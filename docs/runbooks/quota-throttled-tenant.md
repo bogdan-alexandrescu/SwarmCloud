@@ -1,6 +1,6 @@
 # Raising a throttled tenant
 
-**When:** a tenant's tasks queue behind `provider:<p>:tenant:<t> full` while
+**When:** a tenant's agents queue behind `provider:<p>:tenant:<t> full` while
 the pool's `hard_limit` and the quota's `configured_hard_max` are both well
 above what is running, because one or more 429s halved the tenant's AIMD
 target and it has not climbed back. You have fixed, or decided to accept, what

@@ -270,7 +270,7 @@ first that is not `done`; the plugin resumes there and the console opens there.
 | `orgs_enabled` | at least one owner (the user's account or an org) is enabled and its installation is reachable | `GET /user/installations` paged at 100 per page until a short page, plus `GET /user/orgs` to show orgs with no installation; each owner gets `installed`, `requested` or `not_installed`. For an App connection the owners enabled on Work › Access (`forge_orgs`) are read on every checklist read and listed with `enabled: true`, and an enabled, reachable owner checks the step at that read: on 2026-10-11 the step named only the owner a 12-hour-old probe had seen while Access listed two (live QA RSA-2) | `ORG_APPROVAL_PENDING`, `SSO_NOT_AUTHORISED`, `CLASSIC_PAT_BLOCKED`, `FINE_GRAINED_PAT_PENDING` |
 | `repos_chosen` | at least one repository is granted, each `read` or `write`, each registered | `GET /user/installations/{installation_id}/repositories` paged (100 per page, `page` until a short page, served to the chooser one page at a time with a server-side search); a typed `owner/repo` is read once with `GET /repos/{owner}/{repo}` | `REPO_NOT_INSTALLED`, `REPO_ARCHIVED`, `SSO_NOT_AUTHORISED` |
 | `access_verified` | every granted repository passed the checks its mode needs | clone: the smart-HTTP `upload-pack` advertisement (a GET of `info/refs?service=git-upload-pack`); push (write grants): the `receive-pack` advertisement plus `permissions.push` on `GET /repos/{owner}/{repo}`; pull request (write grants): the installation's `pull_requests: write` permission and the same push bit; all are reads, as the probe's are today (`apps/swarm-api/swarm_api/forge.py::git_basic_headers`). An optional write test creates and deletes one branch (decision D6) | `PERMISSION_MISSING`, `SSO_NOT_AUTHORISED`, `REPO_NOT_INSTALLED`, `FORGE_UNREACHABLE` |
-| `ready` | every step above is `done` | none of its own; it offers the first task in a granted repository | none |
+| `ready` | every step above is `done` | none of its own; it offers the first agent in a granted repository | none |
 
 Each probe runs in swarm-api, not in a worker, so it costs no lease and no
 capacity. A read that did not come back (a 5xx, a 429, a network error) is not
@@ -309,7 +309,7 @@ machine with every step done:
   is visible. Adding repositories to an existing installation is done at
   GitHub; the chooser shows them on the next read.
 * **Remove an org**: SwarmCloud deletes the user's `forge_orgs` record and every
-  grant under that owner, in one write, so a task naming one of its
+  grant under that owner, in one write, so an agent naming one of its
   repositories is **refused** at submission from that moment, and a worker
   already running is refused at its next push or pull request, where it
   re-reads the grant (§3.3 step 4). The token already inside that running
@@ -323,7 +323,7 @@ machine with every step done:
   for the tenant if it is not yet registered.
 * **Remove a repository**: the grant is deleted; the tenant's registration is
   kept while another user still holds a grant on it, and deleted with the
-  last one. Tasks for it by this user are refused from then on.
+  last one. Agents for it by this user are refused from then on.
 
 ### 2.5 Several users in one tenant
 
@@ -332,7 +332,7 @@ through `github_connected` themself and gets their own connection and user
 slot. Installations are an org's, so the second user's `orgs_enabled` step is
 usually already satisfied for `example-org`: they see it as installed and only
 enable it. Grants are per user: a repository is in the tenant's list once, and
-each user holds their own `read` or `write` on it. A task acts as its
+each user holds their own `read` or `write` on it. An agent acts as its
 `submitted_by`, the verified email signed into its spec, never as whoever
 connected first. The tenant view for an admin shows every member's connection
 state and grants, never a value.
@@ -518,13 +518,13 @@ already uses. The code is useless without the client secret, which only
 swarm-api reads. Every route takes the tenant from `tenant_scope`, never the
 body, and another tenant's id is the same 404 as a missing one.
 
-### 3.3 How the worker gets the per-task credential
+### 3.3 How the worker gets the per-agent credential
 
 Today `Worker._git_token` reads `swarm-tenant-<tenant>-git` through
 `resolve_git_token`. The change is which suffix it reads, decided by
 swarm-api at submission and carried by name:
 
-1. **At submission** swarm-api resolves the task's repository and its
+1. **At submission** swarm-api resolves the agent's repository and its
    `submitted_by` against the grants: no grant is a refusal
    (`REPOSITORY_NOT_GRANTED`, 403, with "choose it under Access"); a grant is
    the user's slot suffix `git-u-<hex>` and its mode. Resolution order
@@ -533,7 +533,7 @@ swarm-api at submission and carried by name:
 2. **The scheduler** checks the connection's `state` at admission, as
    `CREDENTIAL_MISSING` is decided today: `credentials.py::credential_for`,
    asked by `loop.Scheduler._admit_one` before any pool is reserved, also
-   answers "no" for a `refresh_failed` connection, so the task parks
+   answers "no" for a `refresh_failed` connection, so the agent parks
    `CREDENTIAL_MISSING` without a lease or a worker and a dead token costs no
    capacity. The existing credential sweep (`loop.Scheduler._promote_credentials`)
    asks the same question and returns the park to `READY` once the connection
@@ -549,7 +549,7 @@ swarm-api at submission and carried by name:
    again and retries the call once (the issue fetch, the clone, the push
    probe); a second 401 ends with a message saying the token was re-read and
    refused again, so the person reconnects (owner decision 2026-10-08). A `read` grant makes the worker refuse to push:
-   it never configures a push credential for that task.
+   it never configures a push credential for that agent.
 4. **Before cloning, and again before each push or pull request**, the
    worker re-reads the grant document by `repo_id` (tenant-scoped). A grant
    deleted since submission ends the attempt before the agent starts if it is
@@ -590,7 +590,7 @@ supersedes request (E) as git-tokens.md §8 sketched it, by adding the mode and
 the signature. The summary below is kept as the design's statement of it.
 
 * **What is true today:** `Task` (`apps/common/swarm_common/models.py::Task`)
-  says nothing about which forge secret a task uses; the worker reads
+  says nothing about which forge secret an agent uses; the worker reads
   `Tenant.secret_name("git")`
   (`apps/common/swarm_common/models.py::Tenant.secret_name`), and
   `canonical_step_spec` signs `submitted_by` and `metadata` but no credential.
@@ -601,7 +601,7 @@ the signature. The summary below is kept as the design's statement of it.
   step 1 above and never accepted from a caller; and a new `SPEC_FORMAT` in
   `specsign.py` (format 3) whose projection includes both. Absent means `git`
   and `write`, today's behaviour. As applied, formats 1 and 2 refuse a
-  document that sets either field, so one cannot be added to a task signed
+  document that sets either field, so one cannot be added to an agent signed
   without it.
 * **What it would break if accepted:** nothing existing: documents without
   the fields decode as today, and the older spec format still verifies for
@@ -610,7 +610,7 @@ the signature. The summary below is kept as the design's statement of it.
   `submitted_by`, no tenant-token fallback for a user without a grant, and the
   user-hash rule held equal in two places by a parity test.
 * **Invariants:** 9, because the field names a suffix that
-  `Tenant.secret_name` places under the task's own tenant, so it can never
+  `Tenant.secret_name` places under the agent's own tenant, so it can never
   name another tenant's secret; 10, because no caller sets it; 5, because the
   worker verifies the signature before reading anything the field names.
 
@@ -657,7 +657,7 @@ does).
    that binding lets Bob's agent read Alice's slot. The owner's 2026-10-11
    decision that secrets are user-scoped (#1041) supersedes it: swarm-api's
    broker, `POST /v1/attempts/forge-credential`, releases a person's slot
-   only to the current attempt of a task that person submitted
+   only to the current attempt of an agent that person submitted
    ([design/user-scoped-secrets.md](design/user-scoped-secrets.md)). It is
    built behind the `forge_broker` switch (FORGE_BROKER,
    `terraform/infra/child_tasks.tf`), off by default and off in dev, so the
@@ -675,7 +675,7 @@ does).
    act as the person only by refreshing, and every Access page load, grant
    and verify refreshed. Measured that morning: the owner's slot reached 35
    versions within minutes, and because each refresh makes GitHub end the
-   access token it replaces, a task holding the previous version failed
+   access token it replaces, an agent holding the previous version failed
    `401: Bad credentials`. Now a request reads the current access token and
    reuses it, refreshing only within two hours of expiry or on a 401 (once,
    under the refresh lease); in practice only the sweep refreshes. Reading
@@ -707,27 +707,27 @@ decisions D4, 2026-10-07 and 2026-10-08):**
 * **A person with a grant** runs as themselves. That is their App slot, or
   their fallback token's slot when they enabled that owner through one
   (`apps/swarm-api/swarm_api/service.py::SubmissionService._person_slot`). The
-  grant's mode, `read` or `write`, is signed into the task.
+  grant's mode, `read` or `write`, is signed into the agent.
 * **A person with no grant on the repository** is refused at submission with
   403 `REPOSITORY_NOT_GRANTED`, "choose it under Access"
   (`apps/swarm-api/swarm_api/validation.py::repository_not_granted`). This
-  happens once `REPOSITORY_GRANTS_ENFORCED` is on. While it is off, the task
+  happens once `REPOSITORY_GRANTS_ENFORCED` is on. While it is off, the agent
   runs with the tenant token, as before #780
   (`apps/swarm-api/swarm_api/service.py::SubmissionService._resolve_forge`).
   The switch is `var.repository_grants_enforced`: **on in dev**, where the
   App is registered and people can connect, and **off in prod**, which
-  registers no App. On there, every person's task would be refused. Prod
+  registers no App. On there, every person's agent would be refused. Prod
   changes only on the owner's word.
 * **A service-account submission** (repository indexing, schedules, the
   release's acceptance suite in the smoke tenant) is never refused. It keeps
-  the tenant token, `git`, with write. The task says so: the API serves
+  the tenant token, `git`, with write. The agent says so: the API serves
   `forge_credential_source` as "tenant token, service submission"
   (`apps/swarm-api/swarm_api/codec.py::forge_credential_source`).
 
 **Retiring the tenant token** is the owner's step, not a lane's, and it is
 not a console button. The Access page never grew one, because service
 submissions still need the token. [git-tokens.md](git-tokens.md) ("Built for
-#780") has the procedure. In short: with enforcement on, no person's task
+#780") has the procedure. In short: with enforcement on, no person's agent
 reads it. When the tenant runs no service submission on a repository, or
 those have moved to another credential, its version is disabled with
 `create-secrets.sh --disable-previous` semantics and the record kept as
@@ -741,13 +741,13 @@ needs it.
 
 **1. Only LEASED/DISPATCHED/STARTING/RUNNING create demand.** Every onboarding
 probe, listing and verification runs inside swarm-api on a request, never as
-a task, so none of it holds a lease or a slot; a task whose connection has
+an agent, so none of it holds a lease or a slot; an agent whose connection has
 failed parks `CREDENTIAL_MISSING` at admission, as `CREDENTIAL_MISSING` is
 today (`credentials.py::credential_for`), rather than starting a worker to
-find out, and a parked task costs nothing.
+find out, and a parked agent costs nothing.
 
 **2. All-or-nothing reservation in one transaction.** Admission is untouched:
-the credential is resolved at submission, before admission sees the task, and
+the credential is resolved at submission, before admission sees the agent, and
 the scheduler's connection check happens at admission, as `CREDENTIAL_MISSING`
 is today (`credentials.py::credential_for`, asked by `loop.Scheduler._admit_one`
 before the transaction), so no pool is reserved and then released because of
@@ -755,13 +755,13 @@ a credential, and nothing here
 splits the single transaction that reserves every pool.
 
 **3. Concurrency counts from LEASED.** Nothing in this design changes when a
-lease is taken or counted; the refresher and the probes are not tasks and are
-not counted, and a task waiting on a re-authorisation is PARKED, which was
+lease is taken or counted; the refresher and the probes are not agents and are
+not counted, and an agent waiting on a re-authorisation is PARKED, which was
 never counted, so the count from LEASED stays the only count.
 
 **4. Workers never sleep through a long provider wait.** A worker that finds
 its user token expired or refused does not wait for the user to re-authorise:
-it checkpoints, parks the task `CREDENTIAL_MISSING`, releases and exits, and
+it checkpoints, parks the agent `CREDENTIAL_MISSING`, releases and exits, and
 the existing credential sweep (`loop.Scheduler._promote_credentials`, asking
 `credential_for`) returns it to `READY` when the connection is `active` again,
 exactly as a missing provider key is handled today.
@@ -789,7 +789,7 @@ an 8-hour token is precisely a reason an attempt can be interrupted, not a
 reason to checkpoint less.
 
 **9. Per-tenant isolation.** Every user slot and refresh twin is named through
-`Tenant.secret_name` under the task's own tenant, read only by that tenant's
+`Tenant.secret_name` under the agent's own tenant, read only by that tenant's
 worker account (by the per-tenant name condition) and swarm-api; every
 document carries `tenant_id` and is read filtered by it; a user who belongs to
 two tenants connects separately in each, so no token crosses tenants. Within a
@@ -797,7 +797,7 @@ tenant the worker account can read every member's slot, which is git-tokens.md
 option U1, and decision D7 offers the stronger U3.
 
 **10. Callers pick a runner_profile by name.** No caller supplies a
-credential, a secret name, a suffix or a mode on a task: swarm-api resolves
+credential, a secret name, a suffix or a mode on an agent: swarm-api resolves
 them from the signed `submitted_by` and the stored grants, and a body that
 names one is refused by the existing forbid-unknown-fields models
 (`apps/swarm-api/swarm_api/schemas.py::StrictModel`), so a caller still picks
@@ -945,7 +945,7 @@ is printed nowhere else (as `cmd_account_add` does).
 
 The transcript is the console's flow step for step: the same step ids
 (`app_installed`, added later, is `[x]` once an installation exists), the same
-codes, the same copy. A task submitted afterwards for
+codes, the same copy. An agent submitted afterwards for
 `example-org/example-other`, which was not granted, is refused at submission
 with `REPOSITORY_NOT_GRANTED` and "choose it under Access".
 
@@ -965,8 +965,8 @@ root, since they do not exist yet.
 | OB2 | 1 | **built, #809, #823, #824, #840**: the App's registration runbook and Terraform: client-secret slot, user-slot IAM, refresher grants, the scheduler job, indexes, the custom role | `terraform/modules/secret_manager/`, `terraform/modules/tenancy/`, `terraform/modules/scheduler/jobs.tf`, `terraform/modules/firestore/`, new `runbooks/github-app.md` | — |
 | OB3 | 2 | **built, #821, #828, #837, #864**: authorise, exchange, refresh sweep, disconnect; the `app_user` kind; the connection document | new `swarm_api/forgeapp.py`, new `swarm_api/routes/forgeapp.py`, `apps/swarm-api/swarm_api/gittokens.py`, `apps/swarm-api/swarm_api/main.py` | OB1, OB2 |
 | OB4 | 3 | **built, #832**: the access API (orgs, repositories with paging and search, grants, verify) and register and readable resolving the caller's slot | new `swarm_api/access.py`, new `swarm_api/routes/access.py`, `apps/swarm-api/swarm_api/repositories.py`, `apps/swarm-api/swarm_api/main.py` | OB3 |
-| OB5 | 3 | **built, #836, #843**: the worker reads the task's credential, re-reads it before a push, refuses a push on a read grant, re-checks the grant before cloning and before each push or pull request | `apps/agent-worker/agent_worker/lifecycle.py`, `apps/agent-worker/agent_worker/secrets.py` | OB3 |
-| OB6 | 3 | **built, #829**: admission parks a task whose connection has failed as `CREDENTIAL_MISSING`, and the credential sweep returns it to `READY` when the connection is active | `apps/scheduler/scheduler/credentials.py`, `apps/scheduler/scheduler/loop.py` | OB3 |
+| OB5 | 3 | **built, #836, #843**: the worker reads the agent's credential, re-reads it before a push, refuses a push on a read grant, re-checks the grant before cloning and before each push or pull request | `apps/agent-worker/agent_worker/lifecycle.py`, `apps/agent-worker/agent_worker/secrets.py` | OB3 |
+| OB6 | 3 | **built, #829**: admission parks an agent whose connection has failed as `CREDENTIAL_MISSING`, and the credential sweep returns it to `READY` when the connection is active | `apps/scheduler/scheduler/credentials.py`, `apps/scheduler/scheduler/loop.py` | OB3 |
 | OB7 | 4 | **built, #845, #857**: submission resolves the grant and refuses an ungranted repository | `apps/swarm-api/swarm_api/validation.py`, `apps/swarm-api/swarm_api/routes/tasks.py` | OB4, OB5 |
 | OB8 | 4 | **built, #846, #863, #870, #899**: the console onboarding checklist and the Access page, from the owner's picks | new `src/Onboarding.tsx`, new `src/Access.tsx`, `apps/swarm-ui/src/App.tsx`, `apps/swarm-ui/src/api.ts`, `.github/ISSUE_TEMPLATE/` | OB4 |
 | OB9 | 4 | **built, #844**: `sc setup`, `sc access`, the bridge tools, `/sc:setup` | `apps/swarm-mcp/swarm_mcp/sc.py`, `apps/swarm-mcp/swarm_mcp/server.py`, `plugin/README.md`, new `commands/setup.md` | OB4 |
@@ -1026,12 +1026,12 @@ over, because the exchange already needs the client secret in swarm-api.
 **Recommendation:** (a): #780's first acceptance line is "without an
 operator", and the grant it needs carries no read.
 
-### D4. What does a task do when its submitter has not connected GitHub?
+### D4. What does an agent do when its submitter has not connected GitHub?
 
 * **(a) Refuse at submission** with "connect GitHub under Setup".
-* **(b) Use the tenant token**, as today, and say so on the task.
+* **(b) Use the tenant token**, as today, and say so on the agent.
 * **(c) Tenant token for tenant automation only** (indexing, scheduled runs);
-  refuse for a person's task.
+  refuse for a person's agent.
 
 **Recommendation:** (c) once a tenant has finished migrating, (b) until then,
 set per tenant, so nothing that works today stops on the day this ships.

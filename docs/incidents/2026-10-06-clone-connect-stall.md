@@ -90,7 +90,7 @@ GitHub in well under a second: `fetch_issue` to api.github.com took 0.4 to
 `apps/agent-worker/agent_worker/egress.py::EgressProbe` is a background thread
 that opens a TCP connection to the forge, over and over, until one succeeds.
 `apps/agent-worker/agent_worker/lifecycle.py::Worker._start_egress_probe`
-starts it at the top of the worker's run, before configuration of the task is
+starts it at the top of the worker's run, before configuration of the agent is
 read. The clone, in `gitops.shallow_clone` and `gitops.clone_at_commit`, first
 calls `apps/agent-worker/agent_worker/gitops.py::await_egress`, which waits for
 the clone host to answer the probe and then clones.
@@ -151,7 +151,7 @@ cap, stopped), and the same per target with the `peer` each reached.
 `agent_started`'s `seconds_since_process_start`, so the egress, clone and
 agent marks sit on one timeline. Counted from the probe's own start it read
 1.6 to 4.0 s low (observer P28), because the probe starts only once the
-worker's configuration and clients are built. A task that clones nothing
+worker's configuration and clients are built. An agent that clones nothing
 writes no `egress_ready`.
 
 The tests are `tests/unit/worker/test_egress_probe.py` and

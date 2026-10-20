@@ -34,7 +34,7 @@ fooled us earlier today.
   callers resolve to their personal `u-<user>` tenant. The mapping itself is
   untested. This is one of the seven original asks.
 * **Tokens and cost.** The worker fix landed but has not run on a real
-  attempt, and tasks that already ran will never carry the numbers.
+  attempt, and agents that already ran will never carry the numbers.
 * **The contract invariants.** `make smoke`, `concurrency-test` and
   `race-test` cannot reach the API — see the finding below.
 * **Stale, session-expiry, 429 and dark/light contrast.** Built and reasoned

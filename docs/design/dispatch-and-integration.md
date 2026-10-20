@@ -54,7 +54,7 @@ per run at 1000.
 * `schema` forces structured output, validated at the tool layer.
 * Resume replays unchanged `agent()` calls from cache.
 * **ultracode** is a standing opt-in: author a workflow for every substantive
-  task, often several in sequence — understand, design, implement, review —
+  agent, often several in sequence — understand, design, implement, review —
   with the session reading each result before deciding the next.
 * Same landing rules as 1.2: shared tree unless a stage asks for a worktree.
 
@@ -97,9 +97,9 @@ repository in front of it and can resolve a conflict with context.
 1. ~~**`input_from` is declared and never honoured.**~~ **CLOSED 2026-09-21.**
    It was declared and never honoured: the API validated it, the service
    recorded it in task metadata, the codec returned it, and no worker code read
-   it. The worker now stages each declared artifact from the upstream task's
+   it. The worker now stages each declared artifact from the upstream agent's
    successful attempt into the workspace before the agent starts, and refuses
-   the attempt — naming the upstream task and the filename — when a promised
+   the attempt — naming the upstream agent and the filename — when a promised
    input cannot be found. Starting an agent without an input it was promised is
    how it silently produces the wrong thing.
 
@@ -125,8 +125,8 @@ The three the owner named, in the vocabulary Claude Code already uses:
 
 | Scale | Local | Cluster |
 |---|---|---|
-| single agent | one `Agent` call | one task |
-| main agent with helpers | a session that spawns subagents | a task permitted to submit child tasks |
+| single agent | one `Agent` call | one agent |
+| main agent with helpers | a session that spawns subagents | an agent permitted to submit child agents |
 | a workflow | the `Workflow` tool | a workflow DAG |
 
 The middle one does not exist in the cluster and is the interesting one: it is
@@ -224,7 +224,7 @@ paths through it, and that is the risk this choice accepts deliberately:
   it, exactly as the carrier push and the publish do
   (`Worker._carrier_scope_refusal`, `forge.probe_repository`: one
   `GET /repos/{owner}/{repo}`, `permissions.push`). Three answers:
-  * **no git credential, or `permissions.push` not `true`**: the task ends
+  * **no git credential, or `permissions.push` not `true`**: the agent ends
     FAILED at once, whatever attempts are left, with cause
     `forge_read_only` -- the prefix of `last_error` and
     `result_summary.carrier_check.cause` -- and end cause `cannot_start`. Not
@@ -239,7 +239,7 @@ paths through it, and that is the risk this choice accepts deliberately:
   logged, stored or put in the error; the reason is the probe's own words.
 
   **Why the worker and not the API.** A submit-time 422 would be friendlier --
-  the caller hears at once instead of from a failed task -- and B4 first built
+  the caller hears at once instead of from a failed agent -- and B4 first built
   it that way. It required swarm-api to read every tenant's git secret, which
   breaks the rule that exactly one identity may read each secret, the
   tenant's own worker service account
@@ -257,14 +257,14 @@ paths through it, and that is the risk this choice accepts deliberately:
 In dependency order, smallest first:
 
 1. **Honour `input_from`** in the worker: fetch the named artifact from the
-   upstream task's GCS prefix and stage it into the workspace. This is the
+   upstream agent's GCS prefix and stage it into the workspace. This is the
    unlock; everything in 4.2 depends on it.
 2. **An `integrate` runner profile** whose agent applies N patches in order,
    resolves conflicts and opens one PR.
-3. **A `strategy` field** on a task or workflow submission, defaulting to
+3. **A `strategy` field** on an agent or workflow submission, defaulting to
    today's behaviour so nothing changes for an existing caller.
 4. **Checkpoint retention by reference** rather than by clock.
-5. **Child-task submission** from inside a running agent, for the main-agent
+5. **Child-agent submission** from inside a running agent, for the main-agent
    scale.
 
 

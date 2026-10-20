@@ -37,7 +37,7 @@ move less than lines do, so search for the symbol.
   * on its first run it downloaded an unpinned native extension.
 * **What it does better is the agent-facing surface, not the graph.** That
   means:
-  * a live MCP server agents can query in the middle of a task;
+  * a live MCP server agents can query in the middle of an agent;
   * module "communities" and execution "processes";
   * a risk-scored `impact` answer;
   * `detect_changes` mapping a diff to symbols;
@@ -278,7 +278,7 @@ of every step pays that cost, before any answer (§7.7).
 * **Registration and index runs.**
   * `POST/GET/PATCH/DELETE /v1/repositories` and `POST .../index:run` are
     in `apps/swarm-api/swarm_api/routes/repositories.py`.
-  * An index run is a task on the `indexer` profile
+  * An index run is an agent on the `indexer` profile
     (`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`, contract
     request 48). That is claude-code on `agent-runtime-indexer`, resource
     class `standard` (4 CPU, 8 GiB), timeout 7,200 s.
@@ -441,7 +441,7 @@ against the actors in §4.
   * a 166 s index, or a 698 MB snapshot to stage, per step;
   * ≈ 17.9k tokens of tool schemas per turn unless deferred.
 * **Benefit:** agents get `context`, `impact`, `detect_changes`, `query`
-  and `trace` live, mid-task, on the step's own working tree. That
+  and `trace` live, mid-run, on the step's own working tree. That
   *liveness* is the real prize.
 * **Risk:**
   * every step pays index time or staging size;
@@ -509,7 +509,7 @@ us:**
   * the planner splits steps blind to the code's shape;
   * same-file parallel steps are caught only at integration;
   * implementers and reviewers rediscover the call graph with `grep` on
-    every task.
+    every agent.
 
 ### Recommendation
 
@@ -729,8 +729,8 @@ time**.
 
 * Graphs live only under `tenants/<tenant>/repos/<repo_id>/graph/`
   (`apps/swarm-api/swarm_api/repograph.py::manifest_key`).
-* The worker reads them with **the task's own tenant service account**,
-  resolving the registration from the task's own tenant and
+* The worker reads them with **the agent's own tenant service account**,
+  resolving the registration from the agent's own tenant and
   `repository_url` (repo-index.md §4.2).
 * No graph is shared, cached across tenants, or merged.
 * GitNexus's "group" and cross-repo features are exactly what we must not
@@ -762,7 +762,7 @@ Rules:
 | **KG2** | 1 | extractor version 3: communities, BM25 term index, signature fingerprints, module-object call resolution (§2.2 item 6), entry-point flows; new shard layers | `images/agent-runtime-indexer/repo-index/repo_index_extract.py`, `images/agent-runtime-indexer/repo-index/repo_graph_shards.py`, new `tests/unit/worker/test_repo_index_communities.py` | — | extract time within +10% of version 2; test→application edges ≥ 4,438 and covering the 6 `planner_prompt` tests; community stability across incremental runs (Jaccard ≥ 0.9) |
 | **KG3** | 2 | read routes: `POST .../search`, `GET .../communities`, `POST .../territory` (files → expanded territory, seams, overlap with open PRs and in-flight lanes) | new `apps/swarm-api/swarm_api/territory.py`, `apps/swarm-api/swarm_api/routes/repositories.py`, new tests | KG2 | p95 latency; ETag hit rate |
 | **KG4** | 2 | `swarm-graph` MCP server, read-only, stdio, ≤ 6 tools (`search`, `context`, `impact`, `tests_for`, `neighbours`, `territory`), freshness block on every answer, 4 KiB answer cap with paging | new `apps/agent-worker/agent_worker/graphmcp/` package and new tests | KG2 | schema ≤ 2k tokens; answer p95 < 300 ms on this repo's snapshot |
-| **KG5** | 3 | worker staging of the snapshot (request A amended, §7.4), `--mcp-config` for claude-code, one prompt line | new `apps/agent-worker/agent_worker/graphstage.py`, `apps/agent-worker/agent_worker/runners/claude_code.py`, `apps/agent-worker/agent_worker/runners/cliagent.py`; the frozen-contract edit **by the owner** | KG4, request A' accepted | tokens per task; first-push CI red rate (baseline 25%, #642); tool calls per step |
+| **KG5** | 3 | worker staging of the snapshot (request A amended, §7.4), `--mcp-config` for claude-code, one prompt line | new `apps/agent-worker/agent_worker/graphstage.py`, `apps/agent-worker/agent_worker/runners/claude_code.py`, `apps/agent-worker/agent_worker/runners/cliagent.py`; the frozen-contract edit **by the owner** | KG4, request A' accepted | tokens per agent; first-push CI red rate (baseline 25%, #642); tool calls per step |
 | **KG6** | 3 | review impact block and fixer test→symbol context | `apps/swarm-api/swarm_api/issueci.py`, new `apps/swarm-api/swarm_api/reviewcontext.py`, `issueruns.py` (review step prompt only; KG1 has merged by then) | KG1, KG3 | review findings that name a missed call site or test; fix rounds per run |
 | **KG7** | 3 | orchestrator `swarm_territory` tool and the dispatch-time warning | `apps/swarm-mcp/swarm_mcp/server.py`, `apps/swarm-mcp/swarm_mcp/client.py`, new tests | KG3 | parallel lanes dispatched with overlapping territory, unannounced → 0 |
 | **KG8** | 4 | console community layer, issue and lane overlays | `apps/swarm-ui/src/RepoGraph.tsx`, `apps/swarm-ui/src/RepoGraphData.ts`, `apps/swarm-ui/src/api.ts` | KG3; never beside another `apps/swarm-ui` lane on `api.ts` | owner's pick from a mock-up first, as RI13 did |

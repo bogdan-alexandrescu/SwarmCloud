@@ -11,22 +11,22 @@ quietly reverted.
 
 The old Timeline stacked outcomes (placed by the day work ended) on top of
 still-open work (placed by the day it was submitted) in one column, over the
-newest 200 tasks. So a column's height measured nothing. On dev, 16–25 Sep
+newest 200 agents. So a column's height measured nothing. On dev, 16–25 Sep
 2026, 416 cancels flattened 28 failures, and 22 Sep's 305 cancels hid that
 day's 8 failures.
 
 ## One basis per figure
 
-* Every outcome figure is placed by the task's **`completed_at`**.
+* Every outcome figure is placed by the agent's **`completed_at`**.
 * Exactly one series is not: **`submitted`**, the throughput lane's arrivals,
   placed by **`created_at`**. The owner added that lane to answer "are we
   keeping up".
 * The response names both under `basis`, so no client has to restate which is
   which.
-* **Cost is placed by the task's end**, not by when an attempt ran. The worker
+* **Cost is placed by the agent's end**, not by when an attempt ran. The worker
   records spend before its terminal write (`lifecycle._upload_outputs` calls
   `_record_spend` first, and `_cleanup` is the crash backstop). So a finished
-  task's spend is complete, while an open task's spend is not yet known.
+  agent's spend is complete, while an open agent's spend is not yet known.
   Showing it would show a number that is still moving.
 
 ## The rate excludes cancels (owner decision)
@@ -56,8 +56,8 @@ This rule runs through the whole response:
   false`), and its three counts -- `with_ended_steps`, `with_failed_steps`,
   `rows_total` -- are null: nothing was counted, so no count is a zero. The
   review of #196 found them served as 0, which reads as "no workflow failed".
-* A bucket before a tenant's first task holds sealed zeros. That is a real
-  measurement: tasks are never TTL'd, and the derive covers every task.
+* A bucket before a tenant's first agent holds sealed zeros. That is a real
+  measurement: agents are never TTL'd, and the derive covers every agent.
 
 ## Derive, write, drift check
 
@@ -66,13 +66,13 @@ reason: a written value and a derived value are two records of one fact.
 
 * **DERIVE.** `derive_day(tenant, utc_day)` does four reads, and each one leads
   with `tenant_id == T`:
-  * the tenant's tasks that ended that day;
-  * the tasks that arrived that day;
+  * the tenant's agents that ended that day;
+  * the agents that arrived that day;
   * their attempts;
   * their workflow parents, read with `get_all` and checked against the tenant.
 
-  It turns each task into a small tuple. A parent that is missing or belongs to
-  another tenant counts as **unread**. That task's wait is excluded
+  It turns each agent into a small tuple. A parent that is missing or belongs to
+  another tenant counts as **unread**. That agent's wait is excluded
   (`coverage.wait_excluded`, and `latency.wait_excluded` for the card that
   prints it), never guessed.
 * **WRITE.** The tuples are stored in `outcome_days/{tenant}_{YYYY-MM-DD}`,
@@ -90,7 +90,7 @@ reason: a written value and a derived value are two records of one fact.
 ### Sealing, and why a sealed day is complete
 
 * A UTC day can be sealed 15 minutes (`OUTCOMES_SEAL_GRACE_S = 900`) after it
-  ends. Every tuple is a task that is already terminal, and the terminal
+  ends. Every tuple is an agent that is already terminal, and the terminal
   writers stamp `completed_at` with their own clock. So after the grace,
   nothing more can land in that day.
 * The write that seals a day is always a **full** re-derive, never an
@@ -138,7 +138,7 @@ reason: a written value and a derived value are two records of one fact.
   store reported fewer days built than the full read did.
 
 Read costs, measured on 2026-09-25 by the module's own meter over a read-only
-snapshot of dev (4 tenants, 740 tasks, 481 attempts, 17 workflows). The meter
+snapshot of dev (4 tenants, 740 agents, 481 attempts, 17 workflows). The meter
 counts the way Firestore bills: a query costs its rows or 1 if it returns none,
 a `get_all` costs one read per id asked for (a missing document included), and
 a small `count()` costs 1. It is not a Cloud Billing figure.
@@ -152,8 +152,8 @@ a small `count()` costs 1. It is not a Cloud Billing figure.
 * So the 35–50 estimate holds for a tenant view with no failed workflow: 31
   day docs, the live delta and 4 counts.
 * The "Workflows that failed" rows are the rest. On dev they cost 6 workflow
-  docs plus 143 step tasks, read through `WorkflowRollups.for_workflows`.
-* A first build of a sealed day reads every task that ended or arrived that
+  docs plus 143 step agents, read through `WorkflowRollups.for_workflows`.
+* A first build of a sealed day reads every agent that ended or arrived that
   day, plus their attempts. A cold 14-day platform view spent 2,250 of its
   5,000 budget.
 
@@ -173,17 +173,17 @@ boundary.
   1 Nov 2026 is the example.
 * Weeks start on ISO Monday, the same rule as `types.ts bucketStart`.
 
-## Why a task ended: its typed cause first, its text only without one
+## Why an agent ended: its typed cause first, its text only without one
 
 Contract requests 23 and 24 were accepted by the owner on 2026-09-25 (#185,
 decision 9) and applied in PR #217.
 
 * **`Task.end_cause` is read first.** Every terminal writer records it beside
   `completed_at`: the worker, the reconciler, the scheduler and the API's
-  cancel. A task that carries one is classified by it and by nothing else --
+  cancel. An agent that carries one is classified by it and by nothing else --
   a cause the image does not know is `other`, never re-guessed from the text.
-  The text classifier below is the FALLBACK, for tasks that ended before the
-  field existed (every task on dev on the day it shipped) and for the one end
+  The text classifier below is the FALLBACK, for agents that ended before the
+  field existed (every agent on dev on the day it shipped) and for the one end
   no cause names (the runner stopped on SIGTERM with no cancel requested).
 * **The failure classes**, in their fixed order: runner error, timeout, lost
   worker, could not start, **inputs unavailable**, outputs missing, dispatch
@@ -222,13 +222,13 @@ release. Two halves now close it:
   `cancelled_parent`, or the cancel flag on a parent from before causes). A
   parent cancelled before causes, with no flag, has an end the scheduler
   cannot name, and the cascade is written with **no cause**, for the ledger;
-* a task without a cause is split AT DERIVE TIME by what each `depends_on`
+* an agent without a cause is split AT DERIVE TIME by what each `depends_on`
   parent's end sent down: a FAILED or DEAD_LETTERED parent, or one cancelled
   after a failure or by the sweep, sent a failure; one cancelled on request or
   after a cancel sent a cancel. A parent that is itself an untyped cascade is
   named by its own parents, and so on up: the derive reads the chain above
-  such a task (`_read_cascade_ancestors`), one batched, tenant-checked
-  `get_all` per level, only for cascades that carry no cause -- every task on
+  such an agent (`_read_cascade_ancestors`), one batched, tenant-checked
+  `get_all` per level, only for cascades that carry no cause -- every agent on
   dev when this shipped, none that ends after it. A failure anywhere wins; a
   parent whose end cannot be named (unreadable, or cancelled for no recorded
   reason) makes the step `other`, because it may have been the failure; only
@@ -255,7 +255,7 @@ None of those components ship in the API image.
   `tests/unit/control_plane/test_outcomes_classifier_parity.py`. A reworded
   message therefore turns CI red instead of draining into `other`.
 * Every `InputUnavailable` message `agent_worker/inputs.py` raises opens with
-  its own literal, and the worker ends the task with the message as the whole
+  its own literal, and the worker ends the agent with the message as the whole
   `last_error`; the parity test renders the opening of EVERY raise there and
   holds each to "inputs unavailable".
 * `other` and `no_reason` are always counted. Nothing is dropped.
@@ -316,7 +316,7 @@ write RPC was refused in the client before anything was sent.
   why attempts are read in chunks of 30.
   * `tests/unit/control_plane/fakes.py` now refuses a larger `in` the same
     way. The emulator already did.
-  * A 35-task day is read in both suites. Raising the chunk to 100 turned
+  * A 35-agent day is read in both suites. Raising the chunk to 100 turned
     exactly those two tests red (run 36196177221, reverted).
 * `tests/integration/test_outcomes_emulator.py` runs the route through the
   real client against the emulator on every PR. It covers the queries, the
@@ -339,8 +339,8 @@ places work by **completed_at**. Both give the same headline on dev:
 
 * At the mockup's read time, completed_at gives 272 of 300, 90.67 %
   (0.8684–0.9346). That is the mockup's figure exactly. The two bases agree
-  because every task on dev was created after the span began (the first on
-  16 Sep). So the tasks that had ended by that time are exactly the tasks
+  because every agent on dev was created after the span began (the first on
+  16 Sep). So the agents that had ended by that time are exactly the agents
   whose `completed_at` falls before it. At 22:03 UTC the same span read
   278 of 306, because six more had succeeded since.
 * **The time zone moves 22 Sep's failures, as it should.** In UTC, 22 Sep ended

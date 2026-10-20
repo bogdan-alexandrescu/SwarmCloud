@@ -153,7 +153,7 @@ PR rather than done.
 
 | Plug point | Symbol | What it does today |
 |---|---|---|
-| Prompt chain for every CLI agent | `agent_worker.runners.cliagent.run_cli_agent` | Appends the issue-file line (`issue.prompt_line`), the child-tasks line (`children.prompt_line`), deliverables and `PUBLISH_PARAGRAPH`. There is no system prompt: stdin is "the one instruction channel every CLI runner shares" |
+| Prompt chain for every CLI agent | `agent_worker.runners.cliagent.run_cli_agent` | Appends the issue-file line (`issue.prompt_line`), the child-agents line (`children.prompt_line`), deliverables and `PUBLISH_PARAGRAPH`. There is no system prompt: stdin is "the one instruction channel every CLI runner shares" |
 | claude-code body | `agent_worker.runners.claude_code.body` | Adds resume, egress and browser notes; passes `--mcp-config` |
 | Workspace files before the agent starts | `children.prepare` pattern | Writes `work/.swarm-children/README.md` and `work/issue.md` **outside the checkout**, so the worker's publish never commits them |
 | Pre-publish gate (SPEED-D1, merged 2026-10-14) | `agent_worker.prepublish.select_checks`, `Gate.run` | Rebases onto the base (one conflict turn). Runs `scripts/changed-guards.sh --base`, checkov, tflint, shellcheck, ruff and the build-mirror pytest. Gives one fix turn (`FIX_TURNS = 1`). Publishes anyway, with `prepublish-checks.md` appended to the PR body (`Worker._prepublish_section`) |
@@ -173,7 +173,7 @@ and `select_checks` has no `terraform fmt`. §3 shows that matters.
 
 * **Entry points:** `swarm_run_issue` (MCP), `sc run --issue`, and
   `POST /v1/runs` → `start_run`. They read the issue and the plan context, then
-  submit a `claude-code` planner task (`issueruns.planner_task`).
+  submit a `claude-code` planner agent (`issueruns.planner_task`).
 * **The plan** (`PlanSpec`, extra keys refused) carries `summary`,
   `steps[1..8]`, `mode`, `requirements`, `overlaps` and `estimate`. Each step
   has `{step_id, title, prompt, files, tests, estimate, depends_on}`.
@@ -209,7 +209,7 @@ and `select_checks` has no `terraform fmt`. §3 shows that matters.
 * **What exists on main:**
   * Key storage only: `swarm_api.provider_keys`, Settings › API keys, and
     `/sc key`. Resolution is the submitter's own key in their confirmed
-    personal tenant, else the task tenant's key (`resolve_provider_key`).
+    personal tenant, else the agent tenant's key (`resolve_provider_key`).
   * docs/provider-keys.md says "Nothing uses these keys yet".
   * The `agent-runtime-browser` image carries a patched jev-browser (JEV-IMAGE,
     #1296).
@@ -294,7 +294,7 @@ All 8 NOT_YET verdicts, findings quoted from the PR bodies:
 | #1141 | The guard is red on 30 leftovers in other lanes' files, and touched vitest files are red | guard not run + missed tests |
 | #1132 | The socket is opened before noVNC attaches, so the first frame is dropped | reasoning (race) |
 | #1107 | Fixed the finding on the detail page, but the list card the finding was about still says "1,000 edges" | missed caller surface |
-| #1105 | Half fix (a 200-task page), and the fixture never puts a task off the page | reasoning + test adequacy |
+| #1105 | Half fix (a 200-agent page), and the fixture never puts an agent off the page | reasoning + test adequacy |
 
 **The reviewer is cheap insurance with low recall.** 33 of the 37 PRs that
 went red had passed review. A reviewer that cannot see which tests cover the
@@ -433,7 +433,7 @@ instead of lines. Line coverage is option §8 Q7.
 
 ---
 
-## 4. Design: a context pipeline per task type
+## 4. Design: a context pipeline per agent type
 
 ### 4.1 Shape
 
@@ -450,7 +450,7 @@ intake ──► retrieve ──► rank (local, then Jev if opted in) ──►
 * **Deterministic first.** The graph, history and rules produce the
   candidates. Jev only reorders and judges them. With Jev off or down, the
   pack is the local ranking, and nothing waits on it.
-* **One pack format for every task type.** Only the seeds, the quotas and the
+* **One pack format for every agent type.** Only the seeds, the quotas and the
   checklist differ.
 * **Files, not prompt growth.** CONTEXT.md lives outside the checkout, beside
   `.swarm-children/`, so the publish never commits it. The prompt gains one
@@ -490,7 +490,7 @@ as `POST /v1/attempts/{id}/git/{tool}`:
 * the lease fence (invariant 5);
 * the signed spec read for the repository.
 
-It answers only the task's own tenant and repository (invariant 9).
+It answers only the agent's own tenant and repository (invariant 9).
 
 ### 4.3 Ranking under a token budget
 
@@ -561,15 +561,15 @@ schema budget is under 2k tokens:
 | — | **new** `rules_for(files)`, from layer R, offline |
 | — | **new** `in_flight(files)`. The only remote tool: it calls the attempt-proved route through the worker's proof key, as `swarm-git` does. With no network or no proof, it answers `UNKNOWN`, never "nothing in flight" |
 
-### 4.5 Pipelines per task type
+### 4.5 Pipelines per agent type
 
-**How the task type is known.** By the step's role, not by guessing:
+**How the agent type is known.** By the step's role, not by guessing:
 * an issue run's compiled steps are planner, implementer, review and fix;
 * a `swarm_workflow` step is an implementer unless it gates on `verdict_in`
   (fixer) or its prompt is compiled from the review template;
 * an index run is excluded.
 
-An ad-hoc task with no role is an implementer. Jev may classify it when the
+An ad-hoc agent with no role is an implementer. Jev may classify it when the
 workspace opts in (§5.2 call J0).
 
 | Type | Seeds | Retrieval emphasis | Jev (opt-in) | Checklist in CONTEXT.md | Plugs into |
@@ -733,7 +733,7 @@ gets `jev_decide(state, questions)`, an MCP tool served by `swarm-jev`
   workspace opted in to Jev for code and the repository's override is not
   `off`. Lane CTXQ-JW wires that function into the runners.
 * **Same rules as the worker's calls.** It uses the same `JudgeClient`, so
-  §5.4's redaction, §5.5's retries and breaker, and one per-task ledger
+  §5.4's redaction, §5.5's retries and breaker, and one per-agent ledger
   (`judge.budget.Ledger`, a locked file in the attempt directory) apply to
   both. Its calls are audited as kind `agent` and count against the same
   8 calls and 120k tokens.
@@ -779,7 +779,7 @@ ranking call over many blocks; a hard cap of 32,768 input tokens per request.
 | implement | J1 ×1-2 | 15k-30k | ≤ 3 s |
 | review | J3 ×(findings, mostly 0) + J4 ×1 | ≤ 20k | ≤ 3 s |
 | plan | J2 ×1, J5 ×1 | ≤ 15k | ≤ 2 s |
-| **budget per task** (hard) | **≤ 8 calls** | **≤ 120k tokens** | — |
+| **budget per agent** (hard) | **≤ 8 calls** | **≤ 120k tokens** | — |
 
 A lane runs for minutes to hours, so the added wall time is noise.
 **The TypeSafe per-token price is not in this repository:**
@@ -811,8 +811,8 @@ built at runtime.
    PATs, Slack, AWS access keys, HTTP authorization). These are the same rules
    `redact()` in `scripts/lib/common.sh` mirrors, held in step by
    `tests/fixtures/redaction-parity.json`.
-4. **The task's registered secrets** -- the values `agent_worker.redact.scrub_text`
-   scrubs -- are removed. The names are the task profile's `RunnerProfile.secrets`,
+4. **The agent's registered secrets** -- the values `agent_worker.redact.scrub_text`
+   scrubs -- are removed. The names are the agent profile's `RunnerProfile.secrets`,
    which the lifecycle hands to `graphstage.prepare`, which hands them to
    `judge.attempt.setup` and into the attempt's Jev config (names only, never
    a value); the runner's client reads the values from its own environment.
@@ -846,11 +846,11 @@ Each rule's enforcing code and the test that fails without it: [docs/jev-data-fl
 | No key, workspace not opted in, or repository override `off` | No call. The pack's header says `jev: off (reason)` |
 | Timeout (10 s per call, against jev.mjs's 60 s default), 429 or 5xx | Up to 2 retries with 0.8 s × n backoff, as `jev.mjs` does. Then that call's candidates keep their local rank |
 | Two consecutive failures in one attempt | A circuit breaker: no further Jev calls in this attempt, and `jev_unavailable` is logged once |
-| Over the per-task budget | Remaining calls are skipped and the pack says so |
+| Over the per-agent budget | Remaining calls are skipped and the pack says so |
 | Malformed answer | Treated as a failure. No partial probabilities are used |
 
 **In every case the attempt proceeds.** A Jev problem can make a pack less well
-ordered; it cannot fail, park or delay a task beyond the per-call timeout.
+ordered; it cannot fail, park or delay an agent beyond the per-call timeout.
 
 ### 5.6 What lane CTXQ-JW built: J1-J5 in the pipeline
 
@@ -927,7 +927,7 @@ local-only pack.
 
 **Corpus.** The 150 lanes of §2, each with:
 * its base commit (the PR body's `base commit:` line);
-* its brief (the task's input, read through `swarm_result` with an operator's
+* its brief (the agent's input, read through `swarm_result` with an operator's
   credential);
 * its known outcome (M1-M6).
 
@@ -967,7 +967,7 @@ replay.
 
 **Cost of the eval, in lane-equivalents:**
 
-| Stage | Tasks (implementer + review + scoring) | Lane-equivalents |
+| Stage | Agents (implementer + review + scoring) | Lane-equivalents |
 |---|---|---|
 | Pilot | 40 × 2 arms × 3 | about 80 lanes |
 | Full run | 150 × 2 + 40 for arm C | about 340 lanes |
@@ -1005,7 +1005,7 @@ Measured on the online A/B, arm B against arm A:
 | Clean lanes (controls) | no more than 2 points worse on M2 |
 | Cost per merged lane | at most 15% more (tokens + Jev) |
 | Wall time p50 | at most 10% more |
-| Jev outage drill | zero failed or parked tasks with Jev forced off mid-window |
+| Jev outage drill | zero failed or parked agents with Jev forced off mid-window |
 | Redaction | zero credential-scan hits in the Jev audit's sampled payloads (a test re-scans recorded `state` in a canary) |
 
 **For Jev specifically (arm C against B):**
@@ -1075,7 +1075,7 @@ Recommendation first in each. They are also in this lane's `questions.json`.
   workspace default. On by default for local context; no contract change
   (§4.7). *Recommended.*
 * B. Request A′: a `repo_index` runner input in the frozen contract, as
-  knowledge-graph.md §7.4 wrote it. Each caller opts in per task.
+  knowledge-graph.md §7.4 wrote it. Each caller opts in per agent.
 * C. Both: the setting is the default, and A′ lets a caller turn it off.
 
 **Q2. CONTEXT.md budget.**
@@ -1084,7 +1084,7 @@ Recommendation first in each. They are also in this lane's `questions.json`.
 * C. 24 KiB, the planner's allowance: fewest misses, highest cached-token
   cost on every turn.
 
-**Q3. Which task types first.**
+**Q3. Which agent types first.**
 * **A. Implement and plan/sweep first** (phases 1 and 2). They hold 9 of 9 P
   rows and all G, T, X and W rows. Review follows in phase 2.
   *Recommended.*
@@ -1092,11 +1092,11 @@ Recommendation first in each. They are also in this lane's `questions.json`.
   4 of 37.
 * C. All five types at once.
 
-**Q4. Jev budget per task.**
-* **A. At most 8 calls and 120k input tokens per task, and a per-workspace
+**Q4. Jev budget per agent.**
+* **A. At most 8 calls and 120k input tokens per agent, and a per-workspace
   monthly cap the owner sets once TypeSafe's rate is known.** *Recommended.*
 * B. At most 3 calls (J1 only, no judges).
-* C. No per-task cap; only the monthly cap.
+* C. No per-agent cap; only the monthly cap.
 
 **Q5. What J5 (duplicate) does on an auto-approved sweep plan.**
 * **A. Hold the plan for a human when p ≥ 0.85.** Reversible, and Jev never
@@ -1104,7 +1104,7 @@ Recommendation first in each. They are also in this lane's `questions.json`.
 * B. Annotate only; the plan still runs.
 * C. Off: rely on layer I in the planner's prompt.
 
-**Q6. Whether Jev is a tool the agent can call mid-task.**
+**Q6. Whether Jev is a tool the agent can call mid-run.**
 * **A. No. The worker calls Jev at fixed points, and the key never enters the
   agent's process tree.** *Recommended.*
 * B. Yes, as a `jev` MCP tool, as #1297 does for the live browser. That puts

@@ -37,7 +37,7 @@ spends TypeSafe credits. Name it: `--tools playwright-mcp,dev-browser,jev`.
 No API input selects the tool. A caller picks a runner profile by name and
 sends a prompt (invariant 10); a "tool" field would be a backend parameter
 from a caller. The run's label, `bench-<tool>-<prompt>-<rep>`, rides in the
-task's free-form `metadata.bench`, which selects nothing. A unit test holds
+agent's free-form `metadata.bench`, which selects nothing. A unit test holds
 the arms' bodies equal except for that sentence and the label: anything else
 that differed would be what the benchmark measured.
 
@@ -63,7 +63,7 @@ Every prompt ends with the same instruction: finish with one line
 line and requires its value to fully match the prompt's pattern
 (`PROMPTS` in `scripts/browser_bench.py`; the patterns live there, once).
 
-| id | kind | task | success criterion (the `RESULT` value) |
+| id | kind | agent | success criterion (the `RESULT` value) |
 |---|---|---|---|
 | `google-python-release` | Google search | search Google for the Python 3.12.0 release date | `2023-10-02` |
 | `google-rfc-http-semantics` | Google search | search Google for the RFC titled "HTTP Semantics" | `RFC 9110` |
@@ -71,7 +71,7 @@ line and requires its value to fully match the prompt's pattern
 | `httpbin-pizza-form` | multi-page form | fill httpbin.org's order form (text, radio, checkboxes), submit, read the echo page | `custname=Bench Runner; size=medium` |
 | `rfc9110-large-page` | large page read | find two section numbers in RFC 9110's single ~0.5 MB HTML page | `15.5.19; 8.6` |
 | `herokuapp-new-tab` | multi-tab | click a link that opens a second tab, read both tabs' headings | `New Window / Opening a new window` |
-| `github-signin-handoff` | sign-in hand-off | ask a person to sign in to GitHub through `swarm-handoff`, then read the account's user name | `login=<a valid GitHub user name>`, **and** the task's events show the hand-off returned |
+| `github-signin-handoff` | sign-in hand-off | ask a person to sign in to GitHub through `swarm-handoff`, then read the account's user name | `login=<a valid GitHub user name>`, **and** the agent's events show the hand-off returned |
 | `recaptcha-demo-handoff` | CAPTCHA hand-off | fill Google's reCAPTCHA demo form, ask a person to solve the CAPTCHA through `swarm-handoff`, submit | `Verification Success... Hooray!`, **and** the hand-off returned |
 | `pypi-requests-license` | lookup | read the license from the requests project page on PyPI | Apache 2.0, as PyPI writes it |
 | `herokuapp-dynamic-loading` | dynamic page | start a delayed load and wait for the element it renders | `Hello World!` |
@@ -85,9 +85,9 @@ expires unanswered scores as the tool's failure.
 
 A run is a success only when **all** of these hold:
 
-1. the task `SUCCEEDED`;
+1. the agent `SUCCEEDED`;
 2. the `RESULT` value passes the prompt's check;
-3. the agent drove the **live** browser: the task's gate action log
+3. the agent drove the **live** browser: the agent's gate action log
    (`GET /v1/tasks/{id}/live/actions`) shows at least one CDP method the gate
    forwarded. An answer produced in a hidden browser of the agent's own is
    not a live-browser success. That is exactly what happened on
@@ -96,10 +96,10 @@ A run is a success only when **all** of these hold:
    looks for Chrome on `PATH`, in `~/.cache/ms-playwright`, in its own
    `dev-browser install` download or at `DEV_BROWSER_CHROME`, and never reads
    `PLAYWRIGHT_BROWSERS_PATH`, so today's live-browser-only stub does not
-   stop it. A task with no action log at all is counted as not live;
+   stop it. An agent with no action log at all is counted as not live;
 4. for a hand-off prompt, a `human_control_returned` event.
 
-A run whose task has not finished counts **neither way**: `--collect` says how
+A run whose agent has not finished counts **neither way**: `--collect` says how
 many are unfinished, and is run again later.
 
 ## The pass bar
@@ -121,7 +121,7 @@ default is the owner's decision.
 
 | column | source |
 |---|---|
-| `success`, `check`, `result` | the task's state, its answer (`GET /v1/tasks/{id}/answer`), the prompt's pattern |
+| `success`, `check`, `result` | the agent's state, its answer (`GET /v1/tasks/{id}/answer`), the prompt's pattern |
 | `live_browser` | forwarded CDP methods in `GET /v1/tasks/{id}/live/actions` |
 | `cost_usd`, `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` | summed over `GET /v1/tasks/{id}/attempts`, as `scripts/bench-cost.sh` reads them |
 | `turns` | the answer's `num_turns`, else `result_summary.runner.usage.num_turns` |
@@ -132,7 +132,7 @@ default is the owner's decision.
 | `google_sorry_live` | Google `/sorry` navigations in the action log, by `scripts/live_report.py`'s rule |
 
 A figure the API did not serve is **`not measured`**, never 0: an attempt
-that reported no cost did not cost nothing, and a task with no action log had
+that reported no cost did not cost nothing, and an agent with no action log had
 no gate refusals *measured*, not none.
 
 ## How to run it
@@ -158,7 +158,7 @@ already in `runs.tsv` is not submitted again.
 
 ## What it costs
 
-The measured median cost of one task is **$0.66**. The default batch is
+The measured median cost of one agent is **$0.66**. The default batch is
 10 prompts × 2 tools × 3 repeats = **60 runs**, so:
 
 * at the median: 60 × $0.66 = **$39.60**;

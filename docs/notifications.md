@@ -72,9 +72,9 @@ denial, a plan revised, a second hand-off in the same attempt or a later one.
 |---|---|---|---|
 | `admin` | yes, admins only | `workspaces` in `requested`, `loan_requests` in `requested`: what Admin › People lists first | `/admin/people` |
 | `approval` | yes | the tenant's pending `approvals` records (an expired one, or a merge whose run has moved on, is skipped); `schedule_firings` held for approval before the inbox made their record; `issue_runs` in `PLANNED` | `/approvals/<id>` |
-| `task` | yes | "Agent needs you": RUNNING tasks with a live-browser hand-off (`Task.human_wait`) the caller may take control of -- their own, and the tenant's while "Let any member take control" is on (docs/design/live-browser.md §4.1) -- and the caller's PARKED `HUMAN_REQUIRED` tasks; the tenant's workflow steps PARKED `AWAITING_INPUT` whose `remind` names the caller (below); the caller's tasks of the last 7 days whose agent wrote `questions.json` (`result_summary.questions`) | the task's Browser tab; the workflow; its Artifacts tab |
+| `task` | yes | "Agent needs you": RUNNING agents with a live-browser hand-off (`Task.human_wait`) the caller may take control of -- their own, and the tenant's while "Let any member take control" is on (docs/design/live-browser.md §4.1) -- and the caller's PARKED `HUMAN_REQUIRED` agents; the tenant's workflow steps PARKED `AWAITING_INPUT` whose `remind` names the caller (below); the caller's agents of the last 7 days whose agent wrote `questions.json` (`result_summary.questions`) | the agent's Browser tab; the workflow; its Artifacts tab |
 | `account` | yes for GitHub, no for the workspace | the caller's `forge_connections` document in `refresh_failed` (only reconnecting renews it); their own expired user-scope `git_tokens`; their own workspace becoming `ready` or `denied` in the last 7 days; their own Claude-account loan request `declined` in the last 7 days (LOAN-DECLINE) | `/access`; `/setup#workspace`; `/setup#claude-account` |
-| `finished` | no | the caller's own tasks submitted alone, their workflows (stored state), and their issue runs whose pull request merged, all ended in the last 7 days | the agent, workflow or run |
+| `finished` | no | the caller's own agents submitted alone, their workflows (stored state), and their issue runs whose pull request merged, all ended in the last 7 days | the agent, workflow or run |
 
 Some notes on what each group deliberately leaves out:
 
@@ -91,11 +91,11 @@ Some notes on what each group deliberately leaves out:
   record being made.
 * **A question item goes once every question is answered.** An agent's
   `questions.json` is data for a person (`agent_worker/questions.py`). The
-  person answers on the task's "Questions for you" card
+  person answers on the agent's "Questions for you" card
   (`POST /v1/tasks/{id}/answers`, TASK-ANSWERS, owner decision 2026-10-13), and
-  the answer is stored on the task as `metadata.owner_answers`. The item derives
+  the answer is stored on the agent as `metadata.owner_answers`. The item derives
   only while at least one counted question has no answer. Until then it stays
-  for 7 days after its task ended, and marking it read clears it from the bell's
+  for 7 days after its agent ended, and marking it read clears it from the bell's
   count.
 * **A declined loan request does not count as needing you either.** Nothing
   the person does resolves it. It carries the admin's optional reason and
@@ -107,7 +107,7 @@ Some notes on what each group deliberately leaves out:
   with the denial's reason, which is shown to the person by design
   (docs/workspaces.md §1.3). It never says who decided.
 * **The steps of a workflow are not reported one by one.** The workflow is
-  reported once. A child task is reported by its parent.
+  reported once. A child agent is reported by its parent.
 * **Release IAM holds are left out.** A release waiting on an IAM grant is a
   GitHub environment approval, and the platform keeps no record of it in its
   own stores, so there is nothing to derive an item from. An issue run's IAM
@@ -142,7 +142,7 @@ or sends anything (the owner's Q7):
   replaces the author's period (below).
 * **The approvals inbox shows it to every member**, as kind `input` with id
   `input:<task_id>` (`apps/swarm-api/swarm_api/approvals.py::project_input`),
-  because any member may answer. It is projected on each read from the task
+  because any member may answer. It is projected on each read from the agent
   and never made a record, and the inbox has no decide path for it: approve
   or reject on that id is a 404, so the step's own answer route stays its one
   writer.
@@ -168,7 +168,7 @@ because the bell's layout uses them.
 | `approval` | yes | the `approval` group |
 | `waiting_step` | yes | an await-input step whose `remind` names the person |
 | `question` | yes | a hand-off, and an agent's unanswered questions |
-| `failed` | no | a task or workflow that ended failed, cancelled or dead-lettered |
+| `failed` | no | an agent or workflow that ended failed, cancelled or dead-lettered |
 | `finished` | no | everything else that ended: succeeded, a pull request merged |
 | `account` | GitHub yes, others no | the `account` group |
 | `admin` | yes, admins only | the `admin` group |
@@ -223,7 +223,7 @@ the bell never reads the document a second time. When they cannot be read:
 
 The tenant is the one the caller acts in (`deps.tenant_scope`: the verified
 identity and `X-Swarm-Tenant`, never a body). Every tenant-scoped source reads
-under that tenant only, and keeps only the caller's own work: tasks and
+under that tenant only, and keeps only the caller's own work: agents and
 workflows they submitted, runs they created, and their own connection and
 tokens. Approvals belong to the tenant, because any member may decide one by
 default, and so do workflow steps waiting for a person, because any member
@@ -238,5 +238,5 @@ sweeper and tick allow-lists. They are not people.
 ## Invariants
 
 The feed reads documents and writes one document of its own. It creates no
-task, lease or slot (invariants 1-3), and it takes no image, command or
+agent, lease or slot (invariants 1-3), and it takes no image, command or
 resource spec (invariant 10).

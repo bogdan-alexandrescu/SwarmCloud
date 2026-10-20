@@ -6,7 +6,7 @@ the workspace job did) is leaving the platform and everything provisioned for it
 its identity, its keys, its jobs, its namespace, its records and its artifacts.
 
 **How long.** About an hour of commands, plus however long the tenant's running
-work takes to finish (up to two hours for a `claude-code` or `codex` task).
+work takes to finish (up to two hours for a `claude-code` or `codex` agent).
 
 **What it changes.** Resources named for one tenant id, in the swarm's own
 project resources and on the swarm's own Autopilot cluster. Nothing shared by
@@ -150,7 +150,7 @@ Three things about this half that are easy to get wrong:
 | B2 | A second namespace, if the tenant document's `namespace` field names one other than `swarm-tenant-<id>`. Tenants registered before 2026-09-24 may carry the old spelling `swarm-<id>` | an older `register-tenant.sh` | same as B1 | [9](#9-delete-the-gke-namespace-by-hand) |
 | B3 | Cloud Run Jobs the dispatcher created itself: `swarm-job-<id>-<profile>-<class>` for a smaller resource class, or any job for a tenant terraform did not know. Labels `managed-by=swarm-scheduler`, `swarm-tenant=<id>` | `CloudRunJobDispatcher.ensure_job` | the reconciler deletes them after 7 days idle (`UNUSED_JOB_TTL_SECONDS`), not straight away | [10](#10-remove-what-the-platform-created-at-runtime) |
 | B4 | Account pool: Firestore `accounts/<id>:<label>`; secrets `swarm-account-<id>--<label>` and `...-refresh` (labels `component=swarm-account`, `tenant=<id>`, `managed-by=swarm-secrets`); pending sign-ins in `account_auth`; `<id>` in the `lend_to` list of other tenants' accounts | the quota broker | removing an account deletes its document and **keeps its secret on purpose** (`remove_account` in `quota_broker/main.py`) | [5](#5-take-the-tenant-out-of-the-account-pool) (lends, owned accounts), [6](#6-delete-everything-the-tenant-left) (any account document or sign-in left), [10](#10-remove-what-the-platform-created-at-runtime) (secrets) |
-| B5 | Runtime records: `tasks` (and each task's `events` subcollection), `attempts`, `leases`, `workflows`, `quota/<p>:<id>`, the outcome ledger's `outcome_days/<id>_<day>` rollup; ledger entries `credential_publications/<secret name>`; pools terraform does not hold | the API, scheduler, workers and broker | runtime data, never in terraform state | [6](#6-delete-everything-the-tenant-left) |
+| B5 | Runtime records: `tasks` (and each agent's `events` subcollection), `attempts`, `leases`, `workflows`, `quota/<p>:<id>`, the outcome ledger's `outcome_days/<id>_<day>` rollup; ledger entries `credential_publications/<secret name>`; pools terraform does not hold | the API, scheduler, workers and broker | runtime data, never in terraform state | [6](#6-delete-everything-the-tenant-left) |
 | B6 | Artifacts and checkpoints under `gs://swarm-artifacts-<project>/tenants/<id>/`, every version, including the `.tenant` marker `register-tenant.sh` writes | workers | the bucket is shared; only the prefix is the tenant's | [6](#6-delete-everything-the-tenant-left) |
 | B7 | A provider secret added out of band for a provider that is *not* in the tenant's tfvars `providers` list (labels `component=tenant-credential`, `managed-by=swarm-secrets`) | `scripts/create-secrets.sh` | outside terraform's `for_each` | [10](#10-remove-what-the-platform-created-at-runtime) |
 | B8 | What the personal-workspace job made for a `u-<id>` tenant beyond B1 and B6: the forge slot `swarm-tenant-<id>-git` and its `-refresh` twin (labels `managed-by=swarm-api`, `tenant=<id>`, no `component` label, so B7's filter does not find them); the worker's `roles/storage.objectViewer` and `objectUser` bucket grants, each conditioned on `tenants/<id>/`; on the WD9 fallback its project and bucket-metadata roles; and the Firestore records `workspaces/<id>`, `workspace_ids/<w-id>`, `people/<id>`, `loan_requests/<id>` and `pending_loans/<id>` | the Cloud Run job `swarm-workspace-apply` (A3 to A9) and swarm-api | personal workspaces are outside terraform by design (WD3, WD4), and the job may not delete anything (guard rule C9) | [the workspace section](#a-personal-workspace-made-by-the-workspace-job) |
@@ -437,7 +437,7 @@ or no artifacts makes one command fail, and the rest must still be recorded.
 The label filters are exact (`labels.tenant=eng` does not match `eng-x`), and
 the IAM filter ends in `@` for the same reason. A `du` that says no URLs matched
 means the prefix is empty; a `get namespace` NotFound means it was never
-created, which is common for tenants that never ran a `browser` task.
+created, which is common for tenants that never ran a `browser` agent.
 
 Firestore, read-only (reads nothing secret; `account_auth` holds a PKCE
 verifier, so only its count is printed):
@@ -517,7 +517,7 @@ SH
 
 What that does: every submission for the tenant answers 403 (`SubmissionService.tenant_for`),
 and the scheduler parks anything it would have admitted as `MANUAL_PAUSE`
-("tenant is missing or disabled"). A parked task costs nothing (CONTRACT.md
+("tenant is missing or disabled"). A parked agent costs nothing (CONTRACT.md
 invariant 1). Running work is untouched.
 
 Then close the tenant's slot pool as well, so nothing is admitted even if the
@@ -580,22 +580,22 @@ SH
 Expect four zeros, `unreleased leases 0`, and `(4 capacity states checked)`. The
 last line is there because an empty loop prints nothing and looks like success.
 
-Until it is zero, one of three things ends each running task:
+Until it is zero, one of three things ends each running agent:
 
 * **Wait.** Each profile has a hard timeout: `mock` 600 s, `generic` 3600 s,
   `browser` 5400 s, `claude-code` and `codex` 7200 s.
-* **The tenant cancels.** A member can still cancel their own tasks after the
+* **The tenant cancels.** A member can still cancel their own agents after the
   tenant is disabled (reads and cancels go through `scope_for`, which does not
   refuse a disabled tenant): the UI, `scripts/swarm.py cancel <task>`, or
   `POST /v1/tasks/<id>/cancel`.
-* **You cancel.** The API will not let an admin cancel another tenant's task.
-  The equivalent write is the flag `Store.request_cancel` sets on a task that
+* **You cancel.** The API will not let an admin cancel another tenant's agent.
+  The equivalent write is the flag `Store.request_cancel` sets on an agent that
   holds capacity. The worker sees it on its next control read, stops the
-  runner, checkpoints and finishes the task as `CANCELLED`; if the worker is
+  runner, checkpoints and finishes the agent as `CANCELLED`; if the worker is
   already gone, the reconciler finishes it. The write skips the audit event the
-  API would append, so say in the PR which tasks you cancelled. One task per
+  API would append, so say in the PR which agents you cancelled. One agent per
   run, replacing `<task_id>` inside its quotes (left as it is, the script finds
-  no such task and refuses):
+  no such agent and refuses):
 
 ```bash
 bash -s -- "${TENANT:?run step 1 in this shell}" '<task_id>' <<'SH'
@@ -612,7 +612,7 @@ SH
 (The heredoc blocks in this runbook start at column 0 on purpose: `SH` only
 ends the heredoc when nothing precedes it on its line.)
 
-Pending tasks (`SUBMITTED`, `QUEUED`, `READY`, `PARKED`) do not block anything
+Pending agents (`SUBMITTED`, `QUEUED`, `READY`, `PARKED`) do not block anything
 and cost nothing; step 6 deletes them with the rest of the records.
 
 **Verify the backends agree**, because the reconciler releases a lease only when
@@ -741,8 +741,8 @@ deletes, for one tenant:
   because the bucket is versioned and a noncurrent version is as readable
   through the tenant's IAM grant as a live one;
 * its Firestore records (B5): every event carrying its `tenant_id`, under
-  any task, including a task that is already gone; then each task's own
-  `events`, then the `tasks` themselves, each task only once a recount finds
+  any agent, including an agent that is already gone; then each agent's own
+  `events`, then the `tasks` themselves, each agent only once a recount finds
   no event left under it; `attempts`, `leases`, `workflows` and `quota`; the
   `accounts` and `account_auth` documents it owns; its `credential_publications`
   entries, listed from the ledger itself (below); and its pools;
@@ -751,14 +751,14 @@ deletes, for one tenant:
 
 Why events are found two ways. Firestore does not delete a document's
 subcollections with it: a task document deleted while an event is still under
-it leaves that event where no listing of the tenant's *tasks* can reach it
+it leaves that event where no listing of the tenant's *agents* can reach it
 again. That can happen during this step. Every event writer (the scheduler's
 cascade cancel, the API, the worker and the reconciler) appends events as a
 blind write outside any transaction, so an event can land between the
-script's delete of a task's events and its delete of the task. So the script
-keeps a task that still has an event under it, and the proof then fails on
+script's delete of an agent's events and its delete of the agent. So the script
+keeps an agent that still has an event under it, and the proof then fails on
 it. It also lists and counts events by their own `tenant_id` with a
-collection-group query, which finds an event whether or not its task still
+collection-group query, which finds an event whether or not its agent still
 exists. That query has to order by `at`, newest first. Measured read-only on
 2026-09-24: without that order the database refuses it
 (`FAILED_PRECONDITION`, "requires a COLLECTION_GROUP_ASC index"), because the
@@ -794,7 +794,7 @@ confirmation, because the prompt can wait for an hour:
 |---|---|
 | `tenants/<id>` does not exist: not a registered tenant | 0 (the id) |
 | the tenant is still enabled | 3 |
-| a task in `LEASED`, `DISPATCHED`, `STARTING` or `RUNNING`, an unreleased lease, a pool with `active > 0`, or an account with an agent assigned | 4 (and 5 for the account) |
+| an agent in `LEASED`, `DISPATCHED`, `STARTING` or `RUNNING`, an unreleased lease, a pool with `active > 0`, or an account with an agent assigned | 4 (and 5 for the account) |
 | another tenant's account still lends to this id | 5 |
 
 **Run it before the step-7 merge.** After the merge, terraform has deleted
@@ -828,21 +828,21 @@ a running count, then prints `== Proof: what is left of tenant <id> ==`. That
 table is a fresh count of every row, taken by a different call from the one
 that listed it: a server-side aggregation per collection, a fresh listing of
 the ledger, a new `gcloud storage ls --all-versions` for the prefix. Events
-have two rows. `task events` counts under every task any listing in this run
+have two rows. `task events` counts under every agent any listing in this run
 saw. `events by tenant_id` counts every event carrying the tenant's id under
-any task, including one whose task is gone. **Any non-zero row prints
+any agent, including one whose agent is gone. **Any non-zero row prints
 `VERIFICATION FAILED`, exits non-zero and does not delete `tenants/<id>`**,
 so the id stays held.
 
 Then run the same command again. The second run lists everything afresh from
-the records themselves. A leftover event is found by its `tenant_id`, and a
-task that was kept is found by the task listing. The rerun deletes them and
+the records themselves. A leftover event is found by its `tenant_id`, and an
+agent that was kept is found by the task listing. The rerun deletes them and
 proves the result. It never works from a parent document the first run
-deleted. What a rerun cannot reach is an event under a task that is already
+deleted. What a rerun cannot reach is an event under an agent that is already
 gone *and* that does not carry this tenant's id. The reconciler writes
-`tenant_id` as `""` when it does not know it. The script never deletes a task
-that still has an event under it, which leaves only the moment between a
-task's recount and its delete for that to happen; a rerun cannot recover it
+`tenant_id` as `""` when it does not know it. The script never deletes an agent
+that still has an event under it, which leaves only the moment between an
+agent's recount and its delete for that to happen; a rerun cannot recover it
 afterwards. If the same row fails twice, read it before running a third time.
 Something is still writing for this tenant, and step 3 or 4 did not hold.
 
@@ -1328,7 +1328,7 @@ gcloud logging read \
 
 Expect nothing timestamped after step 9. A line means `tenants/<id>` or a live
 attempt still names the namespace: go back to step 8 or step 4.
-[Troubleshooting](../troubleshooting.md#a-task-is-stuck-in-leased-or-dispatched)
+[Troubleshooting](../troubleshooting.md#an-agent-is-stuck-in-leased-or-dispatched)
 explains how the reconciler reads GKE one namespace at a time.
 
 Put the contents of `build/offboard-<id>/` and the decisions from step 0 in the

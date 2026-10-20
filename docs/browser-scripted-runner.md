@@ -4,7 +4,7 @@
 just Playwright and Chromium playing `input.url` and `input.actions`, then
 extracting the page's text to `page.txt` and a screenshot to `final.png`. This
 page records why it waits for what it waits for, and why some things that
-used to fail a task now only appear in its result. The inputs a caller may
+used to fail an agent now only appear in its result. The inputs a caller may
 give are unchanged by any of it (invariant 10): the catalogue declares them,
 and nothing here added one.
 
@@ -21,7 +21,7 @@ Measured 2026-10-15, QA batch full-1015, profile `browser` (#1363):
 
 The `load` event waits for every subresource: every ad, every iframe, every
 tracker. On a page that keeps loading them it may never fire, although the
-text the task came for was parsed long before. So:
+text the agent came for was parsed long before. So:
 
 * **A goto waits for `domcontentloaded` unless the action names something
   else** (`DEFAULT_WAIT_UNTIL`). The action's `wait_until` is still honoured;
@@ -47,13 +47,13 @@ text the task came for was parsed long before. So:
 Every screenshot -- the final one and a `screenshot` action -- is bounded at
 `SCREENSHOT_TIMEOUT_MS` (15 s, below the 30 s action timeout) and taken with
 animations disabled. Playwright waits for web fonts before it captures; a page
-whose fonts never settle used to cost the whole task.
+whose fonts never settle used to cost the whole agent.
 
 A screenshot that fails is recorded as **missing**: a `screenshot_missing`
 event, a note, `missing: true` on the action, and for the final one
 `screenshot: {"artifact": "final.png", "missing": true, "error": "timeout"}`
-in the result. The task stays SUCCEEDED, because the text was extracted. The
-one exception is a task with `extract_text: false`: there the screenshot was
+in the result. The agent stays SUCCEEDED, because the text was extracted. The
+one exception is an agent with `extract_text: false`: there the screenshot was
 the only thing it was going to produce, so a failed final screenshot fails it.
 
 ## An empty page is stated, not hidden
@@ -67,7 +67,7 @@ Every result carries `page_text`:
 `chars` counts the extracted text without surrounding whitespace, and an
 empty extraction writes no `page.txt`. The summary says
 `...; 0 chars of text`, and a note says the extraction was empty, so a bot
-wall or a consent wall shows in the task list rather than hiding in a
+wall or a consent wall shows in the agent list rather than hiding in a
 SUCCEEDED row with an empty artifact.
 
 `wall` is read from the page **title** alone -- `challenge` for "Just a

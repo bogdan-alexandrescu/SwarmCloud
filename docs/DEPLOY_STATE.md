@@ -25,7 +25,7 @@ sometimes used to check.
    with IAP's Google sign-in redirect.
 4. **Browser capacity is full, and nothing is using it.** Five `browser` leases
    expired at about 04:00 UTC and were never released; they hold `runner:browser`
-   and `resource:browser` at 10 of 10, so no browser task can be admitted.
+   and `resource:browser` at 10 of 10, so no browser agent can be admitted.
 
 ---
 
@@ -164,7 +164,7 @@ Firestore database `swarm`, `pools` collection, by REST `GET`. Five pools show
 **full**. The `leases` collection holds 330 documents; exactly five have no
 `released_at`, and they account for all ten units (`units: 2` each):
 
-| lease | task | created (UTC) | expires_at | heartbeat |
+| lease | agent | created (UTC) | expires_at | heartbeat |
 |---|---|---|---|---|
 | lease_b8dc9372… | task_637eb5ea… | 03:40:06 | 03:42:06 | never |
 | lease_c388c25e… | task_2a417cb2… | 03:55:07 | 03:57:07 | never |
@@ -173,16 +173,16 @@ Firestore database `swarm`, `pools` collection, by REST `GET`. Five pools show
 | lease_66d39067… | task_719225c0… | 03:55:08 | 03:57:08 | never |
 
 All five are `DISPATCHED` on runner profile `browser`, backend `GKE_AUTOPILOT`;
-four of the tasks are steps of `wf_ebb3ab2d65664707a559`. Each lease's
+four of the agents are steps of `wf_ebb3ab2d65664707a559`. Each lease's
 `dispatch_deadline` passed at about 04:00. At the time of reading, **four and a
 half hours** later, none had been reclaimed, although `swarm-reconciler-tick`
-runs every five minutes and its last attempt (08:05:09) returned OK. The tasks'
+runs every five minutes and its last attempt (08:05:09) returned OK. The agents'
 own documents were last updated at about 07:40.
 
 **Not diagnosed.** What is established is that the capacity is held by leases
 nothing is heartbeating, past every deadline they carry, on a deployment that
 predates the dispatch fixes. What is not established is why the reconciler has
-not reclaimed them. Until something does, every browser task will wait
+not reclaimed them. Until something does, every browser agent will wait
 `READY` behind a pool that reads full.
 
 ## Pool ceilings: live against `dev.tfvars`

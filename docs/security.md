@@ -154,7 +154,7 @@ It limits the blast radius instead:
 * egress can be restricted to a known port set (`restrict_egress`, off by
   default until the full set is measured in dev, because turning it on blind
   breaks git over non-standard transports *mid-run* rather than at admission);
-* everything the agent does is attributed to a task, an attempt and a tenant, so
+* everything the agent does is attributed to an agent, an attempt and a tenant, so
   the question "what did it touch?" has an answer.
 
 Treat anything an agent produces as caller-influenced data. The worker already
@@ -167,8 +167,8 @@ does: it never evaluates runner output, only records it.
 The worker starts the runner as a child process with strict rules
 (`agent_worker/procman.py`):
 
-* **Never a shell.** `argv` is a list and `shell=False`, always. Nothing from a
-  task input is ever concatenated into a command line, so there is no quoting
+* **Never a shell.** `argv` is a list and `shell=False`, always. Nothing from an
+  agent input is ever concatenated into a command line, so there is no quoting
   bug that can become command injection.
 * **Own session.** `start_new_session=True`, signals delivered with `killpg`, so
   a runner that forks helpers — `claude`, `npm` and Playwright all do — cannot
@@ -270,7 +270,7 @@ only. It is the command an operator runs while sharing a screen, so its
 
 ## Registered MCP servers: the caller's credential is never in the agent's reach
 
-A task may name MCP servers its workspace registered, and a caller may send a
+An agent may name MCP servers its workspace registered, and a caller may send a
 per-run credential for one ([design](design/registered-mcp-servers.md), part
 of #1433). The whole feature is dark until `SWARM_MCP_SERVERS` is `on`: off, every
 registration write, submission naming a server and attach is refused
@@ -284,7 +284,7 @@ registration write, submission naming a server and attach is refused
 * **The per-run credential at rest** is one Secret Manager secret per
   submission and server, `swarm-tenant-<tenant>-mcpc-<16 hex>`, with Secret
   Manager's own TTL as the backstop and a 10-minute sweep that destroys it
-  once its task ends. Only swarm-api may read `-mcpc-`; the tenant's worker
+  once its agent ends. Only swarm-api may read `-mcpc-`; the tenant's worker
   account holds no grant on it, so an agent that mints the pod's token reads
   nothing. The Firestore row that names the secret holds no value and is
   HMAC-attested, so a row an agent forges points at nothing.
@@ -437,7 +437,7 @@ not hold.
   * **A symlink that leaves `work/` is skipped**, never created, and the rest
     restores. uv leaves `bin/python -> /usr/local/bin/python3.11` in every
     build environment, and refusing the archive over it failed every resume of
-    the task (#286). The skip is logged once per restore: at most 20 links
+    the agent (#286). The skip is logged once per restore: at most 20 links
     named, each name and target through the worker's secret scrub, then a
     count. A symlink that comes to leave only once a later one is made
     (`y -> z/..`, then `z -> .`) is removed after extraction and named the same
@@ -455,12 +455,12 @@ not hold.
     class), so the restore's safety does not depend on the Python patch level.
 * **Which checkpoint is restored is not chosen from the bucket** (#347). Every
   agent of a tenant can write anywhere under `tenants/<tenant>/`, so another
-  step of the same tenant could put a checkpoint under a task's prefix, and
+  step of the same tenant could put a checkpoint under an agent's prefix, and
   `.claude/` — settings, hooks — travels in every checkpoint because HOME is
-  `work/`. A task's first attempt therefore restores nothing, and a retry
+  `work/`. An agent's first attempt therefore restores nothing, and a retry
   restores only `task.latest_checkpoint` when the attempt document that wrote
   it lists its id and its archive digest (`checkpoint_sha256`), and the
-  pointer lies in the task's own prefix. That stops an agent holding only the
+  pointer lies in the agent's own prefix. That stops an agent holding only the
   bucket, whether it adds a checkpoint or rewrites the recorded one. It does
   not stop an agent that also writes Firestore, which has no document-level
   IAM: the complete fix waits for signed step specs (#342).
@@ -546,7 +546,7 @@ Agents have no reason to talk to Kubernetes and are given no way to.
 
 ---
 
-## Unbounded task creation
+## Unbounded agent creation
 
 An authenticated caller with a loop is the most likely incident.
 
@@ -565,7 +565,7 @@ that Cloud Run's concurrency setting already bounds, and would make the limiter
 itself the hot spot. With N instances the real ceiling is N x rate, which is the
 honest trade and is reported on `/v1/stats`.
 
-The deeper protection is invariant 1: a caller can queue a million tasks and pay
+The deeper protection is invariant 1: a caller can queue a million agents and pay
 for none of them. Queue depth is a Firestore bill, not a compute bill.
 
 ---
@@ -694,7 +694,7 @@ carries the same trust requirement.
 
 A person may choose a display name on Settings › Profile
 ([user-profile.md §4.4](design/user-profile.md#44-the-display-name-q5)), and
-other people see it on Admin › People, approvals, task pages and workflow
+other people see it on Admin › People, approvals, agent pages and workflow
 pages. A chosen name is the one thing on those pages that someone else picked.
 So it is treated as untrusted text that can only ever *add* to an email, never
 stand in for one.
@@ -705,7 +705,7 @@ stand in for one.
   `approvers`) and a People row's `display_name`
   (`swarm_api.people.add_names`). No response carries a name without its
   email, and no route looks anyone up by name. Every check that decides what a
-  person may do (who may approve, whose tasks a submitter filter returns) keeps
+  person may do (who may approve, whose agents a submitter filter returns) keeps
   using the verified email.
 * **Nothing else from the preferences document is served to anyone else.** A
   People row carries the name and no default workspace, mute or reminder: those
@@ -776,7 +776,7 @@ What still holds:
 * Tenant workers hold the narrowed `swarmTenantWorkerFirestore` role, which
   omits `datastore.entities.delete` and `datastore.entities.list`. A hostile
   worker can neither enumerate nor delete another tenant's documents; it can
-  only reach documents whose ids it can name. Task, attempt and lease ids are
+  only reach documents whose ids it can name. Agent, attempt and lease ids are
   `<prefix>_<20 hex>`, but `tenants/<id>`, `pools/*`, `workspace_settings/<id>`
   and `control/dispatch` are names anyone can compute, and the role **updates**
   them: see the next section.
@@ -841,7 +841,7 @@ not only the worker. With it, a worker in tenant A can:
   `apps/swarm-api/swarm_api/typesafe_ticket.py::TypesafeTicketService.mint`), its
   merge mode and its code-intelligence delivery.
 * **read B's records.** `tenants/<B>`, `workspace_settings/<B>`, `quota/*:<B>`,
-  `accounts/*`, and any task whose id leaks.
+  `accounts/*`, and any agent whose id leaks.
 
 **Phase 0, once its lanes merge (not built on 2026-10-17).** The dispatcher
 and the reconciler derive each tenant's service account

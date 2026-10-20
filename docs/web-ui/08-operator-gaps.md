@@ -176,7 +176,7 @@ was opened and read.
    PUT genuinely has no marker, and a terraform-created one has a marker nothing reads.
    Getting it onto the screen does **not** need a contract change: `store.py` is unfrozen,
    so a `list_pools_raw()` returning the snapshot dict beside the typed pool is the fix.
-2b. **A pool created by an admin PUT with no limit gets `hard_limit = 1_000_000.**
+2b. **A pool created by an admin PUT with no limit gets `hard_limit = 1_000_000`.**
    `UNLIMITED_HARD_LIMIT` (`store.py:96`) is the default in `upsert_pool`'s create branch
    (`store.py:630-631`). A binding-constraint column that reads `capped by
    hard_limit=1000000` is a lie dressed as a cap; the UI renders `uncapped` for that
@@ -185,14 +185,14 @@ was opened and read.
    `ControlPlane.record_attempt_start`
    (`apps/agent-worker/agent_worker/control.py::ControlPlane.record_attempt_start`) writes exactly sixteen keys and
    neither is among them. The runbook's "peak RSS by profile" therefore needs a join from
-   every attempt to its task — 200 extra document reads for a 200-attempt panel.
+   every attempt to its agent's task document — 200 extra document reads for a 200-attempt panel.
 4. **The event TTL is configured on a field nothing writes.**
    `terraform/modules/firestore/indexes.tf:249-264` sets a TTL policy on
    `var.event_ttl_field`, default `"expires_at"`
    (`terraform/modules/firestore/variables.tf:67-71`). No event writer sets it:
    `TaskEvent` (`models.py:219-228`) has no such field, `event_to_firestore`
    (`codec.py:139-142`) is `asdict(event)`, and the worker's explicit dict
-   (`apps/agent-worker/agent_worker/control.py::ControlPlane._event_write`) does not include it. **Task events never expire**, despite the
+   (`apps/agent-worker/agent_worker/control.py::ControlPlane._event_write`) does not include it. **Agent events never expire**, despite the
    comment at `indexes.tf:249-250` saying that without a TTL the subcollection grows
    without bound. Any event-derived feed sits on an unbounded collection.
 5. **The account sweep's result is keyed by label, not by account.**
@@ -351,7 +351,7 @@ the first thing to look at.*
 * **Parked** — `tasks_by_state.PARKED`.
 * **Dead-lettered** — `tasks_by_state.DEAD_LETTERED`, in alert colour when > 0. Labelled
   **"currently dead-lettered"**, never "all time": `count_tasks_by_state`
-  (`store.py:524-533`) counts tasks *in* that state now, and `scripts/purge-data.sh:42`
+  (`store.py:524-533`) counts agents *in* that state now, and `scripts/purge-data.sh:42`
   purges the whole `tasks` collection, so an all-time framing would be wrong the first
   time anyone runs a purge.
 
@@ -403,7 +403,7 @@ nothing queried is the same lie in the other direction. Those chips arrive with 
 | binding constraint | computed client-side from those fields, per the three rules above |
 | oversubscribed flag | computed client-side: `active > effective_limit`, both from `pool_to_api` |
 | holding capacity | `active` of the pool named `global` |
-| task counters | `GET /v1/stats` → `routes/platform.py:13-19` → `service.stats()` (`service.py:271-288`) → `platform_tasks_by_state` (admin) or `tasks_by_state` |
+| agent counters | `GET /v1/stats` → `routes/platform.py:13-19` → `service.stats()` (`service.py:271-288`) → `platform_tasks_by_state` (admin) or `tasks_by_state` |
 | database name, project | `GET /readyz` (`routes/health.py:42-53`) — unauthenticated, returns `database` and `project` |
 | environment (`dev`/`prod`), region | **nowhere.** See below |
 | source strip | the `status`/`error`/`age_seconds` of each envelope (§0.2) |
@@ -445,12 +445,12 @@ And, by design rather than by gap:
 * `GET /v1/admin/dispatch`: one document read.
 * `GET /v1/stats` as admin: **24 aggregation queries** (trap 8). Aggregations bill one read
   per 1000 index entries scanned, minimum one.
-* **Budget: pools and dispatch at 10s; the task counters at 60s, on their own timer.** Do
+* **Budget: pools and dispatch at 10s; the agent counters at 60s, on their own timer.** Do
   not put them on one poll. At 10s a single viewer would issue 8,640 admin `/stats` calls a
   day = 207,360 aggregation queries.
 * **At 100x:** pools at 200 tenants is ~814 documents and `list_pools` truncates at 500
   with no marker (§0.3) — **this breaks first, and silently.** Fix before scale, not after.
-  The counters degrade next: 12 aggregations over a million tasks is ~1000 index entries
+  The counters degrade next: 12 aggregations over a million agents is ~1000 index entries
   per state per scan. The counters should move to a periodically-materialised
   `platform_snapshots/task_counts` document rather than 24 live aggregations per viewer.
 
@@ -498,7 +498,7 @@ And, by design rather than by gap:
   `reading…` per chip. No spinner over the whole page — a whole-page spinner hides which
   source is slow.
 * **Empty — genuinely:** `no pool is constrained` in normal weight, with the total pool
-  count beside it so "none constrained" is distinguishable from "none read". Zero tasks in
+  count beside it so "none constrained" is distinguishable from "none read". Zero agents in
   every state renders `0` in each counter with `queried at HH:MM:SS` beneath. A drained
   group with no members is absent, not rendered as "0 drained".
 * **Broken:** per §0.2. Specifically: if `GET /v1/admin/pools` fails, the pool section is

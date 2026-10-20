@@ -88,7 +88,7 @@ must show exactly, with `<n>` the project number and `<t>` each tenant in
   `roles/secretmanager.secretAccessor`, on that prefix: the `-refresh` twins
   **and** the base slots (owner decision 2026-10-08). swarm-api reuses the
   person's current access token instead of refreshing on every call -- each
-  refresh makes GitHub end the access token a running task holds, which then
+  refresh makes GitHub end the access token a running agent holds, which then
   fails 401 -- and reading it adds no power, since swarm-api already reads
   the refresh token that mints access tokens. Changing the condition replaces
   the binding; the resource carries `create_before_destroy`, so the new
@@ -102,7 +102,7 @@ it: swarm-api's broker, `POST /v1/attempts/forge-credential`
 ([design/user-scoped-secrets.md](../design/user-scoped-secrets.md)), is built
 behind the `forge_broker` switch (FORGE_BROKER), off by default and off in
 dev. **The binding stays in this root until the broker has been on in dev
-and a live run passed**; while it is off, it is how every user-slot task
+and a live run passed**; while it is off, it is how every user-slot agent
 clones. A plan of this root shows it unchanged.
 
 **Removing it is a later, separate owner change, never part of the change
@@ -126,13 +126,13 @@ of these for the environment, and stop at the first that fails:
    (`apps/agent-worker/agent_worker/forgebroker.py`) -- read the running
    worker image's commit off the release, and `FORGE_BROKER=true` off
    swarm-api's and the scheduler's environment.
-5. **A live run passed with it on**: a user-slot task and a user-slot child
-   of one clone and push through the broker, and another member's task is
+5. **A live run passed with it on**: a user-slot agent and a user-slot child
+   of one clone and push through the broker, and another member's agent is
    refused that slot.
 
 With the broker off, the worker reads a person's slot with its own account,
 as before #1041. Destroy the binding before the broker is on, and that read
-is `PERMISSION_DENIED`: every task that resolved to a person's slot fails
+is `PERMISSION_DENIED`: every agent that resolved to a person's slot fails
 closed until the broker is on. Turning `forge_broker` off or rolling the
 worker back after the removal has the same effect; re-adding the binding is
 the undo.
@@ -171,7 +171,7 @@ Fill in exactly:
 No access):
 
 * Contents: Read and write -- clone and push
-* Pull requests: Read and write -- open and update the task's pull request
+* Pull requests: Read and write -- open and update the agent's pull request
 * Issues: Read and write -- the issue-run comments (#454)
 * Checks: Read-only -- the merge step's CI wait
 * Metadata: Read-only -- mandatory, GitHub sets it
@@ -321,7 +321,7 @@ After the later removal of `forge_slot_reader` (step 2's checklist, with the
 broker on): `swarm-agent-worker-eng@` **denied** for both (#1041: no worker
 reads a user slot), `swarm-api@` still granted for both. A worker granted is a
 binding the removal missed: find it with `gcloud projects get-iam-policy` and
-remove it. Then submit a task as that user in a group tenant: it clones and
+remove it. Then submit an agent as that user in a group tenant: it clones and
 pushes through the broker, and swarm-api logs
 `forge credential released decision=released` with the secret's name and no
 value.

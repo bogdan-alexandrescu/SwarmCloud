@@ -215,7 +215,7 @@ those six and no more:
 There is no parked check and no workflow check. A three-step workflow stalled on
 `DEPENDENCY_INCOMPLETE` raises nothing, while the "clear:" line reassures about
 20 pools and 1 account. The only thing the panel surfaced was an unrelated
-failed task from a different run.
+failed agent from a different run.
 
 ### A1.2 Agents opens on the one tab that cannot contain a stalled step
 
@@ -329,7 +329,7 @@ Keep it.
 - **Cost** — "not reported / No attempt reported a cost. This is an absent
   measurement, not $0.00."
 - **Checkpoints** — `0`, as a figure, caption "No attempt document lists one."
-- **Attempts** — "1 / 3 allowed"; on the parked task "0 / 3 allowed" with
+- **Attempts** — "1 / 3 allowed"; on the parked agent "0 / 3 allowed" with
   "Nothing has been admitted yet — The query succeeded and returned nothing. An
   attempt document is written when capacity is reserved, so a task that is
   PARKED genuinely has none. This is a real zero, not a failed read."
@@ -390,7 +390,7 @@ drawers. The DAG knows the edge and cannot show the state detail; the drawer
 knows the state detail and does not show the edge.
 
 **The machine audit missed this entirely.**
-`audit-agents-task-task_b5dc2568713a40158851.json` is the only per-task audit in
+`audit-agents-task-task_b5dc2568713a40158851.json` is the only per-agent audit in
 the evidence set, and `task_b5dc…` is `research` — DISPATCHED, no `park_reason`,
 therefore no banner. The audit sampled the one step of three that cannot exhibit
 the bug. All ten `audit-*.json` files detect `clipped-x` and `text-truncated`
@@ -409,8 +409,8 @@ rendered into 158px. Three things about it were not measured:
   keyed by full path and never evicted; `probeSnapshot()` (`fetch.ts:261-266`)
   sorts alphabetically. `02-agents-running.png` shows `/v1/admin/tenants … 10m
   ago` and `/v1/runtimes … 10m ago` on a page that requested neither.
-- **It is unbounded in cell count**, because every per-task path gets its own
-  permanent key. Seven tasks produced 16 cells. Opening twenty drawers adds
+- **It is unbounded in cell count**, because every per-agent path gets its own
+  permanent key. Seven agents produced 16 cells. Opening twenty drawers adds
   sixty more, to the footer of every page, for the rest of the session.
 - **The 158px clip destroys its own identifiers.** On `03-agents-workflows.png`
   three separate cards read the identical string `/v1/tasks/task_b208fc…` with
@@ -493,7 +493,7 @@ library's defaults.
    delete the vertical stalk because it rendered a fork as a chain.
 
 8. **The tenant/platform separation** in `PlatformCounts.tsx:18-22` — never side
-   by side in one row, because an admin reading their own four running tasks as
+   by side in one row, because an admin reading their own four running agents as
    the platform total is a truth bug.
 
 9. **`--ctl-hatch`** (`styles.css:1214-1220`) and its comment: "Diagonal stripes
@@ -678,7 +678,7 @@ in `--text-faint`, the faintest token in the system, sitting over body text at
   157; `05-pools` y≈521 → 192; `01-overview` y≈409 → 159), against a comfortable
   45–90. I did not re-count characters; I verified there is no measure rule.
 - **The bars are uncapped.** `.chart .col { flex: 1 }` (`:837`) makes a
-  two-bucket chart draw two ~534px-wide, 120px-tall bars for seven tasks —
+  two-bucket chart draw two ~534px-wide, 120px-tall bars for seven agents —
   `09-history-timeline.png`, y≈335..455. Same defect at `.split-row` (`:872`):
   "claude-code 5" gets a bar the width of the content column.
 - **The tabs are uncapped.** `.tabs button { flex: 1 }` (`:494`) makes
@@ -738,7 +738,7 @@ Visible on `05-pools-pools.png`, `07-pools-holders.png` and
 
 These came from watching a real three-step workflow run on the live platform.
 Each is marked **FIXED**, **IN FLIGHT** or **OPEN**. Three lanes are reported to
-be working on the GKE 401, the wedged task and the API fields as this is
+be working on the GKE 401, the wedged agent and the API fields as this is
 written; I have not seen their branches and cannot confirm the state of any of
 the three, so IN FLIGHT here means "reported in progress", not "verified".
 
@@ -768,7 +768,7 @@ measures the infrastructure rather than the application.
 
 **Fix: §B6.5, the `AttemptDuration` component.** Not prose, not a tooltip.
 
-### A4.2 A task read DISPATCHED for 20 minutes against a dead execution — IN FLIGHT
+### A4.2 An agent read DISPATCHED for 20 minutes against a dead execution — IN FLIGHT
 
 The UI matched the control plane exactly. The control plane did not match
 reality. This is not a UI bug and cannot be fixed in the UI — but §A4.3 is the
@@ -796,7 +796,7 @@ Adjacent and verified: `docs/contract-change-requests.md` §5 records that
 byte-identical copies of the GKE host normaliser, that they *did* disagree once,
 and that the direction of the disagreement meant every GKE dispatch failed
 **after admission had taken the lease** — so invariant 3 counted a slot held by
-a task committed to a backend that would never start it. That is the failure
+an agent committed to a backend that would never start it. That is the failure
 shape a 401 on the same path produces.
 
 ### A4.5 Termination could not be confirmed — OPEN
@@ -990,7 +990,7 @@ these, and getting one wrong is a truth bug:
 - Only `LEASED`/`DISPATCHED`/`STARTING`/`RUNNING` create infrastructure demand.
   `QUEUED`, `PARKED`, `READY` cost nothing and must never be drawn as a backlog.
 - Concurrency counts from `LEASED`, not `RUNNING`.
-- Capacity is all-or-nothing across every pool, so a task's ceiling is the
+- Capacity is all-or-nothing across every pool, so an agent's ceiling is the
   **minimum** across its pools. Raising a non-binding pool changes nothing.
 - Spot is disabled platform-wide; `requests == limits`, so there is no burst
   headroom to draw.
@@ -1308,7 +1308,7 @@ repository already ships an honest primitive for them: `.ctl-util-track` /
 It is what draws REQUESTED VS UTILISED in `22-detail-research.png`.
 
 Those eight: attempt phase breakdown, requested-vs-peak memory, pool saturation,
-concurrency by pool, task-state distribution, per-commit diffstat, outcome mix,
+concurrency by pool, agent-state distribution, per-commit diffstat, outcome mix,
 cost/tokens per attempt.
 
 **So the real shape:** one CSS meter component for the eight proportional
@@ -1438,7 +1438,7 @@ without hovering.
 
 ### B6.4 — The agent inspector (the drawer becomes a pane)
 
-**What it answers:** everything about one attempt of one task.
+**What it answers:** everything about one attempt of one agent.
 
 **Data:**
 `GET /v1/tasks/{id}` (identity, state, `park_reason`, `blocked_by`,
@@ -1478,7 +1478,7 @@ without hovering.
 
 **Must not imply:**
 - That `completed_at − started_at` is the agent's work. `apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_running`
-  overwrites `task.started_at` on every attempt, so on a retried task it is the
+  overwrites `task.started_at` on every attempt, so on a retried agent it is the
   *last* attempt's start. Only the sum of per-attempt intervals is work, and the
   panel does the summing and states it separately.
 - That memory and disk add. `profiles.py:61-67`: the workspace is a slice **of**
@@ -1492,8 +1492,8 @@ without hovering.
 - That `binary_files` is a 0/0 line count. Git prints `-` for both; the field
   exists precisely so a binary change does not read as "changed nothing".
 - That an empty artifact list means none were produced. `complete` is false
-  until the task is terminal.
-- That a task with no spend figure was free (see the coverage rule below).
+  until the agent is terminal.
+- That an agent with no spend figure was free (see the coverage rule below).
 
 **Honesty cases:**
 - `null` cost/tokens → the existing sentence treatment, unchanged.
@@ -1523,7 +1523,7 @@ one nobody uses.
 ### B6.5 — `AttemptDuration`
 
 The component that answers §A4.1. One horizontal segmented bar **per attempt**,
-stacked as rows when a task has several. Never per task, for the
+stacked as rows when an agent has several. Never per agent, for the
 `task.started_at` reason above.
 
 **Inputs:** the attempt row from `/v1/tasks/{id}/attempts`, and the events for
@@ -1562,7 +1562,7 @@ container". In the measured run it was 3m09s against 18s of agent.
 
 **The four missing-event cases, which are four different facts:**
 
-**(a) OPEN AND LIVE.** Task non-terminal, next boundary not yet written. Extent
+**(a) OPEN AND LIVE.** Agent non-terminal, next boundary not yet written. Extent
 is `now − left`. The segment runs to the bar's right edge with **no right
 edge** — a serrated or fading terminus, no axis maximum past it, no tick beyond
 the last measured boundary. The label reads "3m 09s so far", never "3m 09s".
@@ -1577,8 +1577,8 @@ it lies between: "between dispatched and failed · 18m 22s · not broken down."
 **Do not distribute the interval across the segments that should have been
 there** — that invents measurements.
 
-**(c) ABSENT BY CONSTRUCTION — draw nothing.** Segment 0 does not exist for a
-task submitted straight to READY. `swarm_api/service.py:5` says so plainly: "a
+**(c) ABSENT BY CONSTRUCTION — draw nothing.** Segment 0 does not exist for an
+agent submitted straight to READY. `swarm_api/service.py:5` says so plainly: "a
 submitted task is written straight to READY (or PARKED), never to a QUEUED
 state", and `promote_to_ready` (`scheduler/store.py:227`) — one of only two
 `ready` emitters — fires on a park release. So no `ready` event means "there was
@@ -1662,10 +1662,10 @@ produced, and which step is blocking the rest.
 - That a step still running has an end.
 
 **Honesty cases:**
-- A step whose task could not be read renders as `unknown`, hollow, and the
+- A step whose agent could not be read renders as `unknown`, hollow, and the
   rollup is **suppressed** — `Workflows.tsx:111-115` already does this
   ("Counts are SUPPRESSED when any step state is unknown") and it must survive.
-- A workflow with no matching tasks renders the shape with every node
+- A workflow with no matching agents renders the shape with every node
   `unknown`, not with every node `queued`.
 
 ---
@@ -1679,7 +1679,7 @@ first thing to look at?" (`App.tsx:105`).
 
 **The change: a seventh check.** `deriveChecks` (`Overview.tsx:1807-1815`) gains
 `parkedCheck(s.tasks)` — "work of yours is parked, by reason". The data is on
-the task page Overview already loads; no new route. This is the fix for §A1.1,
+the agent page Overview already loads; no new route. This is the fix for §A1.1,
 and the tile's own self-report becomes "7 of 7 checks ran".
 
 RUNNING NOW gains a companion line when the check fires: "Nothing is holding a
@@ -1715,7 +1715,7 @@ all, §A3.1), two ceiling markers, holders list.
   explicitly. Hatch a paused pool; do not fill it.
 - That concurrency counts from RUNNING. It counts from LEASED.
 - That pending pods are a backlog.
-- That raising a non-binding pool changes anything — a task clears **every**
+- That raising a non-binding pool changes anything — an agent clears **every**
   pool at once, so its ceiling is the **minimum**. The current screen says this
   well and must keep saying it.
 
@@ -1760,7 +1760,7 @@ runner-profile split, people table, spend.
 - That failed and cancelled are the same thing — they render identically in
   greyscale today (§A3.3) and B4.2 fixes it.
 - That the two scopes are comparable in one row. `PlatformCounts.tsx:18-22`: an
-  admin reading their own four running tasks as the platform total is a truth
+  admin reading their own four running agents as the platform total is a truth
   bug.
 - That the window is everything. "Grouped client-side over the 7 rows in the
   window. There is no server-side filter or index on `submitted_by`, so this
@@ -1842,7 +1842,7 @@ client at `api.ts:377`. It pages, which the events route does not.
 returns `{artifacts: [{name, bytes, uri}], artifacts_skipped, artifact_bytes,
 complete}`. The `uri` is `gs://` and no download URL is minted, deliberately, to
 keep the tenant boundary where IAM already enforces it. `complete` is false until
-the task is terminal, which is what stops an empty list reading as "produced
+the agent is terminal, which is what stops an empty list reading as "produced
 nothing"; `artifacts_skipped` names files dropped at `max_artifact_bytes`, so a
 short list carries its own reason.
 
@@ -1910,7 +1910,7 @@ It carries the long-form material currently inlined:
 
 | Anchor | What it explains |
 |---|---|
-| `#help/states` | Every task state, and which four reserve capacity |
+| `#help/states` | Every agent state, and which four reserve capacity |
 | `#help/park-reasons` | Every `ParkReason`, what causes it, and what clears it |
 | `#help/pools` | What a pool is; why a ceiling is the minimum across pools; why raising a non-binding pool changes nothing |
 | `#help/paused` | Why a paused pool is not a full one |
@@ -1953,7 +1953,7 @@ once instead of on all four panes of a section (§A1.6 item 5).
 | 19 | `Execution` spends three lines on a Cloud Run resource path | `AgentDetail.tsx` | Last segment, with click-to-copy. |
 | 20 | Four `DEV` badges per screen, from a hardcoded string | every screen except Overview | Remove until §B9.S8 lands. `Overview.tsx:179-183` already made this call. |
 | 21 | The machine audit has no vertical-clip predicate, which is why the worst rendering bug is in none of the ten reports | `docs/web-ui/evidence/audit-*.json` | Add `scrollHeight > clientHeight + 1` on any element with non-visible overflow or a declared height. |
-| 22 | The per-task audit sampled the one step of three that cannot exhibit the banner bug | `audit-agents-task-task_b5dc…json` | Capture a per-task audit for each of a DISPATCHED, a PARKED and a terminal task. |
+| 22 | The per-agent audit sampled the one step of three that cannot exhibit the banner bug | `audit-agents-task-task_b5dc…json` | Capture a per-agent audit for each of a DISPATCHED, a PARKED and a terminal agent. |
 
 ---
 
@@ -2009,9 +2009,9 @@ contents are recorded nowhere, so a listing means reading the tarball.
 **Until it lands:** the manifest renders with the `gs://` uri and a copy
 control, not a dead link.
 
-### S3 — cross-task attempt aggregation · medium · unblocks "what did it cost"
+### S3 — cross-agent attempt aggregation · medium · unblocks "what did it cost"
 
-No route sums cost across tasks. `Store.list_attempts` already accepts
+No route sums cost across agents. `Store.list_attempts` already accepts
 `task_id=None` and the `attempts-tenant-created` index already exists
 (`store.py:770-794`); the only route that calls it passes a task id.
 
@@ -2033,12 +2033,12 @@ other 5 are, so every row without a `cost_usd` is counted in exactly one of four
 buckets, and `with_spend + in_flight_unreported + not_reported_by_profile +
 not_recorded + profile_unknown == attempts`:
 
-1. *In flight.* The attempt is still live: `completed_at` is null AND its task
+1. *In flight.* The attempt is still live: `completed_at` is null AND its agent
    still holds its lease at its generation — the same `attempt_is_over`
    judgement `/answer` and the drawer use. It has not failed to report, it has
    not finished. `in_flight_unreported`. A null `completed_at` alone is NOT in
    flight: a worker hard-killed (OOM, SIGKILL after the grace period, node loss)
-   never writes it, and on a terminal task, a superseded generation or a
+   never writes it, and on a terminal agent, a superseded generation or a
    released lease that row is judged by its profile like any finished one —
    otherwise the attempts that spent and recorded nothing would hide here
    forever. (A running row that already carries a cost is in `with_spend`;
@@ -2053,21 +2053,21 @@ not_recorded + profile_unknown == attempts`:
    that is a gap in a spend total; draw it as one — but as an upper bound on
    unrecorded spend, not a count of costly runs: an attempt that ended before
    the agent ran (a fence exit, an input refusal, a quota park before any
-   usage) spent nothing and lands here too. A row whose task is gone, or
+   usage) spent nothing and lands here too. A row whose agent is gone, or
    names a profile the catalogue no longer holds, is `profile_unknown`, never
    guessed into either side.
 4. *Page or window.* `scope` is `"page"`: every counter is this page's. A caller
    wanting "N of M this week" sums each counter across the pages; the counters
    add, the ratios do not. `finished` counts rows that have ended by the
    judgement in 1, with or without a cost, so it can exceed the rows carrying
-   `completed_at`. A row whose task is gone has ended: nothing holds its lease.
+   `completed_at`. A row whose agent is gone has ended: nothing holds its lease.
 
 Should also decide whether `models`, `num_turns` and `thinking_tokens` become
 queryable. `apps/agent-worker/agent_worker/control.py::ControlPlane.record_spend` deliberately leaves them in the untyped
 `result_summary["runner"]["usage"]` dict — defensible per-agent, indefensible
 per-fleet.
 
-### S4 — `current_generation` and `current_lease_id` on the task · ~2 lines · IN FLIGHT
+### S4 — `current_generation` and `current_lease_id` on the task document · ~2 lines · IN FLIGHT
 
 §A4.3. Both are already decoded at `codec.py:87-88`; `task_to_api` does not
 serve them.
@@ -2210,13 +2210,13 @@ with vitest available.
 | **10** | `test_a_tail_gap_is_reported`: two windows whose `#swarm-tail offset=` values are non-adjacent render a gap marker between them. | Concatenate the two windows. |
 | **10** | `test_resumable_null_is_not_drawn_as_false`: a checkpoint row with `manifest: 'unreadable'`, `resumable: null` renders differently from one with `resumable: false`. | `resumable ?? false`. |
 | **11** | `test_the_dag_orders_siblings_without_crossing_edges` on a four-node fork/join fixture. | Revert to array-index ordering. |
-| **12** | `test_a_parked_step_raises_a_check`: `deriveChecks` with a PARKED task returns a check in `found` state naming the park reason. Plus: the tile's self-report reads "7 of 7". | Remove `parkedCheck` — the count silently becomes 6 of 6 and the test must catch the *count*, not just the check. |
+| **12** | `test_a_parked_step_raises_a_check`: `deriveChecks` with a PARKED agent returns a check in `found` state naming the park reason. Plus: the tile's self-report reads "7 of 7". | Remove `parkedCheck` — the count silently becomes 6 of 6 and the test must catch the *count*, not just the check. |
 
 ### B11.3 The audit harness
 
 Regenerate `docs/web-ui/evidence/audit-*.json` after step 1 and after step 5,
-with the vertical-clip predicate added (§B8.21) and with a per-task audit for a
-DISPATCHED, a PARKED and a terminal task (§B8.22). The PARKED capture is the one
+with the vertical-clip predicate added (§B8.21) and with a per-agent audit for a
+DISPATCHED, a PARKED and a terminal agent (§B8.22). The PARKED capture is the one
 that proves §A3.1 fixed, and no existing audit could have.
 
 Also regenerate the screenshots at 1600×1000, 1440×900, 1280×800 and 1024×768,
@@ -2313,7 +2313,7 @@ the owner may want left as the record of what was believed at `f0154b4`.
 > its open list. The body stays as the design record of what was believed at
 > `f0154b4`.
 
-**D7 — Which seam is built first: S1 (events paging) or S3 (cross-task
+**D7 — Which seam is built first: S1 (events paging) or S3 (cross-agent
 attempts)?**
 The prompt ranks S1 first because every timeline is built on a page that
 silently drops its tail, and a long agent currently renders as one that never
@@ -2509,7 +2509,7 @@ Append to the B-series, in dependency order:
 
 * No route was tested below 1554px content width, so these are desktop
   findings only; the mobile/narrow story is unaudited.
-* Task-detail (`agents/task/<id>`) and its attempts pane were NOT captured —
+* Agent-detail (`agents/task/<id>`) and its attempts pane were NOT captured —
   the link-harvest returned nothing on the workflows route and I did not reach
   them. They remain the deepest unaudited surface and are the most likely home
   of a genuine `ErrorBoundary` crash.
@@ -2525,7 +2525,7 @@ Append to the B-series, in dependency order:
 Submitted `wf_5e5ad3b6f7da4299a839`: five independent `claude-code` steps and a
 sixth joining all five via `input_from`. Walked every route at 1600x1000 while
 it ran. **No route crashed** — `ErrorBoundary` did not fire on any of the 19
-surfaces visited, including task detail and the attempts pane, which half three
+surfaces visited, including agent detail and the attempts pane, which half three
 listed as unaudited.
 
 ## W1 — The New Workflow form cannot submit a workflow that runs (BLOCKER)
@@ -2578,15 +2578,15 @@ edges. The dependency line that would disambiguate is ellipsed:
 
 ## W3 — The PARKED reason banner is vertically clipped (high)
 
-Task detail for the join step, `DEPENDENCY_INCOMPLETE`. The banner renders with
+Agent detail for the join step, `DEPENDENCY_INCOMPLETE`. The banner renders with
 its text sliced horizontally through the middle — the top half of the letters is
 visible and the bottom half is cut off by the container. The probe reports it as
-`clipped-y`. This is the one banner that explains why the task is not running,
+`clipped-y`. This is the one banner that explains why the agent is not running,
 on the one screen a user opens to ask exactly that.
 
-## W4 — The task drawer overlays the list with no scrim (medium)
+## W4 — The agent drawer overlays the list with no scrim (medium)
 
-Opening a task slides a drawer over the right side of the Agents table. There is
+Opening an agent slides a drawer over the right side of the Agents table. There is
 no dimming layer and no shadow, so the drawer's left edge cuts the underlying
 rows and slices the telemetry cards mid-card. It reads as a broken layout rather
 than a panel above a page.
@@ -2609,7 +2609,7 @@ before B15 is built on top of it.
 
 ## What still holds, and should survive the redesign
 
-The absent-value discipline on task detail is the best writing in the product
+The absent-value discipline on agent detail is the best writing in the product
 and got better, not worse, under load:
 
 * `PEAK MEMORY — not recorded. Written when an attempt ends. A running attempt
@@ -2674,7 +2674,7 @@ we could put everywhere we need to a helper hover over question mark tooltip"*.
 | Stats | partial | `PlatformCounts` exists, behind a button |
 | **Visualize the resulting work** | **absent** | Artifacts are LISTED; nothing renders their content |
 | **Inspect the outputs** | **absent** | No viewer, no download, no preview anywhere |
-| Resource consumption | partial | On task detail only; absent from every graph node |
+| Resource consumption | partial | On agent detail only; absent from every graph node |
 | Costs | partial | Same |
 | Duration | partial | Same |
 | Inputs and outputs | **absent** | No input shown; no output viewer |
@@ -2688,8 +2688,8 @@ we could put everywhere we need to a helper hover over question mark tooltip"*.
 ## The three that are not UI work
 
 **S1 — Sub-agents do not exist in the model.** The brief says "workflows of
-agents **and sub-agents**". A workflow step is a task; there is no parent/child
-task relationship anywhere, including in `apps/common/swarm_common/models.py`,
+agents **and sub-agents**". A workflow step is an agent; there is no parent/child
+agent relationship anywhere, including in `apps/common/swarm_common/models.py`,
 which is FROZEN. This cannot be built in the UI. It is a **contract change
 request** and belongs in `docs/contract-change-requests.md` with the shape the
 UI would need — at minimum a nullable parent task id and a way to list children
@@ -2704,7 +2704,7 @@ one. "A way to visualize the resulting work" is the headline ask of the brief
 and it is the single largest unbuilt thing. This needs a server route first.
 
 **S3 — There is no stop control.** `POST /v1/tasks/{task_id}/cancel` exists
-(routes/tasks.py:116) and works — it cancelled six tasks cleanly when used at
+(routes/tasks.py:116) and works — it cancelled six agents cleanly when used at
 the workflow level on 2026-09-22 — but **no UI calls it**. An operator watching
 an agent burn tokens on the wrong thing cannot stop it from the console.
 

@@ -1,6 +1,6 @@
-# Visual QA and UI testing with SwarmCloud's browser task types
+# Visual QA and UI testing with SwarmCloud's browser agent types
 
-Which browser task type to use for which kind of visual QA or exhaustive UI
+Which browser agent type to use for which kind of visual QA or exhaustive UI
 testing, and how to run the one workflow that sweeps the whole console:
 [`docs/qa/console-qa.workflow.json`](qa/console-qa.workflow.json).
 
@@ -11,18 +11,18 @@ says what to pick and why. Read on 2026-10-20 at `87896ff`.
 
 ---
 
-## 1. The task types, and what each one sees
+## 1. The agent types, and what each one sees
 
-There are seven ways a task can have a browser. They differ most in **what the
+There are seven ways an agent can have a browser. They differ most in **what the
 model sees**, which is what decides the job each one is for.
 
-| | task type | who drives | sees | reaches the fixture build on `localhost` | dark mode |
+| | agent type | who drives | sees | reaches the fixture build on `localhost` | dark mode |
 |---|---|---|---|---|---|
 | **F1** | the scripted `browser` profile | a fixed list of actions you send; no model | pixels and text, as files; no model looks at them | no: `localhost` and private addresses are refused | no |
 | **F2** | `claude-code-browser`, `browser_tool: playwright` | the model, through the Playwright MCP tools | pixels, the accessibility tree, the DOM | yes | yes |
 | **F3** | `claude-code-browser`, `browser_tool: dev-browser` | the model, writing short scripts that run many steps per turn | as F2: it is the same browser | yes | yes |
 | **F4** | `claude-code-browser`, `browser_tool: jev` | a second model, Jev, picks each step towards a goal | **page text and element labels only, never pixels** | yes | yes |
-| **F5** | `swarm_browser.live()` from Python, on any `claude-code-browser` task | a fixed, committed script, such as `python -m swarm_qa` | everything Playwright's Python API gives | yes | yes |
+| **F5** | `swarm_browser.live()` from Python, on any `claude-code-browser` agent | a fixed, committed script, such as `python -m swarm_qa` | everything Playwright's Python API gives | yes | yes |
 | **F6** | `claude-code-browser` where the deployment has no live browser | a headless Playwright the agent launches | anything Playwright can, at any size | yes | yes |
 | **F7** | plain `claude-code` | the model, with no browser | **image files** it opens with `Read` | no browser to reach it with | — |
 
@@ -82,7 +82,7 @@ to the model, and a review step receives the PNGs from an earlier step with
 
 A caller picks `runner_profile` and, for `claude-code-browser`, the
 `browser_tool` by name, and nothing else (invariant 10). Which device and
-which theme a page is shown at are commands the agent runs inside the task:
+which theme a page is shown at are commands the agent runs inside the agent:
 `swarm-handoff device`, `swarm-handoff theme`, or `page.emulate_media(...)`
 from `swarm_browser.live()`. The template below puts them in each step's
 prompt.
@@ -183,7 +183,7 @@ tenant's default pool.
 Within one run, the report compares 1440 with 390 and light with dark. To
 compare two runs, open both reports in the console, or download two capture
 tarballs and run `python -m swarm_qa diff A.tar B.tar --out D` in a
-`claude-code-browser` task: a changed-pixel ratio per image and a diff PNG
+`claude-code-browser` agent: a changed-pixel ratio per image and a diff PNG
 where it is over the threshold. No step can read an earlier workflow's
 artifacts yet, so the template does not do this itself (owner, 2026-10-19:
 compare within one run for now).

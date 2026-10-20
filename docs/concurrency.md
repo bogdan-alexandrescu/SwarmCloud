@@ -53,7 +53,7 @@ job, never by a reconciliation sweep that recounts and writes. A recount-and-wri
 would race with a concurrent admission and lose writes under exactly the load
 where correctness matters.
 
-### Which pools a task needs
+### Which pools an agent needs
 
 `swarm_common.models.pool_names_for()`:
 
@@ -95,7 +95,7 @@ transaction, which Firestore aborts and retries if any document it read changed:
 All six, or none.
 
 **Step 1 re-reads rather than trusting the caller's copy.** The scheduler queried
-this task some milliseconds ago; since then it may have been cancelled, or
+this agent some milliseconds ago; since then it may have been cancelled, or
 admitted by another scheduler instance. Optimistic concurrency only works if the
 condition is re-checked inside the transaction.
 
@@ -125,7 +125,7 @@ so a caller can tell "the platform is busy" from "you personally are at your
 limit" — `GLOBAL_CONCURRENCY_LIMIT` versus `TENANT_LIMIT`.
 
 The drain loop **continues** after a denial. Breaking out on the first one is
-how a single full pool stalls every other tenant's work: the next task in the
+how a single full pool stalls every other tenant's work: the next agent in the
 rotation usually belongs to a different tenant and is usually admissible.
 
 ---
@@ -147,14 +147,14 @@ capacity — the platform then admits more than its limit and nothing reports an
 error. The idempotency check is one comparison and removes the entire class.
 
 Every terminal state releases exactly once. `scripts/failure-test.sh` asserts
-this across normal completion, task failure, cancellation mid-run, and malformed
+this across normal completion, agent failure, cancellation mid-run, and malformed
 input, because a leaked lease is worse than the failure that leaked it.
 
 ---
 
 ## 4. Capacity units
 
-Not every task costs the same. `ResourceClass.units` weights them:
+Not every agent costs the same. `ResourceClass.units` weights them:
 
 | Class | cpu | memory | workspace | units |
 |---|---|---|---|---|
@@ -193,21 +193,21 @@ Two mechanisms, deliberately separate, solving two different problems.
 **Aging** fixes starvation *within* a tenant: effective priority rises by
 `aging_step` every `aging_interval_seconds` waited, capped at `aging_max_bonus`.
 The cap keeps aging from inverting the priority scheme permanently — an old
-trivial task should eventually overtake a fresh medium one, never outrank a fresh
+trivial agent should eventually overtake a fresh medium one, never outrank a fresh
 urgent one forever.
 
 **Round-robin** fixes starvation *across* tenants, and it is the reason a tenant
-cannot take the platform by submitting ten thousand priority-100 tasks. Ordering
+cannot take the platform by submitting ten thousand priority-100 agents. Ordering
 purely by priority would let them, because priority is a number the caller
-chooses. Instead tenants take turns: one task each per round. Priority and aging
-decide which of a tenant's own tasks goes first; they never decide how many turns
+chooses. Instead tenants take turns: one agent each per round. Priority and aging
+decide which of a tenant's own agents goes first; they never decide how many turns
 a tenant gets.
 
 One subtlety worth knowing when reading the scheduler: the global candidate query
-returns the highest-priority slice, so a tenant with more high-priority tasks than
+returns the highest-priority slice, so a tenant with more high-priority agents than
 `candidate_batch_size` can fill that slice entirely and disappear the rest from
 the rotation — round-robin cannot interleave what it never read. When the slice
-comes back *full*, the scheduler tops up with a few `READY` tasks from each
+comes back *full*, the scheduler tops up with a few `READY` agents from each
 unrepresented tenant, bounded by `max_topup_tenants` so a pass stays cheap.
 
 The interleave is a pure function of its inputs, so the fairness property is
@@ -232,7 +232,7 @@ they change without a redeploy:
 ./scripts/status.sh
 ```
 
-Lowering a limit below current `active` does **not** kill anything. Running tasks
+Lowering a limit below current `active` does **not** kill anything. Running agents
 keep their leases and finish; the pool simply admits nothing until `active` falls
 below the new ceiling. Draining is the deliberate, non-destructive shape — see
 `POST /v1/admin/providers/{provider}/drain`.

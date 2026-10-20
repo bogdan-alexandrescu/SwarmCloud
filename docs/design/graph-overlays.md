@@ -153,7 +153,7 @@ What each optimises, and what it gives up:
   closed communities as nodes, plus the open ones' modules) built in 126 ms.
   So the aggregation belongs in `RepoGraphData.ts`, where GR3 already
   aggregates by directory, and both views draw its output.
-* **Variant 1's Structure exceeds GR3's 100 ms per-task budget at 2,034
+* **Variant 1's Structure exceeds GR3's 100 ms per-agent budget at 2,034
   modules** unless it is mounted in chunks, as GR3 does. GR3 lays out a view over
   `IN_PLACE_MAX` (120 modules) in a worker and mounts it 100 nodes per frame. Variant 4's full mini-map does too. An
   aggregated mini-map, as in variant 2, costs about 33 ms.

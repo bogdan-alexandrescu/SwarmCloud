@@ -44,7 +44,7 @@ and read, and even **cancel**, every task/workflow belonging to the real `u-eng@
 
 ### 3. Same root cause reachable without the `u-` trick, if the deployment allows multiple hosted domains
 
-`_slug()` discards the domain entirely (`identity.py:65`: `principal.split("@", 1)[0]`). If `ALLOWED_DOMAINS` (in the frozen `Settings`) is ever configured with more than one domain (e.g. onboarding a partner org), then `TENANT_GROUPS=eng@saga.xyz,eng@partner.com` collide outright — `tenant_id_for_group` returns `"eng"` for both. Whichever group's member submits a task first "wins" the tenant document (`ensure_tenant`, `store.py:228-231`); the other group is either blocked with `409 Conflict` the moment any of its members hits a *write* route, or — via finding 2 — can read/cancel the first group's work indefinitely via the unguarded read routes, never triggering the conflict check at all.
+`_slug()` discards the domain entirely (`identity.py:65`: `principal.split("@", 1)[0]`). If `ALLOWED_DOMAINS` (in the frozen `Settings`) is ever configured with more than one domain (e.g. onboarding a partner org), then `TENANT_GROUPS=eng@saga.xyz,eng@partner.com` collide outright — `tenant_id_for_group` returns `"eng"` for both. Whichever group's member submits an agent first "wins" the tenant document (`ensure_tenant`, `store.py:228-231`); the other group is either blocked with `409 Conflict` the moment any of its members hits a *write* route, or — via finding 2 — can read/cancel the first group's work indefinitely via the unguarded read routes, never triggering the conflict check at all.
 
 ---
 

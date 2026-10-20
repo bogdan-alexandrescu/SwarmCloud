@@ -71,8 +71,8 @@ verdict: FAIL -- insufficient n (19 CLOUD_RUN_JOB marks < 30)
   for the true median to be under 5 s, at least 10 of these 19 values would
   have to be, and the measured median is four times the bar. More samples will
   move the p90 and the max; they cannot plausibly move the median below 5 s.
-* **The sample is not every task in the window.** The shell wrapper (§1.2)
-  listed at least 2,000 tasks in the same 7 days before it stopped at
+* **The sample is not every agent in the window.** The shell wrapper (§1.2)
+  listed at least 2,000 agents in the same 7 days before it stopped at
   `--max-tasks`; the measured run visited 199. How those 199 were chosen is
   the operator's and is not recorded with the reading. Most steps now run on
   GKE (claude-code moved there on 2026-10-08, contract request 53), which is
@@ -146,10 +146,10 @@ from `recover-939-fix` at 7c3a45f:
   `api_request`'s `token="$(api_credential)"`, and the request went out with
   an empty bearer. `api_request` does not check that the token is non-empty.
   That is an inference; the 302 could equally be a genuine refusal.
-* **The window was too large for one 600 s run anyway.** At least 2,000 tasks
+* **The window was too large for one 600 s run anyway.** At least 2,000 agents
   in 7 days, each needing one events read and one token mint, does not fit in
   600 s at the cadence this run reached. That is why the measured run (§1.1)
-  used the helper over 199 tasks.
+  used the helper over 199 agents.
 
 The change the wrapper needs, to be made on PR #979's branch:
 
@@ -263,7 +263,7 @@ are, and from which source, the reading does not say (it printed neither
 `connection.src_ip` nor `endpoint.vm_name` nor the drop reason).
 
 **Reading 7, `egress_ready` in Cloud Logging (16:14Z).** `[]` over 7 days.
-The worker writes `egress_ready` as a task event through the API
+The worker writes `egress_ready` as an agent event through the API
 (`apps/agent-worker/agent_worker/lifecycle.py::Worker._mark_egress_ready`), not as a log
 line, so the empty result is expected and the API is the only place the
 marks can be read.

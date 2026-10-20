@@ -319,7 +319,7 @@ summarises, one card carries the screen's figure. In a grid of peer cards that
 each state the same measure in the same unit, every card carries its own
 figure, because the figures are compared card to card, not read as a KPI wall.
 The peer grids are Pools' pool tiles (occupancy), Pool limits' profile cards
-(agent ceiling) and Platform counts' scope cards (task total per scope). A
+(agent ceiling) and Platform counts' scope cards (agent total per scope). A
 smaller step used eight times on a summary still reads as a KPI wall; no
 reference screen shows its largest size more than once on one. *(Amended
 2026-09-25, AH-22 in #86, so this section and §6.2 agree;
@@ -1123,7 +1123,7 @@ named above as their owner, ruled only the Timeline.
 **THE ENDED MARK (CH-22, 2026-09-25).** CANCELLED is `stateTone`'s fifth tone,
 `ended`: terminal, not a verdict, and drawn as the grey flat bar — the **one**
 `is-info` modifier, not a second one. It was `wait`, so Agents drew a cancelled
-task as the caution triangle and Workflows as a blue disc with an amber word.
+agent as the caution triangle and Workflows as a blue disc with an amber word.
 `.ctl-dot.is-info` is the flat bar this table always specified (it had been a
 filled disc, so at 390, where the word is hidden, a cancelled and a queued
 workflow were one dot). The waiting states keep the wait mark: `chipTone` draws
@@ -1788,7 +1788,7 @@ that did not:
   `min(45vw, 20ch)`, wrapping at spaces and, for an id with none, anywhere. A
   **width**, not only a max-width, because a max-width on a table cell is
   ignored by more than one engine. Without it a held cell
-  was as wide as its longest line: on API reads, a task read's concrete URL is
+  was as wide as its longest line: on API reads, an agent read's concrete URL is
   ~53 characters, ~400px of mono in a 356px scrollport, and a sticky cell wider
   than the scrollport covers it at every offset — every other column scrolled
   under it, never visible. A raw-id line that is a locator rather than a name
@@ -1926,7 +1926,7 @@ Six places, in order of commitment. Nothing outside this list.
    Timeline, which reads newest first; the title is "Paged reads: a page of
    events, a window of tasks" and claims no order, and the topic opens by
    naming both reads. *(Superseded by #185, §16: the Timeline no longer reads
-   a window of tasks, so nothing links it to `event-paging`, and the topic is
+   a window of agents, so nothing links it to `event-paging`, and the topic is
    written for the attempt timeline alone again, titled "One page of events,
    not the whole history". The rule this paragraph states is unchanged.)*
 6. **`docs/`.** The argument, the constraint, the thing that is true for six
@@ -1969,7 +1969,7 @@ Five kinds of word, and no sixth:
 healthy path.
 
 **Forms too (TS-23, owner decision 2026-09-25).** The five kinds of word apply
-to a form — Submit a task, Submit a workflow — with one allowance: a field, or
+to a form — Submit an agent, Submit a workflow — with one allowance: a field, or
 an offer to add one, may carry **one `--t-micro` note stating what the runner
 does with that key**, read from the runner source. These are the `SUGGESTED` /
 `ANY_PROFILE` notes on `.sbf-offer-note` and `.sbf-note`, kept on purpose.
@@ -2655,7 +2655,7 @@ won and the earlier block's `display: none` on `.when` survived unopposed:
 that screen's own comment says a phone reader came for. Both `.row` rules in
 the board's block are deleted; one element, one phone block, and it is the one
 in the run list's region. `.row .meta` went with them — nothing has rendered a
-`.meta` cell in a task row since the row was rewritten, so the two rules were a
+`.meta` cell in an agent row since the row was rewritten, so the two rules were a
 selector pair keeping each other alive.
 
 **Ownership, flagged rather than assumed.** `CLAUDE.md` puts `docs/` with
@@ -3376,7 +3376,7 @@ when one was open — development only.
 
 ### 15.2 A route is a path template (CH-18)
 
-The probe registry was keyed by the concrete URL, so every task anyone opened
+The probe registry was keyed by the concrete URL, so every agent anyone opened
 added its own `/v1/tasks/<id>/attempts?limit=50` "route" — 13 of the 29 dock
 cells on the QA screenshot — which inflated the count, shaped the p95 and made
 the help text's "one record per route" untrue. `fetch.ts` exports
@@ -3394,7 +3394,7 @@ router's own name, because one of them compares exactly.
 
 Each record carries `lastUrl`, the concrete URL of its last attempt: the dock
 cell's title and the API reads table's `.ctl-sub` line under the route (the
-raw-id slot of §6.7) show it, so a failure can still be traced to its task. The
+raw-id slot of §6.7) show it, so a failure can still be traced to its agent. The
 "routes" count and "p95 over the last attempt of each route" are now true as
 written. A route's status is the last attempt of any call to it and its age
 the newest successful payload of any call to it; each panel still carries its
@@ -3439,7 +3439,7 @@ session is the diamond rather than the unknown ring.
 Nothing here was seen rendered: every claim is a rule the cascade chooses, a
 DOM the components produced, or a ratio computed from the tokens. Whether the
 phone header fits one row at 390 with a long tenant id, how the held first
-column reads under a thumb, and how the flat-bar segments look at a one-task
+column reads under a thumb, and how the flat-bar segments look at a one-agent
 height are for the next release's screenshots. So are: whether the held
 column — 45vw at 390, 175.5px (§7.3) — reads well on Pools and Accounts; whether the failed segment's 2px
 ground-coloured cut reads as a rule at a 26px column width; and the expanded
@@ -3458,7 +3458,7 @@ red run is in the pull request.
 | Box | What changed | The constraint | Test |
 |---|---|---|---|
 | AG-5 | The artifact viewer's `masked N` is a plain fact: no mark, no `.is-absent`, `--warn` ink above zero, plain at zero, still opening `masking-is-serve-time` | a count that was read is a measurement; the six marks are kinds of *nothing* and there is no seventh (§6.13 amended) | `artifact.masked`, `prose.runs` (re-pointed) |
-| AG-14 | `.row .why` and `.why-full` are `--text`; `.is-warn` only on a line that needs a person: a **failure** (FAILED); work that **can never be admitted** until someone acts — a pool paused or set to zero, whether admission wrote it as a blocker or the task parked on `MANUAL_PAUSE`, and a spent budget (`BUDGET_EXHAUSTED`); **sign-in needed** (`CREDENTIAL_MISSING`); and a **stuck or silent worker** — in the inspector, a slot-holding task with no event for seven minutes gets `livenessOf`'s sentence as its why line (`SilentWorker`, AgentDetail.tsx). Queued, parked on quota or a provider, waiting on a dependency, and cancelled are ink | a colour on every line marks none of them; "needs a person" is the partition types.ts already keeps (`PARK_NEEDS_A_PERSON`, `needsAPerson`), and "silent" is the one `Liveness.tsx` already draws | `whyline.tone` |
+| AG-14 | `.row .why` and `.why-full` are `--text`; `.is-warn` only on a line that needs a person: a **failure** (FAILED); work that **can never be admitted** until someone acts — a pool paused or set to zero, whether admission wrote it as a blocker or the agent parked on `MANUAL_PAUSE`, and a spent budget (`BUDGET_EXHAUSTED`); **sign-in needed** (`CREDENTIAL_MISSING`); and a **stuck or silent worker** — in the inspector, a slot-holding agent with no event for seven minutes gets `livenessOf`'s sentence as its why line (`SilentWorker`, AgentDetail.tsx). Queued, parked on quota or a provider, waiting on a dependency, and cancelled are ink | a colour on every line marks none of them; "needs a person" is the partition types.ts already keeps (`PARK_NEEDS_A_PERSON`, `needsAPerson`), and "silent" is the one `Liveness.tsx` already draws | `whyline.tone` |
 | AG-20 | Every inspector chart root — peak memory, phase bars, retry lollipop, checkpoint strip, diffstat **and the token-spend line** (`TimeSeries`) — drawn at 640 and at 300 units; the figure is the container; the wide drawing only where the chart is ≥ 640px; the narrow one never below 300px. The checkpoint strip's off-page tray takes at most half of each drawing's plot and counts what it has no room to draw as `+N` | tick text at `--t-micro` rendered at 6–8px when a 640 drawing was scaled into a 400–480px column (§7.2 amended); a tray sized by its count left the 300 drawing no axis at 21 off-page checkpoints | `chart.narrow`, `inspector.charts` (every chart root in the inspector, not a list) |
 | AG-23 | The checkpoint and log panels are a facts strip and one `.ctl-table` each, **three columns**: Checkpoint · Size · Age, and Stream · Size · Age. Whether a retry would restore from a checkpoint is a `resume` line under its name; a checkpoint's objects open from its Size cell as rows of the same table, with a name, a size and an age. No `.ckpt` or `.logwin` card, no `dl.kv`; `real zero`, `not measured`, `partial` and `not read` in the cells; the server's lowercase detail on its own line or after a dash. The strip's `restore` fact is what a retry would restore from | one level of box (§13.3); keep only the sentences a table cannot state — a checkpoint written then reclaimed, and a restore pointer a resume would ignore | `runfiles.flat`, `checkpoint.reclaimed` |
 | leftover A | `Agents`, `AttemptTimeline`, `Capacity`, `Holders`, `Runtimes`: the second `real zero` in each empty state removed | one mark per empty state (§6.9 amended) | `emptystate.onemark` |
@@ -3475,9 +3475,9 @@ than smoothed over:
   its link to the masking topic, which is the topic about these credentials,
   which needs the owner's confirmation; pointing it back would undo AG-19's
   fix.
-* **AG-14 names "stuck or silent workers".** `whyAgent` writes no line for a
-  task that holds a slot, so the first pass had nothing to colour. The
-  inspector reads the task's events, and now writes `livenessOf`'s `silent`
+* **AG-14 names "stuck or silent workers".** `whyAgent` writes no line for an
+  agent that holds a slot, so the first pass had nothing to colour. The
+  inspector reads the agent's events, and now writes `livenessOf`'s `silent`
   sentence as a `--warn` why line. The **Agents list** cannot: a row is a task
   document, and a worker's heartbeat is written to its lease, which no
   tenant-scoped route serves (the admin leases route is the only reader). That
@@ -3489,7 +3489,7 @@ than smoothed over:
   it), so a `final` stream's age is its attempt's end — when the worker
   uploads it — and the em dash with `not measured` when that end is not
   recorded. The word `live` is shown only while the attempt has no end **and**
-  the task holds a slot. `source=auto` also serves the live tail when the
+  the agent holds a slot. `source=auto` also serves the live tail when the
   final log is absent, which is what a worker killed before its upload leaves
   behind, and a quota-parked attempt never records an end; either tail is the
   em dash with `partial` — the last tail published, not a stream still being
@@ -3532,7 +3532,7 @@ each. Each is held by a test committed red first.
   (`runfiles.flat.test.tsx`).
 * **The workflow node between attempts.** `stepDuration` gives a step whose
   earlier attempt ran, and which is not STARTING or RUNNING, its state word
-  and no figure — `elapsed()`'s wording for the same task (#145) — because
+  and no figure — `elapsed()`'s wording for the same agent (#145) — because
   its age includes that run and nothing records when its current state began
   (`workflow.views.test.tsx`).
 
@@ -3540,9 +3540,9 @@ each. Each is held by a test committed red first.
 
 ## 16. The Timeline as an outcome ledger (#185, owner decisions 2026-09-25)
 
-The Timeline read the newest 200–2,000 tasks and labelled whatever span they
-happened to cover ("bound by rows, label by the span"), because the task list
-could not filter by time. Dev's 730 tasks already exceeded the default window,
+The Timeline read the newest 200–2,000 agents and labelled whatever span they
+happened to cover ("bound by rows, label by the span"), because the agent list
+could not filter by time. Dev's 730 agents already exceeded the default window,
 so the page was partial on the day it was redesigned, and one column stacked
 outcomes by `completed_at` on top of still-open work by `created_at`, so its
 height measured nothing: 416 cancels flattened 28 failures. The owner accepted
@@ -3562,7 +3562,7 @@ section records what each part must keep, so none of it is quietly reverted.
 | **The readout is the legend** (TS-9) | span totals by default, one bucket's on hover, tap or focus; `all`, Escape and leaving restore; one tab stop with a roving tabindex starting on the newest bucket; not a live region; 44px ‹ › steps on a phone; `zoom to <day>` with a chip back; `N failed that day →` says `not limited to <day>`. **One number per key, and it is the number the key's mark draws**: the flat bars' key prints requested + other, the outline's after_failure + workflow_sweep (`incl. workflow sweep N`), the outlined bars' `after a cancel` its own count, and the cancelled total, which no single mark draws, stands unkeyed; the column names and the Table's `requested or other / after a failure / after a cancel` use the same three sums. The span's totals carry the partial mark and `read of n` when a bucket is unread, and the not-read mark with no count when none was | the SVG marks are `aria-hidden`; each column is an HTML `role="img"` named with its full time and every count. The readout printed 5 beside the outline on 22 Sep while the outline, the column name and the Table said 8 | `activity.timeline` "the readout" |
 | **Table** | the same buckets as a `.ctl-table.is-scroll`, with `Submitted · by <basis.submitted>` | the keyboard and screen-reader route to every value; under Table no lane label is drawn, so the one submission-time column names its basis itself | "the Table toggle" |
 | **The route's words, as the route means them** | the basis is **read** from the payload's `basis` (lane label, readout, facts line, Table), never restated; `coverage.days` is printed in its own unit, `N of M UTC days` in tenant scope and `tenant-days` in platform scope; the provenance says `cached 60 s` only for a payload the route caches (every bucket read, the previous span's too) and `not cached: partial` otherwise, and on a cache hit names the kept read by its time (`N UTC days built by the 14:10:02 read`) rather than saying `built by this read` beside `0 reads this request` (epic #222); a submitter the route sends as `''` is `not recorded` or `—`, never a blank; the from–to inputs refuse, with the reason, a start in the future and a span over 400 days | a parity pass read #196's route beside this page and found each of these saying something the route does not mean: `cached 60 s` on a payload it re-derives, "56 days" for four tenants' 14, a basis word that would survive the basis changing, a blank row, and a 422 the page could have prevented | `activity.timeline` "what the route serves…", `outcomes.view` "what the route means…", `test_outcomes_ui_field_contract.py` |
-| **Eight cards** | Why tasks failed (the server's fixed class order) · Retries and attempts (admissions, not runs) · Time to result by profile (no all-profiles row) · Reliability by profile, tenant or person · Workflows that failed, and where (its step composition in the ledger's TS-4 forms, succeeded solid `--ok`) · **Reported cost · not a bill** (renamed from "Token spend"; per attempt, by task end) · Not finished yet (live, span not applied) · Why tasks were cancelled | every card but the live one draws the same fold on the same basis under the same filters. *Amended 2026-09-30 (#377, the review of #391): the cards no longer share one payload. Each reads its own sections of `GET /v1/outcomes` when it scrolls into view (`CARD_SECTIONS` in `Activity.tsx`), and the route caches the fold, keyed by the query without its sections, so every card of one query in the same minute is a projection of one scan: the same figures the one payload carried, at one full read's cost for the whole page (`test_outcomes_sections.py`, counted at the store)* | "the eight cards" |
+| **Eight cards** | Why agents failed (the server's fixed class order) · Retries and attempts (admissions, not runs) · Time to result by profile (no all-profiles row) · Reliability by profile, tenant or person · Workflows that failed, and where (its step composition in the ledger's TS-4 forms, succeeded solid `--ok`) · **Reported cost · not a bill** (renamed from "Token spend"; per attempt, by agent end) · Not finished yet (live, span not applied) · Why agents were cancelled | every card but the live one draws the same fold on the same basis under the same filters. *Amended 2026-09-30 (#377, the review of #391): the cards no longer share one payload. Each reads its own sections of `GET /v1/outcomes` when it scrolls into view (`CARD_SECTIONS` in `Activity.tsx`), and the route caches the fold, keyed by the query without its sections, so every card of one query in the same minute is a projection of one scan: the same figures the one payload carried, at one full read's cost for the whole page (`test_outcomes_sections.py`, counted at the store)* | "the eight cards" |
 | **Every card says what it covers** | the route sums every card over the buckets it READ. One unread: each card-note carries the partial mark and `read of n <unit>` (§8.6's coverage note; the card head wraps rather than overflow), and an empty list is the partial empty state `… in the 13 of 14 days read`, never `a real zero`. None read: every card draws the not-read mark and the reason, and **no digit** — no count, no real-zero tick, no `$`, and no lane prints a `max` | a zero summed over no bucket is not a measurement; drawn as the real-zero tick it is the absence-as-zero this system exists to prevent | `activity.timeline` "partial and not read" |
 | **The live card carries its age** | "Not finished yet" prints `read <age>` from its own `/v1/stats` read (never `now`), is re-read on every filter change and on the Agents screen's idle cadence (`IDLE_POLL_MS`) while the page is visible, keeps its last counts between reads, and names every set filter it does not apply: `not filtered by profile, tenant, person, kind`. **Park reasons are the caller's own tenant's in platform scope** (`GET /v1/tasks` is tenant-scoped; #185 decision 8), so there the card says `park reasons: tenant <id> only` wherever it draws a reason, `… · none parked there` when that tenant has none, and counts `reasons for k of n` in that tenant, not over the platform | the head's age is the ledger's `generated_at`, a different read; left open 40 minutes and then filtered, the card said `now` over 40-minute-old counts that included the tenant the toolbar had just excluded | "the eight cards" |
 | **Strips only where they fit** | a mini strip is 6px a bucket beside a row of 220px (name ≥ 104 · track ≥ 48 · count 44 · three 8px gaps); the card body is the `ol-card` size container and each strip carries its band (`is-n14` … `is-n60`), shown at ≥ 900px once the body is 220 + 6 × band wide: 304, 364, 406, 490, 580px | at 1440 the cards are 3-up and a body is ~329px: a 24-hour or 30-day strip spilled 20–70px over the card's border into the next card; 14 days fits | `timeline.ledger.rules` "a card's mini strips…" |
@@ -3583,8 +3583,8 @@ are added to TS-4's own rules by selector, so those cannot drift.
 
 **After a cancel, in the same vocabulary (#185, decision 2).** The scheduler
 writes one sentence after a failed parent and after a cancelled one, so lane 3
-drew both as the failure's outline. The route splits them now -- by the task's
-typed `end_cause`, or, for a task that ended before the field existed, by what
+drew both as the failure's outline. The route splits them now -- by the agent's
+typed `end_cause`, or, for an agent that ended before the field existed, by what
 each parent's own end sent down, up the chain (a CANCELLED parent is often a
 failure's cascade itself; the review of #217) -- and lane 3 draws the new cause
 with no new form: it IS a cancel (TS-4's flat bars) AND a cascade (the 1px

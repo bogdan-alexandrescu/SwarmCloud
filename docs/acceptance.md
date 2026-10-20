@@ -1,11 +1,11 @@
 # The acceptance suite
 
-`scripts/acceptance/run.sh` dispatches **real** tasks against a deployed
-environment and asserts what they **produced**. The other suites prove a task
+`scripts/acceptance/run.sh` dispatches **real** agents against a deployed
+environment and asserts what they **produced**. The other suites prove an agent
 reached `SUCCEEDED`. That is not enough, and the proof is on record: every
-browser task this platform reported as a success before 2026-09-29
+browser agent this platform reported as a success before 2026-09-29
 screenshotted `about:blank`. The runner took the picture, the artifact
-uploaded, the task succeeded, and nothing ever looked at the picture. So here a
+uploaded, the agent succeeded, and nothing ever looked at the picture. So here a
 terminal state is a precondition and never the verdict; every check reads an
 output: a PNG's pixels, a patch's lines, a staged file's bytes, a pull
 request's title, a refusal's code. (Owner decision, 2026-09-29.)
@@ -49,7 +49,7 @@ own issue, until it passes five scheduled runs in a row
 (`terraform/bootstrap/acceptance.tf`; [ci.md, "Its identity is not the
 deployer"](ci.md#its-identity-is-not-the-deployer)). Its custom role
 `swarmAcceptanceRunner` — get a job, start an execution, read executions and
-tasks, cancel a running execution; no create, update, delete or IAM — is
+agents, cancel a running execution; no create, update, delete or IAM — is
 granted at **project level with no condition**. Owner decision 2026-10-09
 (#965).
 
@@ -70,13 +70,13 @@ job-name condition: Cloud Run would deny every job again.
 
 ## Where it runs: the smoke tenant and a private sandbox
 
-Every task is submitted for the **`smoke` tenant** (`X-Swarm-Tenant: smoke`)
+Every agent is submitted for the **`smoke` tenant** (`X-Swarm-Tenant: smoke`)
 and clones the **private sandbox repository**
 `bogdan-alexandrescu/swarmcloud-sandbox`, where the direct-pr and integrate
 checks open their pull requests. Both are stated once, in
 `scripts/acceptance/config.sh` (owner decision 2026-10-05, #628). Until then
 acceptance ran in `eng` against this platform's public repository: 58 fixture
-pull requests there in five days, each running full CI, and 62% of eng's tasks.
+pull requests there in five days, each running full CI, and 62% of eng's agents.
 
 Before any group runs the suite refuses to start when the API does not resolve
 it to `smoke`, or when an anonymous read of the repository succeeds (a public
@@ -97,10 +97,10 @@ local run against a branch you pushed to the sandbox yourself sets
 | variable | default | what it changes |
 |---|---|---|
 | `SWARM_ACCEPTANCE_TENANT` | `smoke` | the tenant every call selects with `X-Swarm-Tenant`; the caller must be a confirmed member of its group |
-| `SWARM_ACCEPTANCE_REPOSITORY_URL` | the sandbox | the repository the tasks clone; refused when it is the repository the checkout or CI run is for, or publicly readable |
-| `SWARM_ACCEPTANCE_REF` | `main` | the ref of the sandbox the tasks clone. A release run cannot set it (verify-remote passes no environment), and reads main, where `sandbox-sync.sh` just wrote the deployed commit's fixtures |
-| `SWARM_ACCEPTANCE_TIMEOUT` | `900` | how long one task may take |
-| `SWARM_ACCEPTANCE_ADMIT_WAIT` | `300` | how long a never-admitted task is waited on before it is a SKIP |
+| `SWARM_ACCEPTANCE_REPOSITORY_URL` | the sandbox | the repository the agents clone; refused when it is the repository the checkout or CI run is for, or publicly readable |
+| `SWARM_ACCEPTANCE_REF` | `main` | the ref of the sandbox the agents clone. A release run cannot set it (verify-remote passes no environment), and reads main, where `sandbox-sync.sh` just wrote the deployed commit's fixtures |
+| `SWARM_ACCEPTANCE_TIMEOUT` | `900` | how long one agent may take |
+| `SWARM_ACCEPTANCE_ADMIT_WAIT` | `300` | how long a never-admitted agent is waited on before it is a SKIP |
 | `SWARM_ACCEPTANCE_ISSUE`, `_ISSUE_EXPECT` | `1`, `sandbox-probe.sh` | the sandbox issue the `issue` input fetches, and a string only its text contains |
 | `SWARM_ACCEPTANCE_GITHUB_TOKEN` (or `GH_TOKEN`, `GITHUB_TOKEN`) | unset | a token that reads and writes the sandbox: lets each check read its pull request back and close it. Without one, those reads are SKIPs (the sandbox is private) |
 
@@ -113,14 +113,14 @@ name in the summary, as testlib's `t_skip` does for every suite. Nothing here
 passes silently. Two skips are decided by the platform's own behaviour rather
 than restated from its configuration:
 
-* **Not admitted.** A task still waiting with no attempt after
+* **Not admitted.** An agent still waiting with no attempt after
   `SWARM_ACCEPTANCE_ADMIT_WAIT`, whose `blocked_by` names a pool that is
   *closed* -- `MANUAL_PAUSE`, or a limit of 0, as the scheduler itself records
   them (`swarm_common.admission`) -- or that is parked on `MANUAL_PAUSE` or
   `BUDGET_EXHAUSTED`, is held on purpose. It is cancelled and the check skips,
-  naming the pool. A pool that is merely *full* (the suite's own tasks fill it)
-  is waited on for the whole timeout, and a task that never runs then FAILS. A
-  task parked on `CREDENTIAL_MISSING` skips at once: the tenant has no
+  naming the pool. A pool that is merely *full* (the suite's own agents fill it)
+  is waited on for the whole timeout, and an agent that never runs then FAILS. An
+  agent parked on `CREDENTIAL_MISSING` skips at once: the tenant has no
   credential for the profile's provider.
 * **Not deployed.** Whether a runner input is declared is asked of the door
   without creating anything. The probe carries `metadata.expected_outputs`, a
@@ -129,24 +129,24 @@ than restated from its configuration:
   declared input that is refused answers `invalid_input`; an undeclared one is
   let through to the metadata check and answers `invalid_dispatch`. Either way
   nothing is created. Every door check in this suite carries the same key, so a
-  door that fails to refuse is a `FAIL`, never a task.
+  door that fails to refuse is a `FAIL`, never an agent.
 
 ## What each check asserts, and why
 
 ### mock
 
 The mock has no provider, so this group needs nothing but a deployment. Its
-tasks are submitted together and judged after, so the group costs about its
-slowest task.
+agents are submitted together and judged after, so the group costs about its
+slowest agent.
 
 | check | asserts | why that and not less |
 |---|---|---|
-| success | `completed_steps/requested_steps` is `2/2` and the runner's summary says so; every lease its events name is released | `SUCCEEDED` without the runner's own record is what the about:blank tasks had |
+| success | `completed_steps/requested_steps` is `2/2` and the runner's summary says so; every lease its events name is released | `SUCCEEDED` without the runner's own record is what the about:blank agents had |
 | fail with fail_message | `FAILED`, `end_cause` `runner_error`, `last_error` carries the exact message, one attempt | the message is the only thing that tells a user *why*; a generic "runner exited 1" loses it |
 | every exit_code class | codes 2, 76 and 255 each end `FAILED runner_error` with that code in `result_summary.exit_code` and the runner's message; 0, 77, 78, 143 and 256 are a 422 at the door | 76 is the worker's own timeout code and must still read as the runner's failure; 77/78/143 mean park, refused credential and SIGTERM to the worker, so accepting them would turn a failure on purpose into something else |
 | short rate limit retried | a `retrying` event, a second attempt, `SUCCEEDED`, and the runner saw its saved state (`was_resumed`) | a 1 s retry-after is under the worker's in-place threshold (45 s), so it must be retried in place before the park |
-| quota park | `PARKED` on `QUOTA_EXHAUSTED`; `next_eligible_at` at least 85 s after the `parked` event for a 90 s retry-after; no `retrying` event; while parked, `current_lease_id` is null and every lease is released; then `SUCCEEDED` | invariant 1: a parked task costs nothing. Invariant 4: a long wait is a park, not a sleep |
-| checkpoint restored | the second attempt's `checkpoint_restored` names the last checkpoint written before it, the task's `latest_checkpoint` while parked names the same one, and the runner reports `was_resumed` | a resume that starts from nothing still succeeds for the mock; only the restored id shows the checkpoint was used |
+| quota park | `PARKED` on `QUOTA_EXHAUSTED`; `next_eligible_at` at least 85 s after the `parked` event for a 90 s retry-after; no `retrying` event; while parked, `current_lease_id` is null and every lease is released; then `SUCCEEDED` | invariant 1: a parked agent costs nothing. Invariant 4: a long wait is a park, not a sleep |
+| checkpoint restored | the second attempt's `checkpoint_restored` names the last checkpoint written before it, the agent's `latest_checkpoint` while parked names the same one, and the runner reports `was_resumed` | a resume that starts from nothing still succeeds for the mock; only the restored id shows the checkpoint was used |
 | cancel while running | observed `RUNNING`, cancelled, ends `CANCELLED` with fewer than its 20 steps done, leases released | a cancel that lets the work finish is not a cancel |
 | cancel while queued | a workflow step waiting on a sleeping parent: no lease while it waits, `CANCELLED` after the cancel, and its events never name a lease | deterministic "queued" without racing the scheduler; invariant 1 where it is observable |
 | periodic checkpoints | 150 s of sleep at the mock's 30 s interval writes at least 3 checkpoints, and their ids increase in write order | invariant 8: checkpointing is periodic. The final checkpoint alone is one |
@@ -171,7 +171,7 @@ flag or escapes the workspace, a make target that is a flag, an escaping
 working directory, an `argv`, a timeout above the platform's -- must each be a
 422 `invalid_input` at the door. That door is contract request 32 (#218, PR
 #345); until it is deployed the check skips, because a bad argument would
-become a task the runner refuses rather than a refusal.
+become an agent the runner refuses rather than a refusal.
 
 ### claude-code
 
@@ -188,9 +188,9 @@ that file.**
   `scripts/` and not `tests/`; the sandbox is private, so without a token that
   step is a SKIP.
 * **direct-pr.** A pull request opens; its title on GitHub is the line in the
-  task's `pr-title.txt` artifact, `pull_request_text.title` is `agent`, the
+  agent's `pr-title.txt` artifact, `pull_request_text.title` is `agent`, the
   title carries no task id (the owner's 2026-09-28 rule), the body carries the
-  task id, the head is the branch the task pushed, and the diff changes only
+  task id, the head is the branch the agent pushed, and the diff changes only
   the fixture and removes the bug line. Everything after "the title is the
   agent's" is read back from the sandbox and needs a token; the release's run
   has none, so there it is a SKIP naming why. Then the pull request is closed
@@ -223,7 +223,7 @@ fixture's source instead of rendering it.
 | check | page | asserts |
 |---|---|---|
 | example.com renders | `https://example.com/` | the title is `Example Domain`, `final_url` is on example.com, and `page.txt` (extract_text) carries "This domain is for use in documentation examples" |
-| example.com's pixels | same task | the full-page screenshot, decoded by `scripts/acceptance/pngcheck.py`, is not blank, and at least half of it is the page's background, `#eee` |
+| example.com's pixels | same agent | the full-page screenshot, decoded by `scripts/acceptance/pngcheck.py`, is not blank, and at least half of it is the page's background, `#eee` |
 | reddit.com renders | `https://www.reddit.com/` | `final_url` is on reddit.com, the title is not empty, the full-page screenshot is not blank. No exact text: the page changes. A bot challenge or consent wall (by title, or by the text of a short page) is a SKIP naming what was seen, never a PASS |
 | fill and click | `https://httpbin.org/forms/post` | `fill` the customer name, `click` submit, and httpbin's echoed response carries `"custname": "<the name>"`. httpbin unreachable (a `net::ERR`, a timeout, a 50x) is a SKIP |
 | door refusals | none | `http://169.254.169.254/...`, `http://10.0.0.1/`, `http://kubernetes.default.svc/` and `file:///etc/passwd` are each a 422 `invalid_input`, as `url` and as a `goto` action's `url` |
@@ -248,7 +248,7 @@ until it is.
 
 The smoke suite's browser check and `scripts/prove-gke-dispatch.sh` (both
 `t_check_browser_fixture` in `scripts/lib/testlib.sh`, and both gate a release)
-are a different check from the table above: a browser task loads a page whose
+are a different check from the table above: a browser agent loads a page whose
 colour (`#c2185b`), title (`Swarm acceptance fixture`) and text
 (`swarm-fixture-<run id>`) the check chose, and the check asserts all three came
 back. Until 2026-10-19 that page came from httpbin.org's `/base64/<page>` route,
@@ -298,9 +298,9 @@ whether a page rendered is decided at its top.
 
 ### live-browser
 
-One `claude-code-browser` task, and a scripted person who signs in on its
+One `claude-code-browser` agent, and a scripted person who signs in on its
 browser (docs/design/live-browser.md, section 9, lane LB-L13). The shell half
-is `scripts/acceptance/groups/live-browser.sh`: it submits the task and waits
+is `scripts/acceptance/groups/live-browser.sh`: it submits the agent and waits
 on it with the suite's own settle, so a closed pool or a missing credential is
 the same SKIP as everywhere else. The person is
 `tests/acceptance/test_live_browser.py`, standard library only (the
@@ -311,21 +311,21 @@ told the settled state through a file. It reports one verdict per check.
 **The scripted person opens the live view before anything else.** swarm-api
 counts someone as watching from the viewer socket's join, and a hold nobody
 watches ends after `human_unwatched_seconds` (60 s); the worker then parks
-the task on `HUMAN_REQUIRED`, which only a person's "I'm ready" promotes. The
+the agent on `HUMAN_REQUIRED`, which only a person's "I'm ready" promotes. The
 other-tenant probes (six API calls and a socket that may wait 20 s for its
 refusal) used to run first, and the scheduled runs of 2026-10-15..19 failed
-`returned` with the task PARKED at the 900 s settle (#1333). They now run
+`returned` with the agent PARKED at the 900 s settle (#1333). They now run
 while the viewer's socket is open and the page is on screen, on a thread of
 their own, so the viewer goes on reading its socket for the whole hold as a
 person's open tab does. The viewer reads the hold's deadline after its join
 and before it takes control: swarm-api relays no frame until the join's
 `LiveService.watched` has returned, so the first reading says exactly whether
-the join was counted. A task that still ends `PARKED:HUMAN_REQUIRED` gets a
+the join was counted. An agent that still ends `PARKED:HUMAN_REQUIRED` gets a
 verdict that names which way: the join not counted, no viewer or control in
 the resolved hold's funnel, the worker's park cause (`hold_expired` or
-`gate_lost`), or a return that re-queued the task so a later attempt asked
+`gate_lost`), or a return that re-queued the agent so a later attempt asked
 again with nobody watching. When the settle
-runs out anyway, the group reads the task once more and the verdict names
+runs out anyway, the group reads the agent once more and the verdict names
 its state and `park_reason` (`PARKED:HUMAN_REQUIRED`, or a provider park
 with the instant it is eligible again), never just "did not finish".
 
@@ -348,13 +348,13 @@ holding the value.
 | check | asserts | why that and not less |
 |---|---|---|
 | hand-off | `GET /v1/tasks/{id}/live/session` shows the session `available` with a `human_wait` (Q2: the field, not a state) | a hand-off the console cannot see is a hand-off nobody answers |
-| another tenant | as a member of another tenant (the identity's other membership from `GET /v1/tenants/mine`, or `SWARM_ACCEPTANCE_OTHER_TENANT`), the task, `live/session`, `live/ticket`, `live/control` and `live/audit` are each a 404; a real viewer ticket whose `tenant_id` is rewritten to that tenant is closed `4404` on the socket | LB-2 and invariant 9. A 403 would confirm the task exists, and a ticket that could be pointed at a tenant the caller also belongs to would select it |
+| another tenant | as a member of another tenant (the identity's other membership from `GET /v1/tenants/mine`, or `SWARM_ACCEPTANCE_OTHER_TENANT`), the agent, `live/session`, `live/ticket`, `live/control` and `live/audit` are each a 404; a real viewer ticket whose `tenant_id` is rewritten to that tenant is closed `4404` on the socket | LB-2 and invariant 9. A 403 would confirm the agent exists, and a ticket that could be pointed at a tenant the caller also belongs to would select it |
 | frames painted | the viewer opens `wss://.../v1/live/{session}/stream` with the ticket as its first message (never in the URL), takes control, clicks the field and types. In every frame that shows the page, the field's box -- found from the cyan marker 80 CSS px above it -- is entirely the mask's `#222222`, and no pixel of the field's own magenta is on screen. At least one such frame arrived while the person typed | LB-3: masked before anything leaves the pod. The marker shows the page is on screen, so a frame the mask blanked whole (a stale report, section 5.3) is not counted as a pass |
-| recording painted | segments `rec-<13 digits>.live.webm` exist under the task's `attempts/<a>/live/`, nothing else under `live/` but `actions-*.live.jsonl`; decoded with `ffmpeg` at 5 fps, every recorded frame that shows the page has the same box painted (VP8 is lossy: within 24 per channel, 95% of the box) | LB-4 records the masked stream; a recorder that took frames from anywhere else would show it here |
-| returned | after Return control, the task `SUCCEEDED`, its answer and its `session-code.txt` output carry the code only the typed password makes, and `human_handoff_requested`, `human_control_taken`, `human_control_returned` and `human_handoff_resolved` are among its events | control came back and the agent carried on from the signed-in page, rather than the task ending some other way |
+| recording painted | segments `rec-<13 digits>.live.webm` exist under the agent's `attempts/<a>/live/`, nothing else under `live/` but `actions-*.live.jsonl`; decoded with `ffmpeg` at 5 fps, every recorded frame that shows the page has the same box painted (VP8 is lossy: within 24 per channel, 95% of the box) | LB-4 records the masked stream; a recorder that took frames from anywhere else would show it here |
+| returned | after Return control, the agent `SUCCEEDED`, its answer and its `session-code.txt` output carry the code only the typed password makes, and `human_handoff_requested`, `human_control_taken`, `human_control_returned` and `human_handoff_resolved` are among its events | control came back and the agent carried on from the signed-in page, rather than the agent ending some other way |
 | no password | the password is in no object under `tenants/<t>/tasks/<task>/`, read from the bucket itself (not through the API, which redacts on the way out), gzip members decompressed: the transcript (`logs/agent_stdout.log`), every other log, every checkpoint archive, every output and the recording. Nor in the task document, its events, its live audit and session, or its answer. Each of transcript, logs, checkpoints and outputs must have at least one object read, and an object that could not be read FAILS the check | section 5.4: the agent's CDP is paused while a person types and the fields are cleared before it resumes. An unread category is not a clean one |
 
-**SKIP, not PASS:** a task the platform holds (closed pool, no credential);
+**SKIP, not PASS:** an agent the platform holds (closed pool, no credential);
 a deployment that dispatches the profile with no live path, recognised by the
 agent's own report of `swarm-handoff`'s refusal code `no_live_path`
 (`enable_live_browser` or `LIVE_BROWSER_SIDECAR` off); an identity that is a
@@ -371,7 +371,7 @@ question for the owner (its CVE surface is the reason the image has no Cloud
 SDK either). A local run with `ffmpeg` on `PATH` judges them.
 
 It needs a second `swarm-verify` execution of its own (`scripts/acceptance/
-live-browser.sh`). Its one task peaks the group at 1. It ran in wave 2 of
+live-browser.sh`). Its one agent peaks the group at 1. It ran in wave 2 of
 `accept.yml` until 2026-10-14, when it failed 18 of 34 post-release runs. It
 now runs on `accept.yml`'s schedule, every three hours, and reports to an
 issue of its own. It goes back into wave 2 when
@@ -382,11 +382,11 @@ issue of its own. It goes back into wave 2 when
 
 The runner git tools' acceptance (#1225; docs/runner-git-tools.md, section 7,
 lane G7): five checks, one per row of that lane. The shell half is
-`scripts/acceptance/groups/git-tools.sh`: it submits the tasks, waits on them
-with the suite's own settle, and saves each task's state, document,
+`scripts/acceptance/groups/git-tools.sh`: it submits the agents, waits on them
+with the suite's own settle, and saves each agent's state, document,
 `GET /v1/tasks/{id}/git-calls` audit and two artifacts under one directory.
 The judge is `tests/acceptance/test_runner_git_tools.py`, standard library
-only, which also writes the prompts, so what a task is asked and what is read
+only, which also writes the prompts, so what an agent is asked and what is read
 back are written once. Its offline tests are
 `tests/unit/scripts/test_runner_git_tools_acceptance.py`.
 
@@ -394,10 +394,10 @@ back are written once. Its offline tests are
 resolved sha, a push's old and new sha and `rewrite`, a `pr_checks` read's
 pull request and head: all are read from the audit rows. Two things only the
 agent sees are read from its `git-answers.jsonl`. The first is a refusal the
-WORKER answers before any request leaves: a push to a branch the task may not
+WORKER answers before any request leaves: a push to a branch the agent may not
 push never reaches swarm-api, so it is never audited. The second is the paths
 a rebase listed as conflicted. Each is cross-checked against the audit: no
-push of that task ever reached the forge, and the branch it aimed at did not
+push of that agent ever reached the forge, and the branch it aimed at did not
 move.
 
 **Planting the conflict without a token.** The suite holds no GitHub
@@ -405,9 +405,9 @@ credential, and only `sandbox-sync.sh` writes to the sandbox. So
 `sandbox-sync.sh` points the branch `acceptance/git-tools-base` at the parent
 of the newest commit on main that ADDED `tests/acceptance/fixtures/git-tools/
 planted.txt`. It makes no commit: the base is a commit main already has. The
-branch is outside `swarm/`, so no task can push it.
+branch is outside `swarm/`, so no agent can push it.
 
-The lane task clones that base and adds its own `planted.txt`, so its pull
+The lane agent clones that base and adds its own `planted.txt`, so its pull
 request conflicts with main. The conflict lives in the lane's own commit,
 which the worker wrote. A sandbox commit would carry a foreign author, which
 the push's authorship check refuses.
@@ -417,8 +417,8 @@ the push's authorship check refuses.
 | rebase | a `direct-pr` continuation of the lane's pull request fetches its branch (so swarm-api records the tip to lease), `git_rebase_onto main` lists `planted.txt` as conflicted, the agent resolves it, the audited push replaced exactly the fetched tip with `rewrite: true` (Q1 = A), `pr_checks` read the lane's pull request at the pushed head, and the lane ended `SUCCEEDED`. Its `env_report.py` artifact, names only, shows no forge credential: no name `env \| grep -i token` would find except `CLAUDE_CODE_OAUTH_TOKEN` (owner, 2026-10-13), no `GH_TOKEN`, `GITHUB_TOKEN` or `GIT_*` credential variable, no `GIT_CONFIG_KEY_<n>` naming a credential helper, extra header or `insteadOf`, and no value shaped like a GitHub token or private key | #1225's first acceptance item, end to end. The report prints names, never values, because the environment holds the Claude login. The agent cannot know the forge slot's value, so a value is judged by its shape |
 | read_private | the reader reads an allowlisted repository's file at a branch, then at the sha that read resolved to, both audited `ok`. When that repository is the sandbox, the content must be this build's `planted.txt`. A repository on no list, and on no forge, is refused `repo_not_allowlisted` | the allowlist is the gate (Q3 = A). The refused control shows the check could have come out the other way |
 | push to main | the reader's push to `main` is answered `protected_branch` or `not_this_tasks_branch`, swarm-api accepted no push of the reader's at all, and main's tip, fetched through the tools before and after, is the same | a refusal the agent was told about is not enough. The branch must not have moved |
-| push to another task's branch | the same, aimed at the lane's branch. The branch may move only by the rebase lane's own audited pushes, because the two run at the same time | another task's branch is exactly what `not_this_tasks_branch` exists for |
-| a failed push fails | an `integrate` contributor pushes its branch mid-task, then commits off it (`git reset --hard HEAD~1`), so its final push cannot fast-forward and is refused, never forced. The step ends `FAILED` with `publish_failed:` (G1), not `SUCCEEDED`. If the mid-task push never landed, the check FAILs saying the failure was never set up. If the final push succeeded, it FAILs saying a new way to fail a push is needed | #1225's lost final pushes were contributors that read `SUCCEEDED` with no branch |
+| push to another agent's branch | the same, aimed at the lane's branch. The branch may move only by the rebase lane's own audited pushes, because the two run at the same time | another agent's branch is exactly what `not_this_tasks_branch` exists for |
+| a failed push fails | an `integrate` contributor pushes its branch mid-run, then commits off it (`git reset --hard HEAD~1`), so its final push cannot fast-forward and is refused, never forced. The step ends `FAILED` with `publish_failed:` (G1), not `SUCCEEDED`. If the mid-run push never landed, the check FAILs saying the failure was never set up. If the final push succeeded, it FAILs saying a new way to fail a push is needed | #1225's lost final pushes were contributors that read `SUCCEEDED` with no branch |
 
 The reader is `collect` with `carrier: branches`, so it MAY push its own
 branch. A strategy that pushes nothing is refused `strategy_pushes_nothing`
@@ -429,15 +429,15 @@ in its body, and `github-verify.sh` judges it as its own kind. Its head must
 contain main, it must change exactly `planted.txt` and `lane.txt`, and
 `planted.txt` at its head must be main's line followed by the lane's.
 
-**SKIP, not PASS:** a task the platform held (closed pool, no credential),
+**SKIP, not PASS:** an agent the platform held (closed pool, no credential),
 and `read_private` when no repository in the smoke tenant is
 `readable_by_tasks`. Only a platform admin can set that, with
 `PATCH /v1/repositories/{id}`, so the suite never sets it itself.
 
 It runs in wave 2 of `accept.yml` (`scripts/acceptance/git-tools.sh`), with
-a peak of five tasks. The lane runs first, because both later tasks need its
+a peak of five agents. The lane runs first, because both later agents need its
 branch. In the worst case its two settles take the job's whole 30 minutes;
-the claude-code tasks it runs take a few minutes each.
+the claude-code agents it runs take a few minutes each.
 
 ## Pull requests on the sandbox
 

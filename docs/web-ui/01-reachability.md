@@ -393,7 +393,7 @@ creation), so showing anything else would contradict what the scheduler enforces
   **creates** the tenant document *and* a `tenant:<id>` slot pool (`store.py:247-251`). A
   dashboard that calls this on every page load will, for an engineer nobody has
   provisioned, quietly manufacture a control-plane tenant whose GSA, secrets, GCS prefix
-  and namespace do not exist — and their first task then fails to dispatch with a
+  and namespace do not exist — and their first agent then fails to dispatch with a
   missing-identity error. Call it **once per app mount**, cache the result in memory for
   the session, and when the returned `created_at` is within the last minute, raise a loud
   banner: *"This tenant was created just now. Its infrastructure is not provisioned — run
@@ -569,7 +569,7 @@ will not be in any error message the UI can show.
 ### 7. The route map every other section builds on
 
 Verified by reading the routers. `create_app()` (`main.py:54-73`) includes exactly six:
-health, tasks, workflows, tenants, platform, admin.
+health, agents, workflows, tenants, platform, admin.
 
 **Unauthenticated in the app** (behind IAP once P1/P2 land, which is the point):
 
@@ -628,7 +628,7 @@ rate-limit arithmetic in §5.
 
 **WHAT THE USER SEES.** A collapsible strip under the identity bar, present on every
 screen, four tiles wide on desktop and a horizontally-scrolling row of the same four on a
-phone: **Dispatch** (running / PAUSED, amber), **My tasks** (a count per non-zero state),
+phone: **Dispatch** (running / PAUSED, amber), **My agents** (a count per non-zero state),
 **My capacity** (`active` / `effective_limit` for the `tenant:<id>` pool, with a bar), and
 **Platform** (ready / not-ready from `/readyz`). Expanding it shows every pool the caller
 is entitled to see, one row each: name, `active`, `effective_limit`, `hard_limit`,

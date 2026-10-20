@@ -16,7 +16,7 @@ Every row was checked by opening the file, and the token row was checked by **ex
 | **Jobs** per engineer, calendar range ("all of August") | **No** | `list_tasks` has no `since`/`until` and no index covers `submitted_by` — see P1 and P3 |
 | **Agents** (attempts that actually ran) per tenant, per hour/day/week/month | Yes, **but nothing in this repo can read it yet** | Cloud Monitoring `logging.googleapis.com/user/swarm/starting`, labelled `tenant_id` + `runner_profile` (`terraform/modules/monitoring/metrics.tf:42-101`, `:103-136`) |
 | **Agents** per *engineer* | **No, and not cheaply fixable** | `submitted_by` never reaches the worker — `worker_env` carries identifiers only (`apps/scheduler/scheduler/dispatch.py:194-220`), and `build_logger` binds no user label (`apps/agent-worker/agent_worker/logs.py:183-201`) |
-| **Tokens / provider cost** per task | **No. The capture exists and never fires.** | `_usage_summary` (`apps/agent-worker/agent_worker/lifecycle.py::_usage_summary`) is correct, but it is called on the **wrong object** in `apps/agent-worker/agent_worker/lifecycle.py::Worker._collect_spend`. See the box below — `result_summary.runner.usage` is `{}` on every task in the database |
+| **Tokens / provider cost** per agent | **No. The capture exists and never fires.** | `_usage_summary` (`apps/agent-worker/agent_worker/lifecycle.py::_usage_summary`) is correct, but it is called on the **wrong object** in `apps/agent-worker/agent_worker/lifecycle.py::Worker._collect_spend`. See the box below — `result_summary.runner.usage` is `{}` on every agent in the database |
 | **Tokens** per engineer, aggregated | **No**, twice over | Nothing to aggregate (above), and no index/`sum()` target if there were — see P4 |
 | **Cost / spend**, compute | **No** | No billing export anywhere in `terraform/` — no `google_logging_sink`, no BigQuery dataset |
 | **Budget per tenant** | **No — this is a trap** | `Tenant.monthly_budget_usd` exists in the model (`models.py:246`) and is returned by `tenant_to_api` (`codec.py:297`), but `PUT /v1/admin/tenants/{id}/limits` **422s** on it (`routes/admin.py:178-195`). It is `None` for every tenant. Rendering it is rendering a permanent blank that looks like "no budget set" |
@@ -40,24 +40,24 @@ what the unit test computes    : {"input_tokens": 8, "output_tokens": 402, ... "
 
 `tests/unit/worker/test_usage_summary.py` passes `_usage_summary` the **inner** CLI object directly, so the suite proves the function and never exercises the wiring. Nothing else calls `_usage_summary` — one call site, repo-wide.
 
-**Consequence for this section:** `result_summary.runner.usage` is present and empty on every task. Any tile, column or sum built on it renders `0`, `~$0.00`, or `0% coverage` forever. That is worse than omitting it, because a zero reads as "this engineer spent nothing". **Every token and cost surface below is therefore specified as a blocked state with its reason on screen, not as a number.** The unblock is a one-line change in Track B (`_usage_summary(… .get("structured_output"))`, plus a test at the `result.json` level) — carried below as **P4a**, and it must be picked up by the prerequisites section.
+**Consequence for this section:** `result_summary.runner.usage` is present and empty on every agent. Any tile, column or sum built on it renders `0`, `~$0.00`, or `0% coverage` forever. That is worse than omitting it, because a zero reads as "this engineer spent nothing". **Every token and cost surface below is therefore specified as a blocked state with its reason on screen, not as a number.** The unblock is a one-line change in Track B (`_usage_summary(… .get("structured_output"))`, plus a test at the `result.json` level) — carried below as **P4a**, and it must be picked up by the prerequisites section.
 
 #### Two further traps found while writing this
 
-* **`workflows/{id}.state` is written once, as `QUEUED`, and never updated by anything.** The only writers of the `workflows` collection are `create_workflow` (`apps/swarm-api/swarm_api/store.py:537-544`, seeded `state=TaskState.QUEUED` at `service.py:258`) and `cancel_workflow` (`store.py:577-583`), and the latter sets only `cancel_requested` and `updated_at`. No scheduler or reconciler code touches the collection at all. The index `workflows-tenant-state-created` (`terraform/modules/firestore/indexes.tf:219-226`) covers a field that never changes. **Any "workflows succeeded / failed" chart renders 100% QUEUED forever.** Workflow outcome must be derived from its member tasks (`tasks.workflow_id`), never from `workflows.state`.
+* **`workflows/{id}.state` is written once, as `QUEUED`, and never updated by anything.** The only writers of the `workflows` collection are `create_workflow` (`apps/swarm-api/swarm_api/store.py:537-544`, seeded `state=TaskState.QUEUED` at `service.py:258`) and `cancel_workflow` (`store.py:577-583`), and the latter sets only `cancel_requested` and `updated_at`. No scheduler or reconciler code touches the collection at all. The index `workflows-tenant-state-created` (`terraform/modules/firestore/indexes.tf:219-226`) covers a field that never changes. **Any "workflows succeeded / failed" chart renders 100% QUEUED forever.** Workflow outcome must be derived from its member agents (`tasks.workflow_id`), never from `workflows.state`.
 * **`GET /v1/tasks` returns the whole task document per row**, including `input` and `result_summary` (`codec.py:101-131`). `input` is admitted up to 256 KiB (`apps/common/swarm_common/config.py:72`), so a 200-row page (`apps/swarm-api/swarm_api/settings.py:81`) is bounded only at ~51 MB. The typical figure is **unmeasured** — do not quote one until someone measures a real tenant. This is the single biggest reason the phone layout needs P7.
 
 #### One engineer belongs to exactly one tenant
 
 The requirement says "multi-tenantly", so this has to be stated rather than assumed. `resolve_tenant` walks the admin-ordered `tenant_groups` list and takes the **first** group the caller is a member of, falling back to a personal `u-<user>` tenant (`apps/common/swarm_common/identity.py:101-113`); `_tenant_principal` mirrors that rule exactly (`apps/swarm-api/swarm_api/auth.py:234-245`). So a person in three mapped groups still lands deterministically in one tenant, and "one engineer's activity split across tenants" cannot arise today.
 
-The caveat that can: **reordering `tenant_groups` re-homes a user.** Their new tasks get the new `tenant_id`; their old tasks keep the old one and disappear from the view. If that list is ever reordered, every screen here silently loses history for the affected people, with no marker. Say so in the docs for that setting.
+The caveat that can: **reordering `tenant_groups` re-homes a user.** Their new agents get the new `tenant_id`; their old agents keep the old one and disappear from the view. If that list is ever reordered, every screen here silently loses history for the affected people, with no marker. Say so in the docs for that setting.
 
 ---
 
 ### 1. The one design rule for this section
 
-> **Superseded 2026-09-25 (#185).** The rule below held while the task list
+> **Superseded 2026-09-25 (#185).** The rule below held while the agent list
 > could not filter by time, and the Timeline was built on it. `GET /v1/outcomes`
 > removes that premise: the Timeline now reads a real span (24h to 90d, 14d by
 > default, or a range), the server buckets it in the viewer's zone and derives
@@ -70,7 +70,7 @@ The caveat that can: **reordering `tenant_groups` re-homes a user.** Their new t
 
 The platform can serve "the most recent N tasks for this tenant" cheaply and exactly (`tasks-tenant-created` index, `tenant_id ASC, created_at DESC`, `terraform/modules/firestore/indexes.tf:103-110`). It cannot serve "everything in August" at all.
 
-So the window control does **not** say "Last 7 days". It says **"Last 500 tasks"**, and the header then reports the span those 500 tasks turned out to cover: *"14 Sep 09:12 → 19 Sep 08:44 (4d 23h)"*. If the tenant is busy, that span is 6 hours; if quiet, 3 months. Both are true statements. "Last 7 days" would be a lie the moment the window truncates, and it is exactly the class of lie this platform keeps shipping.
+So the window control does **not** say "Last 7 days". It says **"Last 500 tasks"**, and the header then reports the span those 500 agents turned out to cover: *"14 Sep 09:12 → 19 Sep 08:44 (4d 23h)"*. If the tenant is busy, that span is 6 hours; if quiet, 3 months. Both are true statements. "Last 7 days" would be a lie the moment the window truncates, and it is exactly the class of lie this platform keeps shipping.
 
 This also has a useful cost property: the read cost is fixed at N regardless of volume. At 100x volume the screen costs the same and covers less time — which is visible in the header rather than silent.
 
@@ -100,10 +100,10 @@ The tenant's timeline. One screen, dense.
 **Window bar (sticky, always visible).** Left: `eng` · `eng@example.com`. Centre: `Last 500 tasks · 14 Sep 09:12 → 19 Sep 08:44 · Europe/Bucharest`. Right: a *Group by* selector `[ Hour | Day | Week | Month ]`, a row-budget selector `[ 200 | 500 | 1000 | 2000 ]`, and a refresh control showing `updated 41s ago`.
 
 **Chart (primary).** Stacked columns, one per bucket, newest right.
-Series and stack order, bottom to top: `SUCCEEDED` (green), `FAILED` (red), `DEAD_LETTERED` (dark red), `CANCELLED` (grey), `still open` (hatched — any task in the window whose `completed_at` is null).
+Series and stack order, bottom to top: `SUCCEEDED` (green), `FAILED` (red), `DEAD_LETTERED` (dark red), `CANCELLED` (grey), `still open` (hatched — any agent in the window whose `completed_at` is null).
 Bucketed on **`completed_at`** for the four terminal series and on **`created_at`** for a thin overlaid line labelled *submitted*. Both are labelled on the axis legend; they are genuinely different questions and the chart must not merge them.
 
-`completed_at` is safe to bucket on: **every** writer that moves a task to a terminal state sets it — the worker (`apps/agent-worker/agent_worker/control.py::ControlPlane.finish`), the API's immediate cancel (`store.py:440`), the scheduler's cancel (`scheduler/store.py:318`) and the reconciler's reclaim (`reconciler/store.py:237`). A terminal row with a null `completed_at` is a data bug, and the chart should count it in *still open* **and** surface it in the state strip rather than dropping it.
+`completed_at` is safe to bucket on: **every** writer that moves an agent to a terminal state sets it — the worker (`apps/agent-worker/agent_worker/control.py::ControlPlane.finish`), the API's immediate cancel (`store.py:440`), the scheduler's cancel (`scheduler/store.py:318`) and the reconciler's reclaim (`reconciler/store.py:237`). A terminal row with a null `completed_at` is a data bug, and the chart should count it in *still open* **and** surface it in the state strip rather than dropping it.
 
 **Stat strip, four tiles.** Each tile carries its own state dot (see §6):
 - `Submitted` — count of rows in window. Sub-label: the span.
@@ -111,7 +111,7 @@ Bucketed on **`completed_at`** for the four terminal series and on **`created_at
 - `Attempts consumed` — `sum(attempt_count)` over rows. Sub-label: *"admissions, not runs — a lease reclaimed before dispatch counts here"* (see below).
 - `Tokens & spend` — **permanently in the blocked state until P4a.** It renders the words *"not recorded"*, never a number, never `~$0.00`, and taps through to the explainer below. It stays on the screen rather than being removed, because the owner asked for tokens and an absent tile answers nothing.
 
-> **Superseded 2026-09-25 (epic #84, TS-11 and TS-12).** The strip is the shared boxless `.ctl-metrics` strip with **three** figures: `Submitted` is gone, because the window bar above prints the same count beside the same span. `Tokens & spend` is now `Token spend`: the sum of `total_cost_usd` over the rows whose result carries one, with the foot `{k} of {n} tasks · from result` and the `partial` mark whenever `k < n` or a summed task ran more than once (a result is its last attempt). With no cost in any result it still says *"not recorded"* beside the absent mark, never `$0.00`. The coverage bar the explainer below was replaced by is gone too: it drew a row count where the figure goes, and the foot now states the coverage in words.
+> **Superseded 2026-09-25 (epic #84, TS-11 and TS-12).** The strip is the shared boxless `.ctl-metrics` strip with **three** figures: `Submitted` is gone, because the window bar above prints the same count beside the same span. `Tokens & spend` is now `Token spend`: the sum of `total_cost_usd` over the rows whose result carries one, with the foot `{k} of {n} tasks · from result` and the `partial` mark whenever `k < n` or a summed agent ran more than once (a result is its last attempt). With no cost in any result it still says *"not recorded"* beside the absent mark, never `$0.00`. The coverage bar the explainer below was replaced by is gone too: it drew a row count where the figure goes, and the foot now states the coverage in words.
 
 **The "not recorded" explainer (mandatory, not optional chrome).** Plain language, naming the cause: *"Token and cost numbers are produced by the agent CLI on every run, but the platform does not currently store them — the capture added on 19 Sep reads the wrong level of the result object, so every task records an empty usage block. The full numbers still exist in each attempt's transcript in GCS for `artifact_retention_days` (14 days in dev, 180 in prod), one file per attempt."* Once P4a lands, this tile becomes a real number and this explainer is replaced by the coverage bar specified in §3's *what it cannot show yet*.
 
@@ -138,7 +138,7 @@ Bucketed on **`completed_at`** for the four terminal series and on **`created_at
 - **An honest hourly chart over a long span.** Hour buckets over 500 rows of a busy tenant cover a few hours. The bucket selector must *disable* Month when the covered span is under 60 days, with the reason in the tooltip — not render one lonely column.
 - **"Agents started"** as distinct from "tasks". The real per-attempt throughput signal is the Cloud Monitoring `starting` metric, and nothing in this repo can read it (**P5**). Until then the screen shows `attempt_count` and is explicit that it is admissions. Per-attempt documents cannot fill the gap either: the `attempts` collection has no route (§0).
 - **Total compute spend.** No billing export exists in `terraform/` — no `google_logging_sink`, no BigQuery dataset. `PUT /v1/admin/tenants/{id}/limits` refuses `monthly_budget_usd` for exactly this reason (`routes/admin.py:178-195`), and the UI must not quietly disagree with the API.
-- **Per-attempt history for a retried task.** `result_summary` is written only by `ControlPlane.finish()` (`apps/agent-worker/agent_worker/control.py::ControlPlane.finish`), once, at terminal state, and only when the worker reaches it. `park()` (`apps/agent-worker/agent_worker/control.py::ControlPlane.park`) writes none; a reconciler reclaim (`reconciler/store.py:225-241`) and an API or scheduler cancel write none; a fenced or crashed worker never reaches `finish()` at all. So even after P4a, a task that failed twice and succeeded on the third attempt will carry **attempt 3's numbers only**. Every row with `attempt_count > 1` must carry a marker: *"last attempt only — earlier attempts were not recorded."*
+- **Per-attempt history for a retried agent.** `result_summary` is written only by `ControlPlane.finish()` (`apps/agent-worker/agent_worker/control.py::ControlPlane.finish`), once, at terminal state, and only when the worker reaches it. `park()` (`apps/agent-worker/agent_worker/control.py::ControlPlane.park`) writes none; a reconciler reclaim (`reconciler/store.py:225-241`) and an API or scheduler cancel write none; a fenced or crashed worker never reaches `finish()` at all. So even after P4a, an agent that failed twice and succeeded on the third attempt will carry **attempt 3's numbers only**. Every row with `attempt_count > 1` must carry a marker: *"last attempt only — earlier attempts were not recorded."*
 
 #### Refresh and cost
 
@@ -146,7 +146,7 @@ Bucketed on **`completed_at`** for the four terminal series and on **`created_at
 - **Latency is the real constraint, not money.** 500 rows is 3 sequential round trips; 2000 rows is 10. Budget ~150 ms each. Show incremental progress (*"page 3 of 10"*) and render the chart from the pages already in hand rather than blocking on the last one — with the partial state marked (§6), because a chart drawn from 3 of 10 pages is a chart of a shorter span.
 - **Auto-refresh: 60 s, pause when the tab is hidden, and stop after 15 minutes of no interaction.** A forgotten tab at 5 s with a 2000-row budget is 1.4 M reads/day for one idle browser.
 - **Rate limit.** `requests_per_second` is 20 per instance (`apps/common/swarm_common/config.py:74`, echoed as `requests_per_second_per_instance` by `/v1/stats`); `RateLimited` returns 429 with a `Retry-After` header (`apps/swarm-api/swarm_api/main.py:102-103`). The client honours it with exponential backoff. Never retry-storm a paginated fan-out.
-- **At 100x volume:** read cost is unchanged (bounded by rows); the *covered span* collapses — 500 tasks might be 40 minutes. The chart stays correct because the header states the span. The degradation is honest and visible, which is the point. The thing that genuinely breaks is the **payload**: 500 rows × up to 256 KiB of `input` each. Fix with **P7**.
+- **At 100x volume:** read cost is unchanged (bounded by rows); the *covered span* collapses — 500 agents might be 40 minutes. The chart stays correct because the header states the span. The degradation is honest and visible, which is the point. The thing that genuinely breaks is the **payload**: 500 rows × up to 256 KiB of `input` each. Fix with **P7**.
 
 #### Phone layout (390 pt)
 
@@ -173,18 +173,18 @@ There is **no cost column and no token column** in v1. They are specified in *wh
 
 Above the table, a persistent, non-dismissible caption in the same type size as the numbers, not smaller:
 
-> **Based on the last 500 tasks for `eng` (14 Sep 09:12 → 19 Sep 08:44). This is not an all-time total.**
+> **Based on the last 500 agents for `eng` (14 Sep 09:12 → 19 Sep 08:44). This is not an all-time total.**
 
 Sort defaults to `Tasks` descending.
 
-**Engineer drawer** (tap a row): that engineer's rows from the window as a compact ledger — `created_at` · `runner_profile` · `state` · `attempt_count` · runtime · task id — plus their runner-profile mix and a sparkline in the current bucket size. A task id opens the task detail (owned by another section); the ledger links to it rather than reimplementing it.
+**Engineer drawer** (tap a row): that engineer's rows from the window as a compact ledger — `created_at` · `runner_profile` · `state` · `attempt_count` · runtime · task id — plus their runner-profile mix and a sparkline in the current bucket size. A task id opens the agent detail (owned by another section); the ledger links to it rather than reimplementing it.
 
 #### Where every value comes from
 
 | Value | Source | Computation |
 |---|---|---|
 | Engineer | `task.submitted_by` (`codec.py:114`) — the verified email from the ID token, never client-supplied | group rows by this exact string; no normalisation, no display-name lookup (there is no directory read in this platform) |
-| Tasks / per-state counts | `task.state` | group + count |
+| Agents / per-state counts | `task.state` | group + count |
 | Attempts | `task.attempt_count` | sum; same admissions caveat as A1 |
 | Runtime p50 / p95 | `task.completed_at - task.started_at` | **Only where both are non-null.** `started_at` is written at `DISPATCHED → STARTING` (`apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_running`) and is **overwritten on every retry** — so this is the *last attempt's* wall time, not total compute. Column header reads **"Last-attempt runtime"**, and the tooltip says why. Per-attempt runtimes exist in the `attempts` collection and are unreachable: no route reads it |
 | Last active | `max(task.updated_at)` | — |
@@ -194,8 +194,8 @@ Sort defaults to `Tasks` descending.
 - **A per-engineer query.** `Store.list_tasks` accepts `state`, `workflow_id` and `runner_profile` and nothing else (`store.py:381-389`), and no index in `terraform/modules/firestore/indexes.tf` contains `submitted_by` in any position. The needed index is `tenant_id ASC, submitted_by ASC, created_at DESC` — Firestore serves `<equalities> ORDER BY created_at DESC` only from an index whose ordered field follows the equalities immediately, and the store's own header (`store.py:8-25`) names this as the reason four endpoints previously 500'd. Without the index the query fails `FAILED_PRECONDITION`; it does **not** degrade. Blocked on **P3**.
 - **Tokens and provider cost per engineer.** Blocked on **P4a**, then **P4**. When they arrive the columns are `~Cost` (tilde always rendered, since it is provider cost only and a lower bound) and `Coverage` (a two-tone micro-bar: *rows with a non-empty usage object / rows for this engineer*, never a percentage buried in a tooltip). Ship both together or neither: a cost sum without its coverage bar is a fabrication with a dollar sign on it.
 - **Anyone who submitted nothing in the window.** An engineer on holiday simply is not in the table. The caption above is what stops that reading as "they have never used the platform". Do not pad the table with zero rows for a roster you do not have — there is no roster; the tenant document holds a `principal`, not a member list.
-- **Cross-tenant "everyone".** Every list path is hard-scoped to `auth.tenant_id` at the route (`routes/tasks.py:84`), deliberately (`store.py:5`). `is_admin` unlocks a good deal — dispatch pause/resume, every pool-limit `PUT`, the provider and resource drains, plus `GET /v1/admin/pools` and `GET /v1/admin/tenants` (`routes/admin.py:70-310`) and the platform-wide state counts (`service.py:286-287`) — but **no admin route returns another tenant's tasks, attempts or events**. A platform-wide per-user page is a **security boundary change**, not a parameter — out of scope for this section, and it must stay that way under CONTRACT.md invariant 9.
-- **Workflows per engineer, by outcome.** `Workflow.submitted_by` exists (`models.py:324`) and `GET /v1/workflows` is tenant-scoped, but `workflows.state` is frozen at `QUEUED` forever (see §0). If the owner wants workflow counts, derive them from `tasks.workflow_id` — a "workflow succeeded" is *all its member tasks terminal and none failed*, computed from rows already in hand, and honest only when the whole workflow fits inside the row window. Blocked on **P10** for anything better.
+- **Cross-tenant "everyone".** Every list path is hard-scoped to `auth.tenant_id` at the route (`routes/tasks.py:84`), deliberately (`store.py:5`). `is_admin` unlocks a good deal — dispatch pause/resume, every pool-limit `PUT`, the provider and resource drains, plus `GET /v1/admin/pools` and `GET /v1/admin/tenants` (`routes/admin.py:70-310`) and the platform-wide state counts (`service.py:286-287`) — but **no admin route returns another tenant's agents, attempts or events**. A platform-wide per-user page is a **security boundary change**, not a parameter — out of scope for this section, and it must stay that way under CONTRACT.md invariant 9.
+- **Workflows per engineer, by outcome.** `Workflow.submitted_by` exists (`models.py:324`) and `GET /v1/workflows` is tenant-scoped, but `workflows.state` is frozen at `QUEUED` forever (see §0). If the owner wants workflow counts, derive them from `tasks.workflow_id` — a "workflow succeeded" is *all its member agents terminal and none failed*, computed from rows already in hand, and honest only when the whole workflow fits inside the row window. Blocked on **P10** for anything better.
 
 #### Refresh and cost
 
@@ -223,7 +223,7 @@ Numbers right-aligned in tabular figures. One metric on line 2 is owner-selectab
 
 #### What the user sees
 
-A second chart on A1, tab-switched with the task chart: `[ Tasks | Agents started ]`. Columns per bucket, stacked by `runner_profile`, over a range control that is genuinely calendar-based (`24h / 7d / 30d`) because this source really can serve it. A footnote states the metric's first data point, and any bucket before it renders as **outside the axis**, never as zero.
+A second chart on A1, tab-switched with the agent chart: `[ Tasks | Agents started ]`. Columns per bucket, stacked by `runner_profile`, over a range control that is genuinely calendar-based (`24h / 7d / 30d`) because this source really can serve it. A footnote states the metric's first data point, and any bucket before it renders as **outside the axis**, never as zero.
 
 #### Where every value comes from
 
@@ -276,7 +276,7 @@ Three rules this screen must not break:
 
 - **`monthly_budget_usd` is not rendered.** It is in the payload (`codec.py:297`) and it is `None` for every tenant, because the only route that could set it 422s on it (`routes/admin.py:178-195`). A blank money column reads as "no budget set" — i.e. as a feature that exists and is unused. In its place the table shows `max_active` and `capacity_units`, which are the limits the scheduler really does enforce on every admission, and the column group is titled **"Enforced limits"**.
 - **`service_account` and `gcs_prefix` are behind a row expander**, not columns. They are infrastructure identifiers, they are long, and they push the enforced limits off a laptop screen.
-- **No activity numbers on this screen.** There is no cross-tenant task read (§3), so a `Tasks` column here could only be fabricated or assembled by impersonating each tenant. Each row links to nothing per-tenant; A1 and A2 always show *the caller's own* tenant.
+- **No activity numbers on this screen.** There is no cross-tenant agent read (§3), so a `Tasks` column here could only be fabricated or assembled by impersonating each tenant. Each row links to nothing per-tenant; A1 and A2 always show *the caller's own* tenant.
 
 **The list is capped and unpaginated.** `list_tenants` orders by `tenant_id` and takes the first 200 with no page token and no `limit` parameter on the route (`store.py:186-188`). Past 200 registered tenants the table is silently incomplete, so the header must read *"showing the first 200 tenants, ordered by id"* whenever exactly 200 rows come back, rather than letting the operator believe they are looking at everything.
 
@@ -329,7 +329,7 @@ Two specific confusions to design out, both of which have a wrong-but-plausible 
 `/v1/stats` (`routes/platform.py:13-18` → `service.stats`, `service.py:271-288`) is the obvious-looking source and the wrong one here, for three reasons:
 
 1. **It has no time predicate.** `count_tasks_by_state` (`store.py:524-535`) runs one `count()` per `TaskState` over the whole collection, filtered only by `tenant_id`. It answers "how many tasks are in each state right now", which is a cluster-health question, not an activity-over-time question.
-2. **Its cost grows forever.** Firestore bills an aggregation at roughly one read per 1000 index entries matched, so a tenant with 500k lifetime `SUCCEEDED` tasks pays ~500 reads for that single state, on every call, and more every month. For an admin it runs the whole loop a second time platform-wide (`service.py:286-287`). The bounded-row design in §1 has the opposite property: fixed cost, shrinking coverage.
+2. **Its cost grows forever.** Firestore bills an aggregation at roughly one read per 1000 index entries matched, so a tenant with 500k lifetime `SUCCEEDED` agents pays ~500 reads for that single state, on every call, and more every month. For an admin it runs the whole loop a second time platform-wide (`service.py:286-287`). The bounded-row design in §1 has the opposite property: fixed cost, shrinking coverage.
 3. **Its live counts belong to the cluster-health section**, which owns state, pools and dispatch pause. Rendering them here would give two screens that disagree by a refresh interval.
 
 Once **P1** lands, the cheap path for a calendar-ranged chart is a `count()` *with* a `created_at` range over the existing `tasks-tenant-created` index — ~1 read per bucket, ~30 reads for a 30-day chart, no new index. That is the aggregation this section should be rebuilt on, and it is the reason to decide the read shape (live scan vs. rollup collection) **before** the UI is written.
@@ -342,10 +342,10 @@ Carried here so the prerequisites section picks them up; **P4a is new and is the
 
 | | What | Track | Size |
 |---|---|---|---|
-| **P4a** | `apps/agent-worker/agent_worker/lifecycle.py::Worker._collect_spend` must call `_usage_summary(runner_result["output"].get("structured_output"))` — today it passes the runner envelope and records `{}` on every task. Add a test at the `result.json` level, not the CLI-object level | B | one line + one test |
+| **P4a** | `apps/agent-worker/agent_worker/lifecycle.py::Worker._collect_spend` must call `_usage_summary(runner_result["output"].get("structured_output"))` — today it passes the runner envelope and records `{}` on every agent. Add a test at the `result.json` level, not the CLI-object level | B | one line + one test |
 | **P1** | `since`/`until` on `list_tasks`, mapping onto `tasks-tenant-created`; plus a `count()` variant per bucket | A | small |
 | **P3** | Index `tenant_id ASC, submitted_by ASC, created_at DESC`, and a `submitted_by` parameter on `GET /v1/tasks` | C + A | small (index build time is the real cost) |
 | **P4** | Somewhere typed to aggregate usage from — per-attempt fields plus a `sum()` target, which is a **frozen-contract change request** against `swarm_common.models.Attempt`, not an edit | contract request | medium |
 | **P5** | `roles/monitoring.viewer` for `swarm-api`, the monitoring client dependency, and `GET /v1/activity/series` with a server-side tenant filter | C + A | small |
 | **P7** | A projection or a light list shape for `GET /v1/tasks`, so a page is not up to 51 MB of `input` blobs | A | medium |
-| **P10** | A real `workflows.state` writer, or an explicit decision that workflow outcome is always derived from member tasks | A | medium |
+| **P10** | A real `workflows.state` writer, or an explicit decision that workflow outcome is always derived from member agents | A | medium |

@@ -27,7 +27,7 @@ from the worker):
 | `first_frame` | 11:22:00 | 0.3 s | |
 | **total** | | **~88 s** | |
 
-Two earlier tasks went from `dispatched` to `starting` in 79 s (the first one)
+Two earlier agents went from `dispatched` to `starting` in 79 s (the first one)
 and 26 s (a resume). **Inference, not measured:** the resume most likely
 landed on a node that was still up from the earlier attempt and already had the
 image. That fits the 2026-10-07 reading in
@@ -319,15 +319,15 @@ slot saves the pull as well as the node wait.
 
 **It breaks invariant 1 as written, and that should be said plainly.**
 Invariant 1 says "Only LEASED/DISPATCHED/STARTING/RUNNING create
-infrastructure demand." A placeholder is infrastructure demand that no task
+infrastructure demand." A placeholder is infrastructure demand that no agent
 holds. It does not break the second sentence: it is not a pending pod used as
-a backlog, because no task ever waits in it. It does not touch admission
+a backlog, because no agent ever waits in it. It does not touch admission
 either. Capacity is still reserved all-or-nothing in Firestore (invariant 2)
 and counted from LEASED (invariant 3), because the placeholder is in no pool.
 
 The repository has a precedent, but not a licence. `scripts/warm-jobs.sh`
 already runs one no-op execution per Cloud Run Job after each release (owner
-decision (2) of 2026-10-07), and that is short, release-bound, task-less
+decision (2) of 2026-10-07), and that is short, release-bound, agent-less
 demand. A placeholder held for hours is a different size of thing. It needs a
 **contract amendment request** (`docs/contract-change-requests.md`), written
 and accepted before any of it is built.
@@ -445,7 +445,7 @@ are fetched.
 | 7 | **Smaller `browser` class** (4/8) | 0-38, unknown until measured (§4.3) | saves ~$0.22 per browser-hour | M + contract request | none (requests == limits kept) | medium: Chromium + encoder starved; re-split `LIVE_DISPLAY_SHARE` |
 | 8 | Secondary boot disk preloading | 0-5 on top of #1 | ~0.003 per node-day | L: disk image per release, allowlist, node selector | none | medium: release machinery |
 | 9 | Compute-class change | ~0 | ≥ 0 | S | none | — |
-| 10 | Pre-pull DaemonSet | ~0 cold | small × nodes | S | none (but task-less pods) | — |
+| 10 | Pre-pull DaemonSet | ~0 cold | small × nodes | S | none (but agent-less pods) | — |
 
 Options 3-6 together take about 540 MB (43 %) off the image: about 18 s on a
 cold non-streamed pull, and close to nothing once #1 works. They are still
@@ -496,7 +496,7 @@ deciding #2 and #7. **Do #3-#5 as one image lane** once #1's effect is known.
     CI's image build.
 * **Lane WARM** (only if the owner accepts the amendment).
   * A contract change request amending invariant 1 for a bounded number of
-    task-less warm slots.
+    agent-less warm slots.
   * A PriorityClass and placeholder Deployment template in
     `kubernetes/swarm-system/`, rendered with the browser digest by
     `kubernetes/render.py`.
@@ -623,7 +623,7 @@ default credential is the operator's own gcloud access token, and IAP
 answered 401 to it. The account `.env.example` suggests for
 `SWARM_IMPERSONATE_SA` (`swarm-verify`) is not a member of `u-bogdan`, so the
 API answered 403 `tenant_not_member`. The same reads (`GET /v1/tasks`, then
-every events page of each task) were therefore made through the sc plugin's
+every events page of each agent) were therefore made through the sc plugin's
 API client as the owner, written in the script's own `events.json` stream
 format. The `kubectl top` samples were taken on `swarm-autopilot` only. The
 numbers below are `scripts/startup_measure.py report --since 2d --top
@@ -631,7 +631,7 @@ top.txt <events.json` over what was read. The inputs are kept in
 `scratchpad/startup-measure/20261015/` on the operator's machine; they are not
 committed, because they are task listings.
 
-Visited 480 tasks and 505 dispatched attempts. 392 starts fall in the window,
+Visited 480 agents and 505 dispatched attempts. 392 starts fall in the window,
 113 of them without a startup step. Cold means a node wait over 10 s.
 Times are p50/p95 in seconds.
 

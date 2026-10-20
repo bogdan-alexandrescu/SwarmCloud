@@ -20,7 +20,7 @@ What the design settles, in one line each:
   attempt runs as tenant B's service account. It can also reset `pools/global.active`
   and the platform over-admits.
 * **Signing settings (design A) cannot close it.** A worker must write `tasks`,
-  `attempts`, `leases` and `pools.active` today: it moves its own task's state,
+  `attempts`, `leases` and `pools.active` today: it moves its own agent's state,
   heartbeats its lease and gives capacity back. A signature cannot tell a
   legitimate write of those documents from a forged one.
 * **Recommended: design B.** The worker loses direct Firestore access. It
@@ -136,7 +136,7 @@ How to read the columns:
 | 1 | `tenants/<own>` `.service_account` | yes (own id) | no | **A's next Cloud Run attempt runs as B's account.** `assert_tenant_identity` checks only that the value is non-empty, the Job uses it as written, and the scheduler holds `actAs` on every tenant's worker account (`terraform/modules/tenancy/main.tf`, "Dispatch: actAs"). | `scheduler/dispatch.py::assert_tenant_identity`, the Cloud Run template | yes | yes | yes |
 | 2 | `tenants/<own>` `.namespace` | yes | no | **A's next GKE pod runs in `swarm-tenant-B`, as B's KSA and so as B's account.** `verified_namespace` keeps a stored value that starts with the prefix, and so accepts another tenant's namespace. | `scheduler/dispatch.py::verified_namespace`, `namespace_for`; `reconciler/store.py::tenant_namespaces` (which namespaces it scans and protects) | yes | yes | yes |
 | 3 | `tenants/<own>` `.gcs_prefix` | yes | no | A's `GCS_PREFIX` names B's prefix. IAM still refuses B's objects, because the bucket grant is prefix-conditioned, so this costs failed writes rather than a leak. | `scheduler/dispatch.py::worker_env` | yes | yes | yes |
-| 4 | `tenants/<B>` `.enabled`, `.max_active`, `.credentials[]`, `.kind`, `.principal` | yes | no | Pause B (`MANUAL_PAUSE`). Make B's tasks park `CREDENTIAL_MISSING` or take the account pool. Change B's personal-secret opt-in. Disable B in the broker, which caps the shared provider pool. | `scheduler/store.py` `enabled_tenant_ids`; `scheduler/credentials.py::credential_for`; `scheduler/secret_slots.py`; `quota_broker/service.py` `_enabled_tenant_ids`; swarm-api `auth.py`, `attempts_secrets.py` | yes | yes | yes |
+| 4 | `tenants/<B>` `.enabled`, `.max_active`, `.credentials[]`, `.kind`, `.principal` | yes | no | Pause B (`MANUAL_PAUSE`). Make B's agents park `CREDENTIAL_MISSING` or take the account pool. Change B's personal-secret opt-in. Disable B in the broker, which caps the shared provider pool. | `scheduler/store.py` `enabled_tenant_ids`; `scheduler/credentials.py::credential_for`; `scheduler/secret_slots.py`; `quota_broker/service.py` `_enabled_tenant_ids`; swarm-api `auth.py`, `attempts_secrets.py` | yes | yes | yes |
 | 5 | `workspace_settings/<B>` `.judgment_backend` and `code_intelligence.judgment_backend` | yes | no | #1457: B's judgments go to TypeSafe on B's key; B's pods get the inject label; swarm-api mints B's ticket. | §1.2's three readers | yes | yes | yes |
 | 6 | `workspace_settings/<B>` `.merge.*` | yes | no | B's merge mode at submission, and its merge train's size and age. | swarm-api `MergeSettingsStore.mode_for`, `mergetrain.py` | yes | yes | yes |
 | 7 | `workspace_settings/<B>` `.code_intelligence.{jev,context,context_ab,graph_delivery}` | yes | no | Turn B's graph tickets off. Switch B's Jev and context delivery. | swarm-api `graph_ticket.py` (`CodeIntelligenceStore.get`); worker `judge/attempt.py`, `graphstage.py` | yes | yes | yes |
@@ -144,15 +144,15 @@ How to read the columns:
 | 9 | `pools/<name>` `.hard_limit`, `.adaptive_target`, `.quota_derived_limit`, `.enabled` | yes (`global`, `tenant:<t>`, `provider:<p>`, ... `swarm_common/models.py`) | no | Raise A's own ceiling past the admin's. Disable `pools/global` (the whole platform parks `MANUAL_PAUSE`) or B's pool. Delete a limit field, and `evaluate_capacity` treats a missing pool as unlimited. | `swarm_common/admission.py::evaluate_capacity`; `scheduler/loop.py` fairness and pause | yes (limits signed by their writers) | yes | no (§3.3) |
 | 10 | `pools/<name>` `.active` | yes | **yes**: `release_lease_in_transaction` decrements it on every release | Set `pools/global.active = 0` and the platform admits past its global ceiling (invariants 2 and 3, and money). Set it huge and nothing is admitted. | `admission.py::evaluate_capacity` | **no** | yes | no |
 | 11 | `leases/<id>` `.pools[]`, `.units`, `.released_at`, heartbeat fields | no for another tenant's (`<prefix>_<20 hex>`); yes for its own and for any lease it creates | **yes**: heartbeat, release | `create` a lease document with a chosen `pools[]` and `units` and run `release_lease_in_transaction` on it itself (the worker already holds every permission that needs), or leave it for the reconciler's stale-lease release: either way the pools it names are decremented. Or keep its own lease alive past cancel. | `admission.py::release_lease_in_transaction` (reconciler, scheduler); `reconciler/detect.py` stale-lease detection; swarm-api `children.py::_lease_is_live` before every ticket and secret | no | yes | no |
-| 12 | `tasks/<own>` state fields (`state`, `current_lease_id`, `attempt_count`, `next_eligible_at`, `metadata.*`) | yes (own) | **yes**: every transition, park and finish | Within A: reset `attempt_count` (unbounded retries, A's money); mark its own task SUCCEEDED; set unsigned `metadata.after_prs` or `startup_refunds`, which the reconciler acts on. | scheduler `loop.py::_admit_one`; reconciler `model.py`, `detect.py` | no | yes (the route permits only the worker's transitions, §4.4) | no |
-| 13 | `tasks/<own>` spec fields (`runner_profile`, `resource_class`, `provider`, `input`, ...) | yes (own) | no (swarm-api writes them signed) | The scheduler sizes and routes from these unverified (`acquire_lease_in_transaction` takes pools from the caller's copy). A could rewrite its own READY task's `resource_class` or `runner_profile`. The worker's `specverify` then refuses to run it, but capacity was already reserved by the forged size. Invariant 10 is held by the worker, not by the scheduler. | scheduler `loop.py::_admit_one`, `dispatch.py::worker_env` | partly (already signed; the scheduler would have to verify) | yes | no |
-| 14 | `tasks/<other tenant>` | no (`<prefix>_<20 hex>`), unless the id leaks through a PR body, a log or a URL | `mergeslot.FirestoreMergeSlots.wake` updates a waiter task's `metadata`, but only within its tenant | With a leaked id: everything in rows 12 and 13 for B. | as rows 12 and 13 | no | yes | yes |
-| 15 | `attempts/<own>` | yes (own) | **yes**: start, checkpoints, peaks, spend, end | Forge its own `cost_usd` and tokens, which feed budgets. Forge `checkpoints`, though the task pointer is fenced. | quota broker `_attempt_ended`; reconciler orphan detection (`generation`, `execution_name`) | no | yes | no |
+| 12 | `tasks/<own>` state fields (`state`, `current_lease_id`, `attempt_count`, `next_eligible_at`, `metadata.*`) | yes (own) | **yes**: every transition, park and finish | Within A: reset `attempt_count` (unbounded retries, A's money); mark its own agent SUCCEEDED; set unsigned `metadata.after_prs` or `startup_refunds`, which the reconciler acts on. | scheduler `loop.py::_admit_one`; reconciler `model.py`, `detect.py` | no | yes (the route permits only the worker's transitions, §4.4) | no |
+| 13 | `tasks/<own>` spec fields (`runner_profile`, `resource_class`, `provider`, `input`, ...) | yes (own) | no (swarm-api writes them signed) | The scheduler sizes and routes from these unverified (`acquire_lease_in_transaction` takes pools from the caller's copy). A could rewrite its own READY agent's `resource_class` or `runner_profile`. The worker's `specverify` then refuses to run it, but capacity was already reserved by the forged size. Invariant 10 is held by the worker, not by the scheduler. | scheduler `loop.py::_admit_one`, `dispatch.py::worker_env` | partly (already signed; the scheduler would have to verify) | yes | no |
+| 14 | `tasks/<other tenant>` | no (`<prefix>_<20 hex>`), unless the id leaks through a PR body, a log or a URL | `mergeslot.FirestoreMergeSlots.wake` updates a waiter agent's `metadata`, but only within its tenant | With a leaked id: everything in rows 12 and 13 for B. | as rows 12 and 13 | no | yes | yes |
+| 15 | `attempts/<own>` | yes (own) | **yes**: start, checkpoints, peaks, spend, end | Forge its own `cost_usd` and tokens, which feed budgets. Forge `checkpoints`, though the agent pointer is fenced. | quota broker `_attempt_ended`; reconciler orphan detection (`generation`, `execution_name`) | no | yes | no |
 | 16 | `merge_slots/<B>--<sha256[:40]>` | yes: `slot_id()` is a hash of the tenant, repository and base, all of which are knowable | yes (own tenant's slot) | Hold B's merge slot forever, or wake B's waiters. | worker `mergeslot.py`; the scheduler's wake path | no | yes | no |
 | 17 | `merge_train_entries/mte_<sha256(t\ntask)[:32]>` | yes, given a task id | yes (own) | Enqueue or alter a B entry, given a B task id. | worker `mergetrain.py`; swarm-api merge-train routes | no | yes | no |
 | 18 | `quota/<provider>:<B>` | yes | no (the worker reads it in `ControlPlane.poll`; reports go over HTTP to the broker) | Shape the caps the broker derives for B, or for the shared provider pool. | `quota_broker/service.py` (`_mutate`, the sweep) | yes | yes | yes |
 | 19 | `accounts/<owner>:<label>` `.lend_to[]`, `.secret`, `.state` | yes (labels are human) | no | Lend B's subscription account to A (`lend_to`). Point `.secret` at another secret name, which the assign route returns to a worker. The worker's IAM then decides whether it can read it. | `scheduler/credentials.py` `AccountPool.serves`; broker `accountstore.py` `secret_for` | yes | yes | yes |
-| 20 | `forge_grants/<t>__<userhash>__<repo>`, `forge_connections/conn_<16hex>`, `forge_orgs/...` | grants: yes, given a user email and a repo id; connections: no | no | Make B's tasks see a forge credential as present or absent, which parks or admits them. | `scheduler/credentials.py` `ForgeConnections` (checks the document's own `tenant_id`, which the forger also writes) | yes | yes | yes |
+| 20 | `forge_grants/<t>__<userhash>__<repo>`, `forge_connections/conn_<16hex>`, `forge_orgs/...` | grants: yes, given a user email and a repo id; connections: no | no | Make B's agents see a forge credential as present or absent, which parks or admits them. | `scheduler/credentials.py` `ForgeConnections` (checks the document's own `tenant_id`, which the forger also writes) | yes | yes | yes |
 | 21 | `workspace_secret_grants/*`, `workspace_secrets/<id>` | secret ids: no (`wsec-<hex>`) | no | With a known id: tick B's grant, so a required slot appears filled. The release route re-checks the grant attestation (`workspace-secrets.md` §3.3, SEC-GRANT-ATTEST), so a forged grant releases nothing. | `scheduler/secret_slots.py::missing_required_slots` | yes (already attested at release) | yes | yes |
 | 22 | `provider_keys/swarm-tenant-<B>-typesafe` | yes | no | Point B's ticket at a different secret version, or make B's key look absent. | swarm-api `typesafe_ticket.py` key resolution | yes | yes | yes |
 | 23 | `schedules/<id>` | no (`sch_` + random, `schedules.py` `ID_PREFIX`), unless an id leaks | no | Fire work as the stored `owner` in the stored `tenant_id`, with stored `params`. The tick re-checks directory membership (`schedulefire.py` `_finish`), which bounds it to a real member of that tenant. | swarm-api `schedulefire.py` | yes | yes | yes |
@@ -167,7 +167,7 @@ How to read the columns:
 **Reads, for completeness.** Invariant 9 covers confidentiality, not only
 integrity. Every guessable document above is readable too: `tenants/<B>` (the
 principal, the budget), `workspace_settings/<B>`, `quota/*:<B>`, `accounts/*`.
-So is any task whose id leaks, including its prompt and repository. Design B
+So is any agent whose id leaks, including its prompt and repository. Design B
 closes the reads together with the writes once the role is removed (owner
 question Q5).
 
@@ -219,7 +219,7 @@ still lists on the direct path.
   make the bytes unforgeable.
 * **Firestore transactions are per database.** Admission reserves capacity
   across `pools/global`, `pools/tenant:<t>`, `pools/resource:<rc>`,
-  `pools/runner:<p>`, the provider pools, the task and the new lease in **one**
+  `pools/runner:<p>`, the provider pools, the agent and the new lease in **one**
   transaction (`admission.py::acquire_lease_in_transaction`). Those pools are
   shared across tenants, so they live in one database.
 * **The agent can mint its worker's token and read its container's
@@ -237,7 +237,7 @@ still lists on the direct path.
 
 * **1. Only LEASED/DISPATCHED/STARTING/RUNNING create demand.** Unchanged. The
   state routes move the same transitions the worker makes today. A park still
-  releases the lease in the same call, so a PARKED or READY task holds nothing.
+  releases the lease in the same call, so a PARKED or READY agent holds nothing.
   No new state, no pending pod, nothing queued in Kubernetes.
 * **2. All-or-nothing reservation in one transaction.** Admission is untouched:
   the scheduler still runs `acquire_lease_in_transaction`. The release moves
@@ -258,7 +258,7 @@ still lists on the direct path.
 * **5. Every attempt carries a fencing generation.** **This is the invariant
   the design must not weaken.** Today the fence is `ControlPlane._fenced_task`,
   a transaction the worker runs. Under B every state route runs that same check
-  server-side, in the transaction that writes. The check covers the task's
+  server-side, in the transaction that writes. The check covers the agent's
   `current_generation`, `current_lease_id` and state, the lease's `generation`,
   `task_id` and `released_at`, and the attempt tuple in the request. A stale
   generation gets `409 attempt_fenced` and nothing is written. The worker
@@ -268,7 +268,7 @@ still lists on the direct path.
   so a stale worker's key cannot sign for the new generation.
 * **8. Checkpointing is mandatory and periodic.** The checkpoint *bytes* still
   go to GCS under the tenant prefix, exactly as now. Only the
-  `attempts/<id>.checkpoints` record and the task's `latest_checkpoint` pointer
+  `attempts/<id>.checkpoints` record and the agent's `latest_checkpoint` pointer
   move behind `POST .../state/checkpoint`. A failed record call is handled the
   way a failed Firestore write is handled today
   (`ControlPlane.record_checkpoint`). The interval is still the catalogue's.
@@ -315,7 +315,7 @@ the fields it wrote and stores it beside them:
 * the quota broker for `accounts` and the quota-derived pool fields.
 
 The MAC is computed over a canonical form, as `specsign.canonical_step_spec`
-does for a task. Every reader recomputes it and treats a missing or bad value
+does for an agent. Every reader recomputes it and treats a missing or bad value
 as "unset", which means the platform default.
 
 The readers are all platform services, so a symmetric MAC is enough. The key
@@ -332,7 +332,7 @@ verifies, and none does here.
   every reader must verify (about fifteen call sites in §1.3).
 * *Migration:* every existing document is unsigned. Either a backfill job
   re-signs them, or readers honour unsigned values until a cutover date, the way
-  `SPEC_LEGACY_UNTIL` worked for tasks. That window is a window in which the
+  `SPEC_LEGACY_UNTIL` worked for agents. That window is a window in which the
   forgery still works.
 * *Latency:* negligible. One HMAC per read.
 * *Money:* one secret, one key rotation procedure.
@@ -370,7 +370,7 @@ today (§4.2). Each route:
    timestamp, as `children.py` does. `POST .../state/open` (§4.3) is the
    exception: it verifies the one-use registration nonce instead;
 3. runs the operation in one Firestore transaction. The transaction re-reads
-   the task and the lease, applies the fence, and writes only documents derived
+   the agent and the lease, applies the fence, and writes only documents derived
    from the tuple.
 
 Once every worker uses the routes, the `worker_firestore` binding is removed
@@ -380,7 +380,7 @@ holds no Firestore permission at all.
 **Why the attempt key and not the token alone.** The token proves the tenant,
 and that alone closes every cross-tenant row. But the agent holds the token, so
 on its own it would let an agent in A do anything A's workers can do to A's
-tasks: mark its own task SUCCEEDED, reset its retries, release its lease early
+agents: mark its own agent SUCCEEDED, reset its retries, release its lease early
 and keep running (rows 12, 15). The key is generated in the protected heap
 after `make_non_dumpable` and registered before the agent exists
 (`child-tasks.md` §3.2). With it, the route acts only for the worker of this
@@ -432,7 +432,7 @@ secret release, git tools and in-flight context. B extends it to state.
 
 ### 3.3 Design C: one database per tenant
 
-**What it is.** Each tenant's tasks, attempts, settings and so on live in their
+**What it is.** Each tenant's agents, attempts, settings and so on live in their
 own Firestore database. Each worker account is granted only its own database.
 
 **Why it does not work here.**
@@ -445,7 +445,7 @@ own Firestore database. Each worker account is granted only its own database.
   accounts, quotas and billing for every workspace, including every personal
   `u-<user>` tenant.
 * **Shared pools cannot move.** Invariant 2 needs the global, resource, runner
-  and provider pools in the same transaction as the tenant's task and lease. A
+  and provider pools in the same transaction as the tenant's agent and lease. A
   transaction spans one database. So the pools and leases stay in a shared
   database, and the worker must not write it (row 10). Its release therefore
   has to move behind a control-plane call anyway, which is design B's hardest
@@ -529,9 +529,9 @@ without a second call.
 | `state/event` `{type, detail}` | `emit` | `tasks/<id>/events/<evt_*>`; `type` must be an `EventType` member |
 | `GET state/poll?provider=` | `poll` | none; returns the fence view and `quota/<provider>:<own tenant>` |
 | `GET state/context` | `secrets.load_tenant`, `jevkey` reads, `judge/attempt.py`, `graphstage.py` settings reads | none; returns the own tenant's `tenants/<t>` subset, `workspace_settings/<t>`, `tenant_settings/<t>`, the `provider_keys` record and the forge grant for the signed `submitted_by` and `repository_url` |
-| `GET state/upstream?task_id=` | `fetch_parent_states`, `inputs.py` upstream reads | none; only ids in the signed `depends_on`, or reached through the task's own `metadata.input_from`; each must carry the same `tenant_id` |
+| `GET state/upstream?task_id=` | `fetch_parent_states`, `inputs.py` upstream reads | none; only ids in the signed `depends_on`, or reached through the agent's own `metadata.input_from`; each must carry the same `tenant_id` |
 | `GET state/repository` | `indexrun.py`, `graphstage.py` repository and index reads | none; `repositories/<repo_id_for(signed repository_url)>` and its `index_versions` (a server-side query, so the three refused queries of §1.3 become possible) |
-| `state/merge-slot` `{op: acquire\|renew\|confirm\|release\|wake}` | `mergeslot.FirestoreMergeSlots` | `merge_slots/<slot_id(own tenant, signed repository, base)>`; `wake` only for waiter tasks of the same tenant listed in that slot |
+| `state/merge-slot` `{op: acquire\|renew\|confirm\|release\|wake}` | `mergeslot.FirestoreMergeSlots` | `merge_slots/<slot_id(own tenant, signed repository, base)>`; `wake` only for waiter agents of the same tenant listed in that slot |
 | `state/merge-train` `{op, ...}` | `mergetrain.py` writes | `merge_train_entries/<entry_id_for(own tenant, own task)>` |
 | `state/ci-fix-tasks` | `inputs.find_ci_fix_tasks` | none; the query runs server-side, restricted to `tenant_id == own` |
 
@@ -548,7 +548,7 @@ The error answers follow the child routes' shapes:
 cases need an id:
 
 * **Transitions, parks and finishes** carry `request_id`. The transaction is a
-  no-op success when the task is already in the target state for this
+  no-op success when the agent is already in the target state for this
   generation. That is how `ControlPlane.transition` treats a repeat today.
 * **Events and usage** carry an `event_id` or a sequence number, and a repeat
   of a seen id is a no-op.
@@ -569,7 +569,7 @@ and the agent is still spawned only after RUNNING
 later: the slot is taken once per generation.
 
 **Every attempt gets a nonce.** Today `worker_env` mints one only for a
-top-level task, a child with git tools, or a child that consumes workspace
+top-level agent, a child with git tools, or a child that consumes workspace
 secrets (`keyed =`). Under B the condition becomes `True` whenever
 `SWARM_STATE_VIA_API` is on for the tenant.
 
@@ -700,7 +700,7 @@ do not change.
 
 | case | what happens |
 |---|---|
-| swarm-api unreachable at `state/open` | retried within `startup_budget`; then the worker exits. The lease expires at `dispatch_deadline`, and the reconciler returns the task to READY. Nothing ran. |
+| swarm-api unreachable at `state/open` | retried within `startup_budget`; then the worker exits. The lease expires at `dispatch_deadline`, and the reconciler returns the agent to READY. Nothing ran. |
 | swarm-api unreachable mid-run | heartbeats fail; the worker's existing rule for a failed heartbeat applies. If the outage outlasts the lease timeout, the reconciler fences the attempt and the next one resumes from the last checkpoint (invariant 8). |
 | a `409 attempt_fenced` answer | the worker treats it as `ControlSignals.fenced` and exits without running or continuing the agent, and without a release call (invariant 5). |
 | the agent calls a route with the token it minted | `403 attempt_unproven`: it has no private key. |
@@ -907,7 +907,7 @@ accepted with the design and are recorded in `docs/contract-change-requests.md`.
   routes.** Recommended: it is the only option that closes every row of §1.3,
   including over-admission.
 * (b) A alone, signed settings. It closes rows 1-9 and 18-26 and leaves
-  `pools.active`, leases, tasks and attempts forgeable.
+  `pools.active`, leases, agents and attempts forgeable.
 * (c) C, a project per tenant. It is not enforceable as a database per tenant,
   and it still needs B's release route.
 
@@ -940,7 +940,7 @@ accepted with the design and are recorded in `docs/contract-change-requests.md`.
 **Q5. Do reads move too?**
 
 * (a) **Yes: the role is removed entirely.** Recommended: `tenants/<B>`,
-  `workspace_settings/<B>` and any leaked task are readable today.
+  `workspace_settings/<B>` and any leaked agent are readable today.
 * (b) No: keep a get-only role and move only the writes. That needs fewer
   routes, but cross-tenant reads by a guessable id remain.
 

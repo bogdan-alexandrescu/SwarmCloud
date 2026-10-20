@@ -126,7 +126,7 @@ swarm-job-research-claude-code   -> sa: swarm-agent-worker-research@<project>.ia
 Terraform materialises a Job only for combinations that can actually run: a
 profile needing a provider is skipped for tenants without a key for it. Creating
 the rest would produce Jobs whose every execution dies on a missing secret, when
-the correct behaviour is for the task to park as `CREDENTIAL_MISSING` and cost
+the correct behaviour is for the agent to park as `CREDENTIAL_MISSING` and cost
 nothing.
 
 A tenant with no key that a pool account serves is the exception: admission lets
@@ -294,7 +294,7 @@ object it always was; a unit test holds that byte for byte.
 (`SchedulerSettings.live_browser_sidecar`, default off). The sidecar runs the
 gate, `python -m agent_worker.livegate`, which lanes L1-L4 build. A native
 sidecar whose entrypoint does not exist yet restarts forever, and every
-`claude-code-browser` task would pay for it. Off, `claude-code-browser` keeps
+`claude-code-browser` agent would pay for it. Off, `claude-code-browser` keeps
 the single-container pod and the agent launches its own headless Chromium, as
 before. Turn it on once the dispatched image carries the gate.
 
@@ -353,7 +353,7 @@ What the switch adds, and why each piece is shaped this way:
   CDP proxy) and the two shared directories, but **no `DISPLAY`**. A headed
   launch in the worker container therefore fails loudly instead of drawing
   where nobody sees. The sidecar gets those paths, its profile directory and
-  `HOME=/tmp`. It gets no task, tenant or attempt identifier and no secret,
+  `HOME=/tmp`. It gets no agent, tenant or attempt identifier and no secret,
   because the tunnel ticket arrives over `ctl.sock` from the worker (§3.3).
 * **The image** (`images/agent-runtime-browser/Dockerfile`) adds Xvfb, the
   `swarm-display` user and the §5.6 Chromium policy
@@ -378,7 +378,7 @@ lease acquired (capacity already reserved)
   -> task LEASED -> DISPATCHED
 ```
 
-Any failure in that sequence releases the lease and returns the task to `READY`.
+Any failure in that sequence releases the lease and returns the agent to `READY`.
 A slot held by a container that will never exist is a permanent capacity leak
 until the reconciler notices; releasing immediately is free.
 
@@ -387,11 +387,11 @@ The reconciler covers what dispatch cannot:
 | Disagreement | Cost if ignored |
 |---|---|
 | stale lease | capacity leaks; the platform slowly stops admitting |
-| missing execution | the task is stuck forever holding a slot |
+| missing execution | the agent is stuck forever holding a slot |
 | orphan execution | money, plus a second agent on someone's repository |
 | orphan lease | capacity leaks |
 
-Note what is **not** a finding: a task in `LEASED` with a fresh lease and no
+Note what is **not** a finding: an agent in `LEASED` with a fresh lease and no
 execution yet. Dispatch takes time and image pulls take minutes; a reconciler
 that treated "not started yet" as "dead" would kill every cold start.
 

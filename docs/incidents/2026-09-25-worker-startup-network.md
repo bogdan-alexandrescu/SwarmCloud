@@ -1,9 +1,9 @@
 # Incident, 2026-09-25: a worker whose first connection to Firestore was never answered
 
-**Impact.** One Cloud Run execution, `swarm-job-eng-mock-9ngvq` (task
+**Impact.** One Cloud Run execution, `swarm-job-eng-mock-9ngvq` (agent
 `task_5254e8f1cb31446ca20b`, step c of workflow `wf_7d0bb295af404d7a8c93`),
 could not reach Firestore for the whole of its generation check and exited 69
-having written nothing. The task sat DISPATCHED for another two minutes and
+having written nothing. The agent sat DISPATCHED for another two minutes and
 fifteen seconds, until the 20:40 reconciler pass reclaimed it at the dispatch
 deadline. Attempt 2 succeeded at 20:42:49Z. One attempt was spent. Issue #198.
 
@@ -40,7 +40,7 @@ Everything below was read on 2026-09-25, with the read-only commands in §6.
 |---|---|---|
 | 20:34:11.2 | execution created by `swarm-scheduler` | execution `metadata.creationTimestamp` |
 | 20:34:12.3 | "Imported container image in 1.09s" | condition `ContainerReady` |
-| 20:34:19.95 | task started | `status.startTime` |
+| 20:34:19.95 | agent started | `status.startTime` |
 | 20:37:22.9 | "Started deployed execution in 3m10.26s" | condition `Started` |
 | 20:37:26.05 | `worker process started` | worker log |
 | 20:37:26.08 | DNS preflight passed in 28 ms: `173.194.206.95` and `2607:f8b0:4001:c00::5f` for `firestore.googleapis.com` | worker log |
@@ -106,7 +106,7 @@ time, were not answered for 40 s.
 
 ## 4. Noticed promptly: what PR #200 changes and what it does not
 
-PR #200 adds a reconciler rule (`detect_ended_at_startup`) that requeues a task
+PR #200 adds a reconciler rule (`detect_ended_at_startup`) that requeues an agent
 still DISPATCHED or STARTING once its execution has ended, 30 s after the end,
 with the exit code and the execution in `last_error`. How much sooner that is
 than the 300 s dispatch deadline depends on how late the worker exits and on
@@ -128,7 +128,7 @@ the reconciler's tick:
   the rule, not the deadline, is what requeues this exit.
 * **A worker that dies in its first seconds** (an exit 1, a 143) is eligible
   65 to 155 s before the deadline, so a `*/5` pass falls between the two more
-  often, and when it does the task is requeued five minutes sooner.
+  often, and when it does the agent is requeued five minutes sooner.
 * **At a `*/1` tick** either is requeued 30 to 90 s after its execution ends.
   That change is prepared in draft PR #202 and is the owner's decision: it is
   1,440 reconciler passes a day instead of 288.

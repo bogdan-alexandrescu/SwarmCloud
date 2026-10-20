@@ -1,6 +1,6 @@
 # Runbook: apply the GKE dispatcher RBAC and redispatch `wf_7e2ee6c3075d43228e5a`
 
-**When to use this.** `browser` tasks fail with `jobs.batch is forbidden`, or
+**When to use this.** `browser` agents fail with `jobs.batch is forbidden`, or
 you are landing the GKE dispatch fix for the first time.
 
 **How long.** Two minutes of commands, plus however long the workflow takes.
@@ -214,7 +214,7 @@ reconciler's binding is verified the same way, by reading it.
 
 ---
 
-## 4. Prove one browser task works before spending a workflow
+## 4. Prove one browser agent works before spending a workflow
 
 ```bash
 scripts/smoke-test.sh --profile browser --timeout 900
@@ -222,10 +222,10 @@ scripts/smoke-test.sh --profile browser --timeout 900
 
 `scripts/smoke-test.sh` now covers **one profile per backend**, derived from the
 frozen catalogue, so a plain `make smoke` exercises `GKE_AUTOPILOT` too. Running
-it with `--profile browser` additionally makes the final single-task case a
-browser task, which is the cheapest possible end-to-end proof of this fix.
+it with `--profile browser` additionally makes the final single-agent case a
+browser agent, which is the cheapest possible end-to-end proof of this fix.
 
-If a backend case fails, the suite prints that task's `last_error`. That field
+If a backend case fails, the suite prints that agent's `last_error`. That field
 is the whole diagnosis and it is one line: it is the difference between "browser
 failed" and "403 on jobs.batch in swarm-tenant-eng".
 
@@ -288,7 +288,7 @@ scripts/api.sh GET /workflows/<new_workflow_id> \
 make status
 ```
 
-`state_source` says `derived` when the state was computed from the step tasks
+`state_source` says `derived` when the state was computed from the step agents
 this request loaded, and `stored` when it is the cached field. Both read routes
 derive; `stored` on a GET of one workflow would itself be worth a question.
 
@@ -299,7 +299,7 @@ and quota.
 
 ## 6. If a browser step fails again
 
-Read the task's own error first — it is the only field that distinguishes the
+Read the agent's own error first — it is the only field that distinguishes the
 cases:
 
 ```bash
@@ -330,7 +330,7 @@ line before running anything.
 | `gke_create_job_forbidden`, and the `User "..."` in the upstream text is digits you cannot find in the RoleBinding | the binding carries the email only. It applied cleanly and authorises nobody | re-run step 2; `apply.sh` resolves both uniqueIds and refuses to render if it cannot |
 | `gke_create_job_failed` with a connection or TLS error | the cluster endpoint or CA in the scheduler's environment is wrong | `GKE_ENDPOINT` / `GKE_CA_CERT_B64` come from terraform; re-run `make deploy` after `make infra` |
 | `backend_disabled` | `ENABLE_GKE_AUTOPILOT` is false on the scheduler | a deployment setting, not a cluster problem |
-| task reaches RUNNING, no pod ever appears | the KSA the pod names does not exist | `kubectl describe job -n swarm-tenant-<id> <job>` and look for `serviceaccount ... not found`; step 3 |
+| agent reaches RUNNING, no pod ever appears | the KSA the pod names does not exist | `kubectl describe job -n swarm-tenant-<id> <job>` and look for `serviceaccount ... not found`; step 3 |
 | pod appears and is `Pending` forever | Autopilot has not admitted it — resource class, or a quota on the namespace | `kubectl describe pod`, then `kubectl get resourcequota -n swarm-tenant-<id>` |
 | `CreateContainerConfigError` | the pod is asking for a Kubernetes Secret that does not exist | nothing in this repository creates one; the tenant key lives in Secret Manager and the worker fetches it itself. Read `kubernetes/render.py`'s header |
 | the container STARTS and dies at once on `[Errno 30] Read-only file system` | a path the runner writes to has no volume behind it. GKE sets `readOnlyRootFilesystem: true`; Cloud Run does not, so this class of defect is invisible on the primary backend | `kubectl logs -n swarm-tenant-<id> job/<job>` for the path in the traceback. Every writable path needs a volume in **both** Job specs — `dispatch.py`'s dict and the matching `kubernetes/worker-templates/` YAML |
@@ -351,7 +351,7 @@ kubectl describe job -n swarm-tenant-eng <job-name>
 * **Tenants provisioned before 2026-09-24.** Their tenant document may carry
   `namespace: swarm-<id>`, the old spelling. Until 2026-10-11 the dispatcher
   *preferred* that over its own template unchecked, which is how u-bogdan's
-  tasks went to a namespace that did not exist. Since then the scheduler and
+  agents went to a namespace that did not exist. Since then the scheduler and
   the reconciler ignore a stored value outside `swarm-tenant-`, use the derived
   name, and log `tenant_namespace_mismatch` at ERROR (the
   `tenant-namespace-mismatch` alert); a value inside the prefix but different

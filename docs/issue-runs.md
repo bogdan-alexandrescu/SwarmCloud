@@ -39,17 +39,17 @@ A run lives in the `issue_runs` Firestore collection, read and written only by
 `issueruns.py`, not by `store.py` or `codec.py`. Owner decision, 2026-10-01:
 "a swarm-api run document … The frozen TaskState is untouched."
 
-The reason is that a run is not a task. It *owns* tasks -- one planner task,
+The reason is that a run is not an agent. It *owns* agents -- one planner agent,
 then one workflow, then up to `fix_rounds` one-step continuation workflows --
 and its states (`PLANNED`, `CHECKING`, `FIXING`, `REJECTED`) describe things no
-task does: waiting for a person, reading someone else's CI. Putting those into
+agent does: waiting for a person, reading someone else's CI. Putting those into
 `TaskState` would have meant a frozen-contract change that every component
-written against the twelve task states would have to absorb, for a concept
+written against the twelve agent states would have to absorb, for a concept
 only swarm-api reads. So the run's machine is `issueruns.RUN_TRANSITIONS`, and
-a run's progress is *derived* from its tasks' and workflows' frozen states,
+a run's progress is *derived* from its agents' and workflows' frozen states,
 exactly as a workflow's state is derived from its steps.
 
-The document is tenant-scoped the way a task is: every read compares the stored
+The document is tenant-scoped the way an agent is: every read compares the stored
 `tenant_id` with the caller's tenant and answers a mismatch with the **same 404
 as a missing run**, so a run id is never an oracle for another tenant's work
 (invariant 9).
@@ -60,8 +60,8 @@ Invariant 1: only `LEASED`/`DISPATCHED`/`STARTING`/`RUNNING` create
 infrastructure demand. A person may take a day to read a plan, and that day
 must cost nothing.
 
-So the planner is an ordinary task that **ends**. Once it has, a `PLANNED` run
-is a Firestore document and nothing else: no task, no lease, no workflow, no
+So the planner is an ordinary agent that **ends**. Once it has, a `PLANNED` run
+is a Firestore document and nothing else: no agent, no lease, no workflow, no
 pending pod. The work is a *new* workflow, compiled from the approved plan and
 submitted at approval. Two alternatives were rejected:
 
@@ -201,12 +201,12 @@ the comment may be on a public repository.
 
 ## The Cloud Scheduler tick, and why every read also advances
 
-A run's state is a consequence of its tasks: the planner ending, the workflow
+A run's state is a consequence of its agents: the planner ending, the workflow
 ending, CI going green. Something has to *look*. Two things do, and they run the
 same code (`routes/runs.py` `advance_run`):
 
 * **Every read.** `GET /v1/runs/{id}` (and the list) moves a run as far as its
-  tasks say before answering, as every workflow read derives its state. A
+  agents say before answering, as every workflow read derives its state. A
   reader therefore never sees a stale run, and the console's polling is what
   makes a watched run feel live.
 * **The tick.** Reads alone would leave a run nobody watches where it was --
@@ -219,7 +219,7 @@ same code (`routes/runs.py` `advance_run`):
 
 Each move is a transaction that re-checks the state it moves from, so a reader
 and the tick racing produce one transition and the loser re-reads. A healthy
-run that has not moved costs one task or workflow read and writes nothing. A
+run that has not moved costs one agent or workflow read and writes nothing. A
 tick visits one page of a tenant's movable runs, oldest first, and reports
 `truncated` when there are more; one run failing to advance is counted and the
 rest of the page is still advanced.
@@ -318,7 +318,7 @@ plan, in `plan.json`:
 `kind` is one of `already_done` (with the files, functions and tests that show
 it), `owner_decision`, `blocked`, `too_vague`, `security_deferred`, `epic` or
 `other`. The run moves to the terminal state `NOT_READY`, **holds nothing**
-(no task, workflow or lease after the planner -- invariant 1), and its one
+(no agent, workflow or lease after the planner -- invariant 1), and its one
 status comment on the issue carries the reason and the needs. `NOT_READY` is a
 new state rather than `REJECTED` with `rejected_by: planner` because `RunState`
 is this service's, not the frozen contract's (`apps/common/swarm_common` does
@@ -576,9 +576,9 @@ the merge is now the CI loop's last move:
 * **The merge is submitted by the CI loop** (`issueci._merge`), and only once
   CI is green at the head, the keyword block is recorded written, and the
   review's verdict is `MERGE`. It is ONE merge-only continuation
-  (`issueci.merge_workflow`) of the run's own task that pushed that head --
+  (`issueci.merge_workflow`) of the run's own agent that pushed that head --
   the newest fix round's, else the integrator -- so the merge step pins the
-  head that task pushed, and a head no task of the run pushed is not merged.
+  head that agent pushed, and a head no agent of the run pushed is not merged.
   Red CI on an `auto_merge` run is a fix round, never a failure. A merge the
   step refuses, or a verdict that is not `MERGE`, ends the run `FAILED` with
   the reason and the pull request left open for a person; it is not
@@ -633,8 +633,8 @@ CI, and nothing below claims it has.
 | claim | test |
 |---|---|
 | the defaults are `plan_approval: required`, no auto-merge, 3 fix rounds | `test_issue_runs.py::test_the_defaults_are_required_approval_no_auto_merge_and_three_fix_rounds` |
-| a run starts with one planner task | `test_issue_runs.py::test_a_run_starts_planning_with_one_signed_planner_task` |
-| it pauses at `PLANNED` holding no task, lease or workflow (invariant 1), and the tick leaves it there | `test_issue_runs.py::test_a_run_waiting_for_approval_creates_no_task_lease_or_workflow`, `test_issue_run_tick.py::test_a_required_run_stops_at_planned_and_holds_nothing` |
+| a run starts with one planner agent | `test_issue_runs.py::test_a_run_starts_planning_with_one_signed_planner_task` |
+| it pauses at `PLANNED` holding no agent, lease or workflow (invariant 1), and the tick leaves it there | `test_issue_runs.py::test_a_run_waiting_for_approval_creates_no_task_lease_or_workflow`, `test_issue_run_tick.py::test_a_required_run_stops_at_planned_and_holds_nothing` |
 | the open issues and pull requests are read with the tenant's token and given to the planner | `test_issue_runs.py::test_the_open_work_is_read_with_the_tenants_token_and_stored_on_the_run`, `test_issue_open_work.py::test_a_small_snapshot_is_shown_whole`, `test_issue_open_work.py::test_the_prompt_stays_under_its_limit_with_a_huge_snapshot_and_says_it_cut` |
 | a plan's overlaps validate and reach the plan comment as links | `test_issue_runs.py::test_the_new_fields_round_trip_through_the_schema`, `test_issue_writeback.py::test_the_plan_comment_carries_everything_the_issue_asks_for` |
 | the plan comment is posted once and edited in place | `test_issue_writeback.py::test_the_plan_comment_is_posted_once_and_edited_by_an_edit` |
@@ -689,9 +689,9 @@ integrator branch.
 | on is accepted while the `merge` profile is enabled, and recorded on the run; a run that does not say takes the repository's `merge_policy`, else `merge_by_default` | `test_issue_runs.py::test_auto_merge_is_accepted_and_recorded_on_the_run`, `test_issue_runs.py::test_a_run_that_does_not_say_takes_the_platform_default`, `test_issue_runs.py::test_a_run_that_does_not_say_takes_the_repositorys_merge_policy_first` |
 | the console's availability and the API's refusal are one rule: unavailable, naming #295 and the profile's reason, exactly when the profile is disabled | `test_issue_runs.py::test_auto_merge_availability_says_what_the_refusal_does` |
 | the compiled workflow and every fix round carry no merge, whatever the run or the default says | `test_issue_runs.py::test_the_compiled_workflow_always_says_merge_off`, `test_issue_runs.py::test_an_auto_merge_run_submits_its_workflow_with_no_merge_step`, `test_issue_run_auto_merge.py::test_the_compiled_workflow_and_a_fix_round_never_carry_a_merge` |
-| green with the keyword block written submits ONE merge continuing the task that pushed the head; not before the block is written | `test_issue_run_auto_merge.py::test_green_with_the_keyword_written_submits_one_merge_continuing_the_integrator`, `test_issue_run_auto_merge.py::test_no_merge_while_the_keyword_block_is_not_written` |
-| red CI on an `auto_merge` run is a fix round, and the merge then continues the fix round's task | `test_issue_run_auto_merge.py::test_red_ci_on_an_auto_merge_run_is_a_fix_round_then_the_merge_continues_it` |
-| no merge on a verdict that is not `MERGE`, or at a head no task of the run pushed; a refused merge fails the run with the step's reason and is not resubmitted | `test_issue_run_auto_merge.py::test_a_review_verdict_of_not_yet_fails_the_merge_and_submits_none`, `test_issue_run_auto_merge.py::test_a_head_no_task_of_the_run_pushed_is_not_merged`, `test_issue_run_auto_merge.py::test_a_refused_merge_fails_the_run_with_the_steps_reason_and_is_not_resubmitted` |
+| green with the keyword block written submits ONE merge continuing the agent that pushed the head; not before the block is written | `test_issue_run_auto_merge.py::test_green_with_the_keyword_written_submits_one_merge_continuing_the_integrator`, `test_issue_run_auto_merge.py::test_no_merge_while_the_keyword_block_is_not_written` |
+| red CI on an `auto_merge` run is a fix round, and the merge then continues the fix round's agent | `test_issue_run_auto_merge.py::test_red_ci_on_an_auto_merge_run_is_a_fix_round_then_the_merge_continues_it` |
+| no merge on a verdict that is not `MERGE`, or at a head no agent of the run pushed; a refused merge fails the run with the step's reason and is not resubmitted | `test_issue_run_auto_merge.py::test_a_review_verdict_of_not_yet_fails_the_merge_and_submits_none`, `test_issue_run_auto_merge.py::test_a_head_no_task_of_the_run_pushed_is_not_merged`, `test_issue_run_auto_merge.py::test_a_refused_merge_fails_the_run_with_the_steps_reason_and_is_not_resubmitted` |
 | a run without it ends `DONE` at a green pull request and never merges: no `merge` profile, no `single-pr`, no merge call to GitHub | `test_issue_run_ci.py::test_a_run_without_auto_merge_stops_at_a_green_pull_request_and_never_merges`, `test_issue_runs.py::test_a_run_without_auto_merge_submits_no_merge_step_even_when_the_default_is_on` |
 | the console enables the switch only when the API reports it available, and shows the API's reason when it does not; the CLI prints a refusal plainly | `apps/swarm-ui/src/__tests__/intake.issue.test.tsx`: "auto-merge can be switched on only when the API reports it available, and is sent", "auto-merge stays disabled when the preview says it is unavailable, and shows the API's reason"; `tests/unit/mcp/test_issue_runs.py::test_auto_merge_is_passed_through_and_its_refusal_printed_plainly` |
 

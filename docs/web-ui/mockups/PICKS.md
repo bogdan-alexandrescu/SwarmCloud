@@ -32,7 +32,7 @@ disagrees:
 | workflows.html | V2 full-width pages (/workflows list + /workflows/<id>), Recent (5) switcher in the panel |
 | capacity.html | Ceilings table by family with "Needs a look" first; Accounts as a split view; polling Pools/Holders 30s, Accounts 60s, paused in hidden tabs |
 | admin-help.html | Pool limits = L2 side editor with impact and history, typed confirm for 0 or a cut of half or more; Help = H1 one page per group with search |
-| submit.html | /submit chooser page (N opens it); one-page task form; workflow form stacked top to bottom with on_step_failure and priority in it |
+| submit.html | /submit chooser page (N opens it); one-page agent form; workflow form stacked top to bottom with on_step_failure and priority in it |
 
 ## Batch 3 (picked 2026-10-02)
 
@@ -81,7 +81,7 @@ override:
 | 11 · Repository Settings | **A**, cards | The page's recommendation |
 | 12 · Git tokens | **B**, cards plus a command line. **No console paste box** in phase 1 | A forge token enters only through `scripts/create-secrets.sh --stdin` (CLAUDE.md, owner rule 2026-09-25). A paste box is a new path for a token value through the API, which is the owner's to open, not the operator's. B shows the exact command per slot |
 | 13 · Permission matrix | **A**, a grid of tokens × repositories, one cell per capability | The page's recommendation |
-| Token resolution order (git-tokens.md §3.1) | **R2**: repository token, then tenant token. A user's token is used for attribution only | A task never fails because the dispatching user's token lacks a right that the repository or tenant token has. R1 can refuse work that R2 would do |
+| Token resolution order (git-tokens.md §3.1) | **R2**: repository token, then tenant token. A user's token is used for attribution only | An agent never fails because the dispatching user's token lacks a right that the repository or tenant token has. R1 can refuse work that R2 would do |
 | User-token isolation (§2) | **U1**: a user token is a tenant secret attributed to a person | Simplest for phase 1 and enough under R2, where a user token never clones or pushes. U2 (personal tenants) and U3 (a reader identity per user) stay open if user tokens ever push |
 | Secret creation (§2) | **S1**: Terraform declares each slot, and values come only from `create-secrets.sh --stdin` | The doc's recommendation. It adds no platform privilege, and the registry does not depend on self-service |
 

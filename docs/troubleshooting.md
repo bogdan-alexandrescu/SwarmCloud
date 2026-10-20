@@ -45,7 +45,7 @@ make logs SERVICE=swarm-scheduler
 ```
 
 A paused tick plus a broken push means nothing drains. If the tick is doing all
-the work, the push path is broken — latency will be up to a minute per task.
+the work, the push path is broken — latency will be up to a minute per agent.
 
 **4. A pool you did not expect is the binding one.** Look at `blocked_by`:
 
@@ -64,20 +64,20 @@ Check `park_reason`:
 
 | Reason | Meaning | Fix |
 |---|---|---|
-| `CREDENTIAL_MISSING` | the tenant has no key for this profile's provider, and no pool account can run the profile for it | `create-secrets.sh --tenant <t> --provider <p> --stdin`, or, when the `parked` event's `detail.account_pool` is `no_accounts_registered`, lend the tenant an account (`PUT /v1/accounts/<id>/lending`). `profile_takes_no_subscription` (every `browser` task) means only a key will do |
+| `CREDENTIAL_MISSING` | the tenant has no key for this profile's provider, and no pool account can run the profile for it | `create-secrets.sh --tenant <t> --provider <p> --stdin`, or, when the `parked` event's `detail.account_pool` is `no_accounts_registered`, lend the tenant an account (`PUT /v1/accounts/<id>/lending`). `profile_takes_no_subscription` (every `browser` agent) means only a key will do |
 | `PROVIDER_QUOTA_EXHAUSTED` | quota spent | wait for `next_eligible_at`, or raise the cap |
 | `PROVIDER_COOLDOWN` | backing off after 429s | wait; check AIMD state |
 | `DEPENDENCY_INCOMPLETE` | an upstream workflow step has not finished | check the workflow |
 | `BUDGET_EXHAUSTED` | tenant budget spent | raise it or wait for the period |
 | `MANUAL_PAUSE` | an operator parked it | `resume-swarm.sh` |
 
-Parked tasks cost nothing, so this is rarely an emergency — but
+Parked agents cost nothing, so this is rarely an emergency — but
 `CREDENTIAL_MISSING` across a whole tenant usually means registration was never
 completed.
 
 ---
 
-## A task is stuck in LEASED or DISPATCHED
+## An agent is stuck in LEASED or DISPATCHED
 
 It holds capacity and nothing is running. The reconciler is designed for exactly
 this and runs on a tick:
@@ -89,15 +89,15 @@ gcloud scheduler jobs run swarm-reconciler-tick --project "$PROJECT_ID" --locati
 
 The reconciler deliberately does **not** treat "LEASED with a fresh lease and no
 execution yet" as a fault — dispatch takes time and image pulls take minutes.
-A task becomes a finding only after `dispatch_timeout_seconds` (480; it was 300
+An agent becomes a finding only after `dispatch_timeout_seconds` (480; it was 300
 until contract request 37 made room for the worker's 200 s startup read).
 
-If the reconciler is running and the task stays stuck, there are two causes, and
+If the reconciler is running and the agent stays stuck, there are two causes, and
 both are the reconciler **refusing on purpose**: it will not release a slot it
 cannot prove is free, because releasing early puts a second agent on the same
 workspace. A stuck slot can be recovered. A duplicate agent cannot.
 
-**1. The reconciler cannot read the backend the task is on.** The reconciler
+**1. The reconciler cannot read the backend the agent is on.** The reconciler
 finds the lease, correctly decides the worker is dead, and then **does not act**,
 because it cannot see the backend that would prove nothing is running. Every
 pass logs `backend unavailable; skipping its findings` for a whole backend, or
@@ -115,7 +115,7 @@ passes on one backend, or after one lease has been held for thirty minutes.
 
 This is the cause behind incident wf_ebb3ab2d65664707a559 (2026-09-24):
 
-* Five browser tasks stayed in DISPATCHED for hours with `cancel_requested=true`.
+* Five browser agents stayed in DISPATCHED for hours with `cancel_requested=true`.
 * Their leases held 10 units on each of seven pools.
 * The workflow's derived state stayed RUNNING, because the workflow is RUNNING
   whenever any of its steps holds capacity.
@@ -139,7 +139,7 @@ the reconciler asks for the attempt's Job by name:
   If its lease is stale (the worker stopped heartbeating), or the Job runs a
   superseded generation, the reconciler fences the generation, kills the Job,
   and only then releases the lease. If its lease is still heartbeating,
-  nothing was wrong: the task was only reported missing because the list
+  nothing was wrong: the agent was only reported missing because the list
   failed. The reconciler leaves the Job alone and does not count the lease as
   suppressed. A failed list must never kill a healthy agent. Lists fail for
   reasons a single get does not share: API priority and fairness answers 429
@@ -148,7 +148,7 @@ the reconciler asks for the attempt's Job by name:
 * **Another 403** changes nothing.
 
 Unreadability is judged per backend. An unreadable GKE namespace, or GKE as a
-whole, holds only findings that could be on GKE. A task whose runner profile
+whole, holds only findings that could be on GKE. An agent whose runner profile
 resolves to Cloud Run Jobs is judged on Cloud Run alone (`namespace: null` in
 `suppressed[]`). If such a lease is held, the cause is on Cloud Run, not in the
 GKE `namespace unreadable` lines next to it.
@@ -182,7 +182,7 @@ pass lists it under `held_past_ttl` in the pass report, and `/readyz` reports
 `last_pass_held_past_ttl`.
 
 Fix the namespace or the binding. **Do not add a ClusterRole to make the error
-go away.** When the reconciler finishes a task whose cancel was requested, it
+go away.** When the reconciler finishes an agent whose cancel was requested, it
 finishes it as CANCELLED in the same pass.
 
 **2. Termination could not be confirmed.** The reconciler could see the
@@ -217,7 +217,7 @@ look.
 
 ## Workers exit immediately with `generation_fenced`
 
-Working as designed: another attempt owns that task. The worker checked its
+Working as designed: another attempt owns that agent. The worker checked its
 generation before creating a workspace, reading a secret or starting a runner,
 and exited without touching the lease — the live lease belongs to the replacement.
 
@@ -445,7 +445,7 @@ it, so if this alone moves it, nothing was stuck, only unwatched:
   workflow_id, pull_request, ci_fix_round, fix_rounds, writeback_error}'
 ```
 
-**PLANNING** waits on the planner task:
+**PLANNING** waits on the planner agent:
 
 ```bash
 ./scripts/api.sh GET "/tasks/$PLANNER_TASK" | jq '{state, park_reason, blocked_by, last_error}'
@@ -518,7 +518,7 @@ clears `writeback_error`.
 | 429s, parking, AIMD | [quota-management.md](quota-management.md) |
 | Resume behaviour, lost work | [checkpointing.md](checkpointing.md) |
 | Cloud Run vs GKE, dispatch failures | [execution-backends.md](execution-backends.md) |
-| `jobs.batch is forbidden` on a browser task | [gke-dispatch-403.md](gke-dispatch-403.md) — the 403 does **not** mean a permission problem |
+| `jobs.batch is forbidden` on a browser agent | [gke-dispatch-403.md](gke-dispatch-403.md) — the 403 does **not** mean a permission problem |
 | Applying the dispatcher RBAC and redispatching | [runbooks/gke-dispatch-redispatch.md](runbooks/gke-dispatch-redispatch.md) |
 | A GKE dispatch failure that survives the obvious fix | [incidents/2026-09-24-gke-dispatch.md](incidents/2026-09-24-gke-dispatch.md) — seven causes behind one error message, and the commands that tell them apart |
 | A Cloud Run worker exits 69 at `validate_generation` with `ipv6:... Network is unreachable` | [incidents/2026-09-25-worker-startup-network.md](incidents/2026-09-25-worker-startup-network.md) — the IPv4 connection is the one that failed; the flow-log query that shows it |

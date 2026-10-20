@@ -2,16 +2,16 @@
 
 Two different things share this name, and both are documented here:
 
-* **Part 1 — task workflows**: multi-step agent DAGs submitted to the API.
+* **Part 1 — agent workflows**: multi-step agent DAGs submitted to the API.
 * **Part 2 — development workflows**: the local loop, and the CI/CD pipeline in
   `.github/workflows/`.
 
 ---
 
-# Part 1 — Task workflows (DAGs)
+# Part 1 — Agent workflows (DAGs)
 
 A workflow is a set of steps with dependencies. Each step becomes an ordinary
-task, so everything true of a task is true of a step: it is admitted through the
+agent, so everything true of an agent is true of a step: it is admitted through the
 same transaction, counts against the same pools, checkpoints the same way, and
 costs nothing while it waits.
 
@@ -61,7 +61,7 @@ costs nothing while it waits.
 
 ## What `input` may carry
 
-A runner reads its task's `input`, and an input means something only to the
+A runner reads its agent's `input`, and an input means something only to the
 runner that reads it: `input.model` was passed as `--model` by the CLI runners
 (until #226, when the model became the Job's `MODEL`, set in Terraform; see
 [agent-output.md](agent-output.md); since #1435 a step picks it by
@@ -184,11 +184,11 @@ class and runs on GKE Autopilot; it declares what `claude-code` does:
 | `qa_identity` | string, one of console | sign the live browser in to this deployment's console as its QA identity, a service account with its own workspace; the platform adds the credential, the agent never holds it, and a tenant may name it only when a platform admin has granted it |
 <!-- /runner-inputs:claude-code-browser -->
 
-Which browser task type serves which kind of visual QA, and a workflow that
+Which browser agent type serves which kind of visual QA, and a workflow that
 sweeps the console at 1440 and 390, light and dark: [browser-qa.md](browser-qa.md).
 
 `issue` points a step at a GitHub issue, so its prompt need not restate one.
-It names an issue in the task's own `repository_url` (a workflow's, for a
+It names an issue in the agent's own `repository_url` (a workflow's, for a
 step), and a submission that sends it without a repository is refused with
 422 `invalid_input`: there would be nothing to fetch it from. The worker
 fetches the issue's title, body and comments read-only, with the tenant's
@@ -212,9 +212,9 @@ rewrite a parked later step's prompt, its `input_from`, its dispatch role or
 its repository. swarm-api signs each step's canonical spec
 (`swarm_common.specsign`) with a Cloud KMS key only its own account may use,
 after `input_from` and `expected_outputs` are written; the worker verifies it
-immediately after it fetches the task, before the checkpoint restore, the
+immediately after it fetches the agent, before the checkpoint restore, the
 clone, the staged inputs, the credentials or the issue. A mismatch ends the
-task FAILED with `SPEC_SIGNATURE_INVALID`, never retried. What the signature
+agent FAILED with `SPEC_SIGNATURE_INVALID`, never retried. What the signature
 does NOT cover is every field a later writer changes (`state`,
 `attempt_count`, `result_summary`, `latest_checkpoint` and the rest) and the
 restored workspace; contract request 34's threat model states those
@@ -223,7 +223,7 @@ residuals.
 Every declared number has a floor and a ceiling, and an integer's bounds lie
 inside the signed 64-bit range; the catalogue refuses a declaration without
 them. Python reads a JSON integer at any length and Firestore stores 64 bits,
-so an unbounded number passed every check and failed at the task write with a
+so an unbounded number passed every check and failed at the agent write with a
 500. The API also refuses, with 422, an integer anywhere in an input or a
 task's metadata that Firestore could not store, which is the only number check
 a task's metadata gets.
@@ -232,7 +232,7 @@ A key the profile does not declare, or a declared one outside its bounds, is
 refused with 422 `invalid_input`. The detail names the key (`key`, and every
 refused key in `keys`), the bound for a declared key (`expected`), what the
 profile does declare (`declared`) and, on a workflow, the step (`step_id`).
-Nothing is created: one refused step refuses the workflow, and one refused task
+Nothing is created: one refused step refuses the workflow, and one refused agent
 refuses its batch. `NaN` and `Infinity` are refused as numbers; Python reads
 them from JSON, and every comparison with `NaN` is false, so a bound alone
 would let them through. `swarm_profiles` and `swarm profiles` list each
@@ -240,7 +240,7 @@ profile's inputs.
 
 `browser` and `generic` declare every key their runners read (contract
 request 32, #218, accepted by the owner on 2026-09-29). Until then both were
-bounded by size alone, so a `generic` task with no `command`, an action with
+bounded by size alone, so a `generic` agent with no `command`, an action with
 no `selector`, or a browser `goto` to a private address was admitted, leased
 and started, and failed inside the pod. Each is a 422 at the door now.
 
@@ -259,18 +259,18 @@ and started, and failed inside the pod. Each is a 422 at the door now.
   is **not** the SSRF control -- it sees the URL typed, never a redirect, a
   page's subresources or what a name resolves to in the pod. The worker's
   NetworkPolicy is the control.
-* A browser task still needs `url` or at least one action. Neither is required
-  on its own, so a task with neither is refused by the runner, not the API.
-* A `generic` task's four limits may only lower the platform's own: each
+* A browser agent still needs `url` or at least one action. Neither is required
+  on its own, so an agent with neither is refused by the runner, not the API.
+* A `generic` agent's four limits may only lower the platform's own: each
   declared ceiling is what the worker exports by default.
 
-`{"quota_exhausted": true}` parks a mock step ONCE: the task's first attempt,
-and no other. The attempt is counted by the task's own `attempt_count`, which
+`{"quota_exhausted": true}` parks a mock step ONCE: the agent's first attempt,
+and no other. The attempt is counted by the agent's own `attempt_count`, which
 admission increments in the lease's own transaction and the worker hands to
 the runner, so the bound holds even when the park's checkpoint fails to
 upload; the attempt after the park runs to the end, from that checkpoint when
 there is one. It parked on every attempt until 2026-09-25, and a park does not
-spend an attempt, so such a task never ended. Its first bound was a count in
+spend an attempt, so such an agent never ended. Its first bound was a count in
 the mock's own working directory, which only the checkpoint carried forward,
 so a park whose upload failed was followed by another (the review of #213).
 
@@ -282,7 +282,7 @@ It exists to prove #166's carry live (contract request 56, accepted by the
 owner 2026-10-08): a file an agent wrote before a quota park reaches the
 attempt that succeeds BY REFERENCE, and before this input the mock parked
 before writing anything, so no live run could show it. Because the finishing
-attempt never rewrites the file, the one the task ends with can only have
+attempt never rewrites the file, the one the agent ends with can only have
 arrived by the carry. The recipe is a two-step workflow:
 
 ```json
@@ -321,7 +321,7 @@ against dev after every release, as `workflow: carry`
 **A step may read several registered repositories at pinned commits, and it
 writes only its own.** #1434: a question like "which service owns the
 endpoint the web app calls?" needs the code of more than one repository.
-Before this, the only answer was one indexer task per repository and a step
+Before this, the only answer was one indexer agent per repository and a step
 that read their summaries. The design and its record of what was built are
 in [multi-repository-steps.md](design/multi-repository-steps.md#8-what-was-built).
 
@@ -347,7 +347,7 @@ URL), plus an optional `ref` (a branch, a tag or a full 40-hex sha; absent,
 the registration's default branch) and an optional `name` (the directory;
 absent, the repository part, lower-cased). Nothing else is accepted. The
 URL, the forge slot that clones it, the commit and the size are swarm-api's
-to resolve (invariant 10). The field is on a task (`POST /v1/tasks`), on a
+to resolve (invariant 10). The field is on an agent (`POST /v1/tasks`), on a
 workflow, and on a step. A workflow's list is the default for every step
 that runs an agent. A step's own list **replaces** it, never merges with
 it, and `[]` means none. A worker action (`merge`, `post-verdict`) or an
@@ -359,7 +359,7 @@ is a typed error in the usual envelope, and on a workflow it names the step:
 | code | status | when |
 |---|---|---|
 | `repository_not_registered` | 422 | the tenant has no registration for that `owner/repo` |
-| `repository_not_readable_by_tasks` | 403 | registered, but an admin has not turned on `readable_by_tasks` for it, or it is archived. **The gate is registered and readable by tasks**, the same admin-set flag `read_private` uses ([runner-git-tools.md §2.3](runner-git-tools.md#23-the-private-read-allowlist)) |
+| `repository_not_readable_by_tasks` | 403 | registered, but an admin has not turned on `readable_by_tasks` for it, or it is archived. **The gate is registered and readable by agents**, the same admin-set flag `read_private` uses ([runner-git-tools.md §2.3](runner-git-tools.md#23-the-private-read-allowlist)) |
 | `REPOSITORY_NOT_GRANTED` | 403 | while repository grants are enforced, the submitting person has no grant on it; one refusal names every such entry |
 | `additional_repository_unreadable` | 422 | the slot the clone would use cannot read it at that ref, or the ref names no commit (one sentence for both). **This includes every repository that only its own `git-r-` token can read**: that slot is swarm-api's alone (#1225), the worker never reads it, so the platform refuses the repository rather than clone it with one |
 | `additional_repository_duplicate` | 422 | two entries name one repository or one `name`, or an entry names the step's own repository |
@@ -370,7 +370,7 @@ is a typed error in the usual envelope, and on a workflow it names the step:
 
 **Pinned at submission.** swarm-api resolves each ref to a 40-hex commit
 with the same slot the worker will clone with, so a ref that resolves at
-submission can be cloned later. It stores the entry on the task and signs it
+submission can be cloned later. It stores the entry on the agent and signs it
 (spec format 4). Each (repository, ref) is resolved once per submission, so
 every step of one workflow, and every retry of every step, reads the same
 commit even if the branch moves. A rewritten list fails the worker's
@@ -378,7 +378,7 @@ signature check before the agent runs. This is stronger than the primary
 repository's pinning on purpose: an additional repository has no upstream
 step whose base the worker could pin it to (see
 [the base pin](#the-base-pin-a-downstream-step-starts-where-its-parents-started)).
-The task's read-back (`GET /v1/tasks/{id}`, and the console's task detail)
+The agent's read-back (`GET /v1/tasks/{id}`, and the console's agent detail)
 lists each entry's `name`, `repository`, `repo_id`, `ref`, `commit`, `path`
 and `forge_credential_source`. It never shows the URL or the slot.
 
@@ -416,7 +416,7 @@ again. Checkpoints leave the checkouts out.
 **What comes back is the primary only.** `collect`'s patch, `direct-pr`'s
 push and `integrate`'s merge all read `work/repo`, and `work/repos/` is
 not under it. A change the agent makes in an additional checkout is
-discarded with the pod. The runner git tools act on the task's own
+discarded with the pod. The runner git tools act on the agent's own
 repository only (`other_repository`). The read-only marks are a signal to
 the agent, not the boundary; this is the boundary.
 
@@ -453,7 +453,7 @@ the console's Runtimes screen list each profile's `model_classes`, its
 
 **Where it is accepted.** On `POST /v1/tasks` (`TaskCreate.model_class`), on
 each workflow step (`WorkflowStepCreate.model_class`, stored on the step and
-copied to its task), on an issue run (`RunCreate.model_class`), on the
+copied to its agent), on an issue run (`RunCreate.model_class`), on the
 child-task route, in a `custom_prompt` schedule's steps, in the console's
 Submit form (a class select offering only the profile's classes) and through
 the plugin (`swarm dispatch --model-class`).
@@ -481,10 +481,10 @@ the plugin (`swarm dispatch --model-class`).
 profiles: `model_class` is the only selector a caller has.
 
 **What is stored and signed.** A step that names its profile's default, or
-names nothing, stores no `model_class`, so its task has the bytes and the
+names nothing, stores no `model_class`, so its agent has the bytes and the
 signing format it had before classes existed. A step that names another class
-stores it, and swarm-api signs that task at spec format 5, which covers
-`model_class`: a class rewritten onto a stored task fails its worker's check.
+stores it, and swarm-api signs that agent at spec format 5, which covers
+`model_class`: a class rewritten onto a stored agent fails its worker's check.
 
 **What runs is the class's pin at dispatch** (owner decision R6). The
 scheduler looks the class up in its own map when it dispatches, and the worker
@@ -494,7 +494,7 @@ attempt's `model` records what ran ([agent-output.md](agent-output.md)).
 
 **Children, issue runs and scheduled steps.**
 
-* A child task that names no class runs its own profile's default, never the
+* A child agent that names no class runs its own profile's default, never the
   parent's class (owner decision R3): a `haiku` parent does not silently start
   `haiku` children for deep work.
 * On an issue run, `RunCreate.model_class` is the planner's class. The planner
@@ -518,7 +518,7 @@ wrote into `$SWARM_ARTIFACTS_DIR`, and nothing else is.** That directory sits
 outside the agent's working directory and outside the repository checkout, so a
 file written anywhere else is never staged by a later step, however exactly its
 name matches. (Since #184's owner decision of 2026-09-26, a claude-code or codex
-task with NO repository also uploads what its agent created in its working
+agent with NO repository also uploads what its agent created in its working
 folder, but as `workdir/<path>`, so a working-folder `scan-01.md` is
 `workdir/scan-01.md` and still does not satisfy a step that stages
 `scan-01.md`; see [agent-output.md](agent-output.md).) Until #149 this failed late and cost money:
@@ -535,9 +535,9 @@ and fails the upstream attempt when neither worked.** Three layers, because the
 first alone was measured not to be enough.
 
 1. **Instructions.** At submission the API inverts every `input_from` edge. It
-   records on each upstream step's task the filenames its dependants will
+   records on each upstream step's agent the filenames its dependants will
    stage, as `metadata.expected_outputs`, in the same write that creates the
-   task. The worker passes that list to the runner. Only the `claude-code` and
+   agent. The worker passes that list to the runner. Only the `claude-code` and
    `codex` runners act on it: every prompt they give an agent already ends
    with one line naming the **absolute** path of `$SWARM_ARTIFACTS_DIR` (#184,
    2026-09-26), and they add the names after it, with each file's full path
@@ -583,10 +583,10 @@ first alone was measured not to be enough.
      link, not a regular file, or a name no object can carry), and for
      `swarm-work.patch` `empty_diff`, `patch_omitted` (over the patch cap) or
      `no_base`. The next attempt would write the same file into the same cap,
-     against the same repository, so the task ends FAILED at once, with
+     against the same repository, so the agent ends FAILED at once, with
      `end_cause: outputs_missing`, whatever attempts are left;
    * **retried** -- a file never written (`not_written`), or one whose upload
-     raised (`upload_error`). The task goes back to READY, with a `retrying`
+     raised (`upload_error`). The agent goes back to READY, with a `retrying`
      event, and runs again as a new attempt while it has attempts left, and
      ends FAILED once `max_attempts` is spent.
 
@@ -628,7 +628,7 @@ carries it, is refused with 422 `invalid_dispatch` and
 `detail.reserved_metadata_keys: ["expected_outputs"]`, and nothing is created.
 This is the reservation `metadata.dispatch` already has. Accepted, the key
 would reach the agent as "later steps of this workflow need these files", in
-the platform's voice, on a task no step stages from. For the same reason the
+the platform's voice, on an agent no step stages from. For the same reason the
 worker drops a caller's own `input.expected_outputs` before the runner sees it,
 and logs that it did.
 
@@ -639,8 +639,8 @@ What this deliberately does not do:
   was option (c) on #149, and the owner rejected it. The link is not a copy: a
   file written through it is written into the artifacts directory in the first
   place. A file left anywhere else, in the repository or elsewhere in the
-  working directory, is never staged by a later step under its own name. A
-  task with no repository does upload what its agent created there (#184),
+  working directory, is never staged by a later step under its own name. An
+  agent with no repository does upload what its agent created there (#184),
   for a reader of the Artifacts tab, under `workdir/<path>`, which is not the
   name a dependant stages.
 * **It does not carry the artifacts directory across a retry.** Only `work/`
@@ -704,7 +704,7 @@ The file is a JSON list:
 ]
 ```
 
-**The worker checks the shape and the size, and the task never depends on
+**The worker checks the shape and the size, and the agent never depends on
 it** (`agent_worker/questions.py`). The file is at most 64 KiB and holds at most 20
 questions. Each question has exactly these four keys, and `recommended` and
 `context` may be null or left out. `options` holds 1 to 10 `{label,
@@ -721,15 +721,15 @@ it. The attempt's `result_summary` then says one of three things:
 
 A rejected file is still an ordinary artifact, so the operator can read what
 the agent wrote, but it is not counted, so nothing shows it as questions. It is
-a WARNING line and a summary field, not a failed attempt: the task finishes
+a WARNING line and a summary field, not a failed attempt: the agent finishes
 exactly as it would have without the file. The reason names a position and a
 key (``question 2: `recommended` is not one of its options' labels``) and never
 quotes the file.
 
 **The bridge shows them to whoever reads the result.** When `questions` is
 above 0, `swarm_result` and the follow outcome read the file back through the
-artifacts route. That route looks it up by name in the task's own manifest and
-redacts it, and the bridge returns it as `questions`, a list. A task that asked
+artifacts route. That route looks it up by name in the agent's own manifest and
+redacts it, and the bridge returns it as `questions`, a list. An agent that asked
 nothing has `questions: []` and costs no extra read. A counted file that cannot
 be read has `[]` with `questions_unavailable_because`, so "asked nothing" and
 "asked something nobody could read" never look the same. The final progress
@@ -738,20 +738,20 @@ line of a `format: "progress"` row says `? N question(s) for the owner`, and a
 carries `questions` with `""` for a missing text, keeping its no-null rule, and
 `plugin/agents/step.md` tells the row to put them in its result as given.
 
-**The owner answers on the task** (owner decision 2026-10-13, "Yes, pick an
+**The owner answers on the agent** (owner decision 2026-10-13, "Yes, pick an
 option on the task"; TASK-ANSWERS). The console's "Questions for you" card
 offers each question's options, with the recommended one marked, and an
 "Other…" box for the person's own words. Answering posts
 `POST /v1/tasks/{id}/answers` with `{question_index, choice, text}`. Only the
-task's submitter or an admin may answer. Another member of the tenant gets a
-403, and the card says why. Another tenant's task is a 404. `choice` must be one
+agent's submitter or an admin may answer. Another member of the tenant gets a
+403, and the card says why. Another tenant's agent is a 404. `choice` must be one
 of that question's option labels, and `text` is at most 2,000 characters,
-redacted before it is stored. The answer is stored on the task as
+redacted before it is stored. The answer is stored on the agent as
 `metadata.owner_answers`. It is a reserved platform key, as `start_problem` is,
 so it needs no change to the frozen `Task`. Each question has one answer.
 Answering again replaces it and moves the replaced answer, with who gave it and
 when, into that answer's `history`. A question can change at most 20 times;
-after that a change is refused rather than dropping history. The task read
+after that a change is refused rather than dropping history. The agent read
 serves the answers as `owner_answers`. `GET /questions` puts each one beside
 its question, and `swarm_result`, the follow outcome and `sc task` show them.
 That is how whoever launched the work reads the decision.
@@ -760,7 +760,7 @@ That is how whoever launched the work reads the decision.
 acts on the file or on the answers. No state, retry, dispatch, merge or verdict
 reads them, and no part of the platform takes an instruction from them. The
 agent asks, and a person decides. If the answer changes the work, that is a new
-task, dispatched by whoever reads the answer.
+agent, dispatched by whoever reads the answer.
 
 ## Dependencies and state
 
@@ -871,7 +871,7 @@ field (`apps/swarm-api/swarm_api/validation.py::resolve_await_input`).
 | form | the answer | default artifact |
 |---|---|---|
 | `verdict` | `{"verdict": "MERGE" \| "NOT_YET", "findings": [...]}`, at most 50 findings of 1,000 characters, read with the parser a `when` gate uses | `verdict.json` |
-| `answers` | `{"answers": [{"question_index", "choice", "text"}]}`, every counted question of the staged `questions.json` answered, as on a task's "Questions for you" card | `answers.json` |
+| `answers` | `{"answers": [{"question_index", "choice", "text"}]}`, every counted question of the staged `questions.json` answered, as on an agent's "Questions for you" card | `answers.json` |
 | `text` | `{"text": "..."}`, at most 64 KiB | `input.json` |
 
 `form: "answers"` needs exactly one `input_from` entry naming
@@ -939,7 +939,7 @@ service tenant's principal only, `"on_behalf_of": "<email>"`) as
 the original 200 with `replayed: true`; a replay must carry the same
 `on_behalf_of`. The answer is recorded with `answered_by`, `on_behalf_of`
 (null unless a service principal sent one), `answered_at` and `via`
-(`"console"` or `"mcp"`), on the task, its `succeeded` event and the
+(`"console"` or `"mcp"`), on the agent, its `succeeded` event and the
 response, and `GET .../input` serves them back.
 
 **The first answer is final.** A second is 409 `already_answered`, naming who
@@ -1027,7 +1027,7 @@ spec signature:
 
 A step whose signature does not verify is dead-lettered whatever it declares.
 `POST /v1/workflows/{id}/cancel` ends a waiting step directly, as it ends any
-task that holds no capacity.
+agent that holds no capacity.
 
 ### Where a person sees it
 
@@ -1068,8 +1068,8 @@ lease, no pool count and no execution (invariant 1). Then:
   minute) reads each waiting gate's pull requests with **the tenant's own
   `-git` token**, at most once per `issueci.CI_READ_SECONDS` per gate
   (`swarm_api.prgate.wake_tenant`). It writes only the gate, in a
-  transaction guarded on the task still being PARKED on that gate. It never
-  moves a task.
+  transaction guarded on the agent still being PARKED on that gate. It never
+  moves an agent.
 * **every one merged -> released.** The gate is marked `merged`; the
   scheduler's dependency sweep promotes the root to READY on its next drain
   and admission takes it as any other step. The reconciler's
@@ -1090,19 +1090,19 @@ docs/merge-step.md says why it has none), so the tick is the wake: a merge is
 noticed within a minute or two. The scheduler never reads GitHub.
 
 **Restart-safe by construction.** The wait is a document, not a process: the
-gate, its last reading and its release are on the root task. A restarted
+gate, its last reading and its release are on the root agent. A restarted
 swarm-api re-reads the gates on its next tick; a restarted scheduler reads
 the gate's `state` on its next drain.
 
 **Where it shows.** `GET /v1/workflows[/{id}]` serves `after_pull_requests`
 (`state`, `pull_requests`, `pending`, `merged`, `closed`, and `text`) on a
-workflow submitted with `after`, read off its step tasks. The console's
+workflow submitted with `after`, read off its step agents. The console's
 workflow list and page print `text` as a tag -- "waiting for PR #41 to
 merge" -- and `sc workflows` prints it under the workflow. A released wait
 prints nothing; the steps say the rest.
 
 **The contract.** The frozen `Workflow` has no metadata and `ParkReason` has
-no "pull request pending", so the gate lives on the root tasks and the park
+no "pull request pending", so the gate lives on the root agents and the park
 reuses `DEPENDENCY_INCOMPLETE`; every promoter of that reason checks the
 gate. Contract change request 76 (docs/contract-change-requests.md) asks for
 a typed home.
@@ -1134,7 +1134,7 @@ staging uses.
 | the commit cannot be fetched (a force-push removed it) | the branch tip, as before | `{"pinned": false, "reason": "fetch_failed"}` |
 
 Each fallback also logs a line naming the parents and their bases. A root
-step and a task outside a workflow read nothing and record no `base_pin`. A
+step and an agent outside a workflow read nothing and record no `base_pin`. A
 step that starts from an upstream branch already has its upstream's work and
 records none either. Neither does an attempt resumed from a checkpoint,
 because its clone is not made again. The commit is fetched by sha, which
@@ -1252,7 +1252,7 @@ says which it is.
   its deliverable is their work.
 * **The flag is stored where the worker reads it**, `metadata.dispatch.
   allow_empty_diff`, inside the block the spec signature covers, and served in
-  the task's `dispatch`. It must be a JSON boolean: `"yes"` is refused with 422.
+  the agent's `dispatch`. It must be a JSON boolean: `"yes"` is refused with 422.
 
 **Or the agent says why: `verification.md` (Proposal J, 2026-10-08).** A
 step's author cannot always know in advance that the work may already be done:
@@ -1331,7 +1331,7 @@ anything), and the workflow SUCCEEDS with no pull request -- the integrator's
 (#646). When at least one implementer changed something, the review reviews
 the patches that exist and the fix integrates them.
 
-**Why SKIPPED is a SUCCEEDED task and not a state of its own.** The frozen
+**Why SKIPPED is a SUCCEEDED agent and not a state of its own.** The frozen
 `TaskState` has no SKIPPED, and the frozen transitions forbid PARKED ->
 SUCCEEDED, so the scheduler cannot end a parked step as skipped. The skip is
 made the way the verdict gate's no-agent ending is (#264): the dependency
@@ -1346,7 +1346,7 @@ state, which would let the scheduler skip a step without leasing it, is a
 frozen-contract change and has not been made.
 
 **The workflow derivation counts a skipped step as a success.** It is a
-SUCCEEDED task, so it ranks as one ([workflow state](#workflow-state)), and the
+SUCCEEDED agent, so it ranks as one ([workflow state](#workflow-state)), and the
 rollup names it in `rollup.skipped_steps`, so a reader can tell it from a step
 that ran. `rollup.counts` keeps counting it under `SUCCEEDED`.
 
@@ -1423,7 +1423,7 @@ What each step does, and why each field is there:
   is not in `verdict_in`, the worker stages the verdict, checks its fencing
   generation as it would before an agent, starts no agent, and ends the
   attempt through the same path a clean agent exit takes: final checkpoint,
-  uploads, publish, lease release. The task is SUCCEEDED, and
+  uploads, publish, lease release. The agent is SUCCEEDED, and
   `result_summary.verdict_gate` says `agent_ran: false`. The step holds a
   lease for that short publish; it is real work, and it counts like any
   other (invariants 1 and 3).
@@ -1438,7 +1438,7 @@ What each step does, and why each field is there:
   contributor branches are. The branch exists because the implementer pushed
   it as a contributor, so `builds_on` needs a strategy that pushes every step:
   `integrate` or `direct-pr`. A base whose branch was never pushed (a
-  read-only token, a failed push) fails the clone, naming the task and the
+  read-only token, a failed push) fails the clone, naming the agent and the
   branch. The review builds on the implementer too, so it reviews the change
   in its tree rather than the patch alone.
 * **Only the final step opens a pull request.** Under `integrate` the
@@ -1498,7 +1498,7 @@ integrator owes:
    artifacts of the `builds_on` step. They are read through the same
    tenant-checked upstream read staging uses, located in the implementer's
    successful attempt's manifest (a key outside this tenant's prefix for
-   that task is refused), at most 256 KiB each;
+   that agent is refused), at most 256 KiB each;
 2. for whichever is absent, or for a title the publish would refuse (two
    lines, attribution, a task id): text made from the **workflow's label**,
    the submission's `metadata.unit` (what `swarm_workflow_launch` sends a
@@ -1589,7 +1589,7 @@ the worker and nothing moved into `swarm_common`, so both are restated in
   merge step's `agent_worker.merge.title_is_placeholder` refuses. A pull
   request so titled would sit unmergeable, so it is never opened. It also
   refuses any task id, where the worker refuses only its own: the title was
-  written by another task. One table of titles goes through all three
+  written by another agent. One table of titles goes through all three
   functions (`test_the_restated_worker_rules_are_the_workers`).
 * **The credentials.** The worker's credential half is its final-tree leak
   scan (`final_tree_leak`) plus scrubbing its pull request text. Here the
@@ -1645,9 +1645,9 @@ decides whether an agent runs.
 ### What the worker refuses
 
 A gate or a verdict file that cannot be read fails the attempt with
-`INPUTS_UNAVAILABLE`, naming the upstream task and the file, and the agent is
+`INPUTS_UNAVAILABLE`, naming the upstream agent and the file, and the agent is
 never started. That covers a file that is not JSON, is not an object, has no
-`verdict` or one outside the two, or is over 256 KiB, and a gate whose task
+`verdict` or one outside the two, or is over 256 KiB, and a gate whose agent
 this step stages nothing from. **An unreadable review is not a MERGE**: read
 as one, it would publish unreviewed work; read as NOT_YET, it would run a
 fixer against findings that are not there. The review step has already
@@ -1738,10 +1738,10 @@ across 122 reviews that never left the file. Now the gated step files them.
 
 ## `metadata.input_from` belongs to the service, not the caller
 
-The worker stages a task's inputs from `metadata.input_from`, a map of
+The worker stages an agent's inputs from `metadata.input_from`, a map of
 `{upstream TASK id: filename}`. **Only workflow expansion writes that key.** It
 rewrites each step's `input_from`, keyed by step id, to the ids of the upstream
-tasks it has just created. That rewrite happens after the declaration has passed
+agents it has just created. That rewrite happens after the declaration has passed
 the checks above, including the rule that every `input_from` source is also a
 `depends_on`.
 
@@ -1752,13 +1752,13 @@ So the API refuses the key from callers, the same way it refuses
 |---|---|
 | `POST /v1/tasks` or `POST /v1/tasks/batch` with `metadata.input_from` | 422 `invalid_dispatch`, `detail.reserved_metadata_keys: ["input_from"]`, nothing created |
 | `POST /v1/workflows` whose own `metadata` has `input_from` | the same 422, nothing created |
-| `POST /v1/workflows` whose steps declare `input_from` | accepted; each declaring step's task gets `metadata.input_from` |
+| `POST /v1/workflows` whose steps declare `input_from` | accepted; each declaring step's agent gets `metadata.input_from` |
 
 The key is refused whatever its value, `{}` and `null` included. It is
-reserved, not validated. A value on a plain task arrived with no dependency
-edge, so nothing guaranteed the upstream task had run. A bad declaration was
-refused only by the worker, after the task had been admitted and had held
-capacity. The workflow's own `metadata` is copied onto every step's task, so a
+reserved, not validated. A value on a plain agent arrived with no dependency
+edge, so nothing guaranteed the upstream agent had run. A bad declaration was
+refused only by the worker, after the agent had been admitted and had held
+capacity. The workflow's own `metadata` is copied onto every step's agent, so a
 value there reached every root step verbatim and was silently replaced on any
 step that declared its own. To stage an artifact, declare `input_from` on the
 workflow step that needs it.
@@ -1769,7 +1769,7 @@ have been refused `invalid_dag`. There is no valid workflow-level value for the
 filename rules above to check: they apply to a step's `input_from`, which is
 the only declaration a caller can make.
 
-A batch is refused whole: one task carrying the key means none of the batch is
+A batch is refused whole: one agent carrying the key means none of the batch is
 created.
 
 **Three metadata keys are reserved, and one refusal names all of them.**
@@ -1870,7 +1870,7 @@ then cancelled like any other step that has not started.
 
 ## Workflow state
 
-`workflow.state` is **derived from the step tasks on every read**, and the stored
+`workflow.state` is **derived from the step agents on every read**, and the stored
 copy is written back when the two disagree. Both halves matter and they are
 different halves:
 
@@ -1880,20 +1880,20 @@ different halves:
   `QUEUED` for its whole life. `wf_bcdc9180e4fb4a209f31` read QUEUED while its
   three steps were SUCCEEDED, FAILED and CANCELLED.
 * **written**, so it is queryable. A purely derived field cannot answer "list my
-  failed workflows" without loading every workflow's tasks.
+  failed workflows" without loading every workflow's agents.
 
 The rule, in `apps/swarm-api/swarm_api/rollup.py`, in the order it is applied:
 
 | condition | derived state |
 |---|---|
-| any step's task could not be read | `UNKNOWN` |
+| any step's agent could not be read | `UNKNOWN` |
 | any step holds capacity (`LEASED`/`DISPATCHED`/`STARTING`/`RUNNING`) | `RUNNING` |
 | every step terminal | the worst present: `DEAD_LETTERED` > `FAILED` > `CANCELLED` > `SUCCEEDED` |
 | otherwise | the most advanced pending: `READY` > `PARKED` > `QUEUED` |
 
 A step the worker SKIPPED for "nothing to change" (`result_summary.skipped`,
-[above](#the-steps-that-needed-the-change-are-skipped)) is a SUCCEEDED task and
-ranks as one; `rollup.skipped_steps` names it. A `skipped` marker on a task
+[above](#the-steps-that-needed-the-change-are-skipped)) is a SUCCEEDED agent and
+ranks as one; `rollup.skipped_steps` names it. A `skipped` marker on an agent
 that did not SUCCEED is not a skip.
 
 `UNKNOWN` is not a `TaskState` and is never written to Firestore. It is what a
@@ -2137,8 +2137,8 @@ is green and its `Closes #N` block is written, and only when its review said
 `MERGE` ([merge-step.md](merge-step.md#revised-2026-10-04-owner)).
 
 **A merge-only continuation** is a `direct-pr` workflow whose
-`continues_task` names a task and whose only step runs the `merge` profile: it
-merges that task's pull request at the head that task pushed, with every
+`continues_task` names an agent and whose only step runs the `merge` profile: it
+merges that agent's pull request at the head that agent pushed, with every
 check below except the verdict (it has no review). A tenant member's only.
 
 **A merge of a pull request no workflow opened** (#352, owner decision
@@ -2192,7 +2192,7 @@ What swarm-api appends, before it signs anything:
   (`merge_target: {pull_request, review, verdict_file}`), so the worker never
   follows a pointer the signed spec does not name. A `merge_pr` workflow's
   names the pull request instead (`merge_target: {number, head_sha}`),
-  because no task opened it.
+  because no agent opened it.
 * **`merge_target.base`, the default branch the tenant registered the
   repository with** (`/v1/repositories`, [repo-index.md](repo-index.md) §1),
   read once at submission from the tenant's OWN registration, and absent when
@@ -2268,7 +2268,7 @@ never asked for a merge.
 ## When not to use a workflow
 
 If steps do not exchange artifacts and do not depend on each other, submit a
-**batch** (`POST /v1/tasks/batch`, up to `max_batch_size`). Independent tasks
+**batch** (`POST /v1/tasks/batch`, up to `max_batch_size`). Independent agents
 interleave across tenants under round-robin; a workflow adds dependency
 bookkeeping you are not using.
 
@@ -2364,8 +2364,8 @@ step earlier, for the review credential.
 ```
 
 `fix` depends on `post-verdict`, not on `review` directly, even though `fix`'s
-own `input_from` still reads `review.json` from the `review` task (staged
-artifacts are named by the task that wrote them, not the task that gates
+own `input_from` still reads `review.json` from the `review` agent (staged
+artifacts are named by the agent that wrote them, not the agent that gates
 starting). That substitution is the point: `fix`'s agent cannot start, and so
 cannot race to overwrite `review.json`, until `post-verdict` has already read
 it and posted an immutable GitHub review ([merge-step.md](merge-step.md)
@@ -2378,7 +2378,7 @@ source for exactly this reason.
 **`post-verdict` declares no `input_from` at all — corrected, joint review
 with CR 34, 2026-09-29.** An earlier draft of this spec gave it
 `"input_from": {"review": "review.json"}`, the ordinary staging mechanism.
-That mechanism resolves an artifact's location through the upstream task's
+That mechanism resolves an artifact's location through the upstream agent's
 `result_summary`, a Firestore field the tenant identity writes — exactly the
 kind of attacker-writable pointer this whole design exists to route around
 for the one read the verdict anchor depends on. `post-verdict` instead
@@ -2398,7 +2398,7 @@ What each step does:
 | post-verdict (no agent, profile `post-verdict`) | nothing | submits a GitHub PR review (`APPROVE` or `REQUEST_CHANGES`, `commit_id` pinned to `review.json.sha`), from a credential only this step's own service account can read — the review agent that wrote `review.json` cannot read it. Reads `review.json` from the review-only-writable prefix, not the general staged-artifact location | nothing |
 | fix (`amender`) | the implement branch | fast-forward pushes to the **same** branch, only if it changed something | the fix |
 | proof (`reader`) | the implement branch | no git push, nothing to GitHub at all | `proof.json` |
-| merge (profile `merge`) | nothing, and it runs no agent | `PUT .../pulls/{n}/merge`, squash, `sha` pinned, to `api.github.com` only, no redirect followed | the squash commit, and a comment naming the task that merged it |
+| merge (profile `merge`) | nothing, and it runs no agent | `PUT .../pulls/{n}/merge`, squash, `sha` pinned, to `api.github.com` only, no redirect followed | the squash commit, and a comment naming the agent that merged it |
 
 The merge happens only if **all** of these hold. Otherwise the step ends
 `MERGE_REFUSED` and `result_summary.merge.refusal` says which one failed:

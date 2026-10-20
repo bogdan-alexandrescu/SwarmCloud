@@ -4,7 +4,7 @@
 offline against real git. Exactly one of them has ever run against a real
 repository, and that one pushes nothing.
 
-This document exists because the gap is not a coding task. Closing it needed a
+This document exists because the gap is not a coding agent. Closing it needed a
 credential that did not exist, on a repository somebody owns, with write
 permission somebody has to grant — three decisions, none of them an
 engineer's to take quietly. What follows is what each one is, so the owner can
@@ -199,11 +199,11 @@ Stop at the first that does not behave as stated.
    covers both; confirm the tenant document afterwards.
 
 **Run 1 — `collect`, with a repository attached.** The control. It must clone,
-harvest a patch into the task's GCS prefix, and leave the remote untouched even
+harvest a patch into the agent's GCS prefix, and leave the remote untouched even
 though the token can now push. Check `git.published == false`, the reason names
 `direct-pr`, and `git ls-remote` shows no new `swarm/` ref.
 
-**Run 2 — `direct-pr`, one task.** One branch `swarm/<task-id>` and one pull
+**Run 2 — `direct-pr`, one agent.** One branch `swarm/<task-id>` and one pull
 request against `main`. Check the branch actually contains the agent's edits:
 an empty diff means `commit_dirty` did not stage uncommitted work, which is the
 common agent behaviour and the reason that function exists. Check also that
@@ -409,7 +409,7 @@ keeps no credential in its environment for that reason.
 
 The property this guarantees: **no configuration, file or ref the agent can
 write can cause the tenant token to be sent anywhere except the forge host of
-the task's `repository_url` over verified TLS, or be handed to any program other
+the agent's `repository_url` over verified TLS, or be handed to any program other
 than the worker's own credential mechanism.** It is proven offline by
 `tests/unit/worker/test_forge_token_isolation.py` (real git, local `file://`
 remotes, no network): a `url.*.insteadOf` / `pushInsteadOf` the agent writes into

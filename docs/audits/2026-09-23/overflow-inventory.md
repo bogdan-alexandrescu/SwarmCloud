@@ -479,7 +479,7 @@ the reader can recover one click away.
 | dock dragged tall | click the dock line, drag the grip | F5 |
 | help card open | hover/focus any `?` | F8 at 390; clean at 1440 |
 | account row expanded | `#capacity/accounts`, click a row | see §4, rejected |
-| error panel | open a `FAILED` task's drawer | **clean** — see §3 |
+| error panel | open a `FAILED` agent's drawer | **clean** — see §3 |
 
 ---
 
@@ -499,7 +499,7 @@ Stated because a negative result stops the next person re-deriving it.
   `document.documentElement.scrollWidth === clientWidth` everywhere. The
   sideways overflow in F6/F7/F8 is inside nested scrollers, which is why it is
   invisible rather than obvious.
-* **The error panel is clean.** `pre.err.full` on a `FAILED` task:
+* **The error panel is clean.** `pre.err.full` on a `FAILED` agent:
   `white-space: pre-wrap`, `overflow: auto`, `scrollWidth === clientWidth`
   (413px at 1440, 332px at 390), no spill past its parent. Nothing to fix.
 * **The agent list at 1440 with the drawer open does not clip identity.** The
@@ -594,7 +594,7 @@ probe returns empty output with exit code 0, which is how this pass briefly
   fixture failure switch, and this `bb` build has neither `route` interception
   nor `throttle`. Patching `window.fetch` at runtime does nothing because the
   fixture path never calls it. The `pre.err.full` panel in §3 was reached
-  through a genuinely `FAILED` fixture task, which is the real component but not
+  through a genuinely `FAILED` fixture agent, which is the real component but not
   the network-error path.
 * **Not verified: real devices, retina, or a non-Chromium engine.** All
   measurements are 1× headless Chromium.

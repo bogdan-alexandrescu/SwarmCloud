@@ -31,7 +31,7 @@ Once per deployment, roughly in the order they are done.
 
 ## Incidents
 
-- [Apply the GKE dispatcher RBAC and redispatch](gke-dispatch-redispatch.md): `browser` tasks fail with `jobs.batch is forbidden`, or you are landing the GKE dispatch fix for the first time.
+- [Apply the GKE dispatcher RBAC and redispatch](gke-dispatch-redispatch.md): `browser` agents fail with `jobs.batch is forbidden`, or you are landing the GKE dispatch fix for the first time.
 - [The Cloud Run Jobs start-time support case](cloud-run-start-support-case.md): the owner is filing the Google Cloud support case decided on 2026-10-07 (#625), or a Cloud Run profile's DISPATCHED -> STARTING has jumped again with nothing of ours changed.
 - [Raising a throttled tenant](quota-throttled-tenant.md): a tenant queues behind `provider:<p>:tenant:<t> full` with its pool's `hard_limit` and quota's `configured_hard_max` well above what runs, because a 429 halved its AIMD target and it has not climbed back; a platform admin resets the target, clamped and audited.
-- [Browser pods the reconciler evicts](browser-eviction.md): a browser task was re-queued or failed with `stuck_no_progress`, a task's timeline shows a `generation_fenced` event with `finding: left_running`, or you want to know whether the reconciler is evicting browser pods, and why.
+- [Browser pods the reconciler evicts](browser-eviction.md): a browser agent was re-queued or failed with `stuck_no_progress`, an agent's timeline shows a `generation_fenced` event with `finding: left_running`, or you want to know whether the reconciler is evicting browser pods, and why.

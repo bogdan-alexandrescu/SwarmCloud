@@ -107,7 +107,7 @@ is exact: four pages hold four things, and four things have no page.
   remembered in `localStorage` (`apps/swarm-ui/src/fetch.ts`, `TENANT_PREF`),
   so it is per browser. In `/sc`, it has to be set as the plugin's `tenant`
   option or `SWARM_TENANT`, per machine.
-* **The bell is all or nothing.** A person who submits dozens of tasks a day
+* **The bell is all or nothing.** A person who submits dozens of agents a day
   sees up to 50 `finished` updates (`notifications.py::MAX_UPDATES`). Those
   bury the one failed run among them, and nothing can mute the successes.
 * **A needs-you item read once never rings again.** An approval marked read
@@ -178,7 +178,7 @@ is exact: four pages hold four things, and four things have no page.
   workspace" must go through that check, not through the slug alone.
 * **`AuthContext.display_name` already reaches commits.** It is cleaned by
   `gitidentity.py::clean_name` (no `<`, `>` or control characters, at most
-  `NAME_MAX_CHARS` = 100) and recorded in the task's dispatch block, which the
+  `NAME_MAX_CHARS` = 100) and recorded in the agent's dispatch block, which the
   worker turns into `GIT_AUTHOR_*` and `GIT_COMMITTER_*`. The edited
   name also names commits (Q11, §7.1), so the rules in §4.4, which are
   stricter than `clean_name`, apply to what reaches git.
@@ -200,9 +200,9 @@ is exact: four pages hold four things, and four things have no page.
 **1. Only LEASED/DISPATCHED/STARTING/RUNNING create demand.** Untouched.
 Profile reads documents and writes one document of its own, plus a name
 claim and an audit entry when the name changes. A reminder is a read mark
-that has aged, not a task, a timer or a job. Nothing waits, so nothing costs
+that has aged, not an agent, a timer or a job. Nothing waits, so nothing costs
 while it waits. A headerless request refused with 503
-`preferences_unavailable` is refused before admission, so it creates no task
+`preferences_unavailable` is refused before admission, so it creates no agent
 and no demand.
 
 **2. All-or-nothing reservation.** Untouched. No pool, lease or slot is read
@@ -219,8 +219,8 @@ changes.
 written. The default workspace is resolved **before** a submission is
 admitted, exactly where the computed default is resolved today. A task
 records the tenant it was admitted in, and a later change of default never
-moves it. A changed display name never rewrites a task already admitted: the
-name a task's commits carry (Q11, §7.1) is the one recorded in its
+moves it. A changed display name never rewrites an agent already admitted: the
+name an agent's commits carry (Q11, §7.1) is the one recorded in its
 dispatch block when it was admitted, as P37 already records it.
 
 **6. Spot disabled; 7. requests == limits.** Untouched. No infrastructure.
@@ -237,7 +237,7 @@ in six places:
   today.
 * *The default cannot be planted by another tenant's agent.* If an agent
   could rewrite a person's default to group B, where the agent's owner is
-  also a member, that person's next headerless `/sc` task would land in B,
+  also a member, that person's next headerless `/sc` agent would land in B,
   and B's members would read its prompt and its diff. That is a cross-tenant
   leak even though every membership check passes. So the document's id is an
   HMAC under a key no worker holds (§4.3). With no `list`, no worker can find
@@ -270,7 +270,7 @@ in six places:
 a display name, a workspace id, topic names and a reminder name, each checked
 against a rule or a closed set. None of them is an image, a command, a
 resource or a backend parameter. The display name is the one that can reach
-a task, and only through the existing cleaned `git_identity` record (P37), as Q11
+an agent, and only through the existing cleaned `git_identity` record (P37), as Q11
 decided. It is an author name, not a parameter of the backend.
 
 ### 2.3 What it needs from `apps/common/swarm_common/`
@@ -390,7 +390,7 @@ deliver the issue.
 | **1. You** | email; display name (§4.4); platform role, once (owner, admin, or none) | **the display name** | this page for the name; Admin › People for platform roles |
 | **1. Workspaces** | each workspace from `tenant_choices`: name, kind, your role (`role.name`, and `via` when there is one), its state (personal workspace: `requested`, `applying`, `ready`...), which one you are in now, which is your default | **the default workspace** | Work › Setup for requesting a personal workspace |
 | **2. GitHub** | one row per workspace you can act in (Q10): `@login`, method, state (`active`, `refresh_failed`, `revoked`, or not connected), token expiry, last renewal | no | Work › Access, in that workspace |
-| **2. TypeSafe key** | your personal key: set or not set, when, by whom, version; the acting workspace's key: set or not; which one your tasks in the acting workspace would use | no | Settings › API keys |
+| **2. TypeSafe key** | your personal key: set or not set, when, by whom, version; the acting workspace's key: set or not; which one your agents in the acting workspace would use | no | Settings › API keys |
 | **3. Notifications** | one switch per topic (§4.6) and the reminder cadence; a line saying how many items are muted right now | **all of it** | this page |
 | **4. Claude accounts** | accounts your personal workspace owns, and accounts lent to it: label, state, 5-hour and 7-day use with reset times, who you lend to (count), stale flag | no | Capacity › Accounts |
 
@@ -692,8 +692,8 @@ from them. Nothing reads another person's default, mutes or reminder.
 the verified caller. No admin route reads or writes another person's
 preferences, there is no `?user=` parameter on any profile route, and
 Admin › People has no preferences section (Q8). A person who needs help with
-their settings shares their screen; an admin who suspects a misfiled task
-reads the task's tenant, which is on the task.
+their settings shares their screen; an admin who suspects a misfiled agent
+reads the agent's tenant, which is on the agent.
 
 ### 4.4 The display name (Q5)
 
@@ -719,7 +719,7 @@ email is in the DOM. The routes, all four in PROFILE-NAMES-API:
 |---|---|---|
 | Admin › People | `people.py::People._row` | `email` → `display_name` |
 | Approvals | `routes/approvals.py::list_approvals`, `get_approval` | `decided_by`, `approvers[]` |
-| Task page (Agents) | `routes/tasks.py` task reads | `submitted_by` |
+| Agent page (Agents) | `routes/tasks.py` agent reads | `submitted_by` |
 | Workflow run page | `routes/workflows.py` workflow reads | `submitted_by` |
 
 The bell, Activity, the timeline and the CLIs keep showing emails. They can
@@ -813,7 +813,7 @@ another person:
 * *As the commit author's name (Q11 (a), decided 2026-10-18).*
   `AuthContext.display_name` becomes the stored name when there is one, else
   the token's name claim, else the email's local part (today's value). The
-  email is in every commit beside it, and a task keeps the name recorded at
+  email is in every commit beside it, and an agent keeps the name recorded at
   admission, so a later rename never rewrites a commit.
 
 ### 4.5 The default workspace: one rule, applied in authentication
@@ -906,7 +906,7 @@ tags its items with a topic:
 | `approval` | yes | `approvals` | approvals |
 | `waiting_step` | yes | `awaiting_input`, added by HW-NOTIFY (human-steps.md §4.5) | steps waiting for me |
 | `question` | yes | `handoffs`, `questions` | (agent needs you) |
-| `failed` | no | `finished`, items whose task, workflow or run ended failed, cancelled or dead-lettered | failed runs |
+| `failed` | no | `finished`, items whose agent, workflow or run ended failed, cancelled or dead-lettered | failed runs |
 | `finished` | no | `finished`, everything else (succeeded, PR merged) | |
 | `account` | GitHub yes, others no | `github`, `workspace`, `loan` | |
 | `admin` | yes, admins only | `admin` | |
@@ -934,7 +934,7 @@ admin who mutes `admin` still sees the pill.
 
 **If the preferences cannot be read, the bell follows Q9 like any other
 route.** `GET /v1/notifications` is tenant-scoped (`routes/notifications.py`
-takes `deps.tenant_scope`, and `notifications.py` derives approvals, tasks
+takes `deps.tenant_scope`, and `notifications.py` derives approvals, agents
 and workflows from `viewer.tenant_id`), so a headerless bell read would show
 the work of a guessed workspace, which is the silent fallback Q9 forbids. It
 is not in `PREFERENCE_FREE_ROUTES`, so authentication answers a headerless
@@ -1015,7 +1015,7 @@ would be stored and sent, and it would be its own design.
 * `api.ts`: `loadProfile`, `putPreferences`. `types.ts`: `Profile`,
   `Preferences`, `WorkspaceRole`, `NotificationTopic`,
   `NotificationFeed.muted`, `TenantChoice.is_default` and `default_source`,
-  and the `*_name` siblings on the task, workflow, approval and People row
+  and the `*_name` siblings on the agent, workflow, approval and People row
   types.
 * `App.tsx`: `PROFILE_TAB = 'profile'`, `PROFILE_LABEL = 'Profile'`, and the
   address, title and render branches beside `WORKSPACE_TAB`'s. `paths.ts`:
@@ -1107,7 +1107,7 @@ one.
   `user_preferences`. The scheduler, reconciler and worker never see it. A
   type in `swarm_common` would invite exactly those readers.
 * **The display name is not a contract type.** It is served beside emails by
-  swarm-api only. Where it reaches a task (Q11, §7.1), it travels in the
+  swarm-api only. Where it reaches an agent (Q11, §7.1), it travels in the
   existing `git_identity` record of the dispatch block (P37), whose shape is
   unchanged.
 * **Roles are not a contract type here.** `workspace_role.py::role_in` is
@@ -1120,7 +1120,7 @@ one.
   unchanged.
 * **`Tenant`, `Task`, `ParkReason` and `EventType`** are unchanged. A default
   workspace selects among tenants a person may already use, and is resolved
-  before a task exists.
+  before an agent exists.
 
 **What it would break:** nothing.
 **Invariants:** 1-10 untouched.
@@ -1238,7 +1238,7 @@ other's state.
   * a default the person is no longer a member of is ignored, with
     `not_a_member`, and the stored value is untouched;
   * an unreadable preferences document is 503 `preferences_unavailable` for
-    a headerless submission, the store holds no new task, and the message
+    a headerless submission, the store holds no new agent, and the message
     names the switcher, `SWARM_TENANT` and `--tenant`;
   * the same document unreadable with a header is served normally;
   * `PREFERENCE_FREE_ROUTES` is exactly the three routes of §4.5 (so not
@@ -1287,7 +1287,7 @@ other's state.
 * Red first:
   * each route of the §4.4 table serves the `*_name` sibling of every email
     field it serves, and no name for an email it does not serve;
-  * a page naming ten tasks by three people makes one name `get_all` of
+  * a page naming ten agents by three people makes one name `get_all` of
     three ids;
   * a failed lookup serves every name as `null` and the page is a 200;
   * People's row carries no default workspace, mute or reminder field (Q8).
@@ -1358,7 +1358,7 @@ other's state.
   * with a 64-character name in a narrow box, the full email is in the DOM
     and the name is the part truncated;
   * Approvals' `decided_by`, People's row, the workflow page's owner and the
-    task page's submitter each render through `PersonName` (the test finds
+    agent page's submitter each render through `PersonName` (the test finds
     the component's marker on each).
 
 ### PROFILE-SC: `/sc` and the CLIs say which default applied
@@ -1397,7 +1397,7 @@ other's state.
 | Q8 | May an admin see or change another person's preferences? | No: no admin route, no `?user=`, no preferences section on Admin › People | §4.3, PROFILE-API, PROFILE-NAMES-API |
 | Q9 | If the preferences cannot be read, what does a headerless request do? | 503 `preferences_unavailable`, saying how to name a workspace; nothing submitted; never a silent fallback | §4.5, PROFILE-DEFAULT, PROFILE-SC |
 | Q10 | Which workspaces does the GitHub summary cover? | Every workspace the person can act in, one row each, from one batched read (as recommended) | §4.2, PROFILE-API |
-| Q11 | Does the edited display name also name the agent's commits? | **Yes, answered 2026-10-18:** the stored name, else the token's name claim, else the email's local part. The email is in every commit beside it, and a task keeps the name recorded at admission, so a later rename never rewrites a commit | §2.2, §4.4, PROFILE-DEFAULT |
+| Q11 | Does the edited display name also name the agent's commits? | **Yes, answered 2026-10-18:** the stored name, else the token's name claim, else the email's local part. The email is in every commit beside it, and an agent keeps the name recorded at admission, so a later rename never rewrites a commit | §2.2, §4.4, PROFILE-DEFAULT |
 | Q12 | Does a one-word name block every longer name that contains it? | **No, answered 2026-10-18:** only names of two or more words are checked for containment. An exact match is still refused for every name, and "Ada Lovelace Admin" is still refused when "Ada Lovelace" exists, but "Bob Smith" is allowed when "Bob" exists; the email shown beside every name covers the rest. Departs from the lane's recommendation | §4.4 rule 6, PROFILE-STORE |
 
 #### Amendment, 2026-10-19: first name in the console, full name where the person is the subject

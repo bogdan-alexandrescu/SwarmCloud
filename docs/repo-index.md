@@ -41,7 +41,7 @@ detail:
 * **The index is a JSON document plus a rendered summary**, keyed by the
   commit sha it describes, stored under the tenant's own GCS prefix, with a
   hard size budget so it always fits a planner's prompt (§2).
-* **An index run is an ordinary task**: queued, admitted, leased and counted
+* **An index run is an ordinary agent**: queued, admitted, leased and counted
   like any other, so a tenant's indexing competes with its own work and with
   nobody else's (§3).
 * **The issue-run planner gets the index of the issue's repository**; any
@@ -92,7 +92,7 @@ says what changed and where, so a reader of RI0's version can find it.
   The policy is the owner's to pick, by picking a screen.
 * **(d) Git tokens per repository and per user, and what each can do.**
   Written as a sibling document, [git-tokens.md](git-tokens.md), because a
-  forge token is used by every task that clones or publishes, registered
+  forge token is used by every agent that clones or publishes, registered
   repository or not. §1 here points to it.
 
 The API sketch (§6) gains the graph, symbol and impact routes and the
@@ -106,7 +106,7 @@ graph-storage, impact, selected-tests and graph-explorer lanes.
 ## 0. Why a registry at all
 
 Today a repository is not a thing the platform knows about. It is a string on
-a task: `TaskCreate.repository_url`, checked by one rule,
+an agent: `TaskCreate.repository_url`, checked by one rule,
 `check_repository_url` (`apps/swarm-api/swarm_api/validation.py::check_repository_url`), which
 accepts any https, ssh or `git@` URL that carries no credential. An issue run
 derives its repository from the issue reference (`IssueRef`,
@@ -141,7 +141,7 @@ runs (§2.4 says why indexes are not shared).
 | `tenant_id` | the owner of the record | every read compares it with the caller's tenant and answers a mismatch with the same 404 as a missing record, as `issue_runs` does |
 | `forge` | `github` — the only value accepted in phase 1 | the issue fetch, the preview and `read_open_work` all read GitHub's API and nothing else; a second forge is a second client, not a field |
 | `owner/repo` | stored as `owner` and `repo`, validated with `IssueRef`'s owner and repository patterns | one spelling with the issue runs, so an issue run finds its registration by equality, not by URL parsing |
-| `repository_url` | derived, `https://github.com/<owner>/<repo>`, and passed through `check_repository_url` | a registration must name a URL a task would have accepted, so nothing the registry hands a task is refused later |
+| `repository_url` | derived, `https://github.com/<owner>/<repo>`, and passed through `check_repository_url` | a registration must name a URL an agent would have accepted, so nothing the registry hands an agent is refused later |
 | `default_branch` | read from the forge at registration, overridable by an admin of the tenant | the change trigger watches it and the index describes its head; a fork that works on `develop` says so here |
 | `allowed_profiles` | runner profile **names** that may work in the repository, default `["claude-code"]` | a registration narrows what a tenant runs against a repository; it never widens what a profile is (invariant 10) |
 | `index` | the schedule and trigger settings of §3, plus a pointer to the current index (§2.3) | the registry is where a schedule lives |
@@ -162,7 +162,7 @@ also where `default_branch` comes from, so the read is not extra work.
 **Revised 2026-10-04 (owner): a repository may have its own token, and a
 user may have theirs.** [git-tokens.md](git-tokens.md) designs a token
 registry with three scopes — tenant default (today's `-git`), per repository,
-per user — the order in which a task resolves one, the Secret Manager naming
+per user — the order in which an agent resolves one, the Secret Manager naming
 that keeps each under the tenant (invariant 9), and a server-side view of
 what each token can do in each repository. The registration record still
 holds no credential field: a per-repository token is a separate record that
@@ -181,19 +181,19 @@ fallback token for that owner. Registration's read uses the caller's own
 connection when the route resolved one, and the tenant token otherwise
 (`apps/swarm-api/swarm_api/repositories.py::register`). Granting a repository
 under Access registers it for the tenant if nobody had. The record still holds
-no credential field. A task's credential is decided at submission, not by the
+no credential field. An agent's credential is decided at submission, not by the
 registration:
 
 * **A person** runs with their own slot on a repository they granted, `read`
   or `write`. Once `REPOSITORY_GRANTS_ENFORCED` is on (dev, from
-  `var.repository_grants_enforced`), a person's task on a repository they did
+  `var.repository_grants_enforced`), a person's agent on a repository they did
   not grant is refused, 403 `REPOSITORY_NOT_GRANTED`. While it is off, it runs
   with the tenant token.
 * **A service submission keeps the tenant token**, `swarm-tenant-<tenant>-git`.
   This includes this document's own index runs (§3.1), which repository
   indexing submits as a service
   (`apps/swarm-api/swarm_api/repoindex.py::RepoIndex._start`), and the
-  schedules. The task shows its credential as tenant token, service
+  schedules. The agent shows its credential as tenant token, service
   submission. So the index of a repository keeps working for a tenant whose
   people have not all connected, and indexing never needs a person's grant.
 
@@ -202,14 +202,14 @@ step 2 of "retire the tenant token" in [git-tokens.md](git-tokens.md) ("Built
 for #780") checks for exactly this, and the index runs are its commonest
 reader.
 
-**How it relates to today.** Nothing that works today changes. A task with a
+**How it relates to today.** Nothing that works today changes. An agent with a
 `repository_url` that no registration names still runs exactly as it does:
 the registry is opt-in context, not a gate. Where a registration exists, three
 things use it: an issue run looks up the registration whose `owner/repo`
 equals its `IssueRef.repository` and, finding one, gives its planner the index
-(§4.1); a task whose `repository_url` matches a registration may ask for the
+(§4.1); an agent whose `repository_url` matches a registration may ask for the
 index by name (§4.2); and the console's Repositories section lists them. Phase
-1 does **not** make `allowed_profiles` a submission check for tasks that do
+1 does **not** make `allowed_profiles` a submission check for agents that do
 not use the index; turning the registry into a gate is a product decision the
 owner may take later, and the field exists so it can be taken without a
 migration.
@@ -296,7 +296,7 @@ never touches it:
     tenants/<tenant>/repos/<repo_id>/graph/blobs/<sha256>.jsonl.gz
 
 **Why the artifact alone was not enough.** The first cut kept the index only
-as the task's artifact, on the argument that the artifact lifecycle
+as the agent's artifact, on the argument that the artifact lifecycle
 (`artifact_retention_days`: 14 in dev, 180 in prod) outlived the longest
 schedule a registration may set. Reading the lifecycle again showed two rules
 that did not care about schedules: `SetStorageClass NEARLINE` at 14 days on
@@ -307,7 +307,7 @@ run, and a 30-day minimum charge on each deletion -- and the customTime
 it wrote under `repos/`. A registration whose interval is `off`, or a base an
 incremental run builds on, outlives a 14-day artifact anyway.
 
-**Who writes what.** The worker uploads repo-index.json as the task's
+**Who writes what.** The worker uploads repo-index.json as the agent's
 artifact, then copies the uploaded object -- read back, so byte for byte --
 to `index/<commit_sha>/` (`agent_worker.lifecycle._index_keep_copy`; the
 commit is the signed `repository_ref`, the repo_id is derived from the signed
@@ -318,7 +318,7 @@ tenant's own worker account may already write (invariant 9).
 
 **Versioned by commit sha.** When an index run succeeds, swarm-api validates
 the JSON, renders the markdown, and in one Firestore transaction writes an
-`index_versions/{commit_sha}` entry under the registration (task, attempt,
+`index_versions/{commit_sha}` entry under the registration (agent, attempt,
 `json_object` naming the artifact, the JSON's sha256 digest as the masked
 reader serves it, `kind`, `built_at`) and moves
 `repositories/{repo_id}.index.current_sha` to it — **only if** the new sha is
@@ -425,7 +425,7 @@ rule's prefixes against keys under `repos/` (must match none) and under
 alone (no `age`, no `created_before`), and checks the Delete reaches a
 personal tenant's task key; `tests/unit/worker/test_repos_objects_carry_no_custom_time.py`
 holds the worker's side: nothing it writes under `repos/` is stamped, and
-task artifacts, logs and verdicts still are.
+agent artifacts, logs and verdicts still are.
 
 **After an unregister** nothing deletes `tenants/<t>/repos/<repo_id>/`: no
 lifecycle rule reaches it and no index run sweeps a registration that no
@@ -586,8 +586,8 @@ listed in §7.
 
 ### 3.1 The indexer step
 
-An index run is **one ordinary task**, submitted by swarm-api on the tenant's
-behalf through the same signed `submit_tasks` path every task takes:
+An index run is **one ordinary agent**, submitted by swarm-api on the tenant's
+behalf through the same signed `submit_tasks` path every agent takes:
 
 | setting | phase 1 value | why |
 |---|---|---|
@@ -615,27 +615,27 @@ Nothing about indexing bypasses admission, and that is deliberate: the
 alternative — a side channel that runs index jobs outside the scheduler — is
 exactly how a platform ends up with work nobody counted.
 
-**Invariant 1.** A scheduled or triggered index run is a QUEUED task, which
+**Invariant 1.** A scheduled or triggered index run is a QUEUED agent, which
 creates no infrastructure demand: no Job execution, no pod, nothing pending.
 A registration with a schedule and no due run is a Firestore document and
 nothing else. The schedule never creates a pending pod as a backlog; it
-creates a QUEUED task, or records a pending sha on an existing one.
+creates a QUEUED agent, or records a pending sha on an existing one.
 
 **Invariant 2.** The index run's lease is acquired by the same
-`acquire_lease_in_transaction` as any task, reserving every pool its profile
+`acquire_lease_in_transaction` as any agent, reserving every pool its profile
 needs (global, tenant, profile, provider) all-or-nothing in one Firestore
 transaction. Indexing adds no pool and reserves none of its own.
 
 **Invariant 3.** It counts against the tenant's `max_active` from the moment
-it is LEASED, like any task, so a schedule that fires for twenty repositories
+it is LEASED, like any agent, so a schedule that fires for twenty repositories
 at once cannot oversubscribe a slow-starting tenant. Indexing spends the
 tenant's own capacity and only the tenant's own: one tenant's twenty
 registrations queue behind that tenant's limits, never another's. A tenant
 that wants its capacity for work can pause the schedule (§3.3), and the
-console shows index runs among the tenant's agents like any other task, so the
+console shows index runs among the tenant's agents like any other agent, so the
 cost is visible where capacity is read.
 
-The worker rules that bind any task bind this one: it checkpoints
+The worker rules that bind any agent bind this one: it checkpoints
 periodically (invariant 8), carries a fencing generation and exits without
 running if it is stale (invariant 5), and parks on a provider wait rather
 than sleeping (invariant 4).
@@ -697,7 +697,7 @@ the two triggers cannot double-queue.
 
 A **full** run reads the whole tree. An **incremental** run is given the
 previous index's JSON (staged as an `input_from` file from the earlier index
-task) and `git diff --name-status <base_sha>..<head>`, and rewrites only the
+agent) and `git diff --name-status <base_sha>..<head>`, and rewrites only the
 entries for changed paths, carrying the rest forward with their original
 `commit_sha` on each module so a consumer can tell which entries are fresh.
 
@@ -728,15 +728,15 @@ budget table replaces them for any run that builds the graph.
 
 **Built (revised 2026-10-06, owner, lane IX2).** Until this lane
 `check_run_kind` refused `incremental`, because the design above stages the
-previous index as an `input_from` file and a standalone index task cannot
-be given one (a plain task's `metadata.input_from` is refused at submission,
+previous index as an `input_from` file and a standalone index agent cannot
+be given one (a plain agent's `metadata.input_from` is refused at submission,
 `validation._RESERVED_BECAUSE`). Every trigger was therefore a full rebuild:
 on 2026-10-06 the run for `36ac73bd` re-indexed all 1,685 files two commits
 after the previous index (`fe9e69c6`). What runs now, and why each piece is
 shaped the way it is:
 
 * **The base is staged by reference, not copied.** swarm-api names it in the
-  task's prompt, on a line of its own (`swarm-index-base: <sha>`,
+  agent's prompt, on a line of its own (`swarm-index-base: <sha>`,
   `repoindex.BASE_LINE`). The prompt is inside the signed `input`;
   `metadata.index_kind` and `base_sha` are swarm-api's own record and are
   outside the spec signature, so the worker never reads them
@@ -745,7 +745,7 @@ shaped the way it is:
   the worker runs a fourth phase, `stage_base`
   (`agent_worker/indexrun.py`): it reads the promoted version
   (`repositories/<repo_id>/index_versions/<base_sha>`, under the repo_id the
-  signed spec derives), fetches that version's task's `repo-index.json`
+  signed spec derives), fetches that version's agent's `repo-index.json`
   through the staged-input path a workflow input takes
   (`inputs.fetch_upstream_task`, `inputs.artifact_reference`: the successful
   attempt's manifest, a key inside the tenant's own prefix), checks it
@@ -1026,10 +1026,10 @@ indexrun.py`):
 | phase | what | timeout, of a 1,800 s full run |
 |---|---|---|
 | `stage_base` *(incremental runs only, lane IX2, §3.4)* | the base's `repo-index.json` by the staged-input path, then `swarm-repo-graph read --commit <base_sha> --manifest-digest <recorded> --out $SWARM_WORK_DIR/repo-graph.base.json` | sized from the base graph's size, which its index's `graph.symbols` and `graph.edges` give at 600 bytes each: 20 s + 1.5 s a MB, at most half the extractor's budget (180 s of an incremental run's 360), which is also what an index without counts gets (#1469) |
-| `extract` | `swarm-repo-index --repo <checkout> --out $SWARM_WORK_DIR/repo-index.extract.json --graph-out $SWARM_WORK_DIR/repo-graph.json --lsp-total-budget-seconds <extract - 180>`, and one `--lsp-server-cost <server>=<seconds>` for each cost the signed prompt names (§3.5) | 0.4 of the task's timeout, 720 s: twice the ~6 minutes measured |
+| `extract` | `swarm-repo-index --repo <checkout> --out $SWARM_WORK_DIR/repo-index.extract.json --graph-out $SWARM_WORK_DIR/repo-graph.json --lsp-total-budget-seconds <extract - 180>`, and one `--lsp-server-cost <server>=<seconds>` for each cost the signed prompt names (§3.5) | 0.4 of the agent's timeout, 720 s: twice the ~6 minutes measured |
 | `agent` | the runner, from the extractor's output | what is left, less the write's reserve |
 | `index_check` *(lane INDEX-ROUTES, #1693)* | the agent's `repo-index.json` against `RepoIndexSpec`, by the worker's restatement (`agent_worker/indexspec.py`) | none: a pure check, milliseconds |
-| `graph_write` | `swarm-repo-graph write --graph ... --index $SWARM_ARTIFACTS_DIR/repo-index.json --repo-id <r> --destination tenants/<t>/repos/<r>/graph` | 0.15 of the task's timeout, 270 s, reserved before the agent starts |
+| `graph_write` | `swarm-repo-graph write --graph ... --index $SWARM_ARTIFACTS_DIR/repo-index.json --repo-id <r> --destination tenants/<t>/repos/<r>/graph` | 0.15 of the agent's timeout, 270 s, reserved before the agent starts |
 
 Why each rule:
 
@@ -1116,7 +1116,7 @@ short list in the step's prompt, which `compile_plan` composes today anyway.
 
 ### 4.2 Any step in the same repository, by name (invariant 10)
 
-A task or workflow step whose `repository_url` matches a registration asks for
+An agent or workflow step whose `repository_url` matches a registration asks for
 the index **by name**, never by path: phase 2 adds one runner input to
 `claude-code` and `codex`,
 
@@ -1124,7 +1124,7 @@ the index **by name**, never by path: phase 2 adds one runner input to
 
 and the worker stages it exactly as it stages `input.issue` today
 (`apps/agent-worker/agent_worker/issue.py`): it resolves the registration from
-the task's **own** tenant and `repository_url`, reads the current version's
+the agent's **own** tenant and `repository_url`, reads the current version's
 objects with the tenant's own service account, checks the digest, writes
 `work/repo-index.md` and `work/repo-index.json` beside the checkout — so they
 are in no diff and no pull request — and adds one prompt line naming them.
@@ -1133,8 +1133,8 @@ the only value is `true`. That is invariant 10 applied to context: a caller
 picks a runner profile by name and, now, a context by name, and the platform
 resolves everything behind the name. A step asking for an index its
 repository does not have starts without it and its prompt line says so; a
-missing index is context missing, not an input failure, so it never ends a
-task `INPUTS_UNAVAILABLE`.
+missing index is context missing, not an input failure, so it never ends an
+agent `INPUTS_UNAVAILABLE`.
 
 Phase 2 needs the frozen-contract request in §6.3, because `_CLI_AGENT_INPUTS`
 (`apps/common/swarm_common/profiles.py::_CLI_AGENT_INPUTS`) declares `issue` as the only
@@ -1294,7 +1294,7 @@ Actions:**
 * **(X1) SwarmCloud runs them itself, in a test step.** A workflow step after
   the implement and fix steps runs the plan's commands — taken from the
   repository's own index (`commands`, `test_layout`), never from a caller
-  (invariant 10) — in the tenant's worker, admitted and counted like any task
+  (invariant 10) — in the tenant's worker, admitted and counted like any agent
   (invariants 1-3). A separate agent-free step, the way `post-verdict` is in
   merge-step.md, posts `swarmcloud/selected-tests` with a SwarmCloud checks
   App whose key is `swarm-tenant-<tenant>-git-checks`, read only by that
@@ -1428,7 +1428,7 @@ indistinguishable from a missing one.
 | `GET /v1/repositories` | the tenant's registrations with freshness (§5), last index run, schedule and `test_map` coverage (counts of modules, §6.2) |
 | `GET /v1/repositories/{repo_id}` | one registration, with its last 20 index runs and the runs and workflows that used its index |
 | `PATCH /v1/repositories/{repo_id}` | schedule, trigger, `allowed_profiles`, `default_branch`, `paused` |
-| `DELETE /v1/repositories/{repo_id}` | unregister; typed confirmation in the console. The task artifacts are left to the artifact lifecycle; since IX3 nothing deletes the registration's `repos/<repo_id>/` objects (index copies, graph), because the lifecycle never matches `repos/` and no index run sweeps an unregistered repository -- they stay until deleted by hand (§2.3) |
+| `DELETE /v1/repositories/{repo_id}` | unregister; typed confirmation in the console. The agent artifacts are left to the artifact lifecycle; since IX3 nothing deletes the registration's `repos/<repo_id>/` objects (index copies, graph), because the lifecycle never matches `repos/` and no index run sweeps an unregistered repository -- they stay until deleted by hand (§2.3) |
 | `POST /v1/repositories/{repo_id}/index:run` | queue an index run now (`{"kind": "full" \| "incremental"}`); the in-flight rule of §3.1 applies |
 | `GET /v1/repositories/{repo_id}/index` | the current index's summary and freshness; `?sha=` for a kept version; `?format=json` for the structured document |
 | `POST /v1/repositories/{repo_id}/tests:select` | §4.3 |
@@ -1472,7 +1472,7 @@ contract's and must not leak into it.
 
     repo_index_runs/{task_id}
       tenant_id, repo_id, commit_sha, kind, trigger (interval|change|manual),
-      state (mirrors the task), queued_at, ended_at, end_cause
+      state (mirrors the agent), queued_at, ended_at, end_cause
 
     issue_runs/{run_id}                     (existing; two new optional fields)
       index_sha, index_digest
@@ -1484,8 +1484,8 @@ contract's and must not leak into it.
 
     tenant_settings/{tenant_id}.selection_policy   (revised; the tenant default)
 
-`repo_index_runs` duplicates a little of the task for one reason: the
-repository page lists a repository's index runs, and a query over all tasks by
+`repo_index_runs` duplicates a little of the agent for one reason: the
+repository page lists a repository's index runs, and a query over all agents by
 a metadata key is a composite index on a collection every other lane writes.
 Indexes: `repositories (tenant_id, owner, repo)` and
 `repo_index_runs (tenant_id, repo_id, queued_at desc)`.
@@ -1524,8 +1524,8 @@ only in Settings; the list and the Overview need it without a second read.
 **Phase 1 needs no change.** Registrations, index runs and promotion are
 swarm-api documents; the indexer is `claude-code`; the planner gets the index
 through its prompt, which is composed in swarm-api; no state, event type,
-model or admission rule changes. An index run's task is a `Task` like any
-other, its events are the task's events.
+model or admission rule changes. An index run's agent is a `Task` like any
+other, its events are the agent's events.
 
 **Phase 2 needs one request (A)**, to be filed in
 [contract-change-requests.md](contract-change-requests.md) when the owner

@@ -61,7 +61,7 @@ move.
 - **Events paging** (§6 S1). `GET /v1/tasks/{id}/events` takes `limit` and
   no cursor (`routes/tasks.py:136-144`), so the tail-truncation risk in §4
   still stands.
-- **Cross-task attempts** (§6 S4). No route aggregates attempts across tasks.
+- **Cross-agent attempts** (§6 S4). No route aggregates attempts across agents.
 - **Checkpoint content** (§6 S3, the checkpoint half). The route serves a
   listing and no bytes. The decision on its shape is recorded below.
 - **§1.1(b), the duplicate `@keyframes pulse`**, part of Q2's bug-fix batch.
@@ -84,7 +84,7 @@ left as they were checked at `b0fff1b`; this list is what changed after.
   (`routes/tasks.py:138`). With neither parameter it returns what it always
   did. The route is paged; no screen asks for `order=desc` yet, so the UI's
   event lists still read the oldest page.
-- **Cross-task attempts** (§6 S4), in #19. `GET /v1/attempts`
+- **Cross-agent attempts** (§6 S4), in #19. `GET /v1/attempts`
   (`routes/attempts.py:36`) lists every attempt of the caller's tenant, newest
   first, paged, with a per-page `coverage` count of rows that carry a reported
   cost. No screen calls it yet.
@@ -122,9 +122,9 @@ its order.
 - **Events paging** (§6 S1): the route is paged (above), and the UI half is
   still open. The client reads one page, oldest first. No screen sends
   `order=desc` or follows the page token (`apps/swarm-ui/src/api.ts` (`but this client reads ONE page, oldest-first, and does not`)).
-- **Cross-task attempts** (§6 S4): the route shipped (above), and the UI half
+- **Cross-agent attempts** (§6 S4): the route shipped (above), and the UI half
   is still open. No screen calls `GET /v1/attempts`; attempts are read per
-  task (`apps/swarm-ui/src/api.ts` (`export async function loadAgentRun(`)).
+  agent (`apps/swarm-ui/src/api.ts` (`export async function loadAgentRun(`)).
 - **Checkpoint content** (§6 S3): shipped in #29 (above).
 - **§1.1(b), the duplicate `@keyframes pulse`**: fixed. No `@keyframes pulse`
   is left. The two are `ctl-placeholder-pulse` (.5 → .85,
@@ -425,7 +425,7 @@ the grounds that Temporal and Nomad name sections after objects.
 **I am not proposing new section names.** That would re-litigate a decision the owner
 already made, and none of the three measurable causes of "hard to read" is the
 section list. The membership test also correctly rejects the obvious Lens-shaped
-mistake: a rail of Tasks / Attempts / Leases / Events / Artifacts / Checkpoints is
+mistake: a rail of Agents / Attempts / Leases / Events / Artifacts / Checkpoints is
 the Firestore schema, not the work, and nobody opens this product asking "show me
 leases."
 
@@ -494,7 +494,7 @@ Compact (what happened), Timeline (where the time went), Full (every event, for 
 
 Selecting any node in any mode fills the inspector. Nothing navigates.
 
-**Scrubbers**, also from Weave, and cheap: *next attempt of this task*, *the same
+**Scrubbers**, also from Weave, and cheap: *next attempt of this agent*, *the same
 step across the last ten workflows*, *the next agent on this runtime*. Keyboard
 movement between comparable objects is how you avoid building a comparison screen
 for every pair.
@@ -528,7 +528,7 @@ consequences of the shell rather than of renaming:
 ## 3. The agent detail view
 
 This is the screen the brief is really asking for. It is the inspector from §2.2,
-opened on one task, and it is organised as **six panels plus the dock**.
+opened on one agent, and it is organised as **six panels plus the dock**.
 
 For each panel: where the data comes from, and whether it can be built today.
 
@@ -578,7 +578,7 @@ back into the workflow DAG and should be drawn as one.
 
 **Output manifest — buildable.** `GET /v1/tasks/{id}/artifacts` returns
 `{artifacts: [{name, bytes, uri}], artifacts_skipped: [name], artifact_bytes,
-complete}`. `complete` is false until the task is terminal, which is what stops an
+complete}`. `complete` is false until the agent is terminal, which is what stops an
 empty list reading as "produced nothing". `artifacts_skipped` names files dropped at
 `max_artifact_bytes`, so a short list carries its own reason.
 
@@ -642,7 +642,7 @@ running duration as separate segments.
 
 **The trap: `task.started_at` is overwritten on every attempt.** `apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_running`
 sets it in the `DISPATCHED → STARTING` transition, which runs once per attempt. On a
-retried task it is the *last* attempt's start. So `completed_at - started_at` is the
+retried agent it is the *last* attempt's start. So `completed_at - started_at` is the
 last attempt's runtime, and `completed_at - created_at` is total wall time including
 queue and every park. Neither is "how long the agent worked." Only summing
 per-attempt intervals gives that, and this panel must do the summing.
@@ -719,7 +719,7 @@ four token fields plus `cost_usd`, while `_usage_summary` (`apps/agent-worker/ag
 also produces `models`, `num_turns`, `duration_ms`, `duration_api_ms` and
 `thinking_tokens`. Those survive only inside `task.result_summary["runner"]["usage"]`,
 an untyped dict no index can reach — readable on one agent, not aggregatable. The
-docstring of `apps/agent-worker/agent_worker/control.py::ControlPlane.record_spend` says that is deliberate. Cross-task spend needs
+docstring of `apps/agent-worker/agent_worker/control.py::ControlPlane.record_spend` says that is deliberate. Cross-agent spend needs
 seam **S4**.
 
 ### The dock — logs — NEEDS A ROUTE, but less of one than expected
@@ -806,8 +806,8 @@ drops it, and the fix is five lines.
 | # | What is drawn | Route → field | Chart type | What it must not imply |
 |---|---|---|---|---|
 | 1 | **Agent / sub-agent DAG** | `/v1/workflows/{id}` → `WorkflowStep.depends_on`, `input_from` | Layered directed graph (dagre), node = step, edge = dependency; edge style distinguishes `depends_on` (ordering) from `input_from` (data) | That an unconnected node is orphaned — it is independent. That edge direction is execution order beyond what is declared. |
-| 2 | **Workflow wall-clock timeline** | same nodes → per-task `created_at` / `started_at` / `completed_at` | Gantt on a time axis; in-flight bars dashed and animating | That a bar's length is agent work — it includes queue and parks. That a task still running has an end. |
-| 3 | **Attempt phase breakdown** | `/v1/tasks/{id}/events` → `submitted`, `ready`, `lease_acquired`, `dispatched`, `starting`, `running`, terminal | Horizontal stacked bar, one segment per phase | That the segments sum to task wall time when the 200-event page truncated. The panel must say the page is a window (§6 S1). |
+| 2 | **Workflow wall-clock timeline** | same nodes → per-agent `created_at` / `started_at` / `completed_at` | Gantt on a time axis; in-flight bars dashed and animating | That a bar's length is agent work — it includes queue and parks. That an agent still running has an end. |
+| 3 | **Attempt phase breakdown** | `/v1/tasks/{id}/events` → `submitted`, `ready`, `lease_acquired`, `dispatched`, `starting`, `running`, terminal | Horizontal stacked bar, one segment per phase | That the segments sum to agent wall time when the 200-event page truncated. The panel must say the page is a window (§6 S1). |
 | 4 | **Peak memory reached by T+n** | `/v1/tasks/{id}/events` → `HEARTBEAT.detail.peak_rss_bytes`, `.elapsed_seconds` (~1 point / 150s) | Monotonic **step** line, never smoothed | That it is "memory now". `peak_rss_bytes` is a running maximum that never resets; labelled as current usage it claims a flat footprint for an agent that spiked once and released. Label it *"peak reached by T+n"* and it is exactly true. |
 | 5 | **Requested vs peak memory** | `/v1/resource-classes` → `memory_gib`; `/v1/tasks/{id}/attempts` → `peak_rss_bytes`, `oom_near_miss` | Bullet bar, requested as the track, peak as the fill, **90–100% band hatched** | That there is a CPU row — CPU is not measured anywhere. That disk is additional — `disk_gib` is a slice **of** `memory_gib` (`profiles.py:61-67`), so memory and disk must never be stacked. That `null` is 0. |
 | 6 | **Checkpoint cadence** | `/v1/tasks/{id}/attempts` → `checkpoints[]`; `/v1/tasks/{id}/events` → `checkpoint_completed.detail{uri,size_bytes,seq}` | Dot strip along the attempt timeline; dot area = `size_bytes`; hollow dot = `uriKnown === false` | That a hollow dot is a broken checkpoint — it means the describing event is off this page (`types.ts:894-900`). That the strip shows what is *inside* a checkpoint; contents are recorded nowhere. |
@@ -817,10 +817,10 @@ drops it, and the fix is five lines.
 | 10 | **Pool saturation** | `/v1/pools` → `in_use`, `hard_limit`, `adaptive_target`, `enabled` | Bullet bar, two ceiling markers (adaptive and hard), **hatched when `enabled == false`** | That a paused pool is at its ceiling. Compare `.enabled == false` explicitly — `false // true` is `true` in jq and has already broken this exact column once (CLAUDE.md). |
 | 11 | **Concurrency by pool** | `/v1/leases` → `pools[]`, `units`, `state` | Stacked bar by pool | That it counts RUNNING. Concurrency counts from **LEASED** (CONTRACT invariant 3). |
 | 12 | **Account quota windows** | `/v1/accounts` → `utilization` (0.0–1.0), `resets_at`, `observed_at`, `stale`, `state` | Radial gauge — the **only** genuinely 0..1 quantity in the platform — with an explicit staleness marker | That a stale reading is live. `usage.py:72-81` distinguishes `UsageUnavailable` from a zero on purpose and `usagepoll.py` refuses to record a failed poll; rendering a stale 12% as a live 12% undoes all of it. Also: never join an account to an agent — `Lease` and `Attempt` carry no account field, so "this account's quota is being burned by that agent" is unanswerable. |
-| 13 | **Task state distribution** | `/v1/stats` → `tasks_by_state`, `platform_tasks_by_state` | Horizontal bars, tenant and platform in **separate blocks** | That the two scopes are comparable in one row (`PlatformCounts.tsx:18-22`). That `QUEUED`/`PARKED`/`READY` are demand — only `LEASED`/`DISPATCHED`/`STARTING`/`RUNNING` create infrastructure demand (CONTRACT invariant 1). |
+| 13 | **Agent state distribution** | `/v1/stats` → `tasks_by_state`, `platform_tasks_by_state` | Horizontal bars, tenant and platform in **separate blocks** | That the two scopes are comparable in one row (`PlatformCounts.tsx:18-22`). That `QUEUED`/`PARKED`/`READY` are demand — only `LEASED`/`DISPATCHED`/`STARTING`/`RUNNING` create infrastructure demand (CONTRACT invariant 1). |
 | 14 | **Outcome mix over history** | `/v1/tasks` → `state` | Stacked bar by day | That failed and cancelled are the same thing. They currently render identically in greyscale (§1.5) and must not. |
-| 15 | **Duration across retries** | `/v1/tasks/{id}/attempts` → per-attempt `started_at`, `completed_at` | Lollipop, one per attempt, with the summed total stated separately | That `task.started_at` is the task's start — it is overwritten per attempt (`apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_running`). Only the sum of per-attempt intervals is agent work. |
-| 16 | **Cost and tokens, rolled up** **[F0]** | `/v1/tasks/{id}/attempts` → `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `cost_usd` | Stacked bar per attempt (input / output / cache-read / cache-create), summed to the task and to the workflow | That `null` is `$0.00`. That an attempt with no figure was free — the worker records spend on every exit, but only what the runner reported, so a CLI run killed on SIGTERM or a hard-killed worker reports nothing and the chart must say *"not recorded for N of M attempts"*, N being `coverage.not_recorded` (corrected for #72: this cell first said spend was recorded on clean exit only). That a `mock` or `generic` runner spent nothing — it reports nothing. |
+| 15 | **Duration across retries** | `/v1/tasks/{id}/attempts` → per-attempt `started_at`, `completed_at` | Lollipop, one per attempt, with the summed total stated separately | That `task.started_at` is the agent's start — it is overwritten per attempt (`apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_running`). Only the sum of per-attempt intervals is agent work. |
+| 16 | **Cost and tokens, rolled up** **[F0]** | `/v1/tasks/{id}/attempts` → `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `cost_usd` | Stacked bar per attempt (input / output / cache-read / cache-create), summed to the agent and to the workflow | That `null` is `$0.00`. That an attempt with no figure was free — the worker records spend on every exit, but only what the runner reported, so a CLI run killed on SIGTERM or a hard-killed worker reports nothing and the chart must say *"not recorded for N of M attempts"*, N being `coverage.not_recorded` (corrected for #72: this cell first said spend was recorded on clean exit only). That a `mock` or `generic` runner spent nothing — it reports nothing. |
 
 Two rows of that table (#4, #6) depend on the event page not truncating, and one
 (#3) is actively dangerous without seam S1: a two-hour run emits roughly 6 lifecycle
@@ -974,7 +974,7 @@ believes:**
 
 ### 5.6 Density
 
-A task `.row` is ~68px tall because `.row .agent` (`styles.css:535-538`) stacks
+An agent `.row` is ~68px tall because `.row .agent` (`styles.css:535-538`) stacks
 name, model and id vertically. A 900px viewport shows about ten rows. This is an
 instrument: a screen showing forty rows lets you find the outlier by scanning; a
 screen showing ten makes you page.
@@ -1130,8 +1130,8 @@ The constraints behind the shape, so they are not quietly undone:
   the worker's `ckpt-%05d` format — a second copy of a rule, which is how this
   repository's outages have started.
 - **The tenant boundary is the artifact route's, called rather than copied**
-  (`InspectionService._scoped`, `_segment`, `_reader`). Another tenant's task is the
-  404 a missing task gets, and the tests assert the stronger fact that *no object is
+  (`InspectionService._scoped`, `_segment`, `_reader`). Another tenant's agent is the
+  404 a missing agent gets, and the tests assert the stronger fact that *no object is
   read or listed* on the way to it.
 - **`{path}` never becomes an object key.** It is matched for exact equality against
   member names inside an archive whose key was rebuilt from validated segments. It is
@@ -1144,7 +1144,7 @@ The constraints behind the shape, so they are not quietly undone:
   whatever names the agent left, and `Path.rglob` on Linux hands a Latin-1 name to
   `tarfile` surrogate-escaped; `tarfile` reads it back holding lone surrogates, which
   Starlette's `JSONResponse` cannot encode — an unhandled 500 on every listing of the
-  task. The name is served as its bytes, escaped (`caf\xe9.txt`), with
+  agent. The name is served as its bytes, escaped (`caf\xe9.txt`), with
   `undecodable: true`, and cannot be opened: the escaped spelling carries a backslash,
   which the path check refuses. It is deliberately **not** `unsafe`: that flag tells
   the reader a restore would refuse the archive, and a restore unpacks such a name
@@ -1205,9 +1205,9 @@ expectations, not measurements. The last one needs a deployed service and a chec
 over 32 MiB in the bucket; nothing in CI can see Cloud Run's limit, because the test
 client has none.
 
-### S4 — cross-task attempt aggregation · medium · unblocks "what did it cost"
+### S4 — cross-agent attempt aggregation · medium · unblocks "what did it cost"
 
-There is no route that sums cost across tasks. `Store.list_attempts` already accepts
+There is no route that sums cost across agents. `Store.list_attempts` already accepts
 `task_id=None` and the `attempts-tenant-created` index already exists
 (`store.py:770-794`) — the only route that calls it passes a task id.
 
@@ -1249,7 +1249,7 @@ is **frozen**. Per CLAUDE.md this is raised here as a request. It belongs in
 > **Filed 2026-09-24** as
 > [request #13](../contract-change-requests.md#13-modelspy-attempt-does-not-record-which-pool-account-it-ran-on),
 > open. One correction it makes to the paragraph above: the worker DOES record the
-> assignment, as an untyped `RUNNING` event (`cause: account_assigned`) on the task's
+> assignment, as an untyped `RUNNING` event (`cause: account_assigned`) on the agent's
 > events subcollection. It is not queryable, and an attempt can be offered more than
 > one account, which is why the request stands.
 
@@ -1261,7 +1261,7 @@ is **frozen**. Per CLAUDE.md this is raised here as a request. It belongs in
    amended them on 2026-09-21. None of the measurable causes of "hard to read" is the
    section list. Re-litigating a decided question is not a redesign.
 2. **Not a rail grouped by object kind.** Lens's tree is the Kubernetes *schema* and
-   the direct translation here would be Tasks / Attempts / Leases / Events /
+   the direct translation here would be Agents / Attempts / Leases / Events /
    Artifacts / Checkpoints — the Firestore collections. Nobody opens this product
    asking "show me leases." `App.tsx`'s `question` test already rejects it.
 3. **Not a line chart of cluster utilisation over time.** There is no time-series
@@ -1275,7 +1275,7 @@ is **frozen**. Per CLAUDE.md this is raised here as a request. It belongs in
    cannot keep. `App.tsx:59-60` already decided this and it is still right.
 5. **Not a quality score, eval or LLM-judge column.** Braintrust and LangSmith both
    offer one; this platform has no eval model, so a score would be invented. Taking
-   the *diff between two attempts of the same task* from Braintrust is worth doing;
+   the *diff between two attempts of the same agent* from Braintrust is worth doing;
    taking its scoring is not.
 6. **Not a fourth restatement of the frozen contract.** `types.ts` already
    hand-copies values from `swarm_common` and `check-contract-parity.sh` does not

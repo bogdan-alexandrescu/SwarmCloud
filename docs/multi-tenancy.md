@@ -66,10 +66,10 @@ database in this project — and a worker running attacker-controlled code is
 inside that scope. What is available
 at this layer is the *shape* of the access, so the role is built rather than
 borrowed: `swarmTenantWorkerFirestore` drops `datastore.entities.delete` (a
-hostile worker cannot destroy another tenant's tasks, leases or the pool
+hostile worker cannot destroy another tenant's agents, leases or the pool
 documents the platform admits against) and `datastore.entities.list` (no
 queries, so no enumerating every tenant's prompts and repository URLs — a
-document can only be fetched by an id already known, and task, attempt and
+document can only be fetched by an id already known, and agent, attempt and
 lease ids are `<prefix>_<20 hex>`). **It keeps `update`, and update does the
 damage delete would have:** a worker that cannot delete `pools/global` can set
 its `active` to 0, and one that cannot delete `tenants/<id>` can rewrite the
@@ -280,7 +280,7 @@ goes on in that group. The refusal is identical for "not yours" and "no such ten
 header is not an oracle for enumerating tenant ids.
 
 Why it selects and never grants. The tenant decides the service account, the
-secrets, the GCS prefix and the namespace a task runs under (invariant 9). A
+secrets, the GCS prefix and the namespace an agent runs under (invariant 9). A
 header that could *name* a tenant would let any caller pick any of those; a
 header that can only *choose among memberships already proven* changes nothing
 an attacker can reach — every tenant it can reach is one the same caller could
@@ -329,7 +329,7 @@ worse than the refusal.
 (`/v1/tasks/{id}/checkpoints/{n}/content`, a plain link so a large archive
 streams to disk), are requests the browser makes on its own, and those carry
 no custom header — so without another channel every artifact and checkpoint of
-a task in a switched-to tenant would 404 against the default. On exactly the
+an agent in a switched-to tenant would 404 against the default. On exactly the
 routes in `auth.TENANT_QUERY_ROUTES` (today those two), `current_auth`
 reads `?tenant=` and hands it to the **same** `_select_tenant` check as the
 header: it selects among verified memberships and never grants, and a value
@@ -361,7 +361,7 @@ the new tenant's catalogue on submit.
 
 Google ID token, `hd` claim must be an allowed domain. **There is no shared
 platform bearer token.** A shared secret carries no identity; without identity
-there is no tenant to attribute a task to, no way to scope a list response, and
+there is no tenant to attribute an agent to, no way to scope a list response, and
 no boundary to enforce. Multi-tenancy that starts after authentication is
 decorative.
 
@@ -373,7 +373,7 @@ itself a leak.
 
 Admin routes (`/v1/admin/*`) are gated on admin — `ADMIN_GROUPS` membership or
 an address on `ADMIN_USERS` — which is kept separate from `TENANT_GROUPS` so an
-admin still belongs to a normal tenant for their own tasks. One narrower list,
+admin still belongs to a normal tenant for their own agents. One narrower list,
 `ADMIN_POOL_USERS`, reaches only the routes in `swarm_api.auth.POOL_ADMIN_ROUTES`
 (today the runner-ceiling `PUT`) and is not admin; see
 [security.md](security.md#authentication).
@@ -396,7 +396,7 @@ Three independent mechanisms, all in `swarm_api/credentials.py` and
 
 **One exception to "exactly one accessor": `swarm-tenant-<tenant>-git` has two.**
 swarm-api's issue preview (`swarm_api/forge.py` `preview`, `routes/issues.py`,
-#511) reads the tenant's forge token to show an issue before a task is filed,
+#511) reads the tenant's forge token to show an issue before an agent is filed,
 and the owner accepted swarm-api as that secret's second reader on 2026-10-02.
 Terraform grants it through `forge_readers` in `terraform/infra/main.tf`, but
 only on a `-git` secret Terraform manages, and no tenant's is: they are
@@ -431,7 +431,7 @@ base slots. The owner decided on 2026-10-11 that secrets are user-scoped
   (`apps/swarm-api/swarm_api/credbroker.py::ForgeCredentialBroker.release`),
   signed with its attempt key
   (`apps/agent-worker/agent_worker/forgebroker.py::ForgeBroker.fetch`), and
-  only for the current attempt of a task whose signed `submitted_by` owns
+  only for the current attempt of an agent whose signed `submitted_by` owns
   the slot and still holds the grant. Bob's attempt asking for Alice's slot
   is refused before Secret Manager is read
   (`tests/unit/control_plane/test_forge_credential_broker.py::test_bobs_attempt_is_refused_alices_slot_and_reads_no_secret`);
@@ -451,7 +451,7 @@ measurement of [design/child-tasks.md §9](design/child-tasks.md#9-phase-2)
 item 2 on which the guarantee rests -- made in dev on 2026-10-11, not in
 prod). With the switch off the worker reads a person's slot with its own
 account, as before; were the binding removed first, that read would be
-refused and every user-slot task would fail closed
+refused and every user-slot agent would fail closed
 ([design/user-scoped-secrets.md §5](design/user-scoped-secrets.md#5-iam-the-worker-loses-its-read-of-user-slots);
 [runbooks/github-app.md](runbooks/github-app.md), step 2).
 
@@ -553,7 +553,7 @@ is ordinary tenant work, under every isolation mechanism above:
 | Spend its own forge token's rate limit | Delay another tenant's firings by more than one tick: at most 5 firings per tenant per tick, round-robin |
 | Fire as often as its type's minimum interval allows, across at most 25 schedules | Run without bound. `max_concurrent`, `per_day_usd`, the sweep's cap of 8 live runs and the consecutive-failure pause bound it, and an admin can pause it |
 
-Another tenant's schedule id answers 404 on every route, as a task's does. When
+Another tenant's schedule id answers 404 on every route, as an agent's does. When
 one tenant's schedules crowd the platform, an admin uses what they use today:
 the tenant's ceiling (`PUT /admin/tenants/<t>/limits`), plus pausing the
 schedule from Automate › Schedules, switched to All tenants
@@ -569,11 +569,11 @@ two independent mechanisms to fail together:
 
 | Attack | Blocked by |
 |---|---|
-| Ask the API for another tenant's task | tenant-scoped queries; 404 not 403 |
+| Ask the API for another tenant's agent | tenant-scoped queries; 404 not 403 |
 | Name another tenant's secret in a request | secret name comes from the frozen contract, never from input |
 | Read another tenant's secret from a worker | worker runs as the tenant GSA; secret IAM names one accessor |
 | Read another tenant's checkpoints | GCS binding is conditioned on the tenant prefix, listing included |
-| Hand another task **of the same tenant** a planted checkpoint | **partially.** The bucket grant is per tenant, not per task, so an agent can write under a sibling task's prefix. A first attempt restores nothing, and a retry restores only the checkpoint its earlier attempt recorded, with the archive digest, in Firestore (#347; [checkpointing.md](checkpointing.md#3-restore)). An agent that also writes the task and attempt documents is not stopped: see the Firestore row below, and #342 |
+| Hand another agent **of the same tenant** a planted checkpoint | **partially.** The bucket grant is per tenant, not per agent, so an agent can write under a sibling agent's prefix. A first attempt restores nothing, and a retry restores only the checkpoint its earlier attempt recorded, with the archive digest, in Firestore (#347; [checkpointing.md](checkpointing.md#3-restore)). An agent that also writes the agent and attempt documents is not stopped: see the Firestore row below, and #342 |
 | Reach another tenant's pod | per-tenant namespace + default-deny NetworkPolicy |
 | Have work dispatched under another tenant's identity | **not today.** The Job and the pod take the identity and namespace from the tenant's own `tenants/<id>` document, which that tenant's worker can rewrite: see "Today" below. Phase 0 of #1457 closes it by deriving both from the tenant id |
 | Escalate via a runner profile | callers name profiles; images and commands are catalogue-only |
@@ -599,12 +599,12 @@ workload's metadata token and argues that the boundary is what that identity can
 do — so here is what it can do:
 
 * **It cannot delete anything.** `datastore.entities.delete` is not in the role.
-  Another tenant's tasks, attempts, leases and the `pools/*` documents the whole
+  Another tenant's agents, attempts, leases and the `pools/*` documents the whole
   platform admits against cannot be destroyed.
 * **It cannot enumerate anything.** `datastore.entities.list` is not in the role,
   so there are no queries: no dumping every tenant's prompts, repository URLs and
   artifact paths. A document can only be fetched by an id already known, and
-  task, attempt and lease ids are `<prefix>_<20 hex>`.
+  agent, attempt and lease ids are `<prefix>_<20 hex>`.
 * **It CAN read and write a document whose id it can guess.** The role grants
   `datastore.entities.get`, `create` and `update` on every document in the
   database (`terraform/bootstrap/platform_roles.tf` (`worker_firestore = {`),
@@ -639,7 +639,7 @@ The worst rows, each with the reader that acts on the forged value:
 | `workspace_settings/B` `.merge.*`, `.code_intelligence.*`; `tenant_settings/B` | B's merge mode and train, B's graph tickets, Jev and context delivery. | swarm-api merge and code-intelligence settings; the worker's graph stage |
 
 The same role reads, too: `tenants/<B>` (its principal), `workspace_settings/<B>`,
-`quota/*:<B>`, `accounts/*` and any task whose id leaks are readable today.
+`quota/*:<B>`, `accounts/*` and any agent whose id leaks are readable today.
 
 **The worker's own tenant checks are not a boundary.**
 `apps/agent-worker/agent_worker/control.py::ControlPlane._assert_tenant` refuses
@@ -675,7 +675,7 @@ row. A worker can still zero `pools/global.active`, raise or disable any pool,
 forge and release a lease, pause all dispatch through `control/dispatch`,
 rewrite `tenants/<B>.enabled`, `.max_active` and `.credentials`, `quota/*:<B>`,
 `accounts/*`, `tenant_settings/<B>`, and read everything it can name. A MAC
-cannot close the pool, lease, task and attempt rows at all: the worker writes
+cannot close the pool, lease, agent and attempt rows at all: the worker writes
 those legitimately, and a signature cannot tell its write from a forged one.
 
 #### Design B: what it closes, and the cutover order
@@ -842,7 +842,7 @@ consuming the platform on their first bad loop.
 
 **The tenant's pool ceiling is the smaller of the two.** `max_active` and
 `capacity_units` bound one count: the units the tenant's running work holds,
-where every task costs at least one. So every path that writes `tenant:<id>`
+where every agent costs at least one. So every path that writes `tenant:<id>`
 writes `min(max_active, capacity_units)` as its hard limit — the admin routes
 (`store.set_tenant_limits`), a first sign-in (`store.ensure_tenant`),
 `scripts/register-tenant.sh`, and Terraform's bootstrap (`pool_tenants` in
@@ -881,7 +881,7 @@ A caller in no registered group gets `u-<local-part>` (so `alice@example.com` ->
   not a faithful rendering of the local part, `swarm_common.identity` appends a
   6-character digest of the full principal. `eng.team@example.com` becomes
   `eng-585e84`, not `eng-team`;
-* the tenant is real — own GSA, own prefix, own pools — so a personal task is
+* the tenant is real — own GSA, own prefix, own pools — so a personal agent is
   isolated exactly like a group's.
 
 This exists so that onboarding never requires a group change first. It is also
@@ -1032,7 +1032,7 @@ It is a Cloud Run job in the project, **not** Cloud Build and not a GitHub
 workflow (WD2, re-decided 2026-10-10). Why: the job's logs stay in the
 project, out of a public CI log, and swarm-api, the service every user's token
 reaches, holds only `pubsub.publisher` on one topic. It can publish an opaque
-id; it cannot choose the job's arguments, environment, task count or timeout.
+id; it cannot choose the job's arguments, environment, agent count or timeout.
 Publishing is `WORKSPACE_APPLY_PUBLISH` (`workspace_apply_publish`, on in dev
 since 2026-10-11). The Cloud Scheduler job `swarm-workspace-sweep` calls
 `POST /v1/admin/workspaces/sweep` every 10 minutes: it re-publishes an approved

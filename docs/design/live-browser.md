@@ -62,12 +62,12 @@ Section 5.7 is about that.
 | Decision | What was decided | Where this document answers it |
 |---|---|---|
 | **LB-1** | An **interactive** remote browser: headed Chromium on a virtual display, VNC proxied through the platform into the console via noVNC, with a "take control" button. Not a view-only screencast. | §3, §4, §6 |
-| **LB-2** | Frames are visible **only to members of the task's tenant**, checked on every connection (invariant 9). | §5.1, §5.2 |
+| **LB-2** | Frames are visible **only to members of the agent's tenant**, checked on every connection (invariant 9). | §5.1, §5.2 |
 | **LB-3** | Password and secret fields are **masked before anything leaves the pod**. | §5.3 |
 | **LB-4** | Frames and recordings are kept **7 days**, under the tenant's GCS prefix. | §7 |
 | **LB-5** | The console presentation is **a Browser tab on the agent page, with theater mode available from it** (owner's choice, 2026-10-11, from five in-console alternatives; recorded on #1030). This replaces the earlier phased plan of separate split, picture-in-picture and wall views. | §6 |
 | **LB-6** | The browser can run **as a mobile device, not only desktop**, and a person in control works it **by touch**. Presets: Desktop 1440×900, iPhone 15 393×852, Pixel 8 412×915, iPhone SE 375×667, iPad (gen 7) 810×1080, with rotate. | §6.1 |
-| **LB-7** | **Signed-in sessions are reusable, but only inside a person's own personal workspace** (2026-10-11, revising Q7). In a personal tenant (`u-<user>`), a session signed in once carries to that workflow's later browser steps and is destroyed when the workflow ends. The person can also save it as a **named browser login** of that workspace, and a task in that workspace opts in by name. **Group tenants (e.g. `eng`) never store or carry a session**: every browser step there signs in fresh. The person's own workspace identity enforces this by IAM, because every worker of a group tenant shares one identity and could otherwise read another member's session. Any account may be saved, at the person's judgement. | §5.5, §5.5.1 |
+| **LB-7** | **Signed-in sessions are reusable, but only inside a person's own personal workspace** (2026-10-11, revising Q7). In a personal tenant (`u-<user>`), a session signed in once carries to that workflow's later browser steps and is destroyed when the workflow ends. The person can also save it as a **named browser login** of that workspace, and an agent in that workspace opts in by name. **Group tenants (e.g. `eng`) never store or carry a session**: every browser step there signs in fresh. The person's own workspace identity enforces this by IAM, because every worker of a group tenant shares one identity and could otherwise read another member's session. Any account may be saved, at the person's judgement. | §5.5, §5.5.1 |
 
 The brief also described a shape: "a VNC server bound to localhost only" and
 "Chromium launched by the agent's Playwright on that display", with "swarm-api
@@ -361,7 +361,7 @@ is accepted end to end from a pod is unmeasured until JUDGE-NET's egress is up.
 ### 3.2.3 jev-browser: the internal request adapter (JUDGE-ADAPT)
 
 jev-browser (pinned 0.2.0, patched to attach over CDP: JEV-IMAGE) is an MCP
-server where a model, "Jev", picks each step of a browsing task. It asks only
+server where a model, "Jev", picks each step of a browsing agent. It asks only
 two kinds of question: `noul` (a yes/no probability) and `choice` (one option
 of several). On 2026-10-14 the owner made the backend selectable: **Internal
 Jev** (the default), **Internal Laya** or **TypeSafe**. The network path and
@@ -439,7 +439,7 @@ unchanged, and that `internal` with no key does not throw.
 ### 3.2.4 Choosing and seeing the browser tool (BSTATUS-API)
 
 Owner decision 2026-10-14 (BSTATUS-API, part of #1030): "Picker on Submit,
-Auto by default". A `claude-code-browser` task names its tool in
+Auto by default". A `claude-code-browser` agent names its tool in
 `input.browser_tool`, one of four names the frozen catalogue declares
 (contract request 77): `auto` (the default), `playwright`, `dev-browser` or
 `jev`. A NAME, never a command, an MCP config or a URL (invariant 10): the
@@ -467,7 +467,7 @@ for its submitter or its tenant (the resolution `GET
 jev (`BROWSER_JEV_INSTALLED=false`), is refused 422
 `browser_tool_unavailable`. It is a new refusal, so it ships switched off
 (`REFUSAL_BROWSER_TOOL_UNAVAILABLE`): until the Submit form disables Jev when
-no key resolves, the refusal is logged and the task runs on Playwright.
+no key resolves, the refusal is logged and the agent runs on Playwright.
 
 **How the console learns which tool is in use.** Three parties each know
 one part, and none can see the others' part:
@@ -506,7 +506,7 @@ that mints the ticket.
 
 **What the console reads** is `browser` on `GET
 /v1/tasks/{id}/live/session`, beside `live_browser`, served for a live-browser
-task before, during and after its session:
+agent before, during and after its session:
 
 ```json
 {"tool_selected": "auto",
@@ -516,7 +516,7 @@ task before, during and after its session:
  "egress": {"mode": "residential", "country": "us", "state": "ok", "last_error": null}}
 ```
 
-`tool_selected` is the task's own input, so it is there from submission.
+`tool_selected` is the agent's own input, so it is there from submission.
 `tools_available` is empty and `egress` null until the current attempt's gate
 reports them: never invented. `jev.key_scope` says whose TypeSafe key jev runs
 on while it is registered, and is null otherwise.
@@ -531,18 +531,18 @@ connects, untagged, and is attributed to nothing; the proxy also reads a
 
 ### 3.2.5 jev-browser: which backend, which key, how the key arrives (JEV-RUNNER)
 
-Owner decision 2026-10-14 (JEV-RUNNER, part of #1030): a live-browser task
+Owner decision 2026-10-14 (JEV-RUNNER, part of #1030): a live-browser agent
 also gets [jev-browser](https://github.com/ying-kai-liao/jev-browser)'s MCP
 tools, beside Playwright MCP and dev-browser, **according to the workspace's
-judgment backend (§3.2.2, JUDGE-SELECT, PR 1312) and the task's `browser_tool` (§3.2.4) and, for TypeSafe, when its
+judgment backend (§3.2.2, JUDGE-SELECT, PR 1312) and the agent's `browser_tool` (§3.2.4) and, for TypeSafe, when its
 submitter or its tenant has a TypeSafe key**. jev-browser 0.2.0 (MIT) is a Node MCP server over
 Playwright. Its `browser_do(goal, values)` and `browser_read(question)` hand
 a goal-driven step, or a question about a long page, to TypeSafe's Jev
 models. That means it **sends the page's text and labels to TypeSafe
-(`api.typesafe.ai`)**. The owner accepted that. A TypeSafe-backend task with no key never
+(`api.typesafe.ai`)**. The owner accepted that. A TypeSafe-backend agent with no key never
 loads it, and the prompt says nothing about it. jev-ultrafast stays out.
 
-**The gate is two conditions**, both required: (a) the task's `browser_tool`
+**The gate is two conditions**, both required: (a) the agent's `browser_tool`
 (§3.2.4) is `jev` or `auto`, never `playwright` or `dev-browser`; and (b) the
 workspace's backend allows it. Condition (b) is the backend, not the key (`SWARM_JEV_BACKEND`, set by the
 scheduler's `judgment.py` and passed to the worker and the runner):
@@ -565,7 +565,7 @@ TypeSafe, because nothing goes there. The key path below applies to the
 **Why per key, and which key** (the `typesafe` backend). jev-browser does nothing without
 `TYPESAFE_API_KEY`, and the keys are the ones docs/provider-keys.md stores.
 The worker resolves the key with swarm-api's rule (`resolve_provider_key`): the
-submitter's own key, `swarm-tenant-u-<user>-typesafe`, wins, else the task
+submitter's own key, `swarm-tenant-u-<user>-typesafe`, wins, else the agent
 tenant's, else none. "The submitter's own" means their confirmed personal
 tenant, whose document names their email. A namesake on another domain
 derives the same `u-` id, so the id alone is not enough.
@@ -575,14 +575,14 @@ every combination. The worker reads the secret as its own service account,
 the same way it reads every tenant credential. Nothing asks swarm-api for the
 value, because no route serves a credential.
 
-**A personal key on a group task needs a grant.** A task bogdan submits in
+**A personal key on a group agent needs a grant.** An agent bogdan submits in
 `eng` runs as eng's worker account. swarm-api's write granted
 `swarm-tenant-u-bogdan-typesafe` to u-bogdan's worker only, so eng's worker
 gets PERMISSION_DENIED. It logs `jev_key_unreadable` (the secret id and the
 error type) and uses eng's key if eng has one.
 `terraform/bootstrap/typesafe_user_keys.tf` grants one group's worker read
 on one person's key, one row at a time (`typesafe_user_key_readers`; the
-owner applies it). **A row lets every task in that group read that person's
+owner applies it). **A row lets every agent in that group read that person's
 key**, because every member runs as the same account in the same container.
 It is the same trade as the GitHub user slots (#780 D7 U1), so a person is
 listed only by consent.
@@ -664,9 +664,9 @@ gate --(WS, TCP 8080, in-cluster)--> swarm-live <--(WS, TCP 8080, internal LB)--
 
 1. **The worker asks swarm-api for a tunnel ticket** (`POST
    /v1/attempts/{attempt_id}/live-session`), signed with the attempt key
-   (section 5.4.1). swarm-api checks the fence -- the task is `RUNNING` under
-   this lease and generation -- that the task's profile is a live-browser
-   profile, and that the tenant is the task's, then writes
+   (section 5.4.1). swarm-api checks the fence -- the agent is `RUNNING` under
+   this lease and generation -- that the agent's profile is a live-browser
+   profile, and that the tenant is the agent's, then writes
    `live_sessions/{session_id}` and returns a one-use ticket, an HMAC under
    `swarm-live-key` (held by `swarm-api` and `swarm-live` only, value created by
    `scripts/create-secrets.sh`, never a Terraform secret version) over
@@ -688,7 +688,7 @@ gate --(WS, TCP 8080, in-cluster)--> swarm-live <--(WS, TCP 8080, internal LB)--
    as its first message. swarm-api authenticates the connection exactly as
    every route does (`Authenticator.authenticate`,
    `apps/swarm-api/swarm_api/auth.py::Authenticator.authenticate`), checks the
-   tenant, the task, the role (section 5.1) and the generation, and proxies the
+   tenant, the agent, the role (section 5.1) and the generation, and proxies the
    websocket to `swarm-live` as plain ws over the internal load balancer
    (`SWARM_LIVE_URL`, `ws://<reserved internal address>:8080`, + `/v1/view`),
    presenting the viewer ticket as the relay's first message.
@@ -729,7 +729,7 @@ entry -- half fell back to the image's headless Python Playwright. So
   proxy: `Worker._prepare` fails the ATTEMPT retryably with
   `live_gate_unavailable` before the agent runs -- the start-failure path an
   unreachable forge takes. Its lease and capacity are released at once
-  (invariant 1), the task goes back to READY 30 s later while it has attempts
+  (invariant 1), the agent goes back to READY 30 s later while it has attempts
   left, and ends CANNOT_START when they are spent. Not a park: nothing about
   this pod's sidecar improves by waiting, only a new pod brings a new one, and
   a SCHEDULED_RETRY park is promoted by nothing.
@@ -767,7 +767,7 @@ and L9 minted different ticket shapes. The owner resolved it on 2026-10-11
   `attempt_id`, `generation`, `session_id`, `role` (`tunnel` or `viewer`),
   `exp` (at most 60 s ahead) and a `nonce`. The relay checks the MAC, the
   expiry and single use, and trusts only the ticket: a tunnel ticket defines
-  the session, and every later ticket for it must name the same tenant, task,
+  the session, and every later ticket for it must name the same tenant, agent,
   attempt and generation. When a session closes or its generation goes stale,
   swarm-api calls the relay's `POST /internal/close` with the session id,
   MAC'd with the same key under its own domain (so a ticket is never a close
@@ -832,8 +832,8 @@ session meet in the same process. A StatefulSet of one replica guarantees at
 most one pod; a Cloud Run service with `max_instances = 1` does not (two
 revisions overlap during a rollout, and the two ends can land on different
 revisions). A relay restart drops every live session for the seconds it takes
-to come back; both ends reconnect, and nothing about the task changes because
-the relay holds no task state. The console reconnects with a new viewer
+to come back; both ends reconnect, and nothing about the agent changes because
+the relay holds no agent state. The console reconnects with a new viewer
 ticket. The gate cannot mint its own -- only the worker holds the attempt key
 that proves one -- so the WORKER reconnects it: when the gate's `status` says
 its tunnel closed, the worker asks the live-session route again (an open
@@ -893,7 +893,7 @@ second of that, not of the SIGTERM.
 
 **What the relay is not.** It is not trusted with authorisation: it verifies
 tickets it did not mint against a key it shares only with swarm-api, and it
-refuses a ticket whose tenant, task, attempt or generation does not match the
+refuses a ticket whose tenant, agent, attempt or generation does not match the
 session's tunnel ticket. It has **no Firestore access at all** (decision (a)
 above; the audit of section 5.8 is written by swarm-api in the transaction of
 the change it records), and its only GCS grant is object creation under the
@@ -902,7 +902,7 @@ the change it records), and its only GCS grant is object creation under the
 ### 3.4 In the console: noVNC on the agent's page
 
 The agent's detail view (`apps/swarm-ui/src/AgentDetail.tsx`) gains a **Live
-browser** panel for a task whose profile is a live-browser profile and whose
+browser** panel for an agent whose profile is a live-browser profile and whose
 state is `RUNNING`. It embeds noVNC (`@novnc/novnc`, pinned), which draws
 **pixels into a canvas**. Above the canvas, outside it, the console draws a
 strip the page cannot influence: the top frame's real origin as Chromium
@@ -925,7 +925,7 @@ agent: swarm-handoff request --reason "Sign in to GitHub as the bot account" --e
 agent: swarm-handoff wait            # blocks until resolved, up to 9 minutes a call, then "still waiting" (exit 75)
 ```
 
-`swarm-handoff` is a small command in the browser image. Like the child-task
+`swarm-handoff` is a small command in the browser image. Like the child-agent
 spool (`docs/design/child-tasks.md` (`**Spool, not a localhost endpoint`)) it
 **writes a file** -- `$SWARM_HANDOFF/requests/<id>.json`, atomically -- and
 opens no socket, for the same reasons: no new listener in the agent's reach,
@@ -938,7 +938,7 @@ because claude-code's Bash tool kills a command at 10 (`#736`, recorded in
 | 0 | control was returned; a JSON summary is on stdout (section 5.9) | look at the page once and continue |
 | 75 | still waiting | call `wait` again, at once |
 | 3 | the wait expired; the worker is checkpointing and parking | write its notes into `work/` and stop; the worker ends it either way |
-| 4 | the task is being cancelled | stop |
+| 4 | the agent is being cancelled | stop |
 | 5 | refused (rate limit, no live path, reason invalid) | carry on without help, or fail with that reason |
 
 **Wait, do not poll (HANDOFF-POLICY, 2026-10-13).** Measured on
@@ -969,11 +969,11 @@ The **worker** picks the request up on its control poll (10 seconds,
 2. tells the gate to **pause the agent's CDP** (section 5.4.3), so from this
    moment the agent cannot act on the browser, cooperative or not;
 3. records the wait through a worker route signed with the attempt key, `POST
-   /v1/tasks/{task_id}/handoff`. swarm-api sets the task's `human_wait`
+   /v1/tasks/{task_id}/handoff`. swarm-api sets the agent's `human_wait`
    (`{reason, expect, requested_at, deadline, controller: null}`), writes a
    `human_handoff_requested` event, and raises the console banner.
 
-The task **stays `RUNNING`** (section 4.3 says why that is the recommendation,
+The agent **stays `RUNNING`** (section 4.3 says why that is the recommendation,
 and Q2 asks the owner).
 
 **Notification (HANDOFF-POLICY, owner decision 2026-10-13: "notify, park
@@ -981,12 +981,12 @@ fast, extend while watched").** The moment the wait is recorded, the
 notification feed (`GET /v1/notifications`,
 `apps/swarm-api/swarm_api/notifications.py::handoffs`) derives an unread
 **"Agent needs you"** item -- the redacted reason as its detail, a link to the
-task's Browser tab, and a count on the bell's badge (`unread_needs_you`). It
+agent's Browser tab, and a count on the bell's badge (`unread_needs_you`). It
 goes to everyone who may take control (section 5.1, `handoff.may_control`):
 the submitter, and every member of the tenant while "Let any member take
-control" is on for the attempt's session (or when the task has no human
+control" is on for the attempt's session (or when the agent has no human
 owner). A personal workspace's member-scoped reader is told of their own
-tasks only, and nothing crosses a tenant (invariant 9). The item is derived,
+agents only, and nothing crosses a tenant (invariant 9). The item is derived,
 not stored (docs/notifications.md): it is gone on the next read once the
 hand-off resolves, and its id carries the request id, so a second hand-off in
 the same attempt is unread again. The parking-fast rule below depends on this
@@ -1024,7 +1024,7 @@ Control also ends without a return press, each case audited with its cause:
 the controller's console stops renewing for 60 seconds (`renew_by` passed),
 the controller is idle for `control_idle_seconds` (default 300; no input
 event), the controller is preempted (section 5.1), their membership lapses
-(section 5.2), the task is cancelled, or the hold expires.
+(section 5.2), the agent is cancelled, or the hold expires.
 
 **A person may also take control when the agent did not ask** (Q6). The gate
 pauses the agent's CDP the same way. The agent's in-flight Playwright calls
@@ -1055,14 +1055,14 @@ minute unless someone is watching, up to 30 while they are (HANDOFF-POLICY,
 owner decision 2026-10-13, replacing Q3's flat 10 minutes).** The browser and
 its half-finished state are alive, which is the whole point of the feature: a
 sign-in has to happen in the browser that will use the session. Capacity is
-exactly what it is for any `RUNNING` browser task: the lease holds the
+exactly what it is for any `RUNNING` browser agent: the lease holds the
 `browser` resource class's 1 unit (2 until contract request 79) and the
 backend and provider pools
 (`apps/common/swarm_common/profiles.py::RESOURCE_CLASSES`), and the pod costs 4
 vCPU and 8 GiB per minute (8 and 16 until request 79), idle or not, because `requests == limits`
 (invariant 7).
 
-*Why the flat 10 minutes went.* Measured over 26 live-browser tasks
+*Why the flat 10 minutes went.* Measured over 26 live-browser agents
 (2026-10-13): 42 hand-offs, 16 returned, 25 expired (60%), 1 cancelled. 13 of
 the expiries had nobody present (`person_waiting` false on the request event),
 and each held its 2-unit lease and pod for the full 10 minutes -- about 4.2
@@ -1155,7 +1155,7 @@ then QA2 (nobody came; parked); generation 2 asked for QA1 again, then QA2.
 Two things were missing, and both are now in place:
 
 * *The restore.* The park's refund takes `attempt_count` back down, so the
-  next lease read 1 and the worker took it for the task's first attempt,
+  next lease read 1 and the worker took it for the agent's first attempt,
   which restores nothing (`Worker._recorded_checkpoint`). The agent's notes
   and work were never put back. `human_wait_resumes` is now counted back
   exactly as `child_await_resumes` is, so the attempt after a hand-off park
@@ -1172,7 +1172,7 @@ Two things were missing, and both are now in place:
   `apps/agent-worker/agent_worker/runners/claude_code.py::resume_summary`). The
   agent's guide asks it to keep `notes.md` current, and to write it on exit
   3. The ledger is in the agent's reach, so it is read as untrusted: shape-
-  checked, bounded and redacted again, and only ever told to the same task's
+  checked, bounded and redacted again, and only ever told to the same agent's
   agent; a `resumed.md` the worker did not write this attempt is removed, and
   an earlier attempt's answers in `responses/` are cleared so a `wait` cannot
   read an old `expired` as its own.
@@ -1201,7 +1201,7 @@ FAILED` is not, and adding it is not worth a contract change for a label.
 `attempt_count` on every lease
 (`apps/common/swarm_common/admission.py::acquire_lease_in_transaction`). The park's fenced
 transaction refunds one and counts `metadata.human_wait_resumes`, while fewer
-than `max_human_resumes` (default 2) are used -- the shape the child-task await
+than `max_human_resumes` (default 2) are used -- the shape the child-agent await
 uses (`docs/design/child-tasks.md` (`The await does not spend an attempt, up to a bound.`)). `human_wait_resumes` joins `RESERVED_METADATA_KEYS`
 (`apps/swarm-api/swarm_api/validation.py::RESERVED_METADATA_KEYS`).
 
@@ -1212,7 +1212,7 @@ and an idle 8-vCPU pod.
 #### Invariants 1-3, stated for the waiting pod
 
 * **Invariant 1.** A holding pod is `RUNNING` and is real demand: it exists, so
-  it is counted. A parked task is `PARKED` and creates none. No new state
+  it is counted. A parked agent is `PARKED` and creates none. No new state
   creates demand.
 * **Invariant 2.** Unchanged. The re-admission after `human-ready` reserves
   every pool in one transaction, like any other.
@@ -1220,7 +1220,7 @@ and an idle 8-vCPU pod.
   inside an attempt that was leased; nothing about it is counted from
   `RUNNING`.
 
-#### Why a field and not a new task state (Q2)
+#### Why a field and not a new agent state (Q2)
 
 The brief suggested a state, `WAITING_FOR_HUMAN`. A state that holds a pod
 must join `CONCURRENCY_STATES`
@@ -1231,7 +1231,7 @@ reconciler's heartbeat and stale-generation checks, the worker's fence checks
 in `control.py`, release, the UI's state lists and the contract-parity script
 that holds shell restatements to the Python
 (`scripts/lib/check-contract-parity.sh`). A reader that is missed treats a
-holding task as not running and reclaims it, or as not holding capacity and
+holding agent as not running and reclaims it, or as not holding capacity and
 oversubscribes the pool -- invariant 3's exact failure. The field
 (`Task.human_wait`) carries the same information to the console and to `sc
 status`, and changes no reader that does not want it. The console shows
@@ -1241,7 +1241,7 @@ status`, and changes no reader that does not want it. The console shows
 
 * **During the hold.** `request_cancel`
   (`apps/swarm-api/swarm_api/store.py`) sets `cancel_requested` as for any
-  capacity-holding task. The worker sees it on its next control poll
+  capacity-holding agent. The worker sees it on its next control poll
   (`ControlSignals.cancel_requested`,
   `apps/agent-worker/agent_worker/control.py::ControlSignals`), tells the gate to end control
   mode, close the tunnel and wipe the browser; swarm-api closes the session
@@ -1261,20 +1261,20 @@ status`, and changes no reader that does not want it. The console shows
 
 | Who | Watch | Take control | Why |
 |---|---|---|---|
-| A member of the task's tenant | **yes** | only if the submitter allowed it for this task | LB-2. Watching shows masked pixels of work the tenant already owns. |
-| The task's submitter (`Task.submitted_by`, `apps/common/swarm_common/models.py::Task`) | yes | **yes**, and may preempt another controller | The person whose task it is; the credentials typed are theirs or their team's. |
-| A workflow step's or schedule's task with a non-human submitter | yes | the workflow's or schedule's human owner; if there is none, any tenant member | A service account cannot press a button. |
+| A member of the agent's tenant | **yes** | only if the submitter allowed it for this agent | LB-2. Watching shows masked pixels of work the tenant already owns. |
+| The agent's submitter (`Task.submitted_by`, `apps/common/swarm_common/models.py::Task`) | yes | **yes**, and may preempt another controller | The person whose agent it is; the credentials typed are theirs or their team's. |
+| A workflow step's or schedule's agent with a non-human submitter | yes | the workflow's or schedule's human owner; if there is none, any tenant member | A service account cannot press a button. |
 | A platform admin who is not a tenant member | **no** | no | Invariant 9 and LB-2 say tenant members only. No break-glass in phase 1 (Q5). |
 | Anyone else | no | no | |
 
 **Recommendation (Q1): control defaults to the submitter.** A tenant may be a
 whole team; a teammate taking control of someone else's agent and typing
 credentials into it is a decision the submitter should make. The submitter can
-open control to any member of the tenant for this task with one toggle,
+open control to any member of the tenant for this agent with one toggle,
 audited. "Any member may control" as the default is simpler and is the
 alternative offered.
 
-**The toggle is the task's, and it goes both ways (owner decision 2026-10-13,
+**The toggle is the agent's, and it goes both ways (owner decision 2026-10-13,
 "Carry over, with a confirm"; QA12-11).** QA pass p12 found it one way, with no
 word of what it did, and back off on a resumed attempt, because it lived on one
 attempt's `live_sessions` document. swarm-api now keeps it on the task document
@@ -1296,16 +1296,16 @@ On every websocket connection to `/v1/live/{session_id}/stream`, swarm-api:
    unchanged: `searchTransitiveGroups` 403s in this project, so membership is
    checked **per registered group**, with `x-goog-user-project` on every call
    (`apps/swarm-api/swarm_api/groups.py::CloudIdentityGroups`);
-2. reads the task and refuses unless `task.tenant_id == ctx.tenant_id` **and**
+2. reads the agent and refuses unless `task.tenant_id == ctx.tenant_id` **and**
    the tenant document's principal matches `ctx.tenant_principal` (two groups
    with the same local part slug to the same `tenant_id`;
    `AuthContext.tenant_principal`, `apps/swarm-api/swarm_api/auth.py::AuthContext`). A
-   refusal is a 404, the same answer as a task that does not exist, so a
+   refusal is a 404, the same answer as an agent that does not exist, so a
    foreign task id is not confirmed;
 3. verifies the one-use viewer ticket it minted for this caller (`role =
    viewer`, the caller's email, the session, the generation, 30-second expiry,
    sent as the socket's first message), refuses it unless it names this
-   address's session, the session is the task's current one, open, at the
+   address's session, the session is the agent's current one, open, at the
    ticket's generation, and presents it to the relay, which refuses a ticket
    used twice, expired, or naming another session, tenant or generation. A
    refusal by the relay closes the console's socket as a 404 (4404), as every
@@ -1326,7 +1326,7 @@ carries only the session id, which is not secret (`live_<attempt id>`).
 reads no session state, so swarm-api tells it: on every transaction that
 closes a session (a cancel, an expired hold, an attempt that lost its lease),
 when a worker of a stale generation asks for a tunnel ticket, when a new
-attempt's session opens (every earlier one of that task is stale, watched or
+attempt's session opens (every earlier one of that agent is stale, watched or
 not), and when a proxied socket sees its session closed or its generation
 moved, swarm-api POSTs the relay's `/internal/close`. The relay drops the
 tunnel and every viewer of that session and refuses, until they have expired,
@@ -1546,7 +1546,7 @@ still judged live by its dispatch deadline: task_23cc2e82178640709a45 took
 154 s, registered no key, and ran with no live browser. swarm-api's
 `_lease_is_live` (`apps/swarm-api/swarm_api/children.py`) now uses the
 reconciler's own clock for a never-beaten lease — live until
-`dispatch_deadline` — and nothing else about the fence moved: the task must be
+`dispatch_deadline` — and nothing else about the fence moved: the agent must be
 STARTING, at this lease and generation, the lease unreleased, the slot unused.
 Whatever still refuses the live path is never silent: the worker writes a
 RUNNING event with `cause: live_browser_unavailable`, the code, the reason and
@@ -1770,7 +1770,7 @@ gate reads it on its own pipe session (§3.2) and writes it into the next gate's
 context before the agent connects. The agent never holds it.
 
 **In a group tenant: nothing is kept.** The gate wipes at attempt end (§5.5).
-No secret is written, and "Save as login" is not offered. A task in a group
+No secret is written, and "Save as login" is not offered. An agent in a group
 tenant that names `input.browser_login` is refused at submission with
 `browser_login_personal_only`.
 
@@ -1789,7 +1789,7 @@ tenant that names `input.browser_login` is refused at submission with
   TTL is the backstop.
 
 **Named logins (deliberate, personal tenants only).**
-* After the person returns control on a task in their own workspace, the
+* After the person returns control on an agent in their own workspace, the
   Browser tab offers "Save as login", with a name (for example `github-qa`) and
   an expiry (default 14 days, at most 30).
 * The worker stores the jar as `swarm-tenant-u-<user>-browser-login-<name>`,
@@ -1797,14 +1797,14 @@ tenant that names `input.browser_login` is refused at submission with
   swarm-api keeps its metadata (site, saved at, expires, last used) in its own
   collection `browser_logins`, keyed by tenant. That collection belongs to
   swarm-api, as `live_sessions` does, not to the frozen models.
-* A task in that workspace opts in with `input.browser_login: "<name>"`: a
+* An agent in that workspace opts in with `input.browser_login: "<name>"`: a
   name, never cookies, as invariant 10 asks of every caller choice. An unknown,
-  expired or revoked name fails the task before the agent runs.
+  expired or revoked name fails the agent before the agent runs.
 * Access › Browser logins lists only the signed-in person's own logins, never
   with a value, with Revoke. Revoke destroys every secret version.
 * When a login's site answers with a sign-in page anyway, the gate raises a
   normal hand-off. The new sign-in refreshes the stored login (a new version),
-  so an expiry costs one prompt, not one per task.
+  so an expiry costs one prompt, not one per agent.
 
 **Whose account (owner's answer).** Any account may be saved, at the saving
 person's judgement, including a personal one. The save dialog states that every
@@ -1898,7 +1898,7 @@ create with that resource type.
 * Secrets follow the forge-token rule: Secret Manager only, read at run time.
 
 **The QA identity's console host is never carried (QI-GATE, recorded
-2026-10-20; [qa-identity.md](qa-identity.md) §4.4, part of #1649).** A task
+2026-10-20; [qa-identity.md](qa-identity.md) §4.4, part of #1649).** An agent
 that names `input.qa_identity` has its browser signed in to this
 deployment's console as the QA service account, by a credential the gate
 adds to console requests. While it does, the console host is left out of
@@ -1909,7 +1909,7 @@ everything this section moves:
   console origin's local storage
   (`apps/agent-worker/agent_worker/livegate/session.py::SessionCarry._excluded`).
   Nothing IAP sets for the QA account can enter a carry secret or a named
-  login, where a later step or another task would pick it up.
+  login, where a later step or another agent would pick it up.
 * **Import** drops the same cookies and storage from a carried jar
   (`apps/agent-worker/agent_worker/livegate/session.py::SessionCarry.import_jar`).
   Otherwise a person's own console session, carried from an earlier
@@ -1933,7 +1933,7 @@ per tenant today), filed on its own issue.
 MEASURED 2026-10-15 (QA batch full-1015, `u-bogdan`): S5-resume failed 6 of 6,
 three on Playwright MCP and three on dev-browser. Part one opened
 `https://example.com/?qa=<nonce>`, set `localStorage.qa_state`, asked for a
-hand-off and parked; the task resumed as attempt 2 from `ckpt-00001`, and the
+hand-off and parked; the agent resumed as attempt 2 from `ckpt-00001`, and the
 new browser had only `about:blank`.
 
 **Why nothing came back.** Not Chromium's session files, and not the restore
@@ -1962,14 +1962,14 @@ registered with a protected heap (`agent_worker/browser_resume.py`):
   shows. The worker writes the list to `$SWARM_HANDOFF/browser-tabs.json`, so
   it travels in the checkpoint with `work/`. A URL is the agent's own working
   state: it navigated there, and the list goes back to nobody but the same
-  task's next attempt. That Chromium lists pages in tab-strip order is not
+  agent's next attempt. That Chromium lists pages in tab-strip order is not
   measured. A tab dragged elsewhere comes back where Chromium lists it.
 * **The site storage, in a personal tenant only, under LB-7's rules.** The
   gate's `session_export` with `scope: park` covers cookies of every context,
   plus the local storage of the open https origins. Unlike a carry, it needs
-  no returned hand-off: the jar goes only to the same task's resumed
+  no returned hand-off: the jar goes only to the same agent's resumed
   attempt. The worker asks swarm-api for the slot
-  `swarm-tenant-u-<user>-browser-park-<task>` (`browser_slots.py`: this task's
+  `swarm-tenant-u-<user>-browser-park-<task>` (`browser_slots.py`: this agent's
   own name only, 24-hour TTL, granted to that tenant's worker alone) and adds a
   version. The TTL is its only delete. A hand-off park is dead-lettered after
   `human_park_max_seconds` (24 hours by default), so the secret outlives no
@@ -2083,8 +2083,8 @@ What stands in the way:
 4. **Not over plain HTTP, not to an address.** The gate refuses to enter
    control mode while the top frame is `http:` or its host is an IP literal;
    the console says why.
-5. **A submitter may pin allowed sign-in hosts** for the task (a list on the
-   task, optional): a hand-off whose `expect` is not on it is refused before
+5. **A submitter may pin allowed sign-in hosts** for the agent (a list on the
+   agent, optional): a hand-off whose `expect` is not on it is refused before
    anyone is asked.
 
 What remains: a person who confirms past a red warning. The take-control dialog
@@ -2099,11 +2099,11 @@ transaction** as the change it records, as `admin_audit` is
 redacted), `control_taken`, `control_returned`, `control_ended` (cause:
 `idle`, `renew_lapsed`, `preempted`, `membership_lost`, `cancelled`,
 `hold_expired`), `control_opened_to_members`, `handoff_resolved`,
-`session_closed`. Each names the task, attempt, generation, the person's email,
-and counts (keys, pointer events, duration), never content. The task's own
+`session_closed`. Each names the agent, attempt, generation, the person's email,
+and counts (keys, pointer events, duration), never content. The agent's own
 event stream carries the hand-off and control transitions so the console's
 timeline shows them; that needs new `EventType` members (request LB-B). The
-audit is readable by members of the task's tenant through the task routes, and
+audit is readable by members of the agent's tenant through the task routes, and
 by nobody else.
 
 ### 5.9 What the agent sees of what the person did
@@ -2124,9 +2124,9 @@ the page there (section 5.4.3).
 | What | Limit (default) | Where enforced |
 |---|---|---|
 | Viewer tickets per person | 30 a minute | swarm-api, per principal (`TokenBucketLimiter`, `apps/swarm-api/swarm_api/ratelimit.py::TokenBucketLimiter`; in-process, so N instances allow N times this, as that module records) |
-| Concurrent viewers per task | 10 | relay (single replica, so the count is global) |
+| Concurrent viewers per agent | 10 | relay (single replica, so the count is global) |
 | Concurrent viewers per tenant | 50 | relay |
-| Take-control attempts per person per task | 6 a minute | swarm-api |
+| Take-control attempts per person per agent | 6 a minute | swarm-api |
 | Hand-off requests per attempt | 3 | worker, and swarm-api from the task document |
 | Controller input events | 200 a second | gate (drops above) |
 | Frame rate | 10 fps with a viewer, 1 fps recording-only | gate |
@@ -2471,7 +2471,7 @@ relay's service account holds `storage.objects.create` on the artifact bucket
 under an IAM condition limiting it to names that contain `/live/` and end in
 those suffixes, and nothing else: no read, no delete.
 
-**Viewers.** Members of the task's tenant, through a swarm-api route that
+**Viewers.** Members of the agent's tenant, through a swarm-api route that
 checks the tenant as §5.2 does and streams the object. Not admins outside the
 tenant. The 7 days are the same for every tenant; a tenant-specific retention
 is not in phase 1.
@@ -2487,7 +2487,7 @@ does not run on Cloud Run here: the `browser` profile is GKE-only because
 Chromium needs a sized `/dev/shm`
 (`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`, the `browser` entry), and this design
 adds a native sidecar and a second uid on top. swarm-api refuses a live session
-for a task whose resolved backend is not `GKE_AUTOPILOT`, and
+for an agent whose resolved backend is not `GKE_AUTOPILOT`, and
 `claude-code-browser` must not be added to the Cloud Run fallback list
 (`cloud_run_fallback_profiles`, `terraform/infra/locals.tf`), because a fallback would silently run a
 profile whose hand-off cannot work.
@@ -2627,7 +2627,7 @@ not in the frozen models.
 
 ### 8.5 The ten invariants
 
-1. Only leased tasks create demand: a holding task is `RUNNING`; a parked one
+1. Only leased agents create demand: a holding agent is `RUNNING`; a parked one
    is `PARKED(HUMAN_REQUIRED)` and creates none.
 2. All-or-nothing reservation: unchanged; re-admission after `human-ready` is
    an ordinary admission.
@@ -2644,7 +2644,7 @@ not in the frozen models.
 8. Checkpointing: unchanged and mandatory; a hold does not pause the periodic
    checkpoint, and the park writes one.
 9. Tenant isolation: frames, control, recordings and the audit are served to
-   the task's tenant only, checked on every connection; recordings live under
+   the agent's tenant only, checked on every connection; recordings live under
    the tenant's prefix.
 10. Profiles by name: `live_browser` is a catalogue property; a caller cannot
     ask for a live browser on another profile, or pass display, browser or
@@ -2681,9 +2681,9 @@ first, red, then the fix (CLAUDE.md, "Red first").
 | 2 | **L8b VAULT-IAM** | `terraform/bootstrap/browser_logins.tf` (built in bootstrap, not infra: see its header), `tests/terraform/browser_logins.tftest.hcl` | L8 | as built: only a personal tenant's worker holds a grant, on its own `swarm-tenant-u-<user>-browser-` prefix; no group tenant's worker holds any `-browser-` grant; swarm-api may destroy those secrets; no secret version in Terraform; `managed-by=swarm-terraform` on every resource. **Superseded by L8c** (owner decision 2026-10-11): the worker's project-level reader, writer and unconditioned creator are removed, because Terraform cannot name a person whose workspace the job made, and a project-level create cannot be narrowed by name |
 | 2 | **L8c SECRET-PROVISION** | `terraform/bootstrap/browser_logins.tf`, `terraform/modules/custom_role_ids/main.tf`, `tests/terraform/browser_logins.tftest.hcl`, `apps/swarm-api/swarm_api/browser_slots.py`, `apps/swarm-api/swarm_api/routes/browser_slots.py`, `apps/agent-worker/agent_worker/browser_login.py`, `tests/unit/control_plane/test_browser_slots.py`, `tests/unit/worker/test_browser_session.py` | L8b, L4c, L9b | a non-personal tenant is refused a slot; a name outside the caller's prefix is refused before Secret Manager is called; a stale generation is refused; a granted slot binds exactly one member on exactly one secret; no worker in Terraform holds any Secret Manager project grant for `-browser-`; swarm-api's provisioner role carries the condition; the worker asks for the slot before every write and never creates a secret |
 | 2 | **L8e SHIP-RELAY** | `apps/swarm-live/Dockerfile`, `apps/swarm-live/uv.lock`, `scripts/build-images.sh`, `scripts/push-images.sh`, `terraform/infra/live.tf`, `terraform/infra/locals.tf`, `kubernetes/swarm-system/swarm-live.yaml`, `kubernetes/apply.sh`, the two live policies and `network_parity.py`, `tests/terraform/live.tftest.hcl`, `tests/unit/scripts/test_swarm_live_image.py`, `tests/unit/scripts/test_live_netpol.py` | L6, L7, L8 | build-images lists `swarm-live`; `terraform test`: the manifest is on 8080 with no TLS volume, `requests == limits`, and its NetworkPolicy admits only labelled tenant gates and `var.subnet_cidr`; `apply.sh --swarm-system` applies the manifest before the policies and refuses `agents-staging` (section 8.1.1) |
-| 2 | **L9b LOGIN-VAULT** | `apps/swarm-api/swarm_api/browser_logins.py`, `apps/swarm-api/swarm_api/routes/browser_logins.py`, `apps/scheduler/scheduler/reconcile.py`, `tests/unit/control_plane/test_browser_logins.py` | L9 | only the workspace's own person can list or revoke its logins; anyone else gets 404; a group-tenant task naming `browser_login` is refused with `browser_login_personal_only`; a value is never returned; save takes a name and an expiry of at most 30 days; revoke destroys every version; a workflow's carry secret is deleted at its terminal state; the audit records names only |
-| 3 | **L12c UI-LOGINS** | `apps/swarm-ui/src/BrowserLogins.tsx`, `apps/swarm-ui/src/Access.tsx`, `apps/swarm-ui/src/LiveBrowser.tsx`, `apps/swarm-ui/test/BrowserLogins.test.tsx` | L9b, L12 | after Return control on a personal-workspace task the tab offers "Save as login" with the account warning, and never on a group-tenant task; Access › Browser logins lists name, site, expiry and last use, never a value; Revoke asks for a typed confirmation |
-| 4 | **L13 ACCEPT** | `.github/workflows/accept.yml`, `tests/acceptance/test_live_browser.py`, `tests/acceptance/fixtures/login.html`, `docs/acceptance.md` | all | on dev: a `claude-code-browser` task asks for help on a fixture sign-in page; a scripted viewer takes control and types a password generated at run time; the recording's frames have the field's pixels painted; the transcript, logs, checkpoint and outputs do not contain the password; control returns and the task succeeds; a member of another tenant is refused |
+| 2 | **L9b LOGIN-VAULT** | `apps/swarm-api/swarm_api/browser_logins.py`, `apps/swarm-api/swarm_api/routes/browser_logins.py`, `apps/scheduler/scheduler/reconcile.py`, `tests/unit/control_plane/test_browser_logins.py` | L9 | only the workspace's own person can list or revoke its logins; anyone else gets 404; a group-tenant agent naming `browser_login` is refused with `browser_login_personal_only`; a value is never returned; save takes a name and an expiry of at most 30 days; revoke destroys every version; a workflow's carry secret is deleted at its terminal state; the audit records names only |
+| 3 | **L12c UI-LOGINS** | `apps/swarm-ui/src/BrowserLogins.tsx`, `apps/swarm-ui/src/Access.tsx`, `apps/swarm-ui/src/LiveBrowser.tsx`, `apps/swarm-ui/test/BrowserLogins.test.tsx` | L9b, L12 | after Return control on a personal-workspace agent the tab offers "Save as login" with the account warning, and never on a group-tenant agent; Access › Browser logins lists name, site, expiry and last use, never a value; Revoke asks for a typed confirmation |
+| 4 | **L13 ACCEPT** | `.github/workflows/accept.yml`, `tests/acceptance/test_live_browser.py`, `tests/acceptance/fixtures/login.html`, `docs/acceptance.md` | all | on dev: a `claude-code-browser` agent asks for help on a fixture sign-in page; a scripted viewer takes control and types a password generated at run time; the recording's frames have the field's pixels painted; the transcript, logs, checkpoint and outputs do not contain the password; control returns and the agent succeeds; a member of another tenant is refused |
 
 L1-L3 share `livegate/`, a new directory; they are three lanes because their
 files do not overlap, and L3 waits for L1 because it encodes L1's frames.
@@ -2726,7 +2726,7 @@ routes these lanes introduced. `claude-code-browser` already names
 ## 10. Questions for the owner
 
 **Answered 2026-10-11, recorded on #1030.** The owner took every
-recommendation below: Q1 the submitter, with a per-task "open to the tenant"
+recommendation below: Q1 the submitter, with a per-agent "open to the tenant"
 toggle; Q2 the field; Q3 10 minutes (superseded 2026-10-13 by HANDOFF-POLICY:
 one minute unwatched, extended while watched up to 30, section 4.3); Q4 24 hours; Q5 no; Q6 yes, the submitter
 only; Q7 sign in again; Q8 console only in phase 1; Q9 R2; Q10 on; Q11 yes, at
@@ -2736,9 +2736,9 @@ approved the mockup of §6 as drawn.
 The questions as they were asked, each written to `questions.json` with its
 recommendation:
 
-1. **Q1** Who may take control: the submitter (with a per-task "open to the
+1. **Q1** Who may take control: the submitter (with a per-agent "open to the
    tenant" toggle), or any tenant member. *Recommended: the submitter.*
-2. **Q2** `Task.human_wait` while the pod holds, or a new task state
+2. **Q2** `Task.human_wait` while the pod holds, or a new agent state
    `WAITING_FOR_HUMAN`. *Recommended: the field.*
 3. **Q3** The hold before the park. *Recommended: 10 minutes.*
 4. **Q4** How long a parked hand-off waits before it is dead-lettered.

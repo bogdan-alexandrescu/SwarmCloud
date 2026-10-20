@@ -1,7 +1,7 @@
 # The search tool: live-browser agents search through an API
 
 **Status: built, switched OFF.** Lane SEARCH-TOOL, owner decision 2026-10-13
-(~21:30 PDT), part of #1030. Nothing changes for any task until an operator
+(~21:30 PDT), part of #1030. Nothing changes for any agent until an operator
 stores the provider key and swarm-api runs with `SEARCH_TOOL_ENABLED=true`.
 
 ## 1. Why this exists
@@ -45,12 +45,12 @@ agent ──search{query,count}──▶ swarm-search shim ──spool──▶ 
 * **Authentication is the git tools', reused.** The worker signs each request
   with the attempt key it registered before the agent existed, and sends it
   with its ID token. swarm-api checks both (`ChildService.authenticate_worker`,
-  `verify_proof`), then the fence in one transaction: the task RUNNING under
+  `verify_proof`), then the fence in one transaction: the agent RUNNING under
   this attempt's live lease, no cancel requested. A stale attempt is 409
   `search_fenced` and the worker exits fenced without touching the lease
   (invariant 5). Every unproven request is the same 403 and writes nothing.
 * **Only a live-browser profile is answered** (`RunnerProfile.live_browser`,
-  read from the task's own profile, never from the request). The tool is for
+  read from the agent's own profile, never from the request). The tool is for
   an agent that opens results in the live browser; a headless agent would
   fetch the pages directly from the same NAT address that was blocked.
 * **The caller names a query and a count (1-10, default 5).** Never a
@@ -108,8 +108,8 @@ Every proven call writes one row in `search_audit`: the attempt's tuple, the
 query, the count, the provider, how many results, the outcome and its code. It
 records the **query**, because an audit of searches that does not say what was
 searched answers nothing; it never records the key, a result's text or a URL.
-A tenant member reads a task's rows at `GET /v1/tasks/{task_id}/search-calls`,
-under the task's own scope. The worker's own log names request ids and result
+A tenant member reads an agent's rows at `GET /v1/tasks/{task_id}/search-calls`,
+under the agent's own scope. The worker's own log names request ids and result
 counts, never the query.
 
 ## 5. The provider (owner question)
