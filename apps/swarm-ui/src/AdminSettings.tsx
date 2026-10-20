@@ -737,6 +737,10 @@ export function AdmSetBy({ pool }: { pool: Pool }) {
   // NAMED FOR THE MOUSE TOO (VQA V190): the word was on `aria-label` alone,
   // so a sighted reader hovering a lone `·` learnt nothing. Its own `title`
   // says the word and the sentence why, whatever cell it is drawn in.
+  // A DRAWN DISC, NOT THE GLYPH (visual QA QA-099, 2026-10-20): a 3px `·`
+  // in the faint ink read as an empty cell. `.adm-setby-cfg`
+  // (styles/admin.css) draws a 6px disc in the dim ink and sets the glyph at
+  // size 0; the glyph stays in the text, as Pools' dot keeps it.
   return by.term === 'configured' ? (
     <span className="adm-setby-cfg" role="img" aria-label="configured" title={`configured. ${by.detail}`}>
       ·
@@ -781,27 +785,38 @@ export function keyBreaks(name: string): ReactNode {
  * part after the author is one unbreakable run, `· 40 → 20`, `· 3h ago`
  * (`.adm-changed-part`, styles/admin.css), and the only breaks are the
  * spaces before them, so a line never ends on a separator.
+ *
+ * AND ON A PHONE NO LINE STARTS ON ONE (visual QA QA-043, 2026-10-20). The
+ * leading `·` then began the line under `ops@example.com`: `· 40 → 20 · 3h
+ * ago`. A ~190px value column never holds the whole run, so in the stacked
+ * record the author and each part are a line of their own and the
+ * separators are not drawn (`.adm-changed-sep`, styles/admin.css). A break
+ * CSS cannot see is never left to decide where a `·` falls.
  */
+function Sep() {
+  return <span className="adm-changed-sep">·</span>
+}
+
 function Changed({ change, now, as: Tag }: { change: Change; now: number; as: 'dd' | 'p' | 'span' }) {
   return (
     <Tag className="adm-changed">
-      {change.by}
+      <span className="adm-changed-by">{change.by}</span>
       {change.what !== null && (
         <>
           {' '}
           <span className="adm-changed-part">
-            · <span className="mono">{change.what}</span>
+            <Sep /> <span className="mono">{change.what}</span>
           </span>
         </>
       )}{' '}
       <span className="adm-changed-part">
-        · <time dateTime={change.at} title={change.at}>{timeAgo(change.at, now)}</time>
+        <Sep /> <time dateTime={change.at} title={change.at}>{timeAgo(change.at, now)}</time>
       </span>
       {change.since !== null && (
         <>
           {' '}
           <span className="adm-changed-part">
-            ·{' '}
+            <Sep />{' '}
             <span className="adm-changed-since" title={change.since} aria-label={`changed since. ${change.since}`}>
               changed since
             </span>
@@ -1008,7 +1023,11 @@ function PoolEditor({
 const LIMIT_COLUMNS = [
   { key: 'pool', head: 'Pool', num: false },
   // The unit rides on the column name (§8.4.3), on BOTH figures (CP-24).
-  { key: 'use', head: 'In use (units)', num: true },
+  // NOT `num` (visual QA QA-045, 2026-10-20): `.is-num` right-aligned In
+  // use's figure at its column's right edge while Ceiling's sat in a 6ch slot
+  // at its column's left. Both figures are now the same slot (`.adm-inuse`,
+  // `.adm-ceiling`), so both heads align the same way over them.
+  { key: 'use', head: 'In use (units)', num: false },
   { key: 'ceiling', head: 'Ceiling (units)', num: false },
   { key: 'by', head: 'Set by', num: false },
   { key: 'changed', head: 'Last changed', num: false },
@@ -1171,6 +1190,8 @@ function PoolRow({
   const by = setBy(pool)
   const editable = isEditable(pool)
   const refused = admin === false
+  // Any reason the press would be refused (QA-037: `aria-disabled`, not `disabled`).
+  const blocked = !editable || locked || refused
   const change = changeOf(pool)
   const now = useNow(AGE_TICK_MS)
   const classes = [isPaused(pool) ? 'is-paused' : '', target ? 'is-target' : '', open ? 'is-editing' : '']
@@ -1187,7 +1208,9 @@ function PoolRow({
             prettified label is not. */}
         <span className="ctl-sub">{keyBreaks(pool.name)}</span>
       </th>
-      <td role="cell" data-label="In use (units)" className="is-num">{pool.active}</td>
+      <td role="cell" data-label="In use (units)">
+        <span className="adm-inuse">{pool.active}</span>
+      </td>
       <td role="cell" data-label="Ceiling (units)" className="adm-ceiling-cell">
         {/* THE FIGURE, THEN EDIT, THEN WHAT THE ROW SAYS ABOUT ITSELF. The
             figure has a fixed width (`.adm-ceiling`), so `edit` starts at the
@@ -1218,11 +1241,17 @@ function PoolRow({
           {/* A pool nothing can write gets no editor to open: an enabled
               control that silently does nothing is worse than none. The
               sentence is on the button, where a keyboard reader reaching it
-              gets it and a sighted reader gets the two-word marker instead. */}
+              gets it and a sighted reader gets the two-word marker instead.
+              `aria-disabled`, NOT `disabled` (visual QA QA-037, 2026-10-20):
+              a natively disabled button leaves the tab order, so the keyboard
+              reader that sentence is for never reached it. The press does
+              nothing, and `.is-blocked` (styles/admin.css) draws it as
+              `:disabled` was drawn. */}
           <button
             type="button"
-            onClick={onOpen}
-            disabled={!editable || locked || refused}
+            className={blocked ? 'is-blocked' : undefined}
+            onClick={blocked ? undefined : onOpen}
+            aria-disabled={blocked || undefined}
             aria-expanded={open}
             aria-label={
               !editable
