@@ -394,8 +394,16 @@ def test_an_attempt_that_restarts_its_runner_reports_every_runners_usage(
 #: The four typed fields, as `swarm_common.models.Attempt` declares them.
 CPU_FIELDS = ("cpu_seconds", "peak_cpu_cores", "mean_cpu_cores", "cpu_limit_cores")
 
-#: What a HEARTBEAT event's detail carried before #188, and carries again.
-HEARTBEAT_KEYS = {"elapsed_seconds", "peak_rss_bytes", "checkpoints", "cpu_seconds", "cpu_source"}
+#: What a HEARTBEAT event's detail carried before #188, and carries again --
+#: plus, since LIVE-UTIL-API (#1689, owner request 2026-10-20), the 5-second
+#: utilisation points taken since the previous beat and the attempt's
+#: throttling figures, which `GET /v1/tasks/{id}/utilisation` serves. Still no
+#: peak or mean CPU and no `final` flag: those stay on the attempt.
+HEARTBEAT_KEYS = {
+    "elapsed_seconds", "peak_rss_bytes", "checkpoints", "cpu_seconds", "cpu_source",
+    "series", "series_clock", "memory_limit_bytes",
+    "throttled_seconds", "peak_throttled_share", "mean_throttled_share",
+}
 
 
 def _heartbeats(db):
