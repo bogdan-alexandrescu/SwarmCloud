@@ -480,7 +480,13 @@ class LanguageRow(_Spec):
     grammar: str | None = Field(default=None, max_length=80)
     server: str | None = Field(default=None, max_length=80)
     #: `not_run` until the LSP pass (RI10) exists to run a server at all.
-    status: Literal["ok", "unsupported", "failing", "timed_out", "not_run"]
+    #: `partial`: the server's budget ran out after it finished some files,
+    #: whose edges are kept (#1693); without it here, every run whose server
+    #: was cut would be refused at promotion.
+    status: Literal["ok", "partial", "unsupported", "failing", "timed_out", "not_run"]
+    #: How many of `files` a server answered whole; absent from a row
+    #: written before #1693.
+    files_covered: StrictInt | None = Field(default=None, ge=0)
     fallback: _Line | None = None
 
 
@@ -679,8 +685,9 @@ _INDEX_SHAPE = (
     '   "commands": [{"name", "kind": "build" | "lint" | "test" | "ci" | "other", "command", "source"}],\n'
     '   "hot_spots": [{"path", "changes", "co_changed": ["<path>"]}],\n'
     '   "notes": [{"text": "<one line>", "source"}],\n'
-    '   "languages": [{"language", "files", "grammar", "server", "status": "ok" | "unsupported" |\n'
-    '                  "failing" | "timed_out" | "not_run", "fallback"}],\n'
+    '   "languages": [{"language", "files", "grammar", "server", "status": "ok" | "partial" |\n'
+    '                  "unsupported" | "failing" | "timed_out" | "not_run", "files_covered",\n'
+    '                  "fallback"}],\n'
     '   "graph": {"symbols": <count>, "edges": <count>,\n'
     '             "top_symbols": [{"id": "<symbol id>", "callers": <count>}]},\n'
     '   "truncated": ["<a list you cut to fit, e.g. modules>"]}\n'
@@ -789,9 +796,9 @@ def indexer_prompt(
         # RI10: the extractor's language rows carry more than LanguageRow
         # allows (`reason`, `parsed`, the per-file counts, `lsp`); the
         # document refuses any other key, so the prompt names the mapping.
-        "Copy each of its languages rows with only the six keys of the shape: drop `reason`, "
-        "`parsed`, `lsp` and its other counts, and write `fallback` as its `reason` when it "
-        "gives one, else its `fallback`. Record "
+        "Copy each of its languages rows with only the seven keys of the shape: drop `reason`, "
+        "`parsed`, `lsp` and its other counts, keep `files_covered` as it is, and write "
+        "`fallback` as its `reason` when it gives one, else its `fallback`. Record "
         f'"extractor": {{"ran": true, "command": "{EXTRACTOR_COMMAND}", "version": '
         '"<its extractor.version>"}. If it did not run -- it is not installed in this '
         f"image, or {PHASES_FILE} says it failed or timed out, or {EXTRACT_FILE} is "
@@ -1747,9 +1754,12 @@ def capped_counts(truncated: Any) -> dict[str, Any]:
 
 #: A language whose server was meant to run and did not finish (RSA-6): its
 #: edges are tree-sitter's only, and an impact or a test selection that
-#: touches it falls back to the full suite. `unsupported` (no server exists)
-#: and `not_run` are not a degraded run of this index, so they are not here.
-DEGRADED_LANGUAGE_STATUSES = ("timed_out", "failing")
+#: touches it falls back to the full suite. `partial` finished some files
+#: (#1693): those keep their edges and impact trusts them, the rest fall
+#: back, so it is degraded too, and its row says how many it covered.
+#: `unsupported` (no server exists) and `not_run` are not a degraded run of
+#: this index, so they are not here.
+DEGRADED_LANGUAGE_STATUSES = ("partial", "timed_out", "failing")
 
 
 def degraded_languages(rows: Any) -> list[dict[str, Any]]:
@@ -1763,7 +1773,8 @@ def degraded_languages(rows: Any) -> list[dict[str, Any]]:
     """
     out = [
         {"language": row.get("language"), "status": row.get("status"),
-         "files": row.get("files"), "reason": row.get("reason")}
+         "files": row.get("files"), "files_covered": row.get("files_covered"),
+         "reason": row.get("reason")}
         for row in rows or []
         if isinstance(row, Mapping) and row.get("status") in DEGRADED_LANGUAGE_STATUSES
     ]

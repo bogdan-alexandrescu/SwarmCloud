@@ -10,7 +10,10 @@
 //     the figures say it was cut -- and an uncut one says its count plainly;
 //   * RSA-6: a language whose server pass timed out or failed is said on
 //     the repository's page outside Settings, naming the language; an index
-//     whose every pass finished says nothing.
+//     whose every pass finished says nothing;
+//   * #1693: a language whose server was cut by its budget is `partial`: the
+//     banner names it with how much the server covered, so "degraded" is
+//     never read as "nothing resolved".
 //
 // Fixtures only; nothing token-shaped.
 
@@ -27,7 +30,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-type Langs = { language: string; files: number; status: string }[]
+type Langs = { language: string; files: number; status: string; files_covered?: number }[]
 
 function routes(opts: { truncated?: string[]; langs?: Langs; docLangs?: Langs; edges?: number } = {}) {
   const record = repo({ repo_id: ID }, { coverage: coverageOf(83, 20, opts.edges ?? 1000, 7) })
@@ -177,6 +180,26 @@ describe('RSA-6: a degraded index is said outside Settings', () => {
     expect(visible(warn)).toContain('python (1,046 files)')
     expect(visible(warn)).toContain('timed out')
     expect(visible(warn)).not.toContain('typescript')
+  })
+
+  it('says how many files a partial language covered', async () => {
+    routes({
+      langs: [
+        { language: 'python', files: 1447, status: 'partial', files_covered: 702 },
+        { language: 'go', files: 30, status: 'timed_out' },
+      ],
+    })
+    await mountDetail()
+    const warn = await waitFor(() => {
+      const w = document.querySelector<HTMLElement>('.ur-degraded')
+      expect(w).not.toBeNull()
+      return w!
+    }, WAIT)
+    // MUTATION: leave `partial` out of DEGRADED in RepositoriesDetail.tsx and no banner names python.
+    expect(warn.getAttribute('data-degraded')).toBe('python go')
+    // MUTATION: drop `files_covered` from normLanguages, or the partial wording from DegradedLanguages, and this reads "python (1,447 files)".
+    expect(visible(warn)).toContain('python: covered 702 of 1,447 files')
+    expect(visible(warn)).toContain('go (30 files) timed out')
   })
 
   it('says nothing when every pass finished', async () => {

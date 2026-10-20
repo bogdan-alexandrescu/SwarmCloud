@@ -714,7 +714,7 @@ function UsedByList({ used, go }: { used: readonly UsedBy[] | null; go: (to: str
 // Settings A
 // ---------------------------------------------------------------------------
 
-const LANG_TONE: Readonly<Record<string, string>> = { ok: 'ok', unsupported: 'warn', failing: 'bad', timed_out: 'bad' }
+const LANG_TONE: Readonly<Record<string, string>> = { ok: 'ok', partial: 'warn', unsupported: 'warn', failing: 'bad', timed_out: 'bad' }
 
 /**
  * The languages table: the languages route's rows, or -- when this API does
@@ -733,12 +733,20 @@ function languagesRead(route: Result<LanguageRow[]>, index: Result<IndexDoc | nu
   return { state: { ...index, data: doc.languages }, fromDoc: true }
 }
 
-/** A language whose language-server pass did not finish: the index is degraded for its files (RSA-6). */
-const DEGRADED: Readonly<Record<string, string>> = { timed_out: 'timed out', failing: 'failed' }
+/**
+ * A language whose language-server pass did not finish: the index is degraded for its files (RSA-6). `partial`
+ * finished some of them before its budget ran out, and those keep their edges (#1693).
+ */
+const DEGRADED: Readonly<Record<string, string>> = { partial: 'partly covered', timed_out: 'timed out', failing: 'failed' }
 
 /** "python (1,046 files)": a degraded language, with its size when served. */
 function langWords(l: LanguageRow): string {
   return l.files === null ? l.language : `${l.language} (${thousands(l.files)} file${l.files === 1 ? '' : 's'})`
+}
+
+/** "python: covered 702 of 1,447 files": a partial language, with how far its server got when served. */
+function partialWords(l: LanguageRow): string | null {
+  return l.files_covered === null || l.files === null ? null : `${l.language}: covered ${thousands(l.files_covered)} of ${thousands(l.files)} files`
 }
 
 /**
@@ -753,15 +761,24 @@ function DegradedLanguages({ state, go, repoId, here }: { state: Result<Language
   if (state.status !== 'ok' && state.status !== 'stale') return null
   const rows = state.data.filter((l) => l.status !== null && DEGRADED[l.status] !== undefined)
   if (rows.length === 0) return null
-  const groups = Object.entries(DEGRADED)
-    .map(([status, word]) => ({ word, names: rows.filter((l) => l.status === status).map(langWords) }))
-    .filter((g) => g.names.length > 0)
-    .map((g) => `${g.names.join(' and ')} ${g.word}`)
+  // A partial language says how far its server got; one whose counts were not served falls into its word group.
+  const covered = (l: LanguageRow): string | null => (l.status === 'partial' ? partialWords(l) : null)
+  const groups = [
+    ...rows.flatMap((l) => {
+      const words = covered(l)
+      return words === null ? [] : [words]
+    }),
+    ...Object.entries(DEGRADED)
+      .map(([status, word]) => ({ word, names: rows.filter((l) => l.status === status && covered(l) === null).map(langWords) }))
+      .filter((g) => g.names.length > 0)
+      .map((g) => `${g.names.join(' and ')} ${g.word}`),
+  ]
+  const partly = rows.some((l) => l.status === 'partial')
   return (
     <div className="ur-degraded" data-degraded={rows.map((l) => l.language).join(' ')}>
       <Banner tone="warn" title="This index is degraded" role="status">
-        The language-server pass for {groups.join('; ')}, so call sites in {rows.length === 1 ? 'its' : 'their'} files are
-        not resolved. Impact and test selection answer wider for those files, up to the full suite.
+        The language-server pass for {groups.join('; ')}, so call sites in {rows.length === 1 ? 'its' : 'their'} files
+        {partly ? ' the server did not cover' : ''} are not resolved. Impact and test selection answer wider for those files, up to the full suite.
         {!here && (
           <>
             {' '}

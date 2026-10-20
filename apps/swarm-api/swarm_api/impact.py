@@ -43,7 +43,8 @@ WHY EACH RULE:
   * A FALLBACK TRIGGER SELECTS THE FULL SUITE AND SAYS WHY. The kinds are
     §4.3a's list -- build or test configuration, a shared fixture, a changed
     symbol whose every test path has an edge below 0.4, a changed file in an
-    `unsupported`/`failing`/`timed_out` language, an `unindexed` symbol, a
+    `unsupported`/`failing` language or one no server covered in a
+    `partial`/`timed_out` language, an `unindexed` symbol, a
     stale index -- plus one the forge forces: GitHub cut the diff short
     (`diff_truncated`), and a plan over a diff it has not seen whole cannot
     speak for the rest. They are computed under every policy (§4.4), so the
@@ -153,8 +154,17 @@ MAX_NEIGHBOURHOOD_NODES = 300
 #: dependency, drawn by the graph route and never walked as a call.
 WALKED_KINDS = frozenset({"call", "reference", "route_handler", "inherit"})
 
-#: §4.3a: a changed file in a language marked any of these falls back.
-UNTRUSTED_LANGUAGE_STATUSES = frozenset({"unsupported", "failing", "timed_out"})
+#: §4.3a: a changed file in a language marked any of these falls back...
+UNTRUSTED_LANGUAGE_STATUSES = frozenset({"unsupported", "failing", "timed_out", "partial"})
+#: ...except, under these, a file the graph's row marks `lsp: true`: a
+#: server whose budget ran out kept the files it had answered whole
+#: (images/agent-runtime-indexer/repo-index/lsp/driver.py, "the fallbacks"),
+#: and an incremental run carries a covered file's edges from its base. On
+#: ai-studio on 2026-10-20 pyright had answered most of the Python files and
+#: every Python change still answered the full suite (#1693). `failing` is
+#: not here: a server that crashed or ran out of memory may have answered
+#: from a half-built program, so its status speaks for every file.
+COVERABLE_LANGUAGE_STATUSES = frozenset({"timed_out", "partial"})
 
 #: A file's language when no graph lists it (a file the head adds). Restated
 #: from the extractor (images/agent-runtime-indexer/repo-index/
@@ -820,11 +830,15 @@ def plan_impact(
                 "follow fixtures", path=path))
         if lang is not None:
             status = languages.get(lang, "unsupported")
-            if status in UNTRUSTED_LANGUAGE_STATUSES:
+            coverable = status in COVERABLE_LANGUAGE_STATUSES
+            if status in UNTRUSTED_LANGUAGE_STATUSES and not (
+                    coverable and base_view is not None and f.status != "added"
+                    and (base_view.file(base_path) or {}).get("lsp") is True):
                 known = lang in languages
                 triggers.append(_trigger(
                     "unsupported_language",
                     f"{path} is {lang}, marked {status} in the index's languages table"
+                    + (", and no language server covered this file" if coverable else "")
                     if known else f"{path} is {lang}, which the index has never measured",
                     path=path, language=lang, status=status))
 
@@ -1260,6 +1274,8 @@ SERVER_STATUS_REASONS = {
                   "tree-sitter's only; the per-file parse counts are a different measurement"),
     "failing": ("the language server did not start or stopped, so this language's edges are "
                 "tree-sitter's only"),
+    "partial": ("the language server ran out of its budget part-way, so only the files it "
+                "finished have its edges; the rest are tree-sitter's only"),
 }
 
 
@@ -1280,7 +1296,7 @@ def languages_table(graph: Graph | None, document: Mapping[str, Any] | None
     rows = (graph.manifest.get("languages") if graph is not None else None) \
         or (document or {}).get("languages") or []
     keep = ("language", "files", "grammar", "server", "status", "reason", "fallback",
-            *PARSE_COUNTERS)
+            "files_covered", *PARSE_COUNTERS)
     out = []
     for row in rows:
         if not isinstance(row, dict):
@@ -1564,6 +1580,7 @@ class ImpactService:
 __all__ = [
     "DEPTH_MAX", "Diff", "DiffFile", "ImpactRequest", "ImpactService", "LOW_CONFIDENCE",
     "MAX_AFFECTED", "MIN_CONFIDENCE", "PLANS_COLLECTION", "UNTRUSTED_LANGUAGE_STATUSES",
+    "COVERABLE_LANGUAGE_STATUSES",
     "check_symbol_id", "full_suite_command", "is_build_config", "is_shared_fixture",
     "is_test_config", "languages_table", "module_graph", "neighbourhood", "parse_patch",
     "plan_id_for", "plan_impact", "read_diff", "resolve_read_token", "search_symbols",

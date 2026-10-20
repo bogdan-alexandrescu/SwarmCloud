@@ -421,6 +421,51 @@ def test_a_change_in_an_unsupported_failing_or_timed_out_language_falls_back(
     assert (trigger["path"], trigger["language"], trigger["status"]) == (FORMAT, "python", status)
 
 
+def covered_graph(status: str, covered: set[str]) -> dict:
+    """The shop with python `status`, and files[].lsp True for `covered` only."""
+    document = shop_graph(languages=[{**language_row(status), "files_covered": len(covered)}])
+    for row in document["files"]:
+        row["lsp"] = row["path"] in covered
+    return document
+
+
+@pytest.mark.parametrize("status", ["partial", "timed_out"])
+def test_a_covered_file_of_a_partial_language_is_trusted(writer, objects, tmp_path, status):
+    """#1693: pyright covered most of ai-studio's files before its budget
+    ran out, and every Python change still answered the full suite.
+
+    MUTATION: drop the `file_covered` check from `plan_impact` (any
+    `partial` or `timed_out` language untrusted, as before) and this reads
+    an `unsupported_language` trigger for FORMAT."""
+    graph = open_graph(writer, objects, tmp_path, covered_graph(status, {FORMAT, T_FORMAT}))
+    answer = plan([changed_line(FORMAT, 3)], graph)
+    assert answer["fallback_triggers"] == []
+    assert ids(answer["tests"]) == [TEST_FMT]
+
+
+@pytest.mark.parametrize("status", ["partial", "timed_out"])
+def test_an_uncovered_file_of_a_partial_language_falls_back(writer, objects, tmp_path, status):
+    """MUTATION: trust every file of a `partial` language (drop it from
+    UNTRUSTED_LANGUAGE_STATUSES without the per-file check) and ORDERS,
+    which the server never reached, is selected as if resolved."""
+    graph = open_graph(writer, objects, tmp_path, covered_graph(status, {FORMAT, T_FORMAT}))
+    trigger = assert_full_suite(plan([changed_line(ORDERS, 25)], graph), "unsupported_language")
+    assert (trigger["path"], trigger["language"], trigger["status"]) == (ORDERS, "python", status)
+    assert trigger["reason"].endswith("and no language server covered this file")
+
+
+@pytest.mark.parametrize("status", ["unsupported", "failing"])
+def test_a_covered_flag_never_rescues_an_unsupported_or_failing_language(writer, objects,
+                                                                         tmp_path, status):
+    """A failing server may have answered from a half-built program: its
+    status speaks for every file, whatever a row says.
+
+    MUTATION: apply the per-file check to every status and FORMAT is trusted."""
+    graph = open_graph(writer, objects, tmp_path, covered_graph(status, {FORMAT, T_FORMAT}))
+    trigger = assert_full_suite(plan([changed_line(FORMAT, 3)], graph), "unsupported_language")
+    assert trigger["status"] == status
+
+
 def test_a_change_in_a_language_the_index_has_never_measured_falls_back(shop):
     trigger = assert_full_suite(plan([changed_line("scripts/tool.rb", 1)], shop),
                                 "unsupported_language")
