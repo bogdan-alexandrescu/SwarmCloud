@@ -972,11 +972,14 @@ resource "google_project_iam_member" "front_door_admitter" {
 # iap.webServices.getIamPolicy, so a second grant of the read would only be a
 # row to keep in step.
 #
-# NOT VERIFIED LIVE. modules/frontend/main.tf records that roles/iap.admin
-# bound on our two backends was still 403 on getIamPolicy nine and a half
-# minutes later (2026-09-24), and O1 noted the same. If this binding is
-# refused the same way, nothing is lost: S2 stops for the owner as it does
-# today. The owner's check after the apply is one read as the deployer:
+# VERIFIED LIVE 2026-10-20: applied at 06:09Z, and the retried QA console
+# workspace w-267d01 passed S2 at 06:11Z ("front door: swarm-ui-backend
+# already admits the account"). modules/frontend/main.tf records that
+# roles/iap.admin bound on our two backends was still 403 on getIamPolicy
+# nine and a half minutes later (2026-09-24), and O1 noted the same; why that
+# was refused and this custom role is not is not known. If a later apply is
+# refused that way, nothing is lost: S2 stops for the owner as before. The
+# check is one read as the deployer:
 # `gcloud iap web get-iam-policy --resource-type=backend-services
 # --service=<API backend>`.
 
