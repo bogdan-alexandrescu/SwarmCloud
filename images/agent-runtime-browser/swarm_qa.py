@@ -28,7 +28,9 @@ What `capture` does, and why each:
    other fonts, which is noise in every comparison.
 2. Connects with `swarm_browser.live()` and opens ONE TAB OF ITS OWN, closed at
    the end; it disconnects (Playwright stops) and never closes the browser,
-   which is the one the person watches.
+   which is the one the person watches. Every load of the console in that tab
+   starts with the console's local and session storage emptied
+   (RESET_STATE_JS), so a route never draws what the route before it left.
 3. THE DEVICE IS THE GATE'S, BY NAME: `swarm-handoff device <preset>` per
    preset, which blocks until the worker answers. It never calls
    `set_viewport_size`: the gate refuses the metrics override that sends.
@@ -43,10 +45,16 @@ What `capture` does, and why each:
 5. Per route: navigates and waits for `load`, then up to NETWORK_IDLE_MS for
    the network to go quiet (the console polls, so it may never be quiet for
    long: not reaching it is recorded, not fatal), then `document.fonts.ready`,
-   then the route's `ready` selector. The clock is frozen at the route list's
+   then the route's `ready` selector, then until the page shows no pending
+   read for SETTLE_QUIET_POLLS polls in a row (PENDING_JS: the console's
+   skeletons and its "reading…"), for up to SETTLE_TIMEOUT_MS. A route still
+   reading then is shot as it stands, `unsettled` in its entry and listed in
+   `failed` with what it still showed. The clock is frozen at the route list's
    instant (`page.clock.set_fixed_time`, before the first navigation; timers
    still run) so "3 minutes ago" reads the same every run. Viewport-sized
-   SEGMENTS, scrolling the page's own scroller one viewport at a time up to the
+   SEGMENTS, scrolling the page's own scroller (MEASURE_JS: the nearest one
+   holding the route's ready element, the document, or the largest on the
+   page; its name is the entry's `scroller`) one of its heights at a time up to the
    route's `segments` (default DEFAULT_SEGMENTS): a model is handed a tall
    image downscaled until its text is unreadable, and whether a full-page
    capture through the gate needs a metrics override is unverified.
@@ -122,6 +130,15 @@ NAV_TIMEOUT_MS = 30_000
 NETWORK_IDLE_MS = 10_000
 READY_TIMEOUT_MS = 30_000
 SHOT_TIMEOUT_MS = 30_000
+#: How long one route may go on showing a pending marker (PENDING_JS) after
+#: its ready selector: three times the slowest read the preview build makes
+#: (the Timeline, about 4.5 s). A route still reading then is shot as it
+#: stands and listed in `failed`: a finding, never a silent image.
+SETTLE_TIMEOUT_MS = 15_000
+SETTLE_POLL_MS = 150
+#: Polls in a row with nothing pending before the page counts as settled:
+#: one read landing and the next starting can leave a frame with no marker.
+SETTLE_QUIET_POLLS = 2
 #: An error message kept in the manifest is one line, this long at most.
 MAX_ERROR_CHARS = 300
 #: Each console or page error kept beside a route's images.
@@ -136,24 +153,90 @@ DIFF_MARK = (255, 0, 255)
 MAX_MEMBER_BYTES = 64 * 1024 * 1024
 
 FONTS_READY_JS = "() => document.fonts.ready.then(() => true)"
-#: The element that scrolls: the document, or the console's `main` or open
-#: agent pane when the page itself does not scroll. Kept on `window` for SCROLL_JS.
-MEASURE_JS = """() => {
+#: The element that scrolls (QA-TOOLS-FIX, QA-003). The console's document does
+#: not scroll: the route's content scrolls inside `div.ctl-scroll` (Spine.tsx),
+#: and the first run, which looked only at the document, `main` and
+#: `[role=dialog]`, took one segment of every route. So: the nearest ancestor
+#: of the route's ready element that scrolls and has room; else the document,
+#: when it has room; else the largest element on the page that scrolls and has
+#: room, by the area it shows (the 64 px rail scrolls too, and is not the
+#: page). No class is named, so a console that moves its scroller still
+#: segments. Kept on `window` for SCROLL_JS; returns
+#: `[scrollHeight, the height it shows, what it is]`.
+MEASURE_JS = """(ready) => {
   const doc = document.scrollingElement || document.documentElement;
-  let best = doc, room = doc.scrollHeight - doc.clientHeight;
-  for (const el of document.querySelectorAll('main, [role="dialog"]')) {
-    const overflow = getComputedStyle(el).overflowY;
-    const r = el.scrollHeight - el.clientHeight;
-    if ((overflow === 'auto' || overflow === 'scroll') && r > room) { best = el; room = r; }
+  const room = (el) => el.scrollHeight - el.clientHeight > 1;
+  const scrolls = (el) => /^(auto|scroll|overlay)$/.test(getComputedStyle(el).overflowY) && room(el);
+  let best = null;
+  let content = null;
+  try { content = ready ? document.querySelector(ready) : null; } catch (e) { content = null; }
+  for (let el = content; el && el !== doc && best === null; el = el.parentElement) {
+    if (scrolls(el)) best = el;
   }
+  if (best === null && room(doc)) best = doc;
+  if (best === null) {
+    let area = 0;
+    for (const el of document.querySelectorAll('*')) {
+      if (el !== doc && scrolls(el) && el.clientWidth * el.clientHeight > area) {
+        best = el; area = el.clientWidth * el.clientHeight;
+      }
+    }
+  }
+  if (best === null) best = doc;
   window.__swarmQaScroller = best;
-  return [best.scrollHeight, best === doc ? innerHeight : best.clientHeight];
+  const name = best === doc ? 'document'
+    : best.localName + (best.id ? '#' + best.id : '') + Array.from(best.classList, (c) => '.' + c).join('');
+  return [best.scrollHeight, best === doc ? innerHeight : best.clientHeight, name];
+}"""
+#: What the console draws while a read is in flight (QA-TOOLS-FIX, QA-027):
+#: a skeleton (`.skeleton`, the `*-skel*` bars, `.ctl-pending`'s moving
+#: surface), a region marked `aria-busy`, the page head's refresh while it
+#: reads (Shell.tsx RefreshControl: `.c-refresh`, aria-label "Reading"), and
+#: the word "reading…" that every other pending read writes. The preview
+#: build reads on timers with no network traffic, so network idle and the
+#: ready selector are both met mid-read (the head's read alone is 350 ms, the
+#: Timeline's 26 tasks' attempts about 4.5 s). Only what is drawn counts: an
+#: element with no box, or hidden, is not on the image. Returns up to
+#: five descriptions; [] is a page that has settled.
+PENDING_JS = """() => {
+  const shown = (el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+  const name = (el) => el.localName + Array.from(el.classList, (c) => '.' + c).join('');
+  const found = [];
+  const markers = '.skeleton, [class*="skel"], .ctl-pending, [aria-busy="true"], .c-refresh[aria-label="Reading"]';
+  for (const el of document.querySelectorAll(markers)) {
+    if (found.length >= 5) return found;
+    if (shown(el)) found.push(name(el));
+  }
+  const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let node = walk.nextNode(); node && found.length < 5; node = walk.nextNode()) {
+    if (node.data.includes('reading…') && node.parentElement && shown(node.parentElement)) {
+      found.push('"reading…" in ' + name(node.parentElement));
+    }
+  }
+  return found;
 }"""
 SCROLL_JS = """(y) => {
   const el = window.__swarmQaScroller || document.scrollingElement || document.documentElement;
   el.scrollTop = y;
   return new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(null))));
 }"""
+#: QA-TOOLS-FIX (QA-077). The capture's tab is in the live browser's one
+#: profile, so what a route left in storage drew the next route: the sidebar's
+#: Recent workflows (Spine.tsx RecentWorkflows, filled from localStorage once
+#: /workflows had been opened) appeared on every route after that one and on
+#: none before it. Each route is its own load (`goto`), so the page's memory
+#: starts empty; this, run before the console's own scripts on every load of
+#: the console's origin in the capture's tab, empties its local and session
+#: storage too, so every route starts from the state a first visit has. A
+#: fresh browser context per route would do it as well, but opens a window
+#: the gate has never been measured fitting to a preset. Other origins are
+#: left alone; the console's localStorage is shared with any other tab on its
+#: origin in this profile, which is the agent's own dev server.
+RESET_STATE_JS = """(() => {
+  if (location.origin !== %s) return;
+  try { localStorage.clear(); } catch (e) {}
+  try { sessionStorage.clear(); } catch (e) {}
+})();"""
 AXE_INJECT_JS = "(source) => { (0, eval)(source); return typeof axe !== 'undefined'; }"
 AXE_RUN_JS = "() => axe.run(document, {resultTypes: ['violations']})"
 
@@ -210,6 +293,11 @@ def clock_at(document: dict) -> dt.datetime:
     if when.tzinfo is None:
         raise UsageError("the route list's clock carries no time zone")
     return when
+
+
+def reset_state_script(origin: str) -> str:
+    """RESET_STATE_JS for the console at `origin` (scheme://host[:port])."""
+    return RESET_STATE_JS % json.dumps(origin)
 
 
 def image_name(group: str, route: str, preset: str, theme: str, segment: int) -> str:
@@ -315,6 +403,24 @@ def _write(path: Path, data: bytes | str) -> None:
         path.write_bytes(data)
 
 
+def _settle(page) -> list[str]:
+    """Wait until the page has shown no pending marker (PENDING_JS) on
+    SETTLE_QUIET_POLLS polls in a row, for up to SETTLE_TIMEOUT_MS. Returns
+    what it still showed when the time ran out; [] when it settled. The time
+    is counted in the waits it asks for, so the bound is the same whatever
+    the page costs to ask."""
+    waited, quiet = 0, 0
+    while True:
+        pending = list(page.evaluate(PENDING_JS) or [])
+        quiet = 0 if pending else quiet + 1
+        if quiet >= SETTLE_QUIET_POLLS or (not pending and waited >= SETTLE_TIMEOUT_MS):
+            return []
+        if waited >= SETTLE_TIMEOUT_MS:
+            return [str(p)[:MAX_ERROR_CHARS] for p in pending]
+        page.wait_for_timeout(SETTLE_POLL_MS)
+        waited += SETTLE_POLL_MS
+
+
 def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict, preset: str, theme: str,
                    out: Path, axe_source: str | None) -> dict:
     """One route at one preset and theme. Raises with the step that failed."""
@@ -333,8 +439,11 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
         page.evaluate(FONTS_READY_JS)
         step = "ready"
         page.wait_for_selector(ready, state="visible", timeout=READY_TIMEOUT_MS)
+        step = "settle"
+        pending = _settle(page)
         step = "measure"
-        total, view = page.evaluate(MEASURE_JS)
+        measured = page.evaluate(MEASURE_JS, ready)
+        total, view = measured[0], measured[1]
         count = max(1, min(int(route.get("segments", DEFAULT_SEGMENTS)), math.ceil(total / max(1, view))))
         images = []
         for segment in range(1, count + 1):
@@ -350,8 +459,9 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
         snapshot = page.locator("body").aria_snapshot()
         _write(out / f"{stem}.a11y.json", json.dumps({"format": "aria-snapshot", "snapshot": snapshot}, indent=1))
         entry = {
-            "id": rid, "preset": preset, "theme": theme, "status": "captured", "path": route["path"],
-            "images": images, "network_idle": idle,
+            "id": rid, "preset": preset, "theme": theme, "status": "unsettled" if pending else "captured",
+            "path": route["path"], "images": images, "network_idle": idle,
+            "settled": not pending, "pending": pending, "scroller": measured[2] if len(measured) > 2 else None,
             "text": f"{stem}.txt", "a11y": f"{stem}.a11y.json", "errors": f"{stem}.errors.json",
         }
         if axe_source is not None:
@@ -420,6 +530,8 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
     page = None
     try:
         page = context.new_page()
+        parts = urlsplit(base)
+        page.add_init_script(script=reset_state_script(f"{parts.scheme}://{parts.netloc}".lower()))
         errors = _Errors(page)
         page.clock.set_fixed_time(clock_at(routes))
         for preset in presets:
@@ -436,9 +548,14 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                 page.emulate_media(color_scheme=theme, reduced_motion="reduce")
                 for route in group_routes:
                     try:
-                        manifest["routes"].append(_capture_route(
-                            page, errors, base=base, group=group, route=route, preset=preset,
-                            theme=theme, out=out, axe_source=axe_source))
+                        entry = _capture_route(page, errors, base=base, group=group, route=route,
+                                               preset=preset, theme=theme, out=out, axe_source=axe_source)
+                        manifest["routes"].append(entry)
+                        if entry["pending"]:
+                            manifest["failed"].append({
+                                "id": route["id"], "preset": preset, "theme": theme,
+                                "error": f"did not settle in {SETTLE_TIMEOUT_MS} ms: still showing "
+                                         + "; ".join(entry["pending"]) + " (shot as it stood)"})
                     except _RouteFailed as exc:
                         manifest["failed"].append({"id": route["id"], "preset": preset, "theme": theme,
                                                    "error": str(exc)})
