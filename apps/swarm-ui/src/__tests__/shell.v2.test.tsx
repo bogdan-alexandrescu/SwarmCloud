@@ -101,7 +101,7 @@ describe('#503: the panel draws an icon per page and a count beside Live and Wai
     expect(wf.querySelector('.sk-cnt'), 'a mark beside Workflows').toBeNull()
     const recent = [...c.querySelectorAll('.sk-panel .sk-kid')].find((k) => k.querySelector('span')?.textContent === 'Recent')!
     expect(recent.querySelector('.sk-cnt'), 'a mark beside Recent').toBeNull()
-    expect(recent.getAttribute('title')).toMatch(/not counted/)
+    expect(recent.getAttribute('title')).toMatch(/no number is drawn here/)
     expect(panelCounts({ status: 'loading', since: 0 }, { status: 'loading', since: 0 }).workflows).toBeUndefined()
   })
 
