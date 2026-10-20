@@ -35,6 +35,7 @@ from agent_worker import indexrun, lifecycle
 from agent_worker.lifecycle import Worker
 from swarm_api import repoindex, repositories
 
+import repo_index_fixtures as fx
 from worker_seeds import TENANT, seed_attempt
 
 OWNER, REPO = "Example-Org", "Widgets"
@@ -148,7 +149,8 @@ def _seed(db: Any, store: Any, *, kind: str = "incremental", base_tenant: str = 
         runner_profile="indexer",
         task_input={"prompt": prompt, "steps": 1, "sleep_seconds": 0.05,
                     "artifact_name": indexrun.INDEX_FILE,
-                    "artifact_text": json.dumps({"schema": "swarm.repo-index/v1"})},
+                    "artifact_text": json.dumps(fx.minimal_index(
+                        HEAD, kind=kind, base_sha=BASE if kind == "incremental" else None))},
     )
     db.doc(f"tenants/{TENANT}")["credentials"] = ["anthropic"]
     task = db.doc("tasks/task_1")
