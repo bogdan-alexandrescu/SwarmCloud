@@ -25,6 +25,26 @@
 # then runs them in ONE `pytest -q -n auto -p no:warnings` call, followed by
 # scripts/lib/check-contract-parity.sh. An empty diff runs nothing.
 #
+# A DOCS-ONLY diff -- every changed path under docs/ or ending in .md --
+# selects only the two doc guards (DOC_GUARD_TESTS) and the tests whose text
+# names a changed doc, and runs no parity check (GUARDS-DEDUP, part of #1694:
+# docs-only lanes spent 44-50 min in guards on 2026-10-19/20). The UI route
+# seam and test_specsign_covers read source, not docs, and the parity check
+# skips `.md` files outright, so none of them can turn red on a doc. CI's
+# docs-only pick still runs every test that builds a path through docs/
+# (docs/ci.md), and main's push runs everything.
+#
+# THE RECORD (GUARDS-DEDUP). A run that reads its diff from git (not --files,
+# not --list) writes how it ended -- passed, failed or timed_out -- with the
+# tree it ran on and its base commit, to <git dir>/swarm-changed-guards/
+# all.json (shard-<k>-of-<n>.json with --shard). The tree is the one the
+# worker would commit: HEAD plus every uncommitted and untracked file, as
+# `git add -A` into a scratch index writes it. The worker's pre-publish gate
+# computes that tree itself and skips its own run only when a record says
+# passed on the same tree from the same base (agent_worker.prepublish): in 73
+# of 74 lanes it re-ran this script on code the agent had just passed. The
+# record sits in the git directory, so the publish never commits it.
+#
 # `--shard k/n` runs the k-th of n parts of that selection, so a selection too
 # heavy for one command's limit runs as n commands, each under it (#1334). The
 # parts are cut the way CI cuts its unit shards (docs/ci.md): longest file
@@ -66,7 +86,15 @@ GUARD_TESTS=(
   tests/unit/control_plane/test_runtimes_screen.py
   tests/unit/common/test_specsign_covers.py
 )
+# The guards that read docs: all a docs-only diff selects of GUARD_TESTS.
+DOC_GUARD_TESTS=(
+  tests/unit/scripts/test_docs_describe_what_was_built.py
+  tests/unit/scripts/test_docs_spec_amendments.py
+)
 PARITY_CHECK="scripts/lib/check-contract-parity.sh"
+# Where a run's result is recorded, under the git directory (THE RECORD
+# above). agent_worker.prepublish.GUARDS_RECORD_DIR restates the name.
+RECORD_DIR_NAME="swarm-changed-guards"
 
 # Names shared by many files. Matched by full path only.
 GENERIC_BASENAMES=" __init__.py conftest.py README.md main.py app.py config.py models.py utils.py index.ts index.tsx types.ts package.json pyproject.toml Makefile Dockerfile "
@@ -169,6 +197,21 @@ if [[ "${changed_count}" -eq 0 ]]; then
   exit 0
 fi
 
+# Docs-only: every changed path is under docs/ or a .md file.
+docs_only=1
+while IFS= read -r path; do
+  case "${path}" in
+    docs/*|*.md) ;;
+    *) docs_only=0; break ;;
+  esac
+done <"${work}/changed"
+guards=("${GUARD_TESTS[@]}")
+run_parity=1
+if [[ "${docs_only}" -eq 1 ]]; then
+  guards=("${DOC_GUARD_TESTS[@]}")
+  run_parity=0
+fi
+
 # One fixed-string pattern per full path, and one per distinctive basename.
 : >"${work}/patterns"
 : >"${work}/own-tests"
@@ -196,7 +239,7 @@ if [[ "${status}" -gt 1 ]]; then
 fi
 
 : >"${work}/selected"
-for guard in "${GUARD_TESTS[@]}"; do
+for guard in "${guards[@]}"; do
   if [[ -f "${REPO_ROOT}/${guard}" ]]; then
     printf '%s\n' "${guard}" >>"${work}/selected"
   else
@@ -238,19 +281,71 @@ parts=$(( (weight + SHARD_HINT_WEIGHT - 1) / SHARD_HINT_WEIGHT ))
 split_hint="run it as ${parts} commands: scripts/changed-guards.sh --shard 1/${parts} ... --shard ${parts}/${parts}"
 
 info "${changed_count} changed path(s) in ${source_name}; ${total_count} test file(s) read them or guard the repository:"
+if [[ "${docs_only}" -eq 1 ]]; then
+  info "docs-only change: the doc guards and the tests that read the changed docs; no contract-parity check"
+fi
 if [[ "${shard_n}" -gt 0 ]]; then
   info "part ${shard_k} of ${shard_n}: ${#selected[@]} of the ${total_count} file(s)"
 elif [[ "${weight}" -gt "${SHARD_HINT_WEIGHT}" ]]; then
   warn "the selection weighs ${weight} CI-seconds (${DURATIONS}), more than one ${PYTEST_SECONDS} s run may hold: it runs as ${parts} parts in turn; under a 10-minute command limit, ${split_hint}"
 fi
 printf '%s\n' ${selected[@]+"${selected[@]}"}
-if [[ "${shard_k}" -le 1 ]]; then
+if [[ "${shard_k}" -le 1 && "${run_parity}" -eq 1 ]]; then
   printf 'bash %s\n' "${PARITY_CHECK}"
 fi
 
 if [[ "${list_only}" -eq 1 ]]; then
   exit 0
 fi
+
+# THE RECORD: the tree this run checks, taken before any test runs. Only a
+# run that read its diff from git has a tree to name.
+record_file=""
+record_tree=""
+record_base=""
+if [[ -z "${files_from}" ]]; then
+  git_dir="$(git -C "${REPO_ROOT}" rev-parse --absolute-git-dir)"
+  scratch_index="${work}/index"
+  if [[ -f "${git_dir}/index" ]]; then
+    cp "${git_dir}/index" "${scratch_index}"
+  else
+    GIT_INDEX_FILE="${scratch_index}" git -C "${REPO_ROOT}" read-tree HEAD 2>/dev/null \
+      || GIT_INDEX_FILE="${scratch_index}" git -C "${REPO_ROOT}" read-tree --empty
+  fi
+  if GIT_INDEX_FILE="${scratch_index}" git -C "${REPO_ROOT}" add -A >/dev/null 2>&1 \
+      && record_tree="$(GIT_INDEX_FILE="${scratch_index}" git -C "${REPO_ROOT}" write-tree)"; then
+    record_base="$(git -C "${REPO_ROOT}" rev-parse --verify -q "${base}^{commit}")"
+    mkdir -p "${git_dir}/${RECORD_DIR_NAME}"
+    if [[ "${shard_n}" -gt 0 ]]; then
+      record_file="${git_dir}/${RECORD_DIR_NAME}/shard-${shard_k}-of-${shard_n}.json"
+    else
+      record_file="${git_dir}/${RECORD_DIR_NAME}/all.json"
+    fi
+    # A stale record of this part never outlives a run that did not finish.
+    rm -f "${record_file}"
+  else
+    warn "git could not write this checkout's tree; the run is not recorded"
+  fi
+fi
+
+# How the run ended -- passed, failed or timed_out -- in the record, and to
+# the parent run's status file when this is one of its parts.
+finish() {
+  local result="$1"
+  if [[ -n "${_CHANGED_GUARDS_RESULT:-}" ]]; then
+    printf '%s\n' "${result}" >"${_CHANGED_GUARDS_RESULT}"
+  fi
+  if [[ -n "${record_file}" ]]; then
+    local part="all"
+    [[ "${shard_n}" -eq 0 ]] || part="${shard_k}/${shard_n}"
+    jq -n --arg tree "${record_tree}" --arg base "${record_base}" --arg part "${part}" \
+      --arg status "${result}" --argjson selected "${#selected[@]}" \
+      --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{version: 1, tree: $tree, base: $base, part: $part, status: $status,
+        selected: $selected, finished_at: $at}' >"${record_file}.tmp" \
+      && mv "${record_file}.tmp" "${record_file}"
+  fi
+}
 
 caller_only=(env)
 while IFS= read -r name; do
@@ -278,13 +373,24 @@ fi
 if [[ "${shard_n}" -eq 0 && "${weight}" -gt "${SHARD_HINT_WEIGHT}" ]]; then
   info "running the selection as ${parts} parts, each under ${PYTEST_SECONDS} s"
   part_failed=0
+  part_timed_out=0
   for ((k = 1; k <= parts; k++)); do
-    "${caller_only[@]}" bash "${BASH_SOURCE[0]}" --files "${work}/changed" --shard "${k}/${parts}" || part_failed=1
+    "${caller_only[@]}" "_CHANGED_GUARDS_RESULT=${work}/part-${k}" \
+      bash "${BASH_SOURCE[0]}" --files "${work}/changed" --shard "${k}/${parts}" || part_failed=1
+    if [[ -r "${work}/part-${k}" ]] && grep -qx timed_out "${work}/part-${k}"; then
+      part_timed_out=1
+    fi
   done
   if [[ "${part_failed}" -ne 0 ]]; then
+    if [[ "${part_timed_out}" -ne 0 ]]; then
+      finish timed_out
+    else
+      finish failed
+    fi
     err "a part failed; its output is above"
     exit 1
   fi
+  finish passed
   ok "all ${parts} parts: ${total_count} guard and source-reading test file(s) and contract parity pass"
   exit 0
 fi
@@ -331,7 +437,7 @@ if [[ ${#deadline[@]} -gt 0 ]]; then
   deadline=(timeout "${PARITY_SECONDS}")
 fi
 parity_status=0
-if [[ "${shard_k}" -le 1 ]]; then
+if [[ "${shard_k}" -le 1 && "${run_parity}" -eq 1 ]]; then
   (cd "${REPO_ROOT}" && "${caller_only[@]}" ${deadline[@]+"${deadline[@]}"} bash "${PARITY_CHECK}") >"${log}.parity" 2>&1 \
     || parity_status=$?
 fi
@@ -342,10 +448,18 @@ if [[ "${parity_status}" -ne 0 ]]; then
 fi
 
 if [[ "${failed}" -ne 0 ]]; then
+  if [[ "${pytest_status}" -eq 124 || "${parity_status}" -eq 124 ]]; then
+    finish timed_out
+  else
+    finish failed
+  fi
   exit 1
 fi
+finish passed
 rm -f "${log}" "${log}.parity"
-if [[ "${shard_n}" -eq 0 ]]; then
+if [[ "${run_parity}" -eq 0 ]]; then
+  ok "${#selected[@]} doc guard and doc-reading test file(s) pass"
+elif [[ "${shard_n}" -eq 0 ]]; then
   ok "${#selected[@]} guard and source-reading test file(s) and contract parity pass"
 elif [[ "${shard_k}" -eq 1 ]]; then
   ok "part 1 of ${shard_n}: ${#selected[@]} of ${total_count} test file(s) and contract parity pass"
