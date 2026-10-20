@@ -4170,6 +4170,48 @@ vitest, `terraform test` or anything needing credentials, and a green run proves
 nothing CI has not. `tests/unit/scripts/test_changed_guards.py` holds its
 selection against fixture diffs.
 
+### While it works, a SwarmCloud agent runs only the related tests
+
+```bash
+scripts/related-tests.sh             # print the related test files and the runs that test them
+scripts/related-tests.sh --run       # run those, one after another, in the foreground
+scripts/related-tests.sh --base <rev> | --files <list>|-
+```
+
+**Why** (RELATED-TESTS, part of #1694, owner decision 2026-10-20). Agents ran
+whole suites and lost hours. Measured 2026-10-19/20: 36 vitest runs with no
+file filter at about 22 min each on 4 cores (2.05 h), 8 pytest runs over whole
+`tests/unit` directories (0.73 h), and both out-of-memory kills came from
+`for i in 1 2 3 4; do npx vitest run --shard=$i/4 & done`. The rule an agent
+is given (CLAUDE.md, and the claude-code runner's `RELATED_TESTS_NOTE` when the
+checkout carries this script): related tests through this script; never vitest
+without file arguments; never pytest over a whole directory or with `-n auto`
+across the suite; never parallel shards or background batches polled with
+sleep; `scripts/changed-guards.sh` once at the end.
+
+**What is related** (`scripts/lib/related_tests.py`, standard library only).
+Python: `select_unit_tests.py`'s rules, imported rather than restated -- the
+change's own tests, every test that imports a changed module through any chain
+of imports, every test whose text names a changed path or a script that names
+one -- but **without** its fall-back to the whole suite: where CI would run
+everything, this keeps the files it can name and leaves the rest to CI.
+swarm-ui: the change's own test files and every vitest file that reaches a
+changed module through relative imports (`import ... from`, `export ... from`,
+`import '...'`, `import('...')`, `vi.mock('...')`), transitively -- the graph
+`vitest related` follows, computed from the source so it needs no
+`node_modules` and can be cut into runs. A change to what every component test
+runs under (`vitest.config.ts`, `src/__tests__/setup.ts`, `package.json`, ...)
+is related to no file by import: it is named in a warning and CI runs the suite.
+
+**It never prints an unfiltered command.** Every line names files. A selection
+too big for one run comes back as a few runs: pytest cut by
+`unit_test_durations.json` weight into parts of at most ~540 CI-seconds
+(changed-guards.sh's `SHARD_HINT_WEIGHT`), vitest in runs of at most 50 files
+(~2.5 min at the whole suite's ~2.9 s a file). `--run` runs them in turn, each
+under 540 s, and stops at the first red; a run that times out is not re-run
+as-is. `tests/unit/scripts/test_related_tests.py` holds the selection for a
+UI-only, a Python-only and a mixed change, and that no command is unfiltered.
+
 ## Where the suites are documented
 
 [`testing.md`](testing.md) is still the reference for **what each suite covers
