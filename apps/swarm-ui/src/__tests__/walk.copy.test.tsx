@@ -94,7 +94,9 @@ function findings(text: string): string[] {
 }
 
 const PAGES: readonly string[] = [
-  ...SECTIONS.filter((s) => s.id !== 'api').flatMap((s) => s.tabs.map((t) => `/#${s.id}/${t.id}`)),
+  // API reads is exempt (the header says why); it is Capacity's last tab since
+  // NAV-FOOT (#1672), no longer a section of its own.
+  ...SECTIONS.filter((s) => s.id !== 'api').flatMap((s) => s.tabs.filter((t) => !(s.id === 'capacity' && t.id === 'api-reads')).map((t) => `/#${s.id}/${t.id}`)),
   '/submit',
   '/submit/task',
   '/submit/workflow',
