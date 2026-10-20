@@ -35,7 +35,7 @@ import './styles/people.css'
  * region draws as the admin gate with nothing under it.
  *
  * WHY IT WAS REDRAWN. Measured 2026-10-12 at 1260px: the seven-column table's
- * Actions column took 653px, so `devops@saga.xyz` wrapped as `devops@saga.
+ * Actions column took 653px, so `devops@example.com` wrapped as `devops@example.
  * xyz` and "connected" as "connecte d"; each row crammed Approve, Deny, a
  * ceiling field and Save, Lend, Reclaim and an Account select that wrapped
  * differently per row; and a pending request was one small green dot, so

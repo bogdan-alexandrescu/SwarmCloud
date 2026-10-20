@@ -57,7 +57,7 @@ function task(id: string, state: TaskState, over: Partial<Task> = {}): Task {
   return {
     id, tenant_id: 'eng', state, runner_profile: 'claude-code', resource_class: 'standard', provider: 'anthropic',
     priority: 0, created_at: iso(-600_000), updated_at: iso(-60_000), started_at: iso(-500_000), completed_at: iso(-300_000),
-    submitted_by: 'bogdan@saga.xyz', attempt_count: 1, max_attempts: 3, park_reason: null, blocked_by: null,
+    submitted_by: 'alice@example.com', attempt_count: 1, max_attempts: 3, park_reason: null, blocked_by: null,
     workflow_id: WF, step_id: null, depends_on: null, cancel_requested: false, repository_url: null, model: null,
     timeout_seconds: null, next_eligible_at: null, metadata: null, repository_ref: null, input: null, last_error: null,
     result_summary: null, latest_checkpoint: null, current_generation: 1, current_lease_id: null,
@@ -69,7 +69,7 @@ function workflow(steps: WorkflowStep[]): Workflow {
   return {
     workflow_id: WF, state: 'SUCCEEDED', tenant_id: 'eng', stored_state: 'SUCCEEDED', state_source: 'derived',
     rollup: { state: 'SUCCEEDED', complete: true, reason: null, counts: { SUCCEEDED: steps.length }, unreadable_steps: [], unstarted_steps: [], steps_read: steps.length },
-    created_at: iso(-900_000), updated_at: iso(-60_000), submitted_by: 'bogdan@saga.xyz', priority: 0,
+    created_at: iso(-900_000), updated_at: iso(-60_000), submitted_by: 'alice@example.com', priority: 0,
     on_step_failure: 'FAIL_WORKFLOW', cancel_requested: false, steps,
   } as unknown as Workflow
 }

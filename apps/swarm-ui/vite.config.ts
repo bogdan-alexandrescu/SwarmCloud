@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 
 // In development the API is proxied so the app talks to a same-origin /v1,
 // exactly as it does in production behind the load balancer. Point
-// SWARM_API_ORIGIN at https://swarm.saga.xyz once DNS resolves; until then the
+// SWARM_API_ORIGIN at the deployed origin (https://swarm.example.com, say) once DNS resolves; until then the
 // app runs on fixtures (see src/api.ts) and never reaches the network.
 export default defineConfig({
   plugins: [react()],

@@ -1,4 +1,4 @@
-// LIVE QA, CAPACITY › HOLDERS (2026-10-11, swarm.saga.xyz).
+// LIVE QA, CAPACITY › HOLDERS (2026-10-11, swarm.example.com).
 //
 //   CAP-5  `?pool=nope:x` read "No lease holds nope:x right now · real zero":
 //          a measured zero for a pool that does not exist. It now says the

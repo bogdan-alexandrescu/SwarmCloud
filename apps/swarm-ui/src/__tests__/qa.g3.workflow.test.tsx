@@ -1,4 +1,4 @@
-// QA PASS G3 (2026-10-07, swarm.saga.xyz, code pointers against 9cf90837):
+// QA PASS G3 (2026-10-07, swarm.example.com, code pointers against 9cf90837):
 // one workflow's DETAIL page -- its Graph, Steps table, Timeline and step
 // drawer. One case per finding; each fails on the code before its fix.
 //
@@ -82,7 +82,7 @@ function task(id: string, state: TaskState, over: Partial<Task> = {}): Task {
     updated_at: iso(-20),
     started_at: null,
     completed_at: null,
-    submitted_by: 'qa@saga.xyz',
+    submitted_by: 'qa@example.com',
     attempt_count: 1,
     max_attempts: 3,
     park_reason: null,
@@ -125,7 +125,7 @@ function workflow(steps: WorkflowStep[], state: Workflow['state'] = 'SUCCEEDED')
     },
     created_at: iso(-600),
     updated_at: iso(-20),
-    submitted_by: 'qa@saga.xyz',
+    submitted_by: 'qa@example.com',
     priority: 0,
     on_step_failure: 'CONTINUE',
     cancel_requested: false,

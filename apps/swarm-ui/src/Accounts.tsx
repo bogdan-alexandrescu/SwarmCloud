@@ -3030,7 +3030,7 @@ export function stateNeedsReason(to: AccountStateName): boolean {
 //
 // TWO STEPS, BECAUSE THE PROVIDER'S OAUTH CLIENT ALLOWS EXACTLY ONE REDIRECT
 // TARGET: its own callback page, which DISPLAYS a code. A third-party
-// application cannot register `https://swarm.saga.xyz/callback`, so the browser
+// application cannot register `https://swarm.example.com/callback`, so the browser
 // cannot come back here and the code on that page is what closes the loop. The
 // screen says that out loud rather than leaving the paste looking like an
 // oversight somebody will try to "fix" later.

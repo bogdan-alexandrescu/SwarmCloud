@@ -45,8 +45,8 @@ describe('the sweeper on the Runs list', () => {
   it('shows a NOT_READY run with its reason, and who started each run', async () => {
     serveRuns([
       issueRun({ id: 'run_nr', state: 'NOT_READY', terminal: true, plan: null, plan_digest: null,
-        not_ready: NOT_READY, created_by: 'issue-sweep', on_behalf_of: 'alice@saga.xyz' }),
-      issueRun({ id: 'run_person', state: 'FAILED', terminal: true, created_by: 'bob@saga.xyz' }),
+        not_ready: NOT_READY, created_by: 'issue-sweep', on_behalf_of: 'alice@example.com' }),
+      issueRun({ id: 'run_person', state: 'FAILED', terminal: true, created_by: 'bob@example.com' }),
     ])
     const { container } = await mountList()
     await screen.findByRole('heading', { name: 'Runs', level: 1 }, WAIT)
@@ -57,10 +57,10 @@ describe('the sweeper on the Runs list', () => {
     }, WAIT)
     expect(visible(rows[0]!)).toContain('Not ready')
     expect(visible(rows[0]!)).toContain('Not ready: The sort path is rewritten by #612')
-    expect(visible(rows[0]!)).toContain('issue sweep, as alice@saga.xyz')
+    expect(visible(rows[0]!)).toContain('issue sweep, as alice@example.com')
     expect(rows[0]!.querySelector('[data-sweep]')).not.toBeNull()
     // The control: a run a person started, and a state with no reason line.
-    expect(visible(rows[1]!)).toContain('bob@saga.xyz')
+    expect(visible(rows[1]!)).toContain('bob@example.com')
     expect(visible(rows[1]!)).not.toContain('issue sweep')
     expect(rows[1]!.querySelector('.rn-why')).toBeNull()
   })
@@ -75,7 +75,7 @@ describe('the words', () => {
 
   it('names the sweep, and a person by their address', () => {
     expect(runCreatorWord({ ...base, created_by: 'issue-sweep', on_behalf_of: null })).toBe('issue sweep')
-    expect(runCreatorWord({ ...base, created_by: 'carol@saga.xyz' })).toBe('carol@saga.xyz')
+    expect(runCreatorWord({ ...base, created_by: 'carol@example.com' })).toBe('carol@example.com')
     expect(runCreatorWord({ ...base, created_by: '' })).toBeNull()
   })
 

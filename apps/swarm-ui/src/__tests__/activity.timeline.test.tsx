@@ -80,11 +80,11 @@ const ok = <T,>(data: T): Result<T> => ({ status: 'ok', data, fetchedAt: Date.no
 function me(admin: boolean): Me {
   return {
     tenant: {
-      tenant_id: 'eng', kind: 'group', principal: 'eng@saga.xyz', display_name: null,
+      tenant_id: 'eng', kind: 'group', principal: 'eng@example.com', display_name: null,
       created_at: '2026-09-01T00:00:00Z', max_active: 10, capacity_units: 20, monthly_budget_usd: null,
       enabled: true, credentials: [], service_account: null, gcs_prefix: null, namespace: null,
     },
-    principal: { email: 'a@saga.xyz', domain: 'saga.xyz', groups: [], is_admin: admin },
+    principal: { email: 'a@example.com', domain: 'example.com', groups: [], is_admin: admin },
     environment: 'dev',
     environment_declared: true,
   }
@@ -1278,13 +1278,13 @@ describe('timeline figures open the rows behind them (#116) and add up (#123)', 
       ...d.groups,
       by: 'submitted_by',
       rows_total: 2,
-      rows: [{ ...d.groups.rows[0]!, key: 'a@saga.xyz' }, { ...d.groups.rows[1]!, key: '' }],
+      rows: [{ ...d.groups.rows[0]!, key: 'a@example.com' }, { ...d.groups.rows[1]!, key: '' }],
     }
     const root = await timeline(d, { view: 'group=submitted_by' })
     const c = card(root, /^Reliability/)
-    const href = c.querySelector('tbody tr[data-key="a@saga.xyz"] th a')!.getAttribute('href')!
+    const href = c.querySelector('tbody tr[data-key="a@example.com"] th a')!.getAttribute('href')!
     const q = new URLSearchParams(href.replace(/^#work\/timeline\/outcomes\?/, ''))
-    expect(q.getAll('submitted_by')).toEqual(['a@saga.xyz'])
+    expect(q.getAll('submitted_by')).toEqual(['a@example.com'])
     expect(q.get('group')).toBe('submitted_by')
     expect(c.querySelector('tbody tr[data-key=""] th a'), 'a filter on "nobody" is offered').toBeNull()
   })
@@ -1362,12 +1362,12 @@ describe('timeline figures open the rows behind them (#116) and add up (#123)', 
 
   it('writes a person filter in the case the address reads it back in, so the link does not land unfiltered', async () => {
     const d = ledgerFixture()
-    d.groups = { ...d.groups, by: 'submitted_by', rows_total: 1, rows: [{ ...d.groups.rows[0]!, key: 'Ana@Saga.xyz' }] }
+    d.groups = { ...d.groups, by: 'submitted_by', rows_total: 1, rows: [{ ...d.groups.rows[0]!, key: 'Ana@Example.com' }] }
     const onView = vi.fn()
     const root = await timeline(d, { view: 'group=submitted_by', onView })
     const link = card(root, /^Reliability/).querySelector<HTMLAnchorElement>('tbody tr th a')!
     fireEvent.click(link)
-    expect(new URLSearchParams(onView.mock.calls.at(-1)![0] as string).getAll('submitted_by')).toEqual(['ana@saga.xyz'])
+    expect(new URLSearchParams(onView.mock.calls.at(-1)![0] as string).getAll('submitted_by')).toEqual(['ana@example.com'])
   })
 
   it('leaves a modified click to the browser, so a row can open in a new tab', async () => {
@@ -1392,7 +1392,7 @@ function endedRow(i: number, over: Partial<EndedRow> = {}): EndedRow {
     state: 'FAILED',
     completed_at: '2026-09-22T13:00:00+03:00',
     runner_profile: 'claude-code',
-    submitted_by: 'a@saga.xyz',
+    submitted_by: 'a@example.com',
     workflow_id: null,
     step_id: null,
     failure_class: 'timeout',
@@ -1501,14 +1501,14 @@ describe('a figure lists the tasks behind it (#116)', () => {
 
   it('makes a person’s Failed cell a link to that person’s failed tasks', async () => {
     const d = ledgerFixture()
-    d.groups = { ...d.groups, by: 'submitted_by', rows_total: 1, rows: [{ ...d.groups.rows[0]!, key: 'a@saga.xyz', failed: 3, dead_lettered: 1 }] }
+    d.groups = { ...d.groups, by: 'submitted_by', rows_total: 1, rows: [{ ...d.groups.rows[0]!, key: 'a@example.com', failed: 3, dead_lettered: 1 }] }
     const root = await timeline(d, { view: 'group=submitted_by' })
     const c = card(root, /^Reliability/)
-    const cell = c.querySelector<HTMLAnchorElement>('tbody tr[data-key="a@saga.xyz"] .ol-cell-link[href*="rows=failed"]')
+    const cell = c.querySelector<HTMLAnchorElement>('tbody tr[data-key="a@example.com"] .ol-cell-link[href*="rows=failed"]')
     expect(cell, 'the Failed cell is static').not.toBeNull()
     expect(cell!.textContent).toBe('4')
     const q = new URLSearchParams(cell!.getAttribute('href')!.split('?')[1])
-    expect(q.get('rows_key')).toBe('a@saga.xyz')
+    expect(q.get('rows_key')).toBe('a@example.com')
     expect(q.get('group')).toBe('submitted_by')
     expect(q.has('at')).toBe(false)
   })
@@ -1519,12 +1519,12 @@ describe('a figure lists the tasks behind it (#116)', () => {
       ...d.groups,
       by: 'submitted_by',
       rows_total: 2,
-      rows: [{ ...d.groups.rows[0]!, key: '' }, { ...d.groups.rows[1]!, key: 'b@saga.xyz', failed: 0, dead_lettered: 0 }],
+      rows: [{ ...d.groups.rows[0]!, key: '' }, { ...d.groups.rows[1]!, key: 'b@example.com', failed: 0, dead_lettered: 0 }],
     }
     const root = await timeline(d, { view: 'group=submitted_by' })
     const c = card(root, /^Reliability/)
     expect(c.querySelector('tbody tr[data-key=""] .ol-cell-link')).toBeNull()
-    expect(c.querySelector('tbody tr[data-key="b@saga.xyz"] .ol-cell-link[href*="rows=failed"]')).toBeNull()
+    expect(c.querySelector('tbody tr[data-key="b@example.com"] .ol-cell-link[href*="rows=failed"]')).toBeNull()
   })
 
   it('says a bucket that left the span is gone, rather than drawing nothing', async () => {
@@ -1577,8 +1577,8 @@ describe('a figure lists the tasks behind it (#116)', () => {
 
 describe('the rows address (#116)', () => {
   it('round-trips the figure, and drops a bucket or row named without one', () => {
-    const v = parseView('rows=cancelled&at=2026-09-22T00%3A00%3A00%2B03%3A00&rows_key=a%40saga.xyz&group=submitted_by')
-    expect([v.rows, v.at, v.rowsKey]).toEqual(['cancelled', '2026-09-22T00:00:00+03:00', 'a@saga.xyz'])
+    const v = parseView('rows=cancelled&at=2026-09-22T00%3A00%3A00%2B03%3A00&rows_key=a%40example.com&group=submitted_by')
+    expect([v.rows, v.at, v.rowsKey]).toEqual(['cancelled', '2026-09-22T00:00:00+03:00', 'a@example.com'])
     expect(parseView(serializeView(v))).toEqual(v)
     const bare = parseView('at=2026-09-22&rows_key=x&rows=dead')
     expect([bare.rows, bare.at, bare.rowsKey]).toEqual([null, null, null])
@@ -1632,7 +1632,7 @@ describe('the tenants table', () => {
     const tenant: Tenant = {
       tenant_id: 'eng',
       kind: 'group',
-      principal: 'eng@saga.xyz',
+      principal: 'eng@example.com',
       display_name: null,
       created_at: '2026-09-24T09:00:00Z',
       max_active: 10,

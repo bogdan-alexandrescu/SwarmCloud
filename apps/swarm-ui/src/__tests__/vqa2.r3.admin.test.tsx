@@ -115,7 +115,7 @@ function tenant(over: Partial<Tenant>): Tenant {
   return {
     tenant_id: 'eng',
     kind: 'group',
-    principal: 'eng@saga.xyz',
+    principal: 'eng@example.com',
     display_name: null,
     created_at: '2026-09-24T09:00:00Z',
     max_active: 45,
@@ -123,7 +123,7 @@ function tenant(over: Partial<Tenant>): Tenant {
     monthly_budget_usd: null,
     enabled: true,
     credentials: ['anthropic', 'openai', 'github'],
-    service_account: 'swarm-agent-worker-eng@saga-agents.iam.gserviceaccount.com',
+    service_account: 'swarm-agent-worker-eng@example-project.iam.gserviceaccount.com',
     gcs_prefix: null,
     namespace: null,
     ...over,
@@ -156,7 +156,7 @@ const LONG = 'swarm-platform-integration-acceptance'
 
 describe('V026, V186: the key is whole unless the column cannot hold it, then cut with an ellipsis', () => {
   it('never hands the key a share of the overflow, and caps it at the column less the two floors', async () => {
-    const c = await roster([tenant({ tenant_id: LONG, principal: `${LONG}@saga.xyz` })])
+    const c = await roster([tenant({ tenant_id: LONG, principal: `${LONG}@example.com` })])
     const ident = c.querySelector('td[data-label="Principal"] .ten-ident')!
     const key = ident.querySelector('.ten-ident-key')!
     const tail = ident.querySelector('.ten-ident-tail')!
@@ -192,7 +192,7 @@ describe('V079, V186: every Tenants column is sized to what it holds at 1440', (
   const NEEDS: Record<string, number> = {
     status: 60, // `enabled`
     kind: 56, // `group`
-    principal: 194, // `bogdan@saga.xyz` + its copy control
+    principal: 194, // `alice@example.com` + its copy control
     enforced: 72, // the head `Enforced`
     configured: 85, // the head `Configured`
     credentials: 174, // `anthropic` and `openai` on one line
@@ -207,8 +207,8 @@ describe('V079, V186: every Tenants column is sized to what it holds at 1440', (
     }
     const cols = ['tenant', 'status', 'kind', 'principal', 'enforced', 'configured', 'credentials', 'identity']
     expect(cols.reduce((sum, col) => sum + pct(col), 0)).toBeCloseTo(100, 5)
-    // MUTATION: put Principal back to 15% (158px): `bogdan@saga.xyz` is cut
-    // to `bogdan@sa…` again. Or Configured back to 8%: its head is cut.
+    // MUTATION: put Principal back to 15% (158px): `alice@example.com` is cut
+    // to `alice@ex…` again. Or Configured back to 8%: its head is cut.
     for (const [col, px] of Object.entries(NEEDS)) {
       expect((pct(col) / 100) * TABLE, `${col} is narrower than what it holds`).toBeGreaterThanOrEqual(px)
     }
@@ -318,7 +318,7 @@ describe('V191: Last changed never ends a line on a separator', () => {
         pools: [
           {
             ...pool('global', { hard_limit: 20, effective_limit: 20 }),
-            admin_changed_by: 'ops@saga.xyz',
+            admin_changed_by: 'ops@example.com',
             admin_changed_at: at,
             admin_change: { hard_limit: { from: 40, to: 20 } },
           },
@@ -327,9 +327,9 @@ describe('V191: Last changed never ends a line on a separator', () => {
     )
     await limits([pool('global', { hard_limit: 20, effective_limit: 20 })])
     const cell = document.querySelector('#limit-global td[data-label="Last changed"]')!
-    await waitFor(() => expect(cell.textContent).toContain('ops@saga.xyz'), WAIT)
+    await waitFor(() => expect(cell.textContent).toContain('ops@example.com'), WAIT)
     const line = cell.querySelector('.adm-changed')!
-    expect(line.textContent).toBe('ops@saga.xyz · 40 → 20 · 3h ago')
+    expect(line.textContent).toBe('ops@example.com · 40 → 20 · 3h ago')
     const parts = [...line.querySelectorAll(':scope > .adm-changed-part')]
     expect(parts.map((p) => p.textContent)).toEqual(['· 40 → 20', '· 3h ago'])
     for (const p of parts) expect(won(p, 'white-space', PHONE)).toBe('nowrap')
@@ -390,7 +390,7 @@ describe('V192: while the first run counts, the cards say so', () => {
   it('still says why a non-admin’s platform card has no figure while counting', async () => {
     api.loadStats.mockReturnValue(new Promise<Result<Stats>>(() => {}))
     api.loadMe.mockResolvedValue(
-      ok({ principal: { email: 'a@saga.xyz', domain: 'saga.xyz', groups: [], is_admin: false } } as never),
+      ok({ principal: { email: 'a@example.com', domain: 'example.com', groups: [], is_admin: false } } as never),
     )
     render(<PlatformCountsScreen />)
     await waitFor(() => expect(screen.getByRole('button', { name: /^Run the count · 12 reads/ })).toBeTruthy(), WAIT)

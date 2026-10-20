@@ -86,7 +86,7 @@ const POOL_ACCOUNTS: Account[] = [
   account('team', 0.22),
   account('laptop', 0.6),
   account('devops-team', 0.01, { windows: RESET }),
-  account('saga-personal', 0, { windows: { five_hour: { ...RESET.five_hour, utilization: 0 } } }),
+  account('alice-personal', 0, { windows: { five_hour: { ...RESET.five_hour, utilization: 0 } } }),
 ]
 const accountsPage = (accounts: Account[]): AccountsPage => ({ accounts, tenant_id: 'eng', unreadable_documents: [], unreadable_document_count: 0 })
 
@@ -109,18 +109,18 @@ afterEach(cleanup)
 
 describe('G5-05: the account line names the projected accounts it did not count', () => {
   // MUTATION: drop `projected` from `accountHeadroom`'s answer, or the clause from `AccountLine`.
-  it('appends "2 projected (devops-team, saga-personal) not counted" to the best-account line', async () => {
+  it('appends "2 projected (devops-team, alice-personal) not counted" to the best-account line', async () => {
     const el = await mount({ accounts: ok(accountsPage(POOL_ACCOUNTS)) })
     const line = el.querySelector('.ov-acc')!
     expect(line, 'no account line').not.toBeNull()
     expect(text(line)).toMatch(/best team at 22% of its five-hour window/)
-    expect(text(line)).toContain('2 projected (devops-team, saga-personal) not counted')
+    expect(text(line)).toContain('2 projected (devops-team, alice-personal) not counted')
     expect(text(line)).toMatch(/^2 of 4 usable/)
   })
 
   it('returns the projected names from accountHeadroom, apart from the unread ones', () => {
     const h = Overview.accountHeadroom(ok(accountsPage([...POOL_ACCOUNTS, account('never', 0, { observed_at: null })])))
-    expect(h.projected).toEqual(['devops-team', 'saga-personal'])
+    expect(h.projected).toEqual(['devops-team', 'alice-personal'])
     expect(h.best?.label).toBe('team')
   })
 
@@ -135,7 +135,7 @@ describe('G5-05: the account line names the projected accounts it did not count'
     const el = await mount({ accounts: ok(accountsPage(POOL_ACCOUNTS.slice(2))) })
     const line = text(el.querySelector('.ov-acc'))
     expect(line).toMatch(/no current reading/)
-    expect(line).toContain('2 projected (devops-team, saga-personal) not counted')
+    expect(line).toContain('2 projected (devops-team, alice-personal) not counted')
   })
 })
 

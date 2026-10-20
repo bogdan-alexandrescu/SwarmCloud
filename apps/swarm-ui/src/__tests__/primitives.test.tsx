@@ -253,7 +253,7 @@ describe('leaseCoverage reads the count, and never takes an absence for a zero',
 
 describe("classifyEnvironment's third source is the API's declared environment", () => {
   it('believes a declared API over the build and over the host', () => {
-    expect(classifyEnvironment('dev', 'swarm.saga.xyz', { name: 'prod', declared: true })).toEqual({
+    expect(classifyEnvironment('dev', 'swarm.example.com', { name: 'prod', declared: true })).toEqual({
       kind: 'production',
       name: 'prod',
       source: 'api',
@@ -267,9 +267,9 @@ describe("classifyEnvironment's third source is the API's declared environment",
   })
 
   it('ignores an undeclared API: a defaulted dev is not a dev', () => {
-    expect(classifyEnvironment(undefined, 'swarm.saga.xyz', { name: 'dev', declared: false })).toEqual({
+    expect(classifyEnvironment(undefined, 'swarm.example.com', { name: 'dev', declared: false })).toEqual({
       kind: 'unknown',
-      host: 'swarm.saga.xyz',
+      host: 'swarm.example.com',
     })
     expect(classifyEnvironment(undefined, 'localhost', { name: 'dev', declared: false }).kind).toBe('local')
     expect(classifyEnvironment('staging', 'x', { name: '  ', declared: true })).toEqual({

@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import { painted } from './marks'
+import { COMPANY_NAME } from '../../test/companyName'
 
 type Step = { step: string; state: string; code?: string | null; copy?: string | null; evidence?: Record<string, unknown>; issues?: unknown[] }
 
@@ -187,7 +188,7 @@ describe('the Setup page draws the server-derived checklist', () => {
   })
 })
 
-const INSTALL_URL = 'https://github.com/apps/swarmcloud-saga/installations/new'
+const INSTALL_URL = 'https://github.com/apps/swarmcloud-example/installations/new'
 
 const NOT_INSTALLED = doc([
   { step: 'signed_in', state: 'done', evidence: { email: 'dev@swarm.example.com', tenant_id: 'eng' } },
@@ -237,7 +238,7 @@ describe('the Install the App step (#780, 2026-10-08)', () => {
     await screen.findByRole('list', { name: 'Setup steps' })
     const inst = stepEl('app_installed')
     expect(visible(inst)).toContain("connected as @octo-dev, but the SwarmCloud GitHub App isn't installed anywhere yet")
-    expect(visible(inst)).not.toMatch(/saga/i)
+    expect(visible(inst)).not.toMatch(COMPANY_NAME)
   })
 
   it('names where the App is installed once it is, and offers no install', async () => {

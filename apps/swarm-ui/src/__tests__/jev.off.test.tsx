@@ -23,6 +23,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import type { Judgment, JevBackend } from '../api'
 import type { Result } from '../fetch'
 import type { Capacity } from '../types'
+import { COMPANY_NAME } from '../../test/companyName'
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
@@ -128,8 +129,8 @@ describe('the Submit picker reads whether Jev can run', () => {
     expect(visible(c.querySelector('.btp-notice'))).not.toContain('TypeSafe')
     expect(visible(c.querySelector('.btp-notice'))).toContain('their text stays inside your network.')
     expect(c.querySelector('.btp-hint')?.textContent).toContain('judged inside your network')
-    // The company is not named by the picker (#1647, SAGA-COPY).
-    expect(c.textContent).not.toMatch(/\bSaga\b/i)
+    // The company is not named by the picker (#1647).
+    expect(c.textContent).not.toMatch(COMPANY_NAME)
   })
 
   it('keeps Jev off while the backend read is unanswered or failed, never on a guess', () => {
@@ -183,8 +184,8 @@ describe('the live chip says when the attempt fell back', () => {
     fireEvent.focus(b)
     const card = document.getElementById(b.getAttribute('aria-describedby') ?? '')!
     expect(card.textContent).toMatch(/judges with your internal decision API, and this task has no route to it/)
-    // The company is not named on the chip (#1647, SAGA-COPY).
-    expect(card.textContent).not.toMatch(/\bSaga\b/i)
+    // The company is not named on the chip (#1647).
+    expect(card.textContent).not.toMatch(COMPANY_NAME)
     expect(card.textContent).toMatch(/tailnet egress is off/)
   })
 

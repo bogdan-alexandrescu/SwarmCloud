@@ -1,5 +1,5 @@
 // WORK › REPOSITORIES › ONE REPOSITORY, READ AGAINST THE LIVE API'S SHAPES
-// (QA pass G4, 2026-10-07, on swarm.saga.xyz).
+// (QA pass G4, 2026-10-07, on swarm.example.com).
 //
 // Every response here is shaped as the deployed API answers it, not as the
 // design first guessed it:

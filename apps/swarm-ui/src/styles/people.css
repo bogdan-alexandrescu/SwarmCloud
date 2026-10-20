@@ -4,7 +4,7 @@
 
    WHY THE TABLE HOLDS NO CONTROL. Measured 2026-10-12 at 1260px: the Actions
    column took 653px, and to make room every other cell broke wherever it
-   could -- `devops@saga. xyz`, `connecte d`. The decisions moved to the
+   could -- `devops@example. com`, `connecte d`. The decisions moved to the
    Waiting card and the Manage drawer, so the table is facts, laid out by its
    content inside its own scroll container (`.table-wrap`, Activity.tsx's
    pattern), and NO CELL BREAKS A WORD: cells wrap at spaces, and an address
@@ -21,7 +21,7 @@
 .pp-who { display: block; min-width: 0; max-width: 18rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; overflow-wrap: normal; }
 /* In the wide table the cap is 15rem (visual QA V021, 2026-10-16): at 18rem
    a long address took 362px of a 1024px card, and with a long team list and a
-   job in flight the table was 1151px wide. A typical address (`name@saga.xyz`)
+   job in flight the table was 1151px wide. A typical address (`name@example.com`)
    is far inside either cap; the phone record's name line keeps 18rem. */
 .is-scroll > .pp-table .pp-who { max-width: 15rem; }
 .pp-avatar {

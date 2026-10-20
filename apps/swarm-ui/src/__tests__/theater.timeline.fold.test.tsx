@@ -58,8 +58,8 @@ const SESSION: LiveAction[] = [
   cdp(4, 'Input.insertText', { length: 7 }),
   cdp(4, 'Input.insertText', { length: 5 }),
   cdp(4, 'Input.dispatchKeyEvent'),
-  ctl(30, 'control_taken', { by: 'alice@saga.xyz', you: true }),
-  ctl(31, 'device_changed', { by: 'alice@saga.xyz', you: true, preset: 'iphone-15', orientation: 'portrait', touch: true }),
+  ctl(30, 'control_taken', { by: 'alice@example.com', you: true }),
+  ctl(31, 'device_changed', { by: 'alice@example.com', you: true, preset: 'iphone-15', orientation: 'portrait', touch: true }),
   cdp(40, 'Page.navigate', { url: 'https://example.test/elsewhere', outcome: 'refused', cause: 'method_policy' }),
   ctl(50, 'handoff_resolved', { outcome: 'returned' }),
 ]

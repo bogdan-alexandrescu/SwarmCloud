@@ -1,5 +1,5 @@
 /**
- * QA PASS G1 ON SWARM.SAGA.XYZ (2026-10-07): the Overview, at 1512 and 390.
+ * QA PASS G1 ON SWARM.EXAMPLE.COM (2026-10-07): the Overview, at 1512 and 390.
  *
  *   G1-02  "Finished today" read 62 on a desktop and 41 on a phone at the same
  *          moment, under the same label: both were counted off the task page

@@ -9,7 +9,7 @@ import './styles/forgeperms.css'
 
 /**
  * GITHUB PERMISSIONS HEALTH, DESIGN 2 "ORG CARDS" (#1086, PERM-2; owner pick
- * 2026-10-11). On 2026-10-11 sagaxyz/ai-studio's merges failed with
+ * 2026-10-11). On 2026-10-11 a tenant repository's merges failed with
  * `token_lacks_rights` because the App lacked Commit statuses: read, and
  * nothing in the console said so. These cards say it before a run fails.
  *

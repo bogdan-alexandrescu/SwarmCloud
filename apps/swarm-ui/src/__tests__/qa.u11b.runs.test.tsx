@@ -164,7 +164,7 @@ describe('D11: a reference heading and the list\'s columns fit', () => {
   })
 
   it('fits the Run id and the Issue reference whole in a 1056px list', async () => {
-    const { container } = await mountList([run({ state: 'DONE', workflow_id: WF, created_by: 'bogdan@sagadigital.example.com' })])
+    const { container } = await mountList([run({ state: 'DONE', workflow_id: WF, created_by: 'alice@digitalgroup.example.com' })])
     const table = container.querySelector<HTMLTableElement>('.rn-table')!
     const { cols } = fixedColumns(table, 1056, WIDE)
     const row = container.querySelector('.rn-row')!
