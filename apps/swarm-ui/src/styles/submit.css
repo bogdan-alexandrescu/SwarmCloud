@@ -40,10 +40,14 @@
    whole card multiplied every label's already-muted ink down with it, and
    "how this work gets merged" read at about 2.3:1 on the dark card. The
    labels, the title and the options' words keep their own tokens at full
-   strength; only the fields and the radios themselves fade. No
+   strength; only the fields fade. No
    `pointer-events: none`: a step not reached is still one a caller may fill
-   in first, by pointer as by keyboard. */
-.sb-step.is-dim input,
+   in first, by pointer as by keyboard.
+   NOT THE RADIOS (visual QA run 2, work-b-006): a radio's ring is the only
+   mark its option carries, and `.55` took the 3:1 `--ctl-bd` ring down to
+   about 1.9:1 -- an enabled choice drawn below SC 1.4.11 for as long as no
+   runner is chosen. The step's other fields still say it is not reached. */
+.sb-step.is-dim input:where(:not([type='radio'])),
 .sb-step.is-dim textarea,
 .sb-step.is-dim select { opacity: .55; }
 .sb-step .sbf-move-n {
@@ -77,33 +81,37 @@
 .sbf-runners.is-cards .sbf-runner.is-off .sbf-runner-facts { color: var(--text-faint); }
 
 /* THE RADIO, DRAWN AS THE FRAME'S RING. A native radio still carries the
-   role, the arrow keys and the pick-one behaviour; only its paint changes. */
-.sbf-runners.is-cards .sbf-runner > input[type='radio'] {
-  appearance: none;
-  flex: none;
-  width: 14px; height: 14px;
-  margin: 2px 0 0;
-  border: 1.5px solid var(--line);
-  border-radius: 999px;
-  background: var(--surface);
-}
-.sbf-runners.is-cards .sbf-runner > input[type='radio']:checked { border: 4px solid var(--sk-ac); }
-.sbf-runners.is-cards .sbf-runner > input[type='radio']:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
-/* AND THE DISPATCH STRATEGY'S RADIOS THE SAME WAY (visual QA QA-075,
-   2026-10-20). `.dsp-option > input` in styles.css only tinted the native
-   control, and in dark mode an unchosen native radio is a filled grey disc --
-   so "A PR per step" and "Open a pull request" sat under the runner cards'
-   outlined rings in a second vocabulary for the same pick-one control. */
+   role, the arrow keys and the pick-one behaviour; only its paint changes.
+   ONE RULE FOR BOTH OF THE FORMS' RADIOS: the runner cards and the dispatch
+   options (visual QA QA-075, 2026-10-20). `.dsp-option > input` in styles.css
+   only tinted the native control, and in dark mode an unchosen native radio
+   is a filled grey disc -- so "A PR per step" and "Open a pull request" sat
+   under the runner cards' outlined rings in a second vocabulary for the same
+   pick-one control. Two copies of the rule are how they parted.
+
+   THE UNSELECTED RING IS A CONTROL BOUNDARY, `--ctl-bd`, NOT THE HAIRLINE
+   (visual QA run 2, work-b-006). On `--line` it measured 1.37:1 against its
+   card in dark and 1.34:1 in light, and it is the only mark an enabled,
+   unchosen option carries: the card's own edge is the hairline too. WCAG 2.1
+   SC 1.4.11 asks 3:1 of it; `--ctl-bd` is 3.45:1 on `--surface` in dark and
+   3.35:1 in light. Chosen is the accent's 4px ring; DISABLED keeps the
+   hairline, which is what tells a refused runner's radio from a live one
+   (an inactive control is outside 1.4.11). */
+.sbf-runners.is-cards .sbf-runner > input[type='radio'],
 .dsp-option > input[type='radio'] {
   appearance: none;
   flex: none;
   width: 14px; height: 14px;
   margin: 2px 0 0;
-  border: 1.5px solid var(--line);
+  border: 1.5px solid var(--ctl-bd);
   border-radius: 999px;
   background: var(--surface);
 }
+.sbf-runners.is-cards .sbf-runner > input[type='radio']:checked,
 .dsp-option > input[type='radio']:checked { border: 4px solid var(--sk-ac); }
+.sbf-runners.is-cards .sbf-runner > input[type='radio']:disabled,
+.dsp-option > input[type='radio']:disabled { border: 1.5px solid var(--line); }
+.sbf-runners.is-cards .sbf-runner > input[type='radio']:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
 
 /* EVERY CARD FILLS ITS ROW (visual QA QA-068). The grid stretches each `li`
    to its row, but the label inside kept its own height, so a two-line card
