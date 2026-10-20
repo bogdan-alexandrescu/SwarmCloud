@@ -59,10 +59,12 @@ the raw bytes' `object_digest`) only when it is the artifact's bytes
 exactly; `read_version` serves the copy, masked as the artifact reader
 masks and checked against the promoted `digest`, and falls back to the
 artifact -- which is also how a version promoted before the copy existed is
-still read. Retention is the last 20 versions (`KEPT_VERSIONS`); the objects
-of a version pruned here are deleted by the next index run's sweep, run as
-the tenant's worker (`agent_worker.indexrun.kept_commits`), because this
-service reads the bucket and may not delete in it.
+still read. Retention is the repository's `index.keep_versions` (default 20,
+`KEPT_VERSIONS`); the objects of a version pruned here are deleted by the
+next index run's sweep, run as the tenant's worker, because this service
+reads the bucket and may not delete in it. This service names the commits
+that sweep keeps, in the run's signed prompt (`KEEP_LINE`, `kept_commits`);
+the worker reads no database for them (lane INDEX-RETENTION, #1693).
 
 The summary is rendered on every read from the digest-checked JSON, never
 stored and never written by the agent, so it cannot say what the JSON does
