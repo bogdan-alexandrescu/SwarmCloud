@@ -532,6 +532,20 @@
 @media (max-width: 1099px) {
   .ag-split.ctl-drawer { bottom: var(--dock-h, 28px); }
 }
+/* ON A PHONE THE OPEN TASK STARTS UNDER THE APP HEADER (QA-116, owner
+   2026-10-20: "Start under the header"). Fixed at `top: 0` and z-index 40
+   (`.drawer`, styles.css) it covered the phone header and its menu, so the
+   only way anywhere was back to the list first. Its top is the header's foot,
+   read from the header's own height (`--sk-pbar-h`, styles.css), so it moves
+   with the header when it compacts to 36px; the fallback is the overlay's
+   own 0, for a reader of this sheet alone. Under the menu's scrim (25) and
+   drawer (26), so the opened menu covers the task; above the page's sticky
+   bars (`.ctl-bar`, 20), which it still covers. The pane tabs stick at the
+   column's own top (QA-019, below), so they need no change. Under the
+   header the task is not modal: `useSplitFocus` reads this `top`. */
+@media (max-width: 759px) {
+  .ag-split.ctl-drawer { top: var(--sk-pbar-h, 0px); z-index: 24; }
+}
 .ag-logs {
   flex: 1 1 auto;
   display: flex;

@@ -135,18 +135,28 @@ export function agentListPath(list: AgentList): string {
 export { PHONE_PAGE_LIMIT } from './pageLimits'
 
 /**
- * THE WORD ON THE AGENT PAGE'S BACK LINK: the list tab it returns to.
+ * THE WORD ON THE AGENT PAGE'S BACK LINK: the list it returns to.
  *
  * agents.html V1 (decided 2026-10-01): on a phone the list and the agent are
  * two pages, and the agent page leads with `‹ Waiting` -- the tab the reader
  * came from, read off the list address the drawer closes to. An address that
  * names no tab (the list before it has landed anywhere) goes back to Agents.
+ *
+ * RECENT'S STATE FILTER IS NAMED (QA-116, owner 2026-10-20: "‹ Failed"). A
+ * task opened from `recent/failed` read `‹ Recent`: the link went back to
+ * the filter and its word left the filter out. `‹ Failed`, `‹ Cancelled`,
+ * `‹ Succeeded`; Recent with no filter, Live and Waiting are unchanged. The
+ * words are `AGENT_TABS` and `RECENT_STATES`, never a second list of them.
  */
+const BACK_TO = new RegExp(
+  `running/(${AGENT_TABS.join('|')})(?:/(${RECENT_STATES.join('|')}))?(?:[/?]|$)`,
+)
+
 export function backLabel(listAddress: string): string {
-  // `?` ends the tab too: a list address carries its toggles as a query.
-  const m = /running\/(live|waiting|recent)(?:[/?]|$)/.exec(listAddress)
-  const tab = m?.[1]
-  return tab === undefined ? 'Agents' : tab.charAt(0).toUpperCase() + tab.slice(1)
+  // `?` ends the tab and the state too: a list address carries its toggles as a query.
+  const m = BACK_TO.exec(listAddress)
+  const word = m?.[1] === 'recent' ? (m[2] ?? m[1]) : m?.[1]
+  return word === undefined ? 'Agents' : word.charAt(0).toUpperCase() + word.slice(1)
 }
 
 /** A task id's first eight characters after its `task_` prefix: what a row has room for. */

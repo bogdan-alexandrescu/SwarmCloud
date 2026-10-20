@@ -62,11 +62,16 @@ export function useSplitFocus(panel: RefObject<HTMLDivElement>, close: () => voi
   // an overlay that traps Tab, and it said `role=dialog` without
   // `aria-modal`, so a screen reader still offered the list behind it.
   // Beside the list it is a column, not modal, and says nothing.
+  // UNDER THE PHONE HEADER IT IS A REGION (QA-116): below 760px it starts at
+  // the header's foot and the header and its menu stay usable above it, so
+  // a modal dialog would hide from a screen reader, and keep Tab from, the
+  // controls in plain view. The back link and Escape still close it.
   useEffect(() => {
     const el = panel.current
     if (el === null) return
     const mark = () => {
-      if (isOverlay(el)) el.setAttribute('aria-modal', 'true')
+      el.setAttribute('role', underHeader(el) ? 'region' : 'dialog')
+      if (isModal(el)) el.setAttribute('aria-modal', 'true')
       else el.removeAttribute('aria-modal')
     }
     mark()
@@ -97,6 +102,24 @@ export function useSplitFocus(panel: RefObject<HTMLDivElement>, close: () => voi
     // must not re-capture an opener that is now inside it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+}
+
+/**
+ * WHETHER THE SPLIT STARTS UNDER THE PHONE HEADER (QA-116, owner 2026-10-20):
+ * an overlay whose top is below the screen's. Read off the computed `top`,
+ * which the phone rule sets to the header's height (agents.css,
+ * `--sk-pbar-h`), so the markup cannot disagree with the layout; between
+ * 760 and 1100px the overlay is at 0 and covers everything.
+ */
+export function underHeader(panel: HTMLElement): boolean {
+  if (!isOverlay(panel)) return false
+  const view = panel.ownerDocument.defaultView
+  return view !== null && parseFloat(view.getComputedStyle(panel).top) > 0
+}
+
+/** Whether the split is modal: an overlay over the whole screen, header and all. Tab is held in it only then. */
+export function isModal(panel: HTMLElement): boolean {
+  return isOverlay(panel) && !underHeader(panel)
 }
 
 /**

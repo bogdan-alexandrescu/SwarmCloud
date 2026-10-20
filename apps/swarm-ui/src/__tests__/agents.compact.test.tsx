@@ -268,7 +268,23 @@ describe('the agent page leads back to the tab it came from', () => {
   it('names the tab in the list address', () => {
     expect(backLabel('work/running/waiting')).toBe('Waiting')
     expect(backLabel('work/running/live')).toBe('Live')
-    expect(backLabel('work/running/recent/failed')).toBe('Recent')
+    // With no state filter Recent is still Recent, toggles or none.
+    expect(backLabel('work/running/recent')).toBe('Recent')
+    expect(backLabel('work/running/recent?group=wf')).toBe('Recent')
+  })
+
+  // QA-116 (visual QA #1680; owner 2026-10-20: "‹ Failed"): a task opened
+  // from Recent's failed filter led back with "‹ Recent". It went back to the
+  // filter; only its word left the filter out.
+  it('names Recent’s state filter when the address carries one', () => {
+    // MUTATION: drop the state segment from backLabel's pattern and all three read "Recent".
+    expect(backLabel('work/running/recent/failed')).toBe('Failed')
+    expect(backLabel('work/running/recent/cancelled')).toBe('Cancelled')
+    expect(backLabel('work/running/recent/succeeded')).toBe('Succeeded')
+    // MUTATION: end the state at `/` or the end only, and a filtered list carrying a toggle reads "Recent".
+    expect(backLabel('work/running/recent/failed?group=wf&first=failed')).toBe('Failed')
+    // MUTATION: accept any word after `recent/` and a mistyped state names itself on the link.
+    expect(backLabel('work/running/recent/faild')).toBe('Recent')
   })
 
   it('says Agents when the address names no tab', () => {
