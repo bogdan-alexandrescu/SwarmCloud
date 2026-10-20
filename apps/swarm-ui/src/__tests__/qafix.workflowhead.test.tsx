@@ -10,6 +10,12 @@
  *           opens its card and brings it into view instead of closing it, and
  *           a second click closes it. The step's whole error is on the card.
  *
+ *           Run 2 (wf_b6e2441b419f423a84eb) still saw the card below the fold
+ *           on arrival, with nothing on screen saying why the step failed
+ *           but the node's cut line (QAFIX2-WORKFLOWS). The page now leads
+ *           its graph with the failed step's whole reason and a control that
+ *           brings its card (Open agent, Logs, Changes) to the reader.
+ *
  * Screenshot states for the next visual QA run: this fixture -- a FAILED
  * workflow, 5 → 1, its failed step picked on arrival -- on its Graph at 1440px
  * and at 390px, before and after the first click on the failed node.
@@ -18,11 +24,13 @@
  * change that turns it red.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { WorkflowBoard, WorkflowUsage } from '../api'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
+import type { CascadeEnv } from './cssgate'
+import { painted } from './marks'
 import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
@@ -262,5 +270,74 @@ describe('QA-120: the failed step’s card opens on the first click', () => {
     expect(rule![1]).toMatch(/white-space:\s*pre-wrap/)
     expect(rule![1]).toMatch(/overflow-wrap:\s*anywhere/)
     expect(rule![1]).not.toMatch(/text-overflow|nowrap/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// QA-120 (run 2): why the step failed is on screen on arrival
+// ---------------------------------------------------------------------------
+
+const WIDE: CascadeEnv = { width: 1440 }
+const PHONE: CascadeEnv = { width: 390 }
+const lead = () => document.querySelector<HTMLElement>('.wfp-fail-lead')
+
+describe('QA-120 (run 2): the failed step’s reason leads the graph, above the fold', () => {
+  it('names the failed step and prints its whole reason above the graph on arrival', async () => {
+    await page()
+    // MUTATION: drop the `.wfp-fail-lead` block from `WorkflowCard` and the
+    // only reason on screen at 1440x900 is the node's cut line.
+    const region = await waitFor(() => screen.getByRole('region', { name: 'Why step test failed' }))
+    // MUTATION: print `why.text` (the first line, as the node does) and this is cut.
+    expect(region.querySelector('.wfp-fail-lead-text')?.textContent).toBe(ERROR)
+    // MUTATION: render the lead after the split and it is under the graph,
+    // below the fold again, as the card was.
+    const split = document.querySelector('.wf-split')!
+    expect(region.compareDocumentPosition(split) & Node.DOCUMENT_POSITION_FOLLOWING, 'the lead is not above the graph').toBeTruthy()
+    // The card itself is still not scrolled to on arrival (QA G3-28 holds).
+    expect(scroll).not.toHaveBeenCalled()
+  })
+
+  it('brings the step’s card to the reader from the lead, and the lead goes once it has', async () => {
+    await page()
+    const region = await waitFor(() => screen.getByRole('region', { name: 'Why step test failed' }))
+    // MUTATION: drop the lead's button and nothing on screen points to the card below.
+    act(() => {
+      fireEvent.click(within(region).getByRole('button', { name: /details below/ }))
+    })
+    // MUTATION: make the button toggle the pick and it CLOSES the card it points to.
+    expect(panel(), 'the lead’s button closed the card').not.toBeNull()
+    expect(scroll).toHaveBeenCalled()
+    // MUTATION: leave focus on the button and a keyboard reader is not taken to the card.
+    expect(panel()!.contains(document.activeElement), 'focus did not move into the card').toBe(true)
+    // MUTATION: keep the lead after the reader has picked and the reason is printed twice, once over the card.
+    await waitFor(() => expect(lead()).toBeNull())
+  })
+
+  it('wraps the lead’s reason at every width and inks it as a failure', async () => {
+    await page()
+    const text = await waitFor(() => {
+      const el = lead()?.querySelector<HTMLElement>('.wfp-fail-lead-text')
+      expect(el).toBeTruthy()
+      return el!
+    })
+    for (const env of [WIDE, PHONE]) {
+      // MUTATION: drop `white-space: pre-wrap` and the error's two lines run together.
+      expect(painted(text, 'white-space', env)).toBe('pre-wrap')
+      // MUTATION: drop `overflow-wrap: anywhere` and a long test path runs out of the column at 390.
+      expect(painted(text, 'overflow-wrap', env)).toBe('anywhere')
+    }
+    // MUTATION: draw the lead with the neutral border and it does not read as the failure it names.
+    expect(painted(lead()!, ['border-left', 'border-left-color'], WIDE)).toMatch(/var\(--bad\)/)
+  })
+
+  it('draws no lead once the reader picks another step, nor on a workflow with no failed pick', async () => {
+    await page()
+    await waitFor(() => expect(lead()).not.toBeNull())
+    act(() => {
+      fireEvent.click(node('lint')!)
+    })
+    // MUTATION: key the lead on `picked` failing alone and it stays over a succeeded step's card.
+    await waitFor(() => expect(lead()).toBeNull())
+    expect(panel()!.querySelector('.wf-inspect-id')?.textContent).toBe('lint')
   })
 })

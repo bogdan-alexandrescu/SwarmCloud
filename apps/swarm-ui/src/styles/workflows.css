@@ -335,6 +335,21 @@
   font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text);
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
+/* WHY THE STEP FAILED, LEADING THE GRAPH (visual QA QA-120, run 2). On a
+   failed workflow's page the step's card is under the graph, below the fold;
+   this strip is above it, in view on arrival at 1440x900 and at 390. The
+   failure's ink is its left rule, never its text; the reason wraps whole. */
+.wfp-fail-lead {
+  display: grid; gap: var(--ctl-s1); justify-items: start;
+  margin: 0 0 var(--ctl-s3); padding: var(--ctl-s2) var(--ctl-s3);
+  border-left: 2px solid var(--bad);
+}
+.wfp-fail-lead-head { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text); }
+.wfp-fail-lead-text {
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.wfp-fail-lead-go { padding: 0; border: 0; background: none; cursor: pointer; font: var(--t-micro)/var(--lh-micro) var(--font); }
 .wf-scrub-more { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 /* ◀ position ▶ as one unit that never wraps (browser QA D30); the shape after
    it shrinks and is cut, whole in its title. */

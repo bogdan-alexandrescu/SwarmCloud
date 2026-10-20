@@ -1337,8 +1337,12 @@ export function WorkflowCard({
   // WHETHER A READER HAS PICKED A STEP ON THIS CARD (QA G3-28): the page's
   // own pick on arrival is not one, so its card is not scrolled to.
   const readerPicked = useRef(false)
+  // The same fact as state, for what it draws: the failure lead above the
+  // graph is the arrival pick's, and goes once a reader has picked.
+  const [arrival, setArrival] = useState(true)
   const togglePick = (stepId: string) => {
     readerPicked.current = true
+    setArrival(false)
     return onPick !== undefined
       ? onPick(workflow.workflow_id, stepId)
       : setLocalPick((p) => (p === stepId ? null : stepId))
@@ -1354,6 +1358,7 @@ export function WorkflowCard({
   const pickStep = (stepId: string) => {
     if (page && !readerPicked.current && stepId === picked) {
       readerPicked.current = true
+      setArrival(false)
       const card =
         sectionRef.current?.querySelector<HTMLElement>('.wf-panel') ?? sectionRef.current?.querySelector<HTMLElement>('.wf-inspect') ?? null
       if (card !== null) {
@@ -1380,6 +1385,29 @@ export function WorkflowCard({
     ].find((b) => b.dataset.step === stepId)
     node?.focus()
   }
+
+  // WHY THE STEP FAILED, ABOVE THE GRAPH, ON ARRIVAL (visual QA QA-120, run
+  // 2, 2026-10-20). A failed workflow's page opens with its failed step
+  // picked and that step's card under the graph -- off screen at 1440x900,
+  // and not scrolled to, because scrolling there opened the page ~920px down
+  // past its head (G3-28). The only reason on screen was the node's one cut
+  // line ('exit status 1: pytest coll…'), and nothing said a card waited
+  // below. So the page leads its graph with the step's whole reason and a
+  // control that brings the card (Open agent, Logs, Changes) to the reader.
+  // The node keeps its one line: `layoutOf` sizes it as one (`NOTE_H`).
+  const arrivalStep = page && view === 'graph' && arrival && picked !== null ? workflow.steps.find((s) => s.step_id === picked) : undefined
+  const arrivalWhy =
+    arrivalStep === undefined ? null : stepWhy(arrivalStep, stepState(arrivalStep, taskById), workflow.steps, taskById, null)
+  const failLead =
+    arrivalStep !== undefined && arrivalWhy !== null && arrivalWhy.kind === 'cause' ? (
+      <section className="wfp-fail-lead" aria-label={`Why step ${arrivalStep.step_id} failed`}>
+        <b className="wfp-fail-lead-head">{arrivalStep.step_id} failed</b>
+        <span className="wfp-fail-lead-text">{arrivalWhy.full}</span>
+        <button type="button" className="ctl-link wfp-fail-lead-go" onClick={() => pickStep(arrivalStep.step_id)}>
+          Step details below: agent, logs, changes ↓
+        </button>
+      </section>
+    ) : null
 
   const inspector = (stepId: string, onClose: () => void) => (
     <InspectorSlot
@@ -1441,6 +1469,7 @@ export function WorkflowCard({
             <UnreadableMark counts={unreadable} />
           </div>
         )}
+        {failLead}
         {view === 'graph' ? (
           // THE GRAPH AND ITS PANEL, SIDE BY SIDE (#330, owner request
           // 2026-09-29). The inspector sat under the canvas, which on a
@@ -5092,6 +5121,17 @@ function ListHead() {
 }
 
 /**
+ * THE SEGMENT'S WORDS: the Running bucket's tab is named by what it counts
+ * (visual QA QA-036, run 2, 2026-10-20). The bucket is every workflow not yet
+ * ended -- running, parked, waiting, and any whose state the read could not
+ * derive -- so `Running 2` sat beside the summary's `1 running · 1 state not
+ * derived` and read as two running workflows. `Not ended 2` is the sum of
+ * those parts. The address keeps `state=running` and the back link keeps the
+ * bucket's name (`backLabel`): only the count's own label changed.
+ */
+const TAB_LABEL: Readonly<Record<BucketFilter, string>> = { ...BUCKET_LABEL, running: 'Not ended' }
+
+/**
  * THE LIST'S TOOLBAR, loaded or not (#113). While the read is in flight it is
  * drawn DISABLED, with the address's choices already showing and no counts,
  * so nothing above the table moves when the data lands -- it used to appear
@@ -5121,7 +5161,7 @@ function WorkflowListFilters({
         value={query.state}
         options={BUCKET_FILTERS.map((b) => ({
           key: b,
-          label: BUCKET_LABEL[b],
+          label: TAB_LABEL[b],
           ...(counts !== null ? { count: counts[b] } : {}),
           // WF-10: Running is every workflow not yet ended, parked and queued included.
           // QA-036: and one whose state this read could not derive, which the

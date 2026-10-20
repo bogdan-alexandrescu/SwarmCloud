@@ -8,6 +8,12 @@
 //   QA-094  at 390 the span control (24h/7d/14d/30d/90d) wrapped into a
 //          ragged three-and-two grid about 220px wide.
 //
+//   QA-095 (run 2, wf_b6e2441b419f423a84eb, work-a-004)  the Profile filter
+//          still read 'Profile all 0' while the lanes were being read: it
+//          counted the profiles of no lanes. It now says no count until the
+//          lanes are read, then the count of the profiles the lanes carry
+//          (QAFIX2-WORKFLOWS).
+//
 // Every assertion names the mutation that turns it red.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -134,5 +140,43 @@ describe('QA-094: the span control is one even row across a phone', () => {
     // The desktop control keeps the canonical packing.
     // MUTATION: move the rule out of its phone @media and this is red.
     expect(painted(cells[0]!, ['flex', 'flex-basis'], WIDE)).toBeNull()
+  })
+})
+
+const profileSummary = () => {
+  const box = within(document.body).getByRole('group', { name: 'Timeline span and filters' })
+  const sum = [...box.querySelectorAll<HTMLElement>('details.tl-pick > summary')].find((el) => el.textContent?.startsWith('Profile'))
+  return (sum?.textContent ?? '').replace(/\s+/g, ' ').trim()
+}
+
+describe('QA-095: the Profile filter counts no profiles before the lanes are read', () => {
+  it('says no count while the attempts read is out', async () => {
+    api.loadAttemptsPage.mockImplementation(() => new Promise(() => {}))
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(strip().textContent).toMatch(/fenced — reading the lanes/))
+    // MUTATION: summarise the Profile picker as `all ${options.length}` with no regard
+    // for the read, and this reads 'Profile all 0' again.
+    expect(profileSummary()).not.toMatch(/\d/)
+    // MUTATION: drop the reading word and the picker says only 'Profile all', a claim of a filter over nothing.
+    expect(profileSummary()).toBe('Profile all · reading')
+    // The State picker's options are the fixed list of states, not read, so it keeps its count.
+    const state = [...document.querySelectorAll<HTMLElement>('details.tl-pick > summary')].find((el) => el.textContent?.startsWith('State'))
+    expect(state?.textContent).toMatch(/all \d+/)
+  })
+
+  it('says the lanes were not read when the attempts read failed', async () => {
+    api.loadAttemptsPage.mockResolvedValue(failed(503, 'unavailable'))
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(strip().textContent).toMatch(/fenced — the lanes were not read/))
+    // MUTATION: treat a failed read as a read of no lanes and this reads 'Profile all 0'.
+    expect(profileSummary()).toBe('Profile all · not read')
+  })
+
+  it('counts the profiles the drawn lanes carry once they are read', async () => {
+    api.loadAttemptsPage.mockResolvedValue(ok(page([ATTEMPT])))
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(strip().textContent).toMatch(/0 generations fenced/))
+    // MUTATION: keep the reading word after the lanes land and this is red.
+    await waitFor(() => expect(profileSummary()).toBe('Profile all 1'))
   })
 })
