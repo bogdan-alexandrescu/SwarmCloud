@@ -60,7 +60,7 @@
    disclosure triangle and the three headlines read as plain bold text. The
    marker is drawn here instead, and turns when the rule is open. */
 .ac-rules.is-folded summary::-webkit-details-marker { display: none; }
-.ac-rules.is-folded summary::before { content: '\25B8'; flex: none; width: 20px; font-size: var(--t-lead); line-height: 1; text-align: center; color: var(--text-dim); }
+.ac-rules.is-folded summary::before { content: '\25B8'; flex: none; width: 20px; font-size: var(--t-lead); line-height: var(--lh-flush); text-align: center; color: var(--text-dim); }
 .ac-rules.is-folded details[open] > summary::before { content: '\25BE'; }
 .ac-rules.is-folded summary:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: 4px; }
 .ac-rules.is-folded details > p { margin: 0 0 10px 26px; }
