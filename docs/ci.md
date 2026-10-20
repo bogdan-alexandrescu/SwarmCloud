@@ -3284,6 +3284,84 @@ run going from **935 s to ~835 s**. By class:
 The first runs after this lands are the measurement: re-read them with the
 same two calls and correct this table.
 
+## CI starts when the implement step pushes
+
+**Why (LANE CI-EARLY, part of #1694, owner decision 2026-10-20).** A read of
+117 workflows found the merge step spending 40 % of a workflow waiting for CI
+— 20.5 h in the sample — because nothing was tested until the fix step opened
+the pull request. Under the integrate strategy the implement step is a
+`contributor`: it pushes `swarm/<task id>` and opens no pull request
+(`agent_worker/lifecycle.py`, the contributor's early return); the
+`integrator` (the fix step) pushes its own branch and opens the pull request
+after review. Measured CI then took a median 14.5 min (p90 20.9).
+
+**What runs.** `application.yml`, `security.yml` and `terraform.yml` — every
+workflow behind a required check, `terraform.yml` because `ci-gate` waits for
+it — also run on a push to `swarm/**`. A lane push runs the whole of each, as
+`main` does: the `changes` job treats any event but `pull_request` as "run
+everything". It never builds or pushes an image (`build images` is held to
+`main` and dispatch by its `if:`), never plans (`plan` likewise;
+`plan-not-run` says so in the run), and never releases (`release.yml` is
+`main`-only). `trivy (repo)` compares a lane push with `main`'s tip, the base
+its pull request will have; with no base every finding `main` already carries
+would fail it. The CI fixer acts only on a pull request's run, so one red
+head does not start two fixers.
+
+**Why push triggers and not an early draft pull request.** The owner offered
+both; the merge step's rule — every required check green at the head — is
+exact only under push triggers:
+
+* `agent_worker/merge.py` reads every check run at the head commit, from any
+  event, and holds a required check green only when **all** its runs are
+  (`required_check_state`: any run in progress is pending, any red one is
+  red). A push run at the head is one more run that must be green. Nothing is
+  relaxed, and the pull request's own run still happens on every head.
+* A draft opened at implement would be a *different* pull request from the
+  one merged: the integrator pushes `swarm/<its own task id>`, merging the
+  contributors' branches. Keeping one pull request would mean changing which
+  branch the integrator publishes to, in the worker and in swarm-api.
+* The merge step refuses a draft (`merge.py`, refusal `draft`), so the fix
+  step would have to mark it ready, and a red draft would start `ci-fix.yml`
+  on a branch the fix step is about to write.
+
+**What it costs.** A lane branch's runs, cancelled by the next push to the same
+branch (the concurrency group is the ref everywhere but `main`). The
+integrator's head is pushed *and* opened as a pull request, so it carries two
+runs, and the merge step waits for both: the pull request's selected run and
+the push's full one. Whether the push run should narrow to what the pull
+request would select, or the pull request's run reuse a lane push of the
+identical tree (as `main` does, below), was put to the owner in the lane's
+pull request.
+
+### shellcheck runs in parallel, and on a pull request over what it reaches
+
+`shellcheck` was the slowest check on 19 of 65 heads (291 s median, p90 320 s):
+one serial `shellcheck -x` over every script. `scripts/lib/shellcheck-ci.sh`
+hands each file to its own `shellcheck -x` over the runner's cores
+(`xargs -P`) — shellcheck analyses each file it is given as a separate root,
+so the findings are the serial run's. On `main`, a lane push and a queue entry
+it checks exactly the files the serial command named. On a pull request it
+checks the changed scripts, what they source, and **every script that sources
+a changed file**, through any chain: under `-x` a library is analysed in its
+callers' context, so removing a variable from `common.sh` shows up as SC2154
+in its callers, never in `common.sh`. The edges are the `# shellcheck source=`
+directives, because they are what `-x` follows. A change to the runner itself,
+a `.shellcheckrc` or `application.yml` checks everything. Over every file on a
+6-core container it took 85 s of wall for 312 s of CPU.
+
+### The unit shards are sized by measured weight
+
+The four fixed shards were sized on 2026-10-07 for ~2,950 s of measured test
+time. By 2026-10-20 `unit_test_durations.json` summed to ~7,000 s, so a full
+run's shard carried ~1,750 s — a 455-501 s shard p90 (max 829) against a
+152-188 s median, the median being pull requests' small selections. The split
+was already by weight; the count was the problem. `scripts/lib/unit_shards.py
+count`, in the `changes` job, now sizes the matrix from the weight of the files
+the run will test: about 600 s a shard, at most eight. A full run gets eight,
+~875 s each (at most ~1.5x the target); a selection worth one target gets one
+runner instead of four. `pick` splits with the same code, so the matrix and
+the split never disagree on what runs.
+
 ## Flaky tests and the quarantine
 
 **Owner decision, 2026-10-14: "Fix the known flakes and quarantine new

@@ -70,8 +70,9 @@ def test_a_lane_push_never_builds_or_pushes_images():
     lane push. MUTATION: keep the old `github.event_name != 'pull_request'` if."""
     build = _workflow("application.yml")["jobs"]["build"]
     assert build["if"] == (
-        "${{ !cancelled() && !failure() && (github.event_name == 'workflow_dispatch' || "
-        "(github.event_name == 'push' && github.ref == 'refs/heads/main')) }}"
+        "${{ !cancelled() && !failure() && github.event_name != 'pull_request' && "
+        "github.event_name != 'merge_group' && github.ref == 'refs/heads/main' || "
+        "!cancelled() && !failure() && github.event_name == 'workflow_dispatch' }}"
     ), build["if"]
 
 
@@ -81,8 +82,8 @@ def test_a_lane_push_never_plans_and_says_so():
     MUTATION: keep the plan's `!= 'pull_request' && != 'merge_group'` if."""
     jobs = _workflow("terraform.yml")["jobs"]
     assert jobs["plan"]["if"] == (
-        "github.event_name == 'workflow_dispatch' || "
-        "(github.event_name == 'push' && github.ref == 'refs/heads/main')"
+        "github.event_name != 'pull_request' && github.event_name != 'merge_group' && "
+        "github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'"
     ), jobs["plan"]["if"]
     assert jobs["plan-not-run"]["if"] == (
         "github.event_name == 'pull_request' || github.event_name == 'merge_group' || "
@@ -141,10 +142,12 @@ def _gate(tmp_path: Path, *, event: str, ref: str, base: str, ls_remote: str = f
     bindir = tmp_path / "bin"
     bindir.mkdir()
     git = bindir / "git"
+    answer = tmp_path / "ls-remote"
+    answer.write_text(ls_remote)
     git.write_text(
         "#!/usr/bin/env bash\n"
-        f"[ \"$*\" = 'ls-remote origin refs/heads/main' ] || exit 97\n"
-        f"printf '%s' {ls_remote!r}\n"
+        "[ \"$*\" = 'ls-remote origin refs/heads/main' ] || exit 97\n"
+        f"cat {str(answer)!r}\n"
         f"exit {ls_status}\n"
     )
     git.chmod(0o755)

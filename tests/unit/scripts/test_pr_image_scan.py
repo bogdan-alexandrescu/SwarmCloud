@@ -215,7 +215,9 @@ def test_main_fills_the_tool_mirror_before_it_builds_and_a_pull_request_never_do
     fill = names.index("fill the tool mirror with what this commit pins")
     assert fill < names.index("build with Cloud Build"), names
     assert job["steps"][fill]["run"].strip() == "./scripts/refresh-build-mirror.sh --tools-only"
-    assert job["if"] == "${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}", job["if"]
+    assert job["if"] == ("${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' "
+        # A lane push (`swarm/**`) runs the tests but never builds (LANE CI-EARLY, test_ci_early.py).
+        "&& github.ref == 'refs/heads/main' || !cancelled() && !failure() && github.event_name == 'workflow_dispatch' }}"), job["if"]
     for other_id, other in _jobs().items():
         if other_id != "build":
             for st in other.get("steps", []):

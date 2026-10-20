@@ -550,7 +550,10 @@ def test_application_yml_is_not_touched_by_the_train():
     the pool refuses to any ref but main. A `push: train/**` trigger would run
     `build` on the train ref and fail every train (terraform/bootstrap/wif.tf)."""
     on = _workflow(REPO / ".github" / "workflows" / "application.yml")["on"]
-    assert on["push"]["branches"] == ["main"]
+    # `swarm/**` runs the tests on a lane push (LANE CI-EARLY), and `build`
+    # is held to main there by its own `if:` (test_ci_early.py).
+    assert on["push"]["branches"] == ["main", "swarm/**"]
+    assert not any(b.startswith("train/") for b in on["push"]["branches"])
     assert "pull_request" in on
 
 
