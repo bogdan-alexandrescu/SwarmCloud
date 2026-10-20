@@ -49,7 +49,7 @@ from .test_release_reuses_ci_images import _code, _needs, _workflow
 ROOT = Path(__file__).resolve().parents[3]
 ACCEPTANCE = ROOT / "scripts" / "acceptance"
 REPORT_SH = ROOT / "scripts" / "accept-report.sh"
-GROUPS = ("mock", "generic", "claude-code", "workflow", "browser", "live-browser", "git-tools")
+GROUPS = ("mock", "generic", "claude-code", "workflow", "browser", "live-browser", "git-tools", "tenant-isolation")
 #: What is run rather than sourced. lib.sh and the group files are sourced by
 #: run.sh and checked through it (-x); on their own they would report every
 #: variable common.sh and lib.sh set.
@@ -64,7 +64,7 @@ ENTRY_SCRIPTS = ("run.sh", *(f"{g}.sh" for g in GROUPS), "github-cleanup.sh", "g
 #: rebase lane and the reader (groups/git-tools.sh's header). accept.yml's
 #: header states the same numbers; a group that grows past them should move waves.
 PEAK = {"mock": 13, "generic": 8, "workflow": 4, "claude-code": 3, "browser": 3, "live-browser": 1,
-        "git-tools": 5}
+        "git-tools": 5, "tenant-isolation": 1}
 
 ACCEPT_JOBS = ("acceptance", "acceptance-2")
 
@@ -86,7 +86,10 @@ STREAK_SH = ROOT / "scripts" / "accept-live-browser-streak.sh"
 #: lane, which cannot push .github/workflows/: the operator adds it to wave 2's
 #: matrix (its PR body carries the change). A group added here may be missing
 #: from accept.yml; any other missing group is red.
-PENDING_IN_ACCEPT_YML: frozenset[str] = frozenset()  # git-tools added to wave 2 on 2026-10-14
+#: tenant-isolation (ISO-ACCEPT-WIRE, part of #1457) runs in its own report-only
+#: job, `tenant-isolation`, once the operator pushes that lane's
+#: workflow-lines.patch, which also takes it off this list.
+PENDING_IN_ACCEPT_YML: frozenset[str] = frozenset({"tenant-isolation"})
 
 
 def _accept() -> dict:
