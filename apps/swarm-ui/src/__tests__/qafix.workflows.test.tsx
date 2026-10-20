@@ -7,6 +7,9 @@
  *           this read could not derive is said apart from running work, as
  *           parked and waiting work already were (WF-10); the Running tab,
  *           which still lists it because nothing says it ended, says so.
+ *           Run 2 (wf_b6e2441b419f423a84eb, work-a-003) still read `Running 2`
+ *           beside `1 running · 1 state not derived`: the tab is now named
+ *           by what it counts, `Not ended` (QAFIX2-WORKFLOWS).
  *   QA-097  at 390 the owner, profile and sort selects started at 57, 56 and
  *           44 px, each after its own label's width. The labels now sit in one
  *           fixed column, so the selects share one left edge.
@@ -114,12 +117,26 @@ describe('QA-036: a workflow whose state was not derived is not counted as runni
     await waitFor(() => expect(rowIds()).toEqual(['wf_audit_01', 'wf_bcdc9180e4fb4a209f31']))
     // MUTATION: drop the underived part from listSummary and the page's own count line says `2 running` again.
     expect(screen.getByText(/1 running · 1 state not derived · 0 finished · 1 failed/)).toBeTruthy()
-    const seg = document.querySelector<HTMLElement>('.wfl-seg')!
-    const running = within(seg).getByText('Running').closest('button, a')!
+    const seg = screen.getByRole('group', { name: 'Which workflows' })
     // The tab lists both rows, because nothing on this read says the underived one ended...
-    expect(running.textContent).toMatch(/2/)
+    const notEnded = within(seg).getByRole('button', { name: /^Not ended/, pressed: true })
+    // MUTATION: count the underived row out of the tab and it says 1 over the two rows it lists.
+    expect(notEnded.textContent).toBe('Not ended2')
     // MUTATION: restore the old title ("running, parked or waiting to start") and the tab claims both rows are running.
-    expect(running.getAttribute('title')).toMatch(/state this read could not derive/)
+    expect(notEnded.getAttribute('title')).toMatch(/state this read could not derive/)
+  })
+
+  it('names the tab by what it counts, so its 2 never sits beside `1 running` as a running count (run 2, work-a-003)', async () => {
+    render(<WorkflowsScreen view="state=running" />)
+    await waitFor(() => expect(rowIds()).toHaveLength(2))
+    const seg = screen.getByRole('group', { name: 'Which workflows' })
+    const tabs = within(seg).getAllByRole('button').map((b) => b.textContent)
+    // MUTATION: label the tab `BUCKET_LABEL.running` again and the strip reads `Running2` beside `1 running`.
+    expect(tabs).toEqual(['Not ended2', 'Finished0', 'Failed1', 'All3'])
+    // MUTATION: drop the summary's `state not derived` part and the line no longer sums to the tab's 2.
+    const line = screen.getByText(/1 running · 1 state not derived/).textContent ?? ''
+    const parts = [...line.matchAll(/(\d+) (running|parked|waiting|state not derived)/g)].reduce((n, m) => n + Number(m[1]), 0)
+    expect(parts).toBe(2)
   })
 })
 

@@ -218,7 +218,8 @@ describe('the workflow list', () => {
     await waitFor(() => expect(rowIds()).toEqual(['wf_broker']))
     const seg = screen.getByRole('group', { name: 'Which workflows' })
     const pressed = within(seg).getByRole('button', { pressed: true })
-    expect(pressed.textContent).toBe('Running1')
+    // QA-036 (run 2): the Running bucket's tab is named by what it counts.
+    expect(pressed.textContent).toBe('Not ended1')
     // The counts follow the other filters: priya has no failed workflow.
     const failedSeg = within(seg).getAllByRole('button').find((b) => b.textContent?.startsWith('Failed'))!
     expect(failedSeg.textContent).toBe('Failed0')
