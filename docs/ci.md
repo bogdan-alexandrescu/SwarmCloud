@@ -4105,7 +4105,8 @@ and the contract-parity script (#591, #611, #614; issue #642). Those tests read
 source and docs **as text**, so an import graph does not find them; their text
 naming the changed file does.
 
-**What it selects.** For a non-empty diff: the fixed guard set (always), every
+**What it selects.** For a non-empty diff: the fixed guard set (always, but only
+its two doc guards for a docs-only diff, below), every
 changed `tests/unit/**/test_*.py`, and every `tests/unit/**/test_*.py` whose
 text names a changed path by repo-relative path or basename. A generic basename
 (`__init__.py`, `package.json`, …) selects by full path only, or it would pick
@@ -4116,6 +4117,39 @@ deadlines so one call stays under the ten minutes a lane allows a command. It
 prints the last lines of the output and keeps the full log only on failure. An
 empty diff runs nothing and exits 0; a base that does not resolve exits 2
 rather than reading as an empty diff.
+
+**A docs-only change selects only the doc guards** (GUARDS-DEDUP, part of
+#1694). Docs-only lanes spent 44-50 min in guards on 2026-10-19/20. When every
+changed path is under `docs/` or ends in `.md`, the script selects
+`test_docs_describe_what_was_built`, `test_docs_spec_amendments` and the tests
+whose text names a changed doc, and runs no contract-parity check. The UI route
+seam and `test_specsign_covers` read source, not docs, and the parity check
+skips `.md` files outright, so none of them can go red on a doc change. A doc
+beside any other path keeps the whole guard set.
+
+**The worker does not run it again on the same tree** (GUARDS-DEDUP). The
+worker's pre-publish gate (`agent_worker/prepublish.py`) re-ran the script on
+code the agent had just passed in 73 of 74 lanes (4.9 h, 2026-10-19/20). Now
+every run that reads its diff from git (not `--files`, not `--list`) records
+how it ended (`passed`, `failed` or `timed_out`), the tree it ran on and its
+base commit in `<git dir>/swarm-changed-guards/` (`all.json`, or
+`shard-k-of-n.json` per part). The tree is the one the publish commits: HEAD
+plus every uncommitted and untracked file, written from a scratch index. The
+gate works out that tree and the base commit **itself** and skips its own run
+only when a record says `passed` on both, for the whole selection or for every
+part of one `--shard` split. It never takes the agent's word for it: a record
+with another tree, another base or any other status means the script runs.
+The skip and its reason go in the pull request's advisory section. The record
+lives in the git directory, so it is never committed.
+
+**A timed-out run is not re-run as-is.** Five lanes hit the 600 s limit in both
+of the gate's rounds, with a fix turn in between that could not fix a timeout.
+A guard run that ran out of time (the script's `ran past` line, or the gate's
+kill at its check limit) is reported as a timeout and kept out of the fix
+prompt. The next round runs it as the parts the script advised (`--shard 1/n`
+... `--shard n/n`, at least two), each its own command under the limit. If
+those time out too, it is published under "Pre-publish checks failed" as
+`changed-guards timed out`.
 
 **A heavy selection runs in parts, each under the 540 s limit** (#1334, PR
 1415). The 540 s is not raised for a selection that needs longer: lane

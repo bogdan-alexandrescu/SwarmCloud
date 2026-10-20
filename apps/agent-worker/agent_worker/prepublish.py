@@ -81,6 +81,27 @@ gate)". Advisory and all-or-nothing: a skipped, failed, timed-out or
 malformed call adds nothing, so the section is byte for byte the local-only
 one, and no merge path reads either.
 
+THE GUARD SCRIPT RUNS ONCE PER TREE (GUARDS-DEDUP, part of #1694). Measured
+over 74 implement lanes on 2026-10-19/20: the agent ran `changed-guards.sh`
+and this gate ran it again on the same code in 73 of them (4.9 h), and five
+lanes hit its 600 s limit in BOTH rounds, with a fix turn between that cannot
+fix a timeout. So:
+
+* the script records how each run ended, with the tree it ran on and its base
+  commit, under the git directory (`GUARDS_RECORD_DIR`). The gate computes
+  the tree ITSELF (`worktree_tree`: HEAD plus every uncommitted and untracked
+  file, the tree the publish commits) and skips its run only when a record
+  says `passed` on that tree from the same base, for the whole selection or
+  for every part of one `--shard k/n` split (`guards_pass_on`). The agent's
+  word is never read: a record naming another tree or base, or any status but
+  `passed`, runs the script. The skip and its reason go into the advisory
+  section of the pull request.
+* a guard run that TIMED OUT (`guards_timed_out`: the script's `ran past` line,
+  or this runner's kill) is reported as a timeout, is left out of the fix
+  prompt, and runs once more as the parts the script advised
+  (`guards_parts`), each its own command under the check limit -- never
+  as-is. Parts that time out too are published as a timeout.
+
 A CHECK THAT CANNOT RUN IS NOT A FAILURE. A tool missing from the image,
 `tflint --init` that cannot reach its plugin source, an unknown base: the check
 is `skipped` (or `error`) with the reason, recorded, and never sent to the
@@ -192,6 +213,20 @@ _CODE_SUFFIXES = (_PY_SUFFIX, *_JS_SUFFIXES, ".go", _TF_SUFFIX)
 _FMT_UNFORMATTED = 3
 
 PASSED, FAILED, SKIPPED, ERROR = "passed", "failed", "skipped", "error"
+
+#: The guard script's check, and where the script records its runs, under the
+#: git directory (`RECORD_DIR_NAME` in scripts/changed-guards.sh).
+GUARDS_CHECK = "changed-guards"
+GUARDS_SCRIPT = "scripts/changed-guards.sh"
+GUARDS_RECORD_DIR = "swarm-changed-guards"
+#: What a timed-out guard run prints: the script's own pytest deadline, or
+#: `run_command`'s kill at the check limit.
+_GUARDS_TIMEOUT = re.compile(r"ran past \d+ s|\[timed out after \d+s\]")
+#: The split the script advises: `--shard 1/<n>`.
+_GUARDS_SHARDS = re.compile(r"--shard 1/(\d+)")
+#: Parts to split a timed-out run into when its output advised none: the
+#: script's own minimum (`parts` in changed-guards.sh).
+GUARDS_MIN_PARTS = 2
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +347,8 @@ class Outcome:
     command: str
     output: str = ""
     reason: str | None = None
+    #: A failure by running out of time, which no fix turn can fix.
+    timed_out: bool = False
 
     def record(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -322,6 +359,8 @@ class Outcome:
         }
         if self.reason:
             out["reason"] = self.reason
+        if self.timed_out:
+            out["timed_out"] = True
         return out
 
 
@@ -337,6 +376,106 @@ def _simple(argv: Sequence[str]) -> Callable[[Runner, Path, Mapping[str, str], f
                                              tuple[str, str]]:
     def run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float) -> tuple[str, str]:
         return _verdict(runner(argv, repo, env, timeout))
+    return run
+
+
+def guards_timed_out(output: str) -> bool:
+    """Whether a guard run's output says it ran out of time."""
+    return bool(_GUARDS_TIMEOUT.search(output))
+
+
+def guards_parts(output: str) -> int:
+    """The parts a timed-out guard run should be split into: the largest the
+    script advised, else `GUARDS_MIN_PARTS`."""
+    advised = [int(n) for n in _GUARDS_SHARDS.findall(output)]
+    return max([GUARDS_MIN_PARTS, *advised])
+
+
+def worktree_tree(repo: Path, *, runner: Runner = run_command,
+                  env: Mapping[str, str] | None = None) -> str | None:
+    """The tree the publish would commit: HEAD plus every uncommitted and
+    untracked file, written from a scratch index, so the checkout's own index
+    is untouched. The same computation as THE RECORD in changed-guards.sh;
+    None when git could not say."""
+    env = dict(os.environ if env is None else env)
+    ran = _git(repo, "rev-parse", "--absolute-git-dir", runner=runner, env=env)
+    if ran.code != 0:
+        return None
+    index = Path(ran.output.strip()) / "index"
+    with tempfile.TemporaryDirectory(prefix="prepublish-tree-") as tmp:
+        scratch = Path(tmp) / "index"
+        scoped = {**env, "GIT_INDEX_FILE": str(scratch)}
+        if index.is_file():
+            shutil.copyfile(index, scratch)
+        elif (_git(repo, "read-tree", "HEAD", runner=runner, env=scoped).code != 0
+              and _git(repo, "read-tree", "--empty", runner=runner, env=scoped).code != 0):
+            return None
+        if _git(repo, "add", "-A", runner=runner, env=scoped).code != 0:
+            return None
+        ran = _git(repo, "write-tree", runner=runner, env=scoped)
+    tree = ran.output.strip()
+    return tree if ran.code == 0 and tree else None
+
+
+def guards_pass_on(repo: Path, base: str, *, runner: Runner = run_command,
+                   env: Mapping[str, str] | None = None) -> str | None:
+    """Why the guard script need not run again, or None: a run recorded as
+    `passed` on the tree the publish would commit, from the same base commit,
+    for the whole selection or for every part of one `--shard k/n` split.
+
+    The tree and the base are computed here, never read from the agent: a
+    record is only ever compared against them."""
+    env = dict(os.environ if env is None else env)
+    ran = _git(repo, "rev-parse", "--absolute-git-dir", runner=runner, env=env)
+    if ran.code != 0:
+        return None
+    folder = Path(ran.output.strip()) / GUARDS_RECORD_DIR
+    if not folder.is_dir():
+        return None
+    commit = _git(repo, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}",
+                  runner=runner, env=env)
+    tree = worktree_tree(repo, runner=runner, env=env)
+    if commit.code != 0 or not tree:
+        return None
+    want = commit.output.strip()
+    passed: dict[str, str] = {}
+    for path in sorted(folder.glob("*.json")):
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (isinstance(entry, dict) and entry.get("status") == PASSED
+                and entry.get("tree") == tree and entry.get("base") == want):
+            passed[str(entry.get("part") or "")] = str(entry.get("finished_at") or "")
+    where = f"the same tree ({tree[:12]}) from the same base ({want[:12]})"
+    if "all" in passed:
+        return (f"the last `{GUARDS_SCRIPT}` run in this checkout passed on {where} "
+                f"at {passed['all'] or 'an unrecorded time'}; not run again")
+    splits = {part.split("/")[1] for part in passed if re.fullmatch(r"\d+/\d+", part)}
+    for n in sorted(splits, key=int):
+        if all(f"{k}/{n}" in passed for k in range(1, int(n) + 1)):
+            return (f"every part of the last `{GUARDS_SCRIPT} --shard k/{n}` runs in this "
+                    f"checkout passed on {where}; not run again")
+    return None
+
+
+def _sharded_guards(argv: Sequence[str], parts: int, remaining: Callable[[], float]
+                    ) -> Callable[[Runner, Path, Mapping[str, str], float], tuple[str, str]]:
+    """The guard script as `parts` commands, `--shard 1/n` ... `--shard n/n`,
+    each under the check limit: how a timed-out run runs again."""
+    def run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float) -> tuple[str, str]:
+        status, outputs = PASSED, []
+        for k in range(1, parts + 1):
+            left = remaining()
+            if left < MIN_GATE_SECONDS:
+                outputs.append(f"[the step's budget ran out before part {k} of {parts}]")
+                return ERROR, "\n".join(outputs)
+            ran = runner([*argv, "--shard", f"{k}/{parts}"], repo, env,
+                         max(30.0, min(timeout, left - 30.0)))
+            outputs.append(f"--- part {k}/{parts} ---\n{ran.output}")
+            if ran.code != 0 or ran.timed_out:
+                status = FAILED
+        return status, "\n".join(outputs)
     return run
 
 
@@ -982,9 +1121,9 @@ def select_checks(repo: Path, files: Sequence[str], *, base: str,
     if not files:
         return checks
 
-    if (repo / "scripts" / "changed-guards.sh").is_file():
-        argv = ["bash", "scripts/changed-guards.sh", "--base", base]
-        checks.append(Check("changed-guards", tuple(files), " ".join(argv), run=_simple(argv)))
+    if (repo / GUARDS_SCRIPT).is_file():
+        argv = ["bash", GUARDS_SCRIPT, "--base", base]
+        checks.append(Check(GUARDS_CHECK, tuple(files), " ".join(argv), run=_simple(argv)))
 
     tf = [f for f in present if f.startswith("terraform/") and f.endswith(".tf")]
     if tf:
@@ -1090,8 +1229,13 @@ def run_checks(repo: Path, checks: Sequence[Check], *, env: Mapping[str, str],
         # A check that finds at run time it cannot run (graph-pytest's
         # unreachable service) returns SKIPPED with its reason as the output.
         reason = {ERROR: "the check could not run", SKIPPED: output.strip() or None}.get(status)
+        timed_out = (check.name == GUARDS_CHECK and status == FAILED
+                     and guards_timed_out(output))
+        if timed_out:
+            reason = "ran out of time"
         outcomes.append(Outcome(check.name, status, clock() - started, check.files,
-                                check.command, output=output, reason=reason))
+                                check.command, output=output, reason=reason,
+                                timed_out=timed_out))
     return outcomes
 
 
@@ -1121,7 +1265,8 @@ def _files_line(files: Sequence[str], cap: int = 20) -> str:
     return shown + (f" and {len(files) - cap} more" if len(files) > cap else "")
 
 
-def fix_prompt(failed: Sequence[Outcome], secrets: Sequence[str]) -> str:
+def fix_prompt(failed: Sequence[Outcome], secrets: Sequence[str],
+               timed_out: Sequence[Outcome] = ()) -> str:
     lines = [
         "Before publishing your branch, the worker ran the repository's own checks on the "
         "files you changed, and these failed. You have ONE turn to fix them: fix the cause "
@@ -1129,6 +1274,10 @@ def fix_prompt(failed: Sequence[Outcome], secrets: Sequence[str]) -> str:
         "again after this turn; whatever still fails is published with its output in the "
         "pull request body for the operator.",
     ]
+    if timed_out:
+        lines += ["", "Not yours to fix: " + ", ".join(o.name for o in timed_out)
+                  + " ran out of time, which no change of yours fixes. The worker runs it "
+                  "again in parts after this turn; do not run it yourself."]
     for outcome in failed:
         lines += ["", f"## {outcome.name} ({outcome.command})",
                   f"Files: {_files_line(outcome.files)}",
@@ -1169,7 +1318,8 @@ def pr_section(rebase: Mapping[str, Any] | None, outcomes: Sequence[Outcome],
                   f"The conflict turn did not finish the rebase, so it was aborted and the branch "
                   f"is on its original base. Conflicting files: {_files_line(conflicts)}"]
     for outcome in bad:
-        verb = "failed" if outcome.status == FAILED else "could not run"
+        verb = ("timed out" if outcome.timed_out
+                else "failed" if outcome.status == FAILED else "could not run")
         parts += ["", f"### {outcome.name} {verb} ({outcome.duration_seconds:.1f} s)",
                   f"`{outcome.command}` on {_files_line(outcome.files)}",
                   _fence(clean_output(outcome.output, secrets) or "(no output)")]
@@ -1192,7 +1342,8 @@ def read_self_check(artifacts_dir: Path) -> str | None:
 
 def advisory_section(*, graph: Mapping[str, Any], outcomes: Sequence[Outcome],
                      reach: Mapping[str, Any] | None, self_check: str | None,
-                     secrets: Sequence[str], jev_gap: Mapping[str, Any] | None = None) -> str:
+                     secrets: Sequence[str], jev_gap: Mapping[str, Any] | None = None,
+                     guards: Sequence[str] = ()) -> str:
     """The advisory markdown the worker appends to the pull request's body.
 
     Read by people. No merge path reads it: auto-merge, the review verdict and
@@ -1217,6 +1368,8 @@ def advisory_section(*, graph: Mapping[str, Any], outcomes: Sequence[Outcome],
         parts.append("Ran: " + ", ".join(
             f"{o.name} {o.status}" + (f" ({o.reason})" if o.status == SKIPPED and o.reason
                                        else "") for o in ran) + ".")
+    if guards:
+        parts += ["", f"### {GUARDS_CHECK}", *(f"- {note}" for note in guards)]
 
     parts += ["", "### Test reach (M11)"]
     if reach is None:
@@ -1297,11 +1450,14 @@ class Gate:
     judge: Any = None
     _snapshot: Snapshot | None = field(default=None, init=False, repr=False)
     _diff: tuple[str, list[str]] | None = field(default=None, init=False, repr=False)
+    #: What happened to the guard script in each round, for the advisory section.
+    _guards: list[str] = field(default_factory=list, init=False, repr=False)
 
     def run(self) -> dict[str, Any]:
         record = self.record
         record.update({"rebase": None, "rounds": [], "fix_turn": False,
-                       "conflict_turn": False, "failed": [], "pr_section": False})
+                       "conflict_turn": False, "failed": [], "pr_section": False,
+                       "guards": self._guards})
         if self.remaining() < MIN_GATE_SECONDS:
             record["skipped"] = "budget"
             self.log.warning("too little of the step's budget is left for the pre-publish "
@@ -1323,15 +1479,26 @@ class Gate:
             record["skipped"] = "unknown_base"
         else:
             outcomes = self._round(base)
-            if any(o.status == FAILED for o in outcomes):
-                failed = [o for o in outcomes if o.status == FAILED]
+            # A timed-out guard run is no fix turn's to fix, and never runs
+            # as-is again: the next round runs it in the parts it advised.
+            timed_out = [o for o in outcomes if o.timed_out]
+            parts = max((guards_parts(o.output) for o in timed_out), default=0)
+            failed = [o for o in outcomes if o.status == FAILED and not o.timed_out]
+            if failed:
                 self.log.warning("pre-publish checks failed; one fix turn",
                                  failed=[o.name for o in failed])
-                if self.resume(fix_prompt(failed, self.secrets)):
+                if self.resume(fix_prompt(failed, self.secrets, timed_out)):
                     record["fix_turn"] = True
-                    outcomes = self._round(base)
+                    outcomes = self._round(base, guard_parts=parts)
+                    parts = 0
                 else:
                     record["fix_skipped"] = "no_session_or_budget"
+            if parts:
+                self.log.warning("the guard script ran out of time; running it in parts",
+                                 parts=parts)
+                again = {o.name: o for o in self._round(base, guard_parts=parts,
+                                                        only=GUARDS_CHECK)}
+                outcomes = [again.pop(o.name, o) for o in outcomes] + list(again.values())
         record["failed"] = [o.name for o in outcomes if o.status == FAILED]
         section = pr_section(rebase, outcomes, self.secrets)
         target = Path(self.artifacts_dir) / PR_SECTION_NAME
@@ -1376,13 +1543,18 @@ class Gate:
         record["self_check"] = self_check is not None
         target.write_text(advisory_section(graph=record["graph"], outcomes=outcomes,
                                            reach=reach, self_check=self_check,
-                                           secrets=self.secrets, jev_gap=gap),
+                                           secrets=self.secrets, jev_gap=gap,
+                                           guards=self._guards),
                           encoding="utf-8")
         record["advisory_section"] = True
 
     # -- the checks ---------------------------------------------------------
 
-    def _round(self, base: str) -> list[Outcome]:
+    def _round(self, base: str, *, guard_parts: int = 0, only: str | None = None
+               ) -> list[Outcome]:
+        """One pass of the check set (only the check named `only`, when
+        given). `guard_parts` > 0 runs the guard script as that many
+        `--shard` parts: the round after it timed out."""
         resolved = diff_base(self.repo, base, runner=self.runner, env=self.env)
         files = None if resolved is None else changed_files(
             self.repo, resolved, runner=self.runner, env=self.env)
@@ -1397,6 +1569,10 @@ class Gate:
             self.repo, files, self._snapshot)
         checks = select_checks(self.repo, files, base=resolved, env=self.env, python=self.python,
                                snapshot=self._snapshot)
+        if only is not None:
+            checks = [c for c in checks if c.name == only]
+        checks = [self._guards_check(c, resolved, guard_parts) if c.name == GUARDS_CHECK else c
+                  for c in checks]
         timeout = max(30.0, min(CHECK_TIMEOUT_SECONDS, self.remaining() - 30.0))
         outcomes = run_checks(self.repo, checks, env=self.env, runner=self.runner,
                               timeout=timeout, clock=self.clock)
@@ -1404,6 +1580,27 @@ class Gate:
         self.log.info("pre-publish checks ran", changed_files=len(files),
                       checks=[f"{o.name}:{o.status}" for o in outcomes])
         return outcomes
+
+    def _guards_check(self, check: Check, base: str, parts: int) -> Check:
+        """The guard script's check for this round: skipped when a run already
+        passed on this tree from this base, else as `parts` shards after a
+        timeout, else as selected."""
+        if check.run is None:
+            return check
+        why = guards_pass_on(self.repo, base, runner=self.runner, env=self.env)
+        if why:
+            self._guards.append(f"skipped: {why}.")
+            self.log.info("the guard script already passed on this tree; not run again")
+            return Check(check.name, check.files, check.command, skipped=why)
+        if parts:
+            argv = ["bash", GUARDS_SCRIPT, "--base", base]
+            shards = " ... ".join(f"--shard {k}/{parts}" for k in (1, parts))
+            self._guards.append(f"the previous run timed out, so this round ran it as {parts} "
+                                f"parts ({shards}), each its own command under the "
+                                f"{int(CHECK_TIMEOUT_SECONDS)} s check limit.")
+            return Check(check.name, check.files, f"{' '.join(argv)} {shards}",
+                         run=_sharded_guards(argv, parts, self.remaining))
+        return check
 
     # -- the rebase ---------------------------------------------------------
 
