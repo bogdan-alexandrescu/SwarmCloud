@@ -63,7 +63,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -186,6 +186,27 @@ MIGRATION_VIA = "migration"
 #: making, the resources the tenant already has. Not ready unless migrated: the
 #: job made that one, and there is nothing to move.
 MIGRATABLE = frozenset({REQUESTED, FAILED, DENIED})
+
+
+#: The record's Firestore switch (#1457 design B, lane ISO-WS-FIRESTORE): the
+#: job-made path's twin of terraform/modules/tenancy `worker_firestore_access`
+#: and `register-tenant.sh --worker-firestore-access`. The workspace job's
+#: guard copies it into its expectation (scripts/lib/workspace-guard.sh
+#: `expect`): true, or absent, grants the worker database role at A5 as before
+#: the switch existed; false grants none, and A9 then requires the worker to
+#: hold no Firestore role. Written by `People` on every admin action that
+#: starts a run for the record, from `worker_firestore_access` below.
+WORKER_FIRESTORE_ACCESS = "worker_firestore_access"
+
+
+def worker_firestore_access(tenant_id: str, off_tenants: Iterable[str]) -> bool:
+    """False when TENANT_ID's worker is cut over to swarm-api's state routes:
+    named in WORKER_FIRESTORE_OFF_TENANTS (`ApiSettings.worker_firestore_off_tenants`),
+    or that list is `*`. True otherwise -- an empty list, the default, is
+    every workspace's grant exactly as before (owner decision Q7: dev first,
+    u-bogdan, then eng, then all, and only then is the role removed)."""
+    off = tuple(off_tenants or ())
+    return not ("*" in off or tenant_id in off)
 
 
 def never_dispatched(record: Mapping[str, Any] | None) -> bool:

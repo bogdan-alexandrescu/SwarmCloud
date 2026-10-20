@@ -1245,6 +1245,22 @@ cmd_expect() {
   esac
   [[ -z "${rec_id}" || "${rec_id}" == "${rec_tenant}" ]] \
     || die "the record is filed under '${rec_id}' but names tenant ${rec_tenant}"
+  # The tenant's Firestore switch (#1457 design B, lane ISO-WS-FIRESTORE), as
+  # swarm-api writes it on the record from WORKER_FIRESTORE_OFF_TENANTS: the
+  # job-made path's twin of terraform/modules/tenancy `worker_firestore_access`
+  # and register-tenant.sh --worker-firestore-access. Absent is true, today's
+  # grant, so every record written before the switch reads as it did. A false
+  # expectation holds no `firestore_role`, so C5 admits no database binding for
+  # the worker. Anything but a boolean is refused: a typo must fall through to
+  # neither answer, least of all to a grant the record meant to withhold.
+  local fs_access
+  fs_access="$(printf '%s' "${decoded}" | jq -r '
+    if has("worker_firestore_access") | not then "true"
+    elif .worker_firestore_access == null then "true"
+    elif (.worker_firestore_access | type) == "boolean" then (.worker_firestore_access | tostring)
+    else "invalid" end')"
+  [[ "${fs_access}" == "true" || "${fs_access}" == "false" ]] \
+    || die "the record's worker_firestore_access is not true or false; refusing"
 
   local derived tenant worker_id forge_suffix
   derived="$(python3 -c "${GUARD_DERIVE_PY}" "${REPO_ROOT}" "${rec_principal}" "${rec_kind}")" \
@@ -1306,7 +1322,8 @@ cmd_expect() {
     --arg fs_role_id "${FIRESTORE_ROLE_ID}" --arg meta_role_id "${BUCKET_METADATA_ROLE_ID}" \
     --arg env "${ENVIRONMENT}" --arg cluster "${GKE_CLUSTER}" --arg location "${GKE_LOCATION}" \
     --arg kind "${rec_kind}" --arg service_principal "${service_principal}" \
-    --arg front_door "$(jq -r '.front_door_backend // ""' "${GUARD_RULES}")" '
+    --arg front_door "$(jq -r '.front_door_backend // ""' "${GUARD_RULES}")" \
+    --argjson fs_access "${fs_access}" '
     ($base.project_id) as $p
     | $base + {
         phase: "ready",
@@ -1327,7 +1344,7 @@ cmd_expect() {
         write_expr: $write_expr,
         forge_slot: $forge_slot,
         firestore_role_id: $fs_role_id,
-        firestore_role: "projects/\($p)/roles/\($fs_role_id)",
+        worker_firestore_access: $fs_access,
         bucket_metadata_role_id: $meta_role_id,
         bucket_metadata_role: "projects/\($p)/roles/\($meta_role_id)",
         gke_cluster: $cluster,
@@ -1343,6 +1360,8 @@ cmd_expect() {
       # The label the deployer scope policy admits a job-made namespace by
       # (§4.3 A7); C7 requires it on the Namespace.
       + (if $kind == "personal" then {} else {namespace_label: $base.workspace_id} end)
+      # The worker database role C5 admits, only when the switch is on.
+      + (if $fs_access then {firestore_role: "projects/\($p)/roles/\($fs_role_id)"} else {} end)
       # The two values C10 is made of, only for the kind that is admitted.
       + (if $kind == "service" then {front_door_backend: $front_door} else {} end)
       + (if $kind == "service" and $service_principal != "" then {service_principal: $service_principal} else {} end)

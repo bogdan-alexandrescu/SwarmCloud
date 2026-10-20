@@ -703,6 +703,21 @@ nothing changes for a tenant until the owner switches it.
    `worker_firestore_access` defaults on until the last tenant is switched, and
    `register-tenant.sh` stops granting the role. A worker still on the old path
    after that fails its first read and its attempt fails retryably.
+
+   **The switch is set in three places, one per path that makes a worker:**
+   * a Terraform tenant: `worker_firestore_access` in `terraform/modules/tenancy`;
+   * an operator-registered tenant: `scripts/register-tenant.sh
+     --worker-firestore-access true|false`;
+   * a job-made workspace (personal, group or service, from Admin › Tenants):
+     swarm-api's `WORKER_FIRESTORE_OFF_TENANTS`, which swarm-api writes onto
+     the workspace record as `worker_firestore_access` at each approval, retry
+     and ceiling change. The workspace job's guard copies it into its
+     expectation; under `false` A5 grants no Firestore role and the guard
+     refuses one, and A9 fails a worker that still holds one
+     ([docs/workspaces.md §2.7](workspaces.md#27-the-workers-firestore-switch-follows-its-tenant-1457-design-b)).
+
+   Each defaults to today's grant, and none removes a binding an earlier run
+   made: that is the owner's step at the cutover.
 5. An acceptance probe, from a tenant-A pod, gets `PermissionDenied` on a direct
    update of `workspace_settings/<B>`, a get of `tenants/<B>` and a create under
    `leases/`. It is red until step 4 is applied.

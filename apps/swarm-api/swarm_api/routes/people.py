@@ -207,7 +207,9 @@ def people_service(
                   groups=directory,
                   rules=ws.KindRules.from_settings(ctx.settings),
                   signer=signer,
-                  verify_settings=ctx.settings)
+                  verify_settings=ctx.settings,
+                  firestore_off_tenants=tuple(
+                      getattr(ctx.settings, "worker_firestore_off_tenants", ()) or ()))
 
 
 @router.get("/people")
