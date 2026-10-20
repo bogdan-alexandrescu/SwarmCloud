@@ -1,5 +1,5 @@
 /**
- * LIVE QA OF swarm.saga.xyz, SECTION "WORK › WORKFLOWS" (2026-10-11): the S1
+ * LIVE QA OF swarm.example.com, SECTION "WORK › WORKFLOWS" (2026-10-11): the S1
  * and S2 findings, each held by the property the finding broke rather than
  * by markup.
  *

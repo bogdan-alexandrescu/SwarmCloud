@@ -113,7 +113,7 @@ describe('Pool limits says who last changed a ceiling, once the API serves it (#
     cap.pools[2] = pool('tenant:eng', {
       hard_limit: 30,
       effective_limit: 30,
-      admin_changed_by: 'ops@saga.xyz',
+      admin_changed_by: 'ops@example.com',
       admin_changed_at: at,
     })
     await rows(cap)
@@ -122,7 +122,7 @@ describe('Pool limits says who last changed a ceiling, once the API serves it (#
     const changed = [...side.querySelectorAll('.adm-changed')]
     expect(changed).toHaveLength(2)
     for (const c of changed) {
-      expect(c.textContent).toContain('ops@saga.xyz')
+      expect(c.textContent).toContain('ops@example.com')
       expect(c.textContent).toContain('3h ago')
       // The exact instant rides on the element, for a reader who needs it.
       expect(c.querySelector('time')?.getAttribute('dateTime')).toBe(at)

@@ -68,7 +68,7 @@ const ME: Me = {
   tenant: {
     tenant_id: 'u-bogdan',
     kind: 'user',
-    principal: 'someone@saga.xyz',
+    principal: 'someone@example.com',
     display_name: 'Bogdan',
     created_at: '2026-09-01T00:00:00Z',
     max_active: 4,
@@ -80,7 +80,7 @@ const ME: Me = {
     gcs_prefix: 'tenants/u-bogdan',
     namespace: 'swarm-tenant-u-bogdan',
   },
-  principal: { email: 'someone@saga.xyz', domain: 'saga.xyz', groups: [], is_admin: false },
+  principal: { email: 'someone@example.com', domain: 'example.com', groups: [], is_admin: false },
   environment: 'dev',
   environment_declared: false,
 }

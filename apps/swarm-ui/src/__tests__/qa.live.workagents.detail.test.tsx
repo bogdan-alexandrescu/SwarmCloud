@@ -1,4 +1,4 @@
-// LIVE QA, WORK › AGENTS, THE AGENT (2026-10-11, swarm.saga.xyz).
+// LIVE QA, WORK › AGENTS, THE AGENT (2026-10-11, swarm.example.com).
 //
 // WA-3 (S2): a failed merge that ran twice -- parked for CI once, then failed
 // -- gave four attempt numbers: `attempt 1 of 10` (header), `after 1 of 10

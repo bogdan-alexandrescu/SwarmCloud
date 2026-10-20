@@ -390,7 +390,7 @@ describe('F/N18: the lead is cut on what it renders, and can be read whole', () 
 describe('R11: the Runs list sizes Workflow and By to what they hold', () => {
   it('fits a workflow id and an operator address whole at 1440, with the issue keeping room', async () => {
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
-      runs: [run({ state: 'DONE', workflow_id: WF, created_by: 'bogdan.a@saga.xyz' })], next_page_token: null,
+      runs: [run({ state: 'DONE', workflow_id: WF, created_by: 'ann.a@example.com' })], next_page_token: null,
     }), { status: 200, headers: JSON_HEADERS })) as unknown as typeof fetch
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
@@ -408,7 +408,7 @@ describe('R11: the Runs list sizes Workflow and By to what they hold', () => {
     const wf = row.querySelector('td[data-label="Workflow"] .rn-cut')!
     expect(room('workflow', 'Workflow')).toBeGreaterThanOrEqual(textPx(WF, wf, WIDE))
     const by = row.querySelector('td[data-label="By"] .rn-cut')!
-    expect(room('by', 'By')).toBeGreaterThanOrEqual(textPx('bogdan.a@saga.xyz', by, WIDE))
+    expect(room('by', 'By')).toBeGreaterThanOrEqual(textPx('ann.a@example.com', by, WIDE))
     // And the issue reference stays whole beside them (browser QA D11).
     const ref = row.querySelector('td[data-label="Issue"] .rn-issue-ref')!
     expect(room('issue', 'Issue'), 'the issue reference is cut').toBeGreaterThanOrEqual(textPx(REF, ref, WIDE))

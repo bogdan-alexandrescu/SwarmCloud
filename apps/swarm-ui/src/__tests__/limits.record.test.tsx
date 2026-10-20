@@ -7,7 +7,7 @@
 // `/v1/capacity`, so every row said "not recorded" against an API that had the
 // record all along. It now reads both and joins them by pool name.
 //
-//   * An admin sees `ops@saga.xyz · 20 → 10 · 3h ago` in Last changed and in
+//   * An admin sees `ops@example.com · 20 → 10 · 3h ago` in Last changed and in
 //     the side editor's History.
 //   * A non-admin is refused the admin read: the row says the record is for
 //     admins, not that the API has none.
@@ -110,13 +110,13 @@ describe('Pool limits reads who changed a ceiling from the admin pool read (#133
       ok({
         pools: [
           admin(pools[0]!, null, null, null),
-          admin(pools[1]!, 'ops@saga.xyz', at, { hard_limit: { from: 20, to: 10 } }),
+          admin(pools[1]!, 'ops@example.com', at, { hard_limit: { from: 20, to: 10 } }),
         ],
       }),
     )
     await rows(capacity(pools))
 
-    await waitFor(() => expect(lastChanged('runner:claude-code').textContent).toContain('ops@saga.xyz'), WAIT)
+    await waitFor(() => expect(lastChanged('runner:claude-code').textContent).toContain('ops@example.com'), WAIT)
     const cell = lastChanged('runner:claude-code')
     expect(cell.textContent).toContain('20 → 10')
     expect(cell.textContent).toContain('3h ago')
@@ -125,7 +125,7 @@ describe('Pool limits reads who changed a ceiling from the admin pool read (#133
     const changed = [...side.querySelectorAll('.adm-changed')]
     expect(changed).toHaveLength(2)
     for (const c of changed) {
-      expect(c.textContent).toContain('ops@saga.xyz')
+      expect(c.textContent).toContain('ops@example.com')
       expect(c.textContent).toContain('20 → 10')
     }
 
@@ -138,7 +138,7 @@ describe('Pool limits reads who changed a ceiling from the admin pool read (#133
     const pools = [pool('resource:standard', 20)]
     pools[0]!.enabled = false
     api.loadAdminPools.mockResolvedValue(
-      ok({ pools: [admin(pools[0]!, 'ops@saga.xyz', HOURS_AGO(1), { enabled: { from: true, to: false } })] }),
+      ok({ pools: [admin(pools[0]!, 'ops@example.com', HOURS_AGO(1), { enabled: { from: true, to: false } })] }),
     )
     await rows(capacity(pools))
     await waitFor(() => expect(lastChanged('resource:standard').textContent).toContain('drained'), WAIT)
@@ -164,7 +164,7 @@ describe('Pool limits reads who changed a ceiling from the admin pool read (#133
   it('does not credit the last admin with a ceiling written since by something that records nothing', async () => {
     const pools = [pool('global', 25)]
     api.loadAdminPools.mockResolvedValue(
-      ok({ pools: [admin(pools[0]!, 'ops@saga.xyz', HOURS_AGO(5), { hard_limit: { from: 40, to: 30 } })] }),
+      ok({ pools: [admin(pools[0]!, 'ops@example.com', HOURS_AGO(5), { hard_limit: { from: 40, to: 30 } })] }),
     )
     await rows(capacity(pools))
     await waitFor(() => expect(lastChanged('global').querySelector('.adm-changed-since')).not.toBeNull(), WAIT)
@@ -184,7 +184,7 @@ describe('Pool limits reads who changed a ceiling from the admin pool read (#133
         ok({
           pools: [
             admin(after[0]!, null, null, null),
-            admin(after[1]!, 'root@saga.xyz', new Date().toISOString(), { hard_limit: { from: 20, to: 15 } }),
+            admin(after[1]!, 'root@example.com', new Date().toISOString(), { hard_limit: { from: 20, to: 15 } }),
           ],
         }),
       )
@@ -196,7 +196,7 @@ describe('Pool limits reads who changed a ceiling from the admin pool read (#133
     fireEvent.change(within(side).getByLabelText('Hard limit for runner:claude-code'), { target: { value: '15' } })
     fireEvent.click(within(side).getByRole('button', { name: 'Save' }))
 
-    await waitFor(() => expect(lastChanged('runner:claude-code').textContent).toContain('root@saga.xyz'), WAIT)
+    await waitFor(() => expect(lastChanged('runner:claude-code').textContent).toContain('root@example.com'), WAIT)
     expect(lastChanged('runner:claude-code').textContent).toContain('20 → 15')
   })
 })

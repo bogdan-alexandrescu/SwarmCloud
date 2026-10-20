@@ -64,7 +64,7 @@ async function timelineNote(events: TaskEvent[]): Promise<{ text: string; last: 
   return { text: note!.textContent ?? '', last }
 }
 
-const REQUESTED_BY = { requested_by: 'alice@saga.xyz', from_state: 'DISPATCHED' }
+const REQUESTED_BY = { requested_by: 'alice@example.com', from_state: 'DISPATCHED' }
 
 describe('a cancel request on the timeline', () => {
   it('does not count a stored legacy request as the end of a cancelled task', async () => {

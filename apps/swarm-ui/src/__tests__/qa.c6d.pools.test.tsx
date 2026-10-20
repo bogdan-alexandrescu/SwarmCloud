@@ -111,7 +111,7 @@ describe('G5-11: a pool key is never cut by a clause that repeats it', () => {
     api.loadCapacity.mockResolvedValue(ok(capacity()))
     api.loadMe.mockResolvedValue(ok({
       tenant: { tenant_id: 'eng' },
-      principal: { email: 'a@saga.xyz', domain: 'saga.xyz', groups: [], is_admin: true },
+      principal: { email: 'a@example.com', domain: 'example.com', groups: [], is_admin: true },
       environment: 'dev', environment_declared: false,
     } as unknown as Me))
     render(<AdminSettingsScreen />)

@@ -1,5 +1,5 @@
 /**
- * G1-15 (QA pass on swarm.saga.xyz, 2026-10-07): A READ'S LATENCY IS WRITTEN
+ * G1-15 (QA pass on swarm.example.com, 2026-10-07): A READ'S LATENCY IS WRITTEN
  * AS A DURATION, AND THE ADMIN 403 NOTE IS FOR THE READER IT IS TRUE OF.
  *
  * The dock read `p95 4141ms` and API reads' Took column `1095ms`, `1493ms`:

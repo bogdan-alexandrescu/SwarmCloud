@@ -4266,7 +4266,7 @@ export function quotaReadingAge(
 // WHY A PERSON STILL PASTES SOMETHING, since "just a button" is the obvious
 // ask. Anthropic's OAuth client accepts exactly one redirect target -- its own
 // callback page, which DISPLAYS a code. A third-party application cannot
-// register `https://swarm.saga.xyz/callback`, so the browser cannot be
+// register `https://swarm.example.com/callback`, so the browser cannot be
 // redirected back here and the code on that page is what closes the loop. One
 // short string replaces a keychain item; that is the whole distance this can
 // travel, and the screen says so rather than leaving it looking like an

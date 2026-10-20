@@ -17,10 +17,10 @@ import type { IssueRun } from '../types'
 function run(over: Record<string, unknown> = {}): IssueRun {
   return {
     id: 'run_646', tenant_id: 'eng', state: 'DONE', terminal: true,
-    issue: { ref: 'saga-xyz/widgets#42', owner: 'saga-xyz', repo: 'widgets', number: 42, url: 'https://github.com/saga-xyz/widgets/issues/42' },
+    issue: { ref: 'example-org/widgets#42', owner: 'example-org', repo: 'widgets', number: 42, url: 'https://github.com/example-org/widgets/issues/42' },
     plan_approval: 'auto', auto_merge: false, fix_rounds: 3, planner_task_id: 'tsk_p',
     plan: null, plan_digest: null, plan_revision: 1, plan_edited_by: null, workflow_id: 'wf_1',
-    created_by: 'alice@saga.xyz', created_at: '2026-10-05T10:00:00Z', updated_at: '2026-10-05T11:00:00Z',
+    created_by: 'alice@example.com', created_at: '2026-10-05T10:00:00Z', updated_at: '2026-10-05T11:00:00Z',
     approved_by: null, approved_at: null, approved_digest: null, rejected_by: null,
     rejection_reason: null, error: null, history: [],
     ...over,
