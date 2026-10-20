@@ -319,7 +319,8 @@ export function Dock() {
             <a className="is-end" href={`#${helpAnchor(HELP_TOPIC)}`}>
               What these mean &rarr;
             </a>
-            <a href="#reference">Every read, in a table &rarr;</a>
+            {/* Capacity › API reads since NAV-FOOT (#1672); `#reference` is its old address. */}
+            <a href="#capacity/api-reads">Every read, in a table &rarr;</a>
           </div>
           {/* The cells read the wall clock as they render, and they render on
               this component's shared tick, so their ages move with the line

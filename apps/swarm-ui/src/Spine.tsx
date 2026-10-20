@@ -3,9 +3,10 @@
  * Variant 2, spine.py).
  *
  *   SPINE   84px, deep blue (#0b3a7a -> #06101e), THE SAME IN BOTH THEMES. The
- *           Hive in its 44px full cut (white -> #7dd3fc), Profile (the
- *           person's avatar), Submit (the sky button), Overview, Work,
- *           Automate, Capacity, Admin; at its foot Help and API reads.
+ *           Hive in its 44px full cut (white -> #7dd3fc), Submit (the sky
+ *           button), Overview, Work, Automate, Capacity, Admin; at its foot
+ *           Help, then Profile (the person's avatar), the last item
+ *           (NAV-FOOT, #1672). API reads is Capacity's last page.
  *   PANEL   236px. The wordmark and the environment pill, the tenant block,
  *           the open section's pages, the capacity meter and the user footer.
  *
@@ -48,7 +49,7 @@ import { feedData, notificationsSnapshot, subscribeNotifications } from './notif
 import { firstName } from './PersonName'
 import { roleOf } from './roles'
 
-export type SpineSection = 'profile' | 'overview' | 'work' | 'automate' | 'capacity' | 'admin' | 'help' | 'api' | null
+export type SpineSection = 'profile' | 'overview' | 'work' | 'automate' | 'capacity' | 'admin' | 'help' | null
 
 /** The spine sections that draw a panel of pages. */
 type PanelSection = 'profile' | 'work' | 'automate' | 'capacity' | 'admin'
@@ -70,6 +71,9 @@ interface PanelPage {
 }
 
 const AGENT_LABEL: Readonly<Record<AgentTab, string>> = { live: 'Live', waiting: 'Waiting', recent: 'Recent' }
+
+/** Capacity › API reads' tab (NAV-FOOT, #1672): App.tsx SECTIONS' id. */
+const API_READS_KEY = 'api-reads'
 
 /** Admin › Workspaces you admin's tab (NAV-ADMIN-ROLE; part of #1633). */
 export const WORKSPACES_YOU_ADMIN_TAB = 'workspaces'
@@ -141,6 +145,10 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
         { key: 'quota', label: 'Provider quota', to: 'capacity/quota', admin: true },
       ],
     },
+    // NAV-FOOT (#1672, owner 2026-10-20): API reads left the spine's foot to
+    // be Capacity's last page. Its "Every read / Failures only" pair is drawn
+    // under it while it is the open page (`PanelPages`).
+    { key: API_READS_KEY, label: 'API reads', icon: 'api', to: `capacity/${API_READS_KEY}` },
   ],
   admin: [
     { key: 'limits', label: 'Pool limits', icon: 'admin', to: 'admin/limits' },
@@ -389,9 +397,9 @@ export interface NamedTenantChoice extends TenantChoice {
 export const OWN_WORKSPACE_LABEL = 'Your workspace'
 
 /**
- * Settings › Profile (#1505, user-profile.md §4.7): the panel foot's link.
- * The path is written out because `paths.ts` gains the address in its own
- * lane (PROFILE-NAV); until then `addressToPath` would answer `/overview`.
+ * Settings › Profile (#1505, user-profile.md §4.7): the spine's last item and
+ * the signed-in name's link (NAV-FOOT, #1672). The path is written out because
+ * `paths.ts` gained the address in its own lane (PROFILE-NAV).
  */
 export const PROFILE_ADDRESS = 'settings/profile'
 export const PROFILE_PATH = '/settings/profile'
@@ -1102,9 +1110,11 @@ export function Icon({ name, className = 'sk-ic' }: { name: string; className?: 
 // ---------------------------------------------------------------------------
 
 /**
- * PROFILE, THE FIRST SPINE ITEM (NAV-PROFILE; part of #1633): under the Hive,
- * above Submit, drawn as the person's avatar. It is the one place the person
- * is drawn on the spine -- the foot's avatar went with it.
+ * PROFILE, THE SPINE'S LAST ITEM (NAV-FOOT, #1672, owner 2026-10-20): at the
+ * foot, below Help, drawn as the person's avatar. NAV-PROFILE (#1633) had put
+ * it under the Hive, above Submit; the owner moved it back to where people
+ * look for themselves, and kept its panel of five settings pages. It is the
+ * one place the person is drawn on the spine.
  */
 const PROFILE_ITEM: { key: 'profile'; label: string; to: string } = { key: 'profile', label: 'Profile', to: PROFILE_ADDRESS }
 
@@ -1137,7 +1147,7 @@ export interface ShellProps {
   /** API reads' filter. */
   apiFailuresOnly?: boolean
   onApiFilter?: (failuresOnly: boolean) => void
-  /** The spine's foot: Help and API reads, drawn by App (see `ctl-nav-util`). */
+  /** The spine's foot: Help, drawn by App (see `ctl-nav-util`); Profile follows it. */
   foot: ReactNode
   /**
    * THE NOTIFICATION BELL (#1206), drawn by App -- Notifications.tsx imports
@@ -1620,7 +1630,7 @@ export function SkyShell({
     [who, keepOnSwitch, choices],
   )
 
-  // ONE SPINE SECTION: Profile, then the five after Submit.
+  // ONE SPINE SECTION: the five after Submit, and Profile at the foot.
   const sectionLink = (s: { key: Exclude<SpineSection, null>; label: string; to: string }) => {
     const on = section === s.key
     // A LINK, NOT A BUTTON (#503): a section opens in a new tab and copies
@@ -1700,7 +1710,6 @@ export function SkyShell({
       {/* THE COLLAPSED SPINE KEEPS THE TENANT IN SIGHT (2A): a tile under the
           Hive, which opens the same list beside the spine. */}
       {collapsed && !drawer && <TenantTile me={me} switchable={switchable} open={picker === 'tile'} onOpen={() => setPicker(picker === 'tile' ? null : 'tile')} />}
-      {sectionLink(PROFILE_ITEM)}
       <a className="sk-ri sk-cta" title="Submit (N)" aria-current={section === null ? 'page' : undefined} {...routed('submit', () => nav('submit'))}>
         <Icon name="submit" />
         <small>Submit</small>
@@ -1721,9 +1730,13 @@ export function SkyShell({
           drop-down opens beside the spine (styles/notifications.css). */}
       {!phone && bell !== null && <div className="sk-bell">{bell}</div>}
       {foot}
-      {/* Collapsed, the panel's Sign out is an icon at the spine's foot. The
-          avatar that sat under it is the Profile item now (NAV-PROFILE). */}
+      {/* Collapsed, the panel's Sign out is an icon at the spine's foot. */}
       {collapsed && !drawer && canSignOut && <SignOutButton email={who.principal.email} compact />}
+      {/* PROFILE, LAST (NAV-FOOT, #1672): the bottom-most item at every
+          width -- the open spine, the collapsed one (its flyout opens beside
+          the foot, styles.css `.sk-flyout.is-profile`) and the phone drawer,
+          which holds this same spine. */}
+      {sectionLink(PROFILE_ITEM)}
     </nav>
   )
 
@@ -1778,7 +1791,20 @@ export function SkyShell({
       <Meter meter={meter} read={cap.status === 'error' || fault !== null ? 'unread' : cap.status === 'loading' ? 'loading' : 'landed'} />
       <div className="sk-pfoot">
         <span className="sk-pfrow">
-          <b title={signedIn?.title}>{signedIn === null ? (me.status === 'loading' ? 'reading…' : 'not read') : signedIn.text}</b>
+          {/* THE NAME OPENS PROFILE (NAV-FOOT, #1672): a link once the name is
+              read, named for where it goes -- the visible first name first,
+              so a voice user can say what they see. Unread, it is plain text:
+              "reading…" is no one's profile. The chip, Sign out and the email
+              beside it are unchanged. */}
+          <b title={signedIn?.title}>
+            {signedIn === null ? (
+              me.status === 'loading' ? 'reading…' : 'not read'
+            ) : (
+              <a className="sk-me" aria-label={`${signedIn.text}, open your profile`} {...routed(PROFILE_ADDRESS, () => nav(PROFILE_ADDRESS))}>
+                {signedIn.text}
+              </a>
+            )}
+          </b>
           {admin && <span className="sk-adm">admin</span>}
           {canSignOut && <SignOutButton email={who.principal.email} />}
         </span>
@@ -2465,20 +2491,6 @@ function PanelPages({
       </>
     )
   }
-  if (section === 'api') {
-    // Two filters of one page, not two pages: buttons, pressed or not.
-    return (
-      <>
-        <div className="sk-pt">API reads</div>
-        <button type="button" className={`sk-pk${apiFailuresOnly ? '' : ' is-on'}`} aria-pressed={!apiFailuresOnly} onClick={() => onApiFilter?.(false)}>
-          <span className="sk-pl">Every read this tab made</span>
-        </button>
-        <button type="button" className={`sk-pk${apiFailuresOnly ? ' is-on' : ''}`} aria-pressed={apiFailuresOnly} onClick={() => onApiFilter?.(true)}>
-          <span className="sk-pl">Failures only</span>
-        </button>
-      </>
-    )
-  }
   // SUBMIT DRAWS ITS OWN PAGES (live QA CH-17): it drew Work's, headed
   // "Work" with nothing lit, while the spine marked Submit -- another
   // section's navigation under the place you are. The chooser and its three
@@ -2562,6 +2574,20 @@ function PanelPages({
               </div>
             )}
             {p.key === 'workflows' && sec === 'work' && <RecentWorkflows nav={nav} />}
+            {/* API READS' TWO FILTERS, under the page while it is open
+                (NAV-FOOT, #1672): the rows its own panel drew while it was a
+                spine item. Two filters of one page, not two pages: buttons,
+                pressed or not. */}
+            {on && sec === 'capacity' && p.key === API_READS_KEY && (
+              <div className="sk-kids" role="group" aria-label="API reads rows">
+                <button type="button" className={`sk-kid${apiFailuresOnly ? '' : ' is-on'}`} aria-pressed={!apiFailuresOnly} onClick={() => onApiFilter?.(false)}>
+                  <span>Every read this tab made</span>
+                </button>
+                <button type="button" className={`sk-kid${apiFailuresOnly ? ' is-on' : ''}`} aria-pressed={apiFailuresOnly} onClick={() => onApiFilter?.(true)}>
+                  <span>Failures only</span>
+                </button>
+              </div>
+            )}
           </div>
         )
       })}

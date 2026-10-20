@@ -10461,12 +10461,13 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-grow { flex: 1; }
 .sk-foot { display: contents; }
 .sk-av { margin-top: 8px; width: 28px; height: 28px; border-radius: 50%; background: #0369a1; color: #fff; font: 600 var(--t-micro)/var(--lh-micro) var(--font); display: flex; align-items: center; justify-content: center; flex: none; box-shadow: 0 0 0 2px rgba(255, 255, 255, .18); position: relative; }
-/* THE AVATAR IS THE PROFILE ITEM'S ICON (NAV-PROFILE; part of #1633): first
-   on the spine, under the Hive, so it takes an icon's slot -- 22px, with no
-   foot margin -- rather than the 28px disc that ended the foot. */
+/* THE AVATAR IS THE PROFILE ITEM'S ICON (NAV-PROFILE; part of #1633), and it
+   takes an icon's slot -- 22px, with no margin -- though the item is the
+   foot's last again (NAV-FOOT, #1672): it is a spine item with a label and a
+   panel, not the 28px disc that once ended the foot. */
 .sk-ri > .sk-av { margin-top: 0; width: 22px; height: 22px; }
 /* A whole-app state's echo on the spine (states.html C): the collapsed rail still carries it. */
-.sk-av-dot { position: absolute; top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 50%; background: #f5c451; box-shadow: 0 0 0 2px #0b3a7a; /* the spine's top colour, where Profile sits */ }
+.sk-av-dot { position: absolute; top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 50%; background: #f5c451; box-shadow: 0 0 0 2px #06101e; /* the spine's foot colour, where Profile sits (NAV-FOOT) */ }
 
 /* --- the panel: 236px ---------------------------------------------------- */
 .sk-panel { width: 236px; flex: none; background: var(--surface); border-right: 1px solid var(--sk-ln); display: flex; flex-direction: column; padding: 14px 0; min-height: 0; }
@@ -10527,6 +10528,13 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-pfrow { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .sk-pfrow > .sk-adm { flex: none; }
 .sk-pfoot b { font-size: var(--t-micro); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* THE NAME IS A LINK TO PROFILE (NAV-FOOT, #1672): it keeps the name's ink
+   and weight, and says it is a link the way the product's links do -- an
+   underline on hover and a ring on focus -- so the block still reads as one
+   line, "Ana · admin · Sign out". */
+.sk-pfoot .sk-me { color: inherit; text-decoration: none; }
+.sk-pfoot .sk-me:hover { text-decoration: underline; text-underline-offset: 2px; }
+.sk-pfoot .sk-me:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: -2px; border-radius: 2px; /* inset: the name's `b` clips its overflow */ }
 .sk-pfoot small { font-size: var(--t-micro); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sk-theme { display: flex; gap: 2px; margin: 8px 0 10px; padding: 2px; border: 1px solid var(--sk-ln); border-radius: 10px; }
 .sk-theme button { flex: 1; font: inherit; font-size: var(--t-micro); color: var(--text-dim); background: none; border: 0; border-radius: 6px; padding: 4px 6px; cursor: pointer; }
@@ -10653,6 +10661,10 @@ span.sk-ttile { cursor: default; }
 .sk-flyout { position: fixed; left: 90px; top: 202px; background: var(--surface); border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px; box-shadow: var(--sk-sh); display: flex; flex-direction: column; min-width: 170px; z-index: 20; }
 .sk-flyout.is-capacity { top: 262px; }
 .sk-flyout.is-admin { top: 322px; }
+/* PROFILE IS THE FOOT'S LAST ITEM (NAV-FOOT, #1672), so its flyout opens up
+   from the spine's bottom edge, beside it, rather than from a fixed top that
+   left it a viewport away from the avatar. */
+.sk-flyout.is-profile { top: auto; bottom: 12px; }
 .sk-flyout b { font: 500 var(--t-micro)/var(--lh-micro) var(--font); padding: 2px 8px 4px; color: var(--text-dim); }
 .sk-flyout a { padding: 6px 8px; border: 0; border-radius: var(--r-ctl); background: none; color: var(--text); text-align: left; cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); }
 .sk-flyout a:hover { background: var(--sk-hv); }

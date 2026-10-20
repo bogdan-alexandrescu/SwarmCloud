@@ -1063,6 +1063,15 @@ Profile for all five, and the panel foot keeps the name, the admin tag,
 Sign out, the email and the theme toggle. Profile is not a `SECTIONS`
 entry, so the issue forms' "Where" list above is unchanged.
 
+**Amended 2026-10-20 (#1672, lane NAV-FOOT).** Owner request: Profile is
+no longer the spine's first item. It is the spine foot's **last** item,
+below Help, at desktop, collapsed and phone widths, with the same avatar
+and the same five-page panel. The first name in the panel foot's signed-in
+block is a link to `/settings/profile` again, named "<name>, open your
+profile"; the admin chip, Sign out and the email beside it are unchanged.
+See [`docs/web-ui/redesign.md`](../web-ui/redesign.md), *Changed,
+2026-10-20*.
+
 ### 4.8 Failure cases
 
 | case | what happens |
