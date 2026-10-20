@@ -126,7 +126,7 @@ spec:
               memory: __MEMORY__
               ephemeral-storage: __EPHEMERAL__
             limits:
-              cpu: "__CPU__"
+              cpu: "__CPU_LIMIT__"
               memory: __MEMORY__
               ephemeral-storage: __EPHEMERAL__
           env:

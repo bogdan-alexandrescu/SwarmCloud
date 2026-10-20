@@ -100,6 +100,7 @@ from scheduler.dispatch import (  # noqa: E402
     CACHE_STORAGE_CLASS,
     CACHE_VOLUME_GIB,
     backend_deadline_seconds,
+    cpu_quantity,
     gke_disk,
     gke_ephemeral_storage_gib,
 )
@@ -322,6 +323,7 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     # A container image reference: registry/path:tag or registry/path@sha256:...
     "IMAGE": re.compile(r"^[A-Za-z0-9._/-]{1,200}(:[A-Za-z0-9._-]{1,128}|@sha256:[a-f0-9]{64})$"),
     "CPU": re.compile(r"^[0-9]{1,4}m?$"),
+    "CPU_LIMIT": re.compile(r"^[0-9]{1,5}m?$"),
     "MEMORY": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "TMP_DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
@@ -1136,7 +1138,12 @@ def render_job(args: argparse.Namespace) -> str:
             "IMAGE": args.image
             or f"{args.region}-docker.pkg.dev/{args.project}/"
             f"{args.registry}/{profile.image}:{args.tag}",
-            "CPU": str(int(rc.cpu)),
+            # The CPU request and its burst limit, in millicores, from the
+            # dispatcher's own `cpu_quantity` so the YAML renders what runs:
+            # invariant 7 as amended for CPU by contract request RS-1
+            # (SIZES-SCHED-1). Memory and ephemeral-storage stay one number.
+            "CPU": cpu_quantity(rc.cpu),
+            "CPU_LIMIT": cpu_quantity(rc.cpu_limit_cores),
             "MEMORY": f"{rc.memory_gib}Gi",
             # The local scratch volumes' sizeLimits -- workspace, /tmp, HOME --
             # and the whole pod's ephemeral-storage, their sum; and the cache's

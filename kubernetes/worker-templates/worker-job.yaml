@@ -28,11 +28,13 @@
 # This annotation is only honoured on on-demand capacity, which is the concrete
 # reason Spot is disabled platform-wide rather than merely discouraged.
 #
-# `requests == limits` on every resource, including ephemeral-storage. No
-# bursting: bursting is what gets a two-hour agent container OOM-killed at
-# minute ninety. ephemeral-storage is the WHOLE pod's local disk -- workspace,
-# /tmp and HOME together, which kubelet sums -- not the workspace volume's
-# sizeLimit. It is the sum of the three volumes' sizeLimits; the cache is a
+# `requests == limits` for memory and ephemeral-storage. No memory bursting:
+# that is what gets a two-hour agent container OOM-killed at minute ninety.
+# CPU alone may burst past its request, to the class's limit (invariant 7 as
+# amended by contract request RS-1): a CPU burst is throttled, never killed,
+# and Autopilot bills the request. ephemeral-storage is the WHOLE pod's local
+# disk -- workspace, /tmp and HOME together, which kubelet sums -- not the
+# workspace volume's sizeLimit. It is the sum of the three volumes' sizeLimits; the cache is a
 # network-disk claim kubelet does not count (CACHE-PVC). All of these numbers
 # are the dispatcher's, per resource class: see GkeDisk in
 # apps/scheduler/scheduler/dispatch.py.
@@ -123,7 +125,7 @@ spec:
               memory: __MEMORY__
               ephemeral-storage: __EPHEMERAL__
             limits:
-              cpu: "__CPU__"
+              cpu: "__CPU_LIMIT__"
               memory: __MEMORY__
               ephemeral-storage: __EPHEMERAL__
           env:

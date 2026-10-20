@@ -916,13 +916,19 @@ def test_a_rendered_job_never_asks_for_spot_capacity(profile):
 
 
 @pytest.mark.parametrize("profile", ["mock", "claude-code", "browser"])
-def test_a_rendered_job_sets_requests_equal_to_limits(profile):
+def test_a_rendered_job_sets_memory_and_disk_requests_equal_to_limits(profile):
     job = render_job(profile)
     rc = RESOURCE_CLASSES[RUNNER_PROFILES[profile].resource_class]
     container = job["spec"]["template"]["spec"]["containers"][0]
-    assert container["resources"]["requests"] == container["resources"]["limits"]
+    requests, limits = container["resources"]["requests"], container["resources"]["limits"]
+    # Invariant 7 as amended by contract request RS-1 (SIZES-SCHED-1): memory
+    # and disk never burst; CPU requests the class and bursts to its limit.
+    assert requests["memory"] == limits["memory"]
+    assert requests["ephemeral-storage"] == limits["ephemeral-storage"]
     # ...and the numbers come from the frozen catalogue, not from this file.
-    assert container["resources"]["limits"]["cpu"] == str(int(rc.cpu))
+    # MUTATION: render `__CPU__` on the templates' limits line and this reads "4000m".
+    assert requests["cpu"] == f"{int(rc.cpu * 1000)}m"
+    assert limits["cpu"] == f"{int(rc.cpu_limit_cores * 1000)}m"
     assert container["resources"]["limits"]["memory"] == f"{rc.memory_gib}Gi"
     # The pod's whole local disk -- workspace, /tmp and HOME -- is the
     # dispatcher's number, not disk_gib (contract request 53).
