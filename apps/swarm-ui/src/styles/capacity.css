@@ -252,14 +252,22 @@
    rendered, 11% gave it 96px inside the cell's gutters and clipped its right
    border), `17m ago` ~70px. Feeds pool gives up the 2% Last 429 needs: its
    name is cut in the middle (V020) and keeps the tenant's last eight. */
+/* THE SLACK GOES TO THE POOL NAME (QA-057, 2026-10-20). Every column was a
+   percentage, so a table wider than the ~1054px the widths were measured on
+   gave each column its share of the slack -- and the one long value, the
+   pool, was still head-cut (`…anthropic:tenant:eng`) beside columns with room
+   to spare. The columns whose content is bounded are now as wide as that
+   content (the widths above, as the percentages gave them at 1054), Tenant
+   keeps its share, and Feeds pool sets no width: a fixed table gives an auto
+   column what is left. At 1054 that is ~160px, what its 15% was; at ~1300 it
+   is ~400px, the whole of `provider:anthropic:tenant:u-bogdan`. */
 .quota-table col.quota-c-tenant { width: 16%; }
-.quota-table col.quota-c-state { width: 16%; }
-.quota-table col.quota-c-cap { width: 11%; }
-.quota-table col.quota-c-feeds { width: 15%; }
-.quota-table col.quota-c-left { width: 10%; }
-.quota-table col.quota-c-429s { width: 12%; }
-.quota-table col.quota-c-last { width: 13%; }
-.quota-table col.quota-c-rep { width: 7%; }
+.quota-table col.quota-c-state { width: 168px; }
+.quota-table col.quota-c-cap { width: 116px; }
+.quota-table col.quota-c-left { width: 104px; }
+.quota-table col.quota-c-429s { width: 124px; }
+.quota-table col.quota-c-last { width: 136px; }
+.quota-table col.quota-c-rep { width: 76px; }
 .quota-table thead th { white-space: normal; }
 .quota-feeds a {
   display: block;
@@ -399,6 +407,14 @@
   font: 600 var(--t-meta)/var(--lh-flush) var(--font); cursor: pointer;
 }
 .acct-add svg { width: 12px; height: 12px; }
+/* THE COUNT IS NOT WHAT GIVES WAY AT 390 (QA-050, 2026-10-20). Title, count
+   and `Add account` measured ~352px on one line in ~332px, so the count was
+   cut to `6 ac…`. On a phone the button says `Add` beside its plus -- the
+   heading it sits in already says what is added, and its accessible name is
+   still `Add account` -- which gives back ~50px and the count stays whole. */
+@media (max-width: 560px) {
+  .acct-add-what { display: none; }
+}
 .acct-add:disabled { opacity: .5; cursor: not-allowed; }
 .acct-add:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 
@@ -680,6 +696,23 @@
    track that failed to paint (which has no tick) and from 5% (a fill). */
 .cap-use .ctl-util-track.is-zero { box-shadow: none; }
 .cap-use .ctl-util-track.is-zero > .ctl-util-zero { width: 1px; border-radius: 0; }
+/* A TRACK ON A TINTED ROW IS OUTLINED (QA-053, 2026-10-20). `--surface-2` is
+   the track on a plain row, and a Needs-action row's wash is within ~1.0:1 of
+   it in both themes: on the lavender row only the 0% tick showed. On a tinted
+   row the track is the card's own surface inside a `--line` hairline, which
+   holds it apart from the wash by more than a plain row's track is held from
+   its row. Every track on such a row is outlined, a 0% one too, so G5-20's
+   comparison (an outlined zero reading fuller than a bare 5%) cannot arise
+   within the row. */
+.cap-pools tr.is-paused .ctl-util-track,
+.cap-pools tr.is-warn .ctl-util-track,
+.cap-pools tr.is-bad .ctl-util-track {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+/* THE SUMMARY WRAPS BETWEEN CLAUSES, NEVER INSIDE ONE (QA-054): `tenant
+   u-bogdan` broke at its hyphen at 390. */
+.cap-clause { white-space: nowrap; }
 
 /* G5-15: ONE TASK REFERENCE (TaskRef.tsx). The link, then its copy. */
 .task-ref { display: inline-flex; align-items: baseline; gap: 4px; min-width: 0; max-width: 100%; }
@@ -704,7 +737,7 @@
 .acct-pct-win { color: var(--text-faint); }
 
 /* G5-23: `Quota cap (units)` and `429s (this run)` hold one line each, in
-   the widths above (Feeds pool gave up the room; its name ellipsizes). */
+   the widths above (Feeds pool takes what they leave; its name is cut only when that is too little). */
 .quota-table thead th.quota-nowrap { white-space: nowrap; }
 
 /* G5-08: ON A PHONE A CAPACITY TABLE IS A RECORD PER ROW (capacityPoll

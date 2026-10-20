@@ -4766,6 +4766,14 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   color: var(--warn);
   border-right-style: dashed;
   border-right-width: 2px;
+  /* A STRAIGHT DASHED EDGE, NOT A DASHED CURVE (QA-049, 2026-10-20). The
+     rounded right corners carried the dashes round the curve, and on a mark
+     one line tall the dashes and the corners met as a broken edge: the outline
+     read as clipped beside `unread docs` and `last read 3d ago`, not as the
+     hole it is. Square on the dashed side only, so the dashes run the full
+     height and the solid side keeps the mark's radius. */
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
 }
 /* NOT ENTITLED IS NOT BROKEN. Blue, solid, no dashes: a non-admin genuinely
    cannot read /v1/admin/*, and painting that as a failure tells someone their

@@ -496,12 +496,16 @@ describe('V005/V013: the quota columns follow what they hold', () => {
         '</colgroup></table></div>',
     )
     const widths = [...host.querySelectorAll('col')].map((c) => painted(c, 'width', WIDE))
-    expect(widths).toEqual(['16%', '16%', '11%', '15%', '10%', '12%', '13%', '7%'])
-    expect(widths.reduce((n, w) => n + parseFloat(w ?? '0'), 0)).toBe(100)
+    // Tenant keeps its share; the bounded columns are as wide as what they
+    // hold; Feeds pool sets no width and takes what is left (QA-057).
+    expect(widths).toEqual(['16%', '168px', '116px', null, '104px', '124px', '136px', '76px'])
+    // At the ~1054px table they were measured on, they leave Feeds pool its 15%.
+    const fixed = widths.reduce((n, w) => n + (w === null ? 0 : w.endsWith('%') ? (parseFloat(w) / 100) * 1054 : parseFloat(w)), 0)
+    expect(1054 - fixed).toBeGreaterThanOrEqual(0.15 * 1054)
     // Rendered at 1440 (nav open, a ~1054px table) the `time not recorded`
     // pill is 112px; at 11% the cell gave it 96px inside its 10px gutters and
     // clipped its right border. Its column holds it whole.
-    const last = (parseFloat(widths[6] ?? '0') / 100) * 1054 - 2 * 10
+    const last = parseFloat(widths[6] ?? '0') - 2 * 10
     expect(last).toBeGreaterThanOrEqual(112)
   })
 
