@@ -172,6 +172,41 @@ def test_promotion_records_the_graph_manifest_and_its_digest(
     assert db.docs[f"repositories/{repo_id}"]["index"]["current_sha"] == ONE
 
 
+def test_promotion_records_each_servers_cost_from_a_full_runs_manifest(
+    client, db, objects, repo_id, writer, tmp_path
+):
+    # INDEX-BUDGETS (part of #1693): what the next run's driver grants its
+    # servers from. The manifest's language rows are the graph's, which
+    # carry the driver's `lsp` counts; tsserver serves two languages and is
+    # recorded once.
+    task_id = _start(client, repo_id)
+    tenant = _tenant(db, task_id)
+    document = graph_doc(ONE)
+    document["languages"] = [
+        {"language": "python", "server": "pyright", "status": "partial",
+         "lsp": {"requests": 26_562, "grant_seconds": 270.0, "cost_seconds": 890}},
+        {"language": "typescript", "server": "tsserver", "status": "ok",
+         "lsp": {"requests": 900, "grant_seconds": 270.0, "cost_seconds": 60}},
+        {"language": "javascript", "server": "tsserver", "status": "ok",
+         "lsp": {"requests": 900, "grant_seconds": 270.0, "cost_seconds": 60}},
+    ]
+    root = tmp_path / "store-costs"
+    report = writer.write_graph(document, writer.LocalStore(root), tenant_id=tenant,
+                                repo_id=repo_id)
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            objects.put(path.relative_to(root).as_posix(), path.read_bytes())
+    finish_index_task(db, objects, task_id, _index_with_graph(ONE, report["manifest_digest"]))
+    assert _settle(client, repo_id).status_code == 200
+    index = db.docs[f"repositories/{repo_id}"]["index"]
+    # MUTATION: drop `lsp_costs` from the promotion's index update and this
+    # is a KeyError: the next run splits the pass equally again.
+    assert index["lsp_costs"] == {"pyright": 890, "tsserver": 60}
+    # ... and the next run names them to the worker in its signed prompt.
+    prompt = repoindex.indexer_task(db.docs[f"repositories/{repo_id}"], sha("two")).input["prompt"]
+    assert f"{repoindex.LSP_COST_LINE}pyright=890 tsserver=60" in prompt
+
+
 def test_an_index_with_no_graph_promotes_with_no_graph_fields(client, db, objects, repo_id):
     task_id = _start(client, repo_id)
     finish_index_task(db, objects, task_id, fixture_index(ONE))

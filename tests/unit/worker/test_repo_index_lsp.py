@@ -557,6 +557,95 @@ def test_the_whole_pass_ends_inside_its_total_budget(tool: Any, lsp: Any, tmp_pa
     assert _edge(index, "src/pkg/users.py#load_user", "src/pkg/store.py#fetch")["evidence"] == "lsp"
 
 
+# ---------------------------------------------------------------------------
+# Grants by measured cost (lane INDEX-BUDGETS, part of #1693)
+# ---------------------------------------------------------------------------
+
+
+def test_with_no_history_every_server_needs_an_equal_share(lsp: Any) -> None:
+    # The control: no previous run, or one that measured nothing, is today's
+    # equal split.
+    assert lsp.planned_needs(["gopls", "pyright", "tsserver"], None, 1_260.0) == [420.0] * 3
+    assert lsp.planned_needs(["gopls", "pyright"], {}, 600.0) == [300.0, 300.0]
+
+
+def test_a_measured_server_needs_its_cost_and_an_unmeasured_one_the_equal_share(lsp: Any) -> None:
+    # MUTATION: ignore `costs` in planned_needs() and pyright needs 420
+    # again, the share it ran out of on ai-studio.
+    assert lsp.planned_needs(["gopls", "pyright", "tsserver"], {"pyright": 890, "tsserver": 120},
+                             1_260.0) == [420.0, 890.0, 120.0]
+
+
+def test_a_grant_is_the_servers_proportion_of_what_is_left_capped_at_its_budget(lsp: Any) -> None:
+    # pyright first, tsserver after: 1,000 s left, costs 900 and 100.
+    # MUTATION: divide `left` by the servers remaining (the equal split) and
+    # this reads 500.
+    assert lsp.grant_seconds(1_000.0, [900.0, 100.0], 1_800.0) == pytest.approx(900.0)
+    # §3.5's per-server budget is still the cap.
+    assert lsp.grant_seconds(1_000.0, [900.0, 100.0], 600.0) == 600.0
+    # Equal needs are the equal split, and the last server gets all that is left.
+    assert lsp.grant_seconds(1_000.0, [7.0, 7.0], 1_800.0) == pytest.approx(500.0)
+    assert lsp.grant_seconds(250.0, [100.0], 1_800.0) == pytest.approx(250.0)
+    assert lsp.grant_seconds(-3.0, [100.0], 1_800.0) == 0.0
+
+
+def test_a_cut_servers_cost_is_extrapolated_from_its_requests_and_grant(lsp: Any) -> None:
+    # #1693's measurement: pyright asked 26,562 sites in its 270 s and had
+    # 86,805; at that rate it needed ~882 s, recorded in 10-second steps.
+    # MUTATION: record the grant itself as a cut server's cost and this
+    # reads 270, so the next run grants pyright no more than before.
+    assert lsp.measured_cost("partial", elapsed=270.4, grant=270.0, requests=26_562,
+                             sites=86_805) == 890
+    assert lsp.measured_cost("timed_out", elapsed=270.1, grant=270.0, requests=3_000,
+                             sites=6_000) == 540
+    # A server that finished needed what it used, never less than one step.
+    assert lsp.measured_cost("ok", elapsed=33.2, grant=270.0, requests=900, sites=800) == 40
+    assert lsp.measured_cost("ok", elapsed=0.4, grant=270.0, requests=3, sites=1) == 10
+    # Nothing measured: a failing server, or a cut one that asked nothing.
+    assert lsp.measured_cost("failing", elapsed=1.0, grant=270.0, requests=10, sites=10) is None
+    assert lsp.measured_cost("timed_out", elapsed=270.0, grant=270.0, requests=0,
+                             sites=10) is None
+
+
+def test_the_history_shifts_the_pass_to_the_server_that_costs_most(tool: Any, lsp: Any,
+                                                                  tmp_path: Path) -> None:
+    repo = fx.build_repo(tmp_path / "repo", {**fx.PYTHON_APP, **fx.TS_APP})
+    python, typescript = _two_slow_servers(lsp, tmp_path)
+    index = tool.extract(repo, tool.Budget(), lsp=_options(
+        lsp, python, typescript, server_budget_seconds=60.0, total_budget_seconds=2.0,
+        server_costs={"pyfake": 900, "tsfake": 100}))
+    rows = {name: _language(index, name) for name in ("python", "typescript")}
+    # MUTATION: grant `left / (servers remaining)` in run_pass() and pyfake,
+    # which runs first, gets 1.0 s of the 2.0 instead of 1.8.
+    assert rows["python"]["lsp"]["grant_seconds"] >= 1.7
+    assert rows["typescript"]["lsp"]["grant_seconds"] > 0
+    # Each row records what its server cost, for the next run.
+    assert rows["python"]["lsp"]["cost_seconds"] == 10
+    assert index["extractor"]["lsp"]["server_costs"] == {"pyfake": 900, "tsfake": 100}
+
+
+def test_without_history_the_pass_is_split_equally(tool: Any, lsp: Any, tmp_path: Path) -> None:
+    # The control for the test above: the same servers, no costs.
+    repo = fx.build_repo(tmp_path / "repo", {**fx.PYTHON_APP, **fx.TS_APP})
+    python, typescript = _two_slow_servers(lsp, tmp_path)
+    index = tool.extract(repo, tool.Budget(), lsp=_options(
+        lsp, python, typescript, server_budget_seconds=60.0, total_budget_seconds=2.0))
+    assert _language(index, "python")["lsp"]["grant_seconds"] <= 1.0
+    assert index["extractor"]["lsp"]["server_costs"] == {}
+
+
+def test_a_cut_server_records_a_cost_above_its_grant(tool: Any, lsp: Any, tmp_path: Path) -> None:
+    repo = fx.build_repo(tmp_path / "repo", CUT_APP)
+    spec = _fake(lsp, tmp_path, {"slow_paths": {"src/z.py": 0.6}, "definitions": CUT_DEFINITIONS})
+    index = tool.extract(repo, tool.Budget(), lsp=_options(lsp, spec, server_budget_seconds=3.0))
+    python = _language(index, "python")
+    assert python["status"] == "partial", python["reason"]
+    assert python["lsp"]["grant_seconds"] == 3.0
+    # MUTATION: leave `cost_seconds` out of a cut server's counts and the
+    # next run has no measurement for exactly the server that ran out.
+    assert python["lsp"]["cost_seconds"] >= 10
+
+
 def test_a_server_whose_turn_comes_after_the_total_is_not_started(tool: Any, lsp: Any,
                                                                   tmp_path: Path) -> None:
     repo = fx.build_repo(tmp_path / "repo", {**fx.PYTHON_APP, **fx.TS_APP})
@@ -769,7 +858,8 @@ def test_the_command_line_runs_the_pass_under_isolated_mode(tmp_path: Path) -> N
     done = subprocess.run(
         [sys.executable, "-I", str(SCRIPT), "--repo", str(repo), "--out", str(out),
          "--graph-out", str(graph), "--lsp-bin-dir", str(empty), "--lsp-request-timeout-seconds", "2",
-         "--lsp-total-budget-seconds", "30"],
+         "--lsp-total-budget-seconds", "30", "--lsp-server-cost", "pyright=890",
+         "--lsp-server-cost", "tsserver=120"],
         capture_output=True, text=True, timeout=120, env=fx.git_env(tmp_path),
     )
     assert done.returncode == 0, done.stderr
@@ -779,6 +869,8 @@ def test_the_command_line_runs_the_pass_under_isolated_mode(tmp_path: Path) -> N
         ("failing", f"pyright-langserver is not installed in {empty}")
     assert index["extractor"]["lsp"]["request_timeout_seconds"] == 2.0
     assert index["extractor"]["lsp"]["total_budget_seconds"] == 30.0
+    # MUTATION: drop `--lsp-server-cost` from main() and this is an argparse error.
+    assert index["extractor"]["lsp"]["server_costs"] == {"pyright": 890, "tsserver": 120}
     assert re.search(r"lsp=python:failing", done.stderr)
     off = subprocess.run(
         [sys.executable, "-I", str(SCRIPT), "--repo", str(repo), "--out", str(out), "--no-lsp"],
