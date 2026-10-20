@@ -1682,7 +1682,7 @@ function BeingCreated({ owner }: { owner: boolean }) {
   usePoll(WORKSPACE_POLL_MS, reload, rows === null || !rows.some((w) => BUILDING.has(w.state)))
   return (
     <section className="section" data-testid="being-created" aria-labelledby="ten-being-created">
-      <div className="ob-acts">
+      <div className="ten-bc-head">
         <h2 id="ten-being-created">Being created</h2>
         <Button kind="primary" onClick={() => setFiling(true)}>
           New workspace
