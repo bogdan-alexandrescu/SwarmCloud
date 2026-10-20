@@ -54,7 +54,7 @@ function cards(el: HTMLElement): Record<string, string[]> {
   const out: Record<string, string[]> = {}
   for (const card of Array.from(el.querySelectorAll<HTMLElement>('.att-card'))) {
     const fact = Array.from(card.querySelectorAll<HTMLElement>('.ctl-fact')).find(
-      (li) => li.querySelector('b')?.textContent === 'att',
+      (li) => li.querySelector('b')?.textContent === 'attempt',
     )
     const key = fact?.querySelector('.mono')?.textContent ?? '@preface'
     out[key] = Array.from(card.querySelectorAll<HTMLElement>('.ev-type')).map((s) => s.dataset.kind ?? '')

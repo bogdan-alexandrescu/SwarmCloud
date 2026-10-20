@@ -195,7 +195,7 @@ describe('V260: a Details sub-line never opens a line with its separator', () =>
 })
 
 describe('V261: an absent attempt fact is drawn once', () => {
-  it('draws the mark alone for exec, ran and peak rss; exit keeps its em dash', async () => {
+  it('draws the mark alone for execution, ran and peak memory; exit keeps its em dash', async () => {
     const a = attempt(1, {
       execution_name: null,
       started_at: null,
@@ -211,9 +211,9 @@ describe('V261: an absent attempt fact is drawn once', () => {
     const fact = (k: string) =>
       [...container.querySelectorAll<HTMLElement>('.att-card .ctl-fact')].find((li) => li.querySelector('b')?.textContent === k)!
     for (const [k, word] of [
-      ['exec', 'none'],
+      ['execution', 'none'],
       ['ran', 'none'],
-      ['peak rss', 'not measured'],
+      ['peak memory', 'not measured'],
     ] as const) {
       const f = fact(k)
       expect(f, `no ${k} fact`).toBeTruthy()

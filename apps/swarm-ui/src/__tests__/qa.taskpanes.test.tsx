@@ -161,7 +161,7 @@ describe('QA-113: the Attempts tab says its figures in words', () => {
     const toolbar = el.querySelector<HTMLElement>('.ctl-toolbar .is-end')!
     // MUTATION: toolbar back to `2 ev · first page · 1 blind`.
     expect(toolbar.textContent).toMatch(/2 events · first page/)
-    expect(toolbar.textContent).toMatch(/1 attempt without events$/)
+    expect(toolbar.textContent).toMatch(/· partial 1 attempt without events\b/)
     expect(toolbar.textContent).not.toMatch(/\bev\b|\bblind\b/)
   })
 
