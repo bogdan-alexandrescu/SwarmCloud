@@ -1,4 +1,4 @@
-# Visual QA: which browser task type serves which job, and one workflow that sweeps the console
+# Visual QA: which browser agent type serves which job, and one workflow that sweeps the console
 
 **Status: design, 2026-10-19 (lane QA-GUIDE, part of #1649). Nothing here is
 built.** The owner reads it and picks the answers in §7 before any build lane
@@ -134,7 +134,7 @@ picks. Until then it runs against the fixture build, which needs no sign-in.
 
 ### 1.3 The survey: every flavour as built
 
-Seven ways to put a browser in front of a task exist on main (F1-F7). "Units" are
+Seven ways to put a browser in front of an agent exist on main (F1-F7). "Units" are
 capacity units from the frozen `RESOURCE_CLASSES` (`profiles.py:100-102`):
 scheduling weight, not money. Both `standard` and `browser` are 4 vCPU, 8 GiB,
 1 unit. The only compute price in the repository is "`standard` at roughly
@@ -200,7 +200,7 @@ estimate below.
   `127.0.0.1:9222` (`docs/design/live-browser.md:107-126`).
 * **The tool choice.** `input.browser_tool`, one of `auto`, `playwright`,
   `dev-browser`, `jev` (`profiles.py:1439-1458`; contract request 77), chosen by
-  the caller per task by name; absent means `auto`. `browser_tools.choose`
+  the caller per agent by name; absent means `auto`. `browser_tools.choose`
   (`agent_worker/browser_tools.py:106-135`) maps it: Playwright MCP is
   registered on every choice; `auto` adds dev-browser and, if it can run, jev.
 * **Sees.** Pixels (`browser_take_screenshot`, returned to the model as an
@@ -216,7 +216,7 @@ estimate below.
   3 vCPU / 5 GiB and worker 1 vCPU / 3 GiB (`scheduler/dispatch.py:694-698`).
   Cold start p50 125.2 s, p95 129.4 s (node wait 38.6 s, pull 54 s); warm p50
   6.2 s (`docs/browser-startup-speed.md:633-645`, n=4 each, before CACHE-PVC).
-  Model tokens: the measured median browser task cost **$0.66**
+  Model tokens: the measured median browser agent cost **$0.66**
   (`docs/browser-bench.md:161`), with a long tail the bench budgets at twice
   that.
 * **Determinism.** Low as an agent drives it: the model picks clicks and
@@ -350,7 +350,7 @@ held only while a browser is in use**: a capture step exits when its tarball is
 written, and the review that follows holds a `standard` slot instead. No step
 requests a hand-off (the fixture build needs no sign-in), so none parks. If
 QA-IDENTITY later picks a saved login, a hand-off that nobody answers ends after
-60 s and the task parks holding nothing, as today
+60 s and the agent parks holding nothing, as today
 (`live-browser.md` §4.3).
 
 **2. All-or-nothing reservation.** Unchanged. Each step's attempt reserves its
@@ -433,7 +433,7 @@ requests in §5.
 ### 3.1 Design A: one exploratory agent per page, all on the live browser
 
 One `claude-code-browser` step per console screen (about 31: the 23 tabs of
-`SECTIONS`, `apps/swarm-ui/src/App.tsx:259`, plus the eight task panes), each
+`SECTIONS`, `apps/swarm-ui/src/App.tsx:259`, plus the eight agent panes), each
 told to start the fixture build, look at its page at both sizes and themes,
 and report.
 
@@ -441,7 +441,7 @@ and report.
   screenshots).
 * **Latency.** 31 `browser` pods against a ceiling of 20 in dev: two waves,
   each cold start about 125 s, each step starting its own `npm ci`.
-* **Money.** 31 model-driven browser tasks at the measured median $0.66, long
+* **Money.** 31 model-driven browser agents at the measured median $0.66, long
   tail ×2: **$20-41** of model, and every one holds a `browser` slot while
   its model thinks.
 * **Breaks.** Determinism: each agent captures differently, so two runs cannot
@@ -657,8 +657,8 @@ Six groups, sized so each capture step takes about the same time:
 `timeline`, `repositories`), `work-b` (`setup`, `access`, `new`,
 `new-workflow`, `new-issue`), `capacity` (`pools`, `catalogue`, `profiles`,
 `holders`, `accounts`, `quota`), `admin` (`limits`, `tenants`, `counts`,
-`people`) and `task` (the eight task panes, `detail` to `browser`, on one
-fixture task). The `settings/*` pages join whichever group QA-CAPTURE finds
+`people`) and `task` (the eight agent panes, `detail` to `browser`, on one
+fixture agent). The `settings/*` pages join whichever group QA-CAPTURE finds
 lightest. The hashes and `ready` selectors are QA-CAPTURE's to read from
 `App.tsx`; the shape above is illustrative.
 
@@ -726,7 +726,7 @@ GIF, and the manifests. The Artifacts pane shows the PNGs and GIFs inline
 | component | change | files | lane |
 |---|---|---|---|
 | browser image | `swarm_qa` module; axe-core and Pillow pinned | `images/agent-runtime-browser/swarm_qa.py` (new), `images/agent-runtime-browser/Dockerfile` | QA-CAPTURE |
-| console | the route list, naming the fixture task the task panes are captured on | `apps/swarm-ui/qa/routes.json` (new) | QA-CAPTURE |
+| console | the route list, naming the fixture agent the agent panes are captured on | `apps/swarm-ui/qa/routes.json` (new) | QA-CAPTURE |
 | worker | none beyond QA-KIT's note text | `apps/agent-worker/agent_worker/runners/claude_code.py` (QA-KIT's) | QA-KIT |
 | scheduler, swarm-api, plugin | **none** | — | — |
 | docs | the template and the user-facing guide | `docs/qa/console-qa.workflow.json` (new), `docs/browser-qa.md` (new), one link from `docs/workflows.md` | QA-TEMPLATE |
@@ -869,7 +869,7 @@ pod.
 |---|---|---|---|
 | 6 capture, `claude-code-browser`, haiku | about $0.10 | ~20 turns, context ≤ 20k, mostly cache reads; no image is read by the model | **~$0.60** |
 | 6 review, `claude-code`, opus | about $1.50-2.50 | ~24-40 images × 1,600 tokens enter the context and are re-read each turn from cache: ~40 turns × ~80k average context = 3.2 M cache-read tokens × $0.20/M = $0.64; ~150k cache writes × $5/M = $0.75; ~30k output × $20/M = $0.60 | **~$9-15** |
-| 3 flow + 1 accessibility, `claude-code-browser`, sonnet | about $0.70-1.30 | the browser bench's median $0.66 per task, ×2 for the long tail, at sonnet's lower price | **~$3-5** |
+| 3 flow + 1 accessibility, `claude-code-browser`, sonnet | about $0.70-1.30 | the browser bench's median $0.66 per agent, ×2 for the long tail, at sonnet's lower price | **~$3-5** |
 | 1 report, opus | about $2-4 | reads ten tarballs' JSON and some images | **~$2-4** |
 | compute | 10 browser pods × ~10 min + 7 standard pods × ~30 min at ~$0.20/hour | | **~$1** |
 | **run** | | | **~$16-26** |
@@ -944,7 +944,7 @@ runner); a runner test that `dark` reaches `new_context`; a catalogue test that
 
 #### Rollback
 
-Remove the entry. A stored task that names it is refused at its next
+Remove the entry. A stored agent that names it is refused at its next
 validation as an undeclared input; a queued one runs without it at the default.
 
 #### What it would break
@@ -1026,7 +1026,7 @@ PR branch, lets CI run them red, then pushes the fix to `<branch>-fix`.
 - Q6: on demand.
 - Q7: report only, with findings filed as one epic per run.
 
-Each has a recommendation, first. They are also in the task's
+Each has a recommendation, first. They are also in the agent's
 `questions.json`.
 
 **Q1. Which model class reviews the screenshots?**

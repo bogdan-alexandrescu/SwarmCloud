@@ -242,16 +242,16 @@ A new route on swarm-api, the shape of
   `apps/swarm-api/swarm_api/typesafe_ticket.py::typesafe_ticket_message`.
   swarm-api checks the ID token and the proof as
   `typesafe_ticket.py::TypesafeTicketService` does.
-* **The fence (invariant 5).** The task must be `RUNNING` with no cancel
+* **The fence (invariant 5).** The agent must be `RUNNING` with no cancel
   requested, and the lease must be live with the body's generation. If not,
   swarm-api answers 409 and mints nothing. The worker treats that 409 as
   `apps/agent-worker/agent_worker/egress_ticket.py::mint`'s caller treats
   its own: a fenced exit that does not touch the lease.
-* **The repository comes from the task, never the body.** swarm-api reads
-  the task's own `tenant_id` and `repository_url` from Firestore, resolves
+* **The repository comes from the agent, never the body.** swarm-api reads
+  the agent's own `tenant_id` and `repository_url` from Firestore, resolves
   the registration with
   `apps/swarm-api/swarm_api/repositories.py::repo_id_for`, and checks that
-  the registration's `tenant_id` is the task's.
+  the registration's `tenant_id` is the agent's.
   * The body names only `index_sha`, the commit the worker's ancestry proof
     chose (§4.1). swarm-api accepts it only when
     `repositories/{repo_id}/index_versions/{index_sha}` exists **and** has a
@@ -896,7 +896,7 @@ The order of rollout:
    changes.
 2. **Deploy the service dark.** It runs in `swarm-system` with nothing
    pointing at it, and is checked by a smoke step that mints a ticket for a
-   probe task.
+   probe agent.
 3. **Switch the owner's workspace** to `service`. For each attempt:
    * the worker pins and probes (§4.1, step 3);
    * **if the probe fails, the same attempt stages exactly as today** and
@@ -1031,7 +1031,7 @@ Territory is files. Each lane's brief names `scripts/changed-guards.sh` and
 |---|---|---|---|---|
 | **GS-MEASURE** | 0 | the `graph_ready` mark: timer, bytes, blobs, delivery, reason | `apps/agent-worker/agent_worker/graphstage.py`, `apps/agent-worker/agent_worker/lifecycle.py` | `tests/unit/worker/test_graphstage.py` (timer and facts), new `tests/unit/worker/test_graph_ready_mark.py` |
 | **GS-CORE** | 1 | §2.4's three seams (`BlobSource`, compute/page split, `remark`); the `call_graph` and `index` tools; the `document` layer name; the one-git-call `observe` (§4.3); `TOOLS_VERSION` | `apps/agent-worker/agent_worker/graphmcp/snapshot.py`, `.../graphmcp/tools.py`, `.../graphmcp/freshness.py`, `.../graphmcp/server.py` (instructions only) | `tests/unit/worker/test_graphmcp_budgets.py`, new `test_graphmcp_source.py`, new `test_graphmcp_remark.py` (page-concatenation property), new `test_graphmcp_freshness_one_call.py` (the six cases), new `test_graphmcp_call_graph_index.py`, new `test_graphmcp_tools_version.py` |
-| **GS-TICKET** | 1 | §3.1-§3.2: the reference mint and verify; the route; the setting | new `apps/swarm-api/swarm_api/graph_ticket.py`, new `apps/swarm-api/swarm_api/routes/graph_ticket.py`, `apps/swarm-api/swarm_api/main.py` (include the router), `apps/swarm-api/swarm_api/settings.py` | new `tests/unit/control_plane/test_graph_ticket_api.py` (fence, repository from the task, digest from Firestore, setting off is 403, field set, clamp) |
+| **GS-TICKET** | 1 | §3.1-§3.2: the reference mint and verify; the route; the setting | new `apps/swarm-api/swarm_api/graph_ticket.py`, new `apps/swarm-api/swarm_api/routes/graph_ticket.py`, `apps/swarm-api/swarm_api/main.py` (include the router), `apps/swarm-api/swarm_api/settings.py` | new `tests/unit/control_plane/test_graph_ticket_api.py` (fence, repository from the agent, digest from Firestore, setting off is 403, field set, clamp) |
 | **GS-INDEXDOC** | 1 | the repo-index document as the `document` `index_shards` layer in the manifest | `images/agent-runtime-indexer/repo-index/repo_graph_shards.py` | `tests/unit/worker/test_repo_graph_shards.py`, `tests/unit/worker/test_repo_graph_format.py` |
 | **GS-PUSHAPI** | 1 | `POST /v1/admin/repositories/push`; `webhook` in `ON_CHANGE_VALUES` | `apps/swarm-api/swarm_api/repoindex.py`, `apps/swarm-api/swarm_api/routes/admin.py`, `apps/swarm-api/swarm_api/repositories.py` | new `tests/unit/control_plane/test_repository_index_push.py` (mapping across workspaces, `_poll_one` reused, payload sha never stored, identity check), `tests/unit/control_plane/test_repository_index_poll.py` |
 | **GS-SETTING** | 1 | `code_intelligence.graph_delivery` | `apps/swarm-api/swarm_api/codeintel.py` | `tests/unit/control_plane/test_repository_context_override.py` or a new `test_code_intelligence_delivery.py` |

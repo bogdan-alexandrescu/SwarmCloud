@@ -18,7 +18,7 @@ Bob's agent can read Alice's slot with its worker's token -- stands.
 §9 names the file and the test that holds each guarantee.
 
 **The owner's decision, 2026-10-11: secrets are user-scoped, not
-tenant-scoped.** A person's credential is used only on the tasks that person
+tenant-scoped.** A person's credential is used only on the agents that person
 submitted, and no other member's agent can read it, even though every worker
 of a group tenant runs as the same service account. Browser logins already
 follow this rule: they live only in the person's personal workspace (#1030,
@@ -28,8 +28,8 @@ provider keys the same way (§6).
 What the design settles, in one line each:
 
 * **A broker, option (a).** swarm-api releases a person's user slot only to
-  an attempt that proves it is the worker of a task that person submitted,
-  under the task's current lease and generation (§3, §4).
+  an attempt that proves it is the worker of an agent that person submitted,
+  under the agent's current lease and generation (§3, §4).
 * **Then IAM takes the read away from the worker.** Once the broker has been
   on in an environment and a live run passed, the tenant worker's
   `secretAccessor` on `-git-u-` slots is removed, so it is IAM, and not the
@@ -55,9 +55,9 @@ What the design settles, in one line each:
   `email|owner` (`apps/swarm-api/swarm_api/gittokens.py::owner_suffix`).
 
 Submission picks the slot from the authenticated submitter and signs it into
-the task as `forge_credential`
+the agent as `forge_credential`
 (`apps/swarm-api/swarm_api/service.py::SubmissionService._resolve_forge`).
-The worker reads the slot that the signed task names
+The worker reads the slot that the signed agent names
 (`apps/agent-worker/agent_worker/secrets.py::resolve_git_token`).
 
 **What was wrong.** `terraform/bootstrap/forge_user_slots.tf`
@@ -70,7 +70,7 @@ of [git-tokens.md §2](../git-tokens.md#2-secret-manager-naming-and-who-can-read
 uid and can mint its worker's Google token from the metadata server
 (`apps/swarm-api/swarm_api/childkey.py`, its module docstring;
 [child-tasks.md §3.2](child-tasks.md#32-what-makes-only-the-worker-true-the-attempt-key)).
-So an agent in a task Bob submitted can call Secret Manager with that token and
+So an agent Bob submitted can call Secret Manager with that token and
 read Alice's slot by name. The name is not secret either: it is a hash of
 Alice's email.
 
@@ -86,11 +86,11 @@ The issue names three options. **The choice is (a), the broker.**
 swarm-api already reads every user slot. It refreshes the App tokens and,
 since 2026-10-08, reuses the current access token instead of refreshing per
 call (the `forge_refresh_reader` binding in the same file). The broker adds one
-route. It releases a slot only to an attempt whose task's server-side
+route. It releases a slot only to an attempt whose agent's server-side
 `submitted_by` owns the slot, and the attempt has to prove two things:
 
-* that it is that task's **worker**, not the agent beside it, with the
-  attempt key of child-tasks §3.2;
+* that it is that agent's **worker**, not the agent beside it, with the
+  attempt key of child-agents §3.2;
 * that it is the **current** attempt (invariant 5).
 
 Then, once the broker has been on and a live run passed, the worker's own
@@ -102,7 +102,7 @@ What it costs:
 * one more caller of the key registration that already exists;
 * one HTTPS round trip per token read (clone, push, worker action, 401
   re-read);
-* swarm-api as a dependency of every user-slot task. It already is one,
+* swarm-api as a dependency of every user-slot agent. It already is one,
   through the 15-minute refresh sweep, without which an App token expires
   within eight hours anyway.
 
@@ -135,10 +135,10 @@ whose worker account is theirs alone (git-tokens.md U2). This is the choice
 the owner made for browser logins (#1030, LB-7). It is the right choice for a
 login that cannot be scoped to one repository.
 
-It fails this issue's acceptance criterion: **a task Alice submits in `eng`
-pushes as Alice.** Under (c), Alice's tasks in `eng` would push with the
+It fails this issue's acceptance criterion: **an agent Alice submits in `eng`
+pushes as Alice.** Under (c), Alice's agents in `eng` would push with the
 tenant token or not at all. Under enforcement (`REPOSITORY_GRANTS_ENFORCED`)
-that means "not at all", because a person's task never falls back to `git`.
+that means "not at all", because a person's agent never falls back to `git`.
 It would also make personal workspaces (#847) a dependency of every group
 tenant's pushes.
 
@@ -151,16 +151,16 @@ The attempt key is the one in
 
 * an Ed25519 key that the worker generates in its heap after
   `make_non_dumpable` reports `PROTECTED`;
-* registered by the worker while the task is `STARTING`, with the scheduler's
+* registered by the worker while the agent is `STARTING`, with the scheduler's
   one-use nonce (`POST /v1/attempts/{attempt_id}/child-key`), so before the
   agent exists;
 * attested by swarm-api under `swarm-child-key`.
 
-**Without the broker only a task that is not a child gets the nonce**
+**Without the broker only an agent that is not a child gets the nonce**
 (`apps/scheduler/scheduler/dispatch.py::worker_env`, the CHILD PATH block).
 The broker needs a registered key for **every attempt whose signed
 `forge_credential` is a user slot, children included**. So while
-`forge_broker` is on, the scheduler issues the nonce when the task is not a
+`forge_broker` is on, the scheduler issues the nonce when the agent is not a
 child **or** its `forge_credential` matches `git-u-<16 hex>` (step 3), and
 hands every worker `FORGE_BROKER=true`. Off, it does neither.
 
@@ -171,10 +171,10 @@ offers its agent no child path.
 What keeps depth at 1 is the CHILD'S WORKER, from its verified spec, not
 swarm-api's read of the stored `parent_task_id`. A worker may update any task
 document (`terraform/bootstrap/platform_roles.tf`, `datastore.entities.update`),
-so an agent can erase its own task's `parent_task_id`; swarm-api's check of
+so an agent can erase its own agent's `parent_task_id`; swarm-api's check of
 that stored field (`ChildService.submit`, `MAX_CHILD_DEPTH`) is a courtesy.
 The guard is that `parent_task_id` is inside the spec signature (format 2):
-the worker reads it from the verified task and, when it is set, offers its
+the worker reads it from the verified agent and, when it is set, offers its
 agent no child path and submits nothing
 (`apps/agent-worker/agent_worker/children.py::ChildPath.prepare`, `is_child`,
 and `ChildPath.offered`). A child agent cannot sign a request itself, because
@@ -188,7 +188,7 @@ swarm-api verifies the parent's spec signature on the exact document it
 builds the child from, and refuses anything else with `403
 child_parent_unsigned`, never a switch
 (`apps/swarm-api/swarm_api/children.py::ChildService._read_parent`). Before
-that check, Bob's agent could rewrite its own task as Alice's and obtain a
+that check, Bob's agent could rewrite its own agent as Alice's and obtain a
 freshly signed child naming her slot, which the broker released (security
 review of PR 1070, 2026-10-18;
 `tests/unit/control_plane/test_forge_credential_broker.py::test_a_rewritten_parent_gets_no_child_and_no_user_slot`).
@@ -225,7 +225,7 @@ The signature is over
 `"swarm-child-req/v1\nPOST\n/v1/attempts/forge-credential\n" sha256(body)
 "\n" timestamp`.
 
-The body names **no secret**. swarm-api derives the slot from the task. A
+The body names **no secret**. swarm-api derives the slot from the agent. A
 worker cannot ask for a slot by name.
 
 **swarm-api checks, in this order, and reads no secret before the last
@@ -253,16 +253,16 @@ step:**
 
    A missing registration, a tombstone, a bad attestation, a stale timestamp
    or a bad signature is `403 forge_credential_unproven`.
-3. **The task belongs to the token's tenant (invariant 9).** swarm-api reads
-   the task by the body's `task_id`. A missing task, or a task whose
+3. **The agent belongs to the token's tenant (invariant 9).** swarm-api reads
+   the agent by the body's `task_id`. A missing agent, or an agent whose
    `tenant_id` is not the token's tenant, is `404 task_not_found`, the same
-   answer as for a task that does not exist. Another tenant's task is not
+   answer as for an agent that does not exist. Another tenant's agent is not
    confirmed to exist.
-4. **The tuple is the task's CURRENT attempt (invariant 5).** The task is
+4. **The tuple is the agent's CURRENT attempt (invariant 5).** The agent is
    `STARTING` or `RUNNING`. Its lease is this `lease_id`, `attempt_id` and
    `generation`, and the lease is live, read the way the child route fences
    (`apps/swarm-api/swarm_api/children.py::_lease_is_live`). A superseded
-   generation, a reclaimed lease or a finished task is `403
+   generation, a reclaimed lease or a finished agent is `403
    attempt_superseded`. A stale worker receives nothing and touches nothing.
 5. **The task's spec signature verifies, at format 3.** A tenant identity can
    rewrite any task document of its tenant, `submitted_by` and
@@ -276,7 +276,7 @@ step:**
    format below 3, or a signature that does not verify is `403
    spec_unverified`.
 
-   Without this check, Bob's agent could rewrite its own task to
+   Without this check, Bob's agent could rewrite its own agent to
    `submitted_by: alice@…` and `forge_credential: <Alice's slot>`. Its worker
    would then be handed Alice's token at the next push or 401 re-read.
 6. **The credential is a user slot.** `forge_credential` matches
@@ -299,8 +299,8 @@ step:**
    `apps/swarm-api/swarm_api/service.py::SubmissionService._grant_mode`
    checks it. If there is none, the person lost access since submission:
    `403 grant_removed`. If `access` is `write` and the grant's mode is not
-   `write`, the answer is `403 grant_read_only`. An `access` of `write` on a
-   task whose signed `forge_access` is `read` is also `grant_read_only`.
+   `write`, the answer is `403 grant_read_only`. An `access` of `write` on an
+   agent whose signed `forge_access` is `read` is also `grant_read_only`.
 9. **Read and return.** swarm-api reads the latest version of
    `Tenant.secret_name(forge_credential)` under the token's tenant only. It
    uses the reader it already has
@@ -331,7 +331,7 @@ Firestore, a response header or an error message.
   stands (§5, "The rollout order"). The primary repository and every
   additional repository (#1434) take the same path. `git` and `git-r-` stay direct
   reads (`apps/agent-worker/agent_worker/secrets.py::resolve_git_token`).
-* **With the broker on, it fails closed**, a missing `SWARM_API_URL` included. A user-slot task fails with a named error
+* **With the broker on, it fails closed**, a missing `SWARM_API_URL` included. A user-slot agent fails with a named error
   (`CredentialMissing` or `SecretError` in
   `apps/agent-worker/agent_worker/secrets.py`) in these cases:
   * no key could be registered (no nonce, registration refused, or the
@@ -339,7 +339,7 @@ Firestore, a response header or an error message.
   * the broker is unreachable;
   * the broker refuses.
 
-  It **never** falls back to the tenant token. That would run Alice's task as
+  It **never** falls back to the tenant token. That would run Alice's agent as
   somebody the submission did not resolve it to, as `forge_suffix`'s
   docstring already says
   (`apps/agent-worker/agent_worker/secrets.py::forge_suffix`).
@@ -352,7 +352,7 @@ Firestore, a response header or an error message.
   environment, argv, the workspace or a log line.
 * **The 401 re-read goes through the broker again**
   (`apps/agent-worker/agent_worker/secrets.py::call_reading_again`), so a
-  token swarm-api refreshed mid-task is picked up the same way as today.
+  token swarm-api refreshed mid-run is picked up the same way as today.
 
 ## 4. Team credentials: unchanged
 
@@ -362,7 +362,7 @@ directly with its own account:
 
 | secret | what it is | why it is a team credential |
 |---|---|---|
-| `swarm-tenant-<tenant>-git` | the tenant token | Service submissions run on it: indexing, schedules, the acceptance suite. With enforcement off, so does an ungranted person's task. git-tokens.md "How to retire the tenant token" is its exit. |
+| `swarm-tenant-<tenant>-git` | the tenant token | Service submissions run on it: indexing, schedules, the acceptance suite. With enforcement off, so does an ungranted person's agent. git-tokens.md "How to retire the tenant token" is its exit. |
 | `swarm-tenant-<tenant>-git-r-<hex>` | a repository token | Registered for one repository of the tenant, not for a person. |
 | `swarm-tenant-<tenant>-git-merge`, `-git-review`, `-git-checks` | GitHub App keys | Each has its own sole accessor ([merge-step.md](../merge-step.md)). They sign as the App, never as a member. |
 | service submissions | `forge_credential = git` | `_resolve_forge` gives them the tenant token with write, by design (D4). |
@@ -372,7 +372,7 @@ directly with its own account:
 **Not yet.** The binding `forge_slot_reader` STAYS in
 `terraform/bootstrap/forge_user_slots.tf`: the tenant worker's
 `secretAccessor` on its tenant's base `-git-u-` slots, never a `-refresh`
-twin. While `forge_broker` is off it is how every user-slot task clones, so
+twin. While `forge_broker` is off it is how every user-slot agent clones, so
 it is removed only as step 5 of the rollout order below -- a separate owner
 change and apply, after the broker has been on in dev and a live run passed.
 `tests/terraform/forge_app.tftest.hcl`, run
@@ -390,11 +390,11 @@ the binding the workspace job makes (docs/workspaces.md, A6). That account is
 the person's alone, so the read reaches nobody else's credential.
 
 **This is what makes the guarantee IAM's, once the binding is gone and
-the broker is on** (the rollout order below). An agent in Bob's task that
+the broker is on** (the rollout order below). An agent in Bob's agent that
 mints its worker's token and calls Secret Manager for Alice's slot gets
 `PERMISSION_DENIED`. The same agent calling the broker cannot sign: its
 worker's private key is in a heap it cannot read, and Alice's task's key is in
-another container. Signing Bob's own tuple gets it Bob's task's checks, which
+another container. Signing Bob's own tuple gets it Bob's agent's checks, which
 end at step 5, 7 or 8. All of that holds only on the precondition below.
 
 **The precondition this rests on: no other container reads the nonce.**
@@ -407,7 +407,7 @@ execution overrides (Cloud Run `run.executions.get`) or her pod spec (GKE,
 `get pods` in the tenant namespace), it can race Alice's worker in the
 window between dispatch and her lifecycle step 2: register a key of its own
 for Alice's tuple first, sign Alice's tuple with it, and pass every check of
-§3.2, because every check is about **the task**, and the task is Alice's.
+§3.2, because every check is about **the agent**, and the agent is Alice's.
 Alice's worker then gets `409 child_key_taken` and fails closed, too late.
 That would hand Bob Alice's slot, which is exactly what this design exists
 to prevent.
@@ -417,12 +417,12 @@ This is [child-tasks.md §9](child-tasks.md#9-phase-2) item 2's measurement.
 beside `enable_child_tasks = true` in `terraform/environments/dev/dev.tfvars`:
 the tenant pod identity cannot get or list pods, jobs or their logs, and the
 tenant worker GSA holds no `run.*` or `container.*` role), which is why dev
-has child tasks on. **In prod it has not been made**, and `prod.tfvars` does
-not set `enable_child_tasks`. Child tasks on is still not the broker on: that
+has child agents on. **In prod it has not been made**, and `prod.tfvars` does
+not set `enable_child_tasks`. Child agents on is still not the broker on: that
 is `forge_broker`, a separate switch, off in both. Nothing in this design
 weakens the measurement's gate; it adds a second reason to keep it:
 
-* the measurement is a precondition of `enable_child_tasks` (child-tasks
+* the measurement is a precondition of `enable_child_tasks` (child-agents
   §9 item 2) **and** of the broker, which needs the same key
   (`forge_broker` refuses to plan without `enable_child_tasks`);
 * the broker is a precondition of removing `forge_slot_reader` in an
@@ -434,7 +434,7 @@ weakens the measurement's gate; it adds a second reason to keep it:
 
 If the measurement finds the read possible, the nonce cannot travel in the
 execution's environment, the broker ships off, and the choice in §2 goes
-back to the owner with the measurement (the same stop child-tasks §9 item 2
+back to the owner with the measurement (the same stop child-agents §9 item 2
 prescribes), rather than shipping the race.
 
 **The rollout order.** Each step a precondition of the next, per
@@ -449,10 +449,10 @@ environment:
    (`apps/agent-worker/agent_worker/secrets.py::resolve_git_token`,
    `forgebroker.ForgeBroker.deployed`;
    `tests/unit/worker/test_forge_broker_client.py::test_a_deployment_without_the_broker_reads_the_slot_with_its_own_account`,
-   which covers dev's case of child tasks on). That read is IAM's to allow
-   through `forge_slot_reader`, and Alice's task in dev
+   which covers dev's case of child agents on). That read is IAM's to allow
+   through `forge_slot_reader`, and Alice's agent in dev
    (`repository_grants_enforced = true`) keeps pushing as Alice.
-2. **Child tasks on** in that environment, in child_tasks.tf's order: the
+2. **Child agents on** in that environment, in child_tasks.tf's order: the
    §9 item 2 measurement above; `make apply` with `enable_child_tasks`
    false (the secret and its accessor bindings); `scripts/create-secrets.sh
    --child-key` (the first version -- a revision referencing a secret with
@@ -465,14 +465,14 @@ environment:
    its worker is handed `FORGE_BROKER=true`, and it asks the broker and
    nothing else, failing closed (§3.3). `forge_slot_reader` still stands, so
    turning the switch back off is the undo.
-4. **A live run passes** with the broker on in dev: a user-slot task, and a
-   user-slot child of one, clone and push through the broker, and a task
+4. **A live run passes** with the broker on in dev: a user-slot agent, and a
+   user-slot child of one, clone and push through the broker, and an agent
    another member submitted is refused that slot.
 5. **The IAM removal**, a separate owner change: delete `forge_slot_reader`
    from `terraform/bootstrap/forge_user_slots.tf` (and update the forge_app
    run with it), merged and applied by the owner's bootstrap apply. Applied
    before step 3, a worker with the broker off reads its slot directly, gets
-   `PERMISSION_DENIED`, and every task that resolved to a person's slot
+   `PERMISSION_DENIED`, and every agent that resolved to a person's slot
    fails closed -- a named `SecretError`, never the tenant token
    (`::test_without_the_broker_a_removed_read_fails_closed_without_the_tenant_token`).
    Turning the broker off, or rolling the worker back, after the removal has
@@ -486,11 +486,11 @@ submitter's token, which is no more than today:
 
 * The worker uses the token on the agent's behalf. An agent can already push
   as its own submitter through its worker. That is the point of the slot.
-* The residual of child-tasks §3.2 still applies. If neither a key nor a
-  tombstone was registered, an agent that rewrites its own task back to
+* The residual of child-agents §3.2 still applies. If neither a key nor a
+  tombstone was registered, an agent that rewrites its own agent back to
   `STARTING` could register a key of its own. It still cannot spend another
   attempt's nonce, so the most it gains is its **own** submitter's slot, for
-  its **own** task.
+  its **own** agent.
 
 Nothing in this design lets one person's agent obtain another person's
 credential, once the broker is on and the binding is gone -- and neither is
@@ -533,16 +533,16 @@ person's personal workspace (#1030).
 
 ## 7. Invariants this preserves
 
-* **Invariant 5 (fencing).** Check 4 refuses any tuple that is not the task's
+* **Invariant 5 (fencing).** Check 4 refuses any tuple that is not the agent's
   current lease and generation before anything is read, and the worker treats
   `attempt_superseded` as the fence.
 * **Invariant 9 (per-tenant isolation).** The ID token names the tenant, the
-  task is read only under that tenant, and the secret name is built by the
+  agent is read only under that tenant, and the secret name is built by the
   frozen `Tenant.secret_name` for that tenant. Within the tenant, this design
   adds per-person isolation, which the invariant never claimed.
 * **Invariant 10 (callers choose nothing).** The body names no secret, the
   slot is recomputed from signed fields, and a person cannot call the route.
-* **Invariant 1.** Unchanged. A task without its credential fails or parks as
+* **Invariant 1.** Unchanged. An agent without its credential fails or parks as
   it does today. Nothing here holds capacity.
 
 ## 8. Frozen contract: no change needed
@@ -575,7 +575,7 @@ The tests that hold each guarantee:
 | the token is in no log line, no header and no environment | `tests/unit/control_plane/test_forge_credential_broker.py::test_the_token_is_in_no_log_and_no_header`, `tests/unit/worker/test_forge_broker_client.py::test_the_token_is_in_no_env_and_no_log` |
 | every user-slot attempt gets a nonce, a child one with no child path | `tests/unit/scheduler/test_dispatch_forge_nonce.py::test_a_child_with_a_user_slot_gets_a_nonce_and_no_child_path` |
 | the worker never reads a user slot from Secret Manager, and fails closed without the tenant token | `tests/unit/worker/test_forge_broker_client.py::test_a_user_slot_is_never_read_from_secret_manager`, `::test_a_refused_attempt_fails_closed_without_the_tenant_token`, `::test_an_attempt_without_a_key_fails_closed_before_asking` |
-| with FORGE_BROKER off (dev's child tasks on included) the worker reads the slot with its own account, and fails closed without the tenant token once IAM refuses | `tests/unit/worker/test_forge_broker_client.py::test_a_deployment_without_the_broker_reads_the_slot_with_its_own_account`, `::test_without_the_broker_a_removed_read_fails_closed_without_the_tenant_token` |
+| with FORGE_BROKER off (dev's child agents on included) the worker reads the slot with its own account, and fails closed without the tenant token once IAM refuses | `tests/unit/worker/test_forge_broker_client.py::test_a_deployment_without_the_broker_reads_the_slot_with_its_own_account`, `::test_without_the_broker_a_removed_read_fails_closed_without_the_tenant_token` |
 | the switch ships off: the route, the scheduler and terraform | `tests/unit/control_plane/test_forge_credential_broker.py::test_the_broker_ships_off_and_releases_nothing_while_off`, `tests/unit/scheduler/test_dispatch_forge_nonce.py::test_with_the_broker_off_dispatch_is_what_it_was_before_it`, `tests/terraform/child_tasks_infra.tftest.hcl`, runs `dev_leaves_the_forge_broker_off` and `the_forge_broker_needs_child_tasks` |
 | a parent rewritten after signing gets no child, and no user slot is released | `tests/unit/control_plane/test_forge_credential_broker.py::test_a_rewritten_parent_gets_no_child_and_no_user_slot`, with its control `::test_a_child_of_bobs_signed_task_receives_bobs_slot` |
 | an additional repository's user slot comes from the broker | `tests/unit/worker/test_forge_broker_client.py::test_an_additional_repositorys_user_slot_comes_from_the_broker` |

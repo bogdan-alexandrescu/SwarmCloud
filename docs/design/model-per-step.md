@@ -33,7 +33,7 @@ What the design settles, in one line each:
   steps. `claude-code`, `claude-code-browser` and `indexer` accept all four
   (§4.1).
 * **The class is signed.** The step spec gains a format 4 that covers
-  `model_class`, and the API writes no format-4 task until every worker that
+  `model_class`, and the API writes no format-4 agent until every worker that
   could receive one can verify it (§4.3).
 * **The dispatcher sets `MODEL` per execution**: in the pod manifest on GKE,
   and in the per-execution override on the Cloud Run fallback Jobs. The value
@@ -149,7 +149,7 @@ another.
 ### 2.1 The invariants it touches
 
 **1. Only LEASED/DISPATCHED/STARTING/RUNNING create demand.** Preserved. A
-step's class is a field on a task. A QUEUED, PARKED or READY step on any class
+step's class is a field on an agent. A QUEUED, PARKED or READY step on any class
 holds no lease and no pod. The class is resolved when the dispatcher renders
 the execution, after admission, so it cannot create demand earlier.
 
@@ -167,7 +167,7 @@ per-class ceiling would need a `pool_names_for` change, which nothing here
 asks for. **Invariant 3** follows: concurrency still counts from LEASED,
 whatever the class.
 
-**5. Fencing.** Preserved. The class is fixed on the task at submission and
+**5. Fencing.** Preserved. The class is fixed on the agent at submission and
 signed (§4.3). The dispatcher resolves it to a model ID when it renders this
 generation's execution, so a stale generation has nothing to act on. A stale
 worker still exits before it runs the agent and without touching the lease
@@ -177,7 +177,7 @@ its generation check. `Attempt.model` is written in the same write as
 
 **8. Checkpointing.** Preserved, with one consequence stated. Every class
 inherits the profile's `checkpoint_interval_seconds` (120) and
-`supports_checkpoint`. **A checkpoint never crosses a class**: a task's
+`supports_checkpoint`. **A checkpoint never crosses a class**: an agent's
 `model_class` is signed and does not change between attempts, and nothing here
 lets it. A retry restores its checkpoint under the same class. It runs under
 that class's *current* pin, so a Terraform re-pin between attempts (for
@@ -236,7 +236,7 @@ ends `cannot_start` with a code, §4.5), and new profiles (design A's
   for one release as a rollback path (§4.2).
 * **The pinned Claude Code CLI must accept every pinned ID.** The base image's
   Dockerfile records that CLI 2.1.273 refused the then-new `claude-opus-5-5`
-  as `unrecognized_model`, and every claude-code task failed
+  as `unrecognized_model`, and every claude-code agent failed
   (`images/agent-runtime-base/Dockerfile`, the comment above
   `CLAUDE_CODE_VERSION`, now 2.1.283). The same can happen to any class's ID.
   The acceptance canary runs one real step per class (§4.9).
@@ -246,7 +246,7 @@ ends `cannot_start` with a code, §4.5), and new profiles (design A's
   and only the base Dockerfile pins `CLAUDE_CODE_VERSION`. So an ID cannot be
   valid on one profile and invalid on another. This is why `runner_models` is
   keyed by class alone (§4.2).
-* **The spec signer signs at the oldest format that covers what a task sets**
+* **The spec signer signs at the oldest format that covers what an agent sets**
   (`specsign.signing_format`). A worker built before a format refuses that
   format as `unknown_format` (`agent_worker/specverify.py`, `KNOWN_FORMATS`).
   Format 3 shipped in that order, worker first and submission second
@@ -290,7 +290,7 @@ request field. This was the first version's recommendation.
 
 ### Design B: a per-step `model_class`, chosen by name (decided)
 
-The caller sends `model_class: "sonnet"` on a task or a step, from the frozen
+The caller sends `model_class: "sonnet"` on an agent or a step, from the frozen
 `MODEL_CLASSES` vocabulary. Each profile declares the classes it accepts and
 its default, in the same way it declares its `resource_class`.
 
@@ -300,7 +300,7 @@ its default, in the same way it declares its `resource_class`.
   covers it (format 4) and every worker verifies that format. The dispatcher
   sets `MODEL` per execution on both backends.
 * **Migration.** A spec-format bump, staged so that no worker sees a format it
-  cannot verify (§4.3). Existing tasks have no `model_class`, so they run
+  cannot verify (§4.3). Existing agents have no `model_class`, so they run
   their profile's default, `opus`, which is what they run today.
 * **Latency.** None. Same image, same backend, same start path.
 * **Money.** A mechanical step pays the cheaper model's tokens. A planning
@@ -459,15 +459,15 @@ the catalogue rather than restating it:
 **The format** (request E). Format 4 is format 3's projection plus
 `model_class`. `SPEC_FORMAT` becomes 4 and `SPEC_FORMATS` becomes
 `(1, 2, 3, 4)`. `signing_format` keeps its rule, the oldest format that covers
-every field a task sets: it returns 4 only when `model_class` is set.
+every field an agent sets: it returns 4 only when `model_class` is set.
 **Formats 1 to 3 refuse a document that sets `model_class`**
 (`SpecNotCanonical`), as formats 1 and 2 refuse a forge field. The worker acts
-on the class itself, so adding one to a task signed without it must fail
+on the class itself, so adding one to an agent signed without it must fail
 verification rather than fall outside the signed bytes.
 
 **What swarm-api stores.** `model_class` is stored only when it differs from
 the profile's default. Naming the default stores nothing, so the bytes are the
-ones the task would have had before this feature. The result is that only a
+ones the agent would have had before this feature. The result is that only a
 step that asks for a non-default class is ever signed at format 4, and every
 default step keeps format 1, 2 or 3 throughout the rollout. "Absent" is
 signed too, in effect, because adding the field fails verification.
@@ -484,8 +484,8 @@ signed too, in effect, because adding the field fails verification.
    brought up to the current image by `CloudRunJobDispatcher.ensure_job`
    before its first execution in each scheduler process. So once that release
    has applied, no new attempt starts on an old worker. An old worker still
-   running holds a task signed at format 3 or lower, which it can verify. A
-   retry of any task runs in a new pod, on the new worker.
+   running holds an agent signed at format 3 or lower, which it can verify. A
+   retry of any agent runs in a new pod, on the new worker.
 3. **The API is gated, not just ordered.** swarm-api refuses a non-default
    `model_class` with 422 `model_class_not_yet_available` until
    `MODEL_CLASSES_ENABLED` is true. That is a Terraform variable,
@@ -494,17 +494,17 @@ signed too, in effect, because adding the field fails verification.
    after the release carrying MODEL-WORKER **and** MODEL-SCHED has applied.
    The flag makes the order hold even if lanes merge into the same release.
 4. **What a rollback does.** If the scheduler's image refs are rolled back to
-   a worker without format 4, that worker refuses a format-4 task as
+   a worker without format 4, that worker refuses a format-4 agent as
    `unknown_format`, ending `spec_signature_invalid`. It fails closed: it
    never runs a step on the wrong model. Turning the flag off again stops new
-   format-4 tasks being written, and default steps are unaffected throughout.
+   format-4 agents being written, and default steps are unaffected throughout.
 
-**Unsigned legacy tasks.** The worker's legacy window (`SPEC_LEGACY_UNTIL`,
-2026-10-20 in `specverify.py`) admits a task created before signing shipped,
-and no such task can carry a class. That window closes three days after this
+**Unsigned legacy agents.** The worker's legacy window (`SPEC_LEGACY_UNTIL`,
+2026-10-20 in `specverify.py`) admits an agent created before signing shipped,
+and no such agent can carry a class. That window closes three days after this
 design is written, so by the time MODEL-WORKER is built it has probably
-closed and the worker refuses every unsigned task outright; the rule below
-then costs nothing, and holds only if the window is ever extended. For an unsigned task the worker expects
+closed and the worker refuses every unsigned agent outright; the rule below
+then costs nothing, and holds only if the window is ever extended. For an unsigned agent the worker expects
 the profile's default class and ignores any stored `model_class`. A class
 written onto one therefore fails the model check (§4.5), and the attempt does
 not run.
@@ -519,7 +519,7 @@ in `apps/swarm-api/swarm_api/validation.py`, `validate_model_class`, beside
 | surface | file | what it sets |
 |---|---|---|
 | `TaskCreate` | `schemas.py` | the task's class |
-| `WorkflowStepCreate` | `schemas.py` | the step's class, stored on `WorkflowStep.model_class` and copied to its task |
+| `WorkflowStepCreate` | `schemas.py` | the step's class, stored on `WorkflowStep.model_class` and copied to its agent |
 | `RunCreate` | `schemas.py`, `issueruns.py` | the planner's class. Each plan step may carry its own (§7 R1) |
 | the child-task route | `children.py` (swarm-api) and `CHILD_FIELDS` (worker) | the child's class. If absent, the child **profile's** default, never the parent's (§7 R3) |
 | the plugin bridge | `apps/swarm-mcp/swarm_mcp/client.py`, `server.py`, `cli.py` | passed through as sent (§4.8) |
@@ -570,7 +570,7 @@ The classes are read from the catalogue and `models` from swarm-api's
 `WORKER_CLASS_MODELS`, so the route reports the map the scheduler dispatches
 with. A profile with no classes serves `[]`, `null` and `{}`.
 
-**`GET /v1/tasks/{id}`, workflows and `/v1/attempts`.** Each task and step
+**`GET /v1/tasks/{id}`, workflows and `/v1/attempts`.** Each agent and step
 carries `model_class` (absent means the profile's default; the API serves the
 resolved value, with `model_class_defaulted: true` when nothing was stored).
 Each attempt carries `model` (`codec.attempt_from_dict`,
@@ -581,7 +581,7 @@ fields).
 **Outcome ledger** (`apps/swarm-api/swarm_api/outcomes.py`). `GROUPS` gains
 `model`, grouped by `Attempt.model` over started attempts, with "not recorded"
 as its own row for attempts from before the change. It also gains
-`model_class`, grouped by the task's resolved class. Grouping by
+`model_class`, grouped by the agent's resolved class. Grouping by
 `runner_profile` no longer separates tiers, so these two are how cost by model
 is read.
 
@@ -593,8 +593,8 @@ replaces `profile_model`. It resolves the class with
 `profiles.step_model_class(profile, task.model_class)` and returns
 `settings.worker_class_models[class]`. It returns None only for a profile with
 no classes. An unaccepted class, or a class with no pin, raises `DispatchError`
-(code `model_not_pinned`), which returns the lease and the task. It never falls
-through to the CLI's own default, which is how the QA task of 2026-09-26 ran
+(code `model_not_pinned`), which returns the lease and the agent. It never falls
+through to the CLI's own default, which is how the QA agent of 2026-09-26 ran
 `claude-sonnet-5` on an Opus profile. The startup check (§4.2) makes the
 missing-pin case unreachable. The dispatch-time refusal is the second line of
 defence for a document written past the API.
@@ -622,10 +622,10 @@ into `worker_env`, that is the contract change -- go and get the decision."
 The owner's answer to Q2 is that decision, and MODEL-SCHED inverts the test on
 purpose, rewriting its docstring to cite this design and the owner's answer.
 The inverted test asserts that `worker_env` carries `MODEL`, and that its value
-is **the scheduler's own `WORKER_CLASS_MODELS` entry for the task's resolved
+is **the scheduler's own `WORKER_CLASS_MODELS` entry for the agent's resolved
 class**. **What still cannot reach `worker_env`**, each asserted:
 
-* **`Task.model`.** A task whose stored `model` is any other string (written
+* **`Task.model`.** An agent whose stored `model` is any other string (written
   to Firestore past the API) dispatches with the class's pin, and that string
   appears nowhere in the environment.
 * **`input.model`, or any other `input` key**, and **any `metadata` key**:
@@ -646,7 +646,7 @@ credential or starts the CLI:
 
 * it resolves the expected class with `profiles.step_model_class` from the
   **signed** `model_class`, or from the profile's default on an unsigned
-  legacy task;
+  legacy agent;
 * if the profile has classes and `MODEL` is unset, it ends `cannot_start` with
   code `model_not_pinned`;
 * if `MODEL` is set and the expected class does not `admit` it, it ends
@@ -654,7 +654,7 @@ credential or starts the CLI:
   the ID (an ID is not a secret).
 
 The worker deliberately does not require `MODEL == Task.model`. A Terraform
-re-pin while a task is queued would then fail every queued task of that class,
+re-pin while an agent is queued would then fail every queued agent of that class,
 and the class, which is what is signed and promised, is still honoured (§7
 R6).
 
@@ -712,7 +712,7 @@ Haiku step too. That is the stated cost of the decision.
   it. The broker **reads** the class (`quota_broker.main.step_class_for`):
   `tasks/{task_id}` in the caller's own tenant, resolved by the frozen
   `step_model_class`. No class travels in the request body. A class the
-  broker cannot read (no task id from an older worker, or a task that is not
+  broker cannot read (no task id from an older worker, or an agent that is not
   the caller's) is served only by an account that serves every class.
 * A class no account serves is `no_accounts_registered` to the worker, which
   falls back to the tenant's own key; a metered key serves every class.
@@ -730,7 +730,7 @@ Haiku step too. That is the stated cost of the decision.
   accepted class as a chip with its ID, the default marked; `—` for a profile
   with none.
 * **Submit** (`RunnerPicker.tsx`, `SubmitWorkflow.tsx`): a class select per
-  task and per step, offering only the profile's accepted classes from
+  agent and per step, offering only the profile's accepted classes from
   `/v1/runtimes`, defaulting to the profile's default, each labelled with its
   model. The select is hidden for a classless profile.
 * **Agent detail** (`AgentDetail.tsx`, `AttemptTimeline.tsx`): each attempt
@@ -748,7 +748,7 @@ No new section, tab or route, so the issue forms' "Where" list
   and the bundled copy it falls back to) passes `model_classes`,
   `default_model_class` and `models` through.
 * The bridge's dispatch, workflow and run tools (`server.py`, `client.py`)
-  accept `model_class` on a task, on each workflow step and on a run, and
+  accept `model_class` on an agent, on each workflow step and on a run, and
   pass the API's 422 through.
 * `swarm dispatch --model-class` is new (`cli.py`). `--model` keeps its help
   text ("recorded for attribution; does not select the model"), which stays
@@ -982,7 +982,7 @@ untouched. 1 to 5, 8 and 9 are untouched.
 
 #### Why
 
-The class a step asked for is a fact about the task. It must survive retries,
+The class a step asked for is a fact about the agent. It must survive retries,
 be signed, and be read by the scheduler at dispatch and by the worker at start.
 `Task.model` cannot carry it: that is an ID, a record of a pin at submission
 (§4.4).
@@ -1004,16 +1004,16 @@ be signed, and be read by the scheduler at dispatch and by the worker at start.
 #### Rollback
 
 Delete both fields. A stored value is then ignored, and every step runs its
-profile's default. Request E's format 4 must go first, or a format-4 task
+profile's default. Request E's format 4 must go first, or a format-4 agent
 would fail verification on a worker whose `Task` lacked the field.
 
 #### What it would break
 
 Nothing that decodes today: two optional fields with defaults.
-`codec.task_from_dict` must read `model_class` back, so that a task swarm-api
+`codec.task_from_dict` must read `model_class` back, so that an agent swarm-api
 decodes and writes again keeps its signed field (request 54's precedent).
-The red test: a task with `model_class="sonnet"` round-trips through the
-codec, and a workflow step's class reaches its task.
+The red test: an agent with `model_class="sonnet"` round-trips through the
+codec, and a workflow step's class reaches its agent.
 
 #### Invariants
 
@@ -1088,18 +1088,18 @@ and includes the field in the projection at format 4.
 #### Rollback
 
 Stop writing format 4 (the gate of §4.3 off), then remove the format once no
-stored task carries it. A worker that loses format 4 while such a task is
-queued refuses that task, as `unknown_format`.
+stored agent carries it. A worker that loses format 4 while such an agent is
+queued refuses that agent, as `unknown_format`.
 
 #### What it would break
 
-Nothing for a task without a class: its format and bytes are unchanged.
+Nothing for an agent without a class: its format and bytes are unchanged.
 `test_specsign.py` already pins the SHA-256 of formats 1 to 3 as computed
 before; the same pins must hold after the change. A worker built before
-format 4 refuses a format-4 task, which is why §4.3 retires those workers
+format 4 refuses a format-4 agent, which is why §4.3 retires those workers
 before the gate opens. The red tests: a format-4 document verifies; flipping
 its `model_class` fails; a format-3 document with `model_class` added is
-`SpecNotCanonical`; and a task without a class signs at the format it signs at
+`SpecNotCanonical`; and an agent without a class signs at the format it signs at
 today.
 
 #### Invariants
@@ -1120,12 +1120,12 @@ its tests alone to the PR branch first and its fix to `<branch>-fix`, and runs
 |---|---|---|---|
 | 0 | **MODEL-CONTRACT** (owner applies) | `apps/common/swarm_common/profiles.py`, `models.py`, `specsign.py`; `tests/unit/common/test_specsign.py`, `tests/unit/common/test_model_classes.py` (new); `docs/contract-change-requests.md`; `terraform/infra/locals.tf` (mirror fields, `runner_models` by class, `WORKER_CLASS_MODELS` on scheduler and swarm-api, the derived `WORKER_MODELS`, the Jobs' default-class `MODEL`, `MODEL_CLASSES_ENABLED` from the variable); `terraform/infra/variables.tf` (`model_classes_enabled`, default `false`); `tests/terraform/catalogue.tftest.hcl`, `tests/terraform/runner_model.tftest.hcl`; `scripts/lib/check-contract-parity.sh` | requests A to E's red tests (§5); the tftest finds four class keys whose IDs carry their family word, and a `WORKER_MODELS` equal to today's; the parity script fails on a class name missing from `runner_models`. Signing is unaffected, because nothing sets `model_class` yet |
 | 1 | **MODEL-SCHED** | `apps/scheduler/scheduler/settings.py`, `dispatch.py`; `tests/unit/mcp/test_model_flag_is_attribution_only.py` (the worker-env half inverted, §4.5); `tests/unit/scheduler/test_step_model.py` (new) | an ID of the wrong class, a missing class and an extra key each refuse at startup; GKE and Cloud Run renders of a `haiku` step carry the haiku pin, and of a classless step carry the opus pin; every "cannot reach `worker_env`" case in §4.5 |
-| 1 | **MODEL-WORKER** | `apps/agent-worker/agent_worker/specverify.py`, `lifecycle.py`, `control.py`; `tests/unit/worker/test_model_check.py` (new) | a format-4 task verifies; a `sonnet` task given the opus pin ends `model_class_mismatch` before the CLI starts; a classed profile with no `MODEL` ends `model_not_pinned`; an unsigned legacy task with a class written onto it is refused; the attempt writes `model` with `started_at`, and a stale generation writes none; a stream reporting another model logs `model_mismatch` |
+| 1 | **MODEL-WORKER** | `apps/agent-worker/agent_worker/specverify.py`, `lifecycle.py`, `control.py`; `tests/unit/worker/test_model_check.py` (new) | a format-4 agent verifies; a `sonnet` agent given the opus pin ends `model_class_mismatch` before the CLI starts; a classed profile with no `MODEL` ends `model_not_pinned`; an unsigned legacy agent with a class written onto it is refused; the attempt writes `model` with `started_at`, and a stale generation writes none; a stream reporting another model logs `model_mismatch` |
 | 2 | **MODEL-API** | `apps/swarm-api/swarm_api/schemas.py`, `validation.py`, `service.py`, `children.py`, `codec.py`, `settings.py`, `routes/platform.py`, `routes/workflows.py`, `schedtypes/custom_prompt.py`; `apps/agent-worker/agent_worker/children.py` (`CHILD_FIELDS`, crossing into the worker because `tests/unit/worker/test_child_tasks_worker.py` holds it equal to the route's `ChildSpec`, so the two change in one commit); `tests/unit/worker/test_child_tasks_worker.py`; `tests/unit/control_plane/test_input_model_is_refused.py`, `tests/unit/control_plane/test_model_class_submission.py` (new) | each surface accepts the four classes on `claude-code` and refuses `unknown_model_class` and `model_class_not_accepted`; `model_class_not_yet_available` while the gate is closed; the default is not stored and signs at the old format; a `fable` step signs at format 4; `TaskCreate.model` is filled from the pin, another class's pin is refused naming that class, and any other value is refused; `input.model` is refused on all three classed profiles; `/v1/runtimes` serves the classes and models; `attempt_to_api` serves `model`; the child route accepts `model_class` and `CHILD_FIELDS` has it, equal to `ChildSpec` |
-| 2 | **MODEL-RUNS** | `apps/swarm-api/swarm_api/issueruns.py`, `routes/runs.py`; `tests/unit/control_plane/test_run_model_class.py` (new) | `RunCreate.model_class` reaches the planner task; a plan step's class (if R1 (a)) is inside `plan_digest` and reaches its step; review and fix run `opus` |
+| 2 | **MODEL-RUNS** | `apps/swarm-api/swarm_api/issueruns.py`, `routes/runs.py`; `tests/unit/control_plane/test_run_model_class.py` (new) | `RunCreate.model_class` reaches the planner agent; a plan step's class (if R1 (a)) is inside `plan_digest` and reaches its step; review and fix run `opus` |
 | 2 | **MODEL-LEDGER** | `apps/swarm-api/swarm_api/outcomes.py`; `tests/unit/control_plane/test_outcomes_model.py` (new) | the `model` group separates two models and lists "not recorded"; the `model_class` group counts a defaulted step as `opus` |
 | 3 | **MODEL-UI** | `apps/swarm-ui/src/Runtimes.tsx`, `RunnerPicker.tsx`, `SubmitWorkflow.tsx`, `AgentDetail.tsx`, `AttemptTimeline.tsx`, `Ledger.tsx`, `types.ts`, `api.ts`; their vitest files | the classes column renders the chips and `—`; the select offers only accepted classes and is hidden for `codex`; a mismatch shows both models |
-| 3 | **MODEL-PLUGIN** | `apps/swarm-mcp/swarm_mcp/profiles.py`, `client.py`, `server.py`, `cli.py`; `plugin/skills/delegate/SKILL.md`, `plugin/skills/sc/SKILL.md`; `tests/unit/mcp/test_model_class_bridge.py` (new) | `swarm_profiles` lists the classes and models, from the platform and from the bundled copy; the bridge sends `model_class` on a task, a step and a run; `--model-class` exists, and `--model`'s help still says attribution and "not select" |
+| 3 | **MODEL-PLUGIN** | `apps/swarm-mcp/swarm_mcp/profiles.py`, `client.py`, `server.py`, `cli.py`; `plugin/skills/delegate/SKILL.md`, `plugin/skills/sc/SKILL.md`; `tests/unit/mcp/test_model_class_bridge.py` (new) | `swarm_profiles` lists the classes and models, from the platform and from the bundled copy; the bridge sends `model_class` on an agent, a step and a run; `--model-class` exists, and `--model`'s help still says attribution and "not select" |
 | 4 | **MODEL-ENABLE** | `terraform/environments/*/*.tfvars` (`model_classes_enabled = true`) | the tftest plan shows `MODEL_CLASSES_ENABLED=true` on swarm-api |
 | 5 | **MODEL-CANARY** | the acceptance group that dispatches claude-code (`accept.yml`'s smoke) and its script under `scripts/` | four steps, one per class: each attempt records its class's pin, and `usage.models` agrees. Red until the CLI accepts every ID |
 | 5 | **MODEL-DOCS** | `docs/agent-output.md`, `docs/workflows.md`, `docs/quota-management.md` (one paragraph: windows bind every class, Q5), this file | `test_docs_describe_what_was_built` |
@@ -1177,7 +1177,7 @@ measurement catches a page that was misread);
 (c) only the observed-rate derivation, as a report;
 (d) neither: figures stay manual.
 
-**R3. When a child task names no class, what does it run?**
+**R3. When a child agent names no class, what does it run?**
 (a) **Its own profile's default (`opus`)** (recommended: a child is a new
 step, and inheriting would let a Haiku parent silently start Haiku children
 for deep work);
@@ -1210,7 +1210,7 @@ Which model runs?**
 submission as a record, and `Attempt.model` records what ran** (recommended:
 the class is the promise; requiring the submission's ID would fail every
 queued step at each release, and keeping old IDs alive would need a pin per
-task);
+agent);
 (b) the submission's `Task.model`, provided it is still of the class. This
 makes a stored task field select the model, and the brake of §4.5 would then
 have to admit it.
@@ -1273,7 +1273,7 @@ the code that holds the lane's rule, and the test that holds it there.
   `submit.modelclass.test.tsx`, `submit.task.modelclass.test.tsx`,
   `attempt.model.test.tsx` and `ledger.modelgroups.test.tsx`.
 * **MODEL-PLUGIN (order 3).** `swarm_profiles` lists the classes and models,
-  the bridge sends `model_class` on a task, a step and a run, and `swarm
+  the bridge sends `model_class` on an agent, a step and a run, and `swarm
   dispatch --model-class` exists. Tests:
   `tests/unit/mcp/test_model_class_bridge.py`.
 * **MODEL-ENABLE (order 4).** Dropped, not built: the owner's answer to R4

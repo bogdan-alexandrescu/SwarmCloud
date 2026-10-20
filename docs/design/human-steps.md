@@ -90,7 +90,7 @@ Today:
   `max_artifact_bytes`, **512 MiB** (`apps/agent-worker/agent_worker/config.py`,
   checked in `inputs.py::stage_inputs`), so a draft that stages fine
   cannot be re-sent inline once it passes 256 KiB. Below that size it still
-  travels through Firestore as the task's `input`, which is what
+  travels through Firestore as the agent's `input`, which is what
   `WorkflowStep.input_from`'s own comment forbids: "Artifacts pass by GCS
   reference, never inline through Firestore"
   (`apps/common/swarm_common/models.py::WorkflowStep`).
@@ -114,7 +114,7 @@ this feature, and none of them is it:
 
 | mechanism | what it waits on | why it is not a step that waits |
 |---|---|---|
-| Live-browser hand-off (`Task.human_wait`, contract requests 68-70) | a person signing in inside a running pod | The task **holds its lease** for the hold, 10 minutes (`human_hold_seconds`), then parks `HUMAN_REQUIRED`. Only `human-ready` promotes it, back to **READY**, which restarts the same agent. It is an interruption of an attempt, not a step with an output. |
+| Live-browser hand-off (`Task.human_wait`, contract requests 68-70) | a person signing in inside a running pod | The agent **holds its lease** for the hold, 10 minutes (`human_hold_seconds`), then parks `HUMAN_REQUIRED`. Only `human-ready` promotes it, back to **READY**, which restarts the same agent. It is an interruption of an attempt, not a step with an output. |
 | `questions.json` + `POST /v1/tasks/{id}/answers` (TASK-ANSWERS, 2026-10-13) | the owner answering an agent's questions | The answer is stored as `metadata.owner_answers`, and it is "**data, never a channel**" (`docs/workflows.md`, "An agent asks the owner"). No state, dispatch or step reads it. |
 | The approvals inbox (`apps/swarm-api/swarm_api/approvals.py`) | a member approving a run, plan, merge or proposal | It decides whether work is **created**. Its decision is a yes or a no, never a payload that a later step stages. |
 | Merge-step CI wait (`CI_PENDING`, contract request 49) | a pull request's checks | A sweep promotes it. No person answers it. |
@@ -227,9 +227,9 @@ AWAITING_INPUT` and has no recorded answer. Exactly one can commit, and every
 other gets a 409 or a stale write (§4.6). Two members answering in the same
 second are two writers of the first kind, and the same guard picks one: the
 loser gets 409 `already_answered` (Q8). Fencing on **resume** is the
-dependant's own: `revise` is an ordinary task whose attempt carries
+dependant's own: `revise` is an ordinary agent whose attempt carries
 generation 1, and a stale worker of it exits without running the agent, as
-every worker does. What it stages is immutable, because a SUCCEEDED task's
+every worker does. What it stages is immutable, because a SUCCEEDED agent's
 `result_summary` is never rewritten, and every object of the answer, the form
 and each file, is created with a no-overwrite precondition by an identity
 that cannot delete (§4.3).
@@ -253,7 +253,7 @@ that long. A many-round review keeps each `revise` staging from the
 round before it, not from the first draft (§4.1, "Rounds").
 
 **Invariant 9. Per-tenant isolation.** Every object key of an answer is built
-from the **stored** task's `tenant_id` and id, never from the request:
+from the **stored** agent's `tenant_id` and id, never from the request:
 `tenants/<tenant>/tasks/<task>/attempts/input-<nonce>/artifacts/<name>`, and
 for a file `…/artifacts/<artifact stem>.files/<file>`. Every segment passes
 `objects.safe_segment`. The new write grant is conditioned to that shape
@@ -331,7 +331,7 @@ What it needs **no** change to, and why:
 
 ### 3.1 Design A: a control-plane step that swarm-api ends (recommended, and chosen: Q10)
 
-The step is a task under the catalogue profile `await-input`. When its
+The step is an agent under the catalogue profile `await-input`. When its
 dependencies have succeeded, the scheduler parks it `AWAITING_INPUT` and
 never leases it. swarm-api's new route takes the member's answer, checks it
 against the declared form, writes the form and any files to GCS as the
@@ -347,7 +347,7 @@ tick ends expired waits.
   and plugin wording. A small worker change to stage attachments. Roughly
   the size of #748's control-plane publish, which this copies, plus the
   multipart path.
-* **Migration.** None. These are new fields on new tasks. Every existing
+* **Migration.** None. These are new fields on new agents. Every existing
   document decodes as before.
 * **Latency.** The answer to a promoted dependant is up to eleven GCS writes
   (the form and at most ten files), one transaction and one Pub/Sub wake, a
@@ -355,7 +355,7 @@ tick ends expired waits.
   Expiry precision is the tick: one minute.
 * **Money.** Zero while waiting. Each answer costs at most 16 MiB of GCS
   objects, retained as every artifact is, and three Firestore writes: the
-  task, its event, and the claim.
+  agent, its event, and the claim.
 * **What it breaks.** swarm-api becomes a **writer** to the artifact bucket.
   Today its grant is `roles/storage.objectViewer` and its object module has
   "no upload, no delete and no copy" by design
@@ -369,7 +369,7 @@ tick ends expired waits.
 
 ### 3.2 Design B: the answer is delivered by a worker action
 
-The step parks the same way. The answer is stored in Firestore on the task,
+The step parks the same way. The answer is stored in Firestore on the agent,
 and the step is promoted to READY. A new `WorkerAction.MATERIALISE_INPUT`
 then runs in a container: it reads the answer, writes it as an artifact
 through the worker's normal upload path, and ends the step. swarm-api keeps
@@ -388,11 +388,11 @@ its read-only grant.
   does not fit a task document's 1 MiB. B would need a staging bucket
   swarm-api writes anyway, which is A's grant with a container added.
 
-### 3.3 Design C: the agent's own task pauses (the live-browser shape)
+### 3.3 Design C: the agent pauses itself (the live-browser shape)
 
 There is no step type. The drafting agent writes a request file. Its
-worker checkpoints, parks the task `HUMAN_REQUIRED` and exits. The person
-answers, and the same task is promoted, restored from its checkpoint, and
+worker checkpoints, parks the agent `HUMAN_REQUIRED` and exits. The person
+answers, and the same agent is promoted, restored from its checkpoint, and
 handed the answer, so the agent revises in its own context.
 
 * **Code.** The most of the three: a spool request, a park path and a
@@ -400,7 +400,7 @@ handed the answer, so the agent revises in its own context.
   touches the lifecycle, the riskiest file in the worker.
 * **Latency.** A container start plus a checkpoint restore per round.
 * **Money.** A lease for every resume, and an attempt from `max_attempts`
-  for every round. Three review rounds would exhaust a task's default
+  for every round. Three review rounds would exhaust an agent's default
   `max_attempts: 3`.
 * **What it breaks.** The DAG no longer says where the person is, so the
   console cannot show "waiting on X" from the workflow, and `when` cannot
@@ -536,7 +536,7 @@ without a container). Also refused: any `input` key other than `prompt`;
 `await_input` on any other profile; `form: "answers"` without exactly one
 `input_from` entry whose filename is `questions.json` (Q11, below); a
 `default` whose shape does not match `form`; and the step as a standalone
-task. The profile is valid only inside a workflow.
+agent. The profile is valid only inside a workflow.
 
 **`form: "answers"` and `questions.json` (Q11).** An upstream agent's
 `questions.json` becomes the form only when this step stages it explicitly:
@@ -565,7 +565,7 @@ integrator's `integrates`. It pushes no branch. That is the same rule that
 leaves a gated integrator's review out (`docs/workflows.md`, "The review's
 own branch is not merged").
 
-**Stored** at expansion, in the same write that creates the task:
+**Stored** at expansion, in the same write that creates the agent:
 `metadata.dispatch.await_input` holds the block as normalised (defaults
 filled in, `remind` addresses lower-cased). It is signed with the rest of
 `metadata.dispatch`. `input_from` is expanded to task ids exactly as for any
@@ -586,7 +586,7 @@ model that has to hold without it.
    is the predicate; `handoff.py` already uses it). That covers a tenant's
    worker GSA, the scheduler, the schedule tick, the rollup sweeper, a
    service account listed as a tenant member (`AuthContext.member_scope`,
-   contract request 30) and any CI identity. A child task submits through its
+   contract request 30) and any CI identity. A child agent submits through its
    worker with an attempt proof (`docs/design/child-tasks.md` §3.2), and that
    path never reaches this route. So a SwarmCloud agent, whose MCP bridge
    speaks as its worker, cannot answer any step, including its own
@@ -807,7 +807,7 @@ answer was taken with `answered_as: "service"`. Every other check stays in
 
 ### 4.3 The answer reaches GCS: a narrow, create-only writer
 
-**Object keys**, built only from the stored task:
+**Object keys**, built only from the stored agent:
 
     tenants/<tenant_id>/tasks/<task_id>/attempts/input-<12 hex>/artifacts/<artifact>
     tenants/<tenant_id>/tasks/<task_id>/attempts/input-<12 hex>/artifacts/<artifact stem>.files/<file>
@@ -819,7 +819,7 @@ answer was taken with `answered_as: "service"`. Every other check stays in
   have a directory segment (`apps/agent-worker/agent_worker/inputs.py::artifact_key`).
 * One nonce per answer, fresh per attempt to answer. A losing writer (§4.6)
   therefore leaves objects that **no manifest names**, so they are never
-  staged, and they are deleted with the task's prefix by the audited history
+  staged, and they are deleted with the agent's prefix by the audited history
   purge and by the retention rule.
 * Every object is created with `if_generation_match=0` (create, never
   overwrite) and `customTime` set to the write time, so the retention clock
@@ -878,7 +878,7 @@ task document holds 1 MiB, and an answer may be sixteen times that.
 | bound | value | why |
 |---|---|---|
 | whole answer, form plus every file | **16 MiB** | The owner's number (Q6). It is what swarm-api holds in memory for one answer (below), and well inside the worker's 512 MiB per-attempt staging total, so an answer never makes a dependant refuse its inputs. |
-| the form | 256 KiB serialised | Unchanged from the first draft: `max_input_bytes`, the bound on a task's own input. |
+| the form | 256 KiB serialised | Unchanged from the first draft: `max_input_bytes`, the bound on an agent's own input. |
 | one file | 16 MiB less the form | One large file is the common case (an edited document, a screenshot set as a PDF); a lower per-file bound would only push people to split one. |
 | files per answer | `max_files`, at most **10** | Each file is an entry on the answer's manifest entry in Firestore (§4.7); ten keeps it a few KiB. |
 | a file's name | `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`, distinct, no directory | It becomes a path in the dependant's workspace, checked again there by `destination_for`. No slash means no tree to traverse. |
@@ -979,7 +979,7 @@ and the worker, when it stages an entry that has `attachments`, stages each
 of them too (lane HW-WORKER, `apps/agent-worker/agent_worker/inputs.py`):
 
 * every attachment's URI goes through `artifact_key` with its own name, so
-  it must sit in the same tenant, the same upstream task and an attempt of
+  it must sit in the same tenant, the same upstream agent and an attempt of
   it, or staging fails with `InputUnavailable`, as a forged entry does today;
 * every attachment's destination goes through `destination_for`, so
   `review.files/<file>` cannot traverse or land on a worker control file;
@@ -1014,7 +1014,7 @@ calls from `loop.py`.
    passes through READY for one write. It holds nothing during it.
 2. **Admission backstop.** `Scheduler._admit_one` checks
    `profile.control_plane` **before** any capacity evaluation or lease, and
-   parks the task `AWAITING_INPUT`. A step submitted with no dependencies
+   parks the agent `AWAITING_INPUT`. A step submitted with no dependencies
    reaches READY this way, and so would anything an operator promotes by
    hand. This is the line that makes invariant 1 hold even if the first
    path is bypassed. It mirrors how a missing credential is parked before
@@ -1028,7 +1028,7 @@ calls from `loop.py`.
    started.
 4. **Release.** The answer's `task_finished` wake reaches
    `Scheduler.release_dependants`, which runs the same rule as the sweep.
-   `revise` is promoted in that drain and admitted like any task.
+   `revise` is promoted in that drain and admitted like any agent.
 
 The park writes `metadata.await_input.opened_at` and `expires_at`
 (`opened_at + expires_after_seconds`, so at most 24 hours after the park),
@@ -1037,7 +1037,7 @@ never re-derive the deadline.
 
 ### 4.5 How a person sees it
 
-Every surface reads the same facts: the task is `PARKED(AWAITING_INPUT)`, its
+Every surface reads the same facts: the agent is `PARKED(AWAITING_INPUT)`, its
 tenant, its `expires_at`, and its `metadata.dispatch.await_input`. None of
 them stores a copy.
 
@@ -1244,7 +1244,7 @@ route refuses every service account (§4.2), the tick included.
 
 **Cancel.** `POST /v1/workflows/{id}/cancel` already cancels every step
 through `request_cancel_with_target` (`apps/swarm-api/swarm_api/store.py`,
-`cancel_workflow`). That function ends a task that holds no capacity
+`cancel_workflow`). That function ends an agent that holds no capacity
 directly, in a transaction on its current state. It needs no change: once
 an answer has committed, the step is SUCCEEDED and the cancel has nothing
 left to do.
@@ -1395,12 +1395,12 @@ UI's exhaustive tables hold every restatement to the enum:
 file under `apps/` and `scripts/` that names `HUMAN_REQUIRED` must name
 `AWAITING_INPUT` or be on the test's ignore list with a reason; and the
 human-wait sweep, `human-ready` and the `handoffs` bell source each leave an
-`AWAITING_INPUT` task untouched.
+`AWAITING_INPUT` agent untouched.
 
 #### Rollback
 
 Delete the member, its restatements and the readers test, but only when no
-task is parked under it, because such a document would decode to an unknown
+agent is parked under it, because such a document would decode to an unknown
 reason.
 
 #### What it would break
@@ -1412,7 +1412,7 @@ until it does, which is the intent.
 
 #### Invariants
 
-**1**: a `PARKED(AWAITING_INPUT)` task holds no lease and creates no demand,
+**1**: a `PARKED(AWAITING_INPUT)` agent holds no lease and creates no demand,
 because `PARKED` is in `PENDING_STATES`. **4**: no worker waits. 2, 3 and
 5-10 are unchanged.
 
@@ -1504,7 +1504,7 @@ the refusal that already exists, with its reason served to the caller.
 
 #### Rollback
 
-Delete the entry. No task can name it while it is unavailable.
+Delete the entry. No agent can name it while it is unavailable.
 
 #### What it would break
 
@@ -1569,9 +1569,9 @@ reports blockers and majors on the PR; minors go to the wave epic.
 |---|---|---|---|
 | 0 | **HW-CONTRACT** (owner applies) | `apps/common/swarm_common/states.py`, `profiles.py`, `docs/contract-change-requests.md` (entries 85-87 from §5 A-C), `terraform/infra/locals.tf`, `tests/terraform/catalogue.tftest.hcl`, `apps/swarm-ui/src/types.ts`, `apps/swarm-ui/src/components/StatePill.tsx`, `apps/swarm-mcp/swarm_mcp/progress.py`, `apps/swarm-mcp/swarm_mcp/compact.py`, `tests/unit/common/test_await_input_contract.py` (new), `tests/unit/common/test_awaiting_input_readers.py` (new) | `AWAITING_INPUT` is a `ParkReason` and not in any capacity set; the readers test fails on a file that names `HUMAN_REQUIRED` and not `AWAITING_INPUT` and is not on its list, and its three behavioural cases (25-hour sweep, `human-ready` 409, no `handoffs` item) hold; a `control_plane` profile with `runner_argv`, `worker_action`, `provider`, `secrets`, `inputs` or `live_browser` raises; `await-input` is `control_plane`, unavailable, and in `profiles_without_a_job`; the parity script passes |
 | 1 | **HW-IAM** (Track C; waits at `dev-iam`) | `terraform/infra/await_input.tf` (new: `google_storage_bucket_iam_member.api_input_writer`, local `await_input_object_condition`), `terraform/modules/firestore/indexes.tf` (`resource "google_firestore_index" "await_input_expiry" {`), `tests/terraform/await_input.tftest.hcl` (new) | the condition admits `tenants/a/tasks/t/attempts/input-0123456789ab/artifacts/review.json` and `…/artifacts/review.files/draft.md`; refuses `attempts/att_x/artifacts/…`, `attempts/input-0123456789ab/checkpoints/…`, `attempts/input-0123456789ab/live/…`, a key outside `tenants/`; the role is `objectCreator` only, bucket-scoped; `api_reader` is unchanged |
-| 1 | **HW-SCHED** | `apps/scheduler/scheduler/awaitinput.py` (new), `loop.py`, `store.py`, `tests/unit/control_plane/test_await_input_scheduler.py` (new) | draft -> await -> revise: when `draft` succeeds the await step is `PARKED(AWAITING_INPUT)` with **zero leases** in the store; a READY `await-input` task is parked by `_admit_one` and never leased whatever the pool headroom; `_expire_human_waits` does not touch it at 25 hours; under `fail_workflow` a failed sibling cancels it; its `task_finished` promotes `revise` within the same drain; `expires_at` is `opened_at` plus the declared seconds |
+| 1 | **HW-SCHED** | `apps/scheduler/scheduler/awaitinput.py` (new), `loop.py`, `store.py`, `tests/unit/control_plane/test_await_input_scheduler.py` (new) | draft -> await -> revise: when `draft` succeeds the await step is `PARKED(AWAITING_INPUT)` with **zero leases** in the store; a READY `await-input` agent is parked by `_admit_one` and never leased whatever the pool headroom; `_expire_human_waits` does not touch it at 25 hours; under `fail_workflow` a failed sibling cancels it; its `task_finished` promotes `revise` within the same drain; `expires_at` is `opened_at` plus the declared seconds |
 | 1 | **HW-API-SUBMIT** | `apps/swarm-api/swarm_api/schemas.py`, `validation.py`, `service.py`, `tests/unit/control_plane/test_await_input_submission.py` (new) | each refusal of §4.1 is a 422 naming its field, `assignees` included; `expires_after_seconds` of 86,401 is refused and 86,400 accepted; the API's bound equals the scheduler's `HUMAN_PARK_MAX_SECONDS` (both imported); `max_files` of 11 is refused; `await_input` lands in `metadata.dispatch` and changes the spec digest; a caller-sent `metadata.await_input` is refused as reserved; an await step is never in `integrates`; `form: "answers"` without a `questions.json` source is refused |
-| 1 | **HW-WORKER** (Track B) | `apps/agent-worker/agent_worker/inputs.py`, `tests/unit/worker/test_input_attachments.py` (new) | an entry with two attachments stages them under `review.files/`; an attachment whose URI is in another tenant, another task or outside `artifacts/` fails with `InputUnavailable` and stages nothing; an attachment with no `bytes` is refused; attachments count toward `max_total_bytes`; a resumed attempt with them in its checkpoint does not re-fetch; an entry without `attachments` stages exactly as today |
+| 1 | **HW-WORKER** (Track B) | `apps/agent-worker/agent_worker/inputs.py`, `tests/unit/worker/test_input_attachments.py` (new) | an entry with two attachments stages them under `review.files/`; an attachment whose URI is in another tenant, another agent or outside `artifacts/` fails with `InputUnavailable` and stages nothing; an attachment with no `bytes` is refused; attachments count toward `max_total_bytes`; a resumed attempt with them in its checkpoint does not re-fetch; an entry without `attachments` stages exactly as today |
 | 2 | **HW-API-ANSWER** | `apps/swarm-api/swarm_api/awaitinput.py` (new), `inputwriter.py` (new), `routes/await_input.py` (new), `main.py`, `auth.py`, `groups.py`, `routes/schedule_tick.py`, `apps/swarm-api/pyproject.toml`, `apps/swarm-api/uv.lock`, `tests/unit/control_plane/test_await_input_api.py` (new), `tests/unit/control_plane/test_await_input_files.py` (new) | a service-account caller is 403 and nothing is written; another tenant's step is 404; a member removed from the group after the cache filled is 403 (the fresh check); a lookup failure is 503 and nothing is written; a personal tenant's step refuses anyone but its owner; an answer before the park is 409 `not_open`; a second answer is 409 `already_answered`, while a replay of the same `answer_id` is the original 200; a form with a runtime-built fake token is stored redacted; a text file holding one is 422 `file_contains_credential` naming the line and rule and nothing is written; a zip or an executable is 415; a PNG named `.md` is refused; a 16 MiB + 1 byte body is 413 before any GCS call and a lying `Content-Length` is caught by the counting reader; a fifth concurrent multipart answer is 429; a GCS failure writes nothing to Firestore; answer, expiry and cancel racing in one test commit exactly once; every recorded URI, the attachments' included, passes the worker's `artifact_key` unchanged (imported, not restated); `inputwriter` refuses a key outside the condition's shape; `expire_due` honours `fail` and `default`; an unsigned spec is refused |
 | 2 | **HW-NOTIFY** | `apps/swarm-api/swarm_api/notifications.py`, `approvals.py`, `tests/unit/control_plane/test_await_input_notifications.py` (new) | a reader on `remind` gets the item and another member does not; a reader in another tenant does not; the item id advances once per `remind_after_seconds` and nothing is written to Firestore by reading it; the inbox projects `input:<task>` for every member, has no decide path, and the item is gone once answered |
 | 3 | **HW-UI** | `apps/swarm-ui/src/AwaitInputCard.tsx` (new), `awaitInput.ts` (new), `Workflows.tsx`, `RunSteps.tsx`, `Approvals.tsx`, `SubmitWorkflow.tsx`, their vitest files | the card renders each form; Approve posts `MERGE`; the picker refuses an eleventh file and a total over 16 MiB before sending; the warning is shown above the picker and beside Send; `max_files: 0` shows no picker; an expired or answered step shows who, when and how and offers no form; the pill reads "waiting for a member"; an image attachment is offered as a download, not rendered |
@@ -1689,7 +1689,7 @@ the profile refused while the catalogue serves it unavailable.
 
 Where the build differs from §4.5: the `answers` form is drawn from the
 questions the step's own route serves, not through `QuestionsCard.tsx`,
-whose Answer posts to the task's answers route rather than the step's.
+whose Answer posts to the agent's answers route rather than the step's.
 
 **ROLES-DOCS (2026-10-19, part of #1518).** §4.2's step 3 carries the
 amendment above: workspace roles (`docs/design/workspace-roles.md`) let a

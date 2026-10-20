@@ -39,7 +39,7 @@ What the design settles, in one line each:
   A consumer is a NAME from a platform catalogue: a runner profile, a runtime
   tool, or a platform component. Never an image, a command or a path
   (§2.2, §2.3).
-* **Enforcement, recommended: swarm-api releases a task's granted secrets to
+* **Enforcement, recommended: swarm-api releases an agent's granted secrets to
   its worker once per attempt**, on a request signed with the attempt key and
   fenced on the generation. The tenant's worker account holds no read grant on
   a workspace secret, so an agent that mints that account's token reads
@@ -65,7 +65,7 @@ whether or not it is meant to.
 |---|---|---|---|---|
 | `swarm-tenant-<t>-anthropic`, `-openai` (any `known_providers()` name) | the runner's provider key (metered API key or Claude subscription token) | any tenant member, `POST /v1/tenants/me/credentials` → `apps/swarm-api/swarm_api/credentials.py::SecretManagerCredentials.put_credential`, which grants the tenant's worker account `secretAccessor` **on that secret** (`_grant_accessor`) | the worker, as the tenant's GSA, `apps/agent-worker/agent_worker/secrets.py::resolve_credentials`; only the variable names the frozen `RunnerProfile.secrets` lists are exported, into **the runner child's environment only** (`kubernetes/README.md`, "No provider key in a Job's environment") | **yes**, by design: the CLI reads it from its environment, and its Bash tool inherits that environment |
 | `swarm-tenant-<t>-typesafe` | the tenant's TypeSafe key, for jev-browser | an admin, `PUT /v1/provider-keys/typesafe/tenant` (`apps/swarm-api/swarm_api/routes/provider_keys.py`), through the same `put_credential` | the worker, as the tenant's GSA, `apps/agent-worker/agent_worker/jevkey.py::resolve`, only on a live-browser attempt whose workspace judges with TypeSafe; written to `private/jev-typesafe.key` (0600, `O_EXCL`, `O_NOFOLLOW`); `runners/jev_launch.py` puts it in the jev MCP server's environment only. Also the worker's Jev code-judgment client (`agent_worker/judge/register.py`), when the workspace opted in to Jev for code with the TypeSafe backend: `private/jev-key` | **yes**: the agent can read the MCP config and both files (same uid), as `jevkey.py` and `judge/register.py` record |
-| `swarm-tenant-u-<user>-typesafe` | a person's own TypeSafe key | that person, `PUT /v1/provider-keys/typesafe/user` | as above, when the submitter's **confirmed** personal tenant holds one; it wins over the tenant key (`provider_keys.resolve_provider_key`, restated by `jevkey.candidates`). On a group-tenant task it is readable only where `terraform/bootstrap/typesafe_user_keys.tf` grants that group's worker account on that one secret (an owner apply per row); otherwise `jev_key_unreadable` and the tenant key is tried | as above |
+| `swarm-tenant-u-<user>-typesafe` | a person's own TypeSafe key | that person, `PUT /v1/provider-keys/typesafe/user` | as above, when the submitter's **confirmed** personal tenant holds one; it wins over the tenant key (`provider_keys.resolve_provider_key`, restated by `jevkey.candidates`). On a group-tenant agent it is readable only where `terraform/bootstrap/typesafe_user_keys.tf` grants that group's worker account on that one secret (an owner apply per row); otherwise `jev_key_unreadable` and the tenant key is tried | as above |
 | `swarm-tenant-<t>-git` | the tenant forge token | the operator only, `scripts/create-secrets.sh --stdin` | the worker, `secrets.py::resolve_git_token`, written to a git credentials file the agent is never told about (`gitops.py`); swarm-api, `forge.py::SecretManagerForgeTokens`, for issue preview and open work (`var.forge_readers`, `terraform/modules/secret_manager/main.tf` accessor binding) | not through the git tools: since runner-git-tools ([runner-git-tools.md](../runner-git-tools.md)) the agent's container holds no forge token for them |
 | `swarm-tenant-<t>-git-u-<16 hex>` | a person's GitHub App user token (kind `app_user`) and, one per owner, a fallback personal token | swarm-api at onboarding (`gittokens.py::provider_suffix`, `owner_suffix`; `forgeapp.py::ForgeApp.store_owner_token`); refreshed by the 15-minute sweep | the worker, the slot named by the signed `Task.forge_credential`; swarm-api; under one prefix-conditioned grant per tenant, `terraform/bootstrap/forge_user_slots.tf` | as the tenant forge token |
 | `swarm-tenant-<t>-git-merge`, `-git-review` | the retired #295 App keys | none now | `credentials.refuse_unbindable_provider` refuses them before any write, so a worker account is never bound to them | no |
@@ -262,7 +262,7 @@ the only reader. Once per attempt, before the agent starts, the worker calls
 and swarm-api, in order:
 
 1. verifies the signature against the key registered for this attempt, and
-   that the task is STARTING or RUNNING at this lease and **this generation**
+   that the agent is STARTING or RUNNING at this lease and **this generation**
    with the lease unreleased (the browser-session slot's fence). A stale
    generation gets 409 and nothing, so a stale worker never holds a secret
    (invariant 5);
@@ -270,7 +270,7 @@ and swarm-api, in order:
    the request;
 3. queries `workspace_secret_grants` where `tenant_id == task.tenant_id`,
    `enabled == true`, `consumer in [the set]`. A personal secret on a group
-   task is included only under §9 Q3's rule;
+   agent is included only under §9 Q3's rule;
 4. reads each secret's `current_version` and returns
    `[{name, slot, kind, version, value}]` over TLS;
 5. writes one release row per secret (§4.4) in the same request.
@@ -344,7 +344,7 @@ before the agent is spawned.
   * the attempt key must be registered for every attempt that has any grant.
     Today the scheduler hands the worker a registration nonce only when the
     deployment has the child key and swarm-api's address, and then for every
-    top-level task and for a child whose profile offers git tools
+    top-level agent and for a child whose profile offers git tools
     (`scheduler/dispatch.py::worker_env`, "THE ATTEMPT KEY"). A deployment
     with the child path off registers no key, so B needs it on wherever
     secrets are used, and a child without git tools needs one when it has a
@@ -465,13 +465,13 @@ change to both, and `swarm_api.typesafe_ticket` is the reference.
   signature never verifies. The fence is the egress ticket's: RUNNING under
   this attempt's live lease at this generation, no cancel requested. A stale
   generation is 409 and nothing is minted. Then the workspace (the fenced
-  task's tenant, never a field of the request) must have chosen the `typesafe`
+  agent's tenant, never a field of the request) must have chosen the `typesafe`
   judgment backend (403 `typesafe_backend_off`), and
   `provider_keys.resolve_provider_key` must find a key from the status records
   (403 `typesafe_no_key`): the submitter's confirmed personal key, else the
-  tenant's, with one narrowing (§10 Q3): on a GROUP workspace's task the
+  tenant's, with one narrowing (§10 Q3): on a GROUP workspace's agent the
   submitter's own key is never named, because a personal key reaches a group
-  task only by per-secret opt-in and none exists for it yet; the group's key is
+  agent only by per-secret opt-in and none exists for it yet; the group's key is
   named or the ticket is refused. The answer is `201 {ticket, expires_in, scope}`. The ticket lives
   `TYPESAFE_TICKET_SECONDS` (300 by default, clamped to 60-900). swarm-api
   reads no secret value to mint it. With no `SWARM_TYPESAFE_FWD_KEY` the route
@@ -648,7 +648,7 @@ the only option where minting the GSA token gets the agent nothing, where a
 tool-level checkbox means something (a `claude-code-browser` attempt with
 `browser_tool: playwright` is not released the jev-browser key), where a toggle
 takes effect at the next attempt without an IAM round-trip, and where personal
-secrets on a group task no longer need an owner-applied per-person IAM row
+secrets on a group agent no longer need an owner-applied per-person IAM row
 (the open item in provider-keys.md §2). Its limit, stated once more: the
 boundary is the attempt. Two consumers in one attempt (the profile and its
 tool) share what was released to either.
@@ -679,12 +679,12 @@ tool) share what was released to either.
 ### 4.2 Required and optional
 
 A grant to a profile slot is optional unless the profile declares the slot
-`required` (§7 request A). A required slot with no enabled grant parks the task
+`required` (§7 request A). A required slot with no enabled grant parks the agent
 `CREDENTIAL_MISSING` **before** it leases, at no cost, and it starts by itself
 once the grant is ticked, which is today's rule for a missing provider key.
 Admission counts a grant as present when it is enabled. A grant's
 `attestation` is enforced by the release, not by admission, so a forged grant
-can at worst admit a task that the worker's backstop then parks ("What
+can at worst admit an agent that the worker's backstop then parks ("What
 SEC-ADMIT-PARK built", end of §4).
 
 ### 4.3 Rotation and revocation
@@ -717,7 +717,7 @@ SEC-ADMIT-PARK built", end of §4).
   the response's `failed`. The next hour retries it. The version stays enabled
   past its grace, and is never destroyed.
 * **Revoke a grant** (untick) takes effect at the **next attempt**: the
-  release is computed per attempt, and a parked task that resumes is a new
+  release is computed per attempt, and a parked agent that resumes is a new
   attempt. A running attempt keeps what it holds, because a file cannot be
   unread. The console says so beside the checkbox, and offers "untick and
   rotate" for the case where a running attempt must stop holding a working
@@ -772,12 +772,12 @@ from §3.3, and why:
 
 * **The attempt is found from its id.** The body is `{generation}` and
   nothing else (an extra field is 422), so swarm-api finds the one lease
-  naming the path's attempt id, takes the tenant and the task from it, and
+  naming the path's attempt id, takes the tenant and the agent from it, and
   verifies the worker identity and the attempt-key signature under
   `swarm-secrets-release/v1` against the registration for that whole tuple. A
   wrong generation, a wrong key, another route's purpose, another tenant's
   identity or an unknown attempt is the same 403.
-* **Fenced twice.** The task must be STARTING or RUNNING at this lease and
+* **Fenced twice.** The agent must be STARTING or RUNNING at this lease and
   generation, the lease unreleased, before anything is read, and again in the
   transaction that writes the rows. A worker superseded while Secret Manager
   answered gets 409 and nothing.
@@ -795,7 +795,7 @@ from §3.3, and why:
   agent that learned one of its own workspace's secret ids could write an
   enabled grant for it. SEC-GRANT-ATTEST closes it. "What SEC-GRANT-ATTEST
   built" below says what is now stopped and what still is not.
-* **Q3, as decided.** A personal secret reaches a group task only when its
+* **Q3, as decided.** A personal secret reaches a group agent only when its
   opt-in list names the group, its record's creator and the personal tenant's
   principal are both the signed submitter, and the submitter is a member of
   the group NOW. That is asked of the directory for the group in
@@ -855,12 +855,12 @@ required slot has an enabled grant. Held by
   and a test holds it to `attempt_consumers` for every profile and every
   `browser_tool` value. The components (`merge`, `indexer`) declare no slot,
   so they can require nothing.
-* **A grant counts when it is enabled** and its own document names the task's
+* **A grant counts when it is enabled** and its own document names the agent's
   workspace. A grant naming no slot fills its consumer's only slot. **The
   release, not admission, is where a grant is proven:** admission reads no
   secret record of the workspace's own and no `attestation`, so a forged
-  grant can at worst admit a task that the worker's backstop then parks.
-* **Q3 at admission.** A group task counts the submitter's personal secret
+  grant can at worst admit an agent that the worker's backstop then parks.
+* **Q3 at admission.** A group agent counts the submitter's personal secret
   under the release's rule: the personal tenant names them, and the record is
   theirs, `personal`, `active` and opted in to this workspace. The one check
   admission cannot make is the directory's "a member of the group NOW", so a
@@ -874,7 +874,7 @@ required slot has an enabled grant. Held by
   promoted at once, even when the worker parked because swarm-api was
   unreachable, as it was before this lane.
 * **One query per admission pass**, of every enabled grant, made lazily: only
-  a task that requires a slot reads it. No catalogue slot is required yet
+  an agent that requires a slot reads it. No catalogue slot is required yet
   (request 80), so today no pass reads anything extra.
 
 ### What SEC-GRANT-ATTEST built (2026-10-15, part of #1347)
@@ -1223,10 +1223,10 @@ That reverses `credentials.py`'s "no read path" rule for this one route.
 (a) **yes, only `secrets:release`, signed and fenced, with the sweep test
 amended to name it** (recommended); (b) no, which leaves A′ or C.
 
-**Q3. May a person's own secret be used in a group workspace's tasks they
-submit?** (a) never; (b) **per secret, opt-in by its owner, only on tasks that
+**Q3. May a person's own secret be used in a group workspace's agents they
+submit?** (a) never; (b) **per secret, opt-in by its owner, only on agents that
 person submits** (recommended; it replaces the per-person IAM rows of
-`typesafe_user_keys.tf`, and the group's other members' tasks never get it);
+`typesafe_user_keys.tf`, and the group's other members' agents never get it);
 (c) always.
 
 **Q4. Who manages a group workspace's secrets?** (a) **platform admins only,
@@ -1264,7 +1264,7 @@ The owner answered §9 in this session, and these answers bind the build plan in
 | Q2 release route | **Allowed**, as a consequence of Q1: `POST /v1/attempts/{id}/secrets:release` is the one route that serves credential material, and `test_no_route_serves_credentials` is amended to name it |
 | Q3 personal secrets in group workspaces | **Opt-in per secret, only on the owner's own submissions** |
 | Q4 who manages a group's secrets | **Platform admins only**; superseded 2026-10-19 by workspace-roles.md's Q6: the group workspace's `admin`, and platform admins |
-| Q5 rotation | **The previous version stays enabled for 24 hours**, then is disabled (not destroyed). This differs from the recommendation: tasks already running keep working across a rotation |
+| Q5 rotation | **The previous version stays enabled for 24 hours**, then is disabled (not destroyed). This differs from the recommendation: agents already running keep working across a rotation |
 | Q6 release audit rows | **90 days, by a Firestore TTL**, for every release row |
 | Q7 runner provider keys and pool accounts | **Listed read-only** on the Secrets page, not moved |
 | Q8 inject mode | **In the first build, for TypeSafe.** This differs from the recommendation: a platform forwarder adds the TypeSafe key to jev's requests, so the TypeSafe key never enters an agent pod. File delivery remains for other providers |
@@ -1272,8 +1272,8 @@ The owner answered §9 in this session, and these answers bind the build plan in
 
 **Phase 2: user-signed submissions** (owner, 2026-10-14 ~22:40 PDT, issue #1347):
 - each person gets a signing key (a console passkey, or a key the sc plugin keeps in the OS keychain);
-- every task submission is signed, building on #342's signed step specs;
-- a personal secret is released only to a task whose spec carries a valid signature from the secret's owner, and a group-workspace secret needs a current member's signature;
+- every agent submission is signed, building on #342's signed step specs;
+- a personal secret is released only to an agent whose spec carries a valid signature from the secret's owner, and a group-workspace secret needs a current member's signature;
 - headless jobs (schedules, issue runs, CI-fix rounds) use owner-signed standing grants.
 
 This comes after the attempt-signed release of phase 1, so the build plan gains a phase after SEC-RELEASE.

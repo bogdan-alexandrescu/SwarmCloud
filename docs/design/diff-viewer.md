@@ -259,9 +259,9 @@ Every read in every variant goes through the existing routes:
 
 No variant reads GCS directly or uses a signed URL. A masked secret stays
 `********`, with the masked count shown. A workflow or run view is composed
-client-side from per-task reads, so each read passes its own tenant check. If
+client-side from per-agent reads, so each read passes its own tenant check. If
 a combined `/v1/workflows/{id}/changes` route is ever added, it must call the
-same per-task service path, never a bucket listing. A task whose publish was
+same per-agent service path, never a bucket listing. An agent whose publish was
 refused for a credential shows **withheld** in every entry point, with no
 lines.
 
@@ -304,7 +304,7 @@ Changes matrix (`WorkflowChanges.tsx`) lists every finding of every review
 its gated steps read (`wfreview.reviewFindings`) above the files, and the
 files the review named sort first, tagged "named by the review". The digest
 check is `wfreview.placeFinding`: a finding is pinned only on a step's patch
-that the review read (same task, same file name) and whose bytes as shown
+that the review read (same agent, same file name) and whose bytes as shown
 hash to the recorded `sha256`. The console measures that hash from the
 served text (`WorkflowChanges.patchDigest`) and only when the text IS the
 stored bytes: the whole object, nothing masked, and `invalid_utf8_bytes` a
@@ -317,7 +317,7 @@ severity and summary on hover and focus and a list of buttons above the
 lines that reaches each one by keyboard; a pin whose line is in no hunk is
 listed as not pinned. The worker keeps findings as text, so a severity is
 shown only where the finding object carried one, and "Not graded"
-otherwise. The agent's own Changes tab draws no pins: it holds one task,
+otherwise. The agent's own Changes tab draws no pins: it holds one agent,
 not the gated step that recorded the review.
 
 Every lane runs `scripts/changed-guards.sh`. DIFF1 keeps the existing

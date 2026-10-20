@@ -1,4 +1,4 @@
-# Registered MCP servers: a task's agent queries its caller's own MCP server
+# Registered MCP servers: an agent queries its caller's own MCP server
 
 **Status: PROPOSED 2026-10-17 (lane CALLER-MCP-DESIGN, part of #1433);
 approved by the owner on 2026-10-17 with the answers to §7 in PR 1466's
@@ -35,11 +35,11 @@ Every code citation is `path::symbol` or a path, read at `35f2a61` on
   URL, a header, a transport or a command (invariant 10). A name that is not
   registered, disabled, or not allowed for the profile is refused **at
   submission**, before admission (§4.3).
-* **A per-run credential travels beside the task, never in it**:
+* **A per-run credential travels beside the agent, never in it**:
   `mcp_credentials: {"kb": {"value": …, "expires_in": 3600}}`, a top-level
   request field. swarm-api writes it to a per-submission Secret Manager secret
   (`swarm-tenant-<t>-mcpc-<16 hex>`, with a Secret Manager TTL) and stores only
-  the secret's name; it is destroyed when the task ends (§4.4). A long-lived
+  the secret's name; it is destroyed when the agent ends (§4.4). A long-lived
   credential is a workspace secret granted to the consumer `mcp:kb` (§4.5).
 * **The credential never enters the agent's reach.** Once per attempt the
   worker asks swarm-api, on an attempt-key-signed, generation-fenced request
@@ -75,7 +75,7 @@ must **query that server during its run and write results back through it**,
 with **a credential valid for that one run only**. Its four acceptance
 checks:
 
-1. a claude-code task dispatched with a registered MCP server and a
+1. a claude-code agent dispatched with a registered MCP server and a
    credential calls a tool on that server, and the server sees the
    credential;
 2. the same dispatch naming an unregistered server is refused before
@@ -86,7 +86,7 @@ checks:
 
 ### 1.2 What the code allows today (read 2026-10-17 at `35f2a61`)
 
-* **A task's inputs are its prompt, one repository and its profile's declared
+* **An agent's inputs are its prompt, one repository and its profile's declared
   inputs.** `apps/swarm-api/swarm_api/schemas.py::TaskCreate` has eleven
   fields (`runner_profile`, `input`, `priority`, `metadata`,
   `repository_url`, `repository_ref`, `timeout_seconds`, `max_attempts`,
@@ -140,13 +140,13 @@ server's name is never contacted. The runner's own account is in the
 
 * Register `kb → https://kb.example.com/mcp` once for a workspace, with
   "agents may call `search` and `record_decision`, nothing else".
-* Dispatch a claude-code or codex task, or a workflow whose steps say
+* Dispatch a claude-code or codex agent, or a workflow whose steps say
   `mcp_servers: ["kb"]`, with a credential minted by their own application
   for that dispatch, valid for an hour.
 * Have the agent call `kb.search` as often as it needs during the run and
   `kb.record_decision` to write its result back, while the credential is never
   in the agent's environment, files, transcript, artifacts, checkpoint or the
-  platform's logs, and is destroyed when the task ends.
+  platform's logs, and is destroyed when the agent ends.
 
 ---
 
@@ -158,7 +158,7 @@ server's name is never contacted. The runner's own account is in the
    demand.** Nothing in this design runs before a lease: registration is a
    Firestore document, the stored per-run credential is a Secret Manager
    secret (storage, not capacity), and every check before the lease is a
-   Firestore read. A task whose server was disabled parks
+   Firestore read. An agent whose server was disabled parks
    `CREDENTIAL_MISSING` before it leases, at no cost (§4.10). The relay runs
    inside the worker process the attempt already has; there is no new pod
    per attempt and no warm pool.
@@ -192,8 +192,8 @@ server's name is never contacted. The runner's own account is in the
 9. **Per-tenant isolation.** A registration belongs to one tenant and every
    read compares the stored `tenant_id`, answering a mismatch with the same
    404 as an absent one (the rule `repositories.py` keeps). The attach route
-   takes the tenant from the fenced task, never from the request. A per-run
-   credential lives in a secret named under the task's tenant
+   takes the tenant from the fenced agent, never from the request. A per-run
+   credential lives in a secret named under the agent's tenant
    (`Tenant.secret_name`), readable by swarm-api only. The tenant's worker
    account holds **no** grant on it, so an agent that mints the pod's GSA
    token reads nothing.
@@ -229,7 +229,7 @@ each option below is judged against them:
 * **Egress is open to public addresses on 443, 80 and 22** and closed to
   private ranges (`kubernetes/network-policies/allow-egress.yaml`, rule 4);
   there is no hostname allowlist and none is planned, because the browser
-  profile must fetch whatever page a task names.
+  profile must fetch whatever page an agent names.
 
 ### 2.3 What it needs from `apps/common/swarm_common/`
 
@@ -344,7 +344,7 @@ first two and leaves the third to the owner (Q3):
 
 | source | how | strength | cost |
 |---|---|---|---|
-| **dispatch** (the issue's ask) | the caller sends a value with the dispatch; swarm-api stores it in a per-submission secret with a TTL; destroyed at task end | the caller controls lifetime and scope; nothing for their server to learn | a value at rest for the queue time, in Secret Manager, readable by swarm-api only |
+| **dispatch** (the issue's ask) | the caller sends a value with the dispatch; swarm-api stores it in a per-submission secret with a TTL; destroyed at agent end | the caller controls lifetime and scope; nothing for their server to learn | a value at rest for the queue time, in Secret Manager, readable by swarm-api only |
 | **workspace secret** | an admin stores a long-lived key in the workspace store and grants it to `mcp:<name>` | no per-dispatch plumbing for callers whose server takes one key | the key is long-lived; rotation is the store's (24 h overlap) |
 | **platform-minted** | swarm-api mints a signed JWT per attempt (audience the registered URL, claims tenant/task/attempt/generation, minutes of life) and publishes a JWKS; the caller's server verifies it | nothing caller-supplied is ever at rest; the token cannot outlive the attempt; the server learns which attempt is calling | the caller's server must verify our JWT; a new signing key and a public JWKS route |
 
@@ -391,12 +391,12 @@ reason `repositories.py` gives: the shape is not the frozen contract's.
 | `allowed_profiles` | a subset of the profiles that declare `mcp_servers` (request M1); empty means all of them |
 | `allowed_tools` | MCP tool names an agent may call, `[A-Za-z0-9_.-]{1,64}`, at most 64; empty means every tool the server lists (Q4) |
 | `limits` | `{max_request_bytes, max_response_bytes, calls_per_minute, call_timeout_seconds}`; defaults 1 MiB, 4 MiB, 60, 60; ceilings 8 MiB, 32 MiB, 600, 300 |
-| `enabled` | the kill switch. Disabling parks queued tasks that name it (§4.10); it is never deleted, so its history reads beside `admin_audit` |
+| `enabled` | the kill switch. Disabling parks queued agents that name it (§4.10); it is never deleted, so its history reads beside `admin_audit` |
 | `revision` | incremented on every change; recorded on every attach row, so "which URL did attempt X call" has an answer |
 | `created_at`, `created_by`, `updated_at`, `updated_by` | emails from the verified session, never from a body |
 
 **No credential field, no secret name.** A `workspace_secret` server's key is
-found through the grant (§4.5), a `dispatch` server's through the task's
+found through the grant (§4.5), a `dispatch` server's through the agent's
 credential row (§4.4).
 
 **Who registers** is Q1; the recommendation is platform admins only, as for a
@@ -415,7 +415,7 @@ Every write is audited in the same transaction, in `admin_audit`:
 
 ### 4.3 How a step names a server
 
-**In the task's `input`**, as the profile-declared input `mcp_servers` (request
+**In the agent's `input`**, as the profile-declared input `mcp_servers` (request
 M1): a list of one to four registered names, no duplicates.
 
 ```json
@@ -442,7 +442,7 @@ swarm-api then checks, in `service.py::_build_task` after
 
 | refusal | status, code |
 |---|---|
-| a name not registered for the task's tenant, or registered and disabled | 422 `mcp_server_unregistered` (one code for both, so the answer does not say whether another tenant has the name) |
+| a name not registered for the agent's tenant, or registered and disabled | 422 `mcp_server_unregistered` (one code for both, so the answer does not say whether another tenant has the name) |
 | registered, but the profile is not in `allowed_profiles` | 403 `mcp_server_profile_refused` |
 | `auth.mode == dispatch` and no `mcp_credentials` entry for it | 422 `mcp_credential_missing` |
 | an `mcp_credentials` key the input does not name, or one for a server whose mode is not `dispatch` | 422 `mcp_credential_unexpected` |
@@ -460,7 +460,7 @@ credential is the caller's for the whole submission: each step that names a
 `dispatch` server uses that one stored credential. A step that names a server
 the map has no entry for is refused as above.
 
-**Children.** A child task submitted by a running agent
+**Children.** A child agent submitted by a running agent
 ([child-tasks.md](child-tasks.md)) may name only servers its parent named, and
 uses the parent's stored credential row; a child cannot add a server or a
 credential, because the agent writing the child's spec is exactly the party
@@ -497,17 +497,17 @@ or a hash.
   role holds `secretmanager.secrets.create`, `versions.add` and
   `secrets.delete` and asks for any it lacks. The tenant worker account holds
   nothing on `-mcpc-`, and MCP-IAM's tftest proves it.
-* **Destroyed when.** The task (every task of the workflow, for a workflow's
+* **Destroyed when.** The agent (every agent of the workflow, for a workflow's
   map) is terminal, or `expires_at` passes, whichever is first:
   `POST /v1/admin/mcp-credentials/sweep`, run every 10 minutes by a Cloud
   Scheduler job as the rollup-sweeper account (the shape of the workspace
   secrets' rotation sweep), deletes the secret and marks the row
   `destroyed`. Not at the end of each attempt, because a retry is a new
-  attempt of the same task and needs it (Q2). The worker's copy dies with the
+  attempt of the same agent and needs it (Q2). The worker's copy dies with the
   attempt regardless (§4.7).
-* **Expiry in the queue.** A task whose credential expires before it is
+* **Expiry in the queue.** An agent whose credential expires before it is
   admitted fails `mcp_credential_expired` at admission, with no lease
-  (§4.10). It cannot park: no one can supply a new value to a queued task.
+  (§4.10). It cannot park: no one can supply a new value to a queued agent.
 
 ### 4.5 Long-lived credentials: a workspace secret granted to `mcp:<name>`
 
@@ -545,29 +545,29 @@ signed with the attempt key, purpose "swarm-mcp-attach/v1"
 ```
 
 Worker-only, like `secrets:release`: no person can call it, and the request
-carries no tenant, task, server name or consumer to choose. In order,
+carries no tenant, agent, server name or consumer to choose. In order,
 refusing at the first failure:
 
 1. **The attempt.** The path's attempt id names one lease, which names the
-   tenant and task; the tenant's worker identity, then the attempt key's
+   tenant and agent; the tenant's worker identity, then the attempt key's
    signature over the raw body under `swarm-mcp-attach/v1` (its own purpose,
    so a release, egress, live or child signature never verifies). Every
    failure is the same 403.
 2. **The fence** (invariant 5). STARTING or RUNNING at this lease and this
    generation, lease unreleased; else 409 and nothing.
 3. **Once.** A second attach for the attempt is 410.
-4. **The signed spec.** The server names are read from the task's verified
+4. **The signed spec.** The server names are read from the agent's verified
    `input.mcp_servers` (`verdictpublish.spec_refusal`, as the release does);
-   an unverified task is attached nothing.
+   an unverified agent is attached nothing.
 5. **The registrations**, re-read now: a server disabled since submission, or
-   whose `allowed_profiles` no longer includes the task's profile, is
+   whose `allowed_profiles` no longer includes the agent's profile, is
    `withheld` with that reason. The registration's current `revision` is
    used, so an admin's URL change takes effect at the next attempt, as a
    grant change does in the store.
-6. **The credentials.** `dispatch`: the task's row (or its workflow's, or its
+6. **The credentials.** `dispatch`: the agent's row (or its workflow's, or its
    parent's for a child), `state == live`, unexpired, then the Secret Manager
    version. `workspace_secret`: the enabled, attested grant
-   `mcp:<name>` of the task's tenant, then its `current_version`. Missing or
+   `mcp:<name>` of the agent's tenant, then its `current_version`. Missing or
    unreadable: `withheld` with a reason; a read swarm-api may not make (the
    IAM not applied) is 503 with a reason and no name.
 7. **The rows.** One `mcp_attach_releases` row per server
@@ -610,7 +610,7 @@ security route. The sibling reuses its fence and signature helpers
 only under three conditions (`dispatch.py::worker_env`, "THE ATTEMPT KEY");
 MCP-SCHED adds "the task's signed input names an MCP server", as
 SEC-RELEASE added `consumes_workspace_secrets`. A deployment with the child
-key off registers no key, so a task naming a server there is refused at
+key off registers no key, so an agent naming a server there is refused at
 submission with `mcp_unavailable` (503) rather than admitted to fail.
 
 ### 4.7 The worker: attach, relay, config, cleanup
@@ -791,7 +791,7 @@ lease:
   registration is enabled again (invariant 1: parked costs nothing);
 * a `dispatch` server whose credential row is `destroyed` or past
   `expires_at`: **`FAILED`** with `mcp_credential_expired`, no lease, no
-  retry. Nobody can hand a queued task a new value, so parking would wait for
+  retry. Nobody can hand a queued agent a new value, so parking would wait for
   ever.
 
 The worker's attach (§4.6 step 5-6) repeats both checks, because state moves
@@ -902,12 +902,12 @@ changes at runtime, so the contract cannot list names as `choices`.
 
 #### Rollback
 
-Remove the key. Tasks already stored with it fail `check_inputs` on any
+Remove the key. Agents already stored with it fail `check_inputs` on any
 re-validation, so roll back only with the registry disabled.
 
 #### What it would break
 
-Nothing that exists: a task without the key is unchanged. The plugin's local
+Nothing that exists: an agent without the key is unchanged. The plugin's local
 catalogue copy (`apps/swarm-mcp/swarm_mcp/profiles.py`) must learn the input
 in the same release, or a local check refuses it (lane MCP-SC).
 
@@ -1001,13 +1001,13 @@ Nothing; new names.
 Requests **no change**, recorded so no lane adds one.
 
 * **Spec signing:** `input` is already in `canonical_step_spec`, so
-  `mcp_servers` is signed by format 3. The credential is not in the task and
+  `mcp_servers` is signed by format 3. The credential is not in the agent and
   must not be signed into it. `SPEC_FORMAT` stays 3.
 * **Park reason:** a disabled registration parks `CREDENTIAL_MISSING`, with
   code `mcp_server_unavailable`, exactly as request 83 reused it for a missing
   secret grant.
-* **Event types:** the relay logs `mcp_call` as a structured log line, not a
-  task event; the attach's audit is its own collection. `EventType` is
+* **Event types:** the relay logs `mcp_call` as a structured log line, not an
+  agent event; the attach's audit is its own collection. `EventType` is
   unchanged.
 
 **Not requested:** `Tenant.secret_name` already spells `mcpc-<hex>`;
@@ -1025,16 +1025,16 @@ applies to MCP-IAM, MCP-API, MCP-SUBMIT and MCP-WORKER.
 
 | order | lane | territory | red-first tests (each fails before the change) |
 |---|---|---|---|
-| 0 | **MCP-CONTRACT** (owner applies) | `apps/common/swarm_common/profiles.py`, `apps/common/swarm_common/models.py`, `docs/contract-change-requests.md`, `tests/unit/common/test_mcp_contract.py` (new) | `check_inputs` accepts `mcp_servers: ["kb"]` on claude-code, codex, claude-code-browser and refuses it on `browser`, `merge`, `indexer` and `claude-code-review` (`indexer` and `claude-code-review` share `_CLI_AGENT_INPUTS`, which is why the input has a dict of its own); `check_inputs` still accepts `issue` on `indexer` and `claude-code-review` (their inputs are unchanged); refuses five names and a non-string; `consumer_name("mcp", "kb")` round-trips through `parse_consumer`; `MCP_SERVER_NAME` refuses `swarm-git`'s prefix use via the reserved list; `canonical_step_spec` of a task with `mcp_servers` differs from the same task without (it is signed) |
+| 0 | **MCP-CONTRACT** (owner applies) | `apps/common/swarm_common/profiles.py`, `apps/common/swarm_common/models.py`, `docs/contract-change-requests.md`, `tests/unit/common/test_mcp_contract.py` (new) | `check_inputs` accepts `mcp_servers: ["kb"]` on claude-code, codex, claude-code-browser and refuses it on `browser`, `merge`, `indexer` and `claude-code-review` (`indexer` and `claude-code-review` share `_CLI_AGENT_INPUTS`, which is why the input has a dict of its own); `check_inputs` still accepts `issue` on `indexer` and `claude-code-review` (their inputs are unchanged); refuses five names and a non-string; `consumer_name("mcp", "kb")` round-trips through `parse_consumer`; `MCP_SERVER_NAME` refuses `swarm-git`'s prefix use via the reserved list; `canonical_step_spec` of an agent with `mcp_servers` differs from the same agent without (it is signed) |
 | 1 | **MCP-IAM** (owner applies bootstrap) | `terraform/bootstrap/mcp_credentials.tf` (new), `tests/terraform/mcp_credentials.tftest.hcl` (new), `terraform/modules/scheduler/jobs.tf` (the 10-minute sweep job), `tests/terraform/mcp_sweep.tftest.hcl` (new), the NAT-address output in `terraform/infra/outputs.tf` | the access condition admits `swarm-tenant-a-mcpc-<hex>` and its versions; refuses `-wsec-`, `-git`, `-typesafe`, `swarm-github-app-*`, `agents-*`, another project; no grant to a tenant worker admits `-mcpc-`; the sweep job calls only its route as the rollup sweeper; every resource carries `managed-by=swarm-terraform` |
-| 1 | **MCP-API** | `apps/swarm-api/swarm_api/mcp_servers.py` (new), `mcp_credentials.py` (new), `routes/mcp_servers.py` (new, incl. the admin sweep), `routes/attempts_mcp.py` (new), `main.py` (routers, `UNCAPTURED_ROUTES`), `auth.py` (`ROLLUP_SWEEPER_ROUTES`), `workspace_secrets.py` (list `mcp:` consumers; `attempt_consumers` unchanged and held by a test never to derive one, §4.5), `tests/unit/control_plane/test_mcp_servers.py`, `test_mcp_attach.py` (new), `test_no_route_serves_credentials.py` (the second carve-out), `test_rollup_sweeper_is_narrow.py` | another tenant's server is 404; a non-admin write is 403; a `http://`, IP-literal, userinfo, non-443 or reserved-name registration is 422; every write has its audit row in the transaction; attach: unsigned or wrongly signed is 403, stale generation 409 with nothing, second call 410, a disabled server is withheld, an `mcp:` grant is attached and never released by `secrets:release`; a runtime-built credential is absent from every log line, Firestore document and non-attach response; the sweep destroys a terminal task's secret and marks the row |
-| 2 | **MCP-SUBMIT** (after MCP-API) | `apps/swarm-api/swarm_api/schemas.py`, `service.py`, `validation.py`, `children.py` (`_build_child`: the child's `mcp_servers` must be a subset of the parent's, read through `_read_parent`, and the child's task points at the parent's credential rows, because a child has no `mcp_credentials` of its own), `schedules.py` (`build_schedule` and `apply_edit`: refuse a `dispatch` server at creation and on edit), `tests/unit/control_plane/test_mcp_submit.py` (new) | unregistered name 422 before anything is stored; profile not allowed 403; missing, unexpected and malformed credentials 422; a runtime-built credential is in no 4xx body, no task document, no workflow document, no response, and exactly one Secret Manager `add_version` call with a TTL; a workflow's map serves every step; a child cannot add a server, and a child naming its parent's server is attached with the parent's credential; a schedule naming a `dispatch` server is refused at creation and on edit (a firing goes through `SubmissionService.submit_tasks`/`submit_workflow`, so `schedulefire.py` needs no change: a fire that somehow names one is refused `mcp_credential_missing` by `_build_task` like any submission) |
-| 2 | **MCP-SCHED** (after MCP-CONTRACT) | `apps/scheduler/scheduler/mcp_admission.py` (new), `credentials.py` (its sweep promotes the park), `dispatch.py` (`worker_env`'s attempt-key condition), `tests/unit/scheduler/test_mcp_admission.py` (new) | a disabled registration parks `CREDENTIAL_MISSING` before any lease and is promoted when re-enabled; an expired credential is FAILED with no lease; a task naming a server gets the attempt-key nonce; a task without one is unchanged |
+| 1 | **MCP-API** | `apps/swarm-api/swarm_api/mcp_servers.py` (new), `mcp_credentials.py` (new), `routes/mcp_servers.py` (new, incl. the admin sweep), `routes/attempts_mcp.py` (new), `main.py` (routers, `UNCAPTURED_ROUTES`), `auth.py` (`ROLLUP_SWEEPER_ROUTES`), `workspace_secrets.py` (list `mcp:` consumers; `attempt_consumers` unchanged and held by a test never to derive one, §4.5), `tests/unit/control_plane/test_mcp_servers.py`, `test_mcp_attach.py` (new), `test_no_route_serves_credentials.py` (the second carve-out), `test_rollup_sweeper_is_narrow.py` | another tenant's server is 404; a non-admin write is 403; a `http://`, IP-literal, userinfo, non-443 or reserved-name registration is 422; every write has its audit row in the transaction; attach: unsigned or wrongly signed is 403, stale generation 409 with nothing, second call 410, a disabled server is withheld, an `mcp:` grant is attached and never released by `secrets:release`; a runtime-built credential is absent from every log line, Firestore document and non-attach response; the sweep destroys a terminal agent's secret and marks the row |
+| 2 | **MCP-SUBMIT** (after MCP-API) | `apps/swarm-api/swarm_api/schemas.py`, `service.py`, `validation.py`, `children.py` (`_build_child`: the child's `mcp_servers` must be a subset of the parent's, read through `_read_parent`, and the child's agent points at the parent's credential rows, because a child has no `mcp_credentials` of its own), `schedules.py` (`build_schedule` and `apply_edit`: refuse a `dispatch` server at creation and on edit), `tests/unit/control_plane/test_mcp_submit.py` (new) | unregistered name 422 before anything is stored; profile not allowed 403; missing, unexpected and malformed credentials 422; a runtime-built credential is in no 4xx body, no task document, no workflow document, no response, and exactly one Secret Manager `add_version` call with a TTL; a workflow's map serves every step; a child cannot add a server, and a child naming its parent's server is attached with the parent's credential; a schedule naming a `dispatch` server is refused at creation and on edit (a firing goes through `SubmissionService.submit_tasks`/`submit_workflow`, so `schedulefire.py` needs no change: a fire that somehow names one is refused `mcp_credential_missing` by `_build_task` like any submission) |
+| 2 | **MCP-SCHED** (after MCP-CONTRACT) | `apps/scheduler/scheduler/mcp_admission.py` (new), `credentials.py` (its sweep promotes the park), `dispatch.py` (`worker_env`'s attempt-key condition), `tests/unit/scheduler/test_mcp_admission.py` (new) | a disabled registration parks `CREDENTIAL_MISSING` before any lease and is promoted when re-enabled; an expired credential is FAILED with no lease; an agent naming a server gets the attempt-key nonce; an agent without one is unchanged |
 | 3 | **MCP-WORKER** (after MCP-API) | `apps/agent-worker/agent_worker/mcp_attach.py` (new), `mcp_relay.py` (new), `lifecycle.py` (attach, relay start, fence flag, cleanup step), `tests/unit/worker/test_mcp_relay.py`, `test_mcp_attach.py` (new) | against a loopback fake server: the credential arrives as the registered header and nowhere else; a wrong local token is 401; a non-allowed tool is refused unforwarded; a body carrying a registered secret or a credential-shaped string is refused unforwarded; a 3xx is not followed; a private, loopback or metadata address is refused; size, rate and timeout caps hold; an echoed credential is scrubbed from the answer; after the fence flag nothing is forwarded; after close no reference remains and no file under the workspace holds the value; a 409 attach exits without the agent; a withheld server fails the attempt before the agent |
 | 4 | **MCP-RUNNERS** (after MCP-WORKER) | `apps/agent-worker/agent_worker/runners/claude_code.py` (`write_mcp_config`, the preamble line), `runners/codex.py`, `tests/unit/worker/test_mcp_runner_config.py` (new) | the claude-code config holds the relay URL and local token and never the credential; codex's overrides likewise; the pinned binaries list the fake server's tools through the relay (in the image test, where the binaries exist); a checkpointed `work/` holds no credential; the repository-`.mcp.json` question of §1.2 answered by a test either way |
 | 3 | **MCP-SC** (after MCP-SUBMIT) | `apps/swarm-mcp/swarm_mcp/server.py`, `sc.py`, `workflows.py`, `profiles.py`, `plugin/commands/sc.md` and `plugin/README.md`, `tests/unit/mcp/test_mcp_servers_tool.py` (new) | `swarm_dispatch` and a workflow step pass `mcp_servers` and `mcp_credentials` through; no tool schema accepts a registration or a store value; the plugin's log of a dispatch holds no credential |
 | 3 | **MCP-UI** (after MCP-API) | `apps/swarm-ui/src/McpServers.tsx` (new), its route in `App.tsx`, `paths.ts`, `apps/swarm-ui/src/Submit.tsx` (an MCP server picker beside the `BrowserToolPicker`, offering the tenant's enabled registrations by name; the `SUGGESTED` table is not where it goes, since that holds free-form keys), vitest files | the credential field is never rendered back after submit; a non-admin sees the list read-only; the NAT addresses are shown; a disabled server is not offered on Submit |
-| 5 | **MCP-ACCEPT** | `scripts/acceptance/groups/mcp.sh` (new), `tests/acceptance/test_caller_mcp.py` (new), a dev-only echo MCP server (where it runs is Q10) | the issue's four checks: the server sees the credential; an unregistered name is refused before admission; a search over every log route, artifact, checkpoint and event of the task finds no credential (control: the same search finds a planted canary); after the attempt the worker has exited and its workspace holds no copy |
+| 5 | **MCP-ACCEPT** | `scripts/acceptance/groups/mcp.sh` (new), `tests/acceptance/test_caller_mcp.py` (new), a dev-only echo MCP server (where it runs is Q10) | the issue's four checks: the server sees the credential; an unregistered name is refused before admission; a search over every log route, artifact, checkpoint and event of the agent finds no credential (control: the same search finds a planted canary); after the attempt the worker has exited and its workspace holds no copy |
 | each | **MCP-DOCS** | this file ("what was built" per lane), `docs/security.md` | the docs guards |
 
 Order, as a graph: MCP-CONTRACT → {MCP-IAM, MCP-API, MCP-SCHED} →
@@ -1057,9 +1057,9 @@ send its work); (b) any member registers, admins enable; (c) any member. A
 personal workspace is managed by its person in every option.
 
 **Q2. When is a per-run credential destroyed?**
-(a) **when the task ends, or at its `expires_in`, whichever is first; the
+(a) **when the agent ends, or at its `expires_in`, whichever is first; the
 worker's copy dies with each attempt** (recommended: a retry is an attempt of
-the same task and needs it); (b) at the end of the first attempt, so a task
+the same agent and needs it); (b) at the end of the first attempt, so an agent
 that names a `dispatch` server gets no retry; (c) only at `expires_in`.
 
 **Q3. Which credential sources in the first build?**
@@ -1085,7 +1085,7 @@ new egress rule, and the pod policy already forbids private ranges);
 (b) a later design for Private Service Connect per tenant; (c) allow
 RFC1918 targets on 443 from worker pods (widens every tenant pod's egress).
 
-**Q7. May a child task use its parent's servers?**
+**Q7. May a child agent use its parent's servers?**
 (a) **only servers its parent named, with the parent's stored credential**
 (recommended); (b) never: a child names none; (c) any registered server, as
 its own submission (but a child has no caller to supply a `dispatch`
@@ -1118,7 +1118,7 @@ build-plan lane of §6, plus the follow-up lanes the build needed. Everything
 below ships dark: `apps/swarm-api/swarm_api/mcp_servers.py::FLAG` names
 `SWARM_MCP_SERVERS`, off unless it is exactly `on`, and while it is off a
 registration write, a submission naming a server or carrying a credential,
-and an attach are each refused `mcp_unavailable`. No task can name a server,
+and an attach are each refused `mcp_unavailable`. No agent can name a server,
 so the scheduler, worker and runner halves below never run.
 
 **MCP-CONTRACT (part of #1433; the owner accepted it on 2026-10-17).** Contract requests 88-91 in
@@ -1155,7 +1155,7 @@ MCP-API-B added the list's `egress_addresses` and each server's
 `last_attached_at`. Where the build goes beyond §4.4: every
 `mcp_dispatch_credentials` row carries an HMAC under `swarm-child-key` with
 its own purpose (`RowKeys`), because a tenant's agent can write Firestore
-documents and a forged row could otherwise point its task at a colleague's
+documents and a forged row could otherwise point its agent at a colleague's
 per-run secret; a row that does not verify is no row, for the attach and the
 sweep alike.
 
@@ -1175,11 +1175,11 @@ server is refused at creation and on edit (`schedules.py`). Held by
 disabled, absent or profile-refused registration parks `CREDENTIAL_MISSING`
 with `mcp_server_unavailable`, and the credential sweep promotes it when the
 registration is enabled again; `dispatch.worker_env` issues the attempt-key
-nonce to a task that names a server. §4.10's `FAILED` for an expired or
+nonce to an agent that names a server. §4.10's `FAILED` for an expired or
 destroyed credential needed edges the frozen state machine did not have:
 contract request 98 added `QUEUED` -> `FAILED`, and request 99 added
 `READY` -> `FAILED` and `PARKED` -> `FAILED`, the two states admission and
-the sweep actually hold a task in. Admission writes them, with no lease and
+the sweep actually hold an agent in. Admission writes them, with no lease and
 no reservation, in
 `apps/scheduler/scheduler/loop.py::Scheduler._fail_unrunnable`. The
 `McpAnswer.terminal` docstring in `mcp_admission.py` still describes the

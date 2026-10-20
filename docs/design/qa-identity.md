@@ -33,7 +33,7 @@ What the design settles, one line each:
   to the live gate on `ctl.sock`. The gate adds it to the console's own
   requests on its private CDP session. The agent, the page, the checkpoint
   and the artifacts never hold it (§3.2, §4).
-* **The task names the identity, never the credential.** A caller sends
+* **The agent names the identity, never the credential.** A caller sends
   `input.qa_identity: "console"`. That is a name from the frozen catalogue
   (contract request QI-1, §5), as invariant 10 requires.
 * **Option C stays the default for layout sweeps.** The fixture build is free,
@@ -42,7 +42,7 @@ What the design settles, one line each:
 * **Option A is turned down.** A Google user account in `saga.xyz` passes
   every IAP app that admits `domain:saga.xyz`. Its session also carries a full
   Google sign-in that any page can use. And LB-7 keeps saved logins to
-  personal workspaces, so the login could not be used where the QA tasks run
+  personal workspaces, so the login could not be used where the QA agents run
   (§3.1).
 * **The front door is the existing list.** The new account goes into
   `frontend_iap_members`, applied by the owner from `terraform/bootstrap`.
@@ -111,10 +111,10 @@ What that means in practice, read from the code at `2af9bed`:
   `qa-console`, and sweeps every page at 1440×900 and 390×844, light
   and dark, with no hand-off. It sees what a member of the QA workspace sees,
   backed by the real API.
-* The same run cannot see any other workspace's tasks, secrets, people or
+* The same run cannot see any other workspace's agents, secrets, people or
   settings. It cannot reach an admin screen, and it cannot take the sign-in
   out of the pod.
-* A platform admin grants or revokes, per tenant, whether that tenant's tasks
+* A platform admin grants or revokes, per tenant, whether that tenant's agents
   may name the QA identity. Each grant and each credential issued is audited.
 
 ---
@@ -179,8 +179,8 @@ What that means in practice, read from the code at `2af9bed`:
 
 | # | Invariant | How B keeps it |
 |---|---|---|
-| 1 | Only LEASED…RUNNING cost | No new state and no new resource. A credential is signed only for an attempt holding a live lease (`_lease_is_live`, as the browser routes check). A QUEUED, PARKED or READY task gets nothing and costs nothing. Tasks the agent submits **as** the QA identity are ordinary tasks in the QA workspace, under its own pool ceiling. With no account lent to that workspace (Q3 (a)), they stay QUEUED and cost nothing. |
-| 2 | All-or-nothing reservation | Admission is untouched. The QA workspace's tasks reserve through the same transaction as every other tenant's. |
+| 1 | Only LEASED…RUNNING cost | No new state and no new resource. A credential is signed only for an attempt holding a live lease (`_lease_is_live`, as the browser routes check). A QUEUED, PARKED or READY agent gets nothing and costs nothing. Agents the agent submits **as** the QA identity are ordinary agents in the QA workspace, under its own pool ceiling. With no account lent to that workspace (Q3 (a)), they stay QUEUED and cost nothing. |
+| 2 | All-or-nothing reservation | Admission is untouched. The QA workspace's agents reserve through the same transaction as every other tenant's. |
 | 3 | Concurrency from LEASED | Untouched. |
 | 4 | No sleeping through a wait | Renewal is a short call with the same backoff as the egress ticket. A lapsed credential never makes the worker wait: the console falls back to Google's sign-in page and the agent is told why (§4.5). |
 | 5 | Fencing | swarm-api signs only for the attempt's **current** generation, checked against the lease in the same read as the egress ticket. A fenced worker gets `stale_generation` and nothing to hand on. The gate drops its credential at `wipe`, which runs on every exit, fence included ([live-browser.md](live-browser.md) §5.5). |
@@ -206,7 +206,7 @@ untouched, because swarm-api's configuration lives in its own `settings.py`.
 
 **Shape.** A user account in the domain, `swarm-qa@saga.xyz`. A person signs
 it in once through take-control, then saves the session as a named LB-7 login
-(`swarm-tenant-u-<qa>-browser-login-console`). QA tasks name that login.
+(`swarm-tenant-u-<qa>-browser-login-console`). QA agents name that login.
 
 **Threat model.**
 
@@ -232,7 +232,7 @@ it in once through take-control, then saves the session as a named LB-7 login
   the session is revoked: days, not minutes.
 * *Another tenant.* LB-7 stores the login in the QA account's **personal**
   workspace, where only `swarm-agent-worker-u-<qa>` can read it. That is
-  sound. But it means only tasks **in that workspace** can use the login, and
+  sound. But it means only agents **in that workspace** can use the login, and
   only the workspace's own person, the QA account, may submit there. So a
   person would have to sign in to the console *as* `swarm-qa@` to start each
   QA run. Making it usable from `eng` means storing the session in a group
@@ -353,7 +353,7 @@ JWT already issued remains valid until it expires, at most 15 minutes.
   the console host (`qa_identity_origin`).
 * *A compromised agent* can act as the QA account in the QA workspace, for
   as long as its attempt holds the lease. It can do whatever a member of that
-  workspace can: read its tasks, and submit and cancel tasks there (Q3 bounds
+  workspace can: read its agents, and submit and cancel agents there (Q3 bounds
   what that costs). It cannot reach another workspace, an admin screen or a
   person-only route. To take the credential out it would have to defeat the
   scrubber, the host match and the `Fetch` refusals together. Even then it
@@ -449,7 +449,7 @@ see the deployed console.
 1. **The agent acts as the QA account for the attempt's life.** That is the
    feature, and it cannot be designed away. It is bounded by the QA
    workspace's own authority and pool ceiling (Q3).
-2. **Every granted tenant shares one QA workspace.** A task one tenant's
+2. **Every granted tenant shares one QA workspace.** An agent one tenant's
    agent submits there is visible to another's. Grant only tenants that
    would accept that (Q2). Store nothing in that workspace: no secrets, no
    forge token, no provider key.
@@ -547,8 +547,8 @@ The credential itself is never written anywhere.
 
 ### 4.3 The API
 
-**Submission** (`swarm_api.service`, beside `refuse_unless_personal`). A task,
-batch task or workflow step whose input names `qa_identity` is refused with:
+**Submission** (`swarm_api.service`, beside `refuse_unless_personal`). An agent,
+batch agent or workflow step whose input names `qa_identity` is refused with:
 
 * `qa_identity_unconfigured` (422) when the deployment has no account;
 * `qa_identity_not_granted` (403) when the submitting tenant has no `granted`
@@ -587,8 +587,8 @@ itself. It is left out of the example above so that no example in this
 repository holds a value of a credential's shape.
 
 Refusals, each a code with no free text: `bad_signature` (401), `not_found`
-(404, also for another tenant's task), `stale_generation` (409),
-`lease_not_live` (409), `qa_identity_not_requested` (422: the task's signed
+(404, also for another tenant's agent), `stale_generation` (409),
+`lease_not_live` (409), `qa_identity_not_requested` (422: the agent's signed
 input does not name it), `qa_identity_not_granted` (403: re-read at signing,
 so a revoke takes effect on the next renewal), `qa_identity_unconfigured`
 (503), `qa_identity_sign_failed` (503: IAM Credentials refused or did not
@@ -725,7 +725,7 @@ New module `apps/agent-worker/agent_worker/livegate/qaidentity.py`:
   While a credential is held, `Fetch.getResponseBody` and
   `Network.getResponseBody` for a console-host `requestId` whose body the
   gate cannot decode are refused (`qa_identity_body`).
-* **Hand-off on the console host is refused** while the task named
+* **Hand-off on the console host is refused** while the agent named
   `qa_identity` (`handoff_refused`, cause `qa_identity_host`, Q7). A person
   would otherwise type their own sign-in into a page meant to run as the QA
   account. The agent would then carry on **as that person**, with all of
@@ -749,7 +749,7 @@ New module `apps/agent-worker/agent_worker/qa_identity.py`, modelled on
 * **On a refusal** it tells the gate `{"failed": cause}` and writes the cause
   to the agent's notice (`handoff.EGRESS_NOTICE_NAME`'s sibling,
   `qa-identity.md`). The agent then sees a Google sign-in page and a plain
-  sentence explaining why, rather than a mystery. The task is **not** failed:
+  sentence explaining why, rather than a mystery. The agent is **not** failed:
   the agent can still report what it saw. A first-call refusal of
   `qa_identity_not_granted` or `_unconfigured` fails the attempt before the
   agent starts, because nothing it could do would be signed in.
@@ -763,10 +763,10 @@ New module `apps/agent-worker/agent_worker/qa_identity.py`, modelled on
   identity, its host and account, `configured`, and each grant with Grant and
   Revoke, both requiring a reason. No nav section is added, so the issue
   forms' Where list is unchanged (`tests/unit/scripts/test_issue_forms.py`).
-* **Task submit.** The input arrives through the catalogue's declaration, as
+* **Agent submit.** The input arrives through the catalogue's declaration, as
   `browser_tool` did. The form offers "Sign in to the console as the QA
   identity" only when the tenant is granted.
-* **Task page.** A badge, "Signed in as QA identity (console)", on a task that
+* **Agent page.** A badge, "Signed in as QA identity (console)", on an agent that
   named it, so a person watching knows whose session the browser holds.
 
 ### 4.7 Plugin and agent instructions
@@ -905,7 +905,7 @@ in that file's shape and not filed there.
 > #### What is true today
 >
 > `_CLAUDE_CODE_BROWSER_INPUTS` is `_CLI_AGENT_INPUTS`, `_MCP_SERVER_INPUTS`
-> and `browser_tool` (requests 77 and 88). A task that names any other key is
+> and `browser_tool` (requests 77 and 88). An agent that names any other key is
 > refused `invalid_input` by `check_inputs`. No profile lets a caller say the
 > browser should be signed in to anything.
 >
@@ -939,7 +939,7 @@ in that file's shape and not filed there.
 >
 > #### Rollback
 >
-> Delete the entry. A queued task that names it is then refused by the worker
+> Delete the entry. A queued agent that names it is then refused by the worker
 > as an undeclared input, failing closed. Revoke every grant first so nothing
 > new is submitted.
 >
@@ -994,11 +994,11 @@ parts, never written as one literal.
 | 2 | **QI-API** (after CONTRACT and M1–M4) | `apps/swarm-api/swarm_api/qa_identity.py` (new), `apps/swarm-api/swarm_api/routes/qa_identity.py` (new), `apps/swarm-api/swarm_api/main.py`, `apps/swarm-api/swarm_api/settings.py`, `apps/swarm-api/swarm_api/service.py`, `apps/swarm-api/swarm_api/auth.py`, `apps/swarm-api/swarm_api/refusals.py`, `apps/swarm-api/swarm_api/roles.py` (the member `GET /v1/qa-identities/mine`'s role row), `terraform/infra/locals.tf`, `tests/unit/control_plane/test_qa_identity.py` (new), `tests/unit/control_plane/test_new_refusals_ship_off.py` (entries only) | an ungranted tenant's submission is 403 `qa_identity_not_granted`, and a revoked one likewise; signing for a stale generation is 409 and calls the signer fake zero times; a revoke between issue and renewal refuses the renewal; the signed payload's `aud` is exactly `https://<host>/*` and `exp − iat` is the configured lifetime, clamped; the response carries `no-store`, and the access-log fake never sees the credential; grant and its `admin_audit` row commit together (an injected failure leaves neither); a POST as the QA account with `Origin: https://evil.example` is 403 `qa_identity_origin` and with the console origin passes; `GET /v1/qa-identities/mine` as a non-admin member answers its own tenant's `granted` and no other tenant's; no error handler's body contains a request header's value |
 | 2 | **QI-GATE** (after CONTRACT, M1–M3 and M5) | `apps/agent-worker/agent_worker/livegate/qaidentity.py` (new), `livegate/cdpproxy.py`, `livegate/cdppolicy.py`, `livegate/ctl.py`, `livegate/session.py`, `livegate/__main__.py`, `tests/unit/worker/test_livegate_qa_identity.py` (new) | with a fake Chromium: a console-host request from a console frame gets the header and one from an `evil.example` frame does not; `https://swarm.saga.xyz.evil.example/` and `http://swarm.saga.xyz/` do not; an agent-bound `Network.requestWillBeSentExtraInfo` carrying the header arrives without it, and a frame carrying the credential's bytes anywhere arrives with `[qa-identity]`; the agent's `Fetch.continueRequest` with `url` is refused; a console-host request the gate added the header to that answers 302 to `https://evil.example/` is fulfilled with the gate's stopped-redirect page and the fake never sees a request to `evil.example`, while a 302 to another console path is continued; a request to `evil.example` arriving with the header in `request.headers` is continued without it; a request from a dedicated-worker target gets no header; a base64-encoded `getResponseBody` result containing the credential's bytes arrives with `[qa-identity]`; a hand-off on the console host is refused with `qa_identity_host`; `session_export` omits the host's cookies; after `wipe` the verb is refused |
 | 3 | **QI-WORKER** (after GATE and API) | `apps/agent-worker/agent_worker/qa_identity.py` (new), `apps/agent-worker/agent_worker/handoff.py`, `tests/unit/worker/test_qa_identity_worker.py` (new) | no `qa_identity` input means no call is made; a first refusal `qa_identity_not_granted` fails the attempt before the runner starts; renewal happens at two-thirds of the life; a refusal at renewal sends `failed` to the gate and writes `qa-identity.md`; no log record contains the credential (captured-log scan) |
-| 3 | **QI-UI** (after API) | `apps/swarm-ui/src/QaIdentityGrants.tsx` (new), `apps/swarm-ui/src/Activity.tsx`, `apps/swarm-ui/src/Submit.tsx` (the option, beside `BrowserToolPicker`), `apps/swarm-ui/src/BrowserBadges.tsx` (the badge, drawn by `LiveBrowser.tsx`'s existing `<BrowserBadges>`), `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/types.ts`, `apps/swarm-ui/src/__tests__/qa-identity.test.tsx` (new) | a non-admin sees no panel; Grant without a reason is disabled; a 403 renders the API's message word for word; the submit form offers the option only when `GET /v1/qa-identities/mine` says `granted`; the task-page badge shows only for a task that named the identity |
+| 3 | **QI-UI** (after API) | `apps/swarm-ui/src/QaIdentityGrants.tsx` (new), `apps/swarm-ui/src/Activity.tsx`, `apps/swarm-ui/src/Submit.tsx` (the option, beside `BrowserToolPicker`), `apps/swarm-ui/src/BrowserBadges.tsx` (the badge, drawn by `LiveBrowser.tsx`'s existing `<BrowserBadges>`), `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/types.ts`, `apps/swarm-ui/src/__tests__/qa-identity.test.tsx` (new) | a non-admin sees no panel; Grant without a reason is disabled; a 403 renders the API's message word for word; the submit form offers the option only when `GET /v1/qa-identities/mine` says `granted`; the agent-page badge shows only for an agent that named the identity |
 | 3 | **QI-MCP** (after CONTRACT) | `apps/swarm-mcp/swarm_mcp/details.py`, `tests/unit/mcp/test_qa_identity_details.py` (new) | a step naming `qa_identity` shows `QA identity: console`; one without does not |
 | 4 | **QI-INSTRUCT** (after QA-KIT merges; or folded into QA-KIT) | `images/agent-runtime-browser/swarm_browser.py` | the instruction text names the console as signed in and forbids a hand-off there; QA-KIT's own tests still pass |
 | 5 | **QI-DOCS** (after WORKER) | `docs/design/live-browser.md` (a §5.5.1 note on the excluded host), `docs/workspaces.md` (the QA workspace) | `test_docs_describe_what_was_built` where it reads these files |
-| 6 | **QI-ACCEPT** (after O3, O4 and every lane) | `tests/acceptance/test_live_browser.py` (new cases only) | on dev: a granted tenant's `claude-code-browser` task with `qa_identity: "console"` screenshots the Overview showing the QA workspace; the same task from an ungranted tenant is refused at submission; the attempt's events, logs and artifacts contain no header named `Proxy-Authorization`, and its `qa_identity_scrubbed` records carry counts only; a navigation to a console-host URL that 302s to an external echo the test controls ends on the gate's stopped-redirect page, and the echo records no request carrying the header |
+| 6 | **QI-ACCEPT** (after O3, O4 and every lane) | `tests/acceptance/test_live_browser.py` (new cases only) | on dev: a granted tenant's `claude-code-browser` agent with `qa_identity: "console"` screenshots the Overview showing the QA workspace; the same agent from an ungranted tenant is refused at submission; the attempt's events, logs and artifacts contain no header named `Proxy-Authorization`, and its `qa_identity_scrubbed` records carry counts only; a navigation to a console-host URL that 302s to an external echo the test controls ends on the gate's stopped-redirect page, and the echo records no request carrying the header |
 
 A release that ships QI-API runs `make smoke` against dev in CI. It changes
 authentication, not admission, so `concurrency-test` and `race-test` are not
@@ -1045,7 +1045,7 @@ Also in this lane's `questions.json`. The recommended option is listed first.
   (recommended).** Submit and cancel flows can be exercised, and what it
   submits stays QUEUED at no cost (invariant 1).
 * (b) Act as a member, with a small account lent and a pool ceiling of 1, so
-  flows that need a task to run are covered. Costs money per run.
+  flows that need an agent to run are covered. Costs money per run.
 * (c) Viewer only. This needs workspace roles on service workspaces, which
   workspace-roles does not define today, and it leaves every write flow
   uncovered.
@@ -1156,7 +1156,7 @@ each lane of §6 landed, in its order:
   `qa-identity.md` for the agent.
 * **QI-UI (built).** Admin › Tenants › QA identity
   (`apps/swarm-ui/src/QaIdentityGrants.tsx`), the submit form's option when
-  `GET /v1/qa-identities/mine` says `granted`, and the task page's
+  `GET /v1/qa-identities/mine` says `granted`, and the agent page's
   "Signed in as QA identity" badge (`apps/swarm-ui/src/BrowserBadges.tsx`).
 * **QI-MCP (built).** A step that names the identity shows
   `QA identity: console` (`apps/swarm-mcp/swarm_mcp/details.py`).

@@ -197,7 +197,7 @@ need that a person does not:
 * **A failed lookup of a registered group is fatal, by design.**
   `Authenticator` raises `UpstreamUnavailable` when a failed lookup could have
   changed the answer (`auth.py`, the `GroupLookupError` branch), because a
-  misfiled task cannot be recovered. A new registered group adds that failure
+  misfiled agent cannot be recovered. A new registered group adds that failure
   mode for every caller below it in priority.
 * **A group slug can collide.** `tenant_id_for_group` slugs the local part
   only, so `eng@example.com` and `eng@other.example` share `eng`. A group
@@ -216,7 +216,7 @@ need that a person does not:
   dispatch.
 * **Secrets are user-scoped** (owner decision 2026-10-11,
   `docs/design/user-scoped-secrets.md`). A person's credential is used only on
-  that person's tasks. The broker that enforces this inside a group tenant is
+  that person's agents. The broker that enforces this inside a group tenant is
   built and switched off (`FORGE_BROKER`). Until it is on, a group worker
   reads its members' slots through `forge_slot_reader`, which Terraform grants
   per `var.tenants` key, so a group made outside Terraform has no such grant.
@@ -224,11 +224,11 @@ need that a person does not:
 ### 2.2 The CONTRACT.md invariants it touches, and how each is kept
 
 * **1. Only LEASED/DISPATCHED/STARTING/RUNNING cost anything.** A workspace
-  record in any state creates no task, no lease and no pod. A group that is
+  record in any state creates no agent, no lease and no pod. A group that is
   not `ready` is in no caller's `tenant_choices`, and a service account whose
   record is not `ready` is refused at authentication. So no submission can
   reach a tenant that is still being built, and nothing waits on a build. The
-  job is a Cloud Run job execution, not a task, and holds no pool capacity.
+  job is a Cloud Run job execution, not an agent, and holds no pool capacity.
   The pool document A8 writes holds `capacity_units` as a ceiling, which is
   not a reservation. **Kept.**
 * **2. All-or-nothing reservation.** Admission (`swarm_common/admission.py`)
@@ -242,7 +242,7 @@ need that a person does not:
   `failed` and retryable (§4.8).
 * **5. Fencing.** Untouched. Worker routes, attempt proofs and generations do
   not read the workspace record. A tenant made by the job is fenced exactly
-  like one made by Terraform, because fencing is per task, not per tenant.
+  like one made by Terraform, because fencing is per agent, not per tenant.
 * **6. Spot is disabled.** A7 renders the tenant namespace with
   `kubernetes/render.py`, the same render as today. Nothing here selects a
   node class.
@@ -648,7 +648,7 @@ cached 60 s). It answers two questions:
      (`docs/multi-tenancy.md`). Q4 asks whether the owner wants that, or
      wants a job-made group selectable only.
    * A failed lookup of a job-made group is fatal exactly as for a Terraform
-     group (Q5 (a)), for the reason `auth.py` gives: a misfiled task cannot
+     group (Q5 (a)), for the reason `auth.py` gives: a misfiled agent cannot
      be recovered.
 2. **Admission of a service account.** Beside the `ALLOWED_USERS` check: an
    email in `admitted_services()` is admitted, and its domain is taken from
@@ -663,7 +663,7 @@ cached 60 s). It answers two questions:
 read for up to 10 minutes and logs `registry_stale`. With no good read since
 start, an authenticated request is 503 `registry_unavailable`. Without the
 registry, swarm-api cannot know whether a caller belongs to a job-made group,
-so serving would risk a misfiled task, the same reasoning as the group-lookup
+so serving would risk a misfiled agent, the same reasoning as the group-lookup
 rule.
 
 **Nothing in `TENANT_GROUPS` or `ALLOWED_USERS` changes.** The Terraform
@@ -840,7 +840,7 @@ in the flow still holds. This is Q3's fallback for the front door alone.
 ### 4.6 Secrets and forge slots for group and service workspaces
 
 The 2026-10-11 decision stands: **a person's credential is used only on that
-person's tasks.** So a group or service workspace gets team credentials, and
+person's agents.** So a group or service workspace gets team credentials, and
 never a person's:
 
 | | personal (today) | group | service |
@@ -991,7 +991,7 @@ review by existing rule.
 `swarm-workspace-deployer`, triggered by an approval through Pub/Sub, Eventarc
 and Workflows, exactly as it runs personal workspaces today.** The owner asked
 whether it should instead run in a Kubernetes namespace of its own under a
-service account, or as tasks in a SwarmCloud workspace of its own. The three
+service account, or as agents in a SwarmCloud workspace of its own. The three
 were weighed on one property above all: the provisioner is the most
 privileged identity in SwarmCloud. It creates service accounts and grants
 them IAM, creates namespaces with RBAC (`escalate`, `bind`), and with this
@@ -1137,7 +1137,7 @@ Today's §1.3 rule 4 says nobody can request one for anyone else.
 
 **Q5. A failed lookup of a job-made group.** **Answered 2026-10-19 by the owner: (a).**
 * **(a) Fatal, as for every registered group (recommended).** 503 for a
-  caller it could have changed the answer for. A misfiled task cannot be
+  caller it could have changed the answer for. A misfiled agent cannot be
   recovered.
 * (b) Non-fatal for job-made groups. The caller lands in their next tenant.
   This risks filing work under the wrong tenant.

@@ -1,4 +1,4 @@
-# Child tasks: a running agent submits helpers through its worker
+# Child agents: a running agent submits helpers through its worker
 
 **Status: design, phase 1 of B15 (2026-10-02); BUILT by phase 2 (lane B15b,
 2026-10-02), deployment switch off -- see "Where phase 2 stands" in section
@@ -25,7 +25,7 @@ everything else.
 
 What exists today, verified:
 
-* **No relationship between tasks except order.** A workflow step is a `Task`
+* **No relationship between agents except order.** A workflow step is a `Task`
   with `workflow_id`, `step_id` and `depends_on`
   (`apps/common/swarm_common/models.py::Task`). `depends_on` is ORDER, not
   parentage: the step that produced your input did not create you, cannot
@@ -66,7 +66,7 @@ learn what a child did is to `await`, and `await` gives the slot back.
 | Decision | What was decided | Where this document answers it |
 |---|---|---|
 | **OD-B15-1** | Accept CR 14 WITH the cancel and capacity rules added. | §4 (capacity: invariants 1-4), §3.4 (cancel), the CR 14 amendment |
-| **OD-B15-2** | The agent submits a child THROUGH ITS WORKER (spool or localhost endpoint). The worker validates and calls a route that accepts only the worker identity and checks it against the live lease: task, attempt, generation. The agent never holds a credential. | §3.1, §3.2, §6.1, invariant 5 and 9 |
+| **OD-B15-2** | The agent submits a child THROUGH ITS WORKER (spool or localhost endpoint). The worker validates and calls a route that accepts only the worker identity and checks it against the live lease: agent, attempt, generation. The agent never holds a credential. | §3.1, §3.2, §6.1, invariant 5 and 9 |
 | **OD-B15-3** | The parent submits, then `await` checkpoints and parks holding no capacity, and is promoted when every child is terminal with its outputs staged. Depth 1 and a fan-out cap. | §3.3, §7, invariants 1, 4 and 8 |
 | **OD-B15-4** | Cancelling a parent cancels its children. | §3.4, §5 F5-F7 |
 
@@ -137,7 +137,7 @@ agent                       worker (same container,          swarm-api          
    creates the child in `QUEUED`, with `parent_task_id` and
    `parent_attempt_id` set from the attested registration the proof verified
    against, never from the child body. The child goes
-   through admission exactly like any other task.
+   through admission exactly like any other agent.
 5. **The worker writes the answer** to `responses/<request_id>.json`: the child
    task id, or a refusal with a machine-readable `code` and a sentence. The
    request file is removed only after the response is written, so a crash
@@ -145,7 +145,7 @@ agent                       worker (same container,          swarm-api          
    answers idempotently (§5 F1).
 
 A child's own worker does not create `$SWARM_CHILDREN` and does not set the
-variable: it knows its task has a `parent_task_id`, and depth is 1.
+variable: it knows its agent has a `parent_task_id`, and depth is 1.
 
 ### 3.2 What makes "only the worker" true: the attempt key
 
@@ -208,12 +208,12 @@ The tuple is `(tenant_id, task_id, attempt_id, lease_id, generation)`.
    `apps/agent-worker/agent_worker/lifecycle.py::Worker._prepare`), the worker calls
    `POST /v1/attempts/{attempt_id}/child-key` with its ID token, the tuple, the
    nonce and the public key (§6.1a). swarm-api verifies the nonce, re-reads the
-   task and its lease in one transaction, accepts only while the task is
+   agent and its lease in one transaction, accepts only while the agent is
    `STARTING` with this live lease, and **accepts once per generation**: a
    second registration for the same tuple, from anyone, is `409
    child_key_taken`. The agent is spawned at lifecycle step 7, after `RUNNING`,
    so it can neither win the race nor register later: the slot is taken and
-   the task is no longer `STARTING`.
+   the agent is no longer `STARTING`.
 4. **swarm-api attests the registration with its own key, not with a field a
    tenant can write.** The registration is stored at
    `child_keys/<HMAC(child_key, "swarm-child-reg-id/v1\n" tuple)>`, a document
@@ -245,13 +245,13 @@ slot, so the nonce the agent will read is worthless, and offers no child path
 **The residual, stated plainly.** If neither a key nor a tombstone could be
 registered (swarm-api unreachable at startup past
 `child_submit_retry_seconds`), the worker starts the agent without a child
-path, and the slot stays empty. The task is then `RUNNING`, so the route
+path, and the slot stays empty. The agent is then `RUNNING`, so the route
 refuses a registration; an agent that rewrites its OWN task document back to
 `STARTING` (its tenant identity can write a document whose id it knows) could
 then register a key of its own. What that buys is child submission for its
-own task, under every limit the route enforces -- the power its worker would
+own agent, under every limit the route enforces -- the power its worker would
 have exercised for it, minus the worker's local checks, which are a
-convenience. It buys nothing for any other task: another task's nonce is in
+convenience. It buys nothing for any other agent: another agent's nonce is in
 another container's environment. Phase 2 measures the empty-slot rate as
 an event (`child_key_unregistered`) so the residual is visible, not assumed.
 
@@ -267,7 +267,7 @@ an event (`child_key_unregistered`) so the residual is visible, not assumed.
   under a tuple the lease no longer carries, and the route refuses it
   (invariant 5).
 * **A leaked private key is worth exactly one attempt.** It authorises child
-  submission for one attempt of one task while its lease is live, under the
+  submission for one attempt of one agent while its lease is live, under the
   route's limits, and nothing after.
 
 **And every limit is enforced at the route anyway.** Depth, fan-out, the
@@ -309,7 +309,7 @@ worker: restore checkpoint, stage children's results, start the agent again
    (`apps/common/swarm_common/states.py::_ALLOWED`).
 4. **The park has its own reason, `ParkReason.CHILDREN_INCOMPLETE`**
    (request 40). It cannot reuse `DEPENDENCY_INCOMPLETE`: the scheduler's
-   dependency sweep promotes a `DEPENDENCY_INCOMPLETE` task whose `depends_on`
+   dependency sweep promotes a `DEPENDENCY_INCOMPLETE` agent whose `depends_on`
    is empty at once, with reason `no_dependencies`
    (`apps/scheduler/scheduler/loop.py::Scheduler._promote_dependencies`). A parent awaiting children has an
    empty `depends_on`, so it would be promoted on the next drain, re-run, await
@@ -349,7 +349,7 @@ worker: restore checkpoint, stage children's results, start the agent again
    `apps/agent-worker/agent_worker/inputs.py::stage_inputs`), which builds every object
    key from THIS attempt's tenant (`fetch_upstream_task`,
    `apps/agent-worker/agent_worker/inputs.py::fetch_upstream_task`). It then starts the agent
-   again with the same task input; the agent knows it is resuming because
+   again with the same agent input; the agent knows it is resuming because
    `children.json` exists.
 8. **An agent that exits 0 with live children and no `await` is awaited
    anyway.** A parent never reaches `SUCCEEDED` over children that are still
@@ -371,7 +371,7 @@ because the first screen that draws the tree will be asked:
 |---|---|
 | a person cancels it (`POST /v1/tasks/{id}/cancel`, or its workflow is cancelled) | cancelled, `why: parent_cancelled` |
 | it ends `FAILED` or `DEAD_LETTERED` (retries spent, a lost worker, a dispatch failure) | cancelled, `why: parent_ended` |
-| its attempt fails and it is retried (`FAILED -> READY`, `RUNNING -> READY`) | **kept**: they belong to the task, and the next attempt finds them |
+| its attempt fails and it is retried (`FAILED -> READY`, `RUNNING -> READY`) | **kept**: they belong to the agent, and the next attempt finds them |
 | its attempt is fenced (the reconciler took the generation back) | **kept**, for the same reason |
 | it awaits past `child_await_max_seconds` | the outstanding ones cancelled, `why: await_expired`; the parent is then promoted |
 | a child is cancelled, fails or dead-letters | nothing happens to the parent: the parent reads the end in `children.json` and decides |
@@ -400,7 +400,7 @@ How it is done:
    a cancel somebody pressed -- the confusion request 23 was accepted to end.
 4. **Tenant first.** Both the cascade and the sweep act only on a child whose
    `tenant_id` equals its parent's. A child document whose `parent_task_id` was
-   rewritten to name another tenant's task (§5 F11) is logged and left alone.
+   rewritten to name another tenant's agent (§5 F11) is logged and left alone.
 
 ---
 
@@ -409,7 +409,7 @@ How it is done:
 ### Invariant 1 -- only LEASED/DISPATCHED/STARTING/RUNNING create demand
 
 A child is created `QUEUED` and costs nothing until admission leases it, like
-any task. An awaiting parent is `PARKED`, holds no lease and has no container:
+any agent. An awaiting parent is `PARKED`, holds no lease and has no container:
 the await is a park, not a wait. Nothing about a tree is expressed as pending
 pods or pending executions; the backlog stays in Firestore. The cancel cascade
 never decrements a pool: a child that holds capacity is flagged and released
@@ -426,13 +426,13 @@ Each child acquires its own lease through the unchanged
 on its children's behalf. A gang reservation for a whole fan-out was
 considered and refused: it would hold capacity for children still `QUEUED`
 (an invariant 1 violation), and it would need an admission path across N
-tasks that the frozen `admission.py` does not have. Without it, children start
+agents that the frozen `admission.py` does not have. Without it, children start
 as capacity allows, and a tree on a narrow pool runs its children a few at a
 time rather than deadlocking.
 
 ### Invariant 3 -- concurrency counts from LEASED
 
-Children are counted from `LEASED` like every task, against the same tenant,
+Children are counted from `LEASED` like every agent, against the same tenant,
 runner, resource, backend and provider pools as their parent. The fan-out cap
 is not a concurrency control and does not replace one: sixteen children of one
 parent on a tenant whose limit is four run four at a time, the rest wait in
@@ -455,23 +455,23 @@ has nothing to wait on.
 ### Invariant 5 -- every attempt carries a fencing generation
 
 The attempt key is registered under, and the nonce that registered it is
-bound to, tenant, task, attempt, lease and generation, and the
-route re-reads the parent task and its lease inside its transaction: the
-task's `current_lease_id` and `current_generation`, the lease's `task_id`,
+bound to, tenant, agent, attempt, lease and generation, and the
+route re-reads the parent agent and its lease inside its transaction: the
+agent's `current_lease_id` and `current_generation`, the lease's `task_id`,
 `attempt_id` and `generation`, the lease not released and not expired, the
-task `RUNNING` and not `cancel_requested`. Any mismatch is `409
+agent `RUNNING` and not `cancel_requested`. Any mismatch is `409
 child_submit_fenced` and creates nothing. A worker that receives it is a
 superseded worker: it ends the way a fenced worker does mid-run
 (`_exit_fenced_mid_run`, `apps/agent-worker/agent_worker/lifecycle.py::Worker._exit_fenced_mid_run`),
 without touching the lease. The await park is a fenced transition like the
-quota park, so a stale worker cannot park the task or refund an attempt.
-Registration is fenced the same way: accepted only while the task is
+quota park, so a stale worker cannot park the agent or refund an attempt.
+Registration is fenced the same way: accepted only while the agent is
 `STARTING` with this live lease, once per generation (§3.2).
 
 ### Invariant 6 -- Spot is disabled platform-wide
 
 Unchanged. A child runs on its runner profile's backend through the same
-dispatcher and the same Job and pod templates as any task. Nothing in this
+dispatcher and the same Job and pod templates as any agent. Nothing in this
 design names a node, a provisioning model or a backend parameter, and nothing
 a child request carries can reach one: the request schema has no field for it
 (§6.1), and `runner_profile` resolves to a backend only through the frozen
@@ -481,11 +481,11 @@ because a parent waiting on a preempted child is just a longer wait.
 ### Invariant 7 -- requests == limits
 
 Unchanged. A child names a `resource_class` by name; the catalogue turns it
-into equal requests and limits as for any task. The child request carries no
+into equal requests and limits as for any agent. The child request carries no
 CPU, memory or disk figure, and the worker's local check and the route both
 refuse one by schema (unknown keys are refused). A child's timeout is clamped
 to the parent's own `timeout_seconds`, so a child cannot buy a longer
-execution than the task that asked for it, and `input` can lower the runner's
+execution than the agent that asked for it, and `input` can lower the runner's
 ceilings and never raise them, as `runners/limits.py` already enforces.
 
 ### Invariant 8 -- mandatory periodic checkpointing
@@ -497,7 +497,7 @@ await, including the plan the agent wrote for its own resumption. The spool
 lives in `work/`, so the checkpoint carries which requests were answered; a
 resumed attempt never resubmits a request it already has an answer for, and
 one it lost is answered idempotently (§5 F1). Children checkpoint as every
-task does; nothing about being a child relaxes it.
+agent does; nothing about being a child relaxes it.
 
 ### Invariant 9 -- per-tenant isolation
 
@@ -542,22 +542,22 @@ repository the person who started the parent did not choose.
 | F1 | The worker crashes after the route created the child and before it wrote the response. | The request file is still there. The resumed attempt submits it again; the route finds the existing child by `(parent_task_id, request_id)` in the same transaction and answers `200` with it. No duplicate. |
 | F2 | swarm-api is unreachable or answers 5xx. | The worker retries within `child_submit_retry_seconds`, never longer. It then writes a refusal with `code: api_unavailable, retryable: true`; the agent may write the request again with the same `request_id`, which stays idempotent. |
 | F3 | The agent awaits while requests are unanswered. | The worker answers each first (F2's bound), then parks. A park never carries a request it did not answer. |
-| F4 | The parent's attempt fails and is retried, or its attempt is fenced, while children run. | The children are kept: they belong to the task. The next attempt finds them in `children.json` and may await them. The fan-out cap counts per task across attempts, so a retry loop cannot multiply children. |
+| F4 | The parent's attempt fails and is retried, or its attempt is fenced, while children run. | The children are kept: they belong to the agent. The next attempt finds them in `children.json` and may await them. The fan-out cap counts per agent across attempts, so a retry loop cannot multiply children. |
 | F5 | A person cancels the parent while children run. | The API cascades at once; the scheduler sweep makes it certain (§3.4). Running children are flagged and stop through the ordinary cancel path. |
 | F6 | The parent ends `FAILED` or `DEAD_LETTERED` (retries spent, a lost worker, a dispatch failure) with live children. | The scheduler sweep cancels them with `why: parent_ended`. Nothing is left to consume their outputs. |
 | F7 | A child never ends: parked on a credential nobody registers, or a provider outage. | At the await deadline, `child_await_max_seconds`, the awaiting parent's outstanding children are cancelled with `why: await_expired`; they become terminal and the parent is promoted with their ends in `children.json`. |
 | F8 | A child fails. | Reported in `children.json`. The parent decides; there is no upward cascade and no automatic re-submission beyond the child's own `max_attempts`. |
 | F9 | A `SUCCEEDED` child's artifact has expired or cannot be staged on resume. | Listed in `children.json` with `outputs: unavailable` and the reason, and the agent still starts. Unlike a declared `input_from`, a helper's lost output is information for the main agent, not a reason to fail it. |
 | F10 | The fan-out cap or depth is reached. | `409 child_fan_out_exceeded` or `409 child_depth_exceeded`, written to the response file. Not 429: retrying would not change the answer. |
-| F11 | Some tenant's agent rewrites a child's `parent_task_id` to name another tenant's task, or a task in its own tenant. | The cascade and the sweeps act only on a child in its parent's tenant. Request 42 puts the parent fields inside the signed spec, so the rewritten child's own worker refuses to run it (`SPEC_SIGNATURE_INVALID`). Request 42 does NOT stop the scheduler's cascade sweep: the sweep reads `parent_task_id` and does not verify signatures, so it still cancels a same-tenant task whose `parent_task_id` was rewritten to name a cancelled parent. That grants nothing new -- a tenant identity can already set `cancel_requested` on any task of its tenant whose id it knows -- but it is not closed by request 42, and the sweep's `why: parent_cancelled` event on such a task is the only trace. |
+| F11 | Some tenant's agent rewrites a child's `parent_task_id` to name another tenant's agent, or an agent in its own tenant. | The cascade and the sweeps act only on a child in its parent's tenant. Request 42 puts the parent fields inside the signed spec, so the rewritten child's own worker refuses to run it (`SPEC_SIGNATURE_INVALID`). Request 42 does NOT stop the scheduler's cascade sweep: the sweep reads `parent_task_id` and does not verify signatures, so it still cancels a same-tenant agent whose `parent_task_id` was rewritten to name a cancelled parent. That grants nothing new -- a tenant identity can already set `cancel_requested` on any agent of its tenant whose id it knows -- but it is not closed by request 42, and the sweep's `why: parent_cancelled` event on such an agent is the only trace. |
 | F12 | The worker's memory protection was not established, so an attempt key would sit in a readable heap. | The worker generates no key. It registers a tombstone in the attempt's slot before the agent exists, so the nonce the agent can read in `/proc/1/environ` is spent; it does not create `$SWARM_CHILDREN` and refuses every request with `code: worker_unprotected`, as it refuses to read the git token (`_git_token_refusal`). |
 | F13 | `swarm-child-key` is rotated while attempts run. | swarm-api accepts a nonce or an attestation under the current and the previous secret version and derives registration ids under both; the scheduler mints with the current one. A rotation is two steps a dispatch window apart. |
 | F14 | The parent has used `max_child_await_resumes` and awaits again. | The park counts the attempt; at `max_attempts` the scheduler's await sweep dead-letters the parent as soon as it finds it -- it does not wait for the children, because no resume is coming to read them -- and F6 cancels its children as `parent_ended`. |
 | F15 | The agent awaits with no children. | Logged and ignored; the attempt ends as the agent's exit says. No park, no container restart. |
 | F16 | A tenant is disabled while its parent awaits. | The sweep promotes the parent; admission refuses to lease a disabled tenant's work, as today. The children are unaffected by the sweep. |
-| F18 | The agent reads `SWARM_CHILD_NONCE` from `/proc/1/environ` and calls the registration route, or calls the children route with the tenant ID token and no key. | Registration: `409 child_key_taken`, because the worker spent the slot before spawning it, and `409 child_key_window_closed` anyway, because the task is `RUNNING`. Children route: `403 child_submit_unproven`, because nothing it holds verifies against the attested key. The only residual is §3.2's empty slot. |
+| F18 | The agent reads `SWARM_CHILD_NONCE` from `/proc/1/environ` and calls the registration route, or calls the children route with the tenant ID token and no key. | Registration: `409 child_key_taken`, because the worker spent the slot before spawning it, and `409 child_key_window_closed` anyway, because the agent is `RUNNING`. Children route: `403 child_submit_unproven`, because nothing it holds verifies against the attested key. The only residual is §3.2's empty slot. |
 | F19 | The worker crashes after registering and the same generation's container restarts. | The slot is taken by the first key, which died with the first process. The restarted worker's registration is `409 child_key_taken`; it offers no child path for this attempt (`child_key_unregistered`) and runs the agent otherwise unchanged. The next attempt has a new generation and a new slot. |
-| F17 | The child's own worker sees a task with a `parent_task_id` and the agent writes requests anyway. | The variable and directory do not exist for a child; a request written by hand is never read. The route refuses it too (depth). |
+| F17 | The child's own worker sees an agent with a `parent_task_id` and the agent writes requests anyway. | The variable and directory do not exist for a child; a request written by hand is never read. The route refuses it too (depth). |
 
 ---
 
@@ -602,7 +602,7 @@ Body:
 }
 ```
 
-In ONE Firestore transaction: read the parent task and its lease; check the
+In ONE Firestore transaction: read the parent agent and its lease; check the
 fence (invariant 5); check the parent has no `parent_task_id` (depth); query
 the parent's children (tenant-scoped, at most `max_children_per_task` rows)
 for this `request_id` and the count; validate the child with the
@@ -624,8 +624,8 @@ The registration of §3.2 step 3. Authentication: the ID token of §6.1 step 1
 and the nonce, verified as `HMAC(swarm-child-key, "swarm-child-nonce/v1\n"
 tuple)` under the current or previous version. Body: the tuple, and either
 `{"public_key": "<base64url Ed25519>"}` or `{"key": null, "refused":
-"worker_unprotected"}`. In ONE transaction: read the task and its lease, check
-the fence and that the task is `STARTING`, read the slot at its derived id,
+"worker_unprotected"}`. In ONE transaction: read the agent and its lease, check
+the fence and that the agent is `STARTING`, read the slot at its derived id,
 and create it only if it does not exist.
 
 | Answer | When |
@@ -633,7 +633,7 @@ and create it only if it does not exist.
 | `201` | registered (a key or a tombstone) |
 | `403 child_key_unproven` | the token or the nonce does not verify |
 | `409 child_key_taken` | the slot for this generation is already filled, by anyone |
-| `409 child_key_window_closed` | the task is not `STARTING`, or the lease is not this attempt's live one |
+| `409 child_key_window_closed` | the agent is not `STARTING`, or the lease is not this attempt's live one |
 
 The response carries nothing secret: not the nonce, not the attestation, not
 the registration id.
@@ -662,7 +662,7 @@ is a source for one.
 
 | Field | Where | Written by | Meaning |
 |---|---|---|---|
-| `parent_task_id` | `Task` (CR 14) | swarm-api, at creation, from the attested registration | the task whose agent submitted this one; `None` for everything else |
+| `parent_task_id` | `Task` (CR 14) | swarm-api, at creation, from the attested registration | the agent whose agent submitted this one; `None` for everything else |
 | `parent_attempt_id` | `Task` (CR 14) | swarm-api, at creation, from the attested registration | the parent's attempt that submitted it |
 | `metadata.child_request_id` | task metadata, reserved | swarm-api | the agent's `request_id`, the idempotency key |
 | `metadata.child_await_resumes` | parent's metadata, reserved | the worker's await park | awaits refunded so far |
@@ -699,7 +699,7 @@ design, not a bigger number.
 | Limit | Default | Enforced at | Why this value |
 |---|---|---|---|
 | `max_child_depth` | 1 | route (authority), worker (convenience) | OD-B15-3. One level keeps the cascade, the await and the console's tree a single hop, and keeps a tree's size linear in the fan-out cap instead of exponential in depth. |
-| `max_children_per_task` | 16 | route, inside the creating transaction | Sixteen children plus the parent fit inside a new tenant's `default_tenant_max_active` of 20 (`apps/common/swarm_common/config.py::Settings.default_tenant_max_active`), so a fresh tenant can run one full fan-out without an admin; it is about a third of `max_workflow_steps` (50), because these DAGs are written by an agent, not reviewed by a person. Counted per task across attempts, so retries cannot multiply it. |
+| `max_children_per_task` | 16 | route, inside the creating transaction | Sixteen children plus the parent fit inside a new tenant's `default_tenant_max_active` of 20 (`apps/common/swarm_common/config.py::Settings.default_tenant_max_active`), so a fresh tenant can run one full fan-out without an admin; it is about a third of `max_workflow_steps` (50), because these DAGs are written by an agent, not reviewed by a person. Counted per agent across attempts, so retries cannot multiply it. |
 | `max_child_await_resumes` | 4 | the worker's await park transaction | A main agent with helpers fans out in a few rounds; four refunded awaits allow that, and the fifth counting as an attempt means a parent that awaits in a loop still ends at `max_attempts` rather than running forever. |
 | `child_await_max_seconds` | 86400 | scheduler await sweep | A child can sit parked on a provider's quota reset for hours; a day covers a full daily reset with margin, and past it a parent waiting on a child nobody will ever unblock gets its answer instead of waiting indefinitely. |
 | `max_child_request_bytes` | 262144 | worker (refuses to read), route (refuses to accept) | Equal to `max_input_bytes` (`apps/common/swarm_common/config.py::Settings.max_input_bytes`): the route would refuse a larger `input` anyway, and the worker must never read an unbounded file an agent wrote into its own memory. |
@@ -717,7 +717,7 @@ requests filed with the CR 14 amendment, none made:
 
 | Request | File | Change | Why it cannot live elsewhere |
 |---|---|---|---|
-| 14 (accepted, OD-B15-1) | `models.py` | `Task.parent_task_id`, `Task.parent_attempt_id` | every service reads tasks through `Task` |
+| 14 (accepted, OD-B15-1) | `models.py` | `Task.parent_task_id`, `Task.parent_attempt_id` | every service reads agents through `Task` |
 | 40 | `states.py` | `ParkReason.CHILDREN_INCOMPLETE` | `DEPENDENCY_INCOMPLETE` is promoted at once when `depends_on` is empty (§3.3 step 4) |
 | 41 | `models.py` | `EndCause.CHILD_CASCADE` | `CANCELLED_PARENT` already means an upstream step; `CANCEL_REQUESTED` would misfile a failure as a cancel |
 | 42 | `specsign.py` | the parent fields inside `canonical_step_spec`, `SPEC_FORMAT = 2` | without it a rewritten parent is undetectable by the child's worker (§5 F11) |
