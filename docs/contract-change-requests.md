@@ -114,6 +114,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 104 | `specsign.py`: spec format 5 covers `model_class`, signed at 5 only when a class is set (MODEL-CONTRACT, model per step request E, part of #1435) | ACCEPTED by the owner 2026-10-17 (PR 1509) and APPLIED by the pull request that adds this line |
 | 105 | `profiles.py`: `await-input` becomes available, `available=True` and its `disabled_reason` removed (HW-ENABLE, human steps request D, part of #1436) | ACCEPTED by the owner 2026-10-18 (on PR 1570, turned on in dev before HW-ACCEPT so the acceptance group can run against it) and APPLIED by the pull request that adds this line |
 | 106 | `profiles.py`: `claude-code-browser` declares `qa_identity`, one choice `console`, the live browser signed in to the console as the QA identity (QI-CONTRACT, QA identity request QI-1, part of #1649) | ACCEPTED by the owner 2026-10-19 (option B, design `docs/design/qa-identity.md` §7) and APPLIED by the pull request that adds this line |
+| 107 | `models.py`: `Attempt.throttled_seconds`, `peak_throttled_share`, `mean_throttled_share` and `memory_limit_bytes`, the attempt's measured CPU throttling and memory limit beside its CPU figures (LIVE-UTIL-API, part of #1689) | open, REQUESTED 2026-10-20 by lane LIVE-UTIL-API. Not applied: the four ride on each HEARTBEAT event until this is decided |
 
 ---
 
@@ -13752,3 +13753,76 @@ more option.
 **10**: a name from a closed list, never a credential, host or account.
 **9**: the name grants nothing by itself. swarm-api's per-tenant grant
 decides, at submission and again at signing. 1 to 8 are untouched.
+
+## 107. `models.py`: `Attempt.throttled_seconds`, `peak_throttled_share`, `mean_throttled_share` and `memory_limit_bytes` (LIVE-UTIL-API, part of #1689)
+
+**Status:** open, REQUESTED 2026-10-20 by lane LIVE-UTIL-API. Not applied:
+the four figures ride on every periodic HEARTBEAT event's `detail` until this
+is decided, which works today and changes no frozen type.
+
+### What is true today
+
+The owner asked on 2026-10-20 (#1689) for close to real-time CPU and memory
+use of a running agent, with CPU throttling MEASURED, so "starved" stops being
+an inference from a peak at the limit. The worker now reads the container's
+cgroup v2 `cpu.stat` CFS counters (`nr_periods`, `nr_throttled`,
+`throttled_usec`) every 5 seconds (`agent_worker.metrics.ResourceSampler`
+`sample_point`) and keeps, per attempt, every runner combined
+(`agent_worker.metrics` `combine_usage`):
+
+* `throttled_seconds`: `throttled_usec` over the attempt, in seconds -- the
+  time runnable work waited for its quota, summed across CPUs;
+* `peak_throttled_share`: the most-throttled 5-second window, 0..1;
+* `mean_throttled_share`: throttled periods over all periods.
+
+The CPU figures they belong beside are typed `Attempt` fields (requests 15 and
+26), written by `ControlPlane.record_cpu_usage`. These four are not: `Attempt`
+has no field for them, so the worker puts them, with the container's memory
+limit (`memory_limit_bytes`, cgroup `memory.max` else the sized class's), on
+each HEARTBEAT event (`agent_worker.lifecycle` `Worker._usage_reading`), and
+`GET /v1/tasks/{id}/utilisation` (`swarm_api.utilisation`) reads the newest
+beat's. That is the interim path request 15 replaced for the CPU figures:
+not queryable across attempts, and a read of the task's HEARTBEAT events per
+request.
+
+### The requested change
+
+```python
+@dataclass
+class Attempt:
+    ...
+    model: str | None = None
+
+    # CPU throttling and the memory limit (contract request 107, #1689). The
+    # ATTEMPT's, every runner combined, as for the CPU figures above. None
+    # means NOT MEASURED -- no cgroup throttling counters -- never zero; a
+    # measured 0.0 is an attempt that was never throttled.
+    throttled_seconds: float | None = None
+    peak_throttled_share: float | None = None
+    mean_throttled_share: float | None = None
+    memory_limit_bytes: int | None = None
+```
+
+At the end of the class, for the reason request 15 gives: no positional
+construction of an `Attempt` changes meaning. Optional, so every existing
+document stays valid and nothing migrates.
+
+**What follows outside the contract, once accepted.** The worker adds the
+four to `attempt_cpu_fields` (written with each periodic reading and at each
+reap, as the CPU figures are); swarm-api's `attemptstate` allow-list and
+`codec.attempt_to_api` serve them; `swarm_api.utilisation` reads them off the
+attempt instead of the newest beat. The 5-second points stay on the HEARTBEAT:
+they are a series, not an attempt figure.
+
+### If it is declined
+
+Nothing breaks. The figures stay on the HEARTBEAT, and the utilisation route
+keeps reading the newest beat's. What is lost is a query across attempts
+("which attempts of this profile were throttled last week") without reading
+each task's events.
+
+### Invariants
+
+**7** (requests == limits): unchanged; these MEASURE what the limit did.
+**9**: the attempt document is its own tenant's, as today. 1 to 6, 8 and 10
+are untouched.
