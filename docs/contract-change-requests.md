@@ -115,6 +115,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 105 | `profiles.py`: `await-input` becomes available, `available=True` and its `disabled_reason` removed (HW-ENABLE, human steps request D, part of #1436) | ACCEPTED by the owner 2026-10-18 (on PR 1570, turned on in dev before HW-ACCEPT so the acceptance group can run against it) and APPLIED by the pull request that adds this line |
 | 106 | `profiles.py`: `claude-code-browser` declares `qa_identity`, one choice `console`, the live browser signed in to the console as the QA identity (QI-CONTRACT, QA identity request QI-1, part of #1649) | ACCEPTED by the owner 2026-10-19 (option B, design `docs/design/qa-identity.md` §7) and APPLIED by the pull request that adds this line |
 | 107 | `models.py`: `Attempt.throttled_seconds`, `peak_throttled_share`, `mean_throttled_share` and `memory_limit_bytes`, the attempt's measured CPU throttling and memory limit beside its CPU figures (LIVE-UTIL-API, part of #1689) | open, REQUESTED 2026-10-20 by lane LIVE-UTIL-API. Not applied: the four ride on each HEARTBEAT event until this is decided |
+| 108 | `profiles.py`, `CONTRACT.md`: invariant 7 amended for CPU, `CPU_BURST_MAX_RATIO` and `ResourceClass.cpu_limit`, every class's CPU limit twice its request while memory and disk stay request == limit (SIZES-CONTRACT-1, runner sizes request RS-1, part of #1689) | ACCEPTED by the owner 2026-10-20 (design `docs/design/runner-sizes.md` §5, §7 Q1 A) and APPLIED by the pull request that adds this line. No pod bursts yet: the scheduler renders `cpu_limit_cores` in lane SIZES-SCHED-1 |
 
 ---
 
@@ -13826,3 +13827,100 @@ each task's events.
 **7** (requests == limits): unchanged; these MEASURE what the limit did.
 **9**: the attempt document is its own tenant's, as today. 1 to 6, 8 and 10
 are untouched.
+
+## 108. `profiles.py`, `CONTRACT.md`: invariant 7 amended for CPU; `ResourceClass.cpu_limit` (SIZES-CONTRACT-1, runner sizes request RS-1, part of #1689)
+
+**Status:** ACCEPTED by the owner 2026-10-20 ("CPU limits may be higher than
+requests ... memory stays fixed"; `docs/design/runner-sizes.md` §7, Q1 A: the
+limit is 2 x the request, the requests unchanged) and APPLIED by the pull
+request that adds this line. Design §5 request RS-1, filed here at the next
+free number by lane SIZES-CONTRACT-1.
+
+### What is true today
+
+Invariant 7: "requests == limits. No bursting; bursting is what gets
+OOM-killed." `ResourceClass` has one `cpu`, documented as "BOTH request and
+limit", and `profiles.py`'s module docstring forbids bursting. On 2026-10-20
+the day's implement attempts averaged 1.74 of their 4 cores and sat at the
+limit 22% of the time, 30% on long runs (#1689).
+
+### The change
+
+```python
+#: How far a class's CPU limit may sit above its request.
+CPU_BURST_MAX_RATIO = 2
+
+
+@dataclass(frozen=True)
+class ResourceClass:
+    """`cpu` is the CPU REQUEST ... `cpu_limit` is what it may burst to on GKE
+    Autopilot ... `memory_gib` and `disk_gib` are request AND limit."""
+
+    name: str
+    cpu: float
+    memory_gib: int
+    disk_gib: int
+    units: int
+    requires_preview_disk: bool = False
+    cpu_limit: float | None = None   # None: equal to `cpu`
+
+    @property
+    def cpu_limit_cores(self) -> float:
+        return self.cpu if self.cpu_limit is None else self.cpu_limit
+```
+
+`__post_init__` adds `cpu <= cpu_limit_cores <= CPU_BURST_MAX_RATIO * cpu`.
+The Cloud Run ceiling (8 cores, 32 GiB) keeps binding `cpu` and `memory_gib`,
+not the limit, so `large` at 8/16 constructs. `RESOURCE_CLASSES` gains
+`cpu_limit=8`, `8`, `16` on `standard`, `browser`, `large`; `cpu`,
+`memory_gib`, `disk_gib` and `units` are unchanged (§7 Q2 A). The module
+docstring's first hard rule becomes: memory and disk requests == limits; a CPU
+limit within the ratio, on GKE only.
+
+CONTRACT.md invariant 7 becomes:
+
+> 7. Memory and ephemeral storage: requests == limits, on every container.
+>    CPU: request <= limit <= `CPU_BURST_MAX_RATIO` x request, on GKE
+>    Autopilot only; Cloud Run renders the request as its single limit.
+>    Admission charges, and Autopilot bills, the request. A CPU burst is
+>    throttled under contention, never killed; memory never bursts, because
+>    a memory burst is what gets OOM-killed. The pod's QoS class is
+>    Burstable, so its kernel OOM score is above a Guaranteed pod's; the
+>    periodic checkpoint (invariant 8) bounds that kill as it bounds any.
+
+**What follows outside the contract, in later lanes.** Nothing reads
+`cpu_limit` yet: `dispatch.py` renders `rc.cpu` as both request and limit, so
+every pod is unchanged until SIZES-SCHED-1 renders `cpu_limit_cores` on the
+GKE manifest (and keeps the Cloud Run Job at the request). The worker's
+fallback limit (`lifecycle.py`, read only when the cgroup cannot be) follows
+in SIZES-WORKER-1. `scripts/lib/check-contract-parity.sh` compares each
+class's `units` only, and `terraform/infra/locals.tf` mirrors no CPU limit, so
+neither changes.
+
+**Tests:** `tests/unit/common/test_cpu_burst_contract.py`: the ratio is 2;
+every class's request is unchanged and its limit is twice it; memory and disk
+have no limit field; a limit of 2.5 x the request, or below it, is refused at
+construction; a limit equal to the request constructs; `large` at 8/16
+constructs and a 9-core request is still refused (the ceiling binds the
+request); `test_invariant_7_text_names_cpu_only` reads CONTRACT.md; the module
+docstring no longer forbids every burst; `test_request_rs_1_is_filed_as_entry_108`.
+
+### Rollback
+
+`cpu_limit` back to `None` on every class: every pod renders requests ==
+limits again. A running pod keeps its limit until it ends.
+
+### What it would break
+
+Nothing today, since no renderer reads the limit. When SIZES-SCHED-1 renders
+it, the tests that assert requests == limits for CPU on the GKE manifest
+(`tests/unit/control_plane/test_dispatch_*.py`,
+`test_browser_class_request_79.py`, `test_gke_workspace_fits.py`,
+`test_gke_cache_volume.py`, `test_claude_code_browser_profile.py`) change
+there, red first, to hold memory and ephemeral storage equal and CPU within
+the ratio.
+
+### Invariants
+
+**7** amended as above. **8**: unchanged, and named in 7's text. **1-6, 9,
+10** are untouched: admission still charges the request's units.

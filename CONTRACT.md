@@ -28,7 +28,15 @@ If you believe it needs a change, say so in your report rather than editing it.
    stale exits WITHOUT running the agent.
 6. Spot is disabled platform-wide. Spot Pods cannot use Autopilot extended run
    time, which would break the no-preemption requirement.
-7. requests == limits. No bursting; bursting is what gets OOM-killed.
+7. Memory and ephemeral storage: requests == limits, on every container.
+   CPU: request <= limit <= `CPU_BURST_MAX_RATIO` x request, on GKE
+   Autopilot only; Cloud Run renders the request as its single limit.
+   Admission charges, and Autopilot bills, the request. A CPU burst is
+   throttled under contention, never killed; memory never bursts, because
+   a memory burst is what gets OOM-killed. The pod's QoS class is
+   Burstable, so its kernel OOM score is above a Guaranteed pod's; the
+   periodic checkpoint (invariant 8) bounds that kill as it bounds any.
+   (Amended 2026-10-20, contract request 108, #1689.)
 8. Mandatory periodic checkpointing. Cloud Run ephemeral disk is Preview and
    disables live migration, so checkpoints are what make interruption survivable.
 9. Per-tenant isolation: own GSA, own secrets, own GCS prefix, own namespace.
