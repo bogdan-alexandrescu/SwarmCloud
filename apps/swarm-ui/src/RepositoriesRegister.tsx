@@ -420,7 +420,7 @@ function ScheduleStep({
             Index now, after registering
           </label>
           <p className="ur-hint">
-            A full run. It queues like any task and holds a slot of this tenant's capacity only while it runs.
+            A full run. It queues like any agent and holds a slot of this tenant's capacity only while it runs.
           </p>
         </div>
       </div>

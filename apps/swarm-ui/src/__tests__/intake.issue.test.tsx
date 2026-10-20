@@ -200,7 +200,7 @@ describe('step 1: the issue is read and shown before anything is created', () =>
     serve({ status: 422, body: { code: 'is_pull_request', message: 'a pull request' } })
     const { go } = await mount()
     await readIssue('example-org/infra#498')
-    fireEvent.click(await screen.findByRole('button', { name: 'Submit a task instead' }, WAIT))
+    fireEvent.click(await screen.findByRole('button', { name: 'Start an agent instead' }, WAIT))
     expect(go).toHaveBeenCalledWith('work/new')
   })
 

@@ -67,7 +67,7 @@ describe('#94: an Overview running agent is named by its step', () => {
   it('names a standalone agent by what it is and its short id, with its profile under it', () => {
     // Walkthrough G (2026-10-03): `agentName`, as the list, the Timeline and the crumb name it.
     const th = row({ id: 'task_alone', runner_profile: 'claude-code', workflow_id: null, step_id: null })
-    expect(th.querySelector('a.ov-name')?.textContent).toBe('claude-code task · alone')
+    expect(th.querySelector('a.ov-name')?.textContent).toBe('claude-code agent · alone')
     expect(th.querySelector('.ov-sub')?.textContent).toBe('claude-code')
   })
 })

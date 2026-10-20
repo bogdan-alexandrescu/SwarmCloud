@@ -107,7 +107,7 @@ function capturePosts() {
 
 async function form() {
   const r = render(<SubmitScreen />)
-  await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+  await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
   fireEvent.click(r.container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="claude-code"]')!)
   const prompt = r.container.querySelector<HTMLTextAreaElement>('.sbf-build textarea')!
   fireEvent.change(prompt, { target: { value: 'ask the knowledge base what changed last week' } })
@@ -153,9 +153,9 @@ describe('the MCP server picker', () => {
     fireEvent.click(within(group).getByRole('checkbox', { name: /kb/ }))
     const field = within(group).getByLabelText(/credential for kb/i) as HTMLInputElement
     expect(field.type).toBe('password')
-    expect((screen.getByRole('button', { name: 'Submit one task' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Start one agent' }) as HTMLButtonElement).disabled).toBe(true)
     fireEvent.change(field, { target: { value: CREDENTIAL } })
-    expect((screen.getByRole('button', { name: 'Submit one task' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: 'Start one agent' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('sends the names in `input` and the credential beside it, and never renders the credential back', async () => {
@@ -165,7 +165,7 @@ describe('the MCP server picker', () => {
     const group = await screen.findByRole('group', { name: 'MCP servers' }, WAIT)
     fireEvent.click(within(group).getByRole('checkbox', { name: /kb/ }))
     fireEvent.change(within(group).getByLabelText(/credential for kb/i), { target: { value: CREDENTIAL } })
-    fireEvent.click(screen.getByRole('button', { name: 'Submit one task' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start one agent' }))
     await waitFor(() => expect(posts).toHaveLength(1), WAIT)
 
     const body = posts[0]!
@@ -187,7 +187,7 @@ describe('the MCP server picker', () => {
     const posts = capturePosts()
     await form()
     await screen.findByRole('group', { name: 'MCP servers' }, WAIT)
-    fireEvent.click(screen.getByRole('button', { name: 'Submit one task' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start one agent' }))
     await waitFor(() => expect(posts).toHaveLength(1), WAIT)
     expect(posts[0]!.input).toEqual({ prompt: 'ask the knowledge base what changed last week' })
     expect('mcp_credentials' in posts[0]!).toBe(false)

@@ -172,14 +172,14 @@ function lastAction(s: LiveBrowserTools, now: number): string {
 }
 
 const JEV_WHY: Record<NonNullable<LiveBrowserTools['jev']['reason']>, string> = {
-  no_key: 'Jev is off: there is no TypeSafe key for this task. Add one in Settings › API keys.',
+  no_key: 'Jev is off: there is no TypeSafe key for this agent. Add one in Settings › API keys.',
   not_installed: 'Jev is off: this runner image does not carry it.',
-  not_selected: 'Jev is off: it was not chosen for this task.',
+  not_selected: 'Jev is off: it was not chosen for this agent.',
   no_route:
-    'Jev is off: this workspace judges with your internal decision API, and this task has no route to it (the tailnet egress is off). The agent uses Playwright.',
+    'Jev is off: this workspace judges with your internal decision API, and this agent has no route to it (the tailnet egress is off). The agent uses Playwright.',
 }
 
-const CHANGE_TOOL = 'The tool is chosen with Browser tool on Submit when a task starts; it does not change while the task runs.'
+const CHANGE_TOOL = 'The tool is chosen with Browser tool on Submit when an agent starts; it does not change while the agent runs.'
 
 /**
  * [Signed in as QA identity (console)] (lane QI-UI, docs/design/qa-identity.md
@@ -192,7 +192,7 @@ function QaIdentityBadge({ identity }: { identity: string }) {
   return (
     <Badge kind="qa-identity" tone="note" label={`Signed in as QA identity (${identity})`}>
       <span className="bb-line">
-        This task asked for the QA identity: the browser is signed in to this console as the QA account, not as the person who
+        This agent asked for the QA identity: the browser is signed in to this console as the QA account, not as the person who
         submitted it, and what it does here is done in the QA workspace.
       </span>
       <span className="bb-line">The platform adds the credential to the console’s own requests; the agent never holds it.</span>
@@ -254,7 +254,7 @@ export function BrowserBadges({
         <span className="bb-line">
           {sel === 'auto'
             ? 'Auto: the agent picks the browser tool for each step.'
-            : `${TOOL_LABEL[sel]} was chosen for this task.`}
+            : `${TOOL_LABEL[sel]} was chosen for this agent.`}
         </span>
         <span className="bb-line">
           {available === '' ? 'No browser tool registered in this attempt.' : `Registered in this attempt: ${available}.`}
@@ -273,14 +273,14 @@ export function BrowserBadges({
               ? `The browser’s traffic leaves through a residential proxy${country === null ? '' : ` in ${country}`}.`
               : eg.state === 'failing'
                 ? 'The browser’s traffic should leave through a residential proxy, and the proxy is failing.'
-                : 'This task expected a residential proxy, and the proxy is off: its traffic is not proxied.'}
+                : 'This agent expected a residential proxy, and the proxy is off: its traffic is not proxied.'}
         </span>
         {eg.last_error !== null && eg.last_error.trim() !== '' ? (
           <span className="bb-line">Last error: {eg.last_error}</span>
         ) : null}
         <span className="bb-line">{lastAction(status, now)}</span>
         <span className="bb-line bb-how">
-          Egress is set for the deployment by an administrator, not per task (docs/browser-egress.md).
+          Egress is set for the deployment by an administrator, not per agent (docs/browser-egress.md).
         </span>
       </Badge>
       {status.jev.enabled ? (

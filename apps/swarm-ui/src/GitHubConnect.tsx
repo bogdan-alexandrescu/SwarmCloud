@@ -435,12 +435,12 @@ function ConnectStep({ doc, read, onChange }: { doc: OnboardingDoc; read: UrRead
       </>
     ) : view.kind === 'own-token' ? (
       <>
-        Your own stored token ({who(view.login)}) is what your tasks use. Connect GitHub to act through the SwarmCloud App
+        Your own stored token ({who(view.login)}) is what your agents use. Connect GitHub to act through the SwarmCloud App
         instead: no token to paste, and it renews itself.
       </>
     ) : view.kind === 'tenant' ? (
       <>
-        Your tasks act through the tenant token ({who(view.login)}), not as you. Connect your GitHub account so SwarmCloud
+        Your agents act through the tenant token ({who(view.login)}), not as you. Connect your GitHub account so SwarmCloud
         clones, pushes and opens pull requests as you.
       </>
     ) : (
@@ -503,7 +503,7 @@ function ConnectStep({ doc, read, onChange }: { doc: OnboardingDoc; read: UrRead
         >
           <p className="ur-small">
             SwarmCloud revokes its authorisation at GitHub, disables the token it stored for you and forgets the
-            repositories you granted. Tasks you submit afterwards wait until you connect again.
+            repositories you granted. Agents you submit afterwards wait until you connect again.
           </p>
         </Banner>
       )}
@@ -586,7 +586,7 @@ function IndexingNote({ repo, registered }: { repo: ChosenRepo | null; registere
     <div className="ur-small ur-indexing" data-testid="indexing-note">
       <p>
         Indexing uses: {words === null ? <Dash why="Not served: no repository is registered for indexing" /> : <b className={words.startsWith('none') ? 'ur-bad' : undefined}>{words}</b>}
-        {words !== null && '. Try it checks the access your own tasks use; indexing clones with this.'}
+        {words !== null && '. Try it checks the access your own agents use; indexing clones with this.'}
       </p>
       <p>
         {record === null ? (
@@ -669,8 +669,8 @@ function TryStep({ doc, read, go }: { doc: OnboardingDoc; read: UrRead<Onboardin
       : g.state === 'done'
         ? 'Every chosen repository passed its clone, push and pull request checks.'
         : rows.length > 0
-          ? `${count('passed')} passed${count('failed') > 0 ? ` · ${count('failed')} failed` : ''}${count('pending') > 0 ? ` · ${count('pending')} not checked yet` : ''}. Check a repository, or run a harmless test task in it.`
-          : 'Check a repository, or run a harmless test task in it.'
+          ? `${count('passed')} passed${count('failed') > 0 ? ` · ${count('failed')} failed` : ''}${count('pending') > 0 ? ` · ${count('pending')} not checked yet` : ''}. Check a repository, or run a harmless test agent in it.`
+          : 'Check a repository, or run a harmless test agent in it.'
 
   return (
     <GuideRow
@@ -692,7 +692,7 @@ function TryStep({ doc, read, go }: { doc: OnboardingDoc; read: UrRead<Onboardin
               Check access
             </Button>
             <Button size="sm" disabled={repo === null || !OWNER_REPO.test(repo.repository)} onClick={runTestTask}>
-              Run a test task
+              Run a test agent
             </Button>
           </>
         )

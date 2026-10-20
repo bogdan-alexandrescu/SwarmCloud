@@ -284,7 +284,7 @@ describe('the Now card leads, and becomes the outcome or the failure', () => {
     expect(lead.dataset.lead).toBe('failed')
     expect(lead.classList.contains('is-neu'), 'a cancel reads as a failure').toBe(true)
     expect(lead.querySelector('.dt-card-head > b')?.textContent).toBe('Cancelled')
-    expect(lead.textContent).toContain('No error text was written on the task.')
+    expect(lead.textContent).toContain('No error text was written on the agent.')
   })
 })
 

@@ -18,7 +18,7 @@ import { ToneMark } from './components'
 export type Liveness = 'live' | 'quiet' | 'silent' | 'finished' | 'not-started'
 
 const CAPTION =
-  'Derived from the newest task event, so resolution is ~150s. This is not the lease heartbeat (30s) — that is not exposed by any route.'
+  'Derived from the newest agent event, so resolution is ~150s. This is not the lease heartbeat (30s) — that is not exposed by any route.'
 
 /**
  * THE WORD, THE FIGURE, AND THE SENTENCE -- three things, in three places.

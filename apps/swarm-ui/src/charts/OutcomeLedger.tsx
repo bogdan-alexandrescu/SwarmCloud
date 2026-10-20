@@ -1132,7 +1132,7 @@ export function OutcomeLedger({ data, picked, onPick, onZoom, figureLink }: Outc
                         kind="partial"
                         say={`The readout counts ${n} ${outcome} over the ${cov.read} of ${cov.of} ${cov.unit} built so far; the list reads the whole span and prints its own total.`}
                       />{' '}
-                      every {outcome} task in the whole span →{' '}
+                      every {outcome} agent in the whole span →{' '}
                     </>
                   )}
                   <span className="ol-q">list them</span>

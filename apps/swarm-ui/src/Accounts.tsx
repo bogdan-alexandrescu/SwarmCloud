@@ -1800,7 +1800,7 @@ function HoldWork({ h }: { h: { task_id?: string; attempt?: number | null; recor
     return (
       <span
         className="ctl-mark is-partial"
-        aria-label="The worker named a task this tenant does not own, so it is not shown."
+        aria-label="The worker named an agent this tenant does not own, so it is not shown."
       >
         unverified
       </span>
@@ -1809,9 +1809,9 @@ function HoldWork({ h }: { h: { task_id?: string; attempt?: number | null; recor
   return (
     <span
       className="ctl-mark is-absent"
-      aria-label="No task of this tenant's was recorded on this hold."
+      aria-label="No agent of this tenant's was recorded on this hold."
     >
-      task not recorded
+      agent not recorded
     </span>
   )
 }
@@ -2260,7 +2260,7 @@ function refreshVerdict(r: RefreshResult): { ok: boolean; heading: string; body:
           <>
             The stored token was still valid, but the secret a pod mounts did not
             carry it. It does now. This is the case that silently breaks every
-            task for an account whose credential is working perfectly, so seeing
+            agent for an account whose credential is working perfectly, so seeing
             it here means something was genuinely fixed.
           </>
         ),

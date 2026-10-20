@@ -167,7 +167,7 @@ function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
       const view = connectionOf(doc)
       if (view.kind === 'app') return `connected as @${view.login ?? '?'} · GitHub App`
       if (view.kind === 'own-token') return `your own stored token${view.login !== null ? ` (@${view.login})` : ''}`
-      if (view.kind === 'tenant') return `tasks act through the tenant token${view.login !== null ? ` (@${view.login})` : ''}, not as you`
+      if (view.kind === 'tenant') return `agents act through the tenant token${view.login !== null ? ` (@${view.login})` : ''}, not as you`
       return 'no GitHub account connected'
     }
     case 'app_installed': {
@@ -220,7 +220,7 @@ function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
     }
     case 'ready': {
       const first = str(ev.first_repository)
-      return first === null ? 'submit a first task in a granted repository' : `submit a first task in ${first}`
+      return first === null ? 'submit a first agent in a granted repository' : `submit a first agent in ${first}`
     }
   }
   return null
@@ -248,7 +248,7 @@ function StepAction({ step, doc, reload }: { step: OnboardingStep; doc: Onboardi
   if (step.step === 'ready') {
     return step.state === 'done' ? (
       <ButtonLink kind="primary" size="sm" href={addressToPath(SUBMIT_TASK)}>
-        Submit a task
+        Start an agent
       </ButtonLink>
     ) : null
   }

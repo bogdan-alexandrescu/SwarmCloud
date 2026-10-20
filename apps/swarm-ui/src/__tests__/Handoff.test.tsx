@@ -339,7 +339,7 @@ describe('recordings', () => {
     // The read is the task's own route, which checks the tenant (§7).
     expect(String(fetchMock.mock.calls[0]![0])).toMatch(/^\/v1\/tasks\/task_browser0000000000001\/live\/recordings/)
     // It says what is dropped rather than hiding it silently.
-    expect(container.textContent).toMatch(/2 entries .*not this task's recordings/i)
+    expect(container.textContent).toMatch(/2 entries .*not this agent's recordings/i)
   })
 
   it('says plainly when the deployment does not serve recordings yet', async () => {

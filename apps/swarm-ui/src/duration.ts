@@ -394,7 +394,7 @@ function open(
 /** Why an attempt that never started is over, in the words of what was read. */
 function neverStartedWhy(end: AttemptEnd, task: Task): string {
   if (end.over && end.by === 'released') {
-    return `Admitted and never started. The task is ${task.state} and no longer holds this attempt’s lease — the shape a failed dispatch or a reclaim leaves — so no container is coming for it, and no end was recorded.`
+    return `Admitted and never started. The agent is ${task.state} and no longer holds this attempt’s lease — the shape a failed dispatch or a reclaim leaves — so no container is coming for it, and no end was recorded.`
   }
   return 'Admitted and never started. This attempt is over and no end was recorded for it.'
 }
@@ -406,7 +406,7 @@ function openRunWhy(end: AttemptEnd, task: Task): string {
     return 'Running, with no end yet. It has run at least until its newest heartbeat or checkpoint on this page; the events route is capped and newer ones may exist.'
   }
   if (end.by === 'released') {
-    return `This attempt is over: the task is ${task.state} and no longer holds its lease, and no finish time was ever written — the shape a quota park or a reconciler reclaim leaves. ${bound}`
+    return `This attempt is over: the agent is ${task.state} and no longer holds its lease, and no finish time was ever written — the shape a quota park or a reconciler reclaim leaves. ${bound}`
   }
   return `This attempt is over and no finish time was ever written — the shape a kill or a reconciler reclaim leaves. ${bound}`
 }
@@ -475,7 +475,7 @@ export function phasesFor(
       const submitted = instant(task.created_at)
       queue =
         submitted === null
-          ? { kind: 'absent', phase: 'queue', why: 'The task’s submission time did not parse, so the wait before admission has no start.' }
+          ? { kind: 'absent', phase: 'queue', why: 'The agent’s submission time did not parse, so the wait before admission has no start.' }
           : closedOrAbsent('queue', submitted, admitted, origin)
     } else {
       const from = requeuedAt(previousExisted ?? -Infinity, admitted, events)
@@ -487,10 +487,10 @@ export function phasesFor(
               phase: 'queue',
               why:
                 i === 0
-                  ? `The task records ${counted} attempts and ${ordered.length} documents came back, so this may not be its first attempt, and the ready event that put it in line is not on this page. The wait before admission has no start.`
+                  ? `The agent records ${counted} attempts and ${ordered.length} documents came back, so this may not be its first attempt, and the ready event that put it in line is not on this page. The wait before admission has no start.`
                   : eventsRead
-                    ? 'The ready event that put the task back in line for this attempt is not on this page of events, so the wait before admission has no start.'
-                    : 'The event read failed, so the ready event that put the task back in line for this attempt could not be looked for.',
+                    ? 'The ready event that put the agent back in line for this attempt is not on this page of events, so the wait before admission has no start.'
+                    : 'The event read failed, so the ready event that put the agent back in line for this attempt could not be looked for.',
             }
     }
     previousExisted = admitted ?? instant(a.created_at) ?? previousExisted

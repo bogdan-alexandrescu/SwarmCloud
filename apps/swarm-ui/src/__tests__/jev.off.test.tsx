@@ -86,7 +86,7 @@ async function capacity(): Promise<Result<Capacity>> {
 
 async function browserForm() {
   const r = render(<SubmitScreen />)
-  await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+  await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
   fireEvent.click(r.container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="claude-code-browser"]')!)
   return r.container
 }
@@ -183,7 +183,7 @@ describe('the live chip says when the attempt fell back', () => {
     const b = container.querySelector<HTMLElement>('[data-testid="browser-badge-tool"]')!
     fireEvent.focus(b)
     const card = document.getElementById(b.getAttribute('aria-describedby') ?? '')!
-    expect(card.textContent).toMatch(/judges with your internal decision API, and this task has no route to it/)
+    expect(card.textContent).toMatch(/judges with your internal decision API, and this agent has no route to it/)
     // The company is not named on the chip (#1647).
     expect(card.textContent).not.toMatch(COMPANY_NAME)
     expect(card.textContent).toMatch(/tailnet egress is off/)

@@ -947,7 +947,7 @@ export function AddSetting({ idPrefix, offers, onAdd, onOwn }: {
 export function SubmitScreen() {
   return (
     <Screen
-      title="Submit a task"
+      title="Start an agent"
       load={loadCapacity}
       summary={(c) => `${Object.keys(c.runner_profiles).length} runner profiles · ${c.pools.length} pools you are admitted against`}
       empty={{ heading: 'No pools came back',
@@ -1385,7 +1385,7 @@ function Form({ capacity }: { capacity: Capacity }) {
           <RunnerPicker group="runner-profile" label="runner" profiles={catalogue} chosen={chosen}
             keys={keys} onPick={pick} />
           {profile && (
-            <ModelClassSelect id="task-model-class" label="task model class" offer={offers?.[chosen]} value={modelClass}
+            <ModelClassSelect id="task-model-class" label="agent model class" offer={offers?.[chosen]} value={modelClass}
               onPick={setModelClass} />
           )}
           {bad.runner_profile && <p id={refusedSayId('runner_profile')} tabIndex={-1} className="warn-text" role="alert">{bad.runner_profile}</p>}
@@ -1543,7 +1543,7 @@ function Form({ capacity }: { capacity: Capacity }) {
           ) : (
             <Button key="submit" type="submit" kind="primary" full disabled={outcome.kind === 'sending' || blocked || refusedAsIs || roleGate !== null}
               aria-describedby={blocked && !justSent ? WHY_ID : undefined}>
-              {outcome.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit one task' : `Submit as ${submitAs}`}
+              {outcome.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Start one agent' : `Submit as ${submitAs}`}
             </Button>
           )}
           {blocked && !justSent && <p id={WHY_ID} className="sb-note sbf-why">Not ready: {why.join('; ')}.</p>}
@@ -1579,7 +1579,7 @@ function Form({ capacity }: { capacity: Capacity }) {
                     two sentences here ARE that, with the remedy first. */}
                 <p className="warn-text">
                   <strong>Check Agents before submitting again.</strong> This failed on
-                  a write, so the task may exist anyway.
+                  a write, so the agent may exist anyway.
                 </p>
               </>
             )}
@@ -1674,7 +1674,7 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
           )
         ) : (
           <>
-            Room for <strong>{room.agents}</strong> more task{room.agents === 1 ? '' : 's'} of this
+            Room for <strong>{room.agents}</strong> more agent{room.agents === 1 ? '' : 's'} of this
             profile right now, for {tenant ?? 'a tenant this response does not name'}
             {leadCopy !== null
               ? <>. {leadCopy}</>
@@ -1733,7 +1733,7 @@ function Refused({ outcome, onField }: {
   return (
     // `alert`, as the field's own sentence is: a refusal, not a record of something made.
     <div className="state failed" role="alert">
-      <h3>{outcome.sent ? 'The API refused this task' : 'Not sent'}</h3>
+      <h3>{outcome.sent ? 'The API refused this agent' : 'Not sent'}</h3>
       {outcome.unattributed !== null && <p>It did not say which field: {outcome.unattributed}</p>}
       {named.length > 0 && (
         <ul className="sbf-refused">

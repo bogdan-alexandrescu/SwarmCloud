@@ -362,7 +362,7 @@ function capturePosts() {
 
 async function browserForm() {
   const r = render(<SubmitScreen />)
-  await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+  await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
   fireEvent.click(r.container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="claude-code-browser"]')!)
   const prompt = r.container.querySelector<HTMLTextAreaElement>('.sbf-build textarea')!
   fireEvent.change(prompt, { target: { value: 'sweep the Overview at 390 and 1440' } })
@@ -414,7 +414,7 @@ describe('3. the Submit form offers the QA identity only when this workspace is 
     api.loadQaIdentityMine.mockResolvedValue(mineAnswer(true))
     const posts = capturePosts()
     await browserForm()
-    const submit = screen.getByRole('button', { name: 'Submit one task' })
+    const submit = screen.getByRole('button', { name: 'Start one agent' })
 
     await screen.findByRole('checkbox', { name: OPTION }, WAIT)
     fireEvent.click(submit)
@@ -422,7 +422,7 @@ describe('3. the Submit form offers the QA identity only when this workspace is 
     expect(posts[0]!.input).not.toHaveProperty('qa_identity')
 
     fireEvent.click(screen.getByRole('checkbox', { name: OPTION }))
-    fireEvent.click(screen.getByRole('button', { name: 'Submit one task' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start one agent' }))
     await waitFor(() => expect(posts).toHaveLength(2), WAIT)
     expect((posts[1]!.input as Record<string, unknown>).qa_identity).toBe('console')
   })

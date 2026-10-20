@@ -206,7 +206,7 @@ describe('G5-16: Holding now is the mock-up’s Agent · Attempt · Since table'
     const rows = [...table!.querySelectorAll('tbody tr')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent))
     expect(rows[0]).toEqual(['fix-lease-heartbeat', '1', `${hhmm(since)} (21m)`])
     // A hold that named no task still says so, and has no attempt to give.
-    expect(rows[1]).toEqual(['task not recorded', '—', `${hhmm(since)} (21m)`])
+    expect(rows[1]).toEqual(['agent not recorded', '—', `${hhmm(since)} (21m)`])
     expect(screen.getByRole('heading', { name: 'Holding now · 2' })).toBeTruthy()
   })
 

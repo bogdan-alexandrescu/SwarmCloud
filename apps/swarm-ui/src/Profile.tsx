@@ -572,7 +572,7 @@ function TypeSafeCard({ p }: { p: Profile }) {
           <dd>{ts.personal === null ? 'No ready personal workspace to keep it in' : keyWords(ts.personal)}</dd>
           <dt>{`The key for ${ts.acting_workspace.tenant_id}`}</dt>
           <dd>{ts.acting_workspace.set ? 'Set' : 'Not set'}</dd>
-          <dt>{`Your tasks in ${ts.acting_workspace.tenant_id} would use`}</dt>
+          <dt>{`Your agents in ${ts.acting_workspace.tenant_id} would use`}</dt>
           <dd>{USES_WORDS[ts.uses]}</dd>
         </dl>
       )}

@@ -186,7 +186,7 @@ export function AgChildrenPane({ task, readKey }: { task: Task; readKey: string 
         <p className="att-none">
           <Mark
             kind="absent"
-            say="The list route answering this console does not apply the parent_task_id filter: its rows carry no parent field, so they are the tenant's newest tasks and not this agent's children."
+            say="The list route answering this console does not apply the parent_task_id filter: its rows carry no parent field, so they are the tenant's newest agents and not this agent's children."
           />{' '}
           not available on this deployment yet
         </p>

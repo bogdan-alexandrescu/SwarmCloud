@@ -103,7 +103,7 @@ describe('QA-052: a pool too small for one task of its class says so on its row'
     const mark = [...state.querySelectorAll<HTMLElement>('[title]')].find((m) => m.textContent?.includes('too small'))!
     // MUTATION: title the chip without the weight -- the reason is the
     // comparison, `2` against `4`, and the title states both.
-    expect(mark.getAttribute('title')).toMatch(/limit is 2 units, below the 4 units one large task weighs/)
+    expect(mark.getAttribute('title')).toMatch(/limit is 2 units, below the 4 units one large agent weighs/)
     // MUTATION: leave the row's class undefined for `small` -- the row loses
     // the wash every other Needs-action row carries.
     expect(row.classList.contains('is-paused')).toBe(true)

@@ -414,7 +414,7 @@ describe('G2-12: a checkpoint reclaimed after the task finished is not a warning
   it('says `reclaimed after the task finished`, in the neutral tone, on a succeeded task', async () => {
     const p = await finding(running({ state: 'SUCCEEDED', completed_at: ago(1), latest_checkpoint: POINTER }))
     expect(p.classList.contains('untrusted'), 'a finished task’s retention reads as a fault').toBe(false)
-    expect(p.textContent).toMatch(/Reclaimed after the task finished\.$/)
+    expect(p.textContent).toMatch(/Reclaimed after the agent finished\.$/)
   })
 
   it('keeps the amber line while the task can still run', async () => {

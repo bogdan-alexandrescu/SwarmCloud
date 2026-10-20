@@ -289,11 +289,11 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'an-attempt',
     title: 'When an attempt document exists',
     short:
-      'An attempt document is written when capacity is reserved, not when a task is submitted. A task waiting for capacity has none, and that is the true state of the task, not a gap in the record.',
+      'An attempt document is written when capacity is reserved, not when an agent is submitted. An agent waiting for capacity has none, and that is the true state of the agent, not a gap in the record.',
     long: [
-      'The unit of the agent screen is the attempt, not the task. Each attempt carries its own runtime, its own requested-against-used figures, its own tokens and cost, its own checkpoints and its own error.',
-      'The document is created at dispatch, and the task’s own attempt counter is incremented inside the same admission transaction. So the counter and the documents should agree, and when they do not the difference is the interesting part: a task that counts attempts whose query returned fewer documents has a hole in its record, and that is true of a running task as much as a finished one.',
-      'A task that counts no attempts and returned no documents is consistent, and its empty attempt list is a measurement rather than a failure.',
+      'The unit of the agent screen is the attempt, not the agent. Each attempt carries its own runtime, its own requested-against-used figures, its own tokens and cost, its own checkpoints and its own error.',
+      'The document is created at dispatch, and the agent’s own attempt counter is incremented inside the same admission transaction. So the counter and the documents should agree, and when they do not the difference is the interesting part: an agent that counts attempts whose query returned fewer documents has a hole in its record, and that is true of a running agent as much as a finished one.',
+      'An agent that counts no attempts and returned no documents is consistent, and its empty attempt list is a measurement rather than a failure.',
     ],
   },
 
@@ -308,10 +308,10 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'an-attempt',
     title: 'What the outcome describes',
     short:
-      'The outcome is what the task left when it finished: the pull request or branch it published, the files it uploaded and the answer it wrote. It is written once, when the task ends, so on a task that ran more than once it describes the last attempt only.',
+      'The outcome is what the agent left when it finished: the pull request or branch it published, the files it uploaded and the answer it wrote. It is written once, when the agent ends, so on an agent that ran more than once it describes the last attempt only.',
     long: [
-      'The outcome is read from the task’s result summary, which the worker writes once, at the end. It names what was published — a pull request, a branch, or nothing when the strategy publishes nothing — and counts the files uploaded as artifacts.',
-      'On a task that ran more than once, every part of it belongs to the last attempt. The earlier attempts’ output was never summarised, which is why a retried outcome is marked as the last attempt of several.',
+      'The outcome is read from the agent’s result summary, which the worker writes once, at the end. It names what was published — a pull request, a branch, or nothing when the strategy publishes nothing — and counts the files uploaded as artifacts.',
+      'On an agent that ran more than once, every part of it belongs to the last attempt. The earlier attempts’ output was never summarised, which is why a retried outcome is marked as the last attempt of several.',
       'The files themselves are on the agent’s Artifacts tab, where each can be viewed or downloaded.',
     ],
     see: ['attempt-documents'],
@@ -321,7 +321,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'an-attempt',
     title: 'The input, as it was submitted',
     short:
-      'This is the input the task was submitted with, as the API serves it: masked where a value matched a credential pattern, otherwise unchanged. The platform handed it to the agent without reading it and checked nothing about it but its size.',
+      'This is the input the agent was submitted with, as the API serves it: masked where a value matched a credential pattern, otherwise unchanged. The platform handed it to the agent without reading it and checked nothing about it but its size.',
     long: [
       'The input is shown as the platform stored it at submission. The agent decided what it meant; the platform only carried it.',
       'Values that look like credentials are masked when the input is served, and the number masked is shown beside the prompt. Masking changes the copy that is served, not the stored input.',
@@ -332,13 +332,13 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   'strategy-on-a-task': {
     group: 'an-attempt',
-    title: 'What the task was asked to publish',
+    title: 'What the agent was asked to publish',
     short:
-      'The chips name the dispatch strategy the task was submitted with — publish nothing, one pull request per step, or one for the whole workflow — and, in a workflow that integrates, this step’s role. What was actually published is the outcome, once the task ends.',
+      'The chips name the dispatch strategy the agent was submitted with — publish nothing, one pull request per step, or one for the whole workflow — and, in a workflow that integrates, this step’s role. What was actually published is the outcome, once the agent ends.',
     long: [
-      'The strategy is fixed when the task is submitted and does not change while it runs.',
+      'The strategy is fixed when the agent is submitted and does not change while it runs.',
       'Under the integrating strategy each step has a role: a contributor pushes its branch and opens nothing, and the integrator opens the one pull request for the whole workflow.',
-      'The strategy is what was asked for. Whether a pull request was opened, and which one, is read from the task’s result summary once it ends.',
+      'The strategy is what was asked for. Whether a pull request was opened, and which one, is read from the agent’s result summary once it ends.',
     ],
     // READ, not restated, as `dispatch-strategies` reads them.
     values: () =>
@@ -370,12 +370,12 @@ const SPECS: Record<TopicId, TopicSpec> = {
     // paragraph describing a window nothing draws is not left behind.
     title: 'One page of events, not the whole history',
     short:
-      'This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so newer events may exist that it has not fetched. An attempt with none on this page is blind, not quiet. Zero events is a failed query: a task is written with its first event.',
+      'This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so newer events may exist that it has not fetched. An attempt with none on this page is blind, not quiet. Zero events is a failed query: an agent is written with its first event.',
     long: [
       'The attempt timeline in an agent’s inspector reads one page of events, oldest first, and stops there.',
       'The events route pages: each response carries a token for the next page whenever more events exist, and it can also be asked for the newest events first. The attempt timeline in an agent’s inspector uses neither. It asks for one page, oldest-first, and stops there, so what it holds is the beginning of a history, never a guaranteed whole of it.',
       'So \u201cthis is everything\u201d is a claim the attempt timeline is never entitled to make. An attempt with no events on the page is counted as blind rather than drawn as quiet: past one page, the newest events \u2014 everything belonging to the latest attempts \u2014 are on the platform and not in the timeline.',
-      'Zero events is a different fact again. A task is written together with its first event, in the same batch, so an empty history is a failed query and is marked as one \u2014 never as an empty record.',
+      'Zero events is a different fact again. An agent is written together with its first event, in the same batch, so an empty history is a failed query and is marked as one \u2014 never as an empty record.',
     ],
   },
 
@@ -409,7 +409,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'the-platform',
     title: 'A schedule makes ordinary work on a timetable',
     short:
-      'A schedule fires on its cron, in its own timezone, and each firing makes ordinary work: an issue run, a task or a workflow. Its gate says what waits for a person, its budget what a day may spend. A dry run records what a firing would make and makes nothing.',
+      'A schedule fires on its cron, in its own timezone, and each firing makes ordinary work: an issue run, an agent or a workflow. Its gate says what waits for a person, its budget what a day may spend. A dry run records what a firing would make and makes nothing.',
     long: [
       'A schedule is a named, typed timetable. The type is picked by name from the catalogue, and its parameters, gate and budget start at the type’s defaults; nothing about the machine it runs on is chosen here.',
       'Each firing makes ordinary work, which is admitted and leased like any other and is listed under Work. The schedule’s page links every firing to what it made.',
@@ -436,17 +436,17 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'the-platform',
     title: 'Only work holding a slot costs capacity',
     short:
-      'Only these states create infrastructure demand. Capacity for a task is reserved all-or-nothing across every pool it needs, in one transaction, and is counted from the moment it is held rather than from the moment an agent starts.',
+      'Only these states create infrastructure demand. Capacity for an agent is reserved all-or-nothing across every pool it needs, in one transaction, and is counted from the moment it is held rather than from the moment an agent starts.',
     long: [
-      'Capacity is reserved for a whole task across every pool it needs, in a single transaction, or not at all. A partial reservation would let a task hold a slot in one pool while queueing for another, which is how a platform deadlocks against itself.',
+      'Capacity is reserved for a whole agent across every pool it needs, in a single transaction, or not at all. A partial reservation would let an agent hold a slot in one pool while queueing for another, which is how a platform deadlocks against itself.',
       'Concurrency is counted from the moment capacity is held, not from the moment an agent starts running — the gap between the two is real, and counting from the later one lets the platform admit work it has already promised away.',
-      'The states below are the ones that create demand. The rest are waiting states, and a task sitting in one costs nothing.',
+      'The states below are the ones that create demand. The rest are waiting states, and an agent sitting in one costs nothing.',
     ],
     // READ, not restated. Rename a state in types.ts and this list follows.
     values: () =>
       orderedStates(CONCURRENCY_STATES).map((s) => ({
         term: s,
-        note: 'holds a slot in every pool the task needs',
+        note: 'holds a slot in every pool the agent needs',
       })),
   },
 
@@ -530,13 +530,13 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   states: {
     group: 'the-platform',
-    title: 'The states a task can be in',
+    title: 'The states an agent can be in',
     short:
-      'These are the states a task document can actually hold. Several members of the underlying enum are never written to one, so they are decoded when they arrive but never offered here as a filter or a bucket.',
+      'These are the states an agent document can actually hold. Several members of the underlying enum are never written to one, so they are decoded when they arrive but never offered here as a filter or a bucket.',
     long: [
-      'Several members of the state enum are never written to a task document: some are creation states the real state machine walks through without storing, one belongs to workflows rather than tasks, and one is reachable only through a branch nothing calls.',
+      'Several members of the state enum are never written to an agent document: some are creation states the real state machine walks through without storing, one belongs to workflows rather than agents, and one is reachable only through a branch nothing calls.',
       'They are still decoded when they arrive, because decoding a string is not the same as offering it as a choice — but they are never offered as a filter, a legend entry or a histogram bucket. A bucket that cannot fill reads as “nothing is broken” rather than “this cannot happen”, which is the wrong lesson to teach at 3am.',
-      'The states a task document can actually hold are listed below, each marked as reserving capacity, waiting, or finished.',
+      'The states an agent document can actually hold are listed below, each marked as reserving capacity, waiting, or finished.',
     ],
     // READ from types.ts. Nothing below is typed into this file.
     //
@@ -562,7 +562,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'There is no billing integration, so the infrastructure cost of a run is recorded nowhere this app can read. It is missing, not zero. A run whose cost is absent may have been expensive.',
     long: [
       'Only the CLI runners report token spend at all, and every attempt that ran before the worker’s capture shipped carries nothing for all of its spend fields. So an absent cost has two innocent causes and one alarming one, and none of them is “this run was free”.',
-      'A mock task costs nothing on purpose. A result nobody could parse cost an unknown amount. Rendering both as a zero would lie about one of them, so an unreported cost is a phrase and never a figure.',
+      'A mock agent costs nothing on purpose. A result nobody could parse cost an unknown amount. Rendering both as a zero would lie about one of them, so an unreported cost is a phrase and never a figure.',
       'Each half of a token count is summed separately, because a runner can report input tokens and no output. Treating the missing half as a zero would quietly understate the total and caption it as if both halves were in it.',
       'No cost figure in this console includes compute, storage or database cost. No billing integration exists to read them from.',
     ],
@@ -653,7 +653,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'Reading and writing fail differently. A failed read leaves the platform as it was; a failed write may have been applied in full with only its acknowledgement lost.',
       'Nothing in a browser can tell those apart after the fact, so this app never claims to. It says which of the two it is looking at and points at the thing that can be checked.',
-      'Where repeating the write has a cost — a credential replaced twice, a second task submitted — the panel says so beside the control rather than in a note somewhere else.',
+      'Where repeating the write has a cost — a credential replaced twice, a second agent submitted — the panel says so beside the control rather than in a note somewhere else.',
     ],
   },
 
@@ -665,9 +665,9 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'the-platform',
     title: 'Every pool at once, or none of them',
     short:
-      'A task clears every pool in its list at the same moment or it clears none of them, so its ceiling is the minimum across them and never a sum. Raising a pool that is not the binding one changes nothing at all.',
+      'An agent clears every pool in its list at the same moment or it clears none of them, so its ceiling is the minimum across them and never a sum. Raising a pool that is not the binding one changes nothing at all.',
     long: [
-      'Capacity is reserved for a whole task across every pool it needs, in a single transaction. A partial reservation would let a task hold a slot in one pool while waiting for another, which is how a platform deadlocks against itself.',
+      'Capacity is reserved for a whole agent across every pool it needs, in a single transaction. A partial reservation would let an agent hold a slot in one pool while waiting for another, which is how a platform deadlocks against itself.',
       'The arithmetic consequence is the one most often got wrong in practice: how many more agents a profile can start is the smallest headroom across its pools, divided by the profile’s weight. It is never the pool an operator happens to be looking at.',
       'That is why these panels name the pool that binds. Raising any other one is a change that looks like an action and produces no effect.',
     ],
@@ -677,9 +677,9 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'the-platform',
     title: 'Capacity is counted in units, not agents',
     short:
-      'Each size has a weight, and admission adds that weight to every pool the task has to clear. A pool showing eight in use may be two agents of a size that weighs four, so a ceiling is a ceiling on units and headroom converts back through the weight.',
+      'Each size has a weight, and admission adds that weight to every pool the agent has to clear. A pool showing eight in use may be two agents of a size that weighs four, so a ceiling is a ceiling on units and headroom converts back through the weight.',
     long: [
-      'A pool counter is a sum of weights, not a count of workloads. The weight is the size’s own, published by the catalogue, and it is the same number in every pool the task touches.',
+      'A pool counter is a sum of weights, not a count of workloads. The weight is the size’s own, published by the catalogue, and it is the same number in every pool the agent touches.',
       'So "units in use" and "how many more agents could start" are different questions with different answers, and this app never prints one under the other’s label.',
       'Where a screen shows how many more could start, it has already divided by the weight, and it says which size it divided by.',
     ],
@@ -693,12 +693,12 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'the-platform',
     title: 'A ceiling, a count of what holds it, and a pause switch',
     short:
-      'A pool is a named ceiling on how many units of work may hold capacity at once, with a count of how many do. Every task needs several at the same moment, and it starts only when all of them have room.',
+      'A pool is a named ceiling on how many units of work may hold capacity at once, with a count of how many do. Every agent needs several at the same moment, and it starts only when all of them have room.',
     long: [
-      'A pool has three parts: a ceiling, a count of the units in use against it, and a switch that pauses it. The count is changed only by the transaction that admits a task and the one that releases it, so it cannot drift under contention.',
+      'A pool has three parts: a ceiling, a count of the units in use against it, and a switch that pauses it. The count is changed only by the transaction that admits an agent and the one that releases it, so it cannot drift under contention.',
       'The ceiling a pool enforces is the lowest of up to three numbers: the limit an operator set, a target the platform lowers on its own when a provider pushes back, and a cap derived from a provider’s quota. None of them can raise it above the limit the operator set.',
-      'Every task needs several pools at once: one for the whole platform, one for its tenant, one for its size, one for its runtime and one for its backend, and, when the runtime uses a provider, one for that provider and one for that provider within the tenant. It is admitted into all of them in one transaction, or into none.',
-      'Pools count units, not agents: a task adds its size’s weight to every pool it holds. How many more agents could start is therefore the smallest room across a task’s pools, divided by that weight.',
+      'Every agent needs several pools at once: one for the whole platform, one for its tenant, one for its size, one for its runtime and one for its backend, and, when the runtime uses a provider, one for that provider and one for that provider within the tenant. It is admitted into all of them in one transaction, or into none.',
+      'Pools count units, not agents: each agent adds its size’s weight to every pool it holds. How many more agents could start is therefore the smallest room across an agent’s pools, divided by that weight.',
     ],
     see: ['pools-all-at-once', 'units-not-agents', 'paused-vs-full'],
   },
@@ -711,7 +711,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'Both refuse admission, and on a board of figures they can look alike: nothing new starts. The difference is who has to act, and what they have to do.',
       'A full pool has as many units in use as its ceiling allows. Nothing is wrong with it: admission is doing its job, and the pool admits again as soon as running work finishes and releases its slots. Waiting, or raising the ceiling, are the two ways past it.',
-      'A paused pool has been switched off by an operator. It refuses every task that needs it even with every slot free, so its headroom says nothing about whether anything can start. Work that needs it waits, costs nothing, and goes on waiting until a person resumes the pool.',
+      'A paused pool has been switched off by an operator. It refuses every agent that needs it even with every slot free, so its headroom says nothing about whether anything can start. Work that needs it waits, costs nothing, and goes on waiting until a person resumes the pool.',
       'So raising the ceiling of a paused pool changes nothing; resuming it is the only thing that does. The Pools screen marks a paused pool with a “paused” chip, not as a pool at its limit, so look for that chip before reaching for the ceiling.',
     ],
     see: ['what-a-pool-is', 'ceiling-change-evicts-nothing'],
@@ -769,9 +769,9 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'Enforced is the ceiling admission applies to a tenant: its pool’s effective limit, which starts from the smaller of its two configured limits, Max active and Units, because both cap the same count of units and the smaller one binds. Configured shows the two as the tenant record holds them. No budget can be set, so none is shown.',
     long: [
-      'Tenant is the id every read and write is scoped by. Status says whether the tenant is enabled. A disabled tenant cannot submit tasks or workflows, reach its subscription accounts or register a provider key; its members can still list, read and cancel the tasks and workflows it already has, with their events, attempts, artifacts, checkpoints and logs, because a stopped tenant still has to see and stop what is running.',
+      'Tenant is the id every read and write is scoped by. Status says whether the tenant is enabled. A disabled tenant cannot submit agents or workflows, reach its subscription accounts or register a provider key; its members can still list, read and cancel the agents and workflows it already has, with their events, attempts, artifacts, checkpoints and logs, because a stopped tenant still has to see and stop what is running.',
       'Kind and Principal say who belongs to it. A group tenant takes the members of the group named in Principal; a user tenant is the one address named there.',
-      'Enforced is the ceiling admission applies to the tenant’s own pool: that pool’s effective limit, read from the pool as Pools and Pool limits show it, not worked out from the two configured values. Its hard limit is the smaller of the two. Both limit the same thing — the units the tenant’s running work holds, where every task costs at least one — so the smaller is the one that binds. Every path that writes the tenant’s pool writes this figure as its hard limit: the admin routes whenever either value changes, a first sign-in that creates the tenant, scripts/register-tenant.sh, and Terraform when it creates the pool. An adaptive target lowered by rate limiting can hold the effective limit below that hard limit; a dash means the pool could not be read, does not exist, or has no limit set.',
+      'Enforced is the ceiling admission applies to the tenant’s own pool: that pool’s effective limit, read from the pool as Pools and Pool limits show it, not worked out from the two configured values. Its hard limit is the smaller of the two. Both limit the same thing — the units the tenant’s running work holds, where every agent costs at least one — so the smaller is the one that binds. Every path that writes the tenant’s pool writes this figure as its hard limit: the admin routes whenever either value changes, a first sign-in that creates the tenant, scripts/register-tenant.sh, and Terraform when it creates the pool. An adaptive target lowered by rate limiting can hold the effective limit below that hard limit; a dash means the pool could not be read, does not exist, or has no limit set.',
       'Configured groups the two values as the tenant record holds them: Max active and Units. Neither is enforced on its own; a larger one beside a smaller one is headroom nobody can use until the smaller is raised.',
       'Credentials names the providers the tenant has registered a key for: names, never keys. None registered does not by itself mean the tenant cannot run work. A runtime that takes a subscription token can still run on a subscription account the tenant owns or is lent, on a deployment with an account pool; where the tenant has neither a key nor such an account, a runtime that needs a provider waits for this tenant rather than failing. Identity is the tenant’s own service account, the one its workloads run as; no service account is said in words, because a blank cell would read as fine.',
       'The tenant record carries a monthly budget field, and it is empty for every tenant. PUT /v1/admin/tenants/{id}/limits refuses it with a 422: the control plane has no cost attribution source — no billing export, no compute cost per attempt — so a budget could be stored but never enforced. Spend is bounded by the two limits the scheduler does enforce on every admission, which is what the Enforced column shows. The table leaves the field out because an empty column would read as “no budget set”. What the console’s spend figures do and do not include is a topic of its own, linked under this one.',
@@ -786,11 +786,11 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'the-platform',
     title: 'What Platform counts returns',
     short:
-      'One count of task documents per state for your own tenant, and a second set across every tenant when you are an administrator. Each state is its own count() query, so a run costs one query per state per scope, and the price grows with the platform’s history rather than its load.',
+      'One count of agent documents per state for your own tenant, and a second set across every tenant when you are an administrator. Each state is its own count() query, so a run costs one query per state per scope, and the price grows with the platform’s history rather than its load.',
     long: [
-      'Each run asks the stats route for the number of task documents in each state, as they stand at that moment. A task that has moved on since is counted where it is now, and nothing about how long any task spent anywhere is in the answer.',
+      'Each run asks the stats route for the number of agent documents in each state, as they stand at that moment. An agent that has moved on since is counted where it is now, and nothing about how long any agent spent anywhere is in the answer.',
       'The first set is scoped to the caller’s own tenant. An administrator also gets a second set across every tenant; anyone else sees that card as not entitled, which is a permission and not a fault.',
-      'Every state the contract defines is counted, including the ones never written to a task document, so a run costs one count() per state per scope. That query bills by the index entries it scans, and those grow with every task ever written — so the price is printed before the control that spends it, and nothing re-runs it on a timer.',
+      'Every state the contract defines is counted, including the ones never written to an agent document, so a run costs one count() per state per scope. That query bills by the index entries it scans, and those grow with every agent ever written — so the price is printed before the control that spends it, and nothing re-runs it on a timer.',
       'A total is drawn only when every state came back. When one did not, the total is withheld and the missing states are named, because a sum over a partial response is not a count of anything.',
     ],
     see: ['withheld-total', 'admin-gate-not-failure'],
@@ -803,7 +803,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Most panels re-read on a timer. The spend rollup does not: it fans out across attempts and moves only when you press refresh. A figure that does not re-poll sitting beside ones that do is indistinguishable from them unless it says how old it is.',
     long: [
       'The cheap reads run on their own cadence, and the interval is shown beside them rather than written down here, so the two can never disagree.',
-      'The spend figure is a fan-out over the attempts of many tasks. Running it on the same timer would multiply every tick by the size of the sample, so it runs when asked.',
+      'The spend figure is a fan-out over the attempts of many agents. Running it on the same timer would multiply every tick by the size of the sample, so it runs when asked.',
       'The consequence is that it ages while the panels around it do not, which is why it prints its own age instead of borrowing the screen’s.',
     ],
   },
@@ -819,7 +819,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     // tests/help.test.ts finds the linking screens in the sources, so a fourth
     // fails there until this is written for it too.
     long: [
-      'Every task and workflow read the console makes is answered for the calling tenant, an administrator’s included: the API takes the scope from the verified caller, never from a parameter. A figure drawn from those reads is the caller’s own and never a total across tenants. The one exception is the platform scope on the Timeline screen, which an administrator asks for by name, which the API refuses to anyone else, and whose figures then name the tenants they cover.',
+      'Every agent and workflow read the console makes is answered for the calling tenant, an administrator’s included: the API takes the scope from the verified caller, never from a parameter. A figure drawn from those reads is the caller’s own and never a total across tenants. The one exception is the platform scope on the Timeline screen, which an administrator asks for by name, which the API refuses to anyone else, and whose figures then name the tenants they cover.',
       'The Timeline screen reads its ledger for the calling tenant unless an administrator switches it to platform scope, and the two scopes are never drawn side by side. Grouped by person, its reliability table is computed by the API over the whole span, so someone with no work in the span is absent from the table rather than listed with zero.',
       'The capacity read is scoped too. It lists the platform-wide pools and the caller’s own tenant pools, and leaves another tenant’s pools out unless the caller is an administrator. Every headroom figure in it — the Headroom card on the Pools screen and each card on the Profile headroom screen — is computed against the caller’s own tenant pool, an administrator’s included, so it says how many more the caller could start, never how much the platform has. Each of those cards says which tenant it was computed for.',
       'A figure whose scope is unstated is the one people quote in a meeting as though it were the platform’s, so each of these screens prints the scope beside its figures.',
@@ -830,7 +830,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'the-platform',
     title: 'A missing credential waits rather than fails',
     short:
-      'A task whose runtime names a subscription provider with no account registered waits instead of failing. Waiting costs nothing, and it also runs nothing — so an empty pool is quiet rather than loud, and the quiet is the thing to notice.',
+      'An agent whose runtime names a subscription provider with no account registered waits instead of failing. Waiting costs nothing, and it also runs nothing — so an empty pool is quiet rather than loud, and the quiet is the thing to notice.',
     long: [
       'The platform prefers waiting to failing wherever the obstacle is temporary, and an account that has not been added yet is exactly that.',
       'The cost of that choice is that nothing goes red. Work accumulates in a waiting state, consumes no capacity, and produces no error anyone is paged for.',
@@ -914,7 +914,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'The comparison is computed: largest, smallest, only one of its kind, different backend from the rest. It is derived from the same response the cards are drawn from.',
       'When the computation finds nothing, the card says so rather than reaching for a sentence somebody typed. "Nothing separates it from the rest" is a measured answer.',
       'So a line that looks wrong can be checked against the other cards on the Runtimes screen, and it changes only when the catalogue does.',
-      'Disabled is the catalogue’s own flag, not a reading of load. The runtime is still served because tasks already submitted under its name have to render, and the API refuses any new submission that names it. The reason printed on its card is the platform’s, and usually names the runtime to use instead.',
+      'Disabled is the catalogue’s own flag, not a reading of load. The runtime is still served because agents already submitted under its name have to render, and the API refuses any new submission that names it. The reason printed on its card is the platform’s, and usually names the runtime to use instead.',
     ],
   },
 
@@ -940,7 +940,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'The strategy decides what leaves the platform: nothing at all, one pull request per step, or one for the whole workflow. The number on each option is computed from the steps on the form, so what you read is the consequence rather than a description of it.',
     long: [
-      'The default publishes nothing. The patch is harvested into the task’s own artifacts and no branch is pushed, which is why the option says "no pull request" where the others say how many.',
+      'The default publishes nothing. The patch is harvested into the agent’s own artifacts and no branch is pushed, which is why the option says "no pull request" where the others say how many.',
       'The per-step option pushes each step’s branch and opens a pull request for each. Over six steps that is six, and the option says six rather than "one per step".',
       'The integrating option produces exactly one pull request for the whole workflow, opened by the step nothing depends on. The other steps push branches and open nothing.',
     ],
@@ -954,7 +954,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'submitting-work',
     title: 'One pull request needs exactly one final step',
     short:
-      'Integrating names a final step that receives the other steps’ patches. A single task has no other steps, so it is refused there. A workflow needs exactly one step nothing depends on: two of them, or none, is refused with the graph named.',
+      'Integrating names a final step that receives the other steps’ patches. A single agent has no other steps, so it is refused there. A workflow needs exactly one step nothing depends on: two of them, or none, is refused with the graph named.',
     long: [
       'The platform resolves the integrating step as the workflow’s single sink — the one step no other step depends on. That is a property of the graph, not a field anyone sets.',
       'A graph with two sinks has two candidates and no rule to choose between them, so the platform refuses rather than picking. A graph with no sink is cyclic and is refused earlier, by name.',
@@ -966,10 +966,10 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'submitting-work',
     title: 'What carries work between steps',
     short:
-      'The carrier records how a step’s work is intended to reach the next one. It is stored on the task and returned by the API, and no worker code reads it yet — so it is a recorded preference rather than a behaviour, and the form says so on every choice.',
+      'The carrier records how a step’s work is intended to reach the next one. It is stored on the agent and returned by the API, and no worker code reads it yet — so it is a recorded preference rather than a behaviour, and the form says so on every choice.',
     long: [
       'The field exists so that the intent is captured at the moment it is expressed, rather than reconstructed later from what happened.',
-      'Nothing acts on it today. A control that does nothing and does not say so is worse than no control, so on Submit a task and Submit a workflow the note sits beside the choice rather than behind a help card.',
+      'Nothing acts on it today. A control that does nothing and does not say so is worse than no control, so on Start an agent and Submit a workflow the note sits beside the choice rather than behind a help card.',
       'When a worker does read it, the note goes away. Until then the honest description of the carrier choice is that it records an answer.',
     ],
     // The per-carrier sentence that used to sit under the picker, READ from
@@ -985,7 +985,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'It is the repository the agent clones. Without one the agent starts in an empty workspace whatever the strategy says, and any choice that has to push is refused by the API for want of somewhere to push to.',
     long: [
       'The agent’s workspace is created empty and filled by cloning. No repository means no clone, which is a legitimate thing to ask for and an easy thing to ask for by accident.',
-      'Whether it is required is decided by the platform from the strategy and the carrier together. Submit a task and Submit a workflow preview that decision so the refusal is not a surprise; it never blocks a submission on its own reading.',
+      'Whether it is required is decided by the platform from the strategy and the carrier together. Start an agent and Submit a workflow preview that decision so the refusal is not a surprise; it never blocks a submission on its own reading.',
       'If the preview and the platform ever disagree, the visible result is a caution that did not need to be there rather than a submission that could not be made.',
     ],
   },
@@ -994,11 +994,11 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'submitting-work',
     title: 'A dispatch that was never reported',
     short:
-      'The API sends a dispatch block on every task and fills the defaults for tasks older than the field. Its absence is therefore a deployment older than the field, not a caller who chose to publish nothing — and nothing here says what that run would have published.',
+      'The API sends a dispatch block on every agent and fills the defaults for agents older than the field. Its absence is therefore a deployment older than the field, not a caller who chose to publish nothing — and nothing here says what that run would have published.',
     long: [
       'Two different facts would otherwise look identical: a caller who asked for nothing to be published, and an API that never told us what was asked for.',
       'The first is a choice with a known outcome. The second is a gap in the record, and any claim drawn over it would be invented.',
-      'So a task with no dispatch block gets its own panel saying which of the two this is, in the same way a failed read never renders as empty data anywhere else here.',
+      'So an agent with no dispatch block gets its own panel saying which of the two this is, in the same way a failed read never renders as empty data anywhere else here.',
     ],
   },
 
@@ -1055,9 +1055,9 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'submitting-work',
     title: 'Where your recent submissions come from',
     short:
-      'The API keeps no list of what each person submitted, but it says who submitted every task, workflow and issue run, and who you are. The card lists your newest lone tasks, workflows and issue runs from those reads, each a link to its page, and says which windows it looked in.',
+      'The API keeps no list of what each person submitted, but it says who submitted every agent, workflow and issue run, and who you are. The card lists your newest lone agents, workflows and issue runs from those reads, each a link to its page, and says which windows it looked in.',
     long: [
-      'A workflow’s steps and an agent’s children are not listed as tasks of their own: you submitted the workflow, or the agent did. Older submissions outside the windows read are not listed, and the card says how far it looked.',
+      'A workflow’s steps and an agent’s children are not listed as agents of their own: you submitted the workflow, or the agent did. Older submissions outside the windows read are not listed, and the card says how far it looked.',
       'The settings a submission was made with are not served, so the card opens what you submitted rather than a form filled in from it. When who you are cannot be read, nothing is listed: nothing can be called yours.',
     ],
   },
@@ -1487,10 +1487,10 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'reading-a-figure',
     title: 'The success rate, and what it leaves out',
     short:
-      'Tasks that succeeded, over those that succeeded, failed or were dead-lettered, each placed by when it ended. Cancels are counted and drawn in a lane of their own, but left out of the rate. The band is a 95 % Wilson interval; a hollow point has under five decided, and a gap means nothing was decided.',
+      'Agents that succeeded, over those that succeeded, failed or were dead-lettered, each placed by when it ended. Cancels are counted and drawn in a lane of their own, but left out of the rate. The band is a 95 % Wilson interval; a hollow point has under five decided, and a gap means nothing was decided.',
     long: [
-      'The figure on the Timeline screen is the share of decided work that succeeded: tasks that succeeded, over those that succeeded, failed or were dead-lettered, each placed by the moment it ended. Every cancel is left out of it, because a cancel is somebody’s decision rather than a verdict on the work, and the cancels get a lane of their own on the same axis, split into the ones a person asked for, the ones a failure caused, and the ones a cancel caused. A failure’s cancels are counted as the failure’s however many steps down they reach, because a step stopped by a failure stops its own dependents in turn; a cancel’s are the steps below one somebody stopped.',
-      'A rate over a handful of tasks says little, so every rate carries its 95 % Wilson interval: the band behind the line, and the range printed with the figure and in the readout. A point drawn hollow covers fewer than five decided tasks. A bucket in which nothing was decided has no point at all and the line breaks there, because a rate over nothing is undefined, never zero.',
+      'The figure on the Timeline screen is the share of decided work that succeeded: agents that succeeded, over those that succeeded, failed or were dead-lettered, each placed by the moment it ended. Every cancel is left out of it, because a cancel is somebody’s decision rather than a verdict on the work, and the cancels get a lane of their own on the same axis, split into the ones a person asked for, the ones a failure caused, and the ones a cancel caused. A failure’s cancels are counted as the failure’s however many steps down they reach, because a step stopped by a failure stops its own dependents in turn; a cancel’s are the steps below one somebody stopped.',
+      'A rate over a handful of agents says little, so every rate carries its 95 % Wilson interval: the band behind the line, and the range printed with the figure and in the readout. A point drawn hollow covers fewer than five decided agents. A bucket in which nothing was decided has no point at all and the line breaks there, because a rate over nothing is undefined, never zero.',
       'The comparison with the previous span is dropped, and says why, when that span has a bucket that could not be read or had nothing decided: a delta over part of a span compares two different things.',
       'Tenant scope and platform scope are never drawn side by side. Platform scope is an administrator’s view of every tenant, and the verification tenant can be left out of it in one click; the exclusion names that tenant, so a tenant created later is still counted.',
     ],
@@ -1501,10 +1501,10 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'reading-a-figure',
     title: 'Buckets: sealed, so far, and not read',
     short:
-      'Every bucket in the span is drawn, and a bucket before any task is a measured zero. The current bucket is dashed at its right edge and reads so far. A bucket the server could not read is hatched across every lane, carries no number and is left out of every total.',
+      'Every bucket in the span is drawn, and a bucket before any agent is a measured zero. The current bucket is dashed at its right edge and reads so far. A bucket the server could not read is hatched across every lane, carries no number and is left out of every total.',
     long: [
-      'The Timeline screen asks the API for a real span, from a day to ninety days or a chosen range, and the server buckets it in the viewer’s time zone, choosing the bucket size unless one is picked. Every bucket from the start of the span to now is drawn, the empty ones included: tasks are never deleted, so an empty bucket is a measured zero, drawn as the tick at the axis rather than as a missing column.',
-      'Every outcome is placed by the time its task ended. The throughput lane is the one exception: its submitted line is placed by the time each task was created, and its label says so. Work that has not ended has no end time, so it is on no bucket at all; it is counted live, without the span, in the card for work not finished yet.',
+      'The Timeline screen asks the API for a real span, from a day to ninety days or a chosen range, and the server buckets it in the viewer’s time zone, choosing the bucket size unless one is picked. Every bucket from the start of the span to now is drawn, the empty ones included: agents are never deleted, so an empty bucket is a measured zero, drawn as the tick at the axis rather than as a missing column.',
+      'Every outcome is placed by the time its agent ended. The throughput lane is the one exception: its submitted line is placed by the time each agent was created, and its label says so. Work that has not ended has no end time, so it is on no bucket at all; it is counted live, without the span, in the card for work not finished yet.',
       'A bucket is sealed a quarter of an hour after it ends, once nothing more can land in it. Until then it is open: the current bucket reads so far and carries a dashed right edge, and a bucket that has only just ended reads as settling.',
       'A bucket the server could not read within its budget, or at all, is not read: a hatched band across every lane with no number in it, left out of every total, which then carries the partial mark. Reading again continues where the last read stopped. An agent that ended with no end time recorded cannot be placed on the axis, and the chart says how many such agents exist.',
     ],
@@ -1516,8 +1516,8 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'Each failed or dead-lettered agent gets one class: from the cause the component that ended it recorded, and, for an agent that ended before causes were recorded, from its final attempt’s exit and the words of its last error. Other and no reason recorded are always drawn, because an unmatched failure is still a failure.',
     long: [
-      'The classes come in a fixed order that no filter re-ranks: runner error, timeout, lost worker, could not start, inputs unavailable, outputs missing, dispatch failed, other, and no reason recorded. They separate a failure of the platform (a lost worker, a task that could not start, a dispatch that failed) from the agent’s own work (a runner error, outputs missing), from what the agent was given (inputs unavailable: a file a step was promised by the step before it, which the worker would not stage, so the agent never started) and from its budget (a timeout).',
-      'Since 25 September 2026 every component that ends a task records why, on the task: the worker, the reconciler, the scheduler and a cancel. The API reads that cause first and nothing else. A task that ended before then carries none, and its class comes from its final attempt: the exit that means the worker could not start is read first, and then the last error is matched against the exact words each writer uses. Those words are pinned by tests against their writers, so a reworded message fails a test instead of silently moving counts into other.',
+      'The classes come in a fixed order that no filter re-ranks: runner error, timeout, lost worker, could not start, inputs unavailable, outputs missing, dispatch failed, other, and no reason recorded. They separate a failure of the platform (a lost worker, an agent that could not start, a dispatch that failed) from the agent’s own work (a runner error, outputs missing), from what the agent was given (inputs unavailable: a file a step was promised by the step before it, which the worker would not stage, so the agent never started) and from its budget (a timeout).',
+      'Since 25 September 2026 every component that ends an agent records why, on the agent: the worker, the reconciler, the scheduler and a cancel. The API reads that cause first and nothing else. An agent that ended before then carries none, and its class comes from its final attempt: the exit that means the worker could not start is read first, and then the last error is matched against the exact words each writer uses. Those words are pinned by tests against their writers, so a reworded message fails a test instead of silently moving counts into other.',
       'Other is a failure whose recorded cause is not one of the nine classes, or, with none recorded, whose last error matched nothing and whose final attempt recorded no exit. No reason recorded is a failure with no cause and no last error at all. Both are measured facts and both are always drawn; a zero is the tick at the axis.',
     ],
   },
@@ -1574,7 +1574,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'reading-a-figure',
     title: 'A refusal was measured at an instant',
     short:
-      'These lines are worked out from pool counts read at one moment. Slots are taken and released continuously, so each line says what those counts implied then — not what will happen when a task is actually submitted.',
+      'These lines are worked out from pool counts read at one moment. Slots are taken and released continuously, so each line says what those counts implied then — not what will happen when an agent is actually submitted.',
     long: [
       'Admission is a transaction against live counters. Anything a console computes from a snapshot is a description of that snapshot.',
       'The age of the counts is therefore printed beside the conclusion, because the conclusion is only as current as they are.',
@@ -1767,7 +1767,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'success-rate': {
     subject: 'The success rate',
-    act: { say: 'Read the band, not the point, when few tasks were decided; read cancels in their own lane.', at: 'work/timeline' },
+    act: { say: 'Read the band, not the point, when few agents were decided; read cancels in their own lane.', at: 'work/timeline' },
   },
   'outcome-buckets': {
     subject: 'Timeline buckets',
@@ -1787,7 +1787,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'attempt-documents': {
     subject: 'When an attempt exists',
-    act: { say: 'For a task with no attempt, look at capacity, not at the worker: nothing has been reserved yet.', at: 'capacity/pools' },
+    act: { say: 'For an agent with no attempt, look at capacity, not at the worker: nothing has been reserved yet.', at: 'capacity/pools' },
   },
   'outcome-explained': {
     subject: 'What an outcome describes',
@@ -1798,7 +1798,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
     act: { say: 'Read the prompt as the agent received it; the masked count says how much of it is hidden.' },
   },
   'strategy-on-a-task': {
-    subject: 'The strategy on a task',
+    subject: 'The strategy on an agent',
     act: { say: 'Read the outcome for what was published; the chips say only what was asked for.' },
   },
   'event-paging': {
@@ -1846,8 +1846,8 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
     act: { say: 'Treat a bar near its limit as a risk, and move that work to a larger size.', at: 'capacity/catalogue' },
   },
   states: {
-    subject: 'Task states',
-    act: { say: 'Filter the agent list by state to see which tasks hold capacity and which are waiting.', at: 'work/running' },
+    subject: 'Agent states',
+    act: { say: 'Filter the agent list by state to see which agents hold capacity and which are waiting.', at: 'work/running' },
   },
   'workspace-memory': {
     subject: 'Workspace memory',
@@ -1887,11 +1887,11 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'tenant-scope': {
     subject: 'Whose figures these are',
-    act: { say: 'Read a ceiling as your own tenant’s; for every tenant’s task counts, run Platform counts.', at: 'admin/counts' },
+    act: { say: 'Read a ceiling as your own tenant’s; for every tenant’s agent counts, run Platform counts.', at: 'admin/counts' },
   },
   'park-on-missing-credential': {
     subject: 'A missing credential',
-    act: { say: 'Register an account for that provider, or the task waits for ever.', at: 'capacity/accounts' },
+    act: { say: 'Register an account for that provider, or the agent waits for ever.', at: 'capacity/accounts' },
   },
   'pool-freshness': {
     subject: 'A pool’s timestamp',
@@ -1966,7 +1966,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
     act: { say: 'Read it as an older deployment; it says nothing about what the run published.' },
   },
   'input-is-opaque': {
-    subject: 'The task input',
+    subject: 'The agent input',
     act: { say: 'Write the input for the agent; check it yourself, because nothing else will.', at: 'submit' },
   },
   keyboard: {
@@ -1983,7 +1983,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'recent-submissions': {
     subject: 'Recent submissions',
-    act: { say: 'Start a new task, workflow or issue run from the cards above.', at: 'submit' },
+    act: { say: 'Start a new agent, workflow or issue run from the cards above.', at: 'submit' },
   },
   'room-unknown-not-zero': {
     subject: 'Unknown room',

@@ -36,13 +36,13 @@ const DESTINATION: Readonly<Record<JevBackend, string>> = {
 
 /** §5.4, in the reader's words: what is sent when the switch is on. */
 const SENT =
-  "Excerpts of this workspace's code (the files and symbols ranked for a step), with the task's title and the changed paths."
+  "Excerpts of this workspace's code (the files and symbols ranked for a step), with the agent's title and the changed paths."
 
 /** §5.4: what never is, even when on. */
 const NEVER: readonly string[] = [
   'the content of .env, key, certificate, tfvars and tfstate files, secrets/ and credentials/ directories and the repository’s hard-stop paths (their names only)',
   'any excerpt in which a credential is found: it is dropped whole, not masked',
-  'the task’s registered secrets and anything the redaction rules match',
+  'the agent’s registered secrets and anything the redaction rules match',
   'issue and pull request authors, another repository’s content, the agent’s transcript and environment variables',
 ]
 

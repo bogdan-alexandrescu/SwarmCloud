@@ -24,7 +24,7 @@ describe('the await park reason', () => {
   it('is a park reason with copy of its own', () => {
     expect(PARK_REASONS).toContain('CHILDREN_INCOMPLETE')
     expect(reasonCopy('CHILDREN_INCOMPLETE')).not.toBe('CHILDREN_INCOMPLETE')
-    expect(reasonCopy('CHILDREN_INCOMPLETE')).toMatch(/child tasks/)
+    expect(reasonCopy('CHILDREN_INCOMPLETE')).toMatch(/child agents/)
   })
 
   it('ends on its own, and is in exactly one group', () => {

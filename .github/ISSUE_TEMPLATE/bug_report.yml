@@ -75,7 +75,7 @@ body:
         - "Web UI · Work › Repositories (/repositories)"
         - "Web UI · Work › Setup (/setup)"
         - "Web UI · Work › Access (/access)"
-        - "Web UI · Work › Submit a task (/submit/task)"
+        - "Web UI · Work › Start an agent (/submit/task)"
         - "Web UI · Work › Submit a workflow (/submit/workflow)"
         - "Web UI · Work › Submit from a GitHub issue (/submit/issue)"
         - "Web UI · Automate › Schedules (/automate/schedules)"
@@ -140,7 +140,7 @@ body:
         Number them. Include the specific choices you made — which runner profile,
         which tenant, which workflow — because a lot of behaviour here depends on them.
       placeholder: |
-        1. Submit a task with runner profile `mock` from Work › Submit a task
+        1. Start an agent with runner profile `mock` from Work › Start an agent
         2. Open it from Work › Agents
         3. Wait for its attempt to fail
         4. Look at Capacity › Holders

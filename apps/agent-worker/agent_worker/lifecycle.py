@@ -9303,7 +9303,8 @@ class Worker:
             return []
 
     def _memory_limit_bytes(self) -> int | None:
-        """The container's memory limit: cgroup `memory.max`, else the sized class's."""
+        """The container's memory limit: cgroup `memory.max`, else the scheduler's
+        sized memory, else the sized class's (`WorkerConfig.memory_limit_bytes_of`)."""
         enforced = cgroup_memory_max()
         if enforced is not None:
             return enforced
@@ -9375,9 +9376,19 @@ class Worker:
         nobody has yet read what Cloud Run's `cpu.max` holds, which is why the
         source is worth saying.
 
-        `(None, None)` before the task document has been read: nothing yet
-        says which class this attempt was sized with, and a guess would be
-        drawn as a fact.
+        THE SCHEDULER'S RENDERED LIMIT COMES BEFORE THE CATALOGUE
+        (SIZES-WORKER-1, docs/design/runner-sizes.md §4.4): once CPU bursts,
+        a `standard` container's limit is 8 cores over a request of 4, and
+        the catalogue's `cpu` is the request. `SWARM_SIZED_CPU_LIMIT` says
+        what this container was given, with no task document needed. Still
+        recorded as `resource_class`: the frozen `cpu_limit_source` has two
+        words, and this is the class's size as the platform set it. `cpu.max`
+        still wins, because on a cluster that does not burst Autopilot sets
+        the limit to the request, and the record must say what was enforced.
+
+        `(None, None)` when neither the kernel nor the sized environment says
+        it and the task document has not been read: nothing yet says which
+        class this attempt was sized with, and a guess would be drawn as a fact.
         """
         try:
             cores = cgroup_cpu_limit_cores()
@@ -9385,6 +9396,8 @@ class Worker:
             cores = None
         if cores is not None:
             return cores, "cgroup"
+        if self.cfg.sized_cpu_limit is not None:
+            return float(self.cfg.sized_cpu_limit), "resource_class"
         sized = self._sized_resource_class()
         if sized is None:
             return None, None

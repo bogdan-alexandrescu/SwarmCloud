@@ -108,11 +108,15 @@ describe('R15: your recent submissions', () => {
     const recent = container.querySelector<HTMLElement>('.sb-recent')!
     await waitFor(() => expect(recent.querySelectorAll('.sb-recent-i').length).toBe(3))
     expect(visible(recent)).not.toContain('No recent submissions yet')
+    // VOCAB-AGENTS-UI (part of #1680): the chip names the running unit an
+    // agent; `kind: 'task'` stays an identifier. MUTATION: draw `{it.kind}`
+    // in SubmitChooser's chip again and this reads 'task'.
+    expect([...recent.querySelectorAll('.sb-recent-i')].map((li) => visible(li.querySelector('.c-chip')))).toEqual(['issue run', 'agent', 'workflow'])
     const link = within(recent).getByRole('link', { name: 'Fix the run page' })
     expect(link.getAttribute('href')).toBe('/runs/run_mine')
     link.click()
     expect(go).toHaveBeenCalledWith('work/runs?run=run_mine')
-    expect(visible(recent.querySelector('.sb-recent-scope'))).toBe('Among your newest 4 tasks, the tenant’s newest 2 workflows, its newest 2 issue runs.')
+    expect(visible(recent.querySelector('.sb-recent-scope'))).toBe('Among your newest 4 agents, the tenant’s newest 2 workflows, its newest 2 issue runs.')
   })
 
   it('lists nothing, and says why, when who you are was not read', async () => {

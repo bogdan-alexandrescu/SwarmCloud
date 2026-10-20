@@ -85,7 +85,7 @@ async function load() {
   return import('../ProviderKeys')
 }
 
-const landed = () => screen.findByText(/your tasks in eng would use/i)
+const landed = () => screen.findByText(/your agents in eng would use/i)
 
 function row(name: RegExp): HTMLElement {
   return screen.getByRole('region', { name })
@@ -116,7 +116,7 @@ describe('the status, from GET /v1/provider-keys/typesafe', () => {
     expect(within(row(/your key/i)).getByRole('button', { name: /replace/i })).toBeTruthy()
     expect(visible(row(/tenant key/i))).toMatch(/not set/i)
     expect(within(row(/tenant key/i)).getByRole('button', { name: /^save/i })).toBeTruthy()
-    expect(visible(document.body)).toMatch(/your tasks in eng would use: your key/i)
+    expect(visible(document.body)).toMatch(/your agents in eng would use: your key/i)
   })
 
   it('names the tenant key, or none, as what tasks would use', async () => {

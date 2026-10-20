@@ -80,7 +80,7 @@ afterEach(() => {
 
 async function taskForm(profile = 'mock') {
   const r = render(<SubmitScreen />)
-  await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+  await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
   fireEvent.click(r.container.querySelector<HTMLInputElement>(`input[name="runner-profile"][value="${profile}"]`)!)
   return r.container
 }
@@ -94,7 +94,7 @@ async function workflowForm() {
 }
 
 const panel = (c: HTMLElement) => c.querySelector<HTMLElement>('.sbf-send')!
-const submitButton = () => screen.getByRole('button', { name: 'Submit one task' }) as HTMLButtonElement
+const submitButton = () => screen.getByRole('button', { name: 'Start one agent' }) as HTMLButtonElement
 
 describe('V002: a 422 is drawn where the button is, and the panel stops saying "Ready to send"', () => {
   it('a refusal naming a field: in the slot, with a way to the field; "Refused" and the button held until an edit', async () => {
@@ -106,7 +106,7 @@ describe('V002: a 422 is drawn where the button is, and the panel stops saying "
     fireEvent.click(submitButton())
     await waitFor(() => expect(panel(c).querySelector('.sbf-outcome')).not.toBeNull(), WAIT)
     const out = panel(c).querySelector<HTMLElement>('.sbf-outcome')!
-    expect(visible(out.querySelector('h3'))).toBe('The API refused this task')
+    expect(visible(out.querySelector('h3'))).toBe('The API refused this agent')
     expect(visible(out.querySelector('.sbf-refused'))).toBe('input — input.prompt must be a non-empty string')
     expect(visible(out)).toContain('Nothing was created.')
     // The field keeps its own sentence.

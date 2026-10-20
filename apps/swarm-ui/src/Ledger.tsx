@@ -561,7 +561,7 @@ export function RetriesCard({ data }: { data: Outcomes }) {
         {r.rescued} rescued by a retry · {r.failed_after_retry} failed after a retry
       </p>
       <p className="ol-line">
-        did not end their task {r.not_final.attempts}
+        did not end their agent {r.not_final.attempts}
         {r.not_final.by_exit.length > 0 && ': '}
         {r.not_final.by_exit.map((e, i) => (
           <span key={`${e.exit_code ?? 'none'}`}>

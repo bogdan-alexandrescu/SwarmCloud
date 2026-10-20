@@ -431,7 +431,9 @@
      inline, its longest value in this table (`figureColumnWidths`), so Why
      takes what they do not use. */
   .wf-card .ctl-table.wf-table th[data-col="ran"] { width: 128px; }
-  /* 'task unread' is 79px of 12px mono; at 70px it clipped (owner QA R8).
+  /* 'task unread' was 79px of 12px mono; at 70px it clipped (owner QA R8).
+     It is 'not joined' now (VOCAB-AGENTS-UI): 'agent unread' is 86px and
+     would clip at 92 again, and no column here has 8px to give.
      Step gives the 22px: its name is one line cut with its title (D12), and
      Why keeps its 60px at the 980px minimum. */
   .wf-card .ctl-table.wf-table th[data-col="attempts"] { width: 92px; }

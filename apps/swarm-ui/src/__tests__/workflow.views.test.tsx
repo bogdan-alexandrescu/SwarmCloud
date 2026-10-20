@@ -488,7 +488,7 @@ describe('U2: the view modes', () => {
       await openPage('wf_mid', 'timeline')
       const unread = track(cardOf('wf_mid'), 'lost')
       expect(unread.querySelector('.wf-tl-span')).toBeNull()
-      expect(unread.textContent).toContain('task unread')
+      expect(unread.textContent).toContain('not joined')
 
       // FAILED with no completion time: it ran, it ended, nobody wrote when. A
       // bar reaching "now" would say it is still going; a bar of any length

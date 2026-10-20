@@ -458,7 +458,7 @@ export function WorkflowsScreen({
         body: (
           <>
             A workflow is a set of steps submitted together, run in the order their dependencies give, and this read found
-            none. Individually submitted tasks appear under Agents.
+            none. Individually submitted agents appear under Agents.
           </>
         ),
         link: { href: '#work/new-workflow', label: 'Submit a workflow' },
@@ -1798,7 +1798,7 @@ function Spend({ spend, short = false }: { spend: WorkflowSpend; short?: boolean
     // not a keyboard, and the sentence is the half that says what it is NOT.
     const why =
       spend.joined === 0
-        ? 'No task was joined for this workflow, so nothing could have reported a cost. This is an absent measurement, not $0.00.'
+        ? 'No agent was joined for this workflow, so nothing could have reported a cost. This is an absent measurement, not $0.00.'
         : `None of the ${spend.joined} joined step${spend.joined === 1 ? '' : 's'} reported a cost. This is an absent measurement, not $0.00.`
     // `short`: the list's narrow Cost column, where "not reported" was cut
     // to "not re…" (visual QA Q9). The honest short form is a dash with the
@@ -1934,10 +1934,10 @@ function WorkflowDispatch({
               aria-label={
                 joined
                   ? 'None of this workflow’s agents reported a dispatch, so what it publishes is not shown. That is an API older than the field, not a workflow that publishes nothing.'
-                  : 'No task was joined for this workflow, so what it publishes cannot be read here.'
+                  : 'No agent was joined for this workflow, so what it publishes cannot be read here.'
               }
             >
-              {joined ? 'not reported' : 'no task joined'}
+              {joined ? 'not reported' : 'no agent joined'}
             </span>
           </li>
         </ul>
@@ -1982,7 +1982,7 @@ function WorkflowDispatch({
               className="ctl-link wf-integrator id"
               href={`#work/task/${encodeURIComponent(integratorTaskId)}`}
               title={integratorTaskId}
-              aria-label={`Open the integrator task ${integratorTaskId}`}
+              aria-label={`Open the integrator agent ${integratorTaskId}`}
             >
               {/* THE WHOLE ID (V102, #1038). It was cut to `task_…18680` in a row
                   with hundreds of pixels free; a task id is the thing a reader
@@ -4039,7 +4039,7 @@ function present(state: StepState, now: number = Date.now()): {
         tone: 'wait',
         glyph: '◌',
         word: 'not started',
-        title: 'This step has no task yet. The workflow has not reached it.',
+        title: 'This step has no agent yet. The workflow has not reached it.',
         derived: true,
       }
     case 'unknown':
@@ -4047,7 +4047,7 @@ function present(state: StepState, now: number = Date.now()): {
         tone: 'unknown',
         glyph: '?',
         word: 'state unread',
-        title: `Task ${state.taskId} exists but was not in the task read. Its state is unknown -- this does not mean it is idle.`,
+        title: `Agent ${state.taskId} exists but was not in the agent read. Its state is unknown -- this does not mean it is idle.`,
         derived: true,
       }
     case 'state': {
@@ -4060,7 +4060,7 @@ function present(state: StepState, now: number = Date.now()): {
           tone: stateTone(state.state),
           glyph: stateGlyph(state.state),
           word: SKIPPED_WORD,
-          title: `Task ${state.task.id} SUCCEEDED without running its agent: the review verdict was ${verdict ?? 'not recorded'}, which this step's gate does not run on. The step still published the reviewed work.`,
+          title: `Agent ${state.task.id} SUCCEEDED without running its agent: the review verdict was ${verdict ?? 'not recorded'}, which this step's gate does not run on. The step still published the reviewed work.`,
           derived: true,
         }
       }
@@ -4082,7 +4082,7 @@ function present(state: StepState, now: number = Date.now()): {
         tone: stateTone(state.state),
         glyph: stateGlyph(state.state),
         word: state.state.toLowerCase(),
-        title: `Task ${state.task.id}, attempt ${state.task.attempt_count} of ${state.task.max_attempts}`,
+        title: `Agent ${state.task.id}, attempt ${state.task.attempt_count} of ${state.task.max_attempts}`,
         derived: true,
       }
     }
@@ -4702,7 +4702,7 @@ function ranCell(task: Task, now: number): Cell {
     // started_at, which is why the Timeline counts earlier attempts as waiting.
     return measuredCell(
       durationText(completed - started),
-      'From this task’s latest started_at, rewritten at each attempt’s start, to its completed_at. The inspector’s “took” times one attempt from its own start and end instead -- separate writes, so for a single attempt the two can differ by about a second.',
+      'From this agent’s latest started_at, rewritten at each attempt’s start, to its completed_at. The inspector’s “took” times one attempt from its own start and end instead -- separate writes, so for a single attempt the two can differ by about a second.',
     )
   }
   if (terminal) {
@@ -4718,7 +4718,7 @@ function ranCell(task: Task, now: number): Cell {
   if (!RUNNING_NOW.has(task.state)) {
     return absentCell({
       text: 'between attempts',
-      note: `This task is ${task.state.toLowerCase()} with ${task.attempt_count} of ${task.max_attempts} attempts used. Its start time belongs to an attempt that is over, so there is no run in progress to time.`,
+      note: `This agent is ${task.state.toLowerCase()} with ${task.attempt_count} of ${task.max_attempts} attempts used. Its start time belongs to an attempt that is over, so there is no run in progress to time.`,
     })
   }
   return measuredCell(`${durationText(now - started)} so far`, 'Still running. This figure moves.')
@@ -5024,7 +5024,7 @@ function SampleNote(usage: WorkflowUsage, workflow: Workflow): ReactNode {
   if (uncovered === 0 && failed === 0) return null
   const ceiling =
     uncovered > 0
-      ? ` ${uncovered} ${uncovered === 1 ? 'is' : 'are'} outside the ${usage.sampleLimit}-task read ceiling, so their cost and tokens are unknown here, not zero.`
+      ? ` ${uncovered} ${uncovered === 1 ? 'is' : 'are'} outside the ${usage.sampleLimit}-agent read ceiling, so their cost and tokens are unknown here, not zero.`
       : ''
   const unread = failed > 0 ? ` ${failed} attempt read${failed === 1 ? '' : 's'} failed.` : ''
   return (

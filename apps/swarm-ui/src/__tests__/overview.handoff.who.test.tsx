@@ -141,13 +141,13 @@ describe("the Overview's hand-off cards say which agent is waiting (LB-V5)", () 
   it('names a lone agent by what it is, without repeating its id', () => {
     quiet()
     render(<HandoffCards tasks={[parked('task_dddd4444eeee5555ffff', 2 * HOUR)]} now={NOW} onOpen={() => {}} />)
-    expect(who(cards()[0]!)).toBe('claude-code-browser task · dddd4444 · waiting 2h')
+    expect(who(cards()[0]!)).toBe('claude-code-browser agent · dddd4444 · waiting 2h')
   })
 
   it('counts a held hand-off from when the agent asked', () => {
     quiet()
     render(<HandoffCards tasks={[holding('task_hold00001111222233', 3 * MIN)]} now={NOW} onOpen={() => {}} />)
-    expect(who(cards()[0]!)).toBe('claude-code-browser task · hold0000 · waiting 3m')
+    expect(who(cards()[0]!)).toBe('claude-code-browser agent · hold0000 · waiting 3m')
   })
 
   it("adds the workflow's label when the run has one", async () => {
