@@ -59,8 +59,8 @@ every occurrence of a held credential anywhere in the message becomes
 `[qa-identity]`; a `base64Encoded` body (`getResponseBody`,
 `Page.getResourceContent`, `IO.read`) is decoded, scrubbed and re-encoded,
 because a byte match on base64 would miss it. Every credential held in this
-attempt is kept for the scrub until `wipe`, so a renewal does not unscrub the
-one before it. `qa_identity_scrubbed` records a count, never a value.
+attempt is kept for the scrub until the gate ends, so a renewal does not
+unscrub the one before it and a frame still in flight after `wipe` is scrubbed. `qa_identity_scrubbed` records a count, never a value.
 
 KNOWN LIMIT, stated so nobody relies on more: a console response that
 reflected the header could be read by the page's own script and transformed
@@ -269,11 +269,16 @@ class QaIdentity:
         return {"qa_identity": "held", "expires_in": int(expires_in)}
 
     def wipe(self) -> None:
-        """The attempt's wipe: the credential goes first, and the verb is refused from here."""
+        """The attempt's wipe: the credential goes first, and the verb is refused from here.
+
+        `_kept` stays: the wipe runs before Chromium and the agents' CDP links
+        close, and a console request in flight at wipe time can still reach an
+        agent as a `Network.requestWillBeSentExtraInfo` carrying the header.
+        The scrub matches on `_kept`, so it lives as long as the gate does.
+        """
         self.wiped = True
         self._credential = None
         self._expires_at = 0.0
-        self._kept.clear()
 
     # ------------------------------------------------------------- scrub
 
