@@ -372,6 +372,40 @@ def test_an_out_of_process_console_frame_is_judged_by_its_top_level_origin(tmp):
     run(body)
 
 
+def test_a_frame_whose_parent_the_gate_never_learnt_is_not_taken_for_a_top_frame(tmp):
+    """An out-of-process frame reporting itself with no `parentId`, under a page
+    whose `frameAttached` the gate never saw: its top-level origin is unknown,
+    so it gets no header, rather than counting as a console top frame."""
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.children["PAGE1"] = [("iframe", "F2")]
+        await rig.start()
+        page, frame = rig.page_session(), rig.child_session("F2")
+        await rig.navigated(page, f"{EVIL}/")
+        await rig.navigated(frame, f"{CONSOLE}/embedded", frame="F2")
+        rig.fake.request(frame, f"{CONSOLE}/v1/x", frame="F2", kind="XHR")
+        await rig.settle()
+        assert _auth(rig.fake.network[-1][1]) is None
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_frames_already_in_a_page_are_learnt_from_its_frame_tree(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.results["Page.getFrameTree"] = {"frameTree": {
+            "frame": {"id": "PAGE1", "url": f"{CONSOLE}/"},
+            "childFrames": [{"frame": {"id": "F3", "parentId": "PAGE1", "url": f"{CONSOLE}/embedded"}}]}}
+        await rig.start()
+        rig.fake.request(rig.page_session(), f"{CONSOLE}/v1/x", frame="F3", kind="XHR")
+        await rig.settle()
+        assert _auth(rig.fake.network[-1][1]) == f"Bearer {rig.jwt}", "a frame open before the gate attached"
+        await rig.fake.stop()
+
+    run(body)
+
+
 def test_a_request_from_a_dedicated_worker_target_gets_no_header(tmp):
     async def body() -> None:
         rig = Rig(tmp)
