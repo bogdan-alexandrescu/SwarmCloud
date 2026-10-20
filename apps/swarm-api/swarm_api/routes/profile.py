@@ -55,7 +55,13 @@ def preferences_store(
     credential."""
     prefs = getattr(request.app.state, "preferences", None)
     if prefs is None:
-        prefs = build_preferences(ctx.db, ctx.settings)
+        # The Authenticator's own store when it has one: one cache per app,
+        # so a save's forget() reaches the copy authentication reads and the
+        # next request acts in the new default (#1653). Else, as before, a
+        # store of its own (no child key: every read is PreferencesUnavailable).
+        prefs = getattr(ctx.authenticator, "preferences", None)
+        if prefs is None:
+            prefs = build_preferences(ctx.db, ctx.settings)
         request.app.state.preferences = prefs
     return prefs
 

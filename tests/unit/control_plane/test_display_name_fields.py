@@ -44,12 +44,21 @@ UNSEEN = "unseen@saga.xyz"  # has a name, appears in no response
 NAMES = {ADA: "Ada Lovelace", BOB: "Bob Smith", UNSEEN: "Una Seen", CAROL: "Carol Danvers"}
 
 
+#: Who `_get` calls as. Since #1653 the production Authenticator reads the
+#: caller's OWN preferences (their saved default workspace) on every request;
+#: that one-person read is authentication's, not the name lookup these tests
+#: count, so the recorder neither counts it nor fails it.
+CALLER = "alice@saga.xyz"
+
+
 class CountingFirestore:
     """The test's `FakeFirestore`, with every preferences `get_all` counted,
-    and made to fail when `fail` is set."""
+    and made to fail when `fail` is set -- except the caller's own read for
+    authentication (`skip`), which is neither."""
 
-    def __init__(self, db) -> None:
+    def __init__(self, db, skip: frozenset[str] = frozenset()) -> None:
         self.db = db
+        self.skip = skip
         self.calls: list[list[str]] = []
         self.fail = False
         self._get_all = db.get_all
@@ -57,6 +66,9 @@ class CountingFirestore:
 
     def get_all(self, references, *args: Any, **kwargs: Any):
         refs = list(references)
+        paths = {r.path for r in refs}
+        if paths and paths <= self.skip:
+            return self._get_all(refs, *args, **kwargs)
         if any(r.path.startswith(COLLECTION + "/") for r in refs):
             self.calls.append([r.path for r in refs])
             if self.fail:
@@ -75,7 +87,8 @@ def named(db, child_key) -> CountingFirestore:
     for email, name in NAMES.items():
         prefs.save(email, display_name=name, default_workspace=None, muted=[],
                    reminder="as_set", revision=0)
-    return CountingFirestore(db)
+    caller = frozenset(f"{COLLECTION}/{i}" for i in prefs.ids(CALLER))
+    return CountingFirestore(db, skip=caller)
 
 
 @pytest.fixture

@@ -825,6 +825,15 @@ class Authenticator:
             named.update(tenant_id for tenant_id, _ in ctx.platform_reach)
         return requested in named
 
+    @property
+    def preferences(self) -> Any:
+        """The preferences store `_with_default` reads, or None. The profile
+        routes save through this same instance (`routes.profile.
+        preferences_store`), so a save's `forget()` empties the cached copy
+        authentication reads and the next request acts in the new default
+        (#1653): with two instances the old default stayed for 15 seconds."""
+        return self._preferences
+
     @staticmethod
     def _special(ctx: AuthContext) -> bool:
         """Callers whose tenant is not a person's: never offered a personal one."""
