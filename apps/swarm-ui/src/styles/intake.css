@@ -184,7 +184,7 @@
 .rn-list { display: grid; gap: 12px; min-width: 0; }
 .rn-table-wrap { overflow-x: auto; }
 /* FIXED COLUMNS (browser QA D11, 2026-10-04): auto layout made the table
-   1085px in a 1056px card and cut "bogdan@saga." in By. Ids, names and the
+   1085px in a 1056px card and cut "alice@example." in By. Ids, names and the
    issue are one line each, cut with an ellipsis and whole in their titles. */
 .rn-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 /* THE RUN ID AND THE ISSUE REFERENCE FIT (browser QA D11 again, 2026-10-04):

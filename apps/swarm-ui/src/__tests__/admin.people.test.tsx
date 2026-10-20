@@ -668,7 +668,7 @@ describe('visual QA (VQA-L06)', () => {
 
   it('V021: a long email is capped, so it widens no column, and is cut rather than broken (#1206)', async () => {
     // MUTATION: drop `.pp-who`'s `max-width`, or put back `overflow-wrap:
-    // anywhere`, which is what broke `devops@saga.xyz` as `devops@saga. xyz`.
+    // anywhere`, which is what broke `devops@example.com` as `devops@example. com`.
     await mount(people([...ROWS, person(LONG, ws('requested', 'w-10a000'))]))
     await waitFor(() => expect(rowOf(LONG)).not.toBeNull(), WAIT)
     const who = [...rowOf(LONG).querySelectorAll<HTMLElement>('.pp-who')]

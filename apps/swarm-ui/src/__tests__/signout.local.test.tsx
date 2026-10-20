@@ -19,7 +19,7 @@ async function signedIn(): Promise<HTMLElement> {
       <p>page</p>
     </SkyShell>,
   )
-  await waitFor(() => expect(container.querySelector('.sk-spine .sk-av')?.getAttribute('title')).toBe('bogdan@saga.xyz'))
+  await waitFor(() => expect(container.querySelector('.sk-spine .sk-av')?.getAttribute('title')).toBe('alice@example.com'))
   return container
 }
 

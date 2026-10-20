@@ -145,11 +145,32 @@ COPY --chmod=0555 images/agent-runtime-browser/swarm-handoff /usr/local/bin/swar
 #
 # npm's cache and Playwright's scratch go to a directory removed in the same
 # RUN: as root, npm would otherwise leave a root-owned ~/.npm in /home/swarm.
+#
+# THE VISUAL-QA CAPTURE TOOL (QA-CAPTURE, owner decision 2026-10-19, part of
+# #1649; docs/design/visual-qa.md §4.2). `swarm_qa.py` sits beside
+# `swarm_browser.py`, so the agent's `python -m swarm_qa capture` sweeps a
+# group of apps/swarm-ui/qa/routes.json through the live browser, and
+# `python -m swarm_qa diff` compares two captures. Nothing in the worker calls
+# it. Its two pins ride in the RUN below rather than a RUN of their own (each
+# RUN is a layer every cold pod pulls):
+#   * axe-core, the accessibility engine `capture --axe` runs in the page,
+#     read from /opt/swarm/axe-core/axe.min.js. Pinned 2026-10-20 against
+#     npm's `latest`.
+#   * Pillow, which `diff` decodes with (its standard-library decoder is the
+#     fallback the unit tests use, and is slow on a 3x phone capture) and which
+#     a review step crops a finding's evidence with. Pinned 2026-10-20 against
+#     PyPI's latest; 13.0.0 has a cp311 manylinux wheel, so nothing compiles.
 ARG PLAYWRIGHT_MCP_VERSION=0.0.83
+ARG AXE_CORE_VERSION=4.14.0
+ARG PILLOW_VERSION=13.0.0
 COPY --chmod=0444 images/agent-runtime-browser/swarm_browser.py /opt/venv/lib/python3.11/site-packages/swarm_browser.py
+COPY --chmod=0444 images/agent-runtime-browser/swarm_qa.py /opt/venv/lib/python3.11/site-packages/swarm_qa.py
 RUN --mount=type=bind,source=images/agent-runtime-browser,target=/tmp/swarm-browser-build \
     scratch="$(mktemp -d)" \
- && npm_config_cache="${scratch}/npm" npm install -g --no-audit --no-fund "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" \
+ && npm_config_cache="${scratch}/npm" npm install -g --no-audit --no-fund "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" "axe-core@${AXE_CORE_VERSION}" \
+ && install -d -m 0755 /opt/swarm/axe-core \
+ && install -o root -g root -m 0444 "$(npm root -g)/axe-core/axe.min.js" /opt/swarm/axe-core/axe.min.js \
+ && pip install --no-cache-dir "pillow==${PILLOW_VERSION}" \
  && TMPDIR="${scratch}" python /tmp/swarm-browser-build/install-browser-stub.py \
       /opt/swarm/live-browser-only /tmp/swarm-browser-build/live-browser-only \
  && chmod -R a+rX,a-w /opt/swarm \

@@ -85,7 +85,7 @@ async function fixtureAdminPools(): Promise<Result<{ pools: AdminPool[] }>> {
     i === 0 && p.hard_limit !== null
       ? {
           ...p,
-          admin_changed_by: 'ops@saga.xyz',
+          admin_changed_by: 'ops@example.com',
           admin_changed_at: new Date(Date.now() - 3 * 3_600_000).toISOString(),
           admin_change: { hard_limit: { from: p.hard_limit * 2, to: p.hard_limit } },
         }
@@ -763,7 +763,7 @@ async function fixtureTaskLogs(
   await new Promise((r) => setTimeout(r, 110))
   noteFixtureProbe(route('/v1/tasks/{id}/logs', { id: taskId }), 110, true)
   const body = [
-    '[13:42:01] cloning https://github.com/saga-xyz/example.git',
+    '[13:42:01] cloning https://github.com/example-org/example.git',
     '[13:42:09] workspace ready at /workspace (tmpfs)',
     '[13:42:09] claude-code: starting',
     '[13:44:31] checkpoint ckpt_0002 written (18.4 MB)',
@@ -2602,18 +2602,18 @@ async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>>
     fetchedAt: Date.now(),
     data: {
       tenant: {
-        tenant_id: 'u-bogdan', kind: 'user', principal: 'bogdan@saga.xyz',
+        tenant_id: 'u-bogdan', kind: 'user', principal: 'alice@example.com',
         display_name: 'Bogdan', created_at: new Date(Date.now() - 86_400_000 * 9).toISOString(),
         max_active: 2, capacity_units: 40, monthly_budget_usd: null, enabled: true,
         credentials: [
           'anthropic',
         ],
-        service_account: 'swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com',
+        service_account: 'swarm-agent-worker-u-bogdan@example-project.iam.gserviceaccount.com',
         gcs_prefix: 'gs://swarm-artifacts-dev/u-bogdan', namespace: 'swarm-tenant-u-bogdan',
       },
       principal: {
-        email: 'bogdan@saga.xyz', domain: 'saga.xyz',
-        groups: ['eng@saga.xyz'], is_admin: false,
+        email: 'alice@example.com', domain: 'example.com',
+        groups: ['eng@example.com'], is_admin: false,
       },
       // UNDECLARED, ON PURPOSE. There is no API behind the fixtures, so there
       // is no environment it runs as; this is the shape of an API whose
@@ -3960,7 +3960,7 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
     updated_at: at(Math.max(0, minsAgo - 6)),
     started_at: state === 'QUEUED' || state === 'READY' ? null : at(minsAgo - 1),
     completed_at: ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(state) ? at(minsAgo - 6) : null,
-    submitted_by: 'bogdan@saga.xyz',
+    submitted_by: 'alice@example.com',
     attempt_count: state === 'FAILED' ? 3 : 1,
     max_attempts: 3,
     park_reason: null,
@@ -4191,7 +4191,7 @@ function fixtureWorkflowRows(): Workflow[] {
       },
       created_at: new Date(Date.now() - 30 * 60_000).toISOString(),
       updated_at: new Date().toISOString(),
-      submitted_by: 'bogdan@saga.xyz',
+      submitted_by: 'alice@example.com',
       priority: 0,
       on_step_failure: 'FAIL_WORKFLOW',
       cancel_requested: false,
@@ -4240,7 +4240,7 @@ function fixtureWorkflowRows(): Workflow[] {
         },
         created_at: new Date(Date.now() - 4 * 3600_000).toISOString(),
         updated_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
-        submitted_by: 'bogdan@saga.xyz',
+        submitted_by: 'alice@example.com',
         priority: 0,
         on_step_failure: 'FAIL_WORKFLOW',
         cancel_requested: false,
@@ -4282,7 +4282,7 @@ function fixtureWorkflowRows(): Workflow[] {
         state_source: 'stored',
         created_at: new Date(Date.now() - 6 * 3600_000).toISOString(),
         updated_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
-        submitted_by: 'bogdan@saga.xyz',
+        submitted_by: 'alice@example.com',
         priority: 0,
         on_step_failure: 'FAIL_WORKFLOW',
         cancel_requested: false,

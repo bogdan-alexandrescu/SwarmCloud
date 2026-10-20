@@ -184,8 +184,22 @@ enable_forge_user_slots = true
 # allow-typesafe-fwd policy in render.py's TENANT_FILES (PR 1409), the IAP
 # sign-in path in scripts/lib/common.sh (PR 1413) and today's scheduler
 # changes, so a workspace created now renders what every existing tenant got.
+# Re-pinned 2026-10-19 to the image release 39326139658 (7c2e148d) promoted:
+# it carries WK-SIGNED-APPROVAL (PR 1632), WK-APPROVAL-KEYS (PR 1639: the job
+# verifies approvals against the SPEC_VERIFY_KEYS its command pins) and
+# WK-FAILCOPY (PR 1638), which group and service workspaces need.
 enable_workspace_deployer = true
-workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:4bbc7cdd7a4a6fb4bf865dec005d9e9fe3b134e6fd8a07f39320c15f1c0467a2"
+workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:7a03edc768e67fea9f791ab65ec28c726b8e8420799ece96f51169a7fc46028a"
+
+# Workspace kinds (docs/design/workspace-kinds.md §4.5, #847; owner 2026-10-19):
+# K2 (the deployer's second swarmWorkspaceSecretBinder grant, on any tenant's
+# -git team slot and its -git-refresh twin) and K3 (swarm-api's three forge-slot
+# grants over members' -git-u- slots). K1 is NOT granted: O1 step 2 showed IAP
+# refuses the number-form condition on both backends (docs/workspaces.md, read
+# 2026-10-19 20:20-20:35Z), so swarmFrontDoorAdmitter stays off
+# workspace_deployer_roles and a service workspace's front-door admit (S2) stays
+# an owner step.
+enable_workspace_kinds = true
 
 # L8c (2026-10-12, owner): saved browser logins on. swarm-api provisions each
 # personal tenant's -browser- secret and grants it to that tenant's worker

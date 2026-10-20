@@ -34,7 +34,7 @@ vi.mock('../api', async (importOriginal) => {
 const { SubmitChooser, recentSubmissions } = await import('../SubmitChooser')
 const { IssuePreviewCard } = await import('../IssueSubmit')
 
-const ME = 'bogdan@saga.xyz'
+const ME = 'alice@example.com'
 const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
 
 function ok<T>(data: T): Result<T> {
@@ -57,13 +57,13 @@ const TASKS = [
   task({ id: 'task_mine_lone', submitted_by: ME, created_at: '2026-10-04T10:00:00Z', step_id: null, workflow_id: null }),
   task({ id: 'task_mine_step', submitted_by: ME, created_at: '2026-10-04T11:00:00Z', step_id: 'impl', workflow_id: 'wf_mine' }),
   task({ id: 'task_mine_child', submitted_by: ME, created_at: '2026-10-04T11:30:00Z', parent_task_id: 'task_mine_lone' }),
-  task({ id: 'task_theirs', submitted_by: 'someone@saga.xyz', created_at: '2026-10-04T11:45:00Z' }),
+  task({ id: 'task_theirs', submitted_by: 'someone@example.com', created_at: '2026-10-04T11:45:00Z' }),
 ]
-const WORKFLOWS = [workflow('wf_mine', ME, '2026-10-04T09:00:00Z'), workflow('wf_theirs', 'someone@saga.xyz', '2026-10-04T11:50:00Z')]
-const RUNS = [run('run_mine', ME, '2026-10-04T11:55:00Z', 'Fix the run page'), run('run_theirs', 'other@saga.xyz', '2026-10-04T11:58:00Z', 'Not mine')]
+const WORKFLOWS = [workflow('wf_mine', ME, '2026-10-04T09:00:00Z'), workflow('wf_theirs', 'someone@example.com', '2026-10-04T11:50:00Z')]
+const RUNS = [run('run_mine', ME, '2026-10-04T11:55:00Z', 'Fix the run page'), run('run_theirs', 'other@example.com', '2026-10-04T11:58:00Z', 'Not mine')]
 
 beforeEach(() => {
-  api.loadMe.mockResolvedValue(ok({ principal: { email: ME, domain: 'saga.xyz', groups: [], is_admin: false }, tenant: { tenant_id: 'eng' } }))
+  api.loadMe.mockResolvedValue(ok({ principal: { email: ME, domain: 'example.com', groups: [], is_admin: false }, tenant: { tenant_id: 'eng' } }))
   api.loadTasks.mockResolvedValue(ok({ tasks: TASKS, next_page_token: null }))
   api.loadWorkflows.mockResolvedValue(ok({ workflows: WORKFLOWS }))
   api.loadRuns.mockResolvedValue(ok({ runs: RUNS, next_page_token: null }))
@@ -126,7 +126,7 @@ describe('R15: your recent submissions', () => {
 
   it('says none of yours when the reads hold none', async () => {
     api.loadRuns.mockResolvedValue(ok({ runs: [], next_page_token: null }))
-    api.loadMe.mockResolvedValue(ok({ principal: { email: 'nobody@saga.xyz', domain: 'saga.xyz', groups: [], is_admin: false }, tenant: { tenant_id: 'eng' } }))
+    api.loadMe.mockResolvedValue(ok({ principal: { email: 'nobody@example.com', domain: 'example.com', groups: [], is_admin: false }, tenant: { tenant_id: 'eng' } }))
     const { container } = render(<SubmitChooser go={() => {}} />)
     const recent = container.querySelector<HTMLElement>('.sb-recent')!
     await waitFor(() => expect(visible(recent.querySelector('.sb-empty'))).toBe('None of yours yet.'))

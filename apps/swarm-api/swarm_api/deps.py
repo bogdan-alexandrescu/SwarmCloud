@@ -46,6 +46,7 @@ from .inspect import InspectionService
 from .metrics import ApiMetrics
 from .objects import ObjectReader, build_object_reader
 from .outcomes import Outcomes
+from .preferences import build_preferences
 from .purge import ArtifactPurger, build_artifact_purger
 from .roles import RoleStore
 from .ratelimit import TokenBucketLimiter
@@ -154,6 +155,13 @@ def build_firestore(settings: ApiSettings) -> Any:
     )
 
 
+def _configured_preferences(db: Any, settings: ApiSettings) -> Any:
+    """The preferences store for the Authenticator, or None when no child key
+    is configured (see the call site)."""
+    prefs = build_preferences(db, settings)
+    return prefs if prefs.configured else None
+
+
 def build_context(
     *,
     settings: ApiSettings | None = None,
@@ -227,6 +235,15 @@ def build_context(
         # every request reads the empty registry and no job-made workspace
         # ever resolves or admits anyone.
         registry=WorkspaceRegistry.from_settings(db, settings),
+        # A person's saved default workspace (docs/design/user-profile.md §4.5):
+        # without it `_with_default` returns at its first line and a request
+        # naming no workspace acts in the personal one, whatever the person
+        # saved in Settings › Profile (measured 2026-10-19 on SwarmCloud).
+        # Only when a child key is configured: with none, no preference can be
+        # read, and an unreadable default is a 503 for every request naming no
+        # workspace (Q9) -- right for an outage, wrong for a deployment that
+        # never had the key, which keeps today's computed default instead.
+        preferences=_configured_preferences(db, settings),
     )
     spec_signer = signer_from_settings(settings) if signer is _MISSING else signer
     # Built before the submissions service, which reads a `merge_pr` workflow's

@@ -1022,8 +1022,9 @@ def test_workspaces_doc_records_wd3_reversed_as_built():
 
 def test_workspaces_doc_section_0_holds_the_owners_check_o1():
     """O1 is the owner's, not an agent's: §0 says what it reads, what each
-    answer turns on, and, while the switches it gates are still off, that
-    it is not yet recorded."""
+    answer turns on, and, while the switch it gates is still off, either
+    that it is not yet recorded or a dated record whose step 2 failed and
+    that leaves the switch off. It never reads as passed while K1 is off."""
     text = _text(WORKSPACES_DOC)
     section0 = _whole_section(text, "## 0. Today")
     assert KINDS_O1 in section0
@@ -1035,7 +1036,16 @@ def test_workspaces_doc_section_0_holds_the_owners_check_o1():
     assert bound, "terraform/bootstrap/variables.tf has no front_door_admit_role_bound"
     assert "`front_door_admit_role_bound`" in body and "`FRONT_DOOR_OWNER`" in body
     if bound.group(1) == "false":
-        assert "Not yet recorded" in body
+        # O1 was run 2026-10-19 and step 2 failed (IAP refused the number-form
+        # condition), so the switch stays off with a dated record, not the
+        # "Not yet recorded" placeholder. A record whose step 2 passed would
+        # mean the switch should be on: that is the contradiction held here.
+        recorded = re.search(r"\*\*Recorded \d{4}-\d{2}-\d{2}", body)
+        if recorded:
+            assert "2. **Fails.**" in body, "O1 is recorded, step 2 did not fail, and front_door_admit_role_bound is still off"
+            assert "stays at its default, off" in body
+        else:
+            assert "Not yet recorded" in body
 
 
 def test_workspaces_doc_failure_copy_is_the_codes():

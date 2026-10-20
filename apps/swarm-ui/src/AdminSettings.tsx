@@ -776,7 +776,7 @@ export function keyBreaks(name: string): ReactNode {
  * `ops@… · 20 → 10 · 3h ago`, with the instant on the `time` element.
  *
  * EACH `·` LEADS THE PART IT INTRODUCES (VQA V191). The separator trailed
- * the part before it, so at 400 the line broke after it -- `ops@saga.xyz ·
+ * the part before it, so at 400 the line broke after it -- `ops@example.com ·
  * 40 → 20 ·` over `3h ago` -- and left a `·` alone at the line end. Every
  * part after the author is one unbreakable run, `· 40 → 20`, `· 3h ago`
  * (`.adm-changed-part`, styles/admin.css), and the only breaks are the

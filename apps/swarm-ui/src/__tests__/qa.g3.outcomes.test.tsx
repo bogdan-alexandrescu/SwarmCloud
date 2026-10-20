@@ -1,5 +1,5 @@
 /**
- * BROWSER QA G3 (2026-10-07, swarm.saga.xyz at 1440 and 390): Timeline ›
+ * BROWSER QA G3 (2026-10-07, swarm.example.com at 1440 and 390): Timeline ›
  * Outcomes.
  *
  *   G3-01  On a partial span the headline, its readout and "list them"
@@ -53,11 +53,11 @@ const ok = <T,>(data: T): Result<T> => ({ status: 'ok', data, fetchedAt: Date.no
 function me(): Me {
   return {
     tenant: {
-      tenant_id: 'eng', kind: 'group', principal: 'eng@saga.xyz', display_name: null,
+      tenant_id: 'eng', kind: 'group', principal: 'eng@example.com', display_name: null,
       created_at: '2026-09-01T00:00:00Z', max_active: 10, capacity_units: 20, monthly_budget_usd: null,
       enabled: true, credentials: [], service_account: null, gcs_prefix: null, namespace: null,
     },
-    principal: { email: 'a@saga.xyz', domain: 'saga.xyz', groups: [], is_admin: false },
+    principal: { email: 'a@example.com', domain: 'example.com', groups: [], is_admin: false },
     environment: 'dev',
     environment_declared: true,
   }

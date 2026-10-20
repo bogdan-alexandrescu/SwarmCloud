@@ -121,7 +121,7 @@ const POOLS = [
 
 const ADMIN_ME = {
   tenant: { tenant_id: 'eng' },
-  principal: { email: 'a@saga.xyz', domain: 'saga.xyz', groups: [], is_admin: true },
+  principal: { email: 'a@example.com', domain: 'example.com', groups: [], is_admin: true },
   environment: 'dev', environment_declared: false,
 } as unknown as Me
 
@@ -208,7 +208,7 @@ function quota(over: Partial<QuotaState> = {}): QuotaState {
 
 function tenant(id: string): Tenant {
   return {
-    tenant_id: id, kind: 'group', principal: `${id}@saga.xyz`, display_name: null,
+    tenant_id: id, kind: 'group', principal: `${id}@example.com`, display_name: null,
     created_at: '2026-09-24T09:00:00Z', max_active: 10, capacity_units: 8, monthly_budget_usd: null,
     enabled: true, credentials: [], service_account: null, gcs_prefix: null, namespace: null,
   }

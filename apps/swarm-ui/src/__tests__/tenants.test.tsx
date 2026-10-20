@@ -63,7 +63,7 @@ function tenant(over: Partial<Tenant>): Tenant {
   return {
     tenant_id: 'eng',
     kind: 'group',
-    principal: 'eng@saga.xyz',
+    principal: 'eng@example.com',
     display_name: null,
     created_at: '2026-09-24T09:00:00Z',
     max_active: 20,
@@ -95,7 +95,7 @@ const ROSTER: Tenant[] = [
   }),
   tenant({
     tenant_id: 'smoke',
-    principal: 'swarm-smoke@saga.xyz',
+    principal: 'swarm-smoke@example.com',
     max_active: 10,
     capacity_units: 4,
     enabled: false,

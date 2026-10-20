@@ -1,4 +1,4 @@
-// LIVE QA, CAPACITY › ACCOUNTS (2026-10-11, swarm.saga.xyz).
+// LIVE QA, CAPACITY › ACCOUNTS (2026-10-11, swarm.example.com).
 //
 //   CAP-1   `move to paused` / `move to draining` wrote on the first click.
 //           A state button now opens a confirm that names the account and its
@@ -54,9 +54,9 @@ function ok<T>(data: T): Result<T> {
 
 function account(over: Partial<Account>): Account {
   return {
-    account_id: 'eng:saga-personal',
+    account_id: 'eng:alice-personal',
     owner_tenant: 'eng',
-    label: 'saga-personal',
+    label: 'alice-personal',
     provider: 'anthropic-subscription',
     state: 'AVAILABLE',
     reason: '',
@@ -94,7 +94,7 @@ describe('CAP-1: a state change is confirmed before it is written', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'move to draining' }, WAIT))
     expect(api.setAccountState, 'the first click wrote').not.toHaveBeenCalled()
     const dialog = await screen.findByRole('dialog', undefined, WAIT)
-    expect(dialog.textContent).toContain('eng:saga-personal')
+    expect(dialog.textContent).toContain('eng:alice-personal')
     expect(dialog.textContent).toMatch(/7 agents on it now will be moved off/)
   })
 
@@ -109,7 +109,7 @@ describe('CAP-1: a state change is confirmed before it is written', () => {
     expect(api.setAccountState).not.toHaveBeenCalled()
     fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'held for the release' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'move to paused' }))
-    await waitFor(() => expect(api.setAccountState).toHaveBeenCalledWith('eng:saga-personal', 'PAUSED', 'held for the release'), WAIT)
+    await waitFor(() => expect(api.setAccountState).toHaveBeenCalledWith('eng:alice-personal', 'PAUSED', 'held for the release'), WAIT)
   })
 
   it('writes nothing when the confirm is dismissed', async () => {
@@ -147,9 +147,9 @@ describe('CAP-2: lending is checked against the tenants and confirmed', () => {
     fireEvent.click(screen.getByRole('button', { name: 'save lending' }))
     expect(api.setAccountLending, 'the first click lent the account').not.toHaveBeenCalled()
     const dialog = await screen.findByRole('dialog', undefined, WAIT)
-    expect(dialog.querySelector('h2')!.textContent).toBe('Lend saga-personal to smoke?')
+    expect(dialog.querySelector('h2')!.textContent).toBe('Lend alice-personal to smoke?')
     fireEvent.click(within(dialog).getByRole('button', { name: 'save lending' }))
-    await waitFor(() => expect(api.setAccountLending).toHaveBeenCalledWith('eng:saga-personal', ['smoke']), WAIT)
+    await waitFor(() => expect(api.setAccountLending).toHaveBeenCalledWith('eng:alice-personal', ['smoke']), WAIT)
   })
 
   it('checks the id shape when the tenant list was not read, and keeps an id already lent to', () => {
@@ -222,7 +222,7 @@ describe('CAP-12: a link to an account this read does not hold says so', () => {
   })
 
   it('says nothing when the link names an account that is there', async () => {
-    window.history.replaceState(null, '', `/capacity/accounts?account=${encodeURIComponent('eng:saga-personal')}`)
+    window.history.replaceState(null, '', `/capacity/accounts?account=${encodeURIComponent('eng:alice-personal')}`)
     await mount([account({})])
     expect(document.querySelector('.acct-missing')).toBeNull()
   })

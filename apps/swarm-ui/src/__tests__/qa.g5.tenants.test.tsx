@@ -1,7 +1,7 @@
 // ADMIN › TENANTS, THE 2026-10-07 QA PASS (G5-12, G5-13).
 //
 //   G5-12  every Identity read "swarm-agent-work…" and every Principal ended
-//          "…@saga.x…": the end-ellipsis cut exactly the part that tells one
+//          "…@example.c…": the end-ellipsis cut exactly the part that tells one
 //          tenant's identity from the next. The cut moves to the middle; the
 //          tenant's own part is never cut.
 //   G5-13  Enforced was `Math.min(max_active, capacity_units)` computed here,
@@ -35,13 +35,13 @@ const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
 const WAIT = { timeout: 5000 } as const
 
-const DOMAIN = 'saga-agents.iam.gserviceaccount.com'
+const DOMAIN = 'example-project.iam.gserviceaccount.com'
 
 function tenant(over: Partial<Tenant>): Tenant {
   return {
     tenant_id: 'eng',
     kind: 'group',
-    principal: 'eng@saga.xyz',
+    principal: 'eng@example.com',
     display_name: null,
     created_at: '2026-09-24T09:00:00Z',
     max_active: 45,
@@ -75,7 +75,7 @@ const ROSTER: Tenant[] = [
   tenant({
     tenant_id: 'u-bogdan',
     kind: 'user',
-    principal: 'bogdan@saga.xyz',
+    principal: 'alice@example.com',
     max_active: 4,
     capacity_units: 8,
     service_account: `swarm-agent-worker-u-bogdan@${DOMAIN}`,
@@ -158,10 +158,10 @@ describe('G5-12: an identity is cut in the middle, never through the tenant’s 
     serve(capacity([]))
     const c = await roster()
     const ident = row(c, 'u-bogdan').querySelector('td[data-label="Principal"] .ten-ident')!
-    expect(ident.textContent).toBe('bogdan@saga.xyz')
+    expect(ident.textContent).toBe('alice@example.com')
     expect(ident.querySelector('.ten-ident-head')).toBeNull()
-    expect(ident.querySelector('.ten-ident-key')?.textContent).toBe('bogdan@')
-    expect(ident.querySelector('.ten-ident-tail')?.textContent).toBe('saga.xyz')
+    expect(ident.querySelector('.ten-ident-key')?.textContent).toBe('alice@')
+    expect(ident.querySelector('.ten-ident-tail')?.textContent).toBe('example.com')
   })
 })
 

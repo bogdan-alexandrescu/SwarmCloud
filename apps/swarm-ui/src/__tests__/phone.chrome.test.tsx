@@ -73,7 +73,7 @@ function me(isAdmin: boolean): Me {
     tenant: {
       tenant_id: 'u-phone',
       kind: 'user',
-      principal: 'someone@saga.xyz',
+      principal: 'someone@example.com',
       display_name: 'Phone',
       created_at: new Date().toISOString(),
       max_active: 4,
@@ -85,7 +85,7 @@ function me(isAdmin: boolean): Me {
       gcs_prefix: 'tenants/u-phone',
       namespace: 'swarm-tenant-u-phone',
     },
-    principal: { email: 'someone@saga.xyz', groups: [], is_admin: isAdmin },
+    principal: { email: 'someone@example.com', groups: [], is_admin: isAdmin },
   } as unknown as Me
 }
 
@@ -241,7 +241,7 @@ describe('#139 at 390: the header row never widens the page', () => {
     // MUTATION: drop `min-width: 0` / `max-width` / `overflow: hidden` from
     // `.sk-pbar .sk-tn`, or let the menu, the mark or the env pill shrink.
     const long = me(false)
-    const name = 'someone.with.a.rather.long.address' + '@' + 'saga.xyz'
+    const name = 'someone.with.a.rather.long.address' + '@' + 'example.com'
     ;(long.tenant as { display_name: string }).display_name = name
     vi.stubEnv('VITE_LIVE', '1')
     vi.stubEnv('VITE_SWARM_ENV', 'dev')
