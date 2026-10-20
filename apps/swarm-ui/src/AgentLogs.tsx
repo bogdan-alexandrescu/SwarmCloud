@@ -142,6 +142,21 @@ export function lastLineOf(feed: LogFeed | null, view: LogView): string | null {
 }
 
 /**
+ * WHETHER THE TRANSCRIPT ENDS ON THE CLI'S OWN SUCCESS (QA-115, visual QA run
+ * 2). The newest step that is not a progress notice is a `result` the CLI did
+ * not mark `is_error`. On a FAILED task that is the case a reader most
+ * misreads: the CLI finished and said so, and the task still failed after it
+ * -- the worker's exit, its publish, a refused diff -- so `result · success`
+ * at the end of the log is the CLI's verdict, never why the task failed.
+ */
+export function endsInReportedSuccess(feed: LogFeed | null): boolean {
+  if (feed === null) return false
+  const steps = okFeed(feed.transcript)?.steps ?? []
+  const s = [...steps].reverse().find((x) => !isProgressStep(x))
+  return s !== undefined && s.kind === 'result' && s.meta?.['is_error'] !== true
+}
+
+/**
  * BRING `target` TO THE MIDDLE OF THE LOG'S OWN BODY, AND MOVE NOTHING ELSE
  * (owner QA R3, 2026-10-04: the no-jump rule). `scrollIntoView` scrolls every
  * scrolling ancestor, so Enter in the search moved the PAGE 0 -> 148.5 and
@@ -547,8 +562,14 @@ export function AgentLogs({ task }: { task: Task }) {
       title={`Matches a transcript tool result or final result marked is_error, and lines with ${ERROR_PATTERN_SAYS}. The API marks no line as an error, so this is the console's own pattern: it can miss an error that says none of these, and match a line that only quotes one.`}
     >
       <LogWords
+        // LINES, NOT ERRORS (QA-115, run 2). The narrow `Errors 0` on a
+        // task drawn FAILED read as "nothing went wrong"; what it counts is
+        // log lines the console's pattern matched, and the failure is often
+        // in none. `No match` is no wider than `Errors 0`, and the wide
+        // label keeps its length: one more character spills the button
+        // under More at the 380px split (qa.u11a.logs).
         long={targets.errors.length === 0 ? 'No error matched' : `Error ${errAt < 0 ? '–' : errAt + 1} of ${targets.errors.length}`}
-        short={targets.errors.length === 0 ? 'Errors 0' : `Error ${errAt < 0 ? '–' : errAt + 1}/${targets.errors.length}`}
+        short={targets.errors.length === 0 ? 'No match' : `Error ${errAt < 0 ? '–' : errAt + 1}/${targets.errors.length}`}
       />{' '}
       <kbd>E</kbd>
     </Button>
@@ -704,6 +725,24 @@ export function AgentLogs({ task }: { task: Task }) {
           </details>
         </div>
 
+        {/* THE CLI'S SUCCESS IS NOT THE TASK'S (QA-115, run 2). A failed
+            task's transcript can end `result · success · 7 turns`, and with
+            `No error line` beside it the log read as a run that went well.
+            Above the body, not in it, so a log scrolled to its end still
+            has it in view; it names the error the task did write. */}
+        {task.state === 'FAILED' && view === 'transcript' && endsInReportedSuccess(shown) && (
+          <p className="ag-gap ag-failnote" role="note">
+            This agent failed after its CLI reported success: the <b>result</b> at the end of this transcript is the
+            CLI&rsquo;s own verdict, not why the agent failed.{' '}
+            {task.last_error ? (
+              <>
+                The error it wrote: <code className="mono">{firstLine(task.last_error)}</code>
+              </>
+            ) : (
+              'It wrote no error text.'
+            )}
+          </p>
+        )}
         <div className={`ag-logs-body${wrap ? ' is-wrap' : ''}`} ref={body} onScroll={onScroll} aria-label={`${viewLabel} log`}>
           {view === 'transcript' && <GapNotice name="transcript" />}
           {shown === null ? (
@@ -767,15 +806,30 @@ export function LogLastLine({ task, onOpen }: { task: Task; onOpen: () => void }
   // line: result ## Summary` read as why it failed. It is only the newest
   // line, so there it says so; on any other task the label is unchanged.
   const label = task.state === 'FAILED' ? 'Last log line (not the error)' : 'Last log line'
+  // AND NOT A SUCCESS LINE UNDER A FAILURE (QA-115, visual QA run 2). The
+  // label alone did not hold: `result ## Summary` under the error was still
+  // read as its cause. When the line is the CLI's own success result, the
+  // strip says what that line means instead of quoting it; the line itself
+  // stays in the title and is one click away in Logs.
+  const succeededThenFailed = task.state === 'FAILED' && view === 'transcript' && line !== null && endsInReportedSuccess(feed)
   return (
     <button type="button" className="ag-loglast" onClick={onOpen}>
       <b>{label}</b>
-      <span className={`ag-loglast-line${line === null ? ' is-absent' : ' mono'}`} title={line ?? undefined}>
+      <span className={`ag-loglast-line${line === null || succeededThenFailed ? ' is-absent' : ' mono'}`} title={line ?? undefined}>
         {/* A transcript line is the agent's markdown: its code spans are
             drawn as code, never as raw backticks (owner QA R9). */}
-        {line !== null && view === 'transcript' ? <MarkdownInline text={line} /> : said}
+        {succeededThenFailed
+          ? 'its CLI reported success · it failed after that, with the error above'
+          : line !== null && view === 'transcript'
+            ? <MarkdownInline text={line} />
+            : said}
       </span>
       <span className="ag-loglast-open">Open logs ›</span>
     </button>
   )
+}
+
+/** The first non-blank line of an error, for a one-line note; the whole error is on Details. */
+function firstLine(text: string): string {
+  return text.split('\n').find((l) => l.trim() !== '') ?? text
 }

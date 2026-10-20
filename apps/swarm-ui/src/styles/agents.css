@@ -802,6 +802,10 @@
   line-height: var(--lh-meta);
 }
 .ag-gap.is-unknown { border-color: var(--line); background: none; color: var(--text-dim); }
+/* A FAILED TASK'S SUCCESS LINE, EXPLAINED (QA-115): the gap's box, solid and
+   on the failure rule -- a fact about this task, not output that went missing. */
+.ag-gap.ag-failnote { border-style: solid; border-color: var(--s-bad); background: var(--s-badb); }
+.ag-gap.ag-failnote code { overflow-wrap: anywhere; }
 
 /* --- children ------------------------------------------------------------- */
 .ag-children-await {

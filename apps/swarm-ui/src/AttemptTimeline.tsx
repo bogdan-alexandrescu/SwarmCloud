@@ -200,7 +200,16 @@ function grouped(t: AttemptTimeline): Group[] {
   for (const [id, events] of byAttempt) {
     groups.push({ key: id, attempt: null, label: `Attempt ${id} · no document`, events, byTime })
   }
-  return groups
+  // NEWEST FIRST, AND NO EMPTY PREFACE (QA-113, visual QA run 2). Oldest
+  // first put an empty `Before any attempt` card and a rejected attempt 1
+  // above the attempts that ran, so on a phone a failed task opened on two
+  // cards with nothing in them and its failing attempt below the fold. The
+  // groups are built in the order things happened -- the ordinals and the
+  // by-time placement need it -- and drawn in reverse: the attempt the task
+  // ended on leads, as it does in Details. Each card's events stay oldest
+  // first, so a card still reads in the order it happened. The preface is
+  // drawn only when an event is in it: an empty one claimed nothing.
+  return groups.filter((g) => g.key !== '@preface' || g.events.length > 0).reverse()
 }
 
 /**
@@ -384,7 +393,13 @@ function AttemptCard({
           {a?.oom_near_miss && <ToneMark tone="bad">OOM near miss</ToneMark>}
         </h2>
         <span className="ctl-card-note">
-          {pluralise(g.events.length, 'event')}{a !== null && ` · ${backendWord(a.backend)}`}
+          {/* NOT `0 events` (QA-113, run 2). Three cards each saying `0
+              events` under a toolbar saying `9 events` read as counts that
+              disagree: this page holds none for the attempt, which is not a
+              measured zero. Why that cannot be told from a missing page is
+              the toolbar's one `partial` tally, said once there. */}
+          {g.events.length === 0 && eventsRead ? 'no events on this page' : pluralise(g.events.length, 'event')}
+          {a !== null && ` · ${backendWord(a.backend)}`}
         </span>
       </div>
 
@@ -415,7 +430,13 @@ function AttemptCard({
               {a.execution_name === null ? (
                 <Mark
                   kind="zero"
-                  say="This attempt was never dispatched, so no execution was ever named. That is a fact about the attempt, not a missing record."
+                  say={
+                    // A REJECTED DISPATCH WAS STILL A DISPATCH (QA-113, run 2):
+                    // `never dispatched` over BACKEND_REJECTED contradicted it.
+                    a.error != null
+                      ? 'No execution was ever named for this attempt: it ended with the error below before one was. That is a fact about the attempt, not a missing record.'
+                      : 'This attempt was never dispatched, so no execution was ever named. That is a fact about the attempt, not a missing record.'
+                  }
                 />
               ) : (
                 <span className="mono">{a.execution_name}</span>
@@ -480,15 +501,6 @@ function AttemptCard({
           <p className="blocker-copy">{REASON_COPY[a.error]}</p>
         )}
 
-        {g.events.length === 0 && eventsRead && (
-          <p className="att-none">
-            <Mark
-              kind="partial"
-              say="No event on this page belongs to this attempt — the page ends before them, or none were written. The two cannot be told apart from here."
-            />{' '}
-            none on this page
-          </p>
-        )}
         {g.events.length > 0 && (
           <ol className="timeline">
             {g.events.map((e) => (
@@ -564,7 +576,15 @@ function outcome(a: AttemptRow): { label: string; tone: ChipTone } {
   // NEVER STARTED IS NOT A FAILURE AND NOT A ZERO. `unknown` is the hollow
   // ring: the state exists and there is no outcome to report, which is exactly
   // what the tone is reserved for (§1.3, §6.6).
-  if (a.started_at === null) return { label: 'never started', tone: 'unknown' }
+  //
+  // UNLESS IT ENDED WITH AN ERROR (QA-113, run 2). A dispatch the backend
+  // rejected writes `BACKEND_REJECTED` on an attempt that never started, and
+  // `never started` in the no-verdict ring over that error read as nothing
+  // having gone wrong. It is a failure, so it takes the failure tone; the
+  // error itself is printed under the facts.
+  if (a.started_at === null) {
+    return a.error != null ? { label: 'failed to start', tone: 'bad' } : { label: 'never started', tone: 'unknown' }
+  }
   // TWO WORDS, NOT A CLAUSE. "running, no exit code yet" and "ended with no
   // exit code recorded" were sentences inside a chip; the tone and the `exit`
   // fact beside them already carry which of the two this is, and a chip whose
