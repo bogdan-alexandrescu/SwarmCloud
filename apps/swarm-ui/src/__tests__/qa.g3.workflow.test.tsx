@@ -334,12 +334,13 @@ describe('G3-05: the sample mark counts this workflow’s tasks only', () => {
     expect(container.querySelector('.wf-table-head .ctl-mark.is-partial'), '12/296 sampled on a 3-step page').toBeNull()
   })
 
-  it('counts this workflow’s tasks when one of them is outside the ceiling', () => {
+  it('counts this workflow’s agents when one of them is outside the ceiling', () => {
     const { w, tasks, usage } = skippedRun()
     const { container } = card(w, tasks, boardWide(usage, ['t_fix']), 'table')
     const mark = container.querySelector<HTMLElement>('.wf-table-head .ctl-mark.is-partial')!
     expect(mark.textContent).toBe('2/3 sampled')
-    expect(mark.getAttribute('aria-label')).toContain('2 of this workflow’s 3 tasks')
+    // MUTATION (VOCAB-AGENTS): put back `${ids.length} tasks` in the sample mark's name.
+    expect(mark.getAttribute('aria-label')).toContain('2 of this workflow’s 3 agents')
   })
 })
 

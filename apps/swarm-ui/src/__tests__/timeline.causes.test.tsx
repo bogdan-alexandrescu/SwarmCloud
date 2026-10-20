@@ -506,7 +506,7 @@ describe('Not finished yet, in platform scope', () => {
 // ---------------------------------------------------------------------------
 
 describe('Workflows that failed, when the block does not apply', () => {
-  it('draws "standalone tasks only" and no digit from the null counts the route sends', async () => {
+  it('draws "standalone agents only" and no digit from the null counts the route sends', async () => {
     const d = ledgerFixture()
     const w = d.workflows_failed as unknown as Record<string, unknown>
     w.applicable = false
@@ -517,7 +517,7 @@ describe('Workflows that failed, when the block does not apply', () => {
     w.rows_total = null
     const root = await timeline(d)
     const c = card(root, /^Workflows that failed/)
-    expect(c.textContent).toContain('standalone tasks only')
+    expect(c.textContent).toContain('standalone agents only')
     expect(c.textContent).not.toMatch(/\bnull\b|\d+ of \d+/)
   })
 })

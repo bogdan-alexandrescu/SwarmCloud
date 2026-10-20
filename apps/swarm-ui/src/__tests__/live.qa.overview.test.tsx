@@ -150,7 +150,7 @@ describe('OV-1/OV-2: a phone counts the failures its 200 newest do not hold', ()
     media(true)
     serve(tenant())
     const el = await mount()
-    expect(text(el.querySelector('#ov-needs'))).toMatch(/11 failed tasks in the last 24 hours/)
+    expect(text(el.querySelector('#ov-needs'))).toMatch(/11 failed agents in the last 24 hours/)
   })
 
   /**
@@ -168,7 +168,7 @@ describe('OV-1/OV-2: a phone counts the failures its 200 newest do not hold', ()
     expect(text(card)).toMatch(/≥0 failed/)
     expect(text(card)).toMatch(/partial/)
     // And the check is not "clear": the state counts say 11 FAILED.
-    expect(text(el.querySelector('#ov-needs'))).not.toMatch(/none of the 200 most recently created tasks is FAILED/)
+    expect(text(el.querySelector('#ov-needs'))).not.toMatch(/none of the 200 most recently created (tasks|agents) is FAILED/)
   })
 })
 
@@ -209,8 +209,8 @@ describe('OV-7: "last 24h" says partial when the read did not cover it', () => {
     const el = await mount()
     const note = text(el.querySelector('#ov-failures .ov-card-note, #ov-failures header, #ov-failures'))
     expect(note).toMatch(/last 24h · ≥6 failed/)
-    expect(note).toMatch(/partial: tasks created since \d\d:\d\d UTC read/)
-    expect(text(el.querySelector('#ov-needs'))).toMatch(/≥6 failed tasks in the last 24 hours/)
+    expect(note).toMatch(/partial: agents created since \d\d:\d\d UTC read/)
+    expect(text(el.querySelector('#ov-needs'))).toMatch(/≥6 failed agents in the last 24 hours/)
   })
 
   /** The control: a read that covers every failed task claims the window, with no mark. */

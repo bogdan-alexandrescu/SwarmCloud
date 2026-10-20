@@ -418,7 +418,7 @@ export function WorkflowsScreen({
           // disabled, its view tabs and a body card, so the board lands under
           // the tabs instead of pushing them in above generic rows.
           skeleton={<WorkflowPageSkeleton id={id} query={query} choose={go} />}
-          empty={{ heading: 'No workflows', body: 'Individually submitted tasks appear under Agents.' }}
+          empty={{ heading: 'No workflows', body: 'Individually submitted agents appear under Agents.' }}
         >
           {(d) => (
             <WorkflowPage
@@ -1933,7 +1933,7 @@ function WorkflowDispatch({
               className="ctl-mark is-absent"
               aria-label={
                 joined
-                  ? 'None of this workflow’s tasks reported a dispatch, so what it publishes is not shown. That is an API older than the field, not a workflow that publishes nothing.'
+                  ? 'None of this workflow’s agents reported a dispatch, so what it publishes is not shown. That is an API older than the field, not a workflow that publishes nothing.'
                   : 'No task was joined for this workflow, so what it publishes cannot be read here.'
               }
             >
@@ -5031,7 +5031,7 @@ function SampleNote(usage: WorkflowUsage, workflow: Workflow): ReactNode {
     <span className="wf-caveat" role="status">
       <span
         className="ctl-mark is-partial"
-        aria-label={`Step figures cover ${sampled} of this workflow’s ${ids.length} tasks.${ceiling}${unread}`}
+        aria-label={`Step figures cover ${sampled} of this workflow’s ${ids.length} agents.${ceiling}${unread}`}
       >
         {sampled}/{ids.length} sampled
       </span>

@@ -134,6 +134,9 @@ describe('Lanes: the drawing', () => {
     expect(Date.parse(args.until) - Date.parse(args.since)).toBe(24 * 3_600_000)
     const groups = [...document.querySelectorAll('[data-group]')].map((g) => g.getAttribute('data-group'))
     expect(groups).toEqual(['wf_7c1e', 'standalone'])
+    // VOCAB-AGENTS (QA-109, part of #1680): the standalone block counts agents.
+    // MUTATION: put back `'task' : 'tasks'` in the standalone block's note.
+    expect(document.querySelector('[data-group="standalone"] .tl-lab small')?.textContent).toBe('1 agent in this span')
     expect([...lanes()].map((l) => l.getAttribute('data-lane'))).toEqual(['task_plan', 'task_test', 'task_publish', 'task_solo'])
   })
 
@@ -289,10 +292,22 @@ describe('Lanes: every honest state', () => {
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     await waitFor(() => expect(lane('task_solo')?.textContent).toMatch(/task_solo/))
     expect(lane('task_solo').textContent).toMatch(/profile —/)
+    // VOCAB-AGENTS (QA-109, part of #1680): the block of unread lanes is headed by the Agents page's word.
+    // MUTATION: put back `title = 'Task not read'` in GroupHead.
+    expect(document.querySelector('[data-group="unread"] .tl-lab b')?.textContent).toBe('Agent not read')
   })
 })
 
 describe('Lanes: the outcome strip', () => {
+  it('says no agent was decided when the span has no rate (VOCAB-AGENTS, QA-109)', async () => {
+    const d = ledgerFixture()
+    d.totals = { ...d.totals, rate: null }
+    api.loadOutcomes.mockResolvedValue(ok(d))
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    // MUTATION: put back `no task was decided in this span` in OutcomeStrip.
+    await waitFor(() => expect(document.querySelector('.tl-strip1')?.textContent).toContain('success: no agent was decided in this span'))
+  })
+
   it('reads /v1/outcomes on its own, and a failure there leaves the lanes drawn', async () => {
     api.loadOutcomes.mockResolvedValue(failed(422, 'since is in the future'))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)

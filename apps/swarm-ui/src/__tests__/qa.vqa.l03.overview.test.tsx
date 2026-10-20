@@ -226,7 +226,7 @@ describe('QA-100: at phone width a check card\u2019s detail is not cut before it
   const p: Problem = {
     severity: 'bad',
     n: 2,
-    headline: '2 failed tasks among the 26 most recent · task_a1, task_b2',
+    headline: '2 failed agents among the 26 most recent · task_a1, task_b2',
     detail: 'Terminal: nothing will retry them. 1 used every attempt; 1 had attempts left but the cause is not retryable.',
     href: '#work/tasks',
   }
@@ -240,7 +240,7 @@ describe('QA-100: at phone width a check card\u2019s detail is not cut before it
     // MUTATION: drop the phone `.ov-att-t small.is-one` clamp -- it is one line again.
     expect(painted(detail, '-webkit-line-clamp', PHONE)).toBe('4')
     // MUTATION: drop the phone `.ov-att-t small` clamp -- a card with no ids line keeps two.
-    const plain = render(<Overview.CheckCard problem={{ ...p, headline: '2 failed tasks' }} />).container.querySelector('.ov-att-t small')!
+    const plain = render(<Overview.CheckCard problem={{ ...p, headline: '2 failed agents' }} />).container.querySelector('.ov-att-t small')!
     expect(plain.classList.contains('is-one')).toBe(false)
     expect(painted(plain, '-webkit-line-clamp', PHONE)).toBe('4')
     // The ids stay one cut line, and the desktop keeps its clamp.
@@ -347,7 +347,7 @@ describe('V143: the phone head shares its line, and a check title keeps its noun
   })
   // MUTATION: put `white-space: nowrap` back on the check card title.
   it('lets a check title wrap to two lines', () => {
-    const host = frame('<a class="ov-att"><span class="ov-att-t"><b>2 failed tasks among the 26 most recent</b></span></a>')
+    const host = frame('<a class="ov-att"><span class="ov-att-t"><b>2 failed agents among the 26 most recent</b></span></a>')
     const b = host.querySelector('b')!
     expect(painted(b, 'white-space', PHONE) ?? 'normal').not.toBe('nowrap')
     expect(painted(b, '-webkit-line-clamp', PHONE)).toBe('2')

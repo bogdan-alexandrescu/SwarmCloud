@@ -207,14 +207,14 @@ describe('#90: the overview names the workflow a failure came from', () => {
   /**
    * MUTATION: drop the workflow clause from `failureCheck`'s headline.
    */
-  it('names the workflow behind the failed-task count', async () => {
+  it('names the workflow behind the failed-agent count', async () => {
     const tasks = [
       task({ id: 'tsk_f1', state: 'FAILED', workflow_id: 'wf-nightly', step_id: 'build', updated_at: ago(3), completed_at: ago(3) }),
       task({ id: 'tsk_f2', state: 'FAILED', workflow_id: 'wf-nightly', step_id: 'test', updated_at: ago(4), completed_at: ago(4) }),
       task({ id: 'tsk_f3', state: 'FAILED', updated_at: ago(9), completed_at: ago(9) }),
     ]
     const el = await mount({ loadTasks: page(tasks) })
-    const p = problem(el, /failed task/)
+    const p = problem(el, /failed agent/)
     // Named in the card's second line, under its short title (visual QA Q5).
     expect(text(p.querySelector('.ov-att-ids'))).toMatch(/2 in workflow wf-nightly/)
   })
@@ -285,7 +285,7 @@ describe('#92: the overview’s attention items say which workers are silent and
       task({ id: 'tsk_f2', state: 'FAILED', updated_at: ago(120), completed_at: ago(120) }),
     ]
     const el = await mount({ loadTasks: page(tasks) })
-    expect(text(problem(el, /failed task/).querySelector('.ov-att-ids'))).toMatch(/newest 3m ago/)
+    expect(text(problem(el, /failed agent/).querySelector('.ov-att-ids'))).toMatch(/newest 3m ago/)
   })
 
   /**

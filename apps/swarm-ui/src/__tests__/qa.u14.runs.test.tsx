@@ -276,6 +276,9 @@ describe('4: cost so far sums the steps\' recorded cost with its coverage', () =
     ])
     const { container } = await mount(run(), { [WF]: done })
     await waitFor(() => expect(visible(costFact(container))).toContain('$0.42 · 2 of 4 steps reporting'), WAIT)
+    // VOCAB-AGENTS (QA-109, part of #1680): the source names step agents, the Agents page's word.
+    // MUTATION: put back `the finished step tasks' results` in CostFact (RunSteps.tsx).
+    expect(costFact(container).querySelector('[title]')!.getAttribute('title')).toContain("Summed from the finished step agents' results.")
   })
 
   it('counts a RUNNING step through its attempts, which is how it reports before it finishes', async () => {
@@ -285,6 +288,8 @@ describe('4: cost so far sums the steps\' recorded cost with its coverage', () =
     const { container } = await mount(run(), { [WF]: workflow() })
     await waitFor(() => expect(visible(costFact(container))).toContain('$0.42 · 1 of 4 steps reporting'), WAIT)
     expect(costFact(container).querySelector('[title]')!.getAttribute('title')).toMatch(/attempts/)
+    // MUTATION: put back `the step tasks' attempts` in CostFact (RunSteps.tsx).
+    expect(costFact(container).querySelector('[title]')!.getAttribute('title')).toMatch(/^Summed from the step agents' attempts\./)
   })
 
   it('is a dash with its reason when no step reports, never $0', async () => {

@@ -581,8 +581,10 @@ describe('OV-4, OV-14: the spend figure is a partial sum, and its foot is a run 
     const run = card.querySelector('.ov-foot .ctl-foot-run')
     expect(run, 'the spend foot is not a run of clauses').not.toBeNull()
     const clauses = [...run!.children].map(text)
+    // VOCAB-AGENTS (QA-109, part of #1680): the sample counts agents.
+    // MUTATION: put back `countOf(s.tasksWithAttempts, 'task')` in SpendBody.
     expect(clauses).toEqual([
-      '31 attempts, 12 newest of 40 tasks',
+      '31 attempts, 12 newest of 40 agents',
       '2 unmeasured',
       '1 of 12 reads failed',
       // No age clause: the sum is fresh, and a fresh age is the head's (#98).
@@ -608,7 +610,7 @@ describe('OV-4, OV-14: the spend figure is a partial sum, and its foot is a run 
     })
     const run = el.querySelector('.ov-spend .ov-foot .ctl-foot-run')
     expect(run, 'the spend foot is not a run of clauses').not.toBeNull()
-    expect([...run!.children].map(text)).toEqual(['31 attempts, 12 newest of 40 tasks', 'from 6 min ago', 'updates only on refresh'])
+    expect([...run!.children].map(text)).toEqual(['31 attempts, 12 newest of 40 agents', 'from 6 min ago', 'updates only on refresh'])
   })
 })
 
@@ -901,5 +903,34 @@ describe('OV-10: the failures figure and the failed-agents list count one popula
     const limits = api.loadTasks.mock.calls.map((c) => c[0] as unknown)
     expect(limits.length).toBeGreaterThan(0)
     expect(limits.filter((l) => l !== 200), 'a wide Overview did not ask for the 200-row page').toEqual([])
+  })
+})
+
+describe('VOCAB-AGENTS (QA-109, part of #1680): Running now and Spend name their empty and unread states by agents', () => {
+  const empty = { status: 'empty' as const, fetchedAt: Date.now() }
+  const broken = { status: 'error' as const, error: { kind: 'server_error' as const, httpStatus: 503, code: null, message: 'boom' } }
+
+  it('says "Agent list unread" on Running now, and "Spend unassembled" over the agent list, when the list fails', async () => {
+    const el = await mountWith({ loadTasks: broken, loadSpend: broken })
+    // MUTATION: put back `heading="Task list unread"` in RunningCard.
+    expect(text(el.querySelector('.ov-running .ctl-empty h3'))).toContain('Agent list unread')
+    expect(text(el.querySelector('.ov-spend .ctl-empty h3'))).toContain('Spend unassembled')
+    // MUTATION: put back `the most recent tasks, and the task list itself` in SpendBody.
+    expect(el.querySelector('.ov-spend .ctl-empty .ctl-mark')?.getAttribute('aria-label')).toContain('Spend is summed from the attempts of the most recent agents, and the agent list itself could not be read.')
+  })
+
+  it('says "No agent exists" on both cards for a tenant with no agents', async () => {
+    const el = await mountWith({ loadTasks: empty, loadSpend: empty })
+    // MUTATION: put back `heading="No task exists"` in RunningCard.
+    expect(text(el.querySelector('.ov-running .ctl-empty h3'))).toContain('No agent exists')
+    // MUTATION: put back `heading="No task exists"` in SpendBody.
+    expect(text(el.querySelector('.ov-spend .ctl-empty h3'))).toContain('No agent exists')
+  })
+
+  it('says "No agent has run" on Spend when the agents on the page have no attempt', async () => {
+    const el = await mountWith({ loadSpend: empty })
+    // MUTATION: put back `heading="No task has run"` in SpendBody.
+    expect(text(el.querySelector('.ov-spend .ctl-empty h3'))).toContain('No agent has run')
+    expect(el.querySelector('.ov-spend .ctl-empty .ctl-mark')?.getAttribute('aria-label')).toContain('Every agent on the page has an attempt count of 0')
   })
 })

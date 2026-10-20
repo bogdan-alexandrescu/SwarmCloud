@@ -16,7 +16,7 @@ import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 
 const WIDE: CascadeEnv = { width: 1440 }
-const HEADLINE = '21 failed tasks among the 200 most recent · newest 42m ago · 1 in workflow wf_422ecd715f19465c8283, 1 in wf_618742792c2443a3afaf +6 workflows'
+const HEADLINE = '21 failed agents among the 200 most recent · newest 42m ago · 1 in workflow wf_422ecd715f19465c8283, 1 in wf_618742792c2443a3afaf +6 workflows'
 
 afterEach(() => {
   document.body.innerHTML = ''
@@ -25,7 +25,7 @@ afterEach(() => {
 describe('Q5: a check card is a short title, two lines and a link', () => {
   it('splits the headline at its first clause', () => {
     expect(Overview.splitHeadline(HEADLINE)).toEqual({
-      title: '21 failed tasks among the 200 most recent',
+      title: '21 failed agents among the 200 most recent',
       ids: 'newest 42m ago · 1 in workflow wf_422ecd715f19465c8283, 1 in wf_618742792c2443a3afaf +6 workflows',
     })
     expect(Overview.splitHeadline('2 workers silent past the grace period: tsk_a, tsk_b').title).toBe('2 workers silent past the grace period')
@@ -38,7 +38,7 @@ describe('Q5: a check card is a short title, two lines and a link', () => {
     const p: Problem = { severity: 'bad', n: 21, headline: HEADLINE, detail: 'All still have attempts left and may retry.', href: '#work/running/recent/failed', linkLabel: 'failed agents' }
     const { container } = render(<Overview.CheckCard problem={p} />)
     const b = container.querySelector('.ov-att-t b')!
-    expect(b.textContent).toBe('21 failed tasks among the 200 most recent')
+    expect(b.textContent).toBe('21 failed agents among the 200 most recent')
     expect(b.textContent).not.toMatch(/wf_/)
     const ids = container.querySelector<HTMLElement>('.ov-att-ids')!
     expect(ids.textContent).toMatch(/wf_422ecd715f19465c8283/)

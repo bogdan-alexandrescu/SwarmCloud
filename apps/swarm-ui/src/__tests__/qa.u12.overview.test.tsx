@@ -58,7 +58,7 @@ describe('R12: each width says which window it counts', () => {
   // window to name. MUTATION: put `PHONE_PAGE_LIMIT` back to 50.
   it('names no other window on a phone, because a phone reads the same page', () => {
     const h = failures(inputs(page, true))
-    expect(h).toMatch(/^8 failed tasks among the 50 most recent/)
+    expect(h).toMatch(/^8 failed agents among the 50 most recent/)
     expect(h).not.toContain('a phone reads')
     expect(h).not.toContain('a wider screen')
   })

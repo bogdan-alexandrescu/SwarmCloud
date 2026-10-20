@@ -112,6 +112,10 @@ describe('a complete response', () => {
     expect(fig.textContent).toContain(String(sum))
     expect(fig.className).not.toContain('is-absent')
     expect(fig.querySelector('.ctl-em')).toBeNull()
+    // VOCAB-AGENTS (QA-109, part of #1680): the total counts agents.
+    // MUTATION: put back `>tasks<` as the figure's unit in PlatformCounts.tsx.
+    expect(fig.querySelector('.ctl-figure-unit')?.textContent).toBe('agents')
+    expect(fig.getAttribute('aria-label')).toBe(`${sum} agents across the ${REAL_STATES.length} states that are written.`)
     // And nothing claims the response was partial.
     expect(panel.querySelector('.ctl-mark.is-partial')).toBeNull()
   })

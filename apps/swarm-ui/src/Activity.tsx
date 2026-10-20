@@ -544,7 +544,7 @@ export function ActivityScreen({
           {/* EVERY CARD READS ITS OWN PART, WHEN IT SCROLLS INTO VIEW (#377),
               whether or not the headline has landed: they are separate reads. */}
           <div className="ctl-cards ol-cards">
-            <LedgerPart id="failures" title="Why tasks failed" className="ol-failures" query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[70, 62, 54, 48, 40, 34, 30, 26]}>
+            <LedgerPart id="failures" title="Why agents failed" className="ol-failures" query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[70, 62, 54, 48, 40, 34, 30, 26]}>
               {(d) => <FailureClassesCard data={d} picked={picked} />}
             </LedgerPart>
             <LedgerPart id="retries" title="Retries and attempts" className="ol-retries" query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[60, 72, 66, 58, 50, 56, 64]}>
@@ -594,7 +594,7 @@ export function ActivityScreen({
                 <OpenWorkCard open={open} view={view} tenant={myTenant} now={now} />
               )}
             </div>
-            <LedgerPart id="cancels" title="Why tasks were cancelled" className="ol-cancels" query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[60, 52, 44, 36, 30]}>
+            <LedgerPart id="cancels" title="Why agents were cancelled" className="ol-cancels" query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[60, 52, 44, 36, 30]}>
               {(d) => <CancelCausesCard data={d} picked={picked} />}
             </LedgerPart>
           </div>
@@ -945,16 +945,16 @@ function LedgerSection({
       </p>
       {orphans === null ? (
         <p className="ctl-panel-note">
-          <Mark kind="unread" say="The count of terminal tasks with no completed_at could not be read." /> terminal tasks
+          <Mark kind="unread" say="The count of terminal agents with no completed_at could not be read." /> terminal agents
           without completed_at: not read
         </p>
       ) : orphans > 0 ? (
         <p
           className="ctl-panel-note"
-          aria-label={`${orphans} terminal tasks carry no completed_at. Every writer that moves a task terminal sets it, so this is a data bug; these tasks cannot be placed on this axis and are in no bucket.`}
+          aria-label={`${orphans} terminal agents carry no completed_at. Every writer that moves an agent terminal sets it, so this is a data bug; these agents cannot be placed on this axis and are in no bucket.`}
         >
-          <Mark kind="partial" say={`${orphans} terminal tasks carry no completed_at and are on no bucket.`} /> {orphans}{' '}
-          finished tasks carry no end time
+          <Mark kind="partial" say={`${orphans} terminal agents carry no completed_at and are on no bucket.`} /> {orphans}{' '}
+          finished agents carry no end time
           <a href={helpHref('outcome-buckets')}>Why &rarr;</a>
         </p>
       ) : null}
@@ -1064,7 +1064,7 @@ function Provenance({ data }: { data: Outcomes }) {
     cacheable(data) ? `cached ${OUTCOMES_CACHE_S} s` : 'not cached: partial, the next read continues the build',
     `generated ${generated}`,
     c.derived_now > 0 ? built : null,
-    c.reopened > 0 ? `${c.reopened} re-ended tasks counted once` : null,
+    c.reopened > 0 ? `${c.reopened} re-ended agents counted once` : null,
   ]
   return (
     <p className="ol-prov ctl-foot-run">

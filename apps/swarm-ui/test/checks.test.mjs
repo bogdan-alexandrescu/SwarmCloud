@@ -380,14 +380,43 @@ test('a PARKED task with no park_reason at all is reported', () => {
   assert.match(checkNamed(checks, 'Parked work').problems[0].detail, /no reason recorded/)
 })
 
-test('a standalone parked task is called a task, not a workflow step', () => {
+test('a standalone parked agent is called an agent, not a workflow step', () => {
   const checks = deriveChecks(
     inputs({
       tasks: ok(taskPage([task({ state: 'PARKED', parkReason: 'MANUAL_PAUSE', workflowId: null })])),
     }),
     NOW,
   )
-  assert.match(checkNamed(checks, 'Parked work').problems[0].headline, /1 parked task /)
+  assert.match(checkNamed(checks, 'Parked work').problems[0].headline, /1 parked agent /)
+})
+
+/**
+ * VOCAB-AGENTS (QA-109, part of #1680; owner decision 2026-10-20): the checks
+ * count agents, the word the Agents page they link to uses, never tasks --
+ * one agent, N agents.
+ */
+test('VOCAB-AGENTS: the failures and parked checks count agents, singular and plural', () => {
+  const one = checkNamed(
+    deriveChecks(inputs({ tasks: ok(taskPage([task({ state: 'FAILED' })])) }), NOW),
+    'Failures',
+  ).problems[0]
+  // MUTATION: put back `failed task${...}` in failedProblem's headline.
+  assert.match(one.headline, /^1 failed agent among/)
+  const two = checkNamed(
+    deriveChecks(
+      inputs({
+        tasks: ok(taskPage([
+          task({ state: 'PARKED', parkReason: 'MANUAL_PAUSE', workflowId: null }),
+          task({ state: 'PARKED', parkReason: 'MANUAL_PAUSE', workflowId: null }),
+        ])),
+      }),
+      NOW,
+    ),
+    'Parked work',
+  ).problems[0]
+  // MUTATION: put back `'task' : 'tasks'` in unitFor.
+  assert.match(two.headline, /^2 parked agents /)
+  assert.doesNotMatch(`${one.headline} ${two.headline}`, /\btasks?\b/)
 })
 
 // --------------------------------------------------------------------------
@@ -630,7 +659,7 @@ test('OV-2: a phone page with no failure on it still finds the 11 the FAILED rea
   assert.equal(check.status, 'found')
   const [p] = check.problems
   assert.equal(p.n, 11)
-  assert.match(p.headline, /^11 failed tasks in the last 24 hours/)
+  assert.match(p.headline, /^11 failed agents in the last 24 hours/)
   // Every FAILED task was read, so the figure is not a lower bound.
   assert.doesNotMatch(p.headline, /≥/)
 })
@@ -640,8 +669,8 @@ test('OV-2: a FAILED read with more behind it is ≥N, and says how far back it 
   const page = phonePage()
   page.byState[0].complete = false
   const [p] = checkNamed(deriveChecks(inputs({ tasks: ok(page) }), NOW), 'Failures').problems
-  assert.match(p.headline, /^≥11 failed tasks in the last 24 hours/)
-  assert.match(p.headline, /FAILED tasks created since \d\d:\d\d UTC read/)
+  assert.match(p.headline, /^≥11 failed agents in the last 24 hours/)
+  assert.match(p.headline, /FAILED agents created since \d\d:\d\d UTC read/)
 })
 
 /**

@@ -509,7 +509,7 @@ function failureCheck(tasks: Result<OverviewTaskPage>, stats: Result<Stats>, now
   if (tasks.status === 'loading') return { label, status: 'reading' }
   if (tasks.status === 'error') return { label, status: 'blind', ...blindness(tasks.error) }
   if (tasks.status === 'empty') {
-    return { label, status: 'clear', note: 'no task has ever been submitted' }
+    return { label, status: 'clear', note: 'no agent has ever been submitted' }
   }
 
   const rows = tasks.data.tasks
@@ -521,9 +521,9 @@ function failureCheck(tasks: Result<OverviewTaskPage>, stats: Result<Stats>, now
     const view = stateView(tasks.data, ['FAILED'])
     const failed = newestEndedFirst(view.rows.filter((t) => endedWithin(t, now, DAY_MS)))
     const whole = view.whole('FAILED')
-    const reach = whole ? 'every FAILED task read' : `FAILED tasks created since ${hhmmUtc(view.since ?? '')} read`
+    const reach = whole ? 'every FAILED agent read' : `FAILED agents created since ${hhmmUtc(view.since ?? '')} read`
     if (failed.length === 0) {
-      return { label, status: 'clear', note: `no task FAILED in the last 24 hours · ${reach}` }
+      return { label, status: 'clear', note: `no agent FAILED in the last 24 hours · ${reach}` }
     }
     return { label, status: 'found', problems: [failedProblem(failed, now, `${whole ? '' : '≥'}${failed.length}`, ` in the last 24 hours${whole ? '' : ` · ${reach}`}`)] }
   }
@@ -543,16 +543,16 @@ function failureCheck(tasks: Result<OverviewTaskPage>, stats: Result<Stats>, now
           admin: false,
           why:
             typeof counted === 'number'
-              ? `None of the ${rows.length} most recently created tasks is FAILED, but the state counts say ${counted} FAILED in all and the read of FAILED tasks did not land, so whether any failed recently is not established.`
-              : `None of the ${rows.length} most recently created tasks is FAILED, but more tasks exist beyond them and neither the read of FAILED tasks nor the state counts landed, so whether any failed recently is not established.`,
+              ? `None of the ${rows.length} most recently created agents is FAILED, but the state counts say ${counted} FAILED in all and the read of FAILED agents did not land, so whether any failed recently is not established.`
+              : `None of the ${rows.length} most recently created agents is FAILED, but more agents exist beyond them and neither the read of FAILED agents nor the state counts landed, so whether any failed recently is not established.`,
         }
       }
-      return { label, status: 'clear', note: `the state counts say no task has ever FAILED${widths}` }
+      return { label, status: 'clear', note: `the state counts say no agent has ever FAILED${widths}` }
     }
     return {
       label,
       status: 'clear',
-      note: `none of the ${rows.length} most recently created tasks is FAILED${widths}`,
+      note: `none of the ${rows.length} most recently created agents is FAILED${widths}`,
     }
   }
 
@@ -579,7 +579,7 @@ function failedProblem(failed: Task[], now: number, count: string, scope: string
     // here, in this item, rather than in a second item restating the same
     // failures in another voice.
     headline:
-      `${count} failed task${failed.length === 1 ? '' : 's'}${scope}` +
+      `${count} failed agent${failed.length === 1 ? '' : 's'}${scope}` +
       newestFailureClause(failed, now) +
       workflowClause(failed) +
       widths,
@@ -1011,7 +1011,7 @@ function parkedCheck(tasks: Result<TaskPage>, now: number): Check {
   if (tasks.status === 'loading') return { label, status: 'reading' }
   if (tasks.status === 'error') return { label, status: 'blind', ...blindness(tasks.error) }
   if (tasks.status === 'empty') {
-    return { label, status: 'clear', note: 'no task has ever been submitted' }
+    return { label, status: 'clear', note: 'no agent has ever been submitted' }
   }
 
   const rows = tasks.data.tasks
@@ -1020,7 +1020,7 @@ function parkedCheck(tasks: Result<TaskPage>, now: number): Check {
     return {
       label,
       status: 'clear',
-      note: `none of the ${rows.length} most recently created tasks is parked`,
+      note: `none of the ${rows.length} most recently created agents is parked`,
     }
   }
 
@@ -1064,7 +1064,7 @@ function parkedCheck(tasks: Result<TaskPage>, now: number): Check {
       severity: 'warn',
       n: unclassified.length,
       headline: `${unclassified.length} parked ${unitFor(unclassified)} with no reason this build understands`,
-      detail: `${whyEach(unclassified)}. Either the platform grew a park reason newer than this bundle, or the task was parked without one recorded. Whether it will resume by itself is unknown.`,
+      detail: `${whyEach(unclassified)}. Either the platform grew a park reason newer than this bundle, or the agent was parked without one recorded. Whether it will resume by itself is unknown.`,
       href: '#work/running/waiting',
       linkLabel: 'waiting agents',
     })
@@ -1079,7 +1079,7 @@ function parkedCheck(tasks: Result<TaskPage>, now: number): Check {
 }
 
 /**
- * "workflow step" or "task", because a parked task need not belong to a
+ * "workflow step" or "agent", because a parked agent need not belong to a
  * workflow and calling a standalone agent a step is a lie the reader will chase.
  */
 function unitFor(rows: Task[]): string {
@@ -1087,7 +1087,7 @@ function unitFor(rows: Task[]): string {
   if (steps === rows.length && rows.length > 0) {
     return rows.length === 1 ? 'workflow step' : 'workflow steps'
   }
-  return rows.length === 1 ? 'task' : 'tasks'
+  return rows.length === 1 ? 'agent' : 'agents'
 }
 
 /** "PROVIDER_QUOTA_EXHAUSTED ×2 — The provider quota is spent...". */

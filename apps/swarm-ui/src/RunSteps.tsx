@@ -607,10 +607,10 @@ export function CostFact({ read, ended = false }: { read: RunWorkflows; ended?: 
     } else {
       absent = false
       const source = fromResult === 0
-        ? 'Summed from the step tasks\' attempts.'
+        ? 'Summed from the step agents\' attempts.'
         : fromResult === covered
-          ? 'Summed from the finished step tasks\' results.'
-          : `Summed from the step tasks' attempts; ${fromResult} of ${covered} from a finished task's result.`
+          ? 'Summed from the finished step agents\' results.'
+          : `Summed from the step agents' attempts; ${fromResult} of ${covered} from a finished agent's result.`
       body = (
         <span title={`${source}${attempts}${gap}`}>
           {usd(total)} · {covered} of {steps} {steps === 1 ? 'step' : 'steps'} reporting

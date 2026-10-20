@@ -577,7 +577,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Token counts come from the runner, through the worker, and only the CLI runners produce them. An attempt from any other runner carries none.',
       'Attempts that ran before the worker’s token capture shipped also carry none, so the absence is common on older runs and says nothing about them.',
       'Where a total exists, the caption names how many attempts of the run contributed to it, and which halves — input, output, or both — are in it.',
-      'The Timeline’s Reported cost sums the cost each attempt reported, every attempt of every task, and places it in the bucket where the task ended, so the cost of work still running appears once that work ends. A sum over fewer attempts than ran carries the partial mark and says how many reported. It is the runners’ own report and not a bill: no compute, storage or database cost is in it.',
+      'The Timeline’s Reported cost sums the cost each attempt reported, every attempt of every agent, and places it in the bucket where the agent ended, so the cost of work still running appears once that work ends. A sum over fewer attempts than ran carries the partial mark and says how many reported. It is the runners’ own report and not a bill: no compute, storage or database cost is in it.',
     ],
   },
 
@@ -1506,15 +1506,15 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'The Timeline screen asks the API for a real span, from a day to ninety days or a chosen range, and the server buckets it in the viewer’s time zone, choosing the bucket size unless one is picked. Every bucket from the start of the span to now is drawn, the empty ones included: tasks are never deleted, so an empty bucket is a measured zero, drawn as the tick at the axis rather than as a missing column.',
       'Every outcome is placed by the time its task ended. The throughput lane is the one exception: its submitted line is placed by the time each task was created, and its label says so. Work that has not ended has no end time, so it is on no bucket at all; it is counted live, without the span, in the card for work not finished yet.',
       'A bucket is sealed a quarter of an hour after it ends, once nothing more can land in it. Until then it is open: the current bucket reads so far and carries a dashed right edge, and a bucket that has only just ended reads as settling.',
-      'A bucket the server could not read within its budget, or at all, is not read: a hatched band across every lane with no number in it, left out of every total, which then carries the partial mark. Reading again continues where the last read stopped. A task that ended with no end time recorded cannot be placed on the axis, and the chart says how many such tasks exist.',
+      'A bucket the server could not read within its budget, or at all, is not read: a hatched band across every lane with no number in it, left out of every total, which then carries the partial mark. Reading again continues where the last read stopped. An agent that ended with no end time recorded cannot be placed on the axis, and the chart says how many such agents exist.',
     ],
   },
 
   'failure-classes': {
     group: 'reading-a-figure',
-    title: 'Why a task failed, by class',
+    title: 'Why an agent failed, by class',
     short:
-      'Each failed or dead-lettered task gets one class: from the cause the component that ended it recorded, and, for a task that ended before causes were recorded, from its final attempt’s exit and the words of its last error. Other and no reason recorded are always drawn, because an unmatched failure is still a failure.',
+      'Each failed or dead-lettered agent gets one class: from the cause the component that ended it recorded, and, for an agent that ended before causes were recorded, from its final attempt’s exit and the words of its last error. Other and no reason recorded are always drawn, because an unmatched failure is still a failure.',
     long: [
       'The classes come in a fixed order that no filter re-ranks: runner error, timeout, lost worker, could not start, inputs unavailable, outputs missing, dispatch failed, other, and no reason recorded. They separate a failure of the platform (a lost worker, a task that could not start, a dispatch that failed) from the agent’s own work (a runner error, outputs missing), from what the agent was given (inputs unavailable: a file a step was promised by the step before it, which the worker would not stage, so the agent never started) and from its budget (a timeout).',
       'Since 25 September 2026 every component that ends a task records why, on the task: the worker, the reconciler, the scheduler and a cancel. The API reads that cause first and nothing else. A task that ended before then carries none, and its class comes from its final attempt: the exit that means the worker could not start is read first, and then the last error is matched against the exact words each writer uses. Those words are pinned by tests against their writers, so a reworded message fails a test instead of silently moving counts into other.',
@@ -1775,7 +1775,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'failure-classes': {
     subject: 'Failure classes',
-    act: { say: 'Open a failed task to read its recorded cause; an unmatched class still counts as a failure.', at: 'work/running' },
+    act: { say: 'Open a failed agent to read its recorded cause; an unmatched class still counts as a failure.', at: 'work/running' },
   },
   'withheld-total': {
     subject: 'A withheld total',

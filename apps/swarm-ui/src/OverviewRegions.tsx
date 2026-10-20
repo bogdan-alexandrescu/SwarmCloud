@@ -205,7 +205,7 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
           read.status === 'loading'
             ? 'still reading'
             : read.status === 'error'
-              ? `${c.source === 'stats' ? 'the state counts' : 'the task list'} could not be read: ${read.error.message}`
+              ? `${c.source === 'stats' ? 'the state counts' : 'the agent list'} could not be read: ${read.error.message}`
               : !landed
                 ? 'nothing was returned to count'
                 : 'a state the count did not report is not a zero'
@@ -223,17 +223,17 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
                   : c.source === 'stats'
                     ? 'Counted by /v1/stats, one count per state, for the whole tenant.'
                     : partial
-                      ? `At least ${total}: counted off the ${page?.length ?? 0} newest tasks this page read${since === '' ? '' : `, which reach back to tasks created at ${hhmmUtc(finished?.since ?? '')}`}, and older tasks that finished today are not on it.`
+                      ? `At least ${total}: counted off the ${page?.length ?? 0} newest agents this page read${since === '' ? '' : `, which reach back to agents created at ${hhmmUtc(finished?.since ?? '')}`}, and older agents that finished today are not on it.`
                       : page?.length === 0
-                        ? 'The task list was read and holds no task, so nothing has finished today.'
-                        : `Counted off the ${page?.length ?? 0} newest tasks this page read, which is every task.`
+                        ? 'The agent list was read and holds no agent, so nothing has finished today.'
+                        : `Counted off the ${page?.length ?? 0} newest agents this page read, which is every agent.`
               }
             >
               {total !== null ? (
                 partial ? (
                   <>
                     &ge;{total}{' '}
-                    <Mark kind="partial" say={`At least ${total}: older tasks that finished today are not on the page read.`} />
+                    <Mark kind="partial" say={`At least ${total}: older agents that finished today are not on the page read.`} />
                   </>
                 ) : (
                   total
@@ -269,7 +269,7 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
                 so the two figures differ, and this is what says why. */}
             {c.source === 'page' && page !== null && (
               <span className="ov-lc-foot is-page">
-                {page.length === 0 ? 'no task exists' : `of the ${page.length} newest read${since}`}
+                {page.length === 0 ? 'no agent exists' : `of the ${page.length} newest read${since}`}
               </span>
             )}
           </div>
@@ -377,7 +377,7 @@ export function TaskListAbsent({ tasks }: { tasks: Result<TaskPage> }) {
       <Absent
         className="ov-empty"
         kind={b.admin ? 'admin' : 'failed'}
-        heading="Task list unread"
+        heading="Agent list unread"
         say={`${b.why} This card is blind; it is not reporting that nothing is here.`}
       >
         {readWhy(b)}
@@ -388,7 +388,7 @@ export function TaskListAbsent({ tasks }: { tasks: Result<TaskPage> }) {
     <Absent
       className="ov-empty"
       kind="zero"
-      heading="No task exists"
+      heading="No agent exists"
       say="The read succeeded and returned nothing."
     />
   )
@@ -401,7 +401,7 @@ function NoneAmong({ heading, n }: { heading: string; n: number }) {
       className="ov-empty"
       kind="zero"
       heading={heading}
-      say={`The task read succeeded and none of the ${n} newest tasks is one of these.`}
+      say={`The agent read succeeded and none of the ${n} newest agents is one of these.`}
     />
   )
 }
@@ -478,7 +478,7 @@ export function failuresOf(
     `${n('DEAD_LETTERED')} dead-lettered`,
     ...(dated.some((t) => t.state === 'CANCELLED') || !cover.whole('CANCELLED') ? [`${n('CANCELLED')} cancelled`] : []),
     ...(undated.length > 0 ? [`${undated.length} with no recorded end`] : []),
-    ...(partial ? [cover.since === null ? 'partial: not every task was read' : `partial: tasks created since ${hhmmUtc(cover.since)} read`] : []),
+    ...(partial ? [cover.since === null ? 'partial: not every agent was read' : `partial: agents created since ${hhmmUtc(cover.since)} read`] : []),
   ].join(' · ')
   return { rows: [...dated, ...undated], note, partial }
 }
@@ -494,7 +494,7 @@ export function failuresOf(
 function EndedAgo({ task: t, now }: { task: Task; now: number }) {
   const at = clockTime(t.completed_at, now)
   if (t.completed_at === null || at === null) {
-    return <Dash why={`No end time was recorded for this task; its document was last written ${timeAgo(t.updated_at, now)}, which is not when it ended.`} />
+    return <Dash why={`No end time was recorded for this agent; its document was last written ${timeAgo(t.updated_at, now)}, which is not when it ended.`} />
   }
   // THE INSTANT UNDER THE AGE (#503): "25m ago" is what a reader scans for,
   // and the time it ended -- `clockTime`'s ISO UTC, the hover every other
@@ -526,7 +526,7 @@ export function RecentFailures({ tasks }: { tasks: Result<OverviewTaskPage> }) {
           className="ov-empty"
           kind="partial"
           heading={`None among the ${all.length} newest read`}
-          say={`No failed, dead-lettered or cancelled task among the rows read, but the reads did not reach every such task${view?.since ? ` (only tasks created since ${hhmmUtc(view.since)})` : ''}. Not a zero: unknown beyond what was read.`}
+          say={`No failed, dead-lettered or cancelled agent among the rows read, but the reads did not reach every such agent${view?.since ? ` (only agents created since ${hhmmUtc(view.since)})` : ''}. Not a zero: unknown beyond what was read.`}
         />
       )
     }
