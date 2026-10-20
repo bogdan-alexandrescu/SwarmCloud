@@ -6511,6 +6511,10 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 /* The checkpoint prefix is a path with no spaces in it, and it overflowed the
    drawer at every width. A path has nowhere to break but anywhere (AG-26). */
 .drawer code { overflow-wrap: anywhere; }
+/* ...but at its slashes first (QA-088): `PathText` in RunFiles.tsx draws each
+   segment of a path as one of these, so a line breaks between segments and
+   only a segment wider than the line breaks inside itself. */
+.path-seg { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
 
 /* -------------------------------------------------------------------------- */
 /* Dispatch: choosing how work gets merged, and reading back what was chosen    */
