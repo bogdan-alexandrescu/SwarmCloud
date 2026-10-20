@@ -44,6 +44,7 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 const { AgentDetailScreen } = await import('../AgentDetail')
+const { LogLastLine } = await import('../AgentLogs')
 const { AttemptTimelineScreen } = await import('../AttemptTimeline')
 const { StartupProgress } = await import('../StartupProgress')
 
@@ -80,7 +81,7 @@ function failed(over: Partial<Task> = {}): Task {
   })
 }
 
-async function details(t: Task): Promise<HTMLElement> {
+async function details(t: Task, withLastLine = false): Promise<HTMLElement> {
   const run: AgentRun = {
     task: t,
     events: [],
@@ -92,7 +93,8 @@ async function details(t: Task): Promise<HTMLElement> {
     classesRouteMissing: false,
   }
   api.loadAgentRun.mockResolvedValue(ok(run))
-  const { container } = render(<AgentDetailScreen taskId={t.id} onClose={() => {}} />)
+  const lastLine = withLastLine ? <LogLastLine task={t} onOpen={() => {}} /> : undefined
+  const { container } = render(<AgentDetailScreen taskId={t.id} onClose={() => {}} lastLine={lastLine} />)
   await waitFor(() => expect(container.querySelector('.dt-card[data-lead="failed"]')).not.toBeNull())
   return container as HTMLElement
 }
@@ -116,6 +118,15 @@ describe('QA-115: the Failed card on a task’s Details', () => {
     expect(card.textContent).not.toMatch(/end cause — not recorded/)
     // MUTATION: drop the pointer to the error -- the absence says nothing again.
     expect(within(card).getByText('no end cause recorded · the error below is what it wrote')).toBeTruthy()
+  })
+
+  it('labels the log preview under the error as not the error (owner 2026-10-20)', async () => {
+    const el = await details(failed(), true)
+    const card = el.querySelector<HTMLElement>('.dt-card[data-lead="failed"]')!
+    const line = within(card).getByRole('button', { name: /^Last log line/ })
+    // MUTATION: drop the FAILED label in `LogLastLine` -- `Last log line:
+    // result ## Summary` under the error reads as its cause.
+    expect(line.querySelector('b')!.textContent).toBe('Last log line (not the error)')
   })
 
   it('says so when neither an end cause nor an error was written', async () => {

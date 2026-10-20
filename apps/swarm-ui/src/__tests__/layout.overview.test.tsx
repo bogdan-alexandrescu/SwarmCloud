@@ -39,6 +39,7 @@ import type { Result } from '../fetch'
 import { pathToAddress } from '../paths'
 import type { SpendRollup } from '../api'
 import { elapsed, type Account, type AccountsPage, type Capacity, type Stats, type Task, type TaskPage } from '../types'
+import { painted } from './marks'
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
@@ -651,6 +652,26 @@ describe('OV-9: while the checks read, the lead says so and draws no figure', ()
     expect(text(lead.querySelector('.ov-cnt'))).toMatch(/· 1 blind$/)
     // Nothing else is open, so the all-clear is a PARTIAL one, named so.
     expect(text(lead.querySelector('.ctl-empty h3'))).toMatch(/1 not checked/)
+  })
+
+  /**
+   * THE SQUARED DASHED SIDE IS THE ACCOUNTS SECTION'S, NOT EVERY SCREEN'S
+   * (QA-049, the owner's choice of 2026-10-20). Off Accounts and Provider
+   * quota, the partial mark keeps the rounded corners it had before
+   * QAFIX-CAPACITY squared them in the shared rule.
+   */
+  it('draws the lead\'s partial mark with its original rounded corners', async () => {
+    const el = await mountWith({
+      loadStats: { status: 'error', error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' } },
+      loadAccountPool: ok(accountsPage([reading('fine', 0.1)])),
+    })
+    const mark = el.querySelector('#ov-needs')!.querySelector<HTMLElement>('.ctl-mark.is-partial')!
+    expect(painted(mark, 'border-right-style', { width: 1440 })).toBe('dashed')
+    for (const corner of ['border-top-right-radius', 'border-bottom-right-radius']) {
+      // MUTATION: square the corners in the shared `.ctl-mark.is-partial` rule
+      // again -- every partial mark on every screen loses its rounded side.
+      expect(painted(mark, [corner, 'border-radius'], { width: 1440 }), corner).toBe('var(--ctl-radius-sm)')
+    }
   })
 
   /**

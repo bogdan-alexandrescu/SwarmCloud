@@ -3,7 +3,8 @@
 // the finding was about -- the rule the cascade picks for the rendered mark,
 // the accessible name, the words on the row -- not the markup's shape.
 //
-//   QA-049  The `partial` mark's dashed right edge is square, not a broken curve.
+//   QA-049  The `partial` mark's dashed right edge is square, not a broken curve,
+//           on Accounts and Provider quota only (owner 2026-10-20).
 //   QA-050  At 390 the Add button gives way, not the `6 accounts` count.
 //   QA-051  A reset binding window reads `cleared · 5h`, never `clears cleared`.
 
@@ -91,13 +92,28 @@ describe('QA-049: the partial mark draws its dashed edge straight', () => {
     expect(mark.textContent).toBe('partial')
     expect(painted(mark, 'border-right-style', WIDE)).toBe('dashed')
     // MUTATION: drop `border-top-right-radius: 0` / `border-bottom-right-radius: 0`
-    // from `.ctl-mark.is-partial` -- the dashes run round the mark's rounded
+    // from `.acct-page .ctl-mark.is-partial` (styles/capacity.css), or the
+    // `acct-page` wrapper in Accounts.tsx -- the dashes run round the mark's rounded
     // corner again and the edge reads as clipped. Both corners fail.
     expect(painted(mark, ['border-top-right-radius', 'border-radius'], WIDE)).toBe('0')
     expect(painted(mark, ['border-bottom-right-radius', 'border-radius'], WIDE)).toBe('0')
     // MUTATION: set `border-radius: 0` on the whole mark instead -- the solid
     // side loses the radius every other mark has.
     expect(painted(mark, ['border-top-left-radius', 'border-radius'], WIDE)).toBe('var(--ctl-radius-sm)')
+  })
+})
+
+describe('QA-049, scoped to Accounts (owner 2026-10-20): the account\'s own partial mark is squared too', () => {
+  it('squares the dashed side of the `partial` beside a stale reading on the chosen account', async () => {
+    await mount([account({ stale: true, observed_at: new Date(Date.now() - 3 * 86_400_000).toISOString() })])
+    const marks = [...document.querySelectorAll<HTMLElement>('.acct-split .ctl-mark.is-partial')]
+    expect(marks.length, 'no partial mark on the stale account').toBeGreaterThan(0)
+    for (const mark of marks) {
+      // MUTATION: scope the squared rule to the `unread docs` fact alone --
+      // the account's own mark, on the same page, keeps the broken curve.
+      expect(painted(mark, ['border-top-right-radius', 'border-radius'], WIDE)).toBe('0')
+      expect(painted(mark, ['border-bottom-right-radius', 'border-radius'], WIDE)).toBe('0')
+    }
   })
 })
 

@@ -401,6 +401,30 @@ describe('output missing between two reads', () => {
   })
 })
 
+describe('On a failed task the last log line says it is not the error (QA-115 follow-up, owner 2026-10-20)', () => {
+  // The Failed card's preview read `Last log line: result ## Summary` under
+  // the error, as if it were the cause. Only a FAILED task is relabelled.
+  const name = () => screen.getByRole('button', { name: /^Last log line/ }).querySelector('b')!.textContent
+
+  it('labels the line "Last log line (not the error)" when the task failed', async () => {
+    api.loadTranscript.mockResolvedValue(ok(transcript([step(1, { text: 'result ## Summary' })])))
+    render(<LogLastLine task={running({ state: 'FAILED', completed_at: '2026-10-20T03:10:00Z' })} onOpen={() => {}} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Last log line/ }).textContent).toContain('Summary'))
+    // MUTATION: drop the FAILED branch in `LogLastLine` -- the line reads as the cause again.
+    expect(name()).toBe('Last log line (not the error)')
+  })
+
+  it('keeps "Last log line" on every task that did not fail', async () => {
+    api.loadTranscript.mockResolvedValue(ok(transcript([step(1, { text: 'the newest line' })])))
+    for (const state of ['RUNNING', 'SUCCEEDED', 'CANCELLED'] as const) {
+      const { unmount } = render(<LogLastLine task={running({ state })} onOpen={() => {}} />)
+      // MUTATION: relabel every terminal state, or every state -- a live line is not "not the error".
+      expect(name(), state).toBe('Last log line')
+      unmount()
+    }
+  })
+})
+
 describe('Details carries the newest log line, and it opens the Logs tab', () => {
   it('draws the newest line of the default stream and switches to the tab on a click', async () => {
     api.loadTranscript.mockResolvedValue(ok(transcript([step(1, { text: 'first' }), step(2, { text: 'the newest line' })])))
