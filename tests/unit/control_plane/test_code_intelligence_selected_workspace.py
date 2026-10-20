@@ -38,7 +38,7 @@ def test_what_the_console_writes_it_reads_back(client, db, seeded):
     assert put.json()["jev"] is True and put.json()["can_edit"] is True
     again = client.get("/v1/code-intelligence", headers=auth_header("alice"))
     assert again.json()["jev"] is True
-    assert again.json()["updated_by"] == "root@saga.xyz"
+    assert again.json()["updated_by"] == "root@example.com"
 
 
 def _api_routes(routes):

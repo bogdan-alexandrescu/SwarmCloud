@@ -1,4 +1,4 @@
-# decision-api: the ONE way out of this cluster onto Saga's Tailscale tailnet,
+# decision-api: the ONE way out of this cluster onto the internal Tailscale tailnet,
 # and the one place it leads -- the decision API Jev's internal judgment
 # backends call (owner decisions 2026-10-14; lane JUDGE-NET;
 # docs/runbooks/tailscale-egress.md).

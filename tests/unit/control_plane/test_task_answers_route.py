@@ -39,7 +39,7 @@ from .conftest import auth_header, seed_task, seed_tenant
 
 BUCKET = "swarm-artifacts-saga-agents-staging"
 TASK = "task_q"
-OWNER = "alice@saga.xyz"
+OWNER = "alice@example.com"
 
 
 def _key(name: str, *, tenant: str, task: str, attempt: str = "att_1") -> str:
@@ -184,17 +184,17 @@ def test_a_task_that_asked_none_takes_no_answer(client, db, objects) -> None:
 
 def test_an_admin_of_the_tenant_may_answer(client, db, objects) -> None:
     """`root` is an admin and a member of eng; the task is dana's."""
-    _asked(db, objects, by="dana@saga.xyz")
+    _asked(db, objects, by="dana@example.com")
 
     response = _answer(client, {"question_index": 0, "choice": "per task"}, user="root")
 
     assert response.status_code == 200, response.text
-    assert _stored(db)[0]["by"] == "root@saga.xyz"
+    assert _stored(db)[0]["by"] == "root@example.com"
 
 
 def test_another_member_of_the_tenant_may_not_answer(client, db, objects) -> None:
     """`alice` is in eng but did not submit dana's task and is not an admin."""
-    _asked(db, objects, by="dana@saga.xyz")
+    _asked(db, objects, by="dana@example.com")
 
     response = _answer(client, {"question_index": 0, "choice": "per task"})
 
@@ -204,7 +204,7 @@ def test_another_member_of_the_tenant_may_not_answer(client, db, objects) -> Non
     read = client.get(f"/v1/tasks/{TASK}/questions", headers=auth_header("alice")).json()
     assert read["status"] == "ok"
     assert read["may_answer"] is False
-    assert "dana@saga.xyz" in read["may_answer_because"]
+    assert "dana@example.com" in read["may_answer_because"]
 
 
 def test_another_tenants_task_is_a_404(client, db, objects) -> None:
@@ -222,7 +222,7 @@ def test_another_tenants_task_is_a_404(client, db, objects) -> None:
 # -- 3. one answer per question, re-answering audited ---------------------------
 
 def test_re_answering_replaces_the_answer_and_keeps_the_replaced_one(client, db, objects) -> None:
-    _asked(db, objects, by="dana@saga.xyz")
+    _asked(db, objects, by="dana@example.com")
     assert _answer(client, {"question_index": 0, "choice": "per task"}, user="root").status_code == 200
     assert _answer(client, {"question_index": 1, "choice": "drop"}, user="root").status_code == 200
 
@@ -237,7 +237,7 @@ def test_re_answering_replaces_the_answer_and_keeps_the_replaced_one(client, db,
     assert len(first["history"]) == 1
     replaced = first["history"][0]
     assert replaced["choice"] == "per task"
-    assert replaced["by"] == "root@saga.xyz"
+    assert replaced["by"] == "root@example.com"
     assert replaced["at"]
     # The other question's answer is untouched.
     assert next(e for e in stored if e["question_index"] == 1)["choice"] == "drop"
@@ -383,7 +383,7 @@ def test_a_via_that_is_neither_console_nor_claude_code_is_a_422(client, db, obje
 def test_via_claude_code_does_not_let_another_member_answer(client, db, objects) -> None:
     """`alice` is in eng but did not submit dana's task: saying the answer came
     from Claude Code changes nothing about who may give it."""
-    _asked(db, objects, by="dana@saga.xyz")
+    _asked(db, objects, by="dana@example.com")
 
     for via in ("claude-code", "console"):
         response = _answer(client, {

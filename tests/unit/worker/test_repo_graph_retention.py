@@ -43,7 +43,7 @@ from test_repo_graph_shards import (  # noqa: F401 - `shards` is a fixture
     shards,
 )
 
-OTHER_REPO = "gh-saga-xyz-other"
+OTHER_REPO = "gh-example-org-other"
 
 
 def _sha(word: str) -> str:

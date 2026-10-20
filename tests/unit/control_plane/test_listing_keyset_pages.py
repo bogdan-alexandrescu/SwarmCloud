@@ -169,7 +169,7 @@ def _seed_workflow(db, workflow_id: str, created_at: datetime, tenant: str = "en
         created_at=created_at,
         updated_at=created_at,
         state=TaskState.SUCCEEDED,
-        submitted_by="alice@saga.xyz",
+        submitted_by="alice@example.com",
         steps=[WorkflowStep(step_id="a", runner_profile="mock", input={}, depends_on=[],
                             task_id=task_id)],
     )

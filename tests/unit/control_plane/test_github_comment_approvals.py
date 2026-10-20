@@ -57,7 +57,7 @@ from .test_issue_runs import FULL_PLAN, _docs
 from .test_schedule_tick import seed_schedule
 
 SCHEDULE = "sch_000000000001"
-GH_ID = {"alice@saga.xyz": 1001, "dave@saga.xyz": 1004, "carol@saga.xyz": 1003, OWNER: 1000}
+GH_ID = {"alice@example.com": 1001, "dave@example.com": 1004, "carol@example.com": 1003, OWNER: 1000}
 
 
 # --------------------------------------------------------------------------
@@ -117,8 +117,8 @@ def _audit(db) -> list[dict]:
 def eng(db):
     seed_tenant(db, "eng")
     seed_schedule(db)
-    _connect(db, "alice@saga.xyz", "alice-gh")
-    _connect(db, "dave@saga.xyz", "Dave-GH")
+    _connect(db, "alice@example.com", "alice-gh")
+    _connect(db, "dave@example.com", "Dave-GH")
     _connect(db, OWNER, "root-gh")
 
 
@@ -165,14 +165,14 @@ def test_a_verified_members_comment_approves_the_plan_once_and_the_audit_says_ho
 
     assert counts["approved"] == 1, counts
     assert _state(db, run["id"]) == "RUNNING"
-    assert db.docs[f"issue_runs/{run['id']}"]["approved_by"] == "dave@saga.xyz"
+    assert db.docs[f"issue_runs/{run['id']}"]["approved_by"] == "dave@example.com"
     assert len(_docs(db, "workflows")) == 1
     (entry,) = [e for e in _audit(db) if e["action"] == schedaudit.APPROVED]
-    assert entry["by"] == "dave@saga.xyz"
+    assert entry["by"] == "dave@example.com"
     assert entry["detail"]["via"] == "github_comment"
     assert entry["detail"]["comment_id"] == cid
     assert entry["detail"]["login"] == "dave-gh"
-    assert entry["detail"]["member"] == "dave@saga.xyz"
+    assert entry["detail"]["member"] == "dave@example.com"
     assert entry["detail"]["approval_id"] == f"run:{run['id']}"
 
     # The run left the inbox: the next poll reads nothing more and the
@@ -194,7 +194,7 @@ def test_a_comment_racing_the_consoles_approve_makes_one_transition(client, db, 
     counts = ghapprove.poll_thread(api_context, items[0], "unused-in-the-fake")
     assert counts["approved"] == 0
     assert len(_docs(db, "workflows")) == 1
-    assert db.docs[f"issue_runs/{run['id']}"]["approved_by"] == "alice@saga.xyz"
+    assert db.docs[f"issue_runs/{run['id']}"]["approved_by"] == "alice@example.com"
     assert _replies(writes, 42) == []
 
 
@@ -227,13 +227,13 @@ def test_each_of_these_approves_nothing_and_is_answered_once(client, db, objects
     elif case == "unmapped":
         login, user_id = "mallory-gh", 666
     elif case == "revoked":
-        _connect(db, "dave@saga.xyz", "dave-gh", state=forgeapp.REVOKED)
+        _connect(db, "dave@example.com", "dave-gh", state=forgeapp.REVOKED)
     elif case == "wrong_user_id":
         user_id = 4242  # the login was renamed and reused: the id is not the member's
     elif case == "own_login":
         # The tenant's forge credential writes the platform's comments as this account.
         login = db.docs[f"issue_runs/{run['id']}"]["forge_login"]
-        _connect(db, "dave@saga.xyz", login, user_id=None)
+        _connect(db, "dave@example.com", login, user_id=None)
     elif case == "via_app":
         extra = {"via_app": True}
     _comment(writes, 42, _command(digest), login=login, user_id=user_id, **extra)
@@ -248,7 +248,7 @@ def test_each_of_these_approves_nothing_and_is_answered_once(client, db, objects
 
 def test_a_bots_comment_approves_nothing_and_is_not_answered(client, db, objects, writes, api_context, eng):
     run = _planned(client, db, objects)
-    _connect(db, "dave@saga.xyz", "dave-gh[bot]")
+    _connect(db, "dave@example.com", "dave-gh[bot]")
     _comment(writes, 42, _command(run["plan_digest"]), login="dave-gh[bot]", user_id=1004, kind="Bot")
     _poll(api_context)
     assert _state(db, run["id"]) == "PLANNED"
@@ -261,7 +261,7 @@ def test_a_login_whose_member_has_left_the_tenant_approves_nothing(
     run = _planned(client, db, objects)
     # Removed from the tenant's group since connecting: the directory says so now.
     groups = api_context.authenticator._groups
-    monkeypatch.setitem(groups._mapping, "dave@saga.xyz", ())
+    monkeypatch.setitem(groups._mapping, "dave@example.com", ())
     _comment(writes, 42, _command(run["plan_digest"]), login="dave-gh", user_id=1004)
     _poll(api_context)
     assert _state(db, run["id"]) == "PLANNED"
@@ -271,7 +271,7 @@ def test_a_login_whose_member_has_left_the_tenant_approves_nothing(
 
 def test_a_connection_in_another_tenant_maps_to_nobody_here(client, db, objects, writes, api_context, eng):
     run = _planned(client, db, objects)
-    _connect(db, "bob@saga.xyz", "bob-gh", tenant_id="research", user_id=2002)
+    _connect(db, "bob@example.com", "bob-gh", tenant_id="research", user_id=2002)
     _comment(writes, 42, _command(run["plan_digest"]), login="bob-gh", user_id=2002)
     _poll(api_context)
     assert _state(db, run["id"]) == "PLANNED"
@@ -298,10 +298,10 @@ def test_a_comment_cannot_step_round_a_hold_the_creator_comments_and_a_second_me
 def test_a_one_person_tenants_own_hold_is_answered_approve_in_the_console(
     client, db, objects, writes, api_context, switch_on,
 ):
-    personal = tenant_id_for_user("carol@saga.xyz")
+    personal = tenant_id_for_user("carol@example.com")
     run = _planned(client, db, objects, _bootstrap_plan(), user="carol")
     assert run["tenant_id"] == personal
-    _connect(db, "carol@saga.xyz", "carol-gh", tenant_id=personal)
+    _connect(db, "carol@example.com", "carol-gh", tenant_id=personal)
     _comment(writes, 42, _command(run["plan_digest"]), login="carol-gh", user_id=1003)
     _poll(api_context)
     assert _state(db, run["id"]) == "PLANNED"
@@ -347,11 +347,11 @@ def test_the_merge_request_shows_the_command_once_and_a_members_comment_merges(
     cid = _comment(writes, PR, _command(digest), login="dave-gh", user_id=1004)
     assert _poll(api_context)["approved"] == 1
     decided = db.docs[f"approvals/{item['approval_id']}"]
-    assert decided["state"] == "approved" and decided["decided_by"] == "dave@saga.xyz"
+    assert decided["state"] == "approved" and decided["decided_by"] == "dave@example.com"
     assert db.docs[f"issue_runs/{running['id']}"]["merge_approved"]["head_sha"] == SHA_A
     (entry,) = [e for e in _audit(db) if e["action"] == schedaudit.APPROVED]
     assert entry["detail"]["via"] == "github_comment" and entry["detail"]["comment_id"] == cid
-    assert entry["detail"]["member"] == "dave@saga.xyz" and entry["detail"]["login"] == "dave-gh"
+    assert entry["detail"]["member"] == "dave@example.com" and entry["detail"]["login"] == "dave-gh"
 
     _read(client, clock, running["id"])
     assert len(_merge_workflows(db)) == 1
@@ -415,11 +415,11 @@ def test_the_poll_never_raises(api_context, monkeypatch):
 
 
 def test_the_member_map_reads_only_active_connections_in_the_tenant(db):
-    _connect(db, "dave@saga.xyz", "Dave-GH")
-    assert ghapprove.member_for(db, "eng", "dave-gh", 1004) == "dave@saga.xyz"
+    _connect(db, "dave@example.com", "Dave-GH")
+    assert ghapprove.member_for(db, "eng", "dave-gh", 1004) == "dave@example.com"
     assert ghapprove.member_for(db, "eng", "dave-gh", 9) is None
     assert ghapprove.member_for(db, "research", "dave-gh", 1004) is None
-    _connect(db, "carol@saga.xyz", "nobody-id", user_id=None)
-    assert ghapprove.member_for(db, "eng", "NOBODY-ID", 77) == "carol@saga.xyz"
-    _connect(db, "alice@saga.xyz", "dave-gh", user_id=1004)
+    _connect(db, "carol@example.com", "nobody-id", user_id=None)
+    assert ghapprove.member_for(db, "eng", "NOBODY-ID", 77) == "carol@example.com"
+    _connect(db, "alice@example.com", "dave-gh", user_id=1004)
     assert ghapprove.member_for(db, "eng", "dave-gh", 1004) is None, "two members claiming one account"

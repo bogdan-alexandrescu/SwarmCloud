@@ -37,10 +37,10 @@ from swarm_api.validation import parse_issue_ref
 
 from .conftest import auth_header, seed_task, seed_tenant
 
-ALICE = "alice@saga.xyz"
-BOB = "bob@saga.xyz"
-CAROL = "carol@saga.xyz"
-ROOT = "root@saga.xyz"
+ALICE = "alice@example.com"
+BOB = "bob@example.com"
+CAROL = "carol@example.com"
+ROOT = "root@example.com"
 PLAN = {"summary": "make the thing", "steps": [{"id": "impl-a", "prompt": "do it"}]}
 
 
@@ -130,7 +130,7 @@ def _run(db, run_id: str, *, tenant_id: str = "eng", by: str = ALICE,
     now = _ago(minutes=10)
     run = IssueRun(
         id=run_id, tenant_id=tenant_id, created_by=by, created_at=now, updated_at=now,
-        state=state, issue=parse_issue_ref("saga/swarm#12"), plan_approval="required",
+        state=state, issue=parse_issue_ref("example-org/swarm#12"), plan_approval="required",
         auto_merge=False, fix_rounds=3, planner_task_id="task_planner", plan=PLAN,
         plan_digest=plan_digest(PLAN), **extra,
     )
@@ -178,7 +178,7 @@ def test_approvals_list_the_tenants_pending_records_and_planned_runs(db):
     assert len(items) == 2
     run_item = next(i for i in items if "run_a" in i["id"])
     assert run_item["href"] == "/approvals/run%3Arun_a"
-    assert "saga/swarm#12" in run_item["title"]
+    assert "example-org/swarm#12" in run_item["title"]
 
 
 def test_an_approval_only_the_owner_or_named_people_decide_is_not_everyones(db):
@@ -369,7 +369,7 @@ def test_declining_a_loan_request_replaces_the_admin_item_with_the_requesters(cl
     client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
     root = _feed(client, "root")
     assert [i["title"] for i in root["items"] if i["group"] == "admin"] == [
-        "carol@saga.xyz asks for a Claude account"]
+        "carol@example.com asks for a Claude account"]
     response = client.post("/v1/admin/people/w-c0ffee/loan/decline",
                            headers=auth_header("root"), json={"reason": "not this week"})
     assert response.status_code == 200, response.text

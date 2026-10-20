@@ -41,7 +41,7 @@ from .test_schedtypes_issue_sweep import (  # noqa: F401 -- fixtures
     writes,
 )
 
-ADMIN = "admin@saga.xyz"
+ADMIN = "admin@example.com"
 
 
 def spec(prompt: str = "tidy the changelog", **extra: Any) -> dict[str, Any]:
@@ -206,7 +206,7 @@ def test_a_repository_outside_the_scope_is_refused_when_switched_on(db, ctx, mon
     in_scope = register(db)
     register(db, repo="gadgets")
     schedule = standing(db, repo_ids=(in_scope,),
-                        spec_extra={"repository_url": "https://github.com/saga-xyz/gadgets"})
+                        spec_extra={"repository_url": "https://github.com/example-org/gadgets"})
     _approved(db, ctx, schedule)
     monkeypatch.setenv(refusals.env_name(custom_prompt.CustomPromptRepositoryOutOfScope.code), "on")
 
@@ -225,7 +225,7 @@ def test_the_repository_refusal_ships_off() -> None:
 def test_a_repository_in_scope_is_named_on_the_work_item(db, ctx) -> None:
     repo_id = register(db)
     schedule = standing(db, repo_ids=(repo_id,),
-                        spec_extra={"repository_url": "https://github.com/saga-xyz/widgets"})
+                        spec_extra={"repository_url": "https://github.com/example-org/widgets"})
     firing = firing_for(ctx, schedule)
     assert custom_prompt.repository_in_scope(firing, WorkflowCreate.model_validate(schedule["params"]["spec"])) \
         == (repo_id, True)

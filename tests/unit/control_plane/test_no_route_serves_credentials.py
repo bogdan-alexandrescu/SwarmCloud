@@ -142,7 +142,7 @@ def leaky(client, db):
     db.docs["workflows/wf_theirs"] = {
         "workflow_id": "wf_theirs", "tenant_id": "research",
         "created_at": NOW, "updated_at": NOW, "state": "RUNNING",
-        "submitted_by": "bob@saga.xyz",
+        "submitted_by": "bob@example.com",
         "steps": [{"step_id": "s1", "runner_profile": "mock",
                    "input": {"prompt": OTHER_TENANTS_SECRET}, "depends_on": [],
                    "resource_class": "standard", "input_from": {},
@@ -335,7 +335,7 @@ def test_a_tenants_credential_list_is_provider_names_and_never_key_material():
     from swarm_common.models import Tenant
 
     tenant = Tenant(
-        tenant_id="eng", kind="group", principal="eng@saga.xyz", created_at=NOW,
+        tenant_id="eng", kind="group", principal="eng@example.com", created_at=NOW,
         credentials=["anthropic", "openai"],
     )
     payload = tenant_to_api(tenant)

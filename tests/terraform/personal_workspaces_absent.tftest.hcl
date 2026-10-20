@@ -95,7 +95,7 @@ run "a_service_account_s_tenant_still_can" {
       }
       eng = {
         kind      = "group"
-        principal = "eng@saga.xyz"
+        principal = "eng@example.com"
         providers = ["anthropic"]
       }
     }
@@ -227,7 +227,7 @@ run "a_person_cannot_be_a_terraform_tenant" {
     tenants = {
       "u-sw-c90291" = {
         kind      = "user"
-        principal = "fixture.person@saga.xyz"
+        principal = "fixture.person@example.com"
       }
     }
   }

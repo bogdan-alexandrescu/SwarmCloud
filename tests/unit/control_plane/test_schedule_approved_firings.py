@@ -189,11 +189,11 @@ def test_another_tenants_approval_cannot_release_a_firing(db, ctx) -> None:
         "approval_id": foreign, "tenant_id": "research", "kind": approvals.RUN,
         "subject": {"schedule_id": SUBJECT, "firing_id": subject["firing_id"]},
         "digest": subject["params_digest"], "state": approvals.APPROVED,
-        "decided_by": "mallory@saga.xyz", "decided_at": NOW,
+        "decided_by": "mallory@example.com", "decided_at": NOW,
     }
     _firing(db, subject)["approval_id"] = foreign
     _firing(db, subject)["run_approval"] = {
-        "by": "mallory@saga.xyz", "at": NOW, "approval_id": foreign, "digest": subject["params_digest"],
+        "by": "mallory@example.com", "at": NOW, "approval_id": foreign, "digest": subject["params_digest"],
     }
     executor = FakeExecutor()
     ticker(ctx, executor, at=LATER).tick()

@@ -741,7 +741,7 @@ def test_a_person_in_control_is_not_parked_under_their_fingers(tmp_path, db, tra
     _spool_request(work, "r1", {"reason": "sign in"})
     fetch = lambda: db.doc("tasks/task_1")  # noqa: E731
     path.tick(work, fetch)
-    db.doc("tasks/task_1")["human_wait"]["controller"] = {"email": "alice@saga.xyz"}
+    db.doc("tasks/task_1")["human_wait"]["controller"] = {"email": "alice@example.com"}
     assert path.tick(work, fetch) is None
     db.doc("tasks/task_1")["human_wait"]["controller"] = None
     assert path.tick(work, fetch) == handoff_mod.HOLD_EXPIRED
@@ -1085,7 +1085,7 @@ def test_a_person_who_returned_control_while_the_worker_parked_re_queues_the_tas
     write_plan(REQUEST, WAIT)
     seed_attempt(db)
     routes = FakeLiveRoutes(db, trace, hold_seconds=1)
-    routes.on_resolve = _returned_by("alice@saga.xyz")
+    routes.on_resolve = _returned_by("alice@example.com")
     worker = _live_worker(worker_factory, routes, gate, trace, monkeypatch)
     assert worker.run() == ExitCode.PARKED
     task = db.doc("tasks/task_1")
@@ -1094,7 +1094,7 @@ def test_a_person_who_returned_control_while_the_worker_parked_re_queues_the_tas
     assert db.doc("leases/lease_1")["released_at"] is not None
     assert task["latest_checkpoint"]
     assert task["attempt_count"] == 0
-    assert task["metadata"][handoff_mod.HUMAN_READY_METADATA_KEY]["by"] == "alice@saga.xyz"
+    assert task["metadata"][handoff_mod.HUMAN_READY_METADATA_KEY]["by"] == "alice@example.com"
     assert handoff_mod.HUMAN_RETURNED_METADATA_KEY not in task["metadata"]
     types = [e["type"] for e in db.events("task_1")]
     ready = [e for e in db.events("task_1") if e["type"] == EventType.READY.value]
@@ -1111,7 +1111,7 @@ def test_a_return_recorded_for_another_attempt_does_not_re_queue(
     write_plan(REQUEST, WAIT)
     seed_attempt(db)
     routes = FakeLiveRoutes(db, trace, hold_seconds=1)
-    routes.on_resolve = _returned_by("alice@saga.xyz", attempt_id=attempt_id, generation=generation)
+    routes.on_resolve = _returned_by("alice@example.com", attempt_id=attempt_id, generation=generation)
     worker = _live_worker(worker_factory, routes, gate, trace, monkeypatch)
     assert worker.run() == ExitCode.PARKED
     task = db.doc("tasks/task_1")

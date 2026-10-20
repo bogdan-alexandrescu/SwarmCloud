@@ -3,7 +3,7 @@ browser logins, an issue run's plan and an issue run's auto steps
 (docs/design/workspace-roles.md §4.1, §4.2.3, §4.2.4, §4.8, Q8; lane
 ROLES-GATES-WORK, part of #1518).
 
-Who is who, in eng (`eng@saga.xyz`):
+Who is who, in eng (`eng@example.com`):
 
 * `alice`, `bob` -- members with no grant: `member`, the migration default;
 * `vera` -- a member a grant narrowed to `viewer`;
@@ -59,7 +59,7 @@ from .test_roles_store import grant
 
 MEMBER_SWITCH = refusals.env_name("role_member_required")
 
-ALICE, BOB, VERA, OPS = "alice@saga.xyz", "bob@saga.xyz", "vera@saga.xyz", "ops@saga.xyz"
+ALICE, BOB, VERA, OPS = "alice@example.com", "bob@example.com", "vera@example.com", "ops@example.com"
 SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
 GROUPS = {
     ALICE: (ENG_GROUP,),
@@ -89,7 +89,7 @@ def ctx(db, directory, objects, github, monkeypatch):
     monkeypatch.delenv(MEMBER_SWITCH, raising=False)
     seed_tenant(db, "eng")
     tokens = {f"token-{e.split('@')[0]}": {"email": e, "email_verified": True,
-                                           "sub": f"sub-{e}", "hd": "saga.xyz"}
+                                           "sub": f"sub-{e}", "hd": "example.com"}
               for e in GROUPS}
     tokens["token-sweeper"] = {"email": SWEEPER, "email_verified": True, "sub": "sub-sweeper"}
     context = build_context(

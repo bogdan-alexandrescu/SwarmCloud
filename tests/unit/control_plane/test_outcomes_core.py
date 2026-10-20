@@ -215,8 +215,8 @@ def test_an_unencoded_plus_in_the_offset_is_read_as_a_plus():
 
 
 def test_submitted_by_is_compared_lower_cased():
-    params = parse_params({"tz": "UTC", "submitted_by": ["Alice@Saga.xyz"]}, now=NOW)
-    assert params.submitted_by == ("alice@saga.xyz",)
+    params = parse_params({"tz": "UTC", "submitted_by": ["Alice@Example.com"]}, now=NOW)
+    assert params.submitted_by == ("alice@example.com",)
 
 
 def test_compare_previous_is_the_same_number_of_buckets_immediately_before():
@@ -395,7 +395,7 @@ def _task(**overrides):
         "created_at": T0,
         "completed_at": T0 + timedelta(hours=1),
         "runner_profile": "claude-code",
-        "submitted_by": "Alice@saga.xyz",
+        "submitted_by": "Alice@example.com",
         "workflow_id": "wf",
         "step_id": "b",
         "attempt_count": 3,
@@ -428,7 +428,7 @@ def test_a_tuple_carries_what_the_fold_needs_and_nothing_else():
     assert t["first_start"] == _ms(T0 + timedelta(minutes=6))
     # a step is eligible when its last parent finished
     assert t["eligible"] == _ms(T0 + timedelta(minutes=2))
-    assert t["submitted_by"] == "alice@saga.xyz"
+    assert t["submitted_by"] == "alice@example.com"
     assert t["failure_class"] == "dispatch_failed"
     assert t["cancel_cause"] is None
     # only attempts that STARTED can spend; $0.00 is a report
@@ -476,7 +476,7 @@ def _tuple(task_id: str, state: str, completed: datetime, **overrides):
             "completed": _ms(completed),
             "eligible": _ms(completed - timedelta(hours=1)),
             "profile": "mock",
-            "submitted_by": "alice@saga.xyz",
+            "submitted_by": "alice@example.com",
             "attempt_count": 1,
             "att_docs": 1,
             "timeout_s": 600,

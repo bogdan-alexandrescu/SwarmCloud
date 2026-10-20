@@ -129,9 +129,9 @@ class AuthContext:
     tenant_id: str
     is_admin: bool
     #: WHO the tenant is, as opposed to who is calling. For a group tenant this
-    #: is the group email (`eng@saga.xyz`); for the personal fallback it is the
+    #: is the group email (`eng@example.com`); for the personal fallback it is the
     #: user's own address. `tenant_id` alone cannot identify a tenant, because
-    #: the frozen `tenant_id_for_group` slugs the local part only: `eng@saga.xyz`
+    #: the frozen `tenant_id_for_group` slugs the local part only: `eng@example.com`
     #: and `eng@partner.com` both produce `eng`. The store compares this against
     #: the tenant document so the second group cannot inherit the first's
     #: service account, secrets and GCS prefix.
@@ -724,7 +724,7 @@ class Authenticator:
         THE ID IS DERIVED FROM THE VERIFIED EMAIL, NEVER FROM THE HEADER: the
         only personal tenant this can ever add is `tenant_id_for_user(ctx.email)`,
         and only when `PersonalTenants.ready` confirms that tenant's documents
-        name THIS email -- the frozen slug drops the domain, so `bob@saga.xyz`
+        name THIS email -- the frozen slug drops the domain, so `bob@example.com`
         and `bob@partner.com` derive one id, and the principal is what tells
         them apart. Another person's `u-` id is never in the list, so
         `_select_tenant` refuses it exactly as it refuses a group the caller is
@@ -1087,7 +1087,7 @@ class Authenticator:
         # wherever it sits. Asked together -- `tenant_groups + admin_groups`,
         # admin groups necessarily last -- the priority rule swallowed precisely
         # the failures that decide admin: a caller confirmed in `eng` whose
-        # `swarm-admins` lookup failed came back as `("eng@saga.xyz",)`, and
+        # `swarm-admins` lookup failed came back as `("eng@example.com",)`, and
         # `any(g in admin_set ...)` read that silence as "not an admin". The
         # 403 that followed said "admin group membership is required for this
         # operation" to someone who has it.

@@ -116,7 +116,7 @@ def test_green_with_the_keyword_written_submits_one_merge_continuing_the_integra
     }
     assert integrator["workflow_id"] == running["workflow_id"] != merge_wf["workflow_id"]
     assert task["metadata"]["dispatch"]["continues"] == integrator["id"]
-    assert task["repository_url"].startswith("https://github.com/saga-xyz/widgets")
+    assert task["repository_url"].startswith("https://github.com/example-org/widgets")
 
     # Another read while the merge runs submits nothing more.
     again = _read(client, clock, running["id"])

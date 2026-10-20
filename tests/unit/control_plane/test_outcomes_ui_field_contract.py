@@ -403,7 +403,7 @@ def payloads(db, tokens, group_map) -> dict[str, dict[str, Any]]:
         # Tenant scope with every filter the page sends, and the previous span.
         "tenant": route_tests.ok(api, "alice", compare="previous", group="submitted_by", **week),
         "filtered": route_tests.ok(
-            api, "alice", profile=["mock", "claude-code"], submitted_by="alice@saga.xyz",
+            api, "alice", profile=["mock", "claude-code"], submitted_by="alice@example.com",
             kind="all", bucket="day", **week,
         ),
         # Platform scope, both ways the page asks for it.

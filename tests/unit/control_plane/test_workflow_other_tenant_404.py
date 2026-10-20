@@ -54,14 +54,14 @@ NOW = datetime(2026, 10, 13, 16, 0, tzinfo=timezone.utc)
 def group_map() -> dict[str, tuple[str, ...]]:
     """`dave` is in eng AND research; eng is what a header-less call resolves."""
     return {
-        "alice@saga.xyz": (ENG_GROUP,),
-        "bob@saga.xyz": (RESEARCH_GROUP,),
-        "dave@saga.xyz": (ENG_GROUP, RESEARCH_GROUP),
+        "alice@example.com": (ENG_GROUP,),
+        "bob@example.com": (RESEARCH_GROUP,),
+        "dave@example.com": (ENG_GROUP, RESEARCH_GROUP),
     }
 
 
 def stored(db, *, workflow_id: str = "wf_elsewhere", tenant_id: str = "research",
-           submitted_by: str = "dave@saga.xyz") -> Workflow:
+           submitted_by: str = "dave@example.com") -> Workflow:
     workflow = Workflow(
         workflow_id=workflow_id,
         tenant_id=tenant_id,
@@ -142,9 +142,9 @@ def test_a_missing_workflow_is_still_a_bare_not_found(db):
 
 
 def test_another_submitters_workflow_is_still_a_bare_not_found(db):
-    stored(db, tenant_id="eng", submitted_by="alice@saga.xyz")
+    stored(db, tenant_id="eng", submitted_by="alice@example.com")
     with pytest.raises(NotFound) as caught:
-        Store(db).get_workflow("eng", "wf_elsewhere", submitted_by="dave@saga.xyz")
+        Store(db).get_workflow("eng", "wf_elsewhere", submitted_by="dave@example.com")
     assert caught.value.code == "not_found"
 
 

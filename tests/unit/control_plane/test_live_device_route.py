@@ -98,7 +98,7 @@ def test_the_controller_switches_and_the_request_reaches_the_relay(client, ldb, 
         "orientation": "landscape", "touch": None}
     entries = audit(ldb, "device_requested")
     assert [(r["email"], r["detail"]) for r in entries] == [
-        ("alice@saga.xyz", {"preset": "iphone-15", "orientation": "landscape", "touch": None})]
+        ("alice@example.com", {"preset": "iphone-15", "orientation": "landscape", "touch": None})]
 
 
 def test_a_viewer_is_refused_with_409_and_nothing_is_sent(client, ldb, live, relay):

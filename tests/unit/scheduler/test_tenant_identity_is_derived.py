@@ -66,7 +66,7 @@ def fresh_logs():
 def forged(**fields) -> Tenant:
     """Tenant `eng`, its record rewritten to name tenant `other`'s."""
     base = dict(
-        tenant_id="eng", kind="group", principal="eng@saga.xyz", created_at=NOW,
+        tenant_id="eng", kind="group", principal="eng@example.com", created_at=NOW,
         service_account=OTHER_ACCOUNT,
         gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/other",
         namespace="swarm-tenant-other",
@@ -80,7 +80,7 @@ def make_task(profile_name: str, tenant_id: str = "eng") -> Task:
     return Task(
         id="task_iso1", tenant_id=tenant_id, created_at=NOW, updated_at=NOW,
         state=TaskState.LEASED, runner_profile=profile_name,
-        resource_class=profile.resource_class, input={}, submitted_by="alice@saga.xyz",
+        resource_class=profile.resource_class, input={}, submitted_by="alice@example.com",
         provider=profile.provider, timeout_seconds=1800,
     )
 

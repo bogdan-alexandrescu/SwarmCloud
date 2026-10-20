@@ -87,7 +87,7 @@ def test_a_signed_push_to_the_default_branch_is_forwarded_by_name_only(parts, ke
     reply, _ = _send(receiver, delivery)
 
     assert reply.status == 200 and reply.outcome == "forwarded"
-    assert forward.calls == [("Saga-XYZ/Widgets",)], forward.calls
+    assert forward.calls == [("Example-Org/Widgets",)], forward.calls
     assert list(store.docs) == [delivery.delivery]
 
 
@@ -446,7 +446,7 @@ def test_one_log_line_per_delivery_with_its_id_and_outcome_and_nothing_else(part
     assert line["event"] == "github_delivery"
     assert line["delivery"] == delivery.delivery and line["outcome"] == "forwarded"
     text = lines[0]
-    for value in (after, "Saga-XYZ", "Widgets", "refs/heads/main", sign(key, delivery.body),
+    for value in (after, "Example-Org", "Widgets", "refs/heads/main", sign(key, delivery.body),
                   key.decode(), "GitHub-Hookshot", "someone"):
         assert value not in text, f"the log line carries {value!r}"
 

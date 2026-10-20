@@ -199,7 +199,7 @@ def _tenant_document(
     fields = {
         "tenant_id": {"stringValue": tenant},
         "kind": {"stringValue": kind},
-        "principal": {"stringValue": principal or f"{tenant}@saga.xyz"},
+        "principal": {"stringValue": principal or f"{tenant}@example.com"},
         "display_name": {"stringValue": "Engineering"},
         "max_active": {"integerValue": "40"},
         "capacity_units": {"integerValue": "80"},
@@ -267,6 +267,9 @@ class Fakes:
             "SWARM_KUBECTL": str(bin_dir / "kubectl"),
             "KUBECONFIG": str(tmp / "kubeconfig"),
             "NO_COLOR": "1",
+            # The example principals are @example.com; the script's own default
+            # domain is the deployment's, so the test names its own.
+            "ALLOWED_DOMAINS": "example.com",
             "FAKE_LOG": str(self.log),
             "FAKE_TENANT_DOC": str(doc_file),
         })
@@ -375,7 +378,7 @@ def test_the_hint_create_secrets_prints_keeps_the_tenants_other_providers(tmp_pa
 def test_the_next_step_register_tenant_prints_keeps_the_tenants_other_providers(tmp_path) -> None:
     """The closing 'Next:' block of a registration, followed as printed."""
     fakes = Fakes(tmp_path, _tenant_document(["openai"]))
-    registered = fakes.run([str(REGISTER), "--group", "eng@saga.xyz", "--dry-run", "--skip-k8s"])
+    registered = fakes.run([str(REGISTER), "--group", "eng@example.com", "--dry-run", "--skip-k8s"])
     assert registered.returncode == 0, _out(registered)
     assert "Next:" in _out(registered), _out(registered)
     hint = _command_after(_out(registered).split("Next:", 1)[1], "scripts/register-tenant.sh")
@@ -431,7 +434,7 @@ def test_a_subscription_hint_never_sends_the_worker_to_the_refresh_half(tmp_path
 
 
 @pytest.mark.parametrize(
-    "who", [["--tenant", "eng"], ["--group", "eng@saga.xyz"]], ids=["by-id", "by-principal"]
+    "who", [["--tenant", "eng"], ["--group", "eng@example.com"]], ids=["by-id", "by-principal"]
 )
 def test_add_provider_writes_the_union_and_nothing_else(tmp_path, who: list[str]) -> None:
     fakes = Fakes(tmp_path, _tenant_document(["anthropic", "openai"]))
@@ -611,11 +614,11 @@ def test_add_provider_refuses_a_provider_it_must_not_bind(
 
 
 def test_add_provider_refuses_a_document_owned_by_another_principal(tmp_path) -> None:
-    fakes = Fakes(tmp_path, _tenant_document(["anthropic"], principal="contractors@saga.xyz"))
-    proc = fakes.run([str(REGISTER), "--group", "eng@saga.xyz", "--add-provider", "git"])
+    fakes = Fakes(tmp_path, _tenant_document(["anthropic"], principal="contractors@example.com"))
+    proc = fakes.run([str(REGISTER), "--group", "eng@example.com", "--add-provider", "git"])
     out = _out(proc)
     assert proc.returncode != 0, out
-    assert "contractors@saga.xyz" in out, out
+    assert "contractors@example.com" in out, out
     assert fakes.writes() == [] and fakes.gcloud_changes() == [], out
 
 
@@ -733,7 +736,7 @@ def test_a_full_registration_does_not_grant_the_refresh_half_either(tmp_path) ->
     """
     fakes = Fakes(tmp_path, _tenant_document(["openai"]))
     proc = fakes.run([
-        str(REGISTER), "--group", "eng@saga.xyz", "--providers", "anthropic-refresh",
+        str(REGISTER), "--group", "eng@example.com", "--providers", "anthropic-refresh",
         "--dry-run", "--skip-k8s",
     ])
     out = _out(proc)

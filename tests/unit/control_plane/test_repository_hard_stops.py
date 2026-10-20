@@ -36,7 +36,7 @@ from swarm_api.repositories import HARD_STOP_PATHS_DEFAULT, hard_stop_paths_of
 from .conftest import auth_header
 from .repo_fakes import GitHubRepos, TenantTokens, make_client, repo_entry
 
-WIDGETS = repo_entry("saga-xyz/widgets", default_branch="develop", private=True)
+WIDGETS = repo_entry("example-org/widgets", default_branch="develop", private=True)
 DEFAULTS = [".github/workflows/**", "terraform/bootstrap/**", "**/iam*.tf", "CODEOWNERS"]
 SCHEDULES_DOC = Path(__file__).resolve().parents[3] / "docs" / "schedules.md"
 
@@ -49,7 +49,7 @@ MEMBER = "alice"
 @pytest.fixture
 def make(db, tokens, group_map, objects):
     def build():
-        transport = GitHubRepos(repos={"saga-xyz/widgets": WIDGETS})
+        transport = GitHubRepos(repos={"example-org/widgets": WIDGETS})
         client = make_client(
             db, tokens, group_map, objects, forge_tokens=TenantTokens(), transport=transport
         )
@@ -79,7 +79,7 @@ def commits(db, monkeypatch):
 
 
 def _register(client, user=MEMBER, **body):
-    payload = {"repository": "saga-xyz/widgets", **body}
+    payload = {"repository": "example-org/widgets", **body}
     return client.post("/v1/repositories", json=payload, headers=auth_header(user))
 
 
@@ -167,10 +167,10 @@ def test_an_admin_sets_platform_and_the_audit_is_in_the_same_transaction(make, d
     entry = entries[0]
     assert entry["action"] == "repository_platform_set"
     assert entry["target_repo_id"] == record["repo_id"]
-    assert entry["by"] == "root@saga.xyz"
+    assert entry["by"] == "root@example.com"
     assert entry["detail"] == {
         "tenant_id": "eng",
-        "repository": "saga-xyz/widgets",
+        "repository": "example-org/widgets",
         "platform": {"from": False, "to": True},
     }
     # ONE commit wrote both the registration and the audit entry.

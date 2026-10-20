@@ -35,7 +35,7 @@ from swarm_common.identity import tenant_id_for_user
 
 from .conftest import auth_header, seed_tenant
 
-CAROL = "carol@saga.xyz"
+CAROL = "carol@example.com"
 CAROL_TENANT = tenant_id_for_user(CAROL)
 NOW = datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc)
 
@@ -189,7 +189,7 @@ def test_inherit_clears_it_and_a_put_that_changes_nothing_audits_nothing(client,
 
 def test_the_store_reads_it_back(db, seeded):
     store = codeintel.CodeIntelligenceStore(db, now=lambda: NOW, mac=judgment.SettingsMac())
-    store.put("eng", codeintel.CodeIntelligencePut(graph_delivery="service"), by="root@saga.xyz")
+    store.put("eng", codeintel.CodeIntelligencePut(graph_delivery="service"), by="root@example.com")
     assert store.get("eng").graph_delivery == "service"
     assert store.get("research").graph_delivery is None
 

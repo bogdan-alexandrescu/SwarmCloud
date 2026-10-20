@@ -44,7 +44,7 @@ from swarm_common.specsign import SETTINGS_MAC_FIELDS, canonical_settings_block
 from .conftest import auth_header, seed_tenant
 from .fakes import FakeFirestore
 
-CAROL = "carol@saga.xyz"
+CAROL = "carol@example.com"
 CAROL_TENANT = tenant_id_for_user(CAROL)
 
 
@@ -313,9 +313,9 @@ def legacy(db: FakeFirestore) -> None:
     """Documents written before this lane: valid settings, no MAC."""
     db.docs["workspace_settings/eng"] = {
         "tenant_id": "eng", "judgment_backend": "typesafe",
-        "judgment_backend_set_by": "root@saga.xyz",
+        "judgment_backend_set_by": "root@example.com",
         "merge": {"tenant_id": "eng", "mode": "train", "train_size": 4,
-                  "max_train_age_minutes": 90, "updated_by": "root@saga.xyz"},
+                  "max_train_age_minutes": 90, "updated_by": "root@example.com"},
         "code_intelligence": {"jev": True, "jev_monthly_cap_tokens": 1000},
     }
     db.docs["workspace_settings/research"] = {

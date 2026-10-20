@@ -38,8 +38,8 @@ from fakes import FakeSecretClient
 from worker_seeds import TENANT, seed_attempt
 
 PERSON = "ada@example.com"
-GITHUB_URL = "https://github.com/saga/widgets.git"
-REFUSED_ISSUE = ("could not fetch issue #780 of saga/widgets: the forge refused the "
+GITHUB_URL = "https://github.com/example-org/widgets.git"
+REFUSED_ISSUE = ("could not fetch issue #780 of example-org/widgets: the forge refused the "
                  "credential (401: Bad credentials)")
 
 
@@ -102,8 +102,8 @@ def user_worker(db, worker_factory):
     REFUSED_ISSUE,
     "the token was rejected (401)",
     "git step 0 failed with exit 128: remote: Invalid username or password.\n"
-    "fatal: Authentication failed for 'https://github.com/saga/widgets.git/'",
-    "fatal: unable to access 'https://github.com/saga/widgets.git/': The requested URL "
+    "fatal: Authentication failed for 'https://github.com/example-org/widgets.git/'",
+    "fatal: unable to access 'https://github.com/example-org/widgets.git/': The requested URL "
     "returned error: 401",
 ])
 def test_a_401_or_gits_authentication_failure_is_a_refused_credential(text):
@@ -112,8 +112,8 @@ def test_a_401_or_gits_authentication_failure_is_a_refused_credential(text):
 
 
 @pytest.mark.parametrize("text", [
-    "could not fetch issue #780 of saga/widgets: the forge has no such issue (404)",
-    "could not fetch issue #780 of saga/widgets: the forge refused the credential (403: "
+    "could not fetch issue #780 of example-org/widgets: the forge has no such issue (404)",
+    "could not fetch issue #780 of example-org/widgets: the forge refused the credential (403: "
     "Resource not accessible by integration)",
     "the token cannot see this repository (404)",
     "remote: Repository not found.",
@@ -228,7 +228,7 @@ def test_an_issue_that_is_not_there_is_not_fetched_twice(user_worker, monkeypatc
     def stage_issue(**kwargs: Any) -> Path:
         seen.append(kwargs["token"])
         raise issue_mod.IssueUnavailable(
-            "could not fetch issue #780 of saga/widgets: the forge has no such issue (404)")
+            "could not fetch issue #780 of example-org/widgets: the forge has no such issue (404)")
 
     monkeypatch.setattr(lifecycle.issue_mod, "stage_issue", stage_issue)
     with pytest.raises(issue_mod.IssueUnavailable):

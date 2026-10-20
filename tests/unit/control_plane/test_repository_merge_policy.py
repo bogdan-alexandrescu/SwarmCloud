@@ -27,7 +27,7 @@ from .conftest import auth_header
 from .repo_fakes import GitHubRepos, TenantTokens, make_client, repo_entry
 from .test_repository_hard_stops import commits  # noqa: F401  (fixture)
 
-WIDGETS = repo_entry("saga-xyz/widgets", default_branch="develop", private=True)
+WIDGETS = repo_entry("example-org/widgets", default_branch="develop", private=True)
 ADMIN = "root"
 MEMBER = "alice"
 
@@ -35,7 +35,7 @@ MEMBER = "alice"
 @pytest.fixture
 def make(db, tokens, group_map, objects):
     def build():
-        transport = GitHubRepos(repos={"saga-xyz/widgets": WIDGETS})
+        transport = GitHubRepos(repos={"example-org/widgets": WIDGETS})
         client = make_client(
             db, tokens, group_map, objects, forge_tokens=TenantTokens(), transport=transport
         )
@@ -44,7 +44,7 @@ def make(db, tokens, group_map, objects):
 
 
 def _register(client, user=MEMBER, **body):
-    payload = {"repository": "saga-xyz/widgets", **body}
+    payload = {"repository": "example-org/widgets", **body}
     return client.post("/v1/repositories", json=payload, headers=auth_header(user))
 
 
@@ -100,7 +100,7 @@ def test_an_admin_sets_the_policy_and_the_audit_is_in_the_same_transaction(make,
     assert db.docs[path]["merge_policy"] == "on_merge_verdict"
     (entry,) = _audit(db)
     assert entry["action"] == "repository_merge_policy_set"
-    assert entry["by"] == "root@saga.xyz"
+    assert entry["by"] == "root@example.com"
     assert entry["detail"]["merge_policy"] == {"from": None, "to": "on_merge_verdict"}
     writing = [paths for paths in commits if path in paths]
     assert len(writing) == 1

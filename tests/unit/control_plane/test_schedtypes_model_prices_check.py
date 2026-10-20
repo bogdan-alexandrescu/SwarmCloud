@@ -193,7 +193,7 @@ def test_a_firing_opens_one_issue_per_disagreeing_model_and_never_twice(db, ctx,
     register(db)
     seed(db, attempts_at(OPUS, 1.25) + attempts_at(SONNET, 1.0, tenant_id="research")
          + attempts_at(HAIKU, 0.5, tenant_id="research"))
-    ctx.store.set_platform_settings({"model_prices": PRICES}, by="admin@saga.xyz")
+    ctx.store.set_platform_settings({"model_prices": PRICES}, by="admin@example.com")
 
     work = check.create(firing_for(ctx, schedule(db), room=2))
 

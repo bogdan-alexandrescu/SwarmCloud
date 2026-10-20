@@ -47,7 +47,7 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not 
 
 PERSON = ("Ada Lovelace", "ada@example.com")
 #: A Google service account, as `swarm_common.identity` reads one.
-SERVICE_ACCOUNT = "swarm-dispatch@saga-example.iam.gserviceaccount.com"
+SERVICE_ACCOUNT = "swarm-dispatch@example-project.iam.gserviceaccount.com"
 
 
 def _person_task(task_id: str, dispatch: dict, *, submitted_by: str = PERSON[1],

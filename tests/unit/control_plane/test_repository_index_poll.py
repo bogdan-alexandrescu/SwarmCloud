@@ -52,7 +52,7 @@ from .repo_index_fakes import (
 )
 
 ONE, TWO, THREE = sha("one"), sha("two"), sha("three")
-OTHER = "saga-xyz/gadgets"
+OTHER = "example-org/gadgets"
 
 #: The identity terraform/modules/scheduler/jobs.tf gives the poll job: the
 #: rollup sweeper, admitted by being on ROLLUP_SWEEPER_USERS.
@@ -173,7 +173,7 @@ def test_an_unchanged_branch_answers_304_and_submits_nothing(client, db, repo_id
     assert body["report"]["submitted"] == 0
     assert _tasks(db) == []
     [(url, headers, status)] = polls.calls
-    assert url == "https://api.github.com/repos/saga-xyz/widgets/commits/main"
+    assert url == "https://api.github.com/repos/example-org/widgets/commits/main"
     # The last response's ETag, so GitHub can answer 304 without spending
     # the token's rate limit; the sha media type keeps a 200 to 40 bytes.
     assert headers["If-None-Match"] == etag_of(ONE)
@@ -230,7 +230,7 @@ def test_a_changed_head_submits_one_index_run(client, db, repo_id, github, polls
     assert task["runner_profile"] == "indexer"  # by name (invariant 10)
     assert task["tenant_id"] == "eng"
     # As the registration's creator, never as the scheduler's identity.
-    assert task["submitted_by"] == "alice@saga.xyz"
+    assert task["submitted_by"] == "alice@example.com"
     assert task["state"] in ("QUEUED", "READY")  # waits for admission (invariant 1)
     run = db.docs[f"repo_index_runs/{task['id']}"]
     assert run["trigger"] == "change" and run["commit_sha"] == TWO
@@ -423,7 +423,7 @@ def test_a_refused_read_is_recorded_as_the_reason_nothing_was_built(
     client, db, repo_id, polls, clock
 ):
     _indexed(db, repo_id, ONE, clock() - timedelta(hours=2))
-    polls.status["saga-xyz/widgets"] = 403
+    polls.status["example-org/widgets"] = 403
 
     _poll(client)
 
@@ -524,7 +524,7 @@ def test_an_interval_passing_while_a_run_is_queued_does_not_index_its_commit_twi
 def test_a_pending_head_already_promoted_is_dropped_not_run(client, db, repo_id, clock):
     _indexed(db, repo_id, ONE, clock() - timedelta(minutes=10))
     # Recorded before this lane's guard, or by a run that promoted it since.
-    _index(db, repo_id).update(pending_sha=ONE, pending_requested_by="alice@saga.xyz")
+    _index(db, repo_id).update(pending_sha=ONE, pending_requested_by="alice@example.com")
 
     report = _poll(client).json()["report"]
 
@@ -557,7 +557,7 @@ def test_the_poll_reads_and_submits_only_the_named_tenant(
     assert response.status_code == 200, response.text
     assert response.json()["report"]["registrations"] == 1
     assert [url for url, _h, _s in polls.calls] == [
-        "https://api.github.com/repos/saga-xyz/widgets/commits/main"
+        "https://api.github.com/repos/example-org/widgets/commits/main"
     ]
     assert set(secrets_reader.asked) == {"swarm-tenant-eng-git"}
     assert [t["tenant_id"] for t in _tasks(db)] == ["eng"]
@@ -567,12 +567,12 @@ def test_the_poll_reads_and_submits_only_the_named_tenant(
     _poll(client, "research")
     assert {t["tenant_id"] for t in _tasks(db)} == {"eng", "research"}
     [research] = _tasks(db, "research")
-    assert research["submitted_by"] == "bob@saga.xyz"
+    assert research["submitted_by"] == "bob@example.com"
 
 
 def test_a_creator_no_longer_in_the_tenant_submits_nothing(client, db, repo_id):
     # carol is in no tenant group: the creator as they would read once removed.
-    db.docs[f"repositories/{repo_id}"]["created_by"] = "carol@saga.xyz"
+    db.docs[f"repositories/{repo_id}"]["created_by"] = "carol@example.com"
     response = _poll(client)
     assert response.status_code == 200, response.text
     body = response.json()
@@ -581,7 +581,7 @@ def test_a_creator_no_longer_in_the_tenant_submits_nothing(client, db, repo_id):
 
 
 def test_a_refused_read_is_reported_and_the_pass_goes_on(client, db, repo_id, polls):
-    other = _register(client, "saga-xyz/gadgets")
+    other = _register(client, "example-org/gadgets")
     polls.status[REPOSITORY] = 403
     body = _poll(client).json()
     assert body["failures"] == [{"repo_id": repo_id, "code": "no_access"}]

@@ -57,8 +57,8 @@ from .test_live_api import (  # noqa: F401 - fixtures are used by name
 #: Built at runtime, never one literal (CLAUDE.md).
 GRAPH_KEY = "-".join(("graph", "ticket", "key")) + "-" + secrets.token_hex(16)
 PATH = f"/v1/attempts/{ATTEMPT}/graph-ticket"
-URL = "https://github.com/Saga/Widgets"
-REPO_ID = repo_id_for("eng", "saga", "widgets")
+URL = "https://github.com/Example-Org/Widgets"
+REPO_ID = repo_id_for("eng", "example-org", "widgets")
 SHA = "a" * 40
 OTHER_SHA = "b" * 40
 DIGEST = "sha256:" + hashlib.sha256(b"the promoted manifest").hexdigest()
@@ -87,7 +87,7 @@ def claims(ticket: str) -> dict[str, Any]:
 
 def register(db, *, tenant_id: str = "eng", repo_id: str = REPO_ID, **extra: Any) -> None:
     db.docs[f"repositories/{repo_id}"] = {
-        "repo_id": repo_id, "tenant_id": tenant_id, "owner": "saga", "repo": "widgets",
+        "repo_id": repo_id, "tenant_id": tenant_id, "owner": "example-org", "repo": "widgets",
         "repository_url": URL, **extra,
     }
 
@@ -328,7 +328,7 @@ def test_the_repository_is_the_tasks_even_when_another_is_indexed(ready, ldb):
     task's own repository does not. Asking for OTHER_SHA is a 404: the body
     never moves the ticket to another repository."""
     client, attempt = ready
-    other = repo_id_for("eng", "saga", "gadgets")
+    other = repo_id_for("eng", "example-org", "gadgets")
     register(ldb, repo_id=other)
     version(ldb, OTHER_SHA, repo_id=other)
     refused(ask(client, attempt, index_sha=OTHER_SHA), 404)
@@ -344,7 +344,7 @@ def test_a_task_without_a_github_repository_gets_no_ticket(ready, ldb):
     client, attempt = ready
     ldb.docs[f"tasks/{TASK}"]["repository_url"] = None
     refused(ask(client, attempt), 404)
-    ldb.docs[f"tasks/{TASK}"]["repository_url"] = "https://gitlab.com/saga/widgets"
+    ldb.docs[f"tasks/{TASK}"]["repository_url"] = "https://gitlab.com/example-org/widgets"
     refused(ask(client, attempt), 404)
 
 

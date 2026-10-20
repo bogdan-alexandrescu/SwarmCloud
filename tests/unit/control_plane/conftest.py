@@ -42,9 +42,9 @@ from .fakes import FakeFirestore
 PROJECT = "saga-agents-staging"
 REGION = "us-central1"
 
-ENG_GROUP = "eng@saga.xyz"
-RESEARCH_GROUP = "research@saga.xyz"
-ADMIN_GROUP = "swarm-admins@saga.xyz"
+ENG_GROUP = "eng@example.com"
+RESEARCH_GROUP = "research@example.com"
+ADMIN_GROUP = "swarm-admins@example.com"
 
 
 def core_settings(**overrides: Any) -> Settings:
@@ -54,7 +54,7 @@ def core_settings(**overrides: Any) -> Settings:
         environment="test",
         firestore_database="swarm",
         artifact_bucket=f"{PROJECT}-swarm-artifacts",
-        allowed_domains=("saga.xyz",),
+        allowed_domains=("example.com",),
         max_batch_size=100,
         max_input_bytes=256 * 1024,
         max_workflow_steps=50,
@@ -107,10 +107,10 @@ def group_map() -> dict[str, tuple[str, ...]]:
     a personal tenant), `root` is an admin.
     """
     return {
-        "alice@saga.xyz": (ENG_GROUP,),
-        "bob@saga.xyz": (RESEARCH_GROUP,),
-        "carol@saga.xyz": (),
-        "root@saga.xyz": (ADMIN_GROUP, ENG_GROUP),
+        "alice@example.com": (ENG_GROUP,),
+        "bob@example.com": (RESEARCH_GROUP,),
+        "carol@example.com": (),
+        "root@example.com": (ADMIN_GROUP, ENG_GROUP),
     }
 
 
@@ -121,7 +121,7 @@ def tokens(group_map) -> dict[str, dict[str, Any]]:
             "email": email,
             "email_verified": True,
             "sub": f"sub-{email}",
-            "hd": "saga.xyz",
+            "hd": "example.com",
         }
         for email in group_map
     }
@@ -198,7 +198,7 @@ def seed_tenant(db: FakeFirestore, tenant_id: str, *, credentials: tuple[str, ..
     tenant = Tenant(
         tenant_id=tenant_id,
         kind="group",
-        principal=f"{tenant_id}@saga.xyz",
+        principal=f"{tenant_id}@example.com",
         created_at=datetime.now(timezone.utc),
         display_name=tenant_id,
         max_active=max_active,
@@ -366,11 +366,11 @@ def minutes_ago(minutes: float) -> datetime:
 
 #: The people the default `group_map` signs in, and the tenants a test puts
 #: them in: their groups' tenants and each one's personal fallback.
-GRANTED_MEMBERS = ("alice@saga.xyz", "bob@saga.xyz", "carol@saga.xyz", "root@saga.xyz")
+GRANTED_MEMBERS = ("alice@example.com", "bob@example.com", "carol@example.com", "root@example.com")
 
 #: The GitHub repositories the suite's submissions name.
 TEST_REPOSITORIES = (
-    "saga-xyz/example", "saga-xyz/widgets", "saga-xyz/payments", "octo-org/widget-shop",
+    "example-org/example", "example-org/widgets", "example-org/payments", "octo-org/widget-shop",
     "acme/widgets", "bogdan-alexandrescu/SwarmCloud", "o/r",
 )
 

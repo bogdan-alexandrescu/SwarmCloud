@@ -311,7 +311,7 @@ class ApiSettings:
     #: this platform being deployable outside a Google Workspace or not.
     #:
     #: Authorisation is otherwise by hosted domain, which is exactly right for
-    #: an organisation: `allowed_domains = ["saga.xyz"]` means the people in
+    #: an organisation: `allowed_domains = ["example.com"]` means the people in
     #: that organisation. It collapses for anyone else. A single developer on a
     #: personal project has no domain of their own, so the only value that
     #: would let them in is `["gmail.com"]` -- which authorises every Google
@@ -497,7 +497,7 @@ class ApiSettings:
     #: a link that does not open.
     console_url: str = ""
 
-    #: Saga's decision API through the cluster's Tailscale egress Service
+    #: The internal decision API through the cluster's Tailscale egress Service
     #: (INTERNAL_DECISION_API_URL; JUDGE-NET's switch, terraform
     #: `internal_decision_api_enabled`). Non-empty means the tailnet egress is
     #: on, so the internal Jev backends are offered as available

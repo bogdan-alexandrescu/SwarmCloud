@@ -59,8 +59,8 @@ from .test_default_workspace import (
 )
 from .test_notifications import _approval, _task, _waiting, _workspace
 
-ALICE = "alice@saga.xyz"
-CAROL = "carol@saga.xyz"
+ALICE = "alice@example.com"
+CAROL = "carol@example.com"
 HOUR = 3600
 
 

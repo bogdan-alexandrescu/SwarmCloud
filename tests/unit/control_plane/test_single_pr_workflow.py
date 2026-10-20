@@ -49,7 +49,7 @@ from swarm_common.profiles import RUNNER_PROFILES
 from .conftest import PROJECT, api_settings, auth_header
 from .spec_signer import LocalSpecSigner
 
-REPO = "https://github.com/saga-xyz/example.git"
+REPO = "https://github.com/example-org/example.git"
 
 #: The profiles a `single-pr` chain needs and the catalogue disables (#342).
 _CHAIN_PROFILES = ("merge", "post-verdict")

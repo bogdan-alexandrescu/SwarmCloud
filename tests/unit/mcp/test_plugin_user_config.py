@@ -233,7 +233,7 @@ def test_the_deployment_url_is_required_and_the_secret_is_sensitive():
 
 
 def test_nothing_in_the_manifest_names_this_repositorys_deployment():
-    """The defect in one line: the plugin must not ship pointing at Saga."""
+    """The defect in one line: the plugin must not ship pointing at the owner's deployment."""
     text = _MANIFEST.read_text()
     for owned in ("saga.xyz", "saga-agents-staging", "209012342332"):
         assert owned not in text, f"plugin.json names {owned}"

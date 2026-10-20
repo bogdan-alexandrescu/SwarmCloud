@@ -45,8 +45,8 @@ from .test_child_tasks_api import (  # noqa: F401 -- worker_tokens is a fixture
 )
 
 PATH = "/v1/attempts/forge-credential"
-ALICE = "alice@saga.xyz"
-BOB = "bob@saga.xyz"
+ALICE = "alice@example.com"
+BOB = "bob@example.com"
 REPOSITORY = "acme/widgets"
 REPO_URL = f"https://github.com/{REPOSITORY}.git"
 
@@ -513,7 +513,7 @@ def test_the_token_is_in_no_log_and_no_header(client, db, store, caplog):
 
 
 def test_the_decision_derives_the_slot_from_the_signed_submitter():
-    task = {"submitted_by": "Alice@Saga.xyz", "forge_credential": app_slot(ALICE),
+    task = {"submitted_by": "Alice@Example.com", "forge_credential": app_slot(ALICE),
             "forge_access": "write", "repository_url": REPO_URL}
     modes = {(ALICE, "x"): "write"}
     seen: list[tuple[str, str]] = []
@@ -526,7 +526,7 @@ def test_the_decision_derives_the_slot_from_the_signed_submitter():
     release = credbroker.decide_slot(task, tenant_id="eng", access="write",
                                      grant_mode=grant_mode)
     assert release.suffix == app_slot(ALICE)
-    assert seen and seen[0][0] == "Alice@Saga.xyz"
+    assert seen and seen[0][0] == "Alice@Example.com"
 
     with pytest.raises(credbroker.CredentialNotSubmitters):
         credbroker.decide_slot({**task, "submitted_by": BOB}, tenant_id="eng",

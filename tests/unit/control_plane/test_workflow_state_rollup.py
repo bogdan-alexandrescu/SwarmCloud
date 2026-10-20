@@ -62,7 +62,7 @@ def make_workflow(
         created_at=NOW,
         updated_at=NOW,
         state=state,
-        submitted_by="alice@saga.xyz",
+        submitted_by="alice@example.com",
         steps=[
             WorkflowStep(
                 step_id=step_id,

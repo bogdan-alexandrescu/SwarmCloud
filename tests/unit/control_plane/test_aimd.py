@@ -417,8 +417,8 @@ def test_a_tenant_worker_in_this_project_is_authenticated_as_its_tenant():
         "swarm-t-eng@evil-project.iam.gserviceaccount.com",
         # Some other service account of this project, and a human.
         f"someone-else@{PROJECT}.iam.gserviceaccount.com",
-        "swarm-agent-worker-eng@saga.xyz",
-        "alice@saga.xyz",
+        "swarm-agent-worker-eng@example.com",
+        "alice@example.com",
     ],
 )
 def test_only_a_tenant_worker_of_this_project_is_authenticated(caller):

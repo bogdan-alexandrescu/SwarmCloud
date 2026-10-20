@@ -129,7 +129,7 @@ run "an_app_secret_reader_must_be_a_service_account" {
     tenant_secrets = {}
 
     github_app_secrets_enabled = true
-    github_app_secret_readers  = ["group:eng@saga.xyz"]
+    github_app_secret_readers  = ["group:eng@example.com"]
   }
 
   expect_failures = [var.github_app_secret_readers]

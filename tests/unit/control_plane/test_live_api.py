@@ -241,11 +241,11 @@ def claims_of(ticket: str) -> dict[str, Any]:
 def people() -> dict[str, tuple[str, ...]]:
     """alice submits; root and dave are other members of eng; bob is research."""
     return {
-        "alice@saga.xyz": (ENG_GROUP,),
-        "bob@saga.xyz": (RESEARCH_GROUP,),
-        "carol@saga.xyz": (),
-        "dave@saga.xyz": (ENG_GROUP,),
-        "root@saga.xyz": (ENG_GROUP,),
+        "alice@example.com": (ENG_GROUP,),
+        "bob@example.com": (RESEARCH_GROUP,),
+        "carol@example.com": (),
+        "dave@example.com": (ENG_GROUP,),
+        "root@example.com": (ENG_GROUP,),
     }
 
 
@@ -275,7 +275,7 @@ def _tokens(people) -> dict[str, dict[str, Any]]:
             "email": email,
             "email_verified": True,
             "sub": f"sub-{email}",
-            "hd": "saga.xyz",
+            "hd": "example.com",
         }
         for email in people
     }
@@ -353,7 +353,7 @@ def seed_running(client, db, attempt: Attempt, *, profile: str = PROFILE,
     doc.update({
         "current_lease_id": t.lease_id,
         "current_generation": t.generation,
-        "submitted_by": "alice@saga.xyz",
+        "submitted_by": "alice@example.com",
         "timeout_seconds": 3600,
         "attempt_count": 1,
         "started_at": now,
@@ -521,7 +521,7 @@ def test_another_tenants_member_is_refused_on_the_socket_even_with_a_valid_ticke
     client, ldb, live, relay
 ):
     claims = verify_ticket((LIVE_KEY,), ticket_for(client, "alice"), now=time.time())
-    forged = mint_ticket(LIVE_KEY, {**claims, "email": "bob@saga.xyz",
+    forged = mint_ticket(LIVE_KEY, {**claims, "email": "bob@example.com",
                                     "exp": int(time.time()) + 30})
     with client.websocket_connect(SOCKET, headers=bearer("bob")) as ws:
         ws.send_text(json.dumps({"ticket": forged}))
@@ -541,7 +541,7 @@ def test_a_non_submitter_can_view_and_cannot_take_until_opened(client, ldb, live
     assert view.status_code == 200, view.text
     assert view.json()["live_browser"] is True
     assert view.json()["session"]["you"] == {
-        "email": "root@saga.xyz", "can_control": False, "can_preempt": False,
+        "email": "root@example.com", "can_control": False, "can_preempt": False,
         "can_open": False, "can_switch_device": False,
     }
     assert client.post(f"/v1/tasks/{TASK}/live/ticket", headers=bearer("root")).status_code == 200
@@ -561,11 +561,11 @@ def test_a_non_submitter_can_view_and_cannot_take_until_opened(client, ldb, live
                        headers=bearer("root")).status_code == 403
     opened = client.post(f"/v1/tasks/{TASK}/live/open-to-members", headers=bearer("alice"))
     assert opened.status_code == 200, opened.text
-    assert [r["email"] for r in audit(ldb, "control_opened_to_members")] == ["alice@saga.xyz"]
+    assert [r["email"] for r in audit(ldb, "control_opened_to_members")] == ["alice@example.com"]
     taken = take(client, "root")
     assert taken.status_code == 200, taken.text
-    assert session_doc(ldb)["controller"]["email"] == "root@saga.xyz"
-    assert ldb.docs[f"tasks/{TASK}"]["human_wait"]["controller"]["email"] == "root@saga.xyz"
+    assert session_doc(ldb)["controller"]["email"] == "root@example.com"
+    assert ldb.docs[f"tasks/{TASK}"]["human_wait"]["controller"]["email"] == "root@example.com"
 
 
 def test_an_unrequested_take_is_the_submitters_only_even_when_opened(client, ldb, live):
@@ -605,12 +605,12 @@ def test_one_controller_at_a_time_and_only_the_submitter_preempts(client, ldb, l
     assert take(client, "dave", preempt=True).status_code == 409
     # The submitter is told who holds it, and preempts only when asked to.
     assert take(client, "alice").status_code == 409
-    assert session_doc(ldb)["controller"]["email"] == "root@saga.xyz"
+    assert session_doc(ldb)["controller"]["email"] == "root@example.com"
     preempted = take(client, "alice", preempt=True)
     assert preempted.status_code == 200, preempted.text
-    assert session_doc(ldb)["controller"]["email"] == "alice@saga.xyz"
+    assert session_doc(ldb)["controller"]["email"] == "alice@example.com"
     ended = audit(ldb, "control_ended")
-    assert [(r["email"], r["detail"]["cause"]) for r in ended] == [("root@saga.xyz", "preempted")]
+    assert [(r["email"], r["detail"]["cause"]) for r in ended] == [("root@example.com", "preempted")]
     # And root, preempted, cannot take it back from the submitter.
     assert take(client, "root", preempt=True).status_code == 409
 
@@ -623,7 +623,7 @@ def test_one_take_writes_one_control_audit_row_even_posted_twice(client, ldb, li
     assert take(client, "alice").status_code == 200
     assert take(client, "alice").status_code == 200
     control = [r for r in audit(ldb) if r["entry"].startswith("control_")]
-    assert [(r["entry"], r["email"]) for r in control] == [("control_taken", "alice@saga.xyz")]
+    assert [(r["entry"], r["email"]) for r in control] == [("control_taken", "alice@example.com")]
 
 
 def test_return_resolves_the_hand_off_and_only_the_controller_returns(client, ldb, live):
@@ -726,11 +726,11 @@ def test_a_take_runs_a_fresh_membership_check(client, ldb, live, groups):
                        headers=bearer("alice")).status_code == 200
     assert client.get(f"/v1/tasks/{TASK}/live/session", headers=bearer("root")).status_code == 200
     groups.caching = True
-    groups.mapping["root@saga.xyz"] = ()
+    groups.mapping["root@example.com"] = ()
     # The cached answer still authenticates root; the take asks again.
     response = take(client, "root")
     assert response.status_code == 404
-    assert ("root@saga.xyz", ENG_GROUP) in groups.forgotten
+    assert ("root@example.com", ENG_GROUP) in groups.forgotten
     assert session_doc(ldb)["controller"] is None
 
 
@@ -769,10 +769,10 @@ def test_the_fresh_check_gets_past_the_cloud_identity_cache():
         kind = "group"
         principal = ENG_GROUP
 
-    assert fresh_membership(Auth(), "root@saga.xyz", Tenant()) is True
+    assert fresh_membership(Auth(), "root@example.com", Tenant()) is True
     member["value"] = False
-    assert Auth().is_tenant_member("root@saga.xyz", Tenant()) is True  # cached
-    assert fresh_membership(Auth(), "root@saga.xyz", Tenant()) is False
+    assert Auth().is_tenant_member("root@example.com", Tenant()) is True  # cached
+    assert fresh_membership(Auth(), "root@example.com", Tenant()) is False
 
 
 def test_the_open_socket_is_re_checked_and_closed_when_membership_lapses(
@@ -795,10 +795,10 @@ def test_the_open_socket_is_re_checked_and_closed_when_membership_lapses(
         assert wait_until(lambda: any(m.get("type") == "control" for m in link.texts()))
         control = claims_of(next(m for m in link.texts() if m["type"] == "control")["ticket"])
         assert (control["role"], control["email"], control["session_id"], control["generation"]) == (
-            "control", "root@saga.xyz", SESSION, 1)
+            "control", "root@example.com", SESSION, 1)
         ws.send_bytes(bytes([4, 1, 0, 0, 0, 0, 0, 0x61]))  # an RFB KeyEvent
         assert wait_until(lambda: any(isinstance(m, bytes) for m in link.sent))
-        groups.mapping["root@saga.xyz"] = ()
+        groups.mapping["root@example.com"] = ()
         with pytest.raises(WebSocketDisconnect) as closed:
             while True:
                 ws.receive_json()
@@ -809,9 +809,9 @@ def test_the_open_socket_is_re_checked_and_closed_when_membership_lapses(
     assert wait_until(lambda: session_doc(ldb)["controller"] is None)
     ended = audit(ldb, "control_ended")
     assert [(r["email"], r["detail"]["cause"]) for r in ended] == [
-        ("root@saga.xyz", "membership_lost")]
+        ("root@example.com", "membership_lost")]
     assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
-    assert [r["email"] for r in audit(ldb, "viewer_joined")] == ["root@saga.xyz"]
+    assert [r["email"] for r in audit(ldb, "viewer_joined")] == ["root@example.com"]
     assert link.closed
     # Counts, never content: the key event is counted, not recorded.
     assert ended[0]["detail"]["keys"] == 1
@@ -937,7 +937,7 @@ def test_the_ticket_is_minted_in_a_body_and_the_socket_refuses_one_in_a_query(
 def test_the_viewer_ticket_is_one_person_thirty_seconds_and_this_session(client, ldb, live):
     claims = verify_ticket((LIVE_KEY,), ticket_for(client, "root"), now=time.time())
     assert claims["role"] == ROLE_VIEWER
-    assert claims["email"] == "root@saga.xyz"
+    assert claims["email"] == "root@example.com"
     assert claims["session_id"] == session_id_for(ATTEMPT)
     assert 0 < claims["exp"] - time.time() <= 30
     with pytest.raises(TicketRefused):
@@ -1014,7 +1014,7 @@ def test_the_proxy_refuses_another_tenants_session(client, ldb, live, relay):
     claims = verify_ticket((LIVE_KEY,), ticket_for(client, "alice"), now=time.time())
     # A genuine-looking ticket for bob's OWN tenant, naming eng's session: the
     # task it names is not research's, so it is the same 404 as no session.
-    theirs = mint_ticket(LIVE_KEY, {**claims, "tenant_id": "research", "email": "bob@saga.xyz",
+    theirs = mint_ticket(LIVE_KEY, {**claims, "tenant_id": "research", "email": "bob@example.com",
                                     "nonce": secrets.token_hex(16), "exp": int(time.time()) + 30})
     assert _refused(client, "bob", theirs) == 4404
     # alice's own ticket on another session's address is refused too.
@@ -1119,7 +1119,7 @@ def test_member_control_carries_over_to_the_next_attempts_session(client, ldb, l
     assert open_session(client, second).status_code == 201
     fresh = ldb.docs[f"{LIVE_SESSIONS}/{session_id_for('att_live_2')}"]
     assert fresh["open_to_members"] is True
-    assert fresh["opened_to_members_by"] == "alice@saga.xyz"
+    assert fresh["opened_to_members_by"] == "alice@example.com"
     view = client.get(f"/v1/tasks/{TASK}/live/session", headers=bearer("root")).json()
     assert view["session"]["open_to_members"] is True
     # Carried, not re-chosen: the session's opening says so, and no second
@@ -1143,7 +1143,7 @@ def test_the_submitter_turns_member_control_off_and_it_stays_off(client, ldb, li
     assert closed.json()["session"]["open_to_members"] is False
     assert session_doc(ldb)["open_to_members"] is False
     assert ldb.docs[f"tasks/{TASK}"]["live_open_to_members"] is False
-    assert [r["email"] for r in audit(ldb, "control_closed_to_members")] == ["alice@saga.xyz"]
+    assert [r["email"] for r in audit(ldb, "control_closed_to_members")] == ["alice@example.com"]
     # Twice is once: no second audit row.
     assert client.delete(f"/v1/tasks/{TASK}/live/open-to-members",
                          headers=bearer("alice")).status_code == 200
@@ -1237,7 +1237,7 @@ def _service(db, clock: Clock, **settings: Any):
 def _admission(user: str = "alice"):
     from swarm_api.live import Admission
 
-    return Admission(email=f"{user}@saga.xyz", tenant_id="eng", task_id=TASK, session_id=SESSION,
+    return Admission(email=f"{user}@example.com", tenant_id="eng", task_id=TASK, session_id=SESSION,
                      attempt_id=ATTEMPT, generation=1, ticket="t-" + secrets.token_hex(8))
 
 
@@ -1382,7 +1382,7 @@ def test_a_return_while_the_worker_parks_is_recorded_for_the_park(client, ldb, l
     returned = client.post(f"/v1/tasks/{TASK}/live/control/return", headers=bearer("alice"))
     assert returned.status_code == 200, returned.text
     mark = ldb.docs[f"tasks/{TASK}"]["metadata"]["human_returned"]
-    assert (mark["attempt_id"], mark["generation"], mark["by"]) == (ATTEMPT, 1, "alice@saga.xyz")
+    assert (mark["attempt_id"], mark["generation"], mark["by"]) == (ATTEMPT, 1, "alice@example.com")
     assert ldb.docs[f"tasks/{TASK}"]["state"] == "RUNNING"
 
 
@@ -1410,7 +1410,7 @@ def test_a_return_after_the_park_landed_re_queues_the_task(client, ldb, live, cl
     assert returned.status_code == 200, returned.text
     task = ldb.docs[f"tasks/{TASK}"]
     assert (task["state"], task["park_reason"]) == ("READY", None)
-    assert task["metadata"]["human_ready"]["by"] == "alice@saga.xyz"
+    assert task["metadata"]["human_ready"]["by"] == "alice@example.com"
     assert task["current_lease_id"] is None
     ready = [d for p, d in ldb.docs.items()
              if p.startswith(f"tasks/{TASK}/events/") and d["type"] == "ready"]

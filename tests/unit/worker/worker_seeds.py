@@ -83,7 +83,7 @@ def seed_tenant(db: FakeFirestore, *, credentials: list[str] | None = None) -> N
         {
             "tenant_id": TENANT,
             "kind": "group",
-            "principal": "eng@saga.xyz",
+            "principal": "eng@example.com",
             "created_at": utcnow(),
             "enabled": True,
             "credentials": credentials or [],
@@ -152,7 +152,7 @@ def seed_attempt(
             "provider": profile.provider,
             # By profile, and one its declaration accepts: see `_DEFAULT_INPUT`.
             "input": task_input or dict(_DEFAULT_INPUT.get(runner_profile, {"prompt": "hello"})),
-            "submitted_by": "alice@saga.xyz",
+            "submitted_by": "alice@example.com",
             "created_at": now,
             "updated_at": now,
             # What admission writes in the lease's own transaction: one more

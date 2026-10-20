@@ -70,11 +70,11 @@ def test_index_runs_are_submitted_as_the_indexer_profile_by_name():
     assert repoindex.INDEXER_PROFILE == "indexer"
     record = {
         "tenant_id": "eng",
-        "repo_id": "gh-saga-xyz-widgets",
-        "owner": "saga-xyz",
+        "repo_id": "gh-example-org-widgets",
+        "owner": "example-org",
         "repo": "widgets",
         "default_branch": "main",
-        "repository_url": "https://github.com/saga-xyz/widgets",
+        "repository_url": "https://github.com/example-org/widgets",
     }
     task = repoindex.indexer_task(record, SHA)
     assert task.runner_profile == "indexer"

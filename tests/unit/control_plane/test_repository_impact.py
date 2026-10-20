@@ -692,7 +692,7 @@ def test_a_repository_token_is_used_for_the_diff_before_the_tenant_default(
 ):
     repo_id, tenant = indexed["repo_id"], indexed["tenant"]
     record = record_for_slot(tenant, Scope.REPOSITORY, repo_id=repo_id, repository=REPOSITORY,
-                             registered_by="alice@saga.xyz", now=NOW)
+                             registered_by="alice@example.com", now=NOW)
     db.docs[f"git_tokens/{record.token_id}"] = record.to_firestore()
     repo_value = "github_pat_" + secrets.token_hex(20)
     forge_tokens.slots[record.secret_name] = repo_value

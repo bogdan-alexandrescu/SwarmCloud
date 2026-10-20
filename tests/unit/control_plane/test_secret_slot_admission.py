@@ -39,7 +39,7 @@ from .conftest import seed_pool, seed_task, seed_tenant
 
 TENANT = "eng"
 OTHER = "research"
-PERSON = "ada@saga.xyz"
+PERSON = "ada@example.com"
 PERSONAL = tenant_id_for_user(PERSON)
 
 #: A test profile: `mock` (no provider key, Cloud Run, standard) plus one
@@ -109,7 +109,7 @@ def grant(db, consumer: str = f"profile:{REQUIRED}", *, tenant_id: str = TENANT,
     sid = secret_id(tenant_id, n)
     db.docs[f"workspace_secret_grants/{sid}~{consumer}"] = {
         "secret_id": sid, "tenant_id": tenant_id, "consumer": consumer,
-        "enabled": enabled, "slot": slot, "changed_by": "admin@saga.xyz",
+        "enabled": enabled, "slot": slot, "changed_by": "admin@example.com",
     }
     return sid
 
@@ -275,8 +275,8 @@ def test_a_personal_secret_admits_a_group_task_only_under_the_opt_in(
 
 
 @pytest.mark.parametrize("why, submitted_by, creator", [
-    ("only on the owner's own submissions", "bob@saga.xyz", PERSON),
-    ("the record's creator must be the submitter", PERSON, "bob@saga.xyz"),
+    ("only on the owner's own submissions", "bob@example.com", PERSON),
+    ("the record's creator must be the submitter", PERSON, "bob@example.com"),
 ])
 def test_a_personal_secret_is_not_anyone_elses(
     db, make_scheduler, dispatcher, why, submitted_by, creator

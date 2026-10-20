@@ -92,7 +92,7 @@ def scheduler_expects_the_pool(profile_name: str) -> bool:
     tenant = Tenant(
         tenant_id=TENANT,
         kind="group",
-        principal="eng@saga.xyz",
+        principal="eng@example.com",
         created_at=utcnow(),
         credentials=[],
         service_account=f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com",

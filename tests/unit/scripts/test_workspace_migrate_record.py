@@ -35,7 +35,7 @@ WORLD_PY = Path(__file__).resolve().parent / "fixtures" / "workspace_world.py"
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
 
 TENANT = "u-bogdan"
-PRINCIPAL = "bogdan@saga.xyz"
+PRINCIPAL = "bogdan@example.com"
 KEPT_ID = "w-752763"
 REQUEST_ID = "6f1c2d3e-0000-4000-8000-000000000001"
 PROJECT = "saga-agents-staging"

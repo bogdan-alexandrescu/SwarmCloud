@@ -39,10 +39,10 @@ from swarm_api.waker import NullWaker
 from .conftest import ADMIN_GROUP, ENG_GROUP, RESEARCH_GROUP, NoForgeTokens, api_settings
 from .test_roles_store import Clock, Recording, worker_create
 
-DESIGN_GROUP = "design@saga.xyz"
+DESIGN_GROUP = "design@example.com"
 GROUPS = {
-    "alice@saga.xyz": (ENG_GROUP,),
-    "ops@saga.xyz": (ADMIN_GROUP,),
+    "alice@example.com": (ENG_GROUP,),
+    "ops@example.com": (ADMIN_GROUP,),
 }
 LIST = "/v1/admin/workspaces/roles"
 
@@ -61,10 +61,10 @@ def db() -> Recording:
         "workspace_id": "w-0000d1", "ready_at": ready})
     # Neither of these registers a group workspace.
     db.document("workspaces/sales").set({
-        "kind": "group", "principal": "sales@saga.xyz", "state": "applying",
+        "kind": "group", "principal": "sales@example.com", "state": "applying",
         "workspace_id": "w-0000d2", "ready_at": None})
     db.document("workspaces/u-carol").set({
-        "kind": "personal", "principal": "carol@saga.xyz", "state": "ready"})
+        "kind": "personal", "principal": "carol@example.com", "state": "ready"})
     return db
 
 
@@ -76,7 +76,7 @@ def clock() -> Clock:
 @pytest.fixture
 def app_ctx(db, clock):
     tokens = {f"token-{e.split('@')[0]}": {"email": e, "email_verified": True,
-                                           "sub": f"sub-{e}", "hd": "saga.xyz"}
+                                           "sub": f"sub-{e}", "hd": "example.com"}
               for e in GROUPS}
     return build_context(
         settings=api_settings(tenant_groups=(ENG_GROUP, RESEARCH_GROUP),
@@ -93,7 +93,7 @@ def client(app_ctx):
 
 
 def grant(app_ctx, clock, tenant_id: str, subject: str, role: str | None,
-          by: str = "ops@saga.xyz", via: str = "platform_admin") -> str:
+          by: str = "ops@example.com", via: str = "platform_admin") -> str:
     """A grant written the way the role routes write one."""
     clock.tick(seconds=1)
     store = app_ctx.roles
@@ -114,13 +114,13 @@ def test_a_platform_admin_gets_every_group_workspace_including_a_job_made_one(
         client, app_ctx, clock):
     # MUTATION: list `roles.registered_group_tenants(settings)` alone, and
     # design (job-made) is missing.
-    bob_at = grant(app_ctx, clock, "eng", "bob@saga.xyz", "admin")
-    grant(app_ctx, clock, "eng", "carol@saga.xyz", "viewer", by="bob@saga.xyz", via="console")
+    bob_at = grant(app_ctx, clock, "eng", "bob@example.com", "admin")
+    grant(app_ctx, clock, "eng", "carol@example.com", "viewer", by="bob@example.com", via="console")
     grant(app_ctx, clock, "eng", roles.DEFAULT_SUBJECT, "viewer")
-    grant(app_ctx, clock, "design", "dave@saga.xyz", "admin")
+    grant(app_ctx, clock, "design", "dave@example.com", "admin")
     # Back to the default: an override no more, so not listed.
-    grant(app_ctx, clock, "research", "erin@saga.xyz", "viewer")
-    grant(app_ctx, clock, "research", "erin@saga.xyz", None)
+    grant(app_ctx, clock, "research", "erin@example.com", "viewer")
+    grant(app_ctx, clock, "research", "erin@example.com", None)
 
     response = client.get(LIST, headers=h("ops"))
     assert response.status_code == 200, response.text
@@ -134,11 +134,11 @@ def test_a_platform_admin_gets_every_group_workspace_including_a_job_made_one(
     assert (eng["group"], eng["registered_by"], eng["kind"]) == (ENG_GROUP, "terraform", "group")
     assert (eng["default_role"], eng["default_source"]) == ("viewer", "grant")
     assert eng["people"] == [
-        {"email": "carol@saga.xyz", "role": "viewer", "source": "override",
-         "granted_by": "bob@saga.xyz", "granted_at": eng["people"][0]["granted_at"],
+        {"email": "carol@example.com", "role": "viewer", "source": "override",
+         "granted_by": "bob@example.com", "granted_at": eng["people"][0]["granted_at"],
          "granted_via": "console", "reason": ""},
-        {"email": "bob@saga.xyz", "role": "admin", "source": "override",
-         "granted_by": "ops@saga.xyz", "granted_at": bob_at,
+        {"email": "bob@example.com", "role": "admin", "source": "override",
+         "granted_by": "ops@example.com", "granted_at": bob_at,
          "granted_via": "platform_admin", "reason": ""},
     ]
 
@@ -148,15 +148,15 @@ def test_a_platform_admin_gets_every_group_workspace_including_a_job_made_one(
 
     design = ws["design"]
     assert (design["group"], design["registered_by"]) == (DESIGN_GROUP, "workspace_job")
-    assert [(p["email"], p["role"]) for p in design["people"]] == [("dave@saga.xyz", "admin")]
+    assert [(p["email"], p["role"]) for p in design["people"]] == [("dave@example.com", "admin")]
     # Never a personal workspace, never a group that is not ready.
     assert not {"u-carol", "sales"} & set(ws)
 
 
 def test_each_entry_says_what_the_per_workspace_route_says(client, app_ctx, clock):
-    grant(app_ctx, clock, "eng", "bob@saga.xyz", "admin")
-    grant(app_ctx, clock, "eng", "carol@saga.xyz", "viewer")
-    grant(app_ctx, clock, "eng", "carol@saga.xyz", "admin")
+    grant(app_ctx, clock, "eng", "bob@example.com", "admin")
+    grant(app_ctx, clock, "eng", "carol@example.com", "viewer")
+    grant(app_ctx, clock, "eng", "carol@example.com", "admin")
     grant(app_ctx, clock, "eng", roles.DEFAULT_SUBJECT, "viewer")
     listed = by_id(client.get(LIST, headers=h("ops")).json())["eng"]
     alone = client.get("/v1/admin/workspaces/eng/roles", headers=h("ops")).json()
@@ -177,7 +177,7 @@ def test_one_batched_grants_read_per_page_never_one_per_workspace(
     # MUTATION: read each workspace with `RoleStore.overrides`, and a page of
     # three costs three grants reads.
     for tenant_id in ("eng", "research", "design"):
-        grant(app_ctx, clock, tenant_id, "bob@saga.xyz", "admin")
+        grant(app_ctx, clock, tenant_id, "bob@example.com", "admin")
     seen: list[str] = []
     token: str | None = None
     pages = 0
@@ -189,7 +189,7 @@ def test_one_batched_grants_read_per_page_never_one_per_workspace(
         body = response.json()
         assert grant_reads(db) == 1
         assert 1 <= len(body["workspaces"]) <= page_size
-        assert all(w["people"][0]["email"] == "bob@saga.xyz" for w in body["workspaces"])
+        assert all(w["people"][0]["email"] == "bob@example.com" for w in body["workspaces"])
         seen += [w["tenant_id"] for w in body["workspaces"]]
         pages += 1
         token = body["next_page_token"]
@@ -210,23 +210,23 @@ def test_a_page_token_the_list_does_not_hold_is_422(client):
 
 
 def test_a_forged_grant_is_skipped_as_the_gates_skip_it(client, app_ctx, clock):
-    grant(app_ctx, clock, "eng", "bob@saga.xyz", "viewer")
+    grant(app_ctx, clock, "eng", "bob@example.com", "viewer")
     # A tenant worker's newer, unsigned grant: never the answer.
-    worker_create(app_ctx.db, {"tenant_id": "eng", "subject": "bob@saga.xyz", "role": "admin",
-                               "granted_by": "bob@saga.xyz",
+    worker_create(app_ctx.db, {"tenant_id": "eng", "subject": "bob@example.com", "role": "admin",
+                               "granted_by": "bob@example.com",
                                "granted_at": "2099-01-01T00:00:00.000000Z"})
     eng = by_id(client.get(LIST, headers=h("ops")).json())["eng"]
-    assert [(p["email"], p["role"]) for p in eng["people"]] == [("bob@saga.xyz", "viewer")]
-    gate = app_ctx.roles.person_role("eng", "bob@saga.xyz", fresh=True)
+    assert [(p["email"], p["role"]) for p in eng["people"]] == [("bob@example.com", "viewer")]
+    gate = app_ctx.roles.person_role("eng", "bob@example.com", fresh=True)
     assert gate.role == "viewer"
 
 
 def test_an_id_held_by_another_principal_is_unavailable_and_the_rest_is_served(
         client, app_ctx, clock, db):
-    grant(app_ctx, clock, "research", "bob@saga.xyz", "admin")
+    grant(app_ctx, clock, "research", "bob@example.com", "admin")
     db.document("tenants/eng").set({"tenant_id": "eng", "principal": "eng@partner.com",
                                     "kind": "group"})
     ws = by_id(client.get(LIST, headers=h("ops")).json())
     assert ws["eng"]["unavailable"] is True and ws["eng"]["code"] == "tenant_collision"
     assert "people" not in ws["eng"]
-    assert [p["email"] for p in ws["research"]["people"]] == ["bob@saga.xyz"]
+    assert [p["email"] for p in ws["research"]["people"]] == ["bob@example.com"]

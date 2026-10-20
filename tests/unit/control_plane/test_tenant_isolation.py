@@ -1,8 +1,8 @@
 """The tenant boundary.
 
-`alice@saga.xyz` is in `eng@saga.xyz` -> tenant `eng`.
-`bob@saga.xyz`   is in `research@saga.xyz` -> tenant `research`.
-`carol@saga.xyz` is in no registered group -> personal tenant `u-carol`.
+`alice@example.com` is in `eng@example.com` -> tenant `eng`.
+`bob@example.com`   is in `research@example.com` -> tenant `research`.
+`carol@example.com` is in no registered group -> personal tenant `u-carol`.
 
 The property under test is not "the route filters by tenant" -- it is that there
 is NO request bob can construct that returns alice's task. Reading another
@@ -210,9 +210,9 @@ def collision_client(db, second_group: str, member: str):
 
     from .conftest import ENG_GROUP, api_settings, core_settings
 
-    domains = tuple(sorted({"saga.xyz", second_group.split("@", 1)[1]}))
+    domains = tuple(sorted({"example.com", second_group.split("@", 1)[1]}))
     tokens = {
-        "token-alice": {"email": "alice@saga.xyz", "email_verified": True, "sub": "s1"},
+        "token-alice": {"email": "alice@example.com", "email_verified": True, "sub": "s1"},
         "token-mallory": {"email": member, "email_verified": True, "sub": "s2"},
     }
     ctx = build_context(
@@ -222,7 +222,7 @@ def collision_client(db, second_group: str, member: str):
         ),
         db=db,
         verifier=StaticTokenVerifier(tokens),
-        groups=StaticGroups({"alice@saga.xyz": (ENG_GROUP,), member: (second_group,)}),
+        groups=StaticGroups({"alice@example.com": (ENG_GROUP,), member: (second_group,)}),
         credentials=InMemoryCredentials(),
         waker=NullWaker(),
     )
@@ -230,7 +230,7 @@ def collision_client(db, second_group: str, member: str):
 
 
 def test_a_second_group_cannot_inherit_the_first_groups_tenant(db):
-    """`eng@saga.xyz` and `eng@partner.com` both slug to tenant `eng`.
+    """`eng@example.com` and `eng@partner.com` both slug to tenant `eng`.
 
     The frozen `tenant_id_for_group` keeps the LOCAL PART only, and
     ALLOWED_DOMAINS is explicitly a comma-separated list, so this needs no
@@ -247,7 +247,7 @@ def test_a_second_group_cannot_inherit_the_first_groups_tenant(db):
     )
     assert first.status_code == 201
     assert first.json()["task"]["tenant_id"] == "eng"
-    assert db.docs["tenants/eng"]["principal"] == "eng@saga.xyz"
+    assert db.docs["tenants/eng"]["principal"] == "eng@example.com"
 
     stolen = client.post(
         "/v1/tasks", headers={"Authorization": "Bearer token-mallory"},
@@ -256,11 +256,11 @@ def test_a_second_group_cannot_inherit_the_first_groups_tenant(db):
     assert stolen.status_code == 409, stolen.text
     body = stolen.json()
     assert body["code"] == "conflict"
-    assert body["detail"]["registered_principal"] == "eng@saga.xyz"
+    assert body["detail"]["registered_principal"] == "eng@example.com"
     assert body["detail"]["requested_principal"] == "eng@partner.com"
 
     # Nothing of theirs was written, and the tenant still belongs to the first.
-    assert db.docs["tenants/eng"]["principal"] == "eng@saga.xyz"
+    assert db.docs["tenants/eng"]["principal"] == "eng@example.com"
     task_docs = [p for p in db.docs if p.startswith("tasks/") and p.count("/") == 1]
     assert task_docs == [f"tasks/{first.json()['task']['id']}"]
 
@@ -268,7 +268,7 @@ def test_a_second_group_cannot_inherit_the_first_groups_tenant(db):
 def test_a_punctuation_variant_of_a_group_name_collides_the_same_way(db):
     """`eng.team@`, `eng_team@` and `Eng-Team@` all slug to `eng-team`; the
     domain is not the only way in."""
-    client = collision_client(db, "eng@saga.xyz.example", "mallory@saga.xyz.example")
+    client = collision_client(db, "eng@example.com.example", "mallory@example.com.example")
     ok = client.post(
         "/v1/tasks", headers={"Authorization": "Bearer token-alice"},
         json={"runner_profile": "mock"},
@@ -288,12 +288,12 @@ def test_every_member_of_one_group_shares_its_tenant(client, db):
 
     assert submit(client, "alice")["tenant_id"] == "eng"
     assert submit(client, "root")["tenant_id"] == "eng"
-    assert db.docs["tenants/eng"]["principal"] == "eng@saga.xyz"
+    assert db.docs["tenants/eng"]["principal"] == "eng@example.com"
 
 
 def test_a_personal_tenant_records_the_user_as_its_principal(client, db):
     assert submit(client, "carol")["tenant_id"] == "u-carol"
-    assert db.docs["tenants/u-carol"]["principal"] == "carol@saga.xyz"
+    assert db.docs["tenants/u-carol"]["principal"] == "carol@example.com"
     assert db.docs["tenants/u-carol"]["kind"] == "user"
 
 
@@ -383,8 +383,8 @@ def test_the_colliding_principal_cannot_read_or_cancel_through_any_route(db):
 
 
 def test_a_group_named_like_the_personal_prefix_collides_with_a_users_tenant(db):
-    """`u-eng@saga.xyz` as a registered GROUP derives the same id as the
-    PERSONAL tenant of `eng@saga.xyz`.
+    """`u-eng@example.com` as a registered GROUP derives the same id as the
+    PERSONAL tenant of `eng@example.com`.
 
     The frozen `tenant_id_for_user` prefixes `u-` and documents that this
     "cannot collide with a group" -- but the group path adds no prefix at all,
@@ -405,17 +405,17 @@ def test_a_group_named_like_the_personal_prefix_collides_with_a_users_tenant(db)
 
     from .conftest import api_settings
 
-    group = "u-eng@saga.xyz"
+    group = "u-eng@example.com"
     ctx = build_context(
         settings=api_settings(tenant_groups=(group,)),
         db=db,
         verifier=StaticTokenVerifier({
-            "token-member": {"email": "dana@saga.xyz", "email_verified": True, "sub": "s1"},
+            "token-member": {"email": "dana@example.com", "email_verified": True, "sub": "s1"},
             # In NO registered group, so she falls back to a personal tenant --
             # and her local part is `eng`, so that tenant is `u-eng` too.
-            "token-eng": {"email": "eng@saga.xyz", "email_verified": True, "sub": "s2"},
+            "token-eng": {"email": "eng@example.com", "email_verified": True, "sub": "s2"},
         }),
-        groups=StaticGroups({"dana@saga.xyz": (group,), "eng@saga.xyz": ()}),
+        groups=StaticGroups({"dana@example.com": (group,), "eng@example.com": ()}),
         credentials=InMemoryCredentials(),
         waker=NullWaker(),
     )
@@ -427,7 +427,7 @@ def test_a_group_named_like_the_personal_prefix_collides_with_a_users_tenant(db)
     )
     assert owned.status_code == 201
     assert owned.json()["task"]["tenant_id"] == "u-eng"
-    assert db.docs["tenants/u-eng"]["principal"] == "u-eng@saga.xyz"
+    assert db.docs["tenants/u-eng"]["principal"] == "u-eng@example.com"
 
     intruder = {"Authorization": "Bearer token-eng"}
     # Same derived id, different principal: refused on the write path...
@@ -458,9 +458,9 @@ def test_the_guard_creates_no_tenant_document_on_a_read(db):
         settings=api_settings(),
         db=db,
         verifier=StaticTokenVerifier({
-            "token-alice": {"email": "alice@saga.xyz", "email_verified": True, "sub": "s1"},
+            "token-alice": {"email": "alice@example.com", "email_verified": True, "sub": "s1"},
         }),
-        groups=StaticGroups({"alice@saga.xyz": (ENG_GROUP,)}),
+        groups=StaticGroups({"alice@example.com": (ENG_GROUP,)}),
         credentials=InMemoryCredentials(),
         waker=NullWaker(),
     )

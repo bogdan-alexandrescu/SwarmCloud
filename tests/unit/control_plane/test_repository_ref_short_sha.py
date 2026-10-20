@@ -19,7 +19,7 @@ from swarm_api.validation import check_repository_ref
 
 from .conftest import auth_header
 
-REPO = "https://github.com/saga-xyz/example.git"
+REPO = "https://github.com/example-org/example.git"
 SHORT = "b7bda42e"
 FULL = "b7bda42e" + "0123456789abcdef" * 2
 

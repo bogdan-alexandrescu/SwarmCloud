@@ -168,7 +168,7 @@ def seed_attempt(db, worker: Worker, *, state: str = "STARTING", pools=("global"
         db.docs[f"pools/{name}"]["active"] += 1
     doc = seed_task(db, task_id=t.task_id, tenant_id=t.tenant_id, state=state)
     doc.update({"current_lease_id": t.lease_id, "current_generation": t.generation,
-                "submitted_by": "alice@saga.xyz", "repository_url": REPO_URL,
+                "submitted_by": "alice@example.com", "repository_url": REPO_URL,
                 "attempt_count": 1, **extra})
     db.docs[f"leases/{t.lease_id}"] = {
         "lease_id": t.lease_id, "task_id": t.task_id, "attempt_id": t.attempt_id,

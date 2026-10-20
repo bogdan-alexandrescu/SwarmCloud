@@ -19,7 +19,7 @@ import pytest
 from swarm_api import workspaces as ws
 from swarm_api.errors import Conflict
 
-PRINCIPAL = "bogdan@saga.xyz"
+PRINCIPAL = "bogdan@example.com"
 TENANT = ws.personal_tenant_id(PRINCIPAL)
 KEPT_ID = "w-752763"
 FRESH_ID = "w-0a1b2c"
@@ -72,7 +72,7 @@ def test_a_pending_record_is_completed_in_place_and_keeps_its_workspace_id(db, s
     if state != "requested":
         db.docs[f"workspaces/{TENANT}"].update({
             "state": state,
-            "decision": {"by": "admin@saga.xyz", "at": NOW - timedelta(hours=1),
+            "decision": {"by": "admin@example.com", "at": NOW - timedelta(hours=1),
                          "verdict": "denied" if state == "denied" else "approved",
                          "reason": "no" if state == "denied" else None},
             "failure": {"step": "A3", "code": "X", "retryable": True} if state == "failed" else None,
@@ -103,7 +103,7 @@ def test_a_pending_record_is_completed_in_place_and_keeps_its_workspace_id(db, s
     if state == "requested":
         assert record["history"] == []
     else:
-        assert record["history"][-1]["decision"]["by"] == "admin@saga.xyz"
+        assert record["history"][-1]["decision"]["by"] == "admin@example.com"
 
 
 def test_the_in_place_update_writes_one_admin_audit_entry(db) -> None:
@@ -241,7 +241,7 @@ def test_no_tenant_document_is_refused(db) -> None:
 
 @pytest.mark.parametrize("fields", [
     {"kind": "group"},
-    {"principal": "someone-else@saga.xyz"},
+    {"principal": "someone-else@example.com"},
     {"max_active": None},
 ])
 def test_a_tenant_that_is_not_this_persons_or_has_no_limits_is_refused(db, fields) -> None:
@@ -255,7 +255,7 @@ def test_a_tenant_that_is_not_this_persons_or_has_no_limits_is_refused(db, field
 
 def test_a_record_naming_another_principal_is_refused(db) -> None:
     _tenant(db)
-    _requested(db, principal="someone-else@saga.xyz")
+    _requested(db, principal="someone-else@example.com")
     before = copy.deepcopy(db.docs)
 
     with pytest.raises(Conflict, match="different principals"):

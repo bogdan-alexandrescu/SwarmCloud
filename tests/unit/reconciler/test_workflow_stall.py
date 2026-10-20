@@ -96,7 +96,7 @@ def seed_workflow(
         f"workflows/{workflow_id}",
         {
             "workflow_id": workflow_id, "tenant_id": TENANT, "state": state.value,
-            "submitted_by": "alice@saga.xyz",
+            "submitted_by": "alice@example.com",
             "created_at": utcnow() - timedelta(hours=2),
             "updated_at": utcnow() - timedelta(hours=1),
             "steps": [

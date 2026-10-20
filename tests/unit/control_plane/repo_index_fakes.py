@@ -18,7 +18,7 @@ from urllib.parse import unquote, urlparse
 from .repo_fakes import GitHubRepos, repo_entry
 
 BUCKET = "swarm-artifacts-saga-agents-staging"
-REPOSITORY = "saga-xyz/widgets"
+REPOSITORY = "example-org/widgets"
 # Relative to the clock the route reads, not a fixed date: freshness() calls an
 # index older than STALE_AGE (7 days) `stale`, so a pinned 2026-10-05 build
 # turned every "behind" assertion red on 2026-10-12 (PR #1170).

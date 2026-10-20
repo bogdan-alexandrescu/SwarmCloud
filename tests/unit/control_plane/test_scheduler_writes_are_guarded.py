@@ -92,7 +92,7 @@ from .test_request_cancel_is_transactional import ContendedFirestore
 TENANT = "eng"
 BACKEND = "CLOUD_RUN_JOB"
 ADMISSION = AdmissionConfig()
-BY = "alice@saga.xyz"
+BY = "alice@example.com"
 
 
 @pytest.fixture

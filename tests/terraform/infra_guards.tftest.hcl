@@ -70,7 +70,7 @@ run "the_gke_backend_can_be_switched_off_entirely" {
   variables {
     enable_gke_autopilot = false
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = ["anthropic"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = ["anthropic"] }
     }
   }
 
@@ -112,8 +112,8 @@ run "a_tenant_that_states_no_ceiling_takes_the_environments_default" {
     # var.tenants is frozen to dev's own keys (tenants_frozen.tftest.hcl), so
     # `eng` states a ceiling and `smoke` states none.
     tenants = {
-      eng   = { kind = "group", principal = "eng@saga.xyz", providers = [], max_active = 7 }
-      smoke = { kind = "group", principal = "smoke@saga.xyz", providers = [] }
+      eng   = { kind = "group", principal = "eng@example.com", providers = [], max_active = 7 }
+      smoke = { kind = "group", principal = "smoke@example.com", providers = [] }
     }
 
     pool_limits = {
@@ -172,8 +172,8 @@ run "a_tenant_pool_takes_the_smaller_of_max_active_and_capacity_units" {
     # `eng` is capped by its units, `smoke` by max_active, and `u-sw-c90291`
     # states neither.
     tenants = {
-      eng   = { kind = "group", principal = "eng@saga.xyz", providers = [], max_active = 10, capacity_units = 4 }
-      smoke = { kind = "group", principal = "smoke@saga.xyz", providers = [], max_active = 2, capacity_units = 4 }
+      eng   = { kind = "group", principal = "eng@example.com", providers = [], max_active = 10, capacity_units = 4 }
+      smoke = { kind = "group", principal = "smoke@example.com", providers = [], max_active = 2, capacity_units = 4 }
       "u-sw-c90291" = {
         kind            = "user"
         principal       = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
@@ -214,7 +214,7 @@ run "a_tenant_ceiling_of_zero_is_refused" {
 
   variables {
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = [], max_active = 0 }
+      eng = { kind = "group", principal = "eng@example.com", providers = [], max_active = 0 }
     }
   }
 
@@ -241,9 +241,9 @@ run "the_prod_shaped_configuration_composes" {
     gke_release_channel  = "STABLE"
 
     tenants = {
-      eng      = { kind = "group", principal = "eng@saga.xyz", providers = ["anthropic", "openai"], max_active = 40 }
-      research = { kind = "group", principal = "research@saga.xyz", providers = ["anthropic"], max_active = 20 }
-      smoke    = { kind = "group", principal = "swarm-smoke@saga.xyz", providers = [], max_active = 2 }
+      eng      = { kind = "group", principal = "eng@example.com", providers = ["anthropic", "openai"], max_active = 40 }
+      research = { kind = "group", principal = "research@example.com", providers = ["anthropic"], max_active = 20 }
+      smoke    = { kind = "group", principal = "swarm-smoke@example.com", providers = [], max_active = 2 }
     }
 
     pool_limits = {
@@ -520,9 +520,9 @@ run "the_rollup_sweeper_can_invoke_swarm_api_whatever_api_invokers_says" {
   }
 
   variables {
-    api_invokers = ["group:eng@saga.xyz"]
+    api_invokers = ["group:eng@example.com"]
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = ["anthropic"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = ["anthropic"] }
     }
   }
 

@@ -47,7 +47,7 @@ from . import forge_fakes
 from .conftest import ENG_GROUP, api_settings, auth_header, seed_grant
 from .test_issue_runs import PLAN, _create, _docs, _finish_planner, _run
 
-OWNER = "root@saga.xyz"
+OWNER = "root@example.com"
 SWITCH = refusals.env_name("hold_approver_required")
 SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
 
@@ -71,12 +71,12 @@ PLAIN_PLAN = _plan("src/widgets/list.py")
 @pytest.fixture
 def group_map():
     return {
-        "alice@saga.xyz": (ENG_GROUP,),
-        "dave@saga.xyz": (ENG_GROUP,),
-        "carol@saga.xyz": (),
+        "alice@example.com": (ENG_GROUP,),
+        "dave@example.com": (ENG_GROUP,),
+        "carol@example.com": (),
         # PLATFORM_OWNER, and a member of eng: the owner approves NEEDS_OWNER
         # holds as a member of the platform's tenant, never across tenants.
-        OWNER: ("swarm-admins@saga.xyz", ENG_GROUP),
+        OWNER: ("swarm-admins@example.com", ENG_GROUP),
     }
 
 
@@ -85,7 +85,7 @@ def labels():
     return []
 
 
-ISSUE_URL = "https://api.github.com/repos/saga-xyz/widgets/issues/42"
+ISSUE_URL = "https://api.github.com/repos/example-org/widgets/issues/42"
 
 
 class _Forge:
@@ -97,7 +97,7 @@ class _Forge:
         self.issue = {
             "number": 42, "title": "Widgets cannot be sorted", "body": "Steps: open the list.\n",
             "state": "open", "comments": 0, "labels": [{"name": name} for name in labels],
-            "html_url": "https://github.com/saga-xyz/widgets/issues/42",
+            "html_url": "https://github.com/example-org/widgets/issues/42",
         }
 
     def __call__(self, url: str, headers: dict[str, str], timeout: float):
@@ -140,8 +140,8 @@ def _grants(db):
     from .conftest import TEST_REPOSITORIES, grant_members
 
     grant_members(db, *TEST_REPOSITORIES)
-    for email in ("dave@saga.xyz", OWNER):
-        seed_grant(db, "eng", email, "saga-xyz/widgets")
+    for email in ("dave@example.com", OWNER):
+        seed_grant(db, "eng", email, "example-org/widgets")
 
 
 @pytest.fixture
@@ -150,9 +150,9 @@ def switch_on(monkeypatch):
 
 
 def _register(db, *, platform: bool, hard_stop_paths: list[str] | None = None, tenant_id: str = "eng") -> None:
-    repo_id = repo_id_for(tenant_id, "saga-xyz", "widgets")
+    repo_id = repo_id_for(tenant_id, "example-org", "widgets")
     db.docs[f"repositories/{repo_id}"] = {
-        "repo_id": repo_id, "tenant_id": tenant_id, "owner": "saga-xyz", "repo": "widgets",
+        "repo_id": repo_id, "tenant_id": tenant_id, "owner": "example-org", "repo": "widgets",
         "platform": platform, **({"hard_stop_paths": hard_stop_paths} if hard_stop_paths else {}),
     }
 
@@ -349,8 +349,8 @@ def test_a_one_person_tenant_approves_its_own_hold_only_with_the_typed_paths(cli
     from .conftest import seed_grant as grant
     from swarm_common.identity import tenant_id_for_user
 
-    personal = tenant_id_for_user("carol@saga.xyz")
-    grant(db, personal, "carol@saga.xyz", "saga-xyz/widgets")
+    personal = tenant_id_for_user("carol@example.com")
+    grant(db, personal, "carol@example.com", "example-org/widgets")
     run = _planned(client, db, objects, BOOTSTRAP_PLAN, user="carol")
     assert run["approval_hold"]["code"] == "NEEDS_SECOND_MEMBER"
 

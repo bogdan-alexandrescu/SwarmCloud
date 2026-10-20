@@ -35,7 +35,7 @@ def _task(task_id: str, prompt: str, metadata: dict | None = None) -> Task:
     return Task(
         id=task_id, tenant_id="eng", created_at=MOMENT, updated_at=MOMENT,
         state=TaskState.QUEUED, runner_profile="mock", resource_class="standard",
-        input={"prompt": prompt}, submitted_by="alice@saga.xyz", metadata=dict(metadata or {}),
+        input={"prompt": prompt}, submitted_by="alice@example.com", metadata=dict(metadata or {}),
     )
 
 

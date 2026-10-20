@@ -50,7 +50,7 @@ from swarm_api.onboarding import Caller, derive
 from .conftest import auth_header, seed_tenant
 
 T0 = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
-ALICE = Caller(email="alice@saga.xyz", tenant_id="eng")
+ALICE = Caller(email="alice@example.com", tenant_id="eng")
 DOC = Path(__file__).resolve().parents[3] / "docs" / "onboarding.md"
 
 
@@ -72,7 +72,7 @@ def tenant_token(**fields) -> GitTokenRecord:
     return record
 
 
-def user_token(email: str = "alice@saga.xyz", **fields) -> GitTokenRecord:
+def user_token(email: str = "alice@example.com", **fields) -> GitTokenRecord:
     record = record_for_slot("eng", Scope.USER, user=email, registered_by=email,
                              now=T0 - timedelta(days=3))
     record.kind = "fine_grained_pat"
@@ -191,11 +191,11 @@ def test_a_tenant_with_no_git_token_is_signed_in_and_nothing_else() -> None:
     assert view["next_step"] == "github_connected"
     assert view["complete"] is False
     signed = step(view, "signed_in")
-    assert signed["evidence"]["email"] == "alice@saga.xyz"
+    assert signed["evidence"]["email"] == "alice@example.com"
     assert signed["evidence"]["tenant_id"] == "eng"
     connect = step(view, "github_connected")
     # Today's working route to a user slot: the stdin store command, by name.
-    suffix = provider_suffix(Scope.USER, user="alice@saga.xyz")
+    suffix = provider_suffix(Scope.USER, user="alice@example.com")
     assert connect["evidence"]["store_command"] == (
         f"scripts/create-secrets.sh --tenant eng --provider {suffix} --stdin")
     assert view["user_hash"] == suffix.removeprefix("git-u-")
@@ -320,7 +320,7 @@ def test_the_callers_own_user_slot_is_preferred_to_the_tenant_token() -> None:
 
 
 def test_another_members_user_slot_is_never_used_or_served() -> None:
-    root = user_token("root@saga.xyz")
+    root = user_token("root@example.com")
     view = run([root], tenant_lists_git=False)
     assert step(view, "github_connected")["state"] == "todo"
     dumped = json.dumps(view)
@@ -467,7 +467,7 @@ def test_checks_older_than_the_interval_are_stale() -> None:
 def test_checks_of_another_token_or_tenant_are_not_this_callers() -> None:
     record = tenant_token()
     api = registration("example-org/api")
-    other = checks(user_token("root@saga.xyz"), api)
+    other = checks(user_token("root@example.com"), api)
     foreign = checks(record, api)
     foreign["tenant_id"] = "research"
     verified = step(run([record], [other, foreign], [api]), "access_verified")
@@ -539,7 +539,7 @@ def test_the_read_asks_for_installations_only_for_an_active_app_connection(db) -
 
     plain = tenant_token()
     db.docs[f"{COLLECTION}/{plain.token_id}"] = plain.to_firestore()
-    tenant = onboarding.Tenant(tenant_id="eng", kind="group", principal="eng@saga.xyz",
+    tenant = onboarding.Tenant(tenant_id="eng", kind="group", principal="eng@example.com",
                                credentials=["git"], created_at=T0)
     view = onboarding.read(db, ALICE, tenant=tenant, now=T0, installations=ask)
     assert asked == [] and states(view)["app_installed"] == "done"
@@ -558,7 +558,7 @@ def _seed_eng(db) -> GitTokenRecord:
     seed_tenant(db, "research")
     record = tenant_token(last4="Zq9w")
     db.docs[f"{COLLECTION}/{record.token_id}"] = record.to_firestore()
-    root = user_token("root@saga.xyz")
+    root = user_token("root@example.com")
     db.docs[f"{COLLECTION}/{root.token_id}"] = root.to_firestore()
     api = registration("example-org/api")
     db.docs[f"repositories/{api['repo_id']}"] = api
@@ -572,10 +572,10 @@ def test_the_route_serves_the_callers_checklist(db, client) -> None:
     response = client.get("/v1/onboarding", headers=auth_header("alice"))
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["tenant_id"] == "eng" and body["user"] == "alice@saga.xyz"
+    assert body["tenant_id"] == "eng" and body["user"] == "alice@example.com"
     assert step(body, "github_connected")["evidence"]["via"] == "tenant"
     assert step(body, "repos_chosen")["state"] == "done"
-    assert "root@saga.xyz" not in response.text
+    assert "root@example.com" not in response.text
     # No field of the response is a value, or a part of one.
     assert "Zq9w" not in response.text
 
@@ -617,7 +617,7 @@ INSTALLED = {"read": True, "source": "enabled", "installed": ["example-org"],
              "not_installed": [], "install_url": INSTALL_URL}
 
 
-def grant(repository: str, *, mode: str = "write", user: str = "alice@saga.xyz",
+def grant(repository: str, *, mode: str = "write", user: str = "alice@example.com",
           tenant_id: str = "eng", verified: bool = True, **states) -> dict:
     """A `forge_grants` document as `AccessService.verify` leaves it: checks
     named clone, push and pull_request, each with state, code, checked_at."""
@@ -703,7 +703,7 @@ def test_an_app_connection_with_no_grant_has_chosen_nothing() -> None:
 
 
 def test_another_members_or_tenants_grant_is_not_the_callers() -> None:
-    view = run_app([grant("example-org/api", user="bob@saga.xyz"),
+    view = run_app([grant("example-org/api", user="bob@example.com"),
                     grant("example-org/api", tenant_id="research")])
     assert states(view)["repos_chosen"] == "todo"
 

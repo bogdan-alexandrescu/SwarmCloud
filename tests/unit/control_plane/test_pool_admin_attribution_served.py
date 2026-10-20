@@ -14,7 +14,7 @@ from datetime import datetime
 
 from .conftest import auth_header, seed_pool, seed_tenant
 
-ROOT = "root@saga.xyz"
+ROOT = "root@example.com"
 
 
 def _admin_pools(client) -> dict[str, dict]:

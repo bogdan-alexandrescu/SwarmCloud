@@ -42,15 +42,15 @@ def test_omitting_submitted_by_is_a_type_error(store, call):
 
 
 def test_submitted_by_none_is_the_unfiltered_read(store, db):
-    db.docs["tasks/task_1"]["submitted_by"] = "alice@saga.xyz"
+    db.docs["tasks/task_1"]["submitted_by"] = "alice@example.com"
     assert store.get_task("eng", "task_1", submitted_by=None).id == "task_1"
     assert [t.id for t in store.list_tasks("eng", submitted_by=None).items] == ["task_1"]
 
 
 def test_a_named_submitter_reads_only_its_own_task(store, db):
-    db.docs["tasks/task_1"]["submitted_by"] = "alice@saga.xyz"
-    assert store.get_task("eng", "task_1", submitted_by="alice@saga.xyz").id == "task_1"
-    assert [t.id for t in store.list_tasks("eng", submitted_by="alice@saga.xyz").items] == [
+    db.docs["tasks/task_1"]["submitted_by"] = "alice@example.com"
+    assert store.get_task("eng", "task_1", submitted_by="alice@example.com").id == "task_1"
+    assert [t.id for t in store.list_tasks("eng", submitted_by="alice@example.com").items] == [
         "task_1"
     ]
     assert store.list_tasks("eng", submitted_by="bot@p.iam.gserviceaccount.com").items == []
@@ -61,7 +61,7 @@ def test_not_yours_reads_exactly_like_does_not_exist(store, db):
     tell "not yours" from "not in your tenant" from "no such task"."""
     from swarm_api.errors import NotFound
 
-    db.docs["tasks/task_1"]["submitted_by"] = "alice@saga.xyz"
+    db.docs["tasks/task_1"]["submitted_by"] = "alice@example.com"
     with pytest.raises(NotFound) as not_yours:
         store.get_task("eng", "task_1", submitted_by="bot@p.iam.gserviceaccount.com")
     with pytest.raises(NotFound) as other_tenant:

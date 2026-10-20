@@ -37,7 +37,7 @@ from swarm_api import repoindex, repositories
 
 from worker_seeds import TENANT, seed_attempt
 
-OWNER, REPO = "Saga-XYZ", "Widgets"
+OWNER, REPO = "Example-Org", "Widgets"
 URL = f"https://github.com/{OWNER}/{REPO}"
 REPO_ID = repositories.repo_id_for(TENANT, OWNER, REPO)
 BASE = hashlib.sha1(b"base").hexdigest()

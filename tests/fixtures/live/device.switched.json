@@ -12,7 +12,7 @@
       "deadline": "2026-10-11T23:50:00+00:00"
     },
     "controller": {
-      "email": "alice@saga.xyz",
+      "email": "alice@example.com",
       "since": "2026-10-11T23:41:00+00:00",
       "renew_by": "2026-10-11T23:42:00+00:00"
     },
@@ -60,7 +60,7 @@
       }
     ],
     "you": {
-      "email": "alice@saga.xyz",
+      "email": "alice@example.com",
       "can_control": true,
       "can_preempt": false,
       "can_open": true,

@@ -5,13 +5,13 @@ length: secret_admin_members holds secretVersionAdder on EVERY tenant's
 provider-key secrets. That cannot read a key in place, but it can REPLACE one
 with a key pointing at attacker-controlled infrastructure, after which the
 victim tenant's prompts, source and output all flow through it. The validation
-caught exactly this once, when bogdan@saga.xyz was both the secret admin and
+caught exactly this once, when bogdan@example.com was both the secret admin and
 the principal of the u-bogdan fallback tenant.
 
 That validation can only see tenants DECLARED in var.tenants.
 `Store.ensure_tenant` creates a self-service tenant for any allowed-domain
 caller on first sight, and those are invisible to terraform. On 2026-09-21
-admin@saga.xyz -- the account the tfvars comment describes as "a platform
+admin@example.com -- the account the tfvars comment describes as "a platform
 account that owns no tenant" -- opened the web UI, and tenant u-admin was
 written with the platform's secret admin as its principal.
 
@@ -56,7 +56,7 @@ class _Settings:
     project_id = "p"
     tenant_service_account_prefix = "swarm-agent-worker"
     tenant_namespace_prefix = "swarm-tenant-"
-    secret_admin_principals: tuple[str, ...] = ("admin@saga.xyz",)
+    secret_admin_principals: tuple[str, ...] = ("admin@example.com",)
 
 
 def _service(store, settings=None):
@@ -82,7 +82,7 @@ def _ctx(email, tenant_id, tenant_principal=""):
 def test_the_secret_admin_is_refused_a_tenant():
     store = _Store()
     with pytest.raises(Forbidden) as exc:
-        _service(store).tenant_for(_ctx("admin@saga.xyz", "u-admin"))
+        _service(store).tenant_for(_ctx("admin@example.com", "u-admin"))
     assert store.created == [], "the tenant was created before the check ran"
     assert "provider-key secrets" in str(exc.value)
 
@@ -93,7 +93,7 @@ def test_the_refusal_happens_before_the_tenant_is_created():
     which is the state this platform is already in for u-admin."""
     store = _Store()
     with pytest.raises(Forbidden):
-        _service(store).tenant_for(_ctx("admin@saga.xyz", "u-admin"))
+        _service(store).tenant_for(_ctx("admin@example.com", "u-admin"))
     assert store.created == []
 
 
@@ -102,9 +102,9 @@ def test_an_ordinary_caller_still_gets_a_tenant_on_first_sight():
     resolution is off for most callers, so they land on `u-<user>` and that
     document is created here."""
     store = _Store()
-    tenant = _service(store).tenant_for(_ctx("bogdan@saga.xyz", "u-bogdan"))
+    tenant = _service(store).tenant_for(_ctx("bogdan@example.com", "u-bogdan"))
     assert tenant.tenant_id == "u-bogdan"
-    assert store.created == ["bogdan@saga.xyz"]
+    assert store.created == ["bogdan@example.com"]
 
 
 def test_matching_is_case_insensitive():
@@ -112,7 +112,7 @@ def test_matching_is_case_insensitive():
     been observed returning either."""
     store = _Store()
     with pytest.raises(Forbidden):
-        _service(store).tenant_for(_ctx("Admin@Saga.XYZ", "u-admin"))
+        _service(store).tenant_for(_ctx("Admin@Example.COM", "u-admin"))
     assert store.created == []
 
 
@@ -121,12 +121,12 @@ def test_a_group_tenant_is_matched_on_the_group_not_the_caller():
     secret admin is the more dangerous case of the two, because every member
     of it inherits the reach."""
     class _GroupAdmin(_Settings):
-        secret_admin_principals = ("platform-admins@saga.xyz",)
+        secret_admin_principals = ("platform-admins@example.com",)
 
     store = _Store()
     with pytest.raises(Forbidden):
         _service(store, _GroupAdmin()).tenant_for(
-            _ctx("someone@saga.xyz", "platform-admins", "platform-admins@saga.xyz")
+            _ctx("someone@example.com", "platform-admins", "platform-admins@example.com")
         )
     assert store.created == []
 
@@ -136,10 +136,10 @@ def test_a_caller_in_a_secret_admin_group_but_resolving_elsewhere_is_allowed():
     happens to be in the admin group but whose work files under their own
     tenant is not the dangerous shape -- the tenant is what owns the secrets."""
     class _GroupAdmin(_Settings):
-        secret_admin_principals = ("platform-admins@saga.xyz",)
+        secret_admin_principals = ("platform-admins@example.com",)
 
     store = _Store()
-    tenant = _service(store, _GroupAdmin()).tenant_for(_ctx("someone@saga.xyz", "u-someone"))
+    tenant = _service(store, _GroupAdmin()).tenant_for(_ctx("someone@example.com", "u-someone"))
     assert tenant.tenant_id == "u-someone"
 
 
@@ -150,7 +150,7 @@ def test_no_secret_admins_configured_changes_nothing():
         secret_admin_principals = ()
 
     store = _Store()
-    assert _service(store, _None()).tenant_for(_ctx("x@saga.xyz", "u-x")).tenant_id == "u-x"
+    assert _service(store, _None()).tenant_for(_ctx("x@example.com", "u-x")).tenant_id == "u-x"
 
 
 def test_blank_entries_do_not_match_an_empty_principal():
@@ -158,4 +158,4 @@ def test_blank_entries_do_not_match_an_empty_principal():
         secret_admin_principals = ("", "   ")
 
     store = _Store()
-    assert _service(store, _Blank()).tenant_for(_ctx("x@saga.xyz", "u-x")).tenant_id == "u-x"
+    assert _service(store, _Blank()).tenant_for(_ctx("x@example.com", "u-x")).tenant_id == "u-x"

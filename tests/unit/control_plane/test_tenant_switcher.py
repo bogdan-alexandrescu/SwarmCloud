@@ -92,11 +92,11 @@ class CountingFirestore(FakeFirestore):
 @pytest.fixture
 def group_map() -> dict[str, tuple[str, ...]]:
     return {
-        "alice@saga.xyz": (ENG_GROUP,),
-        "bob@saga.xyz": (RESEARCH_GROUP,),
-        "carol@saga.xyz": (),
-        "dave@saga.xyz": (ENG_GROUP, RESEARCH_GROUP),
-        "root@saga.xyz": (ADMIN_GROUP, ENG_GROUP),
+        "alice@example.com": (ENG_GROUP,),
+        "bob@example.com": (RESEARCH_GROUP,),
+        "carol@example.com": (),
+        "dave@example.com": (ENG_GROUP, RESEARCH_GROUP),
+        "root@example.com": (ADMIN_GROUP, ENG_GROUP),
     }
 
 
@@ -210,7 +210,7 @@ def test_the_header_cannot_name_an_admin_group(client):
 
 def test_the_header_is_matched_exactly(client):
     assert submit(client, "dave", "Research").status_code == 403
-    assert submit(client, "dave", "research@saga.xyz").status_code == 403
+    assert submit(client, "dave", "research@example.com").status_code == 403
 
 
 # -- no header: byte-for-byte today ------------------------------------------
@@ -262,7 +262,7 @@ def test_principal_and_tenant_id_describe_the_same_tenant(group_map):
 
 
 def test_the_header_does_not_change_admin_status(group_map):
-    auth = _authenticator({**group_map, "root@saga.xyz": (ADMIN_GROUP, ENG_GROUP, RESEARCH_GROUP)})
+    auth = _authenticator({**group_map, "root@example.com": (ADMIN_GROUP, ENG_GROUP, RESEARCH_GROUP)})
     root = auth.authenticate("Bearer t-root", None, tenant="research")
     assert root.is_admin is True
     assert root.tenant_id == "research"
@@ -290,7 +290,7 @@ class _FlakyResearch:
 
 
 def test_an_unverified_membership_is_not_selectable():
-    claims = {"t-dave": {"email": "dave@saga.xyz", "email_verified": True, "sub": "s"}}
+    claims = {"t-dave": {"email": "dave@example.com", "email_verified": True, "sub": "s"}}
     auth = Authenticator(api_settings(), StaticTokenVerifier(claims), _FlakyResearch())
     assert auth.authenticate("Bearer t-dave").tenant_id == "eng"
     with pytest.raises(Forbidden):
@@ -331,7 +331,7 @@ def test_mine_follows_the_admin_order_not_the_directorys(db, tokens):
     settings = api_settings(tenant_groups=(RESEARCH_GROUP, ENG_GROUP))
     ctx = build_context(
         settings=settings, db=db, verifier=StaticTokenVerifier(tokens),
-        groups=StaticGroups({"dave@saga.xyz": (ENG_GROUP, RESEARCH_GROUP)}),
+        groups=StaticGroups({"dave@example.com": (ENG_GROUP, RESEARCH_GROUP)}),
         credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(), objects=None,
     )
     client = TestClient(create_app(ctx), raise_server_exceptions=False)

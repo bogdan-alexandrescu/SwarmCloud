@@ -37,13 +37,13 @@ SVC = "ci-bot@saga-agents-staging.iam.gserviceaccount.com"
 @pytest.fixture
 def group_map() -> dict[str, tuple[str, ...]]:
     return {
-        "alice@saga.xyz": (ENG_GROUP,),
-        "dave@saga.xyz": (ENG_GROUP, RESEARCH_GROUP),
-        "erin@saga.xyz": (ENG_GROUP,),
-        "fay@saga.xyz": (ENG_GROUP,),
-        "gus@saga.xyz": (ENG_GROUP,),
-        "carol@saga.xyz": (),
-        "hank@saga.xyz": (),
+        "alice@example.com": (ENG_GROUP,),
+        "dave@example.com": (ENG_GROUP, RESEARCH_GROUP),
+        "erin@example.com": (ENG_GROUP,),
+        "fay@example.com": (ENG_GROUP,),
+        "gus@example.com": (ENG_GROUP,),
+        "carol@example.com": (),
+        "hank@example.com": (),
     }
 
 
@@ -51,7 +51,7 @@ def group_map() -> dict[str, tuple[str, ...]]:
 def tokens(group_map) -> dict[str, dict[str, Any]]:
     return {
         f"token-{email.split('@')[0]}": {
-            "email": email, "email_verified": True, "sub": f"sub-{email}", "hd": "saga.xyz",
+            "email": email, "email_verified": True, "sub": f"sub-{email}", "hd": "example.com",
         }
         for email in group_map
     }
@@ -62,7 +62,7 @@ def seed_personal(db: FakeFirestore, user: str, *, state: str = "ready",
                   record_principal: str | None = None) -> None:
     """`tenants/u-<user>` and `workspaces/u-<user>`, as the workspace job leaves them."""
     tenant_id = f"u-{user}"
-    owner = principal or f"{user}@saga.xyz"
+    owner = principal or f"{user}@example.com"
     seed_tenant(db, tenant_id)
     db.docs[f"tenants/{tenant_id}"].update(kind=kind, principal=owner, display_name=owner)
     db.docs[f"workspaces/{tenant_id}"] = {
@@ -251,8 +251,8 @@ def test_the_callers_own_workspace_reads_are_scoped_to_it(client, seeded):
     ("gus", "u-gus"),           # the id derives from gus's email; the tenant is not his
     ("alice", "U-alice"),       # case
     ("alice", "u-alice "),      # trailing space
-    ("alice", "u-alice@saga.xyz"),
-    ("alice", "alice@saga.xyz"),
+    ("alice", "u-alice@example.com"),
+    ("alice", "alice@example.com"),
     ("alice", "alice"),
     ("hank", "u-hank"),         # personal-only, no workspace: unchanged
 ])
@@ -279,8 +279,8 @@ def test_the_personal_choice_carries_the_callers_email_as_principal(group_map, s
     auth = _authenticator(group_map, seeded)
     ctx = auth.authenticate("Bearer t-dave")
     assert ctx.tenant_id == "u-dave"
-    assert ctx.tenant_principal == "dave@saga.xyz"
-    assert ctx.tenant_choices == (("u-dave", "dave@saga.xyz"), ("eng", ENG_GROUP),
+    assert ctx.tenant_principal == "dave@example.com"
+    assert ctx.tenant_choices == (("u-dave", "dave@example.com"), ("eng", ENG_GROUP),
                                   ("research", RESEARCH_GROUP))
     # Selecting it explicitly is the same context as not selecting.
     assert auth.authenticate("Bearer t-dave", None, tenant="u-dave") == ctx
@@ -290,7 +290,7 @@ def test_the_personal_choice_carries_the_callers_email_as_principal(group_map, s
 
 
 def test_admins_gain_nothing(group_map, seeded):
-    gm = {**group_map, "root@saga.xyz": ("swarm-admins@saga.xyz", ENG_GROUP)}
+    gm = {**group_map, "root@example.com": ("swarm-admins@example.com", ENG_GROUP)}
     auth = _authenticator(gm, seeded)
     root = auth.authenticate("Bearer t-root")
     assert root.is_admin is True
@@ -307,7 +307,7 @@ def test_a_refused_header_reads_nothing_for_the_personal_tenant(group_map):
         def collection(self, path: str):
             raise AssertionError(f"read {path}")
 
-    claims = {"t-alice": {"email": "alice@saga.xyz", "email_verified": True, "sub": "s"}}
+    claims = {"t-alice": {"email": "alice@example.com", "email_verified": True, "sub": "s"}}
     auth = Authenticator(api_settings(), StaticTokenVerifier(claims), StaticGroups(group_map),
                          personal=PersonalTenants(Exploding()))
     with pytest.raises(Forbidden):
@@ -323,7 +323,7 @@ def test_an_unreadable_workspace_is_a_503_never_a_guess(group_map):
         def collection(self, path: str):
             raise RuntimeError("firestore unavailable")
 
-    claims = {"t-alice": {"email": "alice@saga.xyz", "email_verified": True, "sub": "s"}}
+    claims = {"t-alice": {"email": "alice@example.com", "email_verified": True, "sub": "s"}}
     auth = Authenticator(api_settings(), StaticTokenVerifier(claims), StaticGroups(group_map),
                          personal=PersonalTenants(Broken()))
     with pytest.raises(UpstreamUnavailable):
@@ -347,7 +347,7 @@ def test_the_answer_is_cached_briefly_and_then_read_again(group_map, db):
 
 
 def test_no_reader_is_todays_behaviour(group_map, seeded):
-    claims = {"t-alice": {"email": "alice@saga.xyz", "email_verified": True, "sub": "s"}}
+    claims = {"t-alice": {"email": "alice@example.com", "email_verified": True, "sub": "s"}}
     auth = Authenticator(api_settings(), StaticTokenVerifier(claims), StaticGroups(group_map))
     ctx = auth.authenticate("Bearer t-alice")
     assert ctx.tenant_id == "eng" and ctx.tenant_choices == (("eng", ENG_GROUP),)

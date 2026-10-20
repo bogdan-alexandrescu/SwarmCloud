@@ -48,9 +48,9 @@ from swarm_api.waker import NullWaker
 from . import forge_fakes
 from .conftest import api_settings, seed_tenant
 
-OWNER, REPO = "saga-xyz", "widgets"
+OWNER, REPO = "example-org", "widgets"
 REPOSITORY = f"{OWNER}/{REPO}"
-ALICE = "alice@saga.xyz"
+ALICE = "alice@example.com"
 SCHEDULE_ID = "sch_000000000001"
 
 _now = datetime.now(timezone.utc)

@@ -451,7 +451,7 @@ def test_the_expectation_is_private_and_names_the_workspace(ready: dict[str, str
     assert exp["worker_email"] == "swarm-agent-worker-u-alice@saga-agents-staging.iam.gserviceaccount.com"
     assert exp["namespace"] == "swarm-tenant-u-alice"
     assert exp["contexts"] == ["swarm-dev", "gke_saga-agents-staging_us-central1_swarm-autopilot"]
-    assert "principal" not in exp and "alice@saga.xyz" not in path.read_text()
+    assert "principal" not in exp and "alice@example.com" not in path.read_text()
 
 
 def test_init_refuses_a_malformed_workspace_id(tmp_path: Path) -> None:
@@ -515,7 +515,7 @@ def test_the_forge_slot_is_the_one_swarm_api_creates(ready: dict[str, str]) -> N
     from swarm_api.gittokens import Scope, provider_suffix
 
     exp = json.loads(Path(ready["SWARM_CALL_GUARD"]).read_text())
-    suffix = provider_suffix(Scope.USER, user="alice@saga.xyz")
+    suffix = provider_suffix(Scope.USER, user="alice@example.com")
     assert exp["forge_slot"] == f"swarm-tenant-u-alice-{suffix}"
     assert exp["forge_slot_twin"] == f"swarm-tenant-u-alice-{suffix}-refresh"
 

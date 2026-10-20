@@ -7,7 +7,7 @@ plugin be configured by the user with the urls and other credentials needed?"
 It was. `client.front_door_host()` found https://swarm.saga.xyz by reading
 `terraform/environments/<env>/<env>.tfvars` out of whatever checkout the bridge
 was installed from. Anyone installing the `sc` plugin against their OWN
-deployment got Saga's load balancer, and anyone outside a checkout got nothing.
+deployment got the owner's load balancer, and anyone outside a checkout got nothing.
 
 What replaces it is the shape `gh` and `kubectl` have: named CONTEXTS in a
 per-user config file, one of them current, with a strict override order --
@@ -138,18 +138,18 @@ def _run_sc(argv: list[str], *, stdin: str | None = None, monkeypatch=None) -> t
 
 def test_add_list_use_remove_round_trip(store):
     config = _config()
-    config.add_context("saga-dev", "https://swarm.example.test/", client_id="123-abc.apps.googleusercontent.com")
+    config.add_context("example-dev", "https://swarm.example.test/", client_id="123-abc.apps.googleusercontent.com")
     config.add_context("other", "https://swarm.other.test")
 
     loaded = config.load()
-    assert sorted(loaded.contexts) == ["other", "saga-dev"]
+    assert sorted(loaded.contexts) == ["example-dev", "other"]
     # The trailing slash is normalised away: it is joined onto `/v1/...` later
     # and a double slash is a different path to a load balancer's URL map.
-    assert loaded.contexts["saga-dev"].url == "https://swarm.example.test"
-    assert loaded.contexts["saga-dev"].oauth_client_id == "123-abc.apps.googleusercontent.com"
+    assert loaded.contexts["example-dev"].url == "https://swarm.example.test"
+    assert loaded.contexts["example-dev"].oauth_client_id == "123-abc.apps.googleusercontent.com"
     # The FIRST context becomes current -- a user who has exactly one
     # deployment should not need a second command to use it.
-    assert loaded.current == "saga-dev"
+    assert loaded.current == "example-dev"
 
     config.use_context("other")
     assert config.load().current == "other"
@@ -158,17 +158,17 @@ def test_add_list_use_remove_round_trip(store):
     store.set("other/oauth-client-secret", "GOCSPX-secret")
     config.remove_context("other")
     after = config.load()
-    assert sorted(after.contexts) == ["saga-dev"]
+    assert sorted(after.contexts) == ["example-dev"]
     assert after.current is None, "removing the current context leaves none current, not a guess"
     assert store.items == {}, "removing a context must remove the credentials keyed by it"
 
 
 def test_using_an_unknown_context_names_the_ones_that_exist(store):
     config = _config()
-    config.add_context("saga-dev", "https://swarm.example.test")
+    config.add_context("example-dev", "https://swarm.example.test")
     with pytest.raises(SwarmError) as caught:
         config.use_context("sage-dev")
-    assert "saga-dev" in str(caught.value)
+    assert "example-dev" in str(caught.value)
 
 
 @pytest.mark.parametrize("bad", ["", "has space", "a/b", "../up", "-leading-dash", "x" * 80])
@@ -201,7 +201,7 @@ def test_the_config_file_is_private_and_carries_no_secret(store, monkeypatch):
     credential store and NOWHERE in the config file, which is plain JSON a
     user may well paste into an issue."""
     code, out, err = _run_sc(
-        ["context", "add", "saga-dev", "--url", "https://swarm.example.test",
+        ["context", "add", "example-dev", "--url", "https://swarm.example.test",
          "--client-id", "123-abc.apps.googleusercontent.com", "--client-secret-stdin"],
         stdin="GOCSPX-do-not-leak\n",
         monkeypatch=monkeypatch,
@@ -212,11 +212,11 @@ def test_the_config_file_is_private_and_carries_no_secret(store, monkeypatch):
     text = path.read_text()
     assert "GOCSPX-do-not-leak" not in text
     assert "GOCSPX-do-not-leak" not in out + err
-    assert store.items["saga-dev/oauth-client-secret"] == "GOCSPX-do-not-leak"
+    assert store.items["example-dev/oauth-client-secret"] == "GOCSPX-do-not-leak"
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     # Only non-secret keys are ever written, whatever a caller hands over.
     body = json.loads(text)
-    assert set(body["contexts"]["saga-dev"]) <= {"url", "oauth_client_id"}
+    assert set(body["contexts"]["example-dev"]) <= {"url", "oauth_client_id"}
 
 
 def test_the_cli_lists_contexts_and_marks_the_current_one(store, monkeypatch):
@@ -344,10 +344,10 @@ def test_an_env_url_borrows_the_sign_in_of_a_context_with_the_same_url(monkeypat
     """SWARM_URL on a laptop that already signed in to that deployment must
     use that sign-in: credentials are keyed by the context, and the context is
     found by the address."""
-    _config().add_context("saga-dev", "https://swarm.example.test", client_id="1-a.apps.googleusercontent.com")
+    _config().add_context("example-dev", "https://swarm.example.test", client_id="1-a.apps.googleusercontent.com")
     monkeypatch.setenv("SWARM_URL", "https://swarm.example.test/")
     resolved = _config().resolve()
-    assert resolved.context == "saga-dev"
+    assert resolved.context == "example-dev"
     assert resolved.client_id == "1-a.apps.googleusercontent.com"
 
 
@@ -457,7 +457,7 @@ def _unreadable_repo(tmp_path: Path) -> Path:
     directory = tmp_path / "repo" / "terraform" / "environments" / "dev"
     directory.mkdir(parents=True)
     tfvars = directory / "dev.tfvars"
-    tfvars.write_text('enable_frontend = true\nfrontend_hostname = "saga-only.example.test"\n')
+    tfvars.write_text('enable_frontend = true\nfrontend_hostname = "example-only.example.test"\n')
     tfvars.chmod(0)
     return tmp_path / "repo"
 
@@ -466,7 +466,7 @@ def test_the_bridge_never_opens_a_tfvars_file_outside_developer_mode(
     monkeypatch, tmp_path, store, watch_tfvars
 ):
     """THE DEFECT, pinned. Before this change, constructing a client in a
-    checkout read Saga's tfvars and pointed every user at swarm.saga.xyz.
+    checkout read the owner's tfvars and pointed every user at swarm.saga.xyz.
 
     THE MUTATION THIS CATCHES: remove the `repo_mode()` gate from
     `client.front_door_host`. The hook then records the open and this fails,
@@ -485,7 +485,7 @@ def test_the_bridge_never_opens_a_tfvars_file_outside_developer_mode(
         built = SwarmClient()
         assert built.base_url == "https://mine.example.test"
         assert client.front_door_host() == ""
-        # This used to assert `is_front_door("https://saga-only.example.test")
+        # This used to assert `is_front_door("https://example-only.example.test")
         # is False`. Since #62 an https address that is not *.run.app is a
         # front door BY ITS SHAPE when none is declared, so that call answers
         # True without reading anything and proves nothing about tfvars. What
@@ -508,7 +508,7 @@ def test_the_bridge_never_opens_a_tfvars_file_outside_developer_mode(
         (repo / "terraform" / "environments" / "dev" / "dev.tfvars").chmod(0o644)
 
     assert watch_tfvars == [], f"tfvars opened outside developer mode: {watch_tfvars}"
-    assert "saga-only.example.test" not in out.getvalue()
+    assert "example-only.example.test" not in out.getvalue()
 
 
 def test_developer_mode_does_read_the_repository(monkeypatch, tmp_path, store, watch_tfvars):
@@ -521,10 +521,10 @@ def test_developer_mode_does_read_the_repository(monkeypatch, tmp_path, store, w
     monkeypatch.setenv("SWARM_MCP_CONFIG_FROM", "repo")
     watch_tfvars.clear()  # the setup's own write, as above
 
-    assert client.front_door_host() == "saga-only.example.test"
+    assert client.front_door_host() == "example-only.example.test"
     assert watch_tfvars, "developer mode read no tfvars file"
     resolved = _config().resolve()
-    assert resolved.url == "https://saga-only.example.test"
+    assert resolved.url == "https://example-only.example.test"
     assert resolved.front_door is True
 
 

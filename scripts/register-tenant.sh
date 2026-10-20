@@ -18,7 +18,7 @@
 #
 # Re-running is safe for LIMITS and WIRING. It is not a way to re-point a tenant:
 # if tenants/<id> already names a different principal or kind, this refuses,
-# because one `--group contractors@saga.xyz --tenant eng` would otherwise hand
+# because one `--group contractors@example.com --tenant eng` would otherwise hand
 # every member of contractors@ eng's provider keys, artifacts and budget with no
 # prompt and no warning.
 #
@@ -73,12 +73,12 @@
 # is how it works; docs/runbooks/tenant-offboarding.md is how one is removed.
 #
 # Usage:
-#   scripts/register-tenant.sh --group eng@saga.xyz
-#   scripts/register-tenant.sh --user alice@saga.xyz
-#   scripts/register-tenant.sh --group eng@saga.xyz --providers anthropic,openai \
+#   scripts/register-tenant.sh --group eng@example.com
+#   scripts/register-tenant.sh --user alice@example.com
+#   scripts/register-tenant.sh --group eng@example.com --providers anthropic,openai \
 #                              --max-active 40 --capacity-units 80 --budget 2000
-#   scripts/register-tenant.sh --group eng@saga.xyz --dry-run
-#   scripts/register-tenant.sh --group eng@saga.xyz --skip-k8s   # Cloud Run only
+#   scripts/register-tenant.sh --group eng@example.com --dry-run
+#   scripts/register-tenant.sh --group eng@example.com --skip-k8s   # Cloud Run only
 #
 # --worker-firestore-access true|false mirrors terraform/modules/tenancy's
 # `worker_firestore_access`, and defaults the same way: TRUE, the Firestore grant
@@ -98,7 +98,7 @@
 #
 # Add one provider to a tenant that is already registered, keeping the others:
 #   scripts/register-tenant.sh --tenant eng --add-provider git
-#   scripts/register-tenant.sh --group eng@saga.xyz --add-provider openai --dry-run
+#   scripts/register-tenant.sh --group eng@example.com --add-provider openai --dry-run
 # `git` (here or in --providers) also lets swarm-api read that one -git secret,
 # for the issue preview and an issue run's write-back to its issue (which needs
 # the token to hold `issues: write` and `pull_requests: write`, plus
@@ -2606,7 +2606,7 @@ info "limits         max_active=${MAX_ACTIVE} capacity_units=${CAPACITY_UNITS} (
 # both in the field mask, and nothing compared the incoming principal against the
 # one already stored. So a single
 #
-#     register-tenant.sh --group contractors@saga.xyz --tenant eng
+#     register-tenant.sh --group contractors@example.com --tenant eng
 #
 # made every member of contractors@ resolve to tenant eng and inherit eng's
 # provider keys, artifact prefix and budget -- no warning, no confirmation, and

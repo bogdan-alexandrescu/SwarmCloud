@@ -178,6 +178,9 @@ def _run_register(
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["SWARM_ENV_FILE"] = str(env_file)
     env["NO_COLOR"] = "1"
+    # The example principals are @example.com; the script's own default
+    # domain is the deployment's, so the test names its own.
+    env["ALLOWED_DOMAINS"] = "example.com"
     env["FAKE_BUCKET_POLICY"] = str(policy_file)
 
     return subprocess.run(
@@ -188,7 +191,7 @@ def _run_register(
 
 @pytest.fixture(scope="module")
 def dry_run_transcript(tmp_path_factory) -> str:
-    return _register(tmp_path_factory.mktemp("register-tenant"), "eng@saga.xyz")
+    return _register(tmp_path_factory.mktemp("register-tenant"), "eng@example.com")
 
 
 def _would_run(transcript: str, needle: str) -> list[str]:
@@ -348,7 +351,7 @@ def test_another_tenants_bucket_bindings_do_not_count_as_this_tenants(tmp_path) 
 
     The reproduction, end to end: `make infra` in dev leaves eng, smoke and
     u-bogdan bound on the single shared artifact bucket, and
-    `make register-tenant GROUP=research@saga.xyz` then registers a tenant that
+    `make register-tenant GROUP=research@example.com` then registers a tenant that
     is in nobody's var.tenants. Both "already granted?" checks used to be a grep
     over that whole policy -- one for the role id, one for the member -- so both
     matched somebody else and the script printed success for two bindings it
@@ -358,10 +361,10 @@ def test_another_tenants_bucket_bindings_do_not_count_as_this_tenants(tmp_path) 
     """
     transcript = _register(
         tmp_path,
-        "research@saga.xyz",
-        _shared_bucket_policy("eng@saga.xyz", "smoke@saga.xyz", "u-bogdan@saga.xyz"),
+        "research@example.com",
+        _shared_bucket_policy("eng@example.com", "smoke@example.com", "u-bogdan@example.com"),
     )
-    member = _gsa("research@saga.xyz")
+    member = _gsa("research@example.com")
 
     metadata = _would_run(transcript, "roles/swarmBucketMetadataReader")
     assert any(f"--member {member}" in line for line in metadata), (
@@ -394,9 +397,9 @@ def test_this_tenants_own_bindings_are_still_recognised(tmp_path) -> None:
     which aborts the run before the tenant document is written.
     """
     transcript = _register(
-        tmp_path, "eng@saga.xyz", _shared_bucket_policy("eng@saga.xyz", "smoke@saga.xyz")
+        tmp_path, "eng@example.com", _shared_bucket_policy("eng@example.com", "smoke@example.com")
     )
-    member = _gsa("eng@saga.xyz")
+    member = _gsa("eng@example.com")
 
     assert not [
         line for line in _would_run(transcript, "add-iam-policy-binding")
@@ -435,10 +438,10 @@ def test_the_tenant_pool_is_capped_at_the_smaller_limit(
 ) -> None:
     transcript = _register(
         tmp_path,
-        "eng@saga.xyz",
+        "eng@example.com",
         extra=("--max-active", max_active, "--capacity-units", capacity_units),
     )
-    pool = f"pools/tenant:{tenant_id_for_group('eng@saga.xyz')}"
+    pool = f"pools/tenant:{tenant_id_for_group('eng@example.com')}"
     assert f"would write {pool} with hard_limit={ceiling}" in transcript, (
         f"max_active={max_active} capacity_units={capacity_units} must write the "
         f"tenant pool at min(...) = {ceiling}, as swarm_api/store.py does:\n{transcript}"
@@ -453,7 +456,7 @@ def test_a_limit_that_is_not_a_whole_number_is_refused(tmp_path, value: str) -> 
     an unchecked limit would become a ceiling nobody typed. jq's `--argjson`
     used to be the only check, and it accepted a negative number.
     """
-    proc = _run_register(tmp_path, "eng@saga.xyz", extra=("--max-active", value))
+    proc = _run_register(tmp_path, "eng@example.com", extra=("--max-active", value))
     transcript = proc.stdout + proc.stderr
     assert proc.returncode != 0, f"--max-active {value!r} was accepted:\n{transcript}"
     assert "--max-active" in transcript, transcript

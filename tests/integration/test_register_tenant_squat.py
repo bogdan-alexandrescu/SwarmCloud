@@ -137,13 +137,16 @@ def _run(tmp: Path, *, policy: dict | None, keys: str = "", missing: bool = Fals
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["SWARM_ENV_FILE"] = str(env_file)
     env["NO_COLOR"] = "1"
+    # The example principals are @example.com; the script's own default
+    # domain is the deployment's, so the test names its own.
+    env["ALLOWED_DOMAINS"] = "example.com"
     env["FAKE_SA_POLICY"] = str(policy_file)
     env["FAKE_SA_KEYS"] = str(keys_file)
     if missing:
         env["FAKE_SA_MISSING"] = "1"
 
     return subprocess.run(
-        [str(SCRIPT), "--group", "eng@saga.xyz", "--dry-run", "--skip-k8s"],
+        [str(SCRIPT), "--group", "eng@example.com", "--dry-run", "--skip-k8s"],
         cwd=REPO, env=env, capture_output=True, text=True, timeout=180,
     )
 

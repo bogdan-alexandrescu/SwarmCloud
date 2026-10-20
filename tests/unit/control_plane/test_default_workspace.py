@@ -45,9 +45,9 @@ from .test_continuation_scope_is_narrow import SWEPT
 SVC = "ci-bot@saga-agents-staging.iam.gserviceaccount.com"
 
 GROUPS: dict[str, tuple[str, ...]] = {
-    "alice@saga.xyz": (ENG_GROUP,),
-    "carol@saga.xyz": (),
-    "dave@saga.xyz": (ENG_GROUP, RESEARCH_GROUP),
+    "alice@example.com": (ENG_GROUP,),
+    "carol@example.com": (),
+    "dave@example.com": (ENG_GROUP, RESEARCH_GROUP),
     SVC: (ENG_GROUP,),
 }
 
@@ -84,7 +84,7 @@ def _tokens() -> dict[str, dict[str, Any]]:
 def seed_personal(db: FakeFirestore, user: str) -> None:
     """`tenants/u-<user>` and `workspaces/u-<user>`, ready, as the job leaves them."""
     tenant_id = f"u-{user}"
-    owner = f"{user}@saga.xyz"
+    owner = f"{user}@example.com"
     seed_tenant(db, tenant_id)
     db.docs[f"tenants/{tenant_id}"].update(kind="user", principal=owner, display_name=owner)
     db.docs[f"workspaces/{tenant_id}"] = {
@@ -132,7 +132,7 @@ def client(db, prefs) -> TestClient:
 
 def store_default(prefs: Preferences, user: str, workspace: str | None, *,
                   display_name: str | None = None) -> None:
-    email = f"{user}@saga.xyz"
+    email = f"{user}@example.com"
     prefs.save(email, display_name=display_name, default_workspace=workspace,
                muted=[], reminder="as_set", revision=prefs.read(email).revision)
 
@@ -216,7 +216,7 @@ def test_a_personal_default_that_is_not_ready_is_ignored_as_not_ready(db, prefs)
     ctx = authenticator(db, prefs).authenticate("Bearer token-alice")
     assert ctx.tenant_id == "eng"
     assert (ctx.default_source, ctx.default_ignored) == ("first_group", "not_ready")
-    assert prefs.read("alice@saga.xyz").default_workspace == "u-alice"
+    assert prefs.read("alice@example.com").default_workspace == "u-alice"
 
 
 def test_no_stored_default_is_todays_rule_and_says_so(client, db, prefs):
@@ -306,7 +306,7 @@ def test_the_context_holds_the_document_read_and_none_when_it_could_not_be_read(
     auth = authenticator(db, prefs)
 
     ctx = auth.authenticate("Bearer token-dave")
-    assert ctx.preferences == prefs.read("dave@saga.xyz")
+    assert ctx.preferences == prefs.read("dave@example.com")
     assert ctx.preferences is not None and ctx.preferences.default_workspace == "research"
     assert ctx.tenant_choices[0] == ("research", RESEARCH_GROUP)
     assert (ctx.tenant_id, ctx.tenant_principal) == ("research", RESEARCH_GROUP)
@@ -346,8 +346,8 @@ def test_a_header_outside_the_choices_is_refused_without_reading_preferences(db,
 
 def test_the_display_name_is_the_stored_name_else_the_claim_else_the_local_part(db, prefs):
     tokens = {
-        "token-dave": _claims("dave@saga.xyz", name="David From The Token"),
-        "token-alice": _claims("alice@saga.xyz"),
+        "token-dave": _claims("dave@example.com", name="David From The Token"),
+        "token-alice": _claims("alice@example.com"),
     }
     auth = authenticator(db, prefs, tokens)
 

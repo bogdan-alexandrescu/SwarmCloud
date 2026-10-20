@@ -301,7 +301,7 @@ def seed_tenant(db: FakeFirestore, tenant: str, *, record_namespace: bool = Fals
     doc: dict[str, Any] = {
         "tenant_id": tenant,
         "kind": "user" if tenant.startswith("u-") else "group",
-        "principal": f"{tenant}@saga.xyz",
+        "principal": f"{tenant}@example.com",
         "enabled": True,
     }
     if record_namespace:
@@ -622,24 +622,24 @@ def test_the_reconciler_names_a_tenant_namespace_exactly_as_the_dispatcher_does(
         GkeJobDispatcher(scheduler_settings(), target=GkeTarget("10.0.0.1", "/dev/null")),
     ]
     tenants = [
-        Tenant(tenant_id="eng", kind="group", principal="eng@saga.xyz", created_at=utcnow()),
-        Tenant(tenant_id="u-bogdan", kind="user", principal="bogdan@saga.xyz",
+        Tenant(tenant_id="eng", kind="group", principal="eng@example.com", created_at=utcnow()),
+        Tenant(tenant_id="u-bogdan", kind="user", principal="bogdan@example.com",
                created_at=utcnow()),
-        Tenant(tenant_id="u-sw-c90291", kind="user", principal="sw@saga.xyz",
+        Tenant(tenant_id="u-sw-c90291", kind="user", principal="sw@example.com",
                created_at=utcnow()),
         # Recorded, and deliberately NOT what the template would derive: the
         # dispatcher ignores it (#1457).
-        Tenant(tenant_id="smoke", kind="group", principal="smoke@saga.xyz",
+        Tenant(tenant_id="smoke", kind="group", principal="smoke@example.com",
                created_at=utcnow(), namespace=f"{NS}smoke-legacy"),
-        Tenant(tenant_id="eng", kind="group", principal="eng@saga.xyz",
+        Tenant(tenant_id="eng", kind="group", principal="eng@example.com",
                created_at=utcnow(), namespace=ENG_NS),
         # OUTSIDE the prefix: the 2026-10-11 u-bogdan document. Both sides must
         # ignore it for the same derived name, or the reconciler reads a
         # namespace the dispatcher no longer writes to.
-        Tenant(tenant_id="u-bogdan", kind="user", principal="bogdan@saga.xyz",
+        Tenant(tenant_id="u-bogdan", kind="user", principal="bogdan@example.com",
                created_at=utcnow(), namespace="swarm-u-bogdan"),  # namespace-prefix-exempt: stale, on purpose
         # The bare prefix names no tenant's namespace at all.
-        Tenant(tenant_id="smoke", kind="group", principal="smoke@saga.xyz",
+        Tenant(tenant_id="smoke", kind="group", principal="smoke@example.com",
                created_at=utcnow(), namespace=NS),
     ]
     for dispatcher in dispatchers:
@@ -700,7 +700,7 @@ def _reconciler_mismatches(stream: io.StringIO) -> list[dict[str, Any]]:
 
 
 def _tenant(tenant_id: str, namespace: str | None) -> Tenant:
-    return Tenant(tenant_id=tenant_id, kind="user", principal=f"{tenant_id}@saga.xyz",
+    return Tenant(tenant_id=tenant_id, kind="user", principal=f"{tenant_id}@example.com",
                   created_at=utcnow(), namespace=namespace)
 
 
@@ -896,7 +896,7 @@ def test_the_reconciler_names_a_long_tenant_namespace_exactly_as_the_dispatcher_
         GkeJobDispatcher(scheduler_settings(), target=GkeTarget("10.0.0.1", "/dev/null")),
     ]
     for tenant_id in NAMING_CORPUS:
-        tenant = Tenant(tenant_id=tenant_id, kind="group", principal=f"{tenant_id}@saga.xyz",
+        tenant = Tenant(tenant_id=tenant_id, kind="group", principal=f"{tenant_id}@example.com",
                         created_at=utcnow())
         for dispatcher in dispatchers:
             expected = dispatcher.namespace_for(tenant)

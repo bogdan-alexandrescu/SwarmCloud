@@ -10,7 +10,7 @@ checked per registered group with `x-goog-user-project`, and with
 
 `root` is a platform admin (in `swarm-admins`) who is a member of research
 only; `alice` is a non-admin in research only; `carol` is in nothing. The
-registered groups are eng, research and `u-carol@saga.xyz` -- a group whose
+registered groups are eng, research and `u-carol@example.com` -- a group whose
 frozen slug lands in the personal namespace, which no reach may ever offer.
 """
 
@@ -32,7 +32,7 @@ from .conftest import ADMIN_GROUP, ENG_GROUP, PROJECT, RESEARCH_GROUP, api_setti
 from .fakes import FakeFirestore
 from .test_group_resolution import FakeResponse, FakeSession
 
-CAROL_GROUP = "u-carol@saga.xyz"
+CAROL_GROUP = "u-carol@example.com"
 REGISTERED = (ENG_GROUP, RESEARCH_GROUP, CAROL_GROUP)
 
 #: `TenantNotMember`'s message today, which a reach refusal must not change.
@@ -43,8 +43,8 @@ NOT_MEMBER_MESSAGE = (
 )
 
 MEMBERSHIPS = {
-    ADMIN_GROUP: {"root@saga.xyz"},
-    RESEARCH_GROUP: {"root@saga.xyz", "alice@saga.xyz"},
+    ADMIN_GROUP: {"root@example.com"},
+    RESEARCH_GROUP: {"root@example.com", "alice@example.com"},
     ENG_GROUP: set(),
     CAROL_GROUP: set(),
 }
@@ -74,7 +74,7 @@ class Ready:
 
 def claims() -> dict[str, dict[str, Any]]:
     return {
-        f"t-{user}": {"email": f"{user}@saga.xyz", "email_verified": True, "sub": f"s-{user}"}
+        f"t-{user}": {"email": f"{user}@example.com", "email_verified": True, "sub": f"s-{user}"}
         for user in ("root", "alice", "carol")
     }
 
@@ -99,7 +99,7 @@ def checks(session: FakeSession) -> list[dict]:
 
 
 def checked_group(call: dict) -> str:
-    return call["url"].split("/groups/")[1].split("/")[0].replace("id-of-", "") + "@saga.xyz"
+    return call["url"].split("/groups/")[1].split("/")[0].replace("id-of-", "") + "@example.com"
 
 
 # -- (1) a platform admin selects a group workspace they are not in ----------
@@ -140,7 +140,7 @@ def test_a_membership_is_selected_as_a_membership_not_through_the_reach():
 # -- (2) refused every personal workspace but their own ----------------------
 
 def test_a_platform_admin_is_refused_someone_elses_personal_workspace():
-    auth, _ = authenticator(personal=Ready("root@saga.xyz", "carol@saga.xyz"))
+    auth, _ = authenticator(personal=Ready("root@example.com", "carol@example.com"))
     with pytest.raises(TenantNotMember) as refused:
         auth.authenticate("Bearer t-root", None, tenant="u-carol")
     assert refused.value.code == "tenant_not_member"
@@ -156,23 +156,23 @@ def test_a_registered_group_in_the_personal_namespace_is_never_reached():
 
 
 def test_a_platform_admins_own_personal_workspace_still_selects():
-    personal = Ready("root@saga.xyz")
+    personal = Ready("root@example.com")
     auth, _ = authenticator(personal=personal)
     ctx = auth.authenticate("Bearer t-root", None, tenant="u-root")
     assert ctx.tenant_id == "u-root"
-    assert ctx.tenant_principal == "root@saga.xyz"
+    assert ctx.tenant_principal == "root@example.com"
     assert ctx.tenant_via == ""
 
 
 def test_a_reach_request_keeps_the_own_workspace_among_the_choices():
     """§4.2.2 step 2: a reach id is treated like a membership by
     `_with_own_workspace`, so the switcher still offers the own entry."""
-    personal = Ready("root@saga.xyz")
+    personal = Ready("root@example.com")
     auth, _ = authenticator(personal=personal)
     ctx = auth.authenticate("Bearer t-root", None, tenant="eng")
     assert ctx.tenant_id == "eng"
     assert ctx.tenant_via == "platform_admin"
-    assert ctx.tenant_choices[0] == ("u-root", "root@saga.xyz")
+    assert ctx.tenant_choices[0] == ("u-root", "root@example.com")
 
 
 # -- (3) a non-admin is still membership-checked -----------------------------
@@ -203,7 +203,7 @@ def test_a_non_admin_in_nothing_is_refused_a_group():
 
 
 def test_a_pool_admin_gets_no_reach():
-    auth, _ = authenticator(admin_pool_users=("alice@saga.xyz",))
+    auth, _ = authenticator(admin_pool_users=("alice@example.com",))
     ctx = auth.authenticate("Bearer t-alice")
     assert ctx.is_pool_admin is True
     assert ctx.platform_reach == ()
@@ -252,7 +252,7 @@ def test_with_the_reach_off_a_platform_admin_is_refused_a_group_they_are_not_in(
 
 
 def test_with_the_reach_off_the_other_cases_are_todays():
-    auth, _ = authenticator(reach=False, personal=Ready("root@saga.xyz"))
+    auth, _ = authenticator(reach=False, personal=Ready("root@example.com"))
     with pytest.raises(TenantNotMember):
         auth.authenticate("Bearer t-root", None, tenant="u-carol")
     assert auth.authenticate("Bearer t-root", None, tenant="u-root").tenant_via == ""
@@ -277,60 +277,60 @@ def tenant(tenant_id: str, kind: str, principal: str) -> SimpleNamespace:
 
 def test_may_act_in_answers_platform_admin_for_a_group_tenant():
     auth, _ = authenticator()
-    assert auth.may_act_in("root@saga.xyz", tenant("eng", "group", ENG_GROUP)) == "platform_admin"
-    assert auth.may_act_in("root@saga.xyz", tenant("research", "group", RESEARCH_GROUP)) == "member"
-    assert auth.may_act_in("alice@saga.xyz", tenant("eng", "group", ENG_GROUP)) == ""
+    assert auth.may_act_in("root@example.com", tenant("eng", "group", ENG_GROUP)) == "platform_admin"
+    assert auth.may_act_in("root@example.com", tenant("research", "group", RESEARCH_GROUP)) == "member"
+    assert auth.may_act_in("alice@example.com", tenant("eng", "group", ENG_GROUP)) == ""
 
 
 def test_may_act_in_answers_nothing_for_a_personal_tenant():
     auth, _ = authenticator()
-    assert auth.may_act_in("root@saga.xyz", tenant("u-carol", "user", "carol@saga.xyz")) == ""
-    assert auth.may_act_in("root@saga.xyz", tenant("u-carol", "group", CAROL_GROUP)) == ""
-    assert auth.may_act_in("root@saga.xyz", tenant("u-root", "user", "root@saga.xyz")) == "member"
+    assert auth.may_act_in("root@example.com", tenant("u-carol", "user", "carol@example.com")) == ""
+    assert auth.may_act_in("root@example.com", tenant("u-carol", "group", CAROL_GROUP)) == ""
+    assert auth.may_act_in("root@example.com", tenant("u-root", "user", "root@example.com")) == "member"
 
 
 def test_may_act_in_never_reaches_an_unregistered_group():
     auth, _ = authenticator()
-    assert auth.may_act_in("root@saga.xyz", tenant("ops", "group", "ops@saga.xyz")) == ""
+    assert auth.may_act_in("root@example.com", tenant("ops", "group", "ops@example.com")) == ""
     # Same id, another principal: the collision the principal exists to catch.
-    assert auth.may_act_in("root@saga.xyz", tenant("eng", "group", "eng@partner.com")) == ""
+    assert auth.may_act_in("root@example.com", tenant("eng", "group", "eng@partner.com")) == ""
 
 
 def test_may_act_in_with_the_reach_off_is_membership_only():
     auth, _ = authenticator(reach=False)
-    assert auth.may_act_in("root@saga.xyz", tenant("eng", "group", ENG_GROUP)) == ""
-    assert auth.may_act_in("root@saga.xyz", tenant("research", "group", RESEARCH_GROUP)) == "member"
+    assert auth.may_act_in("root@example.com", tenant("eng", "group", ENG_GROUP)) == ""
+    assert auth.may_act_in("root@example.com", tenant("research", "group", RESEARCH_GROUP)) == "member"
 
 
 def test_may_act_in_asks_the_admin_group_past_the_cache():
     auth, session = authenticator()
     auth.authenticate("Bearer t-root")  # primes root's swarm-admins answer
     session.memberships[ADMIN_GROUP] = set()  # removed a moment ago
-    assert auth.may_act_in("root@saga.xyz", tenant("eng", "group", ENG_GROUP)) == ""
+    assert auth.may_act_in("root@example.com", tenant("eng", "group", ENG_GROUP)) == ""
 
 
 def test_may_act_in_is_503_when_the_admin_lookup_fails():
     auth, _ = authenticator(session=FailingAdminGroup({g: set(m) for g, m in MEMBERSHIPS.items()}))
     with pytest.raises(UpstreamUnavailable):
-        auth.may_act_in("root@saga.xyz", tenant("eng", "group", ENG_GROUP))
+        auth.may_act_in("root@example.com", tenant("eng", "group", ENG_GROUP))
 
 
 def test_may_act_in_reads_the_admin_role_document_fresh():
     db = FakeFirestore()
     roles = AdminRoles(db)
-    db.docs[f"{ROLES_COLLECTION}/dana@saga.xyz"] = {"role": "admin"}
+    db.docs[f"{ROLES_COLLECTION}/dana@example.com"] = {"role": "admin"}
     auth, _ = authenticator(admin_roles=roles)
-    assert roles.holds_admin("dana@saga.xyz") is True  # cached
-    assert auth.may_act_in("dana@saga.xyz", tenant("eng", "group", ENG_GROUP)) == "platform_admin"
-    del db.docs[f"{ROLES_COLLECTION}/dana@saga.xyz"]
-    assert roles.holds_admin("dana@saga.xyz") is True  # still the cached answer
-    assert auth.may_act_in("dana@saga.xyz", tenant("eng", "group", ENG_GROUP)) == ""
+    assert roles.holds_admin("dana@example.com") is True  # cached
+    assert auth.may_act_in("dana@example.com", tenant("eng", "group", ENG_GROUP)) == "platform_admin"
+    del db.docs[f"{ROLES_COLLECTION}/dana@example.com"]
+    assert roles.holds_admin("dana@example.com") is True  # still the cached answer
+    assert auth.may_act_in("dana@example.com", tenant("eng", "group", ENG_GROUP)) == ""
 
 
 def test_may_act_in_gives_a_service_identity_no_reach():
-    auth, _ = authenticator(admin_users=("ci@saga-agents.iam.gserviceaccount.com",))
+    auth, _ = authenticator(admin_users=("ci@example-project.iam.gserviceaccount.com",))
     assert auth.may_act_in(
-        "ci@saga-agents.iam.gserviceaccount.com", tenant("eng", "group", ENG_GROUP)) == ""
+        "ci@example-project.iam.gserviceaccount.com", tenant("eng", "group", ENG_GROUP)) == ""
 
 
 # -- holds_admin(fresh=True) -------------------------------------------------
@@ -338,10 +338,10 @@ def test_may_act_in_gives_a_service_identity_no_reach():
 def test_holds_admin_fresh_reads_past_the_cache():
     db = FakeFirestore()
     roles = AdminRoles(db)
-    db.docs[f"{ROLES_COLLECTION}/dana@saga.xyz"] = {"role": "admin"}
-    assert roles.holds_admin("dana@saga.xyz") is True
-    del db.docs[f"{ROLES_COLLECTION}/dana@saga.xyz"]
-    assert roles.holds_admin("dana@saga.xyz") is True
-    assert roles.holds_admin("dana@saga.xyz", fresh=True) is False
+    db.docs[f"{ROLES_COLLECTION}/dana@example.com"] = {"role": "admin"}
+    assert roles.holds_admin("dana@example.com") is True
+    del db.docs[f"{ROLES_COLLECTION}/dana@example.com"]
+    assert roles.holds_admin("dana@example.com") is True
+    assert roles.holds_admin("dana@example.com", fresh=True) is False
     # The fresh read refreshed the cache for everyone after it.
-    assert roles.holds_admin("dana@saga.xyz") is False
+    assert roles.holds_admin("dana@example.com") is False

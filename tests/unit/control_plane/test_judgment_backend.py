@@ -1,7 +1,7 @@
 """Each workspace chooses Jev's judgment backend (JUDGE-SELECT).
 
 Owner decisions 2026-10-14: Jev's judgments go to one of three backends --
-"Internal Jev" (THE DEFAULT), "Internal Laya", both Saga's own decision API
+"Internal Jev" (THE DEFAULT), "Internal Laya", both the internal decision API
 reached over the cluster's Tailscale egress, or "TypeSafe" (api.typesafe.ai,
 which needs a TypeSafe key and receives page text). A workspace's owner or a
 platform admin chooses; every choice is an `admin_audit` entry.
@@ -62,9 +62,9 @@ ROUTE = "/v1/workspaces/{}/judgment-backend"
 @pytest.fixture
 def group_map() -> dict[str, tuple[str, ...]]:
     return {
-        "alice@saga.xyz": (ENG_GROUP,),
-        "dave@saga.xyz": (ENG_GROUP,),
-        "root@saga.xyz": (ADMIN_GROUP, ENG_GROUP),
+        "alice@example.com": (ENG_GROUP,),
+        "dave@example.com": (ENG_GROUP,),
+        "root@example.com": (ADMIN_GROUP, ENG_GROUP),
     }
 
 
@@ -179,7 +179,7 @@ def test_the_owner_of_a_personal_workspace_chooses_its_backend(client, seeded, d
     assert db.docs[f"{SETTINGS_COLLECTION}/u-alice"]["judgment_backend"] == "internal-laya"
     body = client.get(ROUTE.format("u-alice"), headers=as_("alice")).json()
     assert body["judgment_backend"] == "internal-laya"
-    assert body["jev"]["set_by"] == "alice@saga.xyz"
+    assert body["jev"]["set_by"] == "alice@example.com"
     assert body["can_edit"] is True
 
 
@@ -220,8 +220,8 @@ def test_every_change_is_audited(client, seeded, db):
     assert [a["action"] for a in entries] == [AUDIT_JUDGMENT_SET] * 2
     assert [(a["by"], a["detail"]["tenant_id"], a["detail"]["judgment_backend"],
              a["detail"]["previous"]) for a in entries] == [
-        ("alice@saga.xyz", "u-alice", "typesafe", "internal-jev"),
-        ("root@saga.xyz", "eng", "internal-laya", "internal-jev"),
+        ("alice@example.com", "u-alice", "typesafe", "internal-jev"),
+        ("root@example.com", "eng", "internal-laya", "internal-jev"),
     ]
 
 

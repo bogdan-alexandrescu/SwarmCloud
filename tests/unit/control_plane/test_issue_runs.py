@@ -50,7 +50,7 @@ from swarm_api.validation import IssueRef, PullRequestReference, parse_issue_ref
 from . import forge_fakes
 from .conftest import api_settings, auth_header
 
-REF = "saga-xyz/widgets#42"
+REF = "example-org/widgets#42"
 BUCKET = "swarm-artifacts-saga-agents-staging"
 
 PLAN = {
@@ -154,28 +154,28 @@ def _docs(db, collection: str) -> dict:
 @pytest.mark.parametrize(
     "value",
     [
-        "saga-xyz/widgets#42",
-        "https://github.com/saga-xyz/widgets/issues/42",
-        "https://github.com/saga-xyz/widgets/issues/42/",
-        "https://github.com/saga-xyz/widgets/issues/42#issuecomment-1",
-        "https://www.github.com/saga-xyz/widgets/issues/42?x=1",
-        "saga-xyz/widgets.git#42",
+        "example-org/widgets#42",
+        "https://github.com/example-org/widgets/issues/42",
+        "https://github.com/example-org/widgets/issues/42/",
+        "https://github.com/example-org/widgets/issues/42#issuecomment-1",
+        "https://www.github.com/example-org/widgets/issues/42?x=1",
+        "example-org/widgets.git#42",
     ],
 )
 def test_an_issue_is_named_short_or_by_its_url(value):
-    assert parse_issue_ref(value) == IssueRef(owner="saga-xyz", repo="widgets", number=42)
+    assert parse_issue_ref(value) == IssueRef(owner="example-org", repo="widgets", number=42)
 
 
 def test_the_parsed_reference_names_its_repository_and_canonical_url():
     ref = parse_issue_ref(REF)
-    assert ref.repository_url == "https://github.com/saga-xyz/widgets"
-    assert ref.url == "https://github.com/saga-xyz/widgets/issues/42"
+    assert ref.repository_url == "https://github.com/example-org/widgets"
+    assert ref.url == "https://github.com/example-org/widgets/issues/42"
     assert ref.short == REF
 
 
 @pytest.mark.parametrize(
     "value",
-    ["https://github.com/saga-xyz/widgets/pull/42", "https://github.com/saga-xyz/widgets/pulls/42"],
+    ["https://github.com/example-org/widgets/pull/42", "https://github.com/example-org/widgets/pulls/42"],
 )
 def test_a_pull_request_url_is_refused_as_a_pull_request(value):
     with pytest.raises(PullRequestReference, match="is a pull request"):
@@ -185,7 +185,7 @@ def test_a_pull_request_url_is_refused_as_a_pull_request(value):
 def test_an_issue_url_carrying_a_credential_is_refused_without_echoing_it():
     secret = "ghp_" + "q" * 36
     with pytest.raises(ValueError) as refused:
-        parse_issue_ref(f"https://{secret}@github.com/saga-xyz/widgets/issues/42")
+        parse_issue_ref(f"https://{secret}@github.com/example-org/widgets/issues/42")
     assert secret not in str(refused.value)
     assert "credential" in str(refused.value)
 
@@ -193,12 +193,12 @@ def test_an_issue_url_carrying_a_credential_is_refused_without_echoing_it():
 @pytest.mark.parametrize(
     "value",
     [
-        "", "widgets#42", "saga-xyz/widgets", "saga-xyz/widgets#0", "saga-xyz/widgets#1000000",
-        "http://github.com/saga-xyz/widgets/issues/42",
-        "https://gitlab.com/saga-xyz/widgets/issues/42",
-        "https://github.com/saga-xyz/widgets/issues/abc",
-        "https://github.com/saga-xyz/widgets",
-        "saga-xyz/..#4",
+        "", "widgets#42", "example-org/widgets", "example-org/widgets#0", "example-org/widgets#1000000",
+        "http://github.com/example-org/widgets/issues/42",
+        "https://gitlab.com/example-org/widgets/issues/42",
+        "https://github.com/example-org/widgets/issues/abc",
+        "https://github.com/example-org/widgets",
+        "example-org/..#4",
     ],
 )
 def test_anything_else_is_refused(value):
@@ -220,7 +220,7 @@ def test_the_defaults_are_required_approval_no_auto_merge_and_three_fix_rounds()
 
 
 def test_an_issue_url_is_stored_in_its_short_form():
-    assert RunCreate(issue="https://github.com/saga-xyz/widgets/issues/42").issue == REF
+    assert RunCreate(issue="https://github.com/example-org/widgets/issues/42").issue == REF
 
 
 @pytest.mark.parametrize("rounds", [0, 6, -1])
@@ -244,7 +244,7 @@ def test_plan_approval_is_required_or_auto(client):
 def test_a_pull_request_reference_is_a_422_saying_so(client, db):
     response = client.post(
         "/v1/runs", headers=auth_header("alice"),
-        json={"issue": "https://github.com/saga-xyz/widgets/pull/7"},
+        json={"issue": "https://github.com/example-org/widgets/pull/7"},
     )
     assert response.status_code == 422
     assert "pull request" in response.text
@@ -272,13 +272,13 @@ def test_a_run_that_does_not_say_takes_the_platform_default(client, default):
 
 
 def _register_policy(db, tenant_id: str, merge_policy: str | None) -> None:
-    """saga-xyz/widgets, REF's repository, registered with `merge_policy`."""
+    """example-org/widgets, REF's repository, registered with `merge_policy`."""
     from swarm_api import repositories
 
-    repo_id = repositories.repo_id_for(tenant_id, "saga-xyz", "widgets")
+    repo_id = repositories.repo_id_for(tenant_id, "example-org", "widgets")
     db.collection(repositories.COLLECTION).document(repo_id).set({
         "repo_id": repo_id, "tenant_id": tenant_id, "forge": "github",
-        "owner": "saga-xyz", "repo": "widgets", "merge_policy": merge_policy,
+        "owner": "example-org", "repo": "widgets", "merge_policy": merge_policy,
     })
 
 
@@ -409,7 +409,7 @@ def test_a_run_starts_planning_with_one_signed_planner_task(client, db):
     assert planner["input"]["issue"] == 42
     assert REF in planner["input"]["prompt"]
     assert "plan.json" in planner["input"]["prompt"]
-    assert planner["repository_url"] == "https://github.com/saga-xyz/widgets"
+    assert planner["repository_url"] == "https://github.com/example-org/widgets"
     assert planner["metadata"]["issue_run"] == run["id"]
     assert not _docs(db, "workflows")
     # The run document is tenant-scoped like a task.
@@ -506,7 +506,7 @@ def test_approving_the_digest_shown_submits_one_new_workflow(client, db, objects
     assert response.status_code == 200, response.text
     approved = response.json()["run"]
     assert approved["state"] == "RUNNING"
-    assert approved["approved_by"] == "alice@saga.xyz"
+    assert approved["approved_by"] == "alice@example.com"
     assert approved["approved_digest"] == run["plan_digest"]
     workflows = _docs(db, "workflows")
     assert list(workflows) == [f"workflows/{approved['workflow_id']}"]
@@ -517,7 +517,7 @@ def test_approving_the_digest_shown_submits_one_new_workflow(client, db, objects
     assert len(step_tasks) == 4
     assert all(t["runner_profile"] == "claude-code" and t["tenant_id"] == "eng" for t in step_tasks)
     assert all(t["input"]["issue"] == 42 for t in step_tasks)
-    assert all(t["repository_url"] == "https://github.com/saga-xyz/widgets" for t in step_tasks)
+    assert all(t["repository_url"] == "https://github.com/example-org/widgets" for t in step_tasks)
     # Approving twice does not submit twice.
     again = _approve(client, run["id"], run["plan_digest"])
     assert again.status_code == 409
@@ -546,7 +546,7 @@ def test_a_plan_edited_after_it_was_shown_cannot_be_approved_by_the_old_digest(c
     assert after["plan"] == edited_plan
     assert after["plan_digest"] == plan_digest(edited_plan) != run["plan_digest"]
     assert after["plan_revision"] == 2
-    assert after["plan_edited_by"] == "alice@saga.xyz"
+    assert after["plan_edited_by"] == "alice@example.com"
 
     refused = _approve(client, run["id"], run["plan_digest"])
     assert refused.status_code == 409
@@ -585,7 +585,7 @@ def test_rejecting_ends_the_run_and_nothing_can_approve_it_after(client, db, obj
     assert rejected.status_code == 200, rejected.text
     body = rejected.json()["run"]
     assert body["state"] == "REJECTED"
-    assert body["rejected_by"] == "alice@saga.xyz"
+    assert body["rejected_by"] == "alice@example.com"
     assert body["rejection_reason"] == "wrong approach"
     assert _approve(client, run["id"], run["plan_digest"]).status_code == 409
     assert not _docs(db, "workflows")
@@ -614,7 +614,7 @@ def _integrator_opened(db, workflow_id: str, number: int = 57) -> None:
     steps = db.docs[f"workflows/{workflow_id}"]["steps"]
     (task_id,) = [s["task_id"] for s in steps if s["step_id"] == issueruns.FIX_STEP]
     db.docs[f"tasks/{task_id}"]["result_summary"] = {"git": {"pull_request": {
-        "number": number, "url": f"https://github.com/saga-xyz/widgets/pull/{number}",
+        "number": number, "url": f"https://github.com/example-org/widgets/pull/{number}",
     }}}
 
 
@@ -648,7 +648,7 @@ def test_the_run_follows_its_workflow_to_failed(client, db, objects):
 def _stored_run(**overrides) -> issueruns.IssueRun:
     now = datetime.now(timezone.utc)
     base = dict(
-        id="run_x", tenant_id="eng", created_by="alice@saga.xyz", created_at=now, updated_at=now,
+        id="run_x", tenant_id="eng", created_by="alice@example.com", created_at=now, updated_at=now,
         state=RunState.APPROVED, issue=parse_issue_ref(REF), plan_approval="required",
         auto_merge=False, fix_rounds=3, planner_task_id="task_p", plan=PLAN,
         plan_digest=plan_digest(PLAN),
@@ -660,7 +660,7 @@ def _stored_run(**overrides) -> issueruns.IssueRun:
 def test_the_plan_compiles_to_implement_review_and_a_gated_fix():
     spec = compile_plan(_stored_run())
     assert spec.strategy == "integrate"
-    assert spec.repository_url == "https://github.com/saga-xyz/widgets"
+    assert spec.repository_url == "https://github.com/example-org/widgets"
     by_id = {s.step_id: s for s in spec.steps}
     assert list(by_id) == ["impl-sort-key", "impl-ui", "review", "fix"]
     assert by_id["impl-ui"].depends_on == ["impl-sort-key"]
@@ -692,13 +692,13 @@ def test_the_compiled_workflow_is_titled_by_its_issue_and_labelled_issue_n():
     title or label, so the console and the Claude Code rows showed only
     "wf_02381158...". `title` and `unit` are the keys both read."""
     spec = compile_plan(_stored_run(issue_read={"title": "Widgets  cannot\nbe sorted"}))
-    assert spec.metadata["title"] == "saga-xyz/widgets#42: Widgets cannot be sorted"
+    assert spec.metadata["title"] == "example-org/widgets#42: Widgets cannot be sorted"
     assert spec.metadata["unit"] == "issue-42"
 
 
 def test_with_no_issue_title_the_workflow_is_titled_by_the_plans_summary():
     spec = compile_plan(_stored_run(issue_read=None))
-    assert spec.metadata["title"] == "saga-xyz/widgets#42: Make the widget list sortable by name."
+    assert spec.metadata["title"] == "example-org/widgets#42: Make the widget list sortable by name."
     assert spec.metadata["unit"] == "issue-42"
 
 
@@ -706,7 +706,7 @@ def test_a_long_title_is_cut_to_the_cap():
     spec = compile_plan(_stored_run(issue_read={"title": "x" * 400}))
     title = spec.metadata["title"]
     assert len(title) == issueruns.WORKFLOW_TITLE_MAX_CHARS == 150
-    assert title.startswith("saga-xyz/widgets#42: x") and title.endswith("…")
+    assert title.startswith("example-org/widgets#42: x") and title.endswith("…")
 
 
 def test_every_step_task_of_an_approved_run_carries_the_title_and_label(client, db, objects):
@@ -719,7 +719,7 @@ def test_every_step_task_of_an_approved_run_carries_the_title_and_label(client, 
     title = issueruns.workflow_title(
         issueruns.IssueRun.from_firestore(db.docs[f"issue_runs/{run['id']}"])
     )
-    assert title.startswith("saga-xyz/widgets#42: ")
+    assert title.startswith("example-org/widgets#42: ")
     for task in tasks:
         assert task["metadata"]["title"] == title
         assert task["metadata"]["unit"] == "issue-42"
@@ -792,7 +792,7 @@ CHAIN_AS_BEFORE = {
             "input": {
                 "prompt": (
                     "You are doing step 1 of 2 of the approved plan for GitHub issue "
-                    "saga-xyz/widgets#42 (https://github.com/saga-xyz/widgets/issues/42); the "
+                    "example-org/widgets#42 (https://github.com/example-org/widgets/issues/42); the "
                     "issue file named below holds the issue.\n\nThe plan: Make the widget list "
                     "sortable by name.\n\nThis step -- Add a sort key:\nAdd a name sort key to "
                     "WidgetList.\n\nDo this step only. " + issueruns.NO_CLOSING_KEYWORD
@@ -808,7 +808,7 @@ CHAIN_AS_BEFORE = {
             "input": {
                 "prompt": (
                     "You are doing step 2 of 2 of the approved plan for GitHub issue "
-                    "saga-xyz/widgets#42 (https://github.com/saga-xyz/widgets/issues/42); the "
+                    "example-org/widgets#42 (https://github.com/example-org/widgets/issues/42); the "
                     "issue file named below holds the issue.\n\nThe plan: Make the widget list "
                     "sortable by name.\n\nThis step -- Wire the header:\nMake the Name header "
                     "toggle the sort.\n\nThe earlier steps' work is already on this branch. "
@@ -827,7 +827,7 @@ CHAIN_AS_BEFORE = {
             "input": {
                 "issue": 42,
                 "prompt": (
-                    "Review the change on this branch for GitHub issue saga-xyz/widgets#42 "
+                    "Review the change on this branch for GitHub issue example-org/widgets#42 "
                     "against the approved plan: Make the widget list sortable by name.\n\n"
                     "swarm-work.patch holds the last step's diff; the whole change is this "
                     "branch against the default branch. Do not edit files. Write "
@@ -849,7 +849,7 @@ CHAIN_AS_BEFORE = {
             "input": {
                 "issue": 42,
                 "prompt": (
-                    "Fix every finding in verdict.json for GitHub issue saga-xyz/widgets#42. "
+                    "Fix every finding in verdict.json for GitHub issue example-org/widgets#42. "
                     "Change nothing else. " + issueruns.NO_CLOSING_KEYWORD
                 ),
             },
@@ -862,14 +862,14 @@ CHAIN_AS_BEFORE = {
     "metadata": {
         "issue_run": {
             "run_id": "run_x",
-            "issue": "saga-xyz/widgets#42",
+            "issue": "example-org/widgets#42",
             "plan_digest": plan_digest(PLAN),
             "fix_rounds": 3,
             "review_rounds_compiled": 1,
         }
     },
     "strategy": "integrate",
-    "repository_url": "https://github.com/saga-xyz/widgets",
+    "repository_url": "https://github.com/example-org/widgets",
 }
 
 
@@ -891,7 +891,7 @@ def test_a_plan_without_depends_on_compiles_to_the_chain_byte_for_byte():
     # The one addition (contract request 47): the run's merge choice, stated.
     assert dumped["metadata"].pop("merge") == "off"
     # And its title and label (RUNS, 2026-10-12): what the console names it by.
-    assert dumped["metadata"].pop("title") == "saga-xyz/widgets#42: Make the widget list sortable by name."
+    assert dumped["metadata"].pop("title") == "example-org/widgets#42: Make the widget list sortable by name."
     assert dumped["metadata"].pop("unit") == "issue-42"
     assert dumped == CHAIN_AS_BEFORE
 
@@ -1084,7 +1084,7 @@ FULL_PLAN = {
     "summary": "Make the widget list sortable by name.",
     "mode": "workflow",
     "requirements": ["The Name header sorts the list", "The sort survives a reload"],
-    "overlaps": [{"ref": "saga-xyz/widgets#9", "kind": "pull_request", "action": "required",
+    "overlaps": [{"ref": "example-org/widgets#9", "kind": "pull_request", "action": "required",
                   "note": "PR #9 adds sort helpers; step 1 builds on them."}],
     "estimate": "2 agent-hours",
     "steps": [
@@ -1178,9 +1178,9 @@ def test_a_single_mode_plan_compiles_to_the_same_shape_with_one_implementer():
 LEGACY_PLAN = {
     **{k: v for k, v in FULL_PLAN.items() if k != "overlaps"},
     "overlaps": [
-        {"ref": "saga-xyz/widgets#9", "kind": "pull_request",
+        {"ref": "example-org/widgets#9", "kind": "pull_request",
          "note": "PR #9 adds sort helpers; step 1 builds on them."},
-        {"ref": "saga-xyz/widgets#7", "kind": "issue",
+        {"ref": "example-org/widgets#7", "kind": "issue",
          "note": "Edits the list's styles. No action: different file."},
     ],
 }
@@ -1196,11 +1196,11 @@ LEGACY_DIGEST = "sha256:" + hashlib.sha256(
 
 @pytest.mark.parametrize("missing", [{}, {"action": None}])
 def test_a_planner_plan_whose_overlap_has_no_action_is_refused_naming_it(missing):
-    overlap = {"ref": "saga-xyz/widgets#9", "kind": "pull_request", "note": "n", **missing}
+    overlap = {"ref": "example-org/widgets#9", "kind": "pull_request", "note": "n", **missing}
     with pytest.raises(issueruns.InvalidPlan) as refused:
         issueruns.parse_plan({**FULL_PLAN, "overlaps": [overlap]})
     assert "overlaps.0" in refused.value.message
-    assert "saga-xyz/widgets#9" in refused.value.message
+    assert "example-org/widgets#9" in refused.value.message
     assert "action" in refused.value.message
 
 
@@ -1217,7 +1217,7 @@ def test_a_planner_plan_missing_an_overlap_action_fails_the_run(client, db, obje
     _finish_planner(db, objects, run, LEGACY_PLAN)
     read = _run(client, run["id"]).json()["run"]
     assert read["state"] == "FAILED"
-    assert "saga-xyz/widgets#9" in read["error"] and "action" in read["error"]
+    assert "example-org/widgets#9" in read["error"] and "action" in read["error"]
     assert not _docs(db, "workflows")
 
 
@@ -1285,7 +1285,7 @@ def test_a_legacy_plan_edited_only_in_its_summary_is_accepted(client, db, object
 
 @pytest.mark.parametrize("change", [
     {"note": "A note the stored plan never had."},
-    {"ref": "saga-xyz/widgets#8"},
+    {"ref": "example-org/widgets#8"},
     {"kind": "issue"},
 ])
 def test_a_legacy_plan_edit_that_changes_an_overlap_must_give_it_an_action(
@@ -1310,7 +1310,7 @@ def test_an_edit_of_a_new_plan_may_not_drop_an_overlap_action(client, db, object
     del edited["overlaps"][0]["action"]
     response = _edit(client, run["id"], planned["plan_digest"], edited)
     assert response.status_code == 422, response.text
-    assert "saga-xyz/widgets#9" in response.text
+    assert "example-org/widgets#9" in response.text
 
 
 def test_the_planner_is_told_every_overlap_needs_an_action():
@@ -1348,7 +1348,7 @@ def test_the_open_work_is_read_with_the_tenants_token_and_stored_on_the_run(
         headers["Authorization"] == f"Bearer {token}" for _, headers in github.calls
     )
     work = run["open_work"]
-    assert work["repository"] == "saga-xyz/widgets"
+    assert work["repository"] == "example-org/widgets"
     # The planned issue is not its own overlap.
     assert [i["number"] for i in work["issues"]] == [7]
     assert work["pull_requests"] == [{
@@ -1363,9 +1363,9 @@ def test_the_open_work_is_read_with_the_tenants_token_and_stored_on_the_run(
     marker = f"=== OPEN WORK {run['id']} ==="
     assert prompt.count(marker) == 2
     section = prompt.split(marker)[1]
-    assert "pull request saga-xyz/widgets#9: Sort helpers" in section
+    assert "pull request example-org/widgets#9: Sort helpers" in section
     assert "src/widgets/sort.py" in section
-    assert "issue saga-xyz/widgets#7" in section
+    assert "issue example-org/widgets#7" in section
     assert '"overlaps"' in prompt and '"requirements"' in prompt
     assert token not in json.dumps(run) and token not in prompt
 
@@ -1410,7 +1410,7 @@ def test_a_run_stored_before_the_open_work_read_still_loads():
 
 def test_the_open_work_round_trips_through_the_document():
     now = datetime.now(timezone.utc)
-    work = {"repository": "saga-xyz/widgets", "read_at": now,
+    work = {"repository": "example-org/widgets", "read_at": now,
             "issues": [{"number": 7, "title": "t"}], "issues_truncated": True,
             "pull_requests": [], "pull_requests_truncated": False}
     run = _stored_run(open_work=work)

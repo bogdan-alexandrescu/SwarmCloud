@@ -27,7 +27,7 @@ import pytest
 
 from .conftest import auth_header, seed_tenant
 
-REPO = "https://github.com/saga-xyz/payments.git"
+REPO = "https://github.com/example-org/payments.git"
 API_ROOT = pathlib.Path(__file__).resolve().parents[3] / "apps" / "swarm-api"
 
 

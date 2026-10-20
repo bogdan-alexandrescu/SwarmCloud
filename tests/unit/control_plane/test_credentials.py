@@ -34,14 +34,14 @@ NOW = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
 #: What terraform puts on a tenant secret: the worker may read it, and the
 #: platform admins may add new versions (the key rotation path).
 WORKER_SA = f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com"
-SECRET_ADMIN = "group:swarm-admins@saga.xyz"
+SECRET_ADMIN = "group:swarm-admins@example.com"
 
 
 def tenant(service_account: str | None = WORKER_SA) -> Tenant:
     return Tenant(
         tenant_id="eng",
         kind="group",
-        principal="eng@saga.xyz",
+        principal="eng@example.com",
         created_at=NOW,
         service_account=service_account,
         namespace="swarm-tenant-eng",
