@@ -774,6 +774,8 @@ export interface LanguageRow {
   server: string | null
   status: string | null
   files: number | null
+  /** How many of `files` a language server answered whole; null when the row predates #1693. */
+  files_covered: number | null
   resolved: number | null
   fallback: string | null
 }
@@ -791,6 +793,7 @@ export function normLanguages(v: unknown): LanguageRow[] {
             server: str(l.server),
             status: str(l.status),
             files: num(l.files),
+            files_covered: num(l.files_covered),
             resolved: ratio(l.resolved),
             fallback: str(l.fallback),
           }

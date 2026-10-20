@@ -451,7 +451,7 @@ def test_an_uncovered_file_of_a_partial_language_falls_back(writer, objects, tmp
     graph = open_graph(writer, objects, tmp_path, covered_graph(status, {FORMAT, T_FORMAT}))
     trigger = assert_full_suite(plan([changed_line(ORDERS, 25)], graph), "unsupported_language")
     assert (trigger["path"], trigger["language"], trigger["status"]) == (ORDERS, "python", status)
-    assert "not covered" in trigger["reason"]
+    assert trigger["reason"].endswith("and no language server covered this file")
 
 
 @pytest.mark.parametrize("status", ["unsupported", "failing"])

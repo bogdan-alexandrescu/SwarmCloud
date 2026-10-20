@@ -239,7 +239,7 @@ implementer otherwise spends tokens answering:
 | `symbols` *(revised 2026-10-04)* | per language, every function, class, method and route tree-sitter finds: `id` (`<path>#<qualified name>`), `kind`, `path`, `start_line`, `end_line`, `language`, `exported`; for a route also `method` and `path` | "where exactly is X defined, and how big is it?" |
 | `call_edges` *(revised)* | caller → callee and reference edges between symbols, each with `kind` (`call` / `reference` / `inherit` / `route_handler` / `import`), its `evidence` and a `confidence` from 0 to 1 | "what calls this, and how sure are we?" — the impact question at symbol level |
 | `symbol_test_map` *(revised)* | for each symbol, the tests (test functions, as symbols) that reach it through `call_edges`, with the `depth` of the shortest path and the path's confidence | "which tests exercise this function?" (§4.3a) |
-| `languages` *(revised)* | per language: files, the tree-sitter grammar used, the language server and its status (`ok` / `unsupported` / `failing` / `timed_out`) and what the index fell back to | "how far can I trust the graph for this language?" |
+| `languages` *(revised)* | per language: files, the tree-sitter grammar used, the language server and its status (`ok` / `partial` / `unsupported` / `failing` / `timed_out`), how many files it covered and what the index fell back to | "how far can I trust the graph for this language?" |
 
 `modules`, `test_layout`, `test_map`, `commands` and `hot_spots` are computed
 mechanically (§3.4), and so are `symbols`, `call_edges`, `symbol_test_map`
@@ -849,10 +849,19 @@ forces a full run for that language.
 A language server is memory-hungry (pyright on a large repository holds
 several GiB), and requests equal limits (invariant 7), so the indexer's
 resource class is sized for the server, not for bursting past it. A server
-that exceeds its budget, crashes or exceeds its memory is stopped; its
-language is marked `timed_out` or `failing` in `languages` with the reason,
-its edges stay `ast`, and the run still succeeds. A timeout is never a
-failed index: it is a less certain one, and says so.
+that hangs, crashes or exceeds its memory is stopped; its language is marked
+`timed_out` or `failing` in `languages` with the reason, its edges stay
+`ast`, and the run still succeeds. A server whose budget runs out while it is
+still answering keeps the files it finished (revised 2026-10-20, #1693): the
+language is `partial` ("pyright reached N of M files (K of S sites) in its
+270-second budget"), with `files_covered`, every file row says `lsp: true`
+or `false`, and impact trusts a changed file of that language only when its
+row is `true`. Before this, a cut threw away every answer -- 7,106 resolved
+sites from a healthy pyright on ai-studio -- and every Python change there
+answered the full suite. A crash or a memory stop still keeps nothing: a
+server that was failing may have answered from a half-built program, and
+nothing says from which answer on. A timeout is never a failed index: it is
+a less certain one, and says so.
 
 **What happens for an unsupported language.** A language with a tree-sitter
 grammar and no server listed (Ruby, Java, Rust in phase 1) gets symbols and
@@ -1078,7 +1087,9 @@ every policy, so the console can show it whichever policy is picked: a build
 or test configuration file, a shared fixture (`conftest.py`, a `fixtures/`
 or `testutils/` module), a changed symbol with an edge below 0.4 on its path
 to every test that reaches it, a changed file in a language marked
-`unsupported`, `failing` or `timed_out`, an `unindexed` symbol, and an index
+`unsupported` or `failing`, or marked `partial` or `timed_out` when no
+language server covered that file (its graph row's `lsp` is not `true`), an
+`unindexed` symbol, and an index
 that is stale (§5). The query reads only the reverse shards of the modules on
 its frontier, so its cost scales with the change, not the repository. The
 same answer serves a commit and a pull request; the console draws both

@@ -82,9 +82,13 @@ THE LSP PASS (lane RI10, lsp/). After the tree-sitter pass each language's
 server (pyright, tsserver, gopls, terraform-ls) is started headless over
 stdio and asked about every candidate site; a resolved site becomes an `lsp`
 edge at 0.95 (0.8 through an inferred receiver type), keeping `ast` in
-`also_evidence`. Each language's row in `languages` says `ok`, `timed_out`,
-`failing` or `unsupported`, with the reason; a language whose server was
-stopped keeps only its `ast` edges, and the run still succeeds. `--no-lsp`
+`also_evidence`. Each language's row in `languages` says `ok`, `partial`,
+`timed_out`, `failing` or `unsupported`, with the reason; a language whose
+server was stopped keeps only its `ast` edges, one whose budget ran out after
+it finished some files (`partial`) keeps those files' edges, and the run
+still succeeds. Every file row says `lsp: true` when a server answered it
+whole and each language row counts those as `files_covered`, which is what
+impact trusts a changed file by (#1693). `--no-lsp`
 skips the pass: every language is then `unsupported` with "edges are
 syntactic", as before RI10. lsp/driver.py documents the budget, the memory
 stop and the server's environment.
@@ -3010,6 +3014,10 @@ def extract(root: Path, budget: Budget | None = None,
     if lsp_result is not None:
         for edge in lsp_result.edges:
             edges.add(edge.frm, edge.to, edge.kind, "lsp", edge.confidence, edge.path, edge.line)
+    covered = _lsp_coverage(files, lsp_result, affected,
+                            base.graph if affected is not None and base is not None else None)
+    for record in files:
+        record["lsp"] = record["path"] in covered
     routes = [r for path in sorted(facts) for r in facts[path].routes]
     by_route = {}
     for (frm, to, kind), edge in edges.edges.items():
@@ -3347,6 +3355,43 @@ def _modules(files: list[dict], truncated: set[str]) -> list[dict]:
     return modules[:MAX_MODULES]
 
 
+def _lsp_coverage(files: list[dict], lsp_result: Any, affected: set[str] | None,
+                  base_graph: Any) -> set[str]:
+    """The files whose edges a language server answered whole (`files[].lsp`).
+
+    A full run takes the servers' `covered` (lsp/driver.py: every file of an
+    `ok` language, the finished ones of a `partial` one, none of the rest).
+    An incremental run asked only about the affected files, and every other
+    file keeps its base edges verbatim, so it keeps its base flag too; a base
+    graph written before the flag existed said it through its language's
+    status, `ok` being every file and anything else none.
+    """
+    ran: set[str] = set()
+    if lsp_result is not None:
+        for result in lsp_result.languages.values():
+            ran |= result.covered
+    if affected is None:
+        return ran
+    base_rows = {str(row.get("path")): row for row in (base_graph or {}).get("files") or []
+                 if isinstance(row, dict)}
+    base_status = {row.get("language"): row.get("status")
+                   for row in (base_graph or {}).get("languages") or [] if isinstance(row, dict)}
+    covered = set()
+    for record in files:
+        path = record["path"]
+        if path in affected:
+            if path in ran:
+                covered.add(path)
+            continue
+        before = base_rows.get(path)
+        if before is None:
+            continue
+        flag = before.get("lsp")
+        if flag is True or (flag is None and base_status.get(record["language"]) == "ok"):
+            covered.add(path)
+    return covered
+
+
 def _languages(files: list[dict], lsp_result: Any = None,
                carried: dict[str, dict] | None = None) -> list[dict]:
     """The `languages` table: what each language got, and why.
@@ -3356,6 +3401,13 @@ def _languages(files: list[dict], lsp_result: Any = None,
     reason, `fallback` is "ast" unless the status is `ok`, and `lsp` carries
     the server's counts: requests, resolved and unresolved sites, request
     timeouts, errors, edges, and the version the server reported.
+
+    `files_covered` counts the language's files marked `lsp: true` -- the
+    ones a server answered whole, which impact trusts under a `partial` or
+    `timed_out` status (#1693). An incremental run whose server answered
+    every affected file is still `partial` while a file it carried from the
+    base was never covered: an `ok` there would tell impact to trust a file
+    no server has finished.
     """
     table: dict[str, dict] = {}
     for f in files:
@@ -3391,8 +3443,18 @@ def _languages(files: list[dict], lsp_result: Any = None,
                         entry[key] = before[key]
             table[language] = entry
         entry["files"] += 1
+        entry["files_covered"] = entry.get("files_covered", 0) + (f.get("lsp") is True)
         if f["status"] in ("parsed", "timed_out", "failed", "too_large", "over_budget"):
             entry[f["status"]] += 1
+    for language, entry in table.items():
+        ran = None if lsp_result is None else lsp_result.languages.get(language)
+        uncovered = any(f["language"] == language and f["status"] == "parsed" and f.get("lsp") is not True
+                        for f in files)
+        if carried is not None and ran is not None and entry["status"] == "ok" and uncovered:
+            entry.update(status="partial", fallback="ast", reason=(
+                f"{entry['server']} answered every file this run asked about; "
+                f"{entry['files_covered']} of {entry['files']} files are covered, "
+                "the rest carried uncovered from the base index"))
     return [table[name] for name in sorted(table)]
 
 

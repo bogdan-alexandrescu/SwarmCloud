@@ -422,7 +422,8 @@ def _partial_base(tool: Any, lsp: Any, tmp_path: Path, repo: Path) -> Any:
                  name="cutfake")
     facts = tool.extract(repo, tool.Budget(), lsp=_options(lsp, spec, server_budget_seconds=3.0))
     assert _language(facts, "python")["status"] == "partial", _language(facts, "python")["reason"]
-    return tool.Base(sha=facts["commit_sha"], graph=facts, index=tool.index_document(facts))
+    return tool.Base(sha=facts["commit_sha"], graph=tool.graph_document(facts),
+                     index=tool.index_document(facts))
 
 
 def test_an_incremental_run_carries_an_untouched_files_coverage(tool: Any, lsp: Any,
@@ -459,7 +460,8 @@ def test_a_base_written_before_file_coverage_takes_its_languages_status(tool: An
         lsp, _fake(lsp, tmp_path, {"definitions": CUT_DEFINITIONS}, name="okfake")))
     for row in facts["files"]:
         del row["lsp"]
-    base = tool.Base(sha=facts["commit_sha"], graph=facts, index=tool.index_document(facts))
+    base = tool.Base(sha=facts["commit_sha"], graph=tool.graph_document(facts),
+                     index=tool.index_document(facts))
     _commit(repo, {"src/a.py": "from .b import helper\n\n\ndef first():\n    return helper()\n\n\n"
                                "def second():\n    return 2\n"})
     index = tool.extract(repo, tool.Budget(), base=base, lsp=_options(

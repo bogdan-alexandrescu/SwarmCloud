@@ -190,7 +190,8 @@ PARTIAL = {"language": "python", "files": 1447, "status": "partial", "server": "
 def test_a_partial_language_is_degraded_and_says_how_much_it_covered():
     """MUTATION: leave `partial` out of DEGRADED_LANGUAGE_STATUSES and the
     list card and the Overview say nothing about 745 uncovered files."""
-    block = repoindex.coverage({"modules": [], "languages": [PARTIAL, *LANGUAGES]})
+    others = [row for row in LANGUAGES if row["language"] != "python"]
+    block = repoindex.coverage({"modules": [], "languages": [PARTIAL, *others]})
     rows = {r["language"]: r for r in block["degraded_languages"]}
     assert rows["python"]["status"] == "partial"
     # MUTATION: drop `files_covered` from `degraded_languages()`'s rows and
