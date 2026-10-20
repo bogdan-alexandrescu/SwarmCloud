@@ -190,6 +190,12 @@ export const RECENT_TASKS_READ = 30
 export const RECENT_WORKFLOWS_READ = 20
 export const RECENT_RUNS_READ = 20
 
+/**
+ * THE CHIP'S WORD FOR A KIND (VOCAB-AGENTS-UI, part of #1680): the console
+ * calls the running unit an agent; `kind: 'task'` stays the identifier.
+ */
+const KIND_LABEL: Record<RecentSubmission['kind'], string> = { task: 'agent', workflow: 'workflow', 'issue run': 'issue run' }
+
 export interface RecentSubmission {
   kind: 'task' | 'workflow' | 'issue run'
   id: string
@@ -358,7 +364,7 @@ function RecentSubmissions({ go, read, reading, onRetry }: {
         <ul className="sb-recent-list">
           {read.items.map((it) => (
             <li key={`${it.kind}:${it.id}`} className="sb-recent-i">
-              <Chip>{it.kind}</Chip>
+              <Chip>{KIND_LABEL[it.kind]}</Chip>
               <a className="sb-recent-n" href={addressToPath(it.to)} title={`${it.name} · ${it.id}`} onClick={(e) => {
                 if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
                 e.preventDefault()
