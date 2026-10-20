@@ -162,7 +162,12 @@ def test_the_promoted_base_is_served_past_the_routes_bound(api_db, opener):
     state = _opened(api_db, opener)
     count = indexrun.ROUTE_VERSIONS_SERVED + 9
     shas = _register_repository(api_db, versions=count, current=None)
-    promoted = max(shas)
+    # Past the bound whether the store answers in id order (Firestore) or in
+    # insertion order (the fake).
+    bound = indexrun.ROUTE_VERSIONS_SERVED
+    late = [commit for commit in shas[bound:] if commit in sorted(shas)[bound:]]
+    assert late, "the fixture must give a version past the bound in both orders"
+    promoted = late[0]
     api_db.docs[f"repositories/{REPO_ID}"]["index"] = {"current_sha": promoted}
     where = indexrun.target(TENANT, URL)
     assert not isinstance(where, str)
