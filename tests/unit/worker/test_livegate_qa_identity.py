@@ -715,6 +715,26 @@ def test_the_verb_refuses_proxy_authorization_another_host_a_split_header_and_an
     assert jwt not in json.dumps(records)
 
 
+def test_an_agent_bound_frame_delivered_after_the_wipe_is_still_scrubbed():
+    # The wipe runs before Chromium and the agents' links close, so a console
+    # request in flight at wipe time can still reach an agent: it must arrive
+    # without the header and with every copy of the credential replaced.
+    qa = QaIdentity(lambda e, f: None)
+    jwt = _jwt()
+    qa.handle(_args(jwt))
+    qa.wipe()
+    assert qa.held is False and qa.header_value() is None
+    out = qa.scrub({"method": "Network.requestWillBeSentExtraInfo", "params": {
+        "requestId": "W1", "headers": {"authorization": f"Bearer {jwt}", "accept": "*/*"},
+        "note": f"echo {jwt}"}})
+    assert jwt not in json.dumps(out)
+    assert out["params"]["headers"] == {"accept": "*/*"}
+    assert out["params"]["note"] == f"echo {PLACEHOLDER}"
+    body = base64.b64encode(f"token={jwt}".encode()).decode("ascii")
+    result = qa.scrub({"id": 7, "result": {"body": body, "base64Encoded": True}})["result"]
+    assert base64.b64decode(result["body"]).decode() == f"token={PLACEHOLDER}"
+
+
 def test_session_export_and_import_leave_the_console_host_out():
     calls: list[tuple[str, Any]] = []
     jar = {"cookies": [
