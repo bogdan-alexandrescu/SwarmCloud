@@ -576,6 +576,63 @@ What it does, in order, and why each:
 File names: `<group>/<route-id>--<preset>--<theme>--s<N>.png`, so the review
 and the report can name every image without opening the manifest.
 
+#### 4.2.1 Amendment, 2026-10-20: what the capture does after the first run (QA-TOOLS-FIX, epic #1680)
+
+Steps 2 and 5 above are the design as written before the first run. That
+run (epic #1680) showed four places where it did not hold, and QA-TOOLS-FIX
+(PR 1681) changed the tool. What `images/agent-runtime-browser/swarm_qa.py`
+and `images/agent-runtime-browser/swarm-handoff` do now:
+
+* **It scrolls the page's own scroller, not the document.** The console's
+  document does not scroll: a route's content scrolls inside `div.ctl-scroll`
+  (`Spine.tsx`). The first run scrolled only the document, `main` and
+  `[role=dialog]`, so it took one segment of every route (QA-003). The capture
+  now picks, in this order: the nearest ancestor of the route's `ready`
+  element that scrolls and has more to show; else the document, if it has
+  more to show; else the largest scrolling element on the page by the area it
+  shows (the 64 px rail scrolls too, and is not the page). It names no class,
+  so a console that moves its scroller still segments. Each segment scrolls
+  that element by its own visible height, the count is the route's `segments`
+  or the pages it actually holds, whichever is fewer, and the element chosen
+  is written in the route's manifest entry as `scroller`
+  (`swarm_qa.py` (`MEASURE_JS`)).
+* **It waits for the page to stop reading, and says so when it never does.**
+  `networkidle`, `document.fonts.ready` and the `ready` selector are all met
+  in the middle of a read: the fixture build reads on timers with no network
+  traffic (QA-027). So after `load` the capture waits up to 10 s for the
+  network to go quiet (the console polls, so not reaching it is recorded as
+  `network_idle: false`, not a failure), then for the fonts, then up to 30 s
+  for the `ready` selector, and then until the page has shown nothing pending
+  on two polls in a row, 150 ms apart, for up to 15 s. Pending means a
+  skeleton bar, a region marked `aria-busy`, the page head's refresh while it
+  reads, or the word "reading…" anywhere on the page, and only if it is drawn
+  (`swarm_qa.py` (`PENDING_JS`), `SETTLE_TIMEOUT_MS`). A page still reading
+  after 15 s is shot as it stands, never dropped: its entry says
+  `status: "unsettled"` and `settled: false`, `pending` lists up to five
+  things it still showed, and `failed` carries "did not settle in 15000 ms:
+  still showing … (shot as it stood)". That is a finding for the review, not
+  a failed step.
+* **Flows are recorded through the connection the recorder already holds.**
+  `swarm-handoff record start <name>` and `swarm-handoff record stop` write
+  `$SWARM_ARTIFACTS_DIR/flows/<name>.gif`. The recorder connects to the live
+  browser through the gate's CDP proxy, as the agent does, and takes each
+  frame with the page's own screenshot on the session that connection
+  already has for the page. It never opens a CDP session of its own: that is
+  a second browser-debugging session, which the gate refuses, and the first
+  run's recorder asked for one and skipped every frame (QA-002). Frames are
+  taken at CSS size, so a 1440×900 desktop frame is decoded here and fitted
+  to 720×450 (`swarm-handoff` (`LiveFrames`)).
+* **Each route starts from a clean browser state.** The capture's tab lives
+  in the live browser's one profile, so whatever a route left in storage drew
+  the next route: the sidebar's Recent workflows appeared on every route after
+  `/workflows` and on none before it (QA-077). Each route is its own
+  navigation, so the page's memory starts empty; now a script that runs
+  before the console's own scripts, on every load of the console's origin,
+  also empties its local and session storage, so every route draws what a
+  first visit draws (`swarm_qa.py` (`RESET_STATE_JS`)). Other origins are
+  left alone, and cookies are not cleared. A fresh browser context per route would also do it, but opens a
+  window the gate has never been measured fitting to a preset.
+
 ### 4.3 The route list: `apps/swarm-ui/qa/routes.json` (new, lane QA-CAPTURE)
 
 ```json
@@ -759,7 +816,7 @@ repeats that check (§6).
      "prompt": "Goal-driven flow test of the console's fixture build. In apps/swarm-ui run `npm ci` and start `npm run dev` in the background; open http://localhost:5173 in the live browser at the desktop preset. Start a flow recording named flow-workflow-graph. Using the jev browser tools, reach this goal as a person would, without typing addresses: open a workflow that has a failed step, find which step failed and why, and open that step's changes. Stop the recording. Then do it again in dark mode (page.emulate_media(color_scheme='dark') through swarm_browser.live()) as flow-workflow-graph-dark. For each run write in flow-workflow-graph.json: whether the goal was reached, the steps taken, and every point where a label was missing, ambiguous or misleading, each with a screenshot saved under $SWARM_ARTIFACTS_DIR. Bundle flow-workflow-graph.json, both GIFs and the screenshots into flow-workflow-graph.tar under $SWARM_ARTIFACTS_DIR. Change no file in the repository."},
     {"step_id": "flow-submit-form", "runner_profile": "claude-code-browser", "model_class": "sonnet",
      "inputs": {"browser_tool": "playwright"}, "allow_empty_diff": true, "timeout_seconds": 2700,
-     "prompt": "Scripted flow test of the console's fixture build with the Playwright browser tools. In apps/swarm-ui run `npm ci` and start `npm run dev` in the background; open http://localhost:5173 in the live browser. At the desktop preset and then at phone-390 (swarm-handoff device phone-390), record a flow named flow-submit-form-<preset>: open Work > Submit a task, try to submit it empty, read every validation message, fill each field, choose each runner profile in turn and note what the form shows for it, and stop before the final submit. Take a browser_take_screenshot at each step and say in flow-submit-form.json what each screenshot showed you, so the report can tell whether you saw the image. Note every message that is missing, wrong or clipped, with its screenshot under $SWARM_ARTIFACTS_DIR. Bundle flow-submit-form.json, the GIFs and the screenshots into flow-submit-form.tar under $SWARM_ARTIFACTS_DIR. Change no file in the repository."},
+     "prompt": "Scripted flow test of the console's fixture build with the Playwright browser tools. In apps/swarm-ui run `npm ci` and start `npm run dev` in the background; open http://localhost:5173 in the live browser. At the desktop preset and then at phone-390 (swarm-handoff device phone-390), record a flow named flow-submit-form-<preset>: open the task form at `/submit/task` (route `new` in apps/swarm-ui/qa/routes.json), the way a person reaches it: the rail's Submit item, then Start a task; try to submit it empty, read every validation message, fill each field, choose each runner profile in turn and note what the form shows for it, and stop before the final submit. Take a browser_take_screenshot at each step and say in flow-submit-form.json what each screenshot showed you, so the report can tell whether you saw the image. Note every message that is missing, wrong or clipped, with its screenshot under $SWARM_ARTIFACTS_DIR. Bundle flow-submit-form.json, the GIFs and the screenshots into flow-submit-form.tar under $SWARM_ARTIFACTS_DIR. Change no file in the repository."},
     {"step_id": "a11y-keyboard", "runner_profile": "claude-code-browser", "model_class": "sonnet",
      "inputs": {"browser_tool": "playwright"}, "allow_empty_diff": true, "timeout_seconds": 2700,
      "prompt": "Accessibility pass of the console's fixture build. In apps/swarm-ui run `npm ci` and start `npm run dev` in the background; open http://localhost:5173 in the live browser at the desktop preset. For each top-level section, using only the keyboard (Tab, Shift+Tab, Enter, Escape, arrows): reach every control, open and close every dialog and inspector, and note where focus is lost, invisible or trapped. Then take browser_snapshot of each page and note controls with no accessible name. Then, through swarm_browser.live(), repeat one page per section with emulate_media(reduced_motion='reduce') and with Emulation.setEmulatedVisionDeficiency set to deuteranopia, and screenshot each. Write a11y-keyboard.json in the findings shape of docs/design/visual-qa.md section 4.4, with a screenshot per finding under $SWARM_ARTIFACTS_DIR, and bundle it with the screenshots into a11y-keyboard.tar under $SWARM_ARTIFACTS_DIR. Change no file in the repository."},
