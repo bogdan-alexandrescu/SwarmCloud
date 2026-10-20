@@ -327,7 +327,7 @@ describe('QA-120 (run 2): the failed step’s reason leads the graph, above the 
       expect(painted(text, 'overflow-wrap', env)).toBe('anywhere')
     }
     // MUTATION: draw the lead with the neutral border and it does not read as the failure it names.
-    expect(painted(lead()!, 'border-left-color', WIDE)).toBe('var(--bad)')
+    expect(painted(lead()!, ['border-left', 'border-left-color'], WIDE)).toMatch(/var\(--bad\)/)
   })
 
   it('draws no lead once the reader picks another step, nor on a workflow with no failed pick', async () => {

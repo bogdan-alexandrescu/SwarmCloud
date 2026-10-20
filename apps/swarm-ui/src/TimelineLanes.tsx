@@ -1131,7 +1131,16 @@ export function TimelineLanesScreen({
           word={(s) => s.toLowerCase().replace('_', '-')}
           onChange={(next) => setView({ ...view, state: next as TaskState[] })}
         />
-        <TlPicker label="Profile" options={profiles} selected={view.profile} onChange={(next) => setView({ ...view, profile: next })} />
+        {/* THE PROFILES ARE THE LANES' OWN (visual QA QA-095, run 2): until
+            the attempts are read there are none to count, and `all 0` read
+            as a measured zero. It says what the strip below says instead. */}
+        <TlPicker
+          label="Profile"
+          options={profiles}
+          read={shown !== null ? 'read' : att.status === 'error' ? 'failed' : 'reading'}
+          selected={view.profile}
+          onChange={(next) => setView({ ...view, profile: next })}
+        />
         <label className={view.wf !== null ? 'tl-flt is-on' : 'tl-flt'}>
           Workflow{' '}
           <select className="tl-wf-sel" value={view.wf ?? ''} onChange={(e) => setView({ ...view, wf: e.target.value === '' ? null : e.target.value })}>
@@ -1361,15 +1370,29 @@ function TlPicker({
   options,
   selected,
   word = (s) => s,
+  read = 'read',
   onChange,
 }: {
   label: string
   options: readonly string[]
+  /**
+   * Whether `options` were read off the lanes (QA-095). A fixed list (the
+   * states) is always `read`; the profiles are the lanes' own, and before the
+   * attempts land `all 0` counted the profiles of no lanes.
+   */
+  read?: 'read' | 'reading' | 'failed'
   selected: readonly string[]
   word?: (s: string) => string
   onChange: (next: string[]) => void
 }) {
-  const summary = selected.length === 0 ? `all ${options.length}` : selected.map(word).join(', ')
+  const summary =
+    selected.length > 0
+      ? selected.map(word).join(', ')
+      : read === 'reading'
+        ? 'all · reading'
+        : read === 'failed'
+          ? 'all · not read'
+          : `all ${options.length}`
   // ESCAPE AND A PRESS OUTSIDE CLOSE IT (QA G3-18, 2026-10-07): the checklist
   // stayed open through Escape and across a `+` zoom until its own button was
   // pressed again. Escape hands focus back to the button that opened it.
@@ -1416,7 +1439,11 @@ function TlPicker({
           after `failed`, with `cancelled` and `dead-lettered` scrolled out of
           a panel that gave no sign it scrolls. */}
       <div className="tl-pop" role="group" aria-label={label} style={{ maxHeight: 'min(70vh, 480px)' }}>
-        {options.length === 0 && <span className="tl-q">none in the rows read</span>}
+        {options.length === 0 && (
+          <span className="tl-q">
+            {read === 'reading' ? 'the lanes are still being read' : read === 'failed' ? 'the lanes were not read' : 'none in the rows read'}
+          </span>
+        )}
         {options.map((o) => (
           <label key={o}>
             <input
