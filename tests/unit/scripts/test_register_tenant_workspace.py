@@ -469,10 +469,6 @@ def test_create_runs_every_step_and_ends_ready(job: Job, created: dict) -> None:
     # A7: the namespace and its objects, with §8's quota.
     quota = world["k8s"][f"ResourceQuota/{NAMESPACE}/swarm-tenant-quota"]["spec"]["hard"]
     assert (quota["pods"], quota["requests.cpu"], quota["requests.memory"]) == ("16", "64", "128Gi"), quota
-    # CPU bursts to 2x its request (SIZES-SCHED-1, contract request RS-1), so
-    # the limits line is twice the requests line or the namespace fits half
-    # its pods. MUTATION: render limits.cpu from __QUOTA_CPU__ and this reads 64.
-    assert quota["limits.cpu"] == "128", quota
     assert f"Namespace//{NAMESPACE}" in world["k8s"]
     assert f"NetworkPolicy/{NAMESPACE}/swarm-default-deny" in world["k8s"]
     assert all(k.split("/")[1] in ("", NAMESPACE) for k in world["k8s"]), sorted(world["k8s"])
@@ -838,8 +834,6 @@ def test_limits_reapplies_the_quota_and_the_documents_and_makes_no_iam_call(job:
     world = job.read()
     quota = world["k8s"][f"ResourceQuota/{NAMESPACE}/swarm-tenant-quota"]["spec"]["hard"]
     assert (quota["pods"], quota["requests.cpu"]) == ("24", "96"), quota
-    # MUTATION: render limits.cpu from __QUOTA_CPU__ and this reads 96.
-    assert quota["limits.cpu"] == "192", quota
     assert _field(job.doc(f"tenants/{TENANT}"), "max_active") == "12"
     pool = job.doc(f"pools/tenant:{TENANT}")
     assert (_field(pool, "hard_limit"), _field(pool, "active")) == ("12", "3"), "active is never written"
@@ -880,28 +874,6 @@ def test_verify_names_the_type_of_a_missing_object_never_its_name(job: Job, read
     assert _field(record, "state") == "failed"
     assert (_field(record, "failure", "step"), _field(record, "failure", "code"),
             _field(record, "failure", "object")) == ("A9", "VERIFY_FAILED", "NetworkPolicy")
-
-
-def test_verify_finds_a_quota_whose_cpu_limit_cannot_hold_its_pods(job: Job, ready_world: dict) -> None:
-    """A namespace applied before CPU burst (limits.cpu == requests.cpu) fits
-    half its pods: verify must name it, so `--mode limits` re-applies it.
-
-    MUTATION: drop the limits.cpu comparison from register-tenant.sh's
-    ResourceQuota check and verify passes this quota.
-    """
-    _from_ready(job, ready_world)
-
-    def old_quota(world: dict) -> None:
-        hard = world["k8s"][f"ResourceQuota/{NAMESPACE}/swarm-tenant-quota"]["spec"]["hard"]
-        hard["limits.cpu"] = hard["requests.cpu"]
-
-    job.edit(old_quota)
-    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
-    out = _out(proc)
-    assert proc.returncode == 1, out
-    record = job.record()
-    assert (_field(record, "failure", "step"), _field(record, "failure", "code"),
-            _field(record, "failure", "object")) == ("A9", "VERIFY_FAILED", "ResourceQuota")
 
 
 def test_verify_finds_a_lost_act_as_grant(job: Job, ready_world: dict) -> None:

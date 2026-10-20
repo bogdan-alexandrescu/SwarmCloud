@@ -29,15 +29,9 @@ workflow step that named a smaller resource class gets a Job of its own -- see
 the sizing note below.
 
 Two rules from the contract are applied here and are not negotiable:
-  * Memory and ephemeral-storage: requests == limits, on every container. A
-    memory burst is what gets a container OOM-killed under node pressure.
-    CPU (invariant 7 as amended by contract request RS-1, owner 2026-10-20;
-    SIZES-SCHED-1, part of #1689): on GKE the request is the class's `cpu` and
-    the limit its `cpu_limit_cores`, at most CPU_BURST_MAX_RATIO x the request.
-    Autopilot bills, and admission charges, the request; past it a container
-    borrows its node's idle requested CPU and is throttled, never killed, under
-    contention. Cloud Run bills its limit and has no request to separate, so a
-    Cloud Run Job renders the request as its only number.
+  * requests == limits. Cloud Run expresses this as limits only; on GKE both
+    are set to the same values. Bursting past a request is what gets a container
+    OOM-killed under node pressure.
   * No Spot, anywhere. Spot Pods cannot use Autopilot extended run time, so
     Spot and "no preemption" are mutually exclusive.
 
@@ -100,7 +94,6 @@ from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 from swarm_common.identity import worker_service_account_id
 from swarm_common.models import Lease, Task, Tenant
 from swarm_common.profiles import (
-    CPU_BURST_MAX_RATIO,
     RESOURCE_CLASSES,
     RUNNER_PROFILES,
     RUNTIME_TOOLS,
@@ -429,21 +422,6 @@ def gke_disk(rc: Any) -> GkeDisk:
         ) from None
 
 
-def cpu_quantity(cores: float) -> str:
-    """`cores` as a Kubernetes CPU quantity in millicores: 4 -> "4000m".
-
-    Millicores so a quarter-core size (docs/design/runner-sizes.md §4.2's
-    step) renders exactly, where `str(int(cores))` truncated 2.25 to "2".
-    """
-    return f"{round(cores * 1000)}m"
-
-
-def cpu_burst_ratio(rc: Any) -> float:
-    """The class's CPU limit over its request: 2 today, 1 for a class rolled
-    back to `cpu_limit=None` (contract request RS-1's rollback)."""
-    return rc.cpu_limit_cores / rc.cpu
-
-
 def gke_ephemeral_storage_gib(rc: Any) -> int:
     """The ephemeral-storage a GKE worker pod of this resource class requests and is limited to."""
     return gke_disk(rc).ephemeral_gib
@@ -677,12 +655,9 @@ class LiveDisplayShare:
     """What the `display` sidecar takes out of a resource class.
 
     THE CLASS DOES NOT CHANGE; IT IS SPLIT (§8.2). The worker keeps the rest,
-    each container has memory and disk requests == limits (invariant 7), and
-    the two REQUESTS sum to the class, so admission's unit arithmetic and the
-    pod Autopilot bills are what they were. CPU may burst (RS-1): the worker
-    to its request x the class's ratio, the display to `cpu_limit`, or that
-    ratio when it is None, and never past the class's own ratio, so a class
-    that does not burst renders a live pod that does not either. `ephemeral_gib` is the sidecar's container-level disk
+    each container has requests == limits (invariant 7), and the two sum to
+    the class, so admission's unit arithmetic and the pod Autopilot bills are
+    what they were. `ephemeral_gib` is the sidecar's container-level disk
     (its logs; its root is read-only and every volume it mounts is memory);
     the worker's ephemeral-storage gives up the same amount, so the pod's sum
     is still `gke_ephemeral_storage_gib(rc)` and every disk volume's
@@ -692,7 +667,6 @@ class LiveDisplayShare:
     cpu: int
     memory_gib: int
     ephemeral_gib: int = 1
-    cpu_limit: float | None = None
 
 
 #: Per class, like GKE_DISK, and refused for a class without a row.
@@ -715,21 +689,16 @@ class LiveDisplayShare:
 #:   one into work/. A heavier page or a download in flight at a peak is an
 #:   OOM kill, whose cost the worker's periodic checkpoint bounds (invariant 8).
 #:   live_display_share() still refuses a share that leaves the worker nothing.
-#:   CPU BURSTS (SIZES-SCHED-1, docs/design/runner-sizes.md §4.1, owner
-#:   2026-10-20): the worker to 4, the class's 2x; the display to 3, its size
-#:   before BROWSER-SPLIT, which keeps the room it had for Chromium's spikes
-#:   past that 1.90 peak while the agent keeps its 2. Pod limit 7, request 4.
 #: standard: display 2 / 4, worker 2 / 4. A workflow step may shrink a task's
 #:   class (swarm_api.validation.validate_resource_class_override), and admission
 #:   charged the smaller class, so the pod must fit it; half each, still with
-#:   the 2 GiB /dev/shm on the sidecar's side. The display bursts to 3, as
-#:   browser's: it runs the same Chromium.
+#:   the 2 GiB /dev/shm on the sidecar's side.
 #: large: no live profile can reach it (a step only shrinks), but the manifest
 #:   renders any class it is given; the design's starting sidecar (§8.2, what
 #:   browser's was until contract request 79), the rest to the worker.
 LIVE_DISPLAY_SHARE: dict[str, LiveDisplayShare] = {
-    "browser": LiveDisplayShare(cpu=2, memory_gib=5, cpu_limit=3),
-    "standard": LiveDisplayShare(cpu=2, memory_gib=4, cpu_limit=3),
+    "browser": LiveDisplayShare(cpu=2, memory_gib=5),
+    "standard": LiveDisplayShare(cpu=2, memory_gib=4),
     "large": LiveDisplayShare(cpu=5, memory_gib=10),
 }
 
@@ -753,12 +722,6 @@ def live_display_share(rc: Any) -> LiveDisplayShare:
         ) from None
     if share.cpu >= rc.cpu or share.memory_gib >= rc.memory_gib:
         raise ValueError(f"LIVE_DISPLAY_SHARE[{rc.name!r}] leaves the worker nothing")
-    if share.cpu_limit is not None and not (
-            share.cpu <= share.cpu_limit <= CPU_BURST_MAX_RATIO * share.cpu):
-        raise ValueError(
-            f"LIVE_DISPLAY_SHARE[{rc.name!r}]: cpu_limit {share.cpu_limit} must be between "
-            f"its request {share.cpu} and {CPU_BURST_MAX_RATIO} x the request (invariant 7)"
-        )
     return share
 
 
@@ -779,26 +742,18 @@ def with_live_display(job: dict[str, Any], *, rc: Any) -> dict[str, Any]:
 
     template["metadata"]["labels"][LIVE_POD_LABEL[0]] = LIVE_POD_LABEL[1]
 
-    # The split. Memory and disk equal in both directions on both containers
-    # (invariant 7); the CPU requests sum to the class and each limit stays
-    # within the class's own burst ratio (RS-1, LiveDisplayShare).
-    ratio = cpu_burst_ratio(rc)
-    worker_cpu = rc.cpu - share.cpu
-    display_cpu_limit = share.cpu * ratio
-    if share.cpu_limit is not None:
-        display_cpu_limit = min(share.cpu_limit, display_cpu_limit)
-    worker_fixed = {
+    # The split. Both directions equal on both containers (invariant 7).
+    worker_resources = {
+        "cpu": str(int(rc.cpu) - share.cpu),
         "memory": f"{rc.memory_gib - share.memory_gib}Gi",
         "ephemeral-storage": f"{disk.ephemeral_gib - share.ephemeral_gib}Gi",
     }
-    display_fixed = {
+    display_resources = {
+        "cpu": str(share.cpu),
         "memory": f"{share.memory_gib}Gi",
         "ephemeral-storage": f"{share.ephemeral_gib}Gi",
     }
-    worker["resources"] = {
-        "requests": {"cpu": cpu_quantity(worker_cpu), **worker_fixed},
-        "limits": {"cpu": cpu_quantity(worker_cpu * ratio), **worker_fixed},
-    }
+    worker["resources"] = {"requests": dict(worker_resources), "limits": dict(worker_resources)}
 
     # /dev/shm moves to where Chromium runs. The agent's own headless
     # Chromium, if it starts one, is not shown (§3.2) and gets the runtime's
@@ -840,10 +795,7 @@ def with_live_display(job: dict[str, Any], *, rc: Any) -> dict[str, Any]:
             {"name": "SWARM_BROWSER_UPLOADS", "value": LIVE_UPLOADS_MOUNT},
             {"name": "SWARM_CDP_LISTEN", "value": LIVE_CDP_LISTEN},
         ],
-        "resources": {
-            "requests": {"cpu": cpu_quantity(share.cpu), **display_fixed},
-            "limits": {"cpu": cpu_quantity(display_cpu_limit), **display_fixed},
-        },
+        "resources": {"requests": dict(display_resources), "limits": dict(display_resources)},
         "securityContext": copy.deepcopy(DISPLAY_SECURITY_CONTEXT),
         # The worker starts only once this passes: the gate is listening, so
         # the worker's registration is the first one (§5.4.2). A gate that
@@ -1827,11 +1779,8 @@ class CloudRunJobDispatcher:
             # `command=list(profile.command)` (the field's old name) and would
             # have run the bare runner exactly as the GKE pods of 2026-09-24 did.
             env=env,
-            # Cloud Run expresses sizing as limits and bills them, so the
-            # limit is the class's CPU REQUEST, never `cpu_limit_cores`: a
-            # Job has no request to burst past, and rendering the burst limit
-            # here would double the bill and allow no burst (invariant 7 as
-            # amended by RS-1; docs/design/runner-sizes.md §2.5).
+            # Cloud Run expresses sizing as limits; the platform never sets a
+            # request below the limit, so requests == limits holds.
             resources=run_v2.ResourceRequirements(
                 limits={"cpu": str(int(rc.cpu)), "memory": f"{rc.memory_gib}Gi"}
             ),
@@ -2646,22 +2595,14 @@ class GkeJobDispatcher:
         # signature; only a missing ConfigMap stops being fatal.
         for name, value in spec_job_env(self._settings).items():
             env.append({"name": name, "value": value})
-        # Memory and ephemeral-storage are the same number in both directions
-        # (invariant 7); CPU requests the class's `cpu` -- what admission
-        # charged and Autopilot bills -- and is limited to `cpu_limit_cores`,
-        # which it reaches by borrowing its node's idle requested CPU (RS-1,
-        # SIZES-SCHED-1). On a cluster without bursting Autopilot lowers the
-        # limit to the request; the worker records the limit the kernel
-        # enforces (`cpu.max`), which is how that would show.
-        fixed = {
+        resources = {
+            "cpu": str(int(rc.cpu)),
             "memory": f"{rc.memory_gib}Gi",
             # The whole pod's local disk -- the sum of the scratch volumes'
             # sizeLimits below, not the workspace's alone, and not the
             # cache's network disk, which is no ephemeral-storage: see GkeDisk.
             "ephemeral-storage": f"{gke_ephemeral_storage_gib(rc)}Gi",
         }
-        requests = {"cpu": cpu_quantity(rc.cpu), **fixed}
-        limits = {"cpu": cpu_quantity(rc.cpu_limit_cores), **fixed}
         labels = {
             "managed-by": "swarm-scheduler",
             "swarm-tenant": sanitize_name(tenant.tenant_id),
@@ -2745,9 +2686,8 @@ class GkeJobDispatcher:
                                 # (incident wf_ebb3ab2d65664707a559; module
                                 # docstring).
                                 "env": env,
-                                # Memory and disk equal in both directions;
-                                # CPU bursts past its request (above).
-                                "resources": {"requests": requests, "limits": limits},
+                                # requests == limits, both directions, no bursting.
+                                "resources": {"requests": resources, "limits": resources},
                                 "securityContext": CONTAINER_SECURITY_CONTEXT,
                                 "volumeMounts": [
                                     {"name": "workspace", "mountPath": WORKSPACE_MOUNT},

@@ -211,8 +211,7 @@ def test_no_reader_is_the_default(tenant):
 def test_the_url_and_the_ip_are_the_platforms_never_the_callers(tenant):
     """Invariants 7 and 10: a task's input naming another URL, host or IP
     changes nothing -- the URL comes from the scheduler's setting, the IP and
-    the name from constants -- and the pod's resources stay the platform's:
-    memory and disk requests == limits, CPU within its burst ratio (RS-1)."""
+    the name from constants -- and the pod's resources stay requests == limits."""
     sent = {"JEV_API_URL": "https://attacker.invalid/jev/v1/decide",
             "hostAliases": [{"ip": "10.0.0.1", "hostnames": [DECISION_API_TAILNET_NAME]}],
             "internal_decision_api_url": "https://attacker.invalid"}
@@ -222,10 +221,7 @@ def test_the_url_and_the_ip_are_the_platforms_never_the_callers(tenant):
     assert _host_aliases(job) == HOST_ALIASES
     for container in job["spec"]["template"]["spec"]["containers"]:
         resources = container.get("resources") or {}
-        for resource in ("memory", "ephemeral-storage"):
-            assert resources["requests"][resource] == resources["limits"][resource], container["name"]
-        request, limit = (int(resources[d]["cpu"].removesuffix("m")) for d in ("requests", "limits"))
-        assert request <= limit <= 2 * request, container["name"]
+        assert resources.get("requests") == resources.get("limits"), container["name"]
 
 
 @pytest.mark.parametrize("profile,live", [("claude-code", True), ("browser", True), (LIVE, False)])

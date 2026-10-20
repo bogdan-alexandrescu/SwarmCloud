@@ -167,8 +167,7 @@ def test_the_pods_ephemeral_storage_is_its_local_volumes_alone_with_requests_equ
         if "emptyDir" in v and v["emptyDir"].get("medium") != "Memory"
     }
 
-    # Invariant 7 (as amended by RS-1, CPU alone may burst): disk never does.
-    assert resources["requests"]["ephemeral-storage"] == resources["limits"]["ephemeral-storage"]
+    assert resources["requests"] == resources["limits"], "invariant 7"
     limit = _gib(resources["limits"]["ephemeral-storage"])
     assert set(disk) == {"workspace", "tmp", "home"}, disk
     assert sum(disk.values()) == limit, f"{disk} against a {limit} GiB pod limit"

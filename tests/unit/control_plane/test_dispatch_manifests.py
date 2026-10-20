@@ -363,7 +363,7 @@ def test_browser_work_goes_to_gke_with_a_real_dev_shm(settings, tenant):
     )
 
 
-def test_gke_memory_requests_equal_limits_and_cpu_bursts_to_the_class_limit(settings, tenant):
+def test_gke_requests_equal_limits_exactly(settings, tenant):
     api = FakeBatchApi()
     dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
                                   batch_api=api)
@@ -373,17 +373,10 @@ def test_gke_memory_requests_equal_limits_and_cpu_bursts_to_the_class_limit(sett
     )
 
     container = api.created[0][1]["spec"]["template"]["spec"]["containers"][0]
-    requests, limits = container["resources"]["requests"], container["resources"]["limits"]
+    assert container["resources"]["requests"] == container["resources"]["limits"]
     rc = RESOURCE_CLASSES["browser"]
-    # Invariant 7 as amended by contract request RS-1 (SIZES-SCHED-1): memory
-    # and disk request == limit; CPU requests the class and bursts to its
-    # limit, as millicores.
-    assert requests["memory"] == limits["memory"] == f"{rc.memory_gib}Gi"
-    assert requests["ephemeral-storage"] == limits["ephemeral-storage"]
-    # MUTATION: render one `resources` dict for both directions in
-    # GkeJobDispatcher._manifest and the limit reads "4000m".
-    assert requests["cpu"] == f"{int(rc.cpu * 1000)}m"
-    assert limits["cpu"] == f"{int(rc.cpu_limit_cores * 1000)}m"
+    assert container["resources"]["limits"]["cpu"] == str(int(rc.cpu))
+    assert container["resources"]["limits"]["memory"] == f"{rc.memory_gib}Gi"
 
 
 def test_gke_job_has_no_spot_selector_and_no_backend_retries(settings, tenant):
@@ -941,10 +934,7 @@ def test_gke_sizes_the_container_from_the_task_not_the_profile(settings, tenant)
 
     container = api.created[0][1]["spec"]["template"]["spec"]["containers"][0]
     rc = RESOURCE_CLASSES["standard"]
-    # MUTATION: read the CPU limit from the profile's class and a shrunk step
-    # bursts to the class it did not pay for.
-    assert container["resources"]["requests"]["cpu"] == f"{int(rc.cpu * 1000)}m"
-    assert container["resources"]["limits"]["cpu"] == f"{int(rc.cpu_limit_cores * 1000)}m"
+    assert container["resources"]["limits"]["cpu"] == str(int(rc.cpu))
     assert container["resources"]["limits"]["memory"] == f"{rc.memory_gib}Gi"
     # The pod's whole local disk, which on GKE also holds /tmp and HOME: not
     # disk_gib for `standard` since contract request 53. See
@@ -952,8 +942,7 @@ def test_gke_sizes_the_container_from_the_task_not_the_profile(settings, tenant)
     assert container["resources"]["limits"]["ephemeral-storage"] == (
         f"{gke_ephemeral_storage_gib(rc)}Gi"
     )
-    for resource in ("memory", "ephemeral-storage"):
-        assert container["resources"]["requests"][resource] == container["resources"]["limits"][resource]
+    assert container["resources"]["requests"] == container["resources"]["limits"]
 
 
 # -- pod hardening ---------------------------------------------------------
@@ -1176,7 +1165,7 @@ def test_the_pool_that_is_charged_is_the_pool_that_governs_the_container(db, set
 
     assert "resource:standard" in lease["pools"]
     assert lease["units"] == charged.units
-    assert container["resources"]["requests"]["cpu"] == f"{int(charged.cpu * 1000)}m"
+    assert container["resources"]["limits"]["cpu"] == str(int(charged.cpu))
     assert container["resources"]["limits"]["memory"] == f"{charged.memory_gib}Gi"
     assert db.docs["pools/resource:standard"]["active"] == charged.units
     assert db.docs["pools/resource:browser"]["active"] == 0

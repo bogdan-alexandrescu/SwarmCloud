@@ -37,10 +37,8 @@
 #   OLD generation against a lease that may already have been reissued: two
 #   agents, one task.
 #
-#   `requests == limits` for memory and ephemeral-storage. A memory burst is
-#   what gets a two-hour agent OOM-killed at minute ninety. CPU alone may
-#   burst past its request, to the class's limit (invariant 7 as amended by
-#   contract request RS-1): throttled under contention, never killed.
+#   `requests == limits`, including ephemeral-storage. Bursting is what gets a
+#   two-hour agent OOM-killed at minute ninety.
 #
 #   `safe-to-evict: "false"`. Autopilot extended run time, honoured only on
 #   on-demand capacity -- the concrete reason Spot is banned platform-wide.
@@ -149,7 +147,7 @@ spec:
               memory: __MEMORY__
               ephemeral-storage: __EPHEMERAL__
             limits:
-              cpu: "__CPU_LIMIT__"
+              cpu: "__CPU__"
               memory: __MEMORY__
               ephemeral-storage: __EPHEMERAL__
           env:

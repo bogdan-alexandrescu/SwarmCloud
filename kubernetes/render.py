@@ -100,13 +100,12 @@ from scheduler.dispatch import (  # noqa: E402
     CACHE_STORAGE_CLASS,
     CACHE_VOLUME_GIB,
     backend_deadline_seconds,
-    cpu_quantity,
     gke_disk,
     gke_ephemeral_storage_gib,
 )
 from swarm_common.config import Settings  # noqa: E402
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE  # noqa: E402
-from swarm_common.profiles import CPU_BURST_MAX_RATIO, RESOURCE_CLASSES, RUNNER_PROFILES  # noqa: E402
+from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES  # noqa: E402
 
 #: The frozen contract's default, read from the dataclass rather than restated.
 #: A deployment that sets DISPATCH_TIMEOUT_SECONDS passes the same value as
@@ -307,7 +306,6 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "QUOTA_PODS": re.compile(r"^[0-9]{1,6}$"),
     "QUOTA_JOBS": re.compile(r"^[0-9]{1,6}$"),
     "QUOTA_CPU": re.compile(r"^[0-9]{1,6}m?$"),
-    "QUOTA_CPU_LIMIT": re.compile(r"^[0-9]{1,6}m?$"),
     "QUOTA_MEMORY": re.compile(r"^[0-9]{1,9}(Ki|Mi|Gi|Ti|K|M|G|T)?$"),
     "QUOTA_EPHEMERAL": re.compile(r"^[0-9]{1,9}(Ki|Mi|Gi|Ti|K|M|G|T)?$"),
     "QUOTA_CACHE_STORAGE": re.compile(r"^[0-9]{1,9}Gi$"),
@@ -323,10 +321,7 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "RUNNER_PROFILE": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
     # A container image reference: registry/path:tag or registry/path@sha256:...
     "IMAGE": re.compile(r"^[A-Za-z0-9._/-]{1,200}(:[A-Za-z0-9._-]{1,128}|@sha256:[a-f0-9]{64})$"),
-    # Five digits, as CPU_LIMIT: an admin-set request of 10 cores or more
-    # renders as "10000m" (docs/design/runner-sizes.md §4.2).
-    "CPU": re.compile(r"^[0-9]{1,5}m?$"),
-    "CPU_LIMIT": re.compile(r"^[0-9]{1,5}m?$"),
+    "CPU": re.compile(r"^[0-9]{1,4}m?$"),
     "MEMORY": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "TMP_DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
@@ -777,11 +772,6 @@ def tenant_values(args: argparse.Namespace) -> dict[str, str]:
         "QUOTA_PODS": str(args.quota_pods),
         "QUOTA_JOBS": str(args.quota_jobs),
         "QUOTA_CPU": str(args.quota_cpu),
-        # CPU bursts to at most CPU_BURST_MAX_RATIO x its request on every
-        # container the dispatcher renders (contract request RS-1), so the
-        # limits line is that multiple of the requests line: equal, it refused
-        # pods at half the ceiling. Derived, not a flag, like the cache's.
-        "QUOTA_CPU_LIMIT": str(args.quota_cpu * CPU_BURST_MAX_RATIO),
         "QUOTA_MEMORY": args.quota_memory,
         "QUOTA_EPHEMERAL": args.quota_ephemeral,
         # The cache's network disks (CACHE-PVC): one claim per Job, because the
@@ -1146,12 +1136,7 @@ def render_job(args: argparse.Namespace) -> str:
             "IMAGE": args.image
             or f"{args.region}-docker.pkg.dev/{args.project}/"
             f"{args.registry}/{profile.image}:{args.tag}",
-            # The CPU request and its burst limit, in millicores, from the
-            # dispatcher's own `cpu_quantity` so the YAML renders what runs:
-            # invariant 7 as amended for CPU by contract request RS-1
-            # (SIZES-SCHED-1). Memory and ephemeral-storage stay one number.
-            "CPU": cpu_quantity(rc.cpu),
-            "CPU_LIMIT": cpu_quantity(rc.cpu_limit_cores),
+            "CPU": str(int(rc.cpu)),
             "MEMORY": f"{rc.memory_gib}Gi",
             # The local scratch volumes' sizeLimits -- workspace, /tmp, HOME --
             # and the whole pod's ephemeral-storage, their sum; and the cache's
