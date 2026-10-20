@@ -17,7 +17,29 @@ worker, with that worker's own ambient credential, it asks Firestore for
 
 and passes only when each is answered 403 PERMISSION_DENIED. It is RED until
 ISO-IAM's switch is flipped; that is its job, so it is SKIPPED unless asked
-for (below), and the acceptance workflow does not ask today.
+for (below).
+
+ACCEPTANCE RUNS IT ON EVERY RUN (owner decision 2026-10-20, ISO-ACCEPT-WIRE):
+accept.yml's `acceptance (tenant-isolation)` job, beside wave 2, runs the
+acceptance group `tenant-isolation`, which submits it as below. It is
+REPORT-ONLY while the repository variable ISO_PROBE_REQUIRED is unset or not
+"true": the job shows the probe's result and a warning, concludes green, and
+so cannot open or update the red-acceptance issue. Once the owner sets
+ISO_PROBE_REQUIRED=true, after the last tenant is cut over
+(docs/runbooks/isolation-cutover.md), a red probe fails the job and the run.
+docs/ci.md, "The cross-tenant Firestore probe is report-only until the
+cutover".
+
+WHAT THE GROUP READS BACK. The generic runner keeps `stdout_tail` on exit 0
+and, on any other exit, only the end of STDERR (in the agent's last_error).
+So every check writes ONE line to stdout AND to stderr, whatever it concluded,
+
+  ISO-ACCEPT-RESULT {"check": key, "reason": "...", "verdict": "PASS"|"FAIL"}
+
+(`result_line`; `parse_results` reads them back out of a tail), and a probe
+that cannot measure at all reports each check as FAIL "not measured: ..."
+rather than erroring in its fixture. The group passes only on three PASS
+lines and an exit of 0.
 
 WHERE IT RUNS. In a worker pod, as a task's own code: the acceptance group
 submits a `generic` task in the smoke tenant (tenant A) whose `pytest` command
@@ -100,6 +122,11 @@ except ImportError:  # run as a program in an image with no pytest
 
 #: The checks, in the order they are reported.
 CHECKS = ("settings", "tenant", "lease")
+
+#: What starts each check's result line on stderr in pytest mode (docstring,
+#: "WHAT THE GROUP READS BACK"). The acceptance group greps for it.
+RESULT_MARKER = "ISO-ACCEPT-RESULT "
+_RESULT = re.compile(re.escape(RESULT_MARKER) + r"(\{[^\n]*\})")
 
 OPT_IN_ENV = "SWARM_ACCEPT_TENANT_ISOLATION"
 OTHER_TENANT_ENV = "SWARM_ACCEPT_ISO_OTHER_TENANT"
@@ -346,6 +373,31 @@ class Prober:
         return getattr(self, check)()
 
 
+def judge(measured: Prober | NotMeasurable, check: str) -> Verdict:
+    """One check's verdict; a probe that could not ask is that check's FAIL."""
+    if isinstance(measured, NotMeasurable):
+        return Verdict(check, False, f"not measured: {measured}")
+    return measured.run(check)
+
+
+def result_line(verdict: Verdict) -> str:
+    """`ISO-ACCEPT-RESULT {json}` on one line. Carries no token: a Verdict has none."""
+    return RESULT_MARKER + json.dumps(verdict.as_line(), sort_keys=True)
+
+
+def parse_results(text: str) -> dict[str, str]:
+    """{check: "PASS"|"FAIL"} from every result line in a tail; unreadable lines are ignored."""
+    found: dict[str, str] = {}
+    for match in _RESULT.finditer(text):
+        try:
+            line = json.loads(match.group(1))
+        except ValueError:
+            continue
+        if isinstance(line, dict) and line.get("check") in CHECKS and line.get("verdict") in ("PASS", "FAIL"):
+            found[line["check"]] = line["verdict"]
+    return found
+
+
 # --------------------------------------------------------------------------
 # As a program
 # --------------------------------------------------------------------------
@@ -357,10 +409,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         who = identity()
-        prober = Prober(who=who, other=other_tenant(who.tenant, args.other_tenant))
-        verdicts = [prober.run(check) for check in CHECKS]
+        measured: Prober | NotMeasurable = Prober(who=who, other=other_tenant(who.tenant, args.other_tenant))
     except NotMeasurable as exc:
-        verdicts = [Verdict(check, False, f"not measured: {exc}") for check in CHECKS]
+        measured = exc
+    verdicts = [judge(measured, check) for check in CHECKS]
     lines = [json.dumps(v.as_line(), sort_keys=True) for v in verdicts]
     if args.results:
         args.results.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
@@ -390,7 +442,7 @@ def opted_in(environ: Mapping[str, str], args: list[str], cwd: Path) -> bool:
 if pytest is not None:
 
     @pytest.fixture(scope="module")
-    def prober(request: Any) -> Prober:
+    def prober(request: Any) -> Prober | NotMeasurable:
         config = request.config
         if not opted_in(os.environ, list(config.args), Path(config.invocation_params.dir)):
             pytest.skip(
@@ -402,18 +454,34 @@ if pytest is not None:
             who = identity()
             return Prober(who=who, other=other_tenant(who.tenant, os.environ.get(OTHER_TENANT_ENV)))
         except NotMeasurable as exc:
-            pytest.fail(f"not measured: {exc}")
+            # Not pytest.fail: each check still reports, as "not measured".
+            return exc
 
-    def test_update_of_another_tenants_workspace_settings_is_denied(prober: Prober) -> None:
-        verdict = prober.run("settings")
-        assert verdict.denied, f"workspace_settings/{prober.other}: {verdict.reason}"
+    def _checked(measured: Prober | NotMeasurable, check: str, capsys: Any) -> Verdict:
+        verdict = judge(measured, check)
+        # Past pytest's capture, to the process's own streams: on exit 0 the
+        # generic runner keeps stdout's tail, on any other exit stderr's.
+        with capsys.disabled():
+            for stream in (sys.stdout, sys.stderr):
+                stream.write(f"\n{result_line(verdict)}\n")
+                stream.flush()
+        return verdict
 
-    def test_get_of_another_tenants_tenant_document_is_denied(prober: Prober) -> None:
-        verdict = prober.run("tenant")
-        assert verdict.denied, f"tenants/{prober.other}: {verdict.reason}"
+    def _target(measured: Prober | NotMeasurable) -> str:
+        return measured.other if isinstance(measured, Prober) else "(no other tenant chosen)"
 
-    def test_create_under_leases_is_denied(prober: Prober) -> None:
-        verdict = prober.run("lease")
+    def test_update_of_another_tenants_workspace_settings_is_denied(prober: Prober | NotMeasurable,
+                                                                     capsys: Any) -> None:
+        verdict = _checked(prober, "settings", capsys)
+        assert verdict.denied, f"workspace_settings/{_target(prober)}: {verdict.reason}"
+
+    def test_get_of_another_tenants_tenant_document_is_denied(prober: Prober | NotMeasurable,
+                                                               capsys: Any) -> None:
+        verdict = _checked(prober, "tenant", capsys)
+        assert verdict.denied, f"tenants/{_target(prober)}: {verdict.reason}"
+
+    def test_create_under_leases_is_denied(prober: Prober | NotMeasurable, capsys: Any) -> None:
+        verdict = _checked(prober, "lease", capsys)
         assert verdict.denied, f"leases/: {verdict.reason}"
 
 
