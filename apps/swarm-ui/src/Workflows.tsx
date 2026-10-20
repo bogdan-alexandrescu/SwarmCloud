@@ -534,15 +534,26 @@ export function listSummary(d: Pick<WorkflowBoard, 'workflows' | 'nextPageToken'
   const c = bucketCounts(d.workflows)
   let parked = 0
   let waiting = 0
+  // NOR IS A STATE THIS READ COULD NOT DERIVE (visual QA QA-036, 2026-10-20):
+  // the Running bucket holds it because nothing says it ended, and `2 running`
+  // counted a row whose own mark said `state not derived`. Each is said in its
+  // row's words (`state not derived`, `state unread`), in the order first met.
+  const unknown = new Map<string, number>()
   for (const w of d.workflows) {
     if (bucketOf(w) !== 'running') continue
     const s = derivedStateOf(w)
-    if (s === 'PARKED') parked += 1
+    if (s === null) {
+      const word = workflowHeaderState(w).word
+      unknown.set(word, (unknown.get(word) ?? 0) + 1)
+    } else if (s === 'PARKED') parked += 1
     else if (s === 'READY' || s === 'QUEUED' || s === 'SUBMITTED') waiting += 1
   }
-  const parts = [`${c.running - parked - waiting} running`]
+  let underived = 0
+  for (const n of unknown.values()) underived += n
+  const parts = [`${c.running - parked - waiting - underived} running`]
   if (parked > 0) parts.push(`${parked} parked`)
   if (waiting > 0) parts.push(`${waiting} waiting`)
+  for (const [word, n] of unknown) parts.push(`${n} ${word}`)
   parts.push(`${c.finished} finished`, `${c.failed} failed`)
   const of = d.nextPageToken ? ` · of the ${d.workflows.length} newest` : ''
   return `${parts.join(' · ')}${of}`
@@ -5071,7 +5082,14 @@ function WorkflowListFilters({
           label: BUCKET_LABEL[b],
           ...(counts !== null ? { count: counts[b] } : {}),
           // WF-10: Running is every workflow not yet ended, parked and queued included.
-          ...(b === 'running' ? { title: 'Every workflow that has not ended: running, parked or waiting to start' } : {}),
+          // QA-036: and one whose state this read could not derive, which the
+          // title names so the tab's count never reads as that many running.
+          ...(b === 'running'
+            ? {
+                title:
+                  'Every workflow that has not ended: running, parked or waiting to start, and any whose state this read could not derive',
+              }
+            : {}),
         }))}
         onChange={(b) => choose({ ...query, state: b })}
       />
