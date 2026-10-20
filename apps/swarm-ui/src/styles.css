@@ -667,6 +667,11 @@ body {
   min-width: 0;
   overflow: auto;
   scroll-padding-bottom: var(--ctl-s3);
+  /* THE STICKY BAR IS NOT "IN VIEW" (QAFIX-HELP QA-022, part of #1680): a
+     control focused or scrolled into view stopped under `.ctl-bar`, which
+     covered the first Tab stop. `--ctl-bar-h` is the bar's height, 0 where
+     none is drawn (notifications.css), so a page without one keeps its top. */
+  scroll-padding-top: var(--ctl-bar-h, 0px);
 }
 /* THE GRID MOVED INTO THE CONTENT COLUMN (#503). The frame was the two-row
    grid, so the dock ran the full width of the window -- under the spine and
@@ -10468,11 +10473,14 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
    /submit and its forms the spine lit Work and the panel lit Agents › Live,
    and Submit never read as where you are. App.tsx `spineOf` gives Submit no
    section; Spine.tsx marks the CTA `aria-current="page"`, and it carries the
-   section items' marker bar and a ring in the spine's ink.
+   section items' marker bar.
+   NO RING (QA-071, part of #1680): a white ring round the tile read as a
+   focus outline left behind, and no other lit item draws one. The lit Work
+   item is its tile and the bar; the CTA's tile is already lit, so the bar is
+   what says "you are here", exactly as on a section.
    The two colours are the spine's top and its sky line, written as values:
    the spine is one blue in both themes, and the tokens' names read as
    provider keys to the worker's publish scan. */
-.sk-ri.sk-cta[aria-current='page'] { box-shadow: 0 0 0 2px #0b3a7a, 0 0 0 4px #fff; }
 .sk-ri.sk-cta[aria-current='page']::before { content: ""; position: absolute; left: -15px; top: 10px; bottom: 10px; width: 3px; border-radius: 2px; background: #7cc8f8; }
 .sk-ri:focus-visible, .sk-pk:focus-visible, .sk-kid:focus-visible, .sk-ibtn:focus-visible { outline: 2px solid var(--sk-sky-line); outline-offset: 2px; }
 .sk-dot { position: absolute; top: 4px; right: 12px; width: 7px; height: 7px; border-radius: 50%; background: #f5c451; box-shadow: 0 0 0 2px var(--sk-spine-top); }
@@ -10526,7 +10534,10 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .sk-cnt.is-alert { color: var(--s-warn); font-weight: 600; }
 .sk-cnt.is-dash { color: var(--ctl-absent); cursor: help; }
-.sk-kids { margin: 2px 0 6px 38px; border-left: 1px solid var(--sk-ln); padding-left: 8px; display: flex; flex-direction: column; }
+/* THE SUB-LIST ENDS WHERE A ROW DOES (QA-055, part of #1680): a 0 right
+   margin ran the lit `.sk-kid` fill into the panel's border, where a lit
+   `.sk-pk` stops 10px short. */
+.sk-kids { margin: 2px 10px 6px 38px; border-left: 1px solid var(--sk-ln); padding-left: 8px; display: flex; flex-direction: column; }
 .sk-kid { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 5px 10px; border: 0; border-radius: var(--r-ctl); background: none; color: var(--text-dim); white-space: nowrap; cursor: pointer; font: var(--t-micro)/var(--lh-micro) var(--font); text-align: left; }
 .sk-kid:hover { background: var(--sk-hv); color: var(--text); }
 .sk-kid.is-on { color: var(--sk-ac); background: var(--sk-acs); font-weight: 600; }
@@ -10968,6 +10979,10 @@ span.sk-ttile { cursor: default; }
 /* The Recent (5) switcher under Workflows in the panel (workflows.html C). */
 .sk-recent-h { padding: 2px 10px; font-size: var(--t-micro); color: var(--text-faint); }
 .sk-recent-row { display: flex; gap: 6px; align-items: center; min-width: 0; }
+/* THE MARK'S SLOT IS KEPT WHEN THE MARK IS WITHHELD (QA-096, part of #1680):
+   a row not re-read this load draws no glyph, and its name started 12px left
+   of its neighbours'. The glyph is 12px (`.sk-st svg`). */
+.sk-recent .sk-st { min-width: 12px; }
 .sk-recent-id { overflow: hidden; text-overflow: ellipsis; }
 .sk-recent-all { color: var(--sk-ac); }
 /* (Workflows V2 rules go above this line.) */
