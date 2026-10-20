@@ -428,6 +428,7 @@ function AddButton({ ui, patch }: { ui: Persisted; patch: Patch }) {
     <button
       type="button"
       className="acct-add"
+      aria-label="Add account"
       aria-expanded={addOpen(ui)}
       // Nothing to fold while a sign-in is under way: see above.
       disabled={busy}
@@ -436,7 +437,9 @@ function AddButton({ ui, patch }: { ui: Persisted; patch: Patch }) {
       <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
         <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
       </svg>
-      Add account
+      {/* `Add` alone on a phone (QA-050): the word that drops is a span the
+          sheet hides there, and the name is said whole for every width. */}
+      Add<span className="acct-add-what"> account</span>
     </button>
   )
 }
@@ -1160,12 +1163,17 @@ function clearsOf(account: Account, now: number, readAt: number): Clears {
   }
 }
 
-/** The list item's `clears 1h 20m · 5h`. */
+/**
+ * The list item's `clears 1h 20m · 5h`, or `cleared · 5h` for a window that
+ * already reset: `clears` is a countdown's label, and before `cleared` it read
+ * `clears cleared` (QA-051, 2026-10-20). The past tense is the whole fact.
+ */
 function ClearsLine({ account, now, readAt }: { account: Account; now: number; readAt: number }) {
   const c = clearsOf(account, now, readAt)
   return (
     <span className={`acct-clears ${c.cls}`.trim()} data-label="Clears" title={c.title}>
-      clears {c.tilde && <span className="acct-tilde">~</span>}
+      {c.text !== 'cleared' && 'clears '}
+      {c.tilde && <span className="acct-tilde">~</span>}
       {c.text}
       {c.win !== null && (
         <>

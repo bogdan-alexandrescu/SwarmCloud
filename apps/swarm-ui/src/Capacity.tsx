@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { Fragment, useEffect } from 'react'
 import { loadCapacity, loadLeases, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import { isPaused, type Result } from './fetch'
@@ -194,14 +194,25 @@ function PoolsSummary({ capacity }: { capacity: Capacity }) {
   const paused = pools.filter(isPaused).length
   const over = pools.filter(overCeiling).length
   const viewer = poolViewer(capacity)
+  // EACH CLAUSE IS ONE UNBREAKABLE ITEM (QA-054, 2026-10-20): at 390 the line
+  // wrapped inside the tenant id, at its hyphen -- `tenant u-` / `bogdan`. The
+  // line now wraps only BETWEEN clauses, at a ` · `, as Accounts' foot does.
+  const clauses = [
+    `${pools.length} pools in ${families} famil${families === 1 ? 'y' : 'ies'}`,
+    full > 0 ? `${full} full` : null,
+    lowered > 0 ? `${lowered} lowered` : null,
+    paused > 0 ? `${paused} paused` : null,
+    over > 0 ? `${over} over ceiling` : null,
+    viewer !== undefined ? `tenant ${viewer}` : null,
+  ].filter((c): c is string => c !== null)
   return (
     <>
-      {pools.length} pools in {families} famil{families === 1 ? 'y' : 'ies'}
-      {full > 0 && ` · ${full} full`}
-      {lowered > 0 && ` · ${lowered} lowered`}
-      {paused > 0 && ` · ${paused} paused`}
-      {over > 0 && ` · ${over} over ceiling`}
-      {viewer !== undefined && ` · tenant ${viewer}`}
+      {clauses.map((c, i) => (
+        <Fragment key={c}>
+          {i > 0 && ' · '}
+          <span className="cap-clause">{c}</span>
+        </Fragment>
+      ))}
     </>
   )
 }
@@ -290,13 +301,22 @@ function CeilingTables({
           viewer={viewer}
           target={target}
           holders={holders}
+          classes={classes}
         />
       )}
       {POOL_FAMILY_ORDER.map((kind) => {
         const family = rest.filter((p) => poolKind(p.name) === kind).sort(order)
         if (family.length === 0) return null
         return (
-          <Family key={kind} title={FAMILY_TITLE[kind]} pools={family} viewer={viewer} target={target} holders={holders} />
+          <Family
+            key={kind}
+            title={FAMILY_TITLE[kind]}
+            pools={family}
+            viewer={viewer}
+            target={target}
+            holders={holders}
+            classes={classes}
+          />
         )
       })}
     </div>
@@ -337,6 +357,7 @@ function Family({
   viewer,
   target,
   holders,
+  classes,
 }: {
   title: string
   className?: string
@@ -346,6 +367,8 @@ function Family({
   /** The pool a `?pool=` link named, or null. */
   target: string | null
   holders: HolderCounts
+  /** The resource-class catalogue, for a `resource:` pool's `too small`; null unread. */
+  classes: ResourceClasses | null
 }) {
   // Trap E: a number may only sit beside another number of the same scope, so
   // the scope is declared rather than left to be inferred -- ON EVERY ROW
@@ -359,7 +382,7 @@ function Family({
         <h2 className="ctl-card-title">{title}</h2>
       </div>
       <div className="ctl-card-body is-flush">
-        <PoolTable pools={pools} viewer={viewer} target={target} holders={holders} />
+        <PoolTable pools={pools} viewer={viewer} target={target} holders={holders} classes={classes} />
       </div>
     </section>
   )
@@ -404,11 +427,13 @@ function PoolTable({
   viewer,
   target,
   holders,
+  classes,
 }: {
   pools: Pool[]
   viewer: string | undefined
   target: string | null
   holders: HolderCounts
+  classes: ResourceClasses | null
 }) {
   const phone = usePhoneTables()
   return (
@@ -436,6 +461,7 @@ function PoolTable({
               scope={scopeWord(p.name, viewer)}
               target={p.name === target}
               holders={holders}
+              classes={classes}
             />
           ))}
         </tbody>
@@ -474,13 +500,18 @@ function PoolRow({
   scope,
   target,
   holders,
+  classes,
 }: {
   pool: Pool
   scope: string
   target: boolean
   holders: HolderCounts
+  classes: ResourceClasses | null
 }) {
-  const marks = classifyPool(pool)
+  // The weight `needsAction` weighed this pool against, so the row draws the
+  // reason it was filed under Needs action (QA-052).
+  const resourceClass = poolKind(pool.name) === 'resource' ? pool.name.slice('resource:'.length) : null
+  const marks = classifyPool(pool, resourceClass === null ? null : { name: resourceClass, units: classUnits(classes, resourceClass) })
   const by = setBy(pool)
   const limit = pool.effective_limit
   // UNROUNDED for the track: 1 unit of 300 is 0.3%, and rounding it to 0
@@ -625,10 +656,19 @@ interface PoolClass {
  * `paused` and `over ceiling` can both be true, and both are drawn: the drift
  * is not hidden by the pause. The row and the track take the worse of them.
  */
-function classifyPool(pool: Pool): PoolClass {
+function classifyPool(pool: Pool, weight: { name: string; units: number | null } | null = null): PoolClass {
   const paused = isPaused(pool)
   const over = overCeiling(pool)
   const limit = pool.effective_limit
+  // TOO SMALL FOR ONE TASK OF ITS CLASS (QA-052, 2026-10-20). `needsAction`
+  // files a `resource:` pool whose positive limit is below its class's units
+  // under Needs action -- admission refuses when `active + units > limit`, so
+  // it admits nothing at 0 in use -- and the row said `ok` with `0 / 2`, and
+  // nothing on it said why it was there. `blockerCeiling` decides it, so the
+  // group and the mark are one rule.
+  const units = weight?.units ?? null
+  const small =
+    !paused && !over && limit !== null && limit > 0 && blockerCeiling({ reason: '', pool: pool.name, limit }, units) === 'below-units'
   // NO LIMIT SET (#374) is neither `limit 0` nor `ok`: the ceiling was never
   // read, admission refuses on it, and a person has to set one. The verdict is
   // the blockers' own `limit-unset`, so the screens cannot disagree.
@@ -669,6 +709,13 @@ function classifyPool(pool: Pool): PoolClass {
       title: ceilingCopy({ reason: '', pool: pool.name, limit: 0, active: pool.active }, 'This pool') ?? 'This pool is at limit 0.',
     })
   }
+  if (small) {
+    chips.push({
+      cls: 'is-paused',
+      word: 'too small',
+      title: `This pool's limit is ${limit} unit${limit === 1 ? '' : 's'}, below the ${units} units one ${weight?.name} task weighs, so it admits no ${weight?.name} task at this limit. Waiting cannot clear it: somebody has to raise the limit to at least ${units}.`,
+    })
+  }
   if (full) {
     chips.push({ cls: 'is-warn', word: 'full', title: `At its ceiling: ${pool.active} of ${limit} units in use.` })
   }
@@ -678,7 +725,7 @@ function classifyPool(pool: Pool): PoolClass {
   // grey screen is what a healthy platform looks like.
   if (chips.length === 0) chips.push({ cls: 'is-ok', word: 'ok', title: 'Read, capped, not paused, and not at its ceiling.' })
 
-  const track = over ? 'is-bad' : paused ? 'is-paused' : zero || unset ? zeroTone : full ? 'is-warn' : undefined
+  const track = over ? 'is-bad' : paused ? 'is-paused' : zero || unset ? zeroTone : small ? 'is-paused' : full ? 'is-warn' : undefined
   const row =
     track === undefined
       ? undefined
@@ -690,7 +737,9 @@ function classifyPool(pool: Pool): PoolClass {
             ? `${zeroTone} limit-0`
             : unset
               ? `${zeroTone} limit-unset`
-              : 'is-warn full'
+              : small
+                ? 'is-paused below-units'
+                : 'is-warn full'
   return { chips, row, track }
 }
 
