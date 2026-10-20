@@ -16,7 +16,7 @@
  * and it is kept because the owner asked to see it.
  */
 import type { ApiError } from './fetch'
-import type { TaskState } from './types'
+import { timeAgo, type TaskState } from './types'
 
 // ---------------------------------------------------------------------------
 // Reading served JSON without trusting it
@@ -112,6 +112,8 @@ export interface RepoIndexState {
   head_sha: string | null
   head_read_at: string | null
   behind_by: number | null
+  /** When the index first fell behind the head (repoindex.py `settle_behind`); null when current or not read. */
+  behind_since: string | null
   stale: boolean | null
   in_flight_task_id: string | null
   /** The test map's reach in the index's own units (QA G4-03); null when not served. */
@@ -422,6 +424,7 @@ export function normRepo(v: unknown): RepoRecord | null {
       head_sha: str(ix.head_sha),
       head_read_at: str(ix.head_read_at),
       behind_by: num(ix.behind_by),
+      behind_since: str(ix.behind_since),
       stale: bool(ix.stale),
       in_flight_task_id: str(ix.in_flight_task_id),
       coverage: normCoverage(ix.coverage),
@@ -524,7 +527,10 @@ export function freshness(ix: RepoIndexState): Freshness {
       word: n === null ? 'stale' : `stale · ${n} behind`,
       hue: 'bad',
       mark: 'failed',
-      why: 'Behind by more than 200 commits, older than 7 days, or no longer an ancestor of the head',
+      // §5.1 since #1693: stale is an age, never a commit count -- a merged branch counts many commits at once.
+      why:
+        (ix.behind_since !== null ? `Behind the head since ${timeAgo(ix.behind_since)}. ` : '') +
+        'Behind for longer than its schedule allows, built more than 7 days ago, or no longer an ancestor of the head',
     }
   }
   if (ix.current_sha === ix.head_sha) {

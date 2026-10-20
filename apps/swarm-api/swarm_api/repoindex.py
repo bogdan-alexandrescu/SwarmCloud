@@ -327,9 +327,16 @@ KEPT_VERSIONS = KEEP_VERSIONS_DEFAULT
 KEPT_RUNS = 50
 RUNS_PAGE_MAX = KEPT_RUNS
 
-#: §5.1: behind by more than 200 commits, or older than 7 days, is stale.
-STALE_BEHIND_COMMITS = 200
+#: §5.1: built more than 7 days ago and behind the head is stale.
 STALE_AGE = timedelta(days=7)
+#: §5.1: behind the head for longer than the registration's interval and
+#: this grace is stale -- every run due in that time was missed or failed.
+#: The grace covers a run queued at priority -50 behind tenant work and its
+#: own run time. It replaced "more than 200 commits behind" (#1693): GitHub's
+#: compare counts a merged branch commit by commit, so ai-studio's "77
+#: behind" was one merge (its PR #713) and said how much merged, not how long
+#: the index had been out of date.
+STALE_BEHIND_GRACE = timedelta(hours=12)
 #: §5.1: up to 50 changed paths are shown beside a behind index.
 MAX_CHANGED_SHOWN = 50
 
@@ -1499,19 +1506,57 @@ def _iso(moment: Any) -> Any:
     return moment.isoformat() if isinstance(moment, datetime) else moment
 
 
+def stale_behind_after(index: Mapping[str, Any]) -> timedelta:
+    """How long an index may stay behind its head before it is stale (§5.1).
+
+    The registration's `interval_hours` (the default's when off or unset)
+    and `STALE_BEHIND_GRACE`.
+    """
+    hours = index.get("interval_hours")
+    if not isinstance(hours, int) or isinstance(hours, bool) or hours <= 0:
+        hours = INTERVAL_HOURS_DEFAULT
+    return timedelta(hours=hours) + STALE_BEHIND_GRACE
+
+
+def settle_behind(index: Mapping[str, Any], *, now: datetime,
+                  fell_at: datetime | None = None) -> dict[str, Any]:
+    """`index` with `behind_since`: when the index first fell behind the head.
+
+    Written wherever the head or the index moves. None while there is no
+    index, or the index IS the head. Behind with no moment recorded, it is
+    `fell_at` or `now`; a moment already recorded is kept, so a head that
+    keeps moving is judged by the first fall, not by its latest read.
+    Promotion short of the head passes `fell_at` (the run's queued time) to
+    replace the moment: that index is newer, and the head moved past it no
+    earlier than the run was queued.
+    """
+    settled = dict(index)
+    current, head = settled.get("current_sha"), settled.get("head_sha")
+    if not current or not head or current == head:
+        settled["behind_since"] = None
+    elif fell_at is not None:
+        settled["behind_since"] = fell_at
+    elif settled.get("behind_since") is None:
+        settled["behind_since"] = now
+    return settled
+
+
 def freshness(index: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
     """current / behind / stale / unknown / none, from a registration's `index` map.
 
-    Reads `current_sha`, `current_built_at`, `head_sha`, `head_read_at` and
-    `head_relation` (the compare of exactly this current and this head; one
-    for another pair is not this pair's and is ignored).
+    Reads `current_sha`, `current_built_at`, `head_sha`, `head_read_at`,
+    `behind_since`, `interval_hours` and `head_relation` (the compare of
+    exactly this current and this head; one for another pair is not this
+    pair's and is ignored). Stale is a rewritten branch, an index behind for
+    longer than `stale_behind_after`, or one built over `STALE_AGE` ago and
+    behind; never a commit count (#1693).
     """
     current = index.get("current_sha")
     head = index.get("head_sha")
     answer: dict[str, Any] = {
         "state": None, "stale": False, "index_sha": current, "head_sha": head,
         "head_read_at": _iso(index.get("head_read_at")), "behind_by": None,
-        "changed_since": [], "reason": None,
+        "behind_since": None, "changed_since": [], "reason": None,
     }
     if current is None:
         answer.update(state="none", reason="no index has been promoted for this repository yet")
@@ -1529,26 +1574,39 @@ def freshness(index: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
         answer.update(state="current", behind_by=0)
         return answer
     stale = False
+    since = _parse_time(index.get("behind_since"))
+    answer["behind_since"] = _iso(since)
     relation = index.get("head_relation") or {}
     if relation.get("base") == current and relation.get("head") == head:
         answer["behind_by"] = relation.get("ahead_by")
         answer["changed_since"] = list(relation.get("files") or [])[:MAX_CHANGED_SHOWN]
-        if relation.get("status") in ("behind", "diverged"):
-            stale = True
-            answer["reason"] = (
-                "the index's commit is not an ancestor of the head: the branch was rewritten"
-            )
-        elif (relation.get("ahead_by") or 0) > STALE_BEHIND_COMMITS:
-            stale = True
-            answer["reason"] = f"more than {STALE_BEHIND_COMMITS} commits behind the head"
     else:
         answer["reason"] = "the commits between the index and the head have not been compared"
+    limit = stale_behind_after(index)
+    if since is not None and now - since > limit:
+        stale = True
+        interval = limit - STALE_BEHIND_GRACE
+        answer["reason"] = (
+            f"behind the head since {since.isoformat()}, longer than "
+            f"{_hours(limit)} hours (the {_hours(interval)}-hour interval and a "
+            f"{_hours(STALE_BEHIND_GRACE)}-hour grace)"
+        )
     built = _parse_time(index.get("current_built_at"))
     if built is not None and now - built > STALE_AGE:
         stale = True
         answer["reason"] = f"built more than {STALE_AGE.days} days ago and behind the head"
+    if relation.get("base") == current and relation.get("head") == head \
+            and relation.get("status") in ("behind", "diverged"):
+        stale = True
+        answer["reason"] = (
+            "the index's commit is not an ancestor of the head: the branch was rewritten"
+        )
     answer.update(state="stale" if stale else "behind", stale=stale)
     return answer
+
+
+def _hours(span: timedelta) -> int:
+    return int(span.total_seconds() // 3600)
 
 
 def staleness_line(fresh: Mapping[str, Any] | None) -> str | None:
@@ -2348,6 +2406,7 @@ class RepoIndex:
             if head_read:
                 index["head_sha"] = sha
                 index["head_read_at"] = now
+                index = settle_behind(index, now=now)
             if from_pending and index.get("pending_sha") != sha:
                 # Another request consumed it, or a newer head replaced it.
                 txn.update(ref, {"index": index})
@@ -2771,6 +2830,7 @@ class RepoIndex:
 
         index_object, object_digest = self._kept_copy(tenant_id, repo_id, new, window.get("key"))
         now = self._now()
+        queued_at = _parse_time(run.get("queued_at")) or now
         repo_ref = self._repo_ref(repo_id)
         run_ref = self._run_ref(task.id)
         version_ref = self._version_ref(repo_id, new)
@@ -2832,6 +2892,9 @@ class RepoIndex:
                     index["lsp_costs"] = lsp_costs_of(manifest)
                 # The stored compare was of the previous index; RSA-3.
                 index = settle_relation(index)
+                # Short of the head, the head moved past this index no
+                # earlier than its run was queued; at the head, it is current.
+                index = settle_behind(index, now=now, fell_at=queued_at)
             if index.get("in_flight_task_id") == task.id:
                 index["in_flight_task_id"] = None
             # The clone and the build worked, promoted or superseded: the
@@ -3077,7 +3140,7 @@ class RepoIndex:
             # some other head would vouch for the wrong commit.
             index["etag_sha"] = read.sha
             # A new head makes the stored compare another pair's (RSA-3).
-            index = settle_relation(index)
+            index = settle_behind(settle_relation(index), now=now)
             txn.update(ref, {"index": index})
 
         _apply(transaction)
@@ -3468,6 +3531,6 @@ __all__ = [
     "graph_destination", "indexer_prompt", "indexer_task", "interval_due", "parse_index",
     "PollDecision", "poll_decision", "poll_trigger",
     "promotion_decision", "read_head", "read_head_if_changed", "read_relation", "render_markdown", "run_to_api", "select_tests",
-    "staleness_line", "version_to_api",
+    "settle_behind", "stale_behind_after", "staleness_line", "version_to_api",
     "TEST_MAP_PAGE_DEFAULT", "TEST_MAP_PAGE_MAX", "history_depth", "page_test_map",
 ]

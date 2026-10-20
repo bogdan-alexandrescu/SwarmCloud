@@ -671,8 +671,8 @@ def test_behind_since_keeps_the_first_moment_and_ends_at_the_head():
     # its last read, so it is never stale.
     assert repoindex.settle_behind(_state(head_sha=THREE, behind_since=first),
                                    now=NOW)["behind_since"] == first
-    # MUTATION: set it only when absent and never from `now`, and an index
-    # that just fell behind has no moment.
+    # MUTATION: drop the `now` branch from `settle_behind()` and an index
+    # that just fell behind has no moment, so it is never judged stale.
     assert repoindex.settle_behind(_state(), now=NOW)["behind_since"] == NOW
     # MUTATION: keep it once the index reaches the head and the next move
     # is judged by the previous one's age.

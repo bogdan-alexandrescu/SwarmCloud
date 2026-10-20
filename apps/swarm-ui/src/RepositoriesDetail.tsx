@@ -349,6 +349,9 @@ function MetaLine({ r }: { r: RepoRecord }) {
               {shortSha(ix.head_sha)}
             </b>
             {ix.head_read_at !== null ? `, read ${timeAgo(ix.head_read_at)}` : ''}
+            {ix.behind_since !== null && ix.current_sha !== null && ix.current_sha !== ix.head_sha ? (
+              <span title={ix.behind_since}>, behind since {timeAgo(ix.behind_since)}</span>
+            ) : null}
           </>
         )}
       </span>
