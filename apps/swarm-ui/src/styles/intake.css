@@ -76,6 +76,19 @@
    the card's width, and its value shrinks inside it and is cut, whole in the
    reference's title. */
 .in-send .ctl-fact { max-width: 100%; }
+/* ONE TYPE TREATMENT DOWN THE VALUE COLUMN (visual QA QA-073). The values
+   were the fact's 14px body beside 13px mono identifiers, and the absent one
+   was the UA's italic on top of its absent ink: four treatments in a 300px
+   column. Every value is the meta step now -- the size `.sbf-send` already
+   gives a `<code>` -- and the absent ink alone marks an absence, upright.
+   One class more specific than `.sbf-send .ctl-fact` in styles.css, which
+   loads after this sheet. */
+.sbf-send.in-send .ctl-fact { font-size: var(--t-meta); line-height: var(--lh-meta); }
+.sbf-send.in-send .ctl-fact i { font-style: normal; }
+/* THE LONG VALUE GOES UNDER ITS KEY (QA-073): "lands as" wrapped its two
+   lines into a right-aligned column beside the key, a ragged left edge in the
+   middle of the card. Stacked, it reads from the card's left edge. */
+.sbf-send.in-send .ctl-fact.in-fact-long { flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; }
 /* The meta line's items keep their trailing dot with them (N20). */
 .in-meta > .in-meta-i { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
 .in-row { margin: 0; display: flex; gap: 8px; flex-wrap: wrap; }
@@ -151,15 +164,24 @@
 .in-switch > input:disabled { opacity: .45; cursor: not-allowed; }
 .in-switch-w { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
+/* THE CONTROL EDGE, `--ctl-bd`, AS EVERY OTHER FIELD (visual QA QA-072):
+   `--line` is a divider's hairline, about 1.3:1 on the light surface, and the
+   field read as an empty box with a placeholder in it. */
 .in-rounds {
   flex: none; width: 72px; min-height: 32px; padding: 0 8px;
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  border: 1px solid var(--ctl-bd); border-radius: var(--ctl-radius-sm);
   background: var(--surface); color: var(--text);
   font-size: var(--t-meta); line-height: var(--lh-meta);
 }
 /* THE ERROR EDGE EVERY OTHER FIELD ON THESE FORMS HAS (VQA V132): `--warn`,
    the field editor's (`.sbf-field [aria-invalid]`), doubled by an inset ring
    so it reads as a state and not as a slightly different hairline. */
+/* THE DEFAULT IS A VALUE, NOT A HINT (QA-072). Before an issue is read this
+   field sits in a not-reached step, whose controls fade to .55 (submit.css,
+   G4-26); a faded "3" in a number box is what a placeholder looks like, and
+   it is the value the form will send. The field keeps full strength; the
+   step's radios and switch still say "not reached". */
+.sb-step.is-dim .in-rounds { opacity: 1; }
 .in-choice > .in-rounds[aria-invalid='true'] { border-color: var(--warn); box-shadow: inset 0 0 0 1px var(--warn); }
 
 /* ==========================================================================

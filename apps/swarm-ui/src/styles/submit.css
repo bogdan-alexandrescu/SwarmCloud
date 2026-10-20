@@ -51,6 +51,20 @@
   background: var(--sk-acs); color: var(--sk-ac);
 }
 
+/* ---- the fixed carrier: a value, not a control (QA-074) --------------
+   "what carries work between steps" is a disabled select (QA G4-28) so the
+   form still says what it sends; styles.css gives it `--text-dim` at full
+   opacity, which kept its fill, its 3:1 edge and the native chevron -- it
+   looked choosable and was not. On the workflow form it is drawn as the
+   value it is: no chevron, no fill, no edge, flush with its label. One class
+   more specific than `.dsp select:disabled`, which loads after this sheet. */
+.sbf .dsp select:disabled {
+  appearance: none; -webkit-appearance: none;
+  background: transparent;
+  border-color: transparent;
+  padding-left: 0; padding-right: 0;
+}
+
 /* ---- the task form's runners: two columns of cards (F1) ---------------- */
 .sbf-runners.is-cards {
   list-style: none; margin: 0 0 12px; padding: 0;
@@ -58,6 +72,7 @@
 }
 .sbf-runners.is-cards .sbf-runner {
   display: flex; align-items: flex-start; gap: 8px;
+  flex: 1 1 auto;
   min-height: 32px;
   padding: 8px 10px;
   border: 1px solid var(--line);
@@ -89,6 +104,12 @@
 .sbf-runners.is-cards .sbf-runner > input[type='radio']:checked { border: 4px solid var(--sk-ac); }
 .sbf-runners.is-cards .sbf-runner > input[type='radio']:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
 
+/* EVERY CARD FILLS ITS ROW (visual QA QA-068). The grid stretches each `li`
+   to its row, but the label inside kept its own height, so a two-line card
+   beside a one-line one ended 20px lower and the bottoms stepped down the
+   list. The cell is a flex box and the card grows into it (`flex: 1 1 auto`
+   on `.sbf-runner` above). */
+.sbf-runners.is-cards > li { display: flex; }
 .sb-runner-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 /* THE PLATFORM'S OWN RUNNER (QA G4-33): a quiet pill under its name, in the
    muted token at full strength -- a fact about who submits it, not a state,
@@ -115,6 +136,11 @@
   font-family: var(--mono); font-size: inherit;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* AN UNREAD ROOM'S COUNT IS ONE UNIT (visual QA QA-069): "… pools could not
+   be read" left "be read" alone on the card's last line. The clause breaks
+   before its count or not at all; RunnerPicker.tsx's `UnreadRoom` says why it
+   always fits. */
+.sb-room-unread { white-space: nowrap; }
 .sbf-runners.is-cards .sbf-runner-off { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
 /* THE RUNNERS A LIST HOLDS BACK (walkthrough D): one quiet disclosure under
