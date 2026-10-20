@@ -11,8 +11,13 @@ are roughly 2x that, and the worker exports peak RSS and peak disk per profile s
 the numbers get corrected from production rather than from arithmetic.
 
 Two hard rules follow from the stability requirement:
-  * requests == limits. Bursting past a request is precisely what gets a
-    container OOM-killed under node pressure, so we never do it.
+  * Memory and disk: requests == limits. Memory is not compressible, and a
+    memory burst past its request is precisely what gets a container
+    OOM-killed under node pressure. CPU is the one exception (contract request
+    108, RS-1, accepted 2026-10-20 for #1689): on GKE Autopilot a class's CPU
+    limit may be up to `CPU_BURST_MAX_RATIO` x its request, because a CPU
+    burst on a busy node is throttled, never killed. Cloud Run renders the
+    request alone.
   * Spot is disabled. Verified against GKE docs: Spot Pods cannot use Autopilot
     extended run time, so Spot and "no preemption" are mutually exclusive.
 """
@@ -57,9 +62,24 @@ class WorkerAction(str, Enum):
     POST_VERDICT = "post_verdict"
 
 
+#: How far a class's CPU limit may sit above its request (contract request 108,
+#: RS-1; docs/design/runner-sizes.md §4.1). 2: the agents averaged 1.74 of 4
+#: cores on 2026-10-20, so co-located agents have about 2 cores of idle request
+#: each to lend; a higher limit would mostly describe CPU that is not there.
+CPU_BURST_MAX_RATIO = 2
+
+
 @dataclass(frozen=True)
 class ResourceClass:
-    """A sizing envelope. `cpu` and `memory_gib` are BOTH request and limit."""
+    """A sizing envelope.
+
+    `cpu` is the CPU REQUEST: what admission charges, what Autopilot bills
+    and what every container is guaranteed. `cpu_limit` is what it may burst
+    to on GKE Autopilot when its node has idle requested CPU; a burst past
+    the request is throttled under contention, never killed. Cloud Run
+    renders `cpu` alone. `memory_gib` and `disk_gib` are request AND limit:
+    memory is not compressible, and a memory burst is a kill.
+    """
 
     name: str
     cpu: float
@@ -71,13 +91,25 @@ class ResourceClass:
     #: Cloud Run ephemeral disk is a Preview feature and, per Google's docs,
     #: disables live migration -- which is why mandatory checkpointing exists.
     requires_preview_disk: bool = False
+    #: The CPU limit on GKE Autopilot (contract request 108). None: equal to `cpu`.
+    cpu_limit: float | None = None
+
+    @property
+    def cpu_limit_cores(self) -> float:
+        return self.cpu if self.cpu_limit is None else self.cpu_limit
 
     def __post_init__(self) -> None:
         if self.cpu <= 0 or self.memory_gib <= 0:
             raise ValueError(f"resource class {self.name}: cpu and memory must be positive")
         if self.cpu > 8 or self.memory_gib > 32:
-            # Cloud Run's hard ceiling. Anything above must be GKE-only.
+            # Cloud Run's hard ceiling. Anything above must be GKE-only. It binds
+            # the request, not `cpu_limit`: Cloud Run renders the request alone.
             raise ValueError(f"resource class {self.name} exceeds the Cloud Run Jobs ceiling")
+        if not self.cpu <= self.cpu_limit_cores <= CPU_BURST_MAX_RATIO * self.cpu:
+            raise ValueError(
+                f"resource class {self.name}: cpu_limit {self.cpu_limit_cores} must be between "
+                f"its request {self.cpu} and {CPU_BURST_MAX_RATIO} x the request"
+            )
 
 
 # WORKSPACE SIZES ARE MEMORY, NOT DISK.
@@ -96,10 +128,15 @@ class ResourceClass:
 # Upside: this path is fully GA and supports live migration, which the Preview
 # disk explicitly does not -- so the reliability requirement that drove the
 # Cloud Run choice is better served here than by the feature we set out to use.
+#
+# CPU LIMITS ARE TWICE THE REQUESTS (contract request 108, owner 2026-10-20,
+# docs/design/runner-sizes.md §4.1). The requests are unchanged, so admission,
+# units and Autopilot's bill are unchanged; the limit is what a GKE pod may
+# borrow from its node's idle requests. Cloud Run profiles render `cpu` alone.
 RESOURCE_CLASSES: dict[str, ResourceClass] = {
-    "standard": ResourceClass("standard", cpu=4, memory_gib=8, disk_gib=4, units=1),
-    "browser": ResourceClass("browser", cpu=4, memory_gib=8, disk_gib=4, units=1),
-    "large": ResourceClass("large", cpu=8, memory_gib=32, disk_gib=16, units=4),
+    "standard": ResourceClass("standard", cpu=4, memory_gib=8, disk_gib=4, units=1, cpu_limit=8),
+    "browser": ResourceClass("browser", cpu=4, memory_gib=8, disk_gib=4, units=1, cpu_limit=8),
+    "large": ResourceClass("large", cpu=8, memory_gib=32, disk_gib=16, units=4, cpu_limit=16),
 }
 
 
