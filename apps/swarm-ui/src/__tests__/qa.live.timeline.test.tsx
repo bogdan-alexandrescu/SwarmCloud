@@ -184,7 +184,7 @@ describe('RT-7b: what cannot change is not read again every minute', () => {
     render(<TimelineLanesScreen view="span=7d" onView={() => {}} />)
     await waitFor(() => expect(api.loadWorkflow).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(document.querySelector('.tl-row.is-group[data-group="wf_named"] a')).not.toBeNull())
-    fireEvent.click(screen.getByRole('button', { name: /^refresh/i }))
+    fireEvent.click(screen.getByRole('button', { name: /(^|· )refresh\b/i }))
     await waitFor(() => expect(api.loadAttemptsPage.mock.calls.length).toBeGreaterThan(3))
     await new Promise((r) => setTimeout(r, 30))
     expect(api.loadWorkflow, 'a FAILED workflow whose steps have all ended').toHaveBeenCalledTimes(1)

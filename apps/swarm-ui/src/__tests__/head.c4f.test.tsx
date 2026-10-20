@@ -116,7 +116,7 @@ describe('#138: one head shape -- title left, actions right, no sub-line', () =>
     expect(control().textContent).toBe('⟳ read 0 s ago')
     await advance(12_000)
     expect(control().textContent, 'the age did not tick').toBe('⟳ read 10 s ago')
-    expect(control().getAttribute('aria-label')).toMatch(/^Refresh · read 10 s ago/)
+    expect(control().getAttribute('aria-label')).toBe('read 10 s ago · refresh')
   })
 })
 
