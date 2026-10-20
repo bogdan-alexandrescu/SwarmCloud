@@ -26,7 +26,9 @@ WHAT IS KEPT ON PURPOSE (API_OBJECT, OTHER_PRODUCT, KEPT_FILES):
   * Google's and other products' own "task": a Cloud Run task, a Job's task;
   * docs/contract-change-requests.md history rows (its `|` index table and the
     `##` headings each row mirrors): records of what was requested, frozen as
-    written;
+    written; and the request bodies the file itself declares unchanged (from
+    "The request as it was filed follows, unchanged." or "### As filed" to the
+    entry's next `---` or `##`), whose own preamble would otherwise be false;
   * the runner-input tables between `<!-- runner-inputs:<profile> -->`
     markers: generated from swarm_common.profiles.RUNNER_PROFILES (frozen) and
     held equal to it by tests/unit/mcp/test_runner_input_prose.py;
@@ -82,6 +84,26 @@ OTHER_PRODUCT = re.compile(
     r"(?:Cloud Run|Cloud|Job's|job's|Job|execution's|Kubernetes|asyncio|background|Celery)\s+$"
 )
 JOINERS = set("/.:_#=<>{}$@\\")
+#: A line that opens a request body docs/contract-change-requests.md declares
+#: unchanged. The body runs to the entry's next `---` or `## ` heading.
+FILED_UNCHANGED = re.compile(
+    r"^(?:The original request follows, unchanged\b|The request as it was filed follows, unchanged\."
+    r"|### As filed\b)"
+)
+
+
+def _filed_unchanged_lines(lines: list[str]) -> set[int]:
+    """1-based line numbers inside a request body the file declares unchanged."""
+    kept: set[int] = set()
+    inside = False
+    for n, line in enumerate(lines, 1):
+        if FILED_UNCHANGED.match(line):
+            inside = True
+        elif inside and (line == "---" or line.startswith("## ")):
+            inside = False
+        if inside:
+            kept.add(n)
+    return kept
 
 
 def _masked(text: str) -> list[tuple[int, int]]:
@@ -131,6 +153,7 @@ def prose_tasks(text: str, *, history_rows: bool = False) -> list[tuple[int, str
     lines = text.split("\n")
     block: list[tuple[int, str]] = []
     infence = False
+    filed = _filed_unchanged_lines(lines) if history_rows else set()
 
     def scan(chunk: list[tuple[int, str]]) -> None:
         if not chunk:
@@ -150,7 +173,7 @@ def prose_tasks(text: str, *, history_rows: bool = False) -> list[tuple[int, str
                 continue
             if w.isupper() and ((s and body[s - 1] in "-_") or (e < len(body) and body[e] in "-_")):
                 continue
-            if history_rows and (line.startswith("#") or line.startswith("|")):
+            if history_rows and (line.startswith("#") or line.startswith("|") or lineno in filed):
                 continue
             if _is_identifier(body, s, e):
                 continue
@@ -253,6 +276,47 @@ def test_contract_request_history_rows_keep_their_wording():
     # MUTATION: run the scan without history_rows -> the rows are reported -> red.
     assert prose_tasks("| 23 | a task's end |\n", history_rows=False)
     assert prose_tasks("| 23 | a task's end |\n", history_rows=True) == []
+
+
+def test_contract_request_filed_bodies_keep_their_wording():
+    text = (REPO / CONTRACT_REQUESTS).read_text(encoding="utf-8")
+    # Each of these sits under "The request as it was filed follows, unchanged."
+    # (or "The original request follows, unchanged"), so it is kept as filed.
+    # MUTATION: convert request 1's filed body ("a mock task" -> "a mock agent") -> red.
+    assert "from zero -- a mock task reports nothing and did not cost nothing by accident." in text
+    planted = (
+        "The request as it was filed follows, unchanged.\n\n"
+        "### What is true today\n\nA task is admitted.\n\n---\n\n"
+        "## 99. next entry\n\nA task is admitted.\n"
+    )
+    # MUTATION: drop the FILED_UNCHANGED exemption -> both lines reported -> red.
+    assert [n for n, _ in prose_tasks(planted, history_rows=True)] == [9]
+    # MUTATION: apply the exemption without history_rows (to every doc) -> red.
+    assert [n for n, _ in prose_tasks(planted)] == [5, 9]
+
+
+def _firestore_index_names() -> set[str]:
+    tf = (REPO / "terraform/modules/firestore/indexes.tf").read_text(encoding="utf-8")
+    return set(re.findall(r'^\s*"([a-z][a-z0-9-]+)"\s*=\s*\{', tf, re.M))
+
+
+def test_docs_name_firestore_indexes_as_terraform_defines_them():
+    # An index name is an identifier: converting `attempts-task-created` to
+    # `attempts-agent-created` sends the reader to an index that does not exist.
+    indexes = _firestore_index_names()
+    assert {"attempts-task-created", "tasks-tenant-state-created"} <= indexes
+    bad = []
+    for path in _docs():
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for name in re.findall(r"`([a-z][a-z0-9-]+)`", line):
+                if name not in indexes and name.replace("agent", "task") in indexes:
+                    bad.append(f"{path.relative_to(REPO)}:{n} `{name}`")
+    # MUTATION: write `attempts-agent-created` in docs/web-ui/08-operator-gaps.md -> red.
+    assert bad == [], bad
+    gaps = (DOCS / "web-ui/08-operator-gaps.md").read_text(encoding="utf-8")
+    # MUTATION: rename either index in 08-operator-gaps.md -> red.
+    assert "`attempts-task-created` (`:162-169`)" in gaps
+    assert "of `tasks-tenant-state-created` (`indexes.tf:85-93`)" in gaps
 
 
 def test_the_readme_status_names_agents():
