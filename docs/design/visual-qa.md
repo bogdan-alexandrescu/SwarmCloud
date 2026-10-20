@@ -741,7 +741,8 @@ field the template sends exists (`WorkflowStepCreate`,
 
 Valid against the spec reader `swarm_mcp.workflows.read_spec` (the format
 `swarm_workflow` and `swarm workflow` take), and so against
-`WorkflowCreate`: 17 steps of the 50 allowed; every `input_from` source is a
+`WorkflowCreate`: 18 steps of the 50 allowed (17 until QA-TEMPLATE-SPLIT
+added `flow-report`, below); every `input_from` source is a
 `depends_on`; every staged name is unique; every key is in `_STEP_KEYS` or
 `SPEC_KEYS`. `browser_tool` is a declared input of `claude-code-browser`;
 `model_class` is a named class. This lane checked the JSON below on
@@ -823,14 +824,19 @@ repeats that check (§6).
 
     {"step_id": "report", "runner_profile": "claude-code", "model_class": "opus",
      "depends_on": ["review-overview-automate", "review-work-a", "review-work-b", "review-capacity", "review-admin", "review-task",
-                    "flow-find-failure", "flow-workflow-graph", "flow-submit-form", "a11y-keyboard"],
+                    "a11y-keyboard"],
      "input_from": {"review-overview-automate": "review-overview-automate.tar", "review-work-a": "review-work-a.tar",
                     "review-work-b": "review-work-b.tar", "review-capacity": "review-capacity.tar",
                     "review-admin": "review-admin.tar", "review-task": "review-task.tar",
-                    "flow-find-failure": "flow-find-failure.tar", "flow-workflow-graph": "flow-workflow-graph.tar",
-                    "flow-submit-form": "flow-submit-form.tar", "a11y-keyboard": "a11y-keyboard.tar"},
+                    "a11y-keyboard": "a11y-keyboard.tar"},
      "allow_empty_diff": true, "timeout_seconds": 3600,
-     "prompt": "Write the console visual QA report. Unpack every staged tar. Check each review's reviewed count against the images its group's routes should have produced (two presets, two themes, each route's segments) and report any shortfall as a finding about the run itself. Merge every finding into findings.json, de-duplicating the same defect seen at several sizes into one finding that lists each. Write report.md: a summary table (findings by severity and by page), then each finding, severity first, with its crop PNG embedded by relative link, then one section per flow with its GIF embedded and whether its goal was reached, then what the model said it saw in each flow-submit-form screenshot. Copy every crop PNG and every GIF to $SWARM_ARTIFACTS_DIR next to report.md and findings.json so the console shows them. Change no file in the repository."}
+     "prompt": "Write the console visual QA report of the screens. Unpack every staged tar. Check each review's reviewed count against the images its group's routes should have produced (two presets, two themes, each route's segments) and report any shortfall as a finding about the run itself. Merge every finding into findings.json, de-duplicating the same defect seen at several sizes into one finding that lists each. Write report.md: a line saying the flows are in flow-report's flows.md, a summary table (findings by severity and by page), then each finding, severity first, with its crop PNG embedded by relative link. Copy every crop PNG to $SWARM_ARTIFACTS_DIR next to report.md and findings.json so the console shows them. Change no file in the repository."},
+    {"step_id": "flow-report", "runner_profile": "claude-code", "model_class": "opus",
+     "depends_on": ["flow-find-failure", "flow-workflow-graph", "flow-submit-form"],
+     "input_from": {"flow-find-failure": "flow-find-failure.tar", "flow-workflow-graph": "flow-workflow-graph.tar",
+                    "flow-submit-form": "flow-submit-form.tar"},
+     "allow_empty_diff": true, "timeout_seconds": 1800,
+     "prompt": "Write the console visual QA report of the flows. Unpack every staged tar. Write flows.md: one section per flow with each run's GIF embedded, whether its goal was reached (a run its budget or a browser timeout stopped is reported as stopped, with what it reached), and each misleading label beside its screenshot; then each flow-submit-form screenshot beside what the model said it saw in it. Write flows.json. Copy every GIF and screenshot flows.md embeds to $SWARM_ARTIFACTS_DIR. Change no file in the repository."}
   ]
 }
 ```
@@ -846,6 +852,29 @@ Why the choices in it:
   review and report** because the judgment is the product (§7 Q1); **`sonnet`
   for flows**, which are mostly tool calls whose judgment jev or the
   screenshot carries.
+* **Two reports, not one (QA-TEMPLATE-SPLIT, 2026-10-20, part of #1680).**
+  `report` waits for the six reviews and `a11y-keyboard` and writes the screen
+  findings, `report.md` and `findings.json`; `flow-report` waits for the
+  three flows and writes `flows.md` and `flows.json`: each flow's GIFs,
+  whether its goal was reached, and what the model said it saw in each
+  `flow-submit-form` screenshot. The platform cancels every dependant of a
+  failed step ("an upstream workflow step did not succeed"), and `when` routes
+  only on verdicts: there is no "run even if a dependency failed". So the one
+  report that waited for all ten review, flow and a11y steps was hostage to
+  the least reliable of them, and visual QA run 2 lost it (§8). A failed
+  flow now costs `flow-report`, never the screen findings. It still costs all
+  three flows' section, not only its own, which is why `flow-submit-form`
+  also carries a budget (next).
+* **`flow-submit-form` has a 35-minute budget inside its 45-minute timeout**:
+  it records its start with `date +%s`, checks before every step, and at 35
+  minutes stops the recorder and bundles what it reached, with `goal_reached`
+  false. It opens and snapshots the page *before* `swarm-handoff record
+  start`, stops calling browser tools after the first one that times out or
+  errors, and takes at most 12 screenshots per preset. Each of those answers
+  a measured cause of run 2's kill (§8). The budget cannot interrupt a tool
+  call that is already hung: the Playwright MCP's own limit on one call is
+  1800 s, so a hang that starts after minute 15 still ends past 45. The
+  no-retry rule is what keeps it to one hang.
 * **`flow-submit-form` asks the agent to say what each screenshot showed.**
   That is the run-time half of QA-KIT's "the model receives the screenshot as
   an image": the report quotes it, so a run where the model got no image says
@@ -1091,3 +1120,52 @@ and may an admin identity screenshot other tenants' pages?**
    forge write to file them itself.
 2. The report step also opens a pull request adding `findings.json` under
    `docs/qa/runs/`, so findings are in git; one PR per run.
+
+## 8. What the runs taught
+
+**Run 2 lost its whole report to one flow step (2026-10-20).** Workflow
+`wf_b6e2441b419f423a84eb`: all six captures, all six reviews,
+`flow-find-failure`, `flow-workflow-graph` and `a11y-keyboard` succeeded.
+`flow-submit-form` (`task_cfe142a3ee35418abcdb`) was killed: "runner exceeded
+its 2700s timeout and was killed". `report` depended on all ten review, flow
+and a11y steps, so the scheduler cancelled it ("an upstream workflow step did
+not succeed"), and no `report.md` or `findings.json` was written although
+every screen review had finished. `on_step_failure: "continue"` keeps the
+*other* steps running; it does not run a dependant of the failed one. The
+template therefore splits the report (§4.6): the screen findings depend only
+on what produces them.
+
+**Why `flow-submit-form` ran 45 minutes.** Read on 2026-10-20 from the
+attempt's own artifacts, `gs://swarm-artifacts-saga-agents-staging/tenants/eng/tasks/task_cfe142a3ee35418abcdb/attempts/att_d1b50da5a215417d93f7/`
+(`claude-code.stdout.log`, and the gate's `live/actions-*.live.jsonl`); the
+API's task read answered 401 to this lane. The flow never reached the form:
+
+1. At 11:28:34Z the agent ran `swarm-handoff device desktop; swarm-handoff
+   record start flow-submit-form-desktop`, and in the same second
+   `browser_navigate` to `http://localhost:5173`.
+2. The gate's action log shows that navigation's `Page.navigate`, then, over
+   the next 14 s, more CDP connections whose `Runtime.evaluate` and
+   `Runtime.callFunctionOn` calls were each followed by
+   `Target.attachToBrowserTarget` refused by the method policy (five
+   refusals) ("a second browser session is the proxy's to
+   open", `cdppolicy.py`).
+3. The navigation failed after 60 s: "Timeout 60000ms exceeded ... waiting
+   until domcontentloaded". `curl` from the agent's shell got the dev server's
+   200 in 0.02 s, so Vite was serving and the browser was the side that hung.
+4. The agent then called `browser_tabs` to look. It returned nothing for
+   1800 s, the MCP's own per-call limit ("sent no response or progress for
+   1800s; aborting"). The agent called `browser_tabs` again, and that call was
+   still open at the 2700 s kill. The stdout log has 115 lines and no
+   screenshot was taken.
+
+So the cause was a browser that hung on the first navigation, beside a
+recorder connecting at the same moment, and then a brief with nothing in it
+to stop at. Not the number of screenshots, and not the form: the form was
+never opened. The template's brief now answers the parts a brief can (§4.6).
+The refused connections in step 2 fit the recorder's connect:
+`swarm-handoff`'s Playwright `connect_over_cdp`, retried, and its
+visibility `evaluate`. That client is not proven from the log: the action log
+does not name the connecting client. Why a refused second session leaves the
+agent's navigation hung is the browser image's and the gate's to answer, not
+this template's.
+
