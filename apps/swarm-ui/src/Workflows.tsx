@@ -5121,12 +5121,6 @@ function ListHead() {
 }
 
 /**
- * THE LIST'S TOOLBAR, loaded or not (#113). While the read is in flight it is
- * drawn DISABLED, with the address's choices already showing and no counts,
- * so nothing above the table moves when the data lands -- it used to appear
- * only then and push the rows down by its own height.
- */
-/**
  * THE SEGMENT'S WORDS: the Running bucket's tab is named by what it counts
  * (visual QA QA-036, run 2, 2026-10-20). The bucket is every workflow not yet
  * ended -- running, parked, waiting, and any whose state the read could not
@@ -5137,6 +5131,12 @@ function ListHead() {
  */
 const TAB_LABEL: Readonly<Record<BucketFilter, string>> = { ...BUCKET_LABEL, running: 'Not ended' }
 
+/**
+ * THE LIST'S TOOLBAR, loaded or not (#113). While the read is in flight it is
+ * drawn DISABLED, with the address's choices already showing and no counts,
+ * so nothing above the table moves when the data lands -- it used to appear
+ * only then and push the rows down by its own height.
+ */
 function WorkflowListFilters({
   query,
   choose,
