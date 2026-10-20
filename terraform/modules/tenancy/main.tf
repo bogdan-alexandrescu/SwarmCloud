@@ -148,12 +148,21 @@ resource "google_service_account" "worker" {
 # of its five permissions, since #79 (owner decision 2026-09-25): CI no longer
 # holds roles/iam.roleAdmin, so no role can be defined in a module CI applies.
 #
-# The residual is real and is written down here rather than implied: a worker
-# still holds create/get/update across the database, so it can read a document
-# whose id it can guess (`pools/global`, `tenants/<id>`) and write one. Closing
-# that needs the worker off direct Firestore access entirely -- reaching state
-# through a control-plane service that scopes by caller identity -- or one
-# database per tenant, and neither is expressible in IAM.
+# The residual is real and is written down here rather than implied: while the
+# grant below exists, a worker holds create/get/update across the database, so
+# it can read a document whose id it can guess (`pools/global`, `tenants/<id>`,
+# `workspace_settings/<another tenant>`) and write one (#1457). No IAM condition
+# can close that. What closes it is the worker off direct Firestore access
+# entirely: it reaches its state through swarm-api's attempt-signed routes,
+# which scope by caller identity (docs/design/tenant-settings-integrity.md,
+# design B), and then var.worker_firestore_access = false removes the grant for
+# every tenant.
+#
+# The switch DEFAULTS TO TRUE, today's binding exactly: same resource, same
+# for_each keys, same addresses, so every environment's plan shows no change
+# until the owner flips it. Flip it only after every tenant's worker is on the
+# routes (STATE_VIA_API_TENANTS): a worker still on the direct path gets
+# PermissionDenied on its first read and its attempt fails.
 #
 # The role names below are plain strings from ../custom_role_ids, the one
 # spelling this module and terraform/bootstrap share. A string, not a resource
@@ -166,7 +175,7 @@ module "custom_role_ids" {
 }
 
 resource "google_project_iam_member" "worker_firestore" {
-  for_each = var.tenants
+  for_each = var.worker_firestore_access ? var.tenants : {}
 
   project = var.project_id
   role    = module.custom_role_ids.names.worker_firestore
