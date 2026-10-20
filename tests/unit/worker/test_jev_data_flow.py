@@ -151,8 +151,12 @@ def test_the_credential_scan_alone_drops_a_headerless_key() -> None:
     key material has no prefix any redaction rule knows (the control)."""
     from swarm_redaction.rules import redact
 
-    blob = "blob = " + base64.b64encode(os.urandom(512)).decode()
-    assert redact(blob).count == 0
+    # Random base64 occasionally holds a run some redaction rule matches (CI,
+    # run 39388236975), so draw until one does not: the control is that the
+    # blob passed below is one the redaction rules leave alone.
+    blobs = ("blob = " + base64.b64encode(os.urandom(512)).decode() for _ in range(50))
+    blob = next((b for b in blobs if redact(b).count == 0), None)
+    assert blob is not None, "every random blob matched a redaction rule"
     out = sanitize.sanitize_state({"candidates": [{"i": 0, "path": "a.py", "excerpt": blob}]})
     assert out.state == {"candidates": [{"i": 0, "path": "a.py"}]} and out.dropped == 1
 
