@@ -43,7 +43,7 @@ variables {
     }
     smoke = {
       kind            = "group"
-      principal       = "swarm-smoke@saga.xyz"
+      principal       = "smoke@saga.xyz"
       directory_group = false
     }
   }
@@ -121,12 +121,24 @@ run "the_default_renders_todays_grants_exactly" {
     # id, or drop a tenant from its for_each, and every environment plans a
     # destroy-and-create of a live grant.
     condition = {
-      for k, b in google_project_iam_member.worker_firestore : k => [b.role, b.member, length(b.condition)]
+      for k, b in google_project_iam_member.worker_firestore : k => [b.role, length(b.condition)]
       } == {
-      eng   = ["projects/saga-agents-staging/roles/swarmTenantWorkerFirestore", "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com", 0]
-      smoke = ["projects/saga-agents-staging/roles/swarmTenantWorkerFirestore", "serviceAccount:swarm-agent-worker-smoke@saga-agents-staging.iam.gserviceaccount.com", 0]
+      eng   = ["projects/saga-agents-staging/roles/swarmTenantWorkerFirestore", 0]
+      smoke = ["projects/saga-agents-staging/roles/swarmTenantWorkerFirestore", 0]
     }
-    error_message = "worker_firestore_access = true must render today's grant exactly: one unconditioned swarmTenantWorkerFirestore binding per tenant, on that tenant's worker"
+    error_message = "worker_firestore_access = true must render today's grant exactly: one unconditioned swarmTenantWorkerFirestore binding per tenant, keyed by tenant id"
+  }
+
+  # The member is the worker's email, which a mock plan does not know; what it
+  # is built from is. Each tenant's binding is on that tenant's own account.
+  assert {
+    # MUTATION: point the binding's member at any other tenant's account (or
+    # one shared account) and a tenant's grant lands on another's worker.
+    condition = alltrue([
+      for k, _ in google_project_iam_member.worker_firestore :
+      google_service_account.worker[k].account_id == "swarm-agent-worker-${k}"
+    ]) && length(regexall("member\\s*=\\s*\"serviceAccount:\\$\\{google_service_account\\.worker\\[each\\.key\\]\\.email\\}\"", one(regexall("(?ms)^resource \"google_project_iam_member\" \"worker_firestore\" \\{.*?^\\}", file("../../terraform/modules/tenancy/main.tf"))))) == 1
+    error_message = "each tenant's worker_firestore binding must name that tenant's own worker, swarm-agent-worker-<tenant>"
   }
 }
 

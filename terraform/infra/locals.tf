@@ -760,6 +760,13 @@ locals {
       # `egress_addresses`; "" serves [], which the console says in words.
       MCP_EGRESS_ADDRESSES = join(",", module.network.nat_addresses)
 
+      # The job-made workspaces' Firestore cutover list (variables.tf
+      # `worker_firestore_off_tenants`, #1457 design B). swarm_api.settings
+      # reads it as worker_firestore_off_tenants and writes the record's
+      # worker_firestore_access from it. "" -- the default -- is every
+      # workspace keeping its grant, exactly what an unset variable read.
+      WORKER_FIRESTORE_OFF_TENANTS = join(",", var.worker_firestore_off_tenants)
+
       # Neither name appeared anywhere in terraform, so swarm_api.settings read
       # empty tuples, resolve_tenant() had no groups to check, and EVERY caller
       # fell through to the personal `u-<email>` tenant.

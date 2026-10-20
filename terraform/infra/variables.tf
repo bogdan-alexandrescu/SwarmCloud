@@ -1068,6 +1068,66 @@ variable "settings_mac_tenants" {
   default     = []
 }
 
+# DEFAULTS TRUE: every Terraform tenant's worker keeps swarmTenantWorkerFirestore
+# on the database, today's grant exactly (same addresses, so no environment
+# plans a change by this variable existing). It is passed to module "tenancy"
+# (main.tf), whose switch it is. False is the LAST step of #1457's design B
+# cutover (docs/runbooks/isolation-cutover.md step c), and is refused at plan
+# while any Terraform tenant is missing from state_via_api_tenants: that
+# tenant's worker would still be dispatched onto the direct path and fail its
+# first read with PermissionDenied.
+variable "worker_firestore_access" {
+  description = <<-EOT
+    Grant each Terraform tenant's worker the swarmTenantWorkerFirestore role on
+    the swarm database (modules/tenancy `worker_firestore_access`). True is
+    today's grant. False removes it for every tenant in var.tenants, and plans
+    only once every one of them is in state_via_api_tenants
+    (docs/runbooks/isolation-cutover.md).
+  EOT
+  type        = bool
+  default     = true
+  nullable    = false
+
+  validation {
+    condition     = var.worker_firestore_access || alltrue([for t in keys(var.tenants) : contains(var.state_via_api_tenants, t)])
+    error_message = "worker_firestore_access = false needs every tenant in var.tenants listed in state_via_api_tenants first: an unlisted tenant's worker is still dispatched onto direct Firestore and fails its first read once the role is gone (docs/runbooks/isolation-cutover.md)."
+  }
+}
+
+# DEFAULTS EMPTY: swarm-api writes worker_firestore_access true on every
+# job-made workspace record, so each keeps its grant exactly as before this
+# variable existed. Rendered onto swarm-api alone as WORKER_FIRESTORE_OFF_TENANTS
+# (locals.tf), the job-made path's twin of worker_firestore_access above
+# (docs/workspaces.md §2.7). A tenant is listed only after it is in
+# state_via_api_tenants, and the plan refuses it otherwise. `*` is refused
+# too: swarm-api would read it as every tenant, which the state switch cannot
+# list, so every unswitched workspace would lose a role its worker still uses.
+variable "worker_firestore_off_tenants" {
+  description = <<-EOT
+    Tenant ids whose job-made workspace worker gets NO Firestore role
+    (swarm-api's WORKER_FIRESTORE_OFF_TENANTS, #1457 design B; owner decision
+    Q7: u-bogdan, then eng, then all). swarm-api writes the record's
+    worker_firestore_access from it at each approval, retry and ceiling
+    change; the workspace job then withholds the role and its A9 check
+    requires the worker to hold none. Removing an existing binding is the
+    owner's, by hand (docs/runbooks/isolation-cutover.md). Each entry must
+    already be in state_via_api_tenants. Default [] = nobody cut over.
+  EOT
+  type        = list(string)
+  default     = []
+  nullable    = false
+
+  validation {
+    condition     = alltrue([for t in var.worker_firestore_off_tenants : can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", t))])
+    error_message = "every worker_firestore_off_tenants entry must be a tenant id (lowercase letters, digits and inner hyphens). \"*\" is not supported: list the tenants."
+  }
+
+  validation {
+    condition     = alltrue([for t in var.worker_firestore_off_tenants : contains(var.state_via_api_tenants, t)])
+    error_message = "every worker_firestore_off_tenants entry must already be in state_via_api_tenants: a workspace worker still dispatched onto direct Firestore fails its first read once its role is withheld (docs/runbooks/isolation-cutover.md)."
+  }
+}
+
 variable "settings_mac_required" {
   description = <<-EOT
     The scheduler's SETTINGS_MAC_REQUIRED: whether it refuses to act on an
