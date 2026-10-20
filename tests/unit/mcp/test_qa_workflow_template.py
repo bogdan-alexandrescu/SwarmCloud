@@ -23,6 +23,10 @@ hold it to what reads it:
   review's and flow's tarball, each under the name its producer writes; every
   flow records its GIF with `swarm-handoff record`, the command QA-FLOWS
   shipped; no step's output goes nowhere.
+* `test_flow_briefs_name_only_pages_in_the_route_list`: a flow brief names
+  each page by its path in `routes.json`, never by a nav trail (QA-038: the
+  first run's brief said "Work > Submit a task", a trail the console does not
+  draw -- Submit is its own rail item).
 * `test_template_names_only_profiles_inputs_and_classes`: invariant 10. No
   `resource_class`, every `browser_tool` one of the declared choices, every
   `model_class` one of the frozen `MODEL_CLASSES` that its profile takes, and
@@ -225,3 +229,32 @@ def test_template_carries_no_backend_parameter(key):
     document = _template()
     assert key not in document
     assert all(key not in step for step in document["steps"])
+
+
+#: A nav trail in prose: "Work > Submit a task", "Capacity > Pools".
+NAV_TRAIL = re.compile(r"\b[A-Z][\w-]*(?: [\w-]+)* > [A-Z]")
+#: A page named by address: the fixture origin's paths, and a backticked `/path`.
+NAMED_PATH = re.compile(re.escape(FIXTURE_ORIGIN) + r"(/[^\s`'\")]*)?|`(/[^`\s]+)`")
+
+
+def test_flow_briefs_name_only_pages_in_the_route_list():
+    # MUTATION: put "open Work > Submit a task" back in flow-submit-form's
+    # prompt (the brief of the first run, QA-038) and this fails on the trail.
+    routes = json.loads(ROUTES.read_text(encoding="utf-8"))
+    paths = {r["path"] for group in routes["groups"].values() for r in group}
+    steps = _steps()
+    flows = sorted(s for s in steps if s.startswith("flow-"))
+    assert flows, "the template has no flow step"
+    named_by_flow = {}
+    for step_id in flows:
+        prompt = steps[step_id]["prompt"]
+        assert not NAV_TRAIL.search(prompt), (
+            f"{step_id} names a nav trail, {NAV_TRAIL.search(prompt).group(0)!r}...: "
+            "name the page by its path in routes.json"
+        )
+        named = {(a or b or "").rstrip(".,;:") for a, b in NAMED_PATH.findall(prompt)} - {"", "/"}
+        assert named <= paths, f"{step_id} names {sorted(named - paths)}, which routes.json does not list"
+        named_by_flow[step_id] = named
+    # The scripted flow opens one page by name; the goal-driven ones are told
+    # not to type addresses, so they name none.
+    assert named_by_flow["flow-submit-form"] == {"/submit/task"}, named_by_flow
