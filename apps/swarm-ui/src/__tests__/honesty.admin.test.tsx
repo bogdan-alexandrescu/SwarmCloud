@@ -365,11 +365,14 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
     await limitsDrawn()
     fireEvent.change(input('global'), { target: { value: '7' } })
     const other = within(editorRow('tenant:eng')).getByRole('button', { name: /^Edit ceiling for tenant:eng/ })
-    expect((other as HTMLButtonElement).disabled, 'a click elsewhere would drop the typed 7').toBe(true)
+    // aria-disabled, not `disabled` (QA-037): the reason stays reachable by keyboard.
+    expect(other.getAttribute('aria-disabled'), 'a click elsewhere would drop the typed 7').toBe('true')
+    fireEvent.click(other)
+    expect(input('global').value, 'the press opened another pool over the typed 7').toBe('7')
     expect(other.getAttribute('aria-label')).toMatch(/unsaved value/)
     // Typed back to the pool's own value, nothing is held: the others open again.
     fireEvent.change(input('global'), { target: { value: '10' } })
-    expect((within(editorRow('tenant:eng')).getByRole('button', { name: 'Edit ceiling for tenant:eng' }) as HTMLButtonElement).disabled).toBe(false)
+    expect(within(editorRow('tenant:eng')).getByRole('button', { name: 'Edit ceiling for tenant:eng' }).getAttribute('aria-disabled')).toBeNull()
   })
 
   it('says lowering evicts nothing beside the open editor, not in the caption', async () => {
