@@ -12,8 +12,18 @@ on:
   # Also on main, so a direct push is tested too. Without this the suite only
   # ever ran on pull requests, and a repository whose history landed straight
   # on main had never run its own tests once.
+  #
+  # AND ON A LANE BRANCH (LANE CI-EARLY, part of #1694, owner decision
+  # 2026-10-20). Under the integrate strategy the implement step pushes
+  # `swarm/<task id>` and opens no pull request; the fix step opens one after
+  # review. CI now starts on that push, the whole suite as on main, while
+  # review and fix run. The merge step holds EVERY run of a required check at
+  # the head, from any event (agent_worker/merge.py required_check_state), so
+  # a push run is one more run that must be green and the rule is unchanged.
+  # security.yml and terraform.yml (which ci-gate waits for) run on the same
+  # pushes; release.yml never does. tests/unit/scripts/test_ci_early.py.
   push:
-    branches: [main]
+    branches: [main, "swarm/**"]
   # EVERY PULL REQUEST, WITH NO PATH FILTER (owner request 2026-10-07, docs/ci.md
   # "The merge pipeline's wall time"). The `ci-gate` job at the bottom of this
   # file is the check ruleset 24160219 requires, and GitHub holds a required
@@ -122,7 +132,26 @@ jobs:
         # scripts/acceptance/ too (#358): its entry scripts source lib.sh and
         # every group file, so the group files are analysed in that context
         # as well as on their own.
-        run: shellcheck -x scripts/*.sh scripts/lib/*.sh scripts/lib/guard-bin/* scripts/acceptance/*.sh scripts/acceptance/groups/*.sh
+        #
+        # IN PARALLEL, AND ON A PULL REQUEST ONLY WHAT IT REACHES (LANE
+        # CI-EARLY, part of #1694). The one serial call was the slowest check
+        # on 19 of 65 heads (291 s median). scripts/lib/shellcheck-ci.sh runs
+        # `shellcheck -x` per file over the runner's cores; on a pull request
+        # over the changed scripts, what they source and what sources them
+        # (`changes` hands it the diff). Everything else -- main, a lane push,
+        # a queue entry, a diff that could not be read -- checks every file
+        # the serial command named.
+        env:
+          EVENT: ${{ github.event_name }}
+          CHANGED: ${{ needs.changes.outputs.changed }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT}" = "pull_request" ] && [ -n "${CHANGED}" ]; then
+            printf '%s' "${CHANGED}" | jq -r '.[]' > "${RUNNER_TEMP}/shell-changed"
+            scripts/lib/shellcheck-ci.sh --changed "${RUNNER_TEMP}/shell-changed"
+          else
+            scripts/lib/shellcheck-ci.sh
+          fi
 
       - name: scripts are executable and strict
         # The property is "strict mode is on before anything runs", so the check
@@ -525,6 +554,11 @@ jobs:
       python: ${{ steps.select.outputs.python }}
       areas: ${{ steps.select.outputs.areas }}
       tests: ${{ steps.select.outputs.tests }}
+      # The unit shards' matrix, sized by the measured weight of what runs.
+      unit_shards: ${{ steps.shards.outputs.shards }}
+      # A pull request's changed paths as a JSON list, for the shell job;
+      # empty everywhere else, which checks every script.
+      changed: ${{ steps.changed.outputs.changed }}
       ui: ${{ steps.diff.outputs.ui }}
       images: ${{ steps.images.outputs.images }}
       # The JSON list of job ids main's push run skips because a run of the
@@ -751,6 +785,42 @@ jobs:
             --guards "${RUNNER_TEMP}/select-guards" \
             --github-output "${GITHUB_OUTPUT}" --summary "${GITHUB_STEP_SUMMARY}"
 
+      - name: how many unit shards this run needs
+        id: shards
+        # LANE CI-EARLY (part of #1694, owner decision 2026-10-20). The count
+        # follows the measured weight of the files this run will test, about
+        # 600 s a shard up to eight (scripts/lib/unit_shards.py says why): a
+        # fixed four left a full run's shard at ~1,750 s, a 455-501 s p90
+        # against a 152-188 s median. The pick step splits with the same code.
+        env:
+          PYTHON_MODE: ${{ steps.select.outputs.python }}
+          PYTHON_AREAS: ${{ steps.select.outputs.areas }}
+          PYTHON_TESTS: ${{ steps.select.outputs.tests }}
+          DURATIONS: tests/unit/scripts/unit_test_durations.json
+        run: |
+          set -euo pipefail
+          python3 scripts/lib/unit_shards.py count
+
+      - name: the pull request's changed paths, for shellcheck
+        id: changed
+        # The shell job checks only what a pull request's scripts reach
+        # (scripts/lib/shellcheck-ci.sh). Empty on any other event, or when
+        # the diff cannot be read: the shell job then checks every script.
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT}" != "pull_request" ] \
+             || ! git diff --name-only "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/shell-changed"; then
+            echo "changed=" >> "$GITHUB_OUTPUT"
+            echo "${EVENT}: shellcheck checks every script"
+            exit 0
+          fi
+          echo "changed=$(jq -R -s -c 'split("\n") | map(select(length > 0))' "${RUNNER_TEMP}/shell-changed")" >> "$GITHUB_OUTPUT"
+          echo "$(grep -c . "${RUNNER_TEMP}/shell-changed" || true) changed path(s) handed to the shell job"
+
       - name: reuse what a run of this exact tree already passed
         id: reuse
         # B1 (owner decision 2026-10-14, docs/ci.md "Main reuses the tested
@@ -952,11 +1022,12 @@ jobs:
     # takes its own part: every file runs exactly once
     # (tests/unit/scripts/test_unit_shards.py runs the step for every shard).
     #
-    # FOUR SHARDS: ~2,950 s of measured test time is ~740 s a shard, ~130 s of
-    # wall on a 4-vCPU runner under -n auto, plus ~60 s of setup -- about three
-    # minutes. More shards buy less each and cost a runner apiece when twelve
-    # pull requests arrive together. The matrix is the only place the count is
-    # written; the step reads `strategy.job-total`.
+    # HOW MANY SHARDS: as many as the run's measured weight needs, ~600 s a
+    # shard, at most eight (LANE CI-EARLY, part of #1694, 2026-10-20). The
+    # fixed four were sized for ~2,950 s; by 2026-10-20 the weights summed to
+    # ~7,000 s and a full run's shard took a 455-501 s p90 against a 152-188 s
+    # median. The `changes` job computes the list (scripts/lib/unit_shards.py
+    # count) and the matrix reads it; the pick step reads `strategy.job-total`.
     name: unit tests (${{ matrix.shard }}/${{ strategy.job-total }})
     # A HUNG SHARD MUST FAIL, NOT HOLD ITS RUNNER FOR SIX HOURS. On 2026-10-14
     # eight shards sat "in progress" for 51-306 minutes (self-hosted and hosted
@@ -977,7 +1048,7 @@ jobs:
       # failure, not the first.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: ${{ fromJSON(needs.changes.outputs.unit_shards) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -1058,18 +1129,10 @@ jobs:
 
       - name: pick this shard's test files
         id: pick
-        # python=subset (a change confined to docs/ and apps/swarm-ui/) runs
-        # only the files that read those areas: a module whose source builds a
-        # path through the directory -- `REPO / "docs"`, "docs/ci.md",
-        # "apps/swarm-ui/src", `/ "swarm-ui"` -- then every module that imports one
-        # of those (a helper, or a test module used as one: test_issue_forms
-        # imports test_nav_headings_agree), and everything under a conftest
-        # that reads it, until nothing is added.
-        # A mention in prose -- "(docs/ci.md)" in a docstring -- is not a
-        # read, nor is a dict key named "docs": matching those pulled in 496
-        # of 551 files. Over-inclusion is the safe direction; a test that
-        # builds the path some other way is missed here and caught by main's
-        # push run, which runs everything.
+        # The selection (all, selected, or a docs/ or swarm-ui subset) and the
+        # longest-first split by measured weight live in
+        # scripts/lib/unit_shards.py, which the `changes` job's count shares,
+        # so the matrix and the split never disagree on what runs.
         env:
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ strategy.job-total }}
@@ -1081,85 +1144,7 @@ jobs:
           SHARD_FILES: ${{ runner.temp }}/shard-files
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json, os, re, sys
-          from pathlib import Path
-
-          shard, shards = int(os.environ["SHARD"]), int(os.environ["SHARDS"])
-          mode, areas = os.environ["PYTHON_MODE"], os.environ.get("PYTHON_AREAS", "").split()
-          if not 1 <= shard <= shards:
-              sys.exit(f"::error::shard {shard} of {shards} does not exist")
-          modules = sorted(p for p in Path("tests/unit").rglob("*.py") if "__pycache__" not in p.parts)
-
-          def is_test(path):
-              # pytest's default python_files; pyproject.toml does not change it.
-              return path.name.startswith("test_") or path.name.endswith("_test.py")
-
-          tests = [p for p in modules if is_test(p)]
-          if not tests:
-              sys.exit("::error::no test files under tests/unit: the checkout is not the repository")
-          if mode in ("subset", "selected"):
-              # selected (B2): the files the `changes` job chose for this
-              # change, plus -- when it touches docs/ or apps/swarm-ui/ --
-              # the area readers below, exactly as subset picks them.
-              chosen = set()
-              if mode == "selected":
-                  listed = set(os.environ.get("PYTHON_TESTS", "").split())
-                  if not listed:
-                      sys.exit("::error::python=selected with no test file listed")
-                  chosen |= {p for p in tests if str(p) in listed}
-              if mode == "subset" or areas:
-                  def names_dir(d):
-                      # `REPO / "docs"`, "docs/ci.md", Path("docs"), joinpath(.., "docs") --
-                      # a path, not the word: `state["docs"]` is a Firestore fake.
-                      q = "[\"']"
-                      return rf"/\s*{q}{d}{q}|{q}(?:\./)?{d}/|(?:Path|joinpath)\(\s*{q}{d}{q}|,\s*{q}{d}{q}\s*[,)]"
-                  reads = {"docs": names_dir("docs"), "swarm-ui": names_dir("swarm-ui") + r"|[\"'](?:\./)?apps/swarm-ui/"}
-                  if not areas or any(a not in reads for a in areas):
-                      sys.exit(f"::error::python=subset with areas {areas!r}; known: {sorted(reads)}")
-                  pattern = re.compile("|".join(reads[a] for a in areas))
-                  text = {p: p.read_text(errors="replace") for p in modules}
-                  # The names each module imports: every word of its import
-                  # statements, so `from .fakes import X`, `from control_plane.
-                  # test_nav_headings_agree import Y` and `from . import fakes` all
-                  # name their module. A word in prose names nothing.
-                  imports = re.compile(r"^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import[ \t]+(\([^)]*\)|[^\n]*)|import[ \t]+([^\n]+))", re.M)
-                  words = {p: {w for m in imports.finditer(text[p]) for g in m.groups() if g for w in re.findall(r"\w+", g)}
-                           for p in modules}
-                  reach = {p for p in modules if pattern.search(text[p])}
-                  todo = sorted(reach)
-                  while todo:
-                      module = todo.pop()
-                      if module.name == "conftest.py":
-                          more = {p for p in modules if module.parent in p.parents}
-                      elif module.name == "__init__.py":
-                          more = set()
-                      else:
-                          more = {p for p in modules if module.stem in words[p]}
-                      todo.extend(sorted(more - reach))
-                      reach |= more
-                  chosen |= {p for p in tests if p in reach}
-              tests = [p for p in tests if p in chosen]
-          elif mode != "all":
-              sys.exit(f"::error::python={mode!r}: this job runs only on all, selected or subset")
-          weights = json.loads(Path(os.environ["DURATIONS"]).read_text())
-          known = sorted(weights.values())
-          default = known[len(known) // 2] if known else 1.0
-          load = [0.0] * shards
-          mine = []
-          for path in sorted(tests, key=lambda p: (-weights.get(str(p), default), str(p))):
-              k = min(range(shards), key=lambda i: (load[i], i))
-              load[k] += weights.get(str(path), default)
-              if k == shard - 1:
-                  mine.append(str(path))
-          Path(os.environ["SHARD_FILES"]).write_text("".join(f"{f}\n" for f in sorted(mine)))
-          print(f"{mode}: {len(tests)} test file(s) in {shards} shard(s); shard {shard} runs {len(mine)}, "
-                f"~{load[shard - 1]:.0f} s of measured test time (shards: {', '.join(f'{x:.0f}' for x in load)})")
-          for f in sorted(mine):
-              print(f"  {f}")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"count={len(mine)}\n")
-          PY
+          python3 scripts/lib/unit_shards.py pick
 
       - name: unit tests
         # No emulator, no credentials. The admission logic is pure so the
@@ -2005,7 +1990,11 @@ jobs:
     # A needed check skipped by its paths (shell, manifests) is not a failure:
     # without this guard GitHub skips the build too, and the release then
     # refuses the unbuilt commit (adc51c0f, 2026-10-14).
-    if: ${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
+    # Main's push and a dispatch only: a lane push (`swarm/**`, LANE CI-EARLY)
+    # is tested here but never builds or pushes an image. A disjunction, not
+    # parentheses: `&&` binds tighter than `||`, and the workflow models in
+    # tests/unit/scripts read this shape (test_workflow_step_reachability.py).
+    if: ${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.ref == 'refs/heads/main' || !cancelled() && !failure() && github.event_name == 'workflow_dispatch' }}
     environment: build-pr
     # Authenticates to Google through workload identity: the only reason this
     # job holds id-token (the workflow grants it to no one by default).

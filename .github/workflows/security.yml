@@ -12,8 +12,12 @@ name: security
 
 on:
   pull_request:
+  # A lane branch too (LANE CI-EARLY, part of #1694, owner decision
+  # 2026-10-20): four of the ruleset's required checks are this workflow's,
+  # and CI now starts when the implement step pushes `swarm/<task id>`, not
+  # when the fix step opens the pull request (application.yml says why).
   push:
-    branches: [main]
+    branches: [main, "swarm/**"]
   # MAIN MERGES THROUGH A MERGE QUEUE (owner decision 2026-10-06, docs/ci.md
   # "Merging through the merge queue"). Four of the ruleset's required
   # checks are this workflow's, and a queue entry waits for them on its own
@@ -96,13 +100,32 @@ jobs:
         # Only findings the base branch's scan of the same target does not
         # have, compared by rule id + package + target, never by line (PR 1186
         # had main's alerts re-attributed to its edited FROM lines; #1194).
-        # No base (push, schedule): every finding fails. Every finding is still
-        # in the Security tab above. scripts/trivy-new-findings.sh says why.
+        # No base (main's push, schedule): every finding fails. Every finding
+        # is still in the Security tab above. scripts/trivy-new-findings.sh
+        # says why.
+        #
+        # A LANE PUSH (`swarm/**`) compares with main's tip, the base its pull
+        # request will have: with no base, every finding main already carries
+        # would fail it, and the merge step holds a red push run at the head
+        # as red. A tip that cannot be read fails here, never "no base".
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          scripts/trivy-new-findings.sh gate --base "${BASE_SHA}"
+          base="${BASE_SHA}"
+          if [ -z "${base}" ] && [ "${EVENT}" = "push" ] && [ "${REF}" != "refs/heads/main" ]; then
+            tip="$(git ls-remote origin refs/heads/main)" \
+              || { echo "::error::could not read main's tip to compare this lane push with"; exit 1; }
+            base="$(printf '%s\n' "${tip}" | awk '$2 == "refs/heads/main" { print $1 }')"
+            if ! printf '%s' "${base}" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "::error::main's tip read as '${base}', not a commit; nothing to compare this lane push with"
+              exit 1
+            fi
+            echo "lane push: comparing with main's tip ${base}"
+          fi
+          scripts/trivy-new-findings.sh gate --base "${base}"
 
   secrets:
     name: secret scan

@@ -227,4 +227,8 @@ def test_the_pick_step_runs_the_listed_files_in_selected_mode():
     jobs = yaml.safe_load(APPLICATION.read_text())["jobs"]
     (pick,) = [s for s in jobs["python-unit"]["steps"] if s.get("id") == "pick"]
     assert pick["env"]["PYTHON_TESTS"] == "${{ needs.changes.outputs.tests }}", pick["env"]
-    assert 'mode == "selected"' in pick["run"] and "PYTHON_TESTS" in pick["run"], pick["run"]
+    # The selection lives in scripts/lib/unit_shards.py since LANE CI-EARLY
+    # (the `changes` job sizes the matrix with the same code).
+    assert "scripts/lib/unit_shards.py pick" in pick["run"], pick["run"]
+    script = (REPO / "scripts" / "lib" / "unit_shards.py").read_text()
+    assert 'mode == "selected"' in script and "PYTHON_TESTS" in script

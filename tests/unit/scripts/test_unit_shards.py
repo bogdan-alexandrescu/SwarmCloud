@@ -17,7 +17,10 @@ where a step decides something:
     test files that read docs/ or apps/swarm-ui/ -- directly, through a helper
     they import, or under a conftest that reads it -- and a shard left with no
     file runs nothing (a bare `pytest` would run the whole suite);
-  * the shard count is written once, in the matrix;
+  * the Python shard count is computed once, by scripts/lib/unit_shards.py
+    in the `changes` job, from the measured weight of what the change runs
+    (LANE CI-EARLY, part of #1694): a full run gets more shards, a small
+    selection fewer, so every shard carries about the same measured time;
   * vitest is sharded with its own `--shard=k/N` over the same count, beside
     one job for the typecheck, the node:test runners and the build;
   * everything the old `python` job checked besides the unit suite still runs.
@@ -41,6 +44,7 @@ REPO = Path(__file__).resolve().parents[3]
 APPLICATION = REPO / ".github" / "workflows" / "application.yml"
 DURATIONS = REPO / "tests" / "unit" / "scripts" / "unit_test_durations.json"
 UI_PACKAGE = REPO / "apps" / "swarm-ui" / "package.json"
+UNIT_SHARDS = REPO / "scripts" / "lib" / "unit_shards.py"
 
 #: Every check name application.yml reported on a pull request before the
 #: shards (read from main at 8892e96). Each must still be reported.
@@ -132,35 +136,146 @@ def test_the_old_python_jobs_other_checks_still_run():
 # The Python shards.
 # ---------------------------------------------------------------------------
 def test_the_python_shard_count_is_written_once():
-    """The step reads `strategy.job-total`, so the matrix is the one place.
-    MUTATION: write SHARDS: 4 in the step."""
-    shards = _shards("python-unit")
-    assert shards == list(range(1, len(shards) + 1)) and len(shards) >= 2, shards
+    """The `changes` job computes the count; the matrix reads it and the pick
+    step reads `strategy.job-total`. MUTATION: write SHARDS: 4 in the step,
+    or put a literal list back in the matrix."""
+    job = _jobs()["python-unit"]
+    assert job["strategy"]["matrix"]["shard"] == "${{ fromJSON(needs.changes.outputs.unit_shards) }}", job["strategy"]
+    assert "changes" in _needs(job)
+    changes = _jobs()["changes"]
+    assert changes["outputs"].get("unit_shards") == "${{ steps.shards.outputs.shards }}", changes["outputs"]
+    step = _step("changes", "shards")
+    assert "scripts/lib/unit_shards.py count" in step["run"], step["run"]
+    env = step.get("env") or {}
+    assert env.get("PYTHON_MODE") == "${{ steps.select.outputs.python }}", env
+    assert env.get("PYTHON_AREAS") == "${{ steps.select.outputs.areas }}", env
+    assert env.get("PYTHON_TESTS") == "${{ steps.select.outputs.tests }}", env
+    assert env.get("DURATIONS") == "tests/unit/scripts/unit_test_durations.json", env
     env = _step("python-unit", "pick").get("env") or {}
     assert env.get("SHARD") == "${{ matrix.shard }}", env
     assert env.get("SHARDS") == "${{ strategy.job-total }}", env
+    pick = _step("python-unit", "pick")["run"]
+    assert pick.strip().splitlines()[-1].strip() == "python3 scripts/lib/unit_shards.py pick", pick
     assert _jobs()["python-unit"]["strategy"].get("fail-fast") is False
+
+
+def _count(tmp_path: Path, *, mode: str = "all", areas: str = "", tests: str = "",
+           cwd: Path = REPO, durations: Path = DURATIONS) -> tuple[subprocess.CompletedProcess[str], dict]:
+    output = tmp_path / "count-output"
+    output.write_text("")
+    env = {**os.environ, "PYTHON_MODE": mode, "PYTHON_AREAS": areas, "PYTHON_TESTS": tests,
+           "DURATIONS": str(durations), "GITHUB_OUTPUT": str(output)}
+    proc = subprocess.run(["python3", str(UNIT_SHARDS), "count"], cwd=cwd, env=env,
+                          capture_output=True, text=True, timeout=120)
+    outputs = dict(l.split("=", 1) for l in output.read_text().splitlines() if "=" in l)
+    return proc, outputs
+
+
+def _constants() -> tuple[float, int]:
+    text = UNIT_SHARDS.read_text()
+    target = re.search(r"^SHARD_TARGET_SECONDS = (\d+(?:\.\d+)?)\b", text, re.M)
+    most = re.search(r"^MAX_SHARDS = (\d+)\b", text, re.M)
+    assert target and most, "unit_shards.py no longer sets SHARD_TARGET_SECONDS and MAX_SHARDS on lines of their own"
+    return float(target.group(1)), int(most.group(1))
+
+
+def test_a_full_run_gets_enough_shards_that_none_carries_much_over_the_target(tmp_path):
+    """THE TAIL (LANE CI-EARLY, 2026-10-20). The weights now sum to ~7,000 s,
+    not the ~2,950 s the four fixed shards were sized for, so a full run's
+    shard carried ~1,750 s: a 455-501 s p90 against a 152-188 s median, the
+    median being pull requests' small selections. Sized by weight, a full
+    run's shard carries at most ~1.5x what a selection's shard does.
+    MUTATION: go back to a fixed [1, 2, 3, 4], or cap the count below the
+    weight's need (MAX_SHARDS = 4)."""
+    target, most = _constants()
+    proc, outputs = _count(tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    shards = json.loads(outputs["shards"])
+    assert shards == list(range(1, len(shards) + 1)), shards
+    assert 4 < len(shards) <= most, shards
+    weights = json.loads(DURATIONS.read_text())
+    median = sorted(weights.values())[len(weights) // 2]
+    loads = [sum(weights.get(f, median) for f in shard) for shard in _all_shards(tmp_path)]
+    assert len(loads) == len(shards)
+    assert max(loads) <= 1.5 * target, (loads, target)
+
+
+def test_a_small_selection_takes_one_runner_not_four(tmp_path):
+    """Runners were the largest share of pull-request wall time (docs/ci.md,
+    "Where pull-request CI time goes"): a selection that is one target's
+    worth runs on one shard. MUTATION: hand every run MAX_SHARDS."""
+    tests = "tests/unit/scripts/test_unit_shards.py tests/unit/scripts/test_ci_reuse.py"
+    proc, outputs = _count(tmp_path, mode="selected", tests=tests)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert json.loads(outputs["shards"]) == [1], outputs
+
+
+def test_a_selection_is_split_by_its_own_weight(tmp_path):
+    """MUTATION: size every selected run by the whole suite's weight."""
+    target, most = _constants()
+    weights = json.loads(DURATIONS.read_text())
+    heavy = sorted((f for f in weights if (REPO / f).is_file()), key=lambda f: -weights[f])
+    chosen, total = [], 0.0
+    for f in heavy:
+        if total > 2.2 * target:
+            break
+        chosen.append(f)
+        total += weights[f]
+    proc, outputs = _count(tmp_path, mode="selected", tests=" ".join(chosen))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    n = len(json.loads(outputs["shards"]))
+    assert 2 <= n < most, (n, total)
+
+
+def test_a_subset_is_sized_by_the_files_that_read_the_area(tmp_path):
+    """MUTATION: size a docs-only run as the whole suite."""
+    whole = tmp_path / "all"
+    whole.mkdir()
+    proc, all_outputs = _count(whole)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    proc, outputs = _count(tmp_path, mode="subset", areas="docs")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert 1 <= len(json.loads(outputs["shards"])) < len(json.loads(all_outputs["shards"])), outputs
+
+
+@pytest.mark.parametrize("mode, areas, tests", [
+    ("none", "", ""), ("subset", "", ""), ("subset", "terraform", ""), ("bogus", "", ""), ("selected", "", ""),
+])
+def test_the_count_refuses_what_it_does_not_model(tmp_path, mode, areas, tests):
+    """A broken gate is never "one shard of nothing". `none` never reaches the
+    step's output either: the job is skipped. MUTATION: answer [1] to anything."""
+    proc, outputs = _count(tmp_path, mode=mode, areas=areas, tests=tests)
+    if mode == "none":
+        assert proc.returncode == 0 and outputs.get("shards") == "[1]", (proc.stderr, outputs)
+    else:
+        assert proc.returncode != 0, proc.stdout
+        assert "shards" not in outputs
 
 
 def _pick(tmp_path: Path, shard: int, shards: int, *, mode: str = "all", areas: str = "",
           cwd: Path = REPO, durations: Path = DURATIONS) -> tuple[subprocess.CompletedProcess[str], list[str], dict]:
-    step = _step("python-unit", "pick")
-    body = tmp_path / "pick.sh"
-    body.write_text(step["run"])
+    # The workflow's pick step runs this script from the checkout
+    # (test_the_python_shard_count_is_written_once holds that); a scratch tree
+    # (`cwd`) has no scripts/, so the same script runs from here against it.
     files = tmp_path / f"shard-{shard}"
     output = tmp_path / f"output-{shard}"
     output.write_text("")
     env = {**os.environ, "SHARD": str(shard), "SHARDS": str(shards), "PYTHON_MODE": mode,
            "PYTHON_AREAS": areas, "DURATIONS": str(durations), "SHARD_FILES": str(files),
            "GITHUB_OUTPUT": str(output)}
-    proc = subprocess.run(["bash", "-e", str(body)], cwd=cwd, env=env, capture_output=True, text=True, timeout=120)
+    proc = subprocess.run(["python3", str(UNIT_SHARDS), "pick"], cwd=cwd, env=env,
+                          capture_output=True, text=True, timeout=120)
     picked = files.read_text().split() if files.exists() else []
     outputs = dict(l.split("=", 1) for l in output.read_text().splitlines() if "=" in l)
     return proc, picked, outputs
 
 
 def _all_shards(tmp_path: Path, **kwargs) -> list[list[str]]:
-    shards = len(_shards("python-unit"))
+    counted = tmp_path / "count"
+    counted.mkdir()
+    proc, outputs = _count(counted, **{k: v for k, v in kwargs.items() if k in ("mode", "areas", "cwd", "durations")})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    shards = len(json.loads(outputs["shards"]))
     out = []
     for k in range(1, shards + 1):
         sub = tmp_path / f"k{k}"

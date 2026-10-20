@@ -527,7 +527,9 @@ def test_the_gate_job_is_named_ci_gate_and_always_runs():
     # Every pull request, with no filter: a filtered gate is the problem it
     # exists to solve.
     assert "pull_request" in on and not (on["pull_request"] or {}), on
-    assert on["push"] == {"branches": ["main"]}, on
+    # main, and the lane branches whose implement push starts CI early
+    # (LANE CI-EARLY, test_ci_early.py).
+    assert on["push"] == {"branches": ["main", "swarm/**"]}, on
     job = gate_job()
     assert job.get("name") == "ci-gate", job
     # Skipped would read as passed; always() runs it when something it needs

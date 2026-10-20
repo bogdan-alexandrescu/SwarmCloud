@@ -60,7 +60,10 @@ jobs:
     name: fix a red SwarmCloud pull request
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    if: ${{ github.event.workflow_run.conclusion == 'failure' && startsWith(github.event.workflow_run.head_branch, 'swarm/') && github.event.workflow_run.head_repository.full_name == github.repository }}
+    # A pull request's run only (LANE CI-EARLY, part of #1694): a lane push
+    # runs application.yml too, and the same red head would start two fixers.
+    # A branch with no pull request was refused by ci-fix.sh anyway.
+    if: ${{ github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event == 'pull_request' && startsWith(github.event.workflow_run.head_branch, 'swarm/') && github.event.workflow_run.head_repository.full_name == github.repository }}
     steps:
       # main, for scripts/ci-fix.sh and scripts/lib/common.sh. NOT the branch
       # being fixed: its code runs in the fix step's container, never here.

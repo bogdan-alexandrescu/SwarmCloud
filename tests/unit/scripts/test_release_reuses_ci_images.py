@@ -423,7 +423,7 @@ def test_application_builds_every_commit_the_release_would_ship():
     ]
     assert len(builders) == 1, f"application.yml builds in {len(builders)} places"
     job_id, job, _, step = builders[0]
-    assert _evaluate(job.get("if", "true"), **{"github.event_name": "push"}), (
+    assert _evaluate(job.get("if", "true"), **{"github.event_name": "push", "github.ref": "refs/heads/main"}), (
         f"application.yml's {job_id} job does not run on a push to main"
     )
     code = _code(step["run"])
