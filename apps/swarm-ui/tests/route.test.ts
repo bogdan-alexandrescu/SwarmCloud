@@ -69,7 +69,9 @@ test('a route round-trips through its canonical spelling', () => {
   // that the alias machine does NOT work, and went red the moment the rename
   // landed: `#agents/running is rewritten to something else + 'work/running'`.
   // The alias's own property is the test below.
-  for (const hash of ['help', `help/${TOPIC_IDS[0]}`, 'reference', 'work/running']) {
+  // `capacity/api-reads`, not `reference`, since NAV-FOOT (#1672): API reads
+  // is a Capacity page and `#reference` is now its old spelling, rewritten.
+  for (const hash of ['help', `help/${TOPIC_IDS[0]}`, 'capacity/api-reads', 'work/running']) {
     at(`#${hash}`)
     assert.equal(canonical(fromHash()), hash, `#${hash} is rewritten to something else`)
   }
@@ -85,6 +87,8 @@ test('a retired spelling is rewritten to the current one, not merely accepted', 
   for (const [old, current] of [
     ['agents/running', 'work/running'],
     ['agents/workflows', 'work/workflows'],
+    // API reads' old address (NAV-FOOT, #1672): rewritten, not merely accepted.
+    ['reference', 'capacity/api-reads'],
     ['pools/holders', 'capacity/holders'],
     ['capacity/holders', 'capacity/holders'], // the middle spelling, now real again
     // THE THREE-SECTION COLLAPSE, 2026-09-24. `runtimes` and `history` stopped
@@ -156,7 +160,8 @@ test('an unknown topic is carried to the screen, not rewritten away', () => {
 
 test('adding Help did not capture anything that was not Help', () => {
   for (const [hash, section] of [
-    ['#reference', 'reference'],
+    // API reads' old address lands on its Capacity page (NAV-FOOT, #1672).
+    ['#reference', 'capacity'],
     ['#work/running', 'work'],
     ['#helpers', 'overview'], // a head that merely STARTS with "help"
     ['#capacity/holders', 'capacity'],

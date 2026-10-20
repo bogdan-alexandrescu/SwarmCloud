@@ -18,8 +18,9 @@ WHY THIS IS A TEST AND NOT AN AUDIT. The seven were found by reading the source
 once. A one-off reading does not cover the eighth -- a route added next month
 whose author writes a tab label in App.tsx and a `title=` in a screen file
 fifteen hundred lines away and never sees both at once. So this walks the route
-table itself: every `case` in `SectionBody`, every tab in `SECTIONS`, and the
-utility route, each resolved to the heading its screen actually renders. A new
+table itself: every `case` in `SectionBody` and every tab in `SECTIONS`, each
+resolved to the heading its screen actually renders. (The utility route, API
+reads, was named here by hand until NAV-FOOT, #1672, made it a Capacity tab.) A new
 route is covered the moment it is added, and a route with no case -- or a case
 with no tab -- fails here rather than rendering "No such pane" in front of
 somebody.
@@ -245,24 +246,11 @@ def _routes() -> list[tuple[str, str, str]]:
             )
             rows.append((route, tlabel, cases[route]))
 
-    # The utility route. Not a section -- it is one button beside the section
-    # bar -- so it is named here rather than discovered, and its label and its
-    # screen are read from the source exactly like every row above.
-    ref = re.search(r"const REFERENCE = '([^']+)'", app)
-    assert ref is not None, "REFERENCE is not declared in App.tsx"
-    # The rebrand's utility corner holds TWO buttons (Help, then API reads) in
-    # `className="ctl-nav-util sk-foot"`, so the element is found by its first
-    # class and the button by the `go(REFERENCE)` it calls; a label regex run
-    # from the corner's start would read the Help button's whitespace instead.
-    corner = app[app.index('className="ctl-nav-util') :]
-    util = corner[corner.index("go(REFERENCE)") :]
-    # A link since #503 (the spine's items open in a new tab), a button before.
-    label = re.search(r"/>\s*(\{[^}]*\}|[^<>{}]+?)\s*</(?:button|a)>", util)
-    assert label is not None, "could not read the utility button's label"
-    rows.append((ref.group(1), _resolve(app, label.group(1)), "ReferenceScreen"))
-
-    assert len(rows) == len(cases) + 1, (
-        f"SectionBody has {len(cases)} cases but the tabs reach {len(rows) - 1}: "
+    # API READS IS A TAB NOW (NAV-FOOT, #1672): Capacity's last page, so its
+    # row comes from SECTIONS like every other and no utility route is added
+    # by hand. `#reference` still lands on it (App.tsx `fromAddress`).
+    assert len(rows) == len(cases), (
+        f"SectionBody has {len(cases)} cases but the tabs reach {len(rows)}: "
         "a case no tab points at is a screen nobody can open from the nav"
     )
     return rows
@@ -338,6 +326,7 @@ def test_every_route_is_covered() -> None:
         "work/timeline",
         "capacity/pools",
         "capacity/catalogue",
+        "capacity/api-reads",
         "admin/limits",
         "admin/counts",
     ):

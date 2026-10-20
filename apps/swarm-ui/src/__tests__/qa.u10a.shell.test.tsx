@@ -78,9 +78,10 @@ describe('D25: Submit reads as the place you are on', () => {
   it('draws the lit CTA differently from the resting one', () => {
     const host = tree('<nav class="sk-spine"><a class="sk-ri sk-cta" aria-current="page"></a><a class="sk-ri sk-cta"></a></nav>')
     const [on, off] = [...host.querySelectorAll('.sk-cta')]
-    expect(painted(on!, 'box-shadow', WIDE)).not.toBeNull()
-    expect(painted(off!, 'box-shadow', WIDE)).toBeNull()
+    // The marker bar, not a ring: a ring read as a stuck focus outline (QA-071, part of #1680).
+    expect(painted(on!, 'box-shadow', WIDE)).toBeNull()
     expect(painted(on!, 'content', WIDE, 'before')).not.toBeNull()
+    expect(painted(off!, 'content', WIDE, 'before')).toBeNull()
   })
 
   it('still lights Work on a Work page', async () => {

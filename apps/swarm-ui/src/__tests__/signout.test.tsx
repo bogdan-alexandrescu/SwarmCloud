@@ -99,9 +99,11 @@ describe('where the control is', () => {
       expect(btn, 'no Sign out on the collapsed spine').not.toBeNull()
       expect(btn!.getAttribute('aria-label')).toBe('Sign out')
       expect(btn!.querySelector('.sk-out-l'), 'the spine has no room for the word').toBeNull()
-      // At the spine's foot, its last control: the avatar it sat beside is
-      // the Profile item at the top since NAV-PROFILE (#1633).
-      expect(btn!.nextElementSibling, 'something follows Sign out at the foot').toBeNull()
+      // At the spine's foot, and only Profile below it: Profile is the
+      // spine's last item since NAV-FOOT (#1672).
+      const next = btn!.nextElementSibling
+      expect(next?.getAttribute('data-sec'), 'Profile does not follow Sign out at the foot').toBe('profile')
+      expect(next!.nextElementSibling, 'something follows Profile at the foot').toBeNull()
       // The spine is one blue in both themes, so its ink is a fixed light value.
       expect(painted(btn!, 'color', { width: 1440, theme })).not.toBeNull()
     })

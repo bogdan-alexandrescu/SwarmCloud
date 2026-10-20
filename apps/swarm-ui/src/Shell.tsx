@@ -446,7 +446,7 @@ export function RefreshControl({
   if (readAt === null) {
     return (
       <button type="button" className="c-refresh" onClick={onRefresh} disabled={reading} aria-label={reading ? 'Reading' : 'Refresh · not read'}>
-        ⟳ {reading ? 'reading…' : 'refresh'}
+        <span aria-hidden="true">⟳</span> {reading ? 'reading…' : 'refresh'}
       </button>
     )
   }
@@ -466,11 +466,16 @@ export function RefreshControl({
       type="button"
       className={stale ? 'c-refresh is-stale' : 'c-refresh'}
       onClick={onRefresh}
-      aria-label={`Refresh · read ${age} ago${every === null ? '' : ` · re-reads ${every}`}${stale ? ' · not refreshed' : ''}`}
+      // Named with the words it shows, first, then the press (QA-031, axe
+      // label-content-name-mismatch): `Refresh · read 0 s ago · re-reads every
+      // 5 s` beside a visible `every 5 s · read 0 s ago` is a name a voice user
+      // saying what they see cannot reach. The glyph is hidden from the name so
+      // the name starts where the words do.
+      aria-label={`${said} · refresh`}
       // Whole in its title: beside an open agent its words are cut (agents.css).
       title={said}
     >
-      ⟳ {said}
+      <span aria-hidden="true">⟳</span> {said}
     </button>
   )
 }

@@ -23,7 +23,18 @@ import { HELP, HELP_GROUPS, HELP_ROUTE, type TopicId } from './help'
 
 /** The non-section addresses this file knows by name. */
 export const SUBMIT_ADDRESS = 'submit'
+/**
+ * API READS' OLD ADDRESS (NAV-FOOT, #1672): the page is Capacity's last tab,
+ * `capacity/api-reads`, and App.tsx `fromAddress` sends this head there.
+ */
 export const REFERENCE_ADDRESS = 'reference'
+/**
+ * The paths API reads was served at before it became a Capacity page:
+ * `/reference`, the hash router's own spelling, and `/api-reads`, the
+ * rebrand's. Each lands on `/capacity/api-reads`, the bar rewritten once by
+ * App's normalise, so a saved link still opens the page.
+ */
+const OLD_API_READS_PATHS: readonly string[] = ['/reference', '/api-reads']
 
 /**
  * THE GITHUB APP'S CALLBACK (#780, OB3): the URL registered on the App,
@@ -98,6 +109,9 @@ export const FIXED: Readonly<Record<string, string>> = {
   'capacity/holders': '/capacity/holders',
   'capacity/accounts': '/capacity/accounts',
   'capacity/quota': '/capacity/accounts/quota',
+  // NAV-FOOT (#1672): API reads, Capacity's last page. It was `/api-reads`
+  // at the spine's foot; that path and `/reference` still land here.
+  'capacity/api-reads': '/capacity/api-reads',
   'admin/limits': '/admin/limits',
   'admin/tenants': '/admin/tenants',
   'admin/counts': '/admin/counts',
@@ -127,7 +141,6 @@ export const FIXED: Readonly<Record<string, string>> = {
   // (docs/design/workspace-roles.md §4.8). Beside Workspace, for the same reason.
   'settings/people': '/settings/people',
   [HELP_ROUTE]: '/help',
-  reference: '/api-reads',
 }
 
 const FIXED_BACK: Readonly<Record<string, string>> = Object.fromEntries(
@@ -477,6 +490,8 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   // every tenant's schedules are Automate › Schedules' All tenants view, and
   // its old path lands there, the bar rewritten once by App's normalise.
   if (path === '/admin/schedules') return plain('automate/schedules?scope=all')
+  // API reads' old paths, and anything under them (NAV-FOOT, #1672).
+  if (OLD_API_READS_PATHS.some((old) => path === old || path.startsWith(`${old}/`))) return plain(REFERENCE_ADDRESS)
 
   const fixed = FIXED_BACK[path] ?? SECTION_ROOTS[path]
   if (fixed === undefined) return null

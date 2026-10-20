@@ -25,8 +25,8 @@ def _qa_account_id() -> str:
 
 
 def test_the_qa_account_can_own_a_service_workspace() -> None:
-    # Imported here: swarm_api at module top would load the service stack on
-    # every collection of tests/unit/scripts (test_collection_stays_cheap.py).
+    # Imported here, not at module top: test_collection_stays_cheap holds every
+    # module under tests/unit/scripts to collecting without the service stack.
     from swarm_api.workspaces import PLATFORM_SA_PREFIX
 
     address = f"{_qa_account_id()}@saga-agents-staging.iam.gserviceaccount.com"

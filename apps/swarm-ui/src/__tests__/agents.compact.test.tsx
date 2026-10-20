@@ -20,7 +20,12 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { Result } from '../fetch'
 import type { Task, TaskPage, TaskState } from '../types'
 
-const api = vi.hoisted(() => ({ loadTasks: vi.fn() }))
+// THE ATTEMPT READ FAILS HERE, so a live row's try is the task's own counter
+// (`useRuns`); unanswered, it holds `attempt … of N` (visual QA QA-026).
+const api = vi.hoisted(() => ({
+  loadTasks: vi.fn(),
+  loadAttempts: vi.fn(async () => ({ status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: 'no' } })),
+}))
 
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
@@ -116,7 +121,9 @@ describe('beside an open agent, a row is two lines as drawn', () => {
   it('puts the mark, the name and the elapsed time on line one', async () => {
     const c = await land([STEP, LONE], LONE.id)
     const row = rowOf(c, 'fix-heartbeat')
-    const cells = [...row.children].map((el) => el.className.split(' ')[0])
+    // The opener is an empty button laid over the whole row (visual QA
+    // QA-032); it draws no cell, so it is not part of the drawn order.
+    const cells = [...row.children].map((el) => el.className.split(' ')[0]).filter((c) => c !== 'cr-open')
     // Line one, in the drawn order: the mark, the name, the elapsed time.
     expect(cells.slice(0, 3)).toEqual(['sk-st', 'agent', 'when'])
     expect(row.querySelector('.sk-st')?.textContent).toMatch(/running/i)
@@ -131,6 +138,7 @@ describe('beside an open agent, a row is two lines as drawn', () => {
     const c = await land([STEP, LONE], LONE.id)
     const sub = rowOf(c, 'fix-heartbeat').querySelector('.cr-sub')
     expect(sub, 'no second line').not.toBeNull()
+    await waitFor(() => expect(sub!.textContent).toContain('attempt 1 of 3'))
     const text = sub!.textContent ?? ''
     expect(text).toContain('claude-code · sonnet')
     expect(text).toContain('alex')
@@ -158,10 +166,11 @@ describe('beside an open agent, a row is two lines as drawn', () => {
     expect(open.querySelector('.row.is-head')).toBeNull()
     expect(open.querySelectorAll('.row.is-compact')).toHaveLength(2)
     expect(open.querySelector('.row.clickable:not(.is-compact)')).toBeNull()
-    // Exactly the open agent says so, as on the wide list (AG-17).
-    const current = open.querySelectorAll('.row[aria-current]')
+    // Exactly the open agent says so, as on the wide list (AG-17), on the
+    // row's opener (visual QA QA-032).
+    const current = open.querySelectorAll('.row > .cr-open[aria-current]')
     expect(current).toHaveLength(1)
-    expect(current[0]!.querySelector('.id')?.getAttribute('title')).toBe(LONE.id)
+    expect(current[0]!.closest('.row')!.querySelector('.id')?.getAttribute('title')).toBe(LONE.id)
   })
 
   // #503: "with no agent open, the list is a full-width ten-column table";
@@ -171,7 +180,7 @@ describe('beside an open agent, a row is two lines as drawn', () => {
     expect(c.querySelector('.row.is-head')).toBeNull()
     expect(c.querySelectorAll('.row.is-compact')).toHaveLength(2)
     expect(c.querySelector('.row.clickable:not(.is-compact)')).toBeNull()
-    expect(c.querySelector('.row[aria-current]')).toBeNull()
+    expect(c.querySelector('.row [aria-current]')).toBeNull()
   })
 
   it('puts the collapse toggle in the list header, only beside an open agent', async () => {
@@ -209,11 +218,13 @@ describe('a strip row shows its agent on hover and on focus', () => {
     expect(card.textContent).toContain('claude-code · sonnet')
     expect(card.textContent).toContain('alex')
     expect(card.querySelector('.ag-hovcard-when')?.textContent).toBe(row.querySelector('.when')?.textContent)
-    expect(row.getAttribute('aria-describedby')).toBe(card.id)
+    // Described on the row's opener, the element a screen reader is on.
+    const opener = row.querySelector('.cr-open')!
+    expect(opener.getAttribute('aria-describedby')).toBe(card.id)
 
     fireEvent.mouseLeave(row)
     expect(screen.queryByRole('tooltip')).toBeNull()
-    expect(row.hasAttribute('aria-describedby')).toBe(false)
+    expect(opener.hasAttribute('aria-describedby')).toBe(false)
   })
 
   it('draws the card on keyboard focus too, and ↓ moves it to the next row', async () => {
@@ -225,17 +236,21 @@ describe('a strip row shows its agent on hover and on focus', () => {
     expect(first && second, 'the list drew fewer than two compact rows').toBeTruthy()
     const nameOf = (row: HTMLElement) => row.querySelector('.cr-name b')?.textContent ?? ''
 
+    // Focus given to the row passes to its opener (visual QA QA-032), which
+    // is what the keyboard walks.
+    const openerOf = (row: HTMLElement) => row.querySelector<HTMLElement>(':scope > .cr-open')!
     act(() => first!.focus())
+    expect(document.activeElement).toBe(openerOf(first!))
     expect(screen.getByRole('tooltip').textContent).toContain(nameOf(first!))
 
-    fireEvent.keyDown(first!, { key: 'ArrowDown' })
-    expect(document.activeElement).toBe(second)
+    fireEvent.keyDown(openerOf(first!), { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(openerOf(second!))
     const cards = screen.getAllByRole('tooltip')
     expect(cards).toHaveLength(1)
     expect(cards[0]!.textContent).toContain(nameOf(second!))
     expect(cards[0]!.textContent).not.toContain(nameOf(first!))
 
-    act(() => second!.blur())
+    act(() => openerOf(second!).blur())
     expect(screen.queryByRole('tooltip')).toBeNull()
   })
 

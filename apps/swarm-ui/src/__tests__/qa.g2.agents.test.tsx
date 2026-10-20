@@ -184,7 +184,7 @@ describe('G2-05: a count over a capped page says it is a lower bound', () => {
     await land(capped, { list: { tab: 'recent', state: null } })
     expect(tabNamed('Recent').querySelector('.badge')?.textContent).toBe('3+')
     expect(tabNamed('Live').querySelector('.badge')?.textContent).toBe('1+')
-    expect(tabNamed('Recent').getAttribute('aria-label')).toMatch(/^Recent: .*at least 3 among the 4 newest read/)
+    expect(tabNamed('Recent').getAttribute('aria-label')).toMatch(/^Recent 3\+: .*at least 3 among the 4 newest read/)
     const failed = chip('failed')
     expect(failed.querySelector('em')?.textContent).toBe('2+')
     expect(failed.querySelector('em')?.getAttribute('title')).toMatch(/at least 2/)
@@ -252,7 +252,9 @@ describe('G2-22: the list’s filters are in the address', () => {
     window.history.replaceState(null, '', '/agents/recent/task_0123456789abcdef0123?state=failed&group=wf')
     expect(fromLocation().list).toEqual({ tab: 'recent', state: 'failed', grouped: true })
     api.loadTasks.mockResolvedValue(ok({ tasks: [task('task_bbbbbbbb00000000000b', 'FAILED', { workflow_id: 'wf_one' })] }))
-    window.history.replaceState(null, '', '/agents/recent?state=failed&group=wf&first=failed')
+    // NO STATE FILTER: on a list of one state `Failed first` is not offered
+    // (visual QA QA-111), so the toggles are read on the whole of Recent.
+    window.history.replaceState(null, '', '/agents/recent?group=wf&first=failed')
     try {
       render(<App />)
       const group = await waitFor(() => screen.getByRole('checkbox', { name: 'Group by workflow' }) as HTMLInputElement)
@@ -260,15 +262,15 @@ describe('G2-22: the list’s filters are in the address', () => {
       expect(group.checked).toBe(true)
       expect((screen.getByRole('checkbox', { name: 'Failed first' }) as HTMLInputElement).checked).toBe(true)
       // The router's normalise pass wrote the same path back, not a bare `/agents/recent`.
-      expect(window.location.pathname + window.location.search).toBe('/agents/recent?state=failed&group=wf&first=failed')
+      expect(window.location.pathname + window.location.search).toBe('/agents/recent?group=wf&first=failed')
       fireEvent.click(group)
       await act(async () => {})
-      expect(window.location.pathname + window.location.search).toBe('/agents/recent?state=failed&first=failed')
+      expect(window.location.pathname + window.location.search).toBe('/agents/recent?first=failed')
       // Opening an agent keeps the list it came from in its path.
       fireEvent.click(document.querySelector<HTMLElement>('[data-task-id="task_bbbbbbbb00000000000b"]')!)
       await act(async () => {})
       expect(window.location.pathname + window.location.search).toBe(
-        '/agents/recent/task_bbbbbbbb00000000000b?state=failed&first=failed',
+        '/agents/recent/task_bbbbbbbb00000000000b?first=failed',
       )
     } finally {
       window.history.replaceState(null, '', '/')
@@ -280,15 +282,17 @@ describe('G2-22: the list’s filters are in the address', () => {
       tasks: [task('task_bbbbbbbb00000000000b', 'FAILED', { workflow_id: 'wf_one' })],
     }
     const onList = vi.fn()
-    await land(page, { list: { tab: 'recent', state: 'failed', grouped: true, failedFirst: true }, onList })
+    // On the whole of Recent: `Failed first` is not offered on a list of one
+    // state (visual QA QA-111).
+    await land(page, { list: { tab: 'recent', state: null, grouped: true, failedFirst: true }, onList })
     const first = screen.getByRole('checkbox', { name: 'Failed first' }) as HTMLInputElement
     const group = screen.getByRole('checkbox', { name: 'Group by workflow' }) as HTMLInputElement
     expect(first.checked).toBe(true)
     expect(group.checked).toBe(true)
     fireEvent.click(group)
-    expect(onList).toHaveBeenLastCalledWith({ tab: 'recent', state: 'failed', failedFirst: true })
+    expect(onList).toHaveBeenLastCalledWith({ tab: 'recent', state: null, failedFirst: true })
     fireEvent.click(first)
-    expect(onList).toHaveBeenLastCalledWith({ tab: 'recent', state: 'failed' })
+    expect(onList).toHaveBeenLastCalledWith({ tab: 'recent', state: null })
   })
 })
 

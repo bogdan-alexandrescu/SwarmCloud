@@ -79,7 +79,9 @@ const LEGACY_TO_PATH: readonly (readonly [string, string])[] = [
   ['#work/t-9', '/agents/live/t-9'],
   // The utilities.
   ['#help', '/help'],
-  ['#reference', '/api-reads'],
+  // API reads is a Capacity page since NAV-FOOT (#1672); its saved hash lands there.
+  ['#reference', '/capacity/api-reads'],
+  ['#reference/anything', '/capacity/api-reads'],
 ]
 
 describe('every legacy hash redirects to its path', () => {
@@ -112,11 +114,11 @@ describe('every legacy hash redirects to its path', () => {
       'capacity/holders',
       'capacity/accounts',
       'capacity/quota',
+      'capacity/api-reads',
       'admin/limits?pool=tenant%3Aeng',
       'admin/tenants',
       'admin/counts',
       'help',
-      'reference',
     ]
     for (const a of addresses) {
       const path = addressToPath(a)
@@ -279,21 +281,24 @@ describe('the Sky spine shell', () => {
   })
 
   // Links since #503 (a section opens in a new tab and copies as a link).
-  // Profile first since NAV-PROFILE (#1633); its icon is the person's
-  // initials, so each item is read by its label.
+  // Profile at the foot, last, since NAV-FOOT (#1672; it was first under
+  // NAV-PROFILE); its icon is the person's initials, so each item is read by
+  // its label. API reads left the spine for Capacity.
   const spineLabels = () => [...document.querySelectorAll('.sk-spine a.sk-ri')].map((b) => (b.querySelector('small') ?? b).textContent?.trim())
 
-  it('draws the spine in one fixed order: Profile, Submit, the sections, Help, API reads', () => {
+  it('draws the spine in one fixed order: Submit, the sections, Help, Profile', () => {
     // The fixture caller administers nothing, so no Admin (NAV-ADMIN-ROLE).
     render(<App />)
-    expect(spineLabels()).toEqual(['Profile', 'Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Help', 'API reads'])
+    // MUTATION: draw Profile under the Hive again, or API reads in the foot.
+    expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Help', 'Profile'])
   })
 
   it('draws Admin after Capacity for a platform admin', async () => {
     stubMe({ ...ME, principal: { ...ME.principal, is_admin: true } })
     const { LiveApp } = await liveApp()
     render(<LiveApp />)
-    await waitFor(() => expect(spineLabels()).toEqual(['Profile', 'Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Admin', 'Help', 'API reads']))
+    // MUTATION: move `admin` in SPINE and it leaves its place after Capacity.
+    await waitFor(() => expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Admin', 'Help', 'Profile']))
   })
 
   it('lists the open section\'s pages in the panel, with the open page\'s children', async () => {
@@ -301,7 +306,8 @@ describe('the Sky spine shell', () => {
     render(<App />)
     const panel = document.querySelector('.sk-panel')!
     const pages = [...panel.querySelectorAll('.sk-pk .sk-pl')].map((e) => e.textContent)
-    expect(pages).toEqual(['Pools', 'Runtimes', 'Holders', 'Accounts'])
+    // MUTATION: drop API reads from PANEL_PAGES.capacity (NAV-FOOT, #1672).
+    expect(pages).toEqual(['Pools', 'Runtimes', 'Holders', 'Accounts', 'API reads'])
     const kids = [...panel.querySelectorAll('.sk-kid')].map((e) => e.textContent)
     expect(kids).toEqual(['Ceilings', 'By runner profile'])
     expect(panel.querySelector('.sk-kid.is-on')?.textContent).toBe('By runner profile')
@@ -378,9 +384,10 @@ describe('the capacity meter', () => {
 
   it('reads the global pool, and names the first pool that is full or paused', () => {
     const cap = { pools: [pool('global', 31, 40), pool('class:browser', 4, 4)], runner_profiles: {} } as unknown as Capacity
-    expect(meterOf(cap)).toEqual({ active: 31, limit: 40, warn: 'class:browser full' })
+    // Another pool is said to be another pool, by its label (QA-040, part of #1680).
+    expect(meterOf(cap)).toEqual({ active: 31, limit: 40, warn: 'another pool is full: browser', warnPool: 'class:browser' })
     const paused = { pools: [pool('global', 0, 40), pool('tenant:eng', 0, 5, false)], runner_profiles: {} } as unknown as Capacity
-    expect(meterOf(paused)?.warn).toBe('tenant:eng paused')
+    expect(meterOf(paused)?.warn).toBe('another pool is paused: eng')
   })
 
   it('draws nothing it did not read', () => {

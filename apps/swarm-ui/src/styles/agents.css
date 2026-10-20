@@ -132,6 +132,24 @@
   padding-top: 6px;
   padding-bottom: 6px;
 }
+/* THE ROW'S OPENER (visual QA QA-032, 2026-10-20): an empty button over the
+   whole row, so the row is not a button around the copy-id button (axe
+   nested-interactive). It draws nothing but the focus ring the row drew; the
+   id line is raised above it, so the copy and a drag-select of the id are
+   theirs. The row is its containing block. */
+.row.is-compact { position: relative; }
+.row.is-compact > .cr-open {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.row.is-compact > .cr-open:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.row.is-compact .tid { position: relative; z-index: 1; }
 .row.is-compact > .sk-st > .sk-st-w { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .row.is-compact > .cr-name { grid-column: name; min-width: 0; }
 /* THE NAME CELL STACKS (#94): the name, then the id line UNDER it. Without
@@ -151,6 +169,8 @@
   color: var(--text);
 }
 .row.is-compact > .when { grid-column: age; white-space: nowrap; }
+/* A ROW WITH NO TIME TO GIVE KEEPS ITS COLUMN (QA-079): blank, not collapsed. */
+.row.is-compact > .when:empty { min-width: 1px; }
 .row.is-compact > .cr-sub,
 .row.is-compact > .why { grid-column: name / -1; }
 /* TWO LINES, AT EVERY WIDTH (V061, visual QA #1038). The clamp was the
@@ -244,7 +264,7 @@
    wrapper, a child of `.work`; naming what goes is what keeps the marks and
    the » that brings the list back. */
 @media (min-width: 1100px) {
-  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > :not(.sk-st):not(.cr-vh) { display: none; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > :not(.sk-st):not(.cr-vh):not(.cr-open) { display: none; }
   :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > .cr-vh {
     display: block; position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
   }
@@ -454,7 +474,14 @@
 /* The canonical `Tabs` in its tablist form (components.html A). It scrolls
    sideways when it does not fit the split (Q4), rather than wrapping or being
    cut ("Details Children 0 Att…"); here it only takes its place in the column. */
-.ag-split-tabs { margin: var(--ctl-s2) 0 var(--ctl-s3); scrollbar-width: thin; }
+/* IT SCROLLS SIDEWAYS ONLY (QA-020, QA-024, QA-089, visual QA #1680). Each
+   tab reaches 1px under the strip (`margin-bottom: -1px`, components.css) so
+   its underline lies on the hairline, and `overflow-x: auto` alone makes
+   `overflow-y` auto too: that pixel was a vertical scroll range, and at 390
+   a classic-scrollbar browser drew a scrollbar with its arrows in the middle
+   of the row, over `Attempts 3`. The overlap was already clipped at the
+   padding edge by `auto`; `hidden` clips it the same way and cannot scroll. */
+.ag-split-tabs { margin: var(--ctl-s2) 0 var(--ctl-s3); scrollbar-width: thin; overflow-y: hidden; }
 
 /* --- the column: header, tabs, and the open tab -------------------------- */
 /* THE COLUMN DOES NOT SCROLL; ITS PANE DOES (walkthrough B, owner
@@ -577,6 +604,13 @@
    with its buttons. */
 @media (max-width: 560px) {
   .ag-logs-bar > .ag-logs-streams.c-seg.is-sm { height: auto; }
+  /* ONE HEIGHT ACROSS THE FILTER ROW (visual QA QA-080, 2026-10-20): the
+     profile select takes the phone's 44px target (styles.css, `.ag-filter
+     select`), and the search field and `Started` stayed at their 32px base,
+     so the row's three controls stood at three heights. They take the same
+     target. After their base rules above, which they must beat. */
+  .ag-find > input,
+  .ag-sort { min-height: 44px; }
 }
 .ag-logs-attempt { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: var(--t-meta); }
 .ag-logs-attempt select {
@@ -880,7 +914,14 @@
      the scroller, under a column that does not move (qa.u11a.logs). */
   .ag-split.ctl-drawer:not(.on-logs) { overflow-y: auto; overscroll-behavior: contain; }
   .ag-split:not(.on-logs) > .ag-split-pane { flex: none; overflow: visible; }
-  .ag-split:not(.on-logs) > .ag-tabs-edge { position: sticky; top: 0; z-index: 3; background: var(--bg); }
+  /* AT THE COLUMN'S EDGE, NOT 18px INSIDE IT (QA-019, visual QA #1680). A
+     sticky inset is measured from the scroller's CONTENT edge, inside the
+     drawer's 18px of top padding (`.drawer`, styles.css -- the AG-31
+     correction `.drawer::before` carries). At `top: 0` the strip stuck 18px
+     down and the scrolled content (`Attempt 2 · gen 2`, `model not
+     measured`) showed in the gap above the tabs. The two 18s are held equal
+     by qa.tasktabs.test.tsx. */
+  .ag-split:not(.on-logs) > .ag-tabs-edge { position: sticky; top: -18px; z-index: 3; background: var(--bg); }
 }
 
 /* --- U10a (owner QA, 2026-10-04) ----------------------------------------- */

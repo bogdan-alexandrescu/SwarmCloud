@@ -671,19 +671,24 @@ class LiveDisplayShare:
 
 #: Per class, like GKE_DISK, and refused for a class without a row.
 #:
-#: browser: display 3 vCPU / 5 GiB, worker 1 / 3, of the class's 4 / 8
-#:   (contract request 79). Chromium, Xvfb and the encoder on one side;
-#:   claude-code, Node and the worker on the other. It was the design's
-#:   starting split (§8.2), display 5 / 10 and worker 3 / 6 of 8 / 16, which
-#:   cannot fit the smaller class. Sized from the measurement that justified
-#:   the class (docs/browser-startup-speed.md §11, 2026-10-15, four pods,
-#:   eight samples): the display peaked at 1.90 cores and 1.48 GiB, the worker
-#:   at 0.55 cores and 0.37 GiB, so each side has about 1.5x its CPU peak and
-#:   the worker about 8x its memory peak. The sidecar's resident tmpfs
+#: browser: display 2 vCPU / 5 GiB, worker 2 / 3, of the class's 4 / 8.
+#:   Chromium, Xvfb and the encoder on one side; claude-code, Node and the
+#:   worker on the other. The owner's decision of 2026-10-20 (BROWSER-SPLIT,
+#:   part of #1689), within the same 4 cores so the pod's size and cost do
+#:   not move: it was display 3 / worker 1 (contract request 79), and
+#:   browser-profile attempts that day ran at cpu_limit_cores 1.0, so a lane
+#:   running `npm ci` and a dev server (the visual-QA capture) did it on one
+#:   core. The worker goes from 1 core to 2. The display's measured peak
+#:   (docs/browser-startup-speed.md §11, 2026-10-15, four pods, eight
+#:   samples) was 1.90 cores, so 2 leaves it about 1.05x headroom at that
+#:   peak; past it Chromium is throttled, not killed. The memory split did
+#:   not move: the display peaked at 1.48 GiB, the worker at 0.37, so the
+#:   worker has about 8x its memory peak. The sidecar's resident tmpfs
 #:   (/dev/shm 2, profile 1, /tmp 0.25) plus its measured peak is 4.73 of its
 #:   5 GiB; downloads (1) do not stay resident because the worker moves each
 #:   one into work/. A heavier page or a download in flight at a peak is an
 #:   OOM kill, whose cost the worker's periodic checkpoint bounds (invariant 8).
+#:   live_display_share() still refuses a share that leaves the worker nothing.
 #: standard: display 2 / 4, worker 2 / 4. A workflow step may shrink a task's
 #:   class (swarm_api.validation.validate_resource_class_override), and admission
 #:   charged the smaller class, so the pod must fit it; half each, still with
@@ -692,7 +697,7 @@ class LiveDisplayShare:
 #:   renders any class it is given; the design's starting sidecar (§8.2, what
 #:   browser's was until contract request 79), the rest to the worker.
 LIVE_DISPLAY_SHARE: dict[str, LiveDisplayShare] = {
-    "browser": LiveDisplayShare(cpu=3, memory_gib=5),
+    "browser": LiveDisplayShare(cpu=2, memory_gib=5),
     "standard": LiveDisplayShare(cpu=2, memory_gib=4),
     "large": LiveDisplayShare(cpu=5, memory_gib=10),
 }

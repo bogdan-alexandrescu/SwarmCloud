@@ -667,6 +667,11 @@ body {
   min-width: 0;
   overflow: auto;
   scroll-padding-bottom: var(--ctl-s3);
+  /* THE STICKY BAR IS NOT "IN VIEW" (QAFIX-HELP QA-022, part of #1680): a
+     control focused or scrolled into view stopped under `.ctl-bar`, which
+     covered the first Tab stop. `--ctl-bar-h` is the bar's height, 0 where
+     none is drawn (notifications.css), so a page without one keeps its top. */
+  scroll-padding-top: var(--ctl-bar-h, 0px);
 }
 /* THE GRID MOVED INTO THE CONTENT COLUMN (#503). The frame was the two-row
    grid, so the dock ran the full width of the window -- under the spine and
@@ -2248,8 +2253,16 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
   color: var(--text-faint) !important;
 }
 
+/* A REFRESH THAT CANNOT BE PRESSED YET KEEPS ITS INK (QA-004, 2026-10-20).
+   It is disabled while the first read is in flight (`⟳ reading…`) and while a
+   429 holds the poll (`paused 30 s`), which every page shows on every first
+   read. An `opacity: .5` here halved `--text-dim` to 2.2:1 in light and 3.0:1
+   in dark; the words are a reading the person needs, so they stay at full
+   strength and only the cursor says the press is not available. The `1` is
+   stated, not merely left out: every head sits inside `.app`, whose
+   `:where(.app button:disabled)` fades any disabled button to .45. */
 .c-refresh[disabled] {
-  opacity: .5;
+  opacity: 1;
   cursor: not-allowed;
 }
 
@@ -10460,11 +10473,14 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
    /submit and its forms the spine lit Work and the panel lit Agents › Live,
    and Submit never read as where you are. App.tsx `spineOf` gives Submit no
    section; Spine.tsx marks the CTA `aria-current="page"`, and it carries the
-   section items' marker bar and a ring in the spine's ink.
+   section items' marker bar.
+   NO RING (QA-071, part of #1680): a white ring round the tile read as a
+   focus outline left behind, and no other lit item draws one. The lit Work
+   item is its tile and the bar; the CTA's tile is already lit, so the bar is
+   what says "you are here", exactly as on a section.
    The two colours are the spine's top and its sky line, written as values:
    the spine is one blue in both themes, and the tokens' names read as
    provider keys to the worker's publish scan. */
-.sk-ri.sk-cta[aria-current='page'] { box-shadow: 0 0 0 2px #0b3a7a, 0 0 0 4px #fff; }
 .sk-ri.sk-cta[aria-current='page']::before { content: ""; position: absolute; left: -15px; top: 10px; bottom: 10px; width: 3px; border-radius: 2px; background: #7cc8f8; }
 .sk-ri:focus-visible, .sk-pk:focus-visible, .sk-kid:focus-visible, .sk-ibtn:focus-visible { outline: 2px solid var(--sk-sky-line); outline-offset: 2px; }
 .sk-dot { position: absolute; top: 4px; right: 12px; width: 7px; height: 7px; border-radius: 50%; background: #f5c451; box-shadow: 0 0 0 2px var(--sk-spine-top); }
@@ -10474,12 +10490,13 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-grow { flex: 1; }
 .sk-foot { display: contents; }
 .sk-av { margin-top: 8px; width: 28px; height: 28px; border-radius: 50%; background: #0369a1; color: #fff; font: 600 var(--t-micro)/var(--lh-micro) var(--font); display: flex; align-items: center; justify-content: center; flex: none; box-shadow: 0 0 0 2px rgba(255, 255, 255, .18); position: relative; }
-/* THE AVATAR IS THE PROFILE ITEM'S ICON (NAV-PROFILE; part of #1633): first
-   on the spine, under the Hive, so it takes an icon's slot -- 22px, with no
-   foot margin -- rather than the 28px disc that ended the foot. */
+/* THE AVATAR IS THE PROFILE ITEM'S ICON (NAV-PROFILE; part of #1633), and it
+   takes an icon's slot -- 22px, with no margin -- though the item is the
+   foot's last again (NAV-FOOT, #1672): it is a spine item with a label and a
+   panel, not the 28px disc that once ended the foot. */
 .sk-ri > .sk-av { margin-top: 0; width: 22px; height: 22px; }
 /* A whole-app state's echo on the spine (states.html C): the collapsed rail still carries it. */
-.sk-av-dot { position: absolute; top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 50%; background: #f5c451; box-shadow: 0 0 0 2px #0b3a7a; /* the spine's top colour, where Profile sits */ }
+.sk-av-dot { position: absolute; top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 50%; background: #f5c451; box-shadow: 0 0 0 2px #06101e; /* the spine's foot colour, where Profile sits (NAV-FOOT) */ }
 
 /* --- the panel: 236px ---------------------------------------------------- */
 .sk-panel { width: 236px; flex: none; background: var(--surface); border-right: 1px solid var(--sk-ln); display: flex; flex-direction: column; padding: 14px 0; min-height: 0; }
@@ -10517,7 +10534,10 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .sk-cnt.is-alert { color: var(--s-warn); font-weight: 600; }
 .sk-cnt.is-dash { color: var(--ctl-absent); cursor: help; }
-.sk-kids { margin: 2px 0 6px 38px; border-left: 1px solid var(--sk-ln); padding-left: 8px; display: flex; flex-direction: column; }
+/* THE SUB-LIST ENDS WHERE A ROW DOES (QA-055, part of #1680): a 0 right
+   margin ran the lit `.sk-kid` fill into the panel's border, where a lit
+   `.sk-pk` stops 10px short. */
+.sk-kids { margin: 2px 10px 6px 38px; border-left: 1px solid var(--sk-ln); padding-left: 8px; display: flex; flex-direction: column; }
 .sk-kid { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 5px 10px; border: 0; border-radius: var(--r-ctl); background: none; color: var(--text-dim); white-space: nowrap; cursor: pointer; font: var(--t-micro)/var(--lh-micro) var(--font); text-align: left; }
 .sk-kid:hover { background: var(--sk-hv); color: var(--text); }
 .sk-kid.is-on { color: var(--sk-ac); background: var(--sk-acs); font-weight: 600; }
@@ -10540,6 +10560,13 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-pfrow { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .sk-pfrow > .sk-adm { flex: none; }
 .sk-pfoot b { font-size: var(--t-micro); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* THE NAME IS A LINK TO PROFILE (NAV-FOOT, #1672): it keeps the name's ink
+   and weight, and says it is a link the way the product's links do -- an
+   underline on hover and a ring on focus -- so the block still reads as one
+   line, "Ana · admin · Sign out". */
+.sk-pfoot .sk-me { color: inherit; text-decoration: none; }
+.sk-pfoot .sk-me:hover { text-decoration: underline; text-underline-offset: 2px; }
+.sk-pfoot .sk-me:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: -2px; border-radius: 2px; /* inset: the name's `b` clips its overflow */ }
 .sk-pfoot small { font-size: var(--t-micro); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sk-theme { display: flex; gap: 2px; margin: 8px 0 10px; padding: 2px; border: 1px solid var(--sk-ln); border-radius: 10px; }
 .sk-theme button { flex: 1; font: inherit; font-size: var(--t-micro); color: var(--text-dim); background: none; border: 0; border-radius: 6px; padding: 4px 6px; cursor: pointer; }
@@ -10666,6 +10693,10 @@ span.sk-ttile { cursor: default; }
 .sk-flyout { position: fixed; left: 90px; top: 202px; background: var(--surface); border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px; box-shadow: var(--sk-sh); display: flex; flex-direction: column; min-width: 170px; z-index: 20; }
 .sk-flyout.is-capacity { top: 262px; }
 .sk-flyout.is-admin { top: 322px; }
+/* PROFILE IS THE FOOT'S LAST ITEM (NAV-FOOT, #1672), so its flyout opens up
+   from the spine's bottom edge, beside it, rather than from a fixed top that
+   left it a viewport away from the avatar. */
+.sk-flyout.is-profile { top: auto; bottom: 12px; }
 .sk-flyout b { font: 500 var(--t-micro)/var(--lh-micro) var(--font); padding: 2px 8px 4px; color: var(--text-dim); }
 .sk-flyout a { padding: 6px 8px; border: 0; border-radius: var(--r-ctl); background: none; color: var(--text); text-align: left; cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); }
 .sk-flyout a:hover { background: var(--sk-hv); }
@@ -10948,6 +10979,10 @@ span.sk-ttile { cursor: default; }
 /* The Recent (5) switcher under Workflows in the panel (workflows.html C). */
 .sk-recent-h { padding: 2px 10px; font-size: var(--t-micro); color: var(--text-faint); }
 .sk-recent-row { display: flex; gap: 6px; align-items: center; min-width: 0; }
+/* THE MARK'S SLOT IS KEPT WHEN THE MARK IS WITHHELD (QA-096, part of #1680):
+   a row not re-read this load draws no glyph, and its name started 12px left
+   of its neighbours'. The glyph is 12px (`.sk-st svg`). */
+.sk-recent .sk-st { min-width: 12px; }
 .sk-recent-id { overflow: hidden; text-overflow: ellipsis; }
 .sk-recent-all { color: var(--sk-ac); }
 /* (Workflows V2 rules go above this line.) */

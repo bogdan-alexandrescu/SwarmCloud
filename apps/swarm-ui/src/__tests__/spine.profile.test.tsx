@@ -4,12 +4,14 @@
  * Admin by role").
  *
  * The panel foot stacked four "Settings ›" links under the name, and People
- * and roles had no link at all. Profile now sits under the Hive, above
- * Submit, drawn as the person's avatar; its panel lists Profile, API keys,
- * Workspace, MCP servers and People and roles. The foot keeps the name, the
+ * and roles had no link at all. Profile is a spine item drawn as the
+ * person's avatar -- under the Hive until NAV-FOOT (#1672, owner
+ * 2026-10-20) moved it to the spine's foot, the last item, below Help; its
+ * panel lists Profile, API keys, Workspace, MCP servers and People and
+ * roles. The foot keeps the name (a link to Profile since NAV-FOOT), the
  * admin tag, Sign out, the email and the theme. The addresses are unchanged.
  *
- * MUTATION: drop the Profile item from the spine, or draw it after Submit,
+ * MUTATION: drop the Profile item from the spine, or draw it above Help,
  * and the first case goes red; drop or reorder a PANEL_PAGES.profile row and
  * the second does; take a tab out of `spineOf`'s Profile set and the third
  * does; put a `sk-pset` link back in the foot and the fourth does; put the
@@ -51,16 +53,17 @@ const label = (a: Element) => a.querySelector('small')?.textContent ?? ''
 const panelRows = () => [...document.querySelectorAll<HTMLAnchorElement>(`.sk-panel ${PAGES_COLUMN} a.sk-pk`)]
 
 describe('the spine (NAV-PROFILE)', () => {
-  it('draws Profile first, under the Hive and above Submit, with the avatar as its icon', () => {
+  it('draws Profile last, at the spine\'s foot, with the avatar as its icon (NAV-FOOT, #1672)', () => {
     shell('work', 'running')
     const links = [...spine().querySelectorAll<HTMLAnchorElement>(':scope > a')]
     expect(links[0]!.classList.contains('sk-hive'), 'the Hive is not first').toBe(true)
-    const profile = links[1]!
+    expect(links[1]!.classList.contains('sk-cta'), 'Submit does not follow the Hive').toBe(true)
+    // MUTATION: draw `sectionLink(PROFILE_ITEM)` under the Hive again and the last link is a section.
+    const profile = links[links.length - 1]!
     expect(profile.getAttribute('data-sec')).toBe('profile')
     expect(label(profile)).toBe('Profile')
     expect(profile.getAttribute('href')).toBe('/settings/profile')
     expect(profile.querySelector('.sk-av'), 'the Profile item is not drawn as the avatar').not.toBeNull()
-    expect(links[2]!.classList.contains('sk-cta'), 'Submit does not follow Profile').toBe(true)
   })
 
   it('routes a plain click on Profile to settings/profile', () => {
@@ -153,7 +156,9 @@ describe('the panel foot (NAV-PROFILE)', () => {
   it('carries no Settings link: the name, Sign out, the email and the theme only', () => {
     shell('profile', 'profile')
     const foot = document.querySelector<HTMLElement>('.sk-pfoot')!
-    expect(foot.querySelectorAll('a')).toHaveLength(0)
+    // The name is a link to Profile once it is read (NAV-FOOT, #1672;
+    // nav.foot.test.tsx); no other link sits here.
+    expect([...foot.querySelectorAll('a')].filter((a) => a.getAttribute('href') !== '/settings/profile')).toHaveLength(0)
     expect(foot.textContent).not.toContain('Settings ›')
     expect(foot.querySelector('.sk-theme'), 'the theme toggle left the foot').not.toBeNull()
     expect(foot.querySelector('.sk-pfrow > b'), 'the name left the foot').not.toBeNull()
