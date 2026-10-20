@@ -249,17 +249,25 @@ export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; wai
           the reads behind the cards below did not land, and every em dash
           further down is one of those two. Its dot is the severity, its
           accessible name the sentence. */}
+      {/* TWO UNITS, AND THE DOT BELONGS TO THE FIRST (visual QA QA-060,
+          2026-10-20). At 390px the note shares its row with the refresh and
+          wrapped, leaving the `?` alone on a line under "7/8 reads". The
+          scope and the tally are each `nowrap`; on a phone the note breaks
+          only between them, and the ` · ` steps aside so none hangs at the
+          break (overview.css). */}
       <CountNote>
-        {tasks.status === 'loading' ? (
-          <span className="ov-reading">tenant reading…</span>
-        ) : tenant === null ? (
-          <>
-            tenant <i className="ctl-em" title="No read carried a tenant id: not the task list, the account pool or the capacity read.">&mdash;</i>
-          </>
-        ) : (
-          `tenant ${tenant}`
-        )}
-        {' · '}
+        <span className="ov-scope">
+          {tasks.status === 'loading' ? (
+            <span className="ov-reading">tenant reading…</span>
+          ) : tenant === null ? (
+            <>
+              tenant <i className="ctl-em" title="No read carried a tenant id: not the task list, the account pool or the capacity read.">&mdash;</i>
+            </>
+          ) : (
+            `tenant ${tenant}`
+          )}
+          <span className="ov-sep">{' · '}</span>
+        </span>
         <span className="ov-tally" aria-label={readTally(reads.length, landed, pending, refused, broken)}>
           <ToneMark tone={tallyTone(pending, refused, broken)} />
           <span className="ov-num">

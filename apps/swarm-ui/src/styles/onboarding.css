@@ -46,16 +46,24 @@
    visit. `AccessPolicy` draws each rule as its headline, a summary that opens
    its text; wider screens keep the whole list. */
 .ac-rules.is-folded { padding-left: 0; list-style: none; gap: 0; }
-.ac-rules.is-folded summary { display: flex; align-items: center; gap: 6px; min-height: 44px; cursor: pointer; list-style: none; }
+.ac-rules.is-folded summary { display: flex; align-items: center; gap: 6px; min-height: 44px; cursor: pointer; list-style: none; font-size: var(--t-body); line-height: var(--lh-body); }
+/* A FOLDED RULE IS A ROW THAT READS (visual QA QA-067, 2026-10-20). At the
+   list's micro step the headline was 12px text behind a ~6px marker in a
+   44px row, and three such rows with nothing between them read as three
+   bands of empty spacing. The headline is body text, the marker a 20px box
+   at the lead step, a hairline divides the rows, and an opened rule's
+   sentences hang under its headline rather than under its marker. The 44px
+   stays: it is the tap target. */
+.ac-rules.is-folded > li { border-top: 1px solid var(--line); }
 /* THE FOLD SAYS IT OPENS (visual QA V227, the V038/V128 pattern). A summary
    that is `display: flex` is no longer a list item, so the browser drops its
    disclosure triangle and the three headlines read as plain bold text. The
    marker is drawn here instead, and turns when the rule is open. */
 .ac-rules.is-folded summary::-webkit-details-marker { display: none; }
-.ac-rules.is-folded summary::before { content: '\25B8'; flex: none; width: 1em; color: var(--text-dim); }
+.ac-rules.is-folded summary::before { content: '\25B8'; flex: none; width: 20px; font-size: var(--t-lead); line-height: 1; text-align: center; color: var(--text-dim); }
 .ac-rules.is-folded details[open] > summary::before { content: '\25BE'; }
 .ac-rules.is-folded summary:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: 4px; }
-.ac-rules.is-folded details > p { margin: 0 0 8px; }
+.ac-rules.is-folded details > p { margin: 0 0 10px 26px; }
 
 /* Chooser A: owners on the left, one owner's repositories on the right. */
 .ac-choose { display: flex; flex-direction: column; gap: 12px; }

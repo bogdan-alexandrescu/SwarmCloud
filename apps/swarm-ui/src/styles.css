@@ -6384,15 +6384,26 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    `min-height` rather than `height` on the line is what lets it grow. */
 .ctl-dock-facts { min-width: 0; }
 .ctl-dock-fact { white-space: nowrap; }
-/* ONE LINE ON A PHONE (U10a D39, owner QA at 390px, 2026-10-04): the strip
-   wrapped to two lines. F10 above is why it does not ELLIPSE -- the caveats
+/* ONE LINE ON A PHONE (U10a D39, owner QA at 390px, 2026-10-04; SUPERSEDED
+   by QA-039 below, which keeps every fact): the strip wrapped to two lines. F10 above is why it does not ELLIPSE -- the caveats
    were what fell off -- so on a phone it drops the two facts that are not
    caveats instead: the route count and the p95, both in the open dock's table.
    What stays is `failed`, `admin-only` and the age, which fit at 390px
    (Dock.tsx marks the two `is-wide`); it may still wrap between facts if
    a longer age ever does not. */
+/* ALL FIVE FACTS ON A PHONE, SPACED RATHER THAN DOTTED (visual QA QA-039,
+   2026-10-20). D39 above dropped the route count and the p95 for one line,
+   and the strip still wrapped at 390px, with its ` · ` hanging at the end of
+   the first line. A separator that dangles where the line breaks says the
+   fact after it is missing. So on a phone the facts are flex items that wrap
+   between themselves, the gap is the separator, and every separator
+   (`.ctl-dock-sep`, inside the fact it follows) steps aside. Two lines of the
+   strip's 12px mono come to about 43px, under the dock line's 48px phone
+   ceiling. Wider, the line is as it was. */
+.ctl-dock-sep { white-space: normal; }
 @media (max-width: 560px) {
-  .ctl-dock-fact.is-wide { display: none; }
+  .ctl-dock-facts { display: flex; flex-wrap: wrap; column-gap: 10px; row-gap: 0; }
+  .ctl-dock-sep { display: none; }
 }
 .ctl-dock-bad { color: var(--bad-ink); }
 .ctl-dock-caret { margin-left: auto; flex: none; color: var(--text-faint); }
