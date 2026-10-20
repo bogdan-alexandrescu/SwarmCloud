@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react'
+import { useId, type ReactNode } from 'react'
+import { read, route, type Result } from './fetch'
 import { helpAnchor, type TopicId } from './help'
 import {
   CARRIER_NOTE,
@@ -11,7 +12,9 @@ import {
   strategyLabel,
   type DispatchCarrier,
   type DispatchStrategy,
+  type RunnerProfile,
   type Task,
+  type TaskAdditionalRepository,
   type TaskDispatch,
 } from './types'
 
@@ -130,6 +133,17 @@ export function asSentence(fragment: string): string {
   return /[.!?]$/.test(capped) ? capped : `${capped}.`
 }
 
+/**
+ * The id of the sentence a refusal prints under one field (VQA V002). The
+ * send panel's refusal card names the field and takes the reader to it; where
+ * the field has no control that takes focus -- the carrier's select is
+ * disabled -- this sentence is where it lands, so it carries `tabIndex={-1}`.
+ * One form per page, so the key alone is unique.
+ */
+export function refusedSayId(field: string): string {
+  return `refused-${field.replace(/_/g, '-')}`
+}
+
 /** Where the carrier's caveat is argued. Typed, so a renamed topic fails to build. */
 const CARRIER_HELP: TopicId = 'dispatch-carrier'
 
@@ -221,7 +235,7 @@ export function DispatchChoice({
         scale={scale}
         terminals={terminals}
       />
-      {errors?.strategy && <p className="warn-text" role="alert">{errors.strategy}</p>}
+      {errors?.strategy && <p id={refusedSayId('strategy')} tabIndex={-1} className="warn-text" role="alert">{errors.strategy}</p>}
 
       {scale === 'workflow' && (
         <>
@@ -255,7 +269,7 @@ export function DispatchChoice({
           </p>
         </>
       )}
-      {errors?.carrier && <p className="warn-text" role="alert">{errors.carrier}</p>}
+      {errors?.carrier && <p id={refusedSayId('carrier')} tabIndex={-1} className="warn-text" role="alert">{errors.carrier}</p>}
 
       <label className="t-label dsp-label" htmlFor="dsp-repo">
         repository url {repoRequired ? '(required by this choice)' : '(optional)'}
@@ -295,7 +309,7 @@ export function DispatchChoice({
             : `Strategy ${draft.strategy} ends in a pull request, so the API will refuse this without a repository URL.`}
         </p>
       )}
-      {errors?.repository_url && <p className="warn-text" role="alert">{errors.repository_url}</p>}
+      {errors?.repository_url && <p id={refusedSayId('repository_url')} tabIndex={-1} className="warn-text" role="alert">{errors.repository_url}</p>}
     </fieldset>
   )
 }
@@ -431,10 +445,15 @@ export function DispatchFacts({ task }: { task: Task }) {
       </li>
       <li className="ctl-fact">
         <b>carrier</b>
-        <code>{d.carrier}</code>
-        <i className="ctl-mark" role="img" aria-label={CARRIER_NOTE}>
-          not acted on
-        </i>
+        {/* ONE VALUE, the name and its mark (VQA V250): as two flex items the
+            send panel's `space-between` set "checkpoints" mid-row with the
+            mark at the edge, and a wrap left it floating. */}
+        <span className="dsp-fact-v">
+          <code>{d.carrier}</code>{' '}
+          <i className="ctl-mark" role="img" aria-label={CARRIER_NOTE}>
+            not acted on
+          </i>
+        </span>
       </li>
       {d.role !== null && (
         <li className="ctl-fact">
@@ -542,3 +561,243 @@ export function workflowDispatchOf(
   }
   return found === null ? null : { dispatch: found, integratorTaskId }
 }
+
+// ---------------------------------------------------------------------------
+// Additional repositories (#1434, docs/design/multi-repository-steps.md §4.1)
+// ---------------------------------------------------------------------------
+// The repositories a step READS beside its own, checked out read-only under
+// `../repos/<name>`. Its changes there are never carried back: the primary
+// repository is still the only one `collect`, `direct-pr` and `integrate` act
+// on. Here in one file for the same reason the dispatch control is: the task
+// form, the workflow form and the two read-backs say it in the same words.
+//
+// BY NAME, NEVER A URL (invariant 10). The picker offers the workspace's
+// registrations by `owner/repo`, and the body carries that name and, if typed,
+// a ref and a directory. swarm-api resolves everything else -- the slot that
+// clones it, the commit the ref names now, the size -- and signs it.
+
+/** The one backend whose profiles take additional repositories: the worker
+ *  clones them onto the pod's cache volume, which a Cloud Run attempt does not
+ *  have (design §4.3, owner's Q4). Matched against the catalogue's `backend`
+ *  as `/v1/capacity` serves it, never asked of the caller. A worker action or
+ *  the indexer on GKE is still refused by the API, with its own 422. */
+export const ADDITIONAL_REPOSITORIES_BACKEND = 'GKE_AUTOPILOT'
+
+/** Whether a step of this profile may name additional repositories. */
+export function takesAdditionalRepositories(profile: RunnerProfile | null | undefined): boolean {
+  return profile !== null && profile !== undefined && profile.backend === ADDITIONAL_REPOSITORIES_BACKEND
+}
+
+/** A registration a task may read: `owner/repo`, and the branch an absent ref means. */
+export interface TaskReadableRepository {
+  repository: string
+  default_branch: string | null
+}
+
+/** One pick as typed. `ref` and `name` blank mean "the API's default". */
+export interface AdditionalRepositoryPick {
+  repository: string
+  ref: string
+  name: string
+}
+
+/** The most `GET /v1/repositories` pages the picker follows. A tenant with
+ *  more registrations than that sees the first pages' and a line saying so. */
+export const REGISTRATION_PAGES = 20
+
+export interface TaskReadableList {
+  repositories: TaskReadableRepository[]
+  /** True when `REGISTRATION_PAGES` were read and the API still had more. */
+  truncated: boolean
+}
+
+function isRec(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/**
+ * The tenant's registrations a task may read: `GET /v1/repositories`, every
+ * page, keeping those with `readable_by_tasks === true` and not `archived`.
+ *
+ * THE GATE THE API APPLIES, AND NO WIDER (owner's Q1 on PR 1461): registered
+ * AND readable by tasks. `GET /v1/repositories/readable` -- what the git token
+ * can see -- lists repositories nobody registered, every one of which the API
+ * refuses `repository_not_registered`; offering them would be offering
+ * refusals. `=== true`, not truthiness: an API that does not serve the flag has
+ * not said a task may read it.
+ */
+export async function loadTaskReadableRepositories(): Promise<Result<TaskReadableList>> {
+  const out: TaskReadableRepository[] = []
+  let token: string | null = null
+  let fetchedAt = Date.now()
+  for (let page = 0; page < REGISTRATION_PAGES; page++) {
+    const r: Result<unknown> = await read<unknown>(
+      route('/v1/repositories', {}, token === null ? undefined : new URLSearchParams({ page_token: token })),
+      () => false,
+    )
+    if (r.status === 'error' || r.status === 'loading') return r
+    if (r.status === 'empty') break
+    fetchedAt = r.fetchedAt
+    const body: Record<string, unknown> = isRec(r.data) ? r.data : {}
+    const rows = Array.isArray(body.repositories) ? body.repositories : []
+    for (const row of rows) {
+      if (!isRec(row) || row.readable_by_tasks !== true || row.archived === true) continue
+      const name = typeof row.repository === 'string' ? row.repository
+        : typeof row.owner === 'string' && typeof row.repo === 'string' ? `${row.owner}/${row.repo}` : null
+      if (name === null) continue
+      out.push({ repository: name, default_branch: typeof row.default_branch === 'string' ? row.default_branch : null })
+    }
+    token = typeof body.next_page_token === 'string' && body.next_page_token !== '' ? body.next_page_token : null
+    if (token === null) break
+  }
+  out.sort((a, b) => a.repository.localeCompare(b.repository))
+  return { status: 'ok', data: { repositories: out, truncated: token !== null }, fetchedAt }
+}
+
+/** The picks the list still offers, in the list's order. A pick the list no
+ *  longer offers (unregistered, archived, gate closed since) is not sent, as
+ *  the MCP picker drops a server disabled since. */
+export function offeredPicks(
+  picks: readonly AdditionalRepositoryPick[],
+  list: Result<TaskReadableList> | null,
+): AdditionalRepositoryPick[] {
+  const data = list !== null && (list.status === 'ok' || list.status === 'stale') ? list.data : null
+  if (data === null) return []
+  const offered = new Set(data.repositories.map((r) => r.repository))
+  return picks.filter((p) => offered.has(p.repository))
+}
+
+/**
+ * The request's `additional_repositories`: each pick's name, and its ref and
+ * directory only when typed. Blank is the API's default -- the registration's
+ * default branch, the repository part lower-cased -- and sending `""` would be
+ * a 422 about an empty string rather than a default.
+ */
+export function additionalRepositoriesBody(
+  picks: readonly AdditionalRepositoryPick[],
+): Array<{ repository: string; ref?: string; name?: string }> {
+  return picks.map((p) => {
+    const ref = p.ref.trim()
+    const name = p.name.trim()
+    return { repository: p.repository, ...(ref === '' ? {} : { ref }), ...(name === '' ? {} : { name }) }
+  })
+}
+
+/**
+ * The picker. Draws the registrations a task may read, each a checkbox by
+ * `owner/repo`; a picked one takes an optional ref and directory.
+ *
+ * NO COUNT CAP HERE. The operative limit is the platform setting
+ * `max_additional_repositories`, which an admin edits live on Pool limits and
+ * which a member cannot read; a number drawn here would be a guess that goes
+ * stale the moment it is changed. The API refuses a step over it with 422
+ * `too_many_additional_repositories` naming the current limit, and that
+ * sentence is printed under this fieldset (`error`).
+ */
+export function AdditionalRepositoriesPicker({ list, picks, onChange, note, error }: {
+  list: Result<TaskReadableList> | null
+  picks: readonly AdditionalRepositoryPick[]
+  onChange: (next: AdditionalRepositoryPick[]) => void
+  /** One plain line under the legend: on the workflow form, which steps read them. */
+  note?: ReactNode
+  /** The API's refusal of the field, when it named this one. */
+  error?: string
+}) {
+  const id = useId()
+  const data = list !== null && (list.status === 'ok' || list.status === 'stale') ? list.data : null
+  const set = (repository: string, patch: Partial<AdditionalRepositoryPick>) =>
+    onChange(picks.map((p) => (p.repository === repository ? { ...p, ...patch } : p)))
+  return (
+    <fieldset className="btp" aria-labelledby={`${id}-h`}>
+      <legend className="btp-h" id={`${id}-h`}>Additional repositories</legend>
+      <p className="btp-hint">
+        Read-only, beside this work&rsquo;s own checkout, each pinned to the commit its ref names when this is
+        submitted. Nothing changed in them is carried back.
+      </p>
+      {note}
+      {list === null || list.status === 'loading' ? (
+        <p className="btp-hint">Reading this workspace&rsquo;s registered repositories…</p>
+      ) : data === null ? (
+        <p className="btp-hint">
+          This workspace&rsquo;s registered repositories could not be read
+          {list.status === 'error' ? ` (${list.error.message})` : ''}, so none is offered.
+        </p>
+      ) : data.repositories.length === 0 ? (
+        <p className="btp-hint">
+          No repository registered in this workspace is readable by tasks. An admin opens one to tasks on Repositories.
+        </p>
+      ) : (
+        <>
+          {data.repositories.map((r) => {
+            const pick = picks.find((p) => p.repository === r.repository)
+            const on = pick !== undefined
+            const dir = r.repository.split('/')[1]?.toLowerCase() ?? ''
+            return (
+              <div key={r.repository} className="btp-row">
+                <label className={`btp-opt${on ? ' is-on' : ''}`}>
+                  <input type="checkbox" value={r.repository} checked={on}
+                    onChange={(e) => onChange(e.target.checked
+                      ? [...picks, { repository: r.repository, ref: '', name: '' }]
+                      : picks.filter((p) => p.repository !== r.repository))} />
+                  <span><code>{r.repository}</code></span>
+                </label>
+                {on && (
+                  <>
+                    <input className="mono" spellCheck={false} aria-label={`ref of ${r.repository}`}
+                      placeholder={r.default_branch === null ? 'ref: its default branch' : `ref: ${r.default_branch}`}
+                      value={pick.ref} onChange={(e) => set(r.repository, { ref: e.target.value })} />
+                    <input className="mono" spellCheck={false} aria-label={`directory of ${r.repository}`}
+                      placeholder={`../repos/${dir}`}
+                      value={pick.name} onChange={(e) => set(r.repository, { name: e.target.value })} />
+                  </>
+                )}
+              </div>
+            )
+          })}
+          {data.truncated && (
+            <p className="btp-hint">Only the first {REGISTRATION_PAGES} pages of registrations are offered.</p>
+          )}
+        </>
+      )}
+      {error !== undefined && <p id={refusedSayId('additional_repositories')} tabIndex={-1} className="warn-text" role="alert">{error}</p>}
+    </fieldset>
+  )
+}
+
+/** The served list, or [] when the task reads none or the API did not send it. */
+export function additionalRepositoriesOf(task: Task): TaskAdditionalRepository[] {
+  return Array.isArray(task.additional_repositories) ? task.additional_repositories : []
+}
+
+/**
+ * One fact row per additional repository a task reads, for a `ctl-facts`
+ * list: its directory, `owner/repo @ ref`, and the commit it was PINNED to at
+ * submission -- the commit the agent reads, whatever the ref names now. The
+ * row prints twelve characters of it and carries all forty in its title.
+ * Nothing when the task reads none.
+ */
+export function AdditionalRepositoryRows({ task }: { task: Task }) {
+  return (
+    <>
+      {additionalRepositoriesOf(task).map((r) => (
+        <li key={r.name} className="ctl-fact" data-additional-repository={r.repository}>
+          <b>reads</b>
+          <span className="mono" title={`${r.path}: ${r.repository} at ${r.commit}`}>
+            {r.name} · {r.repository} @ {r.ref} · <code title={r.commit}>{r.commit.slice(0, 12)}</code>
+          </span>
+        </li>
+      ))}
+    </>
+  )
+}
+
+/** The rows above as their own list, for a read-back with no facts list to join. */
+export function AdditionalRepositoryFacts({ task }: { task: Task }) {
+  if (additionalRepositoriesOf(task).length === 0) return null
+  return (
+    <ul className="ctl-facts dsp-facts" aria-label="additional repositories">
+      <AdditionalRepositoryRows task={task} />
+    </ul>
+  )
+}
+

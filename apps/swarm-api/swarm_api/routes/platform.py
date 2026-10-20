@@ -1,7 +1,7 @@
 """Platform read models.
 
 /v1/stats, /v1/capacity, /v1/providers, /v1/resource-classes, /v1/runtimes,
-/v1/version.
+/v1/version, /v1/settings/model-prices.
 """
 
 from __future__ import annotations
@@ -68,6 +68,30 @@ def version(
 def _env(name: str) -> str | None:
     value = os.environ.get(name, "").strip()
     return value or None
+
+
+@router.get("/settings/model-prices")
+def model_prices(
+    # Declared, not used: every signed-in member may read the table, and the
+    # dependency is what keeps /v1 free of an unauthenticated hole.
+    auth: AuthContext = Depends(current_auth),  # noqa: ARG001
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The model list price table, read-only, for every signed-in member
+    (PRICES-FOLLOWUP, part of #1481).
+
+    The figures a stopped attempt is priced at are no secret of the admins':
+    a member reading "cost not reported", or an estimate, on their own
+    attempt needs the table to know why. So this serves exactly
+    `model_prices` as `Store.get_platform_settings` reads it -- the seed
+    while the setting was never written, every well-formed entry after, a
+    tiered model with its `tiers` -- and nothing else of the settings
+    document: its `updated_at` and `updated_by` name the last change to ANY
+    setting, which is not when a price changed; each entry carries its own
+    `as_of` and `updated_by`. Writing stays `PUT /v1/admin/settings`,
+    admin-only.
+    """
+    return {"model_prices": ctx.store.get_platform_settings()["model_prices"]}
 
 
 @router.get("/capacity")
@@ -163,6 +187,7 @@ def runtimes(
     # tenant-specific. Whether THIS tenant holds the credential a runtime needs
     # is /v1/providers, which reads the tenant document to answer it.
     auth: AuthContext = Depends(current_auth),  # noqa: ARG001
+    ctx: AppContext = Depends(get_context),
 ) -> dict:
     """What a `runner_profile` NAME actually means.
 
@@ -191,8 +216,13 @@ def runtimes(
     route moves with it in the same commit.
 
     `secrets` lists environment variable NAMES. This route reads no environment,
-    no secret store and no Firestore document.
+    no secret store and no Firestore document. The ONE value it serves that is
+    not the catalogue's is `models`, each class's model ID: that is Terraform's
+    (`runner_models`, owner's Q1 of #1435), read from this service's own
+    WORKER_CLASS_MODELS at start, the map the scheduler dispatches with, so the
+    route reports what a step of each class will run.
     """
+    class_models = ctx.settings.worker_class_models
     # EVERY profile, including disabled ones, each carrying its own
     # `available` flag and reason. A caller reading a task that names `codex`
     # still needs its image, backend and resource class to render that task;
@@ -234,6 +264,16 @@ def runtimes(
             "secrets_any_of": profile.secrets_any_of,
             "timeout_seconds": profile.timeout_seconds,
             "resource_class": profile.resource_class,
+            # The model classes a step on this profile may name, its default,
+            # and each class's model ID (docs/design/model-per-step.md §4.4).
+            # `[]`, null and `{}` on a profile that runs no Claude model; an
+            # empty `models` on a deployment that pins none yet, where only
+            # the default may be named.
+            "model_classes": list(profile.model_classes),
+            "default_model_class": profile.default_model_class,
+            "models": {
+                name: class_models[name] for name in profile.model_classes if name in class_models
+            },
             # Resolved inline rather than left as a name to look up elsewhere.
             # "How big is this runtime" is the question the route exists to
             # answer, and an answer that needs a second request plus a

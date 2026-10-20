@@ -290,12 +290,12 @@ backend**. Owner decisions, 2026-10-14:
 
 | backend | where page text goes | needs |
 |---|---|---|
-| **Internal Jev** (`internal-jev`, the DEFAULT) | Saga's decision API, `/jev/v1/decide`, on the company tailnet | the cluster's tailnet egress |
+| **Internal Jev** (`internal-jev`, the DEFAULT) | the internal decision API, `/jev/v1/decide`, on the company tailnet | the cluster's tailnet egress |
 | **Internal Laya** (`internal-laya`) | the same API's `/laya/v1/decide` | the cluster's tailnet egress |
-| **TypeSafe** (`typesafe`) | api.typesafe.ai -- outside Saga | a TypeSafe key ([provider-keys.md](../provider-keys.md)) |
+| **TypeSafe** (`typesafe`) | api.typesafe.ai -- outside your network | a TypeSafe key ([provider-keys.md](../provider-keys.md)) |
 
 **Why internal is the default.** It keeps page text -- which can be a signed-in
-person's own data -- inside Saga, and it needs no TypeSafe key, so a workspace
+person's own data -- inside your network, and it needs no TypeSafe key, so a workspace
 can use Jev before anyone has set one. TypeSafe stays a choice, and the console
 says what it costs: "sends page text to TypeSafe; needs a key".
 
@@ -345,12 +345,12 @@ internal backend it sends **no TypeSafe key**: upstream jev-browser 0.2.0
 refuses to start without `TYPESAFE_API_KEY` and sends it as a Bearer token, so
 the wrapper replaces it with a fixed marker that is not a key, and the adapter
 sends its own placeholder in its place on every request. A stored value the code does not know, or a settings read that fails, is
-read as the default -- the backend that sends nothing outside Saga.
+read as the default -- the backend that sends nothing outside your network.
 
 **The code-context work reuses this setting.** The context-quality design
 (CTXQ-DESIGN) judges code context with the same decision API; it reads this
 same per-workspace `judgment_backend` and its availability rather than adding a
-second switch, so a workspace that chose to keep page text inside Saga keeps
+second switch, so a workspace that chose to keep page text inside your network keeps
 its code there too.
 
 **Not verified here.** No unit test can reach the tailnet. The decision API
@@ -368,7 +368,7 @@ Jev** (the default), **Internal Laya** or **TypeSafe**. The network path and
 the setting belong to lanes JUDGE-NET and JUDGE-SELECT. This section is about
 the request shape (JUDGE-ADAPT).
 
-Upstream jev-browser speaks TypeSafe's API. Saga's internal decision API
+Upstream jev-browser speaks TypeSafe's API. The internal decision API
 (`decision-api-staging` on the tailnet, `/jev` or `/laya` +
 `/v1/decide`) answers in the same shape (`choice`, `probabilities`,
 `confidence`, `noul`), but it is **not wire-compatible on the request side**.
@@ -2257,6 +2257,7 @@ for sign-ins that only work on mobile.
 * **The presets** are a fixed, named list in the gate:
   - `desktop` 1440×900
   - `iphone-15` 393×852 @3
+  - `phone-390` 390×844 @3 (QA-KIT, 2026-10-19; amendment below)
   - `pixel-8` 412×915 @2.625
   - `iphone-se` 375×667 @2
   - `ipad-7` 810×1080 @2
@@ -2279,6 +2280,71 @@ for sign-ins that only work on mobile.
 * **Who switches the device** is question Q13. The recommendation is the agent,
   plus the person in control. A viewer's switcher shows the current device and
   is disabled.
+
+**Amendment, 2026-10-19: the QA kit (QA-KIT, part of #1649).** The owner
+decided on 2026-10-19 that a live-browser agent should be able to run a visual
+QA sweep at 1440 and 390, light and dark, and that the model must see its
+screenshots. Four things changed. docs/design/visual-qa.md §4.1 and §6 say what
+QA-CAPTURE builds on them.
+
+* **`phone-390`, 390×844 @3**, joins the list after `iphone-15`, with iPhone
+  15's mobile flags, user agent and client hints. 390 is the width a QA sweep
+  names (the iPhone 12-14 viewport), and none of the five presets was 390. The
+  list is written out in three places: the gate (`livegate/presets.py`),
+  swarm-api's restatement (`swarm_api.live.LIVE_PRESETS`) and the console's
+  labels (`LiveBrowser.tsx`, `Theater.tsx`, `TheaterTimeline.tsx`, "Phone
+  390"). A test holds the gate's and swarm-api's lists equal by name and size
+  (`test_live_wire_shapes.py`), because a copy that drifts shows a preset the
+  gate refuses, or hides one it has. Its display fits in the Xvfb already
+  started for the desktop preset, so nothing about the sidecar changed.
+* **The theme: `swarm-handoff theme dark|light|system`.** The gate sends
+  `Emulation.setEmulatedMedia` with the one feature `prefers-color-scheme`, on
+  the same per-page sessions that hold the device. That is why it holds:
+  - across the page's navigations, because the override belongs to the target;
+  - on a page opened later, and on a page whose session went (a renderer
+    swap), which is attached again with the device and the theme together;
+  - across a device switch.
+
+  `system` lifts the override. The name is checked three times, in the
+  command, by the worker and by the gate, and those three lists are held equal
+  by a test. Anything beside the name is refused, so the agent never sends a
+  media feature, which keeps invariant 10 in spirit, as a preset does. On an
+  attempt without the live path it is refused as a device is: exit 5 with the
+  reason. It is recorded the way an agent's device change is recorded: the
+  gate's record writes `theme_set`, `theme_refused` or `theme_failed` with the
+  name, and the worker logs `browser theme set`. Only the agent can set it.
+  The console has no theme control, and the gate does not report the theme.
+  Not measured: which session's override Chromium shows when the agent also
+  calls `Emulation.setEmulatedMedia`, which the method policy allows on its
+  own sessions. So the instructions name the command, not the method.
+* **The agent's instructions name both commands**, one line each. They list
+  every preset with its size, built from the gate's list. They say that
+  `browser_resize` is refused and why: it sends
+  `Emulation.setDeviceMetricsOverride`, which the method policy denies,
+  because the gate owns the size so that the person watching sees the device
+  the page is laid out for.
+* **Screenshots land in the artifacts, and the model sees them.** Playwright
+  MCP is registered with `--output-dir $SWARM_ARTIFACTS_DIR/screenshots`, so a
+  `browser_take_screenshot` taken without a filename is saved there and
+  uploaded. The console draws images up to 20 MiB inline. The following was
+  read from @playwright/mcp 0.0.83's own code (playwright-core
+  1.64.0-alpha-1790635538000), not measured on a live run:
+  - a screenshot comes back to the model as an image only when it was taken
+    without a filename, so the instructions ask for none;
+  - a screenshot given a filename is resolved against the workspace root,
+    which is the checkout;
+  - `--image-responses` defaults to `allow`, and nothing here sets it;
+  - with no `--output-max-size`, nothing is evicted before the upload.
+
+  The runner counts, from the CLI's stream, the screenshot calls and those
+  whose tool_result carried an image block, and writes the counts to its
+  result as `browser_screenshots` (`taken`, `seen_as_image`, `complete`).
+  `complete` is false when the stdout capture was cut. That a live run's
+  stream shows the image block has not yet been seen on a deployed run. Each
+  base64 image makes the stream larger, so a long sweep can pass the
+  transcript's 4,000,000-character cap. The transcript is then skipped (the
+  stdout capture stays whole up to its own cap), and QA-CAPTURE should expect
+  that.
 
 ---
 
@@ -2474,6 +2540,18 @@ untouched. Proposed starting split, to be measured by lane L5: worker 3 vCPU /
 (Chromium, Xvfb, encoding), with the existing 2 GiB memory `/dev/shm`
 (`GkeJobDispatcher._manifest`, `apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher._manifest`)
 moved to the sidecar.
+
+**Amendment, 2026-10-20: the browser split is 2 + 2 (BROWSER-SPLIT, part of
+#1689).** The owner moved one core from the display to the worker: display
+2 vCPU / 5 GiB, worker 2 vCPU / 3 GiB, still of the class's 4 / 8, so the
+pod's size, its units and its cost do not change, and both containers keep
+`requests == limits`. Measured that day, browser-profile attempts ran with
+`cpu_limit_cores` 1.0, and a lane that runs `npm ci` plus a dev server (the
+visual-QA capture) did it on that one core. The display's measured peak was
+1.90 cores (docs/browser-startup-speed.md §11), so 2 cores leaves it about
+1.05x headroom at its peak; a busier page is CPU-throttled, not killed. The
+memory split is unchanged. `live_display_share()` still refuses a share that
+leaves the worker nothing.
 
 ### 8.3 NetworkPolicy
 

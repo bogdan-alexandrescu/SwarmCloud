@@ -27,7 +27,7 @@ NOW = datetime(2026, 10, 9, 12, 0, tzinfo=UTC)
 ALICE = "alice@example.com"
 REPOS = ["repo_a", "repo_b"]
 
-#: §3's table, in its order, with each type's minimum interval.
+#: §3's table, in its order, with each type's minimum interval (§3.14 and §3.15 last).
 CATALOGUE = [
     ("issue-sweep", timedelta(minutes=15)),
     ("issue-plan-only", timedelta(minutes=15)),
@@ -41,6 +41,10 @@ CATALOGUE = [
     ("docs-drift", timedelta(hours=24)),
     ("cost-report", timedelta(hours=24)),
     ("custom-prompt", timedelta(hours=6)),
+    # The platform's own price setting (#1481): the weekly pricing-page read
+    # and the nightly observed-rate check.
+    ("model-prices-refresh", timedelta(hours=24)),
+    ("model-prices-check", timedelta(hours=24)),
 ]
 
 
@@ -92,11 +96,11 @@ def _code(exc_info) -> str:
 
 
 # --------------------------------------------------------------------------
-# The catalogue: twelve entries, each valid on its own defaults
+# The catalogue: §3's entries, each valid on its own defaults
 # --------------------------------------------------------------------------
 
 
-def test_the_catalogue_is_the_twelve_types_of_section_3_in_order():
+def test_the_catalogue_is_the_types_of_section_3_in_order():
     assert [(t.name, t.min_interval) for t in scheduletypes.TYPES] == CATALOGUE
 
 
@@ -169,7 +173,8 @@ def test_the_first_four_types_carry_the_owners_sd4_caps():
 
 def test_catch_up_defaults_follow_sd6():
     run_once = {t.name for t in scheduletypes.TYPES if t.catch_up == "run_once"}
-    assert run_once == {"observer", "cost-report", "release-health", "docs-drift", "repo-index-refresh"}
+    assert run_once == {"observer", "cost-report", "release-health", "docs-drift", "repo-index-refresh",
+                        "model-prices-refresh", "model-prices-check"}
 
 
 def test_risk_tiers_follow_section_4_1():
@@ -183,8 +188,10 @@ def test_risk_tiers_follow_section_4_1():
     assert tier("issue-sweep") == "R2" and tier("issue-sweep", gate=auto) == "R3"
     assert tier("pr-shepherd") == "R1" and tier("pr-shepherd", fix_conflicts=True) == "R2"
     assert tier("docs-drift") == "R1" and tier("docs-drift", fix=True) == "R2"
-    assert [tier(n) for n in ("repo-index-refresh", "observer", "cost-report")] == ["R0"] * 3
-    assert [tier(n) for n in ("issue-plan-only", "epic-triage", "release-health", "ci-flake-hunter")] == ["R1"] * 4
+    assert [tier(n) for n in ("repo-index-refresh", "observer", "cost-report",
+                              "model-prices-refresh")] == ["R0"] * 4
+    assert [tier(n) for n in ("issue-plan-only", "epic-triage", "release-health", "ci-flake-hunter",
+                              "model-prices-check")] == ["R1"] * 5
     assert tier("dependency-cve-refresh") == "R2" and tier("custom-prompt") == "R3"
 
 

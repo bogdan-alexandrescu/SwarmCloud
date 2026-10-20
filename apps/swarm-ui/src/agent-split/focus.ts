@@ -78,7 +78,7 @@ export function useSplitFocus(panel: RefObject<HTMLDivElement>, close: () => voi
     const el = panel.current
     const { el: came, rowId } = born.current ?? { el: null, rowId: null }
     opener.current = came
-    if (el !== null && isOverlay(el)) el.focus()
+    if (el !== null && isOverlay(el)) el.focus(openedByAddress(came) ? QUIET : undefined)
     return () => {
       const back = opener.current
       opener.current = null
@@ -97,4 +97,20 @@ export function useSplitFocus(panel: RefObject<HTMLDivElement>, close: () => voi
     // must not re-capture an opener that is now inside it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+}
+
+/**
+ * FOCUS WITHOUT THE RING WHEN NOTHING OPENED THE SPLIT (V262, VQA2-R13).
+ * `/agents/<tab>/<id>` loaded on a phone mounts the drawer before any click or
+ * key, so the browser judged its programmatic focus keyboard-driven and
+ * `.ctl-drawer:focus-visible` (styles.css, AG-31) drew a 2px ring round the
+ * whole screen. That ring is right when a key opened the drawer -- the reader
+ * must see where focus went -- so it is kept there, and only an open that no
+ * element caused (focus on `<body>` or nowhere) asks for no ring.
+ */
+const QUIET: FocusOptions & { focusVisible?: boolean } = { focusVisible: false }
+
+/** Whether the split opened with nothing focused: by its address, not from a row or a key. */
+export function openedByAddress(came: Element | null): boolean {
+  return came === null || (typeof document !== 'undefined' && came === document.body)
 }

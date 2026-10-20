@@ -1,9 +1,9 @@
-import { noteFixtureProbe, read, route, tenantQuery, write, type ApiRoute, type Result } from './fetch'
+import { noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
 // four states, not a second list written out here.
-import { CONCURRENCY_STATES, TERMINAL_STATES } from './types'
+import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
 // The one rule for summing a nullable measurement: null until something
 // actually reported it, so an unmeasured sample never becomes a confident zero.
 import { sumReported } from './measure'
@@ -20,10 +20,11 @@ import {
   type CallGraph, type ImpactPlan, type ModuleGraph, type SymbolSearch, type SymbolTests,
 } from './RepoGraphData'
 import type {
-  ArtifactContent, ArtifactListing, LogStream, LogStreamName, OwnerAnswer, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
+  AnswerVia, ArtifactContent, ArtifactListing, LogStream, LogStreamName, OwnerAnswer, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AdminPool, AttemptRow, AttemptsPage, TaskEventsPage, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
+  ModelPrice, ModelPriceChange, ModelPriceRate, ModelPriceTable, ModelPriceTier, PlatformSettings,
   RunnerInputContract, Runtime, TaskState,
   TaskWindow, Tenant,
   Workflow, WorkflowPage,
@@ -32,9 +33,15 @@ import type {
   IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, IssueRunSummaryPage, RunCreateBody, RunPlan,
   GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
   OnboardingDismissal, OwnerTokenResponse, AccessInstallRequestResponse,
-  AdminGrantAnswer, AdminRemoveAnswer, LoanDeclineAnswer, LoanRequestAnswer, PeopleDoc, WorkspaceActionAnswer, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceView,
+  AdminGrantAnswer, AdminRemoveAnswer, AdminWorkspaceView, LoanDeclineAnswer, LoanRequestAnswer, NewWorkspaceBody, PeopleDoc, WorkspaceActionAnswer, WorkspaceKind, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceState, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
+  NotificationTopic, Preferences, PreferencesSaved, PreferencesWrite, Profile, ProfileClaudeAccount, ProfileClaudeAccounts, ProfileDefault,
+  ProfileGitHub, ProfileIdentity, ProfileKeyStatus, ProfileNotifications, ProfileQuotaWindow, ProfileSection, ProfileTypeSafe, ProfileWorkspace,
+  ReminderCadence, WorkspaceRole,
+  DefaultRoleChange, PersonRoleChange, PersonRoles, PersonWorkspaceRole, RoleSummary, WorkspaceRoleEvent, WorkspaceRoleMe,
+  WorkspaceRoleOverride, WorkspaceRoles, WorkspaceRoster,
+  AdminWorkspaceRoles, AdminWorkspaceRolesPage,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -43,7 +50,7 @@ import type {
 // task page with no tasks are both non-empty objects.
 
 export type { Result, ApiError } from './fetch'
-export type { OwnerAnswer, OwnerAnswerVersion } from './types'
+export type { AnswerVia, OwnerAnswer, OwnerAnswerVersion } from './types'
 
 /** Fixtures, so the UI can be worked on before DNS resolves. Exported so a
  *  component that keeps its own loaders (CheckpointBrowser.tsx) reads this one
@@ -78,7 +85,7 @@ async function fixtureAdminPools(): Promise<Result<{ pools: AdminPool[] }>> {
     i === 0 && p.hard_limit !== null
       ? {
           ...p,
-          admin_changed_by: 'ops@saga.xyz',
+          admin_changed_by: 'ops@example.com',
           admin_changed_at: new Date(Date.now() - 3 * 3_600_000).toISOString(),
           admin_change: { hard_limit: { from: p.hard_limit * 2, to: p.hard_limit } },
         }
@@ -756,7 +763,7 @@ async function fixtureTaskLogs(
   await new Promise((r) => setTimeout(r, 110))
   noteFixtureProbe(route('/v1/tasks/{id}/logs', { id: taskId }), 110, true)
   const body = [
-    '[13:42:01] cloning https://github.com/saga-xyz/example.git',
+    '[13:42:01] cloning https://github.com/example-org/example.git',
     '[13:42:09] workspace ready at /workspace (tmpfs)',
     '[13:42:09] claude-code: starting',
     '[13:44:31] checkpoint ckpt_0002 written (18.4 MB)',
@@ -1082,6 +1089,13 @@ export interface AnswerChoice {
   question_index: number
   choice: string | null
   text: string | null
+  /**
+   * Where it was answered (ANSWER-SYNC). The console leaves it out, which the
+   * API stores as null; the plugin sends `claude-code` with its session.
+   * Neither changes who may answer.
+   */
+  via?: AnswerVia | null
+  session?: string | null
 }
 
 /**
@@ -1970,6 +1984,10 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
     timeout_seconds: 7200, resource_class: 'demo-small',
     resources: { name: 'demo-small', cpu: 3, memory_gib: 7, disk_gib: 3, units: 1 },
     available: true, disabled_reason: '',
+    // Invented classes, for the same reason as the names: a class this
+    // deployment pins nothing for (`demo-later`) is the chip that says so.
+    model_classes: ['demo-deep', 'demo-quick', 'demo-later'], default_model_class: 'demo-deep',
+    models: { 'demo-deep': 'demo-model-deep-2', 'demo-quick': 'demo-model-quick-2' },
   },
   'demo-probe': {
     name: 'demo-probe', image: 'demo-runtime-base',
@@ -1978,6 +1996,8 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
     timeout_seconds: 300, resource_class: 'demo-small',
     resources: { name: 'demo-small', cpu: 3, memory_gib: 7, disk_gib: 3, units: 1 },
     available: true, disabled_reason: '',
+    // Runs no model: the `—` branch of the classes row.
+    model_classes: [], default_model_class: null, models: {},
   },
   'demo-viewport': {
     name: 'demo-viewport', image: 'demo-runtime-viewport',
@@ -1991,6 +2011,7 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
     // the shipped catalogue is AUTO either.
     available: false,
     disabled_reason: 'demo-vendor refused the registered credential. Use demo-small.',
+    model_classes: ['demo-deep'], default_model_class: 'demo-deep', models: { 'demo-deep': 'demo-model-deep-2' },
   },
   'demo-wide': {
     name: 'demo-wide', image: 'demo-runtime-wide',
@@ -2001,6 +2022,7 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
     timeout_seconds: 10800, resource_class: 'demo-wide',
     resources: { name: 'demo-wide', cpu: 7, memory_gib: 30, disk_gib: 15, units: 4 },
     available: true, disabled_reason: '',
+    model_classes: [], default_model_class: null, models: {},
   },
 }
 
@@ -2060,6 +2082,48 @@ async function fixtureRuntimeNames(): Promise<Result<string[]>> {
   await new Promise((r) => setTimeout(r, 90))
   noteFixtureProbe(route('/v1/runtimes'), 90, true)
   return { status: 'ok', fetchedAt: Date.now(), data: Object.keys(FIXTURE_RUNTIMES).sort() }
+}
+
+/** The fixture catalogue's model classes, recorded as a read of the same route. */
+async function fixtureRuntimeModelClasses(): Promise<Result<Record<string, ModelClassOffer>>> {
+  await new Promise((r) => setTimeout(r, 60))
+  noteFixtureProbe(route('/v1/runtimes'), 60, true)
+  return { status: 'ok', fetchedAt: Date.now(), data: offersOf(FIXTURE_RUNTIMES) }
+}
+
+function offersOf(runtimes: Record<string, Runtime>): Record<string, ModelClassOffer> {
+  return Object.fromEntries(
+    Object.entries(runtimes).map(([name, r]) => [
+      name,
+      // `?? []`, `?? null`, `?? {}`: an API older than the three fields
+      // serves none of them, and its runners then offer no class at all --
+      // the step runs its runner's default, which is what that API runs.
+      { model_classes: r.model_classes ?? [], default_model_class: r.default_model_class ?? null, models: r.models ?? {} },
+    ]),
+  )
+}
+
+/**
+ * What a step on each runner may name as `model_class` (docs/design/
+ * model-per-step.md §4.8, #1435): the accepted classes, the default, and the
+ * model each is pinned to, by runner-profile name. Both Submit forms read the
+ * runners themselves from `/v1/capacity`, which carries no classes, so the
+ * class select reads them from `/v1/runtimes` -- through `readRuntimes`, the
+ * route's one reader.
+ */
+export interface ModelClassOffer {
+  model_classes: string[]
+  default_model_class: string | null
+  models: Record<string, string>
+}
+
+export async function loadModelClasses(): Promise<Result<Record<string, ModelClassOffer>>> {
+  if (USE_FIXTURES) return fixtureRuntimeModelClasses()
+  const r = await readRuntimes()
+  if (r.status === 'ok' || r.status === 'stale') {
+    return { status: 'ok', fetchedAt: r.fetchedAt, data: offersOf(r.data.runtimes) }
+  }
+  return r as Result<Record<string, ModelClassOffer>>
 }
 
 export interface AgentRun {
@@ -2374,6 +2438,19 @@ export interface TenantChoice {
   display_name: string
   /** `user` for the caller's own personal workspace, `group` for a tenant group (#1200). Absent from an older API. */
   kind?: 'user' | 'group'
+  /**
+   * The caller's STORED role there (docs/design/workspace-roles.md §4.3):
+   * `{name, source}`. Absent from an older API, and absent when the role could
+   * not be read -- the cue to show the derived role, never a guessed one.
+   * `roles.ts` `roleOf` reads it.
+   */
+  role?: { name: string; source: string }
+  /**
+   * How the caller reaches it (§4.2.2): `personal`, `member`, or
+   * `platform_admin` for a group workspace a platform admin is not in.
+   * Absent from an older API.
+   */
+  via?: 'personal' | 'member' | 'platform_admin'
 }
 
 /**
@@ -2525,18 +2602,18 @@ async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>>
     fetchedAt: Date.now(),
     data: {
       tenant: {
-        tenant_id: 'u-bogdan', kind: 'user', principal: 'bogdan@saga.xyz',
+        tenant_id: 'u-bogdan', kind: 'user', principal: 'alice@example.com',
         display_name: 'Bogdan', created_at: new Date(Date.now() - 86_400_000 * 9).toISOString(),
         max_active: 2, capacity_units: 40, monthly_budget_usd: null, enabled: true,
         credentials: [
           'anthropic',
         ],
-        service_account: 'swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com',
+        service_account: 'swarm-agent-worker-u-bogdan@example-project.iam.gserviceaccount.com',
         gcs_prefix: 'gs://swarm-artifacts-dev/u-bogdan', namespace: 'swarm-tenant-u-bogdan',
       },
       principal: {
-        email: 'bogdan@saga.xyz', domain: 'saga.xyz',
-        groups: ['eng@saga.xyz'], is_admin: false,
+        email: 'alice@example.com', domain: 'example.com',
+        groups: ['eng@example.com'], is_admin: false,
       },
       // UNDECLARED, ON PURPOSE. There is no API behind the fixtures, so there
       // is no environment it runs as; this is the shape of an API whose
@@ -3070,6 +3147,147 @@ export async function setPoolLimit(poolName: string, limit: number): Promise<Res
 }
 
 // --------------------------------------------------------------------------
+// Platform settings: the model price table (#1481)
+// --------------------------------------------------------------------------
+// `GET /v1/settings/model-prices` serves the table to every signed-in member
+// (PRICES-FOLLOWUP); `PUT /v1/admin/settings` (`Store.set_platform_settings`)
+// is admin-only and writes it. No fixture branch, as Admin › Pool limits'
+// other settings card has none: the fixture build serves no platform settings.
+//
+// NORMALISE OR DROP, NEVER GUESS. An entry with a rate that is not a finite
+// number of 0 or more, or with no `as_of`, is dropped here exactly as
+// `modelprices.entry` drops it on the server: its model then reads "cost not
+// reported", which is what swarm-api prices it at. A zero in its place would
+// be a figure nobody set.
+
+function normRates(r: Record<string, unknown>): Record<ModelPriceRate, number> | null {
+  const rates: Partial<Record<ModelPriceRate, number>> = {}
+  for (const k of MODEL_PRICE_RATES) {
+    const v = r[k]
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return null
+    rates[k] = v
+  }
+  return rates as Record<ModelPriceRate, number>
+}
+
+/**
+ * A tiered entry's tiers, or null when they are not tiers: two or more, each
+ * with its four rates, ceilings that rise, and no ceiling on the last alone.
+ * A malformed list drops the WHOLE entry, as `modelprices.entry` does: its
+ * first tier alone would under-price every prompt past its ceiling.
+ */
+function normTiers(raw: unknown): ModelPriceTier[] | null {
+  if (!Array.isArray(raw) || raw.length < 2) return null
+  const out: ModelPriceTier[] = []
+  for (const [i, t] of raw.entries()) {
+    if (typeof t !== 'object' || t === null || Array.isArray(t)) return null
+    const r = t as Record<string, unknown>
+    const rates = normRates(r)
+    const up = r.up_to_prompt_tokens ?? null
+    const last = i === raw.length - 1
+    if (rates === null) return null
+    if (last ? up !== null : typeof up !== 'number' || !Number.isInteger(up) || up < 1) return null
+    const before = out[out.length - 1]?.up_to_prompt_tokens
+    if (!last && before !== undefined && before !== null && (up as number) <= before) return null
+    out.push({ ...rates, up_to_prompt_tokens: up as number | null })
+  }
+  return out
+}
+
+function normModelPrice(raw: unknown): ModelPrice | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  const rates = normRates(r)
+  if (rates === null) return null
+  if (r.currency !== 'USD' || typeof r.source !== 'string' || typeof r.as_of !== 'string') return null
+  const tiers = r.tiers === undefined || r.tiers === null ? undefined : normTiers(r.tiers)
+  if (tiers === null) return null
+  return {
+    ...rates,
+    currency: 'USD',
+    source: r.source,
+    as_of: r.as_of,
+    updated_by: typeof r.updated_by === 'string' ? r.updated_by : null,
+    ...(tiers === undefined ? {} : { tiers }),
+  }
+}
+
+/** `model_prices` as served, each malformed entry dropped (see above). */
+export function normModelPrices(raw: unknown): Record<string, ModelPrice> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {}
+  const out: Record<string, ModelPrice> = {}
+  for (const [name, entry] of Object.entries(raw as Record<string, unknown>)) {
+    const price = normModelPrice(entry)
+    if (price !== null) out[name] = price
+  }
+  return out
+}
+
+function normPlatformSettings(raw: unknown): PlatformSettings {
+  const s = raw as PlatformSettings
+  return { ...s, model_prices: normModelPrices((raw as { model_prices?: unknown } | null)?.model_prices) }
+}
+
+/**
+ * `GET /v1/settings/model-prices`: the price table for every signed-in
+ * member, admin or not, normalised as above. The console's price table reads
+ * this, so a non-admin sees the figures read-only.
+ */
+export async function loadModelPrices(): Promise<Result<ModelPriceTable>> {
+  const r = await read<unknown>(route('/v1/settings/model-prices'), () => false)
+  if (r.status === 'ok' || r.status === 'stale') {
+    return { ...r, data: { model_prices: normModelPrices((r.data as { model_prices?: unknown } | null)?.model_prices) } }
+  }
+  return r as Result<ModelPriceTable>
+}
+
+/** `GET /v1/admin/settings`, with its price table normalised. */
+export async function loadPlatformSettings(): Promise<Result<PlatformSettings>> {
+  const r = await read<unknown>(route('/v1/admin/settings'), () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPlatformSettings(r.data) }
+  return r as Result<PlatformSettings>
+}
+
+/**
+ * `PUT /v1/admin/settings` with `model_prices` and nothing else, so a save
+ * never rewrites a setting the price table did not touch. Each named entry
+ * replaces that model's whole entry; every model not named keeps its own
+ * (`Store._model_prices_after`). The response is the settings AS STORED, which
+ * is what the table draws next, and carries who saved and when.
+ */
+export async function saveModelPrices(changes: Record<string, ModelPriceChange>): Promise<Result<PlatformSettings>> {
+  const r = await write(route('/v1/admin/settings'), 'PUT', { model_prices: changes })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPlatformSettings(r.data) }
+  return r as Result<PlatformSettings>
+}
+
+/**
+ * Which price a refused save is about. FastAPI's RequestValidationError is
+ * wrapped into `detail.errors[].loc`, here `["body", "model_prices", <model>,
+ * <rate>]`: the message is kept under `<model>/<rate>`, or under `<model>`
+ * when the loc names the entry and no rate (a missing `as_of`, an unknown
+ * key). A model name never holds a `/` (`modelprices.MODEL_NAME`). What names
+ * no model is returned as `unattributed`, to be shown above the table, never
+ * pinned to a guess: a message under the wrong cell sends someone editing a
+ * figure that was never the problem.
+ */
+export function priceRefusals(error: ApiError): { fields: Record<string, string>; unattributed: string | null } {
+  const detail = typeof error.detail === 'object' && error.detail !== null ? (error.detail as Record<string, unknown>) : {}
+  const fields: Record<string, string> = {}
+  for (const e of Array.isArray(detail.errors) ? detail.errors : []) {
+    if (typeof e !== 'object' || e === null) continue
+    const loc = Array.isArray((e as { loc?: unknown }).loc) ? ((e as { loc: unknown[] }).loc).map(String) : []
+    const path = loc[0] === 'body' ? loc.slice(1) : loc
+    if (path[0] !== 'model_prices' || path[1] === undefined) continue
+    const msg = typeof (e as { msg?: unknown }).msg === 'string' ? (e as { msg: string }).msg : error.message
+    const rate = MODEL_PRICE_RATES.find((k) => k === path[2]) ?? (path[2] === 'as_of' ? 'as_of' : undefined)
+    const key = rate === undefined ? path[1] : `${path[1]}/${rate}`
+    fields[key] = fields[key] === undefined ? msg : `${fields[key]}; ${msg}`
+  }
+  return { fields, unattributed: Object.keys(fields).length === 0 ? error.message : null }
+}
+
+// --------------------------------------------------------------------------
 // Fixtures
 // --------------------------------------------------------------------------
 // These are the REAL pool names and the REAL live values read from the dev
@@ -3557,7 +3775,8 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
   "post-verdict": {"required_keys": []},
   "claude-code-review": {"required_keys": ["prompt"]},
   "indexer": {"required_keys": ["prompt"]},
-  "claude-code-browser": {"required_keys": ["prompt"]}
+  "claude-code-browser": {"required_keys": ["prompt"]},
+  "await-input": {"required_keys": []}
 }
 
 /**
@@ -3590,7 +3809,8 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "post-verdict": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
   "claude-code-review": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
   "indexer": {"available": true, "disabled_reason": ""},
-  "claude-code-browser": {"available": true, "disabled_reason": ""}
+  "claude-code-browser": {"available": true, "disabled_reason": ""},
+  "await-input": {"available": true, "disabled_reason": ""}
 }
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {
@@ -3740,7 +3960,7 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
     updated_at: at(Math.max(0, minsAgo - 6)),
     started_at: state === 'QUEUED' || state === 'READY' ? null : at(minsAgo - 1),
     completed_at: ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(state) ? at(minsAgo - 6) : null,
-    submitted_by: 'bogdan@saga.xyz',
+    submitted_by: 'alice@example.com',
     attempt_count: state === 'FAILED' ? 3 : 1,
     max_attempts: 3,
     park_reason: null,
@@ -3971,7 +4191,7 @@ function fixtureWorkflowRows(): Workflow[] {
       },
       created_at: new Date(Date.now() - 30 * 60_000).toISOString(),
       updated_at: new Date().toISOString(),
-      submitted_by: 'bogdan@saga.xyz',
+      submitted_by: 'alice@example.com',
       priority: 0,
       on_step_failure: 'FAIL_WORKFLOW',
       cancel_requested: false,
@@ -4020,7 +4240,7 @@ function fixtureWorkflowRows(): Workflow[] {
         },
         created_at: new Date(Date.now() - 4 * 3600_000).toISOString(),
         updated_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
-        submitted_by: 'bogdan@saga.xyz',
+        submitted_by: 'alice@example.com',
         priority: 0,
         on_step_failure: 'FAIL_WORKFLOW',
         cancel_requested: false,
@@ -4062,7 +4282,7 @@ function fixtureWorkflowRows(): Workflow[] {
         state_source: 'stored',
         created_at: new Date(Date.now() - 6 * 3600_000).toISOString(),
         updated_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
-        submitted_by: 'bogdan@saga.xyz',
+        submitted_by: 'alice@example.com',
         priority: 0,
         on_step_failure: 'FAIL_WORKFLOW',
         cancel_requested: false,
@@ -4121,10 +4341,10 @@ async function fixtureWorkflows(): Promise<Result<WorkflowPage>> {
 // WHICH OF THEM SWARM-API PASSES THROUGH, because this file has been wrong
 // about that in both directions. `routes/accounts.py` registers GET "",
 // POST "", POST /authorize, POST /exchange, POST /{id}/refresh,
-// PUT /{id}/lending, PUT /{id}/state and DELETE /{id}; the `AccountPool`
-// protocol in `brokerclient.py` -- which is "deliberately not a generic HTTP
-// client", so there is no fallthrough -- has a method for each of those and
-// for nothing else.
+// PUT /{id}/lending, PUT /{id}/model-classes, PUT /{id}/state and
+// DELETE /{id}; the `AccountPool` protocol in `brokerclient.py` -- which is
+// "deliberately not a generic HTTP client", so there is no fallthrough -- has
+// a method for each of those and for nothing else.
 //
 // THE TWO SIGN-IN ROUTES ARE AMONG THEM NOW. For one deploy they were not,
 // and this comment carried a long apology for it in place of a proxy; the
@@ -4412,6 +4632,32 @@ export async function setAccountLending(
   return write(route('/v1/accounts/{account_id}/lending', { account_id: accountId }), 'PUT', { lend_to: lendTo })
 }
 
+/**
+ * An account as the broker serves it once it carries `model_classes` (owner
+ * decision R5, 2026-10-17). EMPTY MEANS EVERY CLASS, and so does ABSENT: an
+ * older broker serves no such field, and an account it lists has always
+ * served every class, so reading absent as "none" would claim every step on
+ * it was parked. Local to this file and Accounts.tsx until the field moves
+ * into `Account` in types.ts.
+ */
+export type ServedAccount = Account & { model_classes?: string[] }
+
+/**
+ * `PUT /v1/accounts/{id}/model-classes`. The whole list, not a delta, exactly
+ * like lending -- and `[]` is EVERY class, not none. A step whose class no
+ * account serves waits parked and holds nothing, so narrowing this is never
+ * an outage the platform hides; it is one the Accounts screen has to say.
+ */
+export async function setAccountModelClasses(
+  accountId: string,
+  modelClasses: string[],
+): Promise<Result<unknown>> {
+  if (USE_FIXTURES) return fixtureModelClasses(accountId, modelClasses)
+  return write(route('/v1/accounts/{account_id}/model-classes', { account_id: accountId }), 'PUT', {
+    model_classes: modelClasses,
+  })
+}
+
 /** `PUT /v1/accounts/{id}/state`. `reason` is for the next person, so it is required here. */
 export async function setAccountState(
   accountId: string,
@@ -4493,8 +4739,8 @@ const ISO = (msFromNow: number): string => new Date(Date.now() + msFromNow).toIS
 function fixtureAccount(
   owner: string,
   label: string,
-  extra: Partial<Account> = {},
-): Account {
+  extra: Partial<ServedAccount> = {},
+): ServedAccount {
   return {
     account_id: `${owner}:${label}`,
     owner_tenant: owner,
@@ -4514,11 +4760,13 @@ function fixtureAccount(
     // broker" -- the fixture must not teach that shape as normal. The rows
     // that carry it do so deliberately, below.
     last_assigned_at: ISO(-26 * 60_000),
+    // Every class, which is what a broker that predates the field means too.
+    model_classes: [],
     ...extra,
   }
 }
 
-let fixtureAccounts: Account[] = [
+let fixtureAccounts: ServedAccount[] = [
   fixtureAccount('u-bogdan', 'primary', {
     assigned: 2,
     windows: {
@@ -4784,6 +5032,16 @@ async function fixtureLending(accountId: string, lendTo: string[]): Promise<Resu
     a.account_id === accountId ? { ...a, lend_to: lendTo } : a,
   )
   return { status: 'ok', fetchedAt: Date.now(), data: { ok: true } }
+}
+
+async function fixtureModelClasses(accountId: string, modelClasses: string[]): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 180))
+  const found = fixtureAccounts.find((a) => a.account_id === accountId)
+  if (!found) return fixtureRefused(`no account '${accountId}'`)
+  const account: ServedAccount = { ...found, model_classes: modelClasses }
+  fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? account : a))
+  // The route answers `{"account": ...}`, the same shape lending's does.
+  return { status: 'ok', fetchedAt: Date.now(), data: { account } }
 }
 
 async function fixtureState(
@@ -5786,6 +6044,215 @@ export async function deleteProviderKey(provider: string, scope: ProviderKeyScop
 }
 
 // ---------------------------------------------------------------------------
+// Settings › Profile (docs/design/user-profile.md §4.2; PROFILE-API, PR #1544).
+// Profile.tsx is the only caller. Every field is copied BY NAME from an
+// allow-list, as the API builds it, so a field a response carries by mistake
+// -- a secret's name, a token id, a raw document -- is never drawn. A section
+// the response leaves out stays out (it is named in `unavailable`), and is
+// never filled in with an empty default that would read as "you have none".
+// ---------------------------------------------------------------------------
+
+/** `preferences.TOPICS`, in the API's order. */
+export const NOTIFICATION_TOPICS: readonly NotificationTopic[] = ['approval', 'waiting_step', 'question', 'failed', 'finished', 'account', 'admin']
+
+/** `preferences.REMINDERS`, in the API's order. */
+export const REMINDER_CADENCES: readonly ReminderCadence[] = ['as_set', 'every_4h', 'daily', 'never']
+
+const PROFILE_SECTIONS: readonly ProfileSection[] = ['preferences', 'github', 'typesafe', 'claude_accounts']
+
+function pfObj(v: unknown): Record<string, unknown> | null {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+}
+
+function pfStr(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function pfStrOrNum(v: unknown): string | null {
+  return typeof v === 'number' && Number.isFinite(v) ? String(v) : pfStr(v)
+}
+
+function pfNum(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+function normRole(raw: unknown): WorkspaceRole {
+  const r = pfObj(raw) ?? {}
+  return { name: pfStr(r.name) ?? '', source: pfStr(r.source) ?? '', via: pfStr(r.via) }
+}
+
+function normIdentity(raw: unknown): ProfileIdentity {
+  const r = pfObj(raw) ?? {}
+  return {
+    email: pfStr(r.email) ?? '',
+    display_name: pfStr(r.display_name),
+    display_name_suggested: pfStr(r.display_name_suggested),
+    domain: pfStr(r.domain),
+    platform_role: pfStr(r.platform_role),
+    is_admin: r.is_admin === true,
+    is_admin_unresolved: r.is_admin_unresolved === true,
+  }
+}
+
+function normWorkspace(raw: unknown): ProfileWorkspace | null {
+  const r = pfObj(raw)
+  const tenantId = r === null ? null : pfStr(r.tenant_id)
+  if (r === null || tenantId === null) return null
+  return {
+    tenant_id: tenantId,
+    display_name: pfStr(r.display_name) ?? tenantId,
+    kind: pfStr(r.kind) ?? '',
+    role: normRole(r.role),
+    state: pfStr(r.state),
+    selectable: r.selectable !== false,
+    is_acting: r.is_acting === true,
+    is_default: r.is_default === true,
+  }
+}
+
+function normDefault(raw: unknown): ProfileDefault {
+  const r = pfObj(raw) ?? {}
+  return { tenant_id: pfStr(r.tenant_id), source: pfStr(r.source), ignored: pfStr(r.ignored) }
+}
+
+function normGitHub(raw: unknown): ProfileGitHub | null {
+  const r = pfObj(raw)
+  const tenantId = r === null ? null : pfStr(r.tenant_id)
+  if (r === null || tenantId === null) return null
+  const f = pfObj(r.failure)
+  return {
+    tenant_id: tenantId,
+    state: pfStr(r.state),
+    forge_login: pfStr(r.forge_login),
+    method: pfStr(r.method),
+    access_expires_at: pfStr(r.access_expires_at),
+    refreshed_at: pfStr(r.refreshed_at),
+    failure: f === null ? null : { code: pfStr(f.code), recovery: pfStr(f.recovery) },
+  }
+}
+
+function normProfileKey(raw: unknown): ProfileKeyStatus {
+  const r = pfObj(raw) ?? {}
+  return { set: r.set === true, set_at: pfStr(r.set_at), set_by: pfStr(r.set_by), version: pfStrOrNum(r.version) }
+}
+
+function normTypeSafe(raw: unknown): ProfileTypeSafe {
+  const r = pfObj(raw) ?? {}
+  const acting = pfObj(r.acting_workspace) ?? {}
+  return {
+    personal: pfObj(r.personal) === null ? null : normProfileKey(r.personal),
+    acting_workspace: { ...normProfileKey(acting), tenant_id: pfStr(acting.tenant_id) ?? '' },
+    uses: r.uses === 'user' || r.uses === 'tenant' ? r.uses : 'none',
+  }
+}
+
+function normTopics(raw: unknown): NotificationTopic[] {
+  const given = Array.isArray(raw) ? raw : []
+  return NOTIFICATION_TOPICS.filter((t) => given.includes(t))
+}
+
+function normPreferencesSet(raw: unknown): Preferences {
+  const r = pfObj(raw) ?? {}
+  const reminder = REMINDER_CADENCES.find((c) => c === r.reminder) ?? 'as_set'
+  return { muted: normTopics(r.muted), reminder }
+}
+
+function normNotifications(raw: unknown): ProfileNotifications {
+  const r = pfObj(raw) ?? {}
+  const topics = normTopics(r.topics)
+  return { preferences: normPreferencesSet(r.preferences), topics: topics.length === 0 ? [...NOTIFICATION_TOPICS] : topics }
+}
+
+function normWindow(raw: unknown): ProfileQuotaWindow | undefined {
+  const r = pfObj(raw)
+  return r === null ? undefined : { utilization: pfNum(r.utilization), resets_at: pfStr(r.resets_at) }
+}
+
+function normAccount(raw: unknown): ProfileClaudeAccount | null {
+  const r = pfObj(raw)
+  if (r === null || (r.relation !== 'own' && r.relation !== 'borrowed')) return null
+  const w = pfObj(r.windows) ?? {}
+  const windows: ProfileClaudeAccount['windows'] = {}
+  const five = normWindow(w.five_hour)
+  const seven = normWindow(w.seven_day)
+  if (five !== undefined) windows.five_hour = five
+  if (seven !== undefined) windows.seven_day = seven
+  return {
+    account_id: pfStr(r.account_id),
+    label: pfStr(r.label),
+    relation: r.relation,
+    state: pfStr(r.state),
+    windows,
+    lent_to_count: pfNum(r.lent_to_count),
+    // An account with no freshness flag is not claimed fresh.
+    stale: r.stale !== false,
+  }
+}
+
+function normClaudeAccounts(raw: unknown): ProfileClaudeAccounts {
+  const r = pfObj(raw) ?? {}
+  const list = Array.isArray(r.accounts) ? r.accounts : []
+  return {
+    personal_workspace: pfStr(r.personal_workspace),
+    accounts: list.map(normAccount).filter((a): a is ProfileClaudeAccount => a !== null),
+    unreadable_document_count: pfNum(r.unreadable_document_count) ?? 0,
+  }
+}
+
+function pfPresent<T>(v: T | null): v is T {
+  return v !== null
+}
+
+export function normProfile(raw: unknown): Profile {
+  const r = pfObj(raw) ?? {}
+  const unavailable = Array.isArray(r.unavailable) ? PROFILE_SECTIONS.filter((s) => (r.unavailable as unknown[]).includes(s)) : []
+  const c = pfObj(r.connections) ?? {}
+  const connections: Profile['connections'] = {}
+  if (Array.isArray(c.github)) connections.github = c.github.map(normGitHub).filter(pfPresent)
+  if (pfObj(c.typesafe) !== null) connections.typesafe = normTypeSafe(c.typesafe)
+  const profile: Profile = {
+    identity: normIdentity(r.identity),
+    workspaces: Array.isArray(r.workspaces) ? r.workspaces.map(normWorkspace).filter(pfPresent) : [],
+    default_workspace: normDefault(r.default_workspace),
+    connections,
+    revision: pfNum(r.revision),
+    unavailable,
+  }
+  if (pfObj(r.notifications) !== null) profile.notifications = normNotifications(r.notifications)
+  if (pfObj(r.claude_accounts) !== null) profile.claude_accounts = normClaudeAccounts(r.claude_accounts)
+  return profile
+}
+
+function normPreferencesSaved(raw: unknown): PreferencesSaved {
+  const r = pfObj(raw) ?? {}
+  const id = pfObj(r.identity) ?? {}
+  return {
+    identity: { display_name: pfStr(id.display_name), display_name_suggested: pfStr(id.display_name_suggested) },
+    default_workspace: normDefault(r.default_workspace),
+    notifications: normNotifications(r.notifications),
+    revision: pfNum(r.revision) ?? 0,
+  }
+}
+
+/** `GET /v1/profile`: the signed-in person's own profile, each section failing alone. */
+export async function loadProfile(): Promise<Result<Profile>> {
+  return readAs(route('/v1/profile'), normProfile)
+}
+
+/**
+ * `PUT /v1/profile/preferences`: replace the whole set at `body.revision`. A
+ * stale revision is a 409 `preferences_changed` (another tab saved first); a
+ * refused name is a 422 with its `display_name_*` code and a message that names
+ * the rule.
+ */
+export async function putPreferences(body: PreferencesWrite): Promise<Result<PreferencesSaved>> {
+  const r = await writeTo(route('/v1/profile/preferences'), 'PUT', body)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPreferencesSaved(r.data) }
+  if (r.status === 'empty') return { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The save answered with nothing to read back. Reload to see what was stored.', method: 'PUT' } }
+  return r
+}
+
+// ---------------------------------------------------------------------------
 // The workspace's Jev judgment backend (JUDGE-SELECT; swarm_api/judgment.py).
 // Internal Jev is the default; Internal Laya and TypeSafe are the others. The
 // backend is chosen BY NAME: no URL or key goes in the PUT body.
@@ -6230,6 +6697,44 @@ export async function setWorkspaceCeiling(workspaceId: string, maxActive: number
   >
 }
 
+// Workspace kinds (#847, lanes WK-RECORD and WK-UI-DIALOG; docs/design/workspace-kinds.md §4.2.2). An admin files a
+// personal, group or service workspace and follows its job. The routes are routes/people.py's; a record is addressed
+// by its `w-` id, and the list's filters are a kind and a state, so no URL names an email.
+
+/** A record as `people._admin_view` serves it, with an absent `kind` read as `personal` (`workspaces.kind_of`). */
+export function normAdminWorkspace(raw: unknown): AdminWorkspaceView {
+  const rec = (typeof raw === 'object' && raw !== null ? raw : {}) as AdminWorkspaceView
+  return { ...rec, kind: rec.kind ?? 'personal' }
+}
+
+/**
+ * `POST /v1/admin/workspaces` (admin): file a workspace of any kind. 202 when this call made the record (already
+ * `approved` when the requester may approve it), 200 when one already stood; the record either way. A refusal is the
+ * API's code and sentence (design §4.2.3), drawn as it came.
+ */
+export async function createAdminWorkspace(body: NewWorkspaceBody): Promise<Result<AdminWorkspaceView>> {
+  const r = await writeTo(route('/v1/admin/workspaces'), 'POST', body)
+  return r.status === 'ok' ? { ...r, data: normAdminWorkspace(r.data) } : (r as Result<AdminWorkspaceView>)
+}
+
+/** `GET /v1/admin/workspaces/{workspace_id}` (admin): one record, for the dialog's progress view. */
+export async function loadAdminWorkspace(workspaceId: string): Promise<Result<AdminWorkspaceView>> {
+  return readAs(route('/v1/admin/workspaces/{workspace_id}', { workspace_id: workspaceId }), (raw) =>
+    normAdminWorkspace((raw as { workspace?: unknown } | null)?.workspace),
+  )
+}
+
+/** `GET /v1/admin/workspaces?kind=&state=` (admin): records, newest first, at most 200 -- Admin › Tenants' "Being created". */
+export async function loadAdminWorkspaces(filter: { kind?: WorkspaceKind; state?: Exclude<WorkspaceState, 'none'> } = {}): Promise<Result<AdminWorkspaceView[]>> {
+  const q = new URLSearchParams()
+  if (filter.kind !== undefined) q.set('kind', filter.kind)
+  if (filter.state !== undefined) q.set('state', filter.state)
+  return readAs(route('/v1/admin/workspaces', {}, q.toString() === '' ? undefined : q), (raw) => {
+    const rows = (raw as { workspaces?: unknown } | null)?.workspaces
+    return Array.isArray(rows) ? rows.map(normAdminWorkspace) : []
+  })
+}
+
 /** `PUT /v1/admin/people/{workspace_id}/loan` (admin): lend an account to the person (`lend: true`) or reclaim it. */
 export async function setWorkspaceLoan(workspaceId: string, accountId: string, lend: boolean): Promise<Result<WorkspaceLoanAnswer>> {
   return writeTo(route('/v1/admin/people/{workspace_id}/loan', { workspace_id: workspaceId }), 'PUT', { account_id: accountId, lend }) as Promise<
@@ -6259,6 +6764,182 @@ export async function removeAdmin(email: string): Promise<Result<AdminRemoveAnsw
 }
 
 // ---------------------------------------------------------------------------
+// Workspace roles (docs/design/workspace-roles.md §4.3, lane ROLES-UI-PEOPLE;
+// part of #1518).
+//
+// The routes are swarm_api/routes/roles.py. THE EMAIL IS IN THE BODY, never
+// the path, so an address lands in no request log -- `DELETE` included. The
+// workspace's own routes act in the tenant `X-Swarm-Tenant` selects; the
+// admin's, under the admin prefix (Admin › People), name a group workspace in the
+// path and act without switching to it. Every write carries `via: "console"`,
+// which the server shows beside it and never acts on (a platform admin's is
+// recorded `platform_admin` whatever it says). The fixture build answers each
+// as not served.
+// ---------------------------------------------------------------------------
+
+function isObj(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+function str(v: unknown): string {
+  return typeof v === 'string' ? v : ''
+}
+
+function strOrNull(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function normOverride(raw: unknown): WorkspaceRoleOverride | null {
+  if (!isObj(raw) || str(raw.email) === '') return null
+  return {
+    email: str(raw.email),
+    role: str(raw.role),
+    source: str(raw.source) || 'override',
+    granted_by: str(raw.granted_by),
+    granted_at: str(raw.granted_at),
+    granted_via: str(raw.granted_via),
+    reason: str(raw.reason),
+  }
+}
+
+function normEvent(raw: unknown): WorkspaceRoleEvent | null {
+  if (!isObj(raw) || str(raw.action) === '') return null
+  const target = strOrNull(raw.target_email)
+  return {
+    action: str(raw.action),
+    by: str(raw.by),
+    at: str(raw.at),
+    ...(target === null ? {} : { target_email: target }),
+    detail: isObj(raw.detail) ? raw.detail : {},
+  }
+}
+
+function normSummary(raw: unknown): RoleSummary | null {
+  return isObj(raw) && str(raw.name) !== '' ? { name: str(raw.name), summary: str(raw.summary) } : null
+}
+
+function list<T>(raw: unknown, norm: (v: unknown) => T | null): T[] {
+  return (Array.isArray(raw) ? raw : []).map(norm).filter((v): v is T => v !== null)
+}
+
+/** A workspace's roster, as either the workspace's or the admin's route serves it. */
+export function normWorkspaceRoster(raw: unknown): WorkspaceRoster {
+  const r = isObj(raw) ? raw : {}
+  return {
+    tenant_id: str(r.tenant_id),
+    // Only an explicit `user` is a personal workspace: the fixed-admin line is
+    // drawn on the server's word, never on a guess from the id.
+    kind: r.kind === 'user' ? 'user' : 'group',
+    default_role: strOrNull(r.default_role),
+    default_source: strOrNull(r.default_source),
+    people: list(r.people, normOverride),
+    roles: list(r.roles, normSummary),
+    audit: list(r.audit, normEvent),
+  }
+}
+
+export function normWorkspaceRoles(raw: unknown): WorkspaceRoles {
+  const r = isObj(raw) ? raw : {}
+  const me = isObj(r.me) ? r.me : {}
+  const mine: WorkspaceRoleMe = { email: str(me.email), role: str(me.role), source: str(me.source), via: str(me.via) }
+  if (strOrNull(me.granted_by) !== null) mine.granted_by = str(me.granted_by)
+  if (strOrNull(me.granted_at) !== null) mine.granted_at = str(me.granted_at)
+  // Only an explicit true manages: an unread flag is never offered controls.
+  return { ...normWorkspaceRoster(raw), me: mine, can_manage: r.can_manage === true }
+}
+
+/** `GET /v1/workspace/roles`: the selected workspace's default, overrides, roles and events, and the caller's own role (every role, Q7). */
+export async function loadWorkspaceRoles(): Promise<Result<WorkspaceRoles>> {
+  return readAs(route('/v1/workspace/roles'), normWorkspaceRoles)
+}
+
+/** `PUT /v1/workspace/roles/person` (admin): give one person their own role. */
+export async function setWorkspacePersonRole(email: string, role: string, reason = ''): Promise<Result<PersonRoleChange>> {
+  return writeTo(route('/v1/workspace/roles/person'), 'PUT', roleBody({ email: email.trim(), role }, reason)) as Promise<Result<PersonRoleChange>>
+}
+
+/** `DELETE /v1/workspace/roles/person` (admin): return one person to the default. */
+export async function clearWorkspacePersonRole(email: string, reason = ''): Promise<Result<PersonRoleChange>> {
+  return writeTo(route('/v1/workspace/roles/person'), 'DELETE', roleBody({ email: email.trim() }, reason)) as Promise<Result<PersonRoleChange>>
+}
+
+/** `PUT /v1/workspace/roles/default` (admin): `viewer` or `member`; `admin` is 409. */
+export async function setWorkspaceDefaultRole(role: string, reason = ''): Promise<Result<DefaultRoleChange>> {
+  return writeTo(route('/v1/workspace/roles/default'), 'PUT', roleBody({ role }, reason)) as Promise<Result<DefaultRoleChange>>
+}
+
+/** `GET /v1/admin/workspaces/{tenant_id}/roles` (platform admin): any registered group workspace's roster, without selecting it. */
+export async function loadAdminWorkspaceRoles(tenantId: string): Promise<Result<WorkspaceRoster>> {
+  return readAs(route('/v1/admin/workspaces/{tenant_id}/roles', { tenant_id: tenantId }), normWorkspaceRoster)
+}
+
+/** One page's entries as `AdminWorkspaceRoles`: an entry without an id is dropped, and only an explicit `unavailable` withholds the roster. */
+export function normAdminWorkspaceRolesPage(raw: unknown): AdminWorkspaceRolesPage {
+  const r = isObj(raw) ? raw : {}
+  const roles = r.roles
+  const workspaces = (Array.isArray(r.workspaces) ? r.workspaces : []).flatMap((w): AdminWorkspaceRoles[] => {
+    if (!isObj(w) || str(w.tenant_id) === '') return []
+    const head = { tenant_id: str(w.tenant_id), group: str(w.group), registered_by: str(w.registered_by) }
+    if (w.unavailable === true) return [{ ...head, roster: null, unavailable: { code: str(w.code), message: str(w.message) } }]
+    // The page carries the role table once; each roster is read with it.
+    return [{ ...head, roster: normWorkspaceRoster({ ...w, roles, audit: [] }), unavailable: null }]
+  })
+  return { workspaces, next_page_token: strOrNull(r.next_page_token) }
+}
+
+/**
+ * `GET /v1/admin/workspaces/roles` (platform admin): every registered group
+ * workspace's default and overrides, a page at a time -- one read per page,
+ * never one per workspace. `pageToken` is the previous page's `next_page_token`.
+ */
+export async function loadAdminWorkspacesRoles(pageToken: string | null = null): Promise<Result<AdminWorkspaceRolesPage>> {
+  const q = pageToken === null ? undefined : new URLSearchParams({ page_token: pageToken })
+  return readAs(route('/v1/admin/workspaces/roles', {}, q), normAdminWorkspaceRolesPage, (d) => d.workspaces.length === 0)
+}
+
+/** `PUT /v1/admin/workspaces/{tenant_id}/roles/person` (platform admin): how a group workspace's first admin is named (Q2). */
+export async function setAdminWorkspacePersonRole(tenantId: string, email: string, role: string, reason = ''): Promise<Result<PersonRoleChange>> {
+  return writeTo(route('/v1/admin/workspaces/{tenant_id}/roles/person', { tenant_id: tenantId }), 'PUT', roleBody({ email: email.trim(), role }, reason)) as Promise<
+    Result<PersonRoleChange>
+  >
+}
+
+/** `DELETE /v1/admin/workspaces/{tenant_id}/roles/person` (platform admin). */
+export async function clearAdminWorkspacePersonRole(tenantId: string, email: string, reason = ''): Promise<Result<PersonRoleChange>> {
+  return writeTo(route('/v1/admin/workspaces/{tenant_id}/roles/person', { tenant_id: tenantId }), 'DELETE', roleBody({ email: email.trim() }, reason)) as Promise<
+    Result<PersonRoleChange>
+  >
+}
+
+/** `PUT /v1/admin/workspaces/{tenant_id}/roles/default` (platform admin). */
+export async function setAdminWorkspaceDefaultRole(tenantId: string, role: string, reason = ''): Promise<Result<DefaultRoleChange>> {
+  return writeTo(route('/v1/admin/workspaces/{tenant_id}/roles/default', { tenant_id: tenantId }), 'PUT', roleBody({ role }, reason)) as Promise<
+    Result<DefaultRoleChange>
+  >
+}
+
+/** `GET /v1/admin/roles/person?email=` (platform admin): every override one person holds, across the group workspaces. */
+export async function loadAdminPersonRoles(email: string): Promise<Result<PersonRoles>> {
+  const q = new URLSearchParams({ email: email.trim() })
+  return readAs(route('/v1/admin/roles/person', {}, q), (raw): PersonRoles => {
+    const r = isObj(raw) ? raw : {}
+    const workspaces = (Array.isArray(r.workspaces) ? r.workspaces : []).flatMap((w): PersonWorkspaceRole[] => {
+      if (!isObj(w) || str(w.tenant_id) === '') return []
+      if (w.unavailable === true) return [{ tenant_id: str(w.tenant_id), group: str(w.group), unavailable: true }]
+      const o = normOverride(w)
+      return o === null ? [] : [{ ...o, tenant_id: str(w.tenant_id), group: str(w.group), ...(strOrNull(w.key) === null ? {} : { key: str(w.key) }) }]
+    })
+    return { email: str(r.email), workspaces }
+  })
+}
+
+/** A role write's body: the reason only when one was given, and where it was made. */
+function roleBody(fields: Record<string, string>, reason: string): Record<string, string> {
+  const why = reason.trim()
+  return { ...fields, ...(why === '' ? {} : { reason: why }), via: 'console' }
+}
+
+// ---------------------------------------------------------------------------
 // The access API (#780, OB4), read and written by the Access page (OB8).
 //
 // The routes are swarm_api/routes/access.py. Each acts as the caller with
@@ -6269,6 +6950,17 @@ export async function removeAdmin(email: string): Promise<Result<AdminRemoveAnsw
 /** `GET /v1/access`: the caller's connection, enabled owners and grants (no GitHub read). */
 export async function loadAccess(): Promise<Result<AccessOverview>> {
   return readAs(route('/v1/access'), (raw) => raw as AccessOverview)
+}
+
+/**
+ * The GitHub App's name as the console says it: the display name the API
+ * serves as `app_name` (the deployment's GITHUB_APP_NAME), or, when it serves
+ * none, "the SwarmCloud GitHub App". Never a hard-coded deployment's name
+ * (#1647).
+ */
+export function githubAppName(served: unknown): string {
+  const name = typeof served === 'string' ? served.trim() : ''
+  return name !== '' ? name : 'the SwarmCloud GitHub App'
 }
 
 /** `GET /v1/access/orgs`: every owner the caller's connection reaches, each with its install state. */
@@ -6515,6 +7207,13 @@ export interface ApprovalItem {
   requested_at: string | null
   expires_at: string | null
   projected?: boolean
+  /**
+   * The approvers' display names, index for index with `approvers`
+   * (`people.add_names`, user-profile.md §4.4): served on the inbox rows and
+   * the detail alike. null when `approvers` is a rule such as `members`; a
+   * member who set no name is a null entry; absent from an older API.
+   */
+  approver_names?: (string | null)[] | null
 }
 
 /** `GET /v1/schedules`: the tenant's schedules, by name. */
@@ -6573,6 +7272,8 @@ export interface ApprovalDetail {
     approvers?: unknown
     hold?: { code?: string; approvers?: string; matched?: string[]; reasons?: string[] } | null
     decided_by?: string | null
+    /** The decider's display name: null when they set none or `decided_by` is not a person (`approval-expiry`). */
+    decided_by_name?: string | null
     decided_at?: string | null
     reason?: string | null
   }

@@ -64,12 +64,14 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import zlib
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 #: The checks, in the order live-browser.sh lists them.
@@ -815,7 +817,23 @@ def not_run_reason(state: str) -> tuple[str, str]:
     if state.startswith("HELD:"):
         return "SKIP", (f"not measured: admission held the task without leasing it ({state[5:]}) "
                         "-- a closed pool or a limit, not a result")
-    return "FAIL", f"the task did not finish in time (last state {state})"
+    # The group writes `<state>[:<park_reason>[:eligible again at <when>]]`
+    # (live_browser_stuck in live-browser.sh), so the verdict says which park.
+    name, _, why = state.partition(":")
+    park_reason, _, when = why.partition(":")
+    if name == "PARKED" and park_reason == "HUMAN_REQUIRED":
+        # swarm_api.handoff: the hold ended with nobody in control (unwatched
+        # for human_unwatched_seconds, or the gate's channel dropped), the
+        # worker parked, and only a person's "I'm ready" promotes it.
+        return "FAIL", ("the task was PARKED on HUMAN_REQUIRED when the wait ended: its hand-off hold "
+                        "ran out with nobody in control and the worker parked it, which only a "
+                        "person's \"I'm ready\" undoes")
+    detail = f"park_reason {park_reason}" if park_reason else "no park_reason"
+    if when:
+        detail += f", {when}"
+    if name != "PARKED":
+        detail = "not parked"
+    return "FAIL", f"the task was still {name} when the wait ended ({detail})"
 
 
 class Viewer:
@@ -934,9 +952,41 @@ def check_isolation(api: Api, cfg: Config, session: dict, results: Results) -> N
                 f"answered 404, and a ticket re-pointed at {other} was refused on the socket ({code})")
 
 
-def drive_viewer(api: Api, cfg: Config, session: dict, password: str,
-                 results: Results) -> FrameTally | None:
-    """Watch, take control, click the field, type, submit, return control."""
+#: The longest the probes run beside the viewer before it goes on without
+#: them: six API calls of 30 s each at worst, and a socket held 20 s.
+PROBE_SECONDS = 240.0
+
+
+def watch_while(viewer: Viewer, work: Callable[[], None], seconds: float = PROBE_SECONDS) -> None:
+    """Run `work` on a thread while this viewer goes on reading its socket.
+
+    A person with the view open keeps receiving it. Called inline, the probes
+    left the socket unread for as long as they took (six API calls and a
+    socket that may wait 20 s): no frame request was answered, nothing was
+    read off the wire, and the viewer swarm-api counts as watching was, for
+    that time, a connection nobody served (LIVEBROWSER-WATCH, #1333). What
+    `work` raises is raised here, after the viewer has read what came."""
+    raised: list[BaseException] = []
+
+    def body() -> None:
+        try:
+            work()
+        except BaseException as exc:  # noqa: BLE001 -- re-raised on this thread
+            raised.append(exc)
+
+    thread = threading.Thread(target=body, name="live-browser-probe", daemon=True)
+    thread.start()
+    viewer.pump(seconds, lambda: not thread.is_alive())
+    thread.join(seconds)
+    if raised:
+        raise raised[0]
+
+
+def drive_viewer(api: Api, cfg: Config, session: dict, password: str, results: Results,
+                 while_watching: Callable[[], None] | None = None) -> FrameTally | None:
+    """Watch, take control, click the field, type, submit, return control.
+    `while_watching` runs once the page is on screen, before control is
+    taken, with this viewer's socket open (so the hold is held)."""
     t = cfg.task
     status, minted = api.call("POST", f"/v1/tasks/{t}/live/ticket", {})
     if status != 200 or not isinstance(minted, dict) or not minted.get("ticket"):
@@ -963,6 +1013,8 @@ def drive_viewer(api: Api, cfg: Config, session: dict, password: str,
                         f"90 s ({viewer.rfb.updates} updates; {watching.no_page} without the page; leaks "
                         f"{watching.leaks or 'none'}; socket close code {ws.close_code})")
             return watching
+        if while_watching is not None:
+            watch_while(viewer, while_watching)
         status, taken = api.call("POST", f"/v1/tasks/{t}/live/control", {})
         if status != 200:
             results.put("frames", "FAIL", f"take control answered {status}: "
@@ -1230,6 +1282,107 @@ def sweep(api: Api, cfg: Config, gcs: Gcs | None, password: str, results: Result
     return outputs
 
 
+def _instant(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def read_deadline(api: Api, cfg: Config) -> str | None:
+    """The open hand-off's deadline as GET /live/session serves it now."""
+    status, view = api.call("GET", f"/v1/tasks/{cfg.task}/live/session")
+    session = view.get("session") if status == 200 and isinstance(view, dict) else None
+    wait = session.get("human_wait") if isinstance(session, dict) else None
+    deadline = wait.get("deadline") if isinstance(wait, dict) else None
+    return deadline if isinstance(deadline, str) else None
+
+
+@dataclass
+class Hold:
+    """The hand-off's deadline as this viewer read it: as the agent's request
+    announced it, right after this viewer's join, and once the probes were
+    done, before control was taken.
+
+    A verdict of PARKED on HUMAN_REQUIRED said only that the hold ran out
+    with nobody in control, and three different defects end that way: the
+    join not counted as watching (swarm-api's `LiveService.watched`), the
+    socket gone before control was taken, or the worker parking a hold that
+    was being watched (an expiry it misjudged, or `gate_lost`). The scheduled
+    runs of 2026-10-15..19 could not be told apart (#1333); these readings,
+    with the task's own events (`explain_human_park`), say which.
+
+    The join's reading is exact, not a race: swarm-api's socket relays no
+    frame until the join's `watched` has returned (`_Proxy.run`), so a read
+    made after the first frame sees what the join wrote."""
+
+    opened: str | None
+    joined: str | None = None
+    before_control: str | None = None
+
+    def counted(self) -> bool | None:
+        """Whether the join moved the deadline; None when it was not read."""
+        opened, joined = _instant(self.opened), _instant(self.joined)
+        if opened is None or joined is None:
+            return None
+        return joined > opened
+
+    def describe(self) -> str:
+        if self.opened is None:
+            return "the hand-off was announced with no deadline"
+        counted = self.counted()
+        if counted is None:
+            return (f"the hold opened to {self.opened}, and its deadline was not read after this "
+                    "viewer's join")
+        if not counted:
+            return (f"this viewer's join did NOT move the hold's deadline: it stayed {self.opened}, so "
+                    "swarm-api did not count the join as watching (LiveService.watched)")
+        said = f"this viewer's join moved the hold's deadline from {self.opened} to {self.joined}"
+        if self.before_control is not None:
+            said += f", and it stood at {self.before_control} before control was taken"
+        return said
+
+
+def explain_human_park(events: list[dict], hold: Hold | None) -> str:
+    """Which way a hand-off ended in PARKED(HUMAN_REQUIRED), from the task's
+    own events: how many times the agent asked, what each resolved hold
+    recorded of a viewer and of control (swarm-api's funnel, in seconds from
+    the request), the worker's park cause (`hold_expired` or `gate_lost`),
+    and whether a return re-queued the task so that a later attempt asked
+    again with nobody watching."""
+    def detail(event: dict) -> dict:
+        value = event.get("detail")
+        return value if isinstance(value, dict) else {}
+
+    asked = sum(1 for e in events if e.get("type") == "human_handoff_requested")
+    said = [f"the agent asked for help {asked} time(s)"]
+    for event in events:
+        if event.get("type") != "human_handoff_resolved":
+            continue
+        d = detail(event)
+        funnel = d.get("funnel") if isinstance(d.get("funnel"), dict) else {}
+        viewer = funnel.get("first_viewer_s")
+        control = funnel.get("control_taken_s")
+        said.append(
+            f"a hold of attempt {event.get('attempt_id') or d.get('attempt_id')} resolved "
+            f"{d.get('outcome')} after {d.get('held_seconds')} s, "
+            + ("with no viewer counted" if viewer is None else f"a viewer counted at {viewer} s")
+            + ("" if control is None else f", control taken at {control} s"))
+    for event in events:
+        d = detail(event)
+        if event.get("type") == "parked" and d.get("park_phase") == "human_wait":
+            said.append(f"the worker of attempt {event.get('attempt_id')} parked on {d.get('cause')}")
+        elif event.get("type") == "ready" and d.get("reason") == "human_returned":
+            said.append("a return of control re-queued the task after its park (LB-RETURN), so a "
+                        "later attempt ran and asked again")
+    if hold is not None:
+        said.append(hold.describe())
+    return "; ".join(said)
+
+
 def wait_for_handoff(api: Api, cfg: Config) -> tuple[dict | None, str | None]:
     """(the live session view, None) once the agent has asked, or (None, the
     state the task settled on) when it ended or stopped being waited on first."""
@@ -1260,6 +1413,10 @@ def run(cfg: Config) -> None:
             assert state is not None
             if state not in TERMINAL:
                 verdict, reason = not_run_reason(state)
+                if state.startswith("PARKED:HUMAN_REQUIRED"):
+                    # It parked before this viewer ever saw the hand-off open.
+                    events, _ = all_events(api, cfg.task)
+                    reason += "; " + explain_human_park(events, None)
                 results.put("handoff", verdict, reason)
                 results.rest("SKIP", "not measured: the task never asked for help (see the hand-off check)")
                 return
@@ -1279,11 +1436,31 @@ def run(cfg: Config) -> None:
         results.put("handoff", "PASS", f"the agent asked for help ({wait.get('reason')!r}); session "
                     f"{session.get('session_id')} is open and this submitter may take control: "
                     f"{bool((session.get('you') or {}).get('can_control'))}")
-        check_isolation(api, cfg, session, results)
-        tally = drive_viewer(api, cfg, session, password, results)
+        # The viewer joins first and the probes run while it watches: the
+        # socket's join is what swarm-api counts as someone watching
+        # (LiveService.watched), and an unwatched hold ends after 60 s
+        # (human_unwatched_seconds). Probed first, the minute went on six API
+        # calls and a socket that may wait 20 s, and the task parked on
+        # HUMAN_REQUIRED (LIVEBROWSER-SCHED, #1333).
+        probed: list[bool] = []
+        hold = Hold(opened=wait.get("deadline") if isinstance(wait.get("deadline"), str) else None)
+
+        def probe() -> None:
+            probed.append(True)
+            hold.joined = read_deadline(api, cfg)
+            check_isolation(api, cfg, session, results)
+            hold.before_control = read_deadline(api, cfg)
+            log(hold.describe())
+
+        tally = drive_viewer(api, cfg, session, password, results, while_watching=probe)
+        if not probed:  # the viewer stopped before the page was on screen
+            check_isolation(api, cfg, session, results)
         state = wait_settled(cfg, cfg.timeout + 120)
         if state is None or state not in TERMINAL:
             verdict, reason = not_run_reason(state or "RUNNING")
+            if (state or "").startswith("PARKED:HUMAN_REQUIRED"):
+                events, _ = all_events(api, cfg.task)
+                reason += "; " + explain_human_park(events, hold)
             results.put("returned", verdict, reason)
         outputs = sweep(api, cfg, gcs, password, results)
         check_recording(cfg, gcs, tally, results)
@@ -1294,6 +1471,27 @@ def run(cfg: Config) -> None:
         raise
     finally:
         results.rest("FAIL", "not judged")
+
+
+def test_a_settle_that_stopped_short_is_judged_by_its_state_and_park_reason() -> None:
+    """pytest's entry (as test_caller_mcp.py's), offline and standard library
+    only: what the group writes when its wait stops short becomes a SKIP only
+    when the platform holds the task, and every FAIL names the state and the
+    park, never just "did not finish in time" (#1333). The full matrix is in
+    tests/unit/scripts/test_live_browser_acceptance.py."""
+    assert not_run_reason("PARKED:CREDENTIAL_MISSING")[0] == "SKIP"
+    assert not_run_reason("HELD:QUEUED:pool-gke MANUAL_PAUSE limit 0")[0] == "SKIP"
+    for state, words in (
+        ("PARKED:HUMAN_REQUIRED", ("PARKED", "HUMAN_REQUIRED", "nobody in control")),
+        ("PARKED:PROVIDER_COOLDOWN:eligible again at 2026-10-19T05:40:00Z",
+         ("park_reason PROVIDER_COOLDOWN", "eligible again at 2026-10-19T05:40:00Z")),
+        ("PARKED", ("PARKED", "no park_reason")),
+        ("RUNNING", ("still RUNNING", "not parked")),
+    ):
+        verdict, reason = not_run_reason(state)
+        assert verdict == "FAIL", state
+        assert "did not finish in time" not in reason, reason
+        assert all(word in reason for word in words), (state, reason)
 
 
 def _read_once(path: str | None) -> str | None:

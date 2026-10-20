@@ -46,8 +46,11 @@ from .inspect import InspectionService
 from .metrics import ApiMetrics
 from .objects import ObjectReader, build_object_reader
 from .outcomes import Outcomes
+from .preferences import build_preferences
 from .purge import ArtifactPurger, build_artifact_purger
+from .roles import RoleStore
 from .ratelimit import TokenBucketLimiter
+from .registry import WorkspaceRegistry
 from .rollup import WorkflowRollups
 from .service import SubmissionService
 from .specsigning import SpecSigner, signer_from_settings
@@ -117,6 +120,15 @@ class AppContext:
     #: for a few minutes (`swarm_api.startup`). Per app, never at import.
     startup_estimates: StartupEstimates = field(default_factory=StartupEstimates)
     now: Callable[[], Any] = utcnow
+    #: Workspace roles (`swarm_api.roles`, docs/design/workspace-roles.md):
+    #: the grant reader and its 15 s cache, the gate other routes call, and
+    #: the platform-admin audit `current_auth` runs. Per app, so its caches
+    #: are per instance; built from this context when not given.
+    roles: RoleStore | None = None
+
+    def __post_init__(self) -> None:
+        if self.roles is None:
+            self.roles = RoleStore(self.db, self.settings, metrics=self.metrics, now=self.now)
 
     def ready(self) -> tuple[bool, str]:
         """Readiness is a real Firestore round trip, not a hard-coded 200.
@@ -141,6 +153,13 @@ def build_firestore(settings: ApiSettings) -> Any:
         project=settings.project_id,
         database=settings.core.firestore_database,
     )
+
+
+def _configured_preferences(db: Any, settings: ApiSettings) -> Any:
+    """The preferences store for the Authenticator, or None when no child key
+    is configured (see the call site)."""
+    prefs = build_preferences(db, settings)
+    return prefs if prefs.configured else None
 
 
 def build_context(
@@ -211,6 +230,20 @@ def build_context(
         # A person's own ready personal workspace is their default tenant
         # (#1200); read from the same named database.
         personal=PersonalTenants(db),
+        # The `ready` job-made group and service records (docs/design/
+        # workspace-kinds.md §4.4), from the same named database. Without it
+        # every request reads the empty registry and no job-made workspace
+        # ever resolves or admits anyone.
+        registry=WorkspaceRegistry.from_settings(db, settings),
+        # A person's saved default workspace (docs/design/user-profile.md §4.5):
+        # without it `_with_default` returns at its first line and a request
+        # naming no workspace acts in the personal one, whatever the person
+        # saved in Settings › Profile (measured 2026-10-19 on SwarmCloud).
+        # Only when a child key is configured: with none, no preference can be
+        # read, and an unreadable default is a 503 for every request naming no
+        # workspace (Q9) -- right for an outage, wrong for a deployment that
+        # never had the key, which keeps today's computed default instead.
+        preferences=_configured_preferences(db, settings),
     )
     spec_signer = signer_from_settings(settings) if signer is _MISSING else signer
     # Built before the submissions service, which reads a `merge_pr` workflow's
@@ -379,6 +412,19 @@ def current_auth(
     # scope until someone adds it to `auth.CONTINUATION_ROUTES`. Before the
     # limiter: a request that was never allowed costs the caller no budget.
     require_continuation_route(auth, route)
+    # THE PLATFORM-ADMIN AUDIT (docs/design/workspace-roles.md §4.2.4, Q12):
+    # here, so every route reaches it -- directly, or through `tenant_scope`/
+    # `admin_auth` -- and a route added tomorrow is covered without anyone
+    # remembering. A platform admin acting in a group workspace they are not a
+    # member of, or one whose own role there is below what the route needs,
+    # has an `admin_audit` row written BEFORE the route body runs; a row that
+    # cannot be written is 503 and the route never runs. Before the limiter,
+    # as the continuation check: a refused request costs no budget.
+    acted = ctx.roles.audit_platform_admin(  # type: ignore[union-attr]
+        auth, method=request.method, route=path, path_params=dict(request.path_params))
+    if acted is not None:
+        # `main.observe` logs the response status on the same request.
+        request.state.platform_admin = (acted, auth.tenant_id, path or "unknown")
     try:
         ctx.limiter.check(auth.principal.email)
     except Exception:

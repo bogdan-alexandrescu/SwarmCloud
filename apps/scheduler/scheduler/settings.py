@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from swarm_common.config import Settings
-from swarm_common.profiles import RUNNER_PROFILES
+from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES
 
 from .judgment import check_internal_decision_api_url
 
@@ -93,6 +93,67 @@ def check_worker_models(models: object) -> None:
             raise ValueError(
                 f"WORKER_MODELS[{profile!r}] = {model!r} is not a model name"
             )
+
+
+def check_worker_class_models(models: object) -> None:
+    """Refuse a class map that is not exactly {MODEL_CLASSES name: an ID it admits}.
+
+    #1435, docs/design/model-per-step.md §4.2. WORKER_CLASS_MODELS is
+    terraform's `local.runner_models`, keyed by class; the scheduler renders a
+    step's `MODEL` from it (`dispatch.step_model`). At START, like the image
+    map, and against the frozen catalogue rather than a restatement of it:
+
+      * an ID its class does not admit -- `haiku = "claude-opus-5-5"` -- would
+        bill every haiku step as Opus with nothing saying so;
+      * a missing class would leave that class with no pin, and its steps
+        would fail at dispatch, after admission has taken a lease;
+      * an extra key is a class the catalogue does not have, which no step can
+        name: a typo for one that it does, so the real one is missing.
+
+    EMPTY IS ALLOWED, and means the deployment pins no class (the local
+    emulator loop, and a settings object a test builds). Then a step naming a
+    class refuses at dispatch and a step naming none runs as before this map
+    existed, on WORKER_MODELS (`dispatch.step_model`).
+    """
+    if not isinstance(models, dict):
+        raise ValueError(
+            f"WORKER_CLASS_MODELS must be a JSON object of model class -> model ID, "
+            f"got {type(models).__name__}"
+        )
+    if not models:
+        return
+    missing = sorted(set(MODEL_CLASSES) - set(models))
+    extra = sorted(str(k) for k in set(models) - set(MODEL_CLASSES))
+    if missing or extra:
+        raise ValueError(
+            f"WORKER_CLASS_MODELS must name exactly the model classes "
+            f"{tuple(MODEL_CLASSES)}; missing {missing}, not a class {extra}"
+        )
+    for name, model_id in models.items():
+        if not MODEL_CLASSES[name].admits(model_id):
+            raise ValueError(
+                f"WORKER_CLASS_MODELS[{name!r}] = {model_id!r} is not a {name} model: "
+                f"a pin of this class is claude-{MODEL_CLASSES[name].family}-<major>"
+                f"[-<minor>][-<yyyymmdd>] with major at least "
+                f"{MODEL_CLASSES[name].min_major}"
+            )
+
+
+def parse_worker_class_models(raw: str) -> dict[str, str]:
+    """WORKER_CLASS_MODELS -> {model class: model ID}. Empty means none pinned.
+
+    Written by terraform/infra/locals.tf as `jsonencode(local.runner_models)`
+    (`model_class_env`), the ONE place a class's ID is stated (#1435 Q1).
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        models = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"WORKER_CLASS_MODELS is not valid JSON: {exc}") from exc
+    check_worker_class_models(models)
+    return dict(models)
 
 
 def check_spec_settings(settings: object) -> None:
@@ -347,6 +408,14 @@ class SchedulerSettings:
     #: settings, never a caller's (invariant 10). Omitted when empty.
     swarm_api_url: str = ""
     swarm_api_audience: str = ""
+    #: The forge broker's switch (FORGE_BROKER, terraform `forge_broker`;
+    #: #1041, docs/design/user-scoped-secrets.md §5). Off by default and in
+    #: every environment until the owner turns it on. On, every worker is
+    #: handed FORGE_BROKER=true, and a CHILD on a person's `git-u-` slot also
+    #: gets the registration nonce, so it can prove itself to the broker. Off,
+    #: dispatch is exactly what it was before the broker: no child is keyed
+    #: for its slot, and workers read the slot with their own account.
+    forge_broker: bool = False
     #: How long an awaiting parent waits for its children before the
     #: outstanding ones are cancelled and it is promoted (§7, F7). A day covers
     #: a full daily provider quota reset with margin.
@@ -370,15 +439,25 @@ class SchedulerSettings:
     #: Excluded from the hash: a dict is unhashable and the settings are frozen.
     worker_image_refs: dict[str, str] = field(default_factory=dict, hash=False)
     #: Runner profile -> the model its agent CLI runs, from WORKER_MODELS
-    #: (terraform/infra/locals.tf writes it from `local.runner_models`, today
-    #: `{"claude-code": "claude-opus-5-5"}`). Set as `MODEL` on every Cloud Run
-    #: Job this scheduler CREATES, so a tenant Terraform does not list runs the
-    #: model a listed one does (#226), and on every GKE pod of a pinned profile
-    #: (`profile_model`), which since contract request 53 is how claude-code's
-    #: model reaches it. Never in the per-execution environment:
-    #: `worker_env` carries identifiers and endpoints, and a task's own `model`
-    #: is attribution. Excluded from the hash, like `worker_image_refs`.
+    #: (terraform/infra/locals.tf derives it from `local.runner_models` through
+    #: each profile's `default_model_class`, for one release, #1435). READ ONLY
+    #: WHEN `worker_class_models` IS EMPTY: then it is the `MODEL` on every
+    #: Cloud Run Job this scheduler CREATES and on every GKE pod of a pinned
+    #: profile (`profile_model`), as it was before the class map (#226;
+    #: contract request 53), and never in the per-execution environment. A
+    #: task's own `model` is attribution on either path. Excluded from the
+    #: hash, like `worker_image_refs`.
     worker_models: dict[str, str] = field(default_factory=dict, hash=False)
+    #: Model class -> the ID a step of that class runs, from WORKER_CLASS_MODELS
+    #: (terraform's `local.runner_models`; #1435). When set it is the ONLY
+    #: source of a step's `MODEL`, and `worker_env` carries it on both backends
+    #: (`dispatch.step_model`): the class is the step's, resolved by the frozen
+    #: `step_model_class`, and the ID is this map's, never the task's own
+    #: `model` (invariant 10). It also sets the default class's pin as the
+    #: `MODEL` of every Cloud Run Job this scheduler creates. Empty, the
+    #: scheduler runs on `worker_models` as before, and a step naming a class
+    #: refuses at dispatch. Excluded from the hash, like `worker_image_refs`.
+    worker_class_models: dict[str, str] = field(default_factory=dict, hash=False)
     #: THE LIVE-BROWSER ROLLOUT SWITCH (docs/design/live-browser.md, lane L5,
     #: part of #1030). On, a GKE pod of a `live_browser` profile
     #: (`claude-code-browser`) carries the `display` native sidecar, which runs
@@ -486,6 +565,7 @@ class SchedulerSettings:
             internal_decision_api_url=os.environ.get("INTERNAL_DECISION_API_URL", "").strip(),
             child_key=os.environ.get("SWARM_CHILD_KEY", "").strip(),
             swarm_api_url=os.environ.get("SWARM_API_URL", "").strip(),
+            forge_broker=_bool("FORGE_BROKER", False),
             swarm_api_audience=os.environ.get("SWARM_API_AUDIENCE", "").strip(),
             child_await_max_seconds=_int("CHILD_AWAIT_MAX_SECONDS", 86400),
             project_id=core.project_id,
@@ -498,6 +578,9 @@ class SchedulerSettings:
             ),
             worker_image_refs=parse_worker_image_refs(os.environ.get("WORKER_IMAGE_REFS", "")),
             worker_models=parse_worker_models(os.environ.get("WORKER_MODELS", "")),
+            worker_class_models=parse_worker_class_models(
+                os.environ.get("WORKER_CLASS_MODELS", "")
+            ),
             live_browser_sidecar=_bool("LIVE_BROWSER_SIDECAR", False),
             browser_egress_enabled=_bool("BROWSER_EGRESS_ENABLED", False),
             browser_egress_tenants=_csv("BROWSER_EGRESS_TENANTS"),
@@ -539,6 +622,7 @@ class SchedulerSettings:
         # directly -- as every test does -- cannot carry a tag either.
         check_worker_image_refs(self.worker_image_refs)
         check_worker_models(self.worker_models)
+        check_worker_class_models(self.worker_class_models)
         check_spec_settings(self)
         check_internal_decision_api_url(self.internal_decision_api_url)
         # At START, like the image map: on with no key would read every

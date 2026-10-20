@@ -7,7 +7,12 @@
  *
  *   * the header leaves from ONE place (fetch.ts's `apiHeaders`), on every
  *     read and write, and only when a choice is stored;
- *   * the choice is per browser, and storage that throws costs nothing;
+ *   * the choice lasts for the TAB'S SESSION (user-profile.md §4.5, Q2): it
+ *     survives a reload, a new tab opens in the default, an old per-browser
+ *     choice is removed and never honoured, and "Back to default" clears it;
+ *     storage that throws costs nothing;
+ *   * a headerless request refused with `preferences_unavailable` (Q9) is
+ *     said beside the switcher, where naming a workspace is the next action;
  *   * a stored tenant the caller is no longer in is dropped on the first
  *     `tenant_not_member` 403 and the default used -- and no other 403 drops it;
  *   * the spine's tenant block is a switcher only for more than one tenant,
@@ -43,6 +48,7 @@ afterEach(() => {
   vi.unstubAllEnvs()
   try {
     window.localStorage.clear()
+    window.sessionStorage.clear()
   } catch {
     /* a test that broke storage put it back already */
   }
@@ -63,7 +69,7 @@ describe('the header leaves from the one fetch helper', () => {
 
   it('is sent on every read and write once a tenant is chosen', async () => {
     chooseTenant('research')
-    expect(window.localStorage.getItem(TENANT_PREF)).toBe('research')
+    expect(window.sessionStorage.getItem(TENANT_PREF)).toBe('research')
     const f = vi.fn(async () => ok({ pools: [] }))
     globalThis.fetch = f as unknown as typeof fetch
     await read(route('/v1/capacity'), () => false)
@@ -115,6 +121,51 @@ describe('the header leaves from the one fetch helper', () => {
   })
 })
 
+describe('the switch lasts for the tab’s session (Q2)', () => {
+  /** A reload: the page's modules are evaluated afresh over the same storage. */
+  async function reloaded() {
+    vi.resetModules()
+    return import('../fetch')
+  }
+
+  it('is written to sessionStorage, survives a reload, and is absent in a new session', async () => {
+    // MUTATION: keep the choice in localStorage -- it outlives the session.
+    chooseTenant('research')
+    expect(window.sessionStorage.getItem(TENANT_PREF)).toBe('research')
+    expect(window.localStorage.getItem(TENANT_PREF), 'the switch outlives the tab').toBeNull()
+    const again = await reloaded()
+    expect(again.chosenTenant(), 'a reload lost the switch').toBe('research')
+    // A new tab or window: its sessionStorage starts empty, localStorage is shared.
+    window.sessionStorage.clear()
+    const fresh = await reloaded()
+    expect(fresh.chosenTenant(), 'a new session kept the old switch').toBeNull()
+    const f = vi.fn(async () => ok({ pools: [] }))
+    globalThis.fetch = f as unknown as typeof fetch
+    await fresh.read(fresh.route('/v1/capacity'), () => false)
+    expect(sentTenants(f)).toEqual([null])
+  })
+
+  it('removes an old localStorage choice on first load and does not honour it', async () => {
+    // MUTATION: drop the one-time removal, or read localStorage as a fallback.
+    window.localStorage.setItem(TENANT_PREF, 'research')
+    const loaded = await reloaded()
+    const f = vi.fn(async () => ok({ pools: [] }))
+    globalThis.fetch = f as unknown as typeof fetch
+    await loaded.read(loaded.route('/v1/capacity'), () => false)
+    expect(sentTenants(f), 'the old per-browser choice was sent').toEqual([null])
+    expect(loaded.chosenTenant()).toBeNull()
+    expect(window.localStorage.getItem(TENANT_PREF), 'the old choice was left behind').toBeNull()
+  })
+
+  it('"Back to default" (a null choice) clears it, and the next request names no workspace', async () => {
+    chooseTenant('research')
+    chooseTenant(null)
+    expect(window.sessionStorage.getItem(TENANT_PREF)).toBeNull()
+    expect(chosenTenant()).toBeNull()
+    expect(apiHeaders({ accept: 'application/json' })).toEqual({ accept: 'application/json' })
+  })
+})
+
 describe('a stored tenant the caller is no longer in', () => {
   it('is dropped on the first tenant_not_member 403, and the read retried on the default', async () => {
     chooseTenant('research')
@@ -127,7 +178,7 @@ describe('a stored tenant the caller is no longer in', () => {
     expect(r.status).toBe('ok')
     expect(sentTenants(f)).toEqual(['research', null])
     expect(chosenTenant()).toBeNull()
-    expect(window.localStorage.getItem(TENANT_PREF)).toBeNull()
+    expect(window.sessionStorage.getItem(TENANT_PREF)).toBeNull()
   })
 
   it('is dropped on a refused write, which is NOT retried under another tenant', async () => {
@@ -174,6 +225,26 @@ function liveApi(mine: { tenant_id: string; display_name: string; kind?: 'user' 
     const chosen = new Headers(init?.headers).get(TENANT_HEADER)
     if (url.includes('/v1/tenants/mine')) return ok(mine)
     if (url.includes('/v1/tenants/me')) return ok(me(chosen ?? mine[0]?.tenant_id ?? 'eng'))
+    return ok({ pools: [] })
+  })
+  globalThis.fetch = f as unknown as typeof fetch
+  return f
+}
+
+/** The API's 503 for a headerless request whose default is unknown (§4.5, Q9). */
+const PREFS_MESSAGE =
+  'Your SwarmCloud preferences could not be read, so your default workspace is not known and nothing was submitted. Name a workspace and retry.'
+const prefsDown = () =>
+  new Response(JSON.stringify({ code: 'preferences_unavailable', message: PREFS_MESSAGE }), { status: 503, headers: JSON_HEADERS })
+
+/** A live API whose preferences are unreadable: every headerless request outside the three exempt reads is a 503. */
+function prefsDownApi(mine: { tenant_id: string; display_name: string }[]) {
+  const f = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    const chosen = new Headers(init?.headers).get(TENANT_HEADER)
+    if (url.includes('/v1/tenants/mine')) return ok(mine)
+    if (url.includes('/v1/tenants/me')) return ok(me(chosen ?? mine[0]?.tenant_id ?? 'eng'))
+    if (chosen === null) return prefsDown()
     return ok({ pools: [] })
   })
   globalThis.fetch = f as unknown as typeof fetch
@@ -255,7 +326,7 @@ describe('the spine tenant block', () => {
     })
 
     expect(picker()).toBeNull()
-    expect(window.localStorage.getItem(TENANT_PREF)).toBe('research')
+    expect(window.sessionStorage.getItem(TENANT_PREF)).toBe('research')
     await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Research'))
     // The screen under the shell was mounted afresh, so its reads ran again.
     expect(screenReads).toBeGreaterThan(readsBefore)
@@ -281,7 +352,7 @@ describe('the spine tenant block', () => {
     await act(async () => {
       fireEvent.click(back!)
     })
-    expect(window.localStorage.getItem(TENANT_PREF)).toBe('eng')
+    expect(window.sessionStorage.getItem(TENANT_PREF)).toBe('eng')
     await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Engineering'))
   })
 
@@ -299,7 +370,7 @@ describe('the spine tenant block', () => {
     await act(async () => {
       fireEvent.click(rowFor('eng@example.com')!)
     })
-    expect(window.localStorage.getItem(TENANT_PREF)).toBe('eng')
+    expect(window.sessionStorage.getItem(TENANT_PREF)).toBe('eng')
     const back = [...document.querySelectorAll<HTMLButtonElement>('.c-toast button')].find((b) => b.textContent === 'Back to Your workspace')
     expect(back, 'the way back does not name your workspace').toBeDefined()
   })
@@ -366,6 +437,55 @@ const loadForm = async (): Promise<Result<{ n: number }>> => {
   return { status: 'ok', data: { n: formReads }, fetchedAt: Date.now() }
 }
 
+describe('the default workspace in the tenant block (§4.5)', () => {
+  const backButton = () =>
+    [...document.querySelectorAll<HTMLButtonElement>('.sk-tenant button')].find((b) => b.textContent === 'Back to default')
+
+  it('marks the default, offers "Back to default" only over a switch, and clears the switch', async () => {
+    // MUTATION: drop the button, or have it keep the session's choice.
+    liveApi([{ ...ENG, is_default: true } as typeof ENG, RESEARCH])
+    window.sessionStorage.setItem(TENANT_PREF, 'research')
+    await shell()
+    await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Research'))
+    // Research is not the default, so the block does not call it one.
+    expect(switcher()!.querySelector('small')?.textContent).toBe('tenant · 2 of 2')
+    fireEvent.click(switcher()!)
+    expect(rowFor('eng@example.com')?.textContent).toContain('default')
+    expect(rowFor('Research')?.textContent).not.toContain('default')
+    expect(picker()?.textContent).toContain('Kept for this tab’s session')
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(backButton(), 'no way back to the default over a switch').toBeDefined()
+    await act(async () => {
+      fireEvent.click(backButton()!)
+    })
+    expect(window.sessionStorage.getItem(TENANT_PREF), 'Back to default kept the switch').toBeNull()
+    await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Engineering'))
+    expect(switcher()!.querySelector('small')?.textContent).toBe('tenant · 1 of 2 · default')
+    // In the default already, there is nothing to go back to.
+    expect(backButton()).toBeUndefined()
+  })
+
+  it('shows a 503 preferences_unavailable message beside the switcher, until a workspace is picked', async () => {
+    // MUTATION: raise the 503 only to the screen, and draw nothing in the panel.
+    prefsDownApi([ENG, RESEARCH])
+    await shell()
+    const alert = await waitFor(() => {
+      const a = document.querySelector<HTMLElement>('.sk-tprefs [role="alert"]')
+      expect(a, 'the panel did not say why nothing was read').not.toBeNull()
+      return a!
+    })
+    expect(alert.textContent).toContain(PREFS_MESSAGE)
+    // Beside the switcher: the block's next sibling in the panel.
+    expect(document.querySelector('.sk-panel .sk-tenant + .sk-tprefs')).not.toBeNull()
+    fireEvent.click(switcher()!)
+    await act(async () => {
+      fireEvent.click(rowFor('research@example.com')!)
+    })
+    await waitFor(() => expect(document.querySelector('.sk-tprefs')).toBeNull())
+  })
+})
+
 describe('an unsent form across a tenant switch (2A)', () => {
   it('is KEPT, re-read in place, and its button names the new tenant', async () => {
     // MUTATION: key the kept page on the tenant again (the #501 discard), or
@@ -413,7 +533,7 @@ describe('an unsent form across a tenant switch (2A)', () => {
     await act(async () => {
       fireEvent.click(back!)
     })
-    expect(window.localStorage.getItem(TENANT_PREF)).toBe('eng')
+    expect(window.sessionStorage.getItem(TENANT_PREF)).toBe('eng')
     expect((screen.getByLabelText('draft') as HTMLInputElement).value).toBe('half a prompt')
   })
 

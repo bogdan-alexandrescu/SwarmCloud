@@ -45,11 +45,12 @@ def test_every_profile_names_a_runner_module_the_lifecycle_can_start() -> None:
     """The value is unchanged by the rename: `python -m agent_worker.runners.<x>`.
 
     Except a `worker_action` profile (contract requests 33 and 35), which starts
-    no runner and so has none to name -- its argv is empty, by contract.
+    no runner and so has none to name -- its argv is empty, by contract -- and a
+    `control_plane` profile (contract request 93), which nothing runs at all.
     """
     for name, profile in RUNNER_PROFILES.items():
         argv = profile.runner_argv
-        if profile.worker_action is not None:
+        if profile.worker_action is not None or profile.control_plane:
             assert argv == (), (name, argv)
             continue
         assert isinstance(argv, tuple) and len(argv) == 3, (name, argv)

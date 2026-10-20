@@ -97,7 +97,7 @@ The tenant's timeline. One screen, dense.
 
 #### What the user sees
 
-**Window bar (sticky, always visible).** Left: `eng` · `eng@saga.xyz`. Centre: `Last 500 tasks · 14 Sep 09:12 → 19 Sep 08:44 · Europe/Bucharest`. Right: a *Group by* selector `[ Hour | Day | Week | Month ]`, a row-budget selector `[ 200 | 500 | 1000 | 2000 ]`, and a refresh control showing `updated 41s ago`.
+**Window bar (sticky, always visible).** Left: `eng` · `eng@example.com`. Centre: `Last 500 tasks · 14 Sep 09:12 → 19 Sep 08:44 · Europe/Bucharest`. Right: a *Group by* selector `[ Hour | Day | Week | Month ]`, a row-budget selector `[ 200 | 500 | 1000 | 2000 ]`, and a refresh control showing `updated 41s ago`.
 
 **Chart (primary).** Stacked columns, one per bucket, newest right.
 Series and stack order, bottom to top: `SUCCEEDED` (green), `FAILED` (red), `DEAD_LETTERED` (dark red), `CANCELLED` (grey), `still open` (hatched — any task in the window whose `completed_at` is null).
@@ -208,7 +208,7 @@ Sort defaults to `Tasks` descending.
 An eleven-column table is not a phone screen. On phone, A2 is a **list of cards**, one per engineer, 72 pt tall:
 
 ```
-Line 1   alice@saga.xyz                      47
+Line 1   alice@example.com                   47
 Line 2   38 ok · 6 failed · 3 open       p50 4m
 Line 3   last active 2h ago
 ```
@@ -296,7 +296,7 @@ Cards, one per tenant, 88 pt:
 
 ```
 Line 1   eng                                group
-Line 2   eng@saga.xyz
+Line 2   eng@example.com
 Line 3   max 20 · units 40 · anthropic openai
 ```
 

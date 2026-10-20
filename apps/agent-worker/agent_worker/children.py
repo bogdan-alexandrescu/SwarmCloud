@@ -63,7 +63,7 @@ from swarm_common.states import TERMINAL_STATES, TaskState
 from .accountlease import BrokerUnavailable, fetch_identity_token
 from .continuation import TASK_ID_RE, publish_branch
 from .errors import InputUnavailable, WorkerError
-from .gitidentity import BOT_GIT_IDENTITY, commit_identity
+from .gitidentity import commit_identity
 from .hardening import PROTECTED
 from . import inputs as inputs_mod
 
@@ -80,7 +80,7 @@ REQUEST_ID = re.compile(r"^[a-z0-9-]{1,64}$")
 #: and by the route's strict model.
 CHILD_FIELDS = frozenset(
     {"runner_profile", "resource_class", "input", "provider", "model", "timeout_seconds",
-     "repository_ref"}
+     "repository_ref", "model_class"}
 )
 #: `swarm_api.childkey.REQUEST_PURPOSE` and the proof headers, restated.
 REQUEST_PURPOSE = "swarm-child-req/v1"
@@ -88,6 +88,9 @@ PROOF_HEADER = "X-Swarm-Attempt-Proof"
 TIMESTAMP_HEADER = "X-Swarm-Attempt-Timestamp"
 #: The tombstone's refusal (§5 F12).
 WORKER_UNPROTECTED = "worker_unprotected"
+#: Why a registered attempt offers no child path: the scheduler said
+#: SWARM_CHILD_PATH=false, which it does for a child on a person's slot (#1041).
+CHILD_PATH_OFF = "child_path_off"
 #: The guide the agent reads, written into the spool as README.md by `prepare`
 #: and named by the one prompt line the CLI runners add (`prompt_line`). The
 #: prompt is the one instruction channel every CLI runner shares, so it says
@@ -121,9 +124,12 @@ writing the same id again never makes a second child.
 
 `runner_profile` is required and names a profile, never an image or a
 command. `input` is the child's input, `{"prompt": ...}` for the CLI agents.
-`resource_class`, `provider`, `model`, `timeout_seconds` and `repository_ref`
-are optional; nothing else is accepted. A child works on this task's
-repository, runs no longer than this task, and is at most 256 KiB as a file.
+`resource_class`, `provider`, `model`, `timeout_seconds`, `repository_ref`
+and `model_class` are optional; nothing else is accepted. `model_class` names
+the model a claude-code child runs, `opus`, `fable`, `sonnet` or `haiku`;
+without it the child runs its own profile's default, never this task's. A
+child works on this task's repository, runs no longer than this task, and is
+at most 256 KiB as a file.
 
 ## Read the answer
 
@@ -582,6 +588,13 @@ class ChildPath:
             self._note(note, "child_key_tombstone", WORKER_UNPROTECTED)
             return
         self._key = key
+        if not getattr(self.cfg, "child_path", True):
+            # Registered, so the forge broker can tell this attempt from any
+            # other (docs/design/user-scoped-secrets.md §3.2), but no spool and
+            # no variable: the scheduler marked this attempt a child.
+            self.unavailable = CHILD_PATH_OFF
+            self.log.info("attempt key registered; no child path for a child task")
+            return
         self.unavailable = None
         # The search flag is swarm-api's, answered here so that a deployment
         # with it off names no search tool to any agent (docs/search-tool.md).
@@ -589,6 +602,34 @@ class ChildPath:
         self.search_flag = isinstance(payload, dict) and payload.get("search_tool") is True
         self.log.info("child path registered for this attempt")
 
+    # -- the key's one other use: the forge broker's proof (#1041) ---------
+
+    @property
+    def api(self) -> ChildApi | None:
+        """The worker-only routes' client, which the forge broker reuses."""
+        return self._api
+
+    @property
+    def can_sign(self) -> bool:
+        """Whether this attempt registered a key, whatever its child path."""
+        return self._key is not None
+
+    def sign_request(self, method: str, path: str, body: bytes) -> dict[str, str]:
+        """The proof headers for one request to a worker-only route.
+
+        The signature is made here and only the headers leave: the key stays
+        in this process's heap (`AttemptKey`), never serialised. Raises
+        `LookupError` naming why when no key was registered -- no nonce, a
+        refused registration, or a tombstone -- so a caller that needs a
+        proof fails closed instead of asking unproven.
+        """
+        if self._key is None:
+            raise LookupError(self.unavailable or "not_registered")
+        return self._key.headers(method, path, body, now=self._wall())
+
+    def retrying(self, fn: Callable[[], Any]) -> Any:
+        """`fn` under the registration's retry bound (`child_submit_retry_seconds`)."""
+        return self._with_retry(fn)
     def adopt(
         self,
         key: AttemptKey | None,
@@ -805,9 +846,17 @@ class ChildPath:
             repository=_repository_name(str(repository_url)),
             clone_base=str(clone_base),
             pushable=pushable,
-            # The identity the end-of-task publish writes as
-            # (`Worker._publish_identity`), and the worker's own beside it.
-            author=bot if person == BOT_GIT_IDENTITY else person,
+            # EXACTLY the identity the agent commits as: `git_identity_env`
+            # reads the same `commit_identity(task)` into the runner's
+            # GIT_AUTHOR_*/GIT_COMMITTER_*, and a mid-task push sends the
+            # agent's commits as they are. Not `Worker._publish_identity`,
+            # which swaps BOT_GIT_IDENTITY for the worker's `git_author_*`:
+            # that swap made every mid-task push of a task naming nobody (a
+            # service account's, as acceptance's are) foreign_author from
+            # #1265 on (GITTOOLS-AUTHOR). The worker's own identity stays
+            # beside it, for commits the worker wrote into the clone. A
+            # person's task still refuses BOT_GIT_IDENTITY: it is not theirs.
+            author=person,
             also_own=(bot,),
             pushes=pushes,
             branch_prefix=self.cfg.git_branch_prefix,

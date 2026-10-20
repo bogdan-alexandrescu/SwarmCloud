@@ -84,6 +84,18 @@ A TENANT THAT PREDATES THE WORKSPACE JOB IS NEVER APPROVED HERE (§3.3).
 squat check would fail with IDENTITY_NOT_OURS. A manual approval of it is
 refused `WORKSPACE_MIGRATING` through `refusals.refuse`: a new refusal, so it
 ships report-only until its switch is on (refusals.py).
+
+A NAME IS SERVED ONLY BESIDE THE EMAIL IT BELONGS TO (docs/design/user-profile.md
+§4.4, Q5; lane PROFILE-NAMES-API). A People row's `email` gains
+`display_name`; the approval, task and workflow reads gain a `*_name` sibling
+of each email field they serve, through `add_names`. A name is a label the
+person chose, never an identity: nothing here or there decides anything by
+it. One page asks for its names once (`display_names.DisplayNames.names_for`:
+one `get_all`, a 60-second cache), and a lookup that fails serves every name
+as null, so the page shows emails, as it did before, and is never failed by a
+name. A row carries the name and NOTHING ELSE from the person's preferences:
+their default workspace, mutes and reminder cadence are theirs alone, and no
+admin route reads them (Q8).
 """
 
 from __future__ import annotations
@@ -91,7 +103,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -103,8 +115,21 @@ from swarm_common.models import Tenant
 from . import refusals
 from . import workspaces as ws
 from .admins import AUDIT_COLLECTION
-from .errors import ApiError, Conflict, NotFound, ValidationFailed, WorkspaceMigrating
+from .errors import (
+    ApiError,
+    Conflict,
+    NotFound,
+    ValidationFailed,
+    WorkspaceApprovalOwnerOnly,
+    WorkspaceGroupUnreadable,
+    WorkspaceIdNested,
+    WorkspaceIdTaken,
+    WorkspaceIdTerraform,
+    WorkspaceMigrating,
+)
 from .gittokens import COLLECTION as GIT_TOKENS
+from .groups import GroupLookupError, MembershipResolver, check_group_readable
+from .preferences import Preferences, key_versions
 from .publish_workspace import MODE_CREATE, MODE_LIMITS, WorkspacePublisher
 from .store import TENANTS
 
@@ -162,6 +187,9 @@ AUDIT_SHOWN = 50
 APPROVABLE = frozenset({ws.REQUESTED, ws.DENIED})
 DENIABLE = frozenset({ws.REQUESTED, ws.FAILED})
 RETRYABLE = frozenset({ws.FAILED, ws.NEEDS_OWNER})
+#: The code entry.py stops a record with when its approval does not verify
+#: (images/workspace-apply/entry.py, lane WK-SIGNED-APPROVAL).
+APPROVAL_UNSIGNED = "APPROVAL_UNSIGNED"
 
 #: The value Terraform writes in `managed_by` on every tenant document it owns
 #: (terraform/modules/firestore/bootstrap.tf). `ensure_tenant` and the
@@ -173,6 +201,23 @@ TERRAFORM_MANAGED = "swarm-terraform"
 #: and the reason its decision carries, which the person is shown.
 AUTO_APPROVE_ACTION = "approve_own_workspace_auto"
 AUTO_APPROVE_REASON = "requester is an admin"
+
+#: An admin's request in Admin › Tenants (docs/design/workspace-kinds.md
+#: §4.2): one audit entry per request that changed something -- the approval
+#: when the requester may approve it, in the same transaction, or the request
+#: itself when it waits (a service filed by an admin who is not the owner).
+ADMIN_REQUEST_APPROVED_ACTION = "request_workspace_approved"
+ADMIN_REQUEST_ACTION = "request_workspace"
+
+#: The newest records `GET /v1/admin/workspaces` serves (§4.2.2).
+MAX_RECORDS_LISTED = 200
+
+#: A `limits` value an admin may set at request time: max_active and
+#: capacity_units within People's ceiling bounds, and the namespace quota
+#: within People's ratio at the highest ceiling. They become a namespace
+#: quota and a pool ceiling, never a pod spec (invariant 10).
+MAX_QUOTA_PODS_FACTOR = 2
+MAX_QUOTA_CPU_FACTOR = 8
 
 #: The loan request's state once an admin has lent an account against it.
 LOAN_LENT = "lent"
@@ -191,6 +236,71 @@ PENDING_LOANS = "pending_loans"
 LOAN_APPLIED = "applied"
 LOAN_PENDING = "pending"
 LOAN_RECLAIMED = "reclaimed"
+
+
+#: A lookup of display names: emails in, each email's name (or None) out.
+NameLookup = Callable[[Iterable[str]], Mapping[str, "str | None"]]
+
+#: Where an app context keeps its one `Preferences` for the name lookup, so
+#: the 60-second name cache is per process, not per request.
+_NAMES_ATTR = "_person_names"
+
+#: The email fields whose sibling is a LIST of names, index for index, and
+#: what the sibling is called. Every other field `f` gains `f + "_name"`.
+LIST_SIBLINGS = {"approvers": "approver_names"}
+
+
+def _no_names(emails: Iterable[str]) -> dict[str, str | None]:
+    return {email: None for email in emails}
+
+
+def name_lookup(ctx: Any) -> NameLookup:
+    """The app context's display-name lookup.
+
+    No `swarm-child-key` configured means no preference id can be derived,
+    so every name is null and nothing is read: the pages show emails, as
+    they did before names existed."""
+    prefs = getattr(ctx, _NAMES_ATTR, None)
+    if prefs is None:
+        prefs = Preferences(ctx.db, key_versions(ctx.settings))
+        setattr(ctx, _NAMES_ATTR, prefs)
+    return prefs.names.names_for if prefs.configured else _no_names
+
+
+def _is_email(value: Any) -> bool:
+    # `decided_by` is also `approval-expiry`, and `approvers` also `members`:
+    # neither is a person, and neither is looked up.
+    return isinstance(value, str) and "@" in value
+
+
+def add_names(lookup: NameLookup, rows: Iterable[dict[str, Any]], fields: Iterable[str]) -> None:
+    """Give each row's email `fields` their name siblings, from ONE lookup.
+
+    A field the row does not serve gains no sibling, so no name is ever
+    served for an email the response does not carry. A value that is not an
+    email (a role word, the expiry actor) gets a null name."""
+    rows = list(rows)
+    fields = tuple(fields)
+    emails: list[str] = []
+    for row in rows:
+        for f in fields:
+            value = row.get(f)
+            values = value if isinstance(value, list) else [value]
+            emails.extend(v for v in values if _is_email(v))
+    names = lookup(emails) if emails else {}
+
+    def name(value: Any) -> str | None:
+        return names.get(value) if _is_email(value) else None
+
+    for row in rows:
+        for f in fields:
+            if f not in row:
+                continue
+            value = row[f]
+            if f in LIST_SIBLINGS:
+                row[LIST_SIBLINGS[f]] = [name(v) for v in value] if isinstance(value, list) else None
+            else:
+                row[f + "_name"] = name(value)
 
 
 def worker_member(tenant_id: str, project_id: str) -> str:
@@ -238,6 +348,47 @@ class LoanGrantFailed(ValidationFailed):
     code = "LOAN_GRANT_FAILED"
 
 
+def _stopped_unsigned(record: Mapping[str, Any]) -> bool:
+    """A record the job stopped before any grant because its approval did not
+    verify (entry.py's APPROVAL_UNSIGNED). Deniable, so the remedy is a
+    fresh decision -- deny, then approve the record as shown -- since a retry
+    will not sign an approval swarm-api never made (`retry`, R8)."""
+    return (ws.state_of(record) == ws.NEEDS_OWNER
+            and (record.get("failure") or {}).get("code") == APPROVAL_UNSIGNED)
+
+
+def _owner_only(workspace_id: str, state: str) -> WorkspaceApprovalOwnerOnly:
+    return WorkspaceApprovalOwnerOnly(
+        f"workspace {workspace_id} is a service workspace: it admits a new account at the "
+        "API's front door, so only the platform owner approves or retries it. Nothing was "
+        "changed.",
+        detail={"workspace_id": workspace_id, "state": state})
+
+
+def request_limits(kind: str, given: Mapping[str, int] | None) -> dict[str, int]:
+    """A new record's `limits` (design §4.2.2): the kind's defaults, with what
+    the admin gave laid over them. A ceiling given without a quota keeps
+    People's ratio (`ceiling_limits`), so a raised ceiling is never starved
+    by the default quota. Each number is bounded; an unknown key is refused
+    by the route's model before this runs."""
+    limits = dict(ws.DEFAULT_LIMITS_BY_KIND[kind])
+    given = {k: int(v) for k, v in (given or {}).items() if v is not None}
+    unknown = set(given) - set(ws.LIMIT_KEYS)
+    if unknown:
+        raise ValidationFailed(f"unknown limits: {sorted(unknown)}")
+    if "max_active" in given:
+        derived = ceiling_limits(given["max_active"])
+        limits.update({k: derived[k] for k in ("quota_pods", "quota_cpu")})
+    limits.update(given)
+    bounds = {"max_active": MAX_CEILING, "capacity_units": MAX_CEILING,
+              "quota_pods": MAX_QUOTA_PODS_FACTOR * MAX_CEILING,
+              "quota_cpu": MAX_QUOTA_CPU_FACTOR * MAX_CEILING}
+    for key, top in bounds.items():
+        if not MIN_CEILING <= limits[key] <= top:
+            raise ValidationFailed(f"limits.{key} must be between {MIN_CEILING} and {top}")
+    return limits
+
+
 def ceiling_limits(max_active: int) -> dict[str, int]:
     """The record's `limits` for a ceiling: the one number, and §8's ratio.
 
@@ -273,12 +424,34 @@ class People:
         now: Callable[[], datetime],
         console_url: str = "",
         project_id: str = "",
+        names: NameLookup | None = None,
+        groups: MembershipResolver | None = None,
+        rules: ws.KindRules | None = None,
+        signer: Any = None,
+        verify_settings: Any = None,
     ) -> None:
         self._db = db
+        # Signs every approval and retry (`ws.sign_approval`, lane
+        # WK-SIGNED-APPROVAL): the step-spec KMS signer. None only where
+        # `specsigning.signer_from_settings` allows it (local development and
+        # tests); the job then refuses a group or service approval.
+        self._signer = signer
+        # SPEC_SIGNING_KEY_VERSION and SPEC_VERIFY_KEYS, which a retry of a
+        # group or service record verifies its stored approval with before it
+        # signs anew (`ws.approval_refusal`). None: no such retry is signed.
+        self._verify_settings = verify_settings
         self._publisher = publisher
         self._now = now
         self._console_url = console_url
         self._project_id = project_id
+        # Each row's display name (`name_lookup`). None: every name is null.
+        self._names = names or _no_names
+        # The directory a group request is checked against (§4.2.3 check 7)
+        # and the deployment's rules for every kind. None: no group can be
+        # checked, so a group request is WORKSPACE_GROUP_UNREADABLE, and an
+        # admin request has no rules to pass, so `create` refuses to run.
+        self._groups = groups
+        self._rules = rules
 
     # -- addressing ------------------------------------------------------------
 
@@ -340,15 +513,25 @@ class People:
         return snap.exists and (snap.to_dict() or {}).get("managed_by") == TERRAFORM_MANAGED
 
     def _approve_in(self, txn: Any, record: Mapping[str, Any], *, by: str,
-                    auto: bool = False) -> dict[str, Any]:
+                    auto: bool = False, is_owner: bool = False,
+                    action: str | None = None,
+                    directory: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """THE APPROVAL, for an admin's click and for an admin's own request
         alike: the state check, the migration check, the decision and its
         audit entry, inside `txn`. Returns the record's patch; the caller
         writes it, with whatever else its transaction changes, so the record
         is written once. Nothing here creates a task or a lease (invariant 1):
-        an approval is a record and, after it, one message."""
+        an approval is a record and, after it, one message.
+
+        A SERVICE record is approved by the platform owner only (Q2 (a),
+        docs/design/workspace-kinds.md §4.2.1): it admits a new principal at
+        the front door. A GROUP record's approval carries the directory check
+        made just before it (`directory`), so A1 reads a fresh one."""
         workspace_id = str(record.get("workspace_id") or "")
         state = ws.state_of(record)
+        kind = ws.kind_of(record)
+        if kind == ws.SERVICE and not is_owner:
+            raise _owner_only(workspace_id, state)
         if state not in APPROVABLE:
             raise WorkspaceWrongState(
                 f"workspace {workspace_id} is {state}; only a requested or denied "
@@ -365,11 +548,18 @@ class People:
                 "was made by Terraform, so the setup job would refuse it. Nothing was "
                 "changed and nothing was started.",
                 detail={"workspace_id": workspace_id, "state": state}))
+        at = self._now()
         patch: dict[str, Any] = {
             "state": ws.APPROVED,
-            "decision": {"by": by, "at": self._now(), "verdict": ws.APPROVED,
+            "decision": {"by": by, "at": at, "verdict": ws.APPROVED,
                          "reason": AUTO_APPROVE_REASON if auto else None, "auto": auto},
+            # The job runs nothing that grants for a group or service record
+            # unless this verifies over the record (R8, `ws.sign_approval`).
+            ws.APPROVAL: ws.sign_approval(self._signer, record, decided_by=by, decided_at=at,
+                                          request_id=str(record.get("request_id") or "")),
         }
+        if directory is not None:
+            patch["directory"] = dict(directory)
         if state == ws.DENIED:
             # The earlier denial stays where the admin can read it.
             patch["history"] = [*(record.get("history") or []), {
@@ -377,24 +567,34 @@ class People:
                 "requested_at": record.get("requested_at"),
                 "decision": record.get("decision"),
             }]
-        self._audit(txn, AUTO_APPROVE_ACTION if auto else "approve", workspace_id, by, {
+        detail = {
             "self_approval": (record.get("principal") or "").strip().lower() == by,
             "auto": auto,
             "from_state": state,
             "request_id": record.get("request_id"),
-        })
+        }
+        if kind != ws.PERSONAL:
+            detail["kind"] = kind
+        self._audit(txn, action or (AUTO_APPROVE_ACTION if auto else "approve"),
+                    workspace_id, by, detail)
         return patch
 
-    def approve(self, workspace_id: str, *, by: str) -> dict[str, Any]:
+    def approve(self, workspace_id: str, *, by: str, is_owner: bool = False) -> dict[str, Any]:
         """requested (or denied) -> approved, with the decision and its audit
-        in one transaction; then the publish (§2.1)."""
+        in one transaction; then the publish (§2.1). A group's directory check
+        runs again first, outside the transaction (it is a network call), and
+        its time is written with the approval; a service's is the owner's
+        alone (`_approve_in`)."""
         by = by.strip().lower()
+        directory = self._directory_before(workspace_id, by=by, is_owner=is_owner)
         transaction = self._db.transaction()
 
         @firestore.transactional
         def _apply(txn: Any) -> dict[str, Any]:
             ref, record = self._resolve(txn, workspace_id)
-            patch = self._approve_in(txn, record, by=by)
+            patch = self._approve_in(txn, record, by=by, is_owner=is_owner,
+                                     directory=directory
+                                     if ws.kind_of(record) == ws.GROUP else None)
             txn.update(ref, patch)
             return {**record, **patch}
 
@@ -423,6 +623,135 @@ class People:
             self._dispatch(record, MODE_CREATE)
         return status, record
 
+    # -- an admin's request for any kind (docs/design/workspace-kinds.md §4.2) --
+
+    def _directory(self, group: str, *, by: str) -> dict[str, Any]:
+        """§4.2.3 check 7: one membership question, of the requesting admin,
+        in that one group. Any answer proves the group is readable. A lookup
+        that fails is WORKSPACE_GROUP_UNREADABLE, before anything is
+        written. No log line names the group or the admin."""
+        unreadable = WorkspaceGroupUnreadable(
+            "The directory did not answer for that group, so it cannot be shown to exist "
+            "and resolve. Nothing was written; try again in a minute.",
+            detail={"retryable": True})
+        if self._groups is None:
+            raise unreadable
+        try:
+            check_group_readable(self._groups, by, group)
+        except GroupLookupError:
+            log.warning("workspace directory check failed")
+            raise unreadable from None
+        return {"checked_at": self._now(), "readable": True}
+
+    def _directory_before(self, workspace_id: str, *, by: str,
+                          is_owner: bool) -> dict[str, Any] | None:
+        """The directory check an approval or a retry of a GROUP record makes
+        first (§4.2.3: "repeated at approval and at every retry"). None for
+        any other kind. A service record a non-owner acts on is refused here,
+        before any network call."""
+        record = self.record(workspace_id)
+        kind = ws.kind_of(record)
+        if kind == ws.SERVICE and not is_owner:
+            raise _owner_only(workspace_id, ws.state_of(record))
+        if kind != ws.GROUP:
+            return None
+        return self._directory(str(record.get("principal") or ""), by=by)
+
+    def _assert_stored_scope(self, tenant_id: str, principal: str, kind: str) -> None:
+        """§4.2.3's checks 1-3 that read stored state, before any write.
+
+        1. The tenant document, if any, is this principal's and this kind's
+           (`WORKSPACE_ID_TAKEN`; the record itself is re-checked inside the
+           request's transaction).
+        2. It is not Terraform's (`managed_by`, `WORKSPACE_ID_TERRAFORM`).
+        3. No stored tenant or workspace id nests with this one through
+           `-git-` (`WORKSPACE_ID_NESTED`). Read outside the transaction:
+           Firestore cannot hold a whole collection in one, and the job's own
+           checks follow (§4.3)."""
+        snap = self._db.collection(TENANTS).document(tenant_id).get()
+        if snap.exists:
+            tenant = snap.to_dict() or {}
+            if str(tenant.get("principal") or "").strip().lower() != principal \
+                    or str(tenant.get("kind") or "") != ws.tenant_kind_for(kind):
+                raise WorkspaceIdTaken(
+                    "That workspace name is already a tenant of a different identity or "
+                    "kind. Nothing was changed; this needs a person, not a retry.")
+            if tenant.get("managed_by") == TERRAFORM_MANAGED:
+                raise WorkspaceIdTerraform(
+                    f"{tenant_id!r} is one of the tenants Terraform owns, and the setup job "
+                    "never builds over those. Nothing was changed.")
+        for collection in (TENANTS, ws.WORKSPACES):
+            for doc in self._db.collection(collection).stream():
+                if ws.nested(tenant_id, doc.id):
+                    raise WorkspaceIdNested(
+                        f"{tenant_id!r} and the existing {doc.id!r} nest through '-git-', so "
+                        "one's forge slot names would start with the other's. Choose an "
+                        "address that derives another name.")
+
+    def create(self, workspaces: ws.Workspaces, *, kind: str, principal: str,
+               display_name: str | None, limits: Mapping[str, int] | None, by: str,
+               is_owner: bool) -> tuple[int, dict[str, Any]]:
+        """`POST /v1/admin/workspaces` (§4.2.2): an admin files a personal,
+        group or service workspace. Every check of §4.2.3 runs before any
+        write; then one transaction creates the record and its index entry
+        and, when the requester may approve it (any admin for personal and
+        group, the owner for service), approves it with its single audit
+        entry -- or, when not, writes the request's single audit entry. Then
+        the same publish an approval makes. Returns (HTTP status, record):
+        202 created, 200 already standing (and nothing written)."""
+        if self._rules is None:
+            raise ValidationFailed("this deployment has no workspace rules configured")
+        by = by.strip().lower()
+        tenant_id, principal = ws.validate_kind_request(kind, principal, self._rules)
+        self._assert_stored_scope(tenant_id, principal, kind)
+        extra: dict[str, Any] = {}
+        if kind == ws.GROUP:
+            extra["directory"] = self._directory(principal, by=by)
+        record_limits = request_limits(kind, limits)
+        may_approve = kind != ws.SERVICE or is_owner
+
+        def _approve(txn: Any, record: dict[str, Any]) -> dict[str, Any]:
+            return self._approve_in(txn, record, by=by, auto=True, is_owner=is_owner,
+                                    action=ADMIN_REQUEST_APPROVED_ACTION)
+
+        def _filed(txn: Any, record: dict[str, Any]) -> None:
+            self._audit(txn, ADMIN_REQUEST_ACTION, str(record.get("workspace_id") or ""), by,
+                        {"kind": kind, "request_id": record.get("request_id")})
+
+        status, record = workspaces.request(
+            tenant_id=tenant_id, principal=principal, via=ws.ADMIN_VIA,
+            approve=_approve if may_approve else None, kind=kind, requested_by=by,
+            display_name=(display_name or "").strip() or None, limits=record_limits,
+            extra=extra, on_create=None if may_approve else _filed)
+        log.info("workspace filed by an admin workspace=%s kind=%s state=%s status=%d",
+                 record.get("workspace_id"), kind, record.get("state"), status)
+        if status == 202 and ws.state_of(record) == ws.APPROVED:
+            self._dispatch(record, MODE_CREATE)
+        return status, record
+
+    def admin_view(self, record: Mapping[str, Any] | None) -> dict[str, Any]:
+        """`_admin_view`, for the routes."""
+        return self._admin_view(record)
+
+    def records(self, *, kind: str | None = None, state: str | None = None) -> list[dict[str, Any]]:
+        """`GET /v1/admin/workspaces` (§4.2.2): records, newest request first,
+        at most MAX_RECORDS_LISTED, each the admin view. The kind filter is
+        applied after the read, because a record with no `kind` is personal
+        and an absent field cannot be queried for."""
+        query = self._db.collection(ws.WORKSPACES)
+        if state is not None:
+            query = query.where(filter=FieldFilter("state", "==", state))
+        rows = [snap.to_dict() or {} for snap in query.stream()]
+        if kind is not None:
+            rows = [r for r in rows if ws.kind_of(r) == kind]
+
+        def newest(record: Mapping[str, Any]) -> float:
+            at = record.get("requested_at")
+            return at.timestamp() if isinstance(at, datetime) else 0.0
+
+        rows.sort(key=newest, reverse=True)
+        return [self._admin_view(r) for r in rows[:MAX_RECORDS_LISTED]]
+
     def deny(self, workspace_id: str, *, by: str, reason: str) -> dict[str, Any]:
         """requested or failed -> denied. The reason is required and is shown
         to the person; the 24-hour wait before they may ask again is counted
@@ -439,13 +768,20 @@ class People:
         def _apply(txn: Any) -> dict[str, Any]:
             ref, record = self._resolve(txn, workspace_id)
             state = ws.state_of(record)
-            if state not in DENIABLE and not ws.never_dispatched(record):
+            if (state not in DENIABLE and not ws.never_dispatched(record)
+                    and not _stopped_unsigned(record)):
                 raise WorkspaceWrongState(
                     f"workspace {workspace_id} is {state}; only a requested or failed "
-                    "workspace, or an approved one no build was ever sent for, can be denied",
+                    "workspace, an approved one no build was ever sent for, or one the job "
+                    "stopped as APPROVAL_UNSIGNED, can be denied",
                     detail={"workspace_id": workspace_id, "state": state})
             patch: dict[str, Any] = {"state": ws.DENIED, "decision": {
-                "by": by, "at": self._now(), "verdict": ws.DENIED, "reason": reason}}
+                "by": by, "at": self._now(), "verdict": ws.DENIED, "reason": reason},
+                # A denied record carries no approval signature, so turning its
+                # verdict back is not enough to make the job run it (R8). One
+                # read before the denial can still be put back: docs/design/
+                # workspace-kinds.md §4.5's amendment states that residual.
+                ws.APPROVAL: None}
             if record.get("decision"):
                 # Denying a failed record replaces its approval; the approval
                 # stays in the history beside the run that failed.
@@ -467,19 +803,26 @@ class People:
         log.info("workspace denied workspace=%s", workspace_id)
         return {"workspace": self._admin_view(record)}
 
-    def retry(self, workspace_id: str, *, by: str) -> dict[str, Any]:
+    def retry(self, workspace_id: str, *, by: str, is_owner: bool = False) -> dict[str, Any]:
         """failed or needs_owner -> approved, with a fresh request id, the
         previous failure kept in `history`, and the retry recorded; then the
         publish. The job's claim (A1) accepts `approved` whose decision is an
         admin's approval, so a retried record is claimed like a new one and the
-        sweep covers its publish exactly as it covers an approval's."""
+        sweep covers its publish exactly as it covers an approval's.
+
+        A service's retry is the platform owner's, as its approval is, and a
+        group's re-runs the directory check before anything is written
+        (docs/design/workspace-kinds.md §4.8)."""
         by = by.strip().lower()
+        directory = self._directory_before(workspace_id, by=by, is_owner=is_owner)
         transaction = self._db.transaction()
 
         @firestore.transactional
         def _apply(txn: Any) -> dict[str, Any]:
             ref, record = self._resolve(txn, workspace_id)
             state = ws.state_of(record)
+            if ws.kind_of(record) == ws.SERVICE and not is_owner:
+                raise _owner_only(workspace_id, state)
             if state not in RETRYABLE:
                 raise WorkspaceWrongState(
                     f"workspace {workspace_id} is {state}; only a failed workspace or one "
@@ -492,11 +835,30 @@ class People:
                 raise WorkspaceWrongState(
                     f"workspace {workspace_id} has no approval to retry",
                     detail={"workspace_id": workspace_id, "state": state})
+            if ws.kind_of(record) in (ws.GROUP, ws.SERVICE):
+                # A worker can write `decision` (R8): a group or service record
+                # "approved by" anyone, waiting for a retry. A retry signs only
+                # an approval swarm-api signed before; anything else is a fresh
+                # decision, deny and then approve, on the record as shown.
+                why = ws.approval_refusal(record, self._verify_settings)
+                if why is not None:
+                    raise WorkspaceWrongState(
+                        f"workspace {workspace_id} carries no approval swarm-api signed ({why}); "
+                        "a retry would sign a decision nobody made here. Deny it, then approve "
+                        "the record as shown",
+                        detail={"workspace_id": workspace_id, "state": state,
+                                "reason": "approval_unverified"})
             now = self._now()
+            request_id = str(uuid.uuid4())
             patch = {
                 "state": ws.APPROVED,
-                "request_id": str(uuid.uuid4()),
+                "request_id": request_id,
                 "retry": {"by": by, "at": now, "from_state": state},
+                # A retry runs a new request id, so it is signed afresh, by
+                # whoever retried it: the job checks the signature's request
+                # id is the record's own (R8, `ws.sign_approval`).
+                ws.APPROVAL: ws.sign_approval(self._signer, record, decided_by=by,
+                                              decided_at=now, request_id=request_id),
                 "failure": None,
                 "history": [*(record.get("history") or []), {
                     "request_id": record.get("request_id"),
@@ -505,6 +867,8 @@ class People:
                     "steps": record.get("steps"),
                 }],
             }
+            if directory is not None and ws.kind_of(record) == ws.GROUP:
+                patch["directory"] = dict(directory)
             txn.update(ref, patch)
             self._audit(txn, "retry", workspace_id, by, {
                 "from_state": state, "previous_request_id": record.get("request_id"),
@@ -1088,15 +1452,23 @@ class People:
             data = snap.to_dict() or {}
             people[snap.id] = {"person": data}
         for snap in self._db.collection(ws.WORKSPACES).limit(MAX_PEOPLE).stream():
-            people.setdefault(snap.id, {})["record"] = snap.to_dict() or {}
+            data = snap.to_dict() or {}
+            if ws.kind_of(data) != ws.PERSONAL:
+                # A group's or a service's record is not a person: Admin ›
+                # Tenants lists it (`records`), People does not.
+                continue
+            people.setdefault(snap.id, {})["record"] = data
         rows = [self._row(tenant_id, parts, store=store) for tenant_id, parts in people.items()]
         rows = [row for row in rows if row is not None]
         pending_first = {ws.REQUESTED: 0}
         rows.sort(key=lambda r: (pending_first.get(r["workspace"]["state"], 1),
                                  -(r["_last"].timestamp() if r["_last"] else 0.0),
                                  r["email"]))
+        # Every row's name from one lookup; null for all when it fails.
+        names = self._names([row["email"] for row in rows]) if rows else {}
         for row in rows:
             row.pop("_last")
+            row["display_name"] = names.get(row["email"])
         approved = sum(1 for r in rows if r["workspace"]["state"] == ws.APPROVED)
         return {
             "people": rows,
@@ -1229,6 +1601,10 @@ class People:
                       publishing=bool(self._publisher.enabled), now=self._now())
         out.pop("tenant_id", None)
         if record:
+            # The principal an admin filed or approves: a person's, a group's
+            # or a service account's address (design §4.2.2). Never
+            # `requested_by`, which, like `decision.by`, stays in Firestore.
+            out["principal"] = record.get("principal")
             dispatch = record.get("dispatch") or {}
             run = record.get("run") or {}
             out["dispatch"] = None if not dispatch else {

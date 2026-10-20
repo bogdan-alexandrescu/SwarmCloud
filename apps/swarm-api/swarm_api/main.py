@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from typing import Any
 
@@ -24,6 +25,8 @@ from .deps import AppContext, build_context
 from .errors import ApiError, Conflict, RateLimited, Unauthenticated
 from .forgeapp import ForgeApp, build_forge_app
 from .forgeperms import build_forge_permissions
+from .awaitinput import MAX_CONCURRENT_MULTIPART
+from .inputwriter import InputWriter, build_input_writer
 from .routes import (
     access,
     accounts,
@@ -32,11 +35,14 @@ from .routes import (
     attemptcontext,
     attempts,
     attemptstate,
+    attempts_mcp,
     attempts_secrets,
+    await_input,
     browser_logins,
     browser_slots,
     checkpoints,
     children,
+    credentials,
     codeintel,
     forgeapp,
     forgeperms,
@@ -48,17 +54,21 @@ from .routes import (
     judgment,
     leases,
     live,
+    mcp_servers,
     merge_settings,
     notifications,
     onboarding,
     outcomes,
+    profile,
     provider_keys,
     people,
     platform,
     repositories,
+    roles,
     runs,
     schedule_tick,
     search,
+    spendestimate,
     strandedprs,
     schedules,
     tasks,
@@ -82,7 +92,21 @@ TITLE = "swarm control-plane API"
 #: The release is the one route that serves credential material (owner
 #: decision Q2), so its body and its answer stay out of every log by
 #: construction, not by a reviewer noticing.
-UNCAPTURED_ROUTES = frozenset({attempts_secrets.RELEASE_ROUTE})
+#:
+#: The MCP attach (docs/design/registered-mcp-servers.md §4.6, owner decision
+#: Q9 of #1433) is the second such route. And the three submission routes
+#: join them, because their bodies carry a caller's per-run MCP credentials
+#: (`mcp_credentials`, §4.3): a body capture must skip them too.
+UNCAPTURED_ROUTES = frozenset({
+    attempts_secrets.RELEASE_ROUTE,
+    attempts_mcp.ATTACH_ROUTE,
+    "/v1/tasks",
+    "/v1/tasks/batch",
+    "/v1/workflows",
+    # An await-input answer (docs/design/human-steps.md §4.6): a person's
+    # form and up to 16 MiB of their files.
+    await_input.INPUT_ROUTE,
+})
 
 
 def _forbidden_field_hint(errors: list[dict[str, Any]]) -> str | None:
@@ -106,7 +130,8 @@ def _forbidden_field_hint(errors: list[dict[str, Any]]) -> str | None:
 
 
 def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = None,
-               access_service: AccessService | None = None) -> FastAPI:
+               access_service: AccessService | None = None,
+               input_writer: InputWriter | None = None) -> FastAPI:
     # FIRST, before anything else can log. Nothing configured the root logger
     # previously, so every log.info() in this package was discarded and an
     # operator debugging a refused request saw the request and not the reason.
@@ -133,6 +158,17 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # GitHub permissions health (#1086, PERM-1): read-only, over the App's
     # JWT and transport above; cached per tenant for a minute.
     app.state.forge_perms = build_forge_permissions(app.state.forge_app)
+
+    # The await-input answer's create-only writer (docs/design/human-steps.md
+    # §4.3, swarm_api.inputwriter): the one thing here that writes to the
+    # artifact bucket. Builds no client until an answer arrives; None when no
+    # bucket is configured, which the answer route says by name. A test
+    # injects one over the in-memory reader.
+    app.state.input_writer = input_writer if input_writer is not None else build_input_writer(
+        bucket=app.state.ctx.settings.core.artifact_bucket,
+        project_id=app.state.ctx.settings.project_id)
+    # Multipart answers this instance holds at once (§4.3 step 3): a fifth is 429.
+    app.state.answer_slots = threading.BoundedSemaphore(MAX_CONCURRENT_MULTIPART)
 
     app.include_router(health.router)
     app.include_router(tasks.router)
@@ -183,10 +219,18 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # The caller's own tenant; the App's settings link for admins only.
     app.include_router(forgeperms.router)
     app.include_router(tenants.router)
+    # Workspace roles (docs/design/workspace-roles.md §4.3, lane
+    # ROLES-API-CORE): a workspace's own roster and writes, and a platform
+    # admin's for any registered group workspace.
+    app.include_router(roles.router)
     # Provider keys a person or a tenant admin sets, TypeSafe first
     # (docs/provider-keys.md, lane KEYS-API): write-only, a person's own key in
     # their personal tenant, the tenant key for admins, one-time form links.
     app.include_router(provider_keys.router)
+    # Settings › Profile (docs/design/user-profile.md §4.2, lane PROFILE-API,
+    # part of #1505): the caller's own profile in one read, and the save of
+    # the preferences that have no other home. For people; no route names one.
+    app.include_router(profile.router)
     # The workspace secrets store's management API (docs/design/workspace-
     # secrets.md §5, lane SEC-STORE-API, part of #1347): records and grants,
     # write-only values, each write audited in its own transaction. The
@@ -227,6 +271,7 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # authenticate the tenant's worker service account and an attempt proof
     # rather than a person.
     app.include_router(children.router)
+    app.include_router(credentials.router)
     # The runner git tools (docs/runner-git-tools.md, lane G5): worker-only,
     # authenticated as the child routes are, plus the audit's tenant read.
     app.include_router(gittools.router)
@@ -236,6 +281,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # Layer I, in-flight work (docs/design/context-quality.md §4.2, lane CTXQ-I):
     # worker-only, authenticated and fenced as the git tools are.
     app.include_router(attemptcontext.router)
+    # The stopped-run estimate (#1481): worker-only, proven as the in-flight
+    # route is, NOT fenced -- it is asked as an attempt stops, and it reads
+    # only the platform's price table and writes nothing.
+    app.include_router(spendestimate.router)
     # The worker's state (docs/design/tenant-settings-integrity.md §4, lane
     # ISO-STATE-API, part of #1457): worker-only, token for the tenant, attempt
     # key for the worker, fenced in one transaction. Mounted and unused until a
@@ -246,6 +295,14 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # purpose and fenced; the one route that serves credential material, and
     # in UNCAPTURED_ROUTES.
     app.include_router(attempts_secrets.router)
+    # Registered MCP servers (docs/design/registered-mcp-servers.md, lane
+    # MCP-API, part of #1433): the tenant's registrations, the per-run
+    # credential sweep, and the worker-only attach, the second route that
+    # serves credential material (owner decision Q9), in UNCAPTURED_ROUTES.
+    # Every write and the attach are refused `mcp_unavailable` until
+    # SWARM_MCP_SERVERS=on.
+    app.include_router(mcp_servers.router)
+    app.include_router(attempts_mcp.router)
     # Named browser logins and the workflow carry (docs/design/live-browser.md
     # §5.5.1, lane LB-L9b): the person's own logins, and two worker-only
     # routes that authenticate as the child routes do.
@@ -268,6 +325,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # caller's own items, derived on each read from the records above, and
     # one document of read marks per person.
     app.include_router(notifications.router)
+    # Await-input steps (docs/design/human-steps.md §4.6, lane HW-API-ANSWER):
+    # a person answers a workflow step; the card and the bridge read it.
+    app.include_router(await_input.router)
 
     @app.middleware("http")
     async def observe(request: Request, call_next):
@@ -286,6 +346,14 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
                 )
             except Exception:  # pragma: no cover - metrics must never 500 a request
                 log.debug("latency metric failed for %s", route)
+        # A platform admin's audited request (§4.2.4): its row was written
+        # before the route ran, by `deps.current_auth`; the status it ended
+        # with is logged here, on the same request.
+        audited = getattr(request.state, "platform_admin", None)
+        if audited is not None:
+            log.info("platform_admin %s tenant=%s route=%s status=%s",
+                     "acted" if audited[0] == "platform_admin_acted" else "viewed",
+                     audited[1], audited[2], response.status_code)
         try:
             app.state.ctx.metrics.requests.labels(
                 route=_template(request),

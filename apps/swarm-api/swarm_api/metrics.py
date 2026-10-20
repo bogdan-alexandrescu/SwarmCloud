@@ -99,5 +99,22 @@ class ApiMetrics:
             registry=self.registry,
         )
 
+        # Workspace roles (docs/design/workspace-roles.md §4.4, §4.10). A
+        # rising invalid count is a forged or replayed grant being skipped, or
+        # a flood pushing a person's valid grant past the bounded read.
+        self.role_grant_invalid = Counter(
+            "swarm_api_role_grant_invalid_total",
+            "Workspace role grants the reader skipped, by reason (mac, shape).",
+            ["reason"],
+            registry=self.registry,
+        )
+        self.role_refusals = Counter(
+            "swarm_api_role_refusals_total",
+            "Role gates that found the caller's role too low, by code and whether "
+            "the code's switch enforced it (false: report-only).",
+            ["code", "enforced"],
+            registry=self.registry,
+        )
+
     def render(self) -> tuple[bytes, str]:
         return generate_latest(self.registry), CONTENT_TYPE_LATEST

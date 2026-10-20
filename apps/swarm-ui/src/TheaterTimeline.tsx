@@ -93,6 +93,7 @@ function clock(iso: string): string {
 const PRESET_LABEL: Readonly<Record<string, string>> = {
   desktop: 'Desktop',
   'iphone-15': 'iPhone 15',
+  'phone-390': 'Phone 390',
   'pixel-8': 'Pixel 8',
   'iphone-se': 'iPhone SE',
   'ipad-7': 'iPad',

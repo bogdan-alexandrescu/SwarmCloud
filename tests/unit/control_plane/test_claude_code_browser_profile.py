@@ -90,13 +90,15 @@ def test_the_profile_is_claude_code_on_the_browser_image():
         if getattr(profile, f.name) != getattr(claude, f.name)
     )
     # `live_browser` is contract request 71 (LB-D, #1030): the one live profile.
-    # `inputs` is contract request 77 (BSTATUS-API): claude-code's plus `browser_tool`.
+    # `inputs` is contract request 77 (BSTATUS-API): claude-code's plus `browser_tool`,
+    # and `qa_identity` by contract request 106 (QI-CONTRACT).
     assert differ == ["image", "inputs", "live_browser", "name", "resource_class"], (
         f"the owner's decision was claude-code with its name, image and class changed, "
         f"live_browser set (request 71) and browser_tool declared (request 77); {differ} differ"
     )
     extra = dict(profile.inputs)
     assert extra.pop("browser_tool").choices == ("auto", "playwright", "dev-browser", "jev")
+    assert extra.pop("qa_identity").choices == ("console",)
     assert extra == dict(claude.inputs)
     assert profile.live_browser is True
     assert profile.image == "agent-runtime-browser"
@@ -127,8 +129,9 @@ def test_it_is_selectable_by_name():
 
 def test_it_accepts_the_issue_input_like_claude_code():
     # And `browser_tool` besides, by contract request 77 (BSTATUS-API), and
-    # `mcp_servers`, by contract request 88 (MCP-CONTRACT).
-    assert set(RUNNER_PROFILES[PROFILE].inputs) == {"issue", "browser_tool", "mcp_servers"}
+    # `mcp_servers`, by contract request 88 (MCP-CONTRACT), and `qa_identity`,
+    # by contract request 106 (QI-CONTRACT).
+    assert set(RUNNER_PROFILES[PROFILE].inputs) == {"issue", "browser_tool", "mcp_servers", "qa_identity"}
     assert RUNNER_PROFILES[PROFILE].inputs["issue"] == RUNNER_PROFILES["claude-code"].inputs["issue"]
     assert check_inputs(RUNNER_PROFILES[PROFILE], {"issue": 42}) == {"issue": 42}
     assert check_inputs(RUNNER_PROFILES[PROFILE], {"issue": 42.0}) == {"issue": 42}
@@ -285,7 +288,10 @@ def test_the_launch_env_built_by_the_cli_runner_carries_swarm_handoff(monkeypatc
     spool = tmp_path / ".swarm-handoff"
     spool.mkdir()
     monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
-    monkeypatch.delenv("SWARM_CDP_ENDPOINT", raising=False)
+    # A live-browser attempt reaches the runner only with its browser
+    # (BROWSER-START, part of #1366): without one the runner refuses.
+    monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
+    monkeypatch.setenv(claude_code.BROWSERS_PATH_ENV, "/opt/playwright")
     monkeypatch.delenv("SWARM_BROWSER_UPLOADS", raising=False)
     monkeypatch.setenv(claude_code.SPEC.key_env, "sk-ant-" + "x" * 40)
     launched: dict[str, Any] = {}
@@ -323,22 +329,26 @@ def test_a_resumed_attempt_is_told_in_its_prompt_what_the_earlier_one_did(monkey
     hand-offs (`handoff.HandoffPath.prepare`, written into the spool) is the
     resumed agent's prompt: after the caller's, before the platform's notes."""
     from agent_worker import handoff
-    from agent_worker.runners.claude_code import BROWSER_NOTE
+    from agent_worker.runners.claude_code import LIVE_BROWSER_NOTE
 
     spool = tmp_path / handoff.SPOOL_DIR_NAME
     spool.mkdir()
     summary = f"{handoff.RESUME_HEADLINE}\n\n1. \"QA1\": {handoff.MARK_DONE}"
     (spool / handoff.RESUME_NAME).write_text(summary)
     monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
+    # A live-browser attempt reaches the runner only with its browser
+    # (BROWSER-START, part of #1366): without one the runner refuses.
+    monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
     seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
     assert seen["prompt"].startswith("Screenshot the settings page.")
     assert summary in seen["prompt"]
-    assert seen["prompt"].index(summary) < seen["prompt"].index(BROWSER_NOTE)
+    assert seen["prompt"].index(summary) < seen["prompt"].index(LIVE_BROWSER_NOTE)
 
-    # No summary in the spool: a first attempt's prompt is the caller's.
+    # No summary in the spool: a first attempt is told nothing of earlier ones.
     (spool / handoff.RESUME_NAME).unlink()
-    seen = _run_body(monkeypatch, tmp_path, None)
-    assert seen["prompt"] == "Screenshot the settings page."
+    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
+    assert seen["prompt"].startswith("Screenshot the settings page.")
+    assert handoff.RESUME_HEADLINE not in seen["prompt"]
 
 
 def test_the_browser_image_sets_the_path_the_runner_reads():
@@ -367,8 +377,15 @@ def test_the_terraform_mirror_carries_it_and_its_model():
     assert re.search(r'^\s*backend\s*=\s*"GKE_AUTOPILOT"$', body, re.M), body
     assert re.search(r'^\s*provider\s*=\s*"anthropic"$', body, re.M), body
     assert re.search(r"^\s*timeout_seconds\s*=\s*7200$", body, re.M), body
-    models = dict(re.findall(r'^\s*"([a-z-]+)"\s*=\s*"(claude-[a-z0-9-]+)"$', text, re.M))
-    assert models.get(PROFILE) == models["claude-code"], models
+    # runner_models is keyed by model class (#1435); a profile's model is the
+    # pin of its default_model_class, so it runs claude-code's model when the
+    # two name the same default class.
+    claude_code = re.search(r'^    "claude-code" = \{\n(.*?)^    \}\n', text, re.M | re.S)
+    assert claude_code, 'terraform/infra/locals.tf runner_profiles has no "claude-code" entry'
+    default = r'^\s*default_model_class\s*=\s*"([a-z]+)"$'
+    classes = [re.search(default, b, re.M) for b in (body, claude_code.group(1))]
+    assert all(classes), classes
+    assert classes[0].group(1) == classes[1].group(1), classes
 
 
 def test_the_parity_checked_ui_tables_carry_it():

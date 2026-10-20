@@ -60,13 +60,13 @@ async function split(id: string): Promise<HTMLElement> {
     expect(el).not.toBeNull()
     // The header has the task, and the Details pane has its run.
     expect(el!.querySelector('.ag-head-facts')).not.toBeNull()
-    // A finished agent opens on Details, a running one on its log (U11a).
-    expect(el!.querySelector(id === RUNNING ? '.ag-split-pane > .ag-logs' : '.ag-split-pane .run-stack')).not.toBeNull()
+    // An agent opens on Details, running or finished (#1646, 2026-10-19).
+    expect(el!.querySelector('.ag-split-pane .run-stack')).not.toBeNull()
     return el!
   })
   // EVERY DETAILS READ THIS SPLIT STARTED HAS LANDED BEFORE THE CASE GOES ON
-  // (#605). A running agent's split mounts Details, then moves to Logs, so its
-  // read can outlive the pane; one that landed after the case's environment
+  // (#605). A running agent's split once mounted Details, then moved to Logs
+  // (2026-10-04 to #1646), so its read could outlive the pane; one that landed after the case's environment
   // was torn down failed a CI run whose every test had passed (`window is not
   // defined`, AgentDetail.tsx's load). `0`: wait for the reads made, whether
   // or not this agent's split made one.
@@ -150,9 +150,10 @@ describe('B: the log is a tab, and nothing is drawn under the pane', () => {
     expect(pane.querySelector('.dt > .dt-now > .ag-loglast')).not.toBeNull()
   })
 
-  it('opens a running agent on Logs and a finished one on Details', async () => {
+  it('opens a running agent and a finished one on Details (#1646)', async () => {
     let s = await split(RUNNING)
-    expect(s.querySelector('[role="tab"][aria-selected="true"] .c-tab-label')?.textContent).toBe('Logs')
+    expect(s.querySelector('[role="tab"][aria-selected="true"] .c-tab-label')?.textContent).toBe('Details')
+    expect(s.querySelector('.ag-logs'), 'a running agent opens on its log').toBeNull()
     window.location.hash = ''
     document.body.innerHTML = ''
     s = await split(FINISHED)

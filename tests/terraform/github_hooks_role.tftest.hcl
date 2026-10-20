@@ -72,10 +72,16 @@ run "off_by_default_no_role_and_the_grantable_list_is_unchanged" {
     error_message = "with the role off the output names no role and no permission"
   }
 
-  # No tfvars file in the repository turns it on: merging creates nothing.
+  # The variable's DEFAULT is off (this run sets nothing). The owner turned the
+  # role on at the bootstrap apply that created it, and a -var that is not
+  # committed to terraform/bootstrap/terraform.tfvars makes the next plan from
+  # main read it as false and plan to destroy it, so that one file records it
+  # as true. No other tfvars file may set it.
+  # Both halves in one condition: an assertion that names no object from the
+  # configuration is refused by terraform (tests/terraform/settings_mac.tftest.hcl).
   assert {
-    condition     = !var.enable_github_hooks_dedup_role && !strcontains(file("../../terraform/bootstrap/terraform.tfvars"), "enable_github_hooks_dedup_role")
-    error_message = "terraform/bootstrap/terraform.tfvars sets enable_github_hooks_dedup_role; the owner turns it on, at the apply that shows its plan"
+    condition     = !var.enable_github_hooks_dedup_role && can(regex("(?m)^enable_github_hooks_dedup_role\\s*=\\s*true\\s*$", file("../../terraform/bootstrap/terraform.tfvars")))
+    error_message = "enable_github_hooks_dedup_role must default to false, and terraform/bootstrap/terraform.tfvars must record it = true, the value the owner applied; left out, a plan from main plans to destroy the role"
   }
 }
 

@@ -37,10 +37,21 @@ from typing import Any, Mapping
 #: the owner 2026-10-07: format 2's fields plus `forge_credential` and
 #: `forge_access`, so a task whose forge secret or access mode was rewritten
 #: fails its worker's check.
-SPEC_FORMAT = 3
+#:
+#: 4 is contract request 96 (MULTI-REPO request B,
+#: docs/design/multi-repository-steps.md §5), accepted by the owner 2026-10-17
+#: on PR 1461: format 3's fields plus `additional_repositories`, so a task
+#: whose list was rewritten -- a commit repointed, a repository added that the
+#: step was never given, a slot swapped -- fails its worker's check.
+#:
+#: 5 is contract request 104 (request E of docs/design/model-per-step.md §5,
+#: #1435), accepted by the owner 2026-10-17 on PR 1509: format 4's fields plus
+#: `model_class`, so a task whose model class was rewritten fails its worker's
+#: check. The design named it format 4; request 96 had taken 4 first.
+SPEC_FORMAT = 5
 
 #: Every format a verifier accepts, oldest first.
-SPEC_FORMATS = (1, 2, 3)
+SPEC_FORMATS = (1, 2, 3, 4, 5)
 
 #: The fields format 2 adds to format 1's projection.
 _FORMAT_2_FIELDS = ("parent_task_id", "parent_attempt_id")
@@ -50,6 +61,17 @@ _FORMAT_2_FIELDS = ("parent_task_id", "parent_attempt_id")
 #: canonical (see `canonical_step_spec`): adding a forge credential to a task
 #: signed without one must fail verification, not slip outside the bytes.
 _FORMAT_3_FIELDS = ("forge_credential", "forge_access")
+
+#: The fields format 4 adds to format 3's projection. Formats 1-3 do not cover
+#: them, so a document at any of those that SETS one (non-None and non-empty)
+#: is not canonical, exactly as a format-3 field below format 3.
+_FORMAT_4_FIELDS = ("additional_repositories",)
+
+#: The fields format 5 adds to format 4's projection (contract request 104).
+#: Formats 1-4 do not cover them, so a document at any of those that sets one
+#: (non-None) is not canonical: the worker acts on the class, so adding one to
+#: a task signed without it must fail verification.
+_FORMAT_5_FIELDS = ("model_class",)
 
 #: The top-level fields every writer stores as integers (`Task`'s types).
 #: JCS gives 3600 and 3600.0 the same bytes, so without this a rewrite of one
@@ -63,7 +85,8 @@ def signing_format(doc: Mapping[str, Any]) -> int:
     """The format a signer signs `doc` at: the oldest one that covers every field it sets.
 
     1 when it names no parent and no forge credential, 2 when it names a parent
-    and no forge credential, else 3. Format 2's projection of a task whose
+    and no forge credential, 3 when it has a forge credential or access mode,
+    and 4 when it reads additional repositories (a non-empty list). Format 2's projection of a task whose
     parent fields are both None differs from format 1's only by carrying two
     nulls, so signing such a task at format 1 covers exactly as much -- and
     keeps it verifiable by a worker built before format 2, which knows only
@@ -80,12 +103,32 @@ def signing_format(doc: Mapping[str, Any]) -> int:
     the signature (deferred to #476). A rewrite that adds a forge field does
     NOT: the worker acts on those itself, so `canonical_step_spec` refuses
     them at a format that does not cover them.
+
+    Format 4 follows the same rule (contract request 96): only a task that
+    reads additional repositories is signed at it, so a worker built before
+    format 4 keeps verifying every task that does not. Rollout order: workers
+    first, then swarm-api, as for formats 2 and 3. An empty list is unset: it
+    asks the worker for nothing, and an older format's bytes do not see it.
+
+    Format 5 too (contract request 104): only a task that names a model class
+    is signed at it, and swarm-api stores a class only when it differs from
+    the profile's default, so a default step keeps the format and the bytes
+    it had before format 5.
     """
+    if any(doc.get(key) is not None for key in _FORMAT_5_FIELDS):
+        return 5
+    if any(_is_set(doc.get(key)) for key in _FORMAT_4_FIELDS):
+        return 4
     if any(doc.get(key) is not None for key in _FORMAT_3_FIELDS):
         return 3
     if all(doc.get(key) is None for key in _FORMAT_2_FIELDS):
         return 1
     return 2
+
+
+def _is_set(value: Any) -> bool:
+    """A format-4 field is set when it is present, not None and not an empty list."""
+    return value is not None and value != []
 
 
 #: Domain separation. The bytes of a step spec cannot be read as another message.
@@ -124,7 +167,10 @@ def canonical_step_spec(
     A document that sets `forge_credential` or `forge_access` has no
     canonical form at formats 1 and 2, which do not cover them: absent (or
     None) they leave those formats' bytes exactly as they were, present they
-    are refused rather than left outside the signature.
+    are refused rather than left outside the signature. The same holds for a
+    set `additional_repositories` at formats 1-3; at format 4 the list is
+    projected as stored, in submission order, and the order is in the bytes.
+    And for a set `model_class` at formats 1-4 (contract request 104).
     """
     if spec_format not in SPEC_FORMATS or isinstance(spec_format, bool):
         raise SpecNotCanonical(f"spec format {spec_format!r} is not one of {SPEC_FORMATS}")
@@ -135,6 +181,14 @@ def canonical_step_spec(
         raise SpecNotCanonical("metadata is not a map")
     if spec_format < 3:
         for key in _FORMAT_3_FIELDS:
+            if doc.get(key) is not None:
+                raise SpecNotCanonical(f"{key} is set, and format {spec_format} does not cover it")
+    if spec_format < 4:
+        for key in _FORMAT_4_FIELDS:
+            if _is_set(doc.get(key)):
+                raise SpecNotCanonical(f"{key} is set, and format {spec_format} does not cover it")
+    if spec_format < 5:
+        for key in _FORMAT_5_FIELDS:
             if doc.get(key) is not None:
                 raise SpecNotCanonical(f"{key} is set, and format {spec_format} does not cover it")
     for key in _INTEGER_FIELDS:
@@ -166,6 +220,12 @@ def canonical_step_spec(
             spec[key] = doc.get(key)
     if spec_format >= 3:
         for key in _FORMAT_3_FIELDS:
+            spec[key] = doc.get(key)
+    if spec_format >= 4:
+        for key in _FORMAT_4_FIELDS:
+            spec[key] = doc.get(key)
+    if spec_format >= 5:
+        for key in _FORMAT_5_FIELDS:
             spec[key] = doc.get(key)
     return jcs(spec)
 

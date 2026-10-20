@@ -335,6 +335,13 @@ def _labels_workflows_gate_on() -> set[str]:
     return found
 
 
+def _labels_the_worker_applies() -> set[str]:
+    """Every label the worker adds to a pull request it opens (TERRITORY-WARN)."""
+    from agent_worker.territory import OUT_OF_TERRITORY_LABEL
+
+    return {OUT_OF_TERRITORY_LABEL}
+
+
 def test_the_hotfix_label_is_declared_and_gated_on() -> None:
     """hotfix.yml proceeds only on a merged pull request carrying `hotfix`; a
     label the repository does not declare is one nobody can apply."""
@@ -374,6 +381,7 @@ def test_the_label_declaration_is_one_gh_label_create_accepts() -> None:
     # check.
     applied = {label for p in FORMS for label in (_load(p).get("labels") or [])}
     applied |= _labels_workflows_gate_on()
+    applied |= _labels_the_worker_applies()
     unused = sorted(set(names) - applied, key=str)
     if unused:
         problems.append(f"declared but applied by no form: {unused}")
@@ -421,10 +429,10 @@ def _nav_options() -> dict[str, str]:
             name = slabel if len(tabs) == 1 else f"{slabel} › {tlabel}"
             out[paths[f"{sid}/{tid}"]] = f"{UI}{name} ({paths[f'{sid}/{tid}']})"
 
-    # The two utility buttons beside the sections. Read from the same constants
-    # the router and the button use.
-    ref = _const(app, "REFERENCE")
-    out[paths[ref]] = f"{UI}{_const(app, 'REFERENCE_LABEL')} ({paths[ref]})"
+    # The utility button beside the sections: Help. API reads was the second
+    # until NAV-FOOT (#1672) made it Capacity's last tab, which the SECTIONS
+    # loop above reads like every other. Read from the same constants the
+    # router and the button use.
     help_route = _const(_read(HELP_TS), "HELP_ROUTE")
     # The Help screen's name is what the head's crumb prints for it. Anchored on
     # the crumb's own `??` fallback: the same `at.sectionId === HELP ? '...'`
@@ -442,6 +450,16 @@ def _nav_options() -> dict[str, str]:
     # keys at the panel's foot. The same constants, for the same reason.
     workspace = f"{_const(app, 'SETTINGS')}/{_const(app, 'WORKSPACE_TAB')}"
     out[paths[workspace]] = f"{UI}{_const(app, 'SETTINGS_LABEL')} › {_const(app, 'WORKSPACE_LABEL')} ({paths[workspace]})"
+    # Settings › MCP servers (MCP-UI-NAV): the workspace's registered MCP
+    # servers, beside Workspace at the panel's foot (registered-mcp-servers.md
+    # §4.11). The same constants, for the same reason.
+    mcp = f"{_const(app, 'SETTINGS')}/{_const(app, 'MCP_TAB')}"
+    out[paths[mcp]] = f"{UI}{_const(app, 'SETTINGS_LABEL')} › {_const(app, 'MCP_LABEL')} ({paths[mcp]})"
+    # Settings › Profile (PROFILE-NAV; docs/design/user-profile.md §2.1): the
+    # person's own identity, workspaces, connections, bell and Claude accounts.
+    # The same constants, for the same reason.
+    profile = f"{_const(app, 'SETTINGS')}/{_const(app, 'PROFILE_TAB')}"
+    out[paths[profile]] = f"{UI}{_const(app, 'SETTINGS_LABEL')} › {_const(app, 'PROFILE_LABEL')} ({paths[profile]})"
     return out
 
 

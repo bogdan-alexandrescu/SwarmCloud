@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
+  approveWorkspace,
+  denyWorkspace,
+  loadAdminWorkspaces,
   loadCapacity,
   loadMe,
   loadOutcomes,
+  loadProfile,
   loadRunnerProfiles,
   loadStats,
   loadTasksInState,
   loadTenants,
+  retryWorkspace,
   type OutcomeSection,
 } from './api'
 import { IDLE_POLL_MS } from './Agents'
@@ -65,6 +70,8 @@ import {
   type Span,
 } from './outcomes'
 import { Button, NamedMark, Segmented, StateMark, WarnMark } from './components'
+import { NewWorkspaceDialog, WorkspaceTimeline } from './NewWorkspace'
+import { WORKSPACE_POLL_MS } from './OnboardingWorkspace'
 import { Absent, Mark } from './primitives'
 import { CountNote, Id, PageHead, RefreshControl, Screen, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import { TIMELINE_POLL_MS, TimelinePages } from './TimelineLanes'
@@ -72,7 +79,7 @@ import { EndedRowsCard } from './TimelineRows'
 import { useInView } from './useInView'
 import { tableMode, usePhoneTables } from './capacityPoll'
 import { AGE_TICK_MS, useNow } from './useNow'
-import type { Pool, Tenant } from './types'
+import type { AdminWorkspaceView, Pool, Profile, Tenant } from './types'
 import './styles/admin.css'
 
 /**
@@ -610,6 +617,8 @@ export function ActivityScreen({
  * on the unfiltered page is worse than no link. A zoom's way back is kept.
  */
 export function narrowedTo(view: LedgerView, by: GroupBy, key: string): LedgerView | null {
+  // The page has no model or model-class filter, so such a row has no narrower view.
+  if (by === 'model' || by === 'model_class') return null
   const next: LedgerView =
     by === 'runner_profile'
       ? { ...view, profile: [key] }
@@ -1442,9 +1451,290 @@ function WithTenantPools({ roster, children }: { roster: unknown; children: (poo
   return <>{children(pools)}</>
 }
 
+/**
+ * ADMIN › TENANTS › NEW WORKSPACE AND "BEING CREATED" (#847, lane
+ * WK-UI-TENANTS; docs/design/workspace-kinds.md §4.2.4, §4.8).
+ *
+ * WHO THE CALLER IS, READ ONCE FROM `/v1/profile`. The New workspace button is
+ * an admin's, and Approve or Retry on a SERVICE record is the platform
+ * owner's alone (Q2 (a), 2026-10-19): a service account is the one kind that
+ * admits a new principal at the API's front door. The API refuses either way
+ * (403 `WORKSPACE_APPROVAL_OWNER_ONLY`); the console only does not offer a
+ * button that can only be refused. A profile that was not read is treated as
+ * neither, so the button is absent rather than offered to someone who may not
+ * use it.
+ *
+ * "BEING CREATED" lists every record `GET /v1/admin/workspaces` serves that is
+ * not `ready`, above the roster: kind, display name, `w-` id, state, and the
+ * job's steps as the New workspace dialog draws them. IT NAMES NO EMAIL -- not
+ * the person's, the group's or the service account's. The principal is on the
+ * record for the dialog that filed it and for People; this list addresses each
+ * row by its `w-` id, as every route it calls does. A `needs_owner` row says
+ * the step the guard stopped at and the API's code and copy, word for word.
+ * While any record is still being built, the list is read every 5 s.
+ */
+type Caller = { admin: boolean; owner: boolean }
+
+function useCaller(): Caller | null {
+  const [caller, setCaller] = useState<Caller | null>(null)
+  useEffect(() => {
+    let live = true
+    Promise.resolve(loadProfile()).then(
+      (r: Result<Profile> | undefined) => {
+        if (!live) return
+        const id = r !== undefined && (r.status === 'ok' || r.status === 'stale') ? r.data.identity : null
+        setCaller({
+          admin: id?.is_admin === true,
+          owner: id?.platform_role === 'owner',
+        })
+      },
+      () => {
+        if (live) setCaller({ admin: false, owner: false })
+      },
+    )
+    return () => {
+      live = false
+    }
+  }, [])
+  return caller
+}
+
+/** The states the job is moving by itself: the list is read again every 5 s while any row is in one. */
+const BUILDING: ReadonlySet<string> = new Set(['approved', 'applying'])
+
+type Said = { ok: true; text: string } | { ok: false; error: ApiError }
+
+function SaidLine({ said }: { said: Said | null }) {
+  if (said === null) return null
+  if (said.ok)
+    return (
+      <p className="ur-hint" role="status">
+        {said.text}
+      </p>
+    )
+  return (
+    <p className="ur-small ob-issue" role="alert" data-code={said.error.code ?? undefined}>
+      {said.error.code !== null && <b className="ur-bad">{said.error.code}</b>} {said.error.message}
+    </p>
+  )
+}
+
+function saidOf<T>(r: Result<T>, text: (data: T) => string): Said {
+  if (r.status === 'error') return { ok: false, error: r.error }
+  if (r.status === 'ok' || r.status === 'stale') return { ok: true, text: text(r.data) }
+  return { ok: true, text: 'Done.' }
+}
+
+/** What the record's state means for it, in words; for a `needs_owner` or `failed` record, the API's code and copy. */
+function BeingCreatedState({ w, owner }: { w: AdminWorkspaceView; owner: boolean }) {
+  const code = typeof w.failure?.code === 'string' && w.failure.code !== '' ? w.failure.code : null
+  const copy = typeof w.failure?.copy === 'string' && w.failure.copy !== '' ? w.failure.copy : null
+  const why = (
+    <>
+      {code !== null && <b className="ur-bad">{code}</b>}
+      {copy !== null && <p className="ur-small">{copy}</p>}
+    </>
+  )
+  switch (w.state) {
+    case 'requested':
+      return (
+        <>
+          <p className="ur-hint">
+            {w.kind === 'service'
+              ? owner
+                ? 'Waiting for your approval, as the platform owner.'
+                : 'Waiting for the platform owner to approve it.'
+              : 'Waiting for an admin to approve it.'}
+          </p>
+          {w.held != null && <p className="ur-small">{w.held.copy}</p>}
+        </>
+      )
+    case 'approved':
+    case 'applying':
+      return <p className="ur-hint">Setting up</p>
+    case 'needs_owner': {
+      const step = typeof w.needs_owner_step === 'string' && w.needs_owner_step !== '' ? w.needs_owner_step : (w.failure?.step ?? null)
+      return (
+        <>
+          <p className="ur-hint">
+            {step !== null ? `Stopped at ${step} for the platform owner’s review` : 'Stopped for the platform owner’s review'}{' '}
+            {code !== null && <b className="ur-bad">{code}</b>}
+          </p>
+          {copy !== null && <p className="ur-small">{copy}</p>}
+        </>
+      )
+    }
+    case 'failed':
+      return (
+        <>
+          <p className="ur-hint">Setting up stopped{w.failure?.step ? ` at ${w.failure.step}` : ''}</p>
+          {why}
+        </>
+      )
+    case 'denied':
+      return (
+        <>
+          <p className="ur-hint">Not approved</p>
+          {typeof w.decision?.reason === 'string' && w.decision.reason !== '' && <p className="ur-small">“{w.decision.reason}”</p>}
+        </>
+      )
+    default:
+      return <p className="ur-hint">{w.state}</p>
+  }
+}
+
+/** Approve, Deny and Retry, where this caller may use them: on a service record, Approve and Retry are the owner's. */
+function BeingCreatedActions({ w, owner, reload }: { w: AdminWorkspaceView; owner: boolean; reload: () => void }) {
+  const id = w.workspace_id ?? ''
+  const [busy, setBusy] = useState(false)
+  const [denying, setDenying] = useState(false)
+  const [reason, setReason] = useState('')
+  const [said, setSaid] = useState<Said | null>(null)
+  const mayDecide = w.kind !== 'service' || owner
+  const run = async (call: () => Promise<Said>) => {
+    if (busy) return
+    setBusy(true)
+    const s = await call()
+    setBusy(false)
+    setSaid(s)
+    reload()
+  }
+  const approve = () =>
+    run(async () =>
+      saidOf(await approveWorkspace(id), (d) =>
+        typeof d.message === 'string' && d.message !== '' ? d.message : `Approved ${id}. The job is starting.`,
+      ),
+    )
+  const retry = () =>
+    run(async () =>
+      saidOf(await retryWorkspace(id), (d) =>
+        typeof d.message === 'string' && d.message !== '' ? d.message : 'Retried. The job is starting again.',
+      ),
+    )
+  const deny = () =>
+    run(async () => {
+      const r = await denyWorkspace(id, reason.trim())
+      if (r.status !== 'error') {
+        setDenying(false)
+        setReason('')
+      }
+      return saidOf(r, () => `Denied ${id}.`)
+    })
+  if (id === '') return null
+  return (
+    <div className="ob-acts">
+      {w.state === 'requested' && mayDecide && (
+        <Button size="sm" kind="primary" disabled={busy} onClick={() => void approve()}>
+          Approve
+        </Button>
+      )}
+      {w.state === 'requested' && !denying && (
+        <Button size="sm" disabled={busy} onClick={() => setDenying(true)}>
+          Deny
+        </Button>
+      )}
+      {(w.state === 'needs_owner' || w.state === 'failed') && mayDecide && (
+        <Button size="sm" disabled={busy} onClick={() => void retry()}>
+          Retry
+        </Button>
+      )}
+      {denying && (
+        <span className="pp-deny">
+          <label className="c-field">
+            <span className="c-lbl">Reason (required)</span>
+            <textarea className="c-inp" value={reason} maxLength={500} rows={2} autoFocus onChange={(e) => setReason(e.target.value)} />
+          </label>
+          <Button size="sm" onClick={() => setDenying(false)}>
+            Cancel
+          </Button>
+          <Button size="sm" kind="primary" disabled={busy || reason.trim() === ''} onClick={() => void deny()}>
+            Deny
+          </Button>
+        </span>
+      )}
+      <SaidLine said={said} />
+    </div>
+  )
+}
+
+function BeingCreated({ owner }: { owner: boolean }) {
+  const [rows, setRows] = useState<AdminWorkspaceView[] | null>(null)
+  const [unread, setUnread] = useState<ApiError | null>(null)
+  const [filing, setFiling] = useState(false)
+  const now = useNow(AGE_TICK_MS)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  const reload = useCallback(() => {
+    void loadAdminWorkspaces().then((r) => {
+      if (!mounted.current) return
+      if (r.status === 'ok' || r.status === 'stale') {
+        setRows(r.data.filter((w) => w.state !== 'ready'))
+        setUnread(null)
+      } else if (r.status === 'error') setUnread(r.error)
+    })
+  }, [])
+  useEffect(reload, [reload])
+  usePoll(WORKSPACE_POLL_MS, reload, rows === null || !rows.some((w) => BUILDING.has(w.state)))
+  return (
+    <section className="section" data-testid="being-created" aria-labelledby="ten-being-created">
+      <div className="ten-bc-head">
+        <h2 id="ten-being-created">Being created</h2>
+        <Button kind="primary" onClick={() => setFiling(true)}>
+          New workspace
+        </Button>
+      </div>
+      {unread !== null && <SaidLine said={{ ok: false, error: unread }} />}
+      {rows === null && unread === null && <p className="ur-hint">Reading…</p>}
+      {rows !== null && rows.length === 0 && <p className="ur-hint">No workspace is being created.</p>}
+      {rows !== null && rows.length > 0 && (
+        <ul className="ten-being-created">
+          {rows.map((w) => (
+            <li
+              key={w.workspace_id ?? w.request_id ?? w.requested_at ?? ''}
+              data-workspace-id={w.workspace_id ?? undefined}
+              data-state={w.state}
+              data-kind={w.kind}
+            >
+              <p>
+                {typeof w.display_name === 'string' && w.display_name !== '' && <b>{w.display_name}</b>}{' '}
+                <span className="tag">{w.kind ?? 'personal'}</span> <code>{w.workspace_id ?? 'no workspace id'}</code>
+                {w.limits !== undefined && (
+                  <span className="ur-small">
+                    {' '}
+                    · {w.limits.max_active ?? '—'} agents · {w.limits.capacity_units ?? '—'}u
+                  </span>
+                )}
+              </p>
+              <BeingCreatedState w={w} owner={owner} />
+              <WorkspaceTimeline record={w} now={now} />
+              <BeingCreatedActions w={w} owner={owner} reload={reload} />
+            </li>
+          ))}
+        </ul>
+      )}
+      {filing && (
+        <NewWorkspaceDialog
+          onClose={() => {
+            setFiling(false)
+            reload()
+          }}
+          onFiled={reload}
+        />
+      )}
+    </section>
+  )
+}
+
 export function TenantsScreen() {
   // A record per tenant on a phone (QA G5-08): the roster below.
   const phone = usePhoneTables()
+  // Whether to draw New workspace and "Being created", and whether this caller is the platform owner.
+  const caller = useCaller()
   return (
     <Screen
       title="Tenants"
@@ -1466,7 +1756,9 @@ export function TenantsScreen() {
       }}
     >
       {(d) => (
-        <WithTenantPools roster={d}>
+        <>
+          {caller?.admin === true && <BeingCreated owner={caller.owner} />}
+          <WithTenantPools roster={d}>
           {(pools) => (
             <section className="section">
               {/* `is-scroll` (CH-13, design-system.md §7.3), for the same reason
@@ -1658,7 +1950,8 @@ export function TenantsScreen() {
               <HelpLinks topics={TENANT_TOPICS} label="Reading this table:" />
             </section>
           )}
-        </WithTenantPools>
+          </WithTenantPools>
+        </>
       )}
     </Screen>
   )
@@ -1686,7 +1979,7 @@ const COPY_SAID_MS = 4000
 /**
  * AN IDENTITY IN THREE PIECES, SO THE CUT FALLS IN THE MIDDLE (G5-12, QA
  * 2026-10-07). Cut at its end, every Identity read "swarm-agent-work…" and
- * every Principal "…@saga.x…": the part that tells one tenant's identity from
+ * every Principal "…@example.c…": the part that tells one tenant's identity from
  * the next is the part an end-ellipsis removes. The KEY is the tenant's own
  * part of the local part -- the tenant id where the local part ends in it,
  * the whole local part when it is short, otherwise its last 12 characters --

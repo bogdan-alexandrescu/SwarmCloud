@@ -81,6 +81,22 @@ def test_merge_by_default_is_off_until_an_admin_turns_it_on(client):
     assert again["merge_by_default"] is True and again["settings_document"] == "present"
 
 
+def test_the_settings_document_also_holds_the_additional_repository_limits(client):
+    """#1434 (MR-API): the two limits on a step's additional repositories are
+    settings of this route, beside `merge_by_default`, and setting one leaves
+    the others as they were (test_additional_repositories_submit.py has the
+    rest)."""
+    body = client.get("/v1/admin/settings", headers=auth_header("root")).json()
+    assert (body["max_additional_repositories"], body["additional_repositories_budget_gib"]) == (5, 6)
+    _set_default(client, True)
+    response = client.put("/v1/admin/settings", headers=auth_header("root"),
+                          json={"max_additional_repositories": 8})
+    assert response.status_code == 200, response.text
+    assert response.json()["max_additional_repositories"] == 8
+    assert response.json()["merge_by_default"] is True
+    assert response.json()["additional_repositories_budget_gib"] == 6
+
+
 def test_only_an_admin_reads_or_sets_the_platform_settings(client):
     assert client.get("/v1/admin/settings", headers=auth_header("alice")).status_code == 403
     response = client.put("/v1/admin/settings", headers=auth_header("alice"),

@@ -18,12 +18,19 @@ reads it. These tests hold the route to:
      whether the caller may answer, the task carries `owner_answers`, and free
      text is redacted before it is stored;
   5. THE KEY IS THE PLATFORM'S -- a caller cannot plant `owner_answers` in a
-     submission's metadata.
+     submission's metadata;
+  6. WHERE IT WAS ANSWERED (owner decision 2026-10-19, "Plugin records it,
+     marked as from Claude Code"; lane ANSWER-SYNC, part of #1644) -- an
+     answer may say `via` (`console` | `claude-code`) and the Claude Code
+     `session` it was given in; both are stored, kept in `history` and
+     served, a session that is not id-shaped is a 422, and neither one
+     widens who may answer.
 """
 
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 
 from swarm_api.validation import OWNER_ANSWERS_METADATA_KEY, RESERVED_METADATA_KEYS
@@ -304,3 +311,101 @@ def test_a_caller_cannot_plant_owner_answers_at_submission(client, db) -> None:
 
     assert response.status_code == 422, response.text
     assert response.json()["detail"]["reserved_metadata_keys"] == [OWNER_ANSWERS_METADATA_KEY]
+
+
+# -- 6. where it was answered: via and session ---------------------------------------
+
+
+def _session() -> str:
+    """A Claude Code session id, as Claude Code sets one: a UUID, fresh per call."""
+    return str(uuid.uuid4())
+
+
+def test_an_answer_from_claude_code_stores_and_serves_via_and_session(client, db, objects) -> None:
+    _asked(db, objects)
+    sid = _session()
+
+    response = _answer(
+        client, {"question_index": 0, "choice": "per task", "via": "claude-code", "session": sid})
+
+    assert response.status_code == 200, response.text
+    entry = _stored(db)[0]
+    assert (entry["via"], entry["session"]) == ("claude-code", sid)
+    served = response.json()["questions"][0]["answer"]
+    assert (served["via"], served["session"]) == ("claude-code", sid)
+    read = client.get(f"/v1/tasks/{TASK}/questions", headers=auth_header("alice")).json()
+    answer = read["questions"][0]["answer"]
+    assert (answer["choice"], answer["via"], answer["session"]) == ("per task", "claude-code", sid)
+    task = client.get(f"/v1/tasks/{TASK}", headers=auth_header("alice")).json()["task"]
+    assert task["owner_answers"][0]["via"] == "claude-code"
+    assert task["owner_answers"][0]["session"] == sid
+
+
+def test_an_answer_that_says_nothing_of_where_is_served_with_nulls(client, db, objects) -> None:
+    _asked(db, objects)
+
+    assert _answer(client, {"question_index": 0, "choice": "per task"}).status_code == 200
+
+    answer = client.get(f"/v1/tasks/{TASK}/questions", headers=auth_header("alice")).json()[
+        "questions"][0]["answer"]
+    assert answer["via"] is None and answer["session"] is None
+
+
+def test_a_session_id_of_eight_to_64_word_characters_is_taken(client, db, objects) -> None:
+    _asked(db, objects)
+
+    for sid in ("ce05454f", "a" * 64, "sess_ion-01"):
+        response = _answer(
+            client, {"question_index": 0, "choice": "per task", "via": "claude-code", "session": sid})
+        assert response.status_code == 200, (sid, response.text)
+        assert _stored(db)[0]["session"] == sid
+
+
+def test_a_session_that_is_not_id_shaped_is_a_422_and_nothing_is_stored(client, db, objects) -> None:
+    _asked(db, objects)
+
+    for sid in ("short", "a" * 65, "has space in it", "dots.are.not.ids", "semi;colon01", "", "../../etc/x"):
+        response = _answer(
+            client, {"question_index": 0, "choice": "per task", "via": "claude-code", "session": sid})
+        assert response.status_code == 422, (sid, response.text)
+    assert _stored(db) == []
+
+
+def test_a_via_that_is_neither_console_nor_claude_code_is_a_422(client, db, objects) -> None:
+    _asked(db, objects)
+
+    for via in ("mcp", "admin", "CLAUDE-CODE", ""):
+        response = _answer(client, {"question_index": 0, "choice": "per task", "via": via})
+        assert response.status_code == 422, (via, response.text)
+    assert _stored(db) == []
+
+
+def test_via_claude_code_does_not_let_another_member_answer(client, db, objects) -> None:
+    """`alice` is in eng but did not submit dana's task: saying the answer came
+    from Claude Code changes nothing about who may give it."""
+    _asked(db, objects, by="dana@saga.xyz")
+
+    for via in ("claude-code", "console"):
+        response = _answer(client, {
+            "question_index": 0, "choice": "per task", "via": via, "session": _session()})
+        assert response.status_code == 403, (via, response.text)
+    assert _stored(db) == []
+
+
+def test_a_re_answer_keeps_the_earlier_answer_with_its_via_and_session_in_history(
+        client, db, objects) -> None:
+    _asked(db, objects)
+    sid = _session()
+    first = {"question_index": 0, "choice": "per task", "via": "claude-code", "session": sid}
+    assert _answer(client, first).status_code == 200
+
+    response = _answer(client, {"question_index": 0, "choice": "per workflow", "via": "console"})
+
+    assert response.status_code == 200, response.text
+    entry = _stored(db)[0]
+    assert (entry["choice"], entry["via"], entry["session"]) == ("per workflow", "console", None)
+    assert len(entry["history"]) == 1
+    earlier = entry["history"][0]
+    assert (earlier["choice"], earlier["via"], earlier["session"]) == ("per task", "claude-code", sid)
+    served = response.json()["questions"][0]["answer"]["history"][0]
+    assert (served["via"], served["session"]) == ("claude-code", sid)

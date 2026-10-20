@@ -159,21 +159,25 @@ describe('#503: the panel lights the current page, not its parent', () => {
 // ---------------------------------------------------------------------------
 
 describe('#503: every spine item is a link, so it opens in a new tab and copies', () => {
-  it('draws Submit, the five sections, Help and API reads as anchors with a path', async () => {
+  it('draws Submit, the sections, Help and Profile as anchors with a path', async () => {
     // MUTATION: put `<button data-sec>` back.
     const c = await at('/overview')
     const spine = c.querySelector('.sk-spine')!
     expect(spine.querySelectorAll('button[data-sec]')).toHaveLength(0)
-    const hrefs = Object.fromEntries([...spine.querySelectorAll<HTMLAnchorElement>('a.sk-ri')].map((a) => [a.textContent?.trim(), a.getAttribute('href')]))
+    const hrefs = Object.fromEntries([...spine.querySelectorAll<HTMLAnchorElement>('a.sk-ri')].map((a) => [(a.querySelector('small') ?? a).textContent?.trim(), a.getAttribute('href')]))
     expect(hrefs).toEqual({
+      // NAV-PROFILE (#1633): drawn as the person's initials; the spine's
+      // last item since NAV-FOOT (#1672).
+      Profile: '/settings/profile',
       Submit: '/submit',
       Overview: '/overview',
       Work: '/agents',
       Automate: '/automate/schedules',
       Capacity: '/capacity/pools',
-      Admin: '/admin/limits',
+      // No Admin (NAV-ADMIN-ROLE; part of #1633): the fixture person is not a
+      // platform admin and administers no group workspace.
       Help: '/help',
-      'API reads': '/api-reads',
+      // No API reads: a Capacity page since NAV-FOOT (#1672).
     })
   })
 
@@ -195,6 +199,8 @@ describe('#503: every spine item is a link, so it opens in a new tab and copies'
   ])('leaves a %s-click on every section to the browser', async (_, init) => {
     // MUTATION: drop a clause from `routedClick`, or bind onClick without it.
     const c = await at('/overview')
+    // Profile and the four sections the fixture person is shown (NAV-PROFILE,
+    // #1633): no Admin, as they administer nothing (NAV-ADMIN-ROLE).
     const sections = [...c.querySelectorAll<HTMLAnchorElement>('.sk-spine a[data-sec]')]
     expect(sections).toHaveLength(5)
     for (const a of sections) {
@@ -406,6 +412,9 @@ describe('states.html C: the takeover replaces the content area and keeps the na
     expect(panel).toBeTruthy()
     // The page is gone; the nav is not.
     expect(c.querySelector('main.work')).toBeNull()
+    // Profile and four sections (NAV-PROFILE, #1633): with no read landed,
+    // nobody is known to administer anything, so there is no Admin
+    // (NAV-ADMIN-ROLE), never a locked one.
     expect(c.querySelectorAll('.sk-spine a[data-sec]')).toHaveLength(5)
     expect(c.querySelector('.sk-panel')).not.toBeNull()
     // The meter claims nothing during a whole-app state.

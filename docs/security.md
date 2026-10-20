@@ -32,6 +32,13 @@ separate from `TENANT_GROUPS` so an admin still has a normal tenant for their
 own work. Either makes the caller a **full** admin: every `/v1/admin/*` route,
 including disabling any tenant (`PUT /v1/admin/tenants/{id}/limits`) and
 rewriting any tenant's workflow state (`POST /v1/admin/workflows/rollup`).
+With `PLATFORM_ADMIN_REACH` on, a full admin may also select every registered
+group workspace as its `admin`, member or not, and never anyone else's
+personal workspace; every write there is audited before it runs
+([Workspace roles and a platform admin's reach](#workspace-roles-and-a-platform-admins-reach)).
+It is on in dev and off in prod: `var.platform_admin_reach` in
+`terraform/environments/<env>/<env>.tfvars` renders it into swarm-api's
+environment (lane ROLES-ON-DEV, owner decision 2026-10-19).
 
 There is one narrower way onto the admin surface, and it is not admin.
 A caller on **`ADMIN_POOL_USERS`** may call the routes in
@@ -200,8 +207,15 @@ Covered in depth in [multi-tenancy.md](multi-tenancy.md#secrets). In short:
    caller input;
 2. the secret's own IAM policy names exactly one accessor — the tenant's service
    account — so a cross-tenant read is denied by Google, not by our code;
-3. **there is no read path in the API.** No function returns payload bytes, so no
-   future route can accidentally expose one;
+3. **no route a person can call reads a payload.** Exactly two routes serve
+   credential material, both worker-only, attempt-key-signed,
+   generation-fenced and once per attempt, each by an owner's decision:
+   `POST /v1/attempts/{attempt_id}/secrets:release` (workspace secrets, Q2 of
+   #1347) and `POST /v1/attempts/{attempt_id}/mcp:attach` (a registered MCP
+   server's credential, Q9 of #1433, [below](#registered-mcp-servers-the-callers-credential-is-never-in-the-agents-reach)).
+   `tests/unit/control_plane/test_no_route_serves_credentials.py` fails on a
+   third. (Amended 2026-10-18: this line used to say there was no read path
+   at all, which stopped being true when the release shipped.)
 4. keys reach the agent through the child's environment only — never argv, never
    the workspace, never an artifact.
 
@@ -253,6 +267,130 @@ only. It is the command an operator runs while sharing a screen, so its
 `--tenant` flag scopes the snapshot it collects, not merely what it prints.
 
 ---
+
+## Registered MCP servers: the caller's credential is never in the agent's reach
+
+A task may name MCP servers its workspace registered, and a caller may send a
+per-run credential for one ([design](design/registered-mcp-servers.md), part
+of #1433). The whole feature is dark until `SWARM_MCP_SERVERS` is `on`: off, every
+registration write, submission naming a server and attach is refused
+`mcp_unavailable`. What holds once it is on:
+
+* **A step names a server, never addresses one** (invariant 10). The URL,
+  header, allowed tools and limits come from a registration only a workspace
+  manager writes; a registration holds no credential, and swarm-api never
+  calls a registered URL, so a tenant-typed URL is never an SSRF from a
+  platform identity.
+* **The per-run credential at rest** is one Secret Manager secret per
+  submission and server, `swarm-tenant-<tenant>-mcpc-<16 hex>`, with Secret
+  Manager's own TTL as the backstop and a 10-minute sweep that destroys it
+  once its task ends. Only swarm-api may read `-mcpc-`; the tenant's worker
+  account holds no grant on it, so an agent that mints the pod's token reads
+  nothing. The Firestore row that names the secret holds no value and is
+  HMAC-attested, so a row an agent forges points at nothing.
+* **The worker gets it once**, from
+  `POST /v1/attempts/{attempt_id}/mcp:attach`, signed with the attempt key
+  under its own purpose, `swarm-mcp-attach/v1`
+  (`apps/swarm-api/swarm_api/routes/attempts_mcp.py::ATTACH_PURPOSE`), so a
+  release, child, egress or live signature never verifies there. The agent
+  shares the worker's uid and ID token but not its non-dumpable heap, so it
+  can neither ask nor choose what is attached; a stale generation gets 409
+  and nothing.
+* **The agent talks to a loopback relay**
+  (`apps/agent-worker/agent_worker/mcp_relay.py::Relay`), never the server.
+  The CLI's config, which checkpoints carry, holds the relay's URL and a
+  per-attempt local token that nothing outside the pod can reach and nothing
+  after the attempt accepts; the credential stays in the worker's heap and
+  is added only to the request the relay sends to the registered URL. The
+  relay refuses a non-loopback peer, a wrong local token, a tool not allowed,
+  oversize and over-rate calls, a non-public or non-443 address, and a
+  redirect; it scrubs registered values from answers; and it logs the tool
+  and status, never arguments, results or headers.
+* **What the agent may not send out**: any value registered with the logger
+  (provider keys, released secrets, any server's credential), refused by
+  value; and any string that matches a `swarm_redaction` credential rule,
+  refused by shape, except `key_value_assignment` and `http_authorization`,
+  which fire on ordinary prose and are exempt from this one check by the
+  owner's decision of 2026-10-18 (`SHAPE_EXEMPT`; they still mask logs). A
+  repository's own `.mcp.json` is loaded too (claude-code runs without
+  `--strict-mcp-config`), but no server it declares can reach the credential:
+  only the relay holds it.
+* **After the attempt** the relay closes and drops every reference; a Python
+  string cannot be zeroed, so the bytes go when the worker process exits,
+  which it does at the end of every attempt.
+
+What it does **not** protect against: a malicious or compromised registered
+server can answer with text that steers the agent, which is prompt injection
+by another door (see [Prompt injection](#prompt-injection)), and anything the
+agent sends to an allowed tool is the tenant's work going to the tenant's own
+server, by its manager's choice. A private endpoint is out of reach by design:
+the relay refuses private addresses and the pod policy drops them anyway.
+
+---
+
+## Workspace roles and a platform admin's reach
+
+Each workspace's people are `viewer`, `member` or `admin`
+([design](design/workspace-roles.md), part of #1518). Two properties carry
+the security weight. The refusals `role_member_required` and
+`role_admin_required` are switches that ship off (Q10), and
+`PLATFORM_ADMIN_REACH` ships off. Since ROLES-ON-DEV (owner decision
+2026-10-19) dev runs with `role_member_required` and the reach on, both from
+`dev.tfvars`; `role_admin_required` stays off in dev until every group
+workspace that manages secrets has a named admin, and prod has all three off.
+What holds once they are on:
+
+* **A role never admits anyone.** Membership is still Google's, checked per
+  registered group with `checkTransitiveMembership` and
+  `x-goog-user-project`, because `searchTransitiveGroups` 403s in this
+  project. A grant to someone outside the group is stored and inert until
+  they join. A role only narrows what a member may do.
+* **The one widening is a workspace `admin`**, who manages that group
+  workspace's secrets, MCP servers, tenant provider keys and settings. It is
+  live whatever the switches say, because it only lets someone through. It
+  exists only where an admin named one: the default role can never be
+  `admin`, so a group workspace has no workspace admin until a platform
+  admin names its first.
+* **A grant cannot be forged, replayed or found by a tenant's worker**,
+  which can create and update Firestore documents today
+  ([below](#a-tenant-workers-firestore-access-today-phase-0-and-design-b)).
+  Each grant is HMAC-signed with the settings key under its own domain,
+  `swarm-workspace-role-grant/v1`, over the tenant, the person, the role, who
+  granted it and when. So a forged grant does not verify, a copied older one
+  loses to the newer, and one moved to another tenant fails. Grants are
+  append-only under Firestore's random ids, which no route returns, so there
+  is no document to overwrite by name. A flood of unsigned grants pushes a
+  person past the 60 the reader scans and gives `role_unavailable`: a denial
+  of service, never a wider role, and it is counted in
+  `swarm_api_role_grant_invalid_total`. That residual closes when ISO-IAM
+  removes the worker's Firestore write.
+* **A platform admin's reach stops at group workspaces.** With
+  `PLATFORM_ADMIN_REACH` on, `X-Swarm-Tenant` may select a registered group
+  workspace for a full admin who is not in it. Every `u-` id is dropped from
+  the reach
+  (`apps/swarm-api/swarm_api/auth.py::Authenticator._reachable_groups`), so
+  another person's personal workspace, which holds their own secrets and
+  GitHub token, is 403 `tenant_not_member` exactly as before. A pool admin,
+  the schedule tick, the sweepers and a listed service account get no reach.
+  This widens who may enter a tenant (invariant 9), which is why it is a
+  switch.
+* **Nothing a platform admin does in a workspace they are not a member of
+  goes unrecorded.** `apps/swarm-api/swarm_api/deps.py::current_auth` writes
+  an `admin_audit` row before the route runs: `platform_admin_acted` for
+  every write, `platform_admin_viewed` once per admin, workspace and UTC hour
+  for reads. Both fail closed: if the row cannot be written the request is
+  503 `platform_admin_audit_unavailable` and the route never runs. A row
+  records the route template and its path parameters, never a body, so a
+  secret value or a prompt cannot land in the audit. A platform admin who is
+  a member narrowed below what an action needs gets the same rows. Every
+  member of the workspace sees them on its people page. One gap is known and
+  is recorded in the design's §8: a write through a
+  `/v1/workspaces/{tenant_id}/…` path naming a group workspace the workspace
+  job made writes no row.
+* **No agent can change a role.** The plugin's `swarm_roles` tool is
+  read-only. `sc roles set|clear|default` reads its typed confirmation from
+  `/dev/tty`, never from arguments or stdin, and ignores `SWARM_ASSUME_YES`,
+  so an agent driving a person's own session cannot raise anyone.
 
 ## Cloud metadata abuse
 
@@ -549,6 +687,50 @@ every line in it runs as shell in every script here — including `destroy.sh` a
 refuses to run if the file is not owned by the caller, or if it is group- or
 world-writable. `SWARM_ENV_FILE` points the same machinery at another path and
 carries the same trust requirement.
+
+---
+
+## A display name is a label, never an identity
+
+A person may choose a display name on Settings › Profile
+([user-profile.md §4.4](design/user-profile.md#44-the-display-name-q5)), and
+other people see it on Admin › People, approvals, task pages and workflow
+pages. A chosen name is the one thing on those pages that someone else picked.
+So it is treated as untrusted text that can only ever *add* to an email, never
+stand in for one.
+
+* **The email is always beside it.** A name is served only as a sibling of an
+  email field the response already serves: `submitted_by_name`,
+  `decided_by_name`, `approver_names` (index for index with a listed
+  `approvers`) and a People row's `display_name`
+  (`swarm_api.people.add_names`). No response carries a name without its
+  email, and no route looks anyone up by name. Every check that decides what a
+  person may do (who may approve, whose tasks a submitter filter returns) keeps
+  using the verified email.
+* **Nothing else from the preferences document is served to anyone else.** A
+  People row carries the name and no default workspace, mute or reminder: those
+  are the person's own, and no admin route reads them (Q8).
+* **A failed lookup degrades to emails.** `display_names.DisplayNames.names_for`
+  reads a page's names in one `get_all`, and when that read fails every name is
+  `null` and the page is still served: a name is never a reason a page fails.
+* **The rules stop a name from passing for something it is not**
+  (`display_names.check`): 1-64 characters of letters, marks, spaces and
+  `.'-`, so no digit and no `@` (a name cannot embed an email), no brackets (no
+  `[admin]` tag), no format character (no bidi override or zero-width joiner,
+  which render differently from their bytes); one script, so a Cyrillic `а` in
+  a Latin name is refused; no reserved word (`admin`, `owner`, `system`,
+  `bot`...); and not another person's name, nor a name that contains another
+  person's name of two or more words, compared after folding case and accents.
+* **The uniqueness check is platform-wide, not per workspace**, because
+  listing a group's members is the Cloud Identity call this project cannot
+  make (`searchTransitiveGroups` 403s here). A name unique across the platform
+  is unique in every workspace.
+* **A worker cannot squat a name.** The claim documents that make names unique
+  are addressed by an HMAC under `swarm-child-key`, which only swarm-api and the
+  scheduler hold, and a claim whose id is not the HMAC of its own name is
+  ignored. Every change of name writes an `admin_audit` entry in the save's
+  transaction, so admins see each person's name history in the audit they
+  already read.
 
 ---
 

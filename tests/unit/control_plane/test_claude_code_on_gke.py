@@ -120,11 +120,17 @@ def _block(name: str) -> str:
 
 
 def test_terraform_pins_claude_codes_model_and_no_canary():
-    """WORKER_MODELS is written from `local.runner_models`, the only way MODEL
+    """WORKER_MODELS is derived from `local.runner_models` (keyed by model
+    class) through the profile's `default_model_class`, the only way MODEL
     reaches a GKE pod."""
-    models = dict(re.findall(r'^\s*"([a-z0-9-]+)"\s*=\s*"([^"]+)"', _block("runner_models"), re.M))
-    assert models.get(PROFILE) == PINNED_MODEL, models
+    models = dict(re.findall(r'^\s*([a-z0-9-]+)\s*=\s*"([^"]+)"', _block("runner_models"), re.M))
+    entry = re.search(r'^    "claude-code" = \{\n(.*?)^    \}', _block("runner_profiles"), re.M | re.S)
+    assert entry, "claude-code is not mirrored in local.runner_profiles"
+    default = re.search(r'^\s*default_model_class\s*=\s*"([a-z]+)"', entry.group(1), re.M)
+    assert default, "claude-code names no default_model_class"
+    assert models.get(default.group(1)) == PINNED_MODEL, models
     assert CANARY not in models, models
+    assert re.search(r"WORKER_MODELS\s*=\s*jsonencode\(local\.profile_default_models\)", LOCALS.read_text())
 
 
 def test_terraform_mirrors_claude_code_on_gke_and_drops_the_canary():

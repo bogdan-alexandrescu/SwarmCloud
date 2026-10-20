@@ -90,6 +90,27 @@ def secret_client() -> FakeSecretClient:
     return FakeSecretClient({f"swarm-tenant-{TENANT}-{slot()}": user_token()})
 
 
+def broker():
+    """swarm-api's forge-credential broker, holding the person's slot (#1041).
+
+    A `git-u-` slot is never read from Secret Manager: the worker asks the
+    broker, signed with its attempt key (test_forge_broker_client.py). Its
+    `accessed` lists the slots it released, as `FakeSecretClient.accessed`
+    lists reads.
+    """
+    from test_forge_broker_client import FakeBrokerRoutes
+
+    return FakeBrokerRoutes({f"swarm-tenant-{TENANT}-{slot()}": user_token()})
+
+
+def brokered(routes) -> dict[str, Any]:
+    """The worker_factory arguments that give an attempt a key to sign with."""
+    from test_forge_broker_client import API, NONCE
+
+    return {"child_api": routes, "child_nonce": NONCE, "swarm_api_url": API,
+            "forge_broker": True}
+
+
 def grant_reads(monkeypatch, db) -> list[str]:
     """Every read of the grant collection, in order."""
     reads: list[str] = []
@@ -134,7 +155,9 @@ def _verified(worker, task: dict[str, Any]) -> None:
 def test_a_user_slot_task_reads_the_users_secret_every_time(db, worker_factory):
     seed_attempt(db)
     client = secret_client()
-    worker, _, _ = worker_factory(secret_client=client)
+    routes = broker()
+    worker, _, _ = worker_factory(secret_client=client, **brokered(routes))
+    worker.children.register(lambda note: None)
     _verified(worker, {"repository_url": GITHUB_URL, "forge_credential": slot()})
 
     first = worker._git_token()
@@ -142,9 +165,11 @@ def test_a_user_slot_task_reads_the_users_secret_every_time(db, worker_factory):
 
     name = f"swarm-tenant-{TENANT}-{slot()}"
     assert first == second == user_token()
-    # Read again at the second call: the latest version at that moment, which
-    # is what lets an attempt outlive an 8-hour user token.
-    assert client.accessed == [name, name]
+    # Asked again at the second call: the latest version at that moment, which
+    # is what lets an attempt outlive an 8-hour user token. From the broker,
+    # never from Secret Manager (#1041).
+    assert routes.accessed == [name, name]
+    assert client.accessed == []
     assert user_token() in worker.log._secrets, "the token was not registered for redaction"
 
 
@@ -257,13 +282,15 @@ def test_a_standing_grant_reaches_the_clone_and_the_agent(
     _seed_user_task(db)
     seed_grant(db)
     client = secret_client()
-    worker, _, _ = worker_factory(secret_client=client)
+    routes = broker()
+    worker, _, _ = worker_factory(secret_client=client, **brokered(routes))
     started = _agent_starts(worker, monkeypatch)
     cloned = _clone_from(worker, monkeypatch, origin)
 
     assert worker.run() == 0
     assert cloned == [True] and started == [True]
-    assert f"swarm-tenant-{TENANT}-{slot()}" in client.accessed
+    assert f"swarm-tenant-{TENANT}-{slot()}" in routes.accessed
+    assert client.accessed == []
     assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
     assert user_token() not in log_stream.getvalue()
 
@@ -306,12 +333,15 @@ def test_a_read_grant_ends_a_pull_request_step_before_the_agent(
 
 
 def _push_attempt(worker_factory, monkeypatch, origin: Path, task: dict[str, Any],
-                  client: FakeSecretClient):
+                  client):
+    """`client` is the broker the person's slot is asked of (`broker()`)."""
     worker, config, _ = worker_factory(
         task_id="t-push", attempt_id="att-t-push", lease_id="lease-t-push",
-        repository_url=f"file://{origin}", secret_client=client,
+        repository_url=f"file://{origin}", secret_client=FakeSecretClient(),
+        **brokered(client),
     )
     seed_attempt(worker.db, task_id="t-push", attempt_id="att-t-push", lease_id="lease-t-push")
+    worker.children.register(lambda note: None)
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     _verified(worker, task)
     cloned = worker._maybe_clone(task)
@@ -325,7 +355,7 @@ def test_a_read_grant_never_reads_a_push_credential(
 ):
     """An integrate contributor pushes its branch; on a read grant it does not."""
     seed_grant(db, mode="read")
-    client = secret_client()
+    client = broker()
     task = {
         "task_id": "t-push", "repository_url": GITHUB_URL, "forge_credential": slot(),
         "forge_access": "read",
@@ -348,7 +378,7 @@ def test_a_grant_deleted_before_the_push_refuses_it(
     db, worker_factory, monkeypatch, origin, local_urls, forge
 ):
     seed_grant(db)
-    client = secret_client()
+    client = broker()
     task = {
         "task_id": "t-push", "repository_url": GITHUB_URL, "forge_credential": slot(),
         "forge_access": "write", "metadata": {"dispatch": {"strategy": "direct-pr"}},
@@ -370,7 +400,7 @@ def test_a_grant_turned_read_refuses_the_push_and_a_write_grant_publishes(
     db, worker_factory, monkeypatch, origin, local_urls, forge, mode
 ):
     seed_grant(db)
-    client = secret_client()
+    client = broker()
     task = {
         "task_id": "t-push", "repository_url": GITHUB_URL, "forge_credential": slot(),
         "metadata": {"dispatch": {"strategy": "direct-pr"}},
@@ -396,8 +426,7 @@ def test_a_grant_deleted_during_the_run_checkpoints_then_refuses_and_ends(
     the agent ran, then the final checkpoint, the refused push, the end."""
     _seed_user_task(db, dispatch={"strategy": "direct-pr"})
     seed_grant(db)
-    client = secret_client()
-    worker, _, _ = worker_factory(secret_client=client)
+    worker, _, _ = worker_factory(secret_client=secret_client(), **brokered(broker()))
     _clone_from(worker, monkeypatch, origin)
     order: list[str] = []
     real_checkpoint = worker._checkpoint

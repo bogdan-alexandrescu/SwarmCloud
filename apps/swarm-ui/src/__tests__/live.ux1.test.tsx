@@ -28,6 +28,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LiveRead, LiveSession } from '../api'
 import type { Result } from '../fetch'
 import type { Task } from '../types'
+import { clockTime } from '../types'
 import { task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -211,9 +212,13 @@ const theaterOpen = () => screen.queryByRole('dialog', { name: /^Theater/ })
 /**
  * The split's waits: two reads (the task, then the session) and a redirect
  * before the tab is chosen, which under a loaded parallel run takes longer
- * than waitFor's default second.
+ * than waitFor's default second. 8 s was not enough on PR #1592's run
+ * 39206985893 (shard 4/4: 1,234 s of test time in 298 s of wall clock), where
+ * the second wait of the LIVE test timed out with the tab still unselected;
+ * the same test takes ~4 s on an idle machine. 12 s keeps that test's two
+ * waits inside vitest.config.ts's 30 s testTimeout.
  */
-const SPLIT = { timeout: 8000 }
+const SPLIT = { timeout: 12_000 }
 
 beforeEach(() => {
   localStorage.clear()
@@ -492,7 +497,7 @@ describe('item 6: one hand-off banner, with Take control and Open in theater', (
     expect(strips()).toHaveLength(1)
     const since = strips()[0]!.querySelector('.ho-since')
     expect(since, 'the banner dropped the park instant').not.toBeNull()
-    expect(since!.textContent).toBe(`parked since ${new Date(NOW - 60_000).toLocaleString()}`)
+    expect(since!.textContent).toBe(`parked since ${clockTime(new Date(NOW - 60_000).toISOString())!.text}`)
   })
 
   it('on a held hand-off, the banner says nothing about being parked', async () => {

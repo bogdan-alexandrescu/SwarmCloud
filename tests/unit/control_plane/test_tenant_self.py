@@ -98,7 +98,21 @@ def submit(client: TestClient, user: str, tenant: str | None = None) -> Any:
 def mine(client: TestClient, user: str, tenant: str | None = None) -> list[dict[str, str]]:
     response = client.get("/v1/tenants/mine", headers=as_(user, tenant))
     assert response.status_code == 200, response.text
-    return response.json()
+    listed = response.json()
+    # The first entry is the default and says why (docs/design/user-profile.md
+    # §4.5); test_default_workspace.py holds those fields. These tests are
+    # about which entries are listed and in what order.
+    assert [e.pop("is_default") for e in listed] == [i == 0 for i in range(len(listed))]
+    for entry in listed[:1]:
+        assert entry.pop("default_source") in ("personal", "first_group")
+    # Each entry's `via` and `role` (docs/design/workspace-roles.md §4.3) are
+    # test_roles_api.py's; here they only have to agree with the entry's kind.
+    for entry in listed:
+        via = entry.pop("via")
+        role = entry.pop("role")
+        assert via == ("personal" if entry["kind"] == "user" else "member"), entry
+        assert role["source"] in ("personal", "default", "platform_admin"), role
+    return listed
 
 
 def own(user: str) -> dict[str, str]:
@@ -146,7 +160,12 @@ def test_a_workspace_record_naming_someone_else_is_not_offered(client, db):
 
 def test_a_service_identity_is_never_offered_a_personal_tenant(group_map, db):
     """CI and the acceptance callers are service accounts: their headerless
-    default stays the group even if a record at their slug says ready."""
+    default stays the group even if a record at their slug says ready.
+
+    Naming it is another matter since HW-ACCEPT-ID (owner decision
+    2026-10-19): a service account may select its OWN `kind: user` tenant
+    whose principal is exactly its address -- test_service_own_tenant.py
+    holds that path -- and the selection is never its default."""
     seed_personal(db, "ci-bot", principal=SVC)
     claims = {"t-svc": {"email": SVC, "email_verified": True, "sub": "s-svc"}}
     auth = Authenticator(api_settings(allowed_users=(SVC,)), StaticTokenVerifier(claims),
@@ -155,8 +174,16 @@ def test_a_service_identity_is_never_offered_a_personal_tenant(group_map, db):
     ctx = auth.authenticate("Bearer t-svc")
     assert ctx.tenant_id == "eng"
     assert ctx.tenant_choices == (("eng", ENG_GROUP),)
+    named = auth.authenticate("Bearer t-svc", None, tenant="u-ci-bot")
+    assert (named.tenant_id, named.tenant_principal) == ("u-ci-bot", SVC)
+    assert auth.authenticate("Bearer t-svc").tenant_id == "eng"
+    # Never as a person's ready workspace: a document naming someone else is refused.
+    db.docs["tenants/u-ci-bot"]["principal"] = "ci-bot@other-project.iam.gserviceaccount.com"
+    fresh = Authenticator(api_settings(allowed_users=(SVC,)), StaticTokenVerifier(claims),
+                          StaticGroups({**group_map, SVC: (ENG_GROUP,)}),
+                          personal=PersonalTenants(db))
     with pytest.raises(Forbidden):
-        auth.authenticate("Bearer t-svc", None, tenant="u-ci-bot")
+        fresh.authenticate("Bearer t-svc", None, tenant="u-ci-bot")
 
 
 def test_a_personal_only_caller_with_a_ready_workspace_lists_it(client, seeded):

@@ -23,11 +23,22 @@ import { HELP, HELP_GROUPS, HELP_ROUTE, type TopicId } from './help'
 
 /** The non-section addresses this file knows by name. */
 export const SUBMIT_ADDRESS = 'submit'
+/**
+ * API READS' OLD ADDRESS (NAV-FOOT, #1672): the page is Capacity's last tab,
+ * `capacity/api-reads`, and App.tsx `fromAddress` sends this head there.
+ */
 export const REFERENCE_ADDRESS = 'reference'
+/**
+ * The paths API reads was served at before it became a Capacity page:
+ * `/reference`, the hash router's own spelling, and `/api-reads`, the
+ * rebrand's. Each lands on `/capacity/api-reads`, the bar rewritten once by
+ * App's normalise, so a saved link still opens the page.
+ */
+const OLD_API_READS_PATHS: readonly string[] = ['/reference', '/api-reads']
 
 /**
  * THE GITHUB APP'S CALLBACK (#780, OB3): the URL registered on the App,
- * https://swarm.saga.xyz/onboarding/github/callback. Not a section and not in
+ * https://swarm.example.com/onboarding/github/callback. Not a section and not in
  * FIXED -- nothing links to it, and the not-found page must never offer it.
  * ITS QUERY IS NEVER PART OF THE ADDRESS: GitHub's `code` and `state` ride on
  * it, and an address is what the router writes back into the bar.
@@ -98,11 +109,17 @@ export const FIXED: Readonly<Record<string, string>> = {
   'capacity/holders': '/capacity/holders',
   'capacity/accounts': '/capacity/accounts',
   'capacity/quota': '/capacity/accounts/quota',
+  // NAV-FOOT (#1672): API reads, Capacity's last page. It was `/api-reads`
+  // at the spine's foot; that path and `/reference` still land here.
+  'capacity/api-reads': '/capacity/api-reads',
   'admin/limits': '/admin/limits',
   'admin/tenants': '/admin/tenants',
   'admin/counts': '/admin/counts',
   // #847 W8: Admin › People, everyone who has signed in and their workspace requests.
   'admin/people': '/admin/people',
+  // NAV-ADMIN-ROLE (part of #1633): Admin › Workspaces you admin, the group
+  // workspaces whose stored role for the caller is admin.
+  'admin/workspaces': '/admin/workspaces',
   // KEYS-UI: Settings › API keys, the person's own provider keys and, for an
   // admin, the tenant's. Not a section: reached from the panel's foot by the
   // person's name. Its one-time link is KEY_LINK_PATH, above.
@@ -111,8 +128,19 @@ export const FIXED: Readonly<Record<string, string>> = {
   // (Code intelligence). Beside API keys at the panel's foot, for the same
   // reason: set once, not worked in.
   'settings/workspace': '/settings/workspace',
+  // MCP-UI: Settings › MCP servers, the workspace's registered MCP servers
+  // (docs/design/registered-mcp-servers.md §4.11). A sibling of Workspace, for
+  // the same reason: registered once, then named by tasks.
+  'settings/mcp-servers': '/settings/mcp-servers',
+  // PROFILE-NAV: Settings › Profile, the person's own identity, workspaces,
+  // connections, bell and Claude accounts (docs/design/user-profile.md). About
+  // the person rather than a workspace, so beside API keys, for the same reason.
+  'settings/profile': '/settings/profile',
+  // ROLES-UI-PEOPLE: Settings › People and roles, the selected workspace's
+  // default role, its people's own roles and its role events
+  // (docs/design/workspace-roles.md §4.8). Beside Workspace, for the same reason.
+  'settings/people': '/settings/people',
   [HELP_ROUTE]: '/help',
-  reference: '/api-reads',
 }
 
 const FIXED_BACK: Readonly<Record<string, string>> = Object.fromEntries(
@@ -462,6 +490,8 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   // every tenant's schedules are Automate › Schedules' All tenants view, and
   // its old path lands there, the bar rewritten once by App's normalise.
   if (path === '/admin/schedules') return plain('automate/schedules?scope=all')
+  // API reads' old paths, and anything under them (NAV-FOOT, #1672).
+  if (OLD_API_READS_PATHS.some((old) => path === old || path.startsWith(`${old}/`))) return plain(REFERENCE_ADDRESS)
 
   const fixed = FIXED_BACK[path] ?? SECTION_ROOTS[path]
   if (fixed === undefined) return null

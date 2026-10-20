@@ -149,16 +149,21 @@ from . import continuation as continuation_mod
 from . import egress as egress_mod
 from . import expected_outputs as expected_mod
 from . import gitops as gitops_mod
+from . import forgebroker as forgebroker_mod
+from . import spendprice as spendprice_mod
 from . import graph_ticket as graph_ticket_mod
 from . import graphstage as graphstage_mod
 from . import handoff as handoff_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
 from . import jevkey as jevkey_mod
+from . import mcp_attach as mcp_attach_mod
 from . import secretrelease as secretrelease_mod
+from . import territory as territory_mod
 from . import typesafe_shim as typesafe_shim_mod
 from . import questions as questions_mod
 from . import redact as redact_mod
+from . import extrarepos as extrarepos_mod
 from . import standalone_outputs as standalone_mod
 from . import verdict as verdict_mod
 from . import workspace as workspace_mod
@@ -216,7 +221,7 @@ from . import mergeslot as mergeslot_mod
 from . import mergetrain as mergetrain_mod
 from . import post_verdict as post_verdict_mod
 from . import specverify
-from .forge import ForgeError, RepoAccess, probe_repository, open_pull_request
+from .forge import ForgeError, PullRequest, RepoAccess, probe_repository, open_pull_request
 from .gitops import (
     ATTRIBUTION_MARKERS,
     EMPTY_CLONE_BASE,
@@ -244,6 +249,7 @@ from .gitops import (
     summarize_work,
     validate_ref,
     verify_merged_default_branch,
+    published_paths,
     verify_worker_authorship,
 )
 # The helpers every function in `gitops` builds its git commands from. Borrowed
@@ -477,6 +483,12 @@ _FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 #: pull-request step (`_published_nothing`), from an outage, which does not.
 #: Held to the forge's wording by tests/unit/worker/test_published_nothing.py.
 PULL_REQUEST_REFUSED = "the forge refused the pull request"
+
+#: The `result_summary.git` key `_publish_git` sets when a pull request
+#: refused 401 after its push was still not opened by the one re-read
+#: (`Worker._open_pull_request_reading_again`, #1623): "branch <name> pushed;
+#: pull request not opened (401 twice)", or the re-read's refusal.
+PULL_REQUEST_NOT_OPENED_FIELD = "pull_request_not_opened"
 
 #: The `result_summary.git` key `_publish_git` sets when the forge stayed
 #: unreachable past the in-process retry (`forge.retry_transient`) while
@@ -817,6 +829,10 @@ class Worker:
         #: trusted (`_forge_suffix`): the generation check, then the
         #: signature, then the credential read (invariant 5).
         self._forge_signed = False
+        #: The own spec's check, set by `_verify_spec` (MODEL-WORKER). Until
+        #: then the check of a document that names no class: an unverified
+        #: document never reaches the model check, which runs after it.
+        self._spec_check = specverify.SpecCheck(reason="unverified", task_id=config.task_id)
         #: An `input.issue` number's title, when something upstream of the pull
         #: request title (#265's own fetch, once it lands) already read it.
         #: Nothing sets this yet -- #265 is landing separately and had not, as
@@ -910,6 +926,10 @@ class Worker:
         # less what an earlier attempt's agent created; None until then, and
         # None means nothing is uploaded from the working folder.
         self._standalone = False
+        #: The task's additional repositories as they landed on disk this
+        #: attempt (`extrarepos.prepare`, MULTI-REPO #1434), in the task's
+        #: order; empty for a task with none, which is every task before it.
+        self._extra_checkouts: list[extrarepos_mod.Checkout] = []
         self._restored_workdir: frozenset[str] = frozenset()
         self._workdir_baseline: frozenset[str] | None = None
         self._heartbeats = 0
@@ -1039,6 +1059,19 @@ class Worker:
         self.children = children_mod.ChildPath(
             config, logger=deps.logger, memory=deps.memory, api=deps.child_api
         )
+        # A person's `git-u-` slot comes only from swarm-api's broker, proven
+        # with the attempt key `children` registered (#1041,
+        # docs/design/user-scoped-secrets.md §3.2). Inert for a team token.
+        self.forge_broker = forgebroker_mod.ForgeBroker(
+            config, children=self.children, logger=deps.logger
+        )
+        # A stopped run's cost is priced by swarm-api from the platform's
+        # `model_prices` setting (#1481), proven with the same attempt key.
+        # The worker holds no price table. Without an API or a key, the cost
+        # is not reported.
+        self.spend_pricer = spendprice_mod.SpendPricer(
+            config, children=self.children, logger=deps.logger
+        )
         # The shared graph service's attempt ticket (docs/design/graph-service.md
         # §4.1, lane GS-WORKER): minted by `graphstage.prepare` only when the
         # workspace stored `graph_delivery: service`, then renewed on the
@@ -1051,6 +1084,14 @@ class Worker:
         # signed with the child path's attempt key. Inert for a profile whose
         # catalogue entry, and whose launched tools, declare no secret slot.
         self.secret_release = secretrelease_mod.SecretRelease(
+            config, children=self.children, logger=deps.logger
+        )
+        # The caller's registered MCP servers (docs/design/registered-mcp-
+        # servers.md §4.7, lane MCP-WORKER): attached once per attempt, after
+        # the release, and served through a loopback relay that holds the
+        # credentials in this heap. Inert for a task whose signed input names
+        # no server -- which is every task while SWARM_MCP_SERVERS is off.
+        self.mcp = mcp_attach_mod.McpAttachment(
             config, children=self.children, logger=deps.logger
         )
         # The TypeSafe forwarder's ticket and the loopback shim jev and the
@@ -1668,9 +1709,23 @@ class Worker:
         base: indexrun_mod.BaseVersion, base_sha: str, started: float,
         skipped: Callable[[str], None], *, source: str,
     ) -> str | None | Outcome:
-        """`swarm-repo-graph read` of the base, once its index is staged from `source`."""
+        """`swarm-repo-graph read` of the base, once its index is staged from `source`.
+
+        Its budget is sized from the base graph's size, which the staged
+        index's graph counts give (`indexrun.base_graph_bytes`, #1469). A
+        read that runs out is named, with the last step the tool said it
+        finished, in the log and the `stage_base` record; `skipped` removes
+        whatever it left, so the run is FULL, never built on part of a base.
+        """
         cfg, ws = self.cfg, self.ws
         assert ws is not None
+        try:
+            staged_index = json.loads(
+                (ws.work / indexrun_mod.BASE_INDEX_FILE).read_text("utf-8"))
+        except (OSError, ValueError):
+            staged_index = None
+        size = indexrun_mod.base_graph_bytes(staged_index)
+        budget = indexrun_mod.budgets(cfg.timeout_seconds, base_graph_bytes=size).base_read
         ran = self._run_index_phase(
             "stage_base",
             indexrun_mod.graph_read_argv(
@@ -1678,10 +1733,24 @@ class Worker:
             ),
             cwd=ws.work,
             env=env,
-            timeout=indexrun_mod.budgets(cfg.timeout_seconds).base_read,
+            timeout=budget,
         )
         if isinstance(ran, Outcome):
             return ran
+        if ran.status == "timed_out":
+            said = indexrun_mod.last_line(ws.logs / "repo-index.stage_base.stderr.log")
+            got = self._scrub(said) if said else "it said nothing before it was stopped"
+            sized = f"{size} bytes" if size is not None else "an unknown size"
+            self.log.warning(
+                "index base graph read ran out of its budget",
+                read=f"{indexrun_mod.GRAPH_WRITER_COMMAND} read", base=base_sha[:12],
+                budget_seconds=budget, base_graph_bytes=size, seconds=ran.seconds,
+                last_progress=got,
+            )
+            skipped(f"{indexrun_mod.GRAPH_WRITER_COMMAND} read of base {base_sha[:12]}'s "
+                    f"graph ran out of its {budget}-second budget (sized for {sized}) "
+                    f"after {ran.seconds} s; the last it said: {got}")
+            return None
         if ran.status != "ok" or not (ws.work / indexrun_mod.BASE_GRAPH_FILE).is_file():
             skipped(f"the base graph was not read ({ran.status}: {ran.reason or 'no file'})")
             return None
@@ -2071,18 +2140,27 @@ class Worker:
         A merge is a forge write, so a read grant, or a grant gone since
         submission, raises `ForgeWriteRefused` before any token is read; the
         merge ends the step FAILED and names that type.
+
+        A person's `git-u-` slot is asked of swarm-api's broker, not read
+        (#1041): its refusal raises a named `SecretError`, or
+        `ForgeWriteRefused` for a grant gone, and the merge fails on it.
         """
         forge_refused = self._forge_write_refusal()
         if forge_refused is not None:
             raise ForgeWriteRefused(*forge_refused)
         suffix = self._forge_suffix()
         tenant = load_tenant(self.db, self.cfg.tenant_id, call_options=self.control.call_options())
-        if self.secret_client is None or (
+        person = user_slot_hash(suffix) is not None
+        if (self.secret_client is None and not person) or (
             suffix == GIT_PROVIDER and GIT_PROVIDER not in tenant.credentials
         ):
             raise CredentialMissing(self.cfg.tenant_id, suffix)
+        # A person's slot comes from the broker, asked for a write (#1041): a
+        # refusal is `ForgeCredentialRefused`, or `ForgeWriteRefused` for a
+        # grant gone, and never the tenant token in its place.
         token = resolve_git_token(
-            tenant=tenant, client=self.secret_client, logger=self.log, provider=suffix
+            tenant=tenant, client=self.secret_client, logger=self.log, provider=suffix,
+            broker=self.forge_broker, write=True,
         )
         if not token:
             raise CredentialMissing(self.cfg.tenant_id, suffix)
@@ -2284,7 +2362,9 @@ class Worker:
     def _verify_spec(self, task: dict[str, Any], create_time: Any) -> None:
         """Contract request 34's check, with its log line and its legacy note.
 
-        The spec itself is never logged: a prompt can hold anything.
+        The spec itself is never logged: a prompt can hold anything. The
+        check is kept as `_spec_check`: its `model_class` is the signed class
+        the model check holds MODEL to.
         """
         clock = self.cfg.spec_clock
         now = clock() if clock is not None else datetime.now(timezone.utc)
@@ -2315,6 +2395,38 @@ class Worker:
         else:
             self.log.info("spec signature verified", spec_check=check.as_detail())
             self._forge_signed = True
+        self._spec_check = check
+
+    def _fail_model_check(self, refusal: specverify.ModelRefusal) -> Outcome:
+        """FAILED, not retried, before the agent ran: MODEL cannot run this step.
+
+        docs/design/model-per-step.md §4.5. NOT RETRIED: the next attempt is
+        dispatched from the same signed class by the same scheduler, and
+        meets the same MODEL. CANNOT_START, like every refusal before the
+        agent. The class and the ID are logged and recorded: neither is a
+        secret, and an operator needs both to see which side is wrong.
+        """
+        error = self._scrub(
+            f"{refusal.cause}: {refusal.reason}. The agent was not started."
+        )
+        self.log.error(
+            "the execution's MODEL cannot run this step's model class; failing "
+            "before the agent runs",
+            cause=refusal.cause,
+            model_class=refusal.model_class,
+            job_model=refusal.model,
+        )
+        summary = self._upload_outputs()
+        summary["model_check"] = refusal.as_detail()
+        with self._metrics_after_the_record():
+            self.control.finish(
+                state=TaskState.FAILED,
+                exit_code=None,
+                error=error,
+                result_summary=summary,
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _incomplete_parents(self, task: dict[str, Any]) -> dict[str, str | None]:
         """The signed parents of `task` that have not SUCCEEDED, with their state.
@@ -2380,8 +2492,11 @@ class Worker:
 
         # ---- STEP 2: STARTING -> RUNNING --------------------------------
         self.phases.enter("record_attempt_start")
+        # `model` is the ID this attempt was started with (contract request
+        # 103), written with `started_at`. STEP 1's generation check has
+        # passed, so a stale generation never reaches this write.
         self.control.record_attempt_start(
-            backend=cfg.backend, execution_name=_execution_name()
+            backend=cfg.backend, execution_name=_execution_name(), model=cfg.model
         )
         self.phases.enter("advance_to_running")
         # STEP 2a, inside STEP 2: the child-task attempt key is registered
@@ -2420,8 +2535,10 @@ class Worker:
         # never the viewer's tunnel. A live-browser attempt whose gate is not
         # ready has no CDP proxy, and it never starts its agent headless: the
         # ATTEMPT fails retryably, before the agent, after the startup window.
+        # BROWSER-START: likewise a gate whose CDP endpoint was not passed or
+        # never answered within `setup`'s bounded wait (`browser_missing`).
         if self.handoff.gate_missing:
-            return functools.partial(self._fail_live_gate_missing, self.handoff.unavailable)
+            return functools.partial(self._fail_live_gate_missing, self.handoff.browser_missing)
 
         # THE FIRST HEARTBEAT GOES HERE, BEFORE ANY SLOW WORK.
         #
@@ -2465,6 +2582,15 @@ class Worker:
         # verified copy, never on the live field a tenant agent can rewrite
         # (#346).
         self.control.pin_verified_max_attempts(task.get("max_attempts"))
+
+        # ---- STEP 4 (cont.): the MODEL this execution was given ----------
+        # docs/design/model-per-step.md §4.5. After the signature, on its
+        # signed class, and before a credential is read or the CLI started:
+        # a classed step with no pin, or with the pin of another class, is
+        # refused rather than run on whatever model the CLI would pick.
+        _, model_refusal = specverify.check_model(cfg.profile, self._spec_check, cfg.model)
+        if model_refusal is not None:
+            return functools.partial(self._fail_model_check, model_refusal)
         # The clone host joins the egress probe (#721 (a)) as soon as the
         # document naming it is verified, the same URL `_maybe_clone` reads.
         self._add_egress_target(self.cfg.repository_url or task.get("repository_url"))
@@ -2594,6 +2720,20 @@ class Worker:
         # one most likely to vary with repository size.
         self._heartbeat()
 
+        # ---- STEP 5': the additional repositories (MULTI-REPO, #1434) ------
+        # docs/design/multi-repository-steps.md §4.4: right after the primary
+        # clone, each signed entry cloned at its signed commit onto the cache
+        # volume, read-only, and linked under `work/repos`. All of them or the
+        # agent does not start: a revoked grant or an oversized set ends the
+        # attempt for good, a clone that failed ends it retryably. A task
+        # with no primary repository takes them too (the owner's Q8).
+        try:
+            self._extra_checkouts = self._clone_additional_keeping_lease(task)
+        except extrarepos_mod.Refused as exc:
+            return functools.partial(self._end_additional_refused, exc)
+        if self._extra_checkouts:
+            self._heartbeat()
+
         # ---- before STEP 5a: a READ grant on a step that must push (D9, OB5) -
         # A step whose job is to open a pull request, or to carry its work on a
         # branch, could only ever be refused at its push, so it is refused now,
@@ -2671,6 +2811,17 @@ class Worker:
         payload = dict(task.get("input") or {})
         if repo_info:
             payload.setdefault("repository", repo_info)
+        if self._extra_checkouts:
+            # Assigned, not `setdefault`: what is on disk now, as
+            # `staged_inputs` below is.
+            payload[extrarepos_mod.INPUT_KEY] = [c.as_dict() for c in self._extra_checkouts]
+        elif extrarepos_mod.INPUT_KEY in payload:
+            # Only the worker's own record names checkouts to the agent.
+            payload.pop(extrarepos_mod.INPUT_KEY)
+            self.log.warning(
+                "dropped the caller's own input.additional_repositories: only the "
+                "checkouts the worker made for this task are named to the agent",
+            )
         if staged_inputs:
             # Assigned, not `setdefault`: this key describes what is actually on
             # disk right now, so a caller's own `staged_inputs` in the step input
@@ -2782,6 +2933,30 @@ class Worker:
             raise FencedWriteRefused(
                 cfg.generation, -1, str(exc), write="typesafe ticket"
             ) from None
+        # STEP 6a'': the caller's registered MCP servers (MCP-WORKER, design
+        # §4.7), ONCE, before the runner's environment: every credential is
+        # registered for redaction as the answer is parsed, and the runner is
+        # handed only the relay file's path (`_build_child_env`). A 409 is the
+        # fence: stand down without the agent, leave the lease (invariant 5).
+        # A withheld server, or an attach that could not be made, fails the
+        # attempt before the agent runs: it was named because it is needed.
+        try:
+            attached = self.mcp.attach(profile=cfg.profile, inputs=task.get("input"))
+        except mcp_attach_mod.McpAttachFenced as exc:
+            raise FencedWriteRefused(
+                cfg.generation, -1, f"mcp attach: {exc.code}", write="mcp attach"
+            ) from None
+        unattached = attached.failure()
+        if unattached is None and attached.servers:
+            try:
+                self.mcp.start(ws.private)
+            except OSError as exc:
+                unattached = (
+                    mcp_attach_mod.UNAVAILABLE, f"relay_not_started:{type(exc).__name__}", True
+                )
+        if unattached is not None:
+            self.mcp.close()
+            return functools.partial(self._fail_mcp_unattached, *unattached)
         try:
             child_env = self._build_child_env()
         except CredentialMissing as exc:
@@ -3397,6 +3572,8 @@ class Worker:
         """
         cfg = self.cfg
         self._fenced_exit = True
+        # Before the runner is stopped: from here the relay forwards nothing.
+        self.mcp.mark_fenced()
         self.log.error(
             "generation fenced mid-run; stopping the runner",
             observed_generation=observed_generation,
@@ -3454,6 +3631,7 @@ class Worker:
             attempt made while it still owned the task.
         """
         self._fenced_exit = True
+        self.mcp.mark_fenced()
         self.log.error(
             "FENCED on the way out: this attempt has been superseded; exiting "
             "without writing the task, the lease or an event",
@@ -3887,6 +4065,8 @@ class Worker:
             # CLI runner stopped on SIGTERM may leave no result for the block
             # below to be written from.
             summary["cost_estimated"] = True
+            if self._spend.get("tier_estimated"):
+                summary["tier_estimated"] = True
         runner_result = _read_json(ws.result_path)
         if runner_result:
             # The SAME figure `_record_spend` wrote onto the attempt (it ran
@@ -3930,6 +4110,7 @@ class Worker:
     def _exit_fenced(self, exc: FencedError) -> int:
         """Emit the event and leave. No workspace, no agent, no lease change."""
         self._fenced_exit = True
+        self.mcp.mark_fenced()
         self.log.error(
             "FENCED: this attempt has been superseded; exiting without running the agent",
             expected_generation=exc.expected,
@@ -4520,6 +4701,139 @@ class Worker:
         """
         with self._heartbeat_meanwhile("clone"):
             return self._maybe_clone(task)
+
+    def _clone_additional_keeping_lease(
+        self, task: dict[str, Any]
+    ) -> list[extrarepos_mod.Checkout]:
+        """The task's additional repositories on disk (`extrarepos.prepare`), the
+        lease heartbeated from a thread meanwhile, as for the primary clone.
+
+        Raises `extrarepos.Refused` when they cannot all be put there. From the
+        VERIFIED document only (`_task`, after `_verify_spec`), whose spec
+        signature covers the list at format 4.
+        """
+        entries = extrarepos_mod.entries_of(task)
+        if not entries:
+            return []
+        ws = self.ws
+        assert ws is not None
+        self.phases.enter("additional_clone", count=len(entries))
+        budget = extrarepos_mod.budget_bytes(
+            self.db, logger=self.log, call_options=self.control.call_options()
+        )
+        with self._heartbeat_meanwhile("additional_clone"):
+            checkouts = extrarepos_mod.prepare(
+                ws=ws,
+                entries=entries,
+                grant_refusal=self._additional_grant_refusal,
+                token_for=self._additional_git_token,
+                budget=budget,
+                logger=self.log,
+                timeout_seconds=self.cfg.git_clone_timeout_seconds,
+                max_wait_seconds=self.cfg.max_in_worker_retry_delay_seconds,
+                remaining_seconds=self._remaining_seconds,
+                sleep=self.forge_sleep,
+                egress=self._egress,
+            )
+        # From now on every checkpoint leaves `work/repos` out (§4.6), and
+        # the standalone upload skips it (`_workdir_reserved`).
+        self.checkpoints.leaves_out_extra_repos = True
+        self._extra_checkouts = checkouts
+        return checkouts
+
+    def _additional_suffix(self, entry: dict[str, Any]) -> str:
+        """The forge slot an additional repository is cloned with.
+
+        The entry's signed `forge_credential`, only once the spec signature
+        was verified; an unsigned task reads the tenant token, as
+        `_forge_suffix` does for the primary, so a field anyone with write on
+        the document could set never chooses whose slot this worker reads.
+        """
+        return entry["forge_credential"] if self._forge_signed else GIT_PROVIDER
+
+    def _additional_grant_refusal(self, entry: dict[str, Any]) -> str | None:
+        """Why the submitter's grant no longer covers this entry, or None.
+
+        `secrets.grant_refusal` for the entry's own slot and repository, read
+        again by id. Nothing for a tenant token. Raises when it cannot be read.
+        """
+        suffix = self._additional_suffix(entry)
+        if user_slot_hash(suffix) is None:
+            return None
+        submitted_by = (self._task or {}).get("submitted_by")
+        return grant_refusal(
+            self.db,
+            tenant_id=self.cfg.tenant_id,
+            suffix=suffix,
+            repository_url=entry["repository_url"],
+            write=False,
+            call_options=self.control.call_options(),
+            submitted_by=submitted_by if isinstance(submitted_by, str) else None,
+        )
+
+    def _additional_git_token(self, entry: dict[str, Any]) -> str | None:
+        """This entry's forge token, read now, or None: `_git_token`'s path for
+        the entry's own slot. Never cached, never put in an environment.
+
+        A person's `git-u-` slot goes through `self.forge_broker`, as the
+        primary's does (#1041): without it `resolve_git_token` refuses every
+        user slot, and the entry cloned unauthenticated."""
+        refusal = self._git_token_refusal()
+        suffix = self._additional_suffix(entry)
+        if refusal or (self.secret_client is None and user_slot_hash(suffix) is None):
+            return None
+        try:
+            tenant = load_tenant(
+                self.db, self.cfg.tenant_id, call_options=self.control.call_options()
+            )
+            return resolve_git_token(
+                tenant=tenant, client=self.secret_client, logger=self.log,
+                provider=suffix, broker=self.forge_broker,
+            )
+        except SecretError as exc:
+            self.log.warning(
+                "no usable git credential for an additional repository; cloning "
+                "unauthenticated", name=entry["name"], error=str(exc),
+            )
+            return None
+
+    def _end_additional_refused(self, exc: extrarepos_mod.Refused) -> Outcome:
+        """End the attempt before the agent ran: its additional repositories
+        could not all be put on disk.
+
+        After the startup window closes, like every ending `_prepare` decides
+        on. `control.finish` or `fail_retryably` writes the task's state and
+        releases the lease; nothing else touches it. The reason names entries
+        by `name` only.
+        """
+        reason = self._scrub(exc.reason)
+        error = self._scrub(f"{exc.cause}: {reason}. The agent was not started.")
+        self.log.error(
+            "the additional repositories could not be prepared; ending before the agent runs",
+            cause=exc.cause, retryable=exc.retryable,
+        )
+        summary = self._upload_outputs()
+        summary["additional_repositories_check"] = {"cause": exc.cause, "reason": reason}
+        with self._metrics_after_the_record():
+            if exc.retryable:
+                state = self.control.fail_retryably(
+                    exit_code=None,
+                    error=error,
+                    cause=exc.cause,
+                    result_summary=summary,
+                    retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+                    detail={"clone": "additional_repositories"},
+                    end_cause=EndCause.CANNOT_START,
+                )
+                return Outcome(exit_code=ExitCode.FAILED, state=state)
+            self.control.finish(
+                state=TaskState.FAILED,
+                exit_code=None,
+                error=error,
+                result_summary=summary,
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _maybe_clone(self, task: dict[str, Any]) -> dict[str, Any] | None:
         ws = self.ws
@@ -6056,6 +6370,10 @@ class Worker:
         link = ws.artifacts_link()
         if ws.is_artifacts_link(link):
             names.add(link.name)
+        if self._extra_checkouts:
+            # `work/repos`: the worker's links to the additional checkouts
+            # (MULTI-REPO §4.5), never the agent's deliverable.
+            names.add(workspace_mod.REPOS_DIR_NAME)
         return frozenset(names)
 
     def _take_workdir_baseline(self) -> None:
@@ -6728,6 +7046,11 @@ class Worker:
         refused = git.get("pull_request_refused")
         if refused:
             return f"published_nothing: {refused}"
+        unopened = git.get(PULL_REQUEST_NOT_OPENED_FIELD)
+        if unopened:
+            # Its own words, not "published_nothing": the branch IS pushed,
+            # and the error says so with its name (#1623).
+            return str(unopened)
         if (
             git.get("published") is False
             and git.get("commit_count") == 0
@@ -7067,12 +7390,25 @@ class Worker:
         Nor is it read at all when `_git_token_refusal` names a reason: once
         read, the token stays in this process's heap for the rest of the
         attempt, next to an agent that may be able to read it there.
+
+        A PERSON'S SLOT comes from swarm-api's broker, never Secret Manager
+        (#1041, `forgebroker`) -- except in a deployment with no broker, where
+        the worker's own account reads it while IAM still allows
+        (`ForgeBroker.deployed`) -- asked for `read`: every push and pull request
+        first asks `_forge_write_refusal`, which re-reads the grant for a
+        write, before it calls this. A refusal is None here -- no token, and
+        never the tenant's in its place, so a private repository fails with
+        git's own message and a push has no credential. A superseded attempt
+        raises `FencedError` and stands down. The merge, a write with no such
+        gate of its own, asks the broker for `write` (`_read_action_git_token`).
         """
+        self._git_token_error = None
         refusal = self._git_token_refusal()
         if refusal:
             self.log.error("not reading the tenant git credential", reason=refusal)
             return None
-        if self.secret_client is None:
+        suffix = self._forge_suffix()
+        if self.secret_client is None and user_slot_hash(suffix) is None:
             return None
         try:
             tenant = load_tenant(
@@ -7080,9 +7416,13 @@ class Worker:
             )
             return resolve_git_token(
                 tenant=tenant, client=self.secret_client, logger=self.log,
-                provider=self._forge_suffix(),
+                provider=suffix, broker=self.forge_broker,
             )
         except SecretError as exc:
+            # Why, for a caller that must say it (`_open_pull_request_reading_
+            # again`): a `SecretError` names the secret and the broker's code,
+            # never a value.
+            self._git_token_error = str(exc)
             self.log.warning(
                 "no usable tenant git credential; cloning unauthenticated",
                 error=str(exc),
@@ -7166,6 +7506,82 @@ class Worker:
                 access, reason=f"{access.reason}; {FORGE_REFUSED_TWICE}"
             )
         return token, access
+
+    def _open_pull_request_reading_again(
+        self, open_with: Callable[[str], PullRequest], token: str, *, branch: str
+    ) -> PullRequest:
+        """`open_with(token)`; on a 401, read the slot again ONCE and open once more.
+
+        MEASURED 2026-10-19 (#1623): task_194ad2144eb6441c8a7c pushed its
+        branch and was then refused "could not open a pull request (401): Bad
+        credentials". `_publish_git` reads the token once and the probe, the
+        push and the pull request all use that read; only the probe re-read
+        on a 401. A refresh in between -- each one makes GitHub end the access
+        token it replaces (docs/onboarding.md §3.3 item 5) -- leaves the pull
+        request holding a dead token after the push used it.
+
+        THE RE-READ IS THE FIRST READ AGAIN, gates and all: `_forge_write_
+        refusal` (the submitter's grant, read again now) and `_git_token_
+        refusal` are asked first, and a refusal is not read past; then
+        `_git_token`, the same suffix through the same path -- a person's slot
+        from the broker, a team token from Secret Manager, never the tenant's
+        token in place of a person's. The new value lives in this frame only,
+        as the first did in the publish's.
+
+        Exactly one re-read and one more call, with no sleep: a second 401 or
+        a refused re-read raises `ForgeError` saying the branch is pushed and
+        the pull request is not open, which the publish records as
+        `pull_request_not_opened` and the finish fails the step for
+        (`_published_nothing`). Anything but a 401 (a 403 or 404 is a
+        permission, not a stale token) is raised as it came.
+        """
+        try:
+            return open_with(token)
+        except forge_mod.ForgeCredentialRejected:
+            self.log.warning(
+                "the forge refused the credential at the pull request; reading "
+                "its secret again and retrying once",
+                event="forge_token_reread", reason="pr_open_401", branch=branch,
+            )
+        unopened = f"branch {branch} pushed; pull request not opened"
+        refused = self._forge_write_refusal()
+        if refused is not None:
+            cause, reason = refused
+            self._emit_token_reread(branch, outcome=cause)
+            raise ForgeError(f"{unopened}: the re-read was refused: {cause}: {reason}")
+        refusal = self._git_token_refusal()
+        if refusal:
+            raise ForgeError(f"{unopened} (401): the token was not read again: {refusal}")
+        fresh = self._git_token()
+        if not fresh:
+            why = getattr(self, "_git_token_error", None) or "no forge credential was read"
+            self._emit_token_reread(branch, outcome="unread")
+            raise ForgeError(f"{unopened} (401): the token could not be read again: {why}")
+        self._emit_token_reread(branch, outcome="read")
+        try:
+            return open_with(fresh)
+        except forge_mod.ForgeCredentialRejected as exc:
+            self.log.error("the forge refused the re-read credential at the pull request "
+                           "as well", branch=branch)
+            raise ForgeError(f"{unopened} (401 twice): {exc}; {FORGE_REFUSED_TWICE}") from None
+
+    def _emit_token_reread(self, branch: str, *, outcome: str) -> None:
+        """A `forge_token_reread` mark on the task's events (reason `pr_open_401`).
+
+        RUNNING with `cause`, as `_emit_startup_mark` writes: the frozen
+        `EventType` has no note-only type. The branch and the outcome, never
+        the token. Never raises: the publish's answer is the real signal.
+        """
+        if self._fenced_exit or self._writes_forbidden or self._control_plane_down:
+            return
+        try:
+            self.control.emit(EventType.RUNNING, {
+                "cause": "forge_token_reread", "reason": "pr_open_401",
+                "branch": branch, "outcome": outcome,
+            })
+        except Exception as exc:  # noqa: BLE001 -- a mark is never worth a publish
+            self.log.warning("could not record the forge token re-read",
+                             error=type(exc).__name__)
 
     def _forge_suffix(self) -> str:
         """The provider suffix of this task's forge secret (contract request 54).
@@ -7494,6 +7910,8 @@ class Worker:
         # a path and the gate's loopback CDP address, never a credential.
         base.update(self.handoff.prepare(ws.work))
         base.update(self._graph_context_env(ws, clone_base))
+        # `work/repos`, when the task reads additional repositories: a path.
+        base.update(extrarepos_mod.child_env(ws, self._extra_checkouts))
         # The jev MCP server's TypeSafe key, on a live-browser attempt with a
         # key (JEV-RUNNER, `jevkey`): the PATH of a 0600 file in private/,
         # never the key, which reaches only that server's process. Never
@@ -7518,6 +7936,9 @@ class Worker:
         released = self.secret_release.result
         if released is not None:
             base.update(released.env)
+        # The MCP relay (MCP-WORKER): the relay file's PATH, whose contents
+        # are loopback URLs and the local token -- never a credential.
+        base.update(self.mcp.env)
         return ws.child_env(base)
 
     def _graph_context_env(self, ws: Any, clone_base: str | None) -> dict[str, str]:
@@ -7542,7 +7963,8 @@ class Worker:
                     base_sha=clone_base, call_options=self.control.call_options(),
                     log=self.log, mark=self._mark_graph_ready,
                     graph_ticket=self.graph_ticket, private_dir=ws.private,
-                    backend=self.cfg.backend, service_url=self.cfg.graph_service_url)
+                    backend=self.cfg.backend, service_url=self.cfg.graph_service_url,
+                    secret_env_names=self.cfg.profile.secrets)
             except graph_ticket_mod.GraphTicketFenced as exc:
                 raise FencedWriteRefused(
                     self.cfg.generation, -1, str(exc), write="graph ticket"
@@ -8226,7 +8648,7 @@ class Worker:
         self.control.pin_verified_max_attempts(task.get("max_attempts"))
         cause = handoff_mod.LIVE_GATE_UNAVAILABLE
         error = (
-            f"{cause}: the live browser's gate was not ready ({code or 'unknown'}), so the "
+            f"{cause}: the live browser was not ready ({code or 'unknown'}), so the "
             "agent was not started without its browser; the attempt is retried while the "
             "task has attempts left."
         )
@@ -9197,6 +9619,49 @@ class Worker:
             )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
+    def _fail_mcp_unattached(self, cause: str, detail: str, retryable: bool) -> Outcome:
+        """The attempt ends before its agent ran: a registered MCP server the
+        task names was withheld, or the attach could not be made (MCP-WORKER,
+        design §4.7 step 2). The caller named the server because the agent
+        needs it; work built without it would rest on knowledge the agent was
+        told it had. Retryable only when a later attempt may get it
+        (`unreadable`, an unreachable swarm-api); `credential_expired` and
+        the other reasons are final. `detail` holds names and reason words,
+        never a value.
+        """
+        error = self._scrub(
+            f"{cause}: the task names registered MCP servers this attempt could not "
+            f"attach ({detail}). The agent was not started"
+            + ("; the attempt is retried while the task has attempts left." if retryable
+               else ".")
+        )
+        self.log.warning(
+            "mcp servers not attached; failing before the agent runs",
+            cause=cause, detail=detail, retryable=retryable,
+        )
+        summary = self._upload_outputs()
+        summary["mcp_check"] = {"cause": cause, "detail": detail, "retryable": retryable}
+        with self._metrics_after_the_record():
+            if not retryable:
+                self.control.finish(
+                    state=TaskState.FAILED,
+                    exit_code=None,
+                    error=error,
+                    result_summary=summary,
+                    end_cause=EndCause.CANNOT_START,
+                )
+                return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
+            state = self.control.fail_retryably(
+                exit_code=None,
+                error=error,
+                cause=cause,
+                result_summary=summary,
+                retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+                detail={"mcp": detail},
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
+
     def _forge_retry(self) -> forge_mod.RetryPolicy:
         """The bound on retrying a forge call that failed transiently (F1).
 
@@ -9642,6 +10107,8 @@ class Worker:
                 try:
                     signals = self.control.poll()
                     if signals.is_fenced(self.cfg.generation):
+                        # The relay stops forwarding now, not at the next poll.
+                        self.mcp.mark_fenced()
                         self.log.warning(
                             "stopped heartbeating the lease during a long operation: "
                             "the attempt is fenced",
@@ -11331,6 +11798,15 @@ class Worker:
         if advisory:
             generated = f"{generated}\n\n{advisory}"
         body = f"{agent_body}\n\n---\n\n{generated}" if agent_body else generated
+        # OUTSIDE THE LANE'S TERRITORY (TERRITORY-WARN, part of #1468): the
+        # pull request still opens, its body STARTING with the paths and
+        # carrying the label (owner decision, 2026-10-19). The territory is
+        # the task's stored input, never anything the agent wrote.
+        outside_header, labels = self._territory_warning(
+            publish_repo, head=str(pushed or work_head or ""), out=out
+        )
+        if outside_header:
+            body = f"{outside_header}\n\n---\n\n{body}"
         # The generated block quotes the step's prompt, which is anyone's
         # text too; the whole body is neutralised, so no part of what the
         # platform posts can page anyone (owner decision, 2026-09-29). The
@@ -11358,6 +11834,7 @@ class Worker:
                     agent_body=agent_body, branch=branch, head=str(pushed or work_head or "")
                 )
                 + (f"\n\n{prepublish}" if prepublish else "")
+                + (f"\n\n{outside_header}" if outside_header else "")
             ),
             origin=cfg.console_url,
             task_id=cfg.task_id,
@@ -11385,14 +11862,14 @@ class Worker:
             )
             self.log.warning("no pull request opened: no usable agent title", refused=refused)
             return out
-        try:
+        def open_with(with_token: str) -> PullRequest:
             # Retried on an outage: a POST that timed out after GitHub made
             # the pull request is answered 422 on the next try, which
             # `open_pull_request` resolves by adopting the open one.
-            pr = forge_mod.retry_transient(
+            return forge_mod.retry_transient(
                 lambda: open_pull_request(
                     access=access,
-                    token=token,
+                    token=with_token,
                     head=branch,
                     base=access.default_branch,
                     title=title,
@@ -11410,17 +11887,31 @@ class Worker:
                     retitle_if=lambda current: self._title_carries_task_id(current) or (
                         agent_title is not None and self._is_default_title(current)
                     ),
+                    # Only when there is one: a step inside its territory, or
+                    # with none declared, asks exactly what it always asked.
+                    **({"labels": labels} if labels else {}),
                 ),
                 policy=self._forge_retry(),
                 what="the pull request",
             )
+
+        try:
+            # A 401 reads the slot again once and tries once more (#1623).
+            pr = self._open_pull_request_reading_again(open_with, token, branch=branch)
         except ForgeError as exc:
-            message = str(self._scrub(str(exc)[:300]))
+            message = str(self._scrub(str(exc)[:600]))
             out["published"] = True
             out["publish_reason"] = (
                 f"the branch was pushed but no pull request was opened: {message}"
             )
-            if message.startswith(PULL_REQUEST_REFUSED):
+            if message.startswith(f"branch {branch} pushed; pull request not opened"):
+                # The 401 re-read did not open it (twice refused, or the
+                # re-read refused): the step's pull request does not exist,
+                # and the finish fails it saying where the work is
+                # (`_published_nothing`). Not retried: the next attempt
+                # would read the same slot.
+                out[PULL_REQUEST_NOT_OPENED_FIELD] = message
+            elif message.startswith(PULL_REQUEST_REFUSED):
                 # The forge answered and said no (`forge.open_pull_request`'s
                 # 422, e.g. "No commits between main and swarm/..."): a fact
                 # about this branch that a retry would meet again, so the
@@ -11435,6 +11926,12 @@ class Worker:
                 out[PUBLISH_UNREACHABLE_FIELD] = self._unreachable_marker(exc)
             return out
 
+        if labels:
+            out["out_of_territory"]["labelled"] = list(getattr(pr, "labelled", ()) or ())
+            label_error = str(getattr(pr, "label_error", "") or "")
+            if label_error:
+                out["out_of_territory"]["label_error"] = str(self._scrub(label_error[:300]))
+                self.log.warning("the out-of-territory label was not set", error=label_error[:300])
         updated = bool(getattr(pr, "updated", False))
         retitled = bool(getattr(pr, "retitled", False))
         appended = bool(getattr(pr, "appended", False))
@@ -11474,6 +11971,62 @@ class Worker:
         )
         self.log.info("pull request ready", number=pr.number, url=pr.url, created=pr.created)
         return out
+
+    def _territory_warning(
+        self, publish_repo: Path | None, *, head: str, out: dict[str, Any]
+    ) -> tuple[str, list[str]]:
+        """`(header, labels)` for a pull request whose diff leaves the step's
+        declared territory, or `("", [])` (TERRITORY-WARN, part of #1468).
+
+        The territory is `inputs.territory` in the task document as stored:
+        submitted by the caller, refused at submit when malformed, and covered
+        by the spec signature -- never a file in the workspace. A step that
+        declares none returns `("", [])` before git is asked anything, so its
+        publish is exactly what it was.
+
+        Records `out["out_of_territory"]` (the paths) when there are any, and
+        `out["territory_unchecked"]` (why) when a declared territory could not
+        be compared: a warning that is owed and cannot be made is said where
+        the run result is read, never silently dropped.
+        """
+        stored = (self._task or {}).get("input")
+        try:
+            territory = territory_mod.declared(stored)
+        except territory_mod.TerritoryError as exc:
+            out["territory_unchecked"] = f"the declared territory is malformed: {exc}"[:400]
+            self.log.warning("the declared territory could not be read", error=str(exc)[:300])
+            return "", []
+        if territory is None:
+            return "", []
+        ws = self.ws
+        paths = None
+        if publish_repo is not None and ws is not None:
+            try:
+                paths = published_paths(
+                    repo=publish_repo,
+                    base=self._publish_base,
+                    head=head,
+                    private_dir=ws.private,
+                    logs_dir=ws.logs,
+                    timeout_seconds=self.cfg.git_harvest_timeout_seconds,
+                    logger=self.log,
+                )
+            except GitError as exc:
+                self.log.warning("the published paths could not be read", error=str(exc)[:300])
+        if paths is None:
+            out["territory_unchecked"] = (
+                "git could not list the paths this branch changes, so they were not "
+                "compared with the declared territory"
+            )
+            self.log.warning("the declared territory was not compared")
+            return "", []
+        outside = territory_mod.outside(paths, territory)
+        if not outside:
+            return "", []
+        out["out_of_territory"] = {"paths": outside[: territory_mod.MAX_LISTED],
+                                   "count": len(outside)}
+        self.log.warning("the diff leaves the declared territory", paths=len(outside))
+        return territory_mod.warning_header(outside), [territory_mod.OUT_OF_TERRITORY_LABEL]
 
     def _pull_request_body(
         self,
@@ -12378,20 +12931,59 @@ class Worker:
         if "total_cost_usd" not in usage:
             # A RUN STOPPED BEFORE IT COULD SAY (#627): a CLI killed on a
             # cancel, a SIGTERM, a fence or a timeout prints no result event.
-            # What its stream showed is estimated, and only the keys the run
-            # did not report itself are taken, so nothing is counted twice.
-            estimate = self._stopped_run_estimate()
+            # What its stream showed is summed per model, and only the keys
+            # the run did not report itself are taken, so nothing is counted
+            # twice. SWARM-API PRICES IT (#1481): the worker sends the usage
+            # per model and takes back a figure or None -- "cost not
+            # reported" -- never one of its own.
+            estimate = self._stopped_run_usage()
+            by_model = estimate.pop("usage_by_model", None) or {}
             more = {k: v for k, v in estimate.items() if k not in usage}
+            tier_estimated = False
+            if by_model:
+                cost, tier_estimated = self.spend_pricer.estimate(by_model)
+                if cost is not None:
+                    more["total_cost_usd"] = cost
             if more:
                 usage = {**usage, **more}
                 if "total_cost_usd" in more:
                     self._spend["cost_estimated"] = True
+                    if tier_estimated:
+                        # A tiered model's tier was picked from summed counts,
+                        # not per request (PRICES-TIER-PROMPT).
+                        self._spend["tier_estimated"] = True
+        self._note_model_mismatch(usage.get("models"))
         if usage:
             self._spend = _add_spend(
                 self._spend,
                 usage,
                 session_base=self._session_spend_base if self._spend_resumes_session else None,
             )
+
+    def _note_model_mismatch(self, models: Any) -> None:
+        """Log `model_mismatch` when the stream ran none of the pinned model.
+
+        docs/design/model-per-step.md §4.6. `Attempt.model` is what the
+        worker was started with; `usage.models` is what the CLI's stream says
+        it ran. The two are different facts, and a pinned CLI that
+        substituted another model shows as a disagreement here. Judged as
+        "the pin is not among them", not "anything else is": the CLI also
+        reports the small model it runs for its own housekeeping beside the
+        one it was told to run, and that is not a substitution. A `[...]`
+        context suffix (`claude-opus-5-5[1m]`) is the same model.
+        """
+        pinned = self.cfg.model
+        if not pinned or not isinstance(models, list) or not models:
+            return
+        reported = sorted(str(m) for m in models)
+        if any(m.split("[", 1)[0] == pinned for m in reported):
+            return
+        self.log.warning(
+            "model_mismatch: the agent's stream reports models other than the pinned one",
+            cause="model_mismatch",
+            job_model=pinned,
+            stream_models=reported,
+        )
 
     def _note_runner_spend_start(self, *, resumed: bool) -> None:
         """Say, at a runner's start, whose session its spend will report.
@@ -12406,13 +12998,13 @@ class Worker:
         if not resumed or self._session_spend_base is None:
             self._session_spend_base = dict(self._spend)
 
-    def _stopped_run_estimate(self) -> dict[str, Any]:
-        """`_stream_spend_estimate` over this profile's agent capture, or {}."""
+    def _stopped_run_usage(self) -> dict[str, Any]:
+        """`_stream_usage` over this profile's agent capture, or {}."""
         files = agent_stream_files(self.cfg.runner_profile)
         if files is None or self.ws is None:
             return {}
         try:
-            return _stream_spend_estimate(self.ws.artifacts / files.stdout)
+            return _stream_usage(self.ws.artifacts / files.stdout)
         except Exception as exc:  # pragma: no cover - defensive; teardown path
             self.log.warning("could not estimate the stopped run's spend", error=str(exc))
             return {}
@@ -12811,6 +13403,9 @@ class Worker:
 
         def destroy_workspace() -> None:
             if self.ws is not None:
+                # The additional checkouts were made read-only; their folders
+                # get write back first, or the removal could not unlink in them.
+                extrarepos_mod.release(self.ws)
                 workspace_mod.destroy(self.ws)
 
         def remove_released_secrets() -> None:
@@ -12823,6 +13418,10 @@ class Worker:
         for step, action in (
             ("terminate_runner", terminate_runner),
             ("remove_released_secrets", remove_released_secrets),
+            # The MCP relay closes, its file goes and every credential
+            # reference is dropped once the runner is gone (MCP-WORKER,
+            # design §4.7 step 6). The bytes go when this process exits.
+            ("close_mcp_relay", self.mcp.close),
             # The TypeSafe shim stops, its file goes and the ticket is dropped
             # once the runner is gone (SEC-MIGRATE-TYPESAFE). A no-op when off.
             ("stop_typesafe_shim", self.typesafe.close),
@@ -14790,8 +15389,14 @@ def _recheck_runner_input(runner_profile: str, stored: Any) -> dict[str, Any] | 
             "request 32)"
         )
     try:
+        # `prompt` and `territory` are the platform's, taken by every profile
+        # and named by no declaration (`territory_mod`, TERRITORY-WARN).
         checked = check_inputs(
-            profile, {key: value for key, value in raw.items() if key != "prompt"}
+            profile,
+            {
+                key: value for key, value in raw.items()
+                if key not in ("prompt", territory_mod.TERRITORY_INPUT_KEY)
+            },
         )
     except InputRefused as refused:
         bound = f"; expected {refused.expected}" if refused.expected else ""
@@ -15272,53 +15877,36 @@ def _add_spend(
     return out
 
 
-#: LIST PRICES, USD per million tokens: (input, output, cache read), for the
-#: one use below -- estimating what a CLI run cost when it was stopped before
-#: it could say (#627). A cache WRITE is priced at 1.25x input, the five-minute
-#: write rate. Input and output are Anthropic's first-party API rates as the
-#: Claude API reference's model table gives them (cached 2026-06-24, checked
-#: 2026-10-05). Two that look wrong are not: `claude-mythos-5-1` is the
-#: Project Glasswing counterpart of Fable 5.1, at Fable 5.1's price, and
-#: `claude-opus-5-5` is priced BELOW Opus 5 ($4/$20). Cache reads are that
-#: table's where it gives one (Fable 5.1 $0.25, Opus 5.5 $0.20) and 0.1x input
-#: elsewhere. A model missing here prices NOTHING (see `_stream_spend_estimate`): an unreported
-#: cost is honest, a guessed one is a wrong figure. Add a model when the
-#: platform starts running it; change a price only with the date it changed.
-_LIST_PRICES: dict[str, tuple[float, float, float]] = {
-    "claude-fable-5-1": (10.0, 50.0, 0.25),
-    "claude-mythos-5-1": (10.0, 50.0, 0.25),
-    "claude-fable-5": (10.0, 50.0, 1.0),
-    "claude-opus-5-5": (4.0, 20.0, 0.20),
-    "claude-opus-5": (5.0, 25.0, 0.50),
-    "claude-opus-4-8": (5.0, 25.0, 0.50),
-    "claude-opus-4-7": (5.0, 25.0, 0.50),
-    "claude-opus-4-6": (5.0, 25.0, 0.50),
-    "claude-sonnet-5": (2.0, 10.0, 0.20),
-    "claude-sonnet-4-6": (3.0, 15.0, 0.30),
-    "claude-haiku-4-5": (1.0, 5.0, 0.10),
-}
-_CACHE_WRITE_FACTOR = 1.25
+#: The `usage_by_model` key of a stream message that named no model. Not a
+#: model name swarm-api can price (`modelprices.MODEL_NAME` refuses `<`), so
+#: a run with one is "cost not reported", as it was when the worker priced.
+_UNNAMED_MODEL = "<unnamed>"
 
-#: `claude-haiku-4-5-20251001`, `claude-opus-4-8[1m]`: the priced name, then
-#: at most a date and a context marker. Anything else is not that model.
-_MODEL_SUFFIX = re.compile(r"(?:-\d{8})?(?:\[[a-z0-9]+\])?")
+#: The width, in prompt tokens, of the buckets a stopped run's requests are
+#: counted in per model (`prompt_buckets`, PRICES-TIER-PROMPT, #1481). A model
+#: priced in tiers is priced per REQUEST by that request's own prompt, and
+#: the worker holds no price table, so it cannot split the counts at the tier
+#: ceiling itself. It counts each request in bucket `ceil(prompt / width)`
+#: instead: every request in one bucket falls on the same side of any ceiling
+#: that is a multiple of the width, and swarm-api maps each bucket to its
+#: tier (`modelprices.bucket_rates`). Every ceiling a provider lists today --
+#: 100,000, 128,000, 200,000, 272,000 -- is a multiple of 1,000. MUST equal
+#: `swarm_api.modelprices.PROMPT_BUCKET_TOKENS`; a test holds the two equal.
+_PROMPT_BUCKET_TOKENS = 1_000
+
+#: The most buckets one model's usage is sent in: a prompt sweep over a
+#: million-token context, at one bucket per 1,000 tokens. A model past it is
+#: sent as its sums alone, which swarm-api prices by the summed rule and marks
+#: `tier_estimated` -- the body stays bounded, never refused.
+_MAX_PROMPT_BUCKETS = 1_024
 
 #: The most of a capture file read for an estimate. The capture is itself
 #: capped (`max_stdout_bytes`), so this only bounds a misconfigured cap.
 _ESTIMATE_READ_LIMIT = 64 * 1024 * 1024
 
 
-def _list_price(model: Any) -> tuple[float, float, float] | None:
-    if not isinstance(model, str):
-        return None
-    for name, price in _LIST_PRICES.items():
-        if model.startswith(name) and _MODEL_SUFFIX.fullmatch(model[len(name):]):
-            return price
-    return None
-
-
-def _stream_spend_estimate(path: Path) -> dict[str, Any]:
-    """What a stopped CLI run spent, from the per-message usage its stream carried.
+def _stream_usage(path: Path) -> dict[str, Any]:
+    """What a stopped CLI run used, from the per-message usage its stream carried.
 
     A CLI stopped on SIGTERM -- a cancel, a SIGTERM to the worker, a fence, a
     timeout -- prints no `result` event, and that event is the only place it
@@ -15327,12 +15915,24 @@ def _stream_spend_estimate(path: Path) -> dict[str, Any]:
     `assistant` event carries its message's `usage` and `model`, so the tokens
     are summed per message -- the LAST copy of each message id, because the
     stream repeats a message once per content block with the output count
-    growing -- and priced at `_LIST_PRICES`.
+    growing. The totals come back as the attempt's token counts, and
+    `usage_by_model` holds the same counts per model the stream named, for
+    swarm-api to price (`spendprice`, #1481): the worker prices nothing, so
+    no `total_cost_usd` comes back from here.
+
+    Each model's counts also carry `prompt_buckets` (PRICES-TIER-PROMPT): the
+    same counts split by each request's OWN prompt size -- its input, cache
+    written and cache read -- as `[bucket, input, output, cache written,
+    cache read]` rows in rising bucket order, a request whose prompt is `p`
+    tokens in bucket `ceil(p / _PROMPT_BUCKET_TOKENS)`. A provider prices a
+    tiered model per request, so a long attempt of short requests is the
+    lower tier for every one of them; the attempt's summed prompt is not the
+    size any request had. The rows add up to the model's sums exactly.
 
     A FLOOR, not an exact figure: a capture past its cap keeps its head and
-    tail, so a long run's middle is not counted. The caller marks the figure
-    as an estimate. `total_cost_usd` is left out when any message's model has
-    no price, and {} comes back when the stream carried no usage at all.
+    tail, so a long run's middle is not counted. The caller marks a figure
+    priced from it as an estimate. {} comes back when the stream carried no
+    usage at all.
 
     The capture is in `artifacts/`, which the agent can write, so a link put
     in its place is refused at the open, not followed (as `_publish_tail`
@@ -15376,36 +15976,51 @@ def _stream_spend_estimate(path: Path) -> dict[str, Any]:
         "cache_read_input_tokens",
     )
     totals = dict.fromkeys(fields, 0)
-    cost = 0.0
-    priced = True
-    models: set[str] = set()
+    by_model: dict[str, dict[str, int]] = {}
+    buckets: dict[str, dict[int, list[int]]] = {}
     for model, usage in messages.values():
         counts = {
-            k: usage[k] if isinstance(usage.get(k), int) and not isinstance(usage.get(k), bool)
+            k: usage[k]
+            if isinstance(usage.get(k), int) and not isinstance(usage.get(k), bool) and usage[k] >= 0
             else 0
             for k in fields
         }
         for k in fields:
             totals[k] += counts[k]
-        if isinstance(model, str):
-            models.add(model)
-        price = _list_price(model)
-        if price is None:
-            priced = False
-            continue
-        inp, out, read = price
-        cost += (
-            counts["input_tokens"] * inp
-            + counts["output_tokens"] * out
-            + counts["cache_creation_input_tokens"] * inp * _CACHE_WRITE_FACTOR
-            + counts["cache_read_input_tokens"] * read
-        ) / 1_000_000
+        # A message with no model name is counted in the totals and in a
+        # model nobody prices, so swarm-api answers "not reported" for the
+        # whole run rather than a figure that left those tokens out.
+        name = model if isinstance(model, str) and model else _UNNAMED_MODEL
+        mine = by_model.setdefault(name, dict.fromkeys(fields, 0))
+        for k in fields:
+            mine[k] += counts[k]
+        prompt = (counts["input_tokens"] + counts["cache_creation_input_tokens"]
+                  + counts["cache_read_input_tokens"])
+        bucket = -(-prompt // _PROMPT_BUCKET_TOKENS)
+        row = buckets.setdefault(name, {}).setdefault(bucket, [0, 0, 0, 0])
+        for at, k in enumerate(_BUCKET_FIELDS):
+            row[at] += counts[k]
     estimate: dict[str, Any] = dict(totals)
-    if priced:
-        estimate["total_cost_usd"] = round(cost, 10)
+    models = sorted(m for m in by_model if m != _UNNAMED_MODEL)
     if models:
-        estimate["models"] = sorted(models)
+        estimate["models"] = models
+    out: dict[str, dict[str, Any]] = {}
+    for name, sums in by_model.items():
+        out[name] = dict(sums)
+        rows = buckets.get(name) or {}
+        if len(rows) <= _MAX_PROMPT_BUCKETS:
+            out[name]["prompt_buckets"] = [[b, *rows[b]] for b in sorted(rows)]
+    estimate["usage_by_model"] = out
     return estimate
+
+
+#: The counts of a `prompt_buckets` row, after its bucket, in this order.
+_BUCKET_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
 
 
 def _workspace_label(ws: workspace_mod.Workspace, path: Path) -> str:

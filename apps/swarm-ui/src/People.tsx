@@ -13,11 +13,14 @@ import {
 } from './api'
 import { Banner, Button, buttonClass, Card, Chip, Dash, Dialog, ToneMark } from './components'
 import type { ApiError, Result } from './fetch'
+import { trapTab } from './focus'
 import { ApprovedWaiting, JobSteps, waitingOf } from './OnboardingWorkspace'
+import { PersonName } from './PersonName'
 import { Mark } from './primitives'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead, usePoll } from './Shell'
 import { tableMode, usePhoneTables } from './capacityPoll'
+import { PersonWorkspaceRoles, WorkspaceRolesCard } from './WorkspaceRolesAdmin'
 import type { AdminAuditEntry, AdminHolder, LendableAccount, PeopleDoc, PersonClaudeAccount, PersonRow, WorkspaceState } from './types'
 import { timeAgo } from './types'
 import './styles/repositories.css'
@@ -32,7 +35,7 @@ import './styles/people.css'
  * region draws as the admin gate with nothing under it.
  *
  * WHY IT WAS REDRAWN. Measured 2026-10-12 at 1260px: the seven-column table's
- * Actions column took 653px, so `devops@saga.xyz` wrapped as `devops@saga.
+ * Actions column took 653px, so `devops@example.com` wrapped as `devops@example.
  * xyz` and "connected" as "connecte d"; each row crammed Approve, Deny, a
  * ceiling field and Save, Lend, Reclaim and an Account select that wrapped
  * differently per row; and a pending request was one small green dot, so
@@ -49,6 +52,12 @@ import './styles/people.css'
  *   3. THE MANAGE DRAWER: Facts, the ceiling, the Claude account (Lend OR
  *      Reclaim, never both, and a reason when neither) and the Admin switch.
  *   4. Admins and Recent admin actions side by side, housekeeping folded.
+ *
+ * WORKSPACE ROLES (lane ROLES-UI-ADMIN; docs/design/workspace-roles.md §4.8):
+ * a Workspace roles card between the table and the side cards, and "Roles in
+ * workspaces" in the drawer, both in WorkspaceRolesAdmin.tsx. Role events and
+ * `platform_admin_*` rows are `admin_audit` rows, so Recent admin actions
+ * shows them as it shows every other.
  *
  * A PERSON IS ADDRESSED BY WORKSPACE ID in every URL this screen requests,
  * never by an email or a tenant id, so a URL in a history or a proxy log
@@ -676,7 +685,7 @@ function WaitingCard({ doc, rows, reload }: { doc: PeopleDoc; rows: PersonRow[];
               <div className="pp-req-who">
                 <Avatar email={row.email} />
                 <span className="pp-who" title={row.email}>
-                  {row.email}
+                  <PersonName email={row.email} name={row.display_name ?? null} variant="full" />
                 </span>
               </div>
               {kind === 'workspace' ? (
@@ -746,7 +755,7 @@ function PersonCell({ row, doc }: { row: PersonRow; doc: PeopleDoc }) {
     <span className="pp-person">
       <Avatar email={row.email} />
       <span className="pp-who" title={row.email}>
-        {row.email}
+        <PersonName email={row.email} name={row.display_name ?? null} variant="full" />
       </span>
       <GitHubMark github={row.github} />
       {holderOf(doc, row.email)?.role === 'owner' && <Chip className="pp-owner">platform owner</Chip>}
@@ -764,7 +773,10 @@ function WorkspaceCell({ row }: { row: PersonRow }) {
       {w.workspace_id != null && w.workspace_id !== '' && (
         <>
           {' '}
-          <code className="pp-id">{w.workspace_id}</code>
+          {/* Whole in `title`: people.css cuts an id longer than its room (V021, V161). */}
+          <code className="pp-id" title={w.workspace_id}>
+            {w.workspace_id}
+          </code>
         </>
       )}
       {w.state === 'failed' && failedAt !== null && <> ({failedAt})</>}
@@ -990,17 +1002,36 @@ function Drawer({ row, doc, reload, onClose }: { row: PersonRow; doc: PeopleDoc;
   const closeRef = useRef(onClose)
   closeRef.current = onClose
   const closeBtn = useRef<HTMLButtonElement>(null)
+  const sheet = useRef<HTMLElement>(null)
   useEffect(() => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     closeBtn.current?.focus()
+    // THE PAGE BEHIND IS INERT WHILE THE DRAWER IS OPEN (visual QA V159). It
+    // said `aria-modal="true"` and trapped nothing: after its last control Tab
+    // walked into the skip link, the menu, the bell and the rail -- on a phone,
+    // controls the full-sheet drawer hides. Every other child of <body> is made
+    // inert (the drawer is portalled there), and only the ones this set, so a
+    // confirmation opened later from inside the drawer, portalled after it, is
+    // not. Tab also wraps at the drawer's ends (focus.ts `trapTab`).
+    const scrim = sheet.current?.parentElement ?? null
+    const benched = Array.from(document.body.children).filter(
+      (el): el is HTMLElement => el instanceof HTMLElement && el !== scrim && !el.hasAttribute('inert'),
+    )
+    for (const el of benched) el.setAttribute('inert', '')
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || document.querySelector('.c-dlg') !== null) return
-      e.preventDefault()
-      closeRef.current()
+      // A confirmation on top owns Escape and Tab.
+      if (document.querySelector('.c-dlg') !== null) return
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        closeRef.current()
+        return
+      }
+      trapTab(e, sheet.current)
     }
     document.addEventListener('keydown', onKey)
     return () => {
       document.removeEventListener('keydown', onKey)
+      for (const el of benched) el.removeAttribute('inert')
       opener?.focus()
     }
   }, [])
@@ -1013,11 +1044,11 @@ function Drawer({ row, doc, reload, onClose }: { row: PersonRow; doc: PeopleDoc;
         if (e.target === e.currentTarget) closeRef.current()
       }}
     >
-      <aside className="pp-drawer" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <aside className="pp-drawer" role="dialog" aria-modal="true" aria-labelledby={titleId} ref={sheet}>
         <header className="pp-drawer-h">
           <h2 id={titleId}>
             <span className="vh">Manage </span>
-            {row.email}
+            <PersonName email={row.email} name={row.display_name ?? null} variant="full" />
           </h2>
           <button type="button" ref={closeBtn} className={buttonClass({ size: 'sm' })} onClick={() => closeRef.current()}>
             Close
@@ -1058,6 +1089,8 @@ function Drawer({ row, doc, reload, onClose }: { row: PersonRow; doc: PeopleDoc;
         </section>
         <ClaudeSection row={row} doc={doc} reload={reload} />
         <AdminSwitch row={row} doc={doc} reload={reload} />
+        {/* ROLES-UI-ADMIN (workspace-roles.md §4.8): every override this person holds. */}
+        <PersonWorkspaceRoles email={row.email} platformAdmin={holderOf(doc, row.email) !== undefined} />
       </aside>
     </div>
   )
@@ -1417,6 +1450,9 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
           </div>
         )}
       </Card>
+      {/* ROLES-UI-ADMIN: each group workspace's default and admins, and how
+          its first admin is named (workspace-roles.md §4.8, Q2). */}
+      <WorkspaceRolesCard />
       <div className="pp-side">
         <Admins doc={doc} reload={reload} />
         <Audit entries={Array.isArray(doc.audit) ? doc.audit : []} />

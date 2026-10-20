@@ -30,6 +30,7 @@ import {
   elapsed,
   rollupState,
   taskGroup,
+  timeAgo,
   whyAgent,
   whyNeedsAction,
   type Task,
@@ -76,11 +77,16 @@ function rollTone(roll: ReturnType<typeof rollupState>): ChipTone {
  * It is `aria-label` now, which a keyboard and a screen reader both reach, and
  * the tab's own word plus its count is what a sighted reader needs. Which
  * states cost nothing is `#help/capacity`.
+ *
+ * THE NAME STARTS WITH WHAT THE TAB SHOWS (visual QA QA-029, 2026-10-20). It
+ * was the sentence alone, `Live: holding a pool slot, …`, which leaves out the
+ * visible count: axe's label-content-name-mismatch, and a speech-input user
+ * who says "click Live 6" reaches nothing. The name is `Live 6: <say>`.
  */
 const TABS: { id: Tab; label: string; say: string }[] = [
-  { id: 'live', label: 'Live', say: 'Live: holding a pool slot, and costing money' },
-  { id: 'waiting', label: 'Waiting', say: 'Waiting: durable and free — READY or PARKED' },
-  { id: 'recent', label: 'Recent', say: 'Recent: finished, one way or another' },
+  { id: 'live', label: 'Live', say: 'holding a pool slot, and costing money' },
+  { id: 'waiting', label: 'Waiting', say: 'durable and free — READY or PARKED' },
+  { id: 'recent', label: 'Recent', say: 'finished, one way or another' },
 ]
 
 /**
@@ -587,7 +593,10 @@ function AgentsBody({
   // names it. The tab's empty state says when the search is why it is empty.
   // "Failed first" (#99) stays Recent's, the one tab that holds failures.
   const needle = query.trim().toLowerCase()
-  const failFirst = shown === 'recent' && failedFirst
+  // NOT ON A LIST OF ONE STATE (visual QA QA-111): `failed` chosen, every row
+  // is a failure and the checkbox orders nothing, so it is not offered there.
+  const failFirstOffered = shown === 'recent' && stateFilter === null
+  const failFirst = failFirstOffered && failedFirst
   // THE STARTED SORT (#376), on every tab: newest start, oldest start, then
   // back to the list's own order. A reader's scratch, so not in the address.
   const [startedSort, setStartedSort] = useState<StartedSort>(null)
@@ -768,7 +777,7 @@ function AgentsBody({
             type="button"
             role="tab"
             aria-selected={shown === t.id}
-            aria-label={tabBounded(t.id) ? `${t.say} — ${countSay(counts[t.id])}` : t.say}
+            aria-label={`${t.label} ${countText(counts[t.id], tabBounded(t.id))}: ${t.say}${tabBounded(t.id) ? ` — ${countSay(counts[t.id])}` : ''}`}
             onClick={() => chooseTab(t.id)}
           >
             {t.label}{' '}
@@ -806,133 +815,150 @@ function AgentsBody({
           </span>
         </div>
 
-        <label className="ag-filter">
-          <span className="ag-filter-k">profile:</span>
-          {/* CAPPED, NOT SIZED TO ITS LONGEST OPTION (V061): the whole value is
-              its title. */}
-          <select value={profile} title={profile === '' ? 'all' : profile} onChange={(e) => setProfile(e.target.value)}>
-            <option value="">all</option>
-            {profiles.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
-        </label>
+        {/* THE CONTROLS ARE ONE ITEM OF THE TOOLBAR (V147, VQA2-R13). Each was
+            its own flex item, so at 1440 on Recent the row filled and `Started`
+            alone dropped to a second line -- what the WA-10 rule in
+            agents.css says must not happen. Grouped, they wrap together, and
+            the checkboxes and `Started` are one unbreakable tail inside the
+            group, so a narrow list never strands the last control either. */}
+        <div className="ag-tools">
+          <label className="ag-filter">
+            <span className="ag-filter-k">profile:</span>
+            {/* CAPPED, NOT SIZED TO ITS LONGEST OPTION (V061): the whole value is
+                its title. */}
+            <select value={profile} title={profile === '' ? 'all' : profile} onChange={(e) => setProfile(e.target.value)}>
+              <option value="">all</option>
+              {profiles.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+          </label>
 
-        {/* RECENT, BY STATE (OV-10): pressed buttons rather than tabs -- it
-            filters the tab it sits beside, it is not a fourth tab. Counts are
-            from the loaded rows, like the tab badges, and DEAD_LETTERED is
-            never offered: nothing writes it (`agentlist.ts`). */}
-        {shown === 'recent' && (
-          <Segmented
-            label="Recent, by state"
-            value={recentState ?? 'all'}
-            // A capped page's count is drawn in the label as `2+` with its
-            // sentence as the title (G2-05): `SegOption.count` is a number.
-            options={(['all', ...RECENT_STATES] as const).map((s) =>
-              bounded
-                ? {
-                    key: s,
-                    label: (
-                      <>
-                        {s}
-                        <em className="is-bound" title={countSay(stateCounts[s])}>
-                          {countText(stateCounts[s])}
-                        </em>
-                      </>
-                    ),
-                  }
-                : { key: s, label: s, count: stateCounts[s] },
+          {/* RECENT, BY STATE (OV-10): pressed buttons rather than tabs -- it
+              filters the tab it sits beside, it is not a fourth tab. Counts are
+              from the loaded rows, like the tab badges, and DEAD_LETTERED is
+              never offered: nothing writes it (`agentlist.ts`). */}
+          {shown === 'recent' && (
+            <Segmented
+              label="Recent, by state"
+              value={recentState ?? 'all'}
+              // A capped page's count is drawn in the label as `2+` with its
+              // sentence as the title (G2-05): `SegOption.count` is a number.
+              options={(['all', ...RECENT_STATES] as const).map((s) =>
+                bounded
+                  ? {
+                      key: s,
+                      label: (
+                        <>
+                          {s}
+                          <em className="is-bound" title={countSay(stateCounts[s])}>
+                            {countText(stateCounts[s])}
+                          </em>
+                        </>
+                      ),
+                    }
+                  : { key: s, label: s, count: stateCounts[s] },
+              )}
+              onChange={(s) => chooseState(s === 'all' ? null : s)}
+            />
+          )}
+
+          {/* OFFERED ONLY WHEN THERE IS A LIVE BROWSER TO SHOW (#139 at 390). With
+              none, `Live 0` can only empty the list, and on a phone the switch
+              is a 44px row of its own that put the first Agents row past the
+              screen's midpoint. Kept while it is on, so the way back to All
+              never disappears under the reader. */}
+          {shown === 'live' && (liveBrowsers > 0 || browsersOnly) && (
+            <Segmented
+              label="All live agents or the browser agents among them"
+              value={browsersOnly ? 'browsers' : 'all'}
+              options={[
+                { key: 'all', label: 'All', title: 'Every agent holding a pool slot' },
+                tabBounded('live')
+                  ? {
+                      key: 'browsers',
+                      label: (
+                        <>
+                          Browsers
+                          <em className="is-bound" title={countSay(liveBrowsers)}>
+                            {countText(liveBrowsers)}
+                          </em>
+                        </>
+                      ),
+                      title: 'Browser agents only: the ones waiting for you first, then running, then starting',
+                    }
+                  : {
+                      key: 'browsers',
+                      label: 'Browsers',
+                      count: liveBrowsers,
+                      title: 'Browser agents only: the ones waiting for you first, then running, then starting',
+                    },
+              ]}
+              onChange={(k) => setBrowsersOnly(k === 'browsers')}
+            />
+          )}
+
+          {/* ⤢ THEATER ALL (§6): the first row's Browser tab in the theater,
+              whose prev and next walk the live browsers from there. The first
+              row is the one waiting for a person, when one is. */}
+          {browsers && rows.length > 0 && (
+            <a className="ag-theater-all" href={theaterPath(rows[0]!.id, null)}>
+              ⤢ theater all
+            </a>
+          )}
+
+          <div className="ag-tools-tail">
+            {failFirstOffered && (
+              <label className="ag-filter check">
+                <input
+                  type="checkbox"
+                  checked={failedFirst}
+                  onChange={(e) => chooseFailedFirst(e.target.checked)}
+                />
+                Failed first
+              </label>
             )}
-            onChange={(s) => chooseState(s === 'all' ? null : s)}
-          />
-        )}
 
-        {/* OFFERED ONLY WHEN THERE IS A LIVE BROWSER TO SHOW (#139 at 390). With
-            none, `Live 0` can only empty the list, and on a phone the switch
-            is a 44px row of its own that put the first Agents row past the
-            screen's midpoint. Kept while it is on, so the way back to All
-            never disappears under the reader. */}
-        {shown === 'live' && (liveBrowsers > 0 || browsersOnly) && (
-          <Segmented
-            label="All live agents or the browser agents among them"
-            value={browsersOnly ? 'browsers' : 'all'}
-            options={[
-              { key: 'all', label: 'All', title: 'Every agent holding a pool slot' },
-              tabBounded('live')
-                ? {
-                    key: 'browsers',
-                    label: (
-                      <>
-                        Browsers
-                        <em className="is-bound" title={countSay(liveBrowsers)}>
-                          {countText(liveBrowsers)}
-                        </em>
-                      </>
-                    ),
-                    title: 'Browser agents only: the ones waiting for you first, then running, then starting',
-                  }
-                : {
-                    key: 'browsers',
-                    label: 'Browsers',
-                    count: liveBrowsers,
-                    title: 'Browser agents only: the ones waiting for you first, then running, then starting',
-                  },
-            ]}
-            onChange={(k) => setBrowsersOnly(k === 'browsers')}
-          />
-        )}
+            {shown !== 'live' && (
+              <label className="ag-filter check">
+                <input
+                  type="checkbox"
+                  checked={grouped}
+                  onChange={(e) => chooseGrouped(e.target.checked)}
+                />
+                Group by workflow
+              </label>
+            )}
 
-        {/* ⤢ THEATER ALL (§6): the first row's Browser tab in the theater,
-            whose prev and next walk the live browsers from there. The first
-            row is the one waiting for a person, when one is. */}
-        {browsers && rows.length > 0 && (
-          <a className="ag-theater-all" href={theaterPath(rows[0]!.id, null)}>
-            ⤢ theater all
-          </a>
-        )}
-
-        {shown === 'recent' && (
-          <label className="ag-filter check">
-            <input
-              type="checkbox"
-              checked={failedFirst}
-              onChange={(e) => chooseFailedFirst(e.target.checked)}
-            />
-            Failed first
-          </label>
-        )}
-
-        {shown !== 'live' && (
-          <label className="ag-filter check">
-            <input
-              type="checkbox"
-              checked={grouped}
-              onChange={(e) => chooseGrouped(e.target.checked)}
-            />
-            Group by workflow
-          </label>
-        )}
-
-        {/* SORTED BY START (#376): newest start, oldest start, then the
-            list's own order. It was the Started column's head; the compact
-            list has no columns, so it is a control of the list. */}
-        <button
-          type="button"
-          className="ag-sort"
-          aria-pressed={sort.started !== null}
-          aria-label={
-            sort.started === null
-              ? 'Sort by start time'
-              : sort.started === 'desc'
-                ? 'Sorted by start, newest first'
-                : 'Sorted by start, oldest first'
-          }
-          onClick={sort.onStarted}
-        >
-          Started{sort.started === 'desc' ? ' ↓' : sort.started === 'asc' ? ' ↑' : ''}
-        </button>
+            {/* SORTED BY START (#376): newest start, oldest start, then the
+                list's own order. It was the Started column's head; the compact
+                list has no columns, so it is a control of the list.
+                ITS NAME STARTS WITH ITS WORD, AND IT ALWAYS SHOWS A DIRECTION
+                (visual QA QA-030, QA-111, 2026-10-20): it was named `Sort by
+                start time` beside a visible `Started` (axe
+                label-content-name-mismatch), and off it drew no glyph, so the
+                list's own order -- on Recent the newest END first -- read as
+                an unexplained `Started`. Off is `⇅`, and the name says which
+                order the list is in instead. */}
+            <button
+              type="button"
+              className="ag-sort"
+              aria-pressed={sort.started !== null}
+              aria-label={
+                sort.started === null
+                  ? `Started: off, ${shown === 'recent' ? 'newest end first' : 'newest submitted first'}; press to sort by start`
+                  : sort.started === 'desc'
+                    ? 'Started: newest start first'
+                    : 'Started: oldest start first'
+              }
+              onClick={sort.onStarted}
+            >
+              Started <span aria-hidden="true">{sort.started === 'desc' ? '↓' : sort.started === 'asc' ? '↑' : '⇅'}</span>
+            </button>
+          </div>
+        </div>
       </div>
 
       {rows.length === 0 && idQuery !== null ? (
@@ -1515,7 +1541,7 @@ function GroupedRows({
  */
 export function attemptsUsed(
   task: Pick<Task, 'attempt_count' | 'max_attempts'>,
-  runs: number = task.attempt_count,
+  runs: number | null = task.attempt_count,
 ): {
   over: boolean
   text: string
@@ -1527,6 +1553,16 @@ export function attemptsUsed(
   // header. `runs` is `timesRun` over the attempt documents, as the header's
   // is; the charged counter is still what the ceiling is judged on (AG-15),
   // and the sentence says so when the two differ.
+  //
+  // NOT YET READ IS SAID, NOT GUESSED (visual QA QA-026, 2026-10-20). `null`
+  // is a row whose attempt documents are still being read. It printed the
+  // charged counter meanwhile, `attempt 1 of 3`, beside a header that over
+  // the same three documents said `attempt 3 of 3`; the row now holds the
+  // place until it has the figure the header has.
+  if (runs === null) {
+    const text = `attempt … of ${task.max_attempts}`
+    return { over, text, say: over ? `${task.attempt_count} attempts against a cap of ${task.max_attempts}: ${task.attempt_count - task.max_attempts} over the ceiling` : `reading how many times it ran, of a cap of ${task.max_attempts}` }
+  }
   const text = runs > 0 ? `attempt ${runs} of ${task.max_attempts}` : 'no attempt yet'
   const charged = runs !== task.attempt_count ? `, ${task.attempt_count} counted against the cap` : ''
   return {
@@ -1546,10 +1582,17 @@ export function attemptsUsed(
  * the header's own key, never on every list poll. Until the documents are
  * read, or when the read fails, the task's own counter, as the header falls
  * back to it.
+ *
+ * UNTIL THE FIRST READ LANDS, NULL (visual QA QA-026): the counter is the
+ * figure only once a read has FAILED, never while one is in flight -- in
+ * flight it is the one figure that can contradict the header beside it. A
+ * re-read for a changed key keeps the documents already read (`timesRun`
+ * still takes the larger of them and the new counter), so a row that has
+ * its figure never drops back to the placeholder on a state change.
  */
-function useRuns(task: Task, shows: boolean): number {
+function useRuns(task: Task, shows: boolean): number | null {
   const key = `${task.id}:${task.current_generation}:${task.attempt_count}:${task.state}`
-  const [got, setGot] = useState<{ key: string; attempts: readonly unknown[] | null } | null>(null)
+  const [got, setGot] = useState<{ id: string; key: string; attempts: readonly unknown[] | null } | null>(null)
   useEffect(() => {
     if (!shows) return
     let live = true
@@ -1560,14 +1603,16 @@ function useRuns(task: Task, shows: boolean): number {
       .then((r) => {
         if (!live) return
         const attempts = r === null ? null : r.status === 'ok' || r.status === 'stale' ? r.data.attempts : r.status === 'empty' ? [] : null
-        setGot({ key, attempts })
+        setGot({ id: task.id, key, attempts })
       })
     return () => {
       live = false
     }
     // `key` names everything the read depends on, the task id included.
   }, [key, shows])
-  return timesRun(task, got !== null && got.key === key ? got.attempts : null)
+  if (!shows) return task.attempt_count
+  if (got === null || got.id !== task.id) return null
+  return timesRun(task, got.attempts)
 }
 
 /** The qualifier on a CANCELLED row's elapsed figure (#163); `TaskRow` says why. */
@@ -1695,6 +1740,24 @@ function CompactRow({
   // is not presented as run time without saying what it spans.
   const cancelSpan = task.state === 'CANCELLED' && el.phase === 'ran'
   const live = tabOf(task) === 'live'
+  // THE RIGHT-HAND COLUMN HOLDS TIMES, NOTHING ELSE (visual QA QA-079,
+  // QA-110, 2026-10-20). It mixed `1m 0s` with the words `leased` and
+  // `dispatched` -- `elapsed` gives a slot-holding state its word alone,
+  // because nothing records when it was leased (types.ts) -- so the column
+  // read as neither. That word is line two's now, as `starting` is, and the
+  // column is blank: there is no time to give. And a finished row's column
+  // was its run length, so on a `failed` list two `5m 0s` rows could not say
+  // which failure was the newest; it is WHEN IT ENDED, which is also the
+  // order Recent is in (`listOrder`), and the run length moves to line two.
+  const finished = TERMINAL_STATES.has(task.state)
+  const endedAt = finished ? (task.completed_at ?? task.updated_at) : null
+  const wordOnly = !finished && el.phase === 'waiting' && !el.ticking
+  const whenText = endedAt !== null ? timeAgo(endedAt, now) : wordOnly ? '' : el.text
+  const whenTitle =
+    endedAt !== null
+      ? `ended ${new Date(endedAt).toLocaleString()}`
+      : undefined
+  const ran = finished && el.phase !== 'unknown' ? (el.phase === 'ran' ? `ran ${el.text}` : el.text) : null
   const tries = attemptsUsed(task, useRuns(task, live || task.attempt_count > task.max_attempts))
   // NAMED FROM WHAT IT IS (walkthrough G): its step, else `browser check ·
   // 02e9705a` -- it was the bare hash. `agentName`'s rule, drawn below.
@@ -1719,39 +1782,73 @@ function CompactRow({
     setCard({ top: r.top, left: r.right + 8 })
   }
   const hide = () => setCard(null)
-  const move = (row: HTMLElement, step: 1 | -1): boolean => {
-    const scope: ParentNode = row.closest('.work') ?? row.ownerDocument
-    const all = [...scope.querySelectorAll<HTMLElement>('.row.is-compact')]
-    const next = all[all.indexOf(row) + step]
+  const move = (from: HTMLElement, step: 1 | -1): boolean => {
+    const scope: ParentNode = from.closest('.work') ?? from.ownerDocument
+    const all = [...scope.querySelectorAll<HTMLElement>('.row.is-compact > .cr-open')]
+    const next = all[all.indexOf(from) + step]
     if (next === undefined) return false
     next.focus()
     return true
   }
 
+  // THE OPENER'S NAME IS WHAT THE ROW SAID (#100: a reason hidden from sight
+  // is never hidden from the row's name). As a button the row was named by
+  // all its text; the opener is empty, so the same facts are its label.
+  const say = [
+    `${name} · ${task.id}`,
+    task.state.toLowerCase().replace('_', '-'),
+    endedAt !== null ? `ended ${whenText}` : whenText === '' ? null : whenText,
+    ran,
+    profile,
+    owner ?? 'no owner recorded',
+    live || tries.over ? tries.say : null,
+    startingBrowser ? 'browser starting' : null,
+    cancelling ? 'cancelling' : null,
+    waitsForYou ? 'needs you' : null,
+    cancelSpan ? CANCEL_SPAN : null,
+    why.text === '' ? null : why.text,
+  ]
+    .filter((p): p is string => p !== null && p !== undefined)
+    .join(' · ')
+
+  // THE ROW IS NOT A BUTTON; IT HOLDS ONE (visual QA QA-032, 2026-10-20). It
+  // was a `role="button"` div around the copy-id button, which axe reports as
+  // nested-interactive: a screen reader flattens a button's content, so the
+  // copy was announced as part of "open this agent" and could not be reached
+  // as itself. The opener is `.cr-open`, an empty button laid over the whole
+  // row (styles/agents.css) and named by the agent and its id; the copy is
+  // its sibling, raised above it. A pointer still opens from anywhere on the
+  // row (the div's click, which the opener's own click bubbles to), and the
+  // keyboard walks the openers with ↑/↓ as it walked the rows.
+  // `tabIndex={-1}` keeps the row a target for code that focuses it by its
+  // `data-task-id` (agent-split/focus.ts returns focus there), and its focus
+  // passes straight to the opener.
   return (
     <div
       className={`row clickable is-compact${waitsForYou ? ' is-needs-you' : ''}`}
-      role="button"
-      tabIndex={0}
+      tabIndex={-1}
       data-task-id={task.id}
-      aria-current={open ? 'true' : undefined}
-      aria-describedby={card !== null ? cardId : undefined}
       onClick={() => onOpen(task.id)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onOpen(task.id)
-          return
-        }
-        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-          if (move(e.currentTarget, e.key === 'ArrowDown' ? 1 : -1)) e.preventDefault()
-        }
+      onFocus={(e) => {
+        if (e.target === e.currentTarget) e.currentTarget.querySelector<HTMLElement>(':scope > .cr-open')?.focus()
       }}
       onMouseEnter={(e) => show(e.currentTarget)}
       onMouseLeave={hide}
-      onFocus={(e) => show(e.currentTarget)}
-      onBlur={hide}
     >
+      <button
+        type="button"
+        className="cr-open"
+        aria-label={say}
+        aria-current={open ? 'true' : undefined}
+        aria-describedby={card !== null ? cardId : undefined}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            if (move(e.currentTarget, e.key === 'ArrowDown' ? 1 : -1)) e.preventDefault()
+          }
+        }}
+        onFocus={(e) => show(e.currentTarget.parentElement!)}
+        onBlur={hide}
+      />
       <StateMark state={task.state} />
       <span className="agent cr-name">
         {/* The whole id is the name's hover; a lone task's short id is
@@ -1768,11 +1865,8 @@ function CompactRow({
         <TaskIdLine id={task.id} />
         {whyHidden && <span className="why is-shared">{why.text}</span>}
       </span>
-      <span
-        className={`when${el.ticking ? ' ticking' : ''}`}
-        title={cancelSpan ? `${el.text} ${CANCEL_SPAN}` : undefined}
-      >
-        {el.text}
+      <span className={`when${el.ticking && endedAt === null ? ' ticking' : ''}`} title={whenTitle}>
+        {whenText}
       </span>
       <span className="cr-sub">
         {task.state === 'RUNNING' && isLiveBrowser(task) && <DeviceThumb taskId={task.id} />}
@@ -1781,6 +1875,20 @@ function CompactRow({
         <span className="cr-owner" title={task.submitted_by ?? undefined}>
           {owner ?? <Em />}
         </span>
+        {ran !== null && (
+          <>
+            {' · '}
+            <span className="cr-ran" title={cancelSpan ? `${ran} ${CANCEL_SPAN}` : undefined}>
+              {ran}
+            </span>
+          </>
+        )}
+        {wordOnly && (
+          <>
+            {' · '}
+            <span className="cr-state">{el.text}</span>
+          </>
+        )}
         {/* THE TRY ON A LIVE ROW, as V1 draws it -- and on any row whose
             count is over its cap (AG-15), which a finished row must still
             show: that is the platform running past its own ceiling. */}
@@ -1847,7 +1955,9 @@ function CompactRow({
           row draws only its mark, and its accessible name was the state word.
           Drawn only in the strip (styles/agents.css), for a screen reader;
           a pointer gets the same from the strip's hover card. */}
-      <span className="cr-vh">{name} · {task.id}</span>
+      <span className="cr-vh" aria-hidden="true">
+        {name} · {task.id}
+      </span>
       {card !== null &&
         createPortal(
           <div id={cardId} role="tooltip" className="ag-hovcard" style={{ top: card.top, left: card.left }}>

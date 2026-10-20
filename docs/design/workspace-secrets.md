@@ -8,6 +8,12 @@ The release (SEC-RELEASE), the console (SEC-UI) and the migrations are not
 built. The owner's answers are in §10; where they differ from §9's
 recommendation (Q5, Q8), the answer wins.
 
+**Amended 2026-10-19 (ROLES-DOCS, part of #1518): Q4 is superseded.** A
+group workspace's secrets are managed by its workspace `admin`, a role that
+[workspace-roles.md](workspace-roles.md) added (its Q6), and still by any
+platform admin. Members keep reading names and grants. §5's "Who may do
+what" says how the code decides it.
+
 Owner request, 2026-10-14 ~21:50 PDT, verbatim:
 
 > "we need to be able to set and manage typesafe and other apis from api
@@ -805,9 +811,12 @@ from §3.3, and why:
   `component:judge`'s key is the forwarder's (Q8), and `component:git` takes
   no workspace secret, so neither is derived.
 * **The rows** carry §4.4's fields plus `secret_tenant_id`, `name` and
-  `slot`, and an `expire_at` 90 days out. The marks have one too. **The
-  Firestore TTL policy on `expire_at` is not built:** it is a Terraform field
-  on each collection, outside this lane.
+  `slot`, and an `expire_at` 90 days out. The marks have one too. **Both
+  expire by a Firestore TTL policy on `expire_at`:** one
+  `google_firestore_field` per collection, in
+  `terraform/modules/firestore/workspace_secrets_ttl.tf` (SECRETS-RELEASE-TTL),
+  held to swarm_api's collection and field names by
+  `tests/unit/control_plane/test_workspace_secrets_ttl_parity.py`.
 * **Before SEC-IAM is applied** every read is PERMISSION_DENIED. The route
   answers 503 `secrets_release_unavailable` with that reason, and no name
   and no value. The worker treats it as unreachable.
@@ -992,8 +1001,21 @@ page, for the selected workspace.
 * **Delete.** A typed confirmation: the person types the secret's **name**.
   The dialog lists every enabled grant it will disable and says that running
   attempts keep their copy.
-* **Who may do what** is §9 Q4. Whoever may not manage sees the list and the
-  matrix read-only.
+* **Who may do what** was §9 Q4, and is now workspace-roles.md's Q6
+  (amended 2026-10-19). A personal workspace's secrets are its person's. A
+  group workspace's are its `admin`'s: a person a workspace admin or a
+  platform admin granted `admin` there, or any platform admin, who is
+  `admin` in every group workspace (workspace-roles.md §4.2).
+  `apps/swarm-api/swarm_api/workspace_secrets.py::require_manager` decides
+  it for secrets and for MCP servers alike: its person for a personal
+  workspace, then
+  `apps/swarm-api/swarm_api/workspace_secrets.py::workspace_admin`, which
+  reads the role fresh, then a platform admin. A `member` who manages
+  nothing gets 403 `role_admin_required` once that code's switch is on; while
+  it is off, the refusal is logged and the member gets the 403 this route
+  gave before roles, because a member never managed a group workspace's
+  secrets. `can_manage` follows the same rule. Whoever may not manage sees
+  the list and the matrix read-only.
 
 The API under it (sketch; swarm-api, every route scoped by `tenant_scope`,
 bodies forbidding unnamed fields):
@@ -1241,7 +1263,7 @@ The owner answered §9 in this session, and these answers bind the build plan in
 | Q1 enforcement | **B**: swarm-api releases each attempt's granted secrets on an attempt-signed, generation-fenced request (§3.3) |
 | Q2 release route | **Allowed**, as a consequence of Q1: `POST /v1/attempts/{id}/secrets:release` is the one route that serves credential material, and `test_no_route_serves_credentials` is amended to name it |
 | Q3 personal secrets in group workspaces | **Opt-in per secret, only on the owner's own submissions** |
-| Q4 who manages a group's secrets | **Platform admins only** |
+| Q4 who manages a group's secrets | **Platform admins only**; superseded 2026-10-19 by workspace-roles.md's Q6: the group workspace's `admin`, and platform admins |
 | Q5 rotation | **The previous version stays enabled for 24 hours**, then is disabled (not destroyed). This differs from the recommendation: tasks already running keep working across a rotation |
 | Q6 release audit rows | **90 days, by a Firestore TTL**, for every release row |
 | Q7 runner provider keys and pool accounts | **Listed read-only** on the Secrets page, not moved |

@@ -49,6 +49,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, Stri
 from . import cronexpr, scheduletypes
 from .errors import Conflict, Forbidden, ValidationFailed
 from .scheduletypes import EXECUTOR_DIR, GATE_POINTS, GateSpec, ScheduleType, strictness
+from .validation import MCP_DISPATCH_MODE, mcp_server_names
 
 # --------------------------------------------------------------------------
 # Constants. Each carries its reason, because each is a decision.
@@ -630,6 +631,72 @@ def pushes(entry: ScheduleType, params: Mapping[str, Any]) -> bool:
 
 
 # --------------------------------------------------------------------------
+# Registered MCP servers (docs/design/registered-mcp-servers.md §4.3)
+# --------------------------------------------------------------------------
+
+
+def schedule_mcp_servers(params: Mapping[str, Any]) -> list[str]:
+    """Every MCP server a schedule's stored workflow spec names, once each.
+    Only `custom-prompt` carries a spec; every other type's params name none."""
+    spec = params.get("spec") if isinstance(params, Mapping) else None
+    steps = spec.get("steps") if isinstance(spec, Mapping) else None
+    names: list[str] = []
+    for step in steps if isinstance(steps, list) else []:
+        if isinstance(step, Mapping) and isinstance(step.get("input"), Mapping):
+            names.extend(mcp_server_names(step["input"]))
+    return list(dict.fromkeys(names))
+
+
+def refuse_dispatch_mcp_servers(
+    requested: Mapping[str, Any] | None,
+    params: Mapping[str, Any],
+    mcp_modes: Mapping[str, Any] | None,
+) -> None:
+    """A schedule has no caller online when it fires, so nobody can send a
+    per-run credential: it may name `none` and `workspace_secret` servers
+    only, and is refused `mcp_credential_missing` for a `dispatch` one HERE,
+    at creation and on edit, not at each fire (§4.3).
+
+    `requested` is the request's own params: a credential in it is refused
+    `mcp_credential_unexpected` and never stored (the request model also
+    drops it from every dump). `mcp_modes` maps the tenant's enabled
+    registrations to their auth modes, read by the caller; None means they
+    were not read, and a schedule naming a server is then refused, because
+    nothing has checked that none of them is a `dispatch` server. A server
+    `mcp_modes` does not hold is left to the submission each fire makes,
+    which refuses it `mcp_server_unregistered` like any submission.
+    """
+    spec = (requested or {}).get("spec")
+    if isinstance(spec, Mapping) and "mcp_credentials" in spec:
+        raise ScheduleInvalid(
+            "mcp_credential_unexpected",
+            "a schedule carries no per-run MCP credential: it fires with no caller online, "
+            "so it may name only servers whose key is the workspace's or that take none; "
+            "nothing was saved",
+            field="params.spec.mcp_credentials",
+        )
+    names = schedule_mcp_servers(params)
+    if not names:
+        return
+    if mcp_modes is None:
+        raise ScheduleInvalid(
+            "mcp_credential_missing",
+            "this schedule names MCP servers and their registrations were not read, so "
+            "nothing has checked that none needs a per-run credential; nothing was saved",
+            field="params.spec.steps[].input.mcp_servers", servers=names,
+        )
+    dispatch = [n for n in names if mcp_modes.get(n) == MCP_DISPATCH_MODE]
+    if dispatch:
+        raise ScheduleInvalid(
+            "mcp_credential_missing",
+            "a schedule cannot name a `dispatch` MCP server: its per-run credential is a "
+            "caller's to send, and a schedule fires with no caller online; register the "
+            "server's key as a workspace secret instead",
+            field="params.spec.steps[].input.mcp_servers", servers=dispatch,
+        )
+
+
+# --------------------------------------------------------------------------
 # The document
 # --------------------------------------------------------------------------
 
@@ -648,8 +715,12 @@ def build_schedule(
     is_owner: bool = False,
     schedule_id: str | None = None,
     root: Path = EXECUTOR_DIR,
+    mcp_modes: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The `schedules/{schedule_id}` document a create writes (§1.1), fully resolved."""
+    """The `schedules/{schedule_id}` document a create writes (§1.1), fully resolved.
+
+    `mcp_modes`: the tenant's enabled MCP registrations by name, each its auth
+    mode (`refuse_dispatch_mcp_servers`)."""
     check_tenant_room(existing_count, limit)
     check_name(body.name, existing_names)
     entry = resolve_type(body.type, root)
@@ -657,7 +728,11 @@ def build_schedule(
     check_creator(entry, scope["mode"], is_admin=is_admin, is_owner=is_owner)
     check_cron(entry, body.cron, body.timezone, now)
     gate = resolve_gate(entry, body.gate, is_admin=is_admin)
+    # A credential in the request is refused before the params are resolved,
+    # so it is refused by its own code whatever its shape.
+    refuse_dispatch_mcp_servers(body.params, {}, mcp_modes)
     params = resolve_params(entry, body.params, gate=gate, is_admin=is_admin)
+    refuse_dispatch_mcp_servers(None, params, mcp_modes)
     budget = resolve_budget(entry, body.budget, root=root)
     policy = resolve_policy(entry, body.policy)
     doc: dict[str, Any] = {
@@ -705,8 +780,14 @@ def apply_edit(
     is_owner: bool = False,
     platform_repository: bool = False,
     root: Path = EXECUTOR_DIR,
+    mcp_modes: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The document after `PATCH` (§7.1). A stale revision is 409 `schedule_changed`.
+
+    The edited params are held to the MCP rule a create meets
+    (`refuse_dispatch_mcp_servers`, with `mcp_modes` as `build_schedule`'s):
+    otherwise a schedule created naming no server could be edited to name a
+    `dispatch` one, which no fire could ever run.
 
     A changed scope is held to the creator rule a create meets (§3, §3.13):
     otherwise a member could create `observer` on `repos` and edit it to the
@@ -750,6 +831,7 @@ def apply_edit(
     if patch.cron is not None or patch.timezone is not None:
         check_cron(entry, doc["cron"], doc["timezone"], now)
     doc["gate"] = resolve_gate(entry, patch.gate, current=stored["gate"], is_admin=is_admin)
+    refuse_dispatch_mcp_servers(patch.params, {}, mcp_modes)
     doc["params"] = resolve_params(
         entry,
         patch.params,
@@ -757,6 +839,7 @@ def apply_edit(
         is_admin=is_admin or not _turns_guard_off(stored, patch),
         current=stored["params"],
     )
+    refuse_dispatch_mcp_servers(None, doc["params"], mcp_modes)
     if patch.budget is not None:
         doc["budget"] = resolve_budget(entry, patch.budget, current=stored["budget"], root=root)
     doc["policy"] = resolve_policy(entry, patch.policy, current=stored["policy"])

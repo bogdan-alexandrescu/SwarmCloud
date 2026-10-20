@@ -39,19 +39,26 @@ One of the question's option labels, free text ("Other…"), or both. Stored on
 the task document as `metadata.owner_answers` -- a reserved platform key, as
 `start_problem` is, because the frozen `Task` has no field for it and an
 additive metadata key needs no contract change -- one entry per question:
-`{question_index, question, choice, text, by, at, history}`. Re-answering
-REPLACES the entry and moves the replaced answer, with its own `by` and `at`,
-into `history`, so who changed what is on the task for as long as the task
+`{question_index, question, choice, text, by, at, via, session, history}`.
+Re-answering REPLACES the entry and moves the replaced answer, with its own
+`by`, `at`, `via` and `session`, into `history`, so who changed what is on the task for as long as the task
 is; the write is one Firestore transaction, so two people answering at once
 cannot drop either one's history. `history` is capped at
 `MAX_ANSWER_CHANGES`, past which a change is refused rather than an earlier
 answer forgotten.
 
 WHO MAY ANSWER: the task's submitter, or an admin. "Admin" is the platform's
-`is_admin`: there is no per-tenant admin role to ask instead (see
-`routes.gittokens`). Another member of the tenant reads the questions and is
-told why they may not answer (`may_answer_because`); another tenant's task
-is the 404 a missing one is, from the task read, before anything else.
+`is_admin`. Another member of the tenant reads the questions and is told why
+they may not answer (`may_answer_because`); another tenant's task is the 404
+a missing one is, from the task read, before anything else.
+
+AND ONLY A `member` OR ABOVE (docs/design/workspace-roles.md §4.8): the route
+asks the role first (`routes.tasks.require_member`, `role_member_required`
+through its switch), so a submitter a grant narrowed to `viewer` can no
+longer steer their own running task's agent. The submitter rule above is
+narrower and stays on top of the role. With the switch on, the read says so
+too (`role_refusal`), so the console does not offer a form the answer route
+would refuse.
 
 VALIDATED AGAINST WHAT IS SERVED: the index must name one of the questions the
 worker counted, and a choice must be one of THAT question's option labels as
@@ -59,6 +66,18 @@ the read above serves them -- so an answer can only pick something the person
 was shown. Free text is at most `MAX_ANSWER_CHARS` and is REDACTED BEFORE IT IS
 STORED, as a hand-off's reason is; `task_input.COLLECTED_METADATA_KEYS` masks it
 again wherever the task is served.
+
+WHERE IT WAS ANSWERED (owner decision 2026-10-19, "Plugin records it, marked
+as from Claude Code"; lane ANSWER-SYNC, part of #1644): an answer may say
+`via` -- `console`, or `claude-code` when the person answered in a Claude Code
+session and the sc plugin's `swarm_task_answer` recorded it -- and that
+session's id (`session`), so the console can say "answered in Claude Code".
+Both are optional, stored with the answer and inside `history`, and served
+beside `choice` and `text`. They are LABELS, NEVER PERMISSIONS: who may answer
+is decided above, from the caller's identity and role, before either is
+read, so no `via` widens or narrows it. A `session` is a UUID or 8-64 of
+`[A-Za-z0-9_-]`, anything else a 422: it is shown to people, so it is held to
+the shape of an id and can carry nothing else.
 
 The notification (`notifications.agent_questions`) stops listing a task once
 every question it asked has an answer (`unanswered`).
@@ -68,17 +87,20 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from google.cloud import firestore
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from swarm_common.admission import _snapshot
 
+from . import refusals, roles
 from .agent_output import AgentOutputService
 from .codec import owner_answer_to_api, owner_answers_by_index
-from .errors import Conflict, Forbidden, NotFound, ValidationFailed
+from .errors import Conflict, Forbidden, NotFound, RoleMemberRequired, ValidationFailed
 from .redaction import redact
 from .store import TASKS, Store
 from .task_input import masking_for
@@ -94,6 +116,21 @@ MAX_ANSWER_CHARS = 2000
 #: audit. 20 is far more than a person changes their mind, and bounds the
 #: task document at 20 x 2,000 characters per question.
 MAX_ANSWER_CHANGES = 20
+
+#: A session id that is not a UUID: 8-64 characters of `[A-Za-z0-9_-]`. A
+#: Claude Code session id is a UUID today; the second shape keeps a future
+#: id format from being refused while still holding it to an id.
+_SESSION_SHAPE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+def valid_session(value: str) -> bool:
+    """Whether `value` is a Claude Code session id this API stores."""
+    try:
+        uuid.UUID(value)
+        return True
+    except ValueError:
+        return bool(_SESSION_SHAPE.match(value))
+
 
 #: The artifact's name and the `result_summary` key the worker counts it under
 #: (`agent_worker.questions.NAME` / `SUMMARY_KEY`). Spelled again: the worker
@@ -149,6 +186,20 @@ def answer_refusal(submitted_by: str | None, email: str, *, is_admin: bool) -> s
     return f"only {who}, who launched this task, or an admin may answer its questions"
 
 
+def role_refusal(role_store: Any, auth: Any) -> str | None:
+    """Why the caller's ROLE forbids answering, for the read's
+    `may_answer_because`, or None. Only while `role_member_required` is on:
+    off, the answer route lets a `viewer` through, and the read must not say
+    otherwise. A role that cannot be read says nothing here; the answer route
+    decides then (503 with the switch on)."""
+    if role_store is None or not refusals.enforced(RoleMemberRequired.code):
+        return None
+    me = role_store.try_resolve(auth)
+    if me is None or roles.at_least(me.role, roles.MEMBER):
+        return None
+    return f"your role in {auth.tenant_id} is {me.role}; members answer here"
+
+
 def read_questions(
     store: Store,
     service: AgentOutputService,
@@ -158,18 +209,21 @@ def read_questions(
     submitted_by: str | None,
     viewer: str | None = None,
     viewer_is_admin: bool = False,
+    viewer_role_refusal: str | None = None,
 ) -> dict[str, Any]:
     """The task's questions for its owner, as the worker validated them, redacted.
 
     Each served question carries `answer`: the owner's stored answer, or None.
     `may_answer` says whether `viewer` may answer, and `may_answer_because`
-    why not.
+    why not: `viewer_role_refusal` (`role_refusal`) when their role forbids
+    it, else the submitter rule's sentence.
     """
     # The task read is the tenant boundary: another tenant's task 404s here,
     # with the message a missing one gets, before anything else is looked at.
     task = store.get_task(tenant_id, task_id, submitted_by=submitted_by)
     count = question_count(task.result_summary)
-    refusal = answer_refusal(task.submitted_by, viewer or "", is_admin=viewer_is_admin)
+    refusal = viewer_role_refusal or answer_refusal(
+        task.submitted_by, viewer or "", is_admin=viewer_is_admin)
     out: dict[str, Any] = {
         "task_id": task.id,
         "count": count,
@@ -239,13 +293,29 @@ def read_questions(
 
 
 class AnswerBody(BaseModel):
-    """`POST /v1/tasks/{id}/answers`: an option label, free text, or both."""
+    """`POST /v1/tasks/{id}/answers`: an option label, free text, or both.
+
+    `via` and `session` say where it was answered (ANSWER-SYNC); neither
+    changes who may answer.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     question_index: int
     choice: str | None = None
     text: str | None = None
+    via: Literal["console", "claude-code"] | None = None
+    session: str | None = None
+
+    @field_validator("session")
+    @classmethod
+    def _session_is_an_id(cls, value: str | None) -> str | None:
+        if value is not None and not valid_session(value):
+            raise ValueError(
+                "session must be a Claude Code session id: a UUID, or 8-64 characters "
+                "of A-Z, a-z, 0-9, _ and -"
+            )
+        return value
 
 
 def answer_question(
@@ -314,6 +384,8 @@ def answer_question(
         "text": text,
         "by": email,
         "at": now.isoformat(),
+        "via": body.via,
+        "session": body.session,
     }
 
     @firestore.transactional
@@ -333,7 +405,9 @@ def answer_question(
                     f"question {index + 1}'s answer has been changed {MAX_ANSWER_CHANGES} times; "
                     "it is not changed again, so its history stays whole"
                 )
-            history.append({k: previous.get(k) for k in ("choice", "text", "by", "at")})
+            history.append({
+                k: previous.get(k) for k in ("choice", "text", "by", "at", "via", "session")
+            })
         current[index] = {**entry, "history": history}
         metadata[OWNER_ANSWERS_METADATA_KEY] = [current[i] for i in sorted(current)]
         # `metadata` alone: `updated_at` is the task's own lifecycle clock,
@@ -353,6 +427,7 @@ def answer_question(
             "replaced": replaced,
             "with_choice": choice is not None,
             "with_text": text is not None,
+            "via": body.via,
         },
     )
     return read_questions(

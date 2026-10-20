@@ -55,7 +55,9 @@ class GroupLookupError(Exception):
 
 
 class MembershipResolver(Protocol):
-    def groups_for(self, member_email: str, candidate_groups: tuple[str, ...]) -> tuple[str, ...]: ...
+    def groups_for(
+        self, member_email: str, candidate_groups: tuple[str, ...], *, fresh: bool = False
+    ) -> tuple[str, ...]: ...
 
 
 class CloudIdentityGroups:
@@ -193,10 +195,19 @@ class CloudIdentityGroups:
         self._store(self._group_names, key, name)
         return name
 
-    def is_member(self, member_email: str, group_email: str) -> bool:
-        """Transitive membership check against ONE registered group."""
+    def is_member(self, member_email: str, group_email: str, *, fresh: bool = False) -> bool:
+        """Transitive membership check against ONE registered group.
+
+        `fresh` skips the cached answer and refreshes it with the one Cloud
+        Identity gives now. An await-input answer asks this way
+        (docs/design/human-steps.md §4.2): the ordinary request path's cached
+        answer is up to `group_cache_ttl_seconds` old, and a person removed
+        from the group a minute ago would still pass it. Only the membership
+        is asked again; the group's resource name never changes for an email
+        and stays cached.
+        """
         key = (member_email.lower(), group_email.lower())
-        cached = self._cached(self._memberships, key)
+        cached = None if fresh else self._cached(self._memberships, key)
         if cached is not None:
             return bool(cached)
 
@@ -211,8 +222,12 @@ class CloudIdentityGroups:
         self._store(self._memberships, key, has)
         return has
 
-    def groups_for(self, member_email: str, candidate_groups: tuple[str, ...]) -> tuple[str, ...]:
+    def groups_for(
+        self, member_email: str, candidate_groups: tuple[str, ...], *, fresh: bool = False
+    ) -> tuple[str, ...]:
         """Which of the admin-registered groups this caller belongs to.
+
+        `fresh` asks every candidate past the cache (`is_member`).
 
         `candidate_groups` arrives in ADMIN PRIORITY ORDER, which is the order
         `resolve_tenant` walks, so a failure only matters when it lands ABOVE the
@@ -237,7 +252,7 @@ class CloudIdentityGroups:
         failures: list[str] = []
         for index, group in enumerate(candidate_groups):
             try:
-                member = self.is_member(member_email, group)
+                member = self.is_member(member_email, group, fresh=fresh)
             except GroupLookupError as exc:
                 log.warning("group membership check failed for group=%s: %s", group, exc)
                 failures.append(group)
@@ -263,6 +278,27 @@ class CloudIdentityGroups:
         return tuple(found)
 
 
+def check_group_readable(resolver: MembershipResolver, member_email: str,
+                         group_email: str) -> bool:
+    """The directory check of a group workspace request
+    (docs/design/workspace-kinds.md §4.2.3, check 7): ask whether
+    `member_email` -- the requesting admin -- is in THAT ONE group, past the
+    cache. Any answer, true or false, proves the group exists and is readable
+    under swarm-api's delegation; the boolean itself decides nothing.
+
+    It is the same per-group question `groups_for` asks on every request, one
+    `checkTransitiveMembership` with `x-goog-user-project`, so no call lists
+    groups (`searchTransitiveGroups` 403s here). A lookup that fails raises
+    `GroupLookupError`: with one candidate, `groups_for` raises on a failure,
+    and anything else the transport throws is folded into the same error."""
+    try:
+        return bool(resolver.groups_for(member_email, (group_email,), fresh=True))
+    except GroupLookupError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - transport level, one answer
+        raise GroupLookupError(f"directory check errored: {type(exc).__name__}") from exc
+
+
 def _escape_query_literal(value: str) -> str:
     """Escape a value for embedding in a Cloud Identity query literal."""
     return value.replace("\\", "\\\\").replace("'", "\\'")
@@ -274,7 +310,10 @@ class StaticGroups:
     def __init__(self, mapping: dict[str, tuple[str, ...]]) -> None:
         self._mapping = {k.lower(): tuple(v) for k, v in mapping.items()}
 
-    def groups_for(self, member_email: str, candidate_groups: tuple[str, ...]) -> tuple[str, ...]:
+    def groups_for(
+        self, member_email: str, candidate_groups: tuple[str, ...], *, fresh: bool = False
+    ) -> tuple[str, ...]:
+        # No cache, so every answer is already fresh.
         mine = {g.lower() for g in self._mapping.get(member_email.lower(), ())}
         return tuple(g for g in candidate_groups if g.lower() in mine)
 
@@ -285,4 +324,5 @@ __all__ = [
     "GroupLookupError",
     "MembershipResolver",
     "StaticGroups",
+    "check_group_readable",
 ]

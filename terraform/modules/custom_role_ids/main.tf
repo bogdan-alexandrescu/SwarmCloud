@@ -8,8 +8,10 @@
 # swarmProviderKeyWriter (terraform/bootstrap/provider_keys.tf, KEYS-IAM),
 # swarmWorkspaceSecretAccessor (terraform/bootstrap/workspace_secrets.tf,
 # SEC-IAM), swarmTypesafeForwarderAccessor
-# (terraform/bootstrap/typesafe_forwarder.tf) and swarmGithubHooksDedup
-# (terraform/bootstrap/github_hooks_role.tf, HOOKS-ROLE).
+# (terraform/bootstrap/typesafe_forwarder.tf), swarmGithubHooksDedup
+# (terraform/bootstrap/github_hooks_role.tf, HOOKS-ROLE), swarmQaJwtSigner
+# (terraform/bootstrap/qa_identity.tf, QI-IAM) and swarmFrontDoorReader
+# (terraform/bootstrap/workspace_deployer.tf, FRONT-DOOR-READ).
 #
 # terraform/bootstrap DEFINES these roles, and the owner applies it.
 # terraform/infra and its modules GRANT them, and CI applies that. The two roots
@@ -97,5 +99,15 @@ locals {
     # terraform/infra/github_hooks.tf to the rollup sweeper account the
     # receiver runs as, in place of roles/datastore.user.
     github_hooks_dedup = "swarmGithubHooksDedup${local.role_suffix}"
+    # Defined and granted by terraform/bootstrap/qa_identity.tf alone (QI-IAM,
+    # part of #1649, owner decision 2026-10-19): iam.serviceAccounts.signJwt
+    # alone, bound for swarm-api on the QA account only. terraform/infra never
+    # names it, and the CI deployer may not grant it.
+    qa_jwt_signer = "swarmQaJwtSigner${local.role_suffix}"
+    # Defined and granted by terraform/bootstrap/workspace_deployer.tf alone
+    # (FRONT-DOOR-READ, part of #847, owner decision 2026-10-20):
+    # iap.webServices.getIamPolicy alone, bound for swarm-workspace-deployer on
+    # the API backend's own IAP policy. terraform/infra never names it.
+    front_door_reader = "swarmFrontDoorReader${local.role_suffix}"
   }
 }

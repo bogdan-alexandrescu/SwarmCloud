@@ -245,7 +245,7 @@ describe('V076: Last changed and the pool id wrap only where they should', () =>
     const at = new Date(Date.now() - 3 * 3_600_000).toISOString()
     await limits([
       pool('provider:anthropic:tenant:u-bogdan', {
-        admin_changed_by: 'ops@saga.xyz',
+        admin_changed_by: 'ops@example.com',
         admin_changed_at: at,
       } as Partial<Pool>),
     ])
@@ -257,8 +257,13 @@ describe('V076: Last changed and the pool id wrap only where they should', () =>
     const segs = [...sub.querySelectorAll('.adm-key-seg')]
     expect(segs.map((s) => s.textContent)).toEqual(['provider:', 'anthropic:', 'tenant:', 'u-bogdan'])
     expect(sub.textContent).toBe('provider:anthropic:tenant:u-bogdan')
-    // MUTATION: drop the nowrap: `u- / bogdan` is a break again.
-    for (const s of segs) expect(won(s, 'white-space', WIDE)).toBe('nowrap')
+    // MUTATION: make the segment inline again: `u- / bogdan` is a break
+    // again. An inline block as wide as its text never breaks inside; only
+    // one wider than the cell does (VQA V160, vqa2.r3.admin.test.tsx).
+    for (const s of segs) {
+      expect(won(s, 'display', WIDE)).toBe('inline-block')
+      expect(won(s, 'max-width', WIDE)).toBe('100%')
+    }
     expect(won(sub, 'line-height', WIDE)).toBe('var(--lh-micro)')
   })
 })
@@ -333,7 +338,7 @@ function tenant(over: Partial<Tenant>): Tenant {
   return {
     tenant_id: 'eng',
     kind: 'group',
-    principal: 'eng@saga.xyz',
+    principal: 'eng@example.com',
     display_name: null,
     created_at: '2026-09-24T09:00:00Z',
     max_active: 45,
@@ -341,7 +346,7 @@ function tenant(over: Partial<Tenant>): Tenant {
     monthly_budget_usd: null,
     enabled: true,
     credentials: ['anthropic', 'openai'],
-    service_account: 'swarm-agent-worker-eng@saga-agents.iam.gserviceaccount.com',
+    service_account: 'swarm-agent-worker-eng@example-project.iam.gserviceaccount.com',
     gcs_prefix: null,
     namespace: null,
     ...over,
@@ -355,9 +360,10 @@ describe('V079: Tenants gives the id and the credentials their room, and links o
     const { container } = render(<TenantsScreen />)
     await screen.findByText('u-a-rather-long-tenant-id', undefined, WAIT)
     const width = (c: string) => won(container.querySelector(`col.ten-col-${c}`)!, 'width', WIDE)
-    // MUTATION: put Tenant back to 11% or Credentials to 14%.
-    expect(width('tenant')).toBe('15%')
-    expect(width('credentials')).toBe('20%')
+    // MUTATION: put Tenant back to 11% or Credentials to 14%. (Re-split to
+    // what each column holds by VQA V186: vqa2.r3.admin.test.tsx.)
+    expect(width('tenant')).toBe('14%')
+    expect(width('credentials')).toBe('17.5%')
     const rowOf = (id: string) =>
       [...container.querySelectorAll('tbody th[scope="row"]')].find((h) => h.textContent === id)!.closest('tr')!
     expect(won(rowOf('u-a-rather-long-tenant-id').querySelector('th')!, 'overflow-wrap', WIDE)).toBe('break-word')

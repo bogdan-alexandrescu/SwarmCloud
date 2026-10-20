@@ -44,6 +44,8 @@ const GROUP_WORD: Readonly<Record<GroupBy, string>> = {
   runner_profile: 'profile',
   submitted_by: 'submitter',
   tenant_id: 'tenant',
+  model: 'model',
+  model_class: 'model class',
 }
 
 /**

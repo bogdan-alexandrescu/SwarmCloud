@@ -243,7 +243,7 @@ def test_a_task_launch_titles_its_run_and_rows_from_the_labels(_plugin_root):
     assert out["args"] == {"attach_tasks": [
         {"task_id": "task_a", "title": "lane-a", "console": "https://c.test/agents/task_a", "details": none},
         {"task_id": "task_b", "title": "task_b", "details": none},
-    ], "max_rows": launch.MAX_ATTACHED_TASKS}
+    ], "max_rows": launch.MAX_ATTACHED_TASKS, "titled_copy": out["script_path"]}
     assert Path(out["script_path"]).is_file()
     assert launch.for_tasks([{"task_id": "task_a", "label": "lane-a"}])["title"] == "SC · lane-a · task"
 
@@ -368,7 +368,7 @@ def test_attach_all_by_name_returns_the_call_for_my_single_tasks(tmp_path):
     assert result["task_call"] == {"attach_tasks": [
         {"task_id": "task_a", "title": "lane-a"},
         {"task_id": "task_b", "title": "task_b", "console": "https://c.test/agents/task_b"},
-    ], "max_rows": 30}
+    ], "max_rows": launch.MAX_ATTACHED_TASKS}
 
 
 def test_attach_all_with_only_single_tasks_running_is_not_nothing_running(tmp_path):

@@ -9,10 +9,10 @@ npm install
 npm run dev          # http://localhost:5173, fixtures, no network
 ```
 
-Against the real API, once `swarm.saga.xyz` resolves:
+Against the real API, at its deployed origin (`swarm.example.com` below stands for it):
 
 ```bash
-SWARM_API_ORIGIN=https://swarm.saga.xyz VITE_LIVE=1 npm run dev
+SWARM_API_ORIGIN=https://swarm.example.com VITE_LIVE=1 npm run dev
 ```
 
 The dev server proxies `/v1` so the app talks to a same-origin API in

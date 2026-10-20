@@ -244,6 +244,51 @@ always available, which is why its outage is a SKIP.
 These need contract request 32 (#218, PR #345) deployed, and the group skips
 until it is.
 
+#### The browser fixture page is ours (#1628, 2026-10-19)
+
+The smoke suite's browser check and `scripts/prove-gke-dispatch.sh` (both
+`t_check_browser_fixture` in `scripts/lib/testlib.sh`, and both gate a release)
+are a different check from the table above: a browser task loads a page whose
+colour (`#c2185b`), title (`Swarm acceptance fixture`) and text
+(`swarm-fixture-<run id>`) the check chose, and the check asserts all three came
+back. Until 2026-10-19 that page came from httpbin.org's `/base64/<page>` route,
+the third party #358 had chosen. **Acceptance run 39249979130 failed its GKE
+proof on an httpbin.org `502 Bad Gateway`**: an outage elsewhere turned a release
+gate red, with a message that read like ours. The owner's decision on #1628,
+which reverses #358 for this check only, is that we serve the page ourselves, so
+the check fails only when SwarmCloud does.
+
+So the page is `scripts/acceptance/fixture.html`, uploaded by
+`terraform/infra/acceptance_fixture.tf` as the one object in
+`swarm-acceptance-fixture-<project>`, served as `text/html` with public read on
+that bucket, and opened as
+`https://storage.googleapis.com/swarm-acceptance-fixture-<project>/fixture.html?run=<id>`.
+`SWARM_BROWSER_FIXTURE_BASE` still overrides the part before `?run=`.
+
+**Public, so it shows nothing a URL chooses.** The runner opens it without a
+credential from both the Cloud Run worker's and the GKE browser pod's egress, so
+it cannot sit behind IAP or on `swarm.saga.xyz`'s cookie origin. A public route
+that rendered HTML from its URL, as httpbin's does, would make us a phishing and
+XSS host; this page's markup is fixed. Its one input is `?run=`, accepted only
+when it matches `^[a-z0-9-]{1,80}$` and set with `textContent`; anything else
+leaves the fixed line `invalid run id`, which the check fails on. Its
+Content-Security-Policy admits no fetch, frame or form target and exactly one
+script, by hash. So the most anyone can make it show is `swarm-fixture-` followed
+by up to 80 lower-case letters, digits and hyphens on a magenta block.
+`tests/unit/scripts/test_acceptance_fixture_page.py` holds all of that, and runs
+the page's script against hostile ids where node is on `PATH`.
+
+**Why a bucket of its own.** Buckets here use uniform bucket-level access, so a
+read grant is on a bucket, never an object, and an IAM condition cannot narrow a
+grant to `allUsers`. A bucket holding nothing else makes "public read on the
+bucket" and "public read on `fixture.html`" the same set.
+
+Until the owner applies the public read grant (at the dev-iam hold), the object
+answers 403. The preflight reads that as the host being unavailable and the
+check is a SKIP naming `storage.googleapis.com`, never a PASS. The fill-and-click
+form check above still uses httpbin.org, and still SKIPs when httpbin is
+unreachable.
+
 **`pngcheck.py` uses the standard library only** (`zlib` and the five PNG row
 filters). The swarm-verify image carries `python3` for it (#358). Wherever the
 suite runs without `python3`, the pixel checks SKIP saying so. It decodes at
@@ -262,6 +307,27 @@ the same SKIP as everywhere else. The person is
 swarm-verify image has `python3` and no pip): a websocket client, an RFB 3.8
 viewer and a GCS reader, written out. It runs beside the settle wait and is
 told the settled state through a file. It reports one verdict per check.
+
+**The scripted person opens the live view before anything else.** swarm-api
+counts someone as watching from the viewer socket's join, and a hold nobody
+watches ends after `human_unwatched_seconds` (60 s); the worker then parks
+the task on `HUMAN_REQUIRED`, which only a person's "I'm ready" promotes. The
+other-tenant probes (six API calls and a socket that may wait 20 s for its
+refusal) used to run first, and the scheduled runs of 2026-10-15..19 failed
+`returned` with the task PARKED at the 900 s settle (#1333). They now run
+while the viewer's socket is open and the page is on screen, on a thread of
+their own, so the viewer goes on reading its socket for the whole hold as a
+person's open tab does. The viewer reads the hold's deadline after its join
+and before it takes control: swarm-api relays no frame until the join's
+`LiveService.watched` has returned, so the first reading says exactly whether
+the join was counted. A task that still ends `PARKED:HUMAN_REQUIRED` gets a
+verdict that names which way: the join not counted, no viewer or control in
+the resolved hold's funnel, the worker's park cause (`hold_expired` or
+`gate_lost`), or a return that re-queued the task so a later attempt asked
+again with nobody watching. When the settle
+runs out anyway, the group reads the task once more and the verdict names
+its state and `park_reason` (`PARKED:HUMAN_REQUIRED`, or a provider park
+with the instant it is eligible again), never just "did not finish".
 
 **The page is served inside the agent's own pod.** Nothing this repository
 owns serves HTML as HTML on the internet (see browser, above), so

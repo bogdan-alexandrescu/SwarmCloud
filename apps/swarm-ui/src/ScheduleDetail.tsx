@@ -12,13 +12,14 @@
  * (§6.2): no firing is a fact about the schedule, and a zero would read as a
  * count of something that ran.
  */
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   loadMe,
   loadPeople,
   loadSchedule,
   loadScheduleAudit,
   loadScheduleTypes,
+  loadRepositories,
   setMergeMode,
   type FiringOwnLive,
   type FiringWork,
@@ -31,12 +32,12 @@ import {
 } from './api'
 import { Button, CIcon, Dialog, Tabs } from './components'
 import { WarnGlyph } from './components/glyphs'
-import { errorHeading, type ApiError, type Result } from './fetch'
+import type { ApiError, Result } from './fetch'
 import { usd } from './measure'
 import { pluralise } from './types'
 import { Absent, Mark } from './primitives'
 import { addressToPath } from './paths'
-import { EditSchedule } from './ScheduleEdit'
+import { EditSchedule, plainValue } from './ScheduleEdit'
 import {
   DryRunChip,
   InApp,
@@ -47,10 +48,12 @@ import {
   SpendFigure,
   localTime,
   scheduleAddress,
+  slashBreaks,
   untilWords,
   type ActNotice,
 } from './Schedules'
-import { Screen, timeAgo } from './Shell'
+import { FailedPanel, Screen, timeAgo } from './Shell'
+import type { RepoRecord } from './RepositoriesData'
 import { useNow } from './useNow'
 
 export type DetailTab = 'history' | 'budget' | 'gate' | 'settings' | 'audit'
@@ -250,6 +253,38 @@ function FiringRows({ firings, go }: { firings: ScheduleFiring[]; go: (to: strin
         </tbody>
       </table>
     </div>
+  )
+}
+
+/**
+ * THE SCOPE BY `owner/repo`, AS THE LIST SAYS IT (visual QA V239): the head
+ * printed the raw ids ("repo_a, repo_long…") where the list, one click away,
+ * said "example-org/example-api". The registrations are read once for the
+ * page; until they answer, or if that read fails, an id stands for itself.
+ */
+function ScopeRepos({ ids }: { ids: readonly string[] }) {
+  const [names, setNames] = useState<ReadonlyMap<string, string> | null>(null)
+  useEffect(() => {
+    let live = true
+    void loadRepositories().then((r: Result<RepoRecord[]>) => {
+      if (live && (r.status === 'ok' || r.status === 'stale')) setNames(new Map(r.data.map((x) => [x.repo_id, `${x.owner}/${x.repo}`])))
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+  if (ids.length === 0) return <>no repository</>
+  return (
+    <>
+      {ids.map((id, i) => (
+        <Fragment key={id}>
+          {i > 0 && ', '}
+          <span data-repo={id} title={id}>
+            {slashBreaks(names?.get(id) ?? id)}
+          </span>
+        </Fragment>
+      ))}
+    </>
   )
 }
 
@@ -773,6 +808,41 @@ function Gate({ s, onChanged, go }: { s: Schedule; onChanged: () => void; go: (t
   )
 }
 
+/**
+ * ONE PARAMETER, READABLE (visual QA V171). A custom-prompt schedule's `spec`
+ * was one minified `JSON.stringify` line in a 190px fact column: ~840px of
+ * wrapped mono with `\n` escapes, the prompt in it unreadable. A value with
+ * structure is its own full-width fact, one row per key, and its text keeps
+ * its line breaks.
+ */
+function ParamValue({ v }: { v: unknown }) {
+  const plain = plainValue(v)
+  if (plain !== null) return <span className={typeof v === 'string' && v.includes('\n') ? 'sc-ptext' : undefined}>{plain}</span>
+  if (Array.isArray(v)) {
+    return (
+      <ol className="sc-pobj">
+        {v.map((x, i) => (
+          <li key={i}>
+            <ParamValue v={x} />
+          </li>
+        ))}
+      </ol>
+    )
+  }
+  return (
+    <dl className="sc-pobj">
+      {Object.entries(v as Record<string, unknown>).map(([k, x]) => (
+        <div key={k}>
+          <dt>{k}</dt>
+          <dd>
+            <ParamValue v={x} />
+          </dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
 function Settings({ s }: { s: Schedule }) {
   const params = Object.entries(s.params)
   return (
@@ -780,11 +850,20 @@ function Settings({ s }: { s: Schedule }) {
       {params.length === 0 ? (
         <Fact name="Parameters">the type's defaults</Fact>
       ) : (
-        params.map(([k, v]) => (
-          <Fact key={k} name={k}>
-            <span className="mono">{typeof v === 'string' ? v : JSON.stringify(v)}</span>
-          </Fact>
-        ))
+        params.map(([k, v]) =>
+          plainValue(v) === null ? (
+            <div key={k} className="sc-fact sc-wide" data-param={k}>
+              <dt>{k}</dt>
+              <dd>
+                <ParamValue v={v} />
+              </dd>
+            </div>
+          ) : (
+            <Fact key={k} name={k}>
+              <ParamValue v={v} />
+            </Fact>
+          ),
+        )
       )}
       <Fact name="Overlap">{s.policy.overlap ?? '— not set'}</Fact>
       <Fact name="Catch-up">{s.policy.catch_up ?? '— not set'}</Fact>
@@ -795,35 +874,71 @@ function Settings({ s }: { s: Schedule }) {
   )
 }
 
+/**
+ * AN EDIT'S CHANGES, ONE LINE EACH (visual QA V243): the route records
+ * `changed` as `{field: {from, to}}` with whole field values, and it was
+ * printed as raw JSON. A field whose value is an object (the gate, the
+ * budget, the policy) names the keys that moved; the rest say from → to.
+ */
+export function changeLines(changed: unknown): string[] {
+  if (changed === null || typeof changed !== 'object') return []
+  const said = (v: unknown) => plainValue(v) ?? JSON.stringify(v)
+  const lines: string[] = []
+  for (const [field, c] of Object.entries(changed as Record<string, unknown>)) {
+    const { from, to } = (c ?? {}) as { from?: unknown; to?: unknown }
+    const objects = [from, to].every((x) => x === null || x === undefined || (typeof x === 'object' && !Array.isArray(x)))
+    if (objects && (from ?? to) !== null && (from ?? to) !== undefined) {
+      const a = (from ?? {}) as Record<string, unknown>
+      const b = (to ?? {}) as Record<string, unknown>
+      const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k]))
+      for (const k of keys) lines.push(`${field} · ${k}: ${said(a[k])} → ${said(b[k])}`)
+      continue
+    }
+    lines.push(`${field}: ${said(from)} → ${said(to)}`)
+  }
+  return lines
+}
+
 function Audit({ scheduleId }: { scheduleId: string }) {
   const [r, setR] = useState<Result<{ audit: ScheduleAuditEntry[] }>>({ status: 'loading', since: Date.now() })
+  const [round, setRound] = useState(0)
   useEffect(() => {
     let live = true
+    setR({ status: 'loading', since: Date.now() })
     void loadScheduleAudit(scheduleId).then((next) => {
       if (live) setR(next)
     })
     return () => {
       live = false
     }
-  }, [scheduleId])
+  }, [scheduleId, round])
   const now = useNow()
   if (r.status === 'loading') return <p className="sb-note">Reading the audit…</p>
-  if (r.status === 'error') {
-    return <Absent kind="failed" heading="Audit not read" say={`The audit read failed: ${errorHeading(r.error)}`} />
-  }
+  // THE FAILURE PANEL, NOT A BARE MARK (visual QA V242): "not read · Audit not
+  // read" gave no reason, no HTTP code and no way to read it again.
+  if (r.status === 'error') return <FailedPanel error={r.error} onRetry={() => setRound((n) => n + 1)} />
   if (r.status === 'empty') {
     return <Absent kind="zero" heading="No audit entries" say="The audit was read and holds no entry for this schedule." />
   }
   return (
     <ol className="sc-audit">
       {r.data.audit.map((e, i) => {
+        const changes = changeLines((e.detail as { changed?: unknown }).changed)
         const detail = Object.entries(e.detail)
-          .map(([k, v]) => `${k} ${typeof v === 'string' ? v : JSON.stringify(v)}`)
+          .filter(([k]) => k !== 'changed')
+          .map(([k, v]) => `${k} ${plainValue(v) ?? JSON.stringify(v)}`)
           .join(' · ')
         return (
           <li key={`${e.at}:${i}`} data-audit={e.action}>
             <span className="sc-who">{e.by}</span> <b>{e.action.replace(/_/g, ' ')}</b>
             {detail !== '' && <span className="sc-sub sc-adetail">{detail}</span>}
+            {changes.length > 0 && (
+              <ul className="sc-achanges" aria-label="What changed">
+                {changes.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            )}
             <span className="sc-sub" title={localTime(e.at)}>{timeAgo(e.at, now)}</span>
           </li>
         )
@@ -885,7 +1000,7 @@ function DetailBody({
           {s.words ?? s.cron} <span className="sc-sub mono">{s.cron} · {s.timezone}</span>
         </Fact>
         <Fact name="Scope">
-          {s.scope.mode === 'all' ? 'every registered repository' : s.scope.mode === 'platform' ? 'the platform' : (s.scope.repo_ids ?? []).join(', ')}
+          {s.scope.mode === 'all' ? 'every registered repository' : s.scope.mode === 'platform' ? 'the platform' : <ScopeRepos ids={s.scope.repo_ids ?? []} />}
         </Fact>
         <Fact name="Owner">{s.owner}</Fact>
         <Fact name="State">

@@ -67,6 +67,9 @@ function visibleText(root: Element): string {
     // An id drawn as an id -- one token alone in a code, mono or id element,
     // like the step a workflow integrates through -- is the user's data.
     if (n.parentElement?.matches('code, .mono, .id') && /^\s*[\w.-]+\s*$/.test(t)) continue
+    // An issue's `#N` is the user's reference, drawn on its own so the repository
+    // is the part a narrow cell cuts (.rn-refcut-n); it is not a number we print.
+    if (n.parentElement?.matches('.rn-refcut-n') && /^#\d+$/.test(t)) continue
     words.push(t)
   }
   return words.join(' ').replace(/gs:\/\/\S+/g, ' ').replace(/\s+/g, ' ')
@@ -91,7 +94,9 @@ function findings(text: string): string[] {
 }
 
 const PAGES: readonly string[] = [
-  ...SECTIONS.filter((s) => s.id !== 'api').flatMap((s) => s.tabs.map((t) => `/#${s.id}/${t.id}`)),
+  // API reads is exempt (the header says why); it is Capacity's last tab since
+  // NAV-FOOT (#1672), no longer a section of its own.
+  ...SECTIONS.filter((s) => s.id !== 'api').flatMap((s) => s.tabs.filter((t) => !(s.id === 'capacity' && t.id === 'api-reads')).map((t) => `/#${s.id}/${t.id}`)),
   '/submit',
   '/submit/task',
   '/submit/workflow',

@@ -496,7 +496,7 @@ function poolCheck(capacity: Result<Capacity>): Check {
  * A PAGE WITH MORE BEHIND IT IS NOT ASKED ALONE (live QA OV-2, 2026-10-11).
  * A phone's 50 newest held no FAILED row while 11 tasks had failed in the
  * last 24h -- created earlier, failed since -- and this check said clear:
- * "checks 8/8 · 2 found something" against 3 on the desktop. So when the
+ * "checks 8/8 · 2 found something" (the head's wording then) against 3 on the desktop. So when the
  * page is not every task the Overview also reads FAILED by state, and this
  * counts the FAILED tasks that ENDED in the last 24h, over that read. A
  * FAILED read that has more behind it makes the figure `≥N`. When that read
@@ -602,8 +602,13 @@ function failedProblem(failed: Task[], now: number, count: string, scope: string
     // FAILED read rather than the page (OV-2) the list can show fewer: its
     // page is the newest-created N, and the headline says which population
     // this count is.
+    //
+    // THE PAGE'S OWN NAME (visual QA QA-109, 2026-10-20): "failed agents"
+    // was a name the list it opens carries nowhere -- the page is titled
+    // Agents and filters by state. So the word is the page, then the state
+    // this item counts.
     href: '#work/running/recent/failed',
-    linkLabel: 'failed agents',
+    linkLabel: 'Agents · FAILED',
   }
 }
 

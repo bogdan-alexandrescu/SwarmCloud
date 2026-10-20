@@ -73,6 +73,8 @@ RULES = json.loads(CALLS.read_text())
 #   marker         the object tenants/<tenant>/.tenant in the artifact bucket
 #   slot           a secret named swarm-tenant-u-* (the forge slot and its twin)
 #   cluster        the swarm Autopilot cluster
+#   front-door     the API backend's IAP policy, which a service workspace's S2
+#                  admits its account on (docs/design/workspace-kinds.md §4.5)
 
 NONE: frozenset[str] = frozenset()
 
@@ -111,6 +113,11 @@ GCLOUD: dict[tuple[str, ...], tuple[frozenset[str], str]] = {
         frozenset({"secretmanager.secrets.getIamPolicy", "secretmanager.secrets.setIamPolicy"}), "slot"),
     ("container", "clusters", "describe"): (frozenset({"container.clusters.get"}), "cluster"),
     ("container", "clusters", "get-credentials"): (frozenset({"container.clusters.get"}), "cluster"),
+    # S2 and A9 of a service workspace (§4.3): IAP's own IAM on one backend
+    # service, `projects/<number>/iap_web/compute/services/<id>`.
+    ("iap", "web", "get-iam-policy"): (frozenset({"iap.webServices.getIamPolicy"}), "front-door"),
+    ("iap", "web", "add-iam-policy-binding"): (
+        frozenset({"iap.webServices.getIamPolicy", "iap.webServices.setIamPolicy"}), "front-door"),
 }
 
 #: GKE authenticates a kubectl caller only if it holds container.clusters.get
@@ -140,7 +147,7 @@ PREDEFINED: dict[str, frozenset[str]] = {
 }
 
 #: Every resource kind a project-level grant with no condition reaches.
-PROJECT_WIDE = frozenset({"project", "account", "project-iam", "bucket", "marker", "slot", "cluster"})
+PROJECT_WIDE = frozenset({"project", "account", "project-iam", "bucket", "marker", "slot", "cluster", "front-door"})
 
 #: What each condition in workspace_deployer_conditions lets a grant reach, and
 #: a fragment its expression must carry for that to be true.
@@ -249,11 +256,71 @@ def grants() -> list[dict]:
                           "permissions": role_permissions(role.group(1).strip('"')),
                           "reach": _scope(cond and cond.group(1), frozenset({"bucket", "marker"}))})
     assert len(found) >= 10, f"only {len(found)} grants parsed: {[g['name'] for g in found]}"
+    found.append(front_door_grant())
+    found.append(front_door_reader_grant())
     return found
 
 
-def missing(calls: list[tuple[str, tuple[frozenset[str], str]]]) -> dict[str, list[str]]:
-    held = grants()
+def front_door_grant() -> dict:
+    """K1 (§4.5): swarmFrontDoorAdmitter on the API backend alone. Counted as
+    held because it is what the deployer holds once the owner has turned the
+    kinds on (enable_workspace_kinds, and the role added to
+    workspace_deployer_roles after O1); without it S2's call is refused by IAP
+    and the run stops for the owner as FRONT_DOOR_OWNER, which is the design's
+    fallback, not a gap. Its reach is "front-door" only if its condition is an
+    EXACT match on the number-form name of one backend."""
+    text = _uncommented(DEPLOYER_TF.read_text())
+    role = _block(text, r'resource\s+"google_project_iam_custom_role"\s+"front_door_admitter"\s*\{')
+    gate = re.search(r'lookup\(local\.workspace_role_on,\s*"([^"]+)"', role)
+    assert gate and gate.group(1) == "swarmFrontDoorAdmitter", "K1's role is not gated on its own role name"
+    reviewed = _block(VARIABLES_TF.read_text(), r'variable\s+"workspace_deployer_roles"\s*\{')
+    assert '"swarmFrontDoorAdmitter"' in reviewed, "K1's role is not in the deployer's reviewed role list"
+    member = _block(text, r'resource\s+"google_project_iam_member"\s+"front_door_admitter"\s*\{')
+    assert "local.workspace_kinds_conditions.front_door_admit" in member, "K1 is not bound by its condition"
+    return {"name": "K1 swarmFrontDoorAdmitter", "permissions": _permissions(role),
+            "reach": frozenset({"front-door"}) if front_door_condition_is_exact() else frozenset()}
+
+
+def front_door_reader_grant() -> dict:
+    """FRONT-DOOR-READ (part of #847): swarmFrontDoorReader, the read alone,
+    bound on the API backend's own IAP policy for the deployer. It is what the
+    deployer holds while the kinds are on and K1 is not, which is the shape
+    O1's failure left (docs/workspaces.md §0). Its reach is "front-door" only
+    if the binding is on the API backend by name, for the deployer, with no
+    condition; anything else reaches nothing here."""
+    text = _uncommented(DEPLOYER_TF.read_text())
+    role = _block(text, r'resource\s+"google_project_iam_custom_role"\s+"front_door_reader"\s*\{')
+    assert 'module.custom_role_ids.ids["front_door_reader"]' in role, "the reader's id is not custom_role_ids'"
+    member = _block(text, r'resource\s+"google_iap_web_backend_service_iam_member"\s+"front_door_reader"\s*\{')
+    name = re.search(r"\n\s*front_door_api_backend_name\s*=\s*([^\n]*)", text)
+    on_api = (re.search(r"\n\s*web_backend_service\s*=\s*local\.front_door_api_backend_name\s*\n", member)
+              and name and name.group(1).strip().endswith(
+                  "? data.google_compute_backend_service.frontend_iap[local.front_door_api_backend].name : \"\""))
+    exact = (bool(on_api)
+             and re.search(r"\n\s*member\s*=\s*local\.workspace_deployer_member\s*\n", member) is not None
+             and re.search(r"\n\s*condition\s*\{", member) is None)
+    return {"name": "swarmFrontDoorReader", "permissions": _permissions(role),
+            "reach": frozenset({"front-door"}) if exact else frozenset()}
+
+
+def front_door_condition_is_exact() -> bool:
+    """K1's condition names one IAP backend by `==`, never a prefix, in the
+    number form IAP evaluates (§2.1: any other form matched nothing)."""
+    text = _uncommented(DEPLOYER_TF.read_text())
+    cond = re.search(r'\n\s*front_door_admit\s*=\s*join\(" && ",\s*concat\(\s*\[(.*?)\]', text, re.S)
+    resource = re.search(r'\n\s*front_door_api_resource\s*=\s*([^\n]*)', text)
+    if not (cond and resource):
+        return False
+    return (re.fullmatch(r'\s*"resource\.name == \\"\$\{local\.front_door_api_resource\}\\""\s*', cond.group(1))
+            is not None
+            and "startsWith" not in cond.group(1)
+            and "projects/${local.workspace_project_number}/iap_web/compute/services/" in resource.group(1)
+            and ".generated_id" in resource.group(1))
+
+
+def missing(calls: list[tuple[str, tuple[frozenset[str], str]]],
+            held: list[dict] | None = None) -> dict[str, list[str]]:
+    held = grants() if held is None else held
     gaps: dict[str, list[str]] = {}
     for where, (perms, kind) in calls:
         for perm in sorted(perms):
@@ -266,7 +333,8 @@ def missing(calls: list[tuple[str, tuple[frozenset[str], str]]]) -> dict[str, li
 # The job's calls, from its code
 # ---------------------------------------------------------------------------
 
-GCLOUD_GROUPS = ("auth", "config", "container", "iam", "identity", "projects", "secrets", "storage", "compute", "run")
+GCLOUD_GROUPS = ("auth", "config", "container", "iam", "identity", "projects", "secrets", "storage", "compute", "run",
+                 "iap")
 
 
 def _code(text: str) -> str:
@@ -326,9 +394,9 @@ def script_calls() -> list[tuple[str, tuple[frozenset[str], str]]]:
 # ---------------------------------------------------------------------------
 
 
-def guard_calls(include_local: bool = True) -> list[tuple[str, tuple[frozenset[str], str]]]:
+def guard_calls(include_local: bool = True, rules: dict | None = None) -> list[tuple[str, tuple[frozenset[str], str]]]:
     calls = []
-    for rule in RULES["rules"]:
+    for rule in (rules or RULES)["rules"]:
         for shape in rule.get("shapes", []):
             tool = shape["tool"]
             where = f"{rule['id']} {tool} {' '.join(shape.get('command', [])) or shape.get('url') or shape.get('op') or 'doc'}"
@@ -379,14 +447,18 @@ def test_every_call_the_guard_admits_is_permitted_to_the_deployer() -> None:
     assert not gaps, f"swarm-workspace-deployer lacks what workspace-calls.json admits: {gaps}"
 
 
+def unmade_gcloud(rules: dict, made: set[tuple[str, ...]]) -> list[str]:
+    """Every gcloud shape of RULES that reaches a cloud API and is no call in MADE."""
+    return sorted({where for where, need in guard_calls(include_local=False, rules=rules)
+                   if where.split(" ", 2)[1] == "gcloud" and tuple(where.split(" ", 2)[2].split()) not in made})
+
+
 def test_the_guard_admits_no_cloud_call_the_job_does_not_make() -> None:
     """Shapes that reach no cloud API (gcloud's local config, kubectl's
     client-side commands, the metadata server) are left to
     test_workspace_guard.py; kubectl's cluster verbs are held against a real
     run in test_register_tenant_workspace.py."""
-    made = {w for _, w in script_gcloud()}
-    unmade = sorted({where for where, need in guard_calls(include_local=False)
-                     if where.split(" ", 2)[1] == "gcloud" and tuple(where.split(" ", 2)[2].split()) not in made})
+    unmade = unmade_gcloud(RULES, {w for _, w in script_gcloud()})
     assert not unmade, f"workspace-calls.json admits gcloud calls the job never makes: {unmade}"
     if any(where.split(" ")[1] == "curl" for where, need in guard_calls(include_local=False) if need == MARKER_UPLOAD):
         assert any(url == "WS_MARKER_UPLOAD_URL" for _, url in script_curl()), "the guard admits a marker upload nobody makes"
@@ -408,3 +480,73 @@ def test_the_marker_is_written_create_only_and_never_read() -> None:
     perms = set().union(*(g["permissions"] for g in grants() if "marker" in g["reach"]))
     assert not {p for p in perms if p.startswith("storage.objects.") and p != "storage.objects.create"}, (
         f"the deployer can do more to objects than create them: {sorted(perms)}")
+
+
+# ---------------------------------------------------------------------------
+# C10, the front-door admit (docs/design/workspace-kinds.md §4.5, lane WK-JOB)
+# ---------------------------------------------------------------------------
+
+
+def test_c10_and_its_read_twin_map_to_k1_and_only_k1() -> None:
+    c10 = [s for r in RULES["rules"] if r["id"] == "C10" for s in r["shapes"]]
+    assert [tuple(s["command"]) for s in c10] == [("iap", "web", "add-iam-policy-binding")], c10
+    assert c10[0]["flags"]["--role"] == "roles/iap.httpsResourceAccessor"
+    assert c10[0]["flags"]["--member"] == "serviceAccount:{service_principal}"
+    assert c10[0]["flags"]["--service"] == "{front_door_backend}"
+    assert set(c10[0]["require"]) >= {"--resource-type", "--service", "--role", "--member", "--condition"}
+    calls = [(w, need) for w, need in guard_calls(include_local=False) if need[1] == "front-door"]
+    assert {w.split(" ", 2)[2] for w, _ in calls} == {"iap web add-iam-policy-binding", "iap web get-iam-policy"}, calls
+    assert not missing(calls), "K1 does not cover what C10 and its read twin admit"
+    k1 = front_door_grant()
+    assert k1["permissions"] == {"iap.webServices.getIamPolicy", "iap.webServices.setIamPolicy"}, k1
+    assert k1["reach"] == {"front-door"}, "K1's condition is not an exact match on one backend"
+    # Nothing else the deployer holds reaches an IAP policy but the reader,
+    # which reads it.
+    reader = front_door_reader_grant()
+    others = [g["name"] for g in grants() if g is not None and g["name"] not in (k1["name"], reader["name"])
+              and {"iap.webServices.getIamPolicy", "iap.webServices.setIamPolicy"} & g["permissions"]]
+    assert not others, others
+
+
+def test_the_front_door_read_maps_to_the_reader_and_a_change_still_needs_k1() -> None:
+    """FRONT-DOOR-READ (part of #847): with K1 not granted, the reader alone
+    covers S2's and A9's read of the API backend's IAP policy, and nothing
+    else: the change call, C10's add, still needs K1's setIamPolicy, so the
+    guard and IAM both still refuse it to a deployer without K1."""
+    reader = front_door_reader_grant()
+    assert reader["permissions"] == {"iap.webServices.getIamPolicy"}, reader
+    assert reader["reach"] == {"front-door"}, "the reader is not bound on the API backend, for the deployer, unconditioned"
+    calls = [(w, need) for w, need in guard_calls(include_local=False) if need[1] == "front-door"]
+    reads = [(w, need) for w, need in calls if w.endswith("iap web get-iam-policy")]
+    changes = [(w, need) for w, need in calls if not w.endswith("iap web get-iam-policy")]
+    assert reads and changes, calls
+    assert not missing(reads, held=[reader]), "the reader does not cover the front-door read"
+    assert missing(changes, held=[reader]) == {
+        "iap.webServices.setIamPolicy on front-door": [w for w, _ in changes]}, "the reader reaches a change"
+    # The guard still admits exactly one change shape on the front door, C10's add.
+    shapes = [tuple(s["command"]) for r in RULES["rules"] for s in r["shapes"]
+              if s.get("command", [])[:2] == ["iap", "web"]]
+    assert sorted(set(shapes)) == [("iap", "web", "add-iam-policy-binding"), ("iap", "web", "get-iam-policy")], shapes
+
+
+def test_the_front_door_is_the_api_backend_terraform_grants_k1_on() -> None:
+    """The backend C10 names (workspace-calls.json) is the one K1's condition
+    resolves: terraform's front_door_api_backend for the default name_prefix.
+    The console's backend, `-ui-ui-backend`, is never it."""
+    text = _uncommented(DEPLOYER_TF.read_text())
+    spelled = re.search(r'\n\s*front_door_api_backend\s*=\s*"([^"]+)"', text)
+    prefix = re.search(r'variable\s+"name_prefix"\s*\{[^}]*?default\s*=\s*"([^"]+)"', VARIABLES_TF.read_text(), re.S)
+    assert spelled and prefix, "front_door_api_backend or name_prefix's default not found"
+    backend = spelled.group(1).replace("${var.name_prefix}", prefix.group(1))
+    assert RULES["front_door_backend"] == backend, (RULES["front_door_backend"], backend)
+    assert not backend.endswith("-ui-ui-backend")
+
+
+def test_the_walk_refuses_a_c10_shape_no_call_makes() -> None:
+    """Remove S2's call from what the job makes, and C10 is a shape no call
+    makes: the walk must say so (the test above holds the real one to empty)."""
+    made = {w for _, w in script_gcloud()}
+    assert ("iap", "web", "add-iam-policy-binding") in made, "the script walk found no S2 call"
+    assert ("iap", "web", "get-iam-policy") in made, "the script walk found no front-door read"
+    unmade = unmade_gcloud(RULES, made - {("iap", "web", "add-iam-policy-binding")})
+    assert unmade == ["C10 gcloud iap web add-iam-policy-binding"], unmade

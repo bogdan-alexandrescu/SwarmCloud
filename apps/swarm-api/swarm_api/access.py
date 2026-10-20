@@ -849,6 +849,12 @@ class AccessService:
         slug = self._app.config.slug
         return INSTALL_URL.format(slug=quote(slug, safe="")) if slug else None
 
+    def _app_name(self) -> str | None:
+        """The App's display name as the deployment configures it
+        (GITHUB_APP_NAME), served beside the install link as `app_name`;
+        None when unset, and the console then names it generically."""
+        return self._app.config.name or None
+
     # -- GET /v1/access --------------------------------------------------------
 
     def overview(self, caller: Caller) -> dict[str, Any]:
@@ -880,7 +886,8 @@ class AccessService:
             # their tokens enabled.
             rows = sorted((_token_row(doc) for doc in tokens.values()),
                           key=lambda e: (e["owner_type"] != "User", e["owner"].lower()))
-            return {"owners": rows, "orgs_listed": False, "install_url": self._install_url()}
+            return {"owners": rows, "orgs_listed": False, "install_url": self._install_url(),
+                    "app_name": self._app_name()}
         with self._as_user(caller) as (github, held):
             own_login = held.login or ""
             try:
@@ -940,7 +947,7 @@ class AccessService:
         log.info("access owners tenant=%s user_hash=%s owners=%d installed=%d",
                  caller.tenant_id, user_hash(caller.key), len(rows), len(installed))
         return {"owners": rows, "orgs_listed": orgs is not None,
-                "install_url": self._install_url()}
+                "install_url": self._install_url(), "app_name": self._app_name()}
 
     def installations(self, caller: Caller) -> dict[str, Any]:
         """Whether the App is installed anywhere the person reaches: the
@@ -960,7 +967,7 @@ class AccessService:
                        key=lambda r: r["owner"].lower())
         enabled_answer = {"read": True, "source": "enabled", "installed": installed,
                           "not_installed": [], "requested": asked,
-                          "install_url": self._install_url()}
+                          "install_url": self._install_url(), "app_name": self._app_name()}
         if installed and not asked:
             return enabled_answer
         # No enabled owner, or an install request pending: GitHub is read, so
@@ -976,7 +983,7 @@ class AccessService:
                 return enabled_answer
             return {"read": False, "source": "github", "error": refused.code,
                     "unreachable": refused.status_code == 503, "requested": asked,
-                    "install_url": self._install_url()}
+                    "install_url": self._install_url(), "app_name": self._app_name()}
         rows = found["owners"]
         return {"read": True, "source": "github",
                 "installed": [r["owner"] for r in rows if r["install_state"] == INSTALLED],
@@ -984,7 +991,7 @@ class AccessService:
                                   if r["install_state"] != INSTALLED],
                 "requested": [{"owner": r["owner"], "requested_at": r.get("requested_at")}
                               for r in rows if r["install_state"] == REQUESTED],
-                "install_url": found["install_url"]}
+                "install_url": found["install_url"], "app_name": found["app_name"]}
 
     def enable(self, caller: Caller, owner: str) -> dict[str, Any]:
         """Enable an owner the App is installed on. Refused when it is not."""

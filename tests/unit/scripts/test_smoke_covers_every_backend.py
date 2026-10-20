@@ -75,9 +75,14 @@ def _matrix_program() -> str:
 
 def _served() -> dict:
     """What the deployed route answers, built by the route itself."""
+    from types import SimpleNamespace
+
     from swarm_api.routes.platform import runtimes
 
-    return runtimes(auth=None)
+    # Called directly, not through FastAPI, so the `ctx` dependency is passed by
+    # hand: a deployment that pins no model per class, the route's only read of it.
+    ctx = SimpleNamespace(settings=SimpleNamespace(worker_class_models={}))
+    return runtimes(auth=None, ctx=ctx)
 
 
 def _matrix(served: dict, prefer: str = "mock") -> list[tuple[str, str, str]]:

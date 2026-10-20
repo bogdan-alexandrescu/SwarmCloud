@@ -189,7 +189,7 @@ everything here is one HTTP round trip or two.
 `stats.dispatch_paused === true`:
 
 > **DISPATCH IS PAUSED PLATFORM-WIDE.** Nothing will be admitted at all.
-> Paused by alice@saga.xyz at 13:41 · reason: "provider incident"
+> Paused by alice@example.com at 13:41 · reason: "provider incident"
 > `[ Resume dispatch ]`
 
 Source: `GET /v1/stats` → `.dispatch_paused` for the flag (visible to every caller);

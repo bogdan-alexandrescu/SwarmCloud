@@ -1,5 +1,5 @@
 /**
- * HELP, FROM THE QA PASS ON swarm.saga.xyz (2026-10-07).
+ * HELP, FROM THE QA PASS ON swarm.example.com (2026-10-07).
  *
  *   G1-16  a topic's "You see" row repeated its card's name word for word in
  *          five topics -- the row is the on-screen claim, not the name again;

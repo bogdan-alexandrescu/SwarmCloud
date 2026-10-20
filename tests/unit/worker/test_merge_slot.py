@@ -611,7 +611,11 @@ def test_a_parked_waiter_holds_no_capacity(db, worker_factory, monkeypatch, no_r
                         "merge_wait": {"code": "checks_pending", "wakes": 3,
                                        "first_parked_at": T0}}
     slot = mergeslot.slot_id("eng", "octo-org/widget-shop", BASE)
-    holder = {"task_id": "task_other", "generation": 1, "expires_at": T0 + timedelta(days=9),
+    # The worker builds FirestoreMergeSlots on the wall clock, so the holder's
+    # lease must outlive the real now: a fixed T0 + 9 days expired on
+    # 2026-10-19 and the slot was granted to task_1 instead of queueing it.
+    holder = {"task_id": "task_other", "generation": 1,
+              "expires_at": datetime.now(timezone.utc) + timedelta(days=9),
               "submitted_at": T0}
     db.seed(f"{mergeslot.MERGE_SLOTS_COLLECTION}/{slot}",
             {"tenant_id": "eng", "generation": 1, "holder": holder, "waiters": []})

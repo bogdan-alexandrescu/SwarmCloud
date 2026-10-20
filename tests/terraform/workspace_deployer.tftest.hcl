@@ -11,9 +11,10 @@
 #   * the identity has no key resource and an EMPTY account-level policy, so
 #     nobody may act as it or mint its token there;
 #   * the job runs as that identity, runs the pinned image by digest with the
-#     fixed command `python3 -I /opt/swarm/entry.py` and no argument or
-#     environment of its own, one task, no retries, 1800 seconds, egress
-#     ALL_TRAFFIC into the swarm subnet with the worker tag;
+#     fixed command `python3 -I /opt/swarm/entry.py` and the pin of its
+#     verify keys, no argument and no environment but SPEC_VERIFY_KEYS, one
+#     task, no retries, 1800 seconds, egress ALL_TRAFFIC into the swarm
+#     subnet with the worker tag;
 #   * the job's IAM policy is authoritative and names swarm-workspace-dispatch
 #     alone, with the run-with-overrides role and nothing else;
 #   * Cloud Run's audit config is DATA_WRITE, and only DATA_WRITE: no
@@ -31,6 +32,9 @@
 #     _Default, and its readers are granted that bucket's view and nothing wider;
 #   * the four alerts watch the very accounts and job the bootstrap makes, and
 #     the jobs.run alert reads the Data Access log the audit config turns on;
+#   * two more page on the deployer's IAP SetIamPolicy (K1) and on its secret
+#     IAM writes on a var.tenants key's slots (K2), and neither plans with
+#     create_alerts off;
 #   * and the refusals: an unreviewed role (the old image pull included), a
 #     mutable image, an image from another project, no image at all, a
 #     malformed subnet, the slot creator without the slots, a log reader who
@@ -193,13 +197,15 @@ run "the_identity_is_usable_only_by_its_job" {
   assert {
     condition = alltrue([
       google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].image == var.workspace_apply_image,
-      google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command == tolist(["python3", "-I", "/opt/swarm/entry.py"]),
+      slice(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command, 0, 3) == tolist(["python3", "-I", "/opt/swarm/entry.py"]),
+      length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command) == 4,
+      try(startswith(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command[3], "--spec-verify-keys-sha256="), false),
       try(length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].args), 0) == 0,
-      try(length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].env), 0) == 0,
+      [for e in google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].env : e.name] == ["SPEC_VERIFY_KEYS"],
       length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers) == 1,
       try(length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].volumes), 0) == 0,
     ])
-    error_message = "the job runs one container: the pinned image by digest, with the command `python3 -I /opt/swarm/entry.py` (the scrub, §2.2 step 0), and no argument, environment or volume of its own"
+    error_message = "the job runs one container: the pinned image by digest, with the command `python3 -I /opt/swarm/entry.py --spec-verify-keys-sha256=<hex>` (the scrub, §2.2 step 0, and the pin of its keys), no argument or volume of its own, and SPEC_VERIFY_KEYS as its only variable (tests/terraform/workspace_approval_keys.tftest.hcl)"
   }
 
   assert {
@@ -469,8 +475,8 @@ run "the_alerts_watch_the_names_the_bootstrap_creates" {
   }
 
   assert {
-    condition     = toset(keys(google_monitoring_alert_policy.workspace)) == toset(["outside_personal_workers", "foreign_runtime", "job_changed", "foreign_run"])
-    error_message = "the four alerts of docs/workspaces.md §2.4: outside personal workers, a foreign runtime as the deployer, a change to the job or its dispatch, and a jobs.run by another caller"
+    condition     = toset(keys(google_monitoring_alert_policy.workspace)) == toset(["outside_personal_workers", "foreign_runtime", "job_changed", "foreign_run", "front_door_iam"])
+    error_message = "the four alerts of docs/workspaces.md §2.4 (outside personal workers, a foreign runtime as the deployer, a change to the job or its dispatch, a jobs.run by another caller) and the front-door one of workspace-kinds §4.5; with no tenant_ids there is no tenant slot to watch"
   }
 
   # Three read the Admin Activity audit log, which no sink or exclusion drops;
@@ -544,6 +550,95 @@ run "the_alerts_watch_the_names_the_bootstrap_creates" {
       p.alert_strategy[0].notification_rate_limit[0].period == "300s" && p.user_labels["managed-by"] == "swarm-terraform"
     ])
     error_message = "a log-match policy needs a notification rate limit, and each carries managed-by=swarm-terraform"
+  }
+}
+
+# The deployer's front-door and secret IAM writes (docs/design/workspace-kinds.md
+# §4.5 and §4.9, lane WK-ALERTS): what pages on K1 and K2 once
+# enable_workspace_kinds widens the deployer. The tenant keys are dev.tfvars'.
+run "the_front_door_and_tenant_secret_alerts_page_on_the_deployer" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/monitoring"
+  }
+
+  variables {
+    environment              = "dev"
+    labels                   = { "managed-by" = "swarm-terraform" }
+    service_names            = ["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"]
+    wake_subscription        = "swarm-scheduler-wake-sub"
+    dead_letter_subscription = "swarm-scheduler-wake-dlq-sub"
+    safety_tick_job          = "swarm-scheduler-tick"
+    tenant_ids               = ["eng", "smoke", "u-sw-c90291", "u-or-9a0792"]
+  }
+
+  assert {
+    condition     = toset(keys(google_monitoring_alert_policy.workspace)) == toset(["outside_personal_workers", "foreign_runtime", "job_changed", "foreign_run", "front_door_iam", "tenant_secret_iam"])
+    error_message = "beside §2.4's four, §4.5's two: any IAP SetIamPolicy by the deployer, and any secret IAM write by it on a var.tenants key's slot"
+  }
+
+  # K1: every SetIamPolicy by the deployer on any IAP resource, whoever it
+  # names. Admin Activity, which no sink or exclusion drops.
+  assert {
+    condition = alltrue([
+      startswith(google_monitoring_alert_policy.workspace["front_door_iam"].conditions[0].condition_matched_log[0].filter, "logName=\"projects/saga-agents-staging/logs/cloudaudit.googleapis.com%2Factivity\" AND "),
+      strcontains(google_monitoring_alert_policy.workspace["front_door_iam"].conditions[0].condition_matched_log[0].filter, "protoPayload.authenticationInfo.principalEmail=\"${run.the_identity_is_usable_only_by_its_job.workspace_deployer.service_account}\""),
+      strcontains(google_monitoring_alert_policy.workspace["front_door_iam"].conditions[0].condition_matched_log[0].filter, "protoPayload.serviceName=\"iap.googleapis.com\""),
+      strcontains(google_monitoring_alert_policy.workspace["front_door_iam"].conditions[0].condition_matched_log[0].filter, "protoPayload.methodName=~\"(?i)setiampolicy$\""),
+      !strcontains(google_monitoring_alert_policy.workspace["front_door_iam"].conditions[0].condition_matched_log[0].filter, "resourceName"),
+      !strcontains(google_monitoring_alert_policy.workspace["front_door_iam"].conditions[0].condition_matched_log[0].filter, "bindingDeltas"),
+    ])
+    error_message = "front_door_iam must page on every SetIamPolicy by swarm-workspace-deployer on iap.googleapis.com, on any resource and whoever it names (§4.5)"
+  }
+
+  # K2: a secret IAM write by the deployer on the -git or -git-refresh slot of
+  # every var.tenants key, each named in full.
+  assert {
+    condition = alltrue(concat([
+      startswith(google_monitoring_alert_policy.workspace["tenant_secret_iam"].conditions[0].condition_matched_log[0].filter, "logName=\"projects/saga-agents-staging/logs/cloudaudit.googleapis.com%2Factivity\" AND "),
+      strcontains(google_monitoring_alert_policy.workspace["tenant_secret_iam"].conditions[0].condition_matched_log[0].filter, "protoPayload.authenticationInfo.principalEmail=\"${run.the_identity_is_usable_only_by_its_job.workspace_deployer.service_account}\""),
+      strcontains(google_monitoring_alert_policy.workspace["tenant_secret_iam"].conditions[0].condition_matched_log[0].filter, "protoPayload.serviceName=\"secretmanager.googleapis.com\""),
+      strcontains(google_monitoring_alert_policy.workspace["tenant_secret_iam"].conditions[0].condition_matched_log[0].filter, "protoPayload.methodName=~\"(?i)setiampolicy$\""),
+      ], [
+      for t in ["eng", "smoke", "u-sw-c90291", "u-or-9a0792"] : alltrue([
+        strcontains(google_monitoring_alert_policy.workspace["tenant_secret_iam"].conditions[0].condition_matched_log[0].filter, "/secrets/swarm-tenant-${t}-git$"),
+        strcontains(google_monitoring_alert_policy.workspace["tenant_secret_iam"].conditions[0].condition_matched_log[0].filter, "/secrets/swarm-tenant-${t}-git-refresh$"),
+      ])
+    ]))
+    error_message = "tenant_secret_iam must page on a secret IAM write by swarm-workspace-deployer on swarm-tenant-<key>-git and -git-refresh for every var.tenants key, each anchored at its end"
+  }
+
+  assert {
+    condition = alltrue([
+      for k in ["front_door_iam", "tenant_secret_iam"] :
+      google_monitoring_alert_policy.workspace[k].alert_strategy[0].notification_rate_limit[0].period == "300s" && google_monitoring_alert_policy.workspace[k].user_labels["managed-by"] == "swarm-terraform" && google_monitoring_alert_policy.workspace[k].severity == "CRITICAL"
+    ])
+    error_message = "both page as CRITICAL, rate-limited like the other workspace alerts, and carry managed-by=swarm-terraform"
+  }
+}
+
+run "the_front_door_and_tenant_secret_alerts_follow_the_alert_switch" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/monitoring"
+  }
+
+  variables {
+    environment              = "dev"
+    labels                   = { "managed-by" = "swarm-terraform" }
+    service_names            = ["swarm-api"]
+    wake_subscription        = "swarm-scheduler-wake-sub"
+    dead_letter_subscription = "swarm-scheduler-wake-dlq-sub"
+    safety_tick_job          = "swarm-scheduler-tick"
+    tenant_ids               = ["eng", "smoke", "u-sw-c90291", "u-or-9a0792"]
+    create_alerts            = false
+  }
+
+  assert {
+    condition     = length(google_monitoring_alert_policy.workspace) == 0
+    error_message = "with create_alerts off, no workspace alert plans, the front-door and tenant-secret ones included"
   }
 }
 

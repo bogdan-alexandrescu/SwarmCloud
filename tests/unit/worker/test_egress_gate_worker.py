@@ -37,7 +37,7 @@ from agent_worker.runners import claude_code
 from swarm_api import childkey as api_childkey
 from swarm_api import egress as api_egress
 
-from test_handoff import CTL, FakeGateClient, FakeLiveRoutes, _Log
+from test_handoff import CDP, CTL, FakeGateClient, FakeLiveRoutes, _Log
 
 
 class Clock:
@@ -115,7 +115,8 @@ def _path(tmp_path: Path, db, trace, gate, *, clock: Clock, memory=None, key: bo
     notes: list[dict[str, Any]] = []
     path = handoff_mod.HandoffPath(
         cfg, logger=log, memory=memory or MemoryProtection(PROTECTED, "test"), children=children,
-        live=True, gate_client=lambda p: gate, environ={"SWARM_GATE_CTL": CTL}, wall=clock,
+        live=True, gate_client=lambda p: gate, environ={"SWARM_GATE_CTL": CTL, "SWARM_CDP_ENDPOINT": CDP},
+        wall=clock,
     )
     path.setup(notes.append)
     work = tmp_path / "work"

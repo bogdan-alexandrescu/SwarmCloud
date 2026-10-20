@@ -376,7 +376,15 @@ describe('keyboard traversal', () => {
       // button, each panel page and the footer controls (the spine's Help and
       // API reads, the panel's collapse and the theme switch).
       const stopSet = new Set<Element>(r.stopElements)
+      // NO LOCKED ADMIN PANEL (NAV-ADMIN-ROLE; part of #1633): the fixture
+      // person administers nothing, so an Admin route draws no Admin item and
+      // no panel pages -- the page's own refusal, not a list they cannot use.
+      const noAdmin = route.startsWith('admin/') && container.querySelector('.sk-spine a[data-sec="admin"]') === null
       for (const [what, group] of Object.entries(shellControls(container))) {
+        if (noAdmin && what === 'panel page') {
+          expect(group.all, `${route}: a locked Admin panel was drawn for someone who administers nothing`).toEqual([])
+          continue
+        }
         shellRendered.push({ route, what, count: group.all.length })
         for (const el of group.reachable) {
           if (!stopSet.has(el)) shellMissing.push(`${route} ${what}: ${signature(el)} "${(el.textContent ?? '').trim()}"`)
@@ -508,7 +516,13 @@ describe('keyboard traversal', () => {
     expect([...unsupported]).toEqual([])
     expect(swallowers).toEqual([])
     expect(findings.map((f) => `${f.kind} ${f.where} — ${f.detail}`)).toEqual([])
-  }, 240000)
+    // 480s, NOT 240s. MEASURED: 183.7s for this test alone on an idle
+    // 6-core agent container (2026-10-20), and 241.8s -- a timeout -- in shard
+    // 4/4 of CI run 39342685547, whose sweep renders the same fifteen routes.
+    // 240s was 76% of the idle cost, so any busy runner crossed it, and the
+    // abandoned sweep kept rendering into the next test, which then found no
+    // agent rows. A genuine hang still fails, at eight minutes.
+  }, 480_000)
 
   /**
    * THE DRAWER, WHICH IS THE ONE THAT MATTERS MOST.
@@ -541,7 +555,9 @@ describe('keyboard traversal', () => {
     await act(async () => {
       row!.focus()
     })
-    expect(document.activeElement, 'the row is not focusable').toBe(row)
+    // The row is not a button around its copy-id button (visual QA QA-032):
+    // focus given to it passes to its opener, the empty button over the row.
+    expect(document.activeElement, 'the row is not focusable').toBe(row!.querySelector(':scope > .cr-open'))
 
     await act(async () => {
       fireEvent.click(row!)
@@ -650,8 +666,8 @@ describe('keyboard traversal', () => {
     // returns when it closes, so the node clicked is gone: the property is that
     // focus is on the row of the SAME agent, not on <body>.
     const back = document.activeElement as HTMLElement | null
-    expect(back?.matches('.row.clickable'), 'closing the drawer did not put focus back on a row').toBe(true)
-    expect(back?.getAttribute('data-task-id'), 'focus came back to a different agent\'s row').toBe(rowTaskId)
+    expect(back?.matches('.row.clickable > .cr-open'), 'closing the drawer did not put focus back on a row').toBe(true)
+    expect(back?.closest('[data-task-id]')?.getAttribute('data-task-id'), 'focus came back to a different agent\'s row').toBe(rowTaskId)
     unmount()
   }, 60000)
 

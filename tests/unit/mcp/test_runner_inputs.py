@@ -330,11 +330,12 @@ def test_the_declaring_profiles_and_no_declaration_names_execution_detail():
     # also declares the live browser's tool by name (contract request 77).
     # Contract request 88 gave claude-code, codex and claude-code-browser the
     # registered MCP servers by name, and the review and indexer profiles not.
+    # Contract request 106 gave claude-code-browser alone its QA identity, by name.
     for name in ("claude-code-review", "indexer"):
         assert set(_declared(name)) == {"issue"}, (name, _declared(name))
     for name in ("claude-code", "codex"):
         assert set(_declared(name)) == {"issue", "mcp_servers"}, (name, _declared(name))
-    assert set(_declared("claude-code-browser")) == {"issue", "browser_tool", "mcp_servers"}
+    assert set(_declared("claude-code-browser")) == {"issue", "browser_tool", "mcp_servers", "qa_identity"}
     for name in RUNNER_PROFILES:
         named = set(_declared(name)) & set(_NEVER)
         if name == "generic":
@@ -384,8 +385,15 @@ def test_every_declared_input_is_one_its_runner_reads():
     ONE NAMED EXEMPTION: `mcp_servers` (contract request 88) is declared ahead
     of the worker lane that reads it (request 88's "What it would break": lane
     MCP-SUBMIT refuses it with `mcp_unavailable` while `SWARM_MCP_SERVERS` is
-    off). Delete the exemption when the worker reads it."""
-    unread_until_the_worker_lane = {"mcp_servers"}
+    off). Delete the exemption when the worker reads it.
+
+    A SECOND, THE SAME WAY: `qa_identity` (contract request 106, QI-CONTRACT)
+    is declared ahead of lane QI-WORKER, which reads it in
+    `agent_worker/qa_identity.py` rather than in the runner
+    (docs/design/qa-identity.md §6). Until then a task naming it is signed in
+    to nothing, as without it. QI-WORKER replaces this exemption with a check
+    on the module that reads it."""
+    unread_until_the_worker_lane = {"mcp_servers", "qa_identity"}
     checked = 0
     for name in RUNNER_PROFILES:
         declared = _declared(name)

@@ -99,10 +99,11 @@ from swarm_common.profiles import (
     RUNTIME_TOOLS,
     Backend,
     RunnerProfile,
+    step_model_class,
     tools_launched,
 )
 
-from .credentials import AccountPool, CredentialSource, credential_for
+from .credentials import AccountPool, CredentialSource, credential_for, needs_user_slot
 from .mcp_admission import names_mcp_servers
 from .judgment import BACKENDS as JUDGMENT_BACKENDS
 from .judgment import (
@@ -427,17 +428,72 @@ def gke_ephemeral_storage_gib(rc: Any) -> int:
 
 
 def profile_model(settings: Any, profile: RunnerProfile) -> str | None:
-    """The model this profile's agent runs, from WORKER_MODELS, or None.
+    """The model this profile's agent runs when a step names no class, or None.
 
-    ONE answer for every backend (#226; contract request 53). WORKER_MODELS is
-    terraform's `local.runner_models`, the same map it writes onto the Cloud Run
-    Jobs it creates, so a Job the scheduler creates -- Cloud Run or GKE -- runs
-    the model a terraform Job does. None means no profile pins one, and the Job
-    then carries no MODEL at all: the CLI runs its own default, on either backend.
+    The `MODEL` of every Cloud Run Job this scheduler creates (#226), so a Job
+    run any way other than `dispatch` runs the profile's default class, as a
+    terraform Job does. With WORKER_CLASS_MODELS set it is that map's pin for
+    the profile's `default_model_class` (#1435, §4.2): the map terraform's own
+    Jobs take their `MODEL` from, through the same default. Without it, it is
+    WORKER_MODELS, the profile-keyed map that map replaces, read for as long as
+    terraform derives it (one release, so a scheduler rolled back alone still
+    finds it). None means nothing pins one, and the Job carries no MODEL.
     """
+    class_models = getattr(settings, "worker_class_models", None) or {}
+    if class_models:
+        if profile.default_model_class is None:
+            return None
+        return class_models.get(profile.default_model_class)
     models = getattr(settings, "worker_models", None) or {}
     value = models.get(profile.name)
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def step_model(settings: Any, profile: RunnerProfile, task: Task) -> str | None:
+    """The model ID this step's worker runs, as `MODEL` in `worker_env`, or None.
+
+    #1435, docs/design/model-per-step.md §4.5: ONE resolution, for both
+    backends. The class is the frozen `step_model_class` over the step's own
+    `model_class` -- the rule swarm-api applies at submission and the worker
+    at start, so the three never resolve a step differently -- and the ID is
+    the scheduler's WORKER_CLASS_MODELS entry for it. Never `task.model`,
+    never anything in `input` or `metadata`: a caller names a class, the
+    platform picks the ID (invariant 10).
+
+    None for a profile with no classes (codex, mock, generic, ...): no MODEL,
+    as before. An unknown class, one the profile does not accept, or one with
+    no pin raises `model_not_pinned`, which returns the lease and the task. It
+    never falls back to the profile's default, and never to the CLI's own,
+    which is how the QA task of 2026-09-26 ran claude-sonnet-5 on an Opus
+    profile. The startup check makes a missing pin unreachable once the map is
+    set; this is the second line, for a document written past the API.
+
+    WITHOUT A CLASS MAP (WORKER_CLASS_MODELS unset: the local emulator loop,
+    or a scheduler configured before #1435), a step naming a class refuses,
+    and a step naming none gets None here: the profile's model then reaches it
+    as it did before, on the Job (`profile_model`) or, on GKE, from the pod
+    manifest. The per-execution environment carries a MODEL only from the
+    class map.
+    """
+    try:
+        model_class = step_model_class(profile, task.model_class)
+    except ValueError as exc:
+        raise DispatchError(
+            f"task {task.id} on {profile.name}: {exc}", code="model_not_pinned"
+        ) from None
+    if model_class is None:
+        return None
+    class_models = getattr(settings, "worker_class_models", None) or {}
+    if not class_models and task.model_class is None:
+        return None
+    model_id = class_models.get(model_class)
+    if not isinstance(model_id, str) or not model_id:
+        raise DispatchError(
+            f"task {task.id} on {profile.name}: model class {model_class!r} has no "
+            "pin in WORKER_CLASS_MODELS",
+            code="model_not_pinned",
+        )
+    return model_id
 
 
 #: Pod hardening. kubernetes/namespaces/tenant-namespace.yaml holds Pod Security
@@ -570,6 +626,14 @@ EGRESS_POD_LABEL = ("swarm-egress", "proxy")
 #: manifest) both select: only a pod carrying it reaches swarm-typesafe-fwd on
 #: TCP 8080. Set by `_with_judgment`, only when `typesafe_forwarder_on`.
 TYPESAFE_POD_LABEL = ("swarm-typesafe", "inject")
+#: THE WORKER'S FORWARDER SWITCH (lane TS-INJECT, part of #1347), set on the
+#: worker container by `_with_judgment` with TYPESAFE_POD_LABEL and never
+#: otherwise: a labelled pod whose worker still reads the key file, or a
+#: switched worker the policies do not open the forwarder to, is half a
+#: migration. RESTATED from `agent_worker.typesafe_shim.SWITCH_ENV` and
+#: `SWITCH_ON`, because the scheduler's image does not carry the worker;
+#: tests/unit/control_plane/test_typesafe_switch_parity.py holds them equal.
+TYPESAFE_INJECT_ENV = ("SWARM_TYPESAFE_INJECT", "on")
 
 #: The three volumes both containers mount, and only these (§3.1). All memory,
 #: so inside the pod's memory limit, and none under WORKSPACE_MOUNT, so none
@@ -607,19 +671,24 @@ class LiveDisplayShare:
 
 #: Per class, like GKE_DISK, and refused for a class without a row.
 #:
-#: browser: display 3 vCPU / 5 GiB, worker 1 / 3, of the class's 4 / 8
-#:   (contract request 79). Chromium, Xvfb and the encoder on one side;
-#:   claude-code, Node and the worker on the other. It was the design's
-#:   starting split (§8.2), display 5 / 10 and worker 3 / 6 of 8 / 16, which
-#:   cannot fit the smaller class. Sized from the measurement that justified
-#:   the class (docs/browser-startup-speed.md §11, 2026-10-15, four pods,
-#:   eight samples): the display peaked at 1.90 cores and 1.48 GiB, the worker
-#:   at 0.55 cores and 0.37 GiB, so each side has about 1.5x its CPU peak and
-#:   the worker about 8x its memory peak. The sidecar's resident tmpfs
+#: browser: display 2 vCPU / 5 GiB, worker 2 / 3, of the class's 4 / 8.
+#:   Chromium, Xvfb and the encoder on one side; claude-code, Node and the
+#:   worker on the other. The owner's decision of 2026-10-20 (BROWSER-SPLIT,
+#:   part of #1689), within the same 4 cores so the pod's size and cost do
+#:   not move: it was display 3 / worker 1 (contract request 79), and
+#:   browser-profile attempts that day ran at cpu_limit_cores 1.0, so a lane
+#:   running `npm ci` and a dev server (the visual-QA capture) did it on one
+#:   core. The worker goes from 1 core to 2. The display's measured peak
+#:   (docs/browser-startup-speed.md §11, 2026-10-15, four pods, eight
+#:   samples) was 1.90 cores, so 2 leaves it about 1.05x headroom at that
+#:   peak; past it Chromium is throttled, not killed. The memory split did
+#:   not move: the display peaked at 1.48 GiB, the worker at 0.37, so the
+#:   worker has about 8x its memory peak. The sidecar's resident tmpfs
 #:   (/dev/shm 2, profile 1, /tmp 0.25) plus its measured peak is 4.73 of its
 #:   5 GiB; downloads (1) do not stay resident because the worker moves each
 #:   one into work/. A heavier page or a download in flight at a peak is an
 #:   OOM kill, whose cost the worker's periodic checkpoint bounds (invariant 8).
+#:   live_display_share() still refuses a share that leaves the worker nothing.
 #: standard: display 2 / 4, worker 2 / 4. A workflow step may shrink a task's
 #:   class (swarm_api.validation.validate_resource_class_override), and admission
 #:   charged the smaller class, so the pod must fit it; half each, still with
@@ -628,7 +697,7 @@ class LiveDisplayShare:
 #:   renders any class it is given; the design's starting sidecar (§8.2, what
 #:   browser's was until contract request 79), the rest to the worker.
 LIVE_DISPLAY_SHARE: dict[str, LiveDisplayShare] = {
-    "browser": LiveDisplayShare(cpu=3, memory_gib=5),
+    "browser": LiveDisplayShare(cpu=2, memory_gib=5),
     "standard": LiveDisplayShare(cpu=2, memory_gib=4),
     "large": LiveDisplayShare(cpu=5, memory_gib=10),
 }
@@ -1202,6 +1271,14 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         # kept and why it was never the fix it was taken for.
         "SWARM_ARTIFACTS_DIR": WORKER_ARTIFACTS_DIR,
     }
+    # THE STEP'S MODEL (#1435; the owner's answer to Q2, 2026-10-17). The ID
+    # of the step's resolved class, from the scheduler's own class map: on a
+    # Cloud Run execution it overrides the Job's default-class MODEL for this
+    # execution only, and on GKE it is the pod's. Omitted, not set empty, for
+    # a profile with no classes, for the merge reason below.
+    model = step_model(settings, RUNNER_PROFILES[task.runner_profile], task)
+    if model is not None:
+        env["MODEL"] = model
     broker_url = str(getattr(settings, "quota_broker_url", "") or "").strip()
     if broker_url:
         env["QUOTA_BROKER_URL"] = broker_url
@@ -1237,6 +1314,13 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         env["SWARM_CONSOLE_URL"] = console_url
     if getattr(settings, "pr_console_links", False) is True:
         env["SWARM_PR_CONSOLE_LINKS"] = "true"
+    # THE FORGE BROKER'S SWITCH (#1041, `settings.forge_broker`, terraform
+    # `forge_broker`). Passed through like SWARM_PR_CONSOLE_LINKS, and omitted
+    # when off, so an unswitched worker reads a person's slot with its own
+    # account exactly as before the broker (`agent_worker.forgebroker`).
+    forge_broker = getattr(settings, "forge_broker", False) is True
+    if forge_broker:
+        env["FORGE_BROKER"] = "true"
     # THE ATTEMPT KEY (docs/design/child-tasks.md §3.2). A one-use registration
     # nonce bound to this exact attempt, which its worker spends registering
     # the attempt key it generates BEFORE its agent exists; the agent can read
@@ -1266,14 +1350,49 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
     # naming a server needs one whatever else its profile offers: without it
     # the worker cannot attach, and the attempt fails before its agent runs.
     # A task naming none is keyed exactly as before.
+    # THE FORGE BROKER (#1041, docs/design/user-scoped-secrets.md) reuses the
+    # same registered attempt key: swarm-api releases a person's `git-u-` slot
+    # only to an attempt that signs with it. So WHILE THE BROKER IS SWITCHED ON
+    # (`forge_broker` above), an attempt whose signed `forge_credential` is a
+    # user slot gets the nonce too, child or not -- without it a child running
+    # on its submitter's slot could never prove itself and the broker would
+    # refuse it its own credential.
+    #
+    # THE SWITCH, NOT THE KEY, DECIDES. Dev has child tasks ON
+    # (terraform/environments/dev/dev.tfvars `enable_child_tasks`), so its
+    # scheduler holds the key and hands SWARM_API_URL to every root task. The
+    # broker is nonetheless off there until the owner sets `forge_broker`: off,
+    # no child is keyed for its slot (dispatch is what it was before #1041) and
+    # every worker reads the slot with its own account while
+    # `forge_slot_reader` allows it (`agent_worker.forgebroker.ForgeBroker.deployed`).
+    # That binding is removed only after the switch has been on in dev and a
+    # live run passed (docs/design/user-scoped-secrets.md §5, the rollout order).
+    #
+    # A CHILD KEYED ONLY FOR THE BROKER GETS NO CHILD PATH. SWARM_CHILD_PATH=false
+    # tells its worker to register the key and offer its agent nothing to
+    # submit children with. It is written only when the broker is the SOLE
+    # reason the child has a key: a child keyed for git tools, a workspace
+    # secret or an MCP server needs the key's child path (`ChildPath.available`)
+    # for those, and the flag would switch them off.
+    # That flag is a courtesy, not the guard, and neither is swarm-api's
+    # stored-`parent_task_id` check: an agent can rewrite its own task
+    # document, `parent_task_id` included. Depth is enforced by the CHILD'S
+    # WORKER from its verified spec -- `parent_task_id` is inside the signature
+    # (format 2), and `agent_worker.children` offers no child path to an
+    # attempt whose verified spec `is_child`, nor submits from one -- and
+    # since #1041 swarm-api builds a child only from a parent whose signature
+    # verifies (`children.ChildParentUnsigned`), so a child that erased its
+    # own `parent_task_id` fails its signature instead of passing as a root.
+    # A root task is written nothing: the child path is the worker's default.
     child_key = str(getattr(settings, "child_key", "") or "")
     api_url = str(getattr(settings, "swarm_api_url", "") or "").strip()
-    keyed = (
-        not task.parent_task_id
-        or offers_git_tools(task.runner_profile)
+    is_child = bool(task.parent_task_id)
+    other_key_use = (
+        offers_git_tools(task.runner_profile)
         or consumes_workspace_secrets(task.runner_profile, task.input)
         or names_mcp_servers(task.runner_profile, task.input)
     )
+    keyed = not is_child or (forge_broker and needs_user_slot(task)) or other_key_use
     if child_key and api_url and keyed:
         from .children import registration_nonce
 
@@ -1289,6 +1408,8 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         api_audience = str(getattr(settings, "swarm_api_audience", "") or "").strip()
         if api_audience:
             env["SWARM_API_AUDIENCE"] = api_audience
+        if is_child and not other_key_use:
+            env["SWARM_CHILD_PATH"] = "false"
     return env
 
 
@@ -1569,7 +1690,10 @@ class CloudRunJobDispatcher:
         return f"{self.parent}/jobs/{job_id}"
 
     def _model_for(self, profile: RunnerProfile) -> str | None:
-        """The model this profile's agent runs, from WORKER_MODELS, or None."""
+        """The Job's own MODEL: the profile's default-class pin, or None.
+
+        A step's own class reaches each execution through `worker_env`, whose
+        MODEL overrides this one for that execution only (#1435, §4.5)."""
         return profile_model(self._settings, profile)
 
     def _build_job(
@@ -1950,6 +2074,9 @@ class CloudRunJobDispatcher:
         # Before any API call: a tenant with no identity is refused here rather
         # than after a round trip that would only be wasted.
         assert_tenant_identity(tenant, self._settings)
+        # The step's model before the Job is touched, for the same reason: a
+        # class with no pin refuses with no API call made (#1435).
+        step_model(self._settings, profile, task)
         name = self.ensure_job(profile, tenant, resource_class_for(task, profile))
         env = worker_env(task=task, lease=lease, tenant=tenant, settings=self._settings)
         overrides = run_v2.RunJobRequest.Overrides(
@@ -2443,14 +2570,17 @@ class GkeJobDispatcher:
         # FROM THIS SAME RENDER, so the comparison proves only that this
         # dispatcher agrees with itself; GKE injects no Job name of its own.
         env.append({"name": "RUNNER_JOB_NAME", "value": job_name})
-        # THE PROFILE'S MODEL, as a Cloud Run Job carries it (#226; contract
-        # request 53). Same source, `profile_model` over WORKER_MODELS, and the
-        # same absence: no pinned model, no MODEL, the CLI's default on both
-        # backends. On the Job, never in `worker_env`, which a task shapes: a
-        # caller never chooses it (invariant 10).
-        model = profile_model(self._settings, profile)
-        if model:
-            env.append({"name": "MODEL", "value": model})
+        # THE STEP'S MODEL comes from `gke_worker_env` above (`step_model`,
+        # #1435), the one source both backends share. Only a scheduler with no
+        # WORKER_CLASS_MODELS leaves it unset for a classed profile, and then
+        # the pod carries the profile's model as a Cloud Run Job does (#226;
+        # contract request 53): `profile_model` over WORKER_MODELS, and the
+        # same absence -- no pinned model, no MODEL, the CLI's default on both
+        # backends. Never `task.model`: a caller never chooses it (invariant 10).
+        if not any(e["name"] == "MODEL" for e in env):
+            model = profile_model(self._settings, profile)
+            if model:
+                env.append({"name": "MODEL", "value": model})
         # THE STEP-SPEC VERIFICATION SETTINGS, ON THE JOB, as a Cloud Run Job
         # carries them (contract request 34; owner decision 2026-10-08). This
         # reverses the original GKE design, which delivered them ONLY through
@@ -2658,7 +2788,8 @@ class GkeJobDispatcher:
         hostAliases entry that resolves the API's tailnet name to the egress
         Service. For the TypeSafe backend with the forwarder serving the
         tenant (`typesafe_forwarder_on`), the `swarm-typesafe: inject` label
-        that opens swarm-typesafe-fwd instead. Only with the live browser:
+        that opens swarm-typesafe-fwd instead, and SWARM_TYPESAFE_INJECT=on on
+        the worker, which turns its forwarder path on. Only with the live browser:
         jev-browser attaches to nothing else."""
         backend = self._judgment(tenant.tenant_id) if self._judgment else DEFAULT_BACKEND
         env, labels, host_aliases = jev_dispatch(
@@ -2666,6 +2797,7 @@ class GkeJobDispatcher:
         if typesafe_forwarder_on(self._settings, tenant_id=tenant.tenant_id,
                                  profile=profile, backend=backend):
             labels[TYPESAFE_POD_LABEL[0]] = TYPESAFE_POD_LABEL[1]
+            env[TYPESAFE_INJECT_ENV[0]] = TYPESAFE_INJECT_ENV[1]
         template = job["spec"]["template"]
         (worker,) = [c for c in template["spec"]["containers"] if c["name"] == "worker"]
         worker["env"].extend({"name": k, "value": v} for k, v in env.items())

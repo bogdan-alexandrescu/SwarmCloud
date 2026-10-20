@@ -159,7 +159,7 @@ def list_secrets(
                     tenant_id, type(exc).__name__)
     return {
         "tenant_id": tenant_id,
-        "can_manage": can_manage(auth, tenant),
+        "can_manage": can_manage(auth, tenant, ctx.roles),
         "secrets": _store(ctx, writer).list(tenant_id),
         "platform_credentials": legacy_rows(tenant, payload, error),
         "note": NOTE,
@@ -184,7 +184,7 @@ def create_secret(
     writer: SecretWriter = Depends(secret_writer),
 ) -> dict:
     tenant = _tenant(ctx, tenant_id)
-    require_manager(auth, tenant)
+    require_manager(auth, tenant, ctx.roles)
     name = check_name(body.name)
     provider = check_provider(body.provider)
     kind = check_kind(body.kind)
@@ -210,7 +210,7 @@ def rotate_secret(
     """Q5: the previous version stays enabled for 24 hours, then the
     rotation sweep disables it; it is never destroyed by a rotation."""
     tenant = _tenant(ctx, tenant_id)
-    require_manager(auth, tenant)
+    require_manager(auth, tenant, ctx.roles)
     name = check_name(name)
     store = _store(ctx, writer)
     kind = str(store.find(tenant_id, name).get("kind"))
@@ -234,7 +234,7 @@ def delete_secret(
     """The typed confirmation: the body repeats the secret's name exactly.
     Running attempts keep the copy they were given (§4.3)."""
     tenant = _tenant(ctx, tenant_id)
-    require_manager(auth, tenant)
+    require_manager(auth, tenant, ctx.roles)
     name = check_name(name)
     if body.name != name:
         raise ValidationFailed(
@@ -256,7 +256,7 @@ def set_grant(
     """Tick or untick one cell of the matrix. Takes effect at the next
     attempt: a running attempt keeps what it was released (§4.3)."""
     tenant = _tenant(ctx, tenant_id)
-    require_manager(auth, tenant)
+    require_manager(auth, tenant, ctx.roles)
     name = check_name(name)
     record = _store(ctx, writer).set_grant(tenant_id=tenant_id, name=name, consumer=consumer,
                                            slot=body.slot, enabled=body.enabled, by=auth.email)
@@ -277,7 +277,7 @@ def set_use_in(
     confirmed member of now (`auth.tenant_choices`). Only tasks that person
     submits there may be released it (SEC-RELEASE reads this list)."""
     tenant = _tenant(ctx, tenant_id)
-    require_manager(auth, tenant)
+    require_manager(auth, tenant, ctx.roles)
     name = check_name(name)
     mine = {choice[0] for choice in auth.tenant_choices}
     wanted: list[str] = []
@@ -309,7 +309,7 @@ def mint_link(
     this workspace, this action and (for rotate) this secret. Minted only for
     a write the caller could make; it grants nothing more."""
     tenant = _tenant(ctx, tenant_id)
-    require_manager(auth, tenant)
+    require_manager(auth, tenant, ctx.roles)
     store = _store(ctx, writer)
     name: str | None = None
     if body.action == "rotate":

@@ -1,4 +1,4 @@
-// QA PASS G3 (2026-10-07, swarm.saga.xyz, code pointers against 9cf90837):
+// QA PASS G3 (2026-10-07, swarm.example.com, code pointers against 9cf90837):
 // one workflow's DETAIL page -- its Graph, Steps table, Timeline and step
 // drawer. One case per finding; each fails on the code before its fix.
 //
@@ -82,7 +82,7 @@ function task(id: string, state: TaskState, over: Partial<Task> = {}): Task {
     updated_at: iso(-20),
     started_at: null,
     completed_at: null,
-    submitted_by: 'qa@saga.xyz',
+    submitted_by: 'qa@example.com',
     attempt_count: 1,
     max_attempts: 3,
     park_reason: null,
@@ -125,7 +125,7 @@ function workflow(steps: WorkflowStep[], state: Workflow['state'] = 'SUCCEEDED')
     },
     created_at: iso(-600),
     updated_at: iso(-20),
-    submitted_by: 'qa@saga.xyz',
+    submitted_by: 'qa@example.com',
     priority: 0,
     on_step_failure: 'CONTINUE',
     cancel_requested: false,
@@ -369,9 +369,12 @@ function sheetTable(skipped = false): HTMLElement {
 const px = (v: string | null): number => (v === null ? NaN : Number.parseFloat(v))
 
 describe('G3-10: the Steps table keeps the words that carry meaning', () => {
-  it('gives State the list’s 136px and Step at least 96px', () => {
+  // 126px since V202 (#1427): `skipped by verdict` and its mark are 114px of
+  // 12px sans (Chromium, 2026-10-16) plus the 12px of padding. It was the
+  // list's 136; the 10px went to Ran, which cut `between attempts`.
+  it('gives State the 126px that holds `skipped by verdict`, and Step at least 96px', () => {
     const h = sheetTable()
-    expect(px(painted(h.querySelector('th[data-col="state"]')!, 'width', { width: 1440 }))).toBe(136)
+    expect(px(painted(h.querySelector('th[data-col="state"]')!, 'width', { width: 1440 }))).toBe(126)
     expect(px(painted(h.querySelector('th[data-col="step"]')!, 'width', { width: 1440 }))).toBeGreaterThanOrEqual(96)
   })
 

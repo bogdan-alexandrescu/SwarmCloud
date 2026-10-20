@@ -1,8 +1,8 @@
 // SETTINGS › API KEYS › JEV BACKEND (lane JUDGE-SELECT, owner decisions
 // 2026-10-14). Each workspace chooses where Jev's judgments go:
 //
-//   * Internal Jev -- the default, "stays inside Saga";
-//   * Internal Laya -- also inside Saga;
+//   * Internal Jev -- the default, "stays inside your network";
+//   * Internal Laya -- also inside your network;
 //   * TypeSafe -- "sends page text to TypeSafe; needs a key".
 //
 // The radio reads GET /v1/judgment (the selected workspace) and writes
@@ -16,6 +16,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import { COMPANY_NAME } from '../../test/companyName'
 
 type Json = Record<string, unknown>
 
@@ -89,7 +90,9 @@ describe('the Jev backend radio', () => {
     expect(radio(/typesafe/i).checked).toBe(false)
     const text = visible(g)
     expect(text).toMatch(/internal jev.*default/i)
-    expect(text).toMatch(/stays inside saga/i)
+    expect(text).toMatch(/internal jev.*stays inside your network\..*internal laya.*stays inside your network\./is)
+    // The company is not named on the card (#1647).
+    expect(g.textContent).not.toMatch(COMPANY_NAME)
     expect(text).toMatch(/sends page text to typesafe; needs a key/i)
   })
 

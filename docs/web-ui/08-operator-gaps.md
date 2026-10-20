@@ -341,7 +341,7 @@ the first thing to look at.*
   these four values are not on any route today — see "What it cannot show yet".**
 * **Dispatch pill**: `DISPATCHING` (green), `DISPATCH PAUSED` (red), or — the third state
   trap 1b forces — `UNKNOWN — no control document` (hatched). When paused it expands
-  inline to `paused by alice@saga.xyz · 14:02 · "provider incident #412"`.
+  inline to `paused by alice@example.com · 14:02 · "provider incident #412"`.
 * "as of HH:MM:SS" with the freshness dot, and a manual refresh control.
 
 **Row 2 — four counters**, each a single large numeral with its label:

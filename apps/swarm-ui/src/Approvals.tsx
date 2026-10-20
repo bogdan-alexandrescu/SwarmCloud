@@ -20,12 +20,14 @@
  *
  * A waiting item holds no capacity (invariant 1): nothing here is running.
  */
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { approveApproval, loadApproval, loadApprovals, rejectApproval, type ApprovalDetail, type ApprovalItem } from './api'
 import { usePhoneTables } from './capacityPoll'
 import { Button } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { Absent } from './primitives'
+import { PersonName } from './PersonName'
+import { useRoleGate } from './Profile'
 import { InApp, scheduleAddress, untilWords } from './Schedules'
 import { Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
@@ -69,6 +71,9 @@ export const APPROVAL_KIND: Readonly<Record<string, string>> = {
   merge: 'Merge',
   proposal: 'Proposal',
   spec: 'Spec',
+  // A workflow step waiting for a member's answer (human-steps.md §4.5),
+  // projected from its task. The inbox lists it and never takes the answer.
+  input: 'Answer',
 }
 
 /** What approving each kind does (§4.5 step 3). */
@@ -308,20 +313,27 @@ function Evidence({ d }: { d: ApprovalDetail }) {
  * What became of an item that is no longer waiting (AUT-6): a link from a
  * notification to an item someone else decided, or one that expired, says so.
  */
-function decidedWords(a: ApprovalDetail['approval']): string {
-  const by = a.decided_by ? ` by ${a.decided_by}` : ''
+function decidedWords(a: ApprovalDetail['approval']): ReactNode {
+  // Who decided, through `PersonName` (user-profile.md §4.4): their name, when
+  // they set one, always beside the email that decided.
+  const by = a.decided_by ? (
+    <>
+      {' by '}
+      <PersonName email={a.decided_by} name={a.decided_by_name} />
+    </>
+  ) : null
   const at = a.decided_at ? ` ${new Date(a.decided_at).toLocaleString()}` : ''
   switch (a.state) {
     case 'approved':
-      return `Approved${by}${at}.`
+      return <>Approved{by}{at}.</>
     case 'rejected':
-      return `Rejected${by}${at}${a.reason ? `: ${a.reason}` : ''}.`
+      return <>Rejected{by}{at}{a.reason ? `: ${a.reason}` : ''}.</>
     case 'expired':
       return `Expired${a.expires_at ? ` ${new Date(a.expires_at).toLocaleString()}` : ''}: nobody decided it in time, so it did not go ahead.`
     case 'superseded':
       return 'Superseded: a newer request replaced it.'
     default:
-      return `${a.state}${by}${a.reason ? `: ${a.reason}` : ''}.`
+      return <>{a.state}{by}{a.reason ? `: ${a.reason}` : ''}.</>
   }
 }
 
@@ -333,6 +345,40 @@ function Decide({ d, onDecided }: { d: ApprovalDetail; onDecided: (word: string)
   const [confirm, setConfirm] = useState<{ expected: string; typed: string } | null>(null)
   const [rejecting, setRejecting] = useState(false)
   const [reason, setReason] = useState('')
+  // A VIEWER DECIDES NOTHING (docs/design/workspace-roles.md §4.8): both verbs
+  // are drawn disabled with the role sentence. The server still decides --
+  // `role_member_required`, and every narrower rule on top of it.
+  const roleGate = useRoleGate('member', 'decide')
+  // WHERE FOCUS GOES (visual QA V249). Reject… opened the form with focus on
+  // "Keep it waiting" instead of the reason it requires; Escape did nothing;
+  // and a `hold_approver_required` refusal disabled Approve under the cursor,
+  // dropping focus to <body>. Each now lands on the control that comes next.
+  const decide = useRef<HTMLDivElement>(null)
+  const reasonField = useRef<HTMLTextAreaElement>(null)
+  const confirmField = useRef<HTMLInputElement>(null)
+  const back = useRef(false)
+  const asking = confirm !== null
+  useEffect(() => {
+    if (rejecting) reasonField.current?.focus()
+    else if (back.current) {
+      back.current = false
+      decide.current?.querySelector<HTMLButtonElement>('[data-ap-reject-open]')?.focus()
+    }
+  }, [rejecting])
+  useEffect(() => {
+    if (asking) confirmField.current?.focus()
+  }, [asking])
+  const stopRejecting = () => {
+    back.current = true
+    setRejecting(false)
+  }
+  const onKey = (ev: KeyboardEvent) => {
+    if (ev.key === 'Escape' && rejecting) {
+      ev.preventDefault()
+      ev.stopPropagation()
+      stopRejecting()
+    }
+  }
 
   const approve = async () => {
     setBusy('approve')
@@ -366,20 +412,20 @@ function Decide({ d, onDecided }: { d: ApprovalDetail; onDecided: (word: string)
   const head = a.kind === 'merge' ? mergeDigest(d).head : null
   const approveWord = a.kind !== 'merge' ? 'Approve' : head === null ? 'Approve merge' : `Approve merge at ${short(head)}`
   return (
-    <div className="ap-decide">
+    <div className="ap-decide" ref={decide} onKeyDown={onKey}>
       <p className="sb-note">{APPROVE_DOES[a.kind] ?? 'Approving lets this go ahead.'}</p>
       {confirm !== null && (
         <label className="c-field">
           <span className="c-lbl">
             You are the only person in this tenant, so no second member can approve this hold. Type <code>{confirm.expected}</code> to approve it yourself.
           </span>
-          <input className="c-inp is-mono" value={confirm.typed} autoComplete="off" spellCheck={false} onChange={(e) => setConfirm({ ...confirm, typed: e.target.value })} />
+          <input ref={confirmField} className="c-inp is-mono" value={confirm.typed} autoComplete="off" spellCheck={false} onChange={(e) => setConfirm({ ...confirm, typed: e.target.value })} />
         </label>
       )}
       {rejecting && (
         <label className="c-field">
           <span className="c-lbl">Why it is rejected</span>
-          <textarea className="c-inp" rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
+          <textarea ref={reasonField} className="c-inp" rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
         </label>
       )}
       {refused !== null && !(confirm !== null && confirm.typed === '' && confirmationOf(refused) !== null) && (
@@ -387,26 +433,76 @@ function Decide({ d, onDecided }: { d: ApprovalDetail; onDecided: (word: string)
           {refusalWords(refused)}
         </p>
       )}
+      {roleGate !== null && (
+        <p className="sb-note" data-role-gate="member">
+          {roleGate}
+        </p>
+      )}
       <div className="c-acts">
         {rejecting ? (
           <>
-            <Button kind="ghost" onClick={() => setRejecting(false)}>
+            <Button kind="ghost" onClick={stopRejecting}>
               Keep it waiting
             </Button>
-            <Button kind="danger" busy={busy === 'reject' ? 'Rejecting…' : false} disabledReason={reason.trim() === '' ? 'Say why it is rejected.' : undefined} onClick={() => void reject()}>
+            <Button kind="danger" busy={busy === 'reject' ? 'Rejecting…' : false} disabled={roleGate !== null} disabledReason={reason.trim() === '' ? 'Say why it is rejected.' : undefined} onClick={() => void reject()}>
               Reject
             </Button>
           </>
         ) : (
           <>
-            <Button onClick={() => { setRejecting(true); setRefused(null) }}>Reject…</Button>
-            <Button kind="primary" busy={busy === 'approve' ? 'Approving…' : false} disabledReason={confirmOk ? undefined : 'Type the words shown exactly.'} onClick={() => void approve()}>
+            <Button data-ap-reject-open disabled={roleGate !== null} onClick={() => { setRejecting(true); setRefused(null) }}>Reject…</Button>
+            <Button kind="primary" busy={busy === 'approve' ? 'Approving…' : false} disabled={roleGate !== null} disabledReason={confirmOk ? undefined : 'Type the words shown exactly.'} onClick={() => void approve()}>
               {approveWord}
             </Button>
           </>
         )}
       </div>
     </div>
+  )
+}
+
+/** The inbox id of a projected await-input step (`approvals.INPUT_PREFIX`). */
+const INPUT_PREFIX = 'input:'
+
+/** The workflow page that opens the step's card, where the answer is given. */
+function stepAddress(workflowId: string): string {
+  return `work/workflows?${new URLSearchParams({ wf: workflowId }).toString()}`
+}
+
+/**
+ * A WORKFLOW STEP WAITING FOR AN ANSWER (human-steps.md §4.5). It is drawn
+ * from the inbox row itself: the item is projected from the step's task, so
+ * `GET /v1/approvals/{id}` has no record of it, and the inbox has no decide
+ * path for it. Answer opens the step's card on its workflow, so the step has
+ * one writer, the step's own route.
+ */
+function InputItemDetail({ item, go }: { item: ApprovalItem; go: (to: string) => void }) {
+  const now = useNow()
+  const s = item.subject
+  const workflowId = typeof s.workflow_id === 'string' && s.workflow_id !== '' ? s.workflow_id : null
+  const form = typeof s.form === 'string' ? s.form : null
+  return (
+    <section className="ap-detail" data-testid="ap-detail" data-kind="input" aria-label={`${APPROVAL_KIND.input}: ${item.summary}`}>
+      <h2 className="sc-h2">
+        <span className="sc-kind">{APPROVAL_KIND.input}</span> {item.summary}
+      </h2>
+      <dl className="sc-facts">
+        <Fact name="Asked">{item.requested_at === null ? <i className="ctl-em">&mdash; not served</i> : <span title={item.requested_at}>{timeAgo(item.requested_at, now)}</span>}</Fact>
+        <Fact name="Expires">{item.expires_at === null ? <i className="ctl-em">&mdash; not served</i> : <span title={item.expires_at}>{untilWords(item.expires_at, now)}</span>}</Fact>
+        <Fact name="Who may answer">any member of this tenant, checked when the answer arrives</Fact>
+        {form !== null && <Fact name="Form">{form}</Fact>}
+      </dl>
+      <p className="sb-note">The answer is given on the step’s card, never here: the inbox only lists the steps waiting for one.</p>
+      {workflowId === null ? (
+        <p className="c-hint">The item names no workflow, so its step cannot be opened from here.</p>
+      ) : (
+        <div className="c-acts">
+          <InApp go={go} to={stepAddress(workflowId)} className="c-btn is-primary">
+            Answer ›
+          </InApp>
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -477,7 +573,13 @@ function Inbox({
 }) {
   const now = useNow()
   const phone = usePhoneTables()
-  const detail = selected === null ? null : <ItemDetail key={selected} itemId={selected} go={go} onDecided={onDecided} />
+  const chosen = selected === null ? undefined : items.find((i) => i.approval_id === selected)
+  const detail =
+    selected === null ? null : chosen !== undefined && chosen.kind === 'input' ? (
+      <InputItemDetail key={selected} item={chosen} go={go} />
+    ) : (
+      <ItemDetail key={selected} itemId={selected} go={go} onDecided={onDecided} />
+    )
   return (
     <div className={phone ? 'ap-inbox is-phone' : 'ap-inbox is-split'}>
       <ul className="ap-list" aria-label="Waiting for approval, oldest first">
@@ -485,7 +587,7 @@ function Inbox({
           const on = item.approval_id === selected
           return (
             <li key={item.approval_id} className={on ? 'ap-item is-on' : 'ap-item'} data-approval={item.approval_id}>
-              <InApp go={go} to={on ? approvalsAddress(kind) : approvalAddress(item.approval_id, kind)} className="ap-pick">
+              <InApp go={go} to={on ? approvalsAddress(kind) : approvalAddress(item.approval_id, kind)} className="ap-pick" current={on}>
                 <span className="sc-kind">{APPROVAL_KIND[item.kind] ?? item.kind}</span>
                 <span className="sc-cut" title={item.summary}>{item.summary}</span>
                 {item.requested_at !== null && <span className="sc-sub" title={item.requested_at}>{timeAgo(item.requested_at, now)}</span>}
@@ -545,7 +647,15 @@ function ApprovalsBody({
       <KindFilter kind={kind} go={go} />
       {selected !== null && !listed && (
         <section className="ap-linked" data-testid="ap-linked" aria-label="The item the link names">
-          <ItemDetail key={selected} itemId={selected} go={go} onDecided={onDecided} />
+          {selected.startsWith(INPUT_PREFIX) ? (
+            // A projected step that is not listed is no longer waiting: it
+            // was answered, expired or cancelled. There is no record to read.
+            <p className="sb-note" data-testid="ap-detail">
+              This step is no longer waiting for an answer: it was answered, it expired, or it was cancelled. Its workflow’s page says which, and who answered.
+            </p>
+          ) : (
+            <ItemDetail key={selected} itemId={selected} go={go} onDecided={onDecided} />
+          )}
         </section>
       )}
       {items.length === 0 ? (

@@ -7,6 +7,11 @@ open its pull request (116 s per workflow, measured 2026-10-06). The request
 adds exactly one edge, PARKED -> SUCCEEDED, and nothing else: these tests
 hold the PARKED row to the request's block, and every other way to SUCCEEDED
 to what it was.
+
+Contract request 99 (accepted by the owner 2026-10-18, part of #1433) later
+added PARKED -> FAILED to the same row, for a task whose per-run MCP
+credential expired or was revoked while it was parked; the row below carries
+it, and tests/unit/common/test_queued_to_failed.py holds the whole table.
 """
 
 from __future__ import annotations
@@ -15,9 +20,16 @@ import pytest
 
 from swarm_common.states import InvalidTransition, TaskState, assert_transition, can_transition
 
-#: The PARKED row exactly as contract request 52's "The requested change" block writes it.
+#: The PARKED row as contract request 52's "The requested change" block writes
+#: it, plus request 99's FAILED.
 PARKED_ROW = frozenset(
-    {TaskState.READY, TaskState.CANCELLED, TaskState.DEAD_LETTERED, TaskState.SUCCEEDED}
+    {
+        TaskState.READY,
+        TaskState.CANCELLED,
+        TaskState.DEAD_LETTERED,
+        TaskState.SUCCEEDED,
+        TaskState.FAILED,
+    }
 )
 
 
@@ -31,9 +43,9 @@ def test_every_other_parked_edge_is_unchanged(to):
     assert can_transition(TaskState.PARKED, to) is (to in PARKED_ROW)
 
 
-@pytest.mark.parametrize("to", [TaskState.RUNNING, TaskState.LEASED, TaskState.FAILED])
-def test_parked_still_cannot_skip_to_a_live_or_failed_state(to):
-    """The control: the request opens one terminal edge, not a way round
+@pytest.mark.parametrize("to", [TaskState.RUNNING, TaskState.LEASED])
+def test_parked_still_cannot_skip_to_a_live_state(to):
+    """The control: the requests open terminal edges, not a way round
     admission. A PARKED step still reaches RUNNING only through READY and a
     lease (invariants 1 to 3)."""
     assert can_transition(TaskState.PARKED, to) is False

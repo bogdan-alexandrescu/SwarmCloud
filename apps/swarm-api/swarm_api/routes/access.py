@@ -28,6 +28,13 @@ NO ROUTE RETURNS A VALUE: the person's token is in hand for one request,
 inside `access.AccessService.user_token`, and no answer carries it. The
 tenant comes from `tenant_scope` and the person from the verified identity,
 never the body or the path; the bodies forbid every field they do not name.
+
+WHO MAY WRITE (docs/design/workspace-roles.md §4.1, §4.8; lane
+ROLES-GATES-AUTOMATE). Every write here -- enable or disable an owner, an
+install request, a grant, its revocation and its verify (whose push test
+creates a branch) -- needs the role `member` in the selected workspace
+(`_member`), before the person's token or the forge is touched. A `viewer` is
+`role_member_required`, through its switch. The reads stay open to a viewer.
 """
 
 from __future__ import annotations
@@ -41,7 +48,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from swarm_common.models import Tenant
 
-from .. import forge_limits
+from .. import forge_limits, roles
 from ..access import CHECKS, MAX_PAGES, MAX_QUERY_CHARS, OPT_IN_CHECKS, AccessService
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
@@ -57,6 +64,13 @@ def get_access(request: Request) -> AccessService:
 
 def _caller(auth: AuthContext, tenant_id: str) -> Caller:
     return Caller(email=auth.email, tenant_id=tenant_id)
+
+
+def _member(ctx: AppContext, auth: AuthContext) -> None:
+    """The role gate on every write here (workspace-roles.md §4.8):
+    `role_member_required` for a `viewer`, through its switch."""
+    if ctx.roles is not None:
+        ctx.roles.require(auth, roles.MEMBER)
 
 
 def caller_tenant(ctx: AppContext, tenant_id: str, auth: AuthContext) -> Tenant:
@@ -167,8 +181,10 @@ def enable_owner(
     body: EnableOrgBody,
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
     service: AccessService = Depends(get_access),
 ) -> dict:
+    _member(ctx, auth)
     return {**service.enable(_caller(auth, tenant_id), body.owner), "tenant_id": tenant_id}
 
 
@@ -177,8 +193,10 @@ def disable_owner(
     owner: str,
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
     service: AccessService = Depends(get_access),
 ) -> dict:
+    _member(ctx, auth)
     return {**service.disable(_caller(auth, tenant_id), owner), "tenant_id": tenant_id}
 
 
@@ -187,8 +205,10 @@ def request_install(
     owner: str,
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
     service: AccessService = Depends(get_access),
 ) -> dict:
+    _member(ctx, auth)
     # No body: the owner is the path's, the person the verified identity's.
     return {**service.request_install(_caller(auth, tenant_id), owner), "tenant_id": tenant_id}
 
@@ -215,6 +235,7 @@ def put_grant(
     ctx: AppContext = Depends(get_context),
     service: AccessService = Depends(get_access),
 ) -> dict:
+    _member(ctx, auth)
     tenant = caller_tenant(ctx, tenant_id, auth)
     return {**service.grant(_caller(auth, tenant_id), tenant, repo_id,
                             repository=body.repository, mode=body.mode),
@@ -226,8 +247,10 @@ def delete_grant(
     repo_id: str,
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
     service: AccessService = Depends(get_access),
 ) -> dict:
+    _member(ctx, auth)
     return {**service.revoke(_caller(auth, tenant_id), repo_id), "tenant_id": tenant_id}
 
 
@@ -237,8 +260,10 @@ def verify_grant(
     body: VerifyBody | None = None,
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
     service: AccessService = Depends(get_access),
 ) -> dict:
+    _member(ctx, auth)
     checks = list(body.checks) if body is not None and body.checks else None
     return {**service.verify(_caller(auth, tenant_id), repo_id, checks), "tenant_id": tenant_id}
 

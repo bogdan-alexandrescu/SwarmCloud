@@ -11,8 +11,10 @@ Owner decisions this module implements (the lane brief, 2026-10-15):
     list, "use in my submissions to <workspace>": the group workspaces whose
     tasks THAT person submits may be released it. Nobody else's tasks, and
     only workspaces the person is a confirmed member of when they tick it.
-  * Q4. In a GROUP workspace only platform admins write; members read names
-    and grants. A personal workspace is managed by its person.
+  * Q4. In a GROUP workspace its `admin` writes -- a workspace admin, or a
+    platform admin, who holds `admin` in every group workspace
+    (docs/design/workspace-roles.md §4.8, owner's Q5 and Q6) -- and members
+    read names and grants. A personal workspace is managed by its person.
   * Q5. Rotate keeps the previous version ENABLED for `ROTATION_GRACE`
     (24 h), so a running attempt that read it keeps working; then
     `sweep_rotations` DISABLES it. It never destroys one: a disabled version
@@ -65,8 +67,9 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot
-from swarm_common.models import PLATFORM_COMPONENTS, Tenant, consumer_name
+from swarm_common.models import PLATFORM_COMPONENTS, Tenant, consumer_name, parse_consumer
 from swarm_common.profiles import (
+    MCP_SECRET_SLOTS,
     RUNNER_PROFILES,
     RUNTIME_TOOLS,
     SECRET_KINDS,
@@ -79,6 +82,8 @@ from .auth import AuthContext, require_admin
 from .codec import console_origin
 from .errors import Conflict, Forbidden, NotFound, UpstreamUnavailable, ValidationFailed
 from .grant_attest import ATTESTATION_FIELD, VALID, GrantKeys, GrantPolicy
+from .mcp_servers import enabled_names, read_registration
+from .roles import ADMIN, RoleStore, at_least, with_tenant
 
 log = logging.getLogger(__name__)
 
@@ -365,31 +370,75 @@ def is_personal(tenant: Tenant) -> bool:
     return tenant.kind == "user"
 
 
-def require_manager(auth: AuthContext, tenant: Tenant) -> None:
-    """Q4. A personal workspace: its person, by the tenant document's
+def workspace_admin(roles: RoleStore | None, auth: AuthContext, tenant: Tenant) -> bool:
+    """Whether the caller holds `admin` in GROUP workspace `tenant`
+    (docs/design/workspace-roles.md §4.8; Q6, Q13), read fresh: a narrowing
+    made a moment ago refuses the next write, not the one 15 s later.
+
+    The gate on every route of ROLES-GATES-ADMIN: secrets, MCP servers, the
+    tenant provider key, git-token tenant and repository slots, and the
+    workspace's settings. True lets the caller through on the role alone.
+    False is not a refusal by itself -- the caller then meets the rule the
+    route had before roles, so a switch that is off never lets a member past
+    a gate they were stopped at:
+
+    * `role_admin_required` (403) through its switch (`refusals.py`, Q10).
+      On, a member is refused it here; off, `RoleStore.require` logs
+      `refusal report-only code=role_admin_required` and this answers False;
+    * a role that could not be read is False with the switch off and 503
+      `role_unavailable` with it on, never a guess;
+    * a personal workspace is never decided here: its person is its admin,
+      and every caller checks that first by the tenant document's principal;
+    * a caller who is neither in `tenant` (their selected tenant or a
+      verified membership) nor a platform admin is False before any grant is
+      read: a grant to a non-member is stored and inert until they join
+      (Q3), and a route whose path names a workspace must not let it act.
+    """
+    if roles is None or is_personal(tenant):
+        return False
+    if auth.tenant_id != tenant.tenant_id:
+        if not auth.is_admin and not any(c[0] == tenant.tenant_id for c in auth.tenant_choices):
+            return False
+        auth = with_tenant(auth, tenant.tenant_id, tenant.principal or "")
+    me = roles.require(auth, ADMIN, fresh=True)
+    return me is not None and at_least(me.role, ADMIN)
+
+
+def require_manager(auth: AuthContext, tenant: Tenant, roles: RoleStore | None = None) -> None:
+    """Q4, Q6. A personal workspace: its person, by the tenant document's
     principal (the frozen slug drops the domain, so the id alone does not say
-    whose it is). A group workspace: a full platform admin (`require_admin`
-    with no route, so a pool admin's narrow capability never reaches here).
-    Members of a group read; they never write."""
+    whose it is). A group workspace: its `admin` (`workspace_admin`), else a
+    full platform admin (`require_admin` with no route, so a pool admin's
+    narrow capability never reaches here, and 503 when the directory could not
+    say). Members of a group read; they never write, whatever the role
+    switch says."""
     if is_personal(tenant):
         email = (auth.email or "").strip().lower()
         if not email or (tenant.principal or "").strip().lower() != email:
             raise Forbidden("a personal workspace's secrets are managed by its person only")
         return
+    if workspace_admin(roles, auth, tenant):
+        return
     try:
         require_admin(auth)
     except Forbidden:
         raise Forbidden(
-            "in a group workspace only platform admins add, rotate, grant or delete "
-            "secrets; members see names and grants") from None
+            "in a group workspace only its admins add, rotate, grant or delete "
+            "secrets and MCP servers; members see names and grants") from None
 
 
-def can_manage(auth: AuthContext, tenant: Tenant) -> bool:
-    try:
-        require_manager(auth, tenant)
-    except Forbidden:
-        return False
-    return True
+def can_manage(auth: AuthContext, tenant: Tenant, roles: RoleStore | None = None) -> bool:
+    """What the console offers: whether `require_manager` would let this
+    caller write. Asked without the gate, so a member's listing logs no
+    would-be refusal and costs no fresh read."""
+    if is_personal(tenant) or auth.is_admin or roles is None:
+        try:
+            require_manager(auth, tenant)
+        except Forbidden:
+            return False
+        return True
+    me = roles.try_resolve(auth) if auth.tenant_id == tenant.tenant_id else None
+    return me is not None and at_least(me.role, ADMIN)
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +558,61 @@ def check_grant(consumer: str, slot: str | None, kind: str) -> tuple[Consumer, S
             f"{consumer} reads {', '.join(chosen.kinds)} in its {chosen.name} slot, "
             f"not a {kind}")
     return entry, chosen
+
+
+# ---------------------------------------------------------------------------
+# Contract request 89: `mcp:<name>`, a tenant's registered MCP server
+# ---------------------------------------------------------------------------
+#
+# An `mcp:` consumer is NOT in the catalogue above: its names are a tenant's
+# registrations (mcp_servers.py), which change at runtime, so it is checked
+# against the tenant's registry and never against CONSUMERS_BY_NAME. That is
+# also why the release can never deliver one: `_deliverable` reads the
+# catalogue, and `attempt_consumers` never derives an `mcp:` name (design
+# §4.5). The attach route (routes/attempts_mcp.py) is the one reader of an
+# `mcp:` grant, and it never writes the value to a file.
+
+
+def mcp_consumer(name: str) -> Consumer:
+    """The consumer `mcp:<name>`, with its one slot, `auth`."""
+    return Consumer("mcp", name, _slots(MCP_SECRET_SLOTS))
+
+
+def mcp_consumers(db: Any, tenant_id: str) -> list[Consumer]:
+    """`mcp:<name>` for every ENABLED registration of `tenant_id`: the
+    consumers the console's grant matrix adds to the catalogue for this
+    workspace (§4.5)."""
+    return [mcp_consumer(name) for name in enabled_names(db, tenant_id)]
+
+
+def check_mcp_grant(db: Any, tenant_id: str, consumer: str, slot: str | None,
+                    kind: str) -> tuple[Consumer, Slot]:
+    """`check_grant` for an `mcp:` consumer: the name must be a registration
+    of THIS tenant (any state, so a disabled server's grant can still be
+    unticked), the slot `auth`, the kind one it reads."""
+    try:
+        _, name = parse_consumer(consumer)
+    except ValueError:
+        raise ValidationFailed(
+            "an mcp: consumer names a registered MCP server, e.g. mcp:kb") from None
+    if read_registration(db, tenant_id, name) is None:
+        raise ValidationFailed(
+            "no MCP server by that name is registered in this workspace "
+            "(GET /v1/mcp-servers)")
+    entry = mcp_consumer(name)
+    chosen = entry.slot(slot)
+    if chosen is None:
+        raise ValidationFailed(f"{consumer} has no such slot",
+                               detail={"slots": [s.name for s in entry.slots]})
+    if kind not in chosen.kinds:
+        raise ValidationFailed(
+            f"{consumer} reads {', '.join(chosen.kinds)} in its {chosen.name} slot, "
+            f"not a {kind}")
+    return entry, chosen
+
+
+def is_mcp_consumer(consumer: Any) -> bool:
+    return isinstance(consumer, str) and consumer.startswith("mcp:")
 
 
 # ---------------------------------------------------------------------------
@@ -819,7 +923,11 @@ class WorkspaceSecrets:
                   enabled: bool, by: str) -> dict[str, Any]:
         found = self.find(tenant_id, name)
         secret_id = found["secret_id"]
-        _, chosen = check_grant(consumer, slot, str(found.get("kind")))
+        if is_mcp_consumer(consumer):
+            _, chosen = check_mcp_grant(self._db, tenant_id, consumer, slot,
+                                        str(found.get("kind")))
+        else:
+            _, chosen = check_grant(consumer, slot, str(found.get("kind")))
         now = self._now()
         ref = self._db.collection(SECRETS_COLLECTION).document(secret_id)
         grant_ref = self._db.collection(GRANTS_COLLECTION).document(_grant_id(secret_id, consumer))

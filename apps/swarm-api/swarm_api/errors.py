@@ -166,6 +166,90 @@ class WorkspaceNotRequested(Conflict):
     code = "WORKSPACE_NOT_REQUESTED"
 
 
+# --------------------------------------------------------------------------
+# Workspace kinds: an admin's request for a personal, group or service
+# workspace (docs/design/workspace-kinds.md §4.2.3; lane WK-RECORD). Raised
+# by `POST /v1/admin/workspaces`, before any write, and the owner-only
+# approval by the approve and retry routes on a service record, which only
+# that route creates. None is a switch: no existing caller can meet one, and
+# continuing past any of them is the breach itself
+# (tests/unit/control_plane/test_new_refusals_ship_off.py, NOT_SWITCHABLE_CODES).
+# --------------------------------------------------------------------------
+
+
+class WorkspaceDomainNotAllowed(Forbidden):
+    """The person or group named is outside `allowed_domains`: the domain
+    check admits people at the front door, and a workspace admits nobody the
+    check does not."""
+
+    code = "WORKSPACE_DOMAIN_NOT_ALLOWED"
+
+
+class WorkspaceIdTerraform(Forbidden):
+    """The tenant id is one of Terraform's tenants (`var.tenants`, frozen to
+    four under Q8 (a)): the job never builds over what Terraform owns."""
+
+    code = "WORKSPACE_ID_TERRAFORM"
+
+
+class WorkspaceIdNested(Forbidden):
+    """The id and an existing tenant's id nest through `-git-`, so one
+    tenant's user-slot names would start with the other's
+    (`forge_user_slots.tf::forge_nested_tenants`)."""
+
+    code = "WORKSPACE_ID_NESTED"
+
+
+class WorkspaceGroupIdReserved(Forbidden):
+    """A group whose id starts `u-`: that is a person's id, and the group
+    would be handed their workspace (§2.1's collision)."""
+
+    code = "WORKSPACE_GROUP_ID_RESERVED"
+
+
+class WorkspaceGroupIsAdmin(Forbidden):
+    """An ADMIN_GROUPS entry as a tenant would mix the two lookups `auth.py`
+    keeps apart."""
+
+    code = "WORKSPACE_GROUP_IS_ADMIN"
+
+
+class WorkspaceGroupUnreadable(UpstreamUnavailable):
+    """Cloud Identity did not answer the one-group check, so swarm-api cannot
+    show the group exists and resolves. Retryable; nothing was written."""
+
+    code = "WORKSPACE_GROUP_UNREADABLE"
+
+
+class WorkspaceServiceNotInProject(Forbidden):
+    """Not a user-managed service account of this platform's project (Q7 (a)):
+    the job's S1 cannot read any other, so its checks would be the
+    requester's word."""
+
+    code = "WORKSPACE_SERVICE_NOT_IN_PROJECT"
+
+
+class WorkspaceServicePlatform(Forbidden):
+    """One of the platform's own accounts (`swarm-*`) or a Google-managed
+    default: admitting it would let it file work as a tenant."""
+
+    code = "WORKSPACE_SERVICE_PLATFORM"
+
+
+class WorkspaceServiceAlreadyResolves(Forbidden):
+    """The account already resolves somewhere: a tenant lists it
+    (TENANT_SERVICE_ACCOUNTS) or ALLOWED_USERS admits it."""
+
+    code = "WORKSPACE_SERVICE_ALREADY_RESOLVES"
+
+
+class WorkspaceApprovalOwnerOnly(Forbidden):
+    """Approving or retrying a service workspace: it admits a new principal
+    at the front door, so only the platform owner decides it (Q2 (a))."""
+
+    code = "WORKSPACE_APPROVAL_OWNER_ONLY"
+
+
 class BrowserToolUnavailable(ValidationFailed):
     """A `claude-code-browser` task that names `browser_tool: jev` when jev
     cannot run for it: no TypeSafe key resolves for its submitter or tenant
@@ -185,3 +269,146 @@ class KeyLinkInvalid(Forbidden):
     link ever proves anyway -- it grants nothing that session could not do."""
 
     code = "KEY_LINK_INVALID"
+
+
+# --------------------------------------------------------------------------
+# The user profile (docs/design/user-profile.md §4.2-§4.5; lane PROFILE-STORE)
+# --------------------------------------------------------------------------
+
+#: What a person reads when their preferences could not be read (Q9): what
+#: happened, that nothing was submitted, and every way to name a workspace.
+PREFERENCES_UNAVAILABLE_MESSAGE = (
+    "Your SwarmCloud preferences could not be read, so your default workspace is "
+    "not known and nothing was submitted. Name a workspace and retry: choose one "
+    "in the console's workspace switcher, set SWARM_TENANT or the /sc plugin's "
+    "tenant option, or pass --tenant to swarm."
+)
+
+
+class PreferencesUnavailable(UpstreamUnavailable):
+    """The caller's `user_preferences` document could not be read (§4.5, Q9).
+
+    A 503 and never a guess: a headerless request whose default workspace is
+    unknown is refused rather than run in the computed default, which would
+    misfile work into a workspace the person did not choose."""
+
+    code = "preferences_unavailable"
+
+    def __init__(self, message: str = PREFERENCES_UNAVAILABLE_MESSAGE, **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+
+
+class PreferencesChanged(Conflict):
+    """A save whose `revision` is not the stored one (§4.2): another tab saved
+    first. Nothing is stored; the page reloads, so two tabs never silently
+    overwrite each other."""
+
+    code = "preferences_changed"
+
+
+class DisplayNameInvalid(ValidationFailed):
+    """A display name that breaks §4.4 rules 1-4: its length, a character
+    outside letters, marks, spaces and `.'-`, or letters from two scripts.
+    The message names the rule."""
+
+    code = "display_name_invalid"
+
+
+class DisplayNameReserved(ValidationFailed):
+    """A display name with a word that reads as a platform role (§4.4 rule 5)."""
+
+    code = "display_name_reserved"
+
+
+class DisplayNameTaken(ValidationFailed):
+    """A display name equal to, or containing, another person's (§4.4 rule 6).
+    The message never names the person whose name it collided with."""
+
+    code = "display_name_taken"
+
+
+# --------------------------------------------------------------------------
+# Workspace roles (docs/design/workspace-roles.md §4.9; lane ROLES-API-CORE,
+# part of #1518)
+#
+# Two of these are raised on EXISTING routes and are therefore switches,
+# off at ship (`refusals.SWITCHES`, one per code, Q10): `role_member_required`
+# and `role_admin_required`. The role write routes are new and raise
+# `role_admin_required` with `raise`, never `refuse`: letting a non-admin
+# write a role is the breach itself. The rest are raised only by the new
+# routes (`NOT_SWITCHABLE_CODES` in the guard says why), and the 503s are not
+# refusals at all.
+# --------------------------------------------------------------------------
+
+
+class RoleMemberRequired(Forbidden):
+    """A `viewer` asked for something a `member` does (§4.1). A new refusal
+    on existing routes: raised only through `refusals.refuse`, behind its
+    switch."""
+
+    code = "role_member_required"
+
+
+class RoleAdminRequired(Forbidden):
+    """A `viewer` or `member` asked for something only the workspace's
+    `admin` does: its secrets, MCP servers, tenant provider keys, settings,
+    or its people's roles (§4.1, Q6, Q13). Behind its switch on existing
+    routes; raised directly by the role write routes."""
+
+    code = "role_admin_required"
+
+
+class RolePersonRequired(Forbidden):
+    """A role write naming a service account (§4.6): a listed account has its
+    own narrower scope, and a role must not widen it."""
+
+    code = "role_person_required"
+
+
+class PersonalWorkspaceRolesFixed(Conflict):
+    """A role write against a personal (`u-`) workspace: its person is its
+    `admin`, and nobody else holds a role there (§4.5)."""
+
+    code = "personal_workspace_roles_fixed"
+
+
+class DefaultRoleNotAllowed(Conflict):
+    """`PUT …/roles/default {admin}`: the default is `viewer` or `member`,
+    never `admin`, so a workspace has no admin until one is named (§4.6)."""
+
+    code = "default_role_not_allowed"
+
+
+class RoleUnchanged(Conflict):
+    """A role write that would change nothing; nothing is written (§4.3)."""
+
+    code = "role_unchanged"
+
+
+class UnknownRole(ValidationFailed):
+    """A role that is not `viewer`, `member` or `admin`."""
+
+    code = "unknown_role"
+
+
+class RoleUnavailable(UpstreamUnavailable):
+    """A role could not be read -- Firestore failed, or the newest grants did
+    not verify within the bounded read (§4.4) -- at a gate whose switch is
+    on, or on a role route. Never a guess, and never a wider role."""
+
+    code = "role_unavailable"
+
+
+class RoleSigningUnavailable(UpstreamUnavailable):
+    """A role write in an environment with no settings key: an unsigned grant
+    would be skipped by every reader, so nothing is written (§4.13)."""
+
+    code = "role_signing_unavailable"
+
+
+class PlatformAdminAuditUnavailable(UpstreamUnavailable):
+    """A platform admin's request that must be audited (§4.2.4) and whose
+    `admin_audit` row could not be written. The route never runs: an action
+    is never taken unaudited (Q12)."""
+
+    code = "platform_admin_audit_unavailable"

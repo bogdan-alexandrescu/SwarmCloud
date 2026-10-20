@@ -328,7 +328,7 @@ def test_an_auto_run_whose_creator_left_the_tenant_fails_and_submits_nothing(
 ):
     run = _create(client, plan_approval="auto").json()["run"]
     _finish_planner(db, objects, run, PLAN)
-    monkeypatch.setattr(api_context.authenticator, "is_tenant_member", lambda email, tenant: False)
+    monkeypatch.setattr(api_context.authenticator, "is_tenant_member", lambda email, tenant, **_: False)
 
     report = _tick(client).json()["report"]
 

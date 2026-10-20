@@ -43,9 +43,10 @@ import { Button, Segmented } from './components'
  * out of sight inside a pill row (D13). The owner does not want the log
  * overlapping the agent: it is a tab now, beside Details, Attempts,
  * Artifacts, Checkpoints and Children, at `/agents/<tab>/<id>/logs`, and it
- * fills the whole detail area under the header with nothing beneath it. A
- * running agent opens on it (AgentSplit); Details keeps a one-line last log
- * line that switches here (`LogLastLine`).
+ * fills the whole detail area under the header with nothing beneath it. An
+ * agent opens on Details, not here (#1646, 2026-10-19; a running agent
+ * opened here from 2026-10-04); Details keeps a one-line last log line that
+ * switches here (`LogLastLine`).
  *
  * WHAT IT READS. `GET /v1/tasks/{id}/transcript` and `/logs` -- the agent's
  * stderr and the runner's two streams in one read -- for the attempt the

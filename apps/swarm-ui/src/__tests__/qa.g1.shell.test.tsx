@@ -1,5 +1,5 @@
 /**
- * QA PASS G1/G3 (swarm.saga.xyz, 2026-10-07): the shell's rail, its tenant
+ * QA PASS G1/G3 (swarm.example.com, 2026-10-07): the shell's rail, its tenant
  * names and its titles.
  *
  *   G1-01  a tab opened in the background never made its first frame read, so

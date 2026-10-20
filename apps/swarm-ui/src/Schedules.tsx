@@ -16,7 +16,7 @@
  * run, a task, a workflow -- and is listed in Work like any other; this
  * screen lists the thing that makes it, and links each firing to its work.
  */
-import { useEffect, useState, type MouseEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useState, type MouseEvent, type ReactNode } from 'react'
 import { AllTenantsSchedules } from './AdminSchedules'
 import {
   deleteSchedule,
@@ -39,6 +39,7 @@ import { scheduleWords, type RepoRecord } from './RepositoriesData'
 import { Button, Dialog, Segmented, buttonClass } from './components'
 import { ScheduleDetail, detailTabOf } from './ScheduleDetail'
 import { NewSchedule } from './ScheduleEdit'
+import { useRoleGate } from './Profile'
 import { PageHead, Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
 import { useNow } from './useNow'
@@ -135,11 +136,25 @@ export function DryRunChip({ s }: { s: Pick<Schedule, 'policy'> }) {
 }
 
 /** A link inside the app: an href for a new tab, `go` for a plain click. */
-export function InApp({ to, go, children, className }: { to: string; go: (to: string) => void; children: ReactNode; className?: string }) {
+export function InApp({
+  to,
+  go,
+  children,
+  className,
+  current = false,
+}: {
+  to: string
+  go: (to: string) => void
+  children: ReactNode
+  className?: string
+  /** The link to the item this page has open: `aria-current`, so the choice is not colour alone. */
+  current?: boolean
+}) {
   return (
     <a
       href={addressToPath(to)}
       className={className}
+      aria-current={current ? 'true' : undefined}
       onClick={(e: MouseEvent) => {
         if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
         e.preventDefault()
@@ -194,11 +209,29 @@ export function SpendFigure({ usdReported, unreported, what }: { usdReported: nu
     return (
       <span className="sc-spend">
         <Mark kind="partial" say={`${usd(usdReported)} is a floor: ${missing} of ${what} did not report a cost`} />{' '}
-        {usd(usdReported)} · {missing} unreported
+        <span className="sc-usd">{usd(usdReported)}</span> · {missing} unreported
       </span>
     )
   }
-  return <span className="sc-spend">{usd(usdReported)}</span>
+  return <span className="sc-spend"><span className="sc-usd">{usd(usdReported)}</span></span>
+}
+
+/**
+ * A repository or a zone that breaks after its `/` first (visual QA V167):
+ * "example-org/" then "example-api", never "example-org/example" then "-api".
+ * Each piece is an inline block (`.sc-part`), so a line ends between pieces
+ * before it ends inside one; a piece wider than its column still wraps. The
+ * text and its copy are unchanged.
+ */
+export function slashBreaks(text: string): ReactNode {
+  const parts = text.split('/')
+  if (parts.length === 1) return text
+  return parts.map((part, i) => (
+    <Fragment key={i}>
+      <span className="sc-part">{i < parts.length - 1 ? `${part}/` : part}</span>
+      {i < parts.length - 1 && <wbr />}
+    </Fragment>
+  ))
 }
 
 /** The cron in words, or the expression itself when the parser refused it. */
@@ -206,7 +239,7 @@ function WhenCell({ s }: { s: Schedule }) {
   return (
     <>
       <span className="sc-cut" title={`${s.cron} · ${s.timezone}`}>{s.words ?? s.cron}</span>
-      <span className="sc-sub">{s.timezone}</span>
+      <span className="sc-sub sc-zone">{slashBreaks(s.timezone)}</span>
     </>
   )
 }
@@ -316,7 +349,10 @@ export function ScheduleActions({
   const [typed, setTyped] = useState('')
   const [refused, setRefused] = useState<string | null>(null)
   const size = where === 'row' ? 'sm' : 'md'
-  const disabled = s.state === 'disabled' ? 'An admin disabled this schedule.' : undefined
+  // A VIEWER CHANGES NO SCHEDULE (docs/design/workspace-roles.md §4.8): every
+  // write in routes/schedules.py needs `member`. The server still decides.
+  const roleGate = useRoleGate('member', 'run and change schedules')
+  const disabled = roleGate ?? (s.state === 'disabled' ? 'An admin disabled this schedule.' : undefined)
 
   const act = async (kind: ActKind) => {
     setBusy(kind)
@@ -366,17 +402,17 @@ export function ScheduleActions({
         </Button>
       )}
       {where === 'head' && s.state === 'enabled' && (
-        <Button size={size} busy={busy === 'pause' ? 'Pausing…' : false} onClick={() => void act('pause')}>
+        <Button size={size} busy={busy === 'pause' ? 'Pausing…' : false} disabled={roleGate !== null} onClick={() => void act('pause')}>
           Pause
         </Button>
       )}
       {resumable && (
-        <Button size={size} busy={busy === 'resume' ? 'Resuming…' : false} onClick={() => void act('resume')}>
+        <Button size={size} busy={busy === 'resume' ? 'Resuming…' : false} disabled={roleGate !== null} onClick={() => void act('resume')}>
           Resume
         </Button>
       )}
       {where === 'head' && (
-        <Button size={size} kind="danger" onClick={() => { setTyped(''); setRefused(null); setAsking('delete') }}>
+        <Button size={size} kind="danger" disabled={roleGate !== null} onClick={() => { setTyped(''); setRefused(null); setAsking('delete') }}>
           Delete…
         </Button>
       )}
@@ -449,7 +485,13 @@ export function Said({ notice }: { notice: ActNotice | null }) {
   )
 }
 
-/** The second line of a row on a phone: type · repository · when, then last · next · spend · waiting. */
+/**
+ * The second line of a row on a phone: type · repository · when, then last ·
+ * next · spend · waiting. IT WRAPS, AND CARRIES NO TITLE (visual QA V173): cut
+ * to one line, everything after the cadence -- the next run, the outcome, the
+ * spend and what waits -- sat past the 400px edge, readable only in a
+ * `title`, which a touch screen never opens.
+ */
 function PhoneLine({ s, names, now }: { s: Schedule; names: ReadonlyMap<string, string> | null; now: number }) {
   const last =
     s.last_firing === null
@@ -461,7 +503,7 @@ function PhoneLine({ s, names, now }: { s: Schedule; names: ReadonlyMap<string, 
   const waiting = s.pending_approvals > 0 ? `${s.pending_approvals} waiting` : 'none waiting'
   const head = [s.type, scopeWords(s, names), s.words ?? s.cron, last, next].join(' · ')
   return (
-    <span className="sc-line2" title={`${head} · ${usd(s.spend_today.reported_usd)} today · ${waiting}`}>
+    <span className="sc-line2">
       {head} · <SpendFigure usdReported={s.spend_today.reported_usd} unreported={s.spend_today.unreported_attempts} what="today's runs" /> ·{' '}
       {waiting}
     </span>
@@ -508,7 +550,7 @@ function ScheduleList({
                   <span className="sc-sub sc-type">{s.tier === null ? s.type : `${s.type} · ${s.tier}`}</span>
                   <PhoneLine s={s} names={names} now={now} />
                 </td>
-                <td data-label="Repository" className="sc-c-more"><span className="sc-cut" title={scopeWords(s, names)}>{scopeWords(s, names)}</span></td>
+                <td data-label="Repository" className="sc-c-more"><span className="sc-cut" title={scopeWords(s, names)}>{slashBreaks(scopeWords(s, names))}</span></td>
                 <td data-label="When" className="sc-c-more"><WhenCell s={s} /></td>
                 <td data-label="Next run" className="sc-c-more">
                   {s.next_run_at === null ? (
@@ -639,13 +681,20 @@ function SchedulesBody({
   scopeSwitch: ReactNode
 }) {
   const names = repos.status === 'ok' || repos.status === 'stale' ? new Map(repos.data.map((r) => [r.repo_id, `${r.owner}/${r.repo}`])) : null
+  const roleGate = useRoleGate('member', 'create schedules')
   return (
     <div className="sc-list">
       <div className="c-acts sc-acts">
         {scopeSwitch}
-        <InApp go={go} to={scheduleAddress(NEW_SCHEDULE)} className={buttonClass({ kind: 'primary', size: 'sm' })}>
-          New schedule
-        </InApp>
+        {roleGate === null ? (
+          <InApp go={go} to={scheduleAddress(NEW_SCHEDULE)} className={buttonClass({ kind: 'primary', size: 'sm' })}>
+            New schedule
+          </InApp>
+        ) : (
+          <Button kind="primary" size="sm" disabledReason={roleGate}>
+            New schedule
+          </Button>
+        )}
       </div>
       <Said notice={notice} />
       {rows.length === 0 ? (

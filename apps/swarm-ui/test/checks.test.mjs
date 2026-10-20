@@ -552,6 +552,9 @@ test('agoIso and NOW agree, so every age in this file means what it says', () =>
 //
 // MUTATION: point either back at `#work/running`, or label it by the tab.
 
+// QA-109 (visual QA 2026-10-20): the word is the page's own title, Agents,
+// and the state the item counts, FAILED -- not "failed agents", a fourth
+// name for the page that nothing else on it carries.
 test('OV-10: the failures item opens the failed agents, and says so', () => {
   const checks = deriveChecks(
     inputs({ tasks: ok(taskPage([task({ id: 't1', state: 'FAILED', lastError: 'exit 1' })])) }),
@@ -559,7 +562,7 @@ test('OV-10: the failures item opens the failed agents, and says so', () => {
   )
   const [p] = checkNamed(checks, 'Failures').problems
   assert.equal(p.href, '#work/running/recent/failed')
-  assert.equal(p.linkLabel, 'failed agents')
+  assert.equal(p.linkLabel, 'Agents · FAILED')
 })
 
 test('OV-10: every parked item opens the waiting agents, and says so', () => {

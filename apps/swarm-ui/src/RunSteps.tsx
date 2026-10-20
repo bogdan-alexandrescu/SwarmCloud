@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { loadWorkflow, loadWorkflowUsage, type StepUsage, type WorkflowRead } from './api'
 import { Dash } from './components/Chip'
 import { PARK_WORD } from './components/StatePill'
+import { WAITING_WORD, expiresAtOf, expiresWords, isAwaitStep, isWaitingForMember } from './awaitInput'
 import { workflowSpend } from './dag'
 import { spanText } from './duration'
 import { NamedMark, StateMark } from './marks'
@@ -295,9 +296,57 @@ export function StepChanges({ runId, row, go }: { runId: string; row: StepRow; g
   )
 }
 
+/**
+ * "Answer ›" (or "Open step ›" once it has ended): an `await-input` step has
+ * no agent to open and no changes, so its row leads to the workflow's page,
+ * which opens the step's card (human-steps.md §4.5).
+ */
+export function OpenAwaitStep({ workflowId, waiting, go }: { workflowId: string; waiting: boolean; go: (to: string) => void }) {
+  const to = `work/workflows?${new URLSearchParams({ wf: workflowId }).toString()}`
+  const href = addressToPath(to)
+  return (
+    <a className="rn-open" href={href} title={`The step's card on workflow ${workflowId}`} onClick={(e) => {
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+      e.preventDefault()
+      go(to)
+    }}>{waiting ? 'Answer ›' : 'Open step ›'}</a>
+  )
+}
+
+/** An `await-input` step's line: what it waits for and until when, never an agent's elapsed and attempts. */
+function awaitWords(task: Task, now: number): string[] {
+  if (isWaitingForMember(task)) {
+    const expires = expiresWords(expiresAtOf(task), now)
+    return expires === null ? [WAITING_WORD] : [WAITING_WORD, expires]
+  }
+  if (task.state === 'SUCCEEDED') return ['answered, or took its declared default']
+  if (task.state === 'DEAD_LETTERED') return ['nobody answered before it expired']
+  return [stateWord(task.state)]
+}
+
 function StepLine({ row, runId, go, now }: { row: StepRow; runId: string; go: (to: string) => void; now: number }) {
   const t = row.task
   const round = roundLabel(row.round)
+  if (t !== null && isAwaitStep(t)) {
+    return (
+      <li className="rn-srow" data-step={row.stepId} data-await="1">
+        <StepMark row={row} />
+        <span className="rn-srow-n">
+          {round !== null && <span className="rn-srow-r">{round} · </span>}
+          {row.title !== null && <span className="rn-srow-t">{row.title} </span>}
+          <span className="mono rn-srow-id">{row.stepId}</span>
+        </span>
+        <span className="rn-srow-m sb-note">
+          {awaitWords(t, now).map((w) => <span key={w}>{w}</span>)}
+        </span>
+        {t.workflow_id !== null && (
+          <span className="rn-srow-links">
+            <OpenAwaitStep workflowId={t.workflow_id} waiting={isWaitingForMember(t)} go={go} />
+          </span>
+        )}
+      </li>
+    )
+  }
   return (
     <li className="rn-srow" data-step={row.stepId}>
       <StepMark row={row} />

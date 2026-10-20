@@ -42,6 +42,10 @@ steps:
         cp -R tests/acceptance/fixtures /workspace/verify-ctx/tests/acceptance/fixtures
         cp tests/acceptance/test_live_browser.py /workspace/verify-ctx/tests/acceptance/test_live_browser.py
         cp tests/acceptance/test_runner_git_tools.py /workspace/verify-ctx/tests/acceptance/test_runner_git_tools.py
+        cp tests/acceptance/test_caller_mcp.py /workspace/verify-ctx/tests/acceptance/test_caller_mcp.py
+        cp -R tests/acceptance/mcp_echo_server /workspace/verify-ctx/tests/acceptance/mcp_echo_server
+        mkdir -p /workspace/verify-ctx/apps/common/swarm_common
+        cp apps/common/swarm_common/identity.py /workspace/verify-ctx/apps/common/swarm_common/identity.py
         cp images/swarm-verify/Dockerfile /workspace/verify-ctx/Dockerfile
         # Fail here, loudly, rather than producing an image whose entrypoint is
         # missing and discovering it at 3am when the gate is finally run.
@@ -52,6 +56,9 @@ steps:
         test -f /workspace/verify-ctx/tests/acceptance/fixtures/claude-code/calc.py
         test -f /workspace/verify-ctx/tests/acceptance/test_live_browser.py
         test -f /workspace/verify-ctx/tests/acceptance/test_runner_git_tools.py
+        test -f /workspace/verify-ctx/tests/acceptance/test_caller_mcp.py
+        test -f /workspace/verify-ctx/tests/acceptance/mcp_echo_server/server.py
+        test -f /workspace/verify-ctx/apps/common/swarm_common/identity.py
 
   - id: build
     name: gcr.io/cloud-builders/docker

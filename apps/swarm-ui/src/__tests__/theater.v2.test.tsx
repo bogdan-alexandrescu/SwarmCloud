@@ -113,6 +113,8 @@ function agent(over: Partial<Task> = {}): Task {
 const PRESETS: LiveSession['presets'] = [
   { name: 'desktop', width: 1440, height: 900, scale: 1, mobile: false },
   { name: 'iphone-15', width: 393, height: 852, scale: 3, mobile: true },
+  // QA-KIT: swarm_api.live.LIVE_PRESETS serves it, after iPhone 15.
+  { name: 'phone-390', width: 390, height: 844, scale: 3, mobile: true },
   { name: 'pixel-8', width: 412, height: 915, scale: 2.625, mobile: true },
   { name: 'iphone-se', width: 375, height: 667, scale: 2, mobile: true },
   { name: 'ipad-7', width: 810, height: 1080, scale: 2, mobile: true },
@@ -278,6 +280,7 @@ describe('B4: the DEVICE column is a vertical list, nothing clipped', () => {
     expect(chips.map((c) => [c.textContent, c.getAttribute('data-outline')])).toEqual([
       ['Desktop', 'desktop'],
       ['iPhone 15', 'phone'],
+      ['Phone 390', 'phone'],
       ['Pixel 8', 'phone'],
       ['iPhone SE', 'phone'],
       ['iPad', 'tablet'],

@@ -157,6 +157,11 @@ run "off_by_default_nothing_references_the_key" {
     )
     error_message = "the audience the scheduler hands workers must be the one swarm-api's child routes pin"
   }
+
+  assert {
+    condition     = output.child_tasks_service_wiring.forge_broker == { "swarm-api" = "false", "swarm-scheduler" = "false" }
+    error_message = "the forge broker ships OFF (#1041): FORGE_BROKER=false on swarm-api and the scheduler unless forge_broker is set"
+  }
 }
 
 run "on_both_services_read_the_key_and_workers_may_call" {
@@ -192,4 +197,59 @@ run "on_both_services_read_the_key_and_workers_may_call" {
     error_message = "every tenant's worker must be able to invoke swarm-api's child routes, keyed by tenant"
   }
 
+  # Dev's case: child tasks on does not turn the broker on (#1041).
+  assert {
+    condition     = output.child_tasks_service_wiring.forge_broker == { "swarm-api" = "false", "swarm-scheduler" = "false" }
+    error_message = "enable_child_tasks alone must leave FORGE_BROKER=false: dev has child tasks on and the broker must not go live there with them"
+  }
+
+}
+
+run "the_forge_broker_switch_reaches_both_services" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    enable_child_tasks = true
+    forge_broker       = true
+  }
+
+  expect_failures = [check.child_tasks_have_an_address]
+
+  assert {
+    condition     = output.child_tasks_service_wiring.forge_broker == { "swarm-api" = "true", "swarm-scheduler" = "true" }
+    error_message = "forge_broker = true must reach swarm-api (the route) and the scheduler (which passes it to workers) as FORGE_BROKER=true"
+  }
+}
+
+run "the_forge_broker_needs_child_tasks" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    forge_broker = true
+  }
+
+  expect_failures = [var.forge_broker]
+}
+
+run "dev_leaves_the_forge_broker_off" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # Read from the tfvars file itself, not planned with it: dev.tfvars sets
+  # values (a real swarm_api_url) the mock provider cannot satisfy.
+  assert {
+    condition     = length(regexall("(?m)^forge_broker\\s*=\\s*false\\s*$", file("../../terraform/environments/dev/dev.tfvars"))) == 1 && length(regexall("(?m)^forge_broker\\s*=\\s*true", file("../../terraform/environments/dev/dev.tfvars"))) == 0 && output.child_tasks_service_wiring.forge_broker["swarm-api"] == "false"
+    error_message = "dev.tfvars must keep forge_broker = false (#1041): turning the broker on is a separate owner step, and forge_slot_reader is removed only after it has been on in dev and a live run passed"
+  }
 }

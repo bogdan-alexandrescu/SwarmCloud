@@ -147,8 +147,12 @@ def test_self_test_exits_zero_and_visits_every_case(self_test: dict[str, dict]) 
     assert visited == set(CALL_CASES) | set(RECORD_CASES)
 
 
-def test_the_rules_are_c0_to_c9() -> None:
-    assert [r["id"] for r in RULE_DOC["rules"]] == [f"C{i}" for i in range(10)]
+def test_the_rules_are_c0_to_c10() -> None:
+    # C10 (a service's front-door admit, WK-JOB) sits before C9 in the file so
+    # the never-rule stays last; the guard finds C9 by id, so order is prose.
+    ids = [r["id"] for r in RULE_DOC["rules"]]
+    assert sorted(ids, key=lambda i: int(i[1:])) == [f"C{i}" for i in range(11)]
+    assert ids[-1] == "C9"
 
 
 def test_every_rule_has_a_case_to_refuse_and_a_case_to_allow() -> None:

@@ -18,6 +18,11 @@ and the disagreement is counted and logged BEFORE the repair (`rollup._record`)
 so nothing is resolved without a trace. The alternative -- a background sweep as
 the only writer -- would leave every workflow nobody had swept unqueryable, which
 is the half of the owner's decision the write exists to satisfy.
+
+NAMES BESIDE EMAILS (docs/design/user-profile.md §4.4). Every workflow and
+step task these reads serve carries `submitted_by_name` beside
+`submitted_by`, from one lookup per response (`_named`). A name is a label;
+the submitter filter keeps using the email.
 """
 
 from __future__ import annotations
@@ -29,11 +34,13 @@ from swarm_common.models import Task
 from swarm_common.states import TERMINAL_STATES
 
 from ..auth import AuthContext
+from .tasks import require_member
 from ..attempt_totals import totals_for, with_totals
 from ..children import PARENT_CANCELLED, ChildService
 from ..codec import task_to_api, workflow_dispatch, workflow_to_api
 from ..task_accounts import accounts_for
 from ..errors import ValidationFailed
+from ..people import add_names, name_lookup
 from ..deps import (
     AppContext,
     current_auth,
@@ -69,6 +76,8 @@ def create_workflow(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    # `member` or above (workspace-roles.md §4.1), before anything is written.
+    require_member(ctx, auth)
     submission = ctx.submissions.submit_workflow(auth, body)
     workflow = submission.workflow
     response.headers["Location"] = f"/v1/workflows/{workflow.workflow_id}"
@@ -216,9 +225,16 @@ def list_workflows(
         # the check's result is not known -- never zero (swarm_api.stalls).
         "stalled_workflows": stalled_workflows(ctx.store.db, tenant_id),
     }
+    _named(ctx, payload["workflows"], [])
     if summary:
         payload["view"] = "summary"
     return payload
+
+
+def _named(ctx: AppContext, workflows: list[dict], tasks: list[dict]) -> None:
+    """`submitted_by_name` on every workflow and step task served, from ONE
+    lookup for the whole response."""
+    add_names(name_lookup(ctx), [*workflows, *tasks], ("submitted_by",))
 
 
 def _by_ids(
@@ -284,6 +300,7 @@ def _by_ids(
         "rollup_report": report.to_api(),
         "stalled_workflows": stalled_workflows(ctx.store.db, tenant_id),
     }
+    _named(ctx, payload["workflows"], payload["tasks"])
     if summary:
         payload["view"] = "summary"
     return payload
@@ -315,7 +332,7 @@ def get_workflow(
     accounts = accounts_for(ctx.db, tenant_id, tasks.items)
     totals = totals_for(ctx.db, tenant_id, [t.id for t in tasks.items])
 
-    return {
+    payload = {
         # The step copies of each input are masked by the tasks' own maskers,
         # so `workflow.steps[i].input` and `tasks[i].input` agree (the PR #229
         # review), from the tasks this route already loaded.
@@ -341,6 +358,8 @@ def get_workflow(
             for t in tasks.items
         ],
     }
+    _named(ctx, [payload["workflow"]], payload["tasks"])
+    return payload
 
 
 @router.post("/{workflow_id}/cancel")
@@ -352,6 +371,9 @@ def cancel_workflow(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    # Anyone's workflow, but only by a `member` or above (Q8): a `viewer`
+    # cancels nothing, their own included.
+    require_member(ctx, auth)
     targets: list = []
     result = ctx.store.cancel_workflow(
         tenant_id, workflow_id, by=auth.email, tenant_member=auth.tenant_member,

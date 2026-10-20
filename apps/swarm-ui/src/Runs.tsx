@@ -246,13 +246,25 @@ function RunHeading({ run, onHeading }: { run: IssueRun; onHeading: (title: stri
  * title is no help where there is no hover. A tap draws it whole, wrapped; a
  * second folds it. Its text is its children, so the page head's `textOf`
  * still gives the chip its title.
+ *
+ * EACH FACT IS ITS OWN PIECE (visual QA V209, 2026-10-16): cut as one line,
+ * the chip at 400px was 368 of 470px and showed the reference alone, so the
+ * run id and its creator were drawn nowhere. The facts wrap between them now,
+ * each keeping its ` ·` (never a separator opening a line), and only a fact
+ * wider than the column is cut -- whole once the chip is opened.
  */
 function RunMeta({ children }: { children: string }) {
   const [open, setOpen] = useState(false)
+  const facts = children.split(' · ')
   return (
     <button type="button" className={open ? 'rn-meta is-open' : 'rn-meta'} aria-expanded={open} title={children}
       onClick={() => setOpen((o) => !o)}>
-      {children}
+      {facts.map((f, i) => (
+        <span key={i}>
+          {i > 0 && ' '}
+          <span className="rn-meta-i">{i < facts.length - 1 ? `${f} ·` : f}</span>
+        </span>
+      ))}
     </button>
   )
 }
@@ -381,13 +393,28 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
       // chips, and whether more exist; the head says only the order.
       summary={() => 'newest first'}
       pollMs={RUNS_LIST_POLL_MS}
+      // THE WAY TO START ONE IS A LINK (visual QA V210, 2026-10-16): an empty
+      // first page with no older runs is this panel, not the list's, and its
+      // "Submit › From a GitHub issue" was plain text where the list's and
+      // Workflows' are links.
       empty={{
         heading: 'No runs yet',
-        body: 'This tenant has not planned an issue. Submit › From a GitHub issue starts one.',
+        body: <>This tenant has not planned an issue. <SubmitIssueLink go={go} /> starts one.</>,
       }}
     >
       {(d) => <RunList first={d} go={go} view={view} />}
     </Screen>
+  )
+}
+
+/** The way to start a run: Submit's issue form, in place on a plain click. */
+function SubmitIssueLink({ go }: { go: (to: string) => void }) {
+  return (
+    <a className="ctl-link rn-start" href={addressToPath('work/new-issue')} onClick={(e) => {
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+      e.preventDefault()
+      go('work/new-issue')
+    }}>Submit › From a GitHub issue</a>
   )
 }
 
@@ -518,11 +545,7 @@ function RunList({ first, go, view = null }: { first: IssueRunSummaryPage; go: (
           className="rn-empty"
         >
           {older.next === null ? 'This tenant has not planned an issue.' : 'The newest page holds no run; older ones may exist.'}{' '}
-          <a className="ctl-link" href={addressToPath('work/new-issue')} onClick={(e) => {
-            if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
-            e.preventDefault()
-            go('work/new-issue')
-          }}>Submit › From a GitHub issue</a> starts one.
+          <SubmitIssueLink go={go} /> starts one.
         </Absent>
       ) : (
         <>
@@ -583,10 +606,10 @@ function RunList({ first, go, view = null }: { first: IssueRunSummaryPage; go: (
                       {r.issue_read?.title ? (
                         <>
                           <span className="rn-cut rn-issue-t" title={r.issue_read.title}>{r.issue_read.title}</span>
-                          <span className="mono rn-cut rn-issue-ref" title={r.issue.ref}><IssueRefLink run={r} /></span>
+                          <span className="mono rn-refcut rn-issue-ref" title={r.issue.ref}><IssueRefLink run={r} /></span>
                         </>
                       ) : (
-                        <span className="mono rn-cut" title={r.issue.ref}><IssueRefLink run={r} /></span>
+                        <span className="mono rn-refcut" title={r.issue.ref}><IssueRefLink run={r} /></span>
                       )}
                     </td>
                     <td data-label="State">
@@ -636,12 +659,24 @@ export function noWorkflowWord(run: IssueRunSummary): string {
   return run.terminal ? 'none · the run ended before a workflow' : 'none yet'
 }
 
-/** The issue's reference, linked to the issue on the forge (live QA RT-12: it was plain text). */
+/**
+ * The issue's reference, linked to the issue on the forge (live QA RT-12: it was plain text).
+ *
+ * THE NUMBER IS NEVER THE PART CUT (visual QA V205, 2026-10-16). A
+ * long `owner/repo#N` in a list cell was ellipsised from its end, and the
+ * `#N` that tells one issue of a repository from another went first. The
+ * repository is cut and the number is kept whole after it (`.rn-refcut`).
+ */
 function IssueRefLink({ run }: { run: IssueRunSummary }) {
   const url = run.issue.url
+  const ref = run.issue.ref
+  const at = ref.lastIndexOf('#')
+  const text = at > 0
+    ? <><span className="rn-refcut-repo">{ref.slice(0, at)}</span><span className="rn-refcut-n">{ref.slice(at)}</span></>
+    : <span className="rn-refcut-repo">{ref}</span>
   return typeof url === 'string' && /^https:\/\//.test(url)
-    ? <a href={url} target="_blank" rel="noreferrer">{run.issue.ref}</a>
-    : <>{run.issue.ref}</>
+    ? <a href={url} target="_blank" rel="noreferrer">{text}</a>
+    : <span>{text}</span>
 }
 
 // ---------------------------------------------------------------------------

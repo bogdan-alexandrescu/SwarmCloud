@@ -16,22 +16,38 @@ tick admits nobody, and the 403 says that is why.
 It submits nothing as the caller: every firing is submitted as its schedule's
 stored owner, in its schedule's stored tenant (`schedulefire.
 schedule_owner_auth`).
+
+AWAIT-INPUT EXPIRY RIDES THE SAME MINUTE (docs/design/human-steps.md §4.6).
+After `run_tick`, `awaitinput.expire_due` ends every waiting step past its
+`expires_at` as its signed declaration says: dead-lettered under `fail`, its
+default written and the step SUCCEEDED under `default`. Here because swarm-api
+is the bucket writer, so every write that ends an await-input step is in one
+service, and because the tick is a service account -- which the answer route
+refuses -- expiry is its own function and never the answer route. While the
+`await-input` profile is unavailable it reads nothing and the report has no
+`await_input` key, so the tick is exactly what it was.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+import logging
 
+from fastapi import APIRouter, Depends, Request
+
+from .. import awaitinput
 from ..auth import AuthContext, SCHEDULE_TICK_USERS_ENV
 from ..deps import AppContext, admin_auth, get_context
 from ..errors import Forbidden
 from ..schedulefire import run_tick
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/admin", tags=["schedules"])
 
 
 @router.post("/schedules/tick")
 def schedule_tick(
+    request: Request,
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
@@ -51,4 +67,14 @@ def schedule_tick(
         raise Forbidden("POST /v1/admin/schedules/tick admits only the schedule tick's identity")
     report = run_tick(ctx)
     ctx.metrics.admin_actions.labels(action="schedule_tick").inc()
-    return report.to_api()
+    body = report.to_api()
+    try:
+        expired = awaitinput.expire_due(ctx, getattr(request.app.state, "input_writer", None))
+    except Exception:
+        # One minute's sweep is retried by the next; it must not turn the
+        # schedules' report into a 500 (§2.10's "always 200 to the tick").
+        log.exception("await-input expiry sweep failed; the next tick retries it")
+        expired = awaitinput.ExpiryReport(errors=1)
+    if expired is not None:
+        body["await_input"] = expired.to_api()
+    return body

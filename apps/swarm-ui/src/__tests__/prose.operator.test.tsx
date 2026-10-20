@@ -179,7 +179,14 @@ const BUDGET = {
   // 7, against 72 / 74 / 47 / 8 before the pass. The margin is about a quarter
   // -- enough that renaming a column does not fail the gate, far too little to
   // fit a sentence back in.
-  'Pool limits': 40,
+  // RAISED 40 -> 42, 2026-10-19, BY THE OWNER'S #1481 DECISION that model
+  // prices are a platform setting edited in the console's admin settings
+  // (PRICES-UI). Measured 40 before it, at the ceiling. The Model prices card
+  // costs two tokens here: its heading and the two-word "Not read" mark its
+  // failed read is drawn as in this file's offline fixtures, both run into
+  // their neighbours by `textContent`. The figures are a table and cost
+  // nothing; no sentence was added.
+  'Pool limits': 42,
   'Platform counts': 32,
   // THE PLATFORM TICKS, MOVED ONTO PLATFORM COUNTS BY THE OWNER'S DECISION OF
   // 2026-10-13 (SCHED-ONE-PAGE: Admin › Schedules folded into Automate ›
@@ -189,7 +196,12 @@ const BUDGET = {
   // and each Cloud Scheduler job's own description, one per job in jobs.tf, so
   // it grows by about ten when a job is added. The margin is the quarter the
   // others have, less: a new job fits, a paragraph does not.
-  'Platform ticks': 165,
+  // RAISED 165 -> 195, 2026-10-18: jobs.tf now holds 13 jobs, with
+  // secrets_rotation_sweep and mcp_credentials_sweep each adding its row, and
+  // measured 170 at that point. Each added word is a job's own description,
+  // not a sentence of prose; the margin is the same as before, so one more
+  // job fits and a paragraph still does not.
+  'Platform ticks': 195,
   // RAISED 52 -> 76, 2026-09-25, BY THE OWNER'S CP-8 / CP-9 / CP-10 DECISIONS
   // (#85), measured at 61 on CI after them. What the words are: a `Feeds pool`
   // column naming the pool each cap feeds, column names that carry their basis

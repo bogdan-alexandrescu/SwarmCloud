@@ -20,12 +20,13 @@
 import SHEET from '../styles.css?raw'
 import ADMIN from '../styles/admin.css?raw'
 import { describe, expect, it, vi } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import { HELP } from '../help'
-import type { Capacity, Pool, Tenant } from '../types'
+import type { AdminWorkspaceView, Capacity, Pool, Profile, Tenant } from '../types'
 import { cascade, type CascadeEnv } from './cssgate'
+import { painted } from './marks'
 
 // The shell's sheet and the Admin section's own (styles/admin.css), in the
 // order the app loads them.
@@ -34,6 +35,13 @@ const STYLES = `${SHEET}\n${ADMIN}`
 const api = vi.hoisted(() => ({
   loadTenants: vi.fn(),
   loadCapacity: vi.fn(),
+  // Admin › Tenants' New workspace and "Being created" (WK-UI-TENANTS): who
+  // the caller is, and the records the job is still building.
+  loadProfile: vi.fn(),
+  loadAdminWorkspaces: vi.fn(),
+  approveWorkspace: vi.fn(),
+  denyWorkspace: vi.fn(),
+  retryWorkspace: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => {
   const real = await importOriginal<typeof import('../api')>()
@@ -56,7 +64,7 @@ function tenant(over: Partial<Tenant>): Tenant {
   return {
     tenant_id: 'eng',
     kind: 'group',
-    principal: 'eng@saga.xyz',
+    principal: 'eng@example.com',
     display_name: null,
     created_at: '2026-09-24T09:00:00Z',
     max_active: 20,
@@ -88,7 +96,7 @@ const ROSTER: Tenant[] = [
   }),
   tenant({
     tenant_id: 'smoke',
-    principal: 'swarm-smoke@saga.xyz',
+    principal: 'swarm-smoke@example.com',
     max_active: 10,
     capacity_units: 4,
     enabled: false,
@@ -489,5 +497,233 @@ describe('D16: a head cut at a narrow width keeps its name', () => {
     const heads = [...c.querySelectorAll('table.ten-table thead th')]
     expect(heads.length).toBeGreaterThan(0)
     for (const th of heads) expect(th.getAttribute('title'), th.textContent!).toBe(th.textContent!.trim())
+  })
+})
+
+// ADMIN › TENANTS › NEW WORKSPACE AND "BEING CREATED" (#847, lane
+// WK-UI-TENANTS; docs/design/workspace-kinds.md §4.2.4, §4.8, Q2 (a)).
+//
+//   * the New workspace button is an admin's: a non-admin sees none, and the
+//     list of records is not even read for them;
+//   * "Being created" lists every record that is not `ready`, each with its
+//     kind and `w-` id, and no email -- not the person's, the group's or the
+//     service account's (the principal stays off this page);
+//   * Approve on a SERVICE row is the platform owner's alone (Q2 (a)): an
+//     admin who is not the owner sees none there, and still sees it on a
+//     group row;
+//   * a `needs_owner` row shows the step the guard stopped at, and the API's
+//     code and copy word for word.
+//
+// Every address below is a fixture; nothing here is token-shaped.
+
+function profileOf(role: 'owner' | 'admin' | null): Profile {
+  return {
+    identity: {
+      email: 'someone@example.com',
+      display_name: null,
+      display_name_suggested: null,
+      domain: 'example.com',
+      platform_role: role,
+      is_admin: role !== null,
+      is_admin_unresolved: false,
+    },
+    workspaces: [],
+    revision: 1,
+    unavailable: [],
+  } as unknown as Profile
+}
+
+function ws(over: Partial<AdminWorkspaceView>): AdminWorkspaceView {
+  return {
+    state: 'applying',
+    kind: 'group',
+    setup_url: '/setup#workspace',
+    setup_command: '/sc:setup',
+    workspace_id: 'w-a1b2c3',
+    display_name: 'Research',
+    principal: 'research@example.com',
+    requested_at: '2026-10-19T08:00:00Z',
+    decision: null,
+    held: null,
+    limits: { max_active: 8, capacity_units: 8 },
+    steps: { A1: { state: 'done', at: '2026-10-19T08:01:00Z', code: null } },
+    failure: null,
+    ...over,
+  }
+}
+
+const STOPPED_COPY = 'The call guard refused a call the job tried to make. The platform owner reads it in the restricted log.'
+
+const RECORDS: AdminWorkspaceView[] = [
+  ws({}),
+  ws({ state: 'requested', workspace_id: 'w-group1', display_name: 'Platform team', principal: 'platform@example.com', steps: {} }),
+  ws({
+    state: 'requested',
+    kind: 'service',
+    workspace_id: 'w-svc001',
+    display_name: 'Reports bot',
+    principal: 'reports-bot@example-project.iam.gserviceaccount.com',
+    steps: {},
+  }),
+  ws({
+    state: 'needs_owner',
+    kind: 'personal',
+    workspace_id: 'w-pers01',
+    display_name: 'Ada',
+    principal: 'ada@example.com',
+    needs_owner_step: 'A7',
+    steps: { A1: { state: 'done' }, A7: { state: 'held', code: 'GUARD_REFUSED' } },
+    failure: { code: 'GUARD_REFUSED', step: 'A7', retryable: false, at: '2026-10-19T08:05:00Z', copy: STOPPED_COPY },
+  }),
+  ws({ state: 'ready', workspace_id: 'w-done01', display_name: 'Done already', principal: 'done@example.com' }),
+]
+
+async function tenantsAs(role: 'owner' | 'admin' | null): Promise<HTMLElement> {
+  api.loadProfile.mockResolvedValue({ status: 'ok', data: profileOf(role), fetchedAt: Date.now() } satisfies Result<Profile>)
+  api.loadAdminWorkspaces.mockResolvedValue({ status: 'ok', data: RECORDS, fetchedAt: Date.now() } satisfies Result<AdminWorkspaceView[]>)
+  return roster()
+}
+
+async function beingCreated(c: HTMLElement): Promise<HTMLElement> {
+  await waitFor(() => expect(c.querySelector('[data-testid="being-created"] [data-workspace-id]')).not.toBeNull())
+  return c.querySelector('[data-testid="being-created"]') as HTMLElement
+}
+
+function wsRow(section: HTMLElement, id: string): HTMLElement {
+  const r = section.querySelector(`[data-workspace-id="${id}"]`)
+  expect(r, `no "Being created" row for ${id}`).toBeTruthy()
+  return r as HTMLElement
+}
+
+describe('Tenants: New workspace is an admin’s button (WK-UI-TENANTS)', () => {
+  it('draws no New workspace button and reads no records for a non-admin', async () => {
+    const c = await tenantsAs(null)
+    await waitFor(() => expect(api.loadProfile).toHaveBeenCalled())
+    await act(async () => {})
+    expect(screen.queryByRole('button', { name: 'New workspace' })).toBeNull()
+    expect(c.querySelector('[data-testid="being-created"]')).toBeNull()
+    expect(api.loadAdminWorkspaces).not.toHaveBeenCalled()
+  })
+
+  it('draws it for an admin, and it opens the New workspace dialog', async () => {
+    await tenantsAs('admin')
+    const button = await screen.findByRole('button', { name: 'New workspace' })
+    fireEvent.click(button)
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+    expect(within(screen.getByRole('dialog')).getByRole('tab', { name: 'Service' })).toBeTruthy()
+  })
+})
+
+// THE HEADING AND ITS BUTTON ARE ONE ROW (#1678). Both sat in `.ob-acts`,
+// onboarding's actions row (inline-flex, packed right, no `align-items`), and
+// the `h2` kept the browser's top margin, so New workspace was drawn about
+// 18px above "Being created" and beside it. `painted` reads every shipped
+// sheet in the bundle's order, phone rules included.
+describe('Tenants draws Being created and New workspace on one line (#1678)', () => {
+  async function header(): Promise<{ section: HTMLElement; h2: HTMLElement; button: HTMLElement; row: HTMLElement }> {
+    const section = await beingCreated(await tenantsAs('admin'))
+    const h2 = within(section).getByRole('heading', { name: 'Being created' })
+    const button = within(section).getByRole('button', { name: 'New workspace' })
+    return { section, h2, button, row: h2.parentElement as HTMLElement }
+  }
+
+  it('puts the heading and the button in one header row of the section, outside onboarding’s actions row', async () => {
+    const { section, h2, button, row } = await header()
+    // MUTATION: wrap the button in its own element and this is false.
+    expect(button.parentElement).toBe(row)
+    // MUTATION: nest the row inside another wrapper and this is false.
+    expect(row.parentElement).toBe(section)
+    // MUTATION: put `ob-acts` back on the row and this finds it.
+    expect(h2.closest('.ob-acts')).toBeNull()
+  })
+
+  it('lays the row out across the section, centred, with the heading at no top margin', async () => {
+    const { h2, row } = await header()
+    // MUTATION: leave the row as `.ob-acts` (inline-flex) and this reads inline-flex.
+    expect(painted(row, 'display', WIDE)).toBe('flex')
+    // MUTATION: drop `align-items` and the button rides to the row's top again.
+    expect(painted(row, 'align-items', WIDE)).toBe('center')
+    // MUTATION: `flex-end` packs both to the right, the `.ob-acts` defect.
+    expect(painted(row, 'justify-content', WIDE)).toBe('space-between')
+    // MUTATION: drop the h2's `margin: 0` and the browser's ~18px returns
+    // (the resolver reads that as no rule at all: null).
+    expect(painted(h2, ['margin-top', 'margin'], WIDE)?.split(/\s+/)[0]).toMatch(/^0(px)?$/)
+    // MUTATION: drop the row's bottom margin and the list sits on the heading.
+    // The space is the one a sibling section's heading gets from `.section > h2`.
+    const sibling = document.createElement('section')
+    sibling.className = 'section'
+    const siblingH2 = sibling.appendChild(document.createElement('h2'))
+    document.body.appendChild(sibling)
+    try {
+      const below = (el: Element) => painted(el, ['margin-bottom', 'margin'], WIDE)?.split(/\s+/).at(-1)
+      expect(below(siblingH2)).toBe('10px')
+      expect(below(row)).toBe(below(siblingH2))
+    } finally {
+      sibling.remove()
+    }
+  })
+
+  it('wraps the button under the heading at phone width, full width and a 44px target', async () => {
+    const { button, row } = await header()
+    // MUTATION: drop `flex-wrap: wrap` and a long heading squeezes the button.
+    expect(painted(row, 'flex-wrap', PHONE)).toBe('wrap')
+    // MUTATION: drop the phone rule's min-height and the button is a 30px target.
+    expect(painted(button, 'min-height', PHONE)).toBe('44px')
+    // MUTATION: drop the phone rule's basis and `.c-btn`'s `flex: none` keeps it word-wide.
+    expect(painted(button, ['flex', 'flex-basis'], PHONE)).toMatch(/(^|\s)100%$/)
+  })
+})
+
+describe('Tenants lists the workspaces being created (WK-UI-TENANTS, §4.2.4)', () => {
+  it('lists every record that is not ready, each with its kind and w- id', async () => {
+    const section = await beingCreated(await tenantsAs('admin'))
+    const ids = [...section.querySelectorAll('[data-workspace-id]')].map((r) => r.getAttribute('data-workspace-id'))
+    expect(ids).toEqual(['w-a1b2c3', 'w-group1', 'w-svc001', 'w-pers01'])
+    expect(section.querySelector('[data-workspace-id="w-done01"]')).toBeNull()
+    expect(visible(wsRow(section, 'w-svc001'))).toContain('service')
+    expect(visible(wsRow(section, 'w-svc001'))).toContain('w-svc001')
+    expect(visible(wsRow(section, 'w-pers01'))).toContain('personal')
+    expect(visible(wsRow(section, 'w-a1b2c3'))).toContain('group')
+  })
+
+  it('shows no email: not the person’s, the group’s or the service account’s', async () => {
+    const section = await beingCreated(await tenantsAs('owner'))
+    expect(section.textContent).not.toContain('@')
+    for (const el of section.querySelectorAll('*')) {
+      for (const a of el.attributes) expect(a.value, `${el.tagName} ${a.name}`).not.toContain('@')
+    }
+  })
+
+  it('draws each row’s live steps', async () => {
+    const section = await beingCreated(await tenantsAs('admin'))
+    const steps = wsRow(section, 'w-a1b2c3').querySelector('[aria-label="Workspace job steps"]')
+    expect(steps).toBeTruthy()
+    expect(steps!.querySelector('[data-step="A1"]')!.getAttribute('data-state')).toBe('done')
+  })
+})
+
+describe('Tenants: only the platform owner approves a service workspace (Q2 (a))', () => {
+  it('draws no Approve on a service row for an admin who is not the owner, and draws it on a group row', async () => {
+    const section = await beingCreated(await tenantsAs('admin'))
+    expect(within(wsRow(section, 'w-svc001')).queryByRole('button', { name: 'Approve' })).toBeNull()
+    expect(visible(wsRow(section, 'w-svc001'))).toContain('Waiting for the platform owner')
+    expect(within(wsRow(section, 'w-group1')).getByRole('button', { name: 'Approve' })).toBeTruthy()
+  })
+
+  it('draws Approve on a service row for the owner, and it approves by w- id', async () => {
+    api.approveWorkspace.mockResolvedValue({ status: 'ok', data: { workspace: RECORDS[2]! }, fetchedAt: Date.now() })
+    const section = await beingCreated(await tenantsAs('owner'))
+    fireEvent.click(within(wsRow(section, 'w-svc001')).getByRole('button', { name: 'Approve' }))
+    await waitFor(() => expect(api.approveWorkspace).toHaveBeenCalledWith('w-svc001'))
+  })
+})
+
+describe('Tenants shows the step a stopped workspace is held at (§4.8)', () => {
+  it('names the step, and the API’s code and copy word for word, on a needs_owner row', async () => {
+    const section = await beingCreated(await tenantsAs('admin'))
+    const text = visible(wsRow(section, 'w-pers01'))
+    expect(text).toContain('Stopped at A7')
+    expect(text).toContain('GUARD_REFUSED')
+    expect(text).toContain(STOPPED_COPY)
   })
 })

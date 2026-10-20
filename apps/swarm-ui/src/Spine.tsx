@@ -4,8 +4,9 @@
  *
  *   SPINE   84px, deep blue (#0b3a7a -> #06101e), THE SAME IN BOTH THEMES. The
  *           Hive in its 44px full cut (white -> #7dd3fc), Submit (the sky
- *           button), Overview, Work, Capacity, Admin; at its foot Help, API
- *           reads and the avatar.
+ *           button), Overview, Work, Automate, Capacity, Admin; at its foot
+ *           Help, then Profile (the person's avatar), the last item
+ *           (NAV-FOOT, #1672). API reads is Capacity's last page.
  *   PANEL   236px. The wordmark and the environment pill, the tenant block,
  *           the open section's pages, the capacity meter and the user footer.
  *
@@ -14,19 +15,27 @@
  * the spine's colour, with the compact seven-dot Hive) opens a drawer that
  * holds both columns.
  *
- * Admin is SHOWN to a non-admin, with a lock: the rows are disabled and one
- * line says admins only. A hidden page is indistinguishable from one that does
- * not exist.
+ * ADMIN IS DRAWN ONLY FOR SOMEONE WHO ADMINISTERS SOMETHING (amended
+ * 2026-10-19, NAV-ADMIN-ROLE; part of #1633, owner decision "All under
+ * Profile; Admin by role"): a platform admin (`/v1/tenants/me`), or a person
+ * whose stored role is `admin` in at least one GROUP workspace
+ * (`/v1/tenants/mine`, `adminWorkspaces`). Everyone else sees no Admin item,
+ * flyout, drawer entry or panel -- no lock, no disabled rows -- and nothing is
+ * drawn while either read is in flight. It reverses the rule written here
+ * until then, "Admin is SHOWN to a non-admin, with a lock": a person who
+ * administers nothing was shown four pages they could never use. The routes
+ * stay, and a direct link still lands on the page's own "admins only"
+ * refusal, so a saved link is answered rather than missing.
  *
  * Production draws a red pill and a 3px red bar across the top; the pill shows
  * only what was measured (`classifyEnvironment`), never a hardcoded word.
  */
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
-import { loadApprovals, loadCapacity, loadMe, loadMyTenants, loadStats, type TenantChoice } from './api'
+import { USE_FIXTURES, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadStats, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
-import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, probeSnapshot, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
+import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, read, route, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
 import { HELP_GROUPS, HELP, TOPIC_IDS, helpAnchor } from './help'
 import { STATE_MARK } from './marks'
 import { addressToPath } from './paths'
@@ -37,11 +46,13 @@ import { SignOutButton, SignedBackIn } from './SignOut'
 import { iapFronted, signingOut } from './signoutState'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
 import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
+import { firstName } from './PersonName'
+import { roleOf } from './roles'
 
-export type SpineSection = 'overview' | 'work' | 'automate' | 'capacity' | 'admin' | 'help' | 'api' | null
+export type SpineSection = 'profile' | 'overview' | 'work' | 'automate' | 'capacity' | 'admin' | 'help' | null
 
 /** The spine sections that draw a panel of pages. */
-type PanelSection = 'work' | 'automate' | 'capacity' | 'admin'
+type PanelSection = 'profile' | 'work' | 'automate' | 'capacity' | 'admin'
 
 /** One page in the panel: its label, its icon, the address `go()` takes, and its children. */
 interface PanelPage {
@@ -61,11 +72,30 @@ interface PanelPage {
 
 const AGENT_LABEL: Readonly<Record<AgentTab, string>> = { live: 'Live', waiting: 'Waiting', recent: 'Recent' }
 
+/** Capacity › API reads' tab (NAV-FOOT, #1672): App.tsx SECTIONS' id. */
+const API_READS_KEY = 'api-reads'
+
+/** Admin › Workspaces you admin's tab (NAV-ADMIN-ROLE; part of #1633). */
+export const WORKSPACES_YOU_ADMIN_TAB = 'workspaces'
+
 /**
  * The panel's pages, per spine section (common.py NAV). The `to` values are
  * router addresses, so they resolve exactly as a click on the old rail did.
  */
 export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
+  // EVERY SETTINGS PAGE UNDER PROFILE (NAV-PROFILE; part of #1633, owner
+  // decision 2026-10-19 "All under Profile; Admin by role"). They were four
+  // "Settings ›" links stacked in the panel foot, and People and roles had no
+  // link at all. The person's own pages first, then the selected workspace's.
+  // Not SECTIONS entries (App.tsx): the addresses stay `settings/*`, and the
+  // issue forms already name each page as Settings › <page>.
+  profile: [
+    { key: 'profile', label: 'Profile', icon: 'people', to: 'settings/profile' },
+    { key: 'keys', label: 'API keys', icon: 'key', to: 'settings/keys' },
+    { key: 'workspace', label: 'Workspace', icon: 'tenants', to: 'settings/workspace' },
+    { key: 'mcp-servers', label: 'MCP servers', icon: 'plug', to: 'settings/mcp-servers' },
+    { key: 'people', label: 'People and roles', icon: 'accounts', to: 'settings/people' },
+  ],
   work: [
     {
       key: 'agents',
@@ -115,6 +145,10 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
         { key: 'quota', label: 'Provider quota', to: 'capacity/quota', admin: true },
       ],
     },
+    // NAV-FOOT (#1672, owner 2026-10-20): API reads left the spine's foot to
+    // be Capacity's last page. Its "Every read / Failures only" pair is drawn
+    // under it while it is the open page (`PanelPages`).
+    { key: API_READS_KEY, label: 'API reads', icon: 'api', to: `capacity/${API_READS_KEY}` },
   ],
   admin: [
     { key: 'limits', label: 'Pool limits', icon: 'admin', to: 'admin/limits' },
@@ -124,6 +158,10 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // missing here, so an admin reached it only by typing /admin/people --
     // the Runs defect visual QA Q7 caught, again.
     { key: 'people', label: 'People', icon: 'people', to: 'admin/people' },
+    // NAV-ADMIN-ROLE (part of #1633): the group workspaces the person
+    // administers, last. The only Admin page a workspace admin who is not a
+    // platform admin is shown (`adminPagesFor`).
+    { key: WORKSPACES_YOU_ADMIN_TAB, label: 'Workspaces you admin', icon: 'tenants', to: `admin/${WORKSPACES_YOU_ADMIN_TAB}` },
     // No Schedules here since SCHED-ONE-PAGE (owner decision 2026-10-13):
     // every tenant's schedules are Automate › Schedules, All tenants.
   ],
@@ -141,14 +179,38 @@ const SUBMIT_PAGES: readonly { tab: string; label: string; icon: string; to: str
   { tab: 'new-issue', label: 'From a GitHub issue', icon: 'runs', to: 'work/new-issue' },
 ]
 
+/**
+ * THE GROUP WORKSPACES A PERSON ADMINISTERS (NAV-ADMIN-ROLE; part of #1633):
+ * the `/v1/tenants/mine` entries whose stored role is `admin` and whose kind
+ * is `group`. A personal workspace never counts -- everyone administers their
+ * own, and its settings are under Profile -- and neither does a platform
+ * admin's reach entry (`isReach`): that is a workspace they can reach, not
+ * one they were made admin of.
+ */
+export function adminWorkspaces(choices: readonly TenantChoice[]): TenantChoice[] {
+  return choices.filter((c) => c.kind === 'group' && roleOf(c) === 'admin' && !isReach(c))
+}
+
+/**
+ * The Admin pages a person is shown: all five for a platform admin, only
+ * Workspaces you admin for a workspace admin who is not one, and none for
+ * anyone else -- which is how the spine knows to draw no Admin item.
+ */
+export function adminPagesFor(platformAdmin: boolean, workspaceAdmin: boolean): readonly PanelPage[] {
+  if (platformAdmin) return PANEL_PAGES.admin
+  return workspaceAdmin ? PANEL_PAGES.admin.filter((p) => p.key === WORKSPACES_YOU_ADMIN_TAB) : []
+}
+
 /** Each panel's heading: its spine section's label. */
-export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { work: 'Work', automate: 'Automate', capacity: 'Capacity', admin: 'Admin' }
+export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { profile: 'Profile', work: 'Work', automate: 'Automate', capacity: 'Capacity', admin: 'Admin' }
 
 /** Which panel row a route's tab belongs to: a child's tab belongs to its parent. */
 function rowFor(section: PanelSection, tab: string): string {
   if (section === 'work' && (tab === 'running' || tab === '')) return 'agents'
   if (section === 'capacity' && tab === 'profiles') return 'pools'
   if (section === 'capacity' && tab === 'quota') return 'accounts'
+  // The one-time key link (paths.ts KEY_LINK_ADDRESS) opens API keys.
+  if (section === 'profile' && tab.startsWith('keys/')) return 'keys'
   return tab
 }
 
@@ -252,6 +314,20 @@ function tabletNow(): boolean {
   return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(TABLET_QUERY).matches
 }
 
+/** The phone band, where the spine becomes the 44px phone header (the same width as Notifications.tsx's). */
+const PHONE_QUERY = '(max-width: 759px)'
+
+function subscribePhone(fn: () => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {}
+  const query = window.matchMedia(PHONE_QUERY)
+  query.addEventListener?.('change', fn)
+  return () => query.removeEventListener?.('change', fn)
+}
+
+function phoneNow(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(PHONE_QUERY).matches
+}
+
 /** The page scroller's id: the skip link's target (CH-15). */
 const CONTENT_ID = 'swarm-page'
 
@@ -283,7 +359,7 @@ function focusInChrome(): boolean {
  * THE TENANT NAMES `/v1/tenants/me` HAS GIVEN IN THIS BROWSER, by tenant id
  * (QA G1-06, 2026-10-07). `/v1/tenants/mine` names each tenant by its
  * registered group's email -- it reads nothing, by design -- so the shell
- * called one tenant "Engineering" in the panel and "eng@saga.xyz" in the list
+ * called one tenant "Engineering" in the panel and "eng@example.com" in the list
  * under it. The list draws the name `me` gave where one is known: the current
  * tenant's always, another's once it has been acted as here.
  */
@@ -313,10 +389,20 @@ function learnTenantName(id: string, name: string): void {
 export interface NamedTenantChoice extends TenantChoice {
   /** The registered group's email: `/v1/tenants/mine`'s own `display_name`. */
   group: string
+  /** The person's default workspace (§4.5), as `/v1/tenants/mine` marks it. */
+  is_default: boolean
 }
 
 /** What the switcher calls the caller's own personal workspace (#1200), whatever its tenant document says. */
 export const OWN_WORKSPACE_LABEL = 'Your workspace'
+
+/**
+ * Settings › Profile (#1505, user-profile.md §4.7): the spine's last item and
+ * the signed-in name's link (NAV-FOOT, #1672). The path is written out because
+ * `paths.ts` gained the address in its own lane (PROFILE-NAV).
+ */
+export const PROFILE_ADDRESS = 'settings/profile'
+export const PROFILE_PATH = '/settings/profile'
 
 /**
  * The one name the shell draws for a tenant: the current tenant's from `me`,
@@ -327,11 +413,31 @@ export const OWN_WORKSPACE_LABEL = 'Your workspace'
 export function nameTenants(choices: readonly TenantChoice[], me: Me | null): NamedTenantChoice[] {
   const known = knownTenantNames()
   return choices.map((c) => {
-    if (c.kind === 'user') return { tenant_id: c.tenant_id, display_name: OWN_WORKSPACE_LABEL, group: OWN_WORKSPACE_LABEL }
+    const is_default = defaultChoice(c)
+    if (c.kind === 'user') return { tenant_id: c.tenant_id, display_name: OWN_WORKSPACE_LABEL, group: OWN_WORKSPACE_LABEL, is_default }
     const current = me !== null && me.tenant.tenant_id === c.tenant_id ? me.tenant.display_name || null : null
-    return { tenant_id: c.tenant_id, display_name: current ?? known[c.tenant_id] ?? c.display_name, group: c.display_name }
+    // `via` rides along: the list draws a platform admin's reach entries under
+    // their own heading, and the shell its banner (`isReach`).
+    const via = c.via === undefined ? {} : { via: c.via }
+    return { tenant_id: c.tenant_id, display_name: current ?? known[c.tenant_id] ?? c.display_name, group: c.display_name, is_default, ...via }
   })
 }
+
+/**
+ * A PLATFORM ADMIN'S REACH (docs/design/workspace-roles.md §4.2.2 step 5,
+ * §4.8; owner answer Q5; lane ROLES-UI-ADMIN). `/v1/tenants/mine` lists a
+ * platform admin's memberships, then each registered group workspace they
+ * reach only as a platform admin, marked `via: "platform_admin"`. Only the
+ * server's mark makes an entry one: a group workspace the caller is a member
+ * of is never one, whatever their platform role, and anyone who is not a
+ * platform admin is served no such entry, so their list is drawn as before.
+ */
+export function isReach(c: TenantChoice): boolean {
+  return c.via === 'platform_admin'
+}
+
+/** The heading the switcher draws a platform admin's reach entries under (§4.8). */
+export const REACH_HEADING = 'Other workspaces (platform admin)'
 /** The Workflows panel's Recent (5) switcher, per browser. */
 export const RECENT_WORKFLOWS_KEY = 'swarm.workflows.recent'
 
@@ -570,6 +676,59 @@ function useFrameRead<T>(load: () => Promise<Result<T>>, everyMs: number | null,
     setNonce((n) => n + 1)
   }, [])
   return [r, again]
+}
+
+/*
+ * THE SIGNED-IN LINE'S NAME (PROFILE-FIRSTNAME, owner 2026-10-19,
+ * user-profile.md §7.1 amendment): the caller's saved FIRST name, else the
+ * local part of their email as before. `/v1/tenants/me` does not carry the
+ * name, so `GET /v1/profile` is read for it ONCE per session per signed-in
+ * email -- not once per page, and not again when the workspace changes,
+ * because the name is the person's, not the workspace's. A read that fails
+ * leaves the local part, which is what the line said before names existed.
+ *
+ * Profile's own save calls `noteOwnName`, so a name saved there reaches the
+ * panel without a second read. Memory only, like the frame's other reads.
+ */
+let ownName: { email: string; name: string | null } | null = null
+let ownNameAskedFor: string | null = null
+const ownNameListeners = new Set<() => void>()
+
+/** Record the signed-in person's saved name (null: none saved). */
+export function noteOwnName(email: string, name: string | null): void {
+  const kept = typeof name === 'string' && name.trim() !== '' ? name : null
+  if (ownName !== null && ownName.email === email && ownName.name === kept) return
+  ownName = { email, name: kept }
+  for (const fn of ownNameListeners) fn()
+}
+
+function ownNameSnapshot(): { email: string; name: string | null } | null {
+  return ownName
+}
+
+function subscribeOwnName(fn: () => void): () => void {
+  ownNameListeners.add(fn)
+  return () => ownNameListeners.delete(fn)
+}
+
+/** Ask `/v1/profile` for `email`'s saved name, the first time only. */
+function askOwnName(email: string): void {
+  if (USE_FIXTURES || ownNameAskedFor === email) return
+  ownNameAskedFor = email
+  void read<{ identity?: { email?: unknown; display_name?: unknown } }>(route('/v1/profile'), () => false, { frame: true }).then((r) => {
+    if (r.status !== 'ok' && r.status !== 'stale') return
+    const id = r.data?.identity
+    // The answer is about whoever the API saw; a different address is not this line's.
+    if (typeof id?.email === 'string' && id.email !== email) return
+    noteOwnName(email, typeof id?.display_name === 'string' ? id.display_name : null)
+  })
+}
+
+/** The panel's signed-in line: the saved first name, else the email's local part. */
+export function signedInLabel(email: string, saved: { email: string; name: string | null } | null): { text: string; title: string } {
+  const local = email.split('@')[0] ?? email
+  if (saved === null || saved.email !== email || saved.name === null) return { text: local, title: local }
+  return { text: firstName(saved.name), title: saved.name }
 }
 
 const loadFrameMe = () => loadMe({ frame: true })
@@ -909,6 +1068,19 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
     </>
   ),
   swap: <path d="m7 9 5-5 5 5M7 15l5 5 5-5" />,
+  // NAV-PROFILE: API keys and MCP servers, in the Profile panel.
+  key: (
+    <>
+      <circle cx="8" cy="15" r="4" />
+      <path d="m11 12 8.5-8.5M16.5 6.5l2.5 2.5M14 9l2 2" />
+    </>
+  ),
+  plug: (
+    <>
+      <path d="M9 3.5V8M15 3.5V8M6.5 8h11v3a5.5 5.5 0 0 1-11 0z" />
+      <path d="M12 16.5v4" />
+    </>
+  ),
   // #1206: the header bar's bell, and the tick its empty state and a finished update draw.
   bell: (
     <>
@@ -936,6 +1108,15 @@ export function Icon({ name, className = 'sk-ic' }: { name: string; className?: 
 // ---------------------------------------------------------------------------
 // The shell
 // ---------------------------------------------------------------------------
+
+/**
+ * PROFILE, THE SPINE'S LAST ITEM (NAV-FOOT, #1672, owner 2026-10-20): at the
+ * foot, below Help, drawn as the person's avatar. NAV-PROFILE (#1633) had put
+ * it under the Hive, above Submit; the owner moved it back to where people
+ * look for themselves, and kept its panel of five settings pages. It is the
+ * one place the person is drawn on the spine.
+ */
+const PROFILE_ITEM: { key: 'profile'; label: string; to: string } = { key: 'profile', label: 'Profile', to: PROFILE_ADDRESS }
 
 const SPINE: readonly { key: Exclude<SpineSection, null>; label: string; to: string }[] = [
   { key: 'overview', label: 'Overview', to: 'overview/now' },
@@ -966,8 +1147,17 @@ export interface ShellProps {
   /** API reads' filter. */
   apiFailuresOnly?: boolean
   onApiFilter?: (failuresOnly: boolean) => void
-  /** The spine's foot: Help and API reads, drawn by App (see `ctl-nav-util`). */
+  /** The spine's foot: Help, drawn by App (see `ctl-nav-util`); Profile follows it. */
   foot: ReactNode
+  /**
+   * THE NOTIFICATION BELL (#1206), drawn by App -- Notifications.tsx imports
+   * from this file, so it is handed in rather than imported. Placed ONCE, in
+   * the shell's own chrome (visual QA V178, 2026-10-16): at the spine's foot
+   * from 760px up, in the phone header below it. It used to be the only thing
+   * in a 48px header bar over every section page -- an empty band above the
+   * title at 1440, a second sticky band under the phone header at 390.
+   */
+  bell?: ReactNode
   /**
    * The API-reads strip, drawn as the last row of the CONTENT column -- not a
    * full-width bar under the spine and the panel (#503: it cut the spine's
@@ -1012,6 +1202,7 @@ export function SkyShell({
   onApiFilter,
   missing = false,
   foot,
+  bell = null,
   dock,
   keepOnSwitch = false,
   place = '',
@@ -1028,6 +1219,9 @@ export function SkyShell({
   // A capped list re-reads the stats with each of its own reads (D27).
   const [stats] = useFrameRead(loadFrameStats, 30_000, `${tenant ?? ''}:${fromList !== null && !fromList.whole ? fromList.at : ''}`)
   const [mine, rereadMine] = useFrameRead(loadFrameTenants, null)
+  // A headerless request refused because the default is unknown (Q9): said
+  // beside the switcher, where naming a workspace is the next action.
+  const prefsDown = useSyncExternalStore(subscribePreferencesUnavailable, preferencesUnavailableSnapshot, preferencesUnavailableSnapshot)
   // Once a minute: the inbox route syncs the tenant's held firings as it reads.
   const [inbox] = useFrameRead(loadFrameApprovals, 60_000, tenant ?? '')
   const waiting = approvalsBadge(inbox)
@@ -1037,6 +1231,17 @@ export function SkyShell({
   const adminPending = feedData(notes)?.admin_pending ?? 0
   const who = dataOf(me)
   const admin = who?.principal.is_admin === true
+  // WHO SEES ADMIN (NAV-ADMIN-ROLE; part of #1633): a platform admin, or the
+  // stored admin of a group workspace. Both reads unread is no Admin at all,
+  // never a locked one that then disappears.
+  const adminPages = adminPagesFor(admin, adminWorkspaces(dataOf(mine) ?? []).length > 0)
+  const spineItems = SPINE.flatMap((s) => (s.key !== 'admin' ? [s] : adminPages.length === 0 ? [] : [{ ...s, to: adminPages[0]!.to }]))
+  const savedName = useSyncExternalStore(subscribeOwnName, ownNameSnapshot, ownNameSnapshot)
+  const whoEmail = who?.principal.email ?? null
+  useEffect(() => {
+    if (whoEmail !== null) askOwnName(whoEmail)
+  }, [whoEmail])
+  const signedIn = who === null ? null : signedInLabel(who.principal.email, savedName)
   const env = classifyEnvironment(
     import.meta.env.VITE_SWARM_ENV,
     typeof window === 'undefined' ? '' : window.location.hostname,
@@ -1057,6 +1262,8 @@ export function SkyShell({
   const [attempt, setAttempt] = useState(0)
 
   const tablet = useSyncExternalStore(subscribeTablet, tabletNow, () => false)
+  const phone = useSyncExternalStore(subscribePhone, phoneNow, () => false)
+  const menuNoteId = useId()
   const [pinned, setPinned] = useState(() => readPref(COLLAPSED_KEY) === '1')
   // The tablet's expand, for this visit and this band only (CH-1).
   const [tabletOpen, setTabletOpen] = useState(false)
@@ -1423,6 +1630,78 @@ export function SkyShell({
     [who, keepOnSwitch, choices],
   )
 
+  // ONE SPINE SECTION: the five after Submit, and Profile at the foot.
+  const sectionLink = (s: { key: Exclude<SpineSection, null>; label: string; to: string }) => {
+    const on = section === s.key
+    // A LINK, NOT A BUTTON (#503): a section opens in a new tab and copies
+    // as a link, like every other place in the console.
+    return (
+      <a
+        key={s.key}
+        data-sec={s.key}
+        className={`sk-ri${on ? ' is-on' : ''}`}
+        // A 404 LIGHTS THE NEAREST SECTION BUT IS ON NO PAGE (live QA
+        // CH-14): the section is drawn lit as the way back, never
+        // announced as where the reader is.
+        aria-current={on && !missing ? 'page' : undefined}
+        title={s.label}
+        {...routed(s.to, () => {
+          // COLLAPSED, A CLICK ON THE SECTION YOU ARE IN OPENS ITS PAGES
+          // (visual QA V083, 2026-10-11). It expanded the panel, so with
+          // no hover -- a touch screen -- the only way between the four
+          // Admin pages was to undo the collapse. The flyout opens at
+          // once and stays until a choice, Escape or a click elsewhere;
+          // `Open the panel` in it, and the spine's own expand, still
+          // undo the collapse. Overview has no pages, so it expands.
+          if (collapsed && on && s.key !== 'overview' && !drawer) {
+            if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
+            setFly(s.key)
+            return
+          }
+          // Collapsed, a click on another section opens the panel again --
+          // but not in the tablet band, which is collapsed for room (CH-1).
+          if (collapsed && !tablet) toggle()
+          if (!(collapsed && on)) nav(s.to)
+        })}
+        onMouseEnter={() => hover(s.key)}
+        onMouseLeave={() => hover(null)}
+        onFocus={() => {
+          // Focus opens the flyout at once, so the Tab that follows can enter it (CH-8).
+          if (!collapsed || drawer || quietFocus.current) return
+          if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
+          setFly(s.key)
+        }}
+        onKeyDown={(e) => onSectionKey(e, s.key)}
+      >
+        {/* PROFILE IS DRAWN AS THE PERSON (NAV-PROFILE): their initials, the
+            email in the title, and a whole-app state's dot (states.html C). */}
+        {s.key === 'profile' ? (
+          <span className="sk-av" title={who?.principal.email ?? 'not read'} aria-hidden>
+            {initials(who?.principal.email ?? '')}
+            {fault !== null && <i className="sk-av-dot" />}
+          </span>
+        ) : (
+          <Icon name={s.key} />
+        )}
+        <small>{s.label}</small>
+        {s.key === 'capacity' && meter?.warn != null && <i className="sk-dot" title={meter.warn} />}
+        {s.key === 'automate' && waiting !== null && (
+          <i className={waiting.n === null ? 'sk-badge is-unread' : 'sk-badge'} title={waiting.why} aria-label={waiting.why}>
+            {waiting.n === null ? '—' : waiting.n}
+          </i>
+        )}
+        {/* #1206: requests waiting on ANY admin, as a pill at the item's
+            top-right. Gated on the session read as well as the count: a
+            workspace admin's Admin carries no platform count. */}
+        {s.key === 'admin' && admin && adminPending > 0 && (
+          <i className="sk-badge sk-apill" title={`${adminPending} waiting for an admin`} aria-label={`${adminPending} waiting for an admin`}>
+            {adminPending}
+          </i>
+        )}
+      </a>
+    )
+  }
+
   const spine = (
     <nav className="sk-spine" aria-label="Sections" onBlur={onFlyBlur} onKeyDown={onFlyKey}>
       <a className="sk-hive" {...routed('overview/now', () => nav('overview/now'))}>
@@ -1436,72 +1715,7 @@ export function SkyShell({
         <small>Submit</small>
       </a>
       <span className="sk-rsep" aria-hidden />
-      {SPINE.map((s) => {
-        const on = section === s.key
-        // LOCKED UNTIL THE READ SAYS ADMIN. Drawn unlocked while `who` was
-        // unread, a non-admin saw Admin open and then saw the lock appear.
-        const locked = s.key === 'admin' && !admin
-        const checking = locked && who === null
-        // A LINK, NOT A BUTTON (#503): a section opens in a new tab and copies
-        // as a link, like every other place in the console.
-        return (
-          <a
-            key={s.key}
-            data-sec={s.key}
-            className={`sk-ri${on ? ' is-on' : ''}`}
-            // A 404 LIGHTS THE NEAREST SECTION BUT IS ON NO PAGE (live QA
-            // CH-14): the section is drawn lit as the way back, never
-            // announced as where the reader is.
-            aria-current={on && !missing ? 'page' : undefined}
-            title={checking ? `${s.label} (checking access)` : locked ? `${s.label} (admins only)` : s.label}
-            {...routed(s.to, () => {
-              // COLLAPSED, A CLICK ON THE SECTION YOU ARE IN OPENS ITS PAGES
-              // (visual QA V083, 2026-10-11). It expanded the panel, so with
-              // no hover -- a touch screen -- the only way between the four
-              // Admin pages was to undo the collapse. The flyout opens at
-              // once and stays until a choice, Escape or a click elsewhere;
-              // `Open the panel` in it, and the spine's own expand, still
-              // undo the collapse. Overview has no pages, so it expands.
-              if (collapsed && on && s.key !== 'overview' && !drawer) {
-                if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
-                setFly(s.key)
-                return
-              }
-              // Collapsed, a click on another section opens the panel again --
-              // but not in the tablet band, which is collapsed for room (CH-1).
-              if (collapsed && !tablet) toggle()
-              if (!(collapsed && on)) nav(s.to)
-            })}
-            onMouseEnter={() => hover(s.key)}
-            onMouseLeave={() => hover(null)}
-            onFocus={() => {
-              // Focus opens the flyout at once, so the Tab that follows can enter it (CH-8).
-              if (!collapsed || drawer || quietFocus.current) return
-              if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
-              setFly(s.key)
-            }}
-            onKeyDown={(e) => onSectionKey(e, s.key)}
-          >
-            <Icon name={s.key} />
-            <small>{s.label}</small>
-            {s.key === 'capacity' && meter?.warn != null && <i className="sk-dot" title={meter.warn} />}
-            {s.key === 'automate' && waiting !== null && (
-              <i className={waiting.n === null ? 'sk-badge is-unread' : 'sk-badge'} title={waiting.why} aria-label={waiting.why}>
-                {waiting.n === null ? '—' : waiting.n}
-              </i>
-            )}
-            {/* #1206: requests waiting on ANY admin, as a pill at the item's
-                top-right. Gated on the session read as well as the count: a
-                pill is never drawn over a locked Admin. */}
-            {s.key === 'admin' && admin && adminPending > 0 && (
-              <i className="sk-badge sk-apill" title={`${adminPending} waiting for an admin`} aria-label={`${adminPending} waiting for an admin`}>
-                {adminPending}
-              </i>
-            )}
-            {locked && <Icon name="lock" className="sk-ic sk-lkd" />}
-          </a>
-        )
-      })}
+      {spineItems.map(sectionLink)}
       <span className="sk-grow" />
       {/* THE WAY BACK TO THE PANEL (U10a D26): collapsed, the only way to
           bring it back was to click a section. The panel's own collapse
@@ -1511,13 +1725,18 @@ export function SkyShell({
           <Icon name="expand" />
         </button>
       )}
+      {/* THE BELL AT THE FOOT, above Help, from 760px up (V178): always on
+          screen, as it was in the sticky bar, and no band over the page. Its
+          drop-down opens beside the spine (styles/notifications.css). */}
+      {!phone && bell !== null && <div className="sk-bell">{bell}</div>}
       {foot}
-      {/* Collapsed, the avatar is the person: Sign out sits beside it, as an icon. */}
+      {/* Collapsed, the panel's Sign out is an icon at the spine's foot. */}
       {collapsed && !drawer && canSignOut && <SignOutButton email={who.principal.email} compact />}
-      <span className="sk-av" title={who?.principal.email ?? 'not read'} aria-hidden>
-        {initials(who?.principal.email ?? '')}
-        {fault !== null && <i className="sk-av-dot" />}
-      </span>
+      {/* PROFILE, LAST (NAV-FOOT, #1672): the bottom-most item at every
+          width -- the open spine, the collapsed one (its flyout opens beside
+          the foot, styles.css `.sk-flyout.is-profile`) and the phone drawer,
+          which holds this same spine. */}
+      {sectionLink(PROFILE_ITEM)}
     </nav>
   )
 
@@ -1526,8 +1745,7 @@ export function SkyShell({
       section={section}
       tab={tab}
       agentTab={agentTab}
-      admin={admin}
-      known={who !== null}
+      adminPages={adminPages}
       nav={nav}
       counts={counts}
       helpGroup={helpGroup}
@@ -1556,45 +1774,44 @@ export function SkyShell({
           </button>
         )}
       </div>
-      <TenantBlock me={me} mine={mine} onRetryList={rereadMine} open={picker === 'panel'} onOpen={() => setPicker(picker === 'panel' ? null : 'panel')} />
+      <TenantBlock
+        me={me}
+        mine={mine}
+        onRetryList={rereadMine}
+        open={picker === 'panel'}
+        onOpen={() => setPicker(picker === 'panel' ? null : 'panel')}
+        chosen={tenant}
+        onBackToDefault={() => {
+          setPicker(null)
+          chooseTenant(null)
+        }}
+        prefsDown={prefsDown}
+      />
       <div className="sk-pscroll">{pages}</div>
       <Meter meter={meter} read={cap.status === 'error' || fault !== null ? 'unread' : cap.status === 'loading' ? 'loading' : 'landed'} />
       <div className="sk-pfoot">
         <span className="sk-pfrow">
-          <b title={who?.principal.email.split('@')[0]}>{who === null ? (me.status === 'loading' ? 'reading…' : 'not read') : who.principal.email.split('@')[0]}</b>
+          {/* THE NAME OPENS PROFILE (NAV-FOOT, #1672): a link once the name is
+              read, named for where it goes -- the visible first name first,
+              so a voice user can say what they see. Unread, it is plain text:
+              "reading…" is no one's profile. The chip, Sign out and the email
+              beside it are unchanged. */}
+          <b title={signedIn?.title}>
+            {signedIn === null ? (
+              me.status === 'loading' ? 'reading…' : 'not read'
+            ) : (
+              <a className="sk-me" aria-label={`${signedIn.text}, open your profile`} {...routed(PROFILE_ADDRESS, () => nav(PROFILE_ADDRESS))}>
+                {signedIn.text}
+              </a>
+            )}
+          </b>
           {admin && <span className="sk-adm">admin</span>}
           {canSignOut && <SignOutButton email={who.principal.email} />}
         </span>
         {/* One line each, cut, whole in the title (styles.css `.sk-pfoot`, V054). */}
         {who !== null && <small title={who.principal.email}>{who.principal.email}</small>}
-        {/* SETTINGS › API KEYS (KEYS-UI): the person's own keys, so it sits
-            under their name rather than among the sections (App.tsx SETTINGS). */}
-        <a
-          className={`sk-pset${place.startsWith('/settings/keys') ? ' is-on' : ''}`}
-          aria-current={place.startsWith('/settings/keys') ? 'page' : undefined}
-          href={addressToPath('settings/keys')}
-          onClick={(e) => {
-            if (!routedClick(e)) return
-            e.preventDefault()
-            nav('settings/keys')
-          }}
-        >
-          Settings › API keys
-        </a>
-        {/* SETTINGS › WORKSPACE (CTXQ-UI): the selected workspace's own
-            settings, Code intelligence first (App.tsx WORKSPACE_TAB). */}
-        <a
-          className={`sk-pset${place === '/settings/workspace' ? ' is-on' : ''}`}
-          aria-current={place === '/settings/workspace' ? 'page' : undefined}
-          href={addressToPath('settings/workspace')}
-          onClick={(e) => {
-            if (!routedClick(e)) return
-            e.preventDefault()
-            nav('settings/workspace')
-          }}
-        >
-          Settings › Workspace
-        </a>
+        {/* No Settings links here since NAV-PROFILE (part of #1633): the
+            four that stacked under the name are the Profile panel's pages. */}
         <ThemeToggle />
       </div>
     </nav>
@@ -1624,6 +1841,22 @@ export function SkyShell({
       </div>
     ) : null
 
+  // ACTING THROUGH THE REACH IS SAID ON EVERY SCREEN (§4.8, Q12): a platform
+  // admin in a group workspace they are not a member of is recorded on every
+  // write and hourly on reads, and the banner is how they know it. Drawn from
+  // the server's `via` for the tenant `/v1/tenants/me` says is in force, so it
+  // never claims a reach the API did not answer as.
+  const reachName =
+    who !== null && choices.some((c) => c.tenant_id === who.tenant.tenant_id && isReach(c)) ? who.tenant.display_name || who.tenant.tenant_id : null
+  const reachBanner =
+    reachName === null ? null : (
+      <div className="sk-kept" data-banner="platform-admin">
+        <Banner tone="warn" title={`You are acting in ${reachName} as a platform admin.`}>
+          Every action is recorded in its audit log.
+        </Banner>
+      </div>
+    )
+
   return (
     <div
       ref={appRef}
@@ -1646,8 +1879,31 @@ export function SkyShell({
       </a>
       {t.bar && <div className="sk-prodbar" aria-hidden />}
       <header className="sk-pbar">
-        <button type="button" className="sk-ibtn" aria-label="Open the menu" aria-expanded={drawer} ref={openerRef} onClick={() => setDrawer(true)}>
+        {/* APPROVALS WAITING SHOW ON THE MENU BUTTON (visual QA V237,
+            2026-10-16): the spine's Automate badge is inside the drawer, so
+            on a phone nothing said they waited until the drawer was open.
+            The same count, on the button that opens it; its name stays
+            "Open the menu" and the count is its description. */}
+        <button
+          type="button"
+          className="sk-ibtn"
+          aria-label="Open the menu"
+          aria-describedby={waiting !== null ? menuNoteId : undefined}
+          aria-expanded={drawer}
+          ref={openerRef}
+          onClick={() => setDrawer(true)}
+        >
           <Icon name="menu" />
+          {waiting !== null && (
+            <>
+              <i className={waiting.n === null ? 'sk-badge sk-mbadge is-unread' : 'sk-badge sk-mbadge'} aria-hidden="true">
+                {waiting.n === null ? '—' : waiting.n}
+              </i>
+              <span className="sk-vh" id={menuNoteId}>
+                {waiting.why}
+              </span>
+            </>
+          )}
         </button>
         <SwarmMark size={22} paint="sky" />
         <b>{title}</b>
@@ -1670,6 +1926,9 @@ export function SkyShell({
             hairline tag as the panel's foot, last in the one row, after the
             environment it sits beside. */}
         {admin && <span className="sk-adm">admin</span>}
+        {/* THE BELL JOINS THE PHONE HEADER (V178): one 44px band, not a
+            second sticky one under it. After the tags, before `Top`. */}
+        {phone && bell !== null && <span className="sk-pbell">{bell}</span>}
         {/* A WAY BACK UP, once the page is more than a screen long and the
             reader is past the first screen of it (#139). Drawn below 760px
             only (styles.css): above it the spine never scrolls away.
@@ -1706,6 +1965,7 @@ export function SkyShell({
           section={fly}
           tab={section === fly ? tab : ''}
           agentTab={agentTab}
+          adminPages={adminPages}
           nav={nav}
           onExpand={() => {
             setFly(null)
@@ -1740,6 +2000,7 @@ export function SkyShell({
             />
           ) : (
             <>
+              {reachBanner}
               {keptBanner}
               {who !== null && <SignedBackIn key={who.principal.email} email={who.principal.email} />}
               {/* Keyed on the chosen tenant: a switch is a fresh screen, every
@@ -1822,12 +2083,21 @@ function TenantBlock({
   onRetryList,
   open,
   onOpen,
+  chosen = null,
+  onBackToDefault = () => chooseTenant(null),
+  prefsDown = null,
 }: {
   me: Result<Me>
   mine: Result<TenantChoice[]>
   onRetryList: () => void
   open: boolean
   onOpen: () => void
+  /** This tab's switch (`chosenTenant`), null when the default is in force. */
+  chosen?: string | null
+  /** "Back to default": forget this tab's switch. */
+  onBackToDefault?: () => void
+  /** The API's `preferences_unavailable` message, or null (Q9). */
+  prefsDown?: string | null
 }) {
   const [said, setSaid] = useState('')
   const who = dataOf(me)
@@ -1854,6 +2124,15 @@ function TenantBlock({
   const choices = dataOf(mine) ?? []
   const own = choices.some((c) => c.kind === 'user' && c.tenant_id === id)
   const name = own ? OWN_WORKSPACE_LABEL : (who.tenant.display_name ?? id)
+  // THE DEFAULT (§4.5): the workspace a request naming none acts in, the
+  // stored one or else today's rule, as `/v1/tenants/mine` marks it.
+  const isDefault = choices.some((c) => c.tenant_id === id && defaultChoice(c))
+  const back =
+    chosen === null ? null : (
+      <button type="button" className="sk-tretry sk-tback" onClick={onBackToDefault}>
+        Back to default
+      </button>
+    )
   const copyId = (
     <>
       <button type="button" className="sk-cp" aria-label={`Copy tenant id ${id}`} title={id} onClick={copy}>
@@ -1866,7 +2145,7 @@ function TenantBlock({
   )
   if (choices.length > 1) {
     const at = choices.findIndex((c) => c.tenant_id === id)
-    return (
+    return withPrefs(
       <div className={`sk-tenant is-sw${open ? ' is-open' : ''}`}>
         <button type="button" className="sk-tsw" aria-haspopup="dialog" aria-expanded={open} title={id} onClick={onOpen}>
           <span className="sk-tg" aria-hidden>
@@ -1874,15 +2153,22 @@ function TenantBlock({
           </span>
           <span className="sk-tt">
             <b>{name}</b>
-            <small>tenant · {at === -1 ? 'not in the list' : `${at + 1} of ${choices.length}`}</small>
+            <small>
+              tenant · {at === -1 ? 'not in the list' : `${at + 1} of ${choices.length}`}
+              {isDefault ? ' · default' : ''}
+            </small>
           </span>
           <Icon name="swap" className="sk-ic sk-car" />
         </button>
-        <span className="sk-tcopy">{copyId}</span>
-      </div>
+        <span className="sk-tcopy">
+          {copyId}
+          {back}
+        </span>
+      </div>,
+      prefsDown,
     )
   }
-  return (
+  return withPrefs(
     <div className="sk-tenant">
       <span className="sk-tg" aria-hidden>
         {initialOf(name)}
@@ -1898,12 +2184,39 @@ function TenantBlock({
               </button>
             </>
           ) : (
-            <>tenant </>
+            <>tenant {isDefault ? '· default ' : ''}</>
           )}
           {copyId}
+          {back}
         </small>
       </span>
-    </div>
+    </div>,
+    prefsDown,
+  )
+}
+
+/** `is_default` on a `/v1/tenants/mine` entry (PROFILE-DEFAULT); absent from an older API. */
+function defaultChoice(c: TenantChoice): boolean {
+  return (c as TenantChoice & { is_default?: unknown }).is_default === true
+}
+
+/**
+ * The block, and under it the API's own `preferences_unavailable` message: a
+ * request that named no workspace was refused, so nothing was done, and the
+ * way on is the switcher right above it (§4.5, Q9).
+ */
+function withPrefs(block: ReactNode, prefsDown: string | null) {
+  return (
+    <>
+      {block}
+      {prefsDown !== null && (
+        <div className="sk-tprefs">
+          <Banner tone="warn" role="alert" title="Your default workspace is not known">
+            {prefsDown}
+          </Banner>
+        </div>
+      )}
+    </>
   )
 }
 
@@ -2009,33 +2322,50 @@ function TenantPicker({
     const next = e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : (at + (e.key === 'ArrowDown' ? 1 : n - 1) + n) % n
     items[next]?.focus()
   }
+  // A platform admin's reach entries under their own heading, after the
+  // memberships (§4.8); for anyone else `reach` is empty and the list is as before.
+  const members = choices.filter((c) => !isReach(c))
+  const reach = choices.filter(isReach)
+  const row = (c: NamedTenantChoice) => {
+    const on = c.tenant_id === current
+    // ONE LABEL, IN THE GRID'S THIRD COLUMN (PICKER-LABELS): two `.sk-ck`
+    // spans wrapped the second into the next grid row's 24px column, over
+    // the tenant id -- "defaultu-bogdan" (live, 2026-10-19).
+    const marks = [on ? 'current' : null, c.is_default ? 'default' : null].filter((m) => m !== null)
+    return (
+      <button
+        key={c.tenant_id}
+        type="button"
+        className={`sk-to${on ? ' is-on' : ''}`}
+        aria-current={on ? 'true' : undefined}
+        title={c.group === c.display_name ? undefined : `registered as ${c.group}`}
+        onClick={() => onChoose(c)}
+      >
+        <span className="sk-tg" aria-hidden>
+          {initialOf(c.display_name)}
+        </span>
+        <b>{c.display_name}</b>
+        {marks.length > 0 && <span className="sk-ck">{marks.join(' · ')}</span>}
+        <small>{c.tenant_id}</small>
+      </button>
+    )
+  }
   const list = (
     <div className={`sk-tpop is-${at}`} role="dialog" aria-modal={at === 'sheet' ? true : undefined} aria-label="Act as" ref={box} onBlur={onBlur} onKeyDown={onKeyDown}>
       {at === 'sheet' && <span className="sk-grab" aria-hidden />}
       <span className="sk-th">
-        Act as · {choices.length} tenants you are a member of
+        Act as · {members.length} tenants you are a member of
       </span>
-      {choices.map((c) => {
-        const on = c.tenant_id === current
-        return (
-          <button
-            key={c.tenant_id}
-            type="button"
-            className={`sk-to${on ? ' is-on' : ''}`}
-            aria-current={on ? 'true' : undefined}
-            title={c.group === c.display_name ? undefined : `registered as ${c.group}`}
-            onClick={() => onChoose(c)}
-          >
-            <span className="sk-tg" aria-hidden>
-              {initialOf(c.display_name)}
-            </span>
-            <b>{c.display_name}</b>
-            {on && <span className="sk-ck">current</span>}
-            <small>{c.tenant_id}</small>
-          </button>
-        )
-      })}
-      <span className="sk-tf">Remembered in this browser. Every request names it, and the API checks your membership each time; switching reloads this page&rsquo;s reads.</span>
+      {members.map(row)}
+      {reach.length > 0 && (
+        // `display: contents`: the group names the rows for a screen reader
+        // and leaves them in the list's own column, spaced as the others.
+        <div role="group" aria-label={REACH_HEADING} className="sk-treach" style={{ display: 'contents' }}>
+          <span className="sk-th">{REACH_HEADING}</span>
+          {reach.map(row)}
+        </div>
+      )}
+      <span className="sk-tf">Kept for this tab&rsquo;s session; a new tab opens in your default. Every request names it, and the API checks your membership each time; switching reloads this page&rsquo;s reads.</span>
     </div>
   )
   if (at !== 'sheet') return list
@@ -2093,8 +2423,7 @@ function PanelPages({
   section,
   tab,
   agentTab,
-  admin,
-  known,
+  adminPages,
   nav,
   counts,
   helpGroup,
@@ -2106,8 +2435,8 @@ function PanelPages({
   section: SpineSection
   tab: string
   agentTab: AgentTab
-  admin: boolean
-  known: boolean
+  /** The Admin pages this person is shown (`adminPagesFor`); none draws no Admin panel. */
+  adminPages: readonly PanelPage[]
   nav: (to: string) => void
   counts: Readonly<Record<string, PanelCount>>
   helpGroup: string | null
@@ -2162,20 +2491,6 @@ function PanelPages({
       </>
     )
   }
-  if (section === 'api') {
-    // Two filters of one page, not two pages: buttons, pressed or not.
-    return (
-      <>
-        <div className="sk-pt">API reads</div>
-        <button type="button" className={`sk-pk${apiFailuresOnly ? '' : ' is-on'}`} aria-pressed={!apiFailuresOnly} onClick={() => onApiFilter?.(false)}>
-          <span className="sk-pl">Every read this tab made</span>
-        </button>
-        <button type="button" className={`sk-pk${apiFailuresOnly ? ' is-on' : ''}`} aria-pressed={apiFailuresOnly} onClick={() => onApiFilter?.(true)}>
-          <span className="sk-pl">Failures only</span>
-        </button>
-      </>
-    )
-  }
   // SUBMIT DRAWS ITS OWN PAGES (live QA CH-17): it drew Work's, headed
   // "Work" with nothing lit, while the spine marked Submit -- another
   // section's navigation under the place you are. The chooser and its three
@@ -2197,20 +2512,18 @@ function PanelPages({
     )
   }
   const sec = section
-  // The lock is drawn until the session read says admin (as on the spine);
-  // the rows are disabled, and "admins only" said, only once it says not.
-  const shut = sec === 'admin' && !admin
-  const locked = shut && known
+  // NO LOCKED ADMIN PANEL (NAV-ADMIN-ROLE): someone who administers nothing,
+  // on a direct link to an Admin page, gets the page's own refusal and no
+  // list of pages they cannot use.
+  const rows = sec === 'admin' ? adminPages : PANEL_PAGES[sec]
+  if (rows.length === 0) return null
   const title = PANEL_TITLE[sec]
   // A 404 is on no page, though its section is drawn (CH-14).
   const lit = missing ? { row: '', kid: null } : litPage(sec, tab, agentTab)
   return (
     <>
-      <div className="sk-pt">
-        {title}
-        {shut && <Icon name="lock" className="sk-ic sk-lk" />}
-      </div>
-      {PANEL_PAGES[sec].map((p) => {
+      <div className="sk-pt">{title}</div>
+      {rows.map((p) => {
         const group = p.key === lit.row
         // THE PAGE ITSELF IS LIT (#503). A row with children is a group: it
         // opens its children, and one of them is the page.
@@ -2222,21 +2535,13 @@ function PanelPages({
             {p.admin === true && <span className="sk-adm">admin</span>}
             {p.kids === undefined && <CountMark c={counts[p.key]} />}
             {p.kids !== undefined && p.key === 'pools' && <CountMark c={counts.pools} />}
-            {shut && <Icon name="lock" className="sk-ic sk-lk" />}
           </>
         )
         return (
           <div key={p.key}>
-            {locked ? (
-              // A disabled page is not a link anywhere: it says why below.
-              <span className="sk-pk is-dis" aria-disabled="true">
-                {row}
-              </span>
-            ) : (
-              <a className={`sk-pk${on ? ' is-on' : ''}${group ? ' is-group' : ''}`} aria-current={on ? 'page' : undefined} {...routed(p.to, () => nav(p.to))}>
-                {row}
-              </a>
-            )}
+            <a className={`sk-pk${on ? ' is-on' : ''}${group ? ' is-group' : ''}`} aria-current={on ? 'page' : undefined} {...routed(p.to, () => nav(p.to))}>
+              {row}
+            </a>
             {group && p.kids !== undefined && (
               <div className="sk-kids">
                 {p.kids.map((k) => {
@@ -2251,6 +2556,16 @@ function PanelPages({
                       {...routed(k.to, () => nav(k.to))}
                     >
                       <span>{k.label}</span>
+                      {/* AND IN WORDS (visual QA V150, 2026-10-16): beside a tab
+                          that says "Recent 17", a bare row read as a count
+                          missing. The tab counts the rows read; nothing
+                          totals the finished. Hidden from a screen reader,
+                          which has the title. */}
+                      {p.key === 'agents' && k.key === 'recent' && (
+                        <small className="sk-knote" aria-hidden="true">
+                          not totalled
+                        </small>
+                      )}
                       {k.admin === true && <span className="sk-adm">admin</span>}
                       {p.key === 'agents' && <CountMark c={counts[k.key]} />}
                     </a>
@@ -2259,15 +2574,23 @@ function PanelPages({
               </div>
             )}
             {p.key === 'workflows' && sec === 'work' && <RecentWorkflows nav={nav} />}
+            {/* API READS' TWO FILTERS, under the page while it is open
+                (NAV-FOOT, #1672): the rows its own panel drew while it was a
+                spine item. Two filters of one page, not two pages: buttons,
+                pressed or not. */}
+            {on && sec === 'capacity' && p.key === API_READS_KEY && (
+              <div className="sk-kids" role="group" aria-label="API reads rows">
+                <button type="button" className={`sk-kid${apiFailuresOnly ? '' : ' is-on'}`} aria-pressed={!apiFailuresOnly} onClick={() => onApiFilter?.(false)}>
+                  <span>Every read this tab made</span>
+                </button>
+                <button type="button" className={`sk-kid${apiFailuresOnly ? ' is-on' : ''}`} aria-pressed={apiFailuresOnly} onClick={() => onApiFilter?.(true)}>
+                  <span>Failures only</span>
+                </button>
+              </div>
+            )}
           </div>
         )
       })}
-      {locked && (
-        <p className="sk-pnote">
-          <Icon name="lock" className="sk-ic sk-lk" />
-          <span>Admins only. You can see these pages exist; changing a ceiling or a tenant needs the platform admin group.</span>
-        </p>
-      )}
     </>
   )
 }
@@ -2364,6 +2687,7 @@ function Flyout({
   section,
   tab,
   agentTab,
+  adminPages,
   nav,
   onExpand,
   onEnter,
@@ -2375,6 +2699,7 @@ function Flyout({
   section: Exclude<SpineSection, null>
   tab: string
   agentTab: AgentTab
+  adminPages: readonly PanelPage[]
   nav: (to: string) => void
   /** Undo the collapse: the panel comes back and the flyout goes. */
   onExpand: () => void
@@ -2384,15 +2709,17 @@ function Flyout({
   onBlur: (e: ReactFocusEvent) => void
   onKeyDown: (e: ReactKeyboardEvent) => void
 }) {
-  if (section !== 'work' && section !== 'automate' && section !== 'capacity' && section !== 'admin') return null
+  if (section !== 'profile' && section !== 'work' && section !== 'automate' && section !== 'capacity' && section !== 'admin') return null
   const lit = tab === '' ? { row: '', kid: null } : litPage(section, tab, agentTab)
   const name = PANEL_TITLE[section]
+  const rows = section === 'admin' ? adminPages : PANEL_PAGES[section]
+  if (rows.length === 0) return null
   // A plain labelled group of links, not role="menu": a menu promises arrow
   // keys and roving focus, which this does not have. Tab walks it.
   return (
     <div className={`sk-flyout is-${section}`} ref={flyRef} onMouseEnter={onEnter} onMouseLeave={onLeave} onBlur={onBlur} onKeyDown={onKeyDown} role="group" aria-label={`${name} pages`}>
       <b>{name}</b>
-      {PANEL_PAGES[section].map((p) => {
+      {rows.map((p) => {
         const on = p.key === lit.row && p.kids === undefined
         return (
           <a key={p.key} className={on ? 'is-on' : p.key === lit.row ? 'is-group' : ''} aria-current={on ? 'page' : undefined} {...routed(p.to, () => nav(p.to))}>

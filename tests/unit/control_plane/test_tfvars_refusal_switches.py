@@ -93,3 +93,38 @@ def test_every_tfvars_refusal_names_a_switch(path: Path) -> None:
         for key in unknown
     ]
     assert not messages, "\n".join(messages)
+
+
+# ROLES-ON-DEV (owner decision 2026-10-19, "Viewer gate + reach now", part of
+# #1518): dev turns the viewer gate on and leaves the admin gate off until every
+# group workspace that manages secrets has a named workspace admin
+# (docs/design/workspace-roles.md §4.9). Read from the block's keys, not the
+# file's text: the comment above the block names role_admin_required on purpose.
+DEV_TFVARS = ENVIRONMENTS / "dev" / "dev.tfvars"
+PROD_TFVARS = ENVIRONMENTS / "prod" / "prod.tfvars"
+REACH = re.compile(r"^\s*platform_admin_reach\s*=\s*(?P<value>\S+)", re.MULTILINE)
+
+
+def test_dev_turns_the_viewer_gate_on_and_leaves_the_admin_gate_off() -> None:
+    keys = refusal_keys(DEV_TFVARS.read_text(), "dev.tfvars")
+    assert "index_refresh_failed" in keys, keys
+    assert "role_member_required" in keys, (
+        "dev.tfvars' api_refusals must hold role_member_required = true (ROLES-ON-DEV)"
+    )
+    assert "role_admin_required" not in keys, (
+        "role_admin_required stays off in dev until every group workspace that manages "
+        "secrets has a named admin (workspace-roles.md §4.9)"
+    )
+    block = BLOCK.search(DEV_TFVARS.read_text())
+    assert block and re.search(r"^\s*role_member_required\s*=\s*true\b", block.group("body"), re.M)
+
+
+def test_the_reach_is_on_in_dev_and_unset_in_prod() -> None:
+    dev = [m.group("value") for m in REACH.finditer(DEV_TFVARS.read_text())]
+    assert dev == ["true"], f"dev.tfvars sets platform_admin_reach = true once, found {dev}"
+    for path in tfvars_files():
+        if path != DEV_TFVARS:
+            assert not REACH.search(path.read_text()), (
+                f"{path.relative_to(ROOT)} sets platform_admin_reach; only dev does (ROLES-ON-DEV)"
+            )
+    assert PROD_TFVARS in tfvars_files()

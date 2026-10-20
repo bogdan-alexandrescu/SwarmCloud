@@ -1523,10 +1523,8 @@ body {
 }
 .wf-spend.absent { color: var(--text-faint); font-style: italic; }
 .wf-spend-cov { color: var(--text-faint); margin-left: 5px; }
-/* The table's own total: the narrow-width rules above hide `.wf-spend` in the
-   list bar, which this is not, so it is shown again here. */
+/* The step table's own total, under it. */
 .wf-table-total { margin: var(--ctl-s2) 0 0; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); text-align: right; }
-.wf-table-total .wf-spend { display: inline; }
 
 /* #376: the workflow's start over its submit time. The start is in the row's
    ink; the submit is the age column's faint micro. */
@@ -2101,51 +2099,20 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
      one phone block, and it is the one in the run list's own region.
      `.row .meta` went with them: no screen has rendered a `.meta` cell in a
      task row since the row was rewritten, so it was hiding nothing. */
-  /* 390px. `[state] [name] [progress] [shape] [actions]` and nothing else --
-     ONE redefinition of the one template, which is the whole reason it is
-     written with named lines (§6.8). Columns are DROPPED, never relabelled
-     into "Label: value"; a stacked record is a different and worse thing than
-     a row, and it is what every other phone layout in this product had.
-
-     WHAT SURVIVES AND WHY, in the order they were fought over:
-       [state]    8px of shape. The mark never drops at any width -- it is the
-                  only field that is legible without being read, and it is
-                  where an underived state is told from an unread one.
-       [name]     what you came to find.
-       [progress] the TRACK only; `.wf-progress-text` drops. The hatched
-                  unknown track is what makes this safe: before this pass the
-                  untrusted case was text-only, so on a phone a workflow whose
-                  census failed drew an empty cell.
-       [shape]    `1 → 5 → 1`. A row that cannot tell a fan-out from a chain
-                  has lost the one field that is not recoverable by squinting
-                  at the others, and it costs 72px. IT COST 56, WHICH WAS 9px
-                  SHORT OF THE COMMONEST SHAPE ON THE BOARD and 38px short of a
-                  four-level one -- and because the text had no containment it
-                  did not ellipse, it PAINTED over the column beside it
-                  (inventory F11, the only genuine escape in that set). The
-                  containment is on `.wf-shape-text` now; this is the 16px that
-                  keeps `1 → 5 → 1` whole rather than merely inside its box. It
-                  comes out of `[name]`, which already ellipses here and whose
-                  full id is on the row's own `title`.
-       [actions]  one action, so a row is never a dead end.
-
-     THE STATE WORD DROPS, and that is survivable precisely because the mark
-     does not: `.ctl-dot`'s default is a hollow ring and `.is-underived` is a
-     ring with a bar through it, so the two absences stay apart at 390px with
-     no word at all. */
-  .wf-state, .wf-mix, .wf-spend { display: none; }
+  /* THE LIST BAR'S PHONE TEMPLATE IS GONE, AND SO ARE ITS HIDE RULES (V164,
+     #1427). This block, and a tablet one under it, hid `.wf-state`,
+     `.wf-mix` and `.wf-spend` to fit the old one-line list bar. The list is
+     a table now (a card per row at 640 and below, styles/workflows.css), and
+     those classes are the cells' own contents: below 900 every card printed
+     the label "cost" with no figure after it, and the runner mix went from
+     the name's second line and from the Runners column alike. Nothing here
+     hides them; where a column is not drawn, the list's own rules say so. */
   /* The open body loses the chrome padding it does not have room for; the
      canvas inside it keeps its own computed width and scrolls, and is NOT
      scaled to fit. Scaling a twenty-step graph onto a 358px column turns
      every step name into texture, which is the one thing a node must not
      become (§7.2). */
   .wf-body { padding: var(--ctl-s2); }
-}
-
-@media (min-width: 561px) and (max-width: 900px) {
-  /* Tablet. The mix and the spend go; the state word and the age come back,
-     because at this width `[name]` no longer needs every spare pixel. */
-  .wf-mix, .wf-spend { display: none; }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -6222,6 +6189,19 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    fill is the only thing left to move. */
 .ctl-q-glyph:hover { color: var(--text); background: var(--line-soft); }
 .ctl-q-glyph:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* EVERY `?` CLEARS THE TRAIL BAR WHEN FOCUS SCROLLS TO IT (QA-022, visual QA
+   2026-10-20). On a task page the scroller had already moved (the list keeps
+   the open agent's row in view), so the list head's `Help: Work answers` --
+   the page's first Tab stop -- sat under the sticky `.ctl-bar`, and the
+   browser did not scroll on focus: the glyph was inside the scrollport, just
+   painted over. `elementFromPoint` at its centre returned the breadcrumb's
+   link, and its card opened below a glyph nobody could see. A scroll margin
+   of the bar's height is what makes "in view" mean "below the bar" to the
+   focus scroll. `--ctl-bar-h` is 0 where no bar is drawn (notifications.css),
+   so on every other page this is the same small air it always had.
+   `.help-glyph` is HelpCard's `?`, whose box is otherwise inline styles. */
+.ctl-q-glyph,
+.help-glyph { scroll-margin-top: calc(var(--ctl-bar-h, 0px) + var(--ctl-s2)); }
 .ctl-q-card {
   position: absolute;
   z-index: 40;
@@ -6865,11 +6845,23 @@ table.pools tbody tr.unmeasured {
   align-items: stretch;
   gap: var(--ctl-s1);
 }
-.stop-facts > .ctl-fact { display: flex; flex-wrap: wrap; gap: var(--ctl-s1) var(--ctl-s2); }
-/* A key column, so the four values line up and the pair reads as a table
-   rather than as four sentences. It wraps at 390px rather than forcing a
-   scroll: the value is the part worth reading and it gets the whole line. */
-.stop-facts > .ctl-fact > b { min-width: 13ch; }
+/* A KEY COLUMN AND A VALUE COLUMN, AT EVERY WIDTH, so the values line up and
+   the pairs read as a table rather than as sentences. It was a wrapping flex
+   row with a 13ch floor on the key, and every loose piece of a value -- the
+   text, each `<code>` -- was its own flex item, so at 400 one confirmation
+   drew three layouts (V201, #1427): "stops" put its step id on a line of its
+   own under the key, "attempt" sat beside its key, and the longer values
+   dropped whole under theirs. Each value is one `.stop-val` now
+   (StopRun.tsx), wrapping inside its own column; a key longer than 13ch
+   ("once stopped, also cancels") wraps inside its. */
+.stop-facts > .ctl-fact {
+  display: grid;
+  grid-template-columns: 13ch minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--ctl-s1) var(--ctl-s2);
+}
+.stop-facts > .ctl-fact > b { min-width: 0; }
+.stop-facts > .ctl-fact > .stop-val { min-width: 0; overflow-wrap: anywhere; }
 .stop-blast {
   margin-top: var(--ctl-s2);
   border-top: 1px solid var(--line);
@@ -8148,7 +8140,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   }
   .is-stacked > table > tbody > tr > td[data-label] > .scope { margin-left: 0; }
   /* AN IDENTITY BREAKS RATHER THAN RUNS OFF THE CARD (CH-12). A service
-     account or a principal is one unbroken token -- `swarm-agent-worker-u-bogdan@saga-
+     account or a principal is one unbroken token -- `swarm-agent-worker-u-bogdan@example-
      agents-staging.iam.gserviceaccount.com` -- and in a 200px value column it
      ran past the card's edge with the `.com` cut off. It has no spaces to
      break at, so it breaks anywhere; a cut identity is a different identity.
@@ -8438,6 +8430,27 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   .is-scroll > table > tbody > tr > th:first-child,
   .is-scroll > table > tbody > tr > td:first-child:not([colspan]) {
     background-color: var(--surface);
+  }
+  /* A TONED ROW'S HELD CELL PAINTS THE ROW'S WASH (V213, #1427). The wash is
+     on the ROW (`.ctl-table tbody tr.is-bad`, 8% of the hue over what is
+     behind it), and the held cell's opaque `--surface` above covered it: in
+     Outcomes' "Workflows that failed, and where" at 400 every failed row was
+     red but its Workflow column, the one held in view. The held cell paints
+     the same 8% over `--surface` instead -- the colour the wash makes on the
+     card -- so it still hides what scrolls under it and reads as one row.
+     The edge mark (`background-image`, the rule below `.ctl-table .is-num`)
+     is untouched. */
+  .ctl-table.is-scroll > table > tbody > tr.is-bad > th:first-child,
+  .ctl-table.is-scroll > table > tbody > tr.is-bad > td:first-child:not([colspan]) {
+    background-color: color-mix(in srgb, var(--bad) 8%, var(--surface));
+  }
+  .ctl-table.is-scroll > table > tbody > tr.is-warn > th:first-child,
+  .ctl-table.is-scroll > table > tbody > tr.is-warn > td:first-child:not([colspan]) {
+    background-color: color-mix(in srgb, var(--warn) 8%, var(--surface));
+  }
+  .ctl-table.is-scroll > table > tbody > tr.is-paused > th:first-child,
+  .ctl-table.is-scroll > table > tbody > tr.is-paused > td:first-child:not([colspan]) {
+    background-color: color-mix(in srgb, var(--paused) 7%, var(--surface));
   }
   /* The corner cell is held at `left: 0` and paints over both the held column
      and the head row. IT IS THE ONE HEAD CELL THAT PAINTS ITS OWN FILL, AND
@@ -10457,13 +10470,17 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-dot { position: absolute; top: 4px; right: 12px; width: 7px; height: 7px; border-radius: 50%; background: #f5c451; box-shadow: 0 0 0 2px var(--sk-spine-top); }
 .sk-ic { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .sk-ri > .sk-ic { width: 20px; height: 20px; }
-.sk-ri > .sk-lkd { position: absolute; top: 5px; right: 13px; width: 10px; height: 10px; opacity: .8; }
 .sk-rsep { width: 32px; height: 1px; background: rgba(255, 255, 255, .16); margin: 6px 0; }
 .sk-grow { flex: 1; }
 .sk-foot { display: contents; }
 .sk-av { margin-top: 8px; width: 28px; height: 28px; border-radius: 50%; background: #0369a1; color: #fff; font: 600 var(--t-micro)/var(--lh-micro) var(--font); display: flex; align-items: center; justify-content: center; flex: none; box-shadow: 0 0 0 2px rgba(255, 255, 255, .18); position: relative; }
+/* THE AVATAR IS THE PROFILE ITEM'S ICON (NAV-PROFILE; part of #1633), and it
+   takes an icon's slot -- 22px, with no margin -- though the item is the
+   foot's last again (NAV-FOOT, #1672): it is a spine item with a label and a
+   panel, not the 28px disc that once ended the foot. */
+.sk-ri > .sk-av { margin-top: 0; width: 22px; height: 22px; }
 /* A whole-app state's echo on the spine (states.html C): the collapsed rail still carries it. */
-.sk-av-dot { position: absolute; top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 50%; background: #f5c451; box-shadow: 0 0 0 2px #06101e; /* the spine's foot */ }
+.sk-av-dot { position: absolute; top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 50%; background: #f5c451; box-shadow: 0 0 0 2px #06101e; /* the spine's foot colour, where Profile sits (NAV-FOOT) */ }
 
 /* --- the panel: 236px ---------------------------------------------------- */
 .sk-panel { width: 236px; flex: none; background: var(--surface); border-right: 1px solid var(--sk-ln); display: flex; flex-direction: column; padding: 14px 0; min-height: 0; }
@@ -10496,8 +10513,8 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-pk.is-on { background: var(--sk-acs); color: var(--sk-ac); }
 .sk-pk.is-on .sk-pl { color: var(--sk-ac); opacity: 1; font-weight: 600; }
 .sk-pk.is-on::before { content: ""; position: absolute; left: -10px; top: 7px; bottom: 7px; width: 3px; border-radius: 2px; background: var(--sk-ac); }
-.sk-pk.is-dis, .sk-pk:disabled { opacity: .45; cursor: not-allowed; }
-.sk-lk { width: 12px; height: 12px; }
+/* No locked Admin rows since NAV-ADMIN-ROLE (part of #1633): Admin is drawn only for someone who administers something. */
+.sk-pk:disabled { opacity: .45; cursor: not-allowed; }
 .sk-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .sk-cnt.is-alert { color: var(--s-warn); font-weight: 600; }
 .sk-cnt.is-dash { color: var(--ctl-absent); cursor: help; }
@@ -10507,7 +10524,6 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-kid.is-on { color: var(--sk-ac); background: var(--sk-acs); font-weight: 600; }
 .sk-recent { margin: 2px 10px 6px 38px; font-size: var(--t-micro); color: var(--text-dim); }
 .sk-recent summary { cursor: pointer; padding: 4px 0; }
-.sk-pnote { margin: 6px 18px 0; font-size: var(--t-micro); color: var(--text-dim); display: flex; gap: 6px; }
 .sk-meter { margin: 8px 10px 4px; padding: 9px 10px; border-radius: 10px; background: var(--sk-hv); display: flex; flex-direction: column; gap: 6px; }
 .sk-mh { display: flex; justify-content: space-between; font-size: var(--t-micro); color: var(--text-dim); }
 .sk-mh b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -10525,11 +10541,14 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-pfrow { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .sk-pfrow > .sk-adm { flex: none; }
 .sk-pfoot b { font-size: var(--t-micro); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* THE NAME IS A LINK TO PROFILE (NAV-FOOT, #1672): it keeps the name's ink
+   and weight, and says it is a link the way the product's links do -- an
+   underline on hover and a ring on focus -- so the block still reads as one
+   line, "Ana · admin · Sign out". */
+.sk-pfoot .sk-me { color: inherit; text-decoration: none; }
+.sk-pfoot .sk-me:hover { text-decoration: underline; text-underline-offset: 2px; }
+.sk-pfoot .sk-me:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: -2px; border-radius: 2px; /* inset: the name's `b` clips its overflow */ }
 .sk-pfoot small { font-size: var(--t-micro); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Settings › API keys, under the person's name (KEYS-UI). */
-.sk-pset { margin-top: 6px; font-size: var(--t-micro); color: var(--text-dim); text-decoration: none; }
-.sk-pset:hover, .sk-pset.is-on { color: var(--sk-ac); }
-.sk-pset:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
 .sk-theme { display: flex; gap: 2px; margin: 8px 0 10px; padding: 2px; border: 1px solid var(--sk-ln); border-radius: 10px; }
 .sk-theme button { flex: 1; font: inherit; font-size: var(--t-micro); color: var(--text-dim); background: none; border: 0; border-radius: 6px; padding: 4px 6px; cursor: pointer; }
 .sk-theme button:hover { background: var(--sk-hv); }
@@ -10655,6 +10674,10 @@ span.sk-ttile { cursor: default; }
 .sk-flyout { position: fixed; left: 90px; top: 202px; background: var(--surface); border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px; box-shadow: var(--sk-sh); display: flex; flex-direction: column; min-width: 170px; z-index: 20; }
 .sk-flyout.is-capacity { top: 262px; }
 .sk-flyout.is-admin { top: 322px; }
+/* PROFILE IS THE FOOT'S LAST ITEM (NAV-FOOT, #1672), so its flyout opens up
+   from the spine's bottom edge, beside it, rather than from a fixed top that
+   left it a viewport away from the avatar. */
+.sk-flyout.is-profile { top: auto; bottom: 12px; }
 .sk-flyout b { font: 500 var(--t-micro)/var(--lh-micro) var(--font); padding: 2px 8px 4px; color: var(--text-dim); }
 .sk-flyout a { padding: 6px 8px; border: 0; border-radius: var(--r-ctl); background: none; color: var(--text); text-align: left; cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); }
 .sk-flyout a:hover { background: var(--sk-hv); }
@@ -10841,9 +10864,13 @@ span.sk-ttile { cursor: default; }
    owner select was 424px in a 354px column and pushed `.app` to 440px in a
    386px viewport. The options print the name before the @, so the widest is
    short; this holds whatever an option says. */
+/* AND THE STACKED SELECTS SHARE ONE LEFT EDGE (visual QA QA-097, 2026-10-20):
+   as a flex row each select started after its own label -- 57, 56 and 44 px
+   for owner, profile and sort -- so the three made a ragged edge. The label
+   word sits in a fixed track wide enough for "profile", the widest of them. */
 @media (max-width: 560px) {
-  .wfl-pick { flex: 1 1 100%; min-width: 0; max-width: 100%; }
-  .wfl-pick select { flex: 1 1 auto; min-width: 0; max-width: 100%; }
+  .wfl-pick { flex: 1 1 100%; min-width: 0; max-width: 100%; display: grid; grid-template-columns: 4.5em minmax(0, 1fr); }
+  .wfl-pick select { flex: 1 1 auto; min-width: 0; max-width: 100%; width: 100%; }
 }
 .wfl-scroll { overflow-x: auto; }
 .wfl-table { width: 100%; border-collapse: collapse; font-size: var(--t-meta); }
@@ -11025,3 +11052,14 @@ span.sk-ttile { cursor: default; }
   -webkit-mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
   mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
 }
+
+/* ADMIN › WORKSPACES YOU ADMIN (NAV-ADMIN-ROLE; part of #1633): one row per
+   group workspace the person administers, its name over its id, and its four
+   pages as links on the right; they wrap under the name on a phone. */
+.wya-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--line-soft); border-radius: var(--r-ctl); background: var(--surface); }
+.wya-row { display: flex; align-items: center; justify-content: space-between; gap: var(--ctl-s3); flex-wrap: wrap; padding: 10px 14px; }
+.wya-row + .wya-row { border-top: 1px solid var(--line-soft); }
+.wya-name { display: flex; flex-direction: column; min-width: 0; }
+.wya-name b { font-weight: 600; overflow-wrap: anywhere; }
+.wya-name small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.wya-links { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: var(--t-meta); }

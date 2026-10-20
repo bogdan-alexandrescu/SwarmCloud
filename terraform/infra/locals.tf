@@ -40,6 +40,11 @@ locals {
   # a credential: the value is the string "anthropic" or "openai", and the real
   # key lives only in Secret Manager, added out of band. No secret material
   # exists anywhere in this repository.
+  #
+  # `model_classes` and `default_model_class` mirror contract request 101
+  # (#1435): the model classes a step on the profile may name, and the one it
+  # runs when it names none. The IDs are `runner_models` below, by class.
+  # tests/terraform/catalogue.tftest.hcl and check-contract-parity.sh hold them.
   # checkov:skip=CKV_SECRET_6:env-var name to provider id, not a credential -- see above.
   runner_profiles = {
     "mock" = {
@@ -49,6 +54,9 @@ locals {
       provider        = null
       secret_env      = {}
       timeout_seconds = 600
+
+      model_classes       = []
+      default_model_class = null
     }
     # GKE Autopilot since contract request 64 (owner, 2026-10-10, option A of
     # #939): a new Cloud Run instance's internet path opens a median 20.2 s
@@ -61,6 +69,9 @@ locals {
       provider        = null
       secret_env      = {}
       timeout_seconds = 3600
+
+      model_classes       = []
+      default_model_class = null
     }
     "claude-code" = {
       image          = "agent-runtime-base"
@@ -85,6 +96,9 @@ locals {
         CLAUDE_CODE_OAUTH_TOKEN = "anthropic"
       }
       timeout_seconds = 7200
+
+      model_classes       = ["opus", "fable", "sonnet", "haiku"]
+      default_model_class = "opus"
     }
     # GKE Autopilot since contract request 65 (owner, 2026-10-10, option A of
     # #939); its Cloud Run Jobs stay as the rollback, as generic's do.
@@ -95,6 +109,9 @@ locals {
       provider        = "openai"
       secret_env      = { OPENAI_API_KEY = "openai" }
       timeout_seconds = 7200
+
+      model_classes       = []
+      default_model_class = null
     }
     "browser" = {
       image          = "agent-runtime-browser"
@@ -104,6 +121,9 @@ locals {
       provider        = "anthropic"
       secret_env      = { ANTHROPIC_API_KEY = "anthropic" }
       timeout_seconds = 5400
+
+      model_classes       = []
+      default_model_class = null
     }
     # --- #295, contract requests 33, 35, 36 and 47 ---------------------------
     #
@@ -130,6 +150,9 @@ locals {
       provider        = "git"
       secret_env      = {}
       timeout_seconds = 600
+
+      model_classes       = []
+      default_model_class = null
     }
     "post-verdict" = {
       image           = "agent-runtime-base"
@@ -138,6 +161,9 @@ locals {
       provider        = "git-review"
       secret_env      = {}
       timeout_seconds = 300
+
+      model_classes       = []
+      default_model_class = null
     }
     "claude-code-review" = {
       image          = "agent-runtime-base"
@@ -150,6 +176,9 @@ locals {
         CLAUDE_CODE_OAUTH_TOKEN = "anthropic"
       }
       timeout_seconds = 7200
+
+      model_classes       = ["opus"]
+      default_model_class = "opus"
     }
     # Contract request 48, accepted by the owner 2026-10-05 (#625): claude-code
     # on the image that carries the repository index's toolchain, and nothing
@@ -172,6 +201,9 @@ locals {
       # of an assignment of one.
       secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
       timeout_seconds = 7200
+
+      model_classes       = ["opus", "fable", "sonnet", "haiku"]
+      default_model_class = "opus"
     }
     # Contract request 67, accepted by the owner 2026-10-11: claude-code on
     # agent-runtime-browser, so an agent can render and screenshot pages. The
@@ -185,6 +217,25 @@ locals {
       provider        = "anthropic"
       secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
       timeout_seconds = 7200
+
+      model_classes       = ["opus", "fable", "sonnet", "haiku"]
+      default_model_class = "opus"
+    }
+    # Contract requests 93 and 94 (HW-CONTRACT, docs/design/human-steps.md):
+    # a `control_plane` profile that no container ever runs -- swarm-api ends
+    # its tasks. Mirrored so the catalogue comparison holds; listed in
+    # `profiles_without_a_job` below, so no tenant gets a Job for it. Its
+    # image is never pulled and its class never reserved.
+    "await-input" = {
+      image           = "agent-runtime-base"
+      resource_class  = "standard"
+      backend         = "CLOUD_RUN_JOB"
+      provider        = null
+      secret_env      = {}
+      timeout_seconds = 300
+
+      model_classes       = []
+      default_model_class = null
     }
   }
 
@@ -201,7 +252,12 @@ locals {
   # here, so no tenant gets a Job for either. Without this, every tenant holding
   # anthropic would get a claude-code-review Job running as its worker account.
   # apps/common/swarm_common/profiles.py names this list.
-  profiles_without_a_job = ["post-verdict", "claude-code-review"]
+  #
+  # await-input is a `control_plane` profile (contract request 93): nothing
+  # runs it on any backend, so a Job for it would be a resource nobody
+  # executes. tests/unit/common/test_await_input_contract.py holds every
+  # control_plane profile of the catalogue to this list.
+  profiles_without_a_job = ["post-verdict", "claude-code-review", "await-input"]
 
   # --- GKE profiles that keep their Cloud Run Jobs as a rollback -------------
   #
@@ -223,44 +279,79 @@ locals {
   # still planned.
   cloud_run_fallback_profiles = ["claude-code", "indexer", "generic", "codex", "merge"]
 
-  # --- the model each profile's agent CLI runs (#226) -----------------------
+  # --- the model each model class runs (#226, #1435) ------------------------
   #
-  # THE ONE PLACE A PROFILE'S MODEL IS STATED. It becomes `MODEL` on the
-  # profile's Cloud Run Jobs below, and the scheduler's `WORKER_MODELS`, which
-  # it sets as `MODEL` on the Jobs it creates for tenants this root does not
-  # list. The worker reads MODEL into `WorkerConfig.model` and the runner
-  # passes it to the CLI as `--model`; a caller's `input.model` is refused
-  # (invariant 10), so changing a model is an edit here and a release.
+  # THE ONE PLACE A MODEL ID IS STATED, keyed by the model CLASS a step names
+  # (`swarm_common.profiles.MODEL_CLASSES`, contract request 100). Owner
+  # decisions of 2026-10-17 (docs/design/model-per-step.md §4.2): the class
+  # names are the frozen catalogue's (Q1 (a)), and the IDs behind them are
+  # here, so a model release is an edit to this map and a release, never a
+  # contract request. A caller names a class, never an ID: `input.model` is
+  # refused (invariant 10).
   #
-  # WHY claude-opus-5-5 (owner decision of 2026-09-26): it is the model the
-  # operator's local Claude Code lanes run, and a SwarmCloud step should behave
-  # like a local lane wherever the difference is a choice. With no MODEL on any
-  # Job the CLI ran its own default instead -- the QA task of that day ran
-  # claude-sonnet-5.
+  # WHY BY CLASS AND NOT BY PROFILE x CLASS: claude-code, indexer and
+  # claude-code-browser run one CLI, pinned once in the base image, so an ID
+  # accepted on one is accepted on all three. A profile x class map would be
+  # twelve lines that must change together at every model release, and the
+  # one thing it could add -- a profile lagging another -- is what #226
+  # removed, so that a review never judges with another model than the one
+  # that wrote the change.
   #
-  # NOT a field of `runner_profiles` above, which mirrors the frozen Python
-  # catalogue field for field (tests/terraform/catalogue.tftest.hcl): the
-  # catalogue has no model, and giving it one is a contract request.
-  # Only claude-code: codex is an OpenAI CLI, where this name would fail every
-  # run, and mock, generic and browser start no model.
-  # claude-code-review is claude-code under another name (contract request
-  # 36), so it names the same model: a review agent on the CLI's default would
-  # judge with a different model than the one that wrote the change. It is
-  # retired and has no Job here (`profiles_without_a_job`); the entry stays
-  # while the frozen catalogue holds the profile (contract request 50).
-  # indexer is claude-code on the indexer image (contract request 48), so an
-  # index run keeps the model it ran with as claude-code.
-  # claude-code runs on GKE Autopilot (contract request 53), and indexer since
-  # contract request 63, where no Job of this root exists to carry MODEL: the
-  # scheduler's WORKER_MODELS sets it on each pod. Their Cloud Run fallback
-  # Jobs (`cloud_run_fallback_profiles`) carry the same model from this map.
-  # claude-code-browser is claude-code on the browser image (contract request
-  # 67), a GKE profile from the start, so WORKER_MODELS is its only path.
+  # WHY claude-opus-5-5 FOR opus, THE DEFAULT (owner decision of 2026-09-26,
+  # kept by R3 of 2026-10-17): it is the model the operator's local Claude
+  # Code lanes run, and a step naming no class should behave like a local
+  # lane. With no MODEL on any Job the CLI ran its own default instead -- the
+  # QA task of that day ran claude-sonnet-5. fable is for planning, sonnet
+  # and haiku for mechanical steps (Q3).
+  #
+  # HELD TO ITS CLASSES three ways: the scheduler and swarm-api refuse at
+  # start a map whose keys are not exactly MODEL_CLASSES or whose IDs a
+  # class's `ModelClass.admits` refuses (MODEL-SCHED, MODEL-API);
+  # tests/terraform/runner_model.tftest.hcl asserts the four keys and each
+  # ID's family word; scripts/lib/check-contract-parity.sh (section 17)
+  # applies `admits` to this map.
   runner_models = {
-    "claude-code"         = "claude-opus-5-5"
-    "claude-code-review"  = "claude-opus-5-5"
-    "indexer"             = "claude-opus-5-5"
-    "claude-code-browser" = "claude-opus-5-5"
+    opus   = "claude-opus-5-5"
+    fable  = "claude-fable-5-1"
+    sonnet = "claude-sonnet-5-5"
+    haiku  = "claude-haiku-5-5"
+  }
+
+  # Profile -> the pin of its `default_model_class` (the mirror above), for
+  # every profile that has one: claude-code, claude-code-review, indexer and
+  # claude-code-browser, all opus, so exactly the map #226 wrote by hand.
+  # codex is an OpenAI CLI, where a Claude name would fail every run, and
+  # mock, generic, browser, merge, post-verdict and await-input start no
+  # model, so none of them has a default and none is listed.
+  #
+  # It is the `MODEL` of each classed profile's Cloud Run Jobs below (the
+  # dispatcher's per-execution override replaces it with the step's class),
+  # and the scheduler's `WORKER_MODELS`. That variable is DERIVED here for
+  # ONE release, so that a scheduler image rolled back alone still finds the
+  # profile-keyed map it reads; a follow-up lane removes it once a release
+  # carrying MODEL-SCHED has applied (docs/design/model-per-step.md §4.2).
+  profile_default_models = {
+    for name, p in local.runner_profiles : name => local.runner_models[p.default_model_class]
+    if p.default_model_class != null
+  }
+
+  # The class map itself, for the services that resolve a step's class to its
+  # pin: the scheduler renders MODEL from it (MODEL-SCHED) and swarm-api fills
+  # TaskCreate.model from it and serves it on /v1/runtimes (MODEL-API). Merged
+  # into both services' environments in service_env below.
+  #
+  # NOT YET READ, BY LANE ORDER: this lane (MODEL-CONTRACT) is order 0 of the
+  # design's build plan, and the scheduler's and swarm-api's readers are the
+  # lanes after it, which hold neither this file nor any other the class map
+  # could be wired from. Until they merge it is configuration nobody reads,
+  # and that is the point of the order (owner decision R4, 2026-10-17: no
+  # enablement flag; lane order alone keeps the classes unreachable).
+  # scripts/lib/check-env-parity.sh's rule 1 reads only the literal
+  # assignments of each service block, so it does not see a merged local and
+  # will not flag that window; once both readers have merged, this can move
+  # inline into both blocks, where it will.
+  model_class_env = {
+    WORKER_CLASS_MODELS = jsonencode(local.runner_models)
   }
 
   backends = ["CLOUD_RUN_JOB", "GKE_AUTOPILOT"]
@@ -442,7 +533,7 @@ locals {
         resource_class  = profile.resource_class
         image           = local.image[profile.image]
         timeout_seconds = profile.timeout_seconds
-        model           = lookup(local.runner_models, profile_name, null)
+        model           = lookup(local.profile_default_models, profile_name, null)
         secret_env = {
           for env_name, provider in profile.secret_env :
           env_name => "swarm-tenant-${tenant_id}-${provider}"
@@ -498,8 +589,10 @@ locals {
         # service URL alone is one its own `aud` check rejects.
         QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
         },
-        # The model the agent CLI runs, from `local.runner_models` -- see why
-        # there. Absent, not empty, on a profile with none: the worker reads an
+        # The model the agent CLI runs when a step names no class: the pin of
+        # the profile's default class (`local.profile_default_models`; see why
+        # at `local.runner_models`). Absent, not empty, on a profile with none:
+        # the worker reads an
         # empty MODEL as "no model", but a Job with no such variable says so.
         { for name, value in { MODEL = job.model } : name => value if value != null },
         # The step-spec verification settings (contract request 34,
@@ -622,7 +715,7 @@ locals {
     # local.settings_mac_env / scheduler_settings_mac_env: the one
     # SETTINGS_MAC_TENANTS cutover list, and the scheduler's
     # SETTINGS_MAC_REQUIRED (settings_mac.tf).
-    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, {
+    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()
@@ -640,6 +733,14 @@ locals {
       # The reconciler stops it: swarm-api holds no compute permission, by
       # design (modules/scheduler/execution_cancel.tf says why).
       EXECUTION_CANCEL_TOPIC = local.execution_cancel_topic
+
+      # The addresses a registered MCP server's operator allowlists
+      # (docs/design/registered-mcp-servers.md §4.9): every worker's MCP call
+      # leaves through the NAT's reserved addresses, so they are read from
+      # the same resource as the mcp_egress_addresses output, never typed.
+      # swarm_api.settings reads them and GET /v1/mcp-servers serves them as
+      # `egress_addresses`; "" serves [], which the console says in words.
+      MCP_EGRESS_ADDRESSES = join(",", module.network.nat_addresses)
 
       # Neither name appeared anywhere in terraform, so swarm_api.settings read
       # empty tuples, resolve_tenant() had no groups to check, and EVERY caller
@@ -736,6 +837,28 @@ locals {
       # var.repository_grants_enforced; service submissions are never refused.
       REPOSITORY_GRANTS_ENFORCED = var.repository_grants_enforced ? "true" : "false"
 
+      # A step's additional repositories (swarm_api.settings
+      # `additional_repositories_enabled`, #1434 MR-API). Until this line it
+      # reached swarm-api only by hand, which the next apply would have put
+      # back to off. Off unless the environment's tfvars sets
+      # var.additional_repositories_enabled. Their count and size limits are
+      # platform settings in Firestore, not environment.
+      ADDITIONAL_REPOSITORIES_ENABLED = var.additional_repositories_enabled ? "true" : "false"
+
+      # A platform admin's reach into group workspaces they are not a member
+      # of (swarm_api.settings `platform_admin_reach`,
+      # docs/design/workspace-roles.md §4.2). Until ROLES-ON-DEV nothing in
+      # Terraform set it, so it was off in every environment and turning it
+      # on was a hand edit the next apply put back. Off unless the
+      # environment's tfvars sets var.platform_admin_reach. "true" is one of
+      # the spellings swarm_api.settings._bool reads as on.
+      PLATFORM_ADMIN_REACH = var.platform_admin_reach ? "true" : "false"
+
+      # The forge broker's switch (child_tasks.tf `forge_broker`, #1041;
+      # swarm_api.settings `forge_broker`). Off, POST
+      # /v1/attempts/forge-credential answers 503 before reading anything.
+      FORGE_BROKER = var.forge_broker ? "true" : "false"
+
       # The live browser's search tool (swarm_api.settings
       # `search_tool_enabled`, `search_provider`; docs/search-tool.md, lane
       # SEARCH-TF, #1030). Off unless the environment's tfvars sets
@@ -746,6 +869,15 @@ locals {
       # (scripts/create-secrets.sh --search-api-key --stdin).
       SEARCH_TOOL_ENABLED = var.search_tool_enabled ? "true" : "false"
       SEARCH_PROVIDER     = var.search_provider
+
+      # Registered MCP servers (swarm_api.mcp_servers FLAG,
+      # docs/design/registered-mcp-servers.md §6, #1433). "on" is the only
+      # value mcp_servers_enabled() reads as on; anything else keeps the
+      # feature dark. Off unless the environment's tfvars sets
+      # var.mcp_servers_enabled. swarm-api alone reads it: the scheduler and
+      # the worker act only on a task whose signed input names a server, and
+      # swarm-api refuses every such submission while this is off.
+      SWARM_MCP_SERVERS = var.mcp_servers_enabled ? "on" : "off"
 
       # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
       # #847): approve, retry and the dispatch sweep publish a workspace id to
@@ -758,6 +890,13 @@ locals {
       # workspace-stuck alert, rather than nothing saying so (2026-10-09).
       WORKSPACE_APPLY_TOPIC   = "swarm-workspace-apply"
       WORKSPACE_APPLY_PUBLISH = var.workspace_apply_publish ? "true" : "false"
+
+      # The submission gate (swarm_api.workspaces.gate_from_env, WD8). "on" and
+      # "off" are its words; anything else stops swarm-api at start rather than
+      # being guessed at. Off unless the environment's tfvars sets
+      # var.workspace_gate (W10: dev, 2026-10-13). Before W10 it reached
+      # swarm-api only by hand, and the next apply would have put it back off.
+      WORKSPACE_GATE = var.workspace_gate ? "on" : "off"
 
       # The step-spec key version every submission is signed with (contract
       # request 34). A full version name, because an asymmetric key has no
@@ -788,7 +927,17 @@ locals {
       # This widens WHICH verified identities are admitted, never whether an
       # identity was verified: auth.py:331 consults this only after the token
       # has been checked, and the address it compares comes from that token.
-      ALLOWED_USERS = google_service_account.verify.email
+      #
+      # oracle-api, by owner decision 2026-10-18 (#1568), signed off at merge:
+      # the orchestrating client application submits workflows as its own
+      # tenant, u-or-9a0792 (dev.tfvars), and never as a member of eng. It is
+      # in no registered group, so once admitted here it resolves to that
+      # tenant alone. A literal, not derived: the account is not this root's,
+      # and the owner's decision names this exact address.
+      ALLOWED_USERS = join(",", [
+        google_service_account.verify.email,
+        "oracle-api@saga-agents-staging.iam.gserviceaccount.com",
+      ])
 
       # The same principals terraform already refuses to let own a DECLARED
       # tenant, handed to the runtime so it can refuse the ones terraform
@@ -840,8 +989,10 @@ locals {
       SWARM_API_AUDIENCE = local.push_audiences["swarm-api"]
 
       # The SwarmCloud GitHub App's PUBLIC settings (github_app.tf; #780).
-      # swarm_api.forgeapp reads exactly these three names; without them every
-      # /v1/onboarding/github call answers 503 "the App is not configured".
+      # swarm_api.forgeapp reads exactly these four names; without the first
+      # three every /v1/onboarding/github call answers 503 "the App is not
+      # configured". GITHUB_APP_NAME is the App's display name, served as
+      # `app_name` so the console names the App by it (#1647).
       # Until 2026-10-07 they reached only the `github_app` output, so the
       # App registered that day was invisible to swarm-api (found by the
       # owner's test 1). Empty strings when no App is registered, which
@@ -849,6 +1000,7 @@ locals {
       GITHUB_APP_ID        = var.github_app_id
       GITHUB_APP_CLIENT_ID = var.github_app_client_id
       GITHUB_APP_SLUG      = var.github_app_slug
+      GITHUB_APP_NAME      = var.github_app_name
 
       # Where swarm-api proxies a console's live-browser socket, and POSTs the
       # relay's /internal/close (docs/design/live-browser.md §3.3; owner
@@ -856,7 +1008,7 @@ locals {
       # relay is off, which swarm_api.settings reads as "no relay".
       SWARM_LIVE_URL = local.live_relay_url
     })
-    "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, local.scheduler_browser_egress_env, local.scheduler_typesafe_fwd_env, local.scheduler_settings_mac_env, {
+    "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, local.scheduler_browser_egress_env, local.scheduler_typesafe_fwd_env, local.scheduler_settings_mac_env, local.model_class_env, {
       # local.scheduler_browser_egress_env: the browser egress switch the
       # dispatcher labels and routes a live-browser pod by (egress.tf).
       #
@@ -933,10 +1085,12 @@ locals {
       # digest map removes that failure too: there is no default to fall to.
       WORKER_IMAGE_REFS = jsonencode(local.worker_image_refs)
 
-      # The model each profile's agent runs, for the Jobs this scheduler creates
-      # (tenants this root does not list). The same `local.runner_models` sets
-      # MODEL on this root's own Jobs, so both kinds run one model (#226).
-      WORKER_MODELS = jsonencode(local.runner_models)
+      # The model each profile's agent runs when a step names no class, for
+      # the Jobs this scheduler creates (tenants this root does not list). The
+      # same `local.profile_default_models` sets MODEL on this root's own Jobs,
+      # so both kinds run one model (#226). Derived from the class map for one
+      # release (#1435): see `local.profile_default_models`.
+      WORKER_MODELS = jsonencode(local.profile_default_models)
 
       # Passed THROUGH to each worker by `scheduler.dispatch.worker_env`, which
       # is the single source of a worker's execution environment for both
@@ -975,6 +1129,12 @@ locals {
       # check holds it to the deployed URL.
       SWARM_API_URL      = var.swarm_api_url
       SWARM_API_AUDIENCE = local.push_audiences["swarm-api"]
+
+      # The forge broker's switch (child_tasks.tf `forge_broker`, #1041),
+      # passed THROUGH to every worker by `scheduler.dispatch.worker_env` when
+      # on, and the reason a child on a person's slot is keyed. Off, dispatch
+      # is what it was before the broker.
+      FORGE_BROKER = var.forge_broker ? "true" : "false"
 
       # The live browser's display sidecar (scheduler.settings
       # `live_browser_sidecar`; docs/design/live-browser.md, LB-Lon). On, a

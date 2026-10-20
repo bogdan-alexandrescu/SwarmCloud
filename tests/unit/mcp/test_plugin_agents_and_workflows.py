@@ -555,7 +555,10 @@ def test_run_js_uses_only_the_workflow_globals():
     tokens = _tokens(_RUN_JS.read_text())
     _, end = _meta_span(tokens)
     body = tokens[end:]
-    declared: set[str] = set()
+    # `meta` is the script's own `export const meta`, in scope for the body
+    # (the harnesses below run it as `const meta`); run.js reads its name to
+    # tell a launch by name from a titled copy (SC-TITLES).
+    declared: set[str] = {"meta"}
     for index, (kind, text) in enumerate(body):
         if kind != "ident":
             continue

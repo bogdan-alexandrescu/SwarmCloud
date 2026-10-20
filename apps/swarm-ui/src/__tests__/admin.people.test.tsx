@@ -34,7 +34,6 @@ import { serve, visible } from './repofixture'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { SECTIONS } from '../App'
-import { SkyShell } from '../Spine'
 
 const WAIT = { timeout: 4000 }
 
@@ -174,12 +173,26 @@ describe('the tab', () => {
 
   // A tab and a route are not enough: the panel draws PANEL_PAGES, and a page
   // missing there is reachable only by typing its address (visual QA Q7).
-  it('is drawn in the Admin panel, and lit on /admin/people', () => {
+  // Drawn for a platform admin on the live path: since NAV-ADMIN-ROLE (part of
+  // #1633) the fixture caller, who administers nothing, is shown no Admin panel.
+  it('is drawn in the Admin panel, and lit on /admin/people', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/v1/tenants/me') && !url.includes('/v1/tenants/mine')) {
+        const me = { tenant: { tenant_id: 'eng', display_name: 'Engineering' }, principal: { email: 'ana.b@example.com', domain: 'example.com', groups: [], is_admin: true }, environment: 'dev', environment_declared: true }
+        return new Response(JSON.stringify(me), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response('{}', { status: 503, headers: { 'content-type': 'application/json' } })
+    }))
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const { SkyShell: LiveShell } = await import('../Spine')
     render(
-      <SkyShell section="admin" tab="people" title="People" go={vi.fn()} foot={null}>
+      <LiveShell section="admin" tab="people" title="People" go={vi.fn()} foot={null}>
         {null}
-      </SkyShell>,
+      </LiveShell>,
     )
+    await waitFor(() => expect(document.querySelectorAll('.sk-panel .sk-pk').length).toBeGreaterThan(0), WAIT)
     const labels = [...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((el) => el.textContent)
     expect(labels).toContain('People')
     expect(document.querySelector('.sk-panel .sk-pk.is-on .sk-pl')?.textContent).toBe('People')
@@ -655,7 +668,7 @@ describe('visual QA (VQA-L06)', () => {
 
   it('V021: a long email is capped, so it widens no column, and is cut rather than broken (#1206)', async () => {
     // MUTATION: drop `.pp-who`'s `max-width`, or put back `overflow-wrap:
-    // anywhere`, which is what broke `devops@saga.xyz` as `devops@saga. xyz`.
+    // anywhere`, which is what broke `devops@example.com` as `devops@example. com`.
     await mount(people([...ROWS, person(LONG, ws('requested', 'w-10a000'))]))
     await waitFor(() => expect(rowOf(LONG)).not.toBeNull(), WAIT)
     const who = [...rowOf(LONG).querySelectorAll<HTMLElement>('.pp-who')]
@@ -720,7 +733,9 @@ describe('visual QA (VQA-L06)', () => {
     const step = [...rowOf('fay@example.com').querySelectorAll<HTMLElement>('.ob-ws-steps li')].find((li) => li.textContent?.includes('Checking the name is free'))
     expect(step, 'the A2 step was not drawn').toBeDefined()
     expect(painted(step!, 'display', WIDE)).toBe('grid')
-    expect(painted(step!, 'grid-template-columns', WIDE)).toBe('auto minmax(0, 1fr) auto')
+    // `min-content`, not `0` (VQA2-R4, 2026-10-16): at 0 a squeezed 1440
+    // table let "Namespace" run into "not started" (people.vqa2r4.test.tsx).
+    expect(painted(step!, 'grid-template-columns', WIDE)).toBe('auto minmax(min-content, 1fr) auto')
     expect(painted(step!.querySelector('.ob-state')!, 'white-space', WIDE)).toBe('nowrap')
     const rid = [...rowOf('gil@example.com').querySelectorAll<HTMLElement>('.pp-ws code')].find((c) => c.textContent === 'req-w-61000a')
     expect(rid, 'the request id was not drawn').toBeDefined()

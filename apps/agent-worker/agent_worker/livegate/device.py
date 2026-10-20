@@ -74,6 +74,22 @@ that already shrank it returns the frame unchanged. `captured` is that cut as
 the viewer is sent it: on a mobile preset it also drops the browser's UI band
 above the page (LB-R5, presets.py), so a phone shows the page alone.
 
+THE THEME (QA-KIT, owner decision 2026-10-19, part of #1649). The agent
+asks for a colour scheme by name (`swarm-handoff theme dark|light|system`,
+the `theme` operation on ctl.sock), and the gate sends
+`Emulation.setEmulatedMedia` with the one feature `prefers-color-scheme` on
+the SAME per-page sessions that carry the device. So it holds the way the
+device holds: the override belongs to the page's target, not its document,
+and survives the page's navigations; a page created later, or attached again
+after its session went (a renderer swap, DEVICE-RECOVER), is given it by
+`_apply_page`; a device switch re-applies it with the rest. `system` sends the
+feature with an empty value, which lifts the override. While the theme is
+`system` no media call is made at all, so a browser nobody asked to theme
+gets exactly the calls it got before. The agent may call
+`Emulation.setEmulatedMedia` on its own sessions too (cdppolicy.py allows
+it); which of two sessions' overrides Chromium shows was not measured, which
+is one more reason the instructions name the command rather than the method.
+
 NOTHING HERE IS LOGGED BUT NAMES. A device change records the preset name and
 orientation; a page's URL, a session id or a coordinate is never a log
 argument.
@@ -88,7 +104,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from .capture import BYTES_PER_PIXEL, Frame
-from .presets import DEFAULT_PRESET, MAX_TOUCH_POINTS, Device, UnknownPreset, resolve
+from .presets import DEFAULT_PRESET, DEFAULT_THEME, MAX_TOUCH_POINTS, THEMES, Device, UnknownPreset, resolve
 
 log = logging.getLogger(__name__)
 
@@ -100,6 +116,8 @@ DEFAULT_DISPLAY_SOCKET = "/tmp/.X11-unix/X0"
 #: The arguments a `device` request may carry. Anything else -- a width, a
 #: scale, a user agent -- is refused: a caller names a preset, never a size.
 _CTL_ARGS = frozenset({"preset", "orientation"})
+#: The arguments a `theme` request may carry: a name, never a media feature.
+_THEME_ARGS = frozenset({"theme"})
 
 # X11 core and RandR requests used here.
 _X_QUERY_EXTENSION = 98
@@ -381,6 +399,7 @@ class DeviceController:
         #: so the gate can report it (report.py); never told of a failed one.
         self._on_change = on_change
         self._device = resolve(DEFAULT_PRESET)
+        self._theme = DEFAULT_THEME
         self._pages: dict[str, str] = {}  # targetId -> the gate's session on it
         self._windows: set[Any] = set()  # windowIds fitted to the current display
         self._browser: tuple[str, str] | None = None  # (user agent, version)
@@ -390,6 +409,11 @@ class DeviceController:
     @property
     def device(self) -> Device:
         return self._device
+
+    @property
+    def theme(self) -> str:
+        """The colour scheme every page is told to prefer (`presets.THEMES`)."""
+        return self._theme
 
     def session_for(self, target_id: str) -> str | None:
         """The gate's own session on `target_id`, for touch input (touch.py)."""
@@ -437,6 +461,36 @@ class DeviceController:
         self._record("device_set", {"preset": device.name, "orientation": device.orientation})
         log.info("live device: preset=%s orientation=%s", device.name, device.orientation)
         return device
+
+    async def handle_theme(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """The ctl.sock `theme` operation (`swarm-handoff theme <name>`).
+
+        A name off `THEMES`, or anything beside the name, is refused before
+        anything is sent. A page whose session went is attached again, as a
+        device switch does; one that is gone for good is dropped.
+        """
+        theme = args.get("theme") if isinstance(args, Mapping) else None
+        if not isinstance(args, Mapping) or set(args) != _THEME_ARGS or theme not in THEMES:
+            self._record("theme_refused", {"cause": "not_a_theme"})
+            raise DeviceRefused("a theme is chosen by name only")
+        async with self._lock:
+            previous, self._theme = self._theme, theme
+            try:
+                for target in list(self._pages):
+                    session = self._pages.get(target)
+                    if session is None:
+                        continue
+                    try:
+                        await self._apply_theme(session, force=True)
+                    except Exception:  # noqa: BLE001 -- a session that went: the device path attaches again
+                        await self._apply_page_again(self._device, target)
+            except Exception as exc:
+                self._theme = previous
+                self._record("theme_failed", {"theme": theme, "cause": type(exc).__name__})
+                raise
+        self._record("theme_set", {"theme": theme})
+        log.info("live theme: %s", theme)
+        return {"theme": theme}
 
     async def attach_page(self, target_id: str) -> None:
         """Apply the current device to a page (the fresh page, or one just discovered)."""
@@ -581,3 +635,14 @@ class DeviceController:
         if device.touch:
             touch["maxTouchPoints"] = MAX_TOUCH_POINTS
         await self._cdp.call("Emulation.setTouchEmulationEnabled", touch, session)
+        await self._apply_theme(session)
+
+    async def _apply_theme(self, session: str, *, force: bool = False) -> None:
+        """The theme on one page's session. `system` sends nothing unless `force`
+        (the change TO system, which lifts the override): see the module docstring."""
+        if self._theme == DEFAULT_THEME and not force:
+            return
+        value = "" if self._theme == DEFAULT_THEME else self._theme
+        await self._cdp.call("Emulation.setEmulatedMedia", {
+            "features": [{"name": "prefers-color-scheme", "value": value}],
+        }, session)

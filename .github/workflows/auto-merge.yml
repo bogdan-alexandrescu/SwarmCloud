@@ -135,6 +135,14 @@
 # what it was. docs/runbooks/merge-train.md says when to turn it on.
 # tests/unit/scripts/test_merge_train.py holds both halves.
 #
+# `READY-ON-GREEN` BECOMES `READY` HERE, NOT IN A SESSION (owner decision
+# 2026-10-17). The `ready-on-green` job judges each pull request carrying that
+# label at its head with main's scripts/merge-train.sh judge -- on a finishing
+# run or check suite for the pull requests at its head, and every 15 minutes
+# for all of them -- and, green, swaps the label for `ready` with the merge
+# App's token, so the `labeled` event starts `enable`. A red head gets one
+# comment per head. docs/ci.md; test_auto_merge_ready_on_green.py.
+#
 # tests/unit/scripts/test_auto_merge_workflow.py holds every point above and
 # runs the enable, requeue, requeue-edited and disable jobs' shells against a
 # fake `gh`;
@@ -168,6 +176,11 @@ on:
   # above stays the way in for those -- only for another App's suite.
   check_suite:
     types: [completed]
+  # The `ready-on-green` job's backstop, and the only job it starts: every
+  # other job's `if` names its own event. Fifteen minutes, the owner's brief
+  # (2026-10-17): a run that finished without re-evaluating costs at most that.
+  schedule:
+    - cron: "*/15 * * * *"
   # Sent by `requeue` below; an operator may send it too, to make this look at
   # a `ready` pull request again. It is a request to look, not a `ready`: the
   # `pr` step does nothing unless the pull request is open and carries it.
@@ -1292,3 +1305,214 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/close-merged-issues.sh --pr "${PR_NUMBER}"
+
+  ready-on-green:
+    name: mark ready-on-green pull requests ready once green
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # Owner decision, 2026-10-17: an operator's laptop ran ~20 watcher loops
+    # only to add `ready` once a pull request went green. This does it. The
+    # events `requeue` runs on, for the `ready-on-green` pull requests at that
+    # head, and the 15-minute schedule for all of them as the backstop. Not
+    # without the merge App: the label must be the App's (below).
+    if: >-
+      ((github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'pull_request') ||
+       github.event_name == 'check_suite' ||
+       github.event_name == 'schedule') &&
+      vars.MERGE_APP_ID != ''
+    permissions:
+      # contents: read -- the base branch's classic protection (its required
+      #   checks), and the checkout of the default branch's scripts/.
+      # checks: read -- the head commit's check runs.
+      # statuses: read -- the head commit's combined status.
+      # pull-requests: write -- list the pull requests, and the one comment
+      #   on a red head. The labels are the App token's, never this one's.
+      contents: read
+      checks: read
+      statuses: read
+      pull-requests: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      EVENT_NAME: ${{ github.event_name }}
+      # The finished workflow run's head, or the finished check suite's;
+      # empty on the schedule, which judges every one.
+      RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.check_suite.head_sha }}
+    steps:
+      # The DEFAULT branch's scripts/ for the judge: main's reviewed
+      # merge-train.sh, never a pull request's code, no credentials kept.
+      - name: check out the default branch's scripts
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      # Each pull request is judged at the head GitHub reports for it, with
+      # the merge train's judge: every required check finished well and
+      # nothing that ran failed. The gate's own check run is left out: a
+      # `queue for auto-merge` that refused an earlier label would otherwise
+      # hold the head red for good. A red head is commented on once per head;
+      # the hidden marker is how the next run knows it already said so.
+      - name: judge each ready-on-green pull request
+        id: judge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          prs="${work}/prs.json"
+          gh pr list --state open --label ready-on-green --limit 200 \
+            --json number,title,headRefOid,baseRefName >"${prs}"
+          candidates="${work}/candidates.tsv"
+          case "${EVENT_NAME}" in
+            schedule) only_sha="" ;;
+            *)
+              if [[ -z "${RUN_HEAD_SHA}" ]]; then
+                echo "no head sha on this ${EVENT_NAME} event: nothing to judge" | tee -a "${GITHUB_STEP_SUMMARY}"
+                echo "promote=" >>"${GITHUB_OUTPUT}"
+                exit 0
+              fi
+              only_sha="${RUN_HEAD_SHA}"
+              ;;
+          esac
+          jq -r --arg sha "${only_sha}" '
+            .[] | select($sha == "" or .headRefOid == $sha)
+            | "\(.number)\t\(.headRefOid)\t\(.baseRefName)\t\(.title | gsub("[\\t\\r\\n]"; " "))"
+          ' "${prs}" >"${candidates}"
+          promote="${work}/promote.txt"
+          : >"${promote}"
+          judged=0
+          green=0
+          while IFS=$'\t' read -r number head base title; do
+            [[ -n "${number}" ]] || continue
+            if [[ ! "${number}" =~ ^[1-9][0-9]*$ || ! "${head}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::gh pr list returned a malformed pull request: ${number} ${head}"
+              exit 1
+            fi
+            if grep -Eiq '^[[:space:]]*\[swarm\] task_' <<<"${title}"; then
+              echo "- #${number} skipped: its title is a \`[swarm] task_\` placeholder, which the gate refuses; retitle it" >>"${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+            # The base's required checks, the way the gate reads them:
+            # classic protection and the effective rules, each name once.
+            required="${work}/required-${base//[^A-Za-z0-9._-]/_}.txt"
+            if [[ ! -f "${required}" ]]; then
+              gh api "repos/${GH_REPO}/branches/${base}" >"${work}/branch.json"
+              gh api --paginate "repos/${GH_REPO}/rules/branches/${base}" >"${work}/rules.json"
+              {
+                jq -r '(.protection.required_status_checks.contexts // [])[],
+                       ((.protection.required_status_checks.checks // [])[] | .context)' "${work}/branch.json"
+                jq -rs 'add // [] | .[]
+                        | select(.type == "required_status_checks")
+                        | (.parameters.required_status_checks // [])[] | .context' "${work}/rules.json"
+              } | awk 'length' | sort -u >"${required}"
+            fi
+            if [[ ! -s "${required}" ]]; then
+              echo "- #${number} not promoted: \`${base}\` has no required checks, so \"every required check passed\" says nothing" >>"${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+            judged=$((judged + 1))
+            gh api "repos/${GH_REPO}/commits/${head}/check-runs?per_page=100" >"${work}/check-runs-raw.json"
+            jq '.check_runs = [(.check_runs // [])[] | select(.name != "queue for auto-merge")]' \
+              "${work}/check-runs-raw.json" >"${work}/check-runs.json"
+            gh api "repos/${GH_REPO}/commits/${head}/status?per_page=100" >"${work}/status.json"
+            scripts/merge-train.sh judge --check-runs "${work}/check-runs.json" \
+              --statuses "${work}/status.json" --required "${required}" >"${work}/verdict.tsv"
+            verdict="$(awk -F'\t' '$1 == "verdict" { print $2 }' "${work}/verdict.tsv")"
+            case "${verdict}" in
+              green)
+                green=$((green + 1))
+                echo "${number} ${head}" >>"${promote}"
+                echo "- #${number} is green at \`${head}\`: marking it \`ready\`" >>"${GITHUB_STEP_SUMMARY}"
+                ;;
+              pending)
+                echo "- #${number} at \`${head}\`: still waiting on its checks" >>"${GITHUB_STEP_SUMMARY}"
+                ;;
+              red)
+                names="$(awk -F'\t' '$1 == "failed" { print $2 }' "${work}/verdict.tsv" | sort -u | awk 'NR > 1 { printf ", " } { printf "%s", $0 }')"
+                echo "- #${number} is red at \`${head}\`: ${names}" >>"${GITHUB_STEP_SUMMARY}"
+                marker="<!-- ready-on-green: red at ${head} -->"
+                comments="${work}/comments-${number}.txt"
+                gh api --paginate "repos/${GH_REPO}/issues/${number}/comments" --jq '.[].body' >"${comments}"
+                if ! grep -qF -- "${marker}" "${comments}"; then
+                  body="${work}/comment-${number}.md"
+                  {
+                    echo "${marker}"
+                    echo "\`ready-on-green\`: this pull request is red at \`${head}\`, so it was not marked \`ready\`. Failing: ${names}."
+                    echo
+                    awk -F'\t' '$1 == "failed" { printf "- [%s](%s)\n", $2, $3 }' "${work}/verdict.tsv"
+                    echo
+                    echo "A new head is judged again; the label stays on."
+                  } >"${body}"
+                  gh pr comment "${number}" --body-file "${body}"
+                fi
+                ;;
+              *)
+                echo "::error::the judge said '${verdict}' for #${number}"
+                exit 1
+                ;;
+            esac
+          done <"${candidates}"
+          echo "judged ${judged} ready-on-green pull request(s); ${green} green" | tee -a "${GITHUB_STEP_SUMMARY}"
+          {
+            echo "promote<<PROMOTE_EOF"
+            cat "${promote}"
+            echo "PROMOTE_EOF"
+          } >>"${GITHUB_OUTPUT}"
+
+      # Pull requests only: a `ready` this token adds starts the `enable`
+      # job, and so auto-merge, as one the GITHUB_TOKEN adds would not.
+      - name: mint the merge App's token for this repository
+        id: app-token
+        if: steps.judge.outputs.promote != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.MERGE_APP_ID }}
+          private-key: ${{ secrets.MERGE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-pull-requests: write
+
+      # The head is read again first: `ready` names the head judged green,
+      # so a pull request pushed to, closed or unlabelled since is left alone.
+      - name: swap ready-on-green for ready
+        id: label
+        if: steps.judge.outputs.promote != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          PROMOTE: ${{ steps.judge.outputs.promote }}
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          lines="${work}/promote.txt"
+          printf '%s\n' "${PROMOTE}" >"${lines}"
+          while read -r number head extra; do
+            [[ -n "${number}${head:-}" ]] || continue
+            if [[ ! "${number}" =~ ^[1-9][0-9]*$ || ! "${head:-}" =~ ^[0-9a-f]{40}$ || -n "${extra:-}" ]]; then
+              echo "::error::not a pull request number and head sha: ${number} ${head:-} ${extra:-}"
+              exit 1
+            fi
+          done <"${lines}"
+          while read -r number head _; do
+            [[ -n "${number}" ]] || continue
+            pull="${work}/pull-${number}.json"
+            gh api "repos/${GH_REPO}/pulls/${number}" >"${pull}"
+            state="$(jq -r '.state' "${pull}")"
+            now="$(jq -r '.head.sha' "${pull}")"
+            if [[ "${state}" != "open" ]]; then
+              echo "- #${number} is ${state} now: left alone" | tee -a "${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+            if [[ "${now}" != "${head}" ]]; then
+              echo "- #${number} moved from \`${head}\` to \`${now}\` since it was judged: left alone" | tee -a "${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+            if ! jq -e 'any(.labels[]?; .name == "ready-on-green")' "${pull}" >/dev/null; then
+              echo "- #${number} no longer carries ready-on-green: left alone" | tee -a "${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+            GH_TOKEN="${APP_TOKEN}" gh api -X POST "repos/${GH_REPO}/issues/${number}/labels" -f "labels[]=ready" >/dev/null
+            GH_TOKEN="${APP_TOKEN}" gh api -X DELETE "repos/${GH_REPO}/issues/${number}/labels/ready-on-green" >/dev/null
+            echo "- #${number} marked \`ready\` at \`${head}\`" | tee -a "${GITHUB_STEP_SUMMARY}"
+          done <"${lines}"

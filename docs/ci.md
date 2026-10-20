@@ -1801,7 +1801,7 @@ exercised, and this is what was found, not proof that there is nothing else.
 | 3 | `roles/iam.serviceAccountAdmin` (unscopable) carries `iam.serviceAccounts.setIamPolicy`. CI can grant itself `serviceAccountTokenCreator` on an account that reads logs (the compute account above, or `209012342332@cloudbuild`, which holds `roles/cloudbuild.builds.builder`) and act as it. | **not by a condition, which cannot scope IAM resources; closed by granting the role per account** (#334, owner decision 2026-09-29): only on the accounts `terraform/infra` manages, none of which reads logs ([below](#the-deployers-service-account-grants)). **Closed once applied.** |
 | 4 | `roles/logging.configWriter` keeps sinks and exclusions project-wide even when scoped. A sink can route every log to a `swarm-` bucket (`storage.admin`) or a Pub/Sub topic (`pubsub.admin`) that CI reads. | **no** |
 | 5 | `roles/logging.configWriter` unconditioned holds `logging.views.update`: CI can rewrite this view's filter, or make another view, and read the result through the grant. | yes, once `roles/logging.configWriter` is in `deployer_scoped_roles` |
-| 6 | `roles/resourcemanager.projectIamAdmin` unconditioned lets CI grant itself `roles/logging.viewer`, or any other role that reads logs. Scoped, it may modify only the roles terraform/infra grants: 14 since 2026-09-25, when `swarmSecretLister` left the list (#69) because its project-wide `secrets.setIamPolicy` reaches the other team's secrets and `terraform/bootstrap` now makes the broker's grant of it. None of the 14 reads a log entry: the nine predefined ones are absent from [`log-reading-roles.json`](../terraform/bootstrap/log-reading-roles.json), and the five custom ones carry no `logging.` permission ([`platform_roles.tf`](../terraform/bootstrap/platform_roles.tf)). | yes, once `roles/resourcemanager.projectIamAdmin` is in `deployer_scoped_roles` **and** route 2 is closed. Before route 2 closes, `roleAdmin` could widen one of the grantable custom roles, or add `resourcemanager.projects.setIamPolicy` to a role CI holds unconditioned, and the condition would never be evaluated. Route 2 closed with the owner's bootstrap apply of 2026-09-28 in [the runbook](runbooks/custom-roles-to-bootstrap.md#what-actually-happened-dates). |
+| 6 | `roles/resourcemanager.projectIamAdmin` unconditioned lets CI grant itself `roles/logging.viewer`, or any other role that reads logs. Scoped, it may modify only the roles terraform/infra grants: 15 since #1430 turned `swarmGithubHooksDedup` on (14 from 2026-09-25, when `swarmSecretLister` left the list (#69) because its project-wide `secrets.setIamPolicy` reaches the other team's secrets and `terraform/bootstrap` now makes the broker's grant of it). None of the 15 reads a log entry: the nine predefined ones are absent from [`log-reading-roles.json`](../terraform/bootstrap/log-reading-roles.json), the five custom ones carry no `logging.` permission ([`platform_roles.tf`](../terraform/bootstrap/platform_roles.tf)), and `swarmGithubHooksDedup` holds `datastore.entities.create` alone ([`github_hooks_role.tf`](../terraform/bootstrap/github_hooks_role.tf)). | yes, once `roles/resourcemanager.projectIamAdmin` is in `deployer_scoped_roles` **and** route 2 is closed. Before route 2 closes, `roleAdmin` could widen one of the grantable custom roles, or add `resourcemanager.projects.setIamPolicy` to a role CI holds unconditioned, and the condition would never be evaluated. Route 2 closed with the owner's bootstrap apply of 2026-09-28 in [the runbook](runbooks/custom-roles-to-bootstrap.md#what-actually-happened-dates). |
 
 What bounds routes 1 and 4 today is the ref pin, not IAM: only a workflow
 on `refs/heads/main` can mint the deployer's token, so each route has to be
@@ -1988,8 +1988,8 @@ Once PR #73's targeted apply lands, the deployer's `projectIamAdmin` carries the
 `modifiedGrantsByRole` condition in
 [`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf) --
 as of #275, chunked into two bindings rather than one: `hasOnly()` refuses a
-list over 10 elements, and the 14 grantable roles (15 until #150 took
-`swarmSecretLister` off) do not fit in a single call. Every chunk still authorises only a `setIamPolicy` whose modified
+list over 10 elements, and the 15 grantable roles (14 until #1430 turned
+`swarmGithubHooksDedup` on, and 15 until #150 took `swarmSecretLister` off) do not fit in a single call. Every chunk still authorises only a `setIamPolicy` whose modified
 roles stay inside it, which is what each Terraform-issued call already does.
 
 **The live project also still holds the deployer's UNCONDITIONED
@@ -2074,7 +2074,7 @@ whole expression is matched, and the list is parsed, for that reason. Before
   show that the route is shut: what shuts it is the binding's absence, since
   the owner's bootstrap apply of 2026-09-28 destroyed it.
 * **Who a listed role goes to.** `hasOnly` limits which roles change, not whose
-  grant changes. CI can still grant any of the 14, unconditioned, to
+  grant changes. CI can still grant any of the 15, unconditioned, to
   anyone.
 * **Routes through other identities.** Routes 1 and 3 in
   [the table above](#what-the-view-does-not-bound-the-deployer-can-reach-every-log)
@@ -2609,6 +2609,26 @@ it in its group, so a burst of finishing runs must not cancel a queued
 `synchronize` run of the `disable` job. An operator can send the same
 dispatch by hand (Actions → auto-merge → *Run workflow*, `pr`) to make it
 look again; it is a request to look, not a `ready`.
+
+### `ready-on-green` is marked `ready` by CI, not by a session
+
+Owner decision, 2026-10-17: on that day an operator's laptop ran ~20 watcher
+loops (`gh pr view` every 60-90 s per pull request) only to add `ready` once
+a pull request went green, spending the owner's personal GitHub quota. A pull
+request labelled `ready-on-green` now gets that from the `ready-on-green` job
+in `auto-merge.yml`. It runs on the events `requeue` runs on (a pull
+request's `workflow_run` finishing, any `check_suite`), for the
+`ready-on-green` pull requests at that head, and every 15 minutes for all of
+them as the backstop. Green is judged at the head GitHub reports for each
+pull request with main's `scripts/merge-train.sh judge`: every required
+check finished well and nothing that ran failed. The head is read again just
+before labelling, so a push since is not promoted. Green adds `ready` and
+removes `ready-on-green` with the merge App's token, never the GITHUB_TOKEN:
+GitHub raises no `labeled` event for a label the GITHUB_TOKEN adds, so the
+`enable` job, and with it auto-merge, would never start. A red head is left
+alone, with one comment per head naming the failing checks; a `[swarm]
+task_` title is skipped, as the gate would refuse it; without the merge App
+the job does not run.
 
 ### Why the merge uses a GitHub App token, not the GITHUB_TOKEN
 
@@ -3860,6 +3880,16 @@ would have stopped every suite: a listed account is continuation-scoped
 (`swarm_api.auth.CONTINUATION_ROUTES`) and may submit nothing but a
 continuation.
 
+**One exception: the two await-input checks run in swarm-verify's own service
+tenant** (owner decision 2026-10-19, HW-ACCEPT-ID). A service account answers
+for no person in a group tenant, so their answer would be 403
+`person_required` in `smoke`; as its own service tenant's principal it is
+taken (docs/design/human-steps.md §4.2.2). `groups/workflow.sh` derives that
+id at run time (`u-sw-c90291` for swarm-verify) from the email
+`GET /tenants/me` verified, with `common.sh`'s `personal_tenant_id`, and sends
+it as `X-Swarm-Tenant` for those two workflows only; cleanup cancels their
+tasks in that tenant.
+
 **What the suite refuses.** Before any group runs, `run.sh` asks GitHub
 anonymously for the repository and refuses a 200 (public) or an unanswered
 read, and asks `GET /tenants/me` with the header and refuses any tenant but
@@ -3963,6 +3993,52 @@ in the suite too.
 Until steps 1-3 are done the acceptance job fails at `acc_require_tenant`
 with the sentence that names this section, and nothing is submitted: a red
 acceptance job, not a quiet return to eng.
+
+## The personal-workspace job is not CI, and its log is not public
+
+A person's workspace is made by **the Cloud Run job `swarm-workspace-apply`**
+in the project, not by a workflow in `.github/workflows/` and not by Cloud
+Build ([multi-tenancy §7](multi-tenancy.md#7-a-persons-personal-workspace)).
+It is recorded here because it is the one deployment-shaped thing that no
+workflow runs, and the first place someone looks for its log is this page.
+
+**Why not CI.** Its log names people, and this repository's Actions logs are
+public. Its identity, `swarm-workspace-deployer`, holds account-IAM power IAM
+cannot narrow in the shared project, so it must be reachable from as few
+places as possible: a GitHub workflow holding a way to start it would put
+that power one compromised workflow away (WD2, re-decided 2026-10-10 from a
+Cloud Build trigger to this job).
+
+**How it is started.** An admin's approval (or Retry, or the 10-minute
+`swarm-workspace-sweep`) makes swarm-api publish the opaque workspace id to the
+Pub/Sub topic `swarm-workspace-apply`. An Eventarc trigger hands the message
+to the Workflows definition `swarm-workspace-apply`, running as
+`swarm-workspace-dispatch`, which validates the id and the mode and runs the
+job with those two arguments and nothing else. All of it is
+`terraform/bootstrap/workspace_deployer.tf` and `workspace_dispatch.tf`, the
+owner's apply, never the release's.
+
+**What CI does for it.** The release builds and scans `images/workspace-apply`
+with every other image (`scripts/build-images.sh` `ALL_TARGETS`); the `shell`
+job runs the call guard's self-test (`workspace-guard.sh self-test`), and the
+`python` job the walk of every call the job makes
+(`tests/unit/scripts/test_workspace_deployer_walk.py`). **The job does not run
+what the release just built.** It runs the digest in bootstrap's
+`workspace_apply_image`, and only the owner's bootstrap apply moves it
+(workspaces.md §2.4 R1), so a merge to `main` never changes what runs as the
+deployer. A fix to the job's code therefore reaches it in two steps: the
+release builds the image, then the owner re-pins the digest, as PR 1219 did
+for PR 1217's image on 2026-10-13.
+
+**Where its logs are.** Cloud Logging, `resource.type="cloud_run_job"` and
+`resource.labels.job_name="swarm-workspace-apply"`, routed by the sink
+`swarm-workspace-apply` to the restricted log bucket of the same name and
+excluded from `_Default` (workspaces.md §2.6). Readable by the project's owners
+and logging admins and the members of bootstrap's `workspace_log_readers`; the
+person's row in Admin → People links to the execution. Each step's progress
+is also on the record (`steps.A1` … `steps.A9`), which People shows without
+any log access. The first execution to reach A9 ran 2026-10-13 05:03 to
+05:05Z, for `w-7f9285`.
 
 ## ruff lint is the house Python linter, and formatting is not adopted
 

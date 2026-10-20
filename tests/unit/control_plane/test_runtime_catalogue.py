@@ -67,6 +67,11 @@ def test_each_runtime_matches_the_frozen_catalogue_field_for_field(client):
             "secrets_any_of": profile.secrets_any_of,
             "timeout_seconds": profile.timeout_seconds,
             "resource_class": profile.resource_class,
+            # #1435: the classes from the catalogue; `models` from the
+            # deployment's WORKER_CLASS_MODELS, unset in this fixture.
+            "model_classes": list(profile.model_classes),
+            "default_model_class": profile.default_model_class,
+            "models": {},
             "resources": {
                 "name": rc.name,
                 "cpu": rc.cpu,

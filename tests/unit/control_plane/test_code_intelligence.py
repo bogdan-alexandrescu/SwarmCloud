@@ -76,7 +76,11 @@ def _put(client, tenant_id, user, body):
 
 
 def _audit(db) -> list[dict]:
-    return [doc for path, doc in db.docs.items() if path.startswith("admin_audit/")]
+    # A platform admin's own `platform_admin_*` rows (docs/design/
+    # workspace-roles.md §4.2.4) are test_roles_api.py's; these are this
+    # setting's.
+    return [doc for path, doc in db.docs.items() if path.startswith("admin_audit/")
+            and not str(doc.get("action", "")).startswith("platform_admin_")]
 
 
 def _document(db, tenant_id) -> dict | None:

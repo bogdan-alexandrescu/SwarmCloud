@@ -306,19 +306,19 @@ export function ledgerFixture(): Outcomes {
       rows_total: 3,
       rows: [
         {
-          workflow_id: 'wf_bcdc9180e4fb4a209f31', tenant_id: 'eng', submitted_by: 'engineer-a@saga.xyz',
+          workflow_id: 'wf_bcdc9180e4fb4a209f31', tenant_id: 'eng', submitted_by: 'engineer-a@example.com',
           first_failed: { step_id: 'synthesis', task_id: 'task_0123456789abcdef0001', failure_class: 'lost_worker', ended_at: '2026-09-25T08:10:00Z' },
           cascade_cancelled: 2, last_ended_at: '2026-09-25T08:12:00Z', state: 'FAILED',
           steps: { total: 4, succeeded: 1, failed: 1, dead_lettered: 0, cancelled: 2, open: 0, unreadable: 0 },
         },
         {
-          workflow_id: 'wf_71aa000000000000002c1', tenant_id: 'eng', submitted_by: 'engineer-b@saga.xyz',
+          workflow_id: 'wf_71aa000000000000002c1', tenant_id: 'eng', submitted_by: 'engineer-b@example.com',
           first_failed: { step_id: 'review', task_id: 'task_0123456789abcdef0002', failure_class: 'dispatch_failed', ended_at: '2026-09-22T10:00:00Z' },
           cascade_cancelled: 0, last_ended_at: '2026-09-22T10:05:00Z', state: 'FAILED',
           steps: { total: 4, succeeded: 3, failed: 1, dead_lettered: 0, cancelled: 0, open: 0, unreadable: 0 },
         },
         {
-          workflow_id: 'wf_0c3e0000000000000077b0', tenant_id: 'eng', submitted_by: 'verify-sa@saga.xyz',
+          workflow_id: 'wf_0c3e0000000000000077b0', tenant_id: 'eng', submitted_by: 'verify-sa@example.com',
           first_failed: { step_id: 'build', task_id: 'task_0123456789abcdef0003', failure_class: 'lost_worker', ended_at: '2026-09-23T09:00:00Z' },
           cascade_cancelled: 1, last_ended_at: '2026-09-23T09:01:00Z', state: 'UNKNOWN', steps: null,
         },

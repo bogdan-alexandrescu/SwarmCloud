@@ -1,4 +1,4 @@
-// LIVE QA, WORK › AGENTS, THE LIST (2026-10-11, swarm.saga.xyz).
+// LIVE QA, WORK › AGENTS, THE LIST (2026-10-11, swarm.example.com).
 //
 // WA-1 (S1): a whole task id pasted into "Find by name or task id" was searched
 // for over the loaded page only, and a task past the newest 200 read `real

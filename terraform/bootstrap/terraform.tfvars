@@ -56,8 +56,9 @@ ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.c
 # (rules 1 and 2 in deployer_conditions.tf, the ones the IAP condition broke),
 # only which roles a policy change modifies -- modifiedGrantsByRole with
 # hasOnly, zero logical operators. A read modifies nothing and passes. What CI
-# may still modify is the 14 roles terraform/infra grants
-# (deployer_grantable_project_roles in deployer_conditions.tf), held by
+# may still modify is the 15 roles terraform/infra grants
+# (deployer_grantable_project_roles in deployer_conditions.tf; 14 until #1430
+# turned enable_github_hooks_dedup_role on, below), held by
 # tests/terraform/deployer_iam.tftest.hcl for every project grant CI applies.
 # The list was measured 2026-09-24 at 15 from the code (8 grant resources) and
 # from the live policy (43 grants to terraform/infra's identities); it was 15
@@ -84,7 +85,7 @@ ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.c
 #     direct grant, not one made through a custom-role update, which is why
 #     roleAdmin had to go rather than be scoped.
 #   * hasOnly limits which roles, never whose or with what condition, so CI
-#     can still grant ITSELF any of the 14 (#69); nothing above closes that.
+#     can still grant ITSELF any of the 15 (#69); nothing above closes that.
 #
 # APPLY, in this exact order (owner decision 2026-09-28, after #275): create
 # the chunks FIRST, prove they are live, and ONLY THEN remove the live
@@ -115,8 +116,8 @@ ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.c
 #      the binding with no condition); the two chunk bindings are untouched.
 #   5. Re-run step 3. Expect exactly the two chunk titles, nothing else.
 #   6. Prove the admitted side with a terraform/infra plan or a release apply:
-#      CI must still be able to grant/revoke the 14 roles it needs (15 before
-#      #150 also took swarmSecretLister off deployer_grantable_project_roles),
+#      CI must still be able to grant/revoke the 15 roles it needs (14 until #1430 turned
+#      swarmGithubHooksDedup on, and 15 before #150 also took swarmSecretLister off deployer_grantable_project_roles),
 #      now through the chunked conditions alone.
 #
 # REVERT: delete the entry, leaving `[]`, and run
@@ -133,11 +134,32 @@ deployer_scoped_roles = ["roles/resourcemanager.projectIamAdmin"]
 #                      SWARM_IMPERSONATE_SA reach the API through the load
 #                      balancer. Before this IAP answered 403 "Access denied.
 #                      For user swarm-verify@...".
+#   oracle-api      -- owner decision 2026-10-18 (#1568): the orchestrating
+#                      client application submits workflows as its own tenant,
+#                      u-or-9a0792 (terraform/environments/dev/dev.tfvars),
+#                      the swarm-verify pattern, and never as a member of
+#                      eng@saga.xyz. The owner applies this himself; the line
+#                      is the record of that apply, because a -var not
+#                      written here makes the next bootstrap plan remove it.
+#   qa-console      -- owner decision 2026-10-19 (#1649, QA-IDENTITY option B):
+#                      the key-less QA identity a live-browser QA agent signs
+#                      in to the console as, through a 15-minute JWT swarm-api
+#                      signs (qa_identity.tf). It passes IAP here only; it is
+#                      a member of no group and no other IAP app.
 frontend_iap_members = [
   "domain:saga.xyz",
   "serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com",
+  "serviceAccount:oracle-api@saga-agents-staging.iam.gserviceaccount.com",
   "serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com",
+  "serviceAccount:qa-console@saga-agents-staging.iam.gserviceaccount.com",
 ]
+
+# QA identity (qa_identity.tf, QI-IAM PR 1657; docs/design/qa-identity.md
+# option B, owner 2026-10-19): the key-less service account qa-console, the
+# custom role swarmQaJwtSigner holding iam.serviceAccounts.signJwt alone, and
+# qa-console's own IAM policy granting that role to swarm-api alone. Applied as
+# its own bootstrap apply, after the workspace-kinds one (owner, 2026-10-19).
+enable_qa_identity = true
 
 # The Desktop OAuth client `sc login` signs developers in with
 # (iap_programmatic_clients.tf, docs/runbooks/iap-desktop-client.md). Created
@@ -162,8 +184,22 @@ enable_forge_user_slots = true
 # allow-typesafe-fwd policy in render.py's TENANT_FILES (PR 1409), the IAP
 # sign-in path in scripts/lib/common.sh (PR 1413) and today's scheduler
 # changes, so a workspace created now renders what every existing tenant got.
+# Re-pinned 2026-10-19 to the image release 39326139658 (7c2e148d) promoted:
+# it carries WK-SIGNED-APPROVAL (PR 1632), WK-APPROVAL-KEYS (PR 1639: the job
+# verifies approvals against the SPEC_VERIFY_KEYS its command pins) and
+# WK-FAILCOPY (PR 1638), which group and service workspaces need.
 enable_workspace_deployer = true
-workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:4bbc7cdd7a4a6fb4bf865dec005d9e9fe3b134e6fd8a07f39320c15f1c0467a2"
+workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:7a03edc768e67fea9f791ab65ec28c726b8e8420799ece96f51169a7fc46028a"
+
+# Workspace kinds (docs/design/workspace-kinds.md §4.5, #847; owner 2026-10-19):
+# K2 (the deployer's second swarmWorkspaceSecretBinder grant, on any tenant's
+# -git team slot and its -git-refresh twin) and K3 (swarm-api's three forge-slot
+# grants over members' -git-u- slots). K1 is NOT granted: O1 step 2 showed IAP
+# refuses the number-form condition on both backends (docs/workspaces.md, read
+# 2026-10-19 20:20-20:35Z), so swarmFrontDoorAdmitter stays off
+# workspace_deployer_roles and a service workspace's front-door admit (S2) stays
+# an owner step.
+enable_workspace_kinds = true
 
 # L8c (2026-10-12, owner): saved browser logins on. swarm-api provisions each
 # personal tenant's -browser- secret and grants it to that tenant's worker
@@ -206,3 +242,23 @@ enable_workspace_secrets = true
 # bootstrap plan from main read it as false and planned to destroy both. It is
 # recorded here so the state and this file agree.
 enable_typesafe_forwarder_read = true
+
+# The GitHub push receiver's create-only Firestore role (HOOKS-ROLE, PR 1423;
+# github_hooks_role.tf; owner decision 2026-10-16 on #1384): swarmGithubHooksDedup
+# holds datastore.entities.create and nothing else, and the deployer may grant
+# it. ON 2026-10-16, before terraform/infra's enable_github_hooks, whose binding
+# names this role (docs/runbooks/github-app.md, Step 9 step 2).
+enable_github_hooks_dedup_role = true
+
+# MCP-IAM (PR 1503, #1433; mcp_credentials.tf): swarm-api alone may read and
+# delete swarm-tenant-<t>-mcpc-* secrets and their versions, under one
+# extract() condition, so an attempt's mcp:attach can hand its relay the
+# caller's per-run credential and the sweep can delete it when the task ends.
+# NOT YET APPLIED when this line was committed (read 2026-10-18 22:03Z:
+# swarmMcpCredentialAccessor does not exist). The owner applies it before the
+# release that sets dev's mcp_servers_enabled; lint the condition with
+# iamPolicies:lintPolicy first. The plan is 2 adds / 0 changes / 0 destroys:
+# the role (secretmanager.secrets.delete, secretmanager.versions.access) and
+# its conditioned member for swarm-api. Recorded here in the same change so a
+# later bootstrap plan from main keeps them rather than destroying them.
+enable_mcp_credentials = true

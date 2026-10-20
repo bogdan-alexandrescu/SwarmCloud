@@ -49,7 +49,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Mapping, TypeVar
+from typing import Any, Callable, Mapping, Sequence, TypeVar
 from urllib.parse import quote, urlencode, urlparse
 
 _UA = "swarmcloud-agent-worker"
@@ -58,6 +58,16 @@ _TIMEOUT = 30
 
 class ForgeError(RuntimeError):
     """The forge could not be reached, or refused in a way worth surfacing."""
+
+
+class ForgeCredentialRejected(ForgeError):
+    """The forge answered 401 to the pull request: it refused the token itself.
+
+    Its own type so the publish can tell a token that ended since it was read
+    (a refresh makes GitHub end the access token it replaces, #1623) from a
+    403 or 404, which are permissions a re-read cannot change. The message is
+    `_open_pull_request`'s, unchanged; it never carries the token.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +357,12 @@ class PullRequest:
     #: guard in `_update_pull_request` refused to send it (#807). Empty when
     #: no body was refused.
     body_refused: tuple[str, ...] = ()
+    #: The labels the forge reports the pull request carries after `labels`
+    #: were added (TERRITORY-WARN); empty when none were asked for.
+    labelled: tuple[str, ...] = ()
+    #: Why the asked-for labels were not added, or "" (TERRITORY-WARN). The
+    #: pull request is open either way.
+    label_error: str = ""
 
 
 def parse_repo(url: str) -> RepoRef | None:
@@ -771,6 +787,62 @@ def open_pull_request(
     body: str,
     amendment: str | None = None,
     retitle_if: Callable[[str], bool] | None = None,
+    labels: Sequence[str] = (),
+) -> PullRequest:
+    """Open one pull request, or adopt the open one this branch already has,
+    then add `labels` to it when any are given.
+
+    A label that cannot be added never fails the publish: the pull request is
+    open, and `label_error` says why (TERRITORY-WARN, part of #1468).
+    """
+    pr = _open_pull_request(
+        access=access, token=token, head=head, base=base, title=title, body=body,
+        amendment=amendment, retitle_if=retitle_if,
+    )
+    if not labels or not pr.number:
+        return pr
+    return add_labels(access=access, token=token, pr=pr, labels=labels)
+
+
+def add_labels(
+    *, access: RepoAccess, token: str, pr: PullRequest, labels: Sequence[str]
+) -> PullRequest:
+    """`pr` with `labels` added on the forge: `labelled` is what it then
+    carries, or `label_error` why nothing was added. A pull request is an
+    issue to GitHub's labels API, which creates a label the repository does
+    not have yet."""
+    ref = access.ref
+    if not may_receive_forge_token(ref.host):
+        return replace(pr, label_error=f"labels are sent only to github.com, not {ref.host}")
+    try:
+        status, data = _request(
+            f"{ref.api_base}/repos/{ref.owner}/{ref.name}/issues/{pr.number}/labels",
+            token=token,
+            method="POST",
+            payload={"labels": list(labels)},
+        )
+    except ForgeError as exc:
+        return replace(pr, label_error=f"the forge was not reached: {exc}"[:300])
+    if status != 200 or not isinstance(data, list):
+        message = str(data.get("message") or "") if isinstance(data, dict) else ""
+        said = f": {message}" if message else ""
+        return replace(pr, label_error=f"the forge refused the labels ({status}){said}")
+    names = tuple(
+        str(item.get("name") or "") for item in data if isinstance(item, dict) and item.get("name")
+    )
+    return replace(pr, labelled=names)
+
+
+def _open_pull_request(
+    *,
+    access: RepoAccess,
+    token: str,
+    head: str,
+    base: str,
+    title: str,
+    body: str,
+    amendment: str | None = None,
+    retitle_if: Callable[[str], bool] | None = None,
 ) -> PullRequest:
     """Open one pull request, or adopt the open one this branch already has.
 
@@ -850,7 +922,12 @@ def open_pull_request(
         raise ForgeError(f"the forge refused the pull request: {message or '422'}")
 
     message = str(data.get("message")) if isinstance(data, dict) else ""
-    failure = ForgeUnavailable if transient_status(status, None, data) else ForgeError
+    if transient_status(status, None, data):
+        failure: type[ForgeError] = ForgeUnavailable
+    elif status == 401:
+        failure = ForgeCredentialRejected
+    else:
+        failure = ForgeError
     raise failure(f"could not open a pull request ({status}){': ' + message if message else ''}")
 
 

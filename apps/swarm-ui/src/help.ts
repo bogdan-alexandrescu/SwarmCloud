@@ -141,6 +141,7 @@ export type TopicId =
   | 'runtime-needs-no-provider'
   | 'schedules'
   | 'second-browser-application'
+  | 'served-model-classes'
   | 'sign-in-not-paste'
   | 'strategy-on-a-task'
   | 'signin-201-no-name'
@@ -1332,6 +1333,18 @@ const SPECS: Record<TopicId, TopicSpec> = {
     ],
   },
 
+  'served-model-classes': {
+    group: 'an-account',
+    title: 'An account serves the model classes its owner ticked',
+    short:
+      'Each account lists the model classes it takes steps of; an empty list means every class. A step is never given an account that does not serve its class, and a step whose class no account serves waits, parked, holding nothing, until one does.',
+    long: [
+      'The list is the owner’s, per account, edited beside lending. Ticking all four boxes or none saves the same thing: every class. An account that serves nothing is a paused account, and pausing has its own control and asks for a reason.',
+      'Narrowing an account moves no running step. It decides which account the next step of each class may be given.',
+      'If steps of one class are waiting while accounts look idle, the class is served by no account that can take it. Widen an account’s list, or register one for that class.',
+    ],
+  },
+
   'lent-account': {
     group: 'an-account',
     title: 'A lent account runs your agents and has no controls',
@@ -1684,7 +1697,8 @@ export const HELP_PLACES = {
   'admin/counts': 'Platform counts',
   'automate/schedules': 'Schedules',
   'automate/approvals': 'Approvals',
-  reference: 'API reads',
+  // A Capacity page since NAV-FOOT (#1672); `reference` still lands there.
+  'capacity/api-reads': 'API reads',
 } as const
 
 export type HelpPlace = keyof typeof HELP_PLACES
@@ -1721,7 +1735,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'read-failed': {
     subject: 'A failed read',
-    act: { say: 'Re-read the screen, and if the failure persists, check which route is failing and for how long.', at: 'reference' },
+    act: { say: 'Re-read the screen, and if the failure persists, check which route is failing and for how long.', at: 'capacity/api-reads' },
   },
   'token-cost': {
     subject: 'Token cost',
@@ -1737,7 +1751,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'partial-read': {
     subject: 'Several failed reads',
-    act: { say: 'Look at each failing route on its own; the message describes only the first.', at: 'reference' },
+    act: { say: 'Look at each failing route on its own; the message describes only the first.', at: 'capacity/api-reads' },
   },
   'binding-window': {
     subject: 'Utilisation of an account',
@@ -1813,7 +1827,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'api-reads': {
     subject: 'The reads behind a screen',
-    act: { say: 'Open the reads to see which route is failing and how old its last good payload is.', at: 'reference' },
+    act: { say: 'Open the reads to see which route is failing and how old its last good payload is.', at: 'capacity/api-reads' },
   },
   schedules: {
     subject: 'What a schedule does',
@@ -2058,6 +2072,10 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'lending-narrows-isolation': {
     subject: 'Lending and isolation',
     act: { say: 'Lend only to tenants you trust with the account’s token, and take the lending back when it is no longer needed.', at: 'capacity/accounts' },
+  },
+  'served-model-classes': {
+    subject: 'Model classes an account serves',
+    act: { say: 'Tick the classes on the account; all four or none means every class.', at: 'capacity/accounts' },
   },
   'lent-account': {
     subject: 'An account lent to you',

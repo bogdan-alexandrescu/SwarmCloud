@@ -188,16 +188,18 @@ run "the_workspace_job_s_terraform_names_no_person" {
 
   # The job is declared with a command and NO arguments: the workspace id and
   # the mode arrive with each execution, from the workflow, which reads them
-  # from the message. Terraform holds no workspace.
+  # from the message. Terraform holds no workspace; its one variable is the
+  # step-spec key's public halves.
   assert {
     condition = alltrue([
       google_pubsub_topic.workspace_apply[0].name == "swarm-workspace-apply",
       try(length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].args), 0) == 0,
-      try(length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].env), 0) == 0,
+      [for e in google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].env : e.name] == ["SPEC_VERIFY_KEYS"],
+      alltrue([for e in google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].env : length(regexall("w-[0-9a-f]{6}|u-fixture-person", e.value)) == 0]),
       strcontains(google_workflows_workflow.workspace_apply[0].source_contents, "map.get(message, \"workspace_id\")"),
       length(regexall("w-[0-9a-f]{6}", google_workflows_workflow.workspace_apply[0].source_contents)) == 0,
     ])
-    error_message = "which workspace to make reaches the job only in the message, at run time: the job carries no argument or environment, and the workflow reads the id from the message and names none"
+    error_message = "which workspace to make reaches the job only in the message, at run time: the job carries no argument, its one variable is the public verify keys (SPEC_VERIFY_KEYS, WK-APPROVAL-KEYS) naming no workspace, and the workflow reads the id from the message and names none"
   }
 
   assert {
@@ -218,9 +220,12 @@ run "a_person_cannot_be_a_terraform_tenant" {
     source = "../../terraform/infra"
   }
 
+  # Under a frozen id (var.tenants is frozen to dev's four keys,
+  # tenants_frozen.tftest.hcl), so the refusal is the person rule's and not
+  # the freeze's.
   variables {
     tenants = {
-      "u-fixture-person" = {
+      "u-sw-c90291" = {
         kind      = "user"
         principal = "fixture.person@saga.xyz"
       }

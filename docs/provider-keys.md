@@ -16,7 +16,7 @@ profile names `typesafe` and no Job mounts the secret. `GET` status answers
 
 **A TypeSafe key is needed only when a workspace judges with TypeSafe**
 (JUDGE-SELECT, owner decisions 2026-10-14). Each workspace chooses Jev's
-judgment backend: Internal Jev (the default) or Internal Laya -- Saga's own
+judgment backend: Internal Jev (the default) or Internal Laya -- the internal
 decision API, which needs no TypeSafe key and is never sent one -- or TypeSafe.
 `GET /v1/provider-keys/typesafe` carries the choice as `jev` (`backend`,
 `label`, `available`, `reason`, every option); TypeSafe is `available` exactly
@@ -83,7 +83,7 @@ provider, present)` is a pure function:
 Only the submitter's own key is ever a candidate, and the function takes the
 submitter's **confirmed** personal tenant (`own_personal_tenant`), never an
 email. The frozen slug keeps only the local part, so `dave@partner.com` and
-`dave@saga.xyz` both derive `u-dave`, and a resolver that derived it would hand
+`dave@example.com` both derive `u-dave`, and a resolver that derived it would hand
 one person's key to their namesake. Someone with no confirmed personal tenant,
 a service identity included, falls to the tenant key. In a person's own
 workspace the two are the same secret, which is why the tenant routes refuse a

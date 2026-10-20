@@ -31,6 +31,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { leakedValue, serve, tokenShapedIn, visible } from './repofixture'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
+import { COMPANY_NAME } from '../../test/companyName'
 
 const ID = (n: number) => `repo_${String(n).padStart(16, '0')}`
 
@@ -438,13 +439,15 @@ describe('not connected', () => {
   })
 })
 
-const APP_INSTALL = 'https://github.com/apps/swarmcloud-saga/installations/new'
+const APP_INSTALL = 'https://github.com/apps/swarmcloud-example/installations/new'
 
 /** What GET /v1/access/orgs answered live on 2026-10-08: the account, installed nowhere. */
 const NOWHERE = {
   tenant_id: 'eng',
   orgs_listed: true,
   install_url: APP_INSTALL,
+  // The App's display name, as the deployment's GITHUB_APP_NAME serves it (an example).
+  app_name: 'SwarmCloud',
   owners: [
     {
       owner: 'octo-dev',
@@ -473,8 +476,9 @@ describe('connected but not installed (#780)', () => {
     const box = notice()
     expect(box).not.toBeNull()
     expect(visible(box)).toContain(
-      "You're connected as @octo-dev, but SwarmCloud Saga isn't installed anywhere yet. Install it on the accounts and repositories you want SwarmCloud to use.",
+      "You're connected as @octo-dev, but SwarmCloud isn't installed anywhere yet. Install it on the accounts and repositories you want SwarmCloud to use.",
     )
+    expect(box?.getAttribute('aria-label')).toBe('SwarmCloud is not installed')
     const mine = within(box as HTMLElement).getByRole('link', { name: 'Install on octo-dev' })
     expect(mine.getAttribute('href')).toBe(APP_INSTALL)
     expect(mine.className).toContain('is-primary')
@@ -491,6 +495,24 @@ describe('connected but not installed (#780)', () => {
     expect(authz).toMatch(/^Connecting and installing are two steps\. Connect lets SwarmCloud act as you/)
     expect(authz).toContain('Authorized GitHub Apps')
     expect(authz).toContain('Installed GitHub Apps')
+  })
+
+  it('names the App by the name the API serves, and says "the SwarmCloud GitHub App" when it serves none', async () => {
+    const unnamed = { ...NOWHERE, app_name: null }
+    serve((m, url) => {
+      if (m === 'GET' && url === '/v1/access') return { status: 200, body: overview({ orgs: [], grants: [] }) }
+      if (m === 'GET' && url === '/v1/access/orgs') return { status: 200, body: unnamed }
+      return null
+    })
+    await mount()
+    await screen.findByRole('list', { name: 'Owners your connection reaches' })
+    const box = notice()
+    expect(visible(box)).toContain("You're connected as @octo-dev, but the SwarmCloud GitHub App isn't installed anywhere yet.")
+    expect(box?.getAttribute('aria-label')).toBe('The SwarmCloud GitHub App is not installed')
+    expect(visible(document.querySelector('.ac-chooser'))).toContain(
+      'Install the SwarmCloud GitHub App on an owner on the left',
+    )
+    expect(visible(document.body)).not.toMatch(COMPANY_NAME)
   })
 
   it('draws mixed rows: Enable for the installed owner, Install for the other, and no notice', async () => {
@@ -607,7 +629,7 @@ describe('no value reaches the page', () => {
 })
 
 // ---------------------------------------------------------------------------
-// QA of https://swarm.saga.xyz/access, 2026-10-08: four defects.
+// QA of https://swarm.example.com/access, 2026-10-08: four defects.
 // ---------------------------------------------------------------------------
 
 /**

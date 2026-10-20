@@ -367,6 +367,47 @@ tenants = {
     capacity_units  = 8
   }
 
+  # The oracle-api client application's own tenant (owner decision
+  # 2026-10-18, #1568), modelled on u-sw-c90291 above.
+  #
+  # ITS OWN TENANT, NEVER A MEMBER OF eng@saga.xyz. The account is an
+  # orchestrating client that submits workflows on its own behalf. In eng it
+  # would run as eng's worker account with eng's provider keys, GCS prefix and
+  # namespace (invariant 9), and its work would count against eng's ceiling.
+  # Nor is it a service_accounts listing under eng: a listed account files its
+  # work in that group's tenant. Here it reaches nothing of anybody else's:
+  # it is in no registered group, so swarm-api resolves it to the personal id
+  # below and no X-Swarm-Tenant header can select eng for it.
+  #
+  # THE KEY IS COMPUTED, as u-sw-c90291's is: tenant_id_for_user gives
+  # `oracle-api@saga-agents-staging.iam.gserviceaccount.com` `u-or-9a0792`
+  # (lossy and too long, so it carries a digest). Recomputed on main on
+  # 2026-10-18 and held by tests/unit/scripts/test_oracle_api_tenant.py; a
+  # rename of the account or the project changes it.
+  #
+  # Admitted at the front door by frontend_iap_members in
+  # terraform/bootstrap/terraform.tfvars, and past swarm-api's domain check by
+  # ALLOWED_USERS in terraform/infra/locals.tf.
+  #
+  # No providers and 4/8, swarm-verify's pattern. The owner lends it a pool
+  # Claude account rather than registering a key it would hold itself, and a
+  # lent account needs no declared provider (the pool's own waits apply). A
+  # declared anthropic would also lift provider:anthropic's floor to 4 x
+  # provider_tenant = 160, above pool_limits.providers.anthropic, and fail the
+  # plan. Its git token is swarm-tenant-u-or-9a0792-git, stored with
+  # scripts/create-secrets.sh --stdin and never in this repository. If its
+  # limits need changing, PUT /v1/admin/limits/tenant/u-or-9a0792: like every
+  # tenant document, these are only the values it is born with.
+  u-or-9a0792 = {
+    kind            = "user"
+    principal       = "oracle-api@saga-agents-staging.iam.gserviceaccount.com"
+    display_name    = "Oracle API"
+    directory_group = false
+    providers       = []
+    max_active      = 4
+    capacity_units  = 8
+  }
+
   # u-bogdan IS NO LONGER HERE (lane W9 of #847, 2026-10-09). It was the
   # owner's personal fallback tenant -- `u-<local part>`, which a caller in no
   # registered group resolves to -- declared here so a laptop smoke run had
@@ -459,7 +500,7 @@ frontend_hostname = "swarm.saga.xyz"
 
 # --- the SwarmCloud GitHub App (#780, docs/runbooks/github-app.md) -----------
 # enable_github_app declares the App's two empty secret slots, which swarm-api
-# alone reads (github_app.tf). The three settings below are the App's PUBLIC
+# alone reads (github_app.tf). The four settings below are the App's PUBLIC
 # ones, copied from its settings page after the owner registers it (runbook
 # step 3): registered 2026-10-07 on bogdan-alexandrescu as "SwarmCloud Saga"
 # ("SwarmCloud" is reserved for the @swarmcloud account), installable on any
@@ -470,6 +511,7 @@ enable_github_app    = true
 github_app_id        = "5229127"
 github_app_client_id = "Iv23lipzgYrbQvuJdmZg"
 github_app_slug      = "swarmcloud-saga"
+github_app_name      = "SwarmCloud Saga"
 
 # The 15-minute user-token refresh sweep, swarm-forge-refresh. ON since
 # 2026-10-07: swarm-api serves POST /v1/admin/forge/refresh from OB3's release
@@ -535,6 +577,22 @@ browser_egress = {
 # refused. docs/runbooks/onboarding-acceptance.md is the check that it works.
 repository_grants_enforced = true
 
+# A step's additional repositories (swarm-api ADDITIONAL_REPOSITORIES_ENABLED,
+# docs/design/multi-repository-steps.md, #1434): a claude-code, codex,
+# generic, browser or claude-code-browser step names other registered,
+# readable-by-tasks repositories by `owner/repo`; swarm-api pins each to a
+# commit and signs it, and the worker clones each read-only under
+# work/repos/<name>, never harvested or checkpointed. ON in dev from the
+# release that merges this line, a change held as a draft until the MR lanes
+# (MR-BRIDGE, MR-UI, MR-DOCS) have merged (owner request, 2026-10-18). Each
+# person still needs a grant per repository while repository_grants_enforced
+# is on. Limits: platform settings max_additional_repositories (default 5)
+# and additional_repositories_budget_gib (default 6), PUT /v1/admin/settings.
+# Kill switch: false and release; every submission naming one is then 422
+# additional_repositories_disabled, and a task already stored keeps what it
+# was signed with.
+additional_repositories_enabled = true
+
 # One switched refusal is ON in dev (owner decision 2026-10-11, after PR 1027
 # added it OFF as every new refusal ships). index_refresh_failed: a repo-index
 # refresh firing where every repository failed is refused visibly instead of
@@ -543,9 +601,32 @@ repository_grants_enforced = true
 # swarm-api's start (release 38126514258). A code that names no switch fails
 # that start, and tests/unit/control_plane/test_tfvars_refusal_switches.py
 # now fails CI on one first.
+#
+# role_member_required is ON in dev too (owner decision 2026-10-19, "Viewer
+# gate + reach now", lane ROLES-ON-DEV, part of #1518): a workspace `viewer`
+# is refused 403 role_member_required on every member route (submit, cancel,
+# decide, answer, schedules, repositories, access, accounts, live control,
+# browser logins). Everyone keeps `member` until an admin narrows them
+# (docs/design/workspace-roles.md §4.7), so this refuses only people an admin
+# has made viewers. role_admin_required stays OFF, deliberately: its own
+# condition (workspace-roles.md §4.9) is that every group workspace that
+# manages secrets has a named workspace admin, and eng and smoke do not yet.
+# Turned on before that, the gate would leave a group workspace's secrets
+# with nobody but a platform admin able to change them.
 api_refusals = {
   index_refresh_failed = true
+  role_member_required = true
 }
+
+# A platform admin's reach (swarm-api PLATFORM_ADMIN_REACH,
+# docs/design/workspace-roles.md §4.2, owner answer Q5; WK-REACH, #847): a
+# platform admin may select every READY registered group workspace they are
+# not a member of, as its admin, and every such request is audited
+# (platform_admin_acted). Never anyone else's personal (`u-`) workspace, nor a
+# service workspace. ON in dev only (owner decision 2026-10-19, "Viewer gate
+# + reach now", lane ROLES-ON-DEV); prod stays off until the acceptance probe
+# (ROLES-ACCEPT) has exercised it here. Kill switch: false and release.
+platform_admin_reach = true
 
 # WHO MAY PASS IAP is no longer set here. It moved to terraform/bootstrap
 # (frontend_iap_members) on 2026-09-24, because managing it from this root made
@@ -612,6 +693,12 @@ enable_child_tasks = true
 # Read from Cloud Run (gcloud run services describe swarm-api), the value
 # `terraform output swarm_api_url` gives; swarm_api_url_is_wired checks it.
 swarm_api_url = "https://swarm-api-tonstldhta-uc.a.run.app"
+# THE FORGE BROKER STAYS OFF HERE (#1041, terraform/infra/child_tasks.tf
+# `forge_broker`), although child tasks are on: workers keep reading a
+# person's git-u- slot with their own account through forge_slot_reader.
+# Turning it on is the owner's step, and removing forge_slot_reader comes
+# only after it has been on here and a live run passed.
+forge_broker = false
 
 
 # Admin by email, because admin-by-group is unreachable here: swarm-api cannot
@@ -685,6 +772,24 @@ deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceac
 # dispatches; the sweep and the stuck alert keep reporting waiting records.
 workspace_apply_publish = true
 
+# The personal-workspace submission gate (swarm-api WORKSPACE_GATE, #847 WD8).
+# ON in dev from 2026-10-13 (W10). WD8's precondition, one real approval end
+# to end through the job, was met that morning: devops@saga.xyz requested
+# w-7f9285 (u-devops) 2026-10-12 22:31Z, an admin approved it 2026-10-13
+# 00:02Z, the Cloud Run job swarm-workspace-apply ran A1-A9 05:03-05:05Z and
+# the workspace reached ready at 05:05Z, and eng:devops-main was then lent to
+# it (docs/multi-tenancy.md section 7.5). docs/workspaces.md section 5.5 also
+# asks, in the same step, for a task of that person's to have run and for
+# u-bogdan and every other existing personal tenant with resources to hold a
+# ready record: the owner confirms both before merging this, because on, a
+# personal tenant without a ready record is refused. On, a PERSON's
+# submission into their own tenant is refused until their workspace is ready
+# and has a Claude account (403 WORKSPACE_NOT_READY / NO_CLAUDE_ACCOUNT), and
+# swarm-api no longer writes tenants/u-* on first sight. Group submissions are never gated
+# (WD7). If it refuses people it should not, set false: the next release
+# turns it off, and no workspace record changes.
+workspace_gate = true
+
 # The live browser's search tool (swarm-api SEARCH_TOOL_ENABLED /
 # SEARCH_PROVIDER, docs/search-tool.md, #1030). OFF in dev as of 2026-10-14:
 # the owner chose Brave and "add it (off by default)" on 2026-10-13. It turns on
@@ -693,6 +798,20 @@ workspace_apply_publish = true
 # every search answers 503 search_unconfigured. search_provider stays at
 # its default, "brave".
 search_tool_enabled = false
+
+# Registered MCP servers (swarm-api SWARM_MCP_SERVERS,
+# docs/design/registered-mcp-servers.md, #1433): a workspace registers its own
+# MCP server by name, and a claude-code or codex step names it in
+# `input.mcp_servers`; the worker's relay holds the caller's credential so the
+# agent never sees it. ON in dev from the release that merges this line, a
+# change held as a draft until the MCP acceptance lane passes (owner request,
+# 2026-10-18). It also creates swarm-mcp-credentials-sweep. It needs
+# terraform/bootstrap's enable_mcp_credentials applied first (the owner's
+# apply): without swarm-api's read of swarm-tenant-<t>-mcpc-* every attempt
+# naming a `dispatch` server fails at attach. Kill switch: false and release;
+# every registration write, submission naming a server and attach is then
+# 503 mcp_unavailable, and a stored credential dies at its Secret Manager ttl.
+mcp_servers_enabled = true
 
 # Workspace-secret grant attestation (SEC-GRANT-ATTEST, PR 1377;
 # terraform/infra/workspace_grant_key.tf,

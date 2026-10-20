@@ -5,12 +5,22 @@ key material. It writes the key into THAT tenant's own Secret Manager secret,
 sets that secret's IAM policy to exactly that tenant's service account, and
 returns metadata. There is no corresponding GET: `GET /v1/tenants/me` reports
 which providers have a key registered, never the key.
+
+WORKSPACE ROLES (docs/design/workspace-roles.md §4.3, lane ROLES-API-CORE).
+`/me` and every `/mine` entry carry `role: {name, source}` -- the seam Settings
+› Profile reads (§4.11) -- and each `/mine` entry its `via`: "personal",
+"member", or "platform_admin" for a registered group workspace a platform
+admin reaches without being in it (§4.2.2 step 5). A role that could not be
+read is left out rather than guessed; the console then shows the derived one.
+`POST /me/credentials` writes the workspace's provider key, which is its
+admin's (Q6): behind `role_admin_required`'s switch, off at ship.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
+from .. import roles
 from ..auth import AuthContext
 from ..codec import tenant_to_api
 from ..deps import AppContext, current_auth, get_context
@@ -48,11 +58,23 @@ def get_me(
         # in. A client must treat that as unknown, not as dev: see
         # `ApiSettings.environment_declared`.
         "environment_declared": ctx.settings.environment_declared,
+        **_role_field(ctx, auth),
     }
 
 
+def _role_field(ctx: AppContext, auth: AuthContext) -> dict:
+    """`{"role": {name, source}}` for the selected tenant, or nothing when the
+    role could not be read: an absent field is the console's cue to show the
+    derived role, where a guessed one would be a wrong answer."""
+    resolved = ctx.roles.try_resolve(auth) if ctx.roles is not None else None
+    return {} if resolved is None else {"role": resolved.to_api()}
+
+
 @router.get("/mine")
-def get_mine(auth: AuthContext = Depends(current_auth)) -> list[dict]:
+def get_mine(
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> list[dict]:
     """Every tenant the caller may select with `X-Swarm-Tenant`, default first.
 
     Exactly `AuthContext.tenant_choices`, computed by the same pass that
@@ -74,17 +96,55 @@ def get_mine(auth: AuthContext = Depends(current_auth)) -> list[dict]:
     it is unique where the tenant id is not, and it needs no read.
 
     Empty for a caller in no registered group without a ready workspace.
+
+    EXCEPT THAT A STORED DEFAULT GOES FIRST (docs/design/user-profile.md
+    §4.5): the workspace the person chose on Settings › Profile, when it is
+    one of these, is moved to the front by `Authenticator._with_default`, so
+    the first entry is still the tenant a headerless request acts in. That
+    entry carries `is_default: true` and `default_source` -- "profile",
+    "personal", "first_group", or "unavailable" when the preferences could
+    not be read (this route is in `auth.PREFERENCE_FREE_ROUTES`, so it is
+    still served, in today's order) -- and, when a stored default was not
+    applied, `default_ignored` ("not_a_member" or "not_ready"). Every other
+    entry carries `is_default: false`. The entries and their order are
+    otherwise exactly `tenant_choices`.
+
+    AFTER THEM, for a platform admin with the reach on, every registered group
+    workspace they are NOT a member of (`AuthContext.platform_reach`), each
+    `via: "platform_admin"`, `is_default: false` and `role: admin` by rule --
+    no read. Every other entry's role costs one cached grant read; a
+    personal entry's costs none.
     """
-    return [_choice(auth, tenant_id, principal) for tenant_id, principal in auth.tenant_choices]
+    entries = [
+        _choice(ctx, auth, tenant_id, principal, first=index == 0)
+        for index, (tenant_id, principal) in enumerate(auth.tenant_choices)
+    ]
+    for tenant_id, group in auth.platform_reach:
+        entries.append({
+            "tenant_id": tenant_id, "display_name": group, "kind": "group",
+            "is_default": False, "via": roles.VIA_PLATFORM_ADMIN,
+            "role": {"name": roles.ADMIN, "source": roles.SOURCE_PLATFORM_ADMIN},
+        })
+    return entries
 
 
-def _choice(auth: AuthContext, tenant_id: str, principal: str) -> dict:
+def _choice(ctx: AppContext, auth: AuthContext, tenant_id: str, principal: str, *,
+            first: bool) -> dict:
     # The personal entry is the one whose principal is the caller themselves;
     # `_with_own_workspace` is the only place such an entry is made.
     if principal == auth.email:
-        return {"tenant_id": tenant_id, "display_name": f"Your workspace ({tenant_id})",
-                "kind": "user"}
-    return {"tenant_id": tenant_id, "display_name": principal, "kind": "group"}
+        entry = {"tenant_id": tenant_id, "display_name": f"Your workspace ({tenant_id})",
+                 "kind": "user", "via": roles.VIA_PERSONAL}
+    else:
+        entry = {"tenant_id": tenant_id, "display_name": principal, "kind": "group",
+                 "via": roles.VIA_MEMBER}
+    entry.update(_role_field(ctx, roles.with_tenant(auth, tenant_id, principal)))
+    entry["is_default"] = first
+    if first:
+        entry["default_source"] = auth.default_source
+        if auth.default_ignored:
+            entry["default_ignored"] = auth.default_ignored
+    return entry
 
 
 @router.post("/me/credentials", status_code=status.HTTP_201_CREATED)
@@ -100,6 +160,11 @@ def put_credential(
             f"unknown provider {provider!r}",
             detail={"known_providers": list(allowed)},
         )
+    # The workspace's provider key is its admin's (Q6). A NEW refusal on an
+    # existing route, so through its switch: off, a member's write goes
+    # through and `refusal report-only code=role_admin_required` names them.
+    if ctx.roles is not None:
+        ctx.roles.require(auth, roles.ADMIN)
     tenant = ctx.submissions.tenant_for(auth)
     result = ctx.credentials.put_credential(tenant, provider, body.api_key)
     ctx.store.register_credential(tenant.tenant_id, provider)

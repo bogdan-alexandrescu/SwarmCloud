@@ -732,12 +732,16 @@ const GROUP_LABEL: Record<GroupBy, string> = {
   runner_profile: 'runner profile',
   tenant_id: 'tenant',
   submitted_by: 'person',
+  model: 'model',
+  model_class: 'model class',
 }
 
 const GROUP_HEAD: Record<GroupBy, string> = {
   runner_profile: 'Profile',
   tenant_id: 'Tenant',
   submitted_by: 'Person',
+  model: 'Model',
+  model_class: 'Model class',
 }
 
 /**
@@ -781,10 +785,22 @@ export function CostFigure({ c, what }: { c: CostCell; what: string }) {
   )
 }
 
+/**
+ * The route's own key for a row that has no model or no class
+ * (`outcomes.NOT_RECORDED`, `outcomes.NO_MODEL_CLASS`): attempts from before
+ * `Attempt.model` was written, and tasks on a runner that runs no model. Each
+ * is a row the route counts, drawn as an absence, and never a link -- no
+ * filter selects it.
+ */
+const ABSENT_KEY: Partial<Record<GroupBy, string>> = { model: 'not recorded', model_class: 'no class' }
+
+const isAbsentKey = (by: GroupBy, key: string) => key === '' || ABSENT_KEY[by] === key
+
 /** `5 profiles`, `3 tenants`, `1 person`, `4 people`. */
 function rowsWord(by: GroupBy, n: number): string {
   if (by === 'submitted_by') return `${n} ${n === 1 ? 'person' : 'people'}`
-  return pluralise(n, by === 'tenant_id' ? 'tenant' : 'profile')
+  if (by === 'model_class') return `${n} ${n === 1 ? 'model class' : 'model classes'}`
+  return pluralise(n, by === 'tenant_id' ? 'tenant' : by === 'model' ? 'model' : 'profile')
 }
 
 function RateCell({ row }: { row: GroupRow }) {
@@ -871,7 +887,11 @@ export function ReliabilityCard({
   cellLink?: (outcome: RowOutcome, key: string) => RowLink | null
 }) {
   const g = data.groups
-  const choices: GroupBy[] = platform ? ['runner_profile', 'tenant_id', 'submitted_by'] : ['runner_profile', 'submitted_by']
+  // `model` and `model_class` (#1435) on both views: every class on one
+  // runner is one profile, so grouping by profile no longer separates tiers.
+  const choices: GroupBy[] = platform
+    ? ['runner_profile', 'tenant_id', 'submitted_by', 'model', 'model_class']
+    : ['runner_profile', 'submitted_by', 'model', 'model_class']
   const cov = spanCoverage(data)
   return (
     <Card
@@ -910,15 +930,16 @@ export function ReliabilityCard({
             </thead>
             <tbody>
               {g.rows.map((r) => {
-                const link = r.key === '' || rowLink === undefined ? null : rowLink(g.by, r.key)
+                const absent = isAbsentKey(g.by, r.key)
+                const link = absent || rowLink === undefined ? null : rowLink(g.by, r.key)
                 return (
                 <tr key={r.key} data-key={r.key}>
                   <th scope="row">
                     {/* Grouped by person, '' is the work nobody's name is on: a
                         row the route counts, drawn as an absence, never blank --
                         and never a link, since no filter selects "nobody". */}
-                    {r.key === '' ? (
-                      <i className="ctl-em">not recorded</i>
+                    {absent ? (
+                      <i className="ctl-em">{r.key === '' ? 'not recorded' : r.key}</i>
                     ) : link === null ? (
                       g.by === 'submitted_by' ? <Who address={r.key} /> : r.key
                     ) : (

@@ -141,6 +141,14 @@ PRESETS: Mapping[str, Preset] = {
                "Linux", "", "x86", "", natural=LANDSCAPE),
         Preset("iphone-15", 393, 852, 3.0, True, True, _SAFARI_IOS, "iPhone",
                "iOS", "17.0", "arm", "iPhone"),
+        # QA-KIT (owner decision 2026-10-19, part of #1649): the 390-wide
+        # phone a visual QA sweep names (390 x 844, the iPhone 12-14 viewport),
+        # with iPhone 15's mobile flags, user agent and hints. Its display fits
+        # inside every Xvfb started for the list above, so MAX_DISPLAY_* is
+        # unchanged. swarm_api.live.LIVE_PRESETS and the console's labels
+        # (LiveBrowser.tsx, Theater.tsx, TheaterTimeline.tsx) change with it.
+        Preset("phone-390", 390, 844, 3.0, True, True, _SAFARI_IOS, "iPhone",
+               "iOS", "17.0", "arm", "iPhone"),
         Preset("pixel-8", 412, 915, 2.625, True, True, _CHROME_ANDROID, "Linux armv81",
                "Android", "14.0.0", "arm", "Pixel 8"),
         Preset("iphone-se", 375, 667, 2.0, True, True, _SAFARI_IOS, "iPhone",
@@ -151,6 +159,15 @@ PRESETS: Mapping[str, Preset] = {
 }
 
 DEFAULT_PRESET = "desktop"
+
+#: The colour schemes the browser can be told to prefer (QA-KIT), set by the
+#: gate with `Emulation.setEmulatedMedia` (device.py) when the agent runs
+#: `swarm-handoff theme <name>`. Named, as a preset is: the agent never sends a
+#: media feature. `system` lifts the override, so the page sees Chromium's own
+#: preference again. Restated in the stdlib-only `swarm-handoff` and in
+#: `agent_worker.handoff`; tests/unit/worker/test_handoff.py holds the three equal.
+THEMES = ("dark", "light", "system")
+DEFAULT_THEME = "system"
 
 
 @dataclass(frozen=True)

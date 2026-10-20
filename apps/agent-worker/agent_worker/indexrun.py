@@ -151,12 +151,36 @@ EXTRACT_LSP_RESERVE_SECONDS = 180
 #: took ~3.9 s a blob, ~24 minutes, and could never fit.
 GRAPH_WRITE_SHARE = 0.15
 GRAPH_WRITE_MIN_SECONDS = 120
-#: Reading the base graph back is one batched download of a few hundred
-#: small blobs: a quarter of the extractor's budget, 90 s of an incremental
-#: run's 360, is several times what it takes, and a read that runs out
-#: only makes the run full.
-BASE_READ_SHARE = 0.25
-BASE_READ_MIN_SECONDS = 30
+#: READING THE BASE GRAPH BACK (`swarm-repo-graph read`, #1469) is sized
+#: from the graph's size, not a share of the extractor's budget. The flat
+#: quarter it had, 90 s of an incremental run's 360, was measured running
+#: past on a 63 MB base (#1334, task_6bf9dc7cc95544f59f0f, 2026-10-16).
+#: Measured for #1469 on this repository's own graph (d2b2d14, 98 MB of
+#: JSON): the read fetches 744 blobs, about 7.6 a MB, and decodes and writes
+#: them back in ~4 s of CPU, 0.04 s a MB. Its cost is the download, per
+#: object: ~480 blobs of the 63 MB base in two serial gcloud calls ran past
+#: 90 s, at least 1.4 s a MB. The download now runs four calls at once
+#: (`repo_graph_shards.GET_PROCESSES`), but the budget does not count on it:
+#:
+#:   FIXED      the tool's start, the manifest's `gcloud storage cat` and the
+#:              download calls' own start, ~4 s each
+#:   PER_MB     1.5 s a MB, the serial rate measured in production, so the
+#:              budget holds even if running the calls side by side gains
+#:              nothing; it is ~3x what four at once should take
+#:
+#: 20 + 1.5 x 63 is 114 s for the measured base. Never more than half the
+#: extractor's budget (180 s of an incremental run's 360): a base that costs
+#: more to read than half a full extraction is not worth building on, and a
+#: read that runs out only makes the run full.
+BASE_READ_FIXED_SECONDS = 20
+BASE_READ_SECONDS_PER_MB = 1.5
+#: The base's size, estimated from what its promoted repo-index.json says of
+#: its graph (`graph.symbols` and `graph.edges`, swarm_api.repoindex
+#: `GraphSummary`): 562 bytes of graph a symbol-or-edge on this repository's
+#: graph (98,248,874 bytes, 54,542 symbols, 120,131 edges), rounded up, so
+#: the estimate does not under-state it. An index that gives no counts gives
+#: no size, and the read gets its ceiling.
+BASE_GRAPH_BYTES_PER_ROW = 600
 
 #: Environment names a phase inherits from the worker. Nothing else: the
 #: worker's own environment carries control-plane identifiers and the spec
@@ -238,19 +262,40 @@ class Budgets:
     base_read: int
 
 
-def budgets(timeout_seconds: int) -> Budgets:
+def budgets(timeout_seconds: int, *, base_graph_bytes: int | None = None) -> Budgets:
     """Each deterministic phase's timeout, sized to the task's timeout.
 
     1,800 s (a full run) gives 720 s to extract, 540 s of it to the LSP
     pass, and 270 s reserved for the graph write: the agent has at least the
-    810 s between. Never more than the task has.
+    810 s between. Never more than the task has. The base read is sized from
+    `base_graph_bytes` (`base_graph_bytes()`), up to half the extractor's
+    budget, which is also what an unknown size gets.
     """
     total = max(1, int(timeout_seconds))
     extract = min(total, max(EXTRACT_MIN_SECONDS, int(total * EXTRACT_SHARE)))
     write = min(total, max(GRAPH_WRITE_MIN_SECONDS, int(total * GRAPH_WRITE_SHARE)))
     lsp = max(30, extract - EXTRACT_LSP_RESERVE_SECONDS)
-    base_read = min(total, max(BASE_READ_MIN_SECONDS, int(extract * BASE_READ_SHARE)))
+    ceiling = extract // 2
+    if base_graph_bytes is None:
+        base_read = ceiling
+    else:
+        megabytes = max(0, base_graph_bytes) / (1024 * 1024)
+        base_read = min(ceiling, int(BASE_READ_FIXED_SECONDS
+                                     + BASE_READ_SECONDS_PER_MB * megabytes))
     return Budgets(extract=extract, lsp_total=lsp, graph_write=write, base_read=base_read)
+
+
+def base_graph_bytes(index: Any) -> int | None:
+    """The base graph's size in bytes, estimated from its promoted index's
+    `graph.symbols` and `graph.edges`; None when the index gives no counts."""
+    graph = index.get("graph") if isinstance(index, Mapping) else None
+    if not isinstance(graph, Mapping):
+        return None
+    counts = [graph.get(key) for key in ("symbols", "edges")]
+    if not all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in counts):
+        return None
+    rows = sum(counts)
+    return rows * BASE_GRAPH_BYTES_PER_ROW if rows else None
 
 
 def repo_id_for(tenant_id: str, owner: str, repo: str) -> str:
@@ -603,7 +648,7 @@ def last_line(path: Path, limit: int = 300) -> str | None:
 __all__ = [
     "BASE_GRAPH_FILE", "BASE_INDEX_FILE", "BaseVersion", "Budgets", "EXTRACTOR_COMMAND",
     "EXTRACT_FILE", "GRAPH_FILE", "GRAPH_WRITER_COMMAND", "INDEXER_PROFILE", "INDEX_FILE",
-    "MAX_BASE_INDEX_BYTES", "PHASES_FILE", "PhaseRecord", "Target", "budgets",
+    "MAX_BASE_INDEX_BYTES", "PHASES_FILE", "PhaseRecord", "Target", "base_graph_bytes", "budgets",
     "content_digest", "extractor_argv", "graph_read_argv", "graph_write_argv", "is_index_run",
     "last_line", "phase_env", "repo_id_for", "requested_base", "resolve", "resolve_base",
     "target", "write_phases",

@@ -165,6 +165,33 @@ def _final_archive(store: LocalObjectStore, attempt_id: str = "att_1") -> tarfil
     return tarfile.open(fileobj=io.BytesIO(store.download_bytes(keys[-1])), mode="r:gz")
 
 
+def _attempt_members(
+    store: LocalObjectStore, attempt_id: str = "att_1"
+) -> dict[str, tuple[tarfile.TarInfo, bytes | None]]:
+    """Every entry of `work/` this attempt's checkpoints hold, the newest copy of each.
+
+    A checkpoint after an attempt's first is incremental: it carries only what
+    changed since the one before. A directory restored at the start and never
+    touched again is therefore in the first archive and in no later one, and
+    whether a periodic checkpoint (every 2 s in `worker_seeds`) falls before the
+    final one depends on how long the agent took. Reading the final archive
+    alone found `artifacts` on a fast run and missed it on a slow CI runner.
+    """
+    keys = sorted(
+        key
+        for key in store.list_keys(f"tenants/{TENANT}/tasks/task_1/attempts/{attempt_id}/")
+        if key.endswith("/archive.tar.gz")
+    )
+    assert keys, "the attempt wrote no checkpoint"
+    members: dict[str, tuple[tarfile.TarInfo, bytes | None]] = {}
+    for key in keys:  # `ckpt-00001` first: the zero-padded sequence sorts as written
+        with tarfile.open(fileobj=io.BytesIO(store.download_bytes(key)), mode="r:gz") as archive:
+            for member in archive.getmembers():
+                handle = archive.extractfile(member) if member.isfile() else None
+                members[member.name] = (member, handle.read() if handle is not None else None)
+    return members
+
+
 def _records(log_stream: io.StringIO) -> list[dict[str, Any]]:
     out = []
     for line in log_stream.getvalue().splitlines():
@@ -322,12 +349,12 @@ def test_an_existing_work_artifacts_is_left_alone_and_the_skip_is_logged(
 
     saw = _agent_saw(db)
     assert saw["link_is_symlink"] is False, "the restored directory was replaced by a link"
-    with _final_archive(store) as archive:
-        directory = archive.getmember("artifacts")
-        assert directory.isdir() and not directory.issym()
-        restored = archive.extractfile(f"artifacts/{SCAN_NAME}")
-        assert restored is not None and restored.read() == b"restored\n"
-        assert "artifacts/after-resume.md" in archive.getnames()
+    members = _attempt_members(store)
+    assert "artifacts" in members, sorted(members)
+    directory, _ = members["artifacts"]
+    assert directory.isdir() and not directory.issym()
+    assert members[f"artifacts/{SCAN_NAME}"][1] == b"restored\n"
+    assert "artifacts/after-resume.md" in members
 
     # What was already true before the link, and still is for this directory:
     # a file under it is not an artifact under its own name, so no later step

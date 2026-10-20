@@ -1,7 +1,7 @@
 // ADMIN › TENANTS, THE 2026-10-07 QA PASS (G5-12, G5-13).
 //
 //   G5-12  every Identity read "swarm-agent-work…" and every Principal ended
-//          "…@saga.x…": the end-ellipsis cut exactly the part that tells one
+//          "…@example.c…": the end-ellipsis cut exactly the part that tells one
 //          tenant's identity from the next. The cut moves to the middle; the
 //          tenant's own part is never cut.
 //   G5-13  Enforced was `Math.min(max_active, capacity_units)` computed here,
@@ -35,13 +35,13 @@ const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
 const WAIT = { timeout: 5000 } as const
 
-const DOMAIN = 'saga-agents.iam.gserviceaccount.com'
+const DOMAIN = 'example-project.iam.gserviceaccount.com'
 
 function tenant(over: Partial<Tenant>): Tenant {
   return {
     tenant_id: 'eng',
     kind: 'group',
-    principal: 'eng@saga.xyz',
+    principal: 'eng@example.com',
     display_name: null,
     created_at: '2026-09-24T09:00:00Z',
     max_active: 45,
@@ -75,7 +75,7 @@ const ROSTER: Tenant[] = [
   tenant({
     tenant_id: 'u-bogdan',
     kind: 'user',
-    principal: 'bogdan@saga.xyz',
+    principal: 'alice@example.com',
     max_active: 4,
     capacity_units: 8,
     service_account: `swarm-agent-worker-u-bogdan@${DOMAIN}`,
@@ -132,10 +132,14 @@ describe('G5-12: an identity is cut in the middle, never through the tenant’s 
     expect(key?.textContent).toBe('u-bogdan@')
     expect(tail?.textContent).toBe(DOMAIN)
     // MUTATION: let the key shrink with the others, or cut the whole value at
-    // its end again. The key gives way LAST (VQA V026): a thousandth of the
-    // others' shrink weight, so it shrinks only once they are at their floor,
-    // and then with an ellipsis rather than a hard clip mid-letter.
-    expect(won(key!, ['flex', 'flex-shrink'], WIDE)).toBe('0 0.001 auto')
+    // its end again. The key gives way LAST (VQA V026), and then with an
+    // ellipsis rather than a hard clip mid-letter. The
+    // key does not shrink at all -- any factor gave it a sub-pixel share and
+    // its ellipsis while the head was still wide (VQA V186) -- and a key
+    // longer than the column is capped at it less the two 2ch floors, then
+    // cut with an ellipsis (vqa2.r3.admin.test.tsx).
+    expect(won(key!, ['flex', 'flex-shrink'], WIDE)).toBe('0 0 auto')
+    expect(won(key!, 'max-width', WIDE)).toBe('calc(100% - 4ch)')
     expect(won(key!, 'text-overflow', WIDE)).toBe('ellipsis')
     expect(won(key!, ['overflow', 'overflow-x'], WIDE)).toBe('hidden')
     for (const part of [head!, tail!]) {
@@ -154,10 +158,10 @@ describe('G5-12: an identity is cut in the middle, never through the tenant’s 
     serve(capacity([]))
     const c = await roster()
     const ident = row(c, 'u-bogdan').querySelector('td[data-label="Principal"] .ten-ident')!
-    expect(ident.textContent).toBe('bogdan@saga.xyz')
+    expect(ident.textContent).toBe('alice@example.com')
     expect(ident.querySelector('.ten-ident-head')).toBeNull()
-    expect(ident.querySelector('.ten-ident-key')?.textContent).toBe('bogdan@')
-    expect(ident.querySelector('.ten-ident-tail')?.textContent).toBe('saga.xyz')
+    expect(ident.querySelector('.ten-ident-key')?.textContent).toBe('alice@')
+    expect(ident.querySelector('.ten-ident-tail')?.textContent).toBe('example.com')
   })
 })
 

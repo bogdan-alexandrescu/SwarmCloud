@@ -52,6 +52,16 @@ it does not).
 how many other files depend on it and which. Which in-flight steps and lanes
 hold a file is phase 3's (§4.8, served by swarm-api) and is not in a snapshot;
 the answer says so in `in_flight` rather than leaving it out silently.
+
+ONE SERVER, SEVERAL REPOSITORIES (docs/design/multi-repository-steps.md §4.9,
+lane MR-GRAPH, part of #1434). A step that reads additional repositories
+names one with `repo` (its name under `work/repos/`). `TOOLS` is unchanged --
+it is what the service lists and validates against -- and the pod's shim
+lists `tools_with_repo(names)` only when an additional graph was pinned, so a
+one-repository step's tool list stays byte for byte today's. The shim takes
+`repo` off the arguments (`split_repo`) before it forwards a call: the
+service never sees it, because the ticket already names the repository, and
+no answer changes, so TOOLS_VERSION does not move.
 """
 
 from __future__ import annotations
@@ -183,6 +193,26 @@ TOOLS: list[dict[str, Any]] = [
          "path": {"type": "string"}, "cursor": _CURSOR}}},
 ]
 TOOL_NAMES = tuple(tool["name"] for tool in TOOLS)
+
+#: The argument naming an additional repository's graph (§4.9). Never one of
+#: TOOLS' own properties, and never forwarded to the service.
+REPO_ARGUMENT = "repo"
+REPO_DESCRIPTION = "an additional repository (work/repos/<name>); omit for this step's own"
+
+
+def tools_with_repo(names: Any) -> list[dict[str, Any]]:
+    """TOOLS, each taking an optional `repo` from `names`; TOOLS itself when
+    `names` is empty, so a one-repository step lists exactly today's."""
+    listed = sorted({str(n) for n in names or ()})
+    if not listed:
+        return TOOLS
+    prop = {"type": "string", "enum": listed, "description": REPO_DESCRIPTION}
+    out: list[dict[str, Any]] = []
+    for tool in TOOLS:
+        schema = dict(tool["inputSchema"])
+        schema["properties"] = {**schema["properties"], REPO_ARGUMENT: prop}
+        out.append({**tool, "inputSchema": schema})
+    return out
 
 
 class ToolInputError(Exception):
@@ -382,6 +412,18 @@ def _args(arguments: Any, allowed: set[str], required: set[str]) -> dict:
     if missing:
         raise ToolInputError(f"missing argument(s): {', '.join(missing)}")
     return arguments
+
+
+def split_repo(arguments: Any) -> tuple[str | None, Any]:
+    """`(the repo named, the arguments without it)`; `(None, arguments)`, the
+    very object, when none is named. Raises ToolInputError when `repo` is not
+    a non-empty string."""
+    if not isinstance(arguments, dict) or REPO_ARGUMENT not in arguments:
+        return None, arguments
+    repo = arguments[REPO_ARGUMENT]
+    if not isinstance(repo, str) or not repo:
+        raise ToolInputError(f"{REPO_ARGUMENT} must be an additional repository's name")
+    return repo, {k: v for k, v in arguments.items() if k != REPO_ARGUMENT}
 
 
 def _string(args: dict, key: str) -> str:

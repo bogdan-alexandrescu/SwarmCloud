@@ -1677,9 +1677,14 @@ class LiveGate:
         """Wait for `until` on the loop's clock, or for control to change hands."""
         delay = until - asyncio.get_running_loop().time()
         if delay > 0:
+            # Not `wait_for`: on 3.11 a cancel that lands as the event is set
+            # -- the tunnel's cleanup releasing control as the gate is torn
+            # down -- returns the wait's result and drops the cancel, and the
+            # capture loop runs on after everything else has finished.
             try:
-                await asyncio.wait_for(self._rate_changed.wait(), delay)
-            except asyncio.TimeoutError:
+                async with asyncio.timeout(delay):
+                    await self._rate_changed.wait()
+            except TimeoutError:
                 pass
         self._rate_changed.clear()
 
@@ -1790,6 +1795,8 @@ class LiveGate:
             return await self.end_control(args)
         if op == "device":
             return await self._need(self.devices).handle_ctl(args)
+        if op == "theme":
+            return await self._need(self.devices).handle_theme(args)
         if op == "egress_ticket":
             return await self.egress_ticket(args)
         if op == browser_tools.CTL_OP:

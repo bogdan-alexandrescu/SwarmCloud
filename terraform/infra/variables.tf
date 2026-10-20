@@ -372,13 +372,40 @@ variable "tenants" {
   # the workspace job and live outside Terraform state, so a plan can never
   # change or destroy one; a person in this map would be in state, and in a
   # public tfvars file besides (§2.6). So a `kind = "user"` tenant must be a
-  # SERVICE account's -- swarm-verify's u-sw-c90291 is the one there is.
+  # SERVICE account's -- swarm-verify's u-sw-c90291 and, since 2026-10-18
+  # (#1568), oracle-api's u-or-9a0792.
   validation {
     condition = alltrue([
       for t, v in var.tenants :
       v.kind != "user" || endswith(lower(v.principal), ".iam.gserviceaccount.com")
     ])
     error_message = "a `kind = \"user\"` tenant whose principal is a person is a personal workspace, and personal workspaces are made by the workspace job, never by Terraform (docs/workspaces.md §3.2). Ask for it in the console's setup checklist; only a service account's tenant belongs here."
+  }
+
+  # VAR.TENANTS IS FROZEN to the tenants each environment has today
+  # (docs/design/workspace-kinds.md §4.7, Q8 (a), answered by the owner
+  # 2026-10-19). A NEW workspace of any kind -- personal, group or service --
+  # is made by the in-cloud job swarm-workspace-apply from an admin's request
+  # in Admin › Tenants (§4.11), and lives outside Terraform state, so no plan
+  # can change or destroy it. These tenants stay here because they carry
+  # what the job never makes: authoritative per-provider secret bindings and
+  # Terraform-made Cloud Run and scheduler jobs. Moving one out is §4.7's
+  # option (b), a plan that destroys nothing, one tenant per pull request.
+  # The lists below are a deliberate second copy of dev.tfvars' and
+  # prod.tfvars' keys: that pull request removes the tenant from its tfvars
+  # file AND from its list here, or the freeze would still admit the id the
+  # job now owns. Nothing may add to either.
+  #
+  # Per environment, because the environments differ: dev holds §4.7's four;
+  # prod.tfvars holds eng, research and smoke. An environment with no tfvars
+  # file (staging) has no Terraform tenants, so it may declare none.
+  # tests/terraform/tenants_frozen.tftest.hcl holds this.
+  validation {
+    condition = length(setsubtract(keys(var.tenants), lookup({
+      dev  = ["eng", "smoke", "u-sw-c90291", "u-or-9a0792"]
+      prod = ["eng", "research", "smoke"]
+    }, var.environment, []))) == 0
+    error_message = "var.tenants is frozen to the tenants this environment already has (dev: eng, smoke, u-sw-c90291, u-or-9a0792; prod: eng, research, smoke). A new workspace, personal, group or service, is made by the in-cloud job swarm-workspace-apply from Admin › Tenants › New workspace, never by Terraform (docs/design/workspace-kinds.md §4.7, Q8 (a))."
   }
 }
 
@@ -854,6 +881,40 @@ variable "repository_grants_enforced" {
   default     = false
 }
 
+variable "platform_admin_reach" {
+  description = <<-EOT
+    swarm-api's PLATFORM_ADMIN_REACH (docs/design/workspace-roles.md §4.2,
+    "Platform admins: admin in every group workspace, and in no one else's
+    personal workspace"; owner answer Q5): whether a platform admin may select
+    a registered group workspace they are not a member of, as its admin, each
+    such request audited. Never another person's personal (u-) workspace, on
+    or off. OFF by default, as swarm_api.settings is: it widens who may enter
+    a tenant (invariant 9), so it goes on in dev first, is exercised by the
+    acceptance probe, and only then in prod (§6, step 5).
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "additional_repositories_enabled" {
+  description = <<-EOT
+    swarm-api's ADDITIONAL_REPOSITORIES_ENABLED (#1434,
+    docs/design/multi-repository-steps.md §6 "Feature flag"): whether a
+    submission may name `additional_repositories`, the registered repositories
+    a step reads, at pinned commits, beside the one it writes. OFF by default,
+    as swarm_api.settings is: off, a submission naming any is refused 422
+    `additional_repositories_disabled` and nothing is stored, so a swarm-api
+    deployed ahead of the workers that clone them writes no task those
+    workers would fail. Turn it on only where workers carrying lane MR-WORKER
+    are deployed. How many a step may name and how large they may be are not
+    here: they are the platform settings max_additional_repositories (1-10,
+    default 5) and additional_repositories_budget_gib (1-20, default 6), set
+    at run time with PUT /v1/admin/settings.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "search_tool_enabled" {
   description = <<-EOT
     swarm-api's SEARCH_TOOL_ENABLED (docs/search-tool.md, #1030): whether
@@ -886,6 +947,26 @@ variable "search_provider" {
   }
 }
 
+variable "mcp_servers_enabled" {
+  description = <<-EOT
+    swarm-api's SWARM_MCP_SERVERS (docs/design/registered-mcp-servers.md §6,
+    #1433): whether a workspace may register MCP servers and a claude-code or
+    codex step may name them in `input.mcp_servers`. Rendered "on" or "off":
+    swarm_api.mcp_servers.mcp_servers_enabled() reads exactly "on" as on and
+    anything else as off. OFF by default, as that function is: off, a
+    registration write, an `mcp_servers` submission and an attempt's
+    mcp:attach are each 503 `mcp_unavailable`, and nothing is stored. On, it
+    also creates swarm-mcp-credentials-sweep (modules/scheduler/jobs.tf), the
+    10-minute job that deletes a per-run credential once its task ends (owner
+    decision Q2). Turn it on only where the owner has applied
+    terraform/bootstrap's enable_mcp_credentials: without that grant swarm-api
+    cannot read a stored credential at attach, so every attempt naming a
+    `dispatch` server fails before its agent starts.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "workspace_apply_publish" {
   description = <<-EOT
     swarm-api's WORKSPACE_APPLY_PUBLISH: whether approving a personal
@@ -899,6 +980,22 @@ variable "workspace_apply_publish" {
     release as that apply. Off, nothing is silent: the swarm-workspace-sweep
     job still runs, and every approved record is logged as workspace_stuck
     (reason publishing_off), which pages through the workspace-stuck alert.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "workspace_gate" {
+  description = <<-EOT
+    swarm-api's WORKSPACE_GATE (swarm_api.workspaces.gate_from_env, #847 WD8;
+    docs/workspaces.md §5.5): whether a person's task or workflow submission
+    into their own personal tenant is refused until their workspace is `ready`
+    (403 WORKSPACE_NOT_READY) and has a Claude account (403 NO_CLAUDE_ACCOUNT),
+    and whether swarm-api stops writing tenants/u-* on first sight. A group
+    submission is never gated (WD7). OFF by default, as gate_from_env is: on
+    refuses every person without a `ready` workspace record, so an environment
+    turns it on only after one real approval has gone end to end through the
+    swarm-workspace-apply job.
   EOT
   type        = bool
   default     = false

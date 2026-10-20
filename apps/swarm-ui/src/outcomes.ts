@@ -141,12 +141,14 @@ export interface LatencyRow {
   failed: LatencyOutcome
 }
 
-export type GroupBy = 'runner_profile' | 'submitted_by' | 'tenant_id'
+export type GroupBy = 'runner_profile' | 'submitted_by' | 'tenant_id' | 'model' | 'model_class'
 
 export interface GroupRow {
   /** Grouped by person, `''` is the tasks with no submitter recorded: a row, but not a name. */
   key: string
-  submitted: number
+  /** Null for the `model` group: arrivals are counted per task, before an
+   * attempt has run on any model, so no model can be credited with them. */
+  submitted: number | null
   ended: number
   succeeded: number
   failed: number
@@ -369,7 +371,7 @@ export type BucketChoice = (typeof BUCKET_CHOICES)[number]
 export const KINDS = ['all', 'standalone', 'steps'] as const
 export type Kind = (typeof KINDS)[number]
 
-export const GROUPS: readonly GroupBy[] = ['runner_profile', 'submitted_by', 'tenant_id']
+export const GROUPS: readonly GroupBy[] = ['runner_profile', 'submitted_by', 'tenant_id', 'model', 'model_class']
 
 // THE ROUTE'S LIMITS, RESTATED SO THE PAGE NEVER ASKS FOR WHAT IT REFUSES.
 // Each is `swarm_api.outcomes`'s constant of the same name, and

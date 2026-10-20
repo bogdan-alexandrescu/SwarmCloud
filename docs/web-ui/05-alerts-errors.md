@@ -58,7 +58,7 @@ One dense screen, seven panels, each independently fetched and independently tru
 
 **What the user sees.** A full-width bar, only when something is off. Three possible contents, stacked:
 
-* `DISPATCH PAUSED` — red. "Paused by alice@saga.xyz at 02:14 — 'draining for the quota incident'." Admin-only detail; non-admins see `DISPATCH PAUSED` with no actor.
+* `DISPATCH PAUSED` — red. "Paused by alice@example.com at 02:14 — 'draining for the quota incident'." Admin-only detail; non-admins see `DISPATCH PAUSED` with no actor.
 * `YOUR TASKS: 4 LEASED · 11 RUNNING · 96 READY · 312 PARKED` — the counts, neutral. **The scope word is not decoration.** A non-admin can only be shown `tasks_by_state`, which is their tenant; an admin gets `platform_tasks_by_state` as well and the bar says `PLATFORM:` with a toggle back to `YOURS:`. An admin reading their own tenant's four running tasks as the platform total is a truth bug, not a layout preference.
 * `2 of 7 panels failed` — when any panel on this board, this one included, is in `error`.
 

@@ -10,7 +10,7 @@ a field for any of those things in the first place.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     AliasChoices,
@@ -20,8 +20,12 @@ from pydantic import (
     StrictBool,
     StrictInt,
     field_validator,
+    model_validator,
 )
 
+from swarm_common.models import ADDITIONAL_REPOSITORIES_CEILING, ADDITIONAL_REPOSITORY_NAME
+
+from . import modelprices
 from .sessiontag import PATTERN as SESSION_TAG_PATTERN
 from .validation import (
     DEFAULT_CARRIER,
@@ -39,6 +43,91 @@ class StrictModel(BaseModel):
 # Tasks
 # --------------------------------------------------------------------------
 
+#: At most this many per-run MCP credentials in one map: the `mcp_servers`
+#: input names one to four servers (contract request 88), so a fifth entry
+#: could only ever be refused as unexpected.
+MAX_MCP_CREDENTIALS = 4
+
+
+class McpCredentialCreate(BaseModel):
+    """One per-run MCP credential (docs/design/registered-mcp-servers.md §4.3).
+
+    NOT a `StrictModel`: that strips whitespace from every string, and a
+    credential is not a string to tidy. Both fields are `Any` so that their
+    shape is refused by `mcp_credentials.check_credential` with its own code,
+    `mcp_credential_shape`, whose message names the rule and never the value,
+    rather than by a pydantic type error. The value is a local of the
+    submission and goes to exactly one Secret Manager `add_version`
+    (`SubmissionService`); it is in no document, no response and no log.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: Any
+    expires_in: Any
+
+
+def _mcp_credentials_field() -> Any:
+    """The request field a per-run credential map arrives in. `exclude=True`:
+    no `model_dump` of a request ever carries a credential, so a spec stored
+    as JSON (a custom-prompt schedule's `params.spec`) or logged whole cannot
+    hold one. `repr=False` keeps it out of a model's repr in a traceback."""
+    return Field(default=None, max_length=MAX_MCP_CREDENTIALS, exclude=True, repr=False)
+
+
+#: The most entries a request's `additional_repositories` list may carry
+#: before it is parsed at all: a bound on the work one body costs, NOT the
+#: limit. The limit is the platform setting `max_additional_repositories`
+#: (default 5, at most ADDITIONAL_REPOSITORIES_CEILING), which swarm-api
+#: refuses `too_many_additional_repositories` against, naming its current
+#: value -- so this sits well above the ceiling, and a list between the two
+#: gets that refusal rather than pydantic's generic shape.
+MAX_ADDITIONAL_REPOSITORIES_IN_REQUEST = 4 * ADDITIONAL_REPOSITORIES_CEILING
+
+
+class AdditionalRepositoryCreate(StrictModel):
+    """One repository a step reads beside its own (docs/design/
+    multi-repository-steps.md §4.1, #1434): a NAME the tenant registered,
+    never a URL, a slot or a commit. swarm-api resolves the rest -- the
+    registration, whose slot clones it, the commit its ref names now, its
+    size -- and stores that, signed (`extrarepos`); nothing here reaches the
+    task as sent (invariant 10)."""
+
+    #: `owner/repo`, as GitHub spells it (`repositories.parse_repository`).
+    #: A URL is refused by shape: it is derived from the registration.
+    repository: str = Field(min_length=3, max_length=140)
+    #: A branch, a tag or a full 40-hex sha; absent, the registration's
+    #: default branch. Pinned to a commit at submission.
+    ref: str | None = Field(default=None, min_length=1, max_length=255)
+    #: The directory under `work/repos/`; absent, the repository part,
+    #: lower-cased. `ADDITIONAL_REPOSITORY_NAME` (contract request 95).
+    name: str | None = Field(default=None, min_length=1, max_length=63)
+
+    @field_validator("repository")
+    @classmethod
+    def _owner_repo(cls, value: str) -> str:
+        # Lazily: `repositories` imports the forge clients, which this module
+        # must not pull in at import. ValueError, so pydantic names the field.
+        from .repositories import parse_repository
+
+        owner, repo = parse_repository(value)
+        return f"{owner}/{repo}"
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str | None) -> str | None:
+        if value is not None and not ADDITIONAL_REPOSITORY_NAME.fullmatch(value):
+            raise ValueError("name is lower-case letters, digits, '.', '_' and '-', "
+                             "starting with a letter or digit, at most 63 characters")
+        return value
+
+
+def _additional_repositories_field() -> Any:
+    """None is "not said": a workflow step then reads the workflow's list. `[]`
+    is "none", which on a step replaces the workflow's list (§7 Q6)."""
+    return Field(default=None, max_length=MAX_ADDITIONAL_REPOSITORIES_IN_REQUEST)
+
+
 class TaskCreate(StrictModel):
     #: The ONLY execution knob a caller has. Image, command, resource spec and
     #: backend all come from the frozen catalogue keyed by this name.
@@ -51,9 +140,19 @@ class TaskCreate(StrictModel):
     #: May only SHORTEN the profile's timeout; a longer value is clamped.
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
     max_attempts: int | None = Field(default=None, ge=1, le=10)
-    #: Provider model name, recorded for attribution and cost reporting. It
-    #: selects nothing about the container.
+    #: The model ID, a RECORD: swarm-api fills it with the pin of the task's
+    #: `model_class` (WORKER_CLASS_MODELS), and a value that is not that pin is
+    #: refused `model_is_chosen_by_model_class` behind its switch
+    #: (`validation.resolve_task_model`, #1435 Q4). It selects nothing: the
+    #: scheduler resolves the class's pin again at dispatch.
     model: str | None = Field(default=None, max_length=128)
+    #: The model class this task runs, BY NAME from the frozen
+    #: `profiles.MODEL_CLASSES` (`opus`, `fable`, `sonnet`, `haiku`), never a
+    #: model ID (invariant 10). None: the profile's `default_model_class`.
+    #: Checked by `validation.validate_model_class`, which names the accepted
+    #: classes in its refusal, rather than declared as a `Literal` here, for
+    #: the same reason as `strategy` below.
+    model_class: str | None = Field(default=None, max_length=32)
     #: How this dispatch's work gets merged, and what carries it between steps.
     #: Validated in `validation.resolve_dispatch_options`, which names the
     #: accepted values in its refusal, rather than declared as a `Literal` here:
@@ -64,6 +163,15 @@ class TaskCreate(StrictModel):
     #: gets exactly the dispatch they got before this feature existed.
     strategy: str = Field(default=DEFAULT_STRATEGY, max_length=32)
     carrier: str = Field(default=DEFAULT_CARRIER, max_length=32)
+    #: Per-run credentials for the `dispatch` servers `input.mcp_servers`
+    #: names, by server name (docs/design/registered-mcp-servers.md §4.3):
+    #: beside the task, never in it. Checked and stored by `SubmissionService`.
+    mcp_credentials: dict[str, McpCredentialCreate] | None = _mcp_credentials_field()
+    #: The registered repositories this task reads beside its own, checked out
+    #: read-only and never carried back (#1434). Behind
+    #: `ApiSettings.additional_repositories_enabled` (off by default).
+    additional_repositories: list[AdditionalRepositoryCreate] | None = (
+        _additional_repositories_field())
 
     @field_validator("repository_url")
     @classmethod
@@ -104,6 +212,10 @@ class WorkflowStepCreate(StrictModel):
     #: A NAMED class from the frozen catalogue, and only one no larger than the
     #: profile's own. Not a resource spec.
     resource_class: str | None = Field(default=None, max_length=64)
+    #: The model class this step runs, by name, as `TaskCreate.model_class`
+    #: (#1435). Stored on `WorkflowStep.model_class` and on its task only when
+    #: it differs from the profile's default.
+    model_class: str | None = Field(default=None, max_length=32)
     #: upstream step_id -> artifact filename staged into this step's workspace.
     input_from: dict[str, str] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
@@ -142,6 +254,20 @@ class WorkflowStepCreate(StrictModel):
     #: graph says otherwise, so a chain wired differently from what was meant
     #: is caught at submission rather than at merge time.
     merges: dict[str, str] | None = Field(default=None, max_length=5)
+    #: On an `await-input` step only, and required there: what the person is
+    #: asked to answer, its shape, and when and how the wait ends
+    #: (docs/design/human-steps.md §4.1). A free-form object here, checked by
+    #: `validation.resolve_await_input`, for the same reason as `strategy`:
+    #: every refusal then carries `code` and names its field, `assignees`
+    #: included, which a nested model would answer with pydantic's generic
+    #: shape. Stored normalised in `metadata.dispatch.await_input`, signed.
+    await_input: Any = None
+    #: This step's own list of additional repositories (#1434). It REPLACES
+    #: the workflow's `additional_repositories`, never merges with it, and
+    #: `[]` means none (owner's Q6, 2026-10-17): what a step reads is answered
+    #: from one place. Absent, the step reads the workflow's list.
+    additional_repositories: list[AdditionalRepositoryCreate] | None = (
+        _additional_repositories_field())
 
 
 class MergePullRequest(StrictModel):
@@ -228,6 +354,17 @@ class WorkflowCreate(StrictModel):
     #: merging fails the workflow. Absent: the workflow starts as it always did.
     after: list[AfterPullRequest] | None = Field(default=None, min_length=1,
                                                  max_length=MAX_AFTER_PRS)
+    #: One per-run credential map for the whole submission (§4.3): the
+    #: credential is the caller's, so every step that names a `dispatch`
+    #: server uses the one stored credential, owned by the workflow.
+    mcp_credentials: dict[str, McpCredentialCreate] | None = _mcp_credentials_field()
+    #: The additional repositories every agent step reads, unless the step
+    #: names its own list (which replaces this one) (#1434). A worker-action
+    #: or `await-input` step runs no agent and reads none of them. Each
+    #: (repository, ref) is pinned ONCE per submission, so every step reads
+    #: the same commit even if the branch moves while it is submitted.
+    additional_repositories: list[AdditionalRepositoryCreate] | None = (
+        _additional_repositories_field())
 
     @field_validator("after", mode="before")
     @classmethod
@@ -332,12 +469,77 @@ class PauseRequest(StrictModel):
     reason: str | None = Field(default=None, max_length=512)
 
 
+#: A list price, USD per million tokens. STRICT: a string ("0.20"), a bool or a
+#: null is refused, never coerced -- an admin's figure is stored as they typed
+#: it or not at all. Negative, infinite and NaN are refused too.
+PriceRate = Annotated[float, Field(strict=True, ge=0, le=modelprices.MAX_RATE,
+                                   allow_inf_nan=False)]
+
+
+class ModelPriceTierRequest(StrictModel):
+    """One tier of a model priced by prompt length (`modelprices.tiers_problem`)."""
+
+    #: The largest prompt, in tokens, this tier prices; null on the last tier.
+    #: Required, so a tier that forgot its ceiling is refused, not unbounded.
+    up_to_prompt_tokens: StrictInt | None = Field(ge=1, le=modelprices.MAX_TIER_CEILING)
+    input: PriceRate
+    output: PriceRate
+    cache_read: PriceRate
+    cache_write: PriceRate
+
+
+class ModelPriceRequest(StrictModel):
+    """One model's entry in `model_prices` (#1481). `updated_by` is not the
+    caller's to say: swarm-api stamps the admin who made the change."""
+
+    input: PriceRate
+    output: PriceRate
+    cache_read: PriceRate
+    cache_write: PriceRate
+    currency: Literal["USD"] = modelprices.CURRENCY
+    #: Where the figure was read: `console` for an admin's edit, the weekly
+    #: refresh writes `pricing-page`.
+    source: str = Field(default="console", min_length=1, max_length=64)
+    #: The day the figure was read from its source, YYYY-MM-DD.
+    as_of: str = Field(pattern=modelprices.AS_OF.pattern)
+    #: A model priced by prompt length (Haiku 5.5): its tiers in rising order,
+    #: the first at the four rates above, the last with no ceiling. Omitted
+    #: for a model priced at one set of rates, which is every other model.
+    tiers: list[ModelPriceTierRequest] | None = Field(
+        default=None, min_length=2, max_length=modelprices.MAX_TIERS)
+
+    @model_validator(mode="after")
+    def _tiers_cover_every_prompt(self) -> "ModelPriceRequest":
+        if self.tiers is not None:
+            rates = {name: getattr(self, name) for name in modelprices.RATES}
+            _tiers, why = modelprices.tiers_problem([t.model_dump() for t in self.tiers], rates)
+            if why is not None:
+                raise ValueError(why)
+        return self
+
+
 class PlatformSettingsRequest(StrictModel):
     """`PUT /v1/admin/settings`: the settings to change; one omitted is left as it is."""
 
     #: Append a `merge` step to every workflow that opens one pull request and
     #: does not say `metadata.merge` (contract request 47). Off by default.
     merge_by_default: bool | None = None
+    #: The most additional repositories one step may read (#1434), read by
+    #: swarm-api at every submission, so a change applies to the next one.
+    #: 1 to the frozen ceiling; `store.PLATFORM_SETTINGS_DEFAULTS` says why 5.
+    max_additional_repositories: StrictInt | None = Field(
+        default=None, ge=1, le=ADDITIONAL_REPOSITORIES_CEILING)
+    #: The GiB one step's additional repositories may total (#1434), enforced
+    #: by swarm-api on the forge's estimate and by the worker on disk.
+    #: 1 to 20, the cache volume's size; default 6.
+    additional_repositories_budget_gib: StrictInt | None = Field(default=None, ge=1, le=20)
+    #: List prices by model (#1481), the ones named replacing theirs; a model
+    #: not named keeps its figure. Read at every estimate, so a change prices
+    #: the next stopped attempt. `modelprices` says why a model with no entry
+    #: prices nothing.
+    model_prices: dict[
+        Annotated[str, Field(pattern=modelprices.MODEL_NAME.pattern)], ModelPriceRequest
+    ] | None = Field(default=None, min_length=1, max_length=modelprices.MAX_MODELS)
 
 
 class LimitRequest(StrictModel):

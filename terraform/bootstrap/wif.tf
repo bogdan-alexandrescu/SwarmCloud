@@ -425,6 +425,13 @@ resource "google_iap_web_backend_service_iam_member" "frontend_accessors" {
   web_backend_service = data.google_compute_backend_service.frontend_iap[each.value.backend].name
   role                = "roles/iap.httpsResourceAccessor"
   member              = each.value.member
+
+  # The QA identity (qa_identity.tf) is named here only as a string in
+  # var.frontend_iap_members, so Terraform has no reference to order by. On
+  # 2026-10-20 the owner's first apply with enable_qa_identity ran swarm-qa's
+  # swarm-ui-backend row before the account existed and IAP answered 400 "does
+  # not exist" (#1649). Off, the list is empty and this orders nothing.
+  depends_on = [google_service_account.qa_identity]
 }
 
 # ACT AS THE CLOUD BUILD SERVICE ACCOUNT, AND ONLY THAT ONE.

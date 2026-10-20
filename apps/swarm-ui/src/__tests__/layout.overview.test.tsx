@@ -655,7 +655,8 @@ describe('OV-9: while the checks read, the lead says so and draws no figure', ()
 
   /**
    * A HEALTHY READ IS A REAL ALL-CLEAR, and an open check is a card: the
-   * count names the checks that found something, not the ones that ran.
+   * count names the checks that found something, not the ones that ran,
+   * and the problems they found -- one per card (visual QA QA-013).
    *
    * MUTATION: count the checks that ran as open.
    */
@@ -666,7 +667,7 @@ describe('OV-9: while the checks read, the lead says so and draws no figure', ()
       loadAccountPool: ok(accountsPage([reading('fine', 0.1)])),
     })
     const lead = el.querySelector('#ov-needs')!
-    expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^checks (\d+)\/\1 · 1 found something$/)
+    expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^checks (\d+)\/\1 · 1 found 1 problem$/)
     expect(lead.querySelectorAll('a.ov-att').length).toBeGreaterThan(0)
     expect(lead.querySelector('.ctl-mark.is-partial')).toBeNull()
   })

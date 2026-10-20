@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 
 import { cancelTask } from './api'
 import { Button } from './components'
+import { WarnGlyph } from './components/glyphs'
+import { useRoleGate } from './Profile'
 import { errorHeading, type ApiError } from './fetch'
 import { trapTab } from './focus'
 import {
@@ -291,6 +293,12 @@ export function StopRun({
   // Only consulted when no worker is running this attempt: a started worker's
   // own attempt is the work, and its copy already says what happens to it.
   const earlier = !started && earlierAttemptRan(task)
+  // A VIEWER CANCELS NOTHING (docs/design/workspace-roles.md §4.8, Q8): the
+  // button is disabled with the role sentence beside it. The API still decides
+  // (`role_member_required`); this only stops offering a click it refuses.
+  // Called before any early return below, as every hook must be.
+  const roleGate = useRoleGate('member', 'cancel')
+  const gateId = useId()
 
   // A button that 409s is a button that should not have been drawn:
   // `request_cancel` refuses every terminal state. `cancel_requested` already
@@ -395,12 +403,24 @@ export function StopRun({
       className="run-stop-btn"
       aria-haspopup={overlay ? 'dialog' : undefined}
       aria-expanded={overlay ? open : undefined}
-      onClick={() => setOpen(true)}
+      disabled={roleGate !== null}
+      aria-describedby={roleGate === null ? undefined : gateId}
+      onClick={() => { if (roleGate === null) setOpen(true) }}
     >
       {label}
     </Button>
   )
-  if (!open) return stopButton
+  // THE ROLE SENTENCE IS A SIBLING, NEVER A WRAPPER. Button's own
+  // `disabledReason` wraps the button in a new element, so the role read
+  // landing would remount it: the stop control someone was tabbing to becomes
+  // a different node and focus is lost. The same shape before and after.
+  const gateNote = roleGate === null ? null : (
+    <span className="c-why" id={gateId} data-role-gate="member">
+      <WarnGlyph />
+      {roleGate}
+    </span>
+  )
+  if (!open || roleGate !== null) return <>{stopButton}{gateNote}</>
 
   // FOUR PARAGRAPHS BECAME FOUR FACTS, AND EVERY CLAIM SURVIVES.
   //
@@ -497,37 +517,45 @@ export function StopRun({
       >
         <li className="ctl-fact">
           <b>stops</b>
-          <code>{task.id}</code>
-          {step !== null && (
-            <>
-              {' '}
-              step <code>{step.step_id}</code>
-            </>
-          )}
+          <span className="stop-val">
+            <code>{task.id}</code>
+            {step !== null && (
+              <>
+                {' '}
+                step <code>{step.step_id}</code>
+              </>
+            )}
+          </span>
         </li>
         {task.attempt_count > 0 && (
           <li className="ctl-fact">
             <b>attempt</b>
-            {task.attempt_count} of {task.max_attempts}, not resumed
+            <span className="stop-val">
+              {task.attempt_count} of {task.max_attempts}, not resumed
+            </span>
           </li>
         )}
         <li className="ctl-fact">
           <b>work so far</b>
-          {earlier
-            ? earlierWorkFact
-            : !live
-              ? 'none to harvest'
-              : started
-                ? 'kept — checkpoint, artifacts and logs are uploaded first'
-                : 'none — no worker has ever started this task'}
+          <span className="stop-val">
+            {earlier
+              ? earlierWorkFact
+              : !live
+                ? 'none to harvest'
+                : started
+                  ? 'kept — checkpoint, artifacts and logs are uploaded first'
+                  : 'none — no worker has ever started this task'}
+          </span>
         </li>
         <li className="ctl-fact">
           <b>takes effect</b>
-          {!live
-            ? 'at once'
-            : started
-              ? "at the worker's next heartbeat, not now"
-              : 'when a worker starts, or when the reconciler finishes it — not now'}
+          <span className="stop-val">
+            {!live
+              ? 'at once'
+              : started
+                ? "at the worker's next heartbeat, not now"
+                : 'when a worker starts, or when the reconciler finishes it — not now'}
+          </span>
         </li>
       </ul>
 
@@ -540,16 +568,16 @@ export function StopRun({
         <ul className="ctl-facts stop-facts stop-blast">
           <li className={doomed.length > 0 ? 'ctl-fact' : 'ctl-fact is-absent'}>
             <b>once stopped, also cancels</b>
-            {doomed.length === 0 ? (
-              'nothing — no other step depends on this one'
-            ) : (
-              <StepIdList steps={doomed} />
-            )}
+            <span className="stop-val">
+              {doomed.length === 0 ? 'nothing — no other step depends on this one' : <StepIdList steps={doomed} />}
+            </span>
           </li>
           {survivors.length > 0 && (
             <li className="ctl-fact">
               <b>keeps running</b>
-              <StepIdList steps={survivors} />
+              <span className="stop-val">
+                <StepIdList steps={survivors} />
+              </span>
             </li>
           )}
         </ul>

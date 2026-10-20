@@ -192,7 +192,10 @@ describe('B3: the work area, now beside the Sky spine', () => {
     expect(util, 'tests/unit/control_plane/test_nav_headings_agree.py finds the utility button by this class').not.toBeNull()
     // Links since #503 (they open in a new tab like every spine item).
     const labels = [...util!.querySelectorAll('a')].map((b) => b.textContent?.trim())
-    expect(labels).toEqual(['Help', 'API reads'])
+    // Help alone since NAV-FOOT (#1672): API reads is a Capacity page, and
+    // Profile is drawn by the shell after this corner.
+    // MUTATION: put the API reads link back in App's foot.
+    expect(labels).toEqual(['Help'])
   })
 })
 
@@ -2210,7 +2213,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
       '<div class="table-wrap is-stacked"><table class="pools"><tbody><tr>' +
         '<td data-label="Scope"><span class="scope tenant">this tenant</span></td>' +
         '<td data-label="Status"><span class="tag full">none registered</span></td>' +
-        '<td data-label="Identity" class="mono">swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com</td>' +
+        '<td data-label="Identity" class="mono">swarm-agent-worker-u-bogdan@example-project.iam.gserviceaccount.com</td>' +
         '</tr></tbody></table></div>',
     )
     // MUTATION: take `.tag` or `.scope` out of the justify-self list.

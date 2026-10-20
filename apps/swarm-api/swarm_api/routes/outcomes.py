@@ -62,7 +62,7 @@ def get_outcomes(
     profile: list[str] = Query(default=[]),
     submitted_by: list[str] = Query(default=[]),
     kind: str | None = Query(default=None, description="all | standalone | steps"),
-    group: str | None = Query(default=None, description="runner_profile | submitted_by | tenant_id"),
+    group: str | None = Query(default=None, description="runner_profile | submitted_by | tenant_id | model | model_class"),
     compare: str | None = Query(default=None, description="none | previous"),
     section: list[str] = Query(
         default=[],

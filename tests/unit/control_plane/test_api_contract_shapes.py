@@ -106,6 +106,19 @@ def _distinct(annotation: str, name: str, index: int, default: Any) -> Any:
         return "git-u-" + "0123456789abcdef"
     if name == "forge_access":
         return "read"
+    # Contract request 95: entries the model holds to a shape.
+    if name == "additional_repositories":
+        return [{
+            "name": "web",
+            "repo_id": "repo_" + "0123456789abcdef",
+            "repository": "acme/web",
+            "repository_url": "https://github.com/acme/web",
+            "ref": "main",
+            "commit": "a" * 40,
+            "forge_credential": "git",
+            "forge_credential_source": "tenant",
+            "size_kib": 1024,
+        }]
     # Contract request 70: served as its public projection
     # (`codec.HUMAN_WAIT_PUBLIC_KEYS`), so a value holding exactly those keys
     # is served unchanged and the value comparison below still bites.
@@ -257,6 +270,11 @@ CODECS: tuple[Codec, ...] = (
             # submission that writes them.
             "forge_credential": "worker-only: the secret suffix swarm-api resolved, not served",
             "forge_access": "worker-only: the forge mode swarm-api resolved, not served",
+            # Contract request 95 (MR-CONTRACT, part of #1434). Served as its
+            # masked projection (no URL, no slot) by lane MR-API, which owns the
+            # public shape (docs/design/multi-repository-steps.md §4.1); this
+            # entry is the thing that lane deletes.
+            "additional_repositories": "served by lane MR-API as its §4.1 projection; not yet",
         },
         # The input and metadata are served MASKED (owner decision,
         # 2026-09-26), and these say how many masks each took; so, since the
@@ -277,8 +295,12 @@ CODECS: tuple[Codec, ...] = (
         # (TASK-ANSWERS) is lifted out of `metadata.owner_answers` the same
         # way: `codec.owner_answers_to_api`. `claude_session` (SC-SESSION-SCOPE)
         # is lifted out of `metadata.claude_session`: `codec.claude_session_of`.
+        # `model_class_defaulted` (#1435, MODEL-API) says the served
+        # `model_class` is the profile's default because none was stored:
+        # `codec.served_model_class`.
         api_computed=(
             "dispatch", "start_problem", "owner_answers", "claude_session",
+            "model_class_defaulted",
             "input_redaction_count", "metadata_redaction_count",
             "last_error_redaction_count", "result_summary_redaction_count",
             "repository_url_redaction_count", "waiting_for", "account", "links",

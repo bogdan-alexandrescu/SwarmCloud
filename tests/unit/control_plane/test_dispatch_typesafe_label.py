@@ -19,6 +19,14 @@ these hold, and each is turned off once below:
 A Cloud Run Job gets no label and keeps today's path: the forwarder is
 reachable only from GKE pods.
 
+THE WORKER'S SWITCH RIDES WITH THE LABEL (lane TS-INJECT, part of #1347). The
+worker takes the forwarder path only when `SWARM_TYPESAFE_INJECT=on` is in its
+environment (agent_worker.typesafe_shim.SWITCH_ENV / SWITCH_ON). The same one
+decision that labels the pod puts that variable in the worker container's env,
+and nothing else does: a labelled pod whose worker still read the key file, or
+a switched worker on a pod the policies do not open, is each half a migration.
+test_typesafe_switch_parity.py holds the name and value to the worker's.
+
 MUTATION: drop any one condition from `typesafe_forwarder_on`, label a pod of
 another backend, or match the tenant by prefix, and the named case fails.
 """
@@ -34,11 +42,13 @@ from swarm_common.models import Tenant
 from swarm_common.profiles import RUNNER_PROFILES
 
 from scheduler.dispatch import (
+    TYPESAFE_INJECT_ENV,
     TYPESAFE_POD_LABEL,
     CloudRunJobDispatcher,
     GkeJobDispatcher,
     GkeTarget,
     typesafe_forwarder_on,
+    worker_env,
 )
 from scheduler.settings import SchedulerSettings
 
@@ -47,6 +57,8 @@ from .test_dispatch_manifests import NOW, FakeJobsClient, make_lease, make_task
 
 LIVE = "claude-code-browser"
 LABEL = {"swarm-typesafe": "inject"}
+#: What the worker reads (typesafe_shim.SWITCH_ENV, SWITCH_ON).
+SWITCH = ("SWARM_TYPESAFE_INJECT", "on")
 
 #: Every condition on. Each case below turns exactly one off.
 ON: dict[str, Any] = dict(
@@ -72,15 +84,30 @@ def _settings(*, forwarder: bool, tenants: tuple[str, ...], live: bool) -> Sched
     )
 
 
-def _labels(tenant: Tenant, *, forwarder: bool, tenants: tuple[str, ...], backend: str,
-            live: bool, profile: str) -> dict[str, str]:
+def _pod(tenant: Tenant, *, forwarder: bool, tenants: tuple[str, ...], backend: str,
+         live: bool, profile: str) -> dict[str, Any]:
     settings = _settings(forwarder=forwarder, tenants=tenants, live=live)
     dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
                                   batch_api=object(), judgment=lambda tenant_id: backend)
     task = make_task(profile)
     job = dispatcher._manifest(task=task, lease=make_lease(task),
                                profile=RUNNER_PROFILES[profile], tenant=tenant)
-    return job["spec"]["template"]["metadata"]["labels"]
+    return job["spec"]["template"]
+
+
+def _labels(tenant: Tenant, **conditions: Any) -> dict[str, str]:
+    return _pod(tenant, **conditions)["metadata"]["labels"]
+
+
+def _worker_env(tenant: Tenant, **conditions: Any) -> list[dict[str, str]]:
+    """The worker container's env entries, every one, in order."""
+    (worker,) = [c for c in _pod(tenant, **conditions)["spec"]["containers"]
+                 if c["name"] == "worker"]
+    return worker["env"]
+
+
+def _switch_entries(env: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [e for e in env if e.get("name") == SWITCH[0]]
 
 
 def test_the_label_is_the_one_both_policies_select():
@@ -106,6 +133,42 @@ def test_every_condition_on_labels_the_pod(tenant):
 def test_any_condition_off_leaves_the_pod_unlabelled(tenant, off):
     labels = _labels(tenant, **{**ON, **off})
     assert "swarm-typesafe" not in labels
+
+
+def test_the_switch_is_the_name_and_value_the_worker_reads():
+    assert TYPESAFE_INJECT_ENV == SWITCH
+
+
+def test_every_condition_on_switches_the_worker(tenant):
+    """Exactly one entry, `on`, on the worker container: the worker's
+    `switched_on` compares the stripped value to `on` exactly."""
+    assert _switch_entries(_worker_env(tenant, **ON)) == [{"name": SWITCH[0], "value": SWITCH[1]}]
+
+
+@pytest.mark.parametrize("off", [
+    pytest.param({"forwarder": False}, id="forwarder-off"),
+    pytest.param({"tenants": ()}, id="no-tenant-listed"),
+    pytest.param({"tenants": ("research",)}, id="another-tenant-listed"),
+    pytest.param({"tenants": ("en", "eng-x")}, id="a-prefix-is-not-the-tenant"),
+    pytest.param({"backend": "internal-jev"}, id="internal-jev-backend"),
+    pytest.param({"backend": "internal-laya"}, id="internal-laya-backend"),
+    pytest.param({"live": False}, id="display-switch-off"),
+    pytest.param({"profile": "claude-code"}, id="not-a-live-browser-profile"),
+])
+def test_any_condition_off_leaves_the_worker_unswitched(tenant, off):
+    """Not `off`, not empty: absent, so nothing the worker reads changes."""
+    conditions = {**ON, **off}
+    assert _switch_entries(_worker_env(tenant, **conditions)) == []
+    # The label and the switch are the one decision: neither without the other.
+    assert "swarm-typesafe" not in _labels(tenant, **conditions)
+
+
+def test_the_switch_changes_nothing_else_in_the_worker_env(tenant):
+    """The same pod with the forwarder off differs in its worker's env by the
+    switch alone: no other variable moves with it."""
+    on = _worker_env(tenant, **ON)
+    off = _worker_env(tenant, **{**ON, "forwarder": False})
+    assert [e for e in on if e.get("name") != SWITCH[0]] == off
 
 
 def test_the_label_changes_nothing_else_on_the_pod(tenant):
@@ -141,6 +204,21 @@ def test_a_cloud_run_job_gets_no_label(tenant):
         RUNNER_PROFILES[LIVE], tenant)
     assert "swarm-typesafe" not in dict(job.labels)
     assert "swarm-typesafe" not in dict(job.template.labels or {})
+
+
+def test_a_cloud_run_job_never_switches_the_worker(tenant):
+    """Neither the Job's template env nor the per-execution override env
+    (`worker_env`) carries the switch, with every switch on: the forwarder is
+    a cluster Service a Cloud Run Job cannot reach, and the worker would also
+    refuse it off GKE."""
+    settings = _settings(forwarder=True, tenants=("eng",), live=True)
+    job = CloudRunJobDispatcher(settings, client=FakeJobsClient())._build_job(
+        RUNNER_PROFILES[LIVE], tenant)
+    template_env = [e.name for c in job.template.template.containers for e in c.env]
+    assert SWITCH[0] not in template_env
+    task = make_task(LIVE)
+    assert SWITCH[0] not in worker_env(task=task, lease=make_lease(task), tenant=tenant,
+                                       settings=settings)
 
 
 def test_the_switch_ships_off_and_reads_its_environment(monkeypatch):

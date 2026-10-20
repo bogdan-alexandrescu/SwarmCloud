@@ -21,6 +21,7 @@
  * (`swarm_result`'s `owner_answers`), and once every question is answered the
  * bell stops asking. A saved answer is drawn with who gave it and when, and
  * "Change" reopens the options with it picked; the API keeps the replaced one.
+ * An answer given in Claude Code says so: see `AnsweredInClaudeCode`.
  * Only the task's submitter or an admin may answer: the API says whether this
  * viewer may (`may_answer`) and why not, and the card draws the buttons
  * disabled with that reason rather than guessing the rule itself.
@@ -38,6 +39,7 @@ import { answerQuestion, loadQuestions, type AgentQuestion, type OwnerAnswer, ty
 import { Button } from './components'
 import { errorHeading, type ApiError } from './fetch'
 import { feedData, markRead, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
+import { useRoleGate } from './Profile'
 import { useRead } from './RunFiles'
 import { timeAgo, type Task } from './types'
 
@@ -97,23 +99,50 @@ function OptionBody({ q, label, description }: { q: AgentQuestion; label: string
 /** The saved answer: what, who and when, and "Change" for a viewer who may answer. */
 function SavedAnswer({ a, n, onChange }: { a: OwnerAnswer; n: number; onChange: (() => void) | null }) {
   return (
-    <div className="qc-saved" role="group" aria-label={`Your answer to question ${n}`}>
-      <span className="qc-saved-what">
-        Answered: {a.choice && <b>{a.choice}</b>}
-        {a.choice && a.text && ' — '}
-        {a.text && <span className="qc-saved-text">{a.text}</span>}
-      </span>
-      <span className="dt-note qc-saved-who">
-        {a.by ?? 'someone'}
-        {a.at ? `, ${timeAgo(a.at)}` : ''}
-        {a.history.length > 0 ? ` · changed ${a.history.length}×` : ''}
-      </span>
-      {onChange && (
-        <Button size="sm" kind="ghost" onClick={onChange}>
-          Change
-        </Button>
-      )}
-    </div>
+    <>
+      <div className="qc-saved" role="group" aria-label={`Your answer to question ${n}`}>
+        <span className="qc-saved-what">
+          Answered: {a.choice && <b>{a.choice}</b>}
+          {a.choice && a.text && ' — '}
+          {a.text && <span className="qc-saved-text">{a.text}</span>}
+        </span>
+        <span className="dt-note qc-saved-who">
+          {a.by ?? 'someone'}
+          {a.at ? `, ${timeAgo(a.at)}` : ''}
+          {a.history.length > 0 ? ` · changed ${a.history.length}×` : ''}
+        </span>
+        {onChange && (
+          <Button size="sm" kind="ghost" onClick={onChange}>
+            Change
+          </Button>
+        )}
+      </div>
+      {a.via === 'claude-code' && <AnsweredInClaudeCode a={a} />}
+    </>
+  )
+}
+
+/**
+ * AN ANSWER GIVEN IN CLAUDE CODE SAYS SO (ANSWER-SYNC-UI, part of #1644; owner
+ * decision 2026-10-19, "Plugin records it, marked as from Claude Code"). The
+ * plugin's swarm_task_answer posts the person's own pick from a question the
+ * orchestrating session asked them, with `via: 'claude-code'` and the session
+ * id; under that answer the card writes "answered in Claude Code (session
+ * ce05454f), 3h ago", so whoever reads it here can find the conversation it
+ * was settled in. A console answer, or one stored before `via` was, has no
+ * line and looks as it did.
+ *
+ * It sits in the question's column (`qc-q`, `min-width: 0`), and
+ * `qc-saved-text` is the saved answer's own wrapping rule (`overflow-wrap:
+ * anywhere`), so nothing in it runs past the card at 390 px.
+ */
+function AnsweredInClaudeCode({ a }: { a: OwnerAnswer }) {
+  const session = a.session ? ` (session ${a.session.slice(0, 8)})` : ''
+  return (
+    <p className="dt-note qc-saved-text qc-via">
+      answered in Claude Code{session}
+      {a.at ? `, ${timeAgo(a.at)}` : ''}
+    </p>
   )
 }
 
@@ -255,8 +284,12 @@ function AskedCard({ task, count }: { task: Task; count: number }) {
   const [fresh, setFresh] = useState<TaskQuestions | null>(null)
   const read = state.status === 'ok' || state.status === 'stale' ? state.data : null
   const data = fresh ?? read
+  // A VIEWER ANSWERS NOTHING (docs/design/workspace-roles.md §4.8): the
+  // submitter's own rule stays, and `member` is required on top of it. The
+  // server still decides (`role_member_required`).
+  const roleGate = useRoleGate('member', 'answer')
   // Absent from an API older than answers: nobody may answer there.
-  const mayAnswer = data?.may_answer === true
+  const mayAnswer = data?.may_answer === true && roleGate === null
   const questions = data?.status === 'ok' ? data.questions : []
   useReadsNotification(task.id, questions.length > 0)
   const who = task.step_id ? `This agent (step ${task.step_id})` : 'This agent'
@@ -273,7 +306,12 @@ function AskedCard({ task, count }: { task: Task; count: number }) {
         {who} asked you {count === 1 ? 'this' : 'these'} instead of guessing. Pick an option or write your own: the
         answer is stored on this task, where {launcher(task)} reads it with swarm_result.
       </p>
-      {data !== null && data.status === 'ok' && !mayAnswer && (
+      {data !== null && data.status === 'ok' && roleGate !== null && (
+        <p className="dt-note qc-why-not" data-role-gate="member">
+          {roleGate}
+        </p>
+      )}
+      {data !== null && data.status === 'ok' && data.may_answer !== true && (
         <p className="dt-note qc-why-not">
           You can read these but not answer them: {data.may_answer_because ?? 'the API did not say you may answer'}.
         </p>

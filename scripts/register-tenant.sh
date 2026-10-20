@@ -58,6 +58,20 @@
 # not a choice: it must equal the derived id or this refuses, because any other
 # id registers boundaries under a name nothing ever resolves to.
 #
+# A PERSON'S TENANT IS NOT REGISTERED BY HAND ANY MORE. Since WD3 (2026-10-08)
+# a person requests their workspace (the console's checklist, `sc setup`), an
+# admin approves it in Admin > People, and the Cloud Run job
+# swarm-workspace-apply -- started by Pub/Sub, Eventarc and Workflows, never by
+# a person -- runs this script with --workspace, as swarm-workspace-deployer,
+# under the call guard (section W). Its log goes to the restricted log bucket
+# swarm-workspace-apply, not to a terminal. The first workspace made that way
+# reached ready on 2026-10-13 (w-7f9285, docs/multi-tenancy.md section 7.5).
+# --user stays for the operator: a repair, or a tenant that predates the job.
+# It does not make the act-as grant the job's A4 makes, and it writes no
+# workspaces/ record, so with WORKSPACE_GATE on the person it registers is
+# still refused until a record says ready. docs/multi-tenancy.md section 7
+# is how it works; docs/runbooks/tenant-offboarding.md is how one is removed.
+#
 # Usage:
 #   scripts/register-tenant.sh --group eng@saga.xyz
 #   scripts/register-tenant.sh --user alice@saga.xyz
@@ -243,9 +257,45 @@ esac
 # Exit codes: 0 done (or nothing to do), 1 refused or failed, 3 stopped for the
 # owner (needs_owner). scripts/workspace-apply.sh reads 3 as "ended, not
 # failed" (§2.2).
+#
+# KINDS (docs/design/workspace-kinds.md §4.3, lane WK-JOB of #847). The record's
+# `kind` -- absent is `personal`, so a person's workspace runs call for call as
+# it did before kinds -- decides the tenant id and four steps. The guard's
+# expectation carries the kind, and every step after A1 reads it from there:
+#
+#   group    a Google group, filed under tenant_id_for_group (`research`, never
+#            a `u-` id). A1 refuses a directory check older than 24 hours
+#            (DIRECTORY_CHECK_STALE, retryable: an admin's retry re-checks).
+#            A6 makes the TEAM slot swarm-tenant-<g>-git and its -refresh twin,
+#            empty, the worker on the slot only; members' own slots are the
+#            credential broker's (Q6 (a)). A7 labels the namespace
+#            swarm.saga.xyz/workspace=<w-id>, the label the deployer's scope
+#            policy admits it by. A8 writes kind=group and directory_group.
+#   service  a service account of THIS project (Q7 (a)), filed under its
+#            personal id. A1 refuses a decision or a retry by anyone but the
+#            platform owner (Q2 (a)): workspace-calls.json's platform_owner for
+#            this project, who must also be an owner in admin_roles/ now
+#            (the record's decision.by names them; residual risk R8 is that
+#            whoever can write the record can write that name). S1
+#            checks the account (exists, enabled, this project's, no swarm- id,
+#            not on SHARED_DENY_LIST) and records its uniqueId; the job never
+#            writes that account's IAM. A6 makes the team slot, no twin. S2, the
+#            last write, admits the account at the front door (C10): the
+#            accessor role on the API backend, read first. A9 reads the member
+#            back and the uniqueId again.
+#
+# Neither kind adopts a tenants/ or pools/ document Terraform made
+# (managed_by=swarm-terraform): that tenant is Terraform's (§4.7, Q8 (a)).
 
 WS_ID_RE='^w-[0-9a-f]{6}$'
 WS_TENANT_RE='^u-[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+# A group workspace's id (tenant_id_for_group): a slug that is not a person's.
+WS_GROUP_TENANT_RE='^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+# A group's directory check is good for this long (§4.1, `directory`).
+WS_DIRECTORY_MAX_AGE=86400
+# The label A7 puts on a group's or a service's namespace (kubernetes/render.py
+# WORKSPACE_LABEL); A9 reads it back.
+WS_NAMESPACE_LABEL="swarm.saga.xyz/workspace"
 # Lower-cased, as swarm-api stores a principal; narrow enough that an address
 # is safe in a Firestore document path and a jq string.
 WS_EMAIL_RE='^[a-z0-9._+-]+@[a-z0-9.-]+$'
@@ -297,6 +347,12 @@ WS_RUN_CLAIMED_AT=""
 WS_RUN_FINISHED_AT=""
 WS_RUN_ATTEMPT=0
 WS_MIGRATED="false"
+WS_KIND="personal"
+WS_DISPLAY_NAME=""
+WS_DIRECTORY_AT=""
+WS_DIRECTORY_READABLE=""
+WS_UNIQUE_ID=""
+WS_PLATFORM_OWNER=""
 WS_REQUEST_ID=""
 WS_MAX_ACTIVE=""
 WS_CAPACITY_UNITS=""
@@ -322,6 +378,9 @@ WS_FORGE_TWIN=""
 WS_FIRESTORE_ROLE=""
 WS_META_ROLE=""
 WS_FALLBACK="false"
+WS_LABEL=""
+WS_SERVICE=""
+WS_FRONT_DOOR=""
 
 # The object kinds and names a tenant render holds, one `Kind<TAB>name` line
 # each, read from render.py's YAML without a YAML library (the job's image has
@@ -471,6 +530,14 @@ ws_load_record() {
   [[ "${WS_RUN_ATTEMPT}" =~ ^[0-9]+$ ]] || WS_RUN_ATTEMPT=0
   WS_MIGRATED="$(ws_field "${file}" '.migrated')"
   [[ "${WS_MIGRATED}" == "true" ]] || WS_MIGRATED="false"
+  # Absent is personal (§4.1); a kind this build does not know stays as read,
+  # and ws_admit refuses it.
+  WS_KIND="$(ws_field "${file}" '.kind')"
+  [[ -n "${WS_KIND}" ]] || WS_KIND="personal"
+  WS_DISPLAY_NAME="$(ws_field "${file}" '.display_name')"
+  WS_DIRECTORY_AT="$(ws_field "${file}" '.directory.checked_at')"
+  WS_DIRECTORY_READABLE="$(ws_field "${file}" '.directory.readable')"
+  WS_UNIQUE_ID="$(ws_field "${file}" '.service.unique_id')"
   WS_REQUEST_ID="$(ws_field "${file}" '.request_id')"
   WS_MAX_ACTIVE="$(ws_field "${file}" '.limits.max_active')"
   WS_CAPACITY_UNITS="$(ws_field "${file}" '.limits.capacity_units')"
@@ -529,12 +596,53 @@ ws_admit() {
         *) printf 'NOT_VERIFIABLE only a ready or failed workspace is verified; this one is %s' "${WS_STATE:-without a state}"; return 0 ;;
       esac ;;
   esac
-  if [[ "${WORKSPACE_MODE}" == "verify" && "${WS_MIGRATED}" == "true" ]]; then
+  case "${WS_KIND}" in
+    personal|group|service) ;;
+    *) printf 'WORKSPACE_KIND_UNKNOWN the record is of kind %s, which this build does not make' \
+         "$(printf '%s' "${WS_KIND}" | tr -cd 'a-z0-9-' | cut -c1-32)"; return 0 ;;
+  esac
+  # The migrated shortcut is a person's (u-bogdan, §3.3): no group or service
+  # workspace predates approval, so none skips it.
+  if [[ "${WORKSPACE_MODE}" == "verify" && "${WS_MIGRATED}" == "true" && "${WS_KIND}" == "personal" ]]; then
     return 0
   fi
   [[ "${WS_VERDICT}" == "approved" ]] \
     || { printf 'WORKSPACE_NOT_APPROVED no admin approved this workspace'; return 0; }
+  # Q2 (a): a service workspace admits a new principal at the front door, so
+  # only the platform owner approves it, or retries it. WHO the owner is comes
+  # from the image (workspace-calls.json), never the record or the
+  # environment. THAT they approved is still the record's word: decision.by is
+  # a string any identity with Firestore write can set (residual risk R8, on
+  # the pull request: tenant workers hold entities.update database-wide,
+  # modules/tenancy/main.tf). What bounds a forged approval is S1's account
+  # rules, K1 being the owner's to grant (until then S2 stops for them), the
+  # page on every IAP SetIamPolicy, and swarm-api's inner gate.
+  if [[ "${WS_KIND}" == "service" ]]; then
+    [[ -n "${WS_PLATFORM_OWNER}" ]] \
+      || { printf 'WORKSPACE_APPROVAL_OWNER_ONLY no platform owner is configured for %s, so no service workspace can be approved' "${PROJECT_ID}"; return 0; }
+    [[ "${WS_DECIDED_BY}" == "${WS_PLATFORM_OWNER}" ]] \
+      || { printf 'WORKSPACE_APPROVAL_OWNER_ONLY a service workspace is approved by the platform owner only, and this one was not'; return 0; }
+    if [[ "${WORKSPACE_MODE}" == "create" && ( "${WS_STATE}" == "failed" || "${WS_STATE}" == "needs_owner" ) \
+          && "${WS_RETRY_BY}" != "${WS_PLATFORM_OWNER}" ]]; then
+      printf 'WORKSPACE_APPROVAL_OWNER_ONLY a service workspace is retried by the platform owner only, and this retry was not'
+      return 0
+    fi
+  fi
   return 0
+}
+
+# The platform owner for this project, from the rules in the image
+# (workspace-calls.json `platform_owner`): never the record, never the
+# environment, which an execution override can set.
+ws_platform_owner() {
+  jq -r --arg p "${PROJECT_ID}" '(.platform_owner // {})[$p] // "" | ascii_downcase' \
+    "${SWARM_LIB_DIR}/workspace-calls.json"
+}
+
+# True when EMAIL is the owner in admin_roles/ now.
+ws_is_owner() {
+  ws_is_admin "$1" || return 1
+  [[ "$(ws_field "${WS_WORK}/admin.json" '.role')" == "owner" ]]
 }
 
 # True when EMAIL is an owner or admin in admin_roles/ now.
@@ -547,14 +655,27 @@ ws_is_admin() {
   [[ "${role}" == "owner" || "${role}" == "admin" ]]
 }
 
+# ws_derive PRINCIPAL [KIND]: the tenant id the frozen contract gives the
+# principal; a group's is tenant_id_for_group, every other kind's
+# tenant_id_for_user (§4.1).
 ws_derive() {
-  python3 - "${REPO_ROOT}" "$1" <<'PY'
+  python3 - "${REPO_ROOT}" "$1" "${2:-personal}" <<'PY'
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
-from swarm_common.identity import tenant_id_for_user
-print(tenant_id_for_user(sys.argv[2]))
+from swarm_common.identity import tenant_id_for_group, tenant_id_for_user
+derive = tenant_id_for_group if sys.argv[3] == "group" else tenant_id_for_user
+print(derive(sys.argv[2]))
 PY
+}
+
+# True when DERIVED is an id KIND may be filed under: a person's and a
+# service's are `u-` ids, a group's never is.
+ws_tenant_shape() {
+  case "$2" in
+    group) [[ "$1" =~ ${WS_GROUP_TENANT_RE} && "$1" != u-* ]] ;;
+    *) [[ "$1" =~ ${WS_TENANT_RE} ]] ;;
+  esac
 }
 
 # Whole numbers within bounds, or the default the record leaves out.
@@ -599,6 +720,9 @@ ws_load_names() {
   WS_WRITE_EXPR="$(ws_expect write_expr)"
   WS_FORGE_SLOT="$(ws_expect forge_slot)"
   WS_FORGE_TWIN="$(ws_expect forge_slot_twin)"
+  WS_LABEL="$(ws_expect namespace_label)"
+  WS_SERVICE="$(ws_expect service_principal)"
+  WS_FRONT_DOOR="$(ws_expect front_door_backend)"
   WS_FIRESTORE_ROLE="$(ws_expect firestore_role)"
   WS_META_ROLE="$(ws_expect bucket_metadata_role)"
   WS_CONTEXT="gke_${PROJECT_ID}_$(ws_expect gke_location)_$(ws_expect gke_cluster)"
@@ -606,11 +730,25 @@ ws_load_names() {
   # fallback's grants exactly when the guard allows them (§2.3).
   WS_FALLBACK="$(jq -r '.wd9_fallback == true' "${SWARM_LIB_DIR}/workspace-calls.json")"
   local name
-  for name in WS_TENANT WS_DOC WS_DOCS_PREFIX WS_WORKER_EMAIL WS_NAMESPACE WS_SCHEDULER \
-              WS_RECONCILER WS_BUCKET_URL WS_MARKER_UPLOAD_URL WS_READ_EXPR WS_WRITE_EXPR \
-              WS_FORGE_SLOT WS_FORGE_TWIN; do
+  local -a needed=(WS_TENANT WS_DOC WS_DOCS_PREFIX WS_WORKER_EMAIL WS_NAMESPACE WS_SCHEDULER
+                   WS_RECONCILER WS_BUCKET_URL WS_MARKER_UPLOAD_URL WS_READ_EXPR WS_WRITE_EXPR
+                   WS_FORGE_SLOT)
+  # The kind's own values (§4.3): a person's and a group's slot has its twin; a
+  # group's and a service's namespace its label; a service its front door.
+  case "${WS_KIND}" in
+    personal) needed+=(WS_FORGE_TWIN) ;;
+    group) needed+=(WS_FORGE_TWIN WS_LABEL) ;;
+    service) needed+=(WS_LABEL WS_FRONT_DOOR) ;;
+  esac
+  for name in "${needed[@]}"; do
     [[ -n "${!name}" ]] || die "the guard's expectation holds no ${name#WS_}; nothing past A1 can run"
   done
+  [[ "$(ws_expect kind)" == "${WS_KIND}" ]] \
+    || die "the guard's expectation is for a $(ws_expect kind) workspace, not the record's ${WS_KIND}; nothing past A1 can run"
+  # A service's account is the record's. The guard names it only when it is
+  # one S1 may consider; S1 refuses the rest for the owner, before any write.
+  [[ "${WS_KIND}" != "service" || -z "${WS_SERVICE}" || "${WS_SERVICE}" == "${WS_PRINCIPAL}" ]] \
+    || die "the guard's expectation admits another account than the record's; nothing past A1 can run"
 }
 
 # --- progress on the record -------------------------------------------------------
@@ -630,6 +768,9 @@ ws_mark() {
 ws_retryable() {
   case "$1" in
     APPLY_FAILED|GRANT_FAILED|CONTROL_PLANE_WRITE_FAILED|CLUSTER_UNREACHABLE|NAMESPACE_APPLY_FAILED|VERIFY_FAILED) return 0 ;;
+    # docs/design/workspace-kinds.md §4.8: an admin's retry re-checks the
+    # directory; a front door that did not answer is asked again.
+    DIRECTORY_CHECK_STALE|FRONT_DOOR_FAILED) return 0 ;;
   esac
   return 1
 }
@@ -640,6 +781,8 @@ ws_default_code() {
     A4|A5|A6) printf 'GRANT_FAILED' ;;
     A7) printf 'NAMESPACE_APPLY_FAILED' ;;
     A8) printf 'CONTROL_PLANE_WRITE_FAILED' ;;
+    S1) printf 'SERVICE_ACCOUNT_REFUSED' ;;
+    S2) printf 'FRONT_DOOR_FAILED' ;;
     *) printf 'VERIFY_FAILED' ;;
   esac
 }
@@ -655,6 +798,8 @@ ws_label() {
     A7) printf 'namespace' ;;
     A8) printf 'limits' ;;
     A9) printf 'final check' ;;
+    S1) printf 'checking the service account' ;;
+    S2) printf 'front door' ;;
   esac
 }
 
@@ -731,19 +876,30 @@ ws_rollback() {
   fs_request POST "$(fs_base):rollback" "$(jq -nc --arg t "$1" '{transaction: $t}')" >/dev/null 2>&1 || true
 }
 
+# The steps this mode runs for this kind, in order (§4.3): a service's S1
+# before A2, and S2, the last write, between A8 and A9.
+ws_step_ids() {
+  case "${WORKSPACE_MODE}" in
+    create)
+      if [[ "${WS_KIND}" == "service" ]]; then
+        printf '%s\n' A1 S1 A2 A3 A4 A5 A6 A7 A8 S2 A9
+      else
+        printf '%s\n' A1 A2 A3 A4 A5 A6 A7 A8 A9
+      fi ;;
+    limits) printf '%s\n' A1 A7 A8 ;;
+    verify) printf '%s\n' A1 A9 ;;
+  esac
+}
+
 # The claim's write: the run, the mode's steps reset, the failure cleared, and
 # for a create the state `applying`. One commit inside the transaction whose
 # read admitted it, so two builds cannot both claim one workspace.
 ws_claim_write() {
-  local tx="$1" at attempt steps_json mask_json state_json
+  local tx="$1" at attempt steps_json mask_json state_json id
   at="$(iso_now)"
   attempt=$((WS_RUN_ATTEMPT + 1))
   local -a ids=()
-  case "${WORKSPACE_MODE}" in
-    create) ids=(A1 A2 A3 A4 A5 A6 A7 A8 A9) ;;
-    limits) ids=(A1 A7 A8) ;;
-    verify) ids=(A1 A9) ;;
-  esac
+  while IFS= read -r id; do ids+=("${id}"); done < <(ws_step_ids)
   steps_json="$(printf '%s\n' "${ids[@]}" | jq -Rsc --arg at "${at}" '
     split("\n") | map(select(length > 0))
     | map({key: ., value: {mapValue: {fields: {
@@ -774,6 +930,7 @@ ws_claim_write() {
 ws_claim() {
   step "A1 claim (${WORKSPACE_ID})"
   local query count reason
+  WS_PLATFORM_OWNER="$(ws_platform_owner)"
 
   # 1. The record, by the opaque id: the only read the guard allows yet.
   query="$(jq -nc --arg w "${WORKSPACE_ID}" '{structuredQuery: {
@@ -792,10 +949,11 @@ ws_claim() {
   # 2. The tenant id, re-derived from the principal by the frozen contract.
   [[ "${WS_PRINCIPAL}" =~ ${WS_EMAIL_RE} ]] \
     || die "${WORKSPACE_ID}'s record names no usable principal. Nothing was changed."
-  local derived
-  derived="$(ws_derive "${WS_PRINCIPAL}")" \
+  local derived kind="${WS_KIND}"
+  derived="$(ws_derive "${WS_PRINCIPAL}" "${kind}")" \
     || die "swarm_common.identity could not derive a tenant id from ${WORKSPACE_ID}'s principal. Nothing was changed."
-  [[ "${derived}" =~ ${WS_TENANT_RE} ]] || die "the derived tenant id '${derived}' is not a personal tenant id. Nothing was changed."
+  ws_tenant_shape "${derived}" "${kind}" \
+    || die "the derived tenant id '${derived}' is not a ${kind} tenant id. Nothing was changed."
   if [[ "${WS_REC_TENANT}" != "${derived}" || "${WS_RECORD_ID}" != "${derived}" ]]; then
     die "WORKSPACE_ID_TAKEN: ${WORKSPACE_ID}'s record is filed as '${WS_RECORD_ID}' and names tenant
   '${WS_REC_TENANT}', but its principal derives '${derived}' (swarm_common.identity). An edited
@@ -815,12 +973,23 @@ ws_claim() {
   esac
 
   # 4. Approved, and retried, by people who are admins now.
-  if ! [[ "${WORKSPACE_MODE}" == "verify" && "${WS_MIGRATED}" == "true" ]]; then
+  if ! [[ "${WORKSPACE_MODE}" == "verify" && "${WS_MIGRATED}" == "true" && "${kind}" == "personal" ]]; then
     ws_is_admin "${WS_DECIDED_BY}" \
       || die "WORKSPACE_NOT_APPROVED: ${WORKSPACE_ID} was approved by someone who is not an admin in admin_roles/ now. Nothing was changed."
     if [[ "${WORKSPACE_MODE}" == "create" && ( "${WS_STATE}" == "failed" || "${WS_STATE}" == "needs_owner" ) ]]; then
       ws_is_admin "${WS_RETRY_BY}" \
         || die "WORKSPACE_NOT_APPROVED: ${WORKSPACE_ID}'s retry was asked for by someone who is not an admin now. Nothing was changed."
+    fi
+    # A service: the image's owner (ws_admit) AND an owner in admin_roles/
+    # now. Both are checks of WHO the record names, not proof the owner acted
+    # (R8, see ws_admit).
+    if [[ "${kind}" == "service" ]]; then
+      ws_is_owner "${WS_DECIDED_BY}" \
+        || die "WORKSPACE_APPROVAL_OWNER_ONLY: ${WORKSPACE_ID} is a service workspace, and who approved it is not the platform owner in admin_roles/ now. Nothing was changed."
+      if [[ "${WORKSPACE_MODE}" == "create" && ( "${WS_STATE}" == "failed" || "${WS_STATE}" == "needs_owner" ) ]]; then
+        ws_is_owner "${WS_RETRY_BY}" \
+          || die "WORKSPACE_APPROVAL_OWNER_ONLY: ${WORKSPACE_ID}'s retry was not asked for by the platform owner. Nothing was changed."
+      fi
     fi
   fi
   ws_resolve_limits
@@ -845,10 +1014,10 @@ ws_claim() {
     die "could not re-read the record inside the claim (above). Nothing was changed."
   fi
   ws_load_record "${WS_WORK}/claim.json"
-  if [[ "${WS_REC_TENANT}" != "${derived}" || ! "${WS_PRINCIPAL}" =~ ${WS_EMAIL_RE} ]] \
-     || [[ "$(ws_derive "${WS_PRINCIPAL}")" != "${derived}" ]]; then
+  if [[ "${WS_REC_TENANT}" != "${derived}" || ! "${WS_PRINCIPAL}" =~ ${WS_EMAIL_RE} || "${WS_KIND}" != "${kind}" ]] \
+     || [[ "$(ws_derive "${WS_PRINCIPAL}" "${kind}")" != "${derived}" ]]; then
     ws_rollback "${tx}"
-    die "the record changed its tenant or principal while it was being claimed. Nothing was changed."
+    die "the record changed its tenant, principal or kind while it was being claimed. Nothing was changed."
   fi
   reason="$(ws_admit)"
   if [[ -n "${reason}" ]]; then
@@ -924,6 +1093,134 @@ ws_inspect_account() {
     return 1
   fi
   return 0
+}
+
+# A1 for a group (§4.3): swarm-api's directory check -- one membership
+# question in that one group, which proves it exists and resolves (§4.2.3
+# check 7) -- is no older than WS_DIRECTORY_MAX_AGE. The deployer has no
+# directory access and never gets any, so the job reads the check; it does
+# not make it. A stale or missing one fails A1 retryable: an admin's retry
+# re-runs the check before it publishes (routes/people.py).
+ws_a1_directory() {
+  local age
+  age="$(ws_age "${WS_DIRECTORY_AT}")"
+  if [[ "${WS_DIRECTORY_READABLE}" != "true" || ! "${age}" =~ ^-?[0-9]+$ ]]; then
+    ws_code DIRECTORY_CHECK_STALE
+    err "the record carries no directory check of the group; an admin's retry makes one"
+    return 1
+  fi
+  # A check "from the future" is not a fresh one: beyond five minutes of clock
+  # skew it is refused like a stale one, or a far-future time would pass forever.
+  if [[ "${age}" -lt -300 ]]; then
+    ws_code DIRECTORY_CHECK_STALE
+    err "the group's directory check is dated in the future; an admin's retry makes a fresh one"
+    return 1
+  fi
+  if [[ "${age}" -gt "${WS_DIRECTORY_MAX_AGE}" ]]; then
+    ws_code DIRECTORY_CHECK_STALE
+    err "the group's directory check is $((age / 3600)) hours old, more than $((WS_DIRECTORY_MAX_AGE / 3600)); an admin's retry makes a fresh one"
+    return 1
+  fi
+  ok "directory: the group was read $((age / 60)) minutes ago"
+}
+
+# A1 for a group or a service, before anything outside the record is
+# written: the tenant id is not already someone else's. tenants/<t> and
+# pools/tenant:<t>, if they exist, must not be Terraform's (the four Terraform
+# tenants stay Terraform's, §4.7 Q8 (a)), and the tenant document must name
+# this principal and kind. Otherwise A2-A7 would reach that tenant's worker,
+# bucket grants, slot and namespace before A8 noticed (a group `eng@` of any
+# domain slugs to `eng`; a service account `bogdan@<project>.iam...` derives a
+# person's `u-bogdan`). A8 checks the same again; this is the check that comes
+# first.
+ws_a1_tenant_free() {
+  local tkind
+  tkind="$(ws_tenant_kind)"
+  ws_call "${WS_WORK}/a1-tenant.json" fs_get "tenants/${WS_TENANT}" || { ws_show_err; return 1; }
+  if jq -e '.fields' "${WS_WORK}/a1-tenant.json" >/dev/null 2>&1; then
+    if ws_terraform_doc "${WS_WORK}/a1-tenant.json"; then
+      ws_code WORKSPACE_ID_TERRAFORM
+      err "tenants/<tenant> is Terraform's (managed_by=swarm-terraform); a workspace never adopts it"
+      return 1
+    fi
+    # shellcheck disable=SC2016  # a jq program; $p and $k are jq's
+    if ! ws_doc_check "${WS_WORK}/a1-tenant.json" \
+         '((.principal // "") | ascii_downcase) == $p and ((.kind // "user") == $k)' \
+         --arg p "${WS_PRINCIPAL}" --arg k "${tkind}"; then
+      ws_code WORKSPACE_ID_TAKEN
+      err "tenants/<tenant> already belongs to a different principal or kind"
+      return 1
+    fi
+  fi
+  ws_call "${WS_WORK}/a1-pool.json" fs_get "pools/tenant:${WS_TENANT}" || { ws_show_err; return 1; }
+  if jq -e '.fields' "${WS_WORK}/a1-pool.json" >/dev/null 2>&1 && ws_terraform_doc "${WS_WORK}/a1-pool.json"; then
+    ws_code WORKSPACE_ID_TERRAFORM
+    err "pools/tenant:<tenant> is Terraform's (managed_by=swarm-terraform); a workspace never adopts it"
+    return 1
+  fi
+  ok "tenant id: free, or this workspace's own"
+}
+
+# A1's checks for a group or a service, every mode: the group's directory
+# check (create only: a ceiling change or a verify adds no member), then the
+# tenant id.
+ws_a1_kind() {
+  if [[ "${WS_KIND}" == "group" && "${WORKSPACE_MODE}" == "create" ]]; then
+    ws_a1_directory || return 1
+  fi
+  ws_a1_tenant_free
+}
+
+# S1 (§4.3, Q7 (a)): the account a service workspace is for. It must be this
+# project's, carry no swarm- id, not be on the shared deny-list, exist and be
+# enabled; its uniqueId is recorded, and must not change between runs (a
+# deleted and recreated account is a different principal under the same name).
+# The job READS this account and never writes its IAM: it is the caller, not
+# the worker. Every refusal is the owner's (needs_owner), before any write.
+ws_s1() {
+  local who="${WS_PRINCIPAL}" rc=0 uid
+  if is_shared_resource "${who}"; then
+    ws_hold SERVICE_ACCOUNT_REFUSED "the account is on the shared deny-list (SHARED_DENY_LIST): it belongs to another team"
+    return 1
+  fi
+  if [[ "${who%%@*}" == swarm-* ]]; then
+    ws_hold SERVICE_ACCOUNT_REFUSED "the account is one of the platform's own (swarm-*)"
+    return 1
+  fi
+  if [[ "${who}" != *"@${PROJECT_ID}.iam.gserviceaccount.com" ]]; then
+    ws_hold SERVICE_ACCOUNT_REFUSED "the account is not one of ${PROJECT_ID}'s (Q7 (a))"
+    return 1
+  fi
+  if [[ "${WS_SERVICE}" != "${who}" ]]; then
+    ws_hold SERVICE_ACCOUNT_REFUSED "the call guard admits no call about this account (workspace-guard.sh expect)"
+    return 1
+  fi
+  ws_probe "${WS_WORK}/s1.json" gcloud iam service-accounts describe "${who}" \
+    --project "${PROJECT_ID}" --format=json || rc=$?
+  case "${rc}" in
+    0) ;;
+    1) ws_hold SERVICE_ACCOUNT_REFUSED "the account does not exist"; return 1 ;;
+    *) ws_hold SERVICE_ACCOUNT_REFUSED "the account could not be read, so it cannot be shown to be admissible"; return 1 ;;
+  esac
+  if ! jq -e --arg w "${who}" '((.email // "") | ascii_downcase) == $w' "${WS_WORK}/s1.json" >/dev/null 2>&1; then
+    ws_hold SERVICE_ACCOUNT_REFUSED "the account read back is not the one the record names"
+    return 1
+  fi
+  if jq -e '.disabled == true' "${WS_WORK}/s1.json" >/dev/null 2>&1; then
+    ws_hold SERVICE_ACCOUNT_REFUSED "the account is disabled"
+    return 1
+  fi
+  uid="$(jq -r '.uniqueId // "" | tostring' "${WS_WORK}/s1.json")"
+  [[ "${uid}" =~ ^[0-9]{15,25}$ ]] \
+    || { ws_hold SERVICE_ACCOUNT_REFUSED "the account has no readable uniqueId"; return 1; }
+  if [[ -n "${WS_UNIQUE_ID}" && "${WS_UNIQUE_ID}" != "${uid}" ]]; then
+    ws_hold SERVICE_ACCOUNT_REFUSED "the account's uniqueId is not the one an earlier run recorded: it was deleted and made again"
+    return 1
+  fi
+  ws_call /dev/null fs_patch "${WS_DOC}" "service.unique_id" \
+    "$(jq -nc --arg u "${uid}" '{service: {mapValue: {fields: {unique_id: {stringValue: $u}}}}}')" \
+    || { ws_show_err; ws_code CONTROL_PLANE_WRITE_FAILED; return 1; }
+  ok "service account: present, enabled, this project's (uniqueId recorded)"
 }
 
 ws_a2() {
@@ -1100,11 +1397,22 @@ ws_a5() {
 # (never the twin): scripts/lib/forge-slot.sh, the one path that makes them,
 # which workspace-migrate-record.sh runs too. Through ws_call / ws_probe, so
 # every call has the guard's retry.
+#
+# A group's slot is the TEAM slot swarm-tenant-<g>-git and its twin; a
+# service's the team slot alone, since an App refresh token is a person's
+# (docs/design/workspace-kinds.md §4.6). Empty, filled later by an admin with
+# create-secrets.sh --stdin or the git-token route: never from here.
 ws_a6() {
   local rc=0
-  FORGE_SLOT_CALL=ws_call FORGE_SLOT_PROBE=ws_probe FORGE_SLOT_SHOW_ERR=ws_show_err \
-    FORGE_SLOT_WORK="${WS_WORK}" FORGE_SLOT_DRY_RUN=0 \
-    forge_slot_ensure_pair "${WS_TENANT}" "${WS_FORGE_SLOT}" "${WS_FORGE_TWIN}" "${WS_WORKER_EMAIL}" || rc=$?
+  if [[ "${WS_KIND}" == "service" ]]; then
+    FORGE_SLOT_CALL=ws_call FORGE_SLOT_PROBE=ws_probe FORGE_SLOT_SHOW_ERR=ws_show_err \
+      FORGE_SLOT_WORK="${WS_WORK}" FORGE_SLOT_DRY_RUN=0 \
+      forge_slot_ensure_single "${WS_TENANT}" "${WS_FORGE_SLOT}" "${WS_WORKER_EMAIL}" || rc=$?
+  else
+    FORGE_SLOT_CALL=ws_call FORGE_SLOT_PROBE=ws_probe FORGE_SLOT_SHOW_ERR=ws_show_err \
+      FORGE_SLOT_WORK="${WS_WORK}" FORGE_SLOT_DRY_RUN=0 \
+      forge_slot_ensure_pair "${WS_TENANT}" "${WS_FORGE_SLOT}" "${WS_FORGE_TWIN}" "${WS_WORKER_EMAIL}" || rc=$?
+  fi
   case "${rc}" in
     0) ok "forge slot: bound" ;;
     3) ws_hold SLOT_NOT_OURS "the forge slot already exists labelled for '${FORGE_SLOT_LABELLED:-nobody}', not this tenant"
@@ -1138,6 +1446,10 @@ ws_a7() {
     --cluster "$(ws_expect gke_cluster)" --confirm)
   local quota
   while IFS= read -r quota; do args+=("${quota}"); done < <(ws_quota_args)
+  # A group's or a service's namespace carries the job's label, which the
+  # deployer's scope policy admits it by (§4.3 A7); a person's renders as it
+  # always has.
+  [[ -z "${WS_LABEL}" ]] || args+=(--workspace-id "${WS_LABEL}")
   # A server dry run first, where there is a namespace for it to run in: on a
   # first apply nothing inside the namespace can be dry-run yet (apply.sh).
   if "${WS_KUBECTL}" --context "${WS_CONTEXT}" get namespace "${WS_NAMESPACE}" -o name >/dev/null 2>&1; then
@@ -1183,19 +1495,46 @@ ws_off_err() {
   fi
 }
 
+# The frozen Tenant.kind a workspace of this kind is filed under: a group's
+# is `group`; a person's and a service account's `user` (§5: no new value).
+ws_tenant_kind() {
+  if [[ "${WS_KIND}" == "group" ]]; then printf 'group'; else printf 'user'; fi
+}
+
+# True when a document FILE is Terraform's (terraform/modules/firestore writes
+# managed_by=swarm-terraform). A group or service workspace never adopts one:
+# the four Terraform tenants stay Terraform's (§4.7, Q8 (a)).
+ws_terraform_doc() {
+  ws_doc_check "$1" '(.managed_by // "") == "swarm-terraform"'
+}
+
 ws_a8() {
-  local pool_limit fields mask exists
+  local pool_limit fields mask exists tkind display
   pool_limit=$(( WS_MAX_ACTIVE < WS_CAPACITY_UNITS ? WS_MAX_ACTIVE : WS_CAPACITY_UNITS ))
+  tkind="$(ws_tenant_kind)"
+  # A person's display name is their address, as before kinds; a group's or a
+  # service's the record's (swarm-api defaults it to the local part, §4.1).
+  display="${WS_PRINCIPAL}"
+  [[ "${WS_KIND}" == "personal" || -z "${WS_DISPLAY_NAME}" ]] || display="${WS_DISPLAY_NAME}"
   ws_call "${WS_WORK}/tenant.json" fs_get "tenants/${WS_TENANT}" || { ws_show_err; return 1; }
   exists="$(jq -r 'if .fields then "yes" else "no" end' "${WS_WORK}/tenant.json")"
   fields="$(jq -nc --arg id "${WS_TENANT}" --arg p "${WS_PRINCIPAL}" --arg sa "${WS_WORKER_EMAIL}" \
       --arg prefix "${WS_GCS_PREFIX}" --arg ns "${WS_NAMESPACE}" --arg at "$(iso_now)" \
+      --arg tkind "${tkind}" --arg display "${display}" \
       --argjson max "${WS_MAX_ACTIVE}" --argjson units "${WS_CAPACITY_UNITS}" '
-    {tenant_id: {stringValue: $id}, kind: {stringValue: "user"}, principal: {stringValue: $p},
-     display_name: {stringValue: $p}, created_at: {timestampValue: $at},
+    {tenant_id: {stringValue: $id}, kind: {stringValue: $tkind}, principal: {stringValue: $p},
+     display_name: {stringValue: $display}, created_at: {timestampValue: $at},
      max_active: {integerValue: ($max | tostring)}, capacity_units: {integerValue: ($units | tostring)},
      enabled: {booleanValue: true}, credentials: {arrayValue: {values: []}},
-     service_account: {stringValue: $sa}, gcs_prefix: {stringValue: $prefix}, namespace: {stringValue: $ns}}')"
+     service_account: {stringValue: $sa}, gcs_prefix: {stringValue: $prefix}, namespace: {stringValue: $ns}}
+    # A group is resolved by asking the directory about it (auth.py): the
+    # field terraform/infra/locals.tf reads for the same question.
+    + (if $tkind == "group" then {directory_group: {booleanValue: true}} else {} end)')"
+  if [[ "${WS_KIND}" != "personal" && "${exists}" == "yes" ]] && ws_terraform_doc "${WS_WORK}/tenant.json"; then
+    ws_code WORKSPACE_ID_TERRAFORM
+    err "tenants/<tenant> is Terraform's (managed_by=swarm-terraform); a workspace never adopts it"
+    return 1
+  fi
   if [[ "${exists}" == "yes" ]]; then
     # Adopted, never re-pointed (§3.3): a document `ensure_tenant` wrote on
     # first sight is this person's only when its principal is theirs. Its
@@ -1203,22 +1542,31 @@ ws_a8() {
     # a migrated workspace keeps its provider, a disabled tenant stays disabled.
     # shellcheck disable=SC2016  # a jq program; $p is jq's
     if ! ws_doc_check "${WS_WORK}/tenant.json" \
-         '((.principal // "") | ascii_downcase) == $p and ((.kind // "user") == "user")' --arg p "${WS_PRINCIPAL}"; then
+         '((.principal // "") | ascii_downcase) == $p and ((.kind // "user") == $k)' \
+         --arg p "${WS_PRINCIPAL}" --arg k "${tkind}"; then
       ws_code WORKSPACE_ID_TAKEN
       err "tenants/<tenant> already belongs to a different principal or kind; it is not adopted"
       return 1
     fi
     mask="tenant_id,kind,principal,max_active,capacity_units,service_account,gcs_prefix,namespace"
+    [[ "${tkind}" != "group" ]] || mask+=",directory_group"
     fields="$(jq -c 'del(.created_at, .enabled, .credentials, .display_name)' <<<"${fields}")"
     ws_call /dev/null fs_patch "tenants/${WS_TENANT}" "${mask}" "${fields}" \
       "$(jq -r '.updateTime // ""' "${WS_WORK}/tenant.json")" || { ws_show_err; return 1; }
   else
     mask="tenant_id,kind,principal,display_name,created_at,max_active,capacity_units,enabled,credentials,service_account,gcs_prefix,namespace"
+    [[ "${tkind}" != "group" ]] || mask+=",directory_group"
     ws_call /dev/null fs_patch "tenants/${WS_TENANT}" "${mask}" "${fields}" || { ws_show_err; return 1; }
   fi
   # The pool's limit, never its `active` (invariant 2): an existing pool keeps
   # the count of what it holds.
   ws_call "${WS_WORK}/pool.json" fs_get "pools/tenant:${WS_TENANT}" || { ws_show_err; return 1; }
+  if [[ "${WS_KIND}" != "personal" ]] && jq -e '.fields' "${WS_WORK}/pool.json" >/dev/null 2>&1 \
+     && ws_terraform_doc "${WS_WORK}/pool.json"; then
+    ws_code WORKSPACE_ID_TERRAFORM
+    err "pools/tenant:<tenant> is Terraform's (managed_by=swarm-terraform); a workspace never adopts it"
+    return 1
+  fi
   if jq -e '.fields' "${WS_WORK}/pool.json" >/dev/null 2>&1; then
     ws_call /dev/null fs_patch "pools/tenant:${WS_TENANT}" "hard_limit,updated_at" \
       "$(jq -nc --argjson l "${pool_limit}" --arg t "$(iso_now)" \
@@ -1244,6 +1592,57 @@ ws_kind_word() {
     RoleBinding) printf 'rolebinding' ;;
     *) return 1 ;;
   esac
+}
+
+# The front door's role, and whether the API backend's IAP policy FILE grants
+# it to MEMBER unconditioned: what S2 makes and A9 reads back.
+WS_FRONT_DOOR_ROLE="roles/iap.httpsResourceAccessor"
+ws_front_door_has() {
+  jq -e --arg r "${WS_FRONT_DOOR_ROLE}" --arg m "$2" \
+    'any((.bindings? // [])[]; .role == $r and .condition == null and any(.members[]?; . == $m))' \
+    "$1" >/dev/null 2>&1
+}
+
+# ws_front_door_read FILE: the API backend's IAP policy (C1's read twin of C10).
+ws_front_door_read() {
+  ws_call "$1" gcloud iap web get-iam-policy --project "${PROJECT_ID}" \
+    --resource-type=backend-services --service="${WS_FRONT_DOOR}" --format=json
+}
+
+# A front-door call that failed: IAP refusing the deployer is the owner's
+# (K1 is not granted, or O1 found the number-form name does not match, §4.5),
+# so the run stops for them as FRONT_DOOR_OWNER and they add the account to
+# frontend_iap_members by hand; anything else is FRONT_DOOR_FAILED, retryable.
+ws_front_door_failed() {
+  case "${WS_LAST_ERR}" in
+    *PERMISSION_DENIED*|*"HTTP 403"*|*"code=403"*|*"does not have"*"permission"*)
+      ws_hold FRONT_DOOR_OWNER "IAP refused the deployer on the API backend; the owner admits the account (frontend_iap_members)" ;;
+    *) ws_show_err; ws_code FRONT_DOOR_FAILED ;;
+  esac
+}
+
+# S2 (§4.3, §4.5): the last write. The approved service account becomes an
+# accessor of the API backend -- never the console's, never another role --
+# read first, so a member already present is done. The guard's C10 admits this
+# one call and C9 any removal never; swarm-api still admits the account only
+# once the record is `ready`, after A9 (§4.4): the inner gate opens last.
+ws_s2() {
+  local member="serviceAccount:${WS_SERVICE}" policy="${WS_WORK}/front-door.json"
+  ws_front_door_read "${policy}" || { ws_front_door_failed; return 1; }
+  if ws_front_door_has "${policy}" "${member}"; then
+    ok "front door: ${WS_FRONT_DOOR} already admits the account"
+  else
+    ws_call /dev/null gcloud iap web add-iam-policy-binding --project "${PROJECT_ID}" \
+      --resource-type=backend-services --service="${WS_FRONT_DOOR}" \
+      --role="${WS_FRONT_DOOR_ROLE}" --member="${member}" --condition=None --format=json \
+      || { ws_front_door_failed; return 1; }
+    ok "front door: ${WS_FRONT_DOOR} admits the account"
+  fi
+  ws_call /dev/null fs_patch "${WS_DOC}" "service.front_door" \
+    "$(jq -nc --arg b "${WS_FRONT_DOOR}" --arg at "$(iso_now)" \
+      '{service: {mapValue: {fields: {front_door: {mapValue: {fields: {
+         backend: {stringValue: $b}, admitted_at: {timestampValue: $at}}}}}}}}')" \
+    || { ws_show_err; ws_code CONTROL_PLANE_WRITE_FAILED; return 1; }
 }
 
 # A9: every object read back, as specified. A failure names the object's type,
@@ -1280,8 +1679,11 @@ ws_a9() {
     done
     n=$((n + 4))
   fi
-  # The forge slot, its twin, and who reads them.
-  for name in "${WS_FORGE_SLOT}" "${WS_FORGE_TWIN}"; do
+  # The forge slot, its twin (a service's team slot has none, §4.6), and who
+  # reads them.
+  local -a slots=("${WS_FORGE_SLOT}")
+  [[ -z "${WS_FORGE_TWIN}" ]] || slots+=("${WS_FORGE_TWIN}")
+  for name in "${slots[@]}"; do
     if ! ws_probe "${WS_WORK}/slot.json" gcloud secrets describe "${name}" --project "${PROJECT_ID}" --format=json \
       || [[ "$(jq -r '.labels.tenant // ""' "${WS_WORK}/slot.json")" != "${WS_TENANT}" ]]; then
       ws_object "forge slot"
@@ -1293,12 +1695,14 @@ ws_a9() {
     --project "${PROJECT_ID}" --format=json || { ws_show_err; ws_object "forge slot binding"; return 1; }
   iam_policy_binds_member "${WS_WORK}/slot-policy.json" roles/secretmanager.secretAccessor \
     "serviceAccount:${WS_WORKER_EMAIL}" || { ws_object "forge slot binding"; return 1; }
-  ws_call "${WS_WORK}/twin-policy.json" gcloud secrets get-iam-policy "${WS_FORGE_TWIN}" \
-    --project "${PROJECT_ID}" --format=json || { ws_show_err; ws_object "forge slot binding"; return 1; }
-  if jq -e --arg m "serviceAccount:${WS_WORKER_EMAIL}" 'any((.bindings? // [])[]; any(.members[]?; . == $m))' \
-       "${WS_WORK}/twin-policy.json" >/dev/null 2>&1; then
-    ws_object "forge slot binding"
-    return 1
+  if [[ -n "${WS_FORGE_TWIN}" ]]; then
+    ws_call "${WS_WORK}/twin-policy.json" gcloud secrets get-iam-policy "${WS_FORGE_TWIN}" \
+      --project "${PROJECT_ID}" --format=json || { ws_show_err; ws_object "forge slot binding"; return 1; }
+    if jq -e --arg m "serviceAccount:${WS_WORKER_EMAIL}" 'any((.bindings? // [])[]; any(.members[]?; . == $m))' \
+         "${WS_WORK}/twin-policy.json" >/dev/null 2>&1; then
+      ws_object "forge slot binding"
+      return 1
+    fi
   fi
   n=$((n + 1))
   # Every object the tenant render holds (kubernetes/render.py TENANT_FILES and,
@@ -1321,6 +1725,15 @@ ws_a9() {
       [[ "${name}" == "${WS_NAMESPACE}" ]] || { ws_object "Namespace"; return 1; }
       ws_call "${WS_WORK}/object.json" "${WS_KUBECTL}" --context "${WS_CONTEXT}" get namespace "${name}" -o json \
         || { ws_object "Namespace"; return 1; }
+      # A group's or a service's namespace is this job's only with its label
+      # (§4.3 A7): without it the namespace is someone else's, and the
+      # deployer's scope policy refuses every object inside it.
+      if [[ -n "${WS_LABEL}" ]] && ! jq -e --arg k "${WS_NAMESPACE_LABEL}" --arg v "${WS_LABEL}" \
+           '(.metadata.labels // {})[$k] == $v' "${WS_WORK}/object.json" >/dev/null 2>&1; then
+        ws_code NAMESPACE_LABEL_MISSING
+        ws_object "Namespace"
+        return 1
+      fi
     else
       word="$(ws_kind_word "${kind}")" || { ws_object "${kind}"; return 1; }
       ws_call "${WS_WORK}/object.json" "${WS_KUBECTL}" --context "${WS_CONTEXT}" get "${word}" "${name}" \
@@ -1360,14 +1773,48 @@ ws_a9() {
       --arg p "${WS_PRINCIPAL}" --arg sa "${WS_WORKER_EMAIL}" --arg ns "${WS_NAMESPACE}" \
       --argjson max "${WS_MAX_ACTIVE}" --argjson units "${WS_CAPACITY_UNITS}")"
   [[ -z "${off}" ]] || { ws_off_err "tenant" "${off}"; ws_object "tenant document"; return 1; }
+  if [[ "${WS_KIND}" != "personal" ]]; then
+    # shellcheck disable=SC2016  # a jq program; its $names are jq's
+    off="$(ws_doc_off "${WS_WORK}/tenant.json" \
+        '[(if (.kind // "user") == $k then empty else "kind" end),
+          (if $k != "group" or .directory_group == true then empty else "directory_group" end),
+          (if (.managed_by // "") != "swarm-terraform" then empty else "managed_by" end)]' \
+        --arg k "$(ws_tenant_kind)")"
+    [[ -z "${off}" ]] || { ws_off_err "tenant" "${off}"; ws_object "tenant document"; return 1; }
+  fi
   ws_call "${WS_WORK}/pool.json" fs_get "pools/tenant:${WS_TENANT}" || { ws_show_err; ws_object "pool document"; return 1; }
   # shellcheck disable=SC2016
   off="$(ws_doc_off "${WS_WORK}/pool.json" '[if (.hard_limit | whole) == $l then empty else "hard_limit" end]' \
       --argjson l "$(( WS_MAX_ACTIVE < WS_CAPACITY_UNITS ? WS_MAX_ACTIVE : WS_CAPACITY_UNITS ))")"
   [[ -z "${off}" ]] || { ws_off_err "pool" "${off}"; ws_object "pool document"; return 1; }
   n=$((n + 2))
+  if [[ "${WS_KIND}" == "service" ]]; then
+    ws_a9_service || return 1
+    n=$((n + 2))
+  fi
   printf '%s' "${n}" >"${WS_WORK}/verified"
   ok "verified: ${n} of ${n} objects"
+}
+
+# A9 for a service (§4.3): the account is still the one S1 recorded (its
+# uniqueId, re-read from the record, unchanged and still enabled), and the API
+# backend admits it.
+ws_a9_service() {
+  local recorded
+  ws_call "${WS_WORK}/record-now.json" fs_get "${WS_DOC}" || { ws_show_err; ws_object "workspace record"; return 1; }
+  recorded="$(ws_field "${WS_WORK}/record-now.json" '.service.unique_id')"
+  ws_probe "${WS_WORK}/a9-service.json" gcloud iam service-accounts describe "${WS_SERVICE}" \
+    --project "${PROJECT_ID}" --format=json || { ws_object "service account"; return 1; }
+  if [[ -z "${recorded}" ]] \
+     || ! jq -e --arg u "${recorded}" '(.uniqueId // "" | tostring) == $u and .disabled != true' \
+          "${WS_WORK}/a9-service.json" >/dev/null 2>&1; then
+    err "verify: the service account is not the one S1 recorded, or is disabled"
+    ws_object "service account"
+    return 1
+  fi
+  ws_front_door_read "${WS_WORK}/front-door.json" || { ws_show_err; ws_object "front door member"; return 1; }
+  ws_front_door_has "${WS_WORK}/front-door.json" "serviceAccount:${WS_SERVICE}" \
+    || { ws_object "front door member"; return 1; }
 }
 
 # `ready` only after A9 (create, verify); a ceiling change only closes its run.
@@ -1417,8 +1864,10 @@ workspace_main() {
   info "workspace ${WORKSPACE_ID}, --mode ${WORKSPACE_MODE}"
 
   ws_claim
+  [[ "${WS_KIND}" == "personal" ]] || ws_run_step A1 ws_a1_kind
   case "${WORKSPACE_MODE}" in
     create)
+      [[ "${WS_KIND}" != "service" ]] || ws_run_step S1 ws_s1
       ws_run_step A2 ws_a2
       ws_run_step A3 ws_a3
       ws_run_step A4 ws_a4
@@ -1426,6 +1875,7 @@ workspace_main() {
       ws_run_step A6 ws_a6
       ws_run_step A7 ws_a7
       ws_run_step A8 ws_a8
+      [[ "${WS_KIND}" != "service" ]] || ws_run_step S2 ws_s2
       ws_run_step A9 ws_a9 ;;
     limits)
       ws_run_step A7 ws_a7

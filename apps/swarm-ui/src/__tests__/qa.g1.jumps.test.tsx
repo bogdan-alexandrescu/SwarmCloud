@@ -1,5 +1,5 @@
 /**
- * G1-14 (QA pass on swarm.saga.xyz, 2026-10-07): OVERVIEW'S "ON THIS PAGE"
+ * G1-14 (QA pass on swarm.example.com, 2026-10-07): OVERVIEW'S "ON THIS PAGE"
  * LINKS CAN BE SHARED, AND LIST EVERY CARD.
  *
  * A click scrolled (or, in a hidden tab, did not: a smooth scroll is not

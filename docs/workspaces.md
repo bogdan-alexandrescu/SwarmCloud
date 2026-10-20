@@ -7,6 +7,19 @@ W1 to W9 have since been built against the Cloud Build shape; §10 says which
 of their pieces the re-decision rewrites, and what is removed once the job
 ships. One choice inside the re-decision, how an approval starts the job, was
 **decided by the owner on 2026-10-10: (ii), Pub/Sub through Eventarc and Workflows** (§2.1).
+**Amended 2026-10-19 (#847): the same job now builds group and service
+workspaces too**, filed by an admin from Admin › Tenants › New workspace,
+with no Terraform. That reverses WD3 for new workspaces (§3.2). The design
+is [design/workspace-kinds.md](design/workspace-kinds.md), and its §8 records
+what was built. It stays switched off until the owner's check O1 (§0) and the
+bootstrap apply with `enable_workspace_kinds = true`.
+**Amended 2026-10-19 (#1518): a workspace's people now hold roles**, `viewer`,
+`member` or `admin`, and a platform admin is `admin` in every group workspace,
+member or not, never in anyone else's personal one. The design is
+[design/workspace-roles.md](design/workspace-roles.md), and its §8 records what
+was built; Admin › People's part is §6.4 (5) and §6.5 below. In dev,
+`role_member_required` and `PLATFORM_ADMIN_REACH` are on (ROLES-ON-DEV,
+2026-10-19) and `role_admin_required` is off; in prod all three are off.
 
 The owner asked on 2026-10-08 for each person's personal space to be
 "onboarded at the time of onboarding a new user in swarmcloud", with "a way to create this via the UI and potentially via the
@@ -83,7 +96,7 @@ What it settles, one line each:
   shipped off and turned on after one real end-to-end approval (§5, WD8).
 
 The names below are placeholders where a real one is not needed.
-`alice@saga.xyz` is a new person, their tenant is `u-alice`, and their
+`alice@example.com` is a new person, their tenant is `u-alice`, and their
 workspace id is `w-3f9a2c`. `<project>` is the platform's project and
 `<number>` is its project number.
 
@@ -368,6 +381,105 @@ Read by the operator with `gcloud` against `saga-agents-staging`.
   probe label). The first attempt, without the grant, had been refused at
   impersonation and proved nothing. **W4b's gate (1) is met.**
 
+### O1, the owner's three live reads of the front door (workspace-kinds §4.5)
+
+**Recorded 2026-10-19, 20:20-20:35Z (13:20-13:35 PDT).** Run by the owner's
+session on the owner's approval of the exact temporary rows: a throwaway
+service account `swarm-o1-probe`, a throwaway custom role `swarmO1Probe`
+(the two permissions below) and one conditioned project binding, all removed
+afterwards. Both backends' IAP policies were snapshotted before and compared
+after: identical. No binding names the probe, and the role and the account are deleted.
+
+1. **Passes.** `gcloud iam roles describe roles/iap.admin` holds
+   `iap.webServices.getIamPolicy` and `iap.webServices.setIamPolicy`. `gcloud iam
+   list-testable-permissions` on the project lists both as GA, with custom-role
+   support `SUPPORTED`. A custom role holding exactly those two was created.
+2. **Fails.** The project binding to that role was conditioned on
+   `resource.name == "projects/209012342332/iap_web/compute/services/817602226733443034"`,
+   the API backend `swarm-ui-backend`, by number. With it, the probe's `gcloud iap web
+   get-iam-policy` was refused (`IAM_PERMISSION_DENIED`) on the API backend
+   as well as on `swarm-ui-ui-backend`, every 30 s for 10 minutes. So the
+   number-form name does not admit the permission. This agrees with the
+   2026-09-24 measurement that a `startsWith` condition on the project-id form
+   matched nothing, and that a role bound on the backend itself grants no
+   `iap.webServices.*` on it.
+3. **Not run.** It decides only the extra clause on K1, and (2) means K1 is
+   not granted.
+
+**What follows, as written below for (2) failing:** `swarmFrontDoorAdmitter`
+stays off `workspace_deployer_roles`, so K1 is not granted.
+`front_door_admit_role_bound` stays false. Group and personal workspaces are
+unaffected. `enable_workspace_kinds` can be turned on with K2 and K3 only.
+
+**S2, the front-door step, in plain words (FRONT-DOOR-READ, owner decision
+2026-10-20).** The setup job may now *read* the list of accounts Google's login
+gate (IAP) lets through to the SwarmCloud API. It still may not change that
+list.
+
+* If the service workspace's account is already on the list, S2 sees it there
+  and the setup carries on and finishes.
+* If it is not, the setup stops at `needs_owner` with `FRONT_DOOR_OWNER`. The
+  owner adds the account to `frontend_iap_members` in
+  `terraform/bootstrap/terraform.tfvars`, applies bootstrap, and presses
+  Retry. The retried run then finds the account on the list and finishes.
+
+Before this, the job could not even read the list, so every service workspace
+stopped at S2, including ones the owner had already admitted. On 2026-10-20
+the QA console workspace `w-267d01` (account `qa-console@`) got through A1 to
+A8 and then held at S2, although `frontend_iap_members` already listed its
+account.
+
+**How the read is granted.** `swarmFrontDoorReader`, a custom role holding
+only `iap.webServices.getIamPolicy`, is bound to `swarm-workspace-deployer`
+on the API backend's own IAP policy (`swarm-ui-backend`, the backend S2
+names). It is not a project grant: O1 showed Google would not limit one of
+those to a single backend, and in this shared project it would reach the
+other team's IAP backends. It is never bound on the console's
+`swarm-ui-ui-backend`. `enable_workspace_kinds` turns it on. It is off
+whenever `swarmFrontDoorAdmitter` is granted, because that role already
+includes the read (`terraform/bootstrap/workspace_deployer.tf`,
+`front_door_reader`).
+
+**Why the read is safe.** It shows one thing: who may pass the gate on one
+backend. That list is already written in this repository as
+`frontend_iap_members`. The read changes nothing. It carries no
+`setIamPolicy` and no settings permission, and the job's call guard still
+admits exactly one change on the gate, C10's add, which IAM refuses without
+K1.
+
+**Not verified live.** On 2026-09-24, `roles/iap.admin` bound on our two
+backends still got a 403 on `getIamPolicy` nine and a half minutes later
+(`terraform/modules/frontend/main.tf`). If this binding is refused the same
+way, nothing is lost: S2 stops for the owner exactly as it did before. After
+the bootstrap apply, the owner checks it with one read made as the deployer:
+`gcloud iap web get-iam-policy --resource-type=backend-services
+--service=swarm-ui-backend`.
+
+1. **The permission names**, read from `gcloud iam roles describe roles/iap.admin`:
+   that `iap.webServices.getIamPolicy` and `iap.webServices.setIamPolicy` are
+   the names a custom role may hold. K1's role, `swarmFrontDoorAdmitter`, is
+   made of exactly these.
+2. **That the number-form condition matches**:
+   `getIamPolicy` on the API backend succeeds and on `-ui-backend` fails,
+   under a project binding conditioned on
+   `projects/<number>/iap_web/compute/services/<id>`.
+3. **Whether IAP evaluates `modifiedGrantsByRole`.** If it does not, the
+   clause reads its default, `[]`, whose `hasOnly()` is true, and would look
+   like a bound while being none.
+
+What each answer turns on, all in `terraform/bootstrap`:
+
+* (1) and (2) pass: the owner adds `swarmFrontDoorAdmitter` to
+  `workspace_deployer_roles` and applies with `enable_workspace_kinds = true`.
+  S2 then admits an approved service account itself.
+* (2) fails: K1 cannot be narrowed to one backend and is not granted.
+  Adding an account stays an owner step: the job reads the gate's list
+  (`swarmFrontDoorReader`, above), finishes if the account is already on it,
+  and otherwise stops at `needs_owner` with `FRONT_DOOR_OWNER` until the owner
+  adds it to `frontend_iap_members` and presses Retry.
+* (3) passes: `front_door_admit_role_bound`, set to true, adds the clause to K1.
+  Until then that switch stays at its default, off.
+
 ## 1. The request record
 
 ### 1.1 `workspaces/{tenant_id}`
@@ -387,7 +499,7 @@ Run job reads one record from it by workspace id.
 |---|---|---|---|
 | `tenant_id` | string | swarm-api | `u-alice`; equals the document id. **Private**: it is derived from the email, so it is a name |
 | `workspace_id` | string | swarm-api | `w-3f9a2c`: `w-` and 6 hex digits from `secrets.token_hex(3)`, **random, not derived from the email**, so nobody can recover it by hashing a guessed address. It is unique (§1.3). This is the only id that appears in anything public |
-| `principal` | string | swarm-api | `alice@saga.xyz`, lower-cased, from the verified token, never from the body |
+| `principal` | string | swarm-api | `alice@example.com`, lower-cased, from the verified token, never from the body |
 | `state` | string | swarm-api, the job | §1.2 |
 | `request_id` | string | swarm-api | a fresh UUID for each accepted request or retry; the job logs it, privately |
 | `requested_at`, `requested_via` | timestamp, string | swarm-api | `console`, `plugin` or `api` |
@@ -432,7 +544,9 @@ Otherwise the response is 403 with a code:
    This is the same `assert_allowed_domain` every route uses.
 2. The caller is a **human**: the address does not match the frozen
    service-account pattern in `apps/common/swarm_common/identity.py`. A service
-   account's tenant is in `dev.tfvars` (`u-sw-c90291` for `swarm-verify`).
+   account's tenant is in `dev.tfvars` (`u-sw-c90291` for `swarm-verify`); a
+   service account may name its own service tenant in `X-Swarm-Tenant`, and its
+   default is unchanged (docs/multi-tenancy.md, "The tenant switcher").
    Otherwise the code is `WORKSPACE_NOT_FOR_SERVICE_ACCOUNTS`.
 3. The caller is not a secret-admin principal. This is the refusal `tenant_for`
    already makes, for the reason given there. Otherwise the code is
@@ -1139,14 +1253,29 @@ the script's `--workspace` mode and live outside Terraform state** (owner
 decision WD3, 2026-10-08, which supersedes the WD4 wording "Terraform owns
 personal workspaces through the private list"; §9 keeps that for history).
 
-| | group and service tenants | personal workspaces |
+**Reversed for new workspaces, owner decision of 2026-10-19 on #847, and
+built the same day.** A new workspace of any kind, personal, group or
+service, is filed by an admin from Admin › Tenants › New workspace
+(`POST /v1/admin/workspaces`) and made by the same job, with no tfvars line
+and no release. `workspaces/{tenant_id}` carries its `kind`. The group and
+service tenants that Terraform already holds stay there (Q8 (a)), and
+`var.tenants` is frozen to them: a new key fails validation with a message
+that names the job (`terraform/infra/variables.tf` (`VAR.TENANTS IS FROZEN`)).
+So the table below now describes **the tenants Terraform made before
+2026-10-19** against **every workspace the job makes**. The design, and what
+each lane built, is [design/workspace-kinds.md](design/workspace-kinds.md)
+§8.
+
+| | the Terraform tenants (`eng`, `smoke`, `u-sw-c90291`, `u-or-9a0792` in dev) | workspaces the job makes (personal, and since 2026-10-19 group and service) |
 |---|---|---|
-| defined in | `terraform/environments/dev/dev.tfvars` (`var.tenants`) | `workspaces/{tenant_id}` in Firestore |
+| defined in | `var.tenants` in `terraform/environments/dev/dev.tfvars`, frozen | `workspaces/{tenant_id}` in Firestore |
 | made by | the release (`terraform/infra`), after the owner's bootstrap grant | the Cloud Run job `swarm-workspace-apply`, `register-tenant.sh --workspace` (§2, §4) |
 | account IAM done by | the release deployer, per-account grant | `swarm-workspace-deployer`, under the call guard |
-| database and bucket-metadata roles | per tenant, by the tenancy module | once, to the principal set of all personal workers (WD9), or per person on the fallback |
+| database and bucket-metadata roles | per tenant, by the tenancy module | per worker at A5: the WD9 fallback, on since 2026-10-12 |
 | Cloud Run jobs | `cloud_run_jobs` module | the dispatcher, on demand (`ensure_job`) |
-| teardown | `terraform` | a separate, owner-approved run (§7) |
+| a service account admitted at the front door by | `frontend_iap_members`, the owner's bootstrap apply | step S2, on the API backend only, once K1 is granted (§0, O1); until then the owner's `frontend_iap_members`, which S2 reads and accepts |
+| a group registered for resolution by | `TENANT_GROUPS` | its record reaching `ready` (`apps/swarm-api/swarm_api/registry.py::WorkspaceRegistry`) |
+| teardown | `terraform` | a separate, owner-approved run (§7), not built |
 
 **Terraform must never plan to change or destroy a script-created personal
 resource.** Three things make that hold:
@@ -1420,6 +1549,25 @@ Nothing from a command's output is shown.
 | `IDENTITY_NOT_OURS` | no | “An identity with your workspace's name already exists and carries access SwarmCloud never grants, so it was not adopted. Nothing was changed. The platform owner must look at request {request_id} before this can continue.” |
 | `WORKSPACE_ID_TAKEN` | no | “The workspace name that belongs to your account is already registered to a different identity. Nothing was changed. Ask an admin to look at request {request_id}; this needs a person, not a retry.” |
 | `WORKSPACE_NOT_APPROVED` | no | (not shown to the person: an execution for a record no admin approved. It is an `admin_audit` entry and an alert.) |
+| `WORKSPACE_ID_TERRAFORM` | no | “The workspace name this request was given already belongs to a workspace the platform's own configuration manages. Nothing was changed, and nothing half-made can run. Ask an admin to look at request {request_id}; this needs a person, not a retry.” |
+| `DIRECTORY_CHECK_STALE` | yes | “Setting up your workspace stopped before anything was made, because the check that its group can be read is more than a day old. Nothing half-made can run: your work stays refused until every step is done. An admin can retry it, which checks the group again; the reference is {request_id}.” (a group whose directory check is older than 24 hours at A1; an admin's retry re-checks it) |
+| `SERVICE_ACCOUNT_REFUSED` | — | “Setting up your workspace stopped before anything was granted, because its service account is not one SwarmCloud can admit. Nothing half-made can run: the account stays refused until every step is done. The platform owner must look at request {request_id} before this can continue.” (`needs_owner` when S1 refuses the account, with the code on the step; `failed`, not retryable, when S1 itself fails) |
+| `FRONT_DOOR_OWNER` | — | “Setting up your workspace stopped at the front door, because admitting its service account to SwarmCloud's API is a grant only the platform owner can make. Nothing half-made can run: the account stays refused until every step is done. The platform owner must act on request {request_id} before this can continue.” (`needs_owner`: the account is not on the API backend's gate list and IAP refused the deployer's add at S2, or refused its read; the code is on the step. The owner adds the account to `frontend_iap_members`, applies bootstrap and presses Retry) |
+| `FRONT_DOOR_FAILED` | yes | “Setting up your workspace stopped at the front door, because the step that admits its service account to SwarmCloud's API got no answer. Nothing half-made can run: the account stays refused until every step is done. The platform owner can retry it; the reference is {request_id}.” (a service's S2: IAP did not answer; only the platform owner retries a service) |
+| `NAMESPACE_LABEL_MISSING` | no | “Every step reported success, but the final check found your workspace's Kubernetes namespace without the label that ties it to your workspace. Nothing half-made can run: nothing runs in it until the label is there. Ask an admin to look at request {request_id}; this needs a person, not a retry.” (A9: a group's or a service's namespace without its `swarm.saga.xyz/workspace` label) |
+| `APPROVAL_UNSIGNED` | no | “Setting up your workspace stopped before anything was granted, because its approval does not carry SwarmCloud's signature. Nothing half-made can run, and nothing was changed. An admin, or the platform owner for a service account, must deny it and approve it again as shown; a retry does not help. The reference is {request_id}.” (`needs_owner`, written by `images/workspace-apply/entry.py` before step 1: the remedy is a fresh decision, not a Retry) |
+| `STALE_BUCKET_BINDING` | — | “Setting up your workspace stopped at Access, because its identity already holds storage access SwarmCloud does not grant. Nothing half-made can run: your work stays refused until every step is done. The platform owner must look at request {request_id} before this can continue.” (`needs_owner` at A5; the code is on the step) |
+| `SLOT_NOT_OURS` | — | “Setting up your workspace stopped at Access, because the place its GitHub connection is kept already belongs to another workspace. Nothing half-made can run: your work stays refused until every step is done. The platform owner must look at request {request_id} before this can continue.” (`needs_owner` at A6; the code is on the step) |
+| `TWIN_BOUND` | — | “Setting up your workspace stopped at Access, because its identity can already read a part of its GitHub connection no workspace may read. Nothing half-made can run: your work stays refused until every step is done. The platform owner must look at request {request_id} before this can continue.” (`needs_owner` at A6; the code is on the step) |
+
+**Every code the job can leave on a record has a sentence of its own**: the five the workspace
+kinds added (design/workspace-kinds.md §4.8), the signed approval's `APPROVAL_UNSIGNED`, and the
+holds. Each says what stopped, that nothing half-made can run, and who acts: the platform owner for a
+service's account and front door, an admin otherwise. A held step's code is on the step, so its
+sentence is served only where a record carries it as its `failure` (`APPROVAL_UNSIGNED` does).
+`tests/unit/control_plane/test_workspaces.py` reads the codes from `scripts/register-tenant.sh` and
+`images/workspace-apply/entry.py` and fails on one without copy. The fallback, “Setting up your workspace stopped at {step}. An admin can see why in People; the reference is {request_id}.”, is therefore
+for a malformed record, not for a code the job writes (lane WK-FAILCOPY, 2026-10-19).
 
 The copy for `needs_owner` is the state's own line in §1.2. A retry is an
 admin's **Retry** in People, which publishes the message again; the person has
@@ -1545,7 +1693,7 @@ parallel. Both states come from `GET /v1/onboarding`
 
 ```
 Set up SwarmCloud                                              2 of 7 done
- ✓ Signed in as alice@saga.xyz
+ ✓ Signed in as alice@example.com
  ○ Request your workspace
    Your own isolated space to run agents in: an identity, a storage area and
    a Kubernetes namespace that only your work uses. An admin approves it, and
@@ -1617,7 +1765,7 @@ request) and then reports the record. It does not wait inside the tool.
 
 ```
 $ /sc:setup
-SwarmCloud setup — alice@saga.xyz
+SwarmCloud setup — alice@example.com
   ✓ signed in
   ○ workspace          not requested
   ○ claude account     none
@@ -1678,10 +1826,10 @@ once per 10 minutes per person (`principal`, `first_seen`, `last_seen`,
 ```
 People                                                   12 people · 2 pending
  Person            Teams        GitHub      Workspace         Claude account     Last active
- alice@saga.xyz    eng          connected   ◐ requested       none               3 min ago     [Approve] [Deny]
- bogdan@saga.xyz   eng, admin   connected   ✓ ready w-91c0de  own (2)            now
- carol@saga.xyz    —            —           ✓ ready w-7a12f4  lent by eng        2 days ago
- dan@saga.xyz      eng          connected   ✕ failed (Namespace)  none           1 h ago      [Retry]
+ alice@example.com eng          connected   ◐ requested       none               3 min ago     [Approve] [Deny]
+ bob@example.com   eng, admin   connected   ✓ ready w-91c0de  own (2)            now
+ carol@example.com —            —           ✓ ready w-7a12f4  lent by eng        2 days ago
+ dan@example.com   eng          connected   ✕ failed (Namespace)  none           1 h ago      [Retry]
 ```
 
 * **Teams**: the group tenants the person resolves to, checked per registered
@@ -1693,7 +1841,7 @@ People                                                   12 people · 2 pending
 * **Last activity**: the later of `last_seen` and the last submission.
 
 **2. Pending requests.** `requested` records sort first. **Approve** asks for
-one confirmation ("Create a workspace for alice@saga.xyz with 8 agents? A CI
+one confirmation ("Create a workspace for alice@example.com with 8 agents? A CI
 job will create its identity and namespace."), then the row shows the run's
 steps live, from the record's `steps`, with a link to the job's execution for
 those who can read its restricted log bucket (the owner and
@@ -1766,6 +1914,21 @@ the platform owner" with the step the guard stopped at; a `failed` row has **Ret
 
 **4. Admins.** §6.5.
 
+**5. Workspace roles.** Added by workspace roles (#1518,
+[design/workspace-roles.md](design/workspace-roles.md) §4.8, owner answer Q2).
+A card lists every registered group workspace, Terraform's and the workspace
+job's, a page at a time from `GET /v1/admin/workspaces/roles`, with each one's
+default role, its admins and how many people hold an override. Its "Name an
+admin" action, `apps/swarm-ui/src/WorkspaceRolesAdmin.tsx` (`Name an admin`),
+is how a group workspace gets its first workspace admin: the default role can
+never be `admin`, so only a platform admin can start the chain. "Set default"
+offers `viewer` and `member`. A person's Manage drawer adds "Roles in
+workspaces", every override that email holds. Each write is a
+`workspace_role_granted`, `workspace_role_cleared` or
+`workspace_default_role_set` row with `via: "platform_admin"`. A
+personal workspace is not on the card: its person is its admin, fixed, and
+no role is stored there.
+
 Every action in People writes an `admin_audit` entry in the same transaction:
 `{action, target_workspace_id or target_email, by, at, detail}`, and the pane
 shows the last 50 under the table. The audit is private (Firestore); nothing
@@ -1799,6 +1962,18 @@ After this design:
 
 `admin_pool_users` and the rollup identities are unchanged: they are narrower
 capabilities, not admin.
+
+**Amended 2026-10-19 (#1518): what a platform admin holds inside a
+workspace.** A platform admin (any of the sources above) is `admin` in every
+registered group workspace, member or not, with no grant row
+([design/workspace-roles.md](design/workspace-roles.md) §4.2, owner answer
+Q5). With `PLATFORM_ADMIN_REACH` on, their workspace switcher lists the group
+workspaces they are not in under "Other workspaces (platform admin)", and
+everything they do there is audited before it runs. They are never admin in
+anyone else's personal workspace and cannot select one, because it holds that
+person's own secrets and GitHub token. `PLATFORM_ADMIN_REACH` is on in dev
+(`var.platform_admin_reach`, ROLES-ON-DEV, 2026-10-19) and off in prod, so in
+prod a platform admin enters only the group workspaces they are a member of.
 
 ---
 
@@ -2116,12 +2291,12 @@ phases. New files are named without their root.
 | W2 | 1 | admin roles in Firestore (§6.5): `admin_roles/`, `admin_audit/`, `PLATFORM_OWNER`, the one-time migration of `admin_users`, the grant and remove routes with the owner and last-admin safeguards | new `swarm_api/admins.py`, new `swarm_api/routes/people.py`, `apps/swarm-api/swarm_api/auth.py`, `apps/swarm-api/swarm_api/settings.py` | W0 |
 | W3 | 1 | **the call guard**: `scripts/lib/workspace-guard.sh` with C0–C9 in `scripts/lib/workspace-calls.json`, the three shims, `--report-only`, its self-test cases (every rule refusing a call built to trip it), the no-absolute-path test, and the guard-aware `kubectl_bin` and `prefer_local_bin`; `.github/CODEOWNERS` on the guard, the script, `common.sh` and the build file (**re-decided 2026-10-10:** the build file's entry moves to the entrypoint and the image, in W6b) | new `lib/workspace-guard.sh`, `lib/workspace-calls.json`, `lib/workspace-guard-cases.json` and `lib/guard-bin/` in scripts/, `scripts/lib/common.sh`, `.github/CODEOWNERS`, new `tests/unit/scripts/test_workspace_guard.py` | W0 |
 | W4 | 2 | **Terraform, owner-approved once**: in bootstrap, `swarm-workspace-deployer` (no key, no WIF, no `actAs` member), its custom roles and conditioned grants, the `swarm-workspace-apply` topic with swarm-api as its only publisher, the Pub/Sub Cloud Build trigger building `main` only, the restricted log bucket and sink, the `swarm-tenant-u-` slot bindings for swarm-api, **the WD9 principal-set grant** (or, on the fallback, the conditioned `projectIamAdmin`), and the validation of the identity's role list; the alerts of §2.4; in infra, the validation refusing a human user tenant; `terraform test` assertions, including `personal_workspaces_absent` (§3.2). **Re-decided 2026-10-10:** the Cloud Build trigger, its repository variable, the image-pull grant and the trigger-keyed log filter are replaced by W4b; the identity, its roles and grants, the log bucket, the WD9 fallback grant and the alerts' account rule stay | new `workspace_deployer.tf` in terraform/bootstrap, `terraform/bootstrap/forge_user_slots.tf`, `terraform/bootstrap/variables.tf`, `terraform/modules/monitoring/`, `terraform/infra/variables.tf`, new `personal_workspaces_absent.tftest.hcl` and `workspace_deployer.tftest.hcl` in tests/terraform | W0 |
-| W5 | 2 | **cluster, owner-applied once**: the deployer's ClusterRole, binding and kube-system Role, and the scope ValidatingAdmissionPolicy, plus the parity test that the policy's Role literals equal the render | new `rbac/provisioner-rbac.yaml` and `policies/workspace-provisioner-scope.yaml` in kubernetes/, `kubernetes/render.py` (`POLICY_FILES`), `kubernetes/apply.sh` (`--policies` looks up the uniqueIds) | W0 |
+| W5 | 2 | **cluster, owner-applied once**: the deployer's ClusterRole, binding and kube-system Role, and the scope ValidatingAdmissionPolicy, plus the parity test that the policy's Role literals equal the render | new `rbac/provisioner-rbac.yaml` and `policies/workspace-provisioner-scope.yaml` in kubernetes/, `kubernetes/render.py::POLICY_FILES`, `kubernetes/apply.sh` (`--policies` looks up the uniqueIds) | W0 |
 | W6 | 2 | **`register-tenant.sh --workspace`** (§4.1): the record read, the derived-id check, `--mode create`, `limits` and `verify`, A1–A9 with progress writes, **the act-as grant**, the narrowed squat inspection, the forge slot, the refusal to start without the guard; and **the build file** `scripts/cloudbuild/workspace-apply.yaml` (validate, install the guard, run). **Re-decided 2026-10-10:** the script stays; the build file is replaced by the job's entrypoint in W6b | `scripts/register-tenant.sh`, new `cloudbuild/workspace-apply.yaml` in scripts/, `tests/unit/scripts/` (new `test_register_tenant_workspace.py`) | W3 |
 | W7 | 2 | People and the approval flow in swarm-api: the admin list, approve, deny, retry, limits, loan, the Pub/Sub publish and the sweep route | `swarm_api/routes/people.py` (W2's new file, extended), new `swarm_api/publish_workspace.py`, `apps/swarm-api/swarm_api/routes/accounts.py` | W1, W2 |
 | W8 | 3 | the console: the checklist steps, the progress view, the Submit banners, Admin → People; the plugin: `sc setup`, `swarm_setup_workspace`, `/sc:setup`; the issue forms' "Where" list | `apps/swarm-ui/src/GitHubConnect.tsx`, `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/Submit.tsx`, `apps/swarm-ui/src/SubmitWorkflow.tsx`, `apps/swarm-ui/src/App.tsx`, new `People.tsx` in apps/swarm-ui/src, `apps/swarm-mcp/swarm_mcp/sc.py`, `apps/swarm-mcp/swarm_mcp/server.py`, `plugin/commands/setup.md`, `.github/ISSUE_TEMPLATE/` | W1, W7 |
 | W9 | 4 | **the `u-bogdan` migration**: the `removed` blocks in both layers, its removal from `dev.tfvars`, the record, and a `--mode verify` run; the release's plan must read 0 to add, 0 to change, 0 to destroy | `terraform/infra/removed.tf`, `terraform/bootstrap/removed.tf`, `terraform/environments/dev/dev.tfvars`, `scripts/workspace-migrate-record.sh` | W4, W6 |
-| W10 | 8 (was 5) | the first real approval end to end, **through the job**, then `WORKSPACE_GATE=on` (WD8); docs: multi-tenancy, offboarding runbook, onboarding, ci.md (the Cloud Run job `swarm-workspace-apply`, how it is started, and where its logs are: the restricted bucket of §2.6), register-tenant.sh's header | `docs/multi-tenancy.md`, `docs/runbooks/tenant-offboarding.md`, `docs/onboarding.md`, `docs/ci.md` | W5, W8, W9, W4b, W6b, W7b |
+| W10 | 8 (was 5) | **Done 2026-10-13**: the first approval end to end through the job (w-7f9285, ready 05:05Z; [multi-tenancy §7.5](multi-tenancy.md#75-the-first-end-to-end-run-2026-10-12-to-13)), the docs below, and `workspace_gate = true` in dev.tfvars, held for the owner's merge. Was: the first real approval end to end, **through the job**, then `WORKSPACE_GATE=on` (WD8); docs: multi-tenancy, offboarding runbook, onboarding, ci.md (the Cloud Run job `swarm-workspace-apply`, how it is started, and where its logs are: the restricted bucket of §2.6), register-tenant.sh's header | `docs/multi-tenancy.md`, `docs/runbooks/tenant-offboarding.md`, `docs/onboarding.md`, `docs/ci.md` | W5, W8, W9, W4b, W6b, W7b |
 | W0b | 6 | **verification for the 2026-10-10 re-decision, no code**, each result dated in this document: **(1), before W4b is applied:** that Cloud Run checks `iam.serviceAccounts.actAs` on the job's account on every `jobs.update` and `jobs.create`, including one that leaves the account unchanged, read from Google's documentation and shown by a refused update from an account holding `run.jobs.update` but no `actAs` (§2.3; if it does not, stop and ask the owner); (2) that `runWithOverrides` carries only arguments, environment variables, task count and timeout, and whether an override may set `CLOUD_RUN_*` or `LD_*` names (§2.2 step 0, §2.4 R6); (3) every principal holding, at the project level in the shared project, `actAs` or token-creator, and `run.jobs.run`, `runWithOverrides`, `update` or `setIamPolicy` (§2.3); and on the first execution after W4b: (4) that its output reaches Cloud Logging without `roles/logging.logWriter`, and its image is pulled without `swarmImagePuller`; (5) that its entries carry `resource.labels.job_name`, land in the restricted bucket and not in `_Default`; (6) that direct VPC egress reaches the control plane: the public endpoint through Cloud NAT in dev, the private endpoint from the swarm subnet where it is private; (7) **option (ii) only:** whether `roles/workflows.invoker` can be granted narrower than the project, and whether this project needs the Pub/Sub service agent's token-creator grant for Eventarc | `docs/workspaces.md` | the owner's choice in §2.1 for (7) |
 | W6b | 6 | **the job's image and entrypoint**: `images/workspace-apply/Dockerfile` copies in, read-only under `/opt/swarm`, `scripts/register-tenant.sh`, `scripts/lib/`, `kubernetes/`, `apps/common/swarm_common` and `quota_broker`, and sets no `ENTRYPOINT` the job relies on (the job's `command` is W4b's); new `entry.py` (§2.2 step 0: discard the environment, metadata-server project and region, `CLOUD_RUN_EXECUTION` checked against `WS_BUILD_RE`, task count one, own 1800-second deadline, `execve` with the fixed environment); new `scripts/workspace-apply.sh` (steps 1 to 3, the build file's lines, with the two-argument check and exit 3 as success), which replaces `scripts/cloudbuild/workspace-apply.yaml`, deleted; `register-tenant.sh`'s header and `BUILD_ID` wording; CODEOWNERS on `entry.py`, `scripts/workspace-apply.sh` and the Dockerfile in place of the build file; the PR-check expectation that the guard and the script now rebuild `workspace-apply`; a unit test that every environment variable handed to `entry.py` is gone in the child, that any argument list but `[<w-id>, <mode>]` is refused, and that a task count other than one is refused | `images/workspace-apply/Dockerfile`, new `images/workspace-apply/entry.py`, new `scripts/workspace-apply.sh`, `scripts/cloudbuild/workspace-apply.yaml` (deleted), `scripts/register-tenant.sh` (comments and the `BUILD_ID` message only), `.github/CODEOWNERS`, `tests/unit/scripts/test_build_images_pr_check.py`, `tests/unit/scripts/test_register_tenant_workspace.py`, new `tests/unit/scripts/test_workspace_apply_entry.py` | W6 (built) |
 | W4b | 7 | **Terraform, owner-approved once**: in `workspace_deployer.tf`, `google_cloud_run_v2_job.workspace_apply` in place of `google_cloudbuild_trigger.workspace_apply` (the image by digest, `command` `python3 -I /opt/swarm/entry.py`, one task, `max_retries = 0`, timeout 1800s, direct VPC egress `ALL_TRAFFIC` into the swarm subnet with the worker network tag, so `modules/network`'s worker-ingress deny covers it, `managed-by=swarm-terraform`) and its authoritative `google_cloud_run_v2_job_iam_policy` naming the chosen dispatcher only; the sink and exclusion filter re-targeted at `resource.type="cloud_run_job" AND resource.labels.job_name="swarm-workspace-apply"`; `workspace_deployer_pull` removed, and `roles/logging.logWriter` if W0b (4) says so; `workspace_apply_builder_image` renamed `workspace_apply_image`, `workspace_apply_repository` removed, the swarm subnet named; the alerts of §2.4 re-targeted, plus the alert on a `jobs.run` from any other caller. **Option (ii):** new `workspace_dispatch.tf` (the account `swarm-workspace-dispatch` with its policy written empty, the workflow, the Eventarc trigger on the existing topic, the run role on the job, the invoker grant) and the workflow's source, and the Workflows and Eventarc APIs in infra's service list. **Option (i):** the topic and its publisher binding removed, and swarm-api's run role bound on the job. `terraform test` for each | `terraform/bootstrap/workspace_deployer.tf`, `terraform/bootstrap/variables.tf`, `terraform/modules/monitoring/workspace_alerts.tf`, `scripts/lib/unlabelable-types.json` (drop `google_cloudbuild_trigger`), `tests/terraform/workspace_deployer.tftest.hcl`, `tests/terraform/personal_workspaces_absent.tftest.hcl`; option (ii) adds new `terraform/bootstrap/workspace_dispatch.tf`, new `terraform/bootstrap/workflows/workspace-apply.yaml`, `terraform/infra/main.tf` (the service list only) and new `tests/terraform/workspace_dispatch.tftest.hcl` | W0b (1), W6b (its image promoted, for the digest), the owner's choice |

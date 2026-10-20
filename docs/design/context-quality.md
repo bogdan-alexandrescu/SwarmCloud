@@ -737,7 +737,7 @@ gets `jev_decide(state, questions)`, an MCP tool served by `swarm-jev`
   8 calls and 120k tokens.
 * **The backend** comes from the workspace's judgment-backend setting
   (JUDGE-SELECT):
-  * **Internal Jev** (the default) and **Internal Laya** are the Saga
+  * **Internal Jev** (the default) and **Internal Laya** are the internal
     decision API over the tailnet. No credential exists anywhere in the
     agent's process tree. `state` is sent JSON-stringified, because the API
     takes a string.
@@ -809,16 +809,33 @@ built at runtime.
    PATs, Slack, AWS access keys, HTTP authorization). These are the same rules
    `redact()` in `scripts/lib/common.sh` mirrors, held in step by
    `tests/fixtures/redaction-parity.json`.
-4. **The task's registered secrets** are scrubbed with
-   `agent_worker.redact.scrub_text`.
+4. **The task's registered secrets** -- the values `agent_worker.redact.scrub_text`
+   scrubs -- are removed. The names are the task profile's `RunnerProfile.secrets`,
+   which the lifecycle hands to `graphstage.prepare`, which hands them to
+   `judge.attempt.setup` and into the attempt's Jev config (names only, never
+   a value); the runner's client reads the values from its own environment.
+   Stricter than scrubbing: a string holding a registered value is **dropped
+   whole**, as in step 2, not sent with the value masked. This step is the
+   one that catches a profile secret that does not look like a credential,
+   which steps 2 and 3 would pass.
 5. **What is never sent:**
    * issue or PR author identities and emails;
    * another repository's content;
    * anything from the in-flight view beyond titles and file paths;
    * the agent's transcript;
    * environment variables.
-6. **Audit.** Each call records `{call_id, kind (J0-J5), bytes, input_tokens,
-   ms, outcome}` in `context-pack.json`. The payload is never recorded.
+6. **Audit.** Each call -- sent, failed, malformed or skipped -- appends one
+   row `{call_id, kind (J0-J5, or agent for the jev_decide tool), backend,
+   bytes, input_tokens, ms, outcome}` to the attempt's ledger,
+   `<attempt>/judge/ledger.json`. `backend` is the backend's name
+   (`internal-jev`, `internal-laya` or `typesafe`), never its URL or key. The
+   payload, the questions, the answer and the key are never recorded.
+   `context-pack.json` carries only J1's totals, `jev_calls` and
+   `jev_input_tokens`, and **not** the per-call rows, on purpose: §5.6 keeps
+   the pack byte-identical to the local-only run when Jev fails, and a pack
+   that held a row for every failed call would differ from it.
+
+Each rule's enforcing code and the test that fails without it: [docs/jev-data-flow.md](../jev-data-flow.md).
 
 ### 5.5 Failure modes: never block
 

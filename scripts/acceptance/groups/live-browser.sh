@@ -57,9 +57,25 @@ EOF
 # shellcheck disable=SC2016
 LIVE_BROWSER_PROMPT='Serve the fixture sign-in page and have a person sign in on it; never type into the page yourself. 1) Run: cd tests/acceptance/fixtures && nohup python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1 & 2) In a Python script using Playwright, connect to the platform browser with p.chromium.connect_over_cdp(os.environ["SWARM_CDP_ENDPOINT"]), take browser.contexts[0] and its first page (or a new page), goto http://127.0.0.1:8765/login.html, and end the script without closing the page or the browser. 3) Run: swarm-handoff request --reason "Sign in on the acceptance fixture page". If it exits 5, reply with only HANDOFF-REFUSED followed by the "code" field of the JSON it printed, and stop. 4) Run: swarm-handoff wait, and run it again each time it exits 75. 5) When it exits 0, connect again the same way, read the inner text of #code on that page, write it alone to $SWARM_ARTIFACTS_DIR/session-code.txt, and reply with only that text.'
 
+# live_browser_stuck DOC -> the state of a task acc_settle stopped waiting on,
+# with why it was waiting: `PARKED:<park_reason>`, the shape acc_settle
+# already prints for CREDENTIAL_MISSING, and `:eligible again at <when>` when
+# the park names an instant. The viewer's verdict names both. A bare `PARKED`
+# was all the scheduled runs of 2026-10-15..19 could say (#1333): a hand-off
+# whose hold ran out unwatched parks on HUMAN_REQUIRED, which only a person
+# promotes, and a provider park comes back on its own.
+live_browser_stuck() {
+  jq -j '(.state // "MISSING") as $s
+    | [$s]
+      + (if $s == "PARKED" and (.park_reason // "") != "" then [.park_reason] else [] end)
+      + (if $s == "PARKED" and (.next_eligible_at // "") != ""
+         then ["eligible again at \(.next_eligible_at)"] else [] end)
+    | join(":")' <<<"$1"
+}
+
 run_live_browser() {
   step "Acceptance: live-browser"
-  local task="" state="" dir pid rc=0 i key line verdict reason empty='{}'
+  local task="" state="" doc dir pid rc=0 i key line verdict reason empty='{}'
   local names=()
   while IFS= read -r line; do
     names+=("${line}")
@@ -96,7 +112,12 @@ run_live_browser() {
   python3 "${REPO_ROOT}/tests/acceptance/test_live_browser.py" "${args[@]}" &
   pid=$!
 
-  state="$(acc_settle "${task}" "${ACC_TIMEOUT}")" || true
+  if ! state="$(acc_settle "${task}" "${ACC_TIMEOUT}")"; then
+    # The wait ran out. Which park, if any, is the verdict's reason.
+    if doc="$(task_doc "${task}")"; then
+      state="$(live_browser_stuck "${doc}")"
+    fi
+  fi
   printf '%s\n' "${state}" >"${dir}/settled"
   wait "${pid}" || rc=$?
   [[ "${rc}" -eq 0 ]] || warn "live-browser: the viewer exited ${rc}"

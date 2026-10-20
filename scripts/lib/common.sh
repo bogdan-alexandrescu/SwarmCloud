@@ -179,6 +179,11 @@ load_env() {
   # Filled by scripts/refresh-build-mirror.sh; read by build-images.sh's
   # Cloud Build step (lib/build-mirror.sh, docs/runbooks/build-mirror.md).
   BUILD_MIRROR_BUCKET="${BUILD_MIRROR_BUCKET:-swarm-build-mirror-${PROJECT_ID}}"
+  # The public bucket that serves the browser acceptance fixture page, matching
+  # terraform/infra/acceptance_fixture.tf:
+  #   acceptance_fixture_bucket = "${var.name_prefix}-acceptance-fixture-${var.project_id}"
+  # Read by browser_fixture_url in lib/testlib.sh (#1628).
+  ACCEPTANCE_FIXTURE_BUCKET="${ACCEPTANCE_FIXTURE_BUCKET:-swarm-acceptance-fixture-${PROJECT_ID}}"
   # The swarm's OWN state bucket, created by terraform/bootstrap. Deliberately
   # not saga-agents-terraform-state-staging: that bucket belongs to another team
   # (it is on the deny-list below) and putting our state in it would make our
@@ -221,7 +226,7 @@ load_env() {
   IMAGE_REPO="${IMAGE_REPO:-${IMAGE_HOST}/${PROJECT_ID}/${ARTIFACT_REGISTRY}}"
 
   export PROJECT_ID REGION ZONE ENVIRONMENT FIRESTORE_DATABASE ARTIFACT_BUCKET
-  export ARTIFACT_REGISTRY BUILD_MIRROR_BUCKET TF_STATE_BUCKET TF_STATE_PREFIX TF_BOOTSTRAP_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
+  export ARTIFACT_REGISTRY BUILD_MIRROR_BUCKET ACCEPTANCE_FIXTURE_BUCKET TF_STATE_BUCKET TF_STATE_PREFIX TF_BOOTSTRAP_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
   export PUBSUB_TOPIC SCHEDULER_JOB API_SERVICE SCHEDULER_SERVICE QUOTA_SERVICE RECONCILER_SERVICE
   export API_PREFIX HTTP_TIMEOUT API_HOST IMAGE_HOST IMAGE_REPO
 
@@ -1740,6 +1745,23 @@ platform_account_email() {
   local id="$1"
   tf_platform_account_ids | grep -qxF -- "${id}" || return 1
   printf '%s@%s.iam.gserviceaccount.com' "${id}" "${PROJECT_ID}"
+}
+
+# personal_tenant_id EMAIL  ->  the id of EMAIL's own tenant: a person's
+# personal workspace, or a service account's service tenant (u-sw-c90291 for
+# swarm-verify). swarm_common.identity.tenant_id_for_user, the frozen rule
+# swarm-api resolves callers with, IMPORTED and never restated: the slug appends
+# a digest of the full principal whenever it is lossy or too long, so a shell
+# copy would derive an id nobody resolves to. Needs python3 and
+# apps/common/swarm_common/identity.py (standard library only), which the
+# swarm-verify image carries for this. Non-zero, nothing printed, on failure.
+personal_tenant_id() {
+  python3 - "${REPO_ROOT}/apps/common" "$1" <<'PY' 2>/dev/null
+import sys
+sys.path.insert(0, sys.argv[1])
+from swarm_common.identity import tenant_id_for_user
+print(tenant_id_for_user(sys.argv[2]))
+PY
 }
 
 # states_json ARRAY_ELEMENTS...  ->  ["A","B",...]

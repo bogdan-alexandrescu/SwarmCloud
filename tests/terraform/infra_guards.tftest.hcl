@@ -109,9 +109,11 @@ run "a_tenant_that_states_no_ceiling_takes_the_environments_default" {
   variables {
     environment = "dev"
 
+    # var.tenants is frozen to dev's own keys (tenants_frozen.tftest.hcl), so
+    # `eng` states a ceiling and `smoke` states none.
     tenants = {
-      declared = { kind = "group", principal = "eng@saga.xyz", providers = [], max_active = 7 }
-      silent   = { kind = "group", principal = "research@saga.xyz", providers = [] }
+      eng   = { kind = "group", principal = "eng@saga.xyz", providers = [], max_active = 7 }
+      smoke = { kind = "group", principal = "smoke@saga.xyz", providers = [] }
     }
 
     pool_limits = {
@@ -122,12 +124,12 @@ run "a_tenant_that_states_no_ceiling_takes_the_environments_default" {
   }
 
   assert {
-    condition     = output.pool_limits["tenant:silent"] == 10
+    condition     = output.pool_limits["tenant:smoke"] == 10
     error_message = "a tenant with no max_active must take pool_limits.default_tenant; a number from the variable's type constraint means the environment's ceiling is dead configuration"
   }
 
   assert {
-    condition     = output.pool_limits["tenant:declared"] == 7
+    condition     = output.pool_limits["tenant:eng"] == 7
     error_message = "an explicit max_active must still win over the default"
   }
 
@@ -136,7 +138,7 @@ run "a_tenant_that_states_no_ceiling_takes_the_environments_default" {
   # disagree. If they ever did, the pool would be the real limit and the
   # document would be a lie an operator reads.
   assert {
-    condition     = output.pool_limits["tenant:silent"] <= output.pool_limits["global"]
+    condition     = output.pool_limits["tenant:smoke"] <= output.pool_limits["global"]
     error_message = "a single undeclared tenant must not be able to consume the whole environment's budget"
   }
 }
@@ -166,10 +168,18 @@ run "a_tenant_pool_takes_the_smaller_of_max_active_and_capacity_units" {
   }
 
   variables {
+    # var.tenants is frozen to dev's own keys (tenants_frozen.tftest.hcl):
+    # `eng` is capped by its units, `smoke` by max_active, and `u-sw-c90291`
+    # states neither.
     tenants = {
-      unitsmin  = { kind = "group", principal = "eng@saga.xyz", providers = [], max_active = 10, capacity_units = 4 }
-      activemin = { kind = "group", principal = "research@saga.xyz", providers = [], max_active = 2, capacity_units = 4 }
-      defaults  = { kind = "group", principal = "ops@saga.xyz", providers = [] }
+      eng   = { kind = "group", principal = "eng@saga.xyz", providers = [], max_active = 10, capacity_units = 4 }
+      smoke = { kind = "group", principal = "smoke@saga.xyz", providers = [], max_active = 2, capacity_units = 4 }
+      "u-sw-c90291" = {
+        kind            = "user"
+        principal       = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+        directory_group = false
+        providers       = []
+      }
     }
 
     pool_limits = {
@@ -180,17 +190,17 @@ run "a_tenant_pool_takes_the_smaller_of_max_active_and_capacity_units" {
   }
 
   assert {
-    condition     = output.pool_limits["tenant:unitsmin"] == 4
+    condition     = output.pool_limits["tenant:eng"] == 4
     error_message = "a tenant with capacity_units below max_active must be capped at capacity_units, as swarm_api/store.py caps it; max_active alone admits more than the tenant may hold"
   }
 
   assert {
-    condition     = output.pool_limits["tenant:activemin"] == 2
+    condition     = output.pool_limits["tenant:smoke"] == 2
     error_message = "a tenant with max_active below capacity_units must be capped at max_active"
   }
 
   assert {
-    condition     = output.pool_limits["tenant:defaults"] == 10
+    condition     = output.pool_limits["tenant:u-sw-c90291"] == 10
     error_message = "a tenant stating neither limit takes min(pool_limits.default_tenant, the capacity_units default of 40)"
   }
 }

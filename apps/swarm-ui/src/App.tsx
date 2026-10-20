@@ -34,6 +34,7 @@ import { GITHUB_CALLBACK_ADDRESS, KEY_LINK_ADDRESS, SUBMIT_ADDRESS, addressToPat
 import { GitHubCallbackScreen } from './GitHubConnect'
 import { ProviderKeysScreen } from './ProviderKeys'
 import { WorkspaceSettingsScreen } from './CodeIntelligence'
+import { McpServersScreen } from './McpServers'
 import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
@@ -48,6 +49,10 @@ import { AccessScreen } from './Access'
 import { PeopleScreen } from './People'
 import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
+import { ProfileScreen } from './Profile'
+import { WorkspacePeopleScreen } from './WorkspacePeople'
+import { WorkspacesYouAdminScreen } from './WorkspacesYouAdmin'
+import { WORKSPACE_PEOPLE_ADDRESS } from './roles'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { RuntimesScreen } from './Runtimes'
 import { CountNote, FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
@@ -441,6 +446,16 @@ export const SECTIONS: SectionDef[] = [
       // works and lands here.
       { id: 'accounts', label: 'Accounts' },
       { id: 'quota', label: 'Provider quota', admin: true },
+      // API READS, A PAGE OF CAPACITY SINCE NAV-FOOT (#1672, owner 2026-10-20).
+      // It sat at the spine's foot as a utility, "deliberately NOT one of the
+      // sections" (REFERENCE, below); the owner moved it here, last, and the
+      // spine's foot keeps Help and Profile only. It answers none of this
+      // section's question -- every row is a read THIS TAB made, not capacity
+      // -- and the question is left as it was rather than widened to fit: a
+      // widening is the owner's call. The id is the path's last segment;
+      // `#reference`, `/reference` and the rebrand's `/api-reads` land here
+      // (`fromAddress`, paths.ts).
+      { id: 'api-reads', label: 'API reads' },
     ],
   },
   {
@@ -477,8 +492,14 @@ export const SECTIONS: SectionDef[] = [
     // 2026-10-13, docs/schedules.md §6.1): it is Automate › Schedules' "All
     // tenants" now, and its clause went with it. The platform's own ticks
     // moved to Platform counts, and the clause after its count asks for them.
+    //
+    // WIDENED BY ONE CLAUSE ON 2026-10-19 (NAV-ADMIN-ROLE; part of #1633,
+    // owner decision "All under Profile; Admin by role"): Workspaces you
+    // admin is the last tab, and the last clause is its. Admin is no longer
+    // only the platform's: a workspace admin reaches this section for that
+    // one page, which is why the tab carries no `admin: true` mark.
     question:
-      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, what does the platform run on its own, and who is waiting for a workspace?',
+      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer?',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
       { id: 'tenants', label: 'Tenants', admin: true },
@@ -489,18 +510,26 @@ export const SECTIONS: SectionDef[] = [
       // requests to approve or deny, each person's ceiling and Claude account,
       // and who is an admin. Admin only, like the three before it.
       { id: 'people', label: 'People', admin: true },
+      // NAV-ADMIN-ROLE: each group workspace whose stored role for the
+      // caller is admin, with its four settings pages. Not marked `admin`:
+      // it reads `/v1/tenants/mine`, which everyone may, and a workspace
+      // admin who is not a platform admin is shown only this page.
+      { id: 'workspaces', label: 'Workspaces you admin' },
     ],
   },
 ]
 
 /**
- * The API surface. Reachable, and deliberately NOT one of the sections.
- *
- * It is a thing you look up once, not a thing you work in, and giving it a
- * section would put it beside the three questions that people arrive with —
- * which is the mistake the old eleven-item nav made eleven times over.
+ * THE OLD ADDRESS OF API READS, and nothing else now. It was a utility route
+ * beside the sections ("a thing you look up once, not a thing you work in")
+ * until NAV-FOOT (#1672, owner 2026-10-20) made it Capacity's last page,
+ * `capacity/api-reads`. `#reference` and `/reference` are in runbooks and
+ * saved links, so `fromAddress` sends this head, whatever follows it, to that
+ * page; no route carries it as its section any more.
  */
 const REFERENCE = 'reference'
+/** API reads' tab under Capacity (NAV-FOOT): SECTIONS' id and the path's last segment. */
+const API_READS_TAB = 'api-reads'
 
 /** The Submit chooser's address (`/submit`). Not a section, like Help. */
 const SUBMIT = SUBMIT_ADDRESS
@@ -557,6 +586,37 @@ const KEYS_LABEL = 'API keys'
 const WORKSPACE_TAB = 'workspace'
 /** The page's `<h1>` and the second half of its name in the issue forms. */
 const WORKSPACE_LABEL = 'Workspace'
+/**
+ * SETTINGS › MCP SERVERS (MCP-UI; docs/design/registered-mcp-servers.md
+ * §4.11): the workspace's registered MCP servers, which a task names on
+ * Submit. A sibling of Workspace and not a section, for the same reason. One
+ * exact address: `#settings/<anything else>` still lands on Pool limits.
+ */
+const MCP_TAB = 'mcp-servers'
+/** The page's `<h1>` and the head's crumb. */
+const MCP_LABEL = 'MCP servers'
+/**
+ * SETTINGS › PROFILE (PROFILE-NAV; docs/design/user-profile.md §2.1, §6):
+ * everything about the signed-in person in one place -- who they are, their
+ * workspaces and roles, their connections, their bell and their Claude
+ * accounts. Beside API keys and not a section, for the reason API keys is not
+ * one. One exact address: `#settings/<anything else>` still lands on Pool
+ * limits.
+ */
+const PROFILE_TAB = 'profile'
+/** The page's `<h1>` and the second half of its name in the issue forms. */
+const PROFILE_LABEL = 'Profile'
+/**
+ * SETTINGS › PEOPLE AND ROLES (ROLES-UI-PEOPLE; docs/design/workspace-roles.md
+ * §4.8): the selected workspace's default role, its people's own roles and
+ * its role events, which every member reads (Q7) and its admins change. A
+ * sibling of Workspace and not a section, for the same reason -- and not a
+ * SECTIONS tab, so the issue forms' "Where" list is unchanged (§4.8). One
+ * exact address: `#settings/<anything else>` still lands on Pool limits.
+ */
+const PEOPLE_TAB = WORKSPACE_PEOPLE_ADDRESS.slice(SETTINGS.length + 1)
+/** The page's `<h1>` and the head's crumb. */
+const PEOPLE_LABEL = 'People and roles'
 
 /**
  * The utility button's label AND the heading of the screen it opens. One
@@ -759,9 +819,9 @@ const PANE_SEGMENTS: readonly TaskPane[] = ['logs', 'children', 'attempts', 'art
 const DETAIL_SEGMENTS: readonly string[] = ['details', 'detail']
 
 export interface Route {
-  /** A section id, or REFERENCE. */
+  /** A section id, or one of the pages beside them (Help, Submit, Settings). */
   sectionId: string
-  /** Meaningless when sectionId is REFERENCE; carried anyway so Route is flat. */
+  /** Meaningless on a page with no tabs; carried anyway so Route is flat. */
   tab: string
   /** Set when an agent drawer is open over the Agents section. */
   taskId: string | null
@@ -909,12 +969,19 @@ export function fromAddress(full: string): Route {
   // MOVED_PANES entry cannot say -- the destination carries a query.
   if (hash === 'admin/schedules') return fromAddress(ALL_TENANTS_SCHEDULES)
 
-  if (head === REFERENCE) return { sectionId: REFERENCE, tab: '', ...blank }
+  // API READS' OLD ADDRESS (NAV-FOOT, #1672): `#reference`, `/reference` and
+  // anything after either land on Capacity › API reads. The page has no
+  // sub-address and reads no query, so there is no tail it could open
+  // further: the whole of what an old link named is the page itself.
+  if (head === REFERENCE) return { sectionId: CAPACITY, tab: API_READS_TAB, ...blank }
   if (hash === GITHUB_CALLBACK) return { sectionId: GITHUB_CALLBACK, tab: '', ...blank }
   // Settings › API keys and its one-time link, before LEGACY reads `settings`
   // as the eleven-item nav's Pool limits. Only the link's scope is kept.
   if (hash === `${SETTINGS}/${KEYS_TAB}`) return { sectionId: SETTINGS, tab: KEYS_TAB, ...blank }
   if (hash === `${SETTINGS}/${WORKSPACE_TAB}`) return { sectionId: SETTINGS, tab: WORKSPACE_TAB, ...blank }
+  if (hash === `${SETTINGS}/${MCP_TAB}`) return { sectionId: SETTINGS, tab: MCP_TAB, ...blank }
+  if (hash === `${SETTINGS}/${PROFILE_TAB}`) return { sectionId: SETTINGS, tab: PROFILE_TAB, ...blank }
+  if (hash === `${SETTINGS}/${PEOPLE_TAB}`) return { sectionId: SETTINGS, tab: PEOPLE_TAB, ...blank }
   if (hash === KEY_LINK_ADDRESS) {
     const scope = keyLinkScope(query)
     return { sectionId: SETTINGS, tab: KEY_LINK_TAB, ...blank, ...(scope === null ? {} : { view: `scope=${scope}` }) }
@@ -1073,7 +1140,6 @@ export function canonical(r: Route): string {
     if (r.taskPane === 'changes' && r.file) return `${base}/changes/${encodeURIComponent(r.file)}`
     return r.taskPane === 'detail' ? base : `${base}/${r.taskPane}`
   }
-  if (r.sectionId === REFERENCE) return REFERENCE
   if (r.sectionId === SUBMIT) return SUBMIT
   if (r.sectionId === GITHUB_CALLBACK) return GITHUB_CALLBACK
   if (r.sectionId === SETTINGS) return r.view ? `${SETTINGS}/${r.tab}?${r.view}` : `${SETTINGS}/${r.tab}`
@@ -1319,19 +1385,28 @@ export function App() {
       ? 'Submit'
       : at.sectionId === HELP
         ? 'Help'
-        : at.sectionId === REFERENCE
-          ? REFERENCE_LABEL
-          : at.sectionId === GITHUB_CALLBACK
-            ? 'Connect GitHub'
-            : at.sectionId === SETTINGS
-              ? at.tab === WORKSPACE_TAB
-                ? WORKSPACE_LABEL
-                : KEYS_LABEL
-              : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
+        : at.sectionId === GITHUB_CALLBACK
+          ? 'Connect GitHub'
+          : at.sectionId === SETTINGS
+            ? at.tab === WORKSPACE_TAB
+              ? WORKSPACE_LABEL
+              : at.tab === MCP_TAB
+                ? MCP_LABEL
+                : at.tab === PROFILE_TAB
+                  ? PROFILE_LABEL
+                  : at.tab === PEOPLE_TAB
+                    ? PEOPLE_LABEL
+                    : KEYS_LABEL
+            : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
   const object = at.missing ? null : documentObjectOf(at)
   useEffect(() => {
     document.title = documentTitleOf(title, object)
   }, [title, object])
+  // THE HEADER BAR IS DRAWN ONLY WHERE IT HOLDS A TRAIL (visual QA V178,
+  // 2026-10-16): inside an open object, the one place `Head` draws. The frame
+  // says so (`has-ctl-bar`), which sets `--ctl-bar-h` for the sticky heads
+  // that sit under the bar (styles/notifications.css).
+  const trail = openObjectOf(at) !== null
 
   return (
     // THE FRAME: the spine and the panel, and beside them the content column
@@ -1339,7 +1414,7 @@ export function App() {
     // (§3.4, §11.3). A bar that occupies its height rather than painting over
     // whatever lands under it, and that runs under the content only: under
     // the spine it cut the avatar off at 1440x900 (#503).
-    <div className="ctl-frame">
+    <div className={`ctl-frame${trail ? ' has-ctl-bar' : ''}`}>
         <SkyShell
           section={spineOf(at.missing ? missingSection(at.missing) : at.sectionId, at.tab)}
           tab={at.tab}
@@ -1355,11 +1430,15 @@ export function App() {
           // 2A): the two submit forms re-read under the new tenant in place.
           keepOnSwitch={at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')}
           place={pathFor(at)}
+          // THE BELL (#1206) is the shell's to place: the spine's foot, or the
+          // phone header (V178). It was the only thing in a header bar drawn
+          // over every page, so a section page carried an empty 48px band.
+          bell={<NotificationBell go={go} />}
           foot={
-            // THE UTILITY CORNER: Help and API reads at the spine's foot,
-            // links like every spine item (#503). `ctl-nav-util` is
-            // load-bearing: test_nav_headings_agree.py reads this element to
-            // find the API reads link and its label.
+            // THE UTILITY CORNER: Help at the spine's foot, a link like every
+            // spine item (#503). Profile follows it, drawn by the shell
+            // (NAV-FOOT, #1672); API reads, which sat here beside Help, is
+            // Capacity's last page now.
             <div className="ctl-nav-util sk-foot">
               <a
                 className={`sk-ri${at.sectionId === HELP ? ' is-on' : ''}`}
@@ -1374,17 +1453,6 @@ export function App() {
                 <Icon name="help" />
                 <small>Help</small>
               </a>
-              <a
-                className={`sk-ri${at.sectionId === REFERENCE ? ' is-on' : ''}`}
-                aria-current={at.sectionId === REFERENCE ? 'page' : undefined}
-                href={addressToPath(REFERENCE)}
-                onClick={(e) => {
-                  if (!routedClick(e)) return
-                  e.preventDefault()
-                  go(REFERENCE)
-                }}
-              >
-                <Icon name="api" />{REFERENCE_LABEL}</a>
             </div>
           }
         >
@@ -1394,13 +1462,15 @@ export function App() {
           <FrameAge.Provider value={true}>
           <SectionHelp.Provider value={helpSection === null ? null : <SectionQuestion section={helpSection} topic={PAGE_TOPIC[`${at.sectionId}/${at.tab}`] ?? null} />}>
           <HeadAgeProvider at={at}>
-          {/* THE HEADER BAR (#1206, proposal A): on every page, over both the
-              page and an open agent beside it. The trail and the frame's age
-              where they are drawn at all (`Head`), the bell at the right. */}
-          <header className="ctl-bar">
-            <Head at={at} section={section} title={title} closeTo={listAddress} go={go} />
-            <NotificationBell go={go} />
-          </header>
+          {/* THE HEADER BAR (#1206, proposal A), over both the page and an
+              open agent beside it: the trail and the frame's age (`Head`).
+              Only inside an open object, where `Head` draws (V178): the bell
+              it also held is in the spine's foot or the phone header now. */}
+          {trail && (
+            <header className="ctl-bar">
+              <Head at={at} section={section} title={title} closeTo={listAddress} go={go} />
+            </header>
+          )}
           <div className={`app${inspector ? ' has-inspector' : ''}`}>
             <main className="work">
 
@@ -1413,10 +1483,17 @@ export function App() {
                   <GitHubCallbackScreen go={go} />
                 ) : at.sectionId === SETTINGS && at.tab === WORKSPACE_TAB ? (
                   <WorkspaceSettingsScreen />
-                ) : at.sectionId === SETTINGS ? (
-                  <ProviderKeysScreen link={at.tab === KEY_LINK_TAB ? { scope: keyLinkScope(at.view ?? ''), token: keyLink.current } : null} />
+                ) : at.sectionId === SETTINGS && at.tab === MCP_TAB ? (
+                  <McpServersScreen />
+                ) : at.sectionId === SETTINGS && at.tab === PROFILE_TAB ? (
+                  <ProfileScreen />
+                ) : at.sectionId === SETTINGS && at.tab === PEOPLE_TAB ? (
+                  <WorkspacePeopleScreen />
                 ) : (
-                  <ReferenceScreen failuresOnly={apiFailuresOnly} />
+                  // Settings › API keys and its one-time link: the last page
+                  // that is not a section. API reads was the one after it
+                  // until NAV-FOOT (#1672) made it a Capacity tab.
+                  <ProviderKeysScreen link={at.tab === KEY_LINK_TAB ? { scope: keyLinkScope(at.view ?? ''), token: keyLink.current } : null} />
                 )
               ) : (
                 // THE PAGE (CH-2): its `Screen`s' reads stay its own while the
@@ -1437,6 +1514,7 @@ export function App() {
                     page={at.page ?? null}
                     onView={onView}
                     go={go}
+                    apiFailuresOnly={apiFailuresOnly}
                   />}
                   </FrameAge.Provider>
                 </RoutedPage.Provider>
@@ -1490,14 +1568,20 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
       return 'admin'
     case HELP:
       return 'help'
-    case REFERENCE:
-      return 'api'
     case GITHUB_CALLBACK:
       return 'work'
+    // EVERY SETTINGS PAGE LIGHTS PROFILE (NAV-PROFILE; part of #1633): its
+    // panel holds them. Only the six exact addresses are these pages;
+    // `#settings/<anything else>` is Pool limits (LEGACY), and lights Admin.
+    case SETTINGS:
+      return PROFILE_PANEL_TABS.includes(tab) ? 'profile' : null
     default:
       return null
   }
 }
+
+/** The settings tabs Profile's panel lists, and the one-time key link that opens API keys. */
+const PROFILE_PANEL_TABS: readonly string[] = [PROFILE_TAB, KEYS_TAB, KEY_LINK_TAB, WORKSPACE_TAB, MCP_TAB, PEOPLE_TAB]
 
 /**
  * THE HEAD (§B3): 44px, spanning the work area, above everything routed.
@@ -1576,7 +1660,7 @@ function Head({
   // of its own, not API reads (#503), and the two forms lead back to it.
   const submitForm = at.sectionId === WORK && isSubmitPage(at)
   const head = isSubmitPage(at) ? 'Submit'
-    : section?.label ?? (at.sectionId === HELP ? 'Help' : at.sectionId === SETTINGS ? SETTINGS_LABEL : REFERENCE_LABEL)
+    : section?.label ?? (at.sectionId === HELP ? 'Help' : at.sectionId === SETTINGS ? SETTINGS_LABEL : title)
   const home = submitForm ? SUBMIT : section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
   // The open agent by its name once its split has read it (walkthrough G).
   const named = useAgentName(at.taskId)
@@ -1766,7 +1850,7 @@ function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: num
   // and no "reading…" that never resolves (#503). The Submit chooser is not
   // one of them: it reads your recent submissions and carries that read's age
   // on its own refresh (QA G1-05/G4-23).
-  if (at.sectionId === HELP || at.sectionId === REFERENCE) {
+  if (at.sectionId === HELP || (at.sectionId === CAPACITY && at.tab === API_READS_TAB)) {
     return <span className="ctl-em">reads nothing</span>
   }
   // `reads` is about ANOTHER screen until this one's scope has begun (the
@@ -1924,6 +2008,7 @@ function SectionBody({
   page,
   onView,
   go,
+  apiFailuresOnly = false,
 }: {
   sectionId: string
   tab: string
@@ -1940,6 +2025,8 @@ function SectionBody({
   /** Where the Timeline writes a new view; App turns it into the route. */
   onView: (view: string) => void
   go: (to: string) => void
+  /** API reads' filter, set by the panel's "Failures only" row. */
+  apiFailuresOnly?: boolean
 }) {
   const openAgent = (id: string) => go(`${WORK}/task/${encodeURIComponent(id)}`)
   /*
@@ -2027,6 +2114,8 @@ function SectionBody({
       return <HoldersScreen />
     case 'capacity/accounts':
       return <AccountsScreen />
+    case 'capacity/api-reads':
+      return <ReferenceScreen failuresOnly={apiFailuresOnly} />
     case 'capacity/quota':
       return <QuotaDetailScreen />
 
@@ -2038,6 +2127,8 @@ function SectionBody({
       return <PlatformCountsScreen />
     case 'admin/people':
       return <PeopleScreen />
+    case 'admin/workspaces':
+      return <WorkspacesYouAdminScreen go={go} />
 
     default:
       // Unreachable through the nav, and reachable only by hand-editing a hash

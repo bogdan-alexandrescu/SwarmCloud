@@ -55,6 +55,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot, release_lease_in_transaction
 from swarm_common.models import (
+    ADDITIONAL_REPOSITORIES_CEILING,
     Attempt,
     EndCause,
     Lease,
@@ -92,7 +93,7 @@ from .codec import (
     workflow_from_dict,
     workflow_to_firestore,
 )
-from . import refusals
+from . import modelprices, refusals
 from .errors import Conflict, NotFound, Unpageable, ValidationFailed
 from .executioncancel import ExecutionTarget
 
@@ -124,7 +125,62 @@ SETTINGS_DOC = "settings"
 #:                     (contract request 47). OFF until an operator turns it
 #:                     on: a merge lands code on a default branch, and the
 #:                     owner made it opt-in (2026-10-04).
-PLATFORM_SETTINGS_DEFAULTS: dict[str, Any] = {"merge_by_default": False}
+#:   max_additional_repositories
+#:                     the most additional repositories one step may read
+#:                     (docs/design/multi-repository-steps.md, #1434). 5: the
+#:                     owner's figure of 2026-10-17, raised from the design's
+#:                     4 and made a setting rather than a constant so it moves
+#:                     without a deploy. Accepted 1 to the frozen contract's
+#:                     ADDITIONAL_REPOSITORIES_CEILING (10), which is the
+#:                     document-shape guard and never the operative limit.
+#:   additional_repositories_budget_gib
+#:                     the size, in GiB, the additional repositories of one
+#:                     step may total, by the forge's estimate at submission
+#:                     and by the worker's measurement at the clone
+#:                     (`agent_worker.extrarepos.BUDGET_SETTING` reads this
+#:                     key). 6: the design's share of the 20 GiB cache volume
+#:                     (§4.6), leaving 14 GiB for tool caches and TMPDIR.
+#:                     Accepted 1 to 20: a budget past the volume's size is
+#:                     one the worker can never meet.
+#:   model_prices      the list price of each model, per million tokens, that
+#:                     swarm-api prices a stopped attempt's usage at (#1481,
+#:                     `modelprices`). Seeded with exactly the figures the
+#:                     worker's `_LIST_PRICES` held, `source: code`: prices
+#:                     became data on 2026-10-17 and nothing was re-guessed in
+#:                     the move. A model with no entry prices nothing.
+PLATFORM_SETTINGS_DEFAULTS: dict[str, Any] = {
+    "merge_by_default": False,
+    "max_additional_repositories": 5,
+    "additional_repositories_budget_gib": 6,
+    "model_prices": modelprices.SEED,
+}
+
+#: The accepted range of each integer setting, inclusive. A stored value
+#: outside it, or of another type, reads as the default: an admin's typo
+#: written straight to Firestore must not lift the limit it was meant to set.
+#: `schemas.PlatformSettingsRequest` refuses the same ranges at the route.
+PLATFORM_SETTINGS_RANGES: dict[str, tuple[int, int]] = {
+    "max_additional_repositories": (1, ADDITIONAL_REPOSITORIES_CEILING),
+    "additional_repositories_budget_gib": (1, 20),
+}
+
+
+def _platform_setting(key: str, data: dict[str, Any]) -> Any:
+    """One setting as stored, or its default when unset or malformed."""
+    if key == "model_prices":
+        # A malformed ENTRY is dropped, never defaulted: a price is a figure,
+        # and the seed's figure in place of an admin's typo is an invented one.
+        return modelprices.table(data.get(key), present=key in data)
+    default = PLATFORM_SETTINGS_DEFAULTS[key]
+    if key not in data:
+        return default
+    value = data[key]
+    if isinstance(default, bool):
+        return bool(value)
+    low, high = PLATFORM_SETTINGS_RANGES[key]
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        return default
+    return value
 
 #: Firestore caps a write batch at 500 operations. Each task costs two (the
 #: document and its `submitted` event), so a chunk of 200 tasks is the ceiling.
@@ -2324,10 +2380,8 @@ class Store:
         """
         snap = self._db.collection(CONTROL).document(SETTINGS_DOC).get()
         data = dict(snap.to_dict() or {}) if snap.exists else {}
-        out: dict[str, Any] = {
-            key: (bool(data[key]) if key in data else default)
-            for key, default in PLATFORM_SETTINGS_DEFAULTS.items()
-        }
+        out: dict[str, Any] = {key: _platform_setting(key, data)
+                               for key in PLATFORM_SETTINGS_DEFAULTS}
         out["updated_at"] = data.get("updated_at")
         out["updated_by"] = data.get("updated_by")
         out["settings_document"] = "present" if snap.exists else "missing"
@@ -2338,9 +2392,41 @@ class Store:
         unknown = sorted(set(changes) - set(PLATFORM_SETTINGS_DEFAULTS))
         if unknown:
             raise ValueError(f"unknown platform settings: {', '.join(unknown)}")
+        for key, (low, high) in PLATFORM_SETTINGS_RANGES.items():
+            value = changes.get(key)
+            if key in changes and (isinstance(value, bool) or not isinstance(value, int)
+                                   or not low <= value <= high):
+                raise ValueError(f"{key} is an integer from {low} to {high}")
+        if "model_prices" in changes:
+            changes = {**changes, "model_prices": self._model_prices_after(
+                changes["model_prices"], by=by)}
         payload = {**changes, "updated_at": self._now(), "updated_by": by}
         self._db.collection(CONTROL).document(SETTINGS_DOC).set(payload, merge=True)
         return self.get_platform_settings()
+
+    def _model_prices_after(self, changed: Any, *, by: str) -> dict[str, Any]:
+        """The WHOLE price table after `changed`'s entries replace theirs.
+
+        The entries a change does not name are kept as they read now -- the
+        seed's, while the setting was never written -- so the first change is
+        never a table of one model. Each changed entry is stamped with who
+        changed it; the route has already refused a malformed one, and this
+        refuses it again for a caller that is not the route.
+        """
+        if not isinstance(changed, dict) or not changed:
+            raise ValueError("model_prices names at least one model")
+        current = self.get_platform_settings()["model_prices"]
+        out = {name: dict(price) for name, price in current.items()}
+        for name, raw in changed.items():
+            stamped = {**raw, "updated_by": by} if isinstance(raw, dict) else raw
+            parsed = modelprices.entry(stamped)
+            if not isinstance(name, str) or not modelprices.MODEL_NAME.fullmatch(name) \
+                    or parsed is None:
+                raise ValueError(f"model_prices[{name!r}] is not a valid price entry")
+            out[name] = parsed
+        if len(out) > modelprices.MAX_MODELS:
+            raise ValueError(f"model_prices holds at most {modelprices.MAX_MODELS} models")
+        return out
 
     def set_dispatch_paused(self, paused: bool, *, by: str, reason: str | None = None) -> dict:
         payload = {

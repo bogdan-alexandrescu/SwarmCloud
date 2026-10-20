@@ -48,7 +48,7 @@ const { SubmitScreen } = await import('../Submit')
 
 const WAIT = { timeout: 4000 }
 const AT_1280: CascadeEnv = { width: 1280 }
-const ME = 'someone@saga.xyz'
+const ME = 'someone@example.com'
 const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
 
 function ok<T>(data: T): Result<T> {
@@ -69,7 +69,7 @@ function sizeOf(el: Element): string | null {
 }
 
 function chooserReads() {
-  api.loadMe.mockImplementation(async () => ok({ principal: { email: ME, domain: 'saga.xyz', groups: [], is_admin: false }, tenant: { tenant_id: 'eng' } }))
+  api.loadMe.mockImplementation(async () => ok({ principal: { email: ME, domain: 'example.com', groups: [], is_admin: false }, tenant: { tenant_id: 'eng' } }))
   api.loadTasks.mockImplementation(async () => ok({ tasks: [], next_page_token: null }))
   api.loadWorkflows.mockImplementation(async () => ok({ workflows: [] }))
   api.loadRuns.mockImplementation(async () => ok({ runs: [], next_page_token: null }))
@@ -110,7 +110,7 @@ describe('V135 and V136: Start from a recent one', () => {
   })
 
   it('names only the windows that held something', async () => {
-    api.loadWorkflows.mockImplementation(async () => ok({ workflows: [{ workflow_id: 'wf_x', submitted_by: 'other@saga.xyz', created_at: '2026-10-11T09:00:00Z', steps: [] }] }))
+    api.loadWorkflows.mockImplementation(async () => ok({ workflows: [{ workflow_id: 'wf_x', submitted_by: 'other@example.com', created_at: '2026-10-11T09:00:00Z', steps: [] }] }))
     const { container } = render(<SubmitChooser go={() => {}} />)
     const recent = container.querySelector<HTMLElement>('.sb-recent')!
     await waitFor(() => expect(visible(recent.querySelector('.sb-empty'))).toBe('None of yours yet.'))
@@ -128,7 +128,7 @@ describe('V135 and V136: Start from a recent one', () => {
 
     const retry = within(recent).getByRole('button', { name: 'Try again' })
     const before = api.loadMe.mock.calls.length
-    api.loadMe.mockImplementation(async () => ok({ principal: { email: ME, domain: 'saga.xyz', groups: [], is_admin: false }, tenant: { tenant_id: 'eng' } }))
+    api.loadMe.mockImplementation(async () => ok({ principal: { email: ME, domain: 'example.com', groups: [], is_admin: false }, tenant: { tenant_id: 'eng' } }))
     api.loadTasks.mockImplementation(async () => ok({ tasks: [], next_page_token: null }))
     fireEvent.click(retry)
     await waitFor(() => expect(api.loadMe.mock.calls.length).toBeGreaterThan(before))

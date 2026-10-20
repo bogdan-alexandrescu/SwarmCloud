@@ -39,6 +39,15 @@ WHERE EACH FIELD COMES FROM -- only what the API already serves, by name:
 * Session: the Claude Code session tag (`claude_session`), named `this
   session` when it is the one this bridge serves (`session.current()`).
 
+ONE MORE FIELD, SHOWN ONLY WHEN A STEP NAMES IT: `QA identity: <name>`,
+between `Browser tool:` and `Session:`, from a `claude-code-browser` step's
+`input.qa_identity` (contract request 106; docs/design/qa-identity.md §4.7,
+lane QI-MCP). Such a task's live browser is signed in to the console as the
+deployment's QA service account, and whoever expands the row is told whose
+session it holds. Unlike the six it is left out, not `not reported`, when no
+step names it: absence is the fact (the browser is signed in to nothing),
+and the field on every plain row would read as a sign-in nobody asked for.
+
 NOTHING SECRET-SHAPED IS EVER SHOWN. The fields are read by an allow-list --
 never a whole document, never `metadata`, never an account's other keys -- and
 every value is then checked once more (`shown`): a value that looks like a key
@@ -113,7 +122,7 @@ def _named(values: Iterable[str | None]) -> str | None:
 def empty() -> dict[str, list]:
     """The facts of nothing: every field empty, so each says `not reported`."""
     return {"started_by": [], "profiles": [], "accounts": [], "models": [], "browser_tools": [],
-            "sessions": [], "pending": []}
+            "qa_identities": [], "sessions": [], "pending": []}
 
 
 def _browser_tool(profile: Any, raw_input: Any) -> str | None:
@@ -121,6 +130,14 @@ def _browser_tool(profile: Any, raw_input: Any) -> str | None:
         return None
     chosen = raw_input.get("browser_tool") if isinstance(raw_input, Mapping) else None
     return shown(chosen) or BROWSER_TOOL_DEFAULT
+
+
+def _qa_identity(profile: Any, raw_input: Any) -> str | None:
+    """The QA identity a step's browser is signed in as, or None: read only
+    on the profile that declares the input (contract request 106)."""
+    if profile != BROWSER_PROFILE or not isinstance(raw_input, Mapping):
+        return None
+    return shown(raw_input.get("qa_identity"))
 
 
 def account_fields(raw: Any) -> dict[str, str | None] | None:
@@ -136,11 +153,12 @@ def account_fields(raw: Any) -> dict[str, str | None] | None:
 
 
 def add_step(facts: dict[str, list], step: Any) -> dict[str, list]:
-    """A spec step or a workflow's step: its profile and browser tool."""
+    """A spec step or a workflow's step: its profile, browser tool and QA identity."""
     if isinstance(step, Mapping):
         profile = step.get("runner_profile")
         facts["profiles"].append(shown(profile))
         facts["browser_tools"].append(_browser_tool(profile, step.get("input")))
+        facts["qa_identities"].append(_qa_identity(profile, step.get("input")))
     return facts
 
 
@@ -303,7 +321,8 @@ def line(
     labels: Mapping[str, str] | None = None,
     sid: str | None = None,
 ) -> str:
-    """The DETAILS line, the six fields in their fixed order. `workspace` is
+    """The DETAILS line, the six fields in their fixed order, and `QA
+    identity` before `Session` when a step names one. `workspace` is
     `launch.workspace_shown`'s text (None: not reported)."""
     fields = [
         ("Workspace", workspace or NOT_REPORTED),
@@ -311,8 +330,11 @@ def line(
         ("Profiles", _named(facts.get("profiles") or []) or NOT_REPORTED),
         ("LLM", llm_text(facts, labels)),
         ("Browser tool", browser_text(facts)),
-        ("Session", session_text(facts, sid)),
     ]
+    qa_identity = _named(facts.get("qa_identities") or [])
+    if qa_identity:
+        fields.append(("QA identity", qa_identity))
+    fields.append(("Session", session_text(facts, sid)))
     return " · ".join(f"{name}: {value}" for name, value in fields)
 
 

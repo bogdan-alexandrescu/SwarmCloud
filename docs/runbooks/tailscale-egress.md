@@ -1,7 +1,7 @@
 # The decision-api tailnet egress: set-up, verification, rotation and rollback
 
 Jev's two internal judgment backends, "Internal Jev" (the default) and
-"Internal Laya", call Saga's decision API, which only exists on the company
+"Internal Laya", call the internal decision API, which only exists on the company
 Tailscale tailnet:
 
     https://decision-api-staging.taile0bda9.ts.net/jev/v1/decide

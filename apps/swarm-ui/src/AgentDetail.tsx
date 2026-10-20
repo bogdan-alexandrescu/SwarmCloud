@@ -1,5 +1,5 @@
 import { Button, CIcon, Count, ToneMark } from './components'
-import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { Children, Fragment, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
   loadAgentRun,
@@ -20,6 +20,8 @@ import { TokenSpendChart } from './charts/TokenSpend'
 import { agentName, workflowHref } from './agentlist'
 import { resultIsNewest, stepCostOf, totalCostOf } from './dag'
 import { DecisionCard } from './DecisionCard'
+import { AdditionalRepositoryRows } from './Dispatch'
+import { PersonName } from './PersonName'
 import { QuestionsCard } from './QuestionsCard'
 import { handoffOf } from './Handoff'
 import { pullRequestOf } from './decision'
@@ -61,6 +63,7 @@ import {
   restoredFrom,
   startedOf,
   usageOf,
+  modelMismatch,
   waitingLine,
   whyAgent,
   whyNeedsAction,
@@ -983,11 +986,45 @@ function DtStatCell({ c }: { c: DtCell }) {
       {c.bar !== undefined && <DtBar pct={c.bar} warn={c.tone === 'alert'} />}
       {c.sub !== undefined && c.sub !== '' && (
         <span className="dt-sc-s" ref={sub}>
-          {c.sub}
+          {glueSeparators(c.sub)}
         </span>
       )}
     </div>
   )
+}
+
+/**
+ * A sub-line with every ` · ` glued to the words before it (V260, VQA2-R13).
+ * `of 4 GiB · peak, written at exit · OOM near miss` wrapped in a ~115px cell
+ * as a line that began with an orphaned `· OOM near miss`. Each separator
+ * becomes `<span class="dt-dot"> ·</span>` -- `white-space: nowrap`
+ * (details.css), so its leading space is no break opportunity -- followed by
+ * a plain space, where the line may break. The text is unchanged, so the
+ * title `DtStatCell` copies from it is too. It walks strings, fragments and
+ * host elements: Cost's sub-line is a node, not a string.
+ */
+export function glueSeparators(node: ReactNode): ReactNode {
+  return Children.map(node, (n): ReactNode => {
+    if (typeof n === 'string') {
+      const parts = n.split(' · ')
+      if (parts.length === 1) return n
+      return parts.flatMap((part, i) =>
+        i === 0
+          ? [part]
+          : [
+              <span className="dt-dot" key={`dot-${i}`}>
+                {' ·'}
+              </span>,
+              ` ${part}`,
+            ],
+      )
+    }
+    if (isValidElement<{ children?: ReactNode }>(n) && (n.type === Fragment || typeof n.type === 'string')) {
+      if (n.props.children === undefined) return n
+      return cloneElement(n, undefined, glueSeparators(n.props.children))
+    }
+    return n
+  })
 }
 
 /** A thin bar against a limit; hatched, never empty, when there is no figure or no ceiling. */
@@ -1473,7 +1510,17 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
         </>
       )}
       <p className="dt-note" title={start.submittedTitle}>
-        submitted {start.submitted} · {task.submitted_by === null ? 'by — not recorded' : `by ${task.submitted_by}`} · {timeAgo(task.created_at, now)}
+        {/* The submitter through `PersonName` (user-profile.md §4.4): their
+            name when they set one, always beside the email. */}
+        submitted {start.submitted} ·{' '}
+        {task.submitted_by === null ? (
+          'by — not recorded'
+        ) : (
+          <>
+            by <PersonName email={task.submitted_by} name={task.submitted_by_name} />
+          </>
+        )}{' '}
+        · {timeAgo(task.created_at, now)}
       </p>
     </section>
   )
@@ -2107,9 +2154,7 @@ function Alerts({ task }: { task: Task }) {
       {task.park_reason && !handedOff && (
         <div className="bar amber">
           <strong title={task.park_reason}>{parkWord(task.park_reason)}</strong>
-          {task.next_eligible_at && (
-            <> · eligible {new Date(task.next_eligible_at).toLocaleString()}</>
-          )}
+          <ParkEligible iso={task.next_eligible_at} />
           {REASON_COPY[task.park_reason] === undefined && (
             <span className="blocker-copy">{reasonText(task.park_reason)}</span>
           )}
@@ -2200,7 +2245,32 @@ export function parkedSince(task: Task): number | null {
 export function HandoffParkedSince({ task }: { task: Task }) {
   const since = parkedSince(task)
   if (since === null) return null
-  return <span className="ho-since">parked since {new Date(since).toLocaleString()}</span>
+  const at = clockTime(new Date(since).toISOString())!
+  return (
+    <span className="ho-since" title={at.title}>
+      parked since {at.text}
+    </span>
+  )
+}
+
+/**
+ * ` · eligible at <time>` (or `since`, once the instant has passed) on the
+ * park bar, through `clockTime` -- the formatter the Waiting row beside it
+ * uses (V060, VQA2-R13). `toLocaleString()` printed "10/16/2026, 6:28:17 PM"
+ * over a row that said "Eligible again since 18:28:17.": one instant, two
+ * formats, and the American date order read as a different day elsewhere.
+ * Nothing for a missing or unparseable value.
+ */
+export function ParkEligible({ iso, now = Date.now() }: { iso: string | null | undefined; now?: number }) {
+  const at = clockTime(iso, now)
+  if (at === null) return null
+  const word = new Date(iso as string).getTime() > now ? 'at' : 'since'
+  return (
+    <span title={at.title}>
+      {' '}
+      · eligible {word} {at.text}
+    </span>
+  )
 }
 
 /**
@@ -2524,6 +2594,58 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
 }
 
 /**
+ * THE MODEL AN ATTEMPT RAN, AND THE TASK'S CLASS (docs/design/model-per-step.md
+ * §4.6, §4.8, #1435). Drawn by this pane's attempt cards and the Attempts
+ * tab's, so the two cannot word it two ways.
+ *
+ * `a.model` is what the worker was STARTED with (`Attempt.model`), the pin of
+ * the task's class at dispatch; the class beside it is the task's, resolved,
+ * `default` when nobody named one. Null is an attempt from before the record,
+ * or a runner that starts no model -- an absent record, never a blank.
+ *
+ * When the CLI's own stream does not include that model (`modelMismatch`, the
+ * worker's `model_mismatch` rule) BOTH are shown, with the sentence. Only on
+ * the latest attempt: the stream is read from the task's `result_summary`,
+ * which is written once, by the last attempt.
+ */
+export function AttemptModel({ a, task, isLatest }: { a: AttemptRow; task: Task | null; isLatest: boolean }) {
+  const model = a.model ?? null
+  const modelClass = task?.model_class ?? null
+  const ranOther = isLatest && task !== null ? modelMismatch(model, task) : null
+  return (
+    <>
+      <li className={`ctl-fact${model === null ? ' is-absent' : ''}`}>
+        <b>model</b>
+        {model === null ? (
+          <Mark
+            kind="absent"
+            say="No model is recorded for this attempt: it ran before attempts recorded their model, or its runner starts no model."
+          />
+        ) : (
+          <span className="mono">{model}</span>
+        )}
+        {modelClass !== null && (
+          <span className="att-model-class" title={task?.model_class_defaulted ? 'The task named no class, so it runs its runner’s default.' : 'The class the task named.'}>
+            {' · '}
+            <span className="mono">{modelClass}</span>
+            {task?.model_class_defaulted && ' (default)'}
+          </span>
+        )}
+      </li>
+      {ranOther !== null && model !== null && (
+        <li className="ctl-fact rt-fact-wide att-model-mismatch">
+          <b>CLI ran</b>
+          <span className="warn-text">
+            <span className="mono">{ranOther.join(', ')}</span>, pinned <span className="mono">{model}</span>: the CLI ran
+            a different model from the one pinned
+          </span>
+        </li>
+      )}
+    </>
+  )
+}
+
+/**
  * An attempt's account fact (#379). The row's own `account`, joined on from
  * `accounts_by_attempt` by `loadAgentRun`; absent means not read. Whether an
  * attempt with none is `not assigned yet` or `not assigned` is the API's
@@ -2634,6 +2756,7 @@ function AttemptCard({
           {/* THIS ATTEMPT'S ACCOUNT (#379), swaps included:
               `acct-eng-01 → 02 (swapped: unreadable)`. */}
           <AttemptAccount a={a} />
+          <AttemptModel a={a} task={run.task} isLatest={isLatest} />
           {/* `ran` ONLY BESIDE ANOTHER ATTEMPT (#102). With one attempt it
               is the Elapsed tile's figure a second time -- measured between
               the attempt's instants rather than the task's, so the two read
@@ -4649,6 +4772,10 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
             {task.repository_ref && ` @ ${task.repository_ref}`}
           </span>
         </li>
+        {/* THE REPOSITORIES IT READS BESIDE ITS OWN (#1434), each with the
+            commit it was pinned to at submission: the code the agent read,
+            whatever its ref names today. None drawn when it reads none. */}
+        <AdditionalRepositoryRows task={task} />
         {/* Recorded for attribution. It selects NOTHING about the container --
             image, command and resource spec all come from the profile. */}
         <li className={`ctl-fact${task.model === null ? ' is-absent' : ''}`}>

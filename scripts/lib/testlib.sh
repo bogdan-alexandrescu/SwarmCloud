@@ -326,26 +326,30 @@ profile_input() {
 }
 
 # ---------------------------------------------------------------------------
-# The browser fixture: a page the check writes, loaded and read back (#357)
+# The browser fixture: a page the check chose, loaded and read back (#357)
 # ---------------------------------------------------------------------------
 #
 # The about:blank task above proves Chromium starts. This proves a page LOADS
-# and RENDERS: the check writes a page -- one colour filling the viewport and a
-# string carrying the run id -- has a browser task open it, and asserts the
+# and RENDERS: a fixed page -- one colour filling the viewport and a string
+# carrying the run id -- is opened by a browser task, and the check asserts the
 # screenshot's PIXELS are that colour and the extracted text holds that string.
 # A blank screenshot, another page (an error page, a consent wall) or a stale
 # one from an earlier run fails it.
 #
-# HOW THE CHECK SERVES A PAGE IT WROTE. Not a data: URL: the runner opens http
-# and https only (`ALLOWED_SCHEMES`, and `url_refusal` in the frozen catalogue).
-# Not this repository: no host it has serves an .html file as text/html
-# (scripts/acceptance/groups/browser.sh measured raw.githubusercontent.com and
-# jsDelivr on 2026-09-29: text/plain, nosniff). httpbin's /base64/<value>
-# answers the base64url-decoded value as text/html, so the URL CARRIES the
-# page and nothing outside the URL decides what it shows. httpbin.org is the
-# third party the acceptance suite already uses (owner decision on #358);
-# SWARM_BROWSER_FIXTURE_BASE points this at a self-hosted httpbin (go-httpbin
-# serves the same route) for a deployment whose egress cannot reach it.
+# HOW THE CHECK SERVES THE PAGE. Not a data: URL: the runner opens http and
+# https only (`ALLOWED_SCHEMES`, and `url_refusal` in the frozen catalogue).
+# Not a third party: until 2026-10-19 the page came from httpbin.org's
+# /base64/<page> route (#358), and acceptance run 39249979130 failed its GKE
+# proof on an httpbin.org 502 -- an outage elsewhere turning a release gate red
+# with a message that read like ours. Owner decision on #1628: we serve it.
+# scripts/acceptance/fixture.html is uploaded by terraform/infra/
+# acceptance_fixture.tf as the one object in a public bucket of our own, and
+# the check opens it as `<that object>?run=<id>`. The page's markup is FIXED;
+# its script accepts the id only when it matches BROWSER_FIXTURE_RUN_ID_PATTERN
+# and inserts it as text, so the URL decides nothing but which run id is shown.
+# SWARM_BROWSER_FIXTURE_BASE points the check at another copy of the same file
+# (another project's bucket, a local server) for a deployment that cannot
+# reach this one.
 #
 # tests/unit/scripts/test_browser_fixture_check.py runs every helper here
 # offline, against PNGs it writes.
@@ -364,22 +368,38 @@ BROWSER_FIXTURE_MIN_FRACTION="0.5"
 # hold. Per run, so a screenshot or a cached page from another run cannot pass.
 browser_fixture_text() { printf 'swarm-fixture-%s' "$1"; }
 
-# browser_fixture_html RUN_ID -> the page.
-browser_fixture_html() {
-  printf '<!doctype html><html><head><meta charset="utf-8"><title>%s</title>' "${BROWSER_FIXTURE_TITLE}"
-  printf '<style>html,body{margin:0;height:100%%;background:#%s}' "${BROWSER_FIXTURE_RGB}"
-  printf 'p{margin:0;padding:24px 40px;color:#fff;font:20px sans-serif}</style></head>'
-  printf '<body><p>%s</p><p>%s</p></body></html>' "${BROWSER_FIXTURE_TITLE}" "$(browser_fixture_text "$1")"
+#: The run ids the page shows. scripts/acceptance/fixture.html's script holds
+#: the same pattern and refuses anything else, and test_run_id's ids
+#: (`test-<suite>-<UTC timestamp>`) match it. Lower-case, digits and hyphens:
+#: nothing that could be markup, a quote or an escape, in the page or the URL.
+BROWSER_FIXTURE_RUN_ID_PATTERN='^[a-z0-9-]{1,80}$'
+
+# browser_fixture_run_id_ok RUN_ID -> 0 when RUN_ID matches
+# BROWSER_FIXTURE_RUN_ID_PATTERN. Spelled out character by character rather
+# than as `[[ =~ ]]` or a range, because a bracket range follows the locale's
+# collation in bash 3.2, where [a-z] can admit upper-case letters.
+browser_fixture_run_id_ok() {
+  local id="$1"
+  [[ "${#id}" -ge 1 && "${#id}" -le 80 ]] || return 1
+  [[ -z "${id//[abcdefghijklmnopqrstuvwxyz0123456789-]/}" ]]
 }
 
-# browser_fixture_url RUN_ID -> the URL that serves the page.
-#
-# base64url WITH its padding: httpbin decodes with urlsafe_b64decode, which
-# refuses unpadded input. `tr -d '\n'` because GNU base64 wraps at 76 columns
-# and macOS's does not; `-w` exists on only one of them.
+# browser_fixture_base -> the page's URL without its ?run= id: the object
+# terraform/infra/acceptance_fixture.tf uploads (its `acceptance_fixture_url`
+# output), unless SWARM_BROWSER_FIXTURE_BASE says otherwise.
+browser_fixture_base() {
+  printf '%s' "${SWARM_BROWSER_FIXTURE_BASE:-https://storage.googleapis.com/${ACCEPTANCE_FIXTURE_BUCKET}/fixture.html}"
+}
+
+# browser_fixture_url RUN_ID -> the URL that serves the page for RUN_ID.
+# Refuses (1, nothing on stdout) a RUN_ID the page would refuse, so the check
+# never submits a task that can only show "invalid run id".
 browser_fixture_url() {
-  local base="${SWARM_BROWSER_FIXTURE_BASE:-https://httpbin.org/base64/}"
-  printf '%s%s' "${base}" "$(browser_fixture_html "$1" | base64 | tr -d '\n' | tr '+/' '-_')"
+  if ! browser_fixture_run_id_ok "$1"; then
+    err "browser fixture: run id '$1' does not match ${BROWSER_FIXTURE_RUN_ID_PATTERN}"
+    return 1
+  fi
+  printf '%s?run=%s' "$(browser_fixture_base)" "$1"
 }
 
 # png_shows_colour FILE RRGGBB MIN_FRACTION -> 0 when FILE is a PNG that is not
@@ -413,13 +433,14 @@ png_shows_colour() {
 # BROWSER_FIXTURE_TITLE, fetched from HERE before any task is submitted.
 # Otherwise 1, with FIXTURE_PREFLIGHT_REASON naming the host and what it said.
 #
-# WHY. The fixture host is a third party (httpbin.org unless
-# SWARM_BROWSER_FIXTURE_BASE says otherwise), and both callers gate a release.
-# The runner reports an error page as SUCCEEDED, so without this an httpbin
-# outage reads as "the page did not render" and turns the release red for a
-# reason that is not the platform's. A host that does not serve the fixture is
-# therefore a SKIP that names it -- not measured, never a pass -- exactly as
-# scripts/acceptance/groups/browser.sh treats httpbin being unreachable. The
+# WHY. Both callers gate a release, and the runner reports an error page as
+# SUCCEEDED, so without this a host that does not serve the fixture reads as
+# "the page did not render". The host is ours since #1628 (a public object in
+# our own bucket), so what this catches now is the bucket or its public read
+# grant not applied yet, or SWARM_BROWSER_FIXTURE_BASE pointing at a copy that
+# is not there. That is a SKIP that names the host -- not measured, never a
+# pass -- as scripts/acceptance/groups/browser.sh treats httpbin being
+# unreachable for its own form check. The
 # fetch is from the caller's network, not the worker's, so a host that answers
 # here and not from the worker still fails below, with the page the runner
 # ended on in the message.
@@ -486,7 +507,10 @@ t_check_browser_fixture() {
   t_case "${who}: a browser task loads a page the check wrote; its pixels and text come back"
   run_id="$(test_run_id)"
   text="$(browser_fixture_text "${run_id}")"
-  url="$(browser_fixture_url "${run_id}")"
+  if ! url="$(browser_fixture_url "${run_id}")"; then
+    t_fail "${who}: run id '${run_id}' is not one the fixture page shows (${BROWSER_FIXTURE_RUN_ID_PATTERN})"
+    return 1
+  fi
   if ! browser_fixture_preflight "${url}"; then
     t_skip "${who}: ${FIXTURE_PREFLIGHT_REASON}"
     return 0
@@ -505,7 +529,7 @@ t_check_browser_fixture() {
   fi
   # shellcheck disable=SC2034  # read by the scripts that source this library
   FIXTURE_TASK_ID="${task}"
-  t_info "${who}: fixture task ${task}, page served by ${SWARM_BROWSER_FIXTURE_BASE:-https://httpbin.org/base64/}"
+  t_info "${who}: fixture task ${task}, page served by $(browser_fixture_base)"
   if ! final="$(wait_for_state "${task}" "SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED" "${timeout}")"; then
     t_fail "${who}: the fixture task reached no terminal state within ${timeout}s (stuck at ${final})"
     cancel_task "${task}" || t_info "${who}: could not cancel ${task}; cancel it by hand"

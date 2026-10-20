@@ -76,6 +76,7 @@ from .store import EVENTS, LEASES, TASKS, Store, first_cancel_target
 from .validation import (
     CHILD_CASCADE_METADATA_KEY,
     CHILD_REQUEST_ID_METADATA_KEY,
+    mcp_server_names,
     resolve_dispatch_options,
 )
 
@@ -103,6 +104,11 @@ AWAIT_EXPIRED = "await_expired"
 #: setting raised after children were made, and for a child document whose
 #: `parent_task_id` a tenant rewrote to point here (§5 F11).
 _LIST_CAP = 200
+
+#: The lowest spec format whose signature covers `forge_credential` and
+#: `forge_access` (`swarm_common.specsign._FORMAT_3_FIELDS`; the broker's
+#: `credbroker.MIN_SPEC_FORMAT`, which imports this module).
+_FORGE_SPEC_FORMAT = 3
 
 
 # --------------------------------------------------------------------------
@@ -138,6 +144,18 @@ class ChildDepthExceeded(ApiError):
 class ChildFanOutExceeded(ApiError):
     status_code = 409
     code = "child_fan_out_exceeded"
+
+
+class ChildParentUnsigned(ApiError):
+    """The stored parent's spec signature does not verify (#1041).
+
+    Not a switch (tests/unit/control_plane/test_new_refusals_ship_off.py):
+    continuing past it is the breach -- a child signed by swarm-api over a
+    submitter and forge slot the agent wrote into its own task.
+    """
+
+    status_code = 403
+    code = "child_parent_unsigned"
 
 
 class ChildKeyUnproven(ApiError):
@@ -179,6 +197,9 @@ class ChildSpec(_Strict):
     model: str | None = Field(default=None, max_length=128)
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
     repository_ref: str | None = Field(default=None, max_length=256)
+    #: The child's model class, by name, as `TaskCreate.model_class` (#1435).
+    #: None: the CHILD profile's default, never the parent's class (R3).
+    model_class: str | None = Field(default=None, max_length=32)
 
 
 class _AttemptFields(_Strict):
@@ -675,8 +696,29 @@ class ChildService:
         return answer
 
     def _read_parent(self, attempt: AttemptTuple) -> Task:
-        """The parent as stored, for building the child. The fence is checked
-        again inside the creating transaction; this read only shapes the child."""
+        """The parent as stored AND AS SIGNED, for building the child. The fence
+        is checked again inside the creating transaction; this read only shapes
+        the child.
+
+        `_build_child` copies the parent's `submitted_by`, `repository_url`,
+        `forge_credential` and `forge_access` into a child that swarm-api then
+        signs with its own key. A worker may update any task document
+        (terraform/bootstrap/platform_roles.tf, datastore.entities.update), so
+        an agent can rewrite its own task as another member's; read unchecked,
+        its child would carry a fresh signature over that member's `git-u-`
+        slot, and the forge broker (`credbroker`) would release that member's
+        token to it (#1041, security review of PR 1070). So the signature is
+        verified here, on the exact dict the child is built from, and anything
+        else is `ChildParentUnsigned` -- never a switch, and nothing created.
+
+        Any signed format is enough, not only 3 and up: below format 3 the
+        canonical form refuses a document that sets `forge_credential` or
+        `forge_access` (`swarm_common.specsign`), so a verified format-1 or 2
+        parent carries neither and its child runs on the tenant token, as
+        today. The explicit check below says so rather than leaning on that.
+        """
+        from .verdictpublish import spec_refusal
+
         snap = self._db.collection(TASKS).document(attempt.task_id).get()
         data = snap.to_dict() if snap.exists else None
         if data is None or data.get("tenant_id") != attempt.tenant_id:
@@ -684,6 +726,20 @@ class ChildService:
         if data.get("parent_task_id"):
             raise ChildDepthExceeded(
                 f"a child may not submit children: the depth limit is {MAX_CHILD_DEPTH}"
+            )
+        refusal = spec_refusal(self._settings, data, attempt.task_id)
+        spec_format = data.get("spec_format")
+        if refusal is None and (data.get("forge_credential") is not None
+                                or data.get("forge_access") is not None) and (
+                isinstance(spec_format, bool) or not isinstance(spec_format, int)
+                or spec_format < _FORGE_SPEC_FORMAT):
+            refusal = "the step's spec is signed at a format that does not cover its forge fields"
+        if refusal is not None:
+            log.warning("child refused: the parent's spec does not verify tenant=%s task=%s "
+                        "reason=%s", attempt.tenant_id, attempt.task_id, refusal)
+            raise ChildParentUnsigned(
+                f"{refusal}; a child is built only from a parent whose signature verifies, "
+                "so nothing was created"
             )
         return task_from_dict(data)
 
@@ -722,9 +778,16 @@ class ChildService:
             runner_profile=spec.runner_profile,
             input=spec.input,
             model=spec.model,
+            model_class=spec.model_class,
             timeout_seconds=timeout,
         )
         repository_ref = spec.repository_ref or parent.repository_ref
+        # Q7 of #1433 (docs/design/registered-mcp-servers.md §4.3): a child
+        # names only servers its parent named, and uses the credential rows
+        # the parent's submission stored, the parent's own or its workflow's
+        # (the attach reads the same owners, from the child's signed
+        # `parent_task_id`). It has no `mcp_credentials` of its own.
+        mcp_inherited = self._mcp_inheritance(parent) if mcp_server_names(spec.input) else None
         task = self._submissions._build_task(
             spec=create,
             tenant=tenant,
@@ -747,6 +810,7 @@ class ChildService:
             priority=parent.priority,
             repository_url=parent.repository_url,
             repository_ref=repository_ref,
+            mcp_inherited=mcp_inherited,
         )
         # A child's timeout is never above its parent's, whatever the profile.
         task = replace(
@@ -767,6 +831,23 @@ class ChildService:
         # (contract request 42).
         self._submissions._sign([task])
         return task
+
+    def _mcp_inheritance(self, parent: Task) -> Any:
+        """The parent's servers as its SIGNED spec names them, and whose
+        credential rows a child may use. The agent can rewrite its own task
+        document, so a list read from a parent whose signature does not
+        verify is no list: the child inherits no server."""
+        from .service import McpInheritance
+        from .verdictpublish import spec_refusal
+
+        snap = self._db.collection(TASKS).document(parent.id).get()
+        doc = (snap.to_dict() or {}) if snap.exists else {}
+        signed = (doc.get("tenant_id") == parent.tenant_id
+                  and spec_refusal(self._settings, doc, parent.id) is None)
+        return McpInheritance(
+            servers=tuple(mcp_server_names(doc.get("input"))) if signed else (),
+            owners=tuple(o for o in (parent.id, parent.workflow_id or "") if o),
+        )
 
     # -- §6.2: the listing for a resumed worker ----------------------------
 

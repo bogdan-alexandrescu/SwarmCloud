@@ -4,7 +4,7 @@
 
    WHY THE TABLE HOLDS NO CONTROL. Measured 2026-10-12 at 1260px: the Actions
    column took 653px, and to make room every other cell broke wherever it
-   could -- `devops@saga. xyz`, `connecte d`. The decisions moved to the
+   could -- `devops@example. com`, `connecte d`. The decisions moved to the
    Waiting card and the Manage drawer, so the table is facts, laid out by its
    content inside its own scroll container (`.table-wrap`, Activity.tsx's
    pattern), and NO CELL BREAKS A WORD: cells wrap at spaces, and an address
@@ -19,6 +19,11 @@
 /* ONE LONG ADDRESS DOES NOT WIDEN THE TABLE (visual QA V021) AND IS NEVER
    BROKEN (#1206): one line, capped at 18rem, cut with an ellipsis. */
 .pp-who { display: block; min-width: 0; max-width: 18rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; overflow-wrap: normal; }
+/* In the wide table the cap is 15rem (visual QA V021, 2026-10-16): at 18rem
+   a long address took 362px of a 1024px card, and with a long team list and a
+   job in flight the table was 1151px wide. A typical address (`name@example.com`)
+   is far inside either cap; the phone record's name line keeps 18rem. */
+.is-scroll > .pp-table .pp-who { max-width: 15rem; }
 .pp-avatar {
   flex: none; display: inline-flex; align-items: center; justify-content: center;
   width: 24px; height: 24px; border-radius: 50%;
@@ -33,8 +38,49 @@
    ids the shared workspace bodies print (a request id) are held to the same
    rule (visual QA V081). */
 .pp-id, .pp-ws code { font-family: var(--mono); white-space: nowrap; overflow-wrap: normal; word-break: normal; }
+/* AND AN ID LONGER THAN ITS ROOM IS CUT, NEVER RUN PAST THE CARD (visual QA
+   V021, V161, 2026-10-16). A `w-0123…` id of 34 characters was the Workspace
+   column's min-content at 1440 (292px), which pushed the table 128px past its
+   card -- "Last active" read "Last a" and every Manage sat behind the table's
+   own scroll -- and at 400 it ran 58px out of the phone record. A real id is 8
+   characters (`w-` + 6 hex, workspaces.py `new_workspace_id`), so 16ch never
+   cuts one; a longer one ends in an ellipsis, whole in its `title`. The cap is
+   a length, not `100%` or `min(100%, 16ch)`: neither shrinks a table cell's
+   min-content (measured in Chromium: 1136px of 1024 with `min()`), and that
+   min-content is what the 1440 overflow was. */
+.pp-ws code { display: inline-block; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+/* A STEP'S STATE SITS ON ITS LABEL'S LAST LINE (visual QA V081). The rows
+   are baseline-aligned (onboarding.css), so where a label still wraps -- a
+   narrow drawer -- `running` stood beside "Checking the" and read as the
+   state of a step called "name is free". AND A WORD NEVER RUNS INTO THE
+   STATE: the label column was `minmax(0, 1fr)`, so in a squeezed 1440 table
+   "Namespace" overran "not started"; at `min-content` it holds its longest
+   word and the table's layout counts it. */
+.pp-ws .ob-ws-steps > li[data-state] { grid-template-columns: auto minmax(min-content, 1fr) auto; }
+.pp-ws .ob-ws-steps > li > .ob-state { align-self: last baseline; }
 /* THE TITLE ROW IS ONE HEIGHT IN EVERY STATE (visual QA V064, People's half). */
 .pp-page > .c-phead { min-height: var(--h-ctl); }
+/* THE CEILING HEAD IS A HEAD, NOT A FIGURE (visual QA V185). `table.pools
+   .n` sets the cells' mono on the head too, so "Ceiling" was the one DM Mono
+   head in a row of Inter Tight ones. Tenants says the same at admin.css
+   (`table.ten-table > thead > tr > th.n`); the head keeps its right alignment. */
+.pp-table > thead > tr > th.n { font-family: var(--font); }
+
+/* THE PHONE RECORD (below 560px the table is `.is-stacked`, capacityPoll.ts
+   `tableMode`). Two fields: the workspace and Manage.
+   THE WORKSPACE VALUE TAKES THE RECORD'S WIDTH, its key on the line above
+   (visual QA V081, V161). Beside the 126px key column it had ~166px, so the
+   job step "Checking the / name is free" wrapped and an id ran out of the
+   card; across the record it has ~300px.
+   MANAGE IS THE BUTTON ALONE (visual QA V189). Its key said "Manage" beside a
+   button saying "Manage". The cell keeps `data-label` (the record names every
+   cell, admin.people.test.tsx) and draws no key; the button spans the record
+   at a touch target's height. */
+.is-stacked > .pp-table > tbody > tr > td[data-label='Workspace'] { grid-template-columns: minmax(0, 1fr); gap: var(--ctl-s1); }
+.is-stacked > .pp-table > tbody > tr > td[data-label='Workspace'] > * { grid-column: 1; }
+.is-stacked > .pp-table > tbody > tr > td.pp-manage-cell { display: block; padding-top: var(--ctl-s2); }
+.is-stacked > .pp-table > tbody > tr > td.pp-manage-cell::before { content: none; }
+.is-stacked > .pp-table > tbody > tr > td.pp-manage-cell > .c-btn { width: 100%; min-height: 44px; }
 /* Visually hidden, kept for a screen reader: the Manage column's head and the
    drawer title's verb. In flow at 1px, clipped (styles.css's stacked-head
    note says why not `position: absolute`). */
@@ -59,6 +105,17 @@
   .pp-req { grid-template-columns: minmax(0, 1fr); }
   .pp-req-acts { justify-content: flex-start; }
   .pp-req-acts .c-btn, .pp-drawer .c-btn { min-height: 44px; }
+  /* A LOAN REQUEST'S DECISION IS ONE ROW OF TWO (visual QA V188). The picker
+     is its own group (`.pp-loan`), so with a long account label the select
+     took the line, Lend wrapped under it as a 48px stub and Decline went to a
+     third line: ~100px for two answers that read as unrelated. On a phone the
+     group dissolves into the card's actions: the select takes the line, then
+     Lend and Decline share the next one, half each. */
+  .pp-req[data-kind='loan'] .pp-loan { display: contents; }
+  .pp-req[data-kind='loan'] .pp-loan > .c-field { flex: 1 1 100%; }
+  .pp-req[data-kind='loan'] .pp-loan select { width: 100%; max-width: none; }
+  .pp-req[data-kind='loan'] .pp-req-acts > .c-btn,
+  .pp-req[data-kind='loan'] .pp-loan > .c-btn { flex: 1 1 0; }
 }
 
 /* The controls the card and the drawer share. */

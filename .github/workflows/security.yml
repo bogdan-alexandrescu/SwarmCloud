@@ -310,15 +310,21 @@ jobs:
           # assignment in terraform/ -- a local, a default, an argument --
           # fails here (a comparison, `!=` or `==`, does not), so the
           # exception cannot quietly grow.
+          # THE SECOND (owner decision on #1628, FIXTURE-SELF): the browser
+          # acceptance fixture's bucket, one fixed page whose only input is a
+          # validated run id set as text, held in
+          # terraform/infra/acceptance_fixture.tf's local
+          # `acceptance_fixture_public_reader`.
           public="$(grep -rnIE '(^|[^!=<>])=[[:space:]]*\[?[[:space:]]*"(allUsers|allAuthenticatedUsers)"' \
                --exclude-dir=.git --exclude-dir=.terraform --include='*.tf' --include='*.tfvars' terraform 2>/dev/null \
-             | grep -vE '^terraform/infra/github_hooks\.tf:[0-9]+:[[:space:]]*github_hooks_public_invoker[[:space:]]*=[[:space:]]*"allUsers"$' || true)"
+             | grep -vE '^terraform/infra/github_hooks\.tf:[0-9]+:[[:space:]]*github_hooks_public_invoker[[:space:]]*=[[:space:]]*"allUsers"$' \
+             | grep -vE '^terraform/infra/acceptance_fixture\.tf:[0-9]+:[[:space:]]*acceptance_fixture_public_reader[[:space:]]*=[[:space:]]*"allUsers"$' || true)"
           if [ -n "${public}" ]; then
             printf '%s\n' "${public}"
-            echo "::error::a public IAM member is assigned in the Terraform outside the GitHub push receiver"
+            echo "::error::a public IAM member is assigned in the Terraform outside the GitHub push receiver and the acceptance fixture"
             exit 1
           fi
-          echo "no public bindings beyond the GitHub push receiver's"
+          echo "no public bindings beyond the GitHub push receiver's and the acceptance fixture's"
 
       - name: destroy guard still catches offenders
         # This guard is the only thing between `make destroy` and another team's

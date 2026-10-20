@@ -288,9 +288,9 @@ describe('#98: one read age per screen', () => {
 
   it("labels Overview's lead count as the checks it counts", async () => {
     // The ruling (#98, 2026-10-07): the lead count is `checks ran/total ·
-    // found found something` -- the fraction is allowed, but it says what it
+    // found found N problems` -- the fraction is allowed, but it says what it
     // is a fraction of. MUTATION: an unlabelled `{n}/{m}` fraction, or drop
-    // the `found something` half.
+    // the `found N problems` half (QA-013: the problems, one per card).
     window.history.replaceState(null, '', '/')
     render(<App />)
     const line = await waitFor(() => {
@@ -298,9 +298,9 @@ describe('#98: one read age per screen', () => {
       expect(el).not.toBeNull()
       return el!
     })
-    expect(line.textContent).toMatch(/^(checks \d+\/\d+ · \d+ found something|\d+ of \d+ checks still reading)$/)
+    expect(line.textContent).toMatch(/^(checks \d+\/\d+ · \d+ found \d+ problems?|\d+ of \d+ checks still reading)$/)
     // Once every check has run, the settled form, labelled.
-    await waitFor(() => expect(line.textContent).toMatch(/^checks (\d+)\/(\d+) · \d+ found something$/), { timeout: 5000 })
+    await waitFor(() => expect(line.textContent).toMatch(/^checks (\d+)\/(\d+) · \d+ found \d+ problems?$/), { timeout: 5000 })
     const [, ran, total] = /^checks (\d+)\/(\d+)/.exec(line.textContent ?? '')!
     expect(Number(ran)).toBeLessThanOrEqual(Number(total))
     expect(line.textContent).not.toMatch(/^\d+\/\d+/)

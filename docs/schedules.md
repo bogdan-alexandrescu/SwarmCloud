@@ -810,6 +810,8 @@ holds for schedules exactly as for tasks.
 | 10 | `docs-drift` | `claude-code` task | R1 report, R2 with `fix: true` | with `fix: true` | auto report · **approve merge** | auto report · **approve merge** with `fix` | members | 24 h | 2 |
 | 11 | `cost-report` | API | R0 | no | auto | auto | members (tenant), admin (platform) | 24 h | 2 |
 | 12 | `custom-prompt` | workflow from a saved spec | R3 | yes | **approve run + approve merge**; never auto | **approve run + approve merge** | members, with a one-time admin approval of the spec | 6 h | 3 |
+| 13 | `model-prices-refresh` | API | R0 | no | auto | auto | admin, platform scope only | 24 h | 2 |
+| 14 | `model-prices-check` | API | R1 | no (issues) | auto | auto | admin, platform scope only | 24 h | 2 |
 
 The **floor** column is the lowest gate the type allows. Between the floor and
 the default, only a platform admin may set the gate (§4.2), with one
@@ -1127,6 +1129,94 @@ What such a schedule reads across tenants is **aggregates built by swarm-api**
 (counts, durations, costs, codes), never a tenant's prompts, outputs, titles or
 repository contents. So no tenant's data enters another tenant's worker
 (invariant 9).
+
+### 3.14 `model-prices-refresh`
+
+Added 2026-10-19 for #1481 (lane PRICES-REFRESH). Model list prices are the
+`model_prices` platform setting. The owner decided on 2026-10-17 that "a weekly
+schedule refreshes them from the provider's pricing page. It writes changed
+figures with `source: pricing-page` and the page's date. A figure it cannot
+parse is left as it was, and the run says so … it never writes a guess."
+
+* **Does.** swarm-api fetches the provider's pricing page as markdown
+  (`PRICING_PAGE_URL` in `swarm_api/schedtypes/model_prices_refresh.py`, which
+  is code, never a parameter). It reads the "Model pricing" table by its column
+  headers, and writes every model whose four rates changed, or that had no
+  entry, through `Store.set_platform_settings`, the same check an admin's PUT
+  gets. Each entry is written with `source: pricing-page`, `as_of` the day it
+  was read, and `updated_by: schedule:<id>`. An entry the page agrees with is
+  not rewritten.
+* **Why markdown.** The markdown page's table names its columns in its header.
+  If the layout changes, the header stops matching and the page is refused.
+  An HTML selector could instead go on matching the wrong cell without any
+  error.
+* **The page's date.** When read on 2026-10-19, the page carried no date of its own: it
+  had no `Last-Modified` header and no date in its text. So `as_of` is the day the
+  firing read it, which is what `as_of` means: the day a figure was read from its
+  source.
+* **A model priced in tiers is written with its tiers.** On 2026-10-19 that was
+  Haiku 5.5, priced by prompt length: one row `(for prompts up to 100,000
+  tokens)`, one `(for prompts over 100,000 tokens)`. The two rows become one
+  entry with `tiers` (`{up_to_prompt_tokens, input, output, cache_read,
+  cache_write}`, the last with `up_to_prompt_tokens: null`), whose own four
+  rates are the first tier's. swarm-api's estimate picks the tier by the
+  attempt's prompt size (`modelprices.rates_for`). Owner decision,
+  PRICES-FOLLOWUP, 2026-10-19; before it, such a model was left unparsed.
+* **What it does not parse, it does not write.** A cell that is not `$N / MTok`,
+  a model name that is not `Claude <Family> <version>`, or several rows of one
+  model that are not one chain of prompt-length tiers leaves that model's
+  entry as it was. These rows go into a **failed** `unparsed` item, so the
+  firing is `partial`, its history says which rows were skipped and why, and
+  repeated failures pause the schedule (§4.4). A page that cannot be fetched,
+  or whose model table is missing or has a changed header, writes
+  **nothing**, and the firing is `failed`.
+* **Where it runs.** In swarm-api, at the tick. swarm-api already leaves the VPC
+  through Cloud NAT on 443 to reach GitHub (`vpc_egress = "ALL_TRAFFIC"`), and
+  that path also reaches the pricing page. No credential is sent.
+* **Parameters.** None.
+* **Default gate.** Auto. **Blast radius.** The platform's price setting, at
+  most once per week by its cron; every write is stamped with the schedule.
+* **Creates.** An admin, `scope: {mode: "platform"}` only: prices are a
+  platform setting, and a tenant cannot change them.
+
+### 3.15 `model-prices-check`
+
+Added 2026-10-19 for #1481 (owner's comment of 2026-10-17): "a nightly
+observed-rate check. It derives per-token rates per model from finished
+attempts (the CLI's reported cost and usage) and opens an issue when they
+disagree with the price setting by more than 10%."
+
+* **Does.** It reads every tenant's attempts as aggregates (§3.13) and counts
+  each **finished** attempt from the last 24 hours that names its model and
+  reported both its cost and all four token counts. For each model, it compares
+  the reported cost with what the same token counts cost at the setting, both
+  as totals and per million tokens. If they are more than 10% apart, in either
+  direction, that model is **one finding**, however many attempts it has.
+* **Why a blended rate.** An attempt records one set of token totals and one
+  cost, so its four rates cannot be separated. What can be measured is the
+  cost of its tokens, so the check compares that.
+* **Not counted.** An attempt whose task says `cost_estimated`: swarm-api
+  priced its cost *from the setting*, so it agrees by construction and would
+  pull a real disagreement towards zero. Also not counted: running attempts,
+  and attempts with no cost, no model or a missing token count. A model with
+  fewer than three counted attempts is not judged. A model the setting does
+  not price is listed but never compared, because there is no figure to be
+  off from.
+* **The issue.** One per finding, in `issue_repository`. That repository
+  must be registered in the schedule's owning tenant, and the issue is opened
+  with that tenant's credential, under `cost-report`'s rule (§3.11). The
+  issue body starts with a marker naming the model and the setting's four
+  rates. A firing looks for that marker first, so a given disagreement with a
+  given setting is opened once, not every night. A changed setting that
+  still disagrees opens a new issue. The body holds aggregates only and never
+  names a tenant, task or person. If a firing has a finding but no
+  `issue_repository`, or one that is not registered, it **fails**: a check
+  that told nobody must not read as a success.
+* **Parameters.** `issue_repository` (`owner/repo`) and `issue_label`
+  (`bug`).
+* **Default gate.** Auto. **Blast radius.** At most one issue per model per
+  setting.
+* **Creates.** An admin, `scope: {mode: "platform"}` only.
 
 ---
 

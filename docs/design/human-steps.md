@@ -33,7 +33,12 @@ What the design settles, in one line each:
   never touch it, and a parity test fails any reader that forgets it.
 * **Any member of the step's tenant may answer** (Q2), checked as a member
   at the moment they answer. Agents and service accounts are always
-  refused, including an agent driving a person's own plugin session.
+  refused, including an agent driving a person's own plugin session, with
+  **one exception** (amendment of 2026-10-18, §4.2.1): in a service tenant,
+  the tenant's own principal answers its own steps, and may label the
+  person it answers for with `on_behalf_of`. Release acceptance answers that
+  way, as swarm-verify in its own service tenant (amendment of 2026-10-19,
+  §4.2.2).
 * **A wait lasts at most 24 hours** (Q4), the same bound as
   `HUMAN_REQUIRED`. `expires_after_seconds` is required.
 * **An answer is a JSON form and, optionally, files** (Q6). The form
@@ -502,7 +507,7 @@ profile requires it.
     "on_expire": "default",
     "default": {"verdict": "MERGE", "findings": []},
     "remind_after_seconds": 14400,
-    "remind": ["owner@saga.xyz"]
+    "remind": ["owner@example.com"]
   }
 }
 ```
@@ -615,6 +620,25 @@ model that has to hold without it.
    tenant, as with approvals. `is_admin` is about the caller, not the tenant
    (`auth.py::_select_tenant`), and the route never reads it.
 
+   > **Amended 2026-10-19 (ROLES-DOCS, part of #1518): step 3 is
+   > superseded for group workspaces** by
+   > [workspace-roles.md](workspace-roles.md) §4.2.3, owner answer Q5. A
+   > platform admin is `admin` in every registered group workspace, member
+   > or not, so they answer there as its admin; every write they make in a
+   > group workspace they are not in is audited before it runs. Step 2's
+   > fresh check is now `Authenticator.may_act_in`, which answers
+   > `"platform_admin"` for them only in a group workspace and only while
+   > `PLATFORM_ADMIN_REACH` is on. A personal workspace is unchanged: only
+   > its person answers, and a platform admin cannot even select another
+   > person's. Roles add one check after step 2: the answerer must hold
+   > `member` or above, read fresh, or the answer is 403
+   > `role_member_required` (behind that code's switch, off at ship). The
+   > route runs all of it in
+   > `apps/swarm-api/swarm_api/awaitinput.py::member_refusal`: a person,
+   > then `may_act_in` fresh (`not_a_member` when it answers `""`), then
+   > the role. Step 1 and the gate rules elsewhere in this section are
+   > unchanged and still apply to a platform admin.
+
 **What replaces the per-assignee check in the threat model.** The first draft
 relied on `assignees` for one property: that the person whose judgement the
 author wanted is the person who answered. Q2 drops that property on purpose,
@@ -650,6 +674,136 @@ and the design keeps what is left:
 * **What is no longer protected.** A step can no longer say "only Alice may
   approve this". If an author needs that, it is a product change the owner
   declined in Q2, not a gap in this design.
+
+#### 4.2.1 Amendment, 2026-10-18: a service tenant's own principal (HW-SERVICE-ANSWER)
+
+**Owner decision, 2026-10-18 (part of #1436).** Q2 said agents and service
+accounts are always refused. It now has **one exception**: in a **service
+tenant**, the tenant's own principal may answer the steps of workflows in
+that tenant.
+
+**Why.** A service tenant is a `kind: "user"` tenant whose principal is a
+service account: `u-or-9a0792` for oracle-api, `u-sw-c90291` for
+swarm-verify (docs/multi-tenancy.md, "Service tenants"). Its only member is
+that service account. Under step 1, nobody could answer its steps, so a
+client application that runs its own review loop through a workflow (the
+case #1568 admitted oracle-api for) could never finish one. The application
+collects the person's answer in its own UI and relays it. The rule is
+generic, so it holds for **every** service tenant: swarm-verify's
+`u-sw-c90291`, the acceptance identity's, gains it too, for its own
+tenant's steps only.
+
+**Who, exactly** (`apps/swarm-api/swarm_api/awaitinput.py::service_principal`).
+All of these must hold, and each is read from the verified token or freshly
+from Firestore, never from something the caller chose:
+
+* the caller is a service account and **not** one of the platform's jobs
+  (the schedule tick, the rollup sweeper) and **not** a listed,
+  continuation-scoped account (`member_scope`, `tenant_member`, contract
+  request 30). A listed account is refused even when its address is a
+  tenant's principal;
+* the caller is **not a worker identity**: no address under the frozen
+  worker prefix (`swarm-agent-worker-<tenant>`) or the configured
+  `TENANT_SERVICE_ACCOUNT_PREFIX`, and not the step tenant's derived worker. A workflow's agent speaks as its worker through the MCP bridge,
+  and the worker GSA is a different account from the tenant's principal.
+  A tenant identity can rewrite its own `tenants/<id>` document (contract
+  request 87), so the worker check reads no stored field;
+* the request acts in the step's tenant, reached by no platform-admin
+  reach, and that tenant's id is the one the frozen `tenant_id_for_user`
+  derives from the **caller's own email**. A rewritten tenant document
+  naming another principal therefore cannot make a foreign tenant look like
+  the caller's own;
+* the tenant document, read for this request, is `kind: "user"` and its
+  principal is exactly the caller's address (a blank principal is not a
+  match).
+
+Then the ordinary rest of §4.2 applies unchanged: the step is read through
+the tenant-scoped store (another tenant's step is a 404), `may_act_in` is
+asked freshly (a user tenant's principal is its only member), and the role
+floor is the personal tenant's.
+
+**Still refused, 403 `person_required`:** any other service account, in any
+tenant; a service account in a group tenant (oracle-api is in none, and a
+bot confirmed in eng is still refused there); a service tenant's principal
+in another service tenant; every worker and agent identity; every listed
+scoped identity; the platform's own jobs.
+
+**`on_behalf_of`, a label.** The answer body takes one more optional field,
+`on_behalf_of`: an email address of at most 254 characters of printable
+ASCII, the whole value matched (no trailing newline, no look-alike letter,
+no direction override), checked for an address **shape only**. **It is a label, not a verified identity.** Nothing
+asks whether the address exists, or whether that person asked for the answer:
+the platform knows only that the principal sent it. It is recorded as given
+(lower-cased) beside `answered_by`, which is always the verified principal,
+on the answer record, `result_summary.input` and the `succeeded` event (both
+with `answered_as: "service"`, where a person's answer says `"person"`; the
+`source` stays `"person"`, meaning "not the expiry default"), and every
+response that reads the answer back,
+each with `on_behalf_of_verified: false`. A person may not send it: 422
+`invalid_payload`, `position: "on_behalf_of"`. A replay must carry the same
+label to be a replay. Idempotency, 409 `already_answered`, the forms and
+the file rules are unchanged.
+
+**What this gives up.** The property step 1 protected -- "a workflow's own
+agent cannot approve its own draft" -- now rests, in a service tenant, on
+the service application: it holds the principal's credential, and whatever
+it relays is the answer. That is the same trust the tenant already places in
+it to submit the workflow at all. Its agents still cannot answer, because
+they run as the worker, not the principal.
+
+#### 4.2.2 Amendment, 2026-10-19: release acceptance answers in swarm-verify's own service tenant (HW-ACCEPT-ID)
+
+**Owner decision, 2026-10-19 (part of #1436).** Release acceptance answers
+its await-input step **as swarm-verify, in swarm-verify's own service tenant
+`u-sw-c90291`**: the path oracle-api takes in `u-or-9a0792` (§4.2.1), so the
+release check proves that path too. No new account, no new secret, and **no
+exception to `person_required` in group tenants**.
+
+**Why it was needed.** HW-ACCEPT (PR 1579, merged 2026-10-19 01:45Z) ran the
+two await-input checks in the suite's tenant, the GROUP tenant `smoke`.
+There swarm-verify is a service account answering for no person: 403
+`person_required` on every dev run, as §4.2.1 says it must be. §4.2.1's
+exception needed the request to act in the caller's own service tenant, and
+swarm-verify could not select it: `Authenticator._with_own_workspace` offers
+no service identity its own tenant, and `PersonalTenants.ready` wants a
+`workspaces/` record that a Terraform-written service tenant never has (the
+workspace gate never judges a service account, WD7).
+
+**What changed** (`apps/swarm-api/swarm_api/auth.py`,
+`Authenticator._with_own_service_tenant`). A service account may **name** its
+own service tenant in `X-Swarm-Tenant`, and act in it, when all of these
+hold, each from the verified token or a read, never from what the caller
+sent:
+
+* the named id is exactly `tenant_id_for_user(<the caller's verified
+  email>)`;
+* `tenants/<that id>`, read through `PersonalTenants`' cache, is `kind:
+  "user"` and its principal is **exactly the caller's email**. The frozen
+  slug drops the domain, so `ci-bot@one-project` and `ci-bot@another` derive
+  one id, and the principal is what tells them apart;
+* the caller is not a worker identity (the frozen prefix, the configured
+  `TENANT_SERVICE_ACCOUNT_PREFIX`, or the tenant's own derived worker), not
+  the schedule tick, not the rollup sweeper, and not a listed,
+  continuation-scoped account. These are the conditions §4.2.1 applies,
+  through one shared helper (`auth.own_service_tenant`), so the tenant a
+  service account may select and the tenant it may answer in cannot drift
+  apart.
+
+No `workspaces/` record is asked for on this path. **A person's path is
+unchanged**: their own tenant is still offered only when
+`PersonalTenants.ready` finds the ready record. **The headerless default is
+unchanged**: a service account in a group keeps that group as its default,
+which the acceptance suite relies on for every other check. A failed read is
+a 503 when the request names that tenant, never a fall-through to another.
+
+**What acceptance does** (`scripts/acceptance/groups/workflow.sh`). It
+derives its own tenant from the email `GET /v1/tenants/me` verified, with
+`common.sh`'s `personal_tenant_id` (the frozen `tenant_id_for_user`,
+imported; the swarm-verify image carries `identity.py` for it), and submits,
+reads and answers the two await-input workflows with `X-Swarm-Tenant` set to
+it. Their `mock` steps run on that tenant's own mock job. It asserts the
+answer was taken with `answered_as: "service"`. Every other check stays in
+`smoke`.
 
 ### 4.3 The answer reaches GCS: a narrow, create-only writer
 
@@ -981,7 +1135,8 @@ What the route does, in order:
 1. Apply the size gate of §4.3 steps 1-3 (411, 413, 429).
 2. Read the step through the tenant-scoped store. If the workflow or step is
    unknown, or belongs to another tenant: **404**.
-3. Check that the caller is a person (403 `person_required`) and, freshly, a
+3. Check that the caller is a person, or a service tenant's own principal
+   in that tenant (§4.2.1) (403 `person_required`), and, freshly, a
    member of the step's tenant (403 `not_a_member`, 503
    `membership_unavailable`) (§4.2).
 4. If the step is not `PARKED(AWAITING_INPUT)`, return **409** with the step's
@@ -1015,9 +1170,9 @@ What the route does, in order:
      artifacts: [{name, bytes, uri, sha256, attachments: [{name, bytes, uri, sha256, content_type}]}],
      artifact_bytes,
      published_by: "control_plane",
-     input: {source: "person", answered_by, answered_at, via, wait_seconds, files}
+     input: {source: "person", answered_by, on_behalf_of, answered_at, via, wait_seconds, files}
    },
-   metadata.await_input.answer: {answer_id, answered_by, answered_at, via, sha256, bytes, files}
+   metadata.await_input.answer: {answer_id, answered_by, on_behalf_of, answered_at, via, sha256, bytes, files}
    ```
 
    `artifact_bytes` counts the form and every file. `files` is the count.
@@ -1032,7 +1187,7 @@ Response, **200**:
  "state": "SUCCEEDED",
  "artifact": {"name": "review.json", "bytes": 87, "sha256": "…"},
  "files": [{"name": "review.files/draft.md", "bytes": 40211, "sha256": "…"}],
- "answered_by": "owner@saga.xyz", "answered_at": "2026-10-17T14:05:09Z",
+ "answered_by": "owner@example.com", "answered_at": "2026-10-17T14:05:09Z",
  "replayed": false}
 ```
 
@@ -1043,7 +1198,7 @@ the bridge and the inbox read:
 {"status": "waiting" | "not_open" | "answered" | "expired" | "cancelled",
  "prompt": "...", "form": "verdict", "artifact": "review.json",
  "max_files": 10, "max_answer_bytes": 16777216,
- "tenant": "eng", "may_answer": true, "remind": ["owner@saga.xyz"],
+ "tenant": "eng", "may_answer": true, "remind": ["owner@example.com"],
  "opened_at": "…", "expires_at": "…", "on_expire": "fail",
  "shows": [{"step_id": "draft", "task_id": "task_…", "name": "draft.md"}],
  "questions": null,
@@ -1120,7 +1275,7 @@ metadata:
   input_from: {upstream task id: filename}   # what the person is shown
   await_input:                       # RESERVED, platform-written, unsigned
     opened_at, expires_at
-    answer: null | {answer_id, answered_by, answered_at, via, sha256, bytes, files}
+    answer: null | {answer_id, answered_by, on_behalf_of, answered_at, via, sha256, bytes, files}
 result_summary (once ended): see §4.6 step 8
 ```
 
@@ -1363,7 +1518,11 @@ As request B.
 ### Request D. `profiles.py`: `await-input` becomes available (owner applies, after HW-ACCEPT)
 
 **Status:** to be applied by the owner once the acceptance group of §6 has
-passed on dev.
+passed on dev. Filed as
+[contract request 105](../contract-change-requests.md), ACCEPTED by the owner
+2026-10-18 on PR 1570 and applied there. The owner turned it on in dev before
+HW-ACCEPT, which cannot submit an await-input step while the profile is
+unavailable; HW-ACCEPT then proves it on dev.
 
 #### The change
 
@@ -1409,7 +1568,7 @@ reports blockers and majors on the PR; minors go to the wave epic.
 | phase | lane | territory | red-first tests (each fails before the change) |
 |---|---|---|---|
 | 0 | **HW-CONTRACT** (owner applies) | `apps/common/swarm_common/states.py`, `profiles.py`, `docs/contract-change-requests.md` (entries 85-87 from §5 A-C), `terraform/infra/locals.tf`, `tests/terraform/catalogue.tftest.hcl`, `apps/swarm-ui/src/types.ts`, `apps/swarm-ui/src/components/StatePill.tsx`, `apps/swarm-mcp/swarm_mcp/progress.py`, `apps/swarm-mcp/swarm_mcp/compact.py`, `tests/unit/common/test_await_input_contract.py` (new), `tests/unit/common/test_awaiting_input_readers.py` (new) | `AWAITING_INPUT` is a `ParkReason` and not in any capacity set; the readers test fails on a file that names `HUMAN_REQUIRED` and not `AWAITING_INPUT` and is not on its list, and its three behavioural cases (25-hour sweep, `human-ready` 409, no `handoffs` item) hold; a `control_plane` profile with `runner_argv`, `worker_action`, `provider`, `secrets`, `inputs` or `live_browser` raises; `await-input` is `control_plane`, unavailable, and in `profiles_without_a_job`; the parity script passes |
-| 1 | **HW-IAM** (Track C; waits at `dev-iam`) | `terraform/infra/await_input.tf` (new: `google_storage_bucket_iam_member.api_input_writer`, local `await_input_object_condition`), `terraform/modules/firestore/indexes.tf` (`google_firestore_index.await_input_expiry`), `tests/terraform/await_input.tftest.hcl` (new) | the condition admits `tenants/a/tasks/t/attempts/input-0123456789ab/artifacts/review.json` and `…/artifacts/review.files/draft.md`; refuses `attempts/att_x/artifacts/…`, `attempts/input-0123456789ab/checkpoints/…`, `attempts/input-0123456789ab/live/…`, a key outside `tenants/`; the role is `objectCreator` only, bucket-scoped; `api_reader` is unchanged |
+| 1 | **HW-IAM** (Track C; waits at `dev-iam`) | `terraform/infra/await_input.tf` (new: `google_storage_bucket_iam_member.api_input_writer`, local `await_input_object_condition`), `terraform/modules/firestore/indexes.tf` (`resource "google_firestore_index" "await_input_expiry" {`), `tests/terraform/await_input.tftest.hcl` (new) | the condition admits `tenants/a/tasks/t/attempts/input-0123456789ab/artifacts/review.json` and `…/artifacts/review.files/draft.md`; refuses `attempts/att_x/artifacts/…`, `attempts/input-0123456789ab/checkpoints/…`, `attempts/input-0123456789ab/live/…`, a key outside `tenants/`; the role is `objectCreator` only, bucket-scoped; `api_reader` is unchanged |
 | 1 | **HW-SCHED** | `apps/scheduler/scheduler/awaitinput.py` (new), `loop.py`, `store.py`, `tests/unit/control_plane/test_await_input_scheduler.py` (new) | draft -> await -> revise: when `draft` succeeds the await step is `PARKED(AWAITING_INPUT)` with **zero leases** in the store; a READY `await-input` task is parked by `_admit_one` and never leased whatever the pool headroom; `_expire_human_waits` does not touch it at 25 hours; under `fail_workflow` a failed sibling cancels it; its `task_finished` promotes `revise` within the same drain; `expires_at` is `opened_at` plus the declared seconds |
 | 1 | **HW-API-SUBMIT** | `apps/swarm-api/swarm_api/schemas.py`, `validation.py`, `service.py`, `tests/unit/control_plane/test_await_input_submission.py` (new) | each refusal of §4.1 is a 422 naming its field, `assignees` included; `expires_after_seconds` of 86,401 is refused and 86,400 accepted; the API's bound equals the scheduler's `HUMAN_PARK_MAX_SECONDS` (both imported); `max_files` of 11 is refused; `await_input` lands in `metadata.dispatch` and changes the spec digest; a caller-sent `metadata.await_input` is refused as reserved; an await step is never in `integrates`; `form: "answers"` without a `questions.json` source is refused |
 | 1 | **HW-WORKER** (Track B) | `apps/agent-worker/agent_worker/inputs.py`, `tests/unit/worker/test_input_attachments.py` (new) | an entry with two attachments stages them under `review.files/`; an attachment whose URI is in another tenant, another task or outside `artifacts/` fails with `InputUnavailable` and stages nothing; an attachment with no `bytes` is refused; attachments count toward `max_total_bytes`; a resumed attempt with them in its checkpoint does not re-fetch; an entry without `attachments` stages exactly as today |
@@ -1453,7 +1612,7 @@ this lane's `questions.json`, with the recommendation first.
 | # | question | decision (2026-10-17) | applied in |
 |---|---|---|---|
 | Q1 | Which park reason does a waiting step use? | A new `ParkReason.AWAITING_INPUT` (request A). The 24-hour sweep, `human-ready` and the browser bell never touch it, and a parity test fails any reader that forgets it. As recommended. | §2.2, §3.4, §4.4, §5 A, HW-CONTRACT |
-| Q2 | Who may answer? | **Any member of the step's tenant**, checked as a member at the moment they answer; agents and service accounts always refused. **Departs** from the recommendation (assignees). `assignees` is removed; `remind` only chooses whose bell rings. | §4.1, §4.2, §4.5, §4.6 |
+| Q2 | Who may answer? | **Any member of the step's tenant**, checked as a member at the moment they answer; agents and service accounts always refused. **Departs** from the recommendation (assignees). `assignees` is removed; `remind` only chooses whose bell rings. **Amended 2026-10-18:** in a service tenant, its own principal answers its own steps, labelled `on_behalf_of` (§4.2.1). | §4.1, §4.2, §4.2.1, §4.5, §4.6 |
 | Q3 | Which answer channels are in the first build? | Console and plugin/MCP now; GitHub comments later, in lane HW-GITHUB. As recommended. | §4.9, §6 |
 | Q4 | How long may a step wait? | `expires_after_seconds` required, **at most 24 hours**, the same bound as `HUMAN_REQUIRED`. **Departs** from the recommendation (7 days). | §2.1 (invariant 8), §4.1, §4.4, §4.5, §1.3 |
 | Q5 | What may happen at expiry? | `fail` (dead-letter) or `default` (an answer declared and signed at submission, so a downstream `when` gate takes the author's branch). As recommended. | §4.1, §4.6 |
@@ -1479,3 +1638,62 @@ verdict inside a zip, so a verdict form with files would lose its gate.
 `WorkflowStep` and every workflow reader), with files declared by name at
 submission. It changes the contract for every workflow to serve this one,
 and the author must guess the names in advance.
+
+---
+
+## 8. What was built
+
+**HW-DOCS (2026-10-18, part of #1436).** `docs/workflows.md` has a section,
+"Waiting for a person: `await-input`", and a row for `await_input` in its
+step-field table; `docs/notifications.md` has "A workflow step waiting for a
+person" and names the source in its `task` row and its tenant-isolation
+section. They describe what was on main at `f696290`: the contract entries
+(HW-CONTRACT), the scheduler's park (HW-SCHED), the submission rules
+(HW-API-SUBMIT), attachment staging (HW-WORKER), the answer, expiry and
+listing routes (HW-API-ANSWER) and the bell and inbox items (HW-NOTIFY).
+`tests/unit/scripts/test_docs_describe_what_was_built.py` reads every bound,
+type and name they state from the code: the 24-hour bound (from both
+swarm-api and the scheduler), the 16 MiB answer, the ten files, the 256 KiB
+form, the closed type list, the three forms with their default artifacts,
+the refusal reasons, the routes and the bell's titles.
+
+Where the build differs from §4 and the docs follow the build: a refusal
+carries the design's name in `detail.reason` under an established `code`
+(`apps/swarm-api/swarm_api/awaitinput.py`, "THE CODES"), and the multipart
+parser is swarm-api's own, bounded one, not `python-multipart`
+(`apps/swarm-api/swarm_api/routes/await_input.py`, "THE MULTIPART PARSER").
+
+Not built when this note was written, and so described in the docs only as
+lanes still to land: the console card (HW-UI) and the plugin's
+`swarm_workflow_input` and `swarm_inputs` (HW-MCP). Their sections in the
+docs are theirs to write when they merge.
+
+**HW-UI (2026-10-18, part of #1436).** The console's half, in
+`apps/swarm-ui/src/AwaitInputCard.tsx` and `apps/swarm-ui/src/awaitInput.ts`.
+An `await-input` step's node on Work › Workflows reads "waiting for a
+member", its tooltip names the tenant, and its row says when it expires;
+opening the workflow picks the waiting step, so its card is open on arrival.
+The card shows the prompt and each artifact the step stages through the
+existing artifact viewer, then the declared form (Approve sends `MERGE`,
+Request changes `NOT_YET`; the upstream agent's questions; a text box) and,
+when `max_files` is above 0, a file picker that refuses too many files, a
+name or type the server refuses, and a whole answer over the bound before
+anything is sent, with the §4.3 warning above it and again beside Send. An
+answered, expired or cancelled step shows who, when and how and offers no
+form; its files are offered as downloads, never drawn. The approvals inbox
+lists a waiting step as an Answer, drawn from its row (the item has no
+record to read) with no decide verbs, and its Answer opens the workflow. On
+a run's Steps card the step reads what it waits for and leads to its card.
+Submit › Workflow composes the `await_input` block for the step, and offers
+the profile refused while the catalogue serves it unavailable.
+
+Where the build differs from §4.5: the `answers` form is drawn from the
+questions the step's own route serves, not through `QuestionsCard.tsx`,
+whose Answer posts to the task's answers route rather than the step's.
+
+**ROLES-DOCS (2026-10-19, part of #1518).** §4.2's step 3 carries the
+amendment above: workspace roles (`docs/design/workspace-roles.md`) let a
+platform admin answer in a group workspace and require `member` of every
+answerer. ROLES-GATES-DECIDE built it in the answer route, held by
+`tests/unit/control_plane/test_roles_gates_answer.py`. The console's answer
+card has no role gate of its own; the server decides.

@@ -558,7 +558,19 @@ export interface OwnerAnswerVersion {
   text: string | null
   by: string | null
   at: string | null
+  /**
+   * Where it was answered (ANSWER-SYNC, part of #1644): `console`, or
+   * `claude-code` for a pick the plugin's swarm_task_answer posted from a
+   * Claude Code session. Null on an answer stored before it was recorded, and
+   * OPTIONAL: an API older than ANSWER-SYNC does not send it.
+   */
+  via?: AnswerVia | null
+  /** The Claude Code session it was answered in, or null. Optional as `via` is. */
+  session?: string | null
 }
+
+/** `AnswerBody.via` in agent_questions.py: where an answer was given. */
+export type AnswerVia = 'console' | 'claude-code'
 
 /**
  * The owner's answer to one question (`codec.owner_answer_to_api`), with the
@@ -586,6 +598,89 @@ export interface StartProblem {
   seen_at: string | null
 }
 
+/**
+ * `GET/PUT /v1/admin/settings` (`Store.get_platform_settings`): the platform
+ * settings an admin edits at run time, each at its default when unset. The
+ * two limits on a step's additional repositories (#1434) are read by swarm-api
+ * at every submission and by the worker at every clone, so a change applies to
+ * the next one with no deploy. Their accepted ranges are the API's
+ * (`store.PLATFORM_SETTINGS_RANGES`), and a value outside one is refused 422
+ * naming it; this file does not restate them.
+ */
+export interface PlatformSettings {
+  merge_by_default: boolean
+  /** The most additional repositories one step may read. */
+  max_additional_repositories: number
+  /** The GiB one step's additional repositories may total. */
+  additional_repositories_budget_gib: number
+  /**
+   * List prices by model (#1481), that swarm-api prices a stopped attempt's
+   * usage at. A model with no entry prices nothing: its cost is "not
+   * reported", never a guessed figure (`swarm_api.modelprices`).
+   */
+  model_prices: Record<string, ModelPrice>
+  updated_at: string | null
+  updated_by: string | null
+  /** `missing`: every value above is a default nobody has set. */
+  settings_document: 'present' | 'missing'
+}
+
+/**
+ * One model's entry in `PlatformSettings.model_prices` (`modelprices.entry`):
+ * USD per million tokens of each kind, where the figure was read, the day it
+ * was read, and the admin who last changed it (null for the seed, which the
+ * worker's code held before prices became data).
+ */
+export interface ModelPrice {
+  input: number
+  output: number
+  cache_read: number
+  cache_write: number
+  currency: 'USD'
+  /** `console` for an admin's edit, `pricing-page` for the weekly refresh, `code` for the seed. */
+  source: string
+  /** YYYY-MM-DD. */
+  as_of: string
+  updated_by: string | null
+  /**
+   * A model priced by prompt length (Haiku 5.5), its tiers in rising order:
+   * the first at the four rates above, the last with no ceiling. Absent for
+   * a model priced at one set of rates (`modelprices.tiers_problem`).
+   */
+  tiers?: ModelPriceTier[]
+}
+
+/** The four per-million-token rates of a `ModelPrice`, in the order the table draws them. */
+export const MODEL_PRICE_RATES = ['input', 'output', 'cache_read', 'cache_write'] as const
+export type ModelPriceRate = (typeof MODEL_PRICE_RATES)[number]
+
+/** One tier of `ModelPrice.tiers`: the rates of a prompt up to `up_to_prompt_tokens` tokens (null: no ceiling). */
+export type ModelPriceTier = Record<ModelPriceRate, number> & { up_to_prompt_tokens: number | null }
+
+/** `GET /v1/settings/model-prices`: the price table, read-only, for every signed-in member. */
+export interface ModelPriceTable {
+  model_prices: Record<string, ModelPrice>
+}
+
+/**
+ * What `PUT /v1/admin/settings` takes for one model (`schemas.ModelPriceRequest`).
+ * No `updated_by`, which swarm-api stamps from the token, and no `source` or
+ * `currency`, which default to `console` and `USD` there.
+ */
+export type ModelPriceChange = Record<ModelPriceRate, number> & { as_of: string }
+
+/** One entry of `Task.additional_repositories`, as `additional_repositories_to_api` serves it. */
+export interface TaskAdditionalRepository {
+  name: string
+  repository: string
+  repo_id: string
+  ref: string
+  commit: string
+  /** Where the agent finds it, relative to its own checkout. */
+  path: string
+  forge_credential_source: string
+}
+
 export interface Task {
   id: string
   tenant_id: string
@@ -599,6 +694,8 @@ export interface Task {
   started_at: string | null
   completed_at: string | null
   submitted_by: string | null
+  /** The submitter's display name (`people.add_names`); null when none is set. */
+  submitted_by_name?: string | null
   attempt_count: number
   max_attempts: number
   park_reason: ParkReason | string | null
@@ -621,6 +718,12 @@ export interface Task {
   forge_access?: 'read' | 'write' | null
   /** "the submitter's GitHub credential", "tenant token, service submission", "owner's GitHub connection, service submission" (INDEX-CRED), or null. */
   forge_credential_source?: string | null
+  /**
+   * Contract request 95 (docs/design/multi-repository-steps.md §4.1): the
+   * repositories this task reads beside its own, each pinned to a commit.
+   * Null when it reads none. OPTIONAL: an older API does not send it.
+   */
+  additional_repositories?: TaskAdditionalRepository[] | null
   cancel_requested: boolean
   repository_url: string | null
 
@@ -630,6 +733,14 @@ export interface Task {
   // output, latest_checkpoint for the attempt timeline, next_eligible_at for
   // parked work.
   model: string | null
+  /**
+   * The model class the task runs (contract request 104, #1435), RESOLVED:
+   * the stored class, or its profile's default when none was stored, which
+   * `model_class_defaulted` then says. Null on a profile that runs no Claude
+   * model. OPTIONAL: an older API does not send it.
+   */
+  model_class?: string | null
+  model_class_defaulted?: boolean
   timeout_seconds: number | null
   /** When a PARKED task becomes eligible again. Null unless it is parked. */
   next_eligible_at: string | null
@@ -1443,6 +1554,28 @@ export function usageOf(task: Task): Record<string, number | string[]> | null {
   return usage && typeof usage === 'object' ? usage : null
 }
 
+/**
+ * The models the CLI's stream reports, when the pinned one is NOT among them;
+ * null otherwise (docs/design/model-per-step.md §4.6, #1435).
+ *
+ * The worker's own rule (`lifecycle.py::_note_model_mismatch`), so the console
+ * and the worker's `model_mismatch` log never disagree: the pin missing from
+ * `usage.models` is a mismatch, and another model BESIDE the pin is not -- the
+ * CLI also reports the small model it runs for its own housekeeping. A `[...]`
+ * context suffix (`<model>[1m]`) is the same model. Null when either side was
+ * not recorded: an absent record is not a disagreement.
+ *
+ * `usage` is the task's `result_summary`, written once at the end, so it is
+ * the LAST attempt's stream and is compared with that attempt only.
+ */
+export function modelMismatch(pinned: string | null | undefined, task: Task): string[] | null {
+  if (typeof pinned !== 'string' || pinned === '') return null
+  const models = usageOf(task)?.['models']
+  if (!Array.isArray(models) || models.length === 0) return null
+  const reported = models.map(String).sort()
+  return reported.some((m) => m.split('[', 1)[0] === pinned) ? null : reported
+}
+
 /** `GET /v1/tenants/me`, routes/tenants.py:24-38. */
 export interface Me {
   tenant: Tenant
@@ -1788,6 +1921,11 @@ export interface AttemptRow {
   cpu_limit_source?: string | null
   cpu_reading_age_seconds?: number | null
   /**
+   * Contract request 103 (#1435): the model ID this attempt's agent was
+   * started with. Null: no model, or not recorded. Absent: an older API.
+   */
+  model?: string | null
+  /**
    * #379. THIS attempt's account and the accounts it gave back. Served beside
    * the rows as `accounts_by_attempt` (so a row stays `GET /v1/attempts`'s
    * shape) and joined on by `loadAgentRun`. Absent: not read.
@@ -1909,6 +2047,22 @@ export interface Runtime {
   secrets_any_of: boolean
   timeout_seconds: number
   resource_class: string
+  /**
+   * The model classes a step on this profile may send as `model_class`, BY
+   * NAME (docs/design/model-per-step.md §4.4, #1435). `[]` on a profile that
+   * runs no Claude model. Runtimes draws them as chips, and the workflow form
+   * offers exactly these in a step's class select. OPTIONAL, all three: an
+   * API older than the fields sends none, and is read as offering no class.
+   */
+  model_classes?: string[]
+  /** What a step naming no class runs; null when `model_classes` is empty. */
+  default_model_class?: string | null
+  /**
+   * Class -> the model ID it runs, from the deployment's terraform pin. `{}`
+   * on a classless profile, and on a deployment that pins none yet -- where
+   * only the default may be named (`model_class_not_yet_available`).
+   */
+  models?: Record<string, string>
   /**
    * The class resolved inline. Field-identical to a `/v1/resource-classes`
    * entry, and `test_sizing_agrees_with_the_resource_classes_route` asserts the
@@ -2533,15 +2687,17 @@ export const END_CAUSES: readonly EndCause[] = [
  * step waiting for its pull request's checks (docs/merge-step.md, 2026-10-06).
  * HUMAN_REQUIRED is contract request 68: a live-browser hand-off whose hold
  * expired with nobody in control (docs/design/live-browser.md section 4.3).
+ * AWAITING_INPUT is contract request 92: an `await-input` workflow step
+ * waiting for an answer from a tenant member (docs/design/human-steps.md).
  */
 export type ParkReason =
   | 'PROVIDER_QUOTA_EXHAUSTED' | 'PROVIDER_COOLDOWN' | 'PROVIDER_OUTAGE'
   | 'SCHEDULED_RETRY' | 'DEPENDENCY_INCOMPLETE' | 'MANUAL_PAUSE'
   | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING' | 'CHILDREN_INCOMPLETE'
-  | 'CI_PENDING' | 'HUMAN_REQUIRED'
+  | 'CI_PENDING' | 'HUMAN_REQUIRED' | 'AWAITING_INPUT'
 
 /**
- * The same eleven as a value, so a test can compare the list against
+ * The same twelve as a value, so a test can compare the list against
  * `swarm_common.states.ParkReason` and the three sets below can be checked for
  * covering it. A union type erases at build time and can be checked against
  * nothing.
@@ -2564,6 +2720,7 @@ export const PARK_REASONS = [
   'CHILDREN_INCOMPLETE',
   'CI_PENDING',
   'HUMAN_REQUIRED',
+  'AWAITING_INPUT',
 ] as const
 
 /**
@@ -2593,6 +2750,12 @@ export const PARK_NEEDS_A_PERSON: ReadonlySet<string> = new Set<ParkReason>([
   // 68). Only a person promotes it, from the console, when they are ready to
   // sign in; no sweep or timer does, and past a day it is dead-lettered.
   'HUMAN_REQUIRED',
+  // An `await-input` workflow step waiting for an answer from a member of
+  // its tenant (contract request 92, docs/design/human-steps.md §4.5). Only
+  // an answer moves it on; its declared expiry (at most a day) ends it, and
+  // never resumes the work a person was asked about. No apostrophes in this
+  // comment: test_overview_workflow_checks.py reads the quoted names.
+  'AWAITING_INPUT',
 ])
 
 /**
@@ -2638,7 +2801,7 @@ export const PARK_WAITS_ON_A_STEP: ReadonlySet<string> = new Set<ParkReason>([
 
 /**
  * Copy for every reason that is ever actually written -- the seven from
- * admission plus the eleven ParkReasons.
+ * admission plus the twelve ParkReasons.
  *
  * `BlockedReason.BUDGET_LIMIT`, `QUOTA_EXHAUSTED`, `COOLDOWN`, `DEPENDENCY`
  * and `SCHEDULED_RETRY` are members of the enum that nothing ever writes as a
@@ -2668,6 +2831,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   BUDGET_EXHAUSTED: 'The budget for this work is spent.',
   CREDENTIAL_MISSING: 'No provider key is registered for this tenant.',
   HUMAN_REQUIRED: 'The agent asked for a person and nobody came in time. Holds no capacity until someone says they are ready.',
+  AWAITING_INPUT: 'A workflow step waits for a member of its tenant to answer. Holds no capacity; it ends on the first answer or at its declared expiry.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',
 }
 
@@ -3267,6 +3431,8 @@ export interface Workflow {
    */
   updated_at: string
   submitted_by: string | null
+  /** The submitter's display name (`people.add_names`); null when none is set. */
+  submitted_by_name?: string | null
   priority: number
   on_step_failure: string
   cancel_requested: boolean
@@ -3443,6 +3609,9 @@ export interface WorkflowStep {
   input_from: Record<string, string>
   timeout_seconds?: number | null
   task_id?: string | null
+  /** The step's model class, resolved as its task's is (`Task.model_class`, #1435). Absent: an older API. */
+  model_class?: string | null
+  model_class_defaulted?: boolean
   /**
    * The step's input, MASKED by its TASK's masker (the PR #229 review), so a
    * literal the workflow's metadata names is masked here as on the task. Null
@@ -4097,7 +4266,7 @@ export function quotaReadingAge(
 // WHY A PERSON STILL PASTES SOMETHING, since "just a button" is the obvious
 // ask. Anthropic's OAuth client accepts exactly one redirect target -- its own
 // callback page, which DISPLAYS a code. A third-party application cannot
-// register `https://swarm.saga.xyz/callback`, so the browser cannot be
+// register `https://swarm.example.com/callback`, so the browser cannot be
 // redirected back here and the code on that page is what closes the loop. One
 // short string replaces a keychain item; that is the whole distance this can
 // travel, and the screen says so rather than leaving it looking like an
@@ -5240,6 +5409,8 @@ export interface AppInstalledEvidence {
   installed?: string[]
   not_installed?: string[]
   install_url?: string | null
+  /** The App's display name as the deployment configures it (GITHUB_APP_NAME); null when unset. */
+  app_name?: string | null
 }
 
 /** `github_connected`'s evidence: the record the caller acts through, or none. */
@@ -5319,11 +5490,21 @@ export interface WorkspaceJobStep {
   code?: string | null
 }
 
+/**
+ * `workspaces/{tenant_id}.kind` (docs/design/workspace-kinds.md §4.1): swarm-api's, not the frozen contract's
+ * `Tenant.kind`. A record with no `kind` is `personal`, as `workspaces.kind_of` reads it.
+ */
+export type WorkspaceKind = 'personal' | 'group' | 'service'
+
 /** `GET /v1/workspace`: the caller's own record (`workspaces.view`). Only `state`, `setup_url` and `setup_command` are sent with no record. */
 export interface WorkspaceView {
   state: WorkspaceState
   setup_url: string
   setup_command: string
+  /** Absent from an API older than WK-RECORD; the console reads absent as `personal`. */
+  kind?: WorkspaceKind
+  /** At most 60 characters (`workspaces.MAX_DISPLAY_NAME`); the API defaults it to the address's local part. */
+  display_name?: string | null
   workspace_id?: string | null
   tenant_id?: string | null
   request_id?: string | null
@@ -5366,6 +5547,8 @@ export interface LoanRequestAnswer {
 
 /** A record as an admin sees it (`people._admin_view`): the person's view, less the tenant id, with the dispatch. */
 export interface AdminWorkspaceView extends WorkspaceView {
+  /** The person's, the group's or the service account's address the record was filed for. Never `requested_by`, which stays in Firestore. */
+  principal?: string | null
   dispatch?: {
     attempts: number | null
     last_attempt_at: string | null
@@ -5377,6 +5560,18 @@ export interface AdminWorkspaceView extends WorkspaceView {
   retried_at?: string | null
   /** Only on a `needs_owner` record: the step the call guard stopped at. */
   needs_owner_step?: string | null
+}
+
+/**
+ * `POST /v1/admin/workspaces` (WK-RECORD, design §4.2.2): what Admin › Tenants › New workspace sends -- a kind, an
+ * address and a label, and nothing else. `limits` is the API's per-kind default when absent, so the dialog never
+ * sends it, and no image, command, resource spec or backend parameter is a field here (invariant 10).
+ */
+export interface NewWorkspaceBody {
+  kind: WorkspaceKind
+  principal: string
+  /** Null lets the API take the address's local part. */
+  display_name: string | null
 }
 
 /** `people._claude_account`: where the person's Claude account comes from. */
@@ -5403,6 +5598,12 @@ export interface PersonLentAccount {
 /** One row of `GET /v1/admin/people` (`people._row`). */
 export interface PersonRow {
   email: string
+  /**
+   * The person's display name (user-profile.md §4.4), served beside `email`
+   * since PROFILE-NAMES-API; null when they set none, absent from an older
+   * API. A label only: the email is who the person is.
+   */
+  display_name?: string | null
   teams: string[]
   github: 'connected' | 'expired' | 'none'
   workspace: AdminWorkspaceView
@@ -5641,6 +5842,8 @@ export interface AccessOwners {
   /** False when GitHub did not list the person's orgs; installations are still listed. */
   orgs_listed: boolean
   install_url: string | null
+  /** The App's display name as the deployment configures it (GITHUB_APP_NAME); null or absent when unset. */
+  app_name?: string | null
   tenant_id: string
 }
 
@@ -5746,4 +5949,289 @@ export interface AccessMember {
 export interface AccessMembers {
   members: AccessMember[]
   tenant_id: string
+}
+
+// ---------------------------------------------------------------------------
+// Settings › Profile (docs/design/user-profile.md §4.1, §4.2; lane
+// PROFILE-PAGE, part of #1505). `GET /v1/profile` is ONE read for the page,
+// and each section fails alone: a section the API could not read is ABSENT
+// and named in `unavailable`, so the page says "could not be read" for it
+// rather than drawing an empty one. `api.ts::normProfile` copies every field
+// by name, so a field a source gains by mistake (a secret's name, a token id)
+// never reaches a screen.
+// ---------------------------------------------------------------------------
+
+/** A bell topic (`preferences.TOPICS`). Every one may be muted (Q3). */
+export type NotificationTopic = 'approval' | 'waiting_step' | 'question' | 'failed' | 'finished' | 'account' | 'admin'
+
+/** `preferences.REMINDERS`: how often a read needs-you item rings again (§4.6). */
+export type ReminderCadence = 'as_set' | 'every_4h' | 'daily' | 'never'
+
+/** A section of `GET /v1/profile` that can fail alone. */
+export type ProfileSection = 'preferences' | 'github' | 'typesafe' | 'claude_accounts'
+
+/**
+ * A person's role in one workspace, from `workspace_role.py::role_in` ONLY
+ * (Q7). `name` is drawn as given and nothing branches on it: the roles build
+ * (#1518) may serve any name with `source: "assigned"`, and needs no page
+ * change to do so. `via` is the group that confers it, when there is one.
+ */
+export interface WorkspaceRole {
+  name: string
+  source: string
+  via: string | null
+}
+
+/**
+ * A workspace's STORED roles (docs/design/workspace-roles.md §4.3, lane
+ * ROLES-UI-PEOPLE; part of #1518): `GET /v1/workspace/roles`, readable by
+ * every role (Q7). The ladder and what the console does with it are roles.ts;
+ * the sentences saying what each role permits are the server's (`roles`), so
+ * the screen never restates them.
+ */
+export interface RoleSummary {
+  name: string
+  summary: string
+}
+
+/** The caller's own role in the selected workspace. */
+export interface WorkspaceRoleMe {
+  email: string
+  role: string
+  /** `override`, `default`, `personal` or `platform_admin`. */
+  source: string
+  /** How the workspace was selected: `member`, `personal` or `platform_admin` (§4.2.2). */
+  via: string
+  granted_by?: string
+  granted_at?: string
+}
+
+/** One person's override: everyone else holds the default. Never a grant's document id. */
+export interface WorkspaceRoleOverride {
+  email: string
+  role: string
+  source: string
+  granted_by: string
+  granted_at: string
+  /** `console`, `cli` or `platform_admin`: shown, never acted on. */
+  granted_via: string
+  reason: string
+}
+
+/** One role or platform-admin row of the workspace's audit (§4.10), newest first. */
+export interface WorkspaceRoleEvent {
+  action: string
+  by: string
+  at: string
+  target_email?: string
+  detail: Record<string, unknown>
+}
+
+/** What `GET /v1/admin/workspaces/{tenant_id}/roles` serves: a group workspace's roles. */
+export interface WorkspaceRoster {
+  tenant_id: string
+  kind: 'group' | 'user'
+  /** `viewer` or `member`; null for a personal workspace, which has only its person. */
+  default_role: string | null
+  /** `migration` until an admin sets the default, then `grant`; null for a personal workspace. */
+  default_source: string | null
+  people: WorkspaceRoleOverride[]
+  roles: RoleSummary[]
+  audit: WorkspaceRoleEvent[]
+}
+
+/**
+ * One entry of `GET /v1/admin/workspaces/roles`: a registered group workspace
+ * -- a Terraform group, or a `ready` group the workspace job made -- with its
+ * roster, or, when its roles were not served, the API's reason (`roster` null).
+ */
+export interface AdminWorkspaceRoles {
+  tenant_id: string
+  /** The workspace's registered Google group. */
+  group: string
+  /** `terraform` or `workspace_job`. */
+  registered_by: string
+  roster: WorkspaceRoster | null
+  unavailable: { code: string; message: string } | null
+}
+
+/** A page of `GET /v1/admin/workspaces/roles`; `next_page_token` is null on the last page. */
+export interface AdminWorkspaceRolesPage {
+  workspaces: AdminWorkspaceRoles[]
+  next_page_token: string | null
+}
+
+/** `GET /v1/workspace/roles`: the roster, with the caller's own role and whether they manage it. */
+export interface WorkspaceRoles extends WorkspaceRoster {
+  me: WorkspaceRoleMe
+  /** The caller holds `admin` here. The API is the gate; this only stops offering what would be refused. */
+  can_manage: boolean
+}
+
+/** One entry of `GET /v1/admin/roles/person`: an override the person holds, or a workspace whose grants could not be read. */
+export interface PersonWorkspaceRole extends Partial<WorkspaceRoleOverride> {
+  tenant_id: string
+  group: string
+  /** The signing key's id, for a key rotation (§4.13). */
+  key?: string
+  unavailable?: boolean
+}
+
+/** `GET /v1/admin/roles/person?email=`: every override one person holds, across the group workspaces. */
+export interface PersonRoles {
+  email: string
+  workspaces: PersonWorkspaceRole[]
+}
+
+/** `PUT`/`DELETE /v1/workspace/roles/person`'s answer. `member` is the fresh group check; null when the directory did not answer. */
+export interface PersonRoleChange {
+  email: string
+  role: string
+  previous_role: string
+  source: string
+  granted_at: string
+  member?: boolean | null
+}
+
+/** `PUT /v1/workspace/roles/default`'s answer. */
+export interface DefaultRoleChange {
+  tenant_id: string
+  default_role: string
+  previous_default: string
+  default_source: string
+  granted_at: string
+}
+
+export interface ProfileIdentity {
+  email: string
+  /** The stored name, or null: others then see the email alone. */
+  display_name: string | null
+  /** The token's name claim after the §4.4 rules, only while no name is stored: the editor's initial value. */
+  display_name_suggested: string | null
+  domain: string | null
+  /** `owner`, `admin` or null. Shown once, here, never as a workspace role. */
+  platform_role: string | null
+  is_admin: boolean
+  is_admin_unresolved: boolean
+}
+
+export interface ProfileWorkspace {
+  tenant_id: string
+  display_name: string
+  /** `user` (the personal workspace) or `group`. */
+  kind: string
+  role: WorkspaceRole
+  /** The personal workspace's state (`requested`, `applying`, `ready`...); null for a group. */
+  state: string | null
+  /** False for a personal workspace that is not ready yet: shown, never chosen. */
+  selectable: boolean
+  is_acting: boolean
+  is_default: boolean
+}
+
+export interface ProfileDefault {
+  tenant_id: string | null
+  /** `profile`, `personal`, `first_group`, `unavailable`, or null with no workspace at all. */
+  source: string | null
+  /** Why a stored default was not honoured: `not_a_member`, `not_ready`, `unknown`. */
+  ignored: string | null
+}
+
+/** One workspace's GitHub connection (Q10). `not_connected` carries the tenant and nothing else. */
+export interface ProfileGitHub {
+  tenant_id: string
+  state: string | null
+  forge_login: string | null
+  method: string | null
+  access_expires_at: string | null
+  refreshed_at: string | null
+  failure: { code: string | null; recovery: string | null } | null
+}
+
+/** A key's status: never a value, never a secret's id. */
+export interface ProfileKeyStatus {
+  set: boolean
+  set_at: string | null
+  set_by: string | null
+  version: string | null
+}
+
+export interface ProfileTypeSafe {
+  /** Null when the caller has no ready personal workspace to keep a key in. */
+  personal: ProfileKeyStatus | null
+  acting_workspace: ProfileKeyStatus & { tenant_id: string }
+  /** Which key a task the caller submits in the acting workspace would use. */
+  uses: 'user' | 'tenant' | 'none'
+}
+
+/** Section 2 has exactly these two (Q6: SwarmCloud has no personal API keys). */
+export interface ProfileConnections {
+  github?: ProfileGitHub[]
+  typesafe?: ProfileTypeSafe
+}
+
+export interface Preferences {
+  muted: NotificationTopic[]
+  reminder: ReminderCadence
+}
+
+export interface ProfileNotifications {
+  preferences: Preferences
+  /** Every topic the bell knows, each of which may be muted. */
+  topics: NotificationTopic[]
+}
+
+export interface ProfileQuotaWindow {
+  utilization: number | null
+  resets_at: string | null
+}
+
+export interface ProfileClaudeAccount {
+  account_id: string | null
+  label: string | null
+  /** `own` (your personal workspace owns it) or `borrowed` (lent to it). */
+  relation: 'own' | 'borrowed'
+  state: string | null
+  windows: { five_hour?: ProfileQuotaWindow; seven_day?: ProfileQuotaWindow }
+  /** How many workspaces you lend it to; null on a borrowed account. */
+  lent_to_count: number | null
+  stale: boolean
+}
+
+export interface ProfileClaudeAccounts {
+  /** Null when you have no ready personal workspace. */
+  personal_workspace: string | null
+  accounts: ProfileClaudeAccount[]
+  /** Pool documents the broker could not read: a short list is not the whole pool. */
+  unreadable_document_count: number
+}
+
+/** `GET /v1/profile`. */
+export interface Profile {
+  identity: ProfileIdentity
+  workspaces: ProfileWorkspace[]
+  default_workspace: ProfileDefault
+  connections: ProfileConnections
+  /** Absent when `preferences` is in `unavailable`. */
+  notifications?: ProfileNotifications
+  claude_accounts?: ProfileClaudeAccounts
+  /** The preferences document's revision, which a save echoes; null when it could not be read. */
+  revision: number | null
+  unavailable: ProfileSection[]
+}
+
+/** `PUT /v1/profile/preferences`: the whole set, at the revision last read. */
+export interface PreferencesWrite {
+  display_name: string | null
+  default_workspace: string | null
+  notifications: Preferences
+  revision: number
+}
+
+/** What a save answers: the GET's sections the save can change. */
+export interface PreferencesSaved {
+  identity: Pick<ProfileIdentity, 'display_name' | 'display_name_suggested'>
+  default_workspace: ProfileDefault
+  notifications: ProfileNotifications
+  revision: number
 }

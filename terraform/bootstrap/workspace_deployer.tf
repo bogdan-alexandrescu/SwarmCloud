@@ -95,12 +95,33 @@ locals {
   workspace_deployer_email      = "${local.workspace_deployer_account_id}@${var.project_id}.iam.gserviceaccount.com"
   workspace_deployer_member     = "serviceAccount:${local.workspace_deployer_email}"
 
+  # The public keys the job verifies approval signatures with (lane
+  # WK-APPROVAL-KEYS of #847; owner decision 2026-10-19: no new IAM for
+  # approval verification, so the job never reads Cloud KMS). SPEC_VERIFY_KEYS
+  # in the shape workers get, {full version name: PEM}, over the ENABLED
+  # versions of the key swarm-api signs approvals with: dev's step-spec key,
+  # the one images/workspace-apply/entry.py's SIGNING_KEYS trusts. Read below,
+  # at the owner's plan, with the owner's credentials. Public keys, not
+  # secrets; nothing private is ever read or written here.
+  workspace_spec_environment = "dev"
+  workspace_spec_verify_keys = jsonencode(var.enable_workspace_deployer ? module.workspace_spec_keys[0].verify_keys : {})
+
   # The job's command: isolated-mode Python running the scrub (§2.2 step 0),
   # which the image puts root-owned under /opt/swarm (images/workspace-apply,
-  # W6b). A literal held by tests/terraform/workspace_deployer.tftest.hcl: the
-  # command is the one part of an execution no caller can override, so it is
-  # what makes the scrub run first.
-  workspace_apply_command = ["python3", "-I", "/opt/swarm/entry.py"]
+  # W6b). Held by tests/terraform/workspace_deployer.tftest.hcl: the command
+  # is the one part of an execution no caller can override, so it is what
+  # makes the scrub run first.
+  #
+  # ITS LAST ELEMENT PINS THE KEYS. A caller holding runWithOverrides may set
+  # any environment variable on an execution, SPEC_VERIFY_KEYS included, and
+  # would then choose which key "verifies" a record it wrote. It cannot touch
+  # the command, so the command carries the SHA-256 of the value set below,
+  # and entry.py refuses an execution whose SPEC_VERIFY_KEYS hashes to
+  # anything else.
+  workspace_apply_command = [
+    "python3", "-I", "/opt/swarm/entry.py",
+    "--spec-verify-keys-sha256=${sha256(local.workspace_spec_verify_keys)}",
+  ]
 
   # The swarm subnet and the network it is in, as terraform/modules/network
   # names them (this root cannot read infra's state). The worker tag is that
@@ -178,6 +199,49 @@ locals {
 data "google_project" "workspace_deployer" {
   count      = local.workspace_deployer_on
   project_id = var.project_id
+}
+
+# ---------------------------------------------------------------------------
+# The job's verify keys: read at the owner's plan, never at run time
+# ---------------------------------------------------------------------------
+#
+# The step-spec key's ENABLED versions and each one's public key, read by
+# NAME -- bootstrap's own module.spec_signing_key["dev"] spells it -- with the
+# owner's credentials, exactly as terraform/infra reads them for workers. So
+# the job's identity holds no role on the key (owner decision 2026-10-19).
+#
+# WHY THIS DOES NOT HIT #360. spec_signing.tf explains why this root reads no
+# versions for the key it creates: a list that depends on the key RESOURCE is
+# unknown on the plan that creates it, and the module's for_each over it
+# fails. This data source depends on no resource -- the name is a string the
+# module derives from variables -- so it is read at plan. What that costs: the
+# key must already exist when enable_workspace_deployer is switched on. It has
+# since #342's bootstrap apply, and the job needs the platform's network and
+# image from infra's release anyway, so the deployer is never part of a
+# project's first apply. With the switch off, nothing here is read.
+#
+# THE KEYS ARE AS FRESH AS THE LAST BOOTSTRAP APPLY. Workers' keys refresh on
+# every release; these only when the owner applies this root. A version
+# enabled since stops every group and service run at APPROVAL_UNSIGNED (fail
+# closed) until it is applied: re-apply bootstrap after enabling a version and
+# before swarm-api signs with it (docs/runbooks/spec-signing-rollout.md,
+# "Rotation").
+data "google_kms_crypto_key_versions" "workspace_spec_versions" {
+  count = local.workspace_deployer_on
+
+  crypto_key = module.spec_signing_key[local.workspace_spec_environment].crypto_key_id
+  filter     = "state=ENABLED"
+}
+
+module "workspace_spec_keys" {
+  source = "../modules/spec_signing_key"
+  count  = local.workspace_deployer_on
+
+  project_id  = var.project_id
+  region      = var.region
+  name_prefix = var.name_prefix
+  environment = local.workspace_spec_environment
+  versions    = data.google_kms_crypto_key_versions.workspace_spec_versions[0].versions
 }
 
 # ---------------------------------------------------------------------------
@@ -528,6 +592,13 @@ resource "google_cloud_run_v2_job" "workspace_apply" {
         # two arguments arrive with each execution, from the workflow.
         command = local.workspace_apply_command
 
+        # The job's one variable: the public keys the command pins (above).
+        # entry.py reads it in step 0 and passes it to nothing.
+        env {
+          name  = "SPEC_VERIFY_KEYS"
+          value = local.workspace_spec_verify_keys
+        }
+
         resources {
           # Invariant 7: a Cloud Run job states limits only, and they are what
           # it gets. 2 GiB holds gcloud, kubectl, the render and the guard's
@@ -732,5 +803,241 @@ output "workspace_deployer" {
     log_bucket      = local.workspace_log_bucket
     log_filter      = local.workspace_log_filter
     roles           = var.workspace_deployer_roles
+  } : null
+}
+
+# ---------------------------------------------------------------------------
+# WORKSPACE KINDS: K1 and K2 (docs/design/workspace-kinds.md §4.5, lane WK-IAM
+# of #847). K3 is swarm-api's, in forge_user_slots.tf; K4 is the role list in
+# variables.tf. All behind enable_workspace_kinds, off by default.
+# ---------------------------------------------------------------------------
+#
+# The same job, swarm-workspace-apply, builds group and service workspaces as
+# well as personal ones (owner decision 2026-10-19, design A, Q3 (a)). Two of
+# its steps need a grant the personal path never did:
+#
+#   K1, step S2: a service workspace's account is admitted at the front door,
+#       as one member of roles/iap.httpsResourceAccessor on the API backend.
+#       swarmFrontDoorAdmitter is iap.webServices.getIamPolicy and
+#       setIamPolicy and nothing else -- no iap.web.* or iap.webTypes.*, which
+#       reach every backend, and not roles/iap.admin (refused in variables.tf).
+#       Its condition is EQUALITY on one backend's full name, by project
+#       NUMBER and the backend's generated id, never a prefix: the console's
+#       -ui-backend, and the other team's eight IAP backends in this shared
+#       project, cannot match. A service calls the API; the console is for
+#       people, so the console's backend is never named.
+#
+#   K2, step A6 for a group: the group's team slot, swarm-tenant-<g>-git and
+#       its -git-refresh twin, is bound to the group's worker. The existing
+#       secret-binder grant stops at swarm-tenant-u-, and a job-made group's
+#       id has no u-, so a second grant of the same role reaches the team-slot
+#       suffixes. It does not reach a tenant's provider key, workspace
+#       secrets or members' -git-u- slots (Q6 (a): those are read through the
+#       broker, never bound to a group worker).
+#
+# WHAT IAM CANNOT BOUND, and what does (§4.5): IAM cannot say WHICH member a
+# setIamPolicy adds. The job's guard rule C10 admits exactly the approved
+# service account and C9 refuses every removal; A1 refuses a service record
+# not approved by the platform owner (Q2 (a)); swarm-api admits the account
+# only once its record is `ready`; and the alert on every SetIamPolicy by this
+# identity on an IAP resource (terraform/modules/monitoring/workspace_alerts.tf)
+# pages a person on each one. K2 reaches the Terraform tenants' team slots
+# (eng, smoke) as well; the same guard and the secret-IAM alert bound that.
+#
+# RESIDUAL RISK R7 (§4.5), stated so it is not mistaken for zero: a stolen
+# deployer token can rewrite the API backend's accessor list for the token's
+# life, widening it (which admits nobody to swarm-api, whose domain,
+# ALLOWED_USERS and registry checks are unchanged) or narrowing it (an outage
+# until the owner's bootstrap apply re-adds frontend_accessors).
+#
+# NOT VERIFIED LIVE (owner step O1, before the switch is turned on): that IAP
+# accepts these two permission names in a custom role; that a project binding
+# conditioned on `projects/<number>/iap_web/compute/services/<id>` matches
+# the API backend and not -ui-backend; and whether IAP evaluates
+# modifiedGrantsByRole (front_door_admit_role_bound). If the name form does not
+# match, K1 narrows nothing usable and S2 stays an owner step
+# (FRONT_DOOR_OWNER). So K1 has two keys: this switch, and
+# swarmFrontDoorAdmitter on workspace_deployer_roles, which is not in that
+# list's default and is added by the owner once O1 has passed.
+
+locals {
+  workspace_kinds_on = var.enable_workspace_deployer && var.enable_workspace_kinds
+
+  # modules/frontend/main.tf's names for name_prefix: `${name_prefix}-ui` is
+  # its local.name, the API backend is `<local.name>-backend`, the console's
+  # `<local.name>-ui-backend`. Read through wif.tf's data source, so a rename
+  # there fails this plan at the lookup instead of admitting at a stale name.
+  front_door_api_backend = "${var.name_prefix}-ui-backend"
+
+  # K1's resource, in the form IAP's IAM evaluates (§4.5): the project NUMBER
+  # and the backend's numeric id, both read rather than spelled. "" when the
+  # API backend is not in frontend_iap_backends; the grant's precondition
+  # refuses that rather than make a binding that names nothing.
+  front_door_api_resource = local.workspace_kinds_on && contains(var.frontend_iap_backends, local.front_door_api_backend) ? "projects/${local.workspace_project_number}/iap_web/compute/services/${data.google_compute_backend_service.frontend_iap[local.front_door_api_backend].generated_id}" : ""
+
+  workspace_kinds_conditions = {
+    front_door_admit = join(" && ", concat(
+      ["resource.name == \"${local.front_door_api_resource}\""],
+      var.front_door_admit_role_bound ? ["api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([\"roles/iap.httpsResourceAccessor\"])"] : [],
+    ))
+
+    # Every tenant's team slot and its twin, by full name. A secret's IAM is
+    # evaluated on the secret, `projects/<n>/secrets/<id>`, so the suffix is
+    # the secret id's own end: `-git-u-<hash>`, `-anthropic`, `-wsec-<hex>`
+    # all end otherwise.
+    team_slot_bind = "resource.name.startsWith(\"projects/${local.workspace_project_number}/secrets/swarm-tenant-\") && (resource.name.endsWith(\"-git\") || resource.name.endsWith(\"-git-refresh\"))"
+  }
+
+  # K1 is held only with the switch AND its role on workspace_deployer_roles:
+  # the admitter's own count, below, spelled the same way.
+  front_door_admitter_on = local.workspace_kinds_on && lookup(local.workspace_role_on, "swarmFrontDoorAdmitter", false)
+
+  # The API backend's name as IAP's resource-level IAM takes it. "" when the
+  # backend is not in frontend_iap_backends, so the lookup cannot fail first:
+  # the reader's precondition refuses that, in words.
+  front_door_api_backend_name = contains(var.frontend_iap_backends, local.front_door_api_backend) ? data.google_compute_backend_service.frontend_iap[local.front_door_api_backend].name : ""
+
+  # Not in workspace_custom_roles: those are module.custom_role_ids' ids,
+  # which terraform/infra shares. This role is defined and granted here alone,
+  # and terraform/infra never names it, so its id is spelled here as
+  # mcp_credentials.tf spells its own.
+  front_door_admitter_role_id = "swarmFrontDoorAdmitter"
+}
+
+resource "google_project_iam_custom_role" "front_door_admitter" {
+  count = local.workspace_kinds_on && lookup(local.workspace_role_on, "swarmFrontDoorAdmitter", false) ? 1 : 0
+
+  project     = var.project_id
+  role_id     = local.front_door_admitter_role_id
+  title       = "Swarm Front Door Admitter"
+  description = "managed-by=swarm-terraform; read and set the IAP policy of the swarm API backend to admit a service workspace's account (docs/design/workspace-kinds.md §4.5 K1). Granted on that one backend by exact name. No iap.web.*, no tunnel, no admin."
+  stage       = "GA"
+  permissions = [
+    "iap.webServices.getIamPolicy",
+    "iap.webServices.setIamPolicy",
+  ]
+}
+
+resource "google_project_iam_member" "front_door_admitter" {
+  count = length(google_project_iam_custom_role.front_door_admitter)
+
+  project = var.project_id
+  # Through the resource, so the role exists before it is granted.
+  role   = "projects/${var.project_id}/roles/${google_project_iam_custom_role.front_door_admitter[0].role_id}"
+  member = local.workspace_deployer_member
+
+  condition {
+    title       = "swarm API backend only"
+    description = "managed-by=swarm-terraform; K1: the API backend's IAP policy, by exact name; never the console's -ui-backend or another team's backend (docs/design/workspace-kinds.md §4.5)."
+    expression  = local.workspace_kinds_conditions.front_door_admit
+  }
+
+  lifecycle {
+    precondition {
+      condition     = contains(var.frontend_iap_backends, local.front_door_api_backend)
+      error_message = "K1 is made on the API backend (${local.front_door_api_backend}), which frontend_iap_backends does not list. On a fresh project leave enable_workspace_kinds off until the release has created the backends and frontend_iap_backends names them."
+    }
+  }
+
+  depends_on = [google_service_account.workspace_deployer]
+}
+
+# ---------------------------------------------------------------------------
+# FRONT-DOOR-READ (part of #847, owner decision 2026-10-20): the READ of the
+# API backend's accessor list, never a change to it.
+# ---------------------------------------------------------------------------
+#
+# O1 (2): failed (docs/workspaces.md §0), so K1 is not granted and S2 cannot
+# admit an account. But S2 begins with `gcloud iap web get-iam-policy` on the
+# API backend (scripts/register-tenant.sh ws_s2), and A9 reads it back, and
+# without even the read every service workspace stopped at FRONT_DOOR_OWNER
+# -- the QA console workspace w-267d01 included, on 2026-10-20, though its
+# account qa-console@ was already admitted through frontend_iap_members. With
+# the read, an account the owner has admitted passes S2 and the run finishes;
+# one not yet admitted still stops for the owner, because the change
+# (setIamPolicy) is K1's and this role does not carry it.
+#
+# WHY IT IS SAFE: it shows who may pass IAP on one backend -- the accessor
+# list frontend_iap_members already writes in this repository -- and changes
+# nothing. No setIamPolicy, no settings, no other backend.
+#
+# WHERE IT IS BOUND: on that backend's OWN IAP policy, a resource-level
+# binding, never the project. A project grant is what O1 found Google would
+# not limit to one backend, and in this shared project it would reach the
+# other team's IAP backends too. Never the console's -ui-ui-backend: no
+# service is admitted there, so the job never reads it. No condition: the
+# binding names the one resource itself.
+#
+# OFF WHILE K1 IS ON: swarmFrontDoorAdmitter already carries
+# iap.webServices.getIamPolicy, so a second grant of the read would only be a
+# row to keep in step.
+#
+# NOT VERIFIED LIVE. modules/frontend/main.tf records that roles/iap.admin
+# bound on our two backends was still 403 on getIamPolicy nine and a half
+# minutes later (2026-09-24), and O1 noted the same. If this binding is
+# refused the same way, nothing is lost: S2 stops for the owner as it does
+# today. The owner's check after the apply is one read as the deployer:
+# `gcloud iap web get-iam-policy --resource-type=backend-services
+# --service=<API backend>`.
+
+resource "google_project_iam_custom_role" "front_door_reader" {
+  count = local.workspace_kinds_on && !local.front_door_admitter_on ? 1 : 0
+
+  project     = var.project_id
+  role_id     = module.custom_role_ids.ids["front_door_reader"]
+  title       = "Swarm Front Door Reader"
+  description = "managed-by=swarm-terraform; read the IAP accessor list of the swarm API backend, so a service workspace the owner admitted passes S2 (docs/workspaces.md §0). Bound on that backend only. No setIamPolicy, no settings."
+  stage       = "GA"
+  permissions = [
+    "iap.webServices.getIamPolicy",
+  ]
+}
+
+resource "google_iap_web_backend_service_iam_member" "front_door_reader" {
+  count = length(google_project_iam_custom_role.front_door_reader)
+
+  project             = var.project_id
+  web_backend_service = local.front_door_api_backend_name
+  # Through the resource, so the role exists before it is granted.
+  role   = "projects/${var.project_id}/roles/${google_project_iam_custom_role.front_door_reader[0].role_id}"
+  member = local.workspace_deployer_member
+
+  lifecycle {
+    precondition {
+      condition     = contains(var.frontend_iap_backends, local.front_door_api_backend)
+      error_message = "The front-door read is bound on the API backend (${local.front_door_api_backend}), which frontend_iap_backends does not list. On a fresh project leave enable_workspace_kinds off until the release has created the backends and frontend_iap_backends names them."
+    }
+  }
+
+  depends_on = [google_service_account.workspace_deployer]
+}
+
+resource "google_project_iam_member" "workspace_team_slot_binder" {
+  count = local.workspace_kinds_on && lookup(local.workspace_role_on, "swarmWorkspaceSecretBinder", false) ? 1 : 0
+
+  project = var.project_id
+  role    = module.custom_role_ids.names.workspace_secret_binder
+  member  = local.workspace_deployer_member
+
+  condition {
+    title       = "team forge slots only"
+    description = "managed-by=swarm-terraform; K2: a group's team slot swarm-tenant-<g>-git and its -git-refresh twin (docs/design/workspace-kinds.md §4.5, §4.6)."
+    expression  = local.workspace_kinds_conditions.team_slot_bind
+  }
+
+  depends_on = [
+    google_project_iam_custom_role.workspace,
+    google_service_account.workspace_deployer,
+  ]
+}
+
+output "workspace_kinds_grants" {
+  description = "What the owner reads a plan against for the workspace-kinds rows (docs/design/workspace-kinds.md §4.5): K1's backend and condition, the backend the front-door read is bound on (null while K1 is held), K2's and K3's conditions. Null while enable_workspace_kinds is off."
+  value = local.workspace_kinds_on ? {
+    front_door_backend = local.front_door_api_backend
+    front_door_admit   = local.workspace_kinds_conditions.front_door_admit
+    front_door_reader  = length(google_iap_web_backend_service_iam_member.front_door_reader) > 0 ? google_iap_web_backend_service_iam_member.front_door_reader[0].web_backend_service : null
+    team_slot_bind     = local.workspace_kinds_conditions.team_slot_bind
+    member_slots       = local.forge_member_slots_any
   } : null
 }

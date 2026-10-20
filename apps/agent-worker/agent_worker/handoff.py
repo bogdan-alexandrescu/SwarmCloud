@@ -8,6 +8,7 @@ end of ctl.sock is `agent_worker.livegate.ctl` (lane L3).
     $SWARM_HANDOFF = work/.swarm-handoff/
       requests/<id>.json   the agent's, through `swarm-handoff request` (.tmp, rename)
       devices/<id>.json    the agent's, through `swarm-handoff device <preset>`
+      themes/<id>.json     the agent's, through `swarm-handoff theme dark|light|system`
       responses/<id>.json  this worker's: {"outcome": ..., "exit": N, ...}
       status.json          this worker's: the last control episode, for `status`
       history.json         this worker's: every hand-off of the task and its outcome
@@ -152,6 +153,10 @@ _HOST = re.compile(r"^[a-z0-9.-]{1,253}$")
 #: A device preset's NAME (§6.1). The list itself is the gate's: a name
 #: outside it is refused there. A caller never sends dimensions.
 _PRESET = re.compile(r"^[a-z0-9-]{1,32}$")
+#: `livegate.presets.THEMES`, restated (QA-KIT): the colour schemes the agent
+#: may name. Checked here, again by the gate, and by `swarm-handoff` itself;
+#: tests/unit/worker/test_handoff.py holds the three equal.
+THEMES = ("dark", "light", "system")
 
 #: §4.1 step 1.
 MAX_REASON_CHARS = 200
@@ -261,6 +266,28 @@ LIVE_GATE_UNAVAILABLE = "live_gate_unavailable"
 #: retried attempt does not look stuck.
 LIVE_GATE_RETRY_DELAY_SECONDS = 30
 
+#: BROWSER-START (part of #1366): the agent's browser is the gate's CDP proxy,
+#: and `setup` checks it is answering before the agent can start, rather than
+#: trusting a registration alone. Why the agent has no browser when it has a
+#: gate: no SWARM_CDP_ENDPOINT was passed to this worker (the runner would
+#: then register no Playwright MCP and leave SWARM_CDP_ENDPOINT empty, the
+#: devb-1015 symptom), or the endpoint never answered `/json/version`.
+NO_CDP_ENDPOINT = "no_cdp_endpoint"
+CDP_UNREACHABLE = "cdp_unreachable"
+#: How long `setup` waits, in all, for a registration whose channel failed (a
+#: gate restarting: ctl.sock present but not yet accepting) and, separately,
+#: for the CDP proxy to answer. WHY 20 s: the native sidecar's startup probe
+#: only tests that ctl.sock exists, so this is the margin for a gate that
+#: restarts or a proxy that is slow under a burst of pod starts -- seconds,
+#: not minutes; past it a new pod is the better bet (LIVE_GATE_UNAVAILABLE).
+#: A registration the gate REFUSED is never retried: a restarted gate refuses
+#: every one.
+BROWSER_WAIT_SECONDS = 20.0
+BROWSER_WAIT_FIRST_SECONDS = 0.5
+BROWSER_WAIT_MAX_SECONDS = 4.0
+#: One `/json/version` probe's bound.
+CDP_PROBE_SECONDS = 2.0
+
 #: The ctl.sock operations this module sends. Every one must be in the gate's
 #: `livegate.ctl.OPS`; the test holds that once L3 is importable.
 #:
@@ -271,7 +298,7 @@ LIVE_GATE_RETRY_DELAY_SECONDS = 30
 #: `tabs_export` / `session_export` (scope park) are sent at park, before the
 #: wipe; `session_import` / `tabs_restore` on the resumed attempt, before the
 #: agent exists (browser_resume.py, §5.5.2).
-GATE_OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status",
+GATE_OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "theme", "status",
                       "egress_ticket", "browser_tools", "tabs_export", "tabs_restore",
                       "session_export", "session_import"})
 
@@ -339,7 +366,15 @@ it is what you continue from if this attempt is parked.
 
 `swarm-handoff status` prints the last control episode in the same shape as
 `wait`. `swarm-handoff device <preset>` switches the browser to a device
-preset by name (desktop, iphone-15, pixel-8, iphone-se, ipad-7).
+preset by name (desktop, iphone-15, phone-390, pixel-8, iphone-se, ipad-7).
+`swarm-handoff theme dark|light|system` sets the colour scheme every page is
+told to prefer (prefers-color-scheme); it holds across navigation and new
+tabs, and `system` lifts it. browser_resize is refused: the size is a preset's.
+
+A flow as a GIF, and a mockup beside the app (one line each):
+
+    swarm-handoff record start <name>   then the flow, then   swarm-handoff record stop   -> $SWARM_ARTIFACTS_DIR/flows/<name>.gif
+    swarm-handoff serve <dir>   -> prints http://127.0.0.1:<port>/ for a new tab of the live browser (file:// is blocked)
 
 Never copy cookies or a storage state into your files: they are refused.
 """
@@ -588,6 +623,25 @@ def _relay_address(environ: Mapping[str, str]) -> tuple[str, int] | None:
     return (parts.hostname or "", parts.port or 80) if parts.hostname else None
 
 
+def _probe_cdp(endpoint: str, timeout: float) -> bool:
+    """Whether the gate's CDP proxy answers `/json/version` with a websocket URL
+    (BROWSER-START). The same discovery Playwright's `connectOverCDP` makes
+    first, and side-effect free at the proxy: no client is attributed and
+    Chromium is not reached (livegate.cdpproxy `_serve_one`). A module
+    function so the unit suite's conftest can stand in for it. Never raises."""
+    from urllib.request import ProxyHandler, Request, build_opener
+
+    try:
+        request = Request(endpoint.rstrip("/") + "/json/version", method="GET")
+        # No proxy: the endpoint is the pod's loopback, never an egress.
+        opener = build_opener(ProxyHandler({}))
+        with opener.open(request, timeout=timeout) as response:  # noqa: S310 -- the dispatcher's loopback
+            body = json.loads(response.read(64 * 1024).decode("utf-8"))
+    except Exception:
+        return False
+    return isinstance(body, dict) and isinstance(body.get("webSocketDebuggerUrl"), str)
+
+
 def _default_gate_client(path: str) -> Any:
     """L3's client. Imported here, not at module load, so a worker image
     built before L3 merged still starts; it then has no live path."""
@@ -698,6 +752,9 @@ class HandoffPath:
         resolve: Callable[[str, int], Any] | None = None,
     ) -> None:
         self.cfg = cfg
+        #: Why the agent's browser is not ready although the gate took the
+        #: registration (NO_CDP_ENDPOINT, CDP_UNREACHABLE); None while it is.
+        self._cdp_missing: str | None = None
         self._sleep = sleep
         self._rand = rand
         #: The pod's resolver (LB-DNS); None is `_resolve_relay`, looked up per call.
@@ -781,17 +838,30 @@ class HandoffPath:
     @property
     def browser_ready(self) -> bool:
         """Whether the agent gets its browser: the gate took this worker's
-        registration, so its CDP proxy is up (the gate serves ctl.sock only
-        after the proxy, livegate.__main__ `start`). Independent of the
-        tunnel, the hand-off and the attempt key: those are the HUMAN's view
-        (NOLIVE-GUARD, part of #1366)."""
-        return self.live and self.gate is not None
+        registration AND its CDP proxy answered at SWARM_CDP_ENDPOINT
+        (BROWSER-START: a registration alone left an attempt with no endpoint
+        free to start headless). Independent of the tunnel, the hand-off and
+        the attempt key: those are the HUMAN's view (NOLIVE-GUARD, part of
+        #1366)."""
+        return self.live and self.browser_missing is None
+
+    @property
+    def browser_missing(self) -> str | None:
+        """Why this live-browser attempt's agent has no browser, or None: the
+        gate's refusal code while there is no gate, else NO_CDP_ENDPOINT or
+        CDP_UNREACHABLE. What `LIVE_GATE_UNAVAILABLE` names as `live_path`."""
+        if not self.live:
+            return None
+        if self.gate is None:
+            return self.unavailable or GATE_UNAVAILABLE
+        return self._cdp_missing
 
     @property
     def gate_missing(self) -> bool:
-        """A live-browser attempt whose gate is not ready: the agent must not
-        start, headless or otherwise (`LIVE_GATE_UNAVAILABLE`)."""
-        return self.live and self.gate is None
+        """A live-browser attempt whose browser is not ready -- no gate, no
+        CDP endpoint, or one that never answered: the agent must not start,
+        headless or otherwise (`LIVE_GATE_UNAVAILABLE`)."""
+        return self.browser_missing is not None
 
     @property
     def spooled(self) -> bool:
@@ -813,12 +883,14 @@ class HandoffPath:
         if not self._ctl_path:
             return self._refuse(note, GATE_UNAVAILABLE, "no SWARM_GATE_CTL for this attempt")
         try:
-            gate = Gate(self._gate_client(self._ctl_path))
-            gate.register()
+            gate = self._register()
         except (GateLost, ImportError, OSError) as exc:
             return self._refuse(note, GATE_UNAVAILABLE, type(exc).__name__)
         self.gate = gate
         self._note = note
+        # BROWSER-START: before anything of the human's view, so the agent's
+        # browser is known to answer, or the attempt is known to have none.
+        self._await_cdp(note)
         if getattr(self._memory, "status", None) != PROTECTED:
             # §5.4.1: no tunnel ticket and no hand-off. The slot stays taken.
             # No egress ticket either; a proxied browser fails closed.
@@ -871,6 +943,88 @@ class HandoffPath:
         self.view = failure
         self._tunnel_failed(failure)
         self._view_unavailable(note, failure)
+
+    def _register(self) -> Gate:
+        """Take the gate's slot, waiting (bounded) out a channel that failed.
+
+        BROWSER-START (part of #1366). A `GateLost` -- ctl.sock there but not
+        accepting, as while a gate restarts, or a connect that failed under a
+        burst of pod starts -- is tried again, with a fresh client, on a
+        jittered delay from BROWSER_WAIT_FIRST_SECONDS doubling to
+        BROWSER_WAIT_MAX_SECONDS, for up to BROWSER_WAIT_SECONDS. A
+        `GateRefused` raises at once: the gate answered no, and a restarted
+        gate refuses every registration. Raises the last failure.
+        """
+        started = self._wall()
+        step = BROWSER_WAIT_FIRST_SECONDS
+        tries = 0
+        while True:
+            try:
+                gate = Gate(self._gate_client(self._ctl_path))
+                gate.register()
+                return gate
+            except GateRefused:
+                raise
+            except (GateLost, OSError) as exc:
+                tries += 1
+                low, spread = TUNNEL_JITTER
+                delay = step * (low + spread * self._rand())
+                if self._wall() + delay - started > BROWSER_WAIT_SECONDS:
+                    self.log.warning("the live gate did not take the registration in time",
+                                     error=type(exc).__name__, tries=tries)
+                    raise
+                self.log.warning("the live gate did not take the registration; retrying",
+                                 error=type(exc).__name__, tries=tries, retry_seconds=round(delay, 1))
+                self._sleep(delay)
+                step = min(step * 2, BROWSER_WAIT_MAX_SECONDS)
+
+    def _await_cdp(self, note: Callable[[dict[str, Any]], Any] | None) -> None:
+        """Wait, bounded, for the CDP proxy at SWARM_CDP_ENDPOINT to answer (BROWSER-START).
+
+        Sets `_cdp_missing` when there is no endpoint to give the agent, or
+        when it has not answered `/json/version` within BROWSER_WAIT_SECONDS
+        (the same jittered, doubling delay as `_register`). Either makes
+        `gate_missing` true, and `Worker._prepare` then fails the attempt
+        retryably before the agent exists: never a headless run. Said on the
+        task's events through `note`. Never raises.
+        """
+        endpoint = self._passthrough.get("SWARM_CDP_ENDPOINT", "")
+        if not endpoint:
+            self._cdp_missing = NO_CDP_ENDPOINT
+        else:
+            started = self._wall()
+            step = BROWSER_WAIT_FIRST_SECONDS
+            tries = 0
+            while True:
+                tries += 1
+                try:
+                    # Looked up per call, so the unit suite's conftest stands in.
+                    answered = bool(_probe_cdp(endpoint, CDP_PROBE_SECONDS))
+                except Exception:
+                    answered = False
+                if answered:
+                    if tries > 1:
+                        self.log.info("the live browser's CDP endpoint answered", tries=tries)
+                    return
+                low, spread = TUNNEL_JITTER
+                delay = step * (low + spread * self._rand())
+                if self._wall() + delay - started > BROWSER_WAIT_SECONDS:
+                    self._cdp_missing = CDP_UNREACHABLE
+                    break
+                self.log.warning("the live browser's CDP endpoint did not answer; retrying",
+                                 tries=tries, retry_seconds=round(delay, 1))
+                self._sleep(delay)
+                step = min(step * 2, BROWSER_WAIT_MAX_SECONDS)
+        self.log.warning("the live browser is not ready; the agent will not be started",
+                         live_path=self._cdp_missing)
+        if note is None:
+            return
+        try:
+            note({"phase": "live_browser", "live_path": self._cdp_missing, "reason": self._cdp_missing,
+                  "message": f"live browser unavailable: {self._cdp_missing}; the agent was not "
+                             "started, and the attempt is retried"})
+        except Exception:  # a note must never stop the attempt
+            pass
 
     def _view_unavailable(self, note: Callable[[dict[str, Any]], Any] | None, code: str) -> None:
         """The human's view did not open; the agent's browser runs. Never raises."""
@@ -1175,7 +1329,7 @@ class HandoffPath:
         if not self.spooled:
             return {}
         root = self.spool(work)
-        for name in ("requests", "devices", "responses"):
+        for name in ("requests", "devices", "themes", "responses"):
             (root / name).mkdir(parents=True, exist_ok=True)
         marker = root / "unavailable"
         if self.offered:
@@ -1284,6 +1438,7 @@ class HandoffPath:
             self.log.warning("browser egress upkeep failed", error=type(exc).__name__)
         try:
             self._answer_devices(root)
+            self._answer_themes(root)
             self._forward_browser_tools(root)
             if self.active is None:
                 self._answer_requests(root)
@@ -1585,6 +1740,38 @@ class HandoffPath:
                 self._refusal(root, request_id, GATE_UNAVAILABLE, "the live browser is unavailable")
                 continue
             self._respond(root, request_id, {"outcome": "applied", "exit": 0, "preset": preset})
+
+    def _answer_themes(self, root: Path) -> None:
+        """`swarm-handoff theme <name>` (QA-KIT): the gate's `theme` operation, as
+        a device switch is answered -- by name, on a live attempt only, and
+        logged by name, never more."""
+        themes = root / "themes"
+        if not themes.is_dir():
+            return
+        for path in sorted(themes.glob("*.json")):
+            request_id = path.stem
+            data = _read_request(path)
+            path.unlink(missing_ok=True)
+            if not REQUEST_ID.fullmatch(request_id):
+                continue
+            if not self.offered or self.gate is None:
+                self._refusal(root, request_id, self.unavailable or NO_LIVE_SESSION,
+                              "this attempt has no live browser path")
+                continue
+            theme = data.get("theme") if isinstance(data, dict) else None
+            if not isinstance(data, dict) or set(data) != {"theme"} or theme not in THEMES:
+                self._refusal(root, request_id, "theme_invalid", "a theme is dark, light or system")
+                continue
+            try:
+                self.gate.call("theme", {"theme": theme})
+            except GateRefused:
+                self._refusal(root, request_id, "theme_refused", f"the gate refused {theme!r}")
+                continue
+            except GateLost:
+                self._refusal(root, request_id, GATE_UNAVAILABLE, "the live browser is unavailable")
+                continue
+            self.log.info("browser theme set", theme=theme)
+            self._respond(root, request_id, {"outcome": "applied", "exit": 0, "theme": theme})
 
     # -- the ends ----------------------------------------------------------------
 

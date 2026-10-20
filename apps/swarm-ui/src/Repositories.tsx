@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { loadRepositories, loadRepositoryIndex, runRepositoryIndex } from './api'
 import { Banner, Button, Card, Dash, EmptyState, NamedMark } from './components'
 import { HEAD_UNREAD, freshness, indexCredentialWords, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
@@ -8,6 +8,7 @@ import { RepositoryDetail } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
 import { RepoDot, useRepoStatuses } from './PermissionCards'
 import type { ForgeRepoStatus } from './api'
+import { useRoleGate } from './Profile'
 import { CountNote, PageHead } from './Shell'
 import { timeAgo } from './types'
 import './styles/repositories.css'
@@ -77,6 +78,9 @@ function RepositoryList({
   const [busy, setBusy] = useState<string | null>(null)
   // The card whose Index now is waiting for its confirmation (RSA-15): one at a time.
   const [confirm, setConfirm] = useState<string | null>(null)
+  // A VIEWER REGISTERS AND INDEXES NOTHING (docs/design/workspace-roles.md
+  // §4.8): register and index:run need `member`. The server still decides.
+  const roleGate = useRoleGate('member', 'register and index repositories')
   const count = state.status === 'ok' || state.status === 'stale' ? state.data.length : state.status === 'empty' ? 0 : null
 
   async function indexNow(r: RepoRecord) {
@@ -92,20 +96,45 @@ function RepositoryList({
     reload()
   }
 
+  // THE COUNT LINE IS THERE IN EVERY STATE (V224). Absent while the list was
+  // read and when it failed, it arrived with the cards and pushed them ~37px
+  // down. Reading, it says so; failed, the count is a dash with its reason.
+  const meta =
+    count !== null ? (
+      `${count} registered`
+    ) : state.status === 'loading' ? (
+      'Reading the registered repositories…'
+    ) : (
+      <>
+        <Dash why="The list of registered repositories was not read" /> registered
+      </>
+    )
+
   return (
     <div className="ur-page ur-list">
       {children(
-        count === null ? undefined : `${count} registered`,
+        meta,
         <span className="ur-acts">
           {/* The list's age, on the control that renews it (#98). */}
           <UrRefresh reads={[{ state, reload }]} />
           <UrNavButton to={GT_PAGE} go={go} size="sm">
             Git tokens
           </UrNavButton>
-          <UrNavButton to={REGISTER} go={go} kind="primary" size="sm">
-            Register repository
-          </UrNavButton>
+          {roleGate === null ? (
+            <UrNavButton to={REGISTER} go={go} kind="primary" size="sm">
+              Register repository
+            </UrNavButton>
+          ) : (
+            <Button kind="primary" size="sm" disabled>
+              Register repository
+            </Button>
+          )}
         </span>,
+      )}
+      {roleGate !== null && (
+        <p className="ur-small" data-role-gate="member">
+          {roleGate}
+        </p>
       )}
       {failed !== null && (
         <Banner tone="bad" title="Index now was refused">
@@ -123,9 +152,15 @@ function RepositoryList({
             kind="empty"
             heading="No repositories registered"
             action={
-              <UrNavButton to={REGISTER} go={go} kind="primary">
-                Register repository
-              </UrNavButton>
+              roleGate === null ? (
+                <UrNavButton to={REGISTER} go={go} kind="primary">
+                  Register repository
+                </UrNavButton>
+              ) : (
+                <Button kind="primary" disabled>
+                  Register repository
+                </Button>
+              )
             }
           >
             A registered repository is indexed on a schedule so planners and agents start from its map. Pick one the
@@ -146,6 +181,7 @@ function RepositoryList({
                 onCancel={() => setConfirm(null)}
                 onIndex={() => void indexNow(r)}
                 perm={perms.get(r.repo_id)}
+                viewerOnly={roleGate !== null}
               />
             ))}
           </div>
@@ -291,6 +327,7 @@ function RepoCard({
   onCancel,
   onIndex,
   perm,
+  viewerOnly = false,
 }: {
   r: RepoRecord
   go: (to: string) => void
@@ -301,11 +338,22 @@ function RepoCard({
   onCancel: () => void
   onIndex: () => void
   perm?: ForgeRepoStatus
+  /** The caller's role is below `member`: Index now is drawn disabled, the list says why. */
+  viewerOnly?: boolean
 }) {
   const f = freshness(r.index)
   const head = r.index.head_sha
   const sched = scheduleWords(r.index)
   const cut = useTestMapCut(r)
+  // FOCUS GOES BACK TO INDEX NOW WHEN ITS CONFIRMATION CLOSES (V222). Index now
+  // is disabled while the confirmation is open, so it loses focus; Escape or
+  // Cancel then removed the focused Cancel and left focus on <body>.
+  const acts = useRef<HTMLDivElement>(null)
+  const wasConfirming = useRef(confirming)
+  useEffect(() => {
+    if (wasConfirming.current && !confirming) acts.current?.querySelector<HTMLButtonElement>('button[data-index-now]')?.focus()
+    wasConfirming.current = confirming
+  }, [confirming])
   return (
     <Card
       className="ur-card"
@@ -339,14 +387,14 @@ function RepoCard({
       </div>
       <IndexingUses r={r} go={go} />
       <FailureLine r={r} go={go} />
-      <div className="ur-cacts">
+      <div className="ur-cacts" ref={acts}>
         <UrNavButton to={repoAddress(r.repo_id)} go={go} size="sm">
           Open
         </UrNavButton>
         {r.index.in_flight_task_id !== null ? (
           <NamedMark mark="running" hue="live" word="indexing now" title={r.index.in_flight_task_id} />
         ) : (
-          <Button size="sm" busy={busy} disabled={confirming} onClick={onAsk}>
+          <Button size="sm" busy={busy} disabled={confirming || viewerOnly} onClick={onAsk} data-index-now="">
             Index now
           </Button>
         )}

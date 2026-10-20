@@ -81,7 +81,7 @@ label did not name.
 | **Work** | `work` | What is running, what has already run, what did it produce — and why has mine not moved? | Agents · Workflows · Timeline · Submit a task · Submit a workflow |
 | **Automate** | `automate` | What runs here by itself, on a schedule, and what is waiting on me to approve? | Schedules · Approvals |
 | **Capacity** | `capacity` | What kinds of agent can run here, is there room for another, which ceiling is the binding one, and what is holding what there is? | Pools · Runtimes · Profile headroom · Holders · Accounts · Provider quota |
-| **Admin** | `admin` | What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, what does the platform run on its own, and who is waiting for a workspace? | Pool limits · Tenants · Platform counts · People |
+| **Admin** | `admin` | What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer? | Pool limits · Tenants · Platform counts · People · Workspaces you admin |
 
 **Automate** was added on 2026-10-08 by the owner's decision SD1
 ([schedules.md §6.1](../schedules.md#61-placement-sd1)): a different question
@@ -112,7 +112,9 @@ Plus two things in the nav's utility corner rather than among the sections:
 **API reads** (`#reference`) and **Help** (`#help/<topic>`). Both are things
 you look up once, not things you work in. *Why these sections* below gives the
 argument for keeping them out of the sections, and why "API reads" is neither
-of the two names that screen shipped with.
+of the two names that screen shipped with. (Since 2026-10-20 API reads is
+Capacity's last page, at the owner's request, and only Help stays in the
+corner: see *Changed, 2026-10-20* at the end of this file.)
 
 The question is **not** printed on the pane. It was, on all fifteen routes,
 which is six copies of one sentence for Capacity alone and a line of vertical
@@ -750,3 +752,142 @@ because every other test in that file stays green through it.
   given in the previous note: a measurement rewritten to match today is a
   measurement that has been falsified. The translation table in
   [`README.md`](README.md) gained the four new rows.
+
+## Changed, 2026-10-19 — every settings page sits under Profile, the spine's first item (#1633)
+
+Owner decision, 2026-10-19 ("All under Profile; Admin by role"), part 1
+(lane NAV-PROFILE; part 2, NAV-ADMIN-ROLE, owns Admin's visibility).
+
+**Why.** The settings pages had no section. Each lane that added one put a
+"Settings ›" link in the panel foot under the signed-in name — API keys, then
+Workspace, MCP servers and Profile — until four links stood between the name
+and the theme toggle, and the fifth page, People and roles
+(`/settings/people`), had no link anywhere: reached only by typing it. A foot
+that grows by one line per lane is not navigation.
+
+**What holds now.**
+
+- **Profile is the first spine item**, under the Hive and above Submit. Its
+  icon is the person's avatar (their initials, the email in its title); the
+  avatar that ended the spine's foot went with it, so the person is drawn
+  once. Help and API reads stay at the foot; collapsed, the compact Sign out
+  stays there too, since the panel's is not drawn. (Reversed 2026-10-20,
+  NAV-FOOT: Profile is the foot's last item and API reads a Capacity page —
+  see the last section of this file.)
+- **Its panel lists five pages, in this order:** Profile, API keys, Workspace,
+  MCP servers, People and roles (`PANEL_PAGES.profile` in `Spine.tsx`). The
+  person's own pages first, then the selected workspace's. The collapsed
+  spine's flyout and the phone drawer show the same five, because they draw
+  the same list.
+- **The addresses did not change.** Every `settings/*` route, LEGACY and
+  MOVED_PANES entry behaves as before; `spineOf` (App.tsx) lights Profile for
+  the five pages and for the one-time key link (`settings/keys/typesafe?…`),
+  which lights API keys. `#settings/<anything else>` still lands on Pool
+  limits, and so lights Admin.
+- **The panel foot holds the name** (first name, PROFILE-NAMES), the admin
+  tag, Sign out, the email and the theme toggle — no links. The `sk-pset`
+  rules went with the links.
+- **Profile is not a `SECTIONS` entry.** It is a spine panel outside
+  `SECTIONS`, like Submit's pages: the issue forms already name each page as
+  "Settings › <page>", and a sixth section would have moved their "Where"
+  list (`tests/unit/scripts/test_issue_forms.py`) for no change a reporter
+  can see.
+
+`apps/swarm-ui/src/__tests__/spine.profile.test.tsx` holds all of it.
+
+## Changed, 2026-10-19 — Admin is shown only to platform and workspace admins (#1633)
+
+Owner decision, 2026-10-19 ("All under Profile; Admin by role"), part 2
+(lane NAV-ADMIN-ROLE; part 1, NAV-PROFILE, is the section above).
+
+**Why.** Admin was drawn for everyone, locked with a padlock for a
+non-admin: four disabled rows and a line saying admins only. The rule behind
+it — "a hidden page is indistinguishable from one that does not exist" — was
+written when Admin was only the platform's, and it showed every member four
+pages they could never use. Meanwhile a workspace admin, who does administer
+something, had no place that listed their workspaces: they selected one in
+the tenant block and then found its pages under Profile.
+
+**What holds now.**
+
+- **Admin's spine item, its flyout, its phone-drawer entry and its panel are
+  drawn only for a platform admin** (`/v1/tenants/me` `is_admin`) **or for
+  someone whose stored role is `admin` in at least one group workspace**
+  (`/v1/tenants/mine`, each entry's `role.name` and `kind`;
+  `adminWorkspaces` in `Spine.tsx`). Anyone else sees no Admin item: no
+  lock, no disabled rows. While either read is in flight no Admin item is
+  drawn, so nobody sees a locked one flicker away.
+- **Personal workspaces never count.** Everyone administers their own, and
+  its settings are under Profile. Nor does a platform admin's reach entry
+  (`via: "platform_admin"`): it is a workspace they can reach, not one they
+  were made admin of.
+- **A new page, Admin › Workspaces you admin** (`/admin/workspaces`,
+  `WorkspacesYouAdmin.tsx`), lists each such group workspace by name with
+  four links: Workspace, MCP servers, People and roles, and Workspace key.
+  Each link first selects that workspace (`chooseTenant`, the tenant block's
+  own switch), then opens the page. An empty list says that you administer
+  no group workspace.
+- **Who sees which Admin pages** (`adminPagesFor`): a platform admin sees
+  Pool limits, Tenants, Platform counts, People and, last, Workspaces you
+  admin; a workspace admin who is not a platform admin sees only Workspaces
+  you admin, and the Admin item opens it.
+- **The routes stay.** A direct link to an Admin page by a non-admin renders
+  that page's own "admins only" refusal, with no Admin item and no panel
+  rows beside it.
+- **Admin's question gains one clause**, the new tab's ("and which group
+  workspaces do you administer?"). It is the third widening this file asks to
+  be argued: Admin is no longer only the platform's, because one of its pages
+  is a workspace admin's. The tab carries no `admin: true` mark in `SECTIONS`
+  for the same reason.
+
+`apps/swarm-ui/src/__tests__/spine.adminrole.test.tsx` holds it; it replaces
+`spine.adminlock.test.tsx`, which held the reversed rule.
+
+## Changed, 2026-10-20 — Profile is the spine foot's last item, API reads is a Capacity page, the signed-in name opens Profile (#1672)
+
+Owner request, 2026-10-20, after NAV-PROFILE and NAV-ADMIN-ROLE shipped
+(lane NAV-FOOT).
+
+**Why.** People look for themselves at the bottom of a sidebar, where the
+avatar sat before NAV-PROFILE moved it under the Hive; the spine's top is
+for the places they work in. API reads was the one utility at the foot that
+is not about the person or about getting help — it is a reading of what this
+tab fetched, which sits with the other readings under Capacity. And the
+signed-in name in the panel foot was plain text, though it is the first
+thing a person clicks to reach their own settings.
+
+**What holds now.**
+
+- **The spine, top to bottom:** the Hive, Submit, Overview, Work, Automate,
+  Capacity, Admin (only for platform and workspace admins, NAV-ADMIN-ROLE's
+  rule, unchanged), then at the foot the bell, Help, collapsed Sign out and,
+  **last, Profile** — at desktop width, on the collapsed spine and in the
+  phone drawer, which draws the same spine. Profile keeps its avatar icon and
+  its panel of five pages (Profile, API keys, Workspace, MCP servers, People
+  and roles). Collapsed, its flyout opens up from the spine's bottom edge
+  (`.sk-flyout.is-profile`) rather than from the fixed top the other
+  sections use.
+- **API reads is Capacity's last tab** (`SECTIONS` in `App.tsx`,
+  `PANEL_PAGES.capacity` in `Spine.tsx`), labelled "API reads", at
+  `/capacity/api-reads`. Its panel row, while it is the open page, carries
+  the same "Every read this tab made / Failures only" pair its own panel
+  had. **Capacity's question was not widened** to cover it: every row on the
+  page is a read this browser tab made, not capacity, and widening a
+  section's question is the owner's call (the note at the top of this file).
+- **The old addresses still land.** `#reference`, `/reference` and the
+  rebrand's `/api-reads`, with anything after them, resolve to
+  `capacity/api-reads` (`fromAddress` in `App.tsx`, `OLD_API_READS_PATHS` in
+  `paths.ts`), and the bar is rewritten once. The page has no sub-address and
+  reads no query, so there is no tail it could open further.
+- **The first name in the signed-in block is a link to `/settings/profile`**,
+  named "<name>, open your profile" for assistive technology. The admin chip,
+  Sign out and the email are unchanged. The block is drawn once, in the
+  panel foot, and the phone drawer holds that panel, so a phone gets the
+  same link. While the name is unread the block still says "reading…" or
+  "not read", as plain text.
+- **The issue forms' "Where" list** names "Capacity › API reads
+  (/capacity/api-reads)" in place of "API reads (/api-reads)";
+  `tests/unit/scripts/test_issue_forms.py` reads it from `SECTIONS`.
+
+`apps/swarm-ui/src/__tests__/nav.foot.test.tsx` holds all of it, with the
+full spine order asserted at each width.

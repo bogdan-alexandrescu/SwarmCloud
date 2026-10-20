@@ -83,7 +83,7 @@ function row(id: string, over: Partial<Task> = {}): Task {
     updated_at: '2026-10-12T10:01:00Z',
     started_at: '2026-10-12T10:00:30Z',
     completed_at: null,
-    submitted_by: 'alice@saga.xyz',
+    submitted_by: 'alice@example.com',
     attempt_count: 1,
     max_attempts: 3,
     park_reason: null,

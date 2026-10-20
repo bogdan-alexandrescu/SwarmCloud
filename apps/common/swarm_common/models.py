@@ -298,6 +298,109 @@ FORGE_CREDENTIAL = re.compile(r"git(-[ru]-[0-9a-f]{16})?")
 FORGE_ACCESS = ("write", "read")
 
 
+#: Contract request 95 (MULTI-REPO request A, docs/design/multi-repository-steps.md
+#: §4.7), accepted by the owner 2026-10-17 on PR 1461. The directory an
+#: additional repository is checked out under, `work/repos/<name>`: lower-case,
+#: no separator, never "." or ".." (the first character cannot be a dot).
+#: Anchor with `fullmatch`.
+ADDITIONAL_REPOSITORY_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
+
+#: The most entries `Task.additional_repositories` can HOLD: a guard on the
+#: document's shape, NEVER the operative limit. What swarm-api enforces at
+#: submission is the platform setting `max_additional_repositories` (default 5,
+#: editable by an admin at run time, accepted range 1 to this ceiling), and a
+#: step over it is refused `too_many_additional_repositories` naming the
+#: current setting. The owner set this ceiling at 10 on 2026-10-17 so the
+#: setting can rise without a contract change; a code constant here would
+#: have been the limit nobody can edit live.
+ADDITIONAL_REPOSITORIES_CEILING = 10
+
+#: The forge slot an additional repository is cloned with: the tenant slot
+#: ("git") or a user slot ("git-u-<16 hex>"). Never a repository slot
+#: (`git-r-`), which only swarm-api reads (#1225); such a repository is
+#: refused at submission (`additional_repository_unreadable`, the owner's Q2).
+ADDITIONAL_FORGE_CREDENTIAL = re.compile(r"git(-u-[0-9a-f]{16})?")
+
+#: Whose slot it is, as swarm-api's `ForgeSlot.source` spells it: the tenant's,
+#: a personal tenant's owner's, or the submitting person's own. A label, never
+#: a value.
+ADDITIONAL_REPOSITORY_SOURCES = ("tenant", "owner", "person")
+
+#: The keys of one entry, all required, no others.
+ADDITIONAL_REPOSITORY_KEYS = (
+    "name", "repo_id", "repository", "repository_url", "ref", "commit",
+    "forge_credential", "forge_credential_source", "size_kib",
+)
+
+_REPO_ID = re.compile(r"repo_[0-9a-f]{16}")
+_COMMIT = re.compile(r"[0-9a-f]{40}")
+#: GitHub's own spelling of owner/repo, as swarm-api's `parse_repository` reads it.
+_OWNER_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}")
+#: A ref as asked, kept for display: a branch, a tag or a 40-hex sha. Never an
+#: option (a leading "-") and never whitespace or a control character.
+_REF = re.compile(r"[^\s\x00-\x1f\x7f-][^\s\x00-\x1f\x7f]{0,254}")
+_ENTRY_SHAPES = {
+    "name": ADDITIONAL_REPOSITORY_NAME,
+    "repo_id": _REPO_ID,
+    "repository": _OWNER_REPO,
+    "ref": _REF,
+    "commit": _COMMIT,
+    "forge_credential": ADDITIONAL_FORGE_CREDENTIAL,
+}
+
+
+def check_additional_repositories(value: Any) -> None:
+    """Raise ValueError unless `value` is a well-formed `Task.additional_repositories`.
+
+    None (today's task) or a list of at most ADDITIONAL_REPOSITORIES_CEILING
+    maps, each of exactly ADDITIONAL_REPOSITORY_KEYS: `name` matching
+    ADDITIONAL_REPOSITORY_NAME and `repo_id` matching `repo_<16 hex>`, both
+    unique in the list; `repository` an owner/repo and `repository_url`
+    exactly "https://github.com/" + `repository`; `ref` a non-empty ref that
+    is not an option; `commit` a 40-hex lower-case sha; `forge_credential`
+    matching ADDITIONAL_FORGE_CREDENTIAL; `forge_credential_source` one of
+    ADDITIONAL_REPOSITORY_SOURCES; `size_kib` a non-negative int, not a bool.
+
+    The message names the key and the entry's position, never a value: the
+    values are a tenant's repository names, and a document a tenant's agent
+    can write is not trusted to be free of anything else.
+    """
+    if value is None:
+        return
+    if not isinstance(value, list):
+        raise ValueError("additional_repositories is a list or None")
+    if len(value) > ADDITIONAL_REPOSITORIES_CEILING:
+        raise ValueError(
+            f"additional_repositories holds at most {ADDITIONAL_REPOSITORIES_CEILING} entries"
+        )
+    names: set[str] = set()
+    repo_ids: set[str] = set()
+    for i, entry in enumerate(value):
+        where = f"additional_repositories[{i}]"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{where} is a map")
+        if set(entry) != set(ADDITIONAL_REPOSITORY_KEYS):
+            raise ValueError(f"{where} has exactly the keys {ADDITIONAL_REPOSITORY_KEYS}")
+        for key, pattern in _ENTRY_SHAPES.items():
+            if not (isinstance(entry[key], str) and pattern.fullmatch(entry[key])):
+                raise ValueError(f"{where}.{key} is not well formed")
+        if entry["repository_url"] != "https://github.com/" + entry["repository"]:
+            raise ValueError(f"{where}.repository_url is not https://github.com/<repository>")
+        if entry["forge_credential_source"] not in ADDITIONAL_REPOSITORY_SOURCES:
+            raise ValueError(
+                f"{where}.forge_credential_source is one of {ADDITIONAL_REPOSITORY_SOURCES}"
+            )
+        size = entry["size_kib"]
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise ValueError(f"{where}.size_kib is a non-negative integer")
+        if entry["name"] in names:
+            raise ValueError(f"{where}.name repeats an earlier entry's")
+        if entry["repo_id"] in repo_ids:
+            raise ValueError(f"{where}.repo_id repeats an earlier entry's")
+        names.add(entry["name"])
+        repo_ids.add(entry["repo_id"])
+
+
 #: Contract request 82 (workspace secrets, design §2.3). A workspace secret
 #: is granted to a CONSUMER, spelt "<kind>:<name>". `profile:` names a key of
 #: RUNNER_PROFILES, `tool:` a key of RUNTIME_TOOLS (request 81), `component:`
@@ -465,10 +568,31 @@ class Task:
     #: the task's spec. Contract request 70 (LB-C, the owner's Q2: the field,
     #: not a new state), accepted by the owner 2026-10-11 (#1030).
     human_wait: dict[str, Any] | None = None
+    #: The registered repositories this task reads beside its own, each checked
+    #: out read-only at `commit` in `work/repos/<name>` and never harvested
+    #: (`collect`, `direct-pr` and `integrate` carry the primary only). Entry
+    #: shape: `check_additional_repositories`. Contract request 95 (MULTI-REPO
+    #: request A), accepted by the owner 2026-10-17 on PR 1461: WRITTEN BY
+    #: swarm-api ONLY, in the creating write, from its resolution of the
+    #: caller's `owner/repo` names against the tenant's registrations (gate:
+    #: registered and `readable_by_tasks`) with each ref pinned to a commit;
+    #: never accepted from a caller (invariant 10). Covered by the spec
+    #: signature at format 4 (request 96). None is today's behaviour, and every
+    #: document written before it decodes exactly as it did.
+    additional_repositories: list[dict[str, Any]] | None = None
+    #: Contract request 102 (#1435): the MODEL_CLASSES name this step asked
+    #: for. None: the profile's default_model_class. Written by swarm-api at
+    #: submission, only when it differs from that default; signed at spec
+    #: format 5 (request 104). Resolved by profiles.step_model_class. A class
+    #: is a name, never a model ID: `model` above is the ID, a record of the
+    #: class's pin at submission. Last in the class, so no positional
+    #: construction of a task changes meaning; every document written before
+    #: it decodes exactly as it did.
+    model_class: str | None = None
 
     def __post_init__(self) -> None:
-        # Only the two fields of request 54: a document decoded before them is
-        # never refused here, and a writer cannot construct a malformed one.
+        # Only the fields of requests 54 and 95: a document decoded before them
+        # is never refused here, and a writer cannot construct a malformed one.
         if self.forge_credential is not None and not (
             isinstance(self.forge_credential, str)
             and FORGE_CREDENTIAL.fullmatch(self.forge_credential)
@@ -478,6 +602,9 @@ class Task:
             )
         if self.forge_access is not None and self.forge_access not in FORGE_ACCESS:
             raise ValueError(f"forge_access is one of {FORGE_ACCESS}")
+        # Request 95: None (every older document) passes; a malformed list,
+        # which no writer produces, is refused.
+        check_additional_repositories(self.additional_repositories)
 
     def retries_exhausted(self) -> bool:
         """This task has used its last attempt. See `retries_exhausted`."""
@@ -616,6 +743,13 @@ class Attempt:
     cpu_measured_at: datetime | None = None
     cpu_limit_source: str | None = None
 
+    #: Contract request 103 (#1435): the model ID this attempt's agent was
+    #: started with (MODEL), written by the worker at attempt start after its
+    #: generation check. None: no model (mock, generic, browser, worker
+    #: actions) or written before this field existed. At the end of the class
+    #: for the reason given above.
+    model: str | None = None
+
 
 @dataclass
 class TaskEvent:
@@ -721,6 +855,9 @@ class WorkflowStep:
     input_from: dict[str, str] = field(default_factory=dict)
     timeout_seconds: int | None = None
     task_id: str | None = None
+    #: Contract request 102 (#1435): the MODEL_CLASSES name this step asks
+    #: for, carried to its task's `model_class`. None: its profile's default.
+    model_class: str | None = None
 
 
 @dataclass

@@ -16,13 +16,22 @@
 # `bug` and `enhancement` are GitHub's defaults and already existed. `epic` was
 # created on 2026-09-24 for epic.yml.
 #
-# One label here is read by a WORKFLOW rather than applied by a form:
+# Two labels here are read by a WORKFLOW rather than applied by a form. The first:
 # `hotfix`, which .github/workflows/hotfix.yml requires on the merged pull
 # request before it ships the commit to dev on the hotfix lane (owner decision
 # 2026-10-08, observer proposal H; docs/ci.md, "Hotfix releases"). A workflow
 # gating on a label the repository does not have would never proceed, so it is
 # declared for the same reason the forms' labels are. test_issue_forms.py
 # accepts a declared label that a workflow passes as `--label <name>`.
+# `ready-on-green` is the second: .github/workflows/auto-merge.yml's
+# `ready-on-green` job lists it, and swaps it for `ready` once the pull
+# request is green at its head (owner decision 2026-10-17; docs/ci.md).
+#
+# One is applied by the WORKER: `out-of-territory`, on a pull request whose diff
+# touches a path outside the step's declared `inputs.territory` (owner decision
+# 2026-10-19, lane TERRITORY-WARN, part of #1468). It warns; it gates nothing.
+# GitHub creates it on first use; declaring it keeps its colour and wording ours.
+# test_issue_forms.py accepts it as `agent_worker.territory.OUT_OF_TERRITORY_LABEL`.
 #
 # Colours are QUOTED: an all-digit colour left unquoted is a YAML integer and
 # loses its leading zeros.
@@ -38,3 +47,9 @@
 - name: hotfix
   color: "b60205"
   description: "Ship to dev on the hotfix lane, not behind the release queue; never changes IAM (docs/ci.md)"
+- name: ready-on-green
+  color: "0e8a16"
+  description: "CI adds `ready` once every required check is green at the head (auto-merge.yml)"
+- name: out-of-territory
+  color: "fbca04"
+  description: "The diff touches paths outside the step's declared territory; listed first in the body"

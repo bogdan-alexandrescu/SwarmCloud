@@ -60,7 +60,7 @@ function me(over: Partial<Me['principal']> = {}): Me {
     tenant: {
       tenant_id: 'u-bogdan',
       kind: 'user',
-      principal: 'someone@saga.xyz',
+      principal: 'someone@example.com',
       display_name: 'Bogdan',
       created_at: new Date().toISOString(),
       max_active: 4,
@@ -73,8 +73,8 @@ function me(over: Partial<Me['principal']> = {}): Me {
       namespace: 'swarm-tenant-u-bogdan',
     },
     principal: {
-      email: 'someone@saga.xyz',
-      domain: 'saga.xyz',
+      email: 'someone@example.com',
+      domain: 'example.com',
       groups: [],
       is_admin: false,
       ...over,
@@ -192,12 +192,12 @@ describe('the SwarmCloud mark', () => {
 
 describe('which environment this console is pointed at', () => {
   it('says so when the build declared it', () => {
-    expect(classifyEnvironment('dev', 'swarm.saga.xyz')).toEqual({
+    expect(classifyEnvironment('dev', 'swarm.example.com')).toEqual({
       kind: 'nonprod',
       name: 'dev',
       source: 'build',
     })
-    expect(classifyEnvironment('PROD', 'swarm.saga.xyz').kind).toBe('production')
+    expect(classifyEnvironment('PROD', 'swarm.example.com').kind).toBe('production')
     expect(classifyEnvironment('production', 'x').kind).toBe('production')
     // A suffixed production name is still production. This is the case a
     // straight equality check gets wrong, and getting it wrong means a quiet
@@ -216,8 +216,8 @@ describe('which environment this console is pointed at', () => {
     // The whole point. Nothing declared it, the host is not this machine, and
     // the console does not know. The previous behaviour was a hardcoded "dev"
     // on sixteen screens, which is the same sentence with the refusal removed.
-    const env = classifyEnvironment(undefined, 'swarm.saga.xyz')
-    expect(env).toEqual({ kind: 'unknown', host: 'swarm.saga.xyz' })
+    const env = classifyEnvironment(undefined, 'swarm.example.com')
+    expect(env).toEqual({ kind: 'unknown', host: 'swarm.example.com' })
 
     const t = envTreatment(env)
     expect(t.label).toBe('ENVIRONMENT UNKNOWN')
@@ -442,7 +442,7 @@ describe('the badge shouts only where shouting is a safety signal', () => {
     classifyEnvironment('production', 'x'),
     classifyEnvironment('prod-eu', 'x'),
     classifyEnvironment('live', 'x'),
-    classifyEnvironment(undefined, 'swarm.saga.xyz'),
+    classifyEnvironment(undefined, 'swarm.example.com'),
     classifyEnvironment(undefined, ''),
   ]
   const quiet: Environment[] = [
@@ -588,7 +588,7 @@ describe('the frame', () => {
     // signed-in principal in the panel's foot.
     await waitFor(() => expect(c.querySelector('.sk-tenant b')?.textContent).toBe('Bogdan'))
     expect(c.querySelector('.sk-tenant b')?.getAttribute('title')).toBe('u-bogdan')
-    expect(c.querySelector('.sk-pfoot small')?.textContent).toBe('someone@saga.xyz')
+    expect(c.querySelector('.sk-pfoot small')?.textContent).toBe('someone@example.com')
   })
 
   it('never renders an identity it has not read', async () => {
@@ -626,14 +626,14 @@ describe('the frame', () => {
   })
 
   it('prints NO environment word it did not measure', async () => {
-    const c = await sky(null, '', 'swarm.saga.xyz')
+    const c = await sky(null, '', 'swarm.example.com')
     const pill = c.querySelector('.sk-panel .sk-pill')!
     // Scoped to the pill on purpose: an address elsewhere in the frame may
     // legitimately contain the letters "dev".
     expect(pill.textContent).not.toMatch(/\bdev\b/i)
     expect(pill.textContent).toBe('ENVIRONMENT UNKNOWN')
     // The host it could not classify is named, so the reader can act on it.
-    expect(pill.getAttribute('title') ?? '').toContain('swarm.saga.xyz')
+    expect(pill.getAttribute('title') ?? '').toContain('swarm.example.com')
     expect(c.querySelector('.sk-prodbar')).toBeTruthy()
   })
 

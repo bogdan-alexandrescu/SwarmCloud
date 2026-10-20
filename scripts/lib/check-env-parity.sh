@@ -115,22 +115,52 @@ def env_reads(path):
     most worth checking -- TENANT_GROUPS is read as `_csv("TENANT_GROUPS")`.
     So: any module-level function whose body touches os.environ is itself
     treated as an env reader, and its string-literal first argument is a key.
+
+    Two more shapes a reader takes, both in swarm-api, which this missed until
+    var.mcp_servers_enabled put SWARM_MCP_SERVERS on swarm-api (#1433):
+
+      * the key is a module-level string constant, `FLAG = "SWARM_MCP_SERVERS"`
+        then `.get(FLAG, "")` (swarm_api.mcp_servers), so a Name bound once at
+        module level to a string counts as that string;
+      * the mapping is injectable for tests,
+        `(os.environ if environ is None else environ).get(...)`
+        (swarm_api.mcp_servers.mcp_servers_enabled,
+        swarm_api.workspaces.gate_from_env), so a `.get` on a conditional
+        expression with an `environ` arm counts as an environ read.
     """
     tree = ast.parse(path.read_text(), filename=str(path))
 
     helpers = set()
+    constants = {}
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             dumped = ast.dump(node)
             if "'environ'" in dumped or "'getenv'" in dumped:
                 helpers.add(node.name)
+        elif (isinstance(node, ast.Assign) and len(node.targets) == 1
+              and isinstance(node.targets[0], ast.Name)
+              and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):
+            constants[node.targets[0].id] = node.value.value
+        elif (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+              and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):
+            constants[node.target.id] = node.value.value
 
     keys = set()
 
     def literal(node):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
+        if isinstance(node, ast.Name):
+            return constants.get(node.id)
         return None
+
+    def is_environ(node):
+        if isinstance(node, ast.Attribute) and node.attr == "environ":
+            return True
+        return isinstance(node, ast.IfExp) and any(
+            isinstance(arm, ast.Attribute) and arm.attr == "environ"
+            for arm in (node.body, node.orelse)
+        )
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Subscript):
@@ -144,7 +174,16 @@ def env_reads(path):
             matched = False
             if isinstance(fn, ast.Attribute):
                 inner = fn.value
-                if fn.attr == "get" and isinstance(inner, ast.Attribute) and inner.attr == "environ":
+                if fn.attr == "get" and is_environ(inner):
+                    matched = True
+                # `(os.environ if environ is None else environ).get("KEY")`: a
+                # reader that takes an injectable mapping for its tests
+                # (swarm_api.workspaces.gate_from_env, WORKSPACE_GATE). Until
+                # W10 terraform did not set that key, so missing it was silent.
+                elif fn.attr == "get" and isinstance(inner, ast.IfExp) and any(
+                    isinstance(arm, ast.Attribute) and arm.attr == "environ"
+                    for arm in (inner.body, inner.orelse)
+                ):
                     matched = True
                 elif fn.attr == "getenv":
                     matched = True

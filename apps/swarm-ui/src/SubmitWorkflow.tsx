@@ -1,11 +1,38 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { loadCapacity, loadStats } from './api'
-import { DispatchChoice, asSentence, repositorySchemeRefused, type DispatchDraft } from './Dispatch'
+import { loadCapacity, loadModelClasses, loadStats, type ModelClassOffer } from './api'
+import {
+  AdditionalRepositoriesPicker,
+  DispatchChoice,
+  additionalRepositoriesBody,
+  asSentence,
+  loadTaskReadableRepositories,
+  offeredPicks,
+  repositorySchemeRefused,
+  takesAdditionalRepositories,
+  type AdditionalRepositoryPick,
+  type DispatchDraft,
+  type TaskReadableList,
+} from './Dispatch'
 import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, errorHeading, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
+import {
+  MCP_SERVERS_KEY,
+  McpCredentialField,
+  McpServerPicker,
+  clearCredentials,
+  declaredMcpServers,
+  loadMcpServers,
+  offeredMcpServers,
+  readCredentials,
+  withMcpServers,
+  type CredentialFields,
+  type McpServer,
+  type McpServerList,
+} from './McpServers'
 import { workflowHref } from './agentlist'
+import { AWAIT_INPUT_PROFILE, DEFAULT_ARTIFACT, FIRST_AWAIT_DRAFT, MAX_FILES, awaitBlockOf, type AwaitDraft, type AwaitForm } from './awaitInput'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
-import { RunnerSelect, StepRunnerFacts, useProviderKeys, type ProviderKeys } from './RunnerPicker'
+import { ModelClassSelect, RunnerSelect, StepRunnerFacts, sentModelClass, useProviderKeys, type ProviderKeys } from './RunnerPicker'
 import { Screen, timeAgo, useSubmitAs } from './Shell'
 import {
   InputFields,
@@ -77,10 +104,18 @@ interface FormSources {
   /** `limits` from /v1/stats, or null when that read did not produce them. */
   limits: Record<string, number> | null
   limitsDetail: string
+  /**
+   * What each runner's step may name as `model_class`, from `/v1/runtimes`
+   * (#1435), or null when that read did not produce them. Null hides every
+   * step's class select, and each step then runs its runner's default -- the
+   * request a form without the select sends. A failed read never blocks the
+   * form: the runners themselves come from the capacity read above.
+   */
+  classes: Record<string, ModelClassOffer> | null
 }
 
 async function loadSubmitForm(): Promise<Result<FormSources>> {
-  const [cap, stats] = await Promise.all([loadCapacity(), loadStats()])
+  const [cap, stats, offers] = await Promise.all([loadCapacity(), loadStats(), loadModelClasses()])
   // The catalogue IS the form: a caller picks a runner_profile by name, so a failed
   // read here must not degrade into a text box to type one into.
   if (cap.status === 'loading' || cap.status === 'empty' || cap.status === 'error') return cap
@@ -92,7 +127,8 @@ async function loadSubmitForm(): Promise<Result<FormSources>> {
   // -- not that it is 50 -- so in that case nothing caps the form.
   const limits = stats.status === 'ok' || stats.status === 'stale' ? stats.data.limits : null
   const detail = stats.status === 'error' ? stats.error.message : 'The stats read returned no limits.'
-  const data: FormSources = { profiles, limits, limitsDetail: detail }
+  const classes = offers.status === 'ok' || offers.status === 'stale' ? offers.data : null
+  const data: FormSources = { profiles, limits, limitsDetail: detail, classes }
   return cap.status === 'stale'
     ? { status: 'stale', data, fetchedAt: cap.fetchedAt, error: cap.error }
     : { status: 'ok', data, fetchedAt: cap.fetchedAt, serverAt: cap.serverAt }
@@ -224,10 +260,20 @@ interface StepDraft {
    *  point sideways or forwards, so nothing here can make a cycle. */
   after: string[] | null
   input: InputField[]
+  /** The MCP servers this step names, as picked; only those its profile is
+   *  offered are sent (`mcpNamesOf`). */
+  mcp: string[]
   /** upstream step_id -> artifact filename. Keyed by step id and NOT by the
    *  dependency's position, so reordering or removing a step cannot silently
    *  re-point a filename at a different upstream. */
   from: Record<string, string>
+  /** The model class somebody picked for this step, by name (#1435); absent
+   *  or null is the runner's default, and is sent as nothing (`sentModelClass`). */
+  modelClass?: string | null
+  /** The `await_input` block of an `await-input` step (human-steps.md §4.1);
+   *  absent until one is edited, and read as `FIRST_AWAIT_DRAFT` then. Sent
+   *  only on a step whose runner is `await-input`. */
+  wait?: AwaitDraft
 }
 
 /** A name nothing else in the plan is using. The profile is the stem because
@@ -289,6 +335,8 @@ function planOf(
   steps: StepDraft[],
   byName: ReadonlyMap<string, RunnerProfile>,
   inputLimit: number | null,
+  mcpNamesOf: (s: StepDraft) => string[],
+  classes: Readonly<Record<string, ModelClassOffer>> | null = null,
 ): { problems: StepProblem[]; body: Array<Record<string, unknown>> } {
   const problems: StepProblem[] = []
   const body: Array<Record<string, unknown>> = []
@@ -311,6 +359,15 @@ function planOf(
       problems.push({ key: s.key, stepId: id, kind: 'input', message: built.message })
       continue
     }
+    // THE STEP'S MCP PICKS go into its `input` (§4.3), as on the task form; a
+    // `mcp_servers` typed as a setting of one's own as well is set twice.
+    const mcpNames = mcpNamesOf(s)
+    if (mcpNames.length > 0 && Object.prototype.hasOwnProperty.call(built.input, MCP_SERVERS_KEY)) {
+      problems.push({ key: s.key, stepId: id, kind: 'input',
+        message: `the setting ${MCP_SERVERS_KEY} is set twice and an object has one value per key` })
+      continue
+    }
+    const withMcp = { ...built, input: withMcpServers(built.input, mcpNames) }
     // null means THIS API DID NOT SAY which keys the runner demands, which is
     // not the same as demanding none. Nothing is checked in that case and the
     // step says so; inventing a rule here would refuse valid workflows.
@@ -333,7 +390,7 @@ function planOf(
     // OVER THE SERVED LIMIT (live QA SUB-4): `submit_workflow` measures each
     // step's input against `max_input_bytes`, so a step over it is a 422 the
     // form can name first. Null limit (not read) checks nothing.
-    const tooBig = inputSizeProblem(built.input, inputLimit)
+    const tooBig = inputSizeProblem(withMcp.input, inputLimit)
     if (tooBig !== null) {
       problems.push({ key: s.key, stepId: id, kind: 'size', message: tooBig })
       continue
@@ -344,6 +401,29 @@ function planOf(
       const filename = (s.from[source] ?? '').trim()
       if (filename !== '') staged[source] = filename
     }
+    // A STEP THAT WAITS FOR A PERSON (human-steps.md §4.1) runs nothing, so
+    // its input is the prompt the person reads and nothing else, and its
+    // `await_input` block is checked here before the API refuses it.
+    let awaitBlock: Record<string, unknown> | null = null
+    if (s.profile === AWAIT_INPUT_PROFILE) {
+      const extra = Object.keys(withMcp.input).filter((k) => k !== 'prompt')
+      if (extra.length > 0) {
+        problems.push({ key: s.key, stepId: id, kind: 'input', message: `a step that waits for a person takes only a prompt, not ${extra.join(', ')}` })
+        continue
+      }
+      const wait = s.wait ?? FIRST_AWAIT_DRAFT
+      const built = awaitBlockOf(wait)
+      if (!built.ok) {
+        problems.push({ key: s.key, stepId: id, kind: 'input', message: built.message })
+        continue
+      }
+      if (wait.form === 'answers' && Object.values(staged).filter((f) => f === 'questions.json').length !== 1) {
+        problems.push({ key: s.key, stepId: id, kind: 'input', message: 'an answers form stages exactly one questions.json from a step it waits for' })
+        continue
+      }
+      awaitBlock = built.block
+    }
+    const modelClass = sentModelClass(classes?.[s.profile], s.modelClass)
     body.push({
       step_id: id,
       runner_profile: s.profile,
@@ -351,12 +431,16 @@ function planOf(
       // `Field(default_factory=dict)`, so an omitted `input` is an accepted
       // workflow whose every agent step fails -- the defect this screen had.
       // An empty object here is a caller who chose it, not a form that forgot.
-      input: built.input,
+      input: withMcp.input,
       depends_on: depends,
       // Omitted when empty, unlike `input`: an empty `input_from` is exactly
       // the default and stages nothing, whereas an empty `input` is a payload
       // the runner still has to read.
       ...(Object.keys(staged).length === 0 ? {} : { input_from: staged }),
+      ...(awaitBlock === null ? {} : { await_input: awaitBlock }),
+      // A CLASS NAME, never a model ID (invariant 10), and only one somebody
+      // chose over the runner's default (#1435).
+      ...(modelClass === undefined ? {} : { model_class: modelClass }),
     })
   }
   return { problems, body }
@@ -430,7 +514,7 @@ export function OnFailureChoice({ value, onChange }: {
 /** The plan an untouched form starts from, and the one "Submit another" returns to. */
 const firstSteps = (): StepDraft[] => [{
   key: 1, id: autoId('', new Set()), profile: '', stage: 0,
-  after: null, input: [], from: {},
+  after: null, input: [], mcp: [], from: {},
 }]
 const firstDispatch = (): DispatchDraft => ({ strategy: DEFAULT_STRATEGY, carrier: DEFAULT_CARRIER, repositoryUrl: '' })
 
@@ -466,6 +550,84 @@ function Form({ sources }: { sources: FormSources }) {
   const rawInput = sources.limits === null ? undefined : sources.limits.max_input_bytes
   const inputLimit = typeof rawInput === 'number' && rawInput > 0 ? rawInput : null
 
+  // THE MCP SERVERS (MCP-UI-WF; docs/design/registered-mcp-servers.md §4.3
+  // "Workflows"). Each step names its own, in its `input.mcp_servers`, from a
+  // picker drawn only when its profile declares the input; the workspace's
+  // list is read once, and only once some step's profile does. A pick the
+  // list no longer offers that step -- another runner, a server disabled
+  // since -- is not sent, as on the task form.
+  // ONE CREDENTIAL PER `dispatch` SERVER FOR THE WHOLE WORKFLOW:
+  // `WorkflowCreate.mcp_credentials` is a single top-level map and every step
+  // naming the server uses that one stored value, so its field is drawn once,
+  // under the plan, however many steps name it. The value stays in the
+  // field's DOM node (`mcpFields`), never in state, and leaves only in the
+  // POST's `mcp_credentials`; the field is emptied once the API has answered.
+  const mcpDeclared = steps.some((s) => declaredMcpServers(byName.get(s.profile)) !== null)
+  const [mcpList, setMcpList] = useState<Result<McpServerList> | null>(null)
+  useEffect(() => {
+    if (!mcpDeclared) return
+    let live = true
+    void loadMcpServers().then((r) => {
+      if (live) setMcpList(r)
+    })
+    return () => {
+      live = false
+    }
+  }, [mcpDeclared])
+  const mcpData = mcpList !== null && (mcpList.status === 'ok' || mcpList.status === 'stale') ? mcpList.data : null
+  const mcpNamesOf = (s: StepDraft): string[] => {
+    if (mcpData === null || declaredMcpServers(byName.get(s.profile)) === null) return []
+    const offered = offeredMcpServers(mcpData, s.profile)
+    return s.mcp.filter((n) => offered.some((o) => o.name === n))
+  }
+  const mcpNamed = new Set(steps.flatMap(mcpNamesOf))
+  const mcpAsked: McpServer[] = mcpData === null ? []
+    : mcpData.servers.filter((s) => mcpNamed.has(s.name) && s.auth.mode === 'dispatch')
+  const mcpFields = useRef(new Map<string, HTMLInputElement>())
+  const [mcpFilled, setMcpFilled] = useState<ReadonlySet<string>>(() => new Set())
+  const [mcpLifetimes, setMcpLifetimes] = useState<Record<string, number>>({})
+  const mcpUnfilled = mcpAsked.filter((s) => !mcpFilled.has(s.name)).map((s) => s.name)
+  const onMcpFilled = (name: string, on: boolean) =>
+    setMcpFilled((was) => {
+      const next = new Set(was)
+      if (on) next.add(name)
+      else next.delete(name)
+      return next
+    })
+  const onMcpLifetime = (name: string, seconds: number) => setMcpLifetimes((was) => ({ ...was, [name]: seconds }))
+  const forgetCredentials = () => {
+    clearCredentials(mcpFields)
+    setMcpFilled(new Set())
+  }
+  const mcpPicker: StepMcp = {
+    list: mcpList, namesOf: mcpNamesOf, fields: mcpFields, filled: mcpFilled, onFilled: onMcpFilled,
+    lifetimes: mcpLifetimes, onLifetime: onMcpLifetime,
+  }
+
+  // ADDITIONAL REPOSITORIES (MR-UI, #1434): ONE LIST FOR THE WORKFLOW,
+  // `WorkflowCreate.additional_repositories`, which every agent step reads
+  // unless it names its own (owner's Q6: a step's list replaces it, `[]` is
+  // none). Drawn once some step's runner takes them; read once, then.
+  // A STEP WHOSE RUNNER TAKES NONE (a Cloud Run profile) IS SENT `[]`: it
+  // would otherwise inherit the list and the whole workflow would be refused
+  // `additional_repositories_unsupported_profile`, which tells its author to
+  // do exactly this (`extrarepos.Resolver`). The picker names both sets.
+  const extraTakers = steps.filter((s) => takesAdditionalRepositories(byName.get(s.profile)))
+  const extraOthers = steps.filter((s) => s.profile !== '' && !takesAdditionalRepositories(byName.get(s.profile)))
+  const extraDrawn = extraTakers.length > 0
+  const [extraList, setExtraList] = useState<Result<TaskReadableList> | null>(null)
+  const [extraPicks, setExtraPicks] = useState<AdditionalRepositoryPick[]>([])
+  const extraAsked = useRef(false)
+  useEffect(() => {
+    if (!extraDrawn || extraAsked.current) return
+    extraAsked.current = true
+    void loadTaskReadableRepositories().then(setExtraList)
+  }, [extraDrawn])
+  const extraSent = extraDrawn ? additionalRepositoriesBody(offeredPicks(extraPicks, extraList)) : []
+  const withExtra = (body: Array<Record<string, unknown>>): Array<Record<string, unknown>> =>
+    extraSent.length === 0 ? body : body.map((b) =>
+      takesAdditionalRepositories(byName.get(String(b.runner_profile))) ? b : { ...b, additional_repositories: [] })
+
   const stageCount = steps.reduce((m, s) => Math.max(m, s.stage + 1), 1)
   const stages = Array.from({ length: stageCount }, (_, i) => steps.filter((s) => s.stage === i))
   const atCeiling = maxSteps !== null && steps.length >= maxSteps
@@ -474,7 +636,7 @@ function Form({ sources }: { sources: FormSources }) {
     const taken = new Set(steps.map((s) => s.id))
     setSteps([...steps, {
       key: nextKey, id: autoId('', taken), profile: '', stage,
-      after: null, input: [], from: {},
+      after: null, input: [], mcp: [], from: {},
     }])
     setNextKey(nextKey + 1)
   }
@@ -498,7 +660,7 @@ function Form({ sources }: { sources: FormSources }) {
   // THE LIVE PLAN. What disables the button, titles the send panel and lists
   // the steps that stop it -- the same pass `send` makes, so what the panel
   // says and what the click does cannot disagree.
-  const plan = planOf(steps, byName, inputLimit)
+  const plan = planOf(steps, byName, inputLimit, mcpNamesOf, sources.classes)
   // THE REPOSITORY THE CLICK PUSHES TO (VQA V139), as on the task form: the
   // trimmed URL, named in the panel whenever the strategy pushes. A push with
   // nowhere to push is refused by the API at either scale
@@ -511,11 +673,13 @@ function Form({ sources }: { sources: FormSources }) {
   // the field said "it will refuse this one" under "Ready to send". It is the
   // field's own test, so the field, the heading and the button agree.
   const badRepo = repositorySchemeRefused(repo)
-  const blocked = plan.problems.length > 0 || noRepo || badRepo
+  // A `dispatch` server some step names, with no credential typed for it, is
+  // refused 422 `mcp_credential_missing`; the button holds until it is given.
+  const blocked = plan.problems.length > 0 || noRepo || badRepo || mcpUnfilled.length > 0
   // WHAT THIS CLICK WOULD SEND, as one comparable value (VQA V048, owner
   // decision Q1 on #1038): after a 201 the button is "Submit another" for as
   // long as the form still says exactly what was sent.
-  const draftKey = JSON.stringify([plan.body, dispatch.strategy, dispatch.carrier, repo, onFailure, priority.trim()])
+  const draftKey = JSON.stringify([plan.body, dispatch.strategy, dispatch.carrier, repo, onFailure, priority.trim(), extraSent])
   const justSent = sub.kind === 'created' && sentKey === draftKey
   const another = () => {
     setSteps(firstSteps())
@@ -523,6 +687,9 @@ function Form({ sources }: { sources: FormSources }) {
     setDispatch(firstDispatch())
     setOnFailure('fail_workflow')
     setPriority('0')
+    setMcpLifetimes({})
+    setExtraPicks([])
+    forgetCredentials()
     setSub({ kind: 'idle' })
     setSentKey(null)
     setRestarted((n) => n + 1)
@@ -542,6 +709,10 @@ function Form({ sources }: { sources: FormSources }) {
   // A 5xx's detail is read the same way for the outcome, but marks no card:
   // nothing says the step was the problem.
   const refusal = sub.kind === 'rejected' || sub.kind === 'uncertain' ? refusalOf(sub.error, sentIds) : null
+  // A refusal of the workflow's list is said under its picker too. Every
+  // `extrarepos` refusal names the field in its detail.
+  const extraRefused = sub.kind === 'rejected' && typeof sub.error.detail === 'object' && sub.error.detail !== null
+    && (sub.error.detail as Record<string, unknown>).field === 'additional_repositories' ? sub.error.message : undefined
   // WHAT THE CLICK COMMITS TO (#115), from the steps `send` builds the body
   // from. Each step's weight is its runner's `units`, taken in every pool that
   // step needs; the sum is the weight the whole plan asks admission for. A step
@@ -581,19 +752,21 @@ function Form({ sources }: { sources: FormSources }) {
     // button is disabled while a problem stands, so this branch should not be
     // reachable; it stays because "the form refuses before it posts" is the
     // invariant, and a disabled attribute is only one way of keeping it.
-    const { problems, body } = planOf(steps, byName, inputLimit)
+    const { problems, body } = planOf(steps, byName, inputLimit, mcpNamesOf, sources.classes)
     if (problems.length > 0) { setSub({ kind: 'not_sent', problems }); return }
     // ONE POST PER CLICK (live QA SUB-1, the task form's defect): nothing is
     // sent while a request is in flight, or while the form still says exactly
     // what the last 201 created.
     if (inFlight.current || sub.kind === 'sending' || justSent) return
-    if (!priorityOk || noRepo || badRepo) return
+    if (!priorityOk || noRepo || badRepo || mcpUnfilled.length > 0) return
+    // Read once, here, from the fields; never held in state.
+    const credentials = readCredentials(mcpFields, mcpAsked, mcpAsked.map((s) => s.name), mcpLifetimes)
     inFlight.current = true
     setSub({ kind: 'sending' })
     setSentIds(body.map((b) => String(b.step_id)))
     const sending = draftKey
     void postWorkflow({
-      steps: body,
+      steps: withExtra(body),
       // Workflow-level, not per step: `integrate` produces ONE pull request, so
       // "which repository" cannot be a per-step answer (schemas.WorkflowCreate).
       strategy: dispatch.strategy,
@@ -601,8 +774,18 @@ function Form({ sources }: { sources: FormSources }) {
       ...(repo === '' ? {} : { repository_url: repo }),
       ...(onFailure === 'fail_workflow' ? {} : { on_step_failure: onFailure }),
       ...(priorityN === 0 ? {} : { priority: priorityN }),
+      // Omitted when none is picked, so a workflow that reads none sends what
+      // it always did.
+      ...(extraSent.length === 0 ? {} : { additional_repositories: extraSent }),
+      // BESIDE `steps`, never in a step's `input`, which is stored and shown
+      // (§4.3). One map for the workflow; omitted when no step names a
+      // `dispatch` server.
+      ...(Object.keys(credentials).length === 0 ? {} : { mcp_credentials: credentials }),
     }).then((result) => {
       inFlight.current = false
+      // NEVER RENDERED BACK: whatever the answer, the fields are emptied, and
+      // a second send needs the credential typed again.
+      forgetCredentials()
       if (result.kind === 'created') setSentKey(sending)
       setSub(result)
     })
@@ -659,12 +842,12 @@ function Form({ sources }: { sources: FormSources }) {
               </div>
               <div className="wfb-steps">
                 {inStage.map((s) => (
-                  <StepCard key={s.key} step={s} steps={steps} profiles={sources.profiles} keys={keys}
+                  <StepCard key={s.key} step={s} steps={steps} profiles={sources.profiles} keys={keys} classes={sources.classes}
                     required={requiredInputKeys(byName.get(s.profile))}
                     nameProblem={plan.problems.find((p) => p.key === s.key && p.kind === 'name')?.message ?? null}
                     sizeProblem={plan.problems.find((p) => p.key === s.key && p.kind === 'size')?.message ?? null}
                     refused={sub.kind === 'rejected' ? refusal?.byStep[s.id.trim()] ?? null : null}
-                    removable={steps.length > 1}
+                    removable={steps.length > 1} mcp={mcpPicker}
                     onChange={(next) => patch(s.key, next)} onRemove={() => drop(s.key)} />
                 ))}
                 {/* A FULL TILE AT THE END OF THE ROW (#118): its words say where
@@ -693,6 +876,28 @@ function Form({ sources }: { sources: FormSources }) {
               step limit · nothing caps this form
               <span className="ctl-panel-note-detail">{sources.limitsDetail}</span>
             </p>
+          )}
+          {extraDrawn && (
+            <AdditionalRepositoriesPicker list={extraList} picks={extraPicks} onChange={setExtraPicks}
+              error={extraRefused}
+              note={
+                <p className="btp-hint" data-extra-readers>
+                  Read by {extraTakers.map((s) => s.id.trim() || '(unnamed step)').join(', ')}
+                  {extraOthers.length > 0 && (
+                    <>; not by {extraOthers.map((s) => s.id.trim() || '(unnamed step)').join(', ')}, whose runner takes none</>
+                  )}.
+                </p>
+              } />
+          )}
+          {mcpAsked.length > 0 && (
+            <fieldset className="btp">
+              <legend className="btp-h">MCP credentials for this workflow</legend>
+              {mcpAsked.map((srv) => (
+                <McpCredentialField key={srv.name} server={srv} scope="workflow" fields={mcpFields}
+                  filled={mcpFilled.has(srv.name)} onFilled={onMcpFilled}
+                  lifetime={mcpLifetimes[srv.name]} onLifetime={onMcpLifetime} />
+              ))}
+            </fieldset>
           )}
         </Move>
 
@@ -795,6 +1000,11 @@ function Form({ sources }: { sources: FormSources }) {
               ))}
             </p>
           )}
+          {mcpUnfilled.length > 0 && (
+            <p className="warn-text" role="status">
+              {mcpUnfilled.join(', ')} {mcpUnfilled.length === 1 ? 'needs its' : 'need their'} credential for this run.
+            </p>
+          )}
           {justSent ? (
             <Button key="another" kind="primary" full onClick={another}>Submit another</Button>
           ) : (
@@ -813,12 +1023,26 @@ function Form({ sources }: { sources: FormSources }) {
   )
 }
 
-function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProblem, refused, removable, onChange, onRemove }: {
+/** What every step's MCP picker shares: the one list read, and the workflow's credential fields. */
+interface StepMcp {
+  list: Result<McpServerList> | null
+  /** The picks a step would send: those its profile is offered. */
+  namesOf: (s: StepDraft) => string[]
+  fields: CredentialFields
+  filled: ReadonlySet<string>
+  onFilled: (name: string, filled: boolean) => void
+  lifetimes: Readonly<Record<string, number>>
+  onLifetime: (name: string, seconds: number) => void
+}
+
+function StepCard({ step, steps, profiles, keys, classes, required, nameProblem, sizeProblem, refused, removable, mcp, onChange, onRemove }: {
   step: StepDraft
   steps: StepDraft[]
   /** The whole catalogue: a disabled runner is drawn, refused, with its reason. */
   profiles: Array<[string, RunnerProfile]>
   keys: ProviderKeys
+  /** Each runner's model classes (`FormSources.classes`); null when not read. */
+  classes: Record<string, ModelClassOffer> | null
   /** What this step's runner refuses to start without, or null when this API
    *  did not say. Computed by the form so the live warning here and the
    *  refusal in `send` read the same answer. */
@@ -834,11 +1058,13 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProb
    *  (a 422 naming it), or null. */
   refused: string | null
   removable: boolean
+  mcp: StepMcp
   onChange: (next: StepDraft) => void
   onRemove: () => void
 }) {
   const [open, setOpen] = useState(false)
   const chosen = profiles.find(([name]) => name === step.profile)
+  const mcpMax = declaredMcpServers(chosen?.[1])
   const depends = dependsOf(step, steps)
   const built = buildInput(step.input)
   // Every step in an EARLIER stage. Offering a step in the same stage or a
@@ -854,6 +1080,10 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProb
       ? autoId(profile, new Set(steps.filter((s) => s.key !== step.key).map((s) => s.id)))
       : step.id,
     input: seedFields(step.input, requiredInputKeys(profiles.find(([n]) => n === profile)?.[1])),
+    // Another runner is offered other servers, as on the task form.
+    mcp: [],
+    // A class the new runner does not accept is not carried over to it.
+    modelClass: step.modelClass != null && classes?.[profile]?.model_classes.includes(step.modelClass) ? step.modelClass : null,
   })
 
   return (
@@ -878,6 +1108,14 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProb
       <RunnerSelect id={stepRunnerId(step.key)} label={`${step.id} runner`}
         profiles={profiles} chosen={step.profile} onPick={retitle} />
       {chosen && <StepRunnerFacts profile={chosen[1]} keys={keys} />}
+      {/* THE STEP'S MODEL CLASS, BY NAME (#1435): only the classes this
+          runner accepts, starting on its default; not drawn for a runner
+          that runs no Claude model. */}
+      {chosen && (
+        <ModelClassSelect id={`wfb-${step.key}-model-class`} label={`${step.id} model class`}
+          offer={classes?.[step.profile]} value={step.modelClass ?? null}
+          onPick={(modelClass) => onChange({ ...step, modelClass })} />
+      )}
 
       {/* A MISSING REQUIRED KEY IS SAID AT ITS FIELD, by `InputFields`, once
           the field has been left (TS-15). This card's own copy of it -- "Not
@@ -890,6 +1128,18 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProb
       ) : (
         <InputFields profile={step.profile} fields={step.input} required={required}
           idPrefix={stepFields(step.key)} onChange={(input) => onChange({ ...step, input })} />
+      )}
+      {/* ONLY FOR `await-input`: how the step waits, and for what (§4.1). */}
+      {step.profile === AWAIT_INPUT_PROFILE && (
+        <AwaitFields idPrefix={stepFields(step.key)} draft={step.wait ?? FIRST_AWAIT_DRAFT} onChange={(wait) => onChange({ ...step, wait })} />
+      )}
+      {/* ONLY FOR A PROFILE THAT DECLARES `mcp_servers`: any other refuses the key. */}
+      {mcpMax !== null && (
+        <McpServerPicker list={mcp.list} profile={step.profile} max={mcpMax} picked={mcp.namesOf(step)}
+          onPick={(names) => onChange({ ...step, mcp: names })}
+          fields={mcp.fields} filled={mcp.filled} onFilled={mcp.onFilled}
+          lifetimes={mcp.lifetimes} onLifetime={mcp.onLifetime}
+          credentialsElsewhere="Its credential is asked for once, for the whole workflow, under the plan." />
       )}
 
       {/* SENTENCES (QA G4-31): the fragments are written to follow a step's
@@ -959,6 +1209,81 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProb
 }
 
 /**
+ * HOW AN `await-input` STEP WAITS (human-steps.md §4.1): the form a person
+ * answers, how many files the answer may carry, how long it waits (24 hours
+ * at most, Q4), what happens at expiry (Q5) and whose bell is rung. Any
+ * member of the tenant may answer (Q2): `remind` chooses who is reminded,
+ * never who may answer. Offered only once the catalogue serves the profile
+ * as available; until then the runner select refuses it.
+ */
+function AwaitFields({ idPrefix, draft, onChange }: { idPrefix: string; draft: AwaitDraft; onChange: (next: AwaitDraft) => void }) {
+  const id = (k: string) => `${idPrefix}-await-${k}`
+  const built = awaitBlockOf(draft)
+  return (
+    <fieldset className="wfb-await" data-testid="wfb-await">
+      <legend className="t-label">how it waits for a person</legend>
+      <label className="c-field" htmlFor={id('form')}>
+        <span className="c-lbl">the answer</span>
+        <select id={id('form')} className="c-inp" value={draft.form} onChange={(e) => onChange({ ...draft, form: e.target.value as AwaitForm, ...(e.target.value === 'answers' ? { onExpire: 'fail' as const } : {}) })}>
+          <option value="verdict">a verdict: approve, or request changes</option>
+          <option value="answers">answers to an upstream agent’s questions.json</option>
+          <option value="text">text</option>
+        </select>
+      </label>
+      <label className="c-field" htmlFor={id('artifact')}>
+        <span className="c-lbl">written as</span>
+        <input id={id('artifact')} className="c-inp mono" value={draft.artifact} placeholder={DEFAULT_ARTIFACT[draft.form]} spellCheck={false}
+          onChange={(e) => onChange({ ...draft, artifact: e.target.value })} />
+      </label>
+      <label className="c-field" htmlFor={id('files')}>
+        <span className="c-lbl">files with the answer (0 offers no upload)</span>
+        <input id={id('files')} className="c-inp" type="number" min={0} max={MAX_FILES} value={draft.maxFiles}
+          onChange={(e) => onChange({ ...draft, maxFiles: Number(e.target.value) })} />
+      </label>
+      <label className="c-field" htmlFor={id('hours')}>
+        <span className="c-lbl">expires after, in hours (24 at most)</span>
+        <input id={id('hours')} className="c-inp" inputMode="decimal" value={draft.expiresHours}
+          onChange={(e) => onChange({ ...draft, expiresHours: e.target.value })} />
+      </label>
+      <label className="c-field" htmlFor={id('expire')}>
+        <span className="c-lbl">if nobody answers</span>
+        <select id={id('expire')} className="c-inp" value={draft.onExpire} onChange={(e) => onChange({ ...draft, onExpire: e.target.value as AwaitDraft['onExpire'] })}>
+          <option value="fail">the step fails</option>
+          {draft.form !== 'answers' && <option value="default">the step takes a default answer</option>}
+        </select>
+      </label>
+      {draft.onExpire === 'default' && draft.form === 'verdict' && (
+        <label className="c-field" htmlFor={id('default')}>
+          <span className="c-lbl">the default verdict</span>
+          <select id={id('default')} className="c-inp" value={draft.defaultVerdict} onChange={(e) => onChange({ ...draft, defaultVerdict: e.target.value as AwaitDraft['defaultVerdict'] })}>
+            <option value="MERGE">MERGE</option>
+            <option value="NOT_YET">NOT_YET</option>
+          </select>
+        </label>
+      )}
+      {draft.onExpire === 'default' && draft.form === 'text' && (
+        <label className="c-field" htmlFor={id('default')}>
+          <span className="c-lbl">the default text</span>
+          <textarea id={id('default')} className="c-inp" rows={2} value={draft.defaultText} onChange={(e) => onChange({ ...draft, defaultText: e.target.value })} />
+        </label>
+      )}
+      <label className="c-field" htmlFor={id('remind-after')}>
+        <span className="c-lbl">remind every, in hours (blank for no reminder)</span>
+        <input id={id('remind-after')} className="c-inp" inputMode="decimal" value={draft.remindHours}
+          onChange={(e) => onChange({ ...draft, remindHours: e.target.value })} />
+      </label>
+      <label className="c-field" htmlFor={id('remind')}>
+        <span className="c-lbl">whose bell is rung (blank for yours); any member may answer</span>
+        <input id={id('remind')} className="c-inp" value={draft.remind} spellCheck={false}
+          onChange={(e) => onChange({ ...draft, remind: e.target.value })} />
+      </label>
+      {/* Said at the fields, as the input editor says its own problem. */}
+      {!built.ok && <p className="warn-text" role="alert">{asSentence(built.message)}</p>}
+    </fieldset>
+  )
+}
+
+/**
  * WHAT THE API ACCEPTED, read off the 201 rather than off the form.
  *
  * `create_workflow` echoes the resolved dispatch precisely so a caller sees the
@@ -991,7 +1316,11 @@ function Accepted({ echo, steps }: { echo: DispatchEcho | null; steps: number })
     <ul className="ctl-facts">
       <li className="ctl-fact">
         <b>accepted as</b>
-        <code>{echo.strategy}</code> / <code>{echo.carrier}</code>
+        {/* ONE VALUE (VQA V174): as three flex items the panel's
+            `space-between` set "direct-pr" mid-row, a lone "/" at the edge
+            and "checkpoints" on a line of its own. The slash is held to the
+            strategy, so a wrap can only move the carrier down whole. */}
+        <span className="dsp-fact-v"><code>{echo.strategy}</code>{'\u00a0/ '}<code>{echo.carrier}</code></span>
       </li>
       <li className={known === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
         <b>outcome</b>
@@ -999,10 +1328,10 @@ function Accepted({ echo, steps }: { echo: DispatchEcho | null; steps: number })
           // A STRATEGY THIS BUNDLE DOES NOT KNOW IS NOT A STRATEGY WITH NO
           // OUTCOME. Same rule as every other absence on these screens: an em
           // dash and a mark, never a claim.
-          <>
-            <i className="ctl-em">&mdash;</i>
+          <span className="dsp-fact-v">
+            <i className="ctl-em">&mdash;</i>{' '}
             <i className="ctl-mark is-absent">not measured</i>
-          </>
+          </span>
         ) : (
           consequenceOf(known, steps).headline
         )}

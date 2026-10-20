@@ -25,6 +25,8 @@ import {
   type WorkflowUsage,
 } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
+import { AwaitInputCard } from './AwaitInputCard'
+import { AWAIT_INPUT_PROFILE, WAITING_WORD, expiresAtOf, expiresWords, isWaitingForMember, waitingTitle } from './awaitInput'
 import {
   LIVE_CARD_H,
   autoTier,
@@ -172,6 +174,7 @@ import {
 } from './WorkflowViews'
 import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, type MergeRead, type VerdictRead } from './wfreview'
 import { WorkflowChangesTab, changesAtOf, changesCount, withChangesAt, type ChangesAt } from './WorkflowChanges'
+import { PersonName } from './PersonName'
 import { Mark } from './primitives'
 import './styles/workflows.css'
 import './styles/names.css'
@@ -478,18 +481,30 @@ function useRecentName(id: string | null): string | null {
   return name
 }
 
-/** `4 steps · 1 → 2 → 1 · 1 of 4 done · by priya · started 8m ago`: one workflow's count note (#138). */
-function pageSummary(d: WorkflowBoard, id: string): string {
+/**
+ * `4 steps · 1 → 2 → 1 · 1 of 4 done · by Priya Rao · priya@example.com ·
+ * started 8m ago`: one workflow's count note (#138).
+ *
+ * THE OWNER IS A PERSON, SO IT PRINTS THROUGH `PersonName` (user-profile.md
+ * §4.4): their name when they set one, always beside the whole email. The
+ * list's narrow Owner column keeps the name before the @ (QA G3-14); this
+ * note is the workflow page's, where the design names the owner. It is
+ * called, not mounted, so the note's element tree carries the name and the
+ * email as text, and `CountNote`'s title (`textOf`) keeps them.
+ */
+function pageSummary(d: WorkflowBoard, id: string): ReactNode {
   const w = d.workflows.find((x) => x.workflow_id === id)
   if (w === undefined) return 'not in this read'
   const shape = shapeOf(w.steps)
   const started = workflowStartText(w, d.taskById)
-  return [
-    `${shape.steps} step${shape.steps === 1 ? '' : 's'} · ${shape.text}`,
-    rollupLine(w, d.taskById).text,
-    `by ${ownerShort(w.submitted_by)}`,
-    startedPhrase(started),
-  ].join(' · ')
+  const owner = w.submitted_by === null || w.submitted_by === '' ? ownerShort(w.submitted_by) : PersonName({ email: w.submitted_by, name: w.submitted_by_name })
+  return (
+    <>
+      {`${shape.steps} step${shape.steps === 1 ? '' : 's'} · ${shape.text} · ${rollupLine(w, d.taskById).text} · by `}
+      {owner}
+      {` · ${startedPhrase(started)}`}
+    </>
+  )
 }
 
 /**
@@ -519,15 +534,26 @@ export function listSummary(d: Pick<WorkflowBoard, 'workflows' | 'nextPageToken'
   const c = bucketCounts(d.workflows)
   let parked = 0
   let waiting = 0
+  // NOR IS A STATE THIS READ COULD NOT DERIVE (visual QA QA-036, 2026-10-20):
+  // the Running bucket holds it because nothing says it ended, and `2 running`
+  // counted a row whose own mark said `state not derived`. Each is said in its
+  // row's words (`state not derived`, `state unread`), in the order first met.
+  const unknown = new Map<string, number>()
   for (const w of d.workflows) {
     if (bucketOf(w) !== 'running') continue
     const s = derivedStateOf(w)
-    if (s === 'PARKED') parked += 1
+    if (s === null) {
+      const word = workflowHeaderState(w).word
+      unknown.set(word, (unknown.get(word) ?? 0) + 1)
+    } else if (s === 'PARKED') parked += 1
     else if (s === 'READY' || s === 'QUEUED' || s === 'SUBMITTED') waiting += 1
   }
-  const parts = [`${c.running - parked - waiting} running`]
+  let underived = 0
+  for (const n of unknown.values()) underived += n
+  const parts = [`${c.running - parked - waiting - underived} running`]
   if (parked > 0) parts.push(`${parked} parked`)
   if (waiting > 0) parts.push(`${waiting} waiting`)
+  for (const [word, n] of unknown) parts.push(`${n} ${word}`)
   parts.push(`${c.finished} finished`, `${c.failed} failed`)
   const of = d.nextPageToken ? ` · of the ${d.workflows.length} newest` : ''
   return `${parts.join(' · ')}${of}`
@@ -2189,7 +2215,12 @@ function WorkflowSteps({
           // THE SAMPLE MARK QUALIFIES THESE FIGURES, SO IT IS IN THIS TABLE'S
           // HEAD ROW, inside the card (walkthrough A, 2026-10-03): it was a
           // chip in a strip above the card, floating apart from what it qualifies.
-          head={usage.kind === 'ready' && usage.usage !== null ? <SampleNote usage={usage.usage} workflow={workflow} /> : null}
+          // CALLED, NOT RENDERED (V203, #1427): `head` is null when every task
+          // was sampled, so the table draws no head row. As a component it was
+          // an element that rendered nothing, and the table drew an empty
+          // 32px row and its margin -- a ~45px band between the facts and
+          // the table, where the Graph has its toolbar.
+          head={usage.kind === 'ready' && usage.usage !== null ? SampleNote(usage.usage, workflow) : null}
         />
         <p className="wf-table-total">
           <span>Total</span> <Spend spend={spend} />
@@ -2364,6 +2395,11 @@ function StepCardExtras({
       )}
       {mergeCard !== null && <MergeStepCard card={mergeCard} now={now} />}
       {merge !== null && <MergeCard merge={merge} />}
+      {/* AN `await-input` STEP'S CARD (human-steps.md §4.5): what it shows,
+          its form, and once it has ended who answered, when and how. */}
+      {step.runner_profile === AWAIT_INPUT_PROFILE && step.task_id && (
+        <AwaitInputCard workflowId={workflow.workflow_id} stepId={step.step_id} onAnswered={reload} />
+      )}
     </>
   )
 }
@@ -3948,7 +3984,7 @@ function stageCause(steps: readonly WorkflowStep[], notes: ReadonlyMap<string, S
  *  in the read is an absence of information, not a state nobody computed --
  *  the distinction that needs the second mark exists one level up, on the
  *  workflow header, where an API without `rollup.py` derives nothing at all. */
-function present(state: StepState): {
+function present(state: StepState, now: number = Date.now()): {
   tone: Tone | 'unknown'
   glyph: string
   word: string
@@ -3983,6 +4019,20 @@ function present(state: StepState): {
           glyph: stateGlyph(state.state),
           word: SKIPPED_WORD,
           title: `Task ${state.task.id} SUCCEEDED without running its agent: the review verdict was ${verdict ?? 'not recorded'}, which this step's gate does not run on. The step still published the reviewed work.`,
+          derived: true,
+        }
+      }
+      // A STEP WAITING FOR A PERSON (human-steps.md §4.5) reads as what it
+      // waits for, not as a bare `parked`: any member of its tenant may
+      // answer (Q2), so the word is never "you", and the tooltip names the
+      // tenant and the deadline the scheduler wrote at the park.
+      if (isWaitingForMember(state.task)) {
+        const expires = expiresWords(expiresAtOf(state.task), now)
+        return {
+          tone: stateTone(state.state),
+          glyph: stateGlyph(state.state),
+          word: WAITING_WORD,
+          title: `${waitingTitle(state.task.tenant_id)}${expires === null ? '' : ` Now: ${expires}.`}`,
           derived: true,
         }
       }
@@ -4086,7 +4136,7 @@ function StepNode({
   /** The live card's socket (`WorkflowCard`'s `openLive`); undefined is the real one. */
   openLive?: OpenLive
 }) {
-  const p = present(state)
+  const p = present(state, now)
   // THE BRAND LOOK (rebrand 2026-10-01): the node's mark and its tint, from
   // marks.tsx through `stepLook`, the one place a step's state becomes a hue.
   const look = stepLook(state)
@@ -4189,6 +4239,10 @@ function StepNode({
       <div className="node-line">
         <LookMark look={look} />
         <span className="node-state">{p.word}</span>
+        {/* A waiting-for-a-member step's deadline, on its row (§4.5). */}
+        {state.kind === 'state' && isWaitingForMember(state.task) && expiresAtOf(state.task) !== null && (
+          <span className="node-until">{expiresWords(expiresAtOf(state.task), now)}</span>
+        )}
         {showFigures && (dur.kind === 'queued' || dur.kind === 'parked' || dur.kind === 'held') && <StepTime dur={dur} />}
       </div>
       {/* WHY, ON ONE LINE, AT EVERY TIER (#105, #106). A failed node's cause
@@ -4910,8 +4964,12 @@ function NodeSource({ f, pending }: { f: StepFigures; pending: boolean }) {
  * contains the words `not zero`: that clause is the entire reason this
  * component exists and it does not get to become implicit just because it
  * stopped being visible ink.
+ *
+ * CALLED, NOT RENDERED (V203, #1427), so the table's `head` is null when it is
+ * silent; it keeps its component's name because
+ * test_workflow_step_measurements.py reads this function by it.
  */
-function SampleNote({ usage, workflow }: { usage: WorkflowUsage; workflow: Workflow }) {
+function SampleNote(usage: WorkflowUsage, workflow: Workflow): ReactNode {
   // THIS WORKFLOW'S TASKS ONLY (QA G3-05). The read is the board's -- every
   // workflow's tasks, this one's first under the ceiling -- and the mark
   // printed `12/296 sampled` over a three-step table whose three steps all
@@ -5024,7 +5082,14 @@ function WorkflowListFilters({
           label: BUCKET_LABEL[b],
           ...(counts !== null ? { count: counts[b] } : {}),
           // WF-10: Running is every workflow not yet ended, parked and queued included.
-          ...(b === 'running' ? { title: 'Every workflow that has not ended: running, parked or waiting to start' } : {}),
+          // QA-036: and one whose state this read could not derive, which the
+          // title names so the tab's count never reads as that many running.
+          ...(b === 'running'
+            ? {
+                title:
+                  'Every workflow that has not ended: running, parked or waiting to start, and any whose state this read could not derive',
+              }
+            : {}),
         }))}
         onChange={(b) => choose({ ...query, state: b })}
       />
@@ -5884,11 +5949,22 @@ function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: Workfl
     <div className="wfp is-loading" aria-busy="true">
       <div className="wfp-head">
         <div className="wfp-chips" aria-hidden="true">
-          {PAGE_SKELETON_CHIPS.map((w, i) => (
-            <span key={i} className="c-chip">
-              <span className="wfl-skel" style={{ width: `${w}em` }} />
-            </span>
-          ))}
+          {PAGE_SKELETON_CHIPS.map((w, i) => {
+            const chip = (
+              <span key={i} className="c-chip">
+                <span className="wfl-skel" style={{ width: `${w}em` }} />
+              </span>
+            )
+            // THE COST BAR IS IN THE COST'S SLOT (V103, #1427), which a phone
+            // gives a line of its own in both states (styles/workflows.css).
+            return i === PAGE_SKELETON_CHIPS.length - 1 ? (
+              <span key={i} className="wfp-cost">
+                {chip}
+              </span>
+            ) : (
+              chip
+            )
+          })}
         </div>
         <span className="wfp-actions">
           <Button disabled>Copy link</Button>
@@ -5953,13 +6029,17 @@ function WfTabs({
 /** The step the card opens on: the first failure, else the first live step, else none. */
 function firstStepToShow(workflow: Workflow, taskById: ReadonlyMap<string, Task> | null): string | null {
   let live: string | null = null
+  let waiting: string | null = null
   for (const s of workflow.steps) {
     const st = stepState(s, taskById)
     if (st.kind !== 'state') continue
     if (st.state === 'FAILED' || st.state === 'DEAD_LETTERED') return s.step_id
+    // A step waiting for a member is opened next: its card is where the
+    // answer is given, and the inbox's Answer lands on this page (§4.5).
+    if (waiting === null && isWaitingForMember(st.task)) waiting = s.step_id
     if (live === null && STATE_MARK[st.state].hue === 'live') live = s.step_id
   }
-  return live
+  return waiting ?? live
 }
 
 function WorkflowHead({

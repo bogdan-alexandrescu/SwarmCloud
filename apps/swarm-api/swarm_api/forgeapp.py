@@ -318,7 +318,7 @@ def _app_setting(name: str, environ: Mapping[str, str] | None = None) -> str:
     A module-level helper that touches os.environ ON PURPOSE:
     scripts/lib/check-env-parity.sh counts a variable as read only through
     `os.environ` or such a helper, so reading it off an injected mapping hid
-    these three reads and failed the parity check (#840). `environ` is the
+    these reads and failed the parity check (#840). `environ` is the
     tests' injection point.
     """
     env = os.environ if environ is None else environ
@@ -332,12 +332,17 @@ class AppConfig:
     client_id: str = ""
     app_id: str = ""
     slug: str = ""
+    #: The App's display name (GITHUB_APP_NAME), served as `app_name` so the
+    #: console names the App by it rather than a hard-coded name (#1647).
+    #: Empty when unset; the console then says "the SwarmCloud GitHub App".
+    name: str = ""
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "AppConfig":
         return cls(client_id=_app_setting("GITHUB_APP_CLIENT_ID", environ),
                    app_id=_app_setting("GITHUB_APP_ID", environ),
-                   slug=_app_setting("GITHUB_APP_SLUG", environ))
+                   slug=_app_setting("GITHUB_APP_SLUG", environ),
+                   name=_app_setting("GITHUB_APP_NAME", environ))
 
     def missing(self) -> list[str]:
         return [] if self.client_id else ["GITHUB_APP_CLIENT_ID"]

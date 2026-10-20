@@ -281,6 +281,14 @@ def _payloads(client) -> dict[str, dict[str, Any]]:
 #: the reason. An entry here is a decision; an undeclared key without one is
 #: the drift this file exists to catch.
 UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
+    # Served ahead of the client (docs/design/workspace-roles.md §4.3, lane
+    # ROLES-API-CORE, part of #1518); types.ts is lane ROLES-UI-PEOPLE's
+    # (§6), and the Profile seam that reads it ROLES-UI-GATES'. Remove when
+    # types.ts declares it.
+    "Me": {
+        "role": "the caller's role in the selected workspace, {name, source}; declared by "
+        "lane ROLES-UI-PEOPLE",
+    },
     "Task": {
         "dispatch": "declared as the optional TaskDispatch, whose own fields are checked separately",
         "links": "the console link, for surfaces OUTSIDE the console (MCP, sc, plugin, PR bodies); "
@@ -293,6 +301,10 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         "heartbeat": "what the heartbeat reading is (#179); declared by the UI lane after PR #432",
         "claude_session": "the Claude Code session that submitted it (SC-SESSION-SCOPE), read by the "
         "sc plugin's check, attach-all and watch; the console does not scope by it",
+        # `model_class` and `model_class_defaulted` (contract request 104,
+        # #1435) were excused here while the API served them ahead of the
+        # client. types.ts declares both since lane MODEL-UI, so they are held
+        # by the two directions below like every other field.
     },
     # U26, served ahead of the client the same way; remove when types.ts
     # declares them.
@@ -333,6 +345,15 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         "heartbeats": "declared as LeaseHeartbeat[], checked as LeaseHeartbeat",
     },
     "ProvidersPage": {"providers": "declared as ProviderEntry[], checked as ProviderEntry"},
+    # Served ahead of the client (docs/design/workspace-kinds.md §4.2.2, lane
+    # WK-ADMIN-LIST, part of #847); types.ts and Admin › Tenants are the
+    # console lane's (§4.9). Remove when types.ts declares them.
+    "Tenant": {
+        "workspace_kind": "the workspace record's kind, null for a Terraform tenant (WK-ADMIN-LIST); "
+        "declared by the console lane",
+        "workspace_id": "the workspace record's w- id, null for a Terraform tenant (WK-ADMIN-LIST); "
+        "declared by the console lane",
+    },
 }
 
 

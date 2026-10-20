@@ -36,6 +36,7 @@ from ..browser_logins import BrowserLogins, CarryReaper, SaveLogin, SecretManage
 from ..children import PROOF_HEADER, TIMESTAMP_HEADER, ChildService
 from ..deps import AppContext, admin_auth, current_auth, get_context, submission_scope, tenant_scope
 from .children import child_service
+from .tasks import require_member
 
 router = APIRouter(tags=["browser-logins"])
 
@@ -81,8 +82,11 @@ def save_browser_login(
     submitted_by: str | None = Depends(submission_scope),
     auth: AuthContext = Depends(current_auth),
     service: BrowserLogins = Depends(browser_logins),
+    ctx: AppContext = Depends(get_context),
 ) -> dict:
-    """Accepted, not done: the worker stores the jar and reports `stored`."""
+    """Accepted, not done: the worker stores the jar and reports `stored`.
+    A `member`'s (workspace-roles.md §4.1), asked first."""
+    require_member(ctx, auth)
     return service.save(tenant_id, task_id, body, email=auth.email,
                         member_scope=auth.member_scope, submitted_by=submitted_by)
 
@@ -93,7 +97,10 @@ def revoke_browser_login(
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
     service: BrowserLogins = Depends(browser_logins),
+    ctx: AppContext = Depends(get_context),
 ) -> dict:
+    """Revoke: a `member`'s (workspace-roles.md §4.1's member row), asked first."""
+    require_member(ctx, auth)
     return service.revoke(tenant_id, name, email=auth.email, member_scope=auth.member_scope)
 
 

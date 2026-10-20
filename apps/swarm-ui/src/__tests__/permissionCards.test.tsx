@@ -33,7 +33,7 @@ import { repo, serve, visible } from './repofixture'
 
 const WAIT = { timeout: 4000 }
 const REVIEW = 'https://github.com/organizations/example-org/settings/installations/42/permissions/update'
-const SETTINGS = 'https://github.com/organizations/swarm-owner/settings/apps/swarmcloud-saga/permissions'
+const SETTINGS = 'https://github.com/organizations/swarm-owner/settings/apps/swarmcloud-example/permissions'
 const ORG_REPO = 'repo_0a1b2c3d4e5f6071'
 const TOKEN_REPO = 'repo_2222222222222222'
 
@@ -76,7 +76,7 @@ function answer({ gap = false, settingsUrl = null as string | null, orgs = null 
     tenant_id: 'eng',
     checked_at: new Date().toISOString(),
     required: REQUIRED,
-    app: { configured: true, slug: 'swarmcloud-saga', granted: {}, requested: {}, missing: appMissing, settings_url: settingsUrl, error: null },
+    app: { configured: true, slug: 'swarmcloud-example', granted: {}, requested: {}, missing: appMissing, settings_url: settingsUrl, error: null },
     orgs: orgs ?? [theOrg],
     repositories: [
       {
@@ -138,7 +138,7 @@ describe('Setup › GitHub: one card for the App and one per org', () => {
     expect(visible(card.querySelector('h3 small'))).toBe('org')
     expect(card.querySelector('.fp-body')).toBeNull()
     expect(card.querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false')
-    expect(cardNamed('swarmcloud-saga')).toBeDefined()
+    expect(cardNamed('swarmcloud-example')).toBeDefined()
   })
 
   it('draws an org missing a permission open, in plain words, with Review on GitHub to exactly its review page', async () => {
@@ -254,9 +254,9 @@ describe('Setup › GitHub: one card for the App and one per org', () => {
   it('never draws Add to App for a member, even if a URL were served', async () => {
     routes(() => answer({ appMissing: [{ ...STATUSES, granted: null }], settingsUrl: SETTINGS }), false)
     await mountSection()
-    await waitFor(() => expect(cardNamed('swarmcloud-saga')?.querySelector('.fp-body')).not.toBeNull(), WAIT)
+    await waitFor(() => expect(cardNamed('swarmcloud-example')?.querySelector('.fp-body')).not.toBeNull(), WAIT)
     await new Promise((r) => setTimeout(r, 20))
-    const app = cardNamed('swarmcloud-saga')!
+    const app = cardNamed('swarmcloud-example')!
     expect(visible(app.querySelector('.fp-words'))).toBe("merges can't see CI, so they fail")
     expect(screen.queryByText('Add to App')).toBeNull()
     expect(document.querySelector(`a[href="${SETTINGS}"]`)).toBeNull()
@@ -330,7 +330,7 @@ describe('Setup › GitHub: one card for the App and one per org', () => {
     expect(document.querySelector('[aria-busy="true"], .c-sk')).not.toBeNull()
     release()
     await screen.findByText('No connected org', undefined, WAIT)
-    expect(cardNamed('swarmcloud-saga')).toBeDefined()
+    expect(cardNamed('swarmcloud-example')).toBeDefined()
   })
 
   it('shows a failed read as a failure, not as an empty or healthy section', async () => {
@@ -409,5 +409,24 @@ describe("the repository page shows its own org's card", () => {
     expect(card.closest('.fp-repo')).not.toBeNull()
     expect(visible(card.querySelector('.fp-words'))).toBe("merges can't see CI, so they fail")
     expect(card.querySelector(`a[href="${REVIEW}"]`)).not.toBeNull()
+  })
+})
+
+describe('visual QA VQA2-R5', () => {
+  it('V231: Setup › GitHub says when it was checked once, in its head, not again in its lede', async () => {
+    // MUTATION: call `checkedLine(doc)` (with the time) for the section's lede again.
+    routes(() => ({ ...answer(), checked_at: null }) as unknown as Answer)
+    await mountSection()
+    await waitFor(() => expect(document.querySelector('.fp-checked')).not.toBeNull(), WAIT)
+    const section = document.querySelector<HTMLElement>('.fp-section')!
+    const head = section.querySelector<HTMLElement>('.fp-head')!
+    expect(visible(head.querySelector('.fp-when'))).toBe('Checked at an unknown time')
+    const lede = visible(section.querySelector('.fp-checked'))
+    expect(lede).not.toMatch(/checked/i)
+    expect(lede).toBe('GitHub does not let SwarmCloud grant permissions itself, so a fix is always a link.')
+    // Everything the section prints outside the folded org details says the time once.
+    const said = visible(section).match(/Checked at an unknown time/g) ?? []
+    const folded = [...section.querySelectorAll('.fp-detail')].reduce((n, d) => n + (visible(d).match(/Checked at an unknown time/g) ?? []).length, 0)
+    expect(said.length - folded).toBe(1)
   })
 })

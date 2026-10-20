@@ -168,7 +168,7 @@ describe('D11: an old run reads honestly and the state is a pill', () => {
   })
 
   it('fits the list in a 1056px card, with the issue title and every cell cut with its title', async () => {
-    const { container } = await mountList([run({ state: 'DONE', created_by: 'bogdan@sagadigital.example.com', workflow_id: 'wf_9c4be0e52b3a4cbe9f1f7a3d0c2e8b61' })])
+    const { container } = await mountList([run({ state: 'DONE', created_by: 'alice@digitalgroup.example.com', workflow_id: 'wf_9c4be0e52b3a4cbe9f1f7a3d0c2e8b61' })])
     const table = container.querySelector<HTMLTableElement>('.rn-table')!
     const { width, cols } = fixedColumns(table, 1056, WIDE)
     expect(width).toBe(1056)

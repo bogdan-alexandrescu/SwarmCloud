@@ -429,10 +429,12 @@ def test_gke_job_has_no_spot_selector_and_no_backend_retries(settings, tenant):
 
 ALL_PROFILES = sorted(RUNNER_PROFILES)
 #: The profiles that start a runner child. A `worker_action` profile (contract
-#: requests 33 and 35) has an empty `runner_argv` by contract, so there is no
-#: runner for the lifecycle to resolve and no command a pre-fix Job could carry.
+#: requests 33 and 35) and a `control_plane` profile (contract request 93) have
+#: an empty `runner_argv` by contract, so there is no runner for the lifecycle
+#: to resolve and no command a pre-fix Job could carry.
 RUNNER_STARTING_PROFILES = sorted(
-    name for name, profile in RUNNER_PROFILES.items() if profile.worker_action is None
+    name for name, profile in RUNNER_PROFILES.items()
+    if profile.worker_action is None and not profile.control_plane
 )
 
 

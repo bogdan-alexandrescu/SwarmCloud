@@ -81,10 +81,24 @@
    not fit they go to the next line together. Beside an open agent the list is
    380px, so the find group takes the first line to itself. */
 .ag-list-head > .ag-find { flex: 1 1 22em; min-width: min(100%, 16em); }
-.ag-list-head > .ag-filter,
-.ag-list-head > .ag-sort,
-.ag-list-head > .c-seg { flex: none; }
-.app.has-inspector > .work .ag-list-head > .ag-find { flex-basis: 100%; }
+/* THE CONTROLS ARE ONE FLEX ITEM (V147, VQA2-R13). The rule above sized the
+   find group, but every control after it was still its own item, so at 1440
+   on Recent (and with Group by workflow) `Started` dropped alone to a second
+   row all the same. `.ag-tools` is one item whose size is all its controls:
+   it shares the find group's line when they all fit and goes to the next
+   line whole when they do not. Inside it the checkboxes and `Started` are
+   `.ag-tools-tail`, which never breaks, so a list too narrow for the group
+   still ends its last line with company. */
+.ag-tools { flex: 0 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
+.ag-tools-tail { flex: none; display: flex; align-items: center; gap: var(--ctl-s2); white-space: nowrap; }
+.ag-tools > .ag-filter,
+.ag-tools-tail > .ag-filter,
+.ag-tools-tail > .ag-sort,
+.ag-tools > .c-seg { flex: none; }
+/* BESIDE AN OPEN AGENT the list is 380px: `«` and the find group share the
+   first line and the controls take the next. The find group used to be
+   `flex-basis: 100%`, which left `«` on a row of its own above it (V147). */
+.app.has-inspector > .work .ag-list-head > .ag-tools { flex-basis: 100%; }
 .ag-find > input {
   flex: 1;
   min-width: 0;
@@ -118,6 +132,24 @@
   padding-top: 6px;
   padding-bottom: 6px;
 }
+/* THE ROW'S OPENER (visual QA QA-032, 2026-10-20): an empty button over the
+   whole row, so the row is not a button around the copy-id button (axe
+   nested-interactive). It draws nothing but the focus ring the row drew; the
+   id line is raised above it, so the copy and a drag-select of the id are
+   theirs. The row is its containing block. */
+.row.is-compact { position: relative; }
+.row.is-compact > .cr-open {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.row.is-compact > .cr-open:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.row.is-compact .tid { position: relative; z-index: 1; }
 .row.is-compact > .sk-st > .sk-st-w { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .row.is-compact > .cr-name { grid-column: name; min-width: 0; }
 /* THE NAME CELL STACKS (#94): the name, then the id line UNDER it. Without
@@ -137,6 +169,8 @@
   color: var(--text);
 }
 .row.is-compact > .when { grid-column: age; white-space: nowrap; }
+/* A ROW WITH NO TIME TO GIVE KEEPS ITS COLUMN (QA-079): blank, not collapsed. */
+.row.is-compact > .when:empty { min-width: 1px; }
 .row.is-compact > .cr-sub,
 .row.is-compact > .why { grid-column: name / -1; }
 /* TWO LINES, AT EVERY WIDTH (V061, visual QA #1038). The clamp was the
@@ -230,7 +264,7 @@
    wrapper, a child of `.work`; naming what goes is what keeps the marks and
    the » that brings the list back. */
 @media (min-width: 1100px) {
-  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > :not(.sk-st):not(.cr-vh) { display: none; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > :not(.sk-st):not(.cr-vh):not(.cr-open) { display: none; }
   :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > .cr-vh {
     display: block; position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
   }
@@ -563,6 +597,13 @@
    with its buttons. */
 @media (max-width: 560px) {
   .ag-logs-bar > .ag-logs-streams.c-seg.is-sm { height: auto; }
+  /* ONE HEIGHT ACROSS THE FILTER ROW (visual QA QA-080, 2026-10-20): the
+     profile select takes the phone's 44px target (styles.css, `.ag-filter
+     select`), and the search field and `Started` stayed at their 32px base,
+     so the row's three controls stood at three heights. They take the same
+     target. After their base rules above, which they must beat. */
+  .ag-find > input,
+  .ag-sort { min-height: 44px; }
 }
 .ag-logs-attempt { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: var(--t-meta); }
 .ag-logs-attempt select {

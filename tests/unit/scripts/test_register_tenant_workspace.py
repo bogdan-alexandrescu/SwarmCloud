@@ -83,6 +83,76 @@ WRITE_EXPR = (
 )
 
 
+#: The API backend's IAP policy, for `gcloud iap web get-iam-policy` and
+#: `add-iam-policy-binding` (docs/design/workspace-kinds.md §4.5). Kept here,
+#: not in fixtures/workspace_world.py, which this lane does not own: the
+#: same world file, the same call log, the same injected failures.
+IAP_FAKE = r"""
+import json
+import os
+import sys
+from pathlib import Path
+
+world_path = Path(os.environ["FAKE_WORLD"])
+world = json.loads(world_path.read_text())
+argv = sys.argv[1:]
+if argv[:3] != ["iap", "web", argv[2] if len(argv) > 2 else ""]:
+    # A describe: the shared world's, unless the account is marked disabled.
+    account = world.get("accounts", {}).get(argv[3] if len(argv) > 3 else "")
+    if argv[:3] != ["iam", "service-accounts", "describe"] or not (account or {}).get("disabled"):
+        os.environ["FAKE_TOOL"] = "gcloud"
+        os.execv(sys.executable, [sys.executable, os.environ["FAKE_WORLD_PY"], *argv])
+    world.setdefault("calls", []).append({"tool": "gcloud", "argv": argv})
+    world_path.write_text(json.dumps(world, indent=1, sort_keys=True))
+    sys.stdout.write(json.dumps({"email": argv[3], "uniqueId": account["uid"], "disabled": True}) + "\n")
+    sys.exit(0)
+world.setdefault("calls", []).append({"tool": "gcloud", "argv": argv})
+
+
+def save():
+    world_path.write_text(json.dumps(world, indent=1, sort_keys=True))
+
+
+pos, flags, i = [], {}, 0
+while i < len(argv):
+    arg = argv[i]
+    if arg.startswith("--") and "=" in arg:
+        key, value = arg.split("=", 1)
+        flags[key] = value
+    elif arg in ("--project", "--format"):
+        flags[arg] = argv[i + 1]
+        i += 1
+    elif arg.startswith("-"):
+        flags[arg] = ""
+    else:
+        pos.append(arg)
+    i += 1
+for rule in world.get("fail", []):
+    if rule["tool"] == "gcloud" and pos[: len(rule["words"])] == rule["words"] and rule.get("times", 0) > 0:
+        rule["times"] -= 1
+        save()
+        sys.stderr.write(rule.get("stderr", "ERROR: injected failure") + "\n")
+        sys.exit(int(rule.get("rc", 1)))
+service = flags.get("--service", "")
+policies = world.setdefault("iap", {})
+policy = policies.setdefault(service, {"version": 1, "etag": "BwX=", "bindings": [
+    {"role": "roles/iap.httpsResourceAccessor", "members": ["domain:saga.xyz"]}]})
+if pos[2] == "add-iam-policy-binding":
+    for binding in policy["bindings"]:
+        if binding["role"] == flags["--role"] and "condition" not in binding:
+            if flags["--member"] not in binding["members"]:
+                binding["members"].append(flags["--member"])
+            break
+    else:
+        policy["bindings"].append({"role": flags["--role"], "members": [flags["--member"]]})
+elif pos[2] != "get-iam-policy":
+    sys.stderr.write("fake gcloud iap: unhandled call " + " ".join(argv) + "\n")
+    sys.exit(2)
+sys.stdout.write(json.dumps(policy) + "\n")
+save()
+"""
+
+
 def _s(value: str) -> dict:
     return {"stringValue": value}
 
@@ -138,6 +208,15 @@ class Job:
             path = self.bin / tool
             path.write_text(f'#!/bin/sh\nFAKE_TOOL={tool} exec "{sys.executable}" "{WORLD_PY}" "$@"\n')
             path.chmod(0o755)
+        # `gcloud iap web ...` (a service workspace's S2 and A9), and the
+        # describe of an account marked disabled (S1), are answered by
+        # IAP_FAKE below; every other gcloud call by the shared fake world.
+        iap = tmp / "iap_fake.py"
+        iap.write_text(IAP_FAKE)
+        (self.bin / "gcloud").write_text(
+            '#!/bin/sh\nif { [ "$1" = iap ] && [ "$2" = web ]; } || [ "$3" = describe ]; then\n'
+            f'  FAKE_WORLD_PY="{WORLD_PY}" exec "{sys.executable}" "{iap}" "$@"\nfi\n'
+            f'FAKE_TOOL=gcloud exec "{sys.executable}" "{WORLD_PY}" "$@"\n')
         self.world_file = tmp / "world.json"
         self.write(_world())
         (tmp / "home").mkdir()
@@ -1280,3 +1359,548 @@ def test_the_job_script_refuses_to_run_unenforced(tmp_path: Path, enforce: str |
                           capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 1 and "never runs unguarded" in proc.stderr, _out(proc)
     assert not (tmp_path / "stub.log").exists()
+
+
+# ---------------------------------------------------------------------------
+# Kinds: a group's and a service's workspace (docs/design/workspace-kinds.md
+# §4.3, lane WK-JOB). The same job, the same guard, the same fake world.
+# ---------------------------------------------------------------------------
+
+RULES_FILE = REPO / "scripts" / "lib" / "workspace-calls.json"
+COMMON = REPO / "scripts" / "lib" / "common.sh"
+#: Who alone approves a service workspace in this project (Q2 (a)): the
+#: image's, never the record's word.
+OWNER = json.loads(RULES_FILE.read_text()).get("platform_owner", {}).get(PROJECT, "")
+FRONT_DOOR = json.loads(RULES_FILE.read_text()).get("front_door_backend", "")
+ACCESSOR = "roles/iap.httpsResourceAccessor"
+
+GROUP = "research@saga.xyz"
+G_TENANT = "research"
+G_WORKER = f"swarm-agent-worker-{G_TENANT}@{PROJECT}.iam.gserviceaccount.com"
+G_NAMESPACE = f"swarm-tenant-{G_TENANT}"
+
+SERVICE = f"reports-bot@{PROJECT}.iam.gserviceaccount.com"
+SERVICE_UID = "112233445566778899001"
+
+
+def _user_tenant(email: str) -> str:
+    sys.path.insert(0, str(REPO / "apps" / "common"))
+    from swarm_common.identity import tenant_id_for_user
+
+    return tenant_id_for_user(email)
+
+
+S_TENANT = _user_tenant(SERVICE)
+S_WORKER = f"swarm-agent-worker-{S_TENANT}@{PROJECT}.iam.gserviceaccount.com"
+S_NAMESPACE = f"swarm-tenant-{S_TENANT}"
+S_SLOT = f"swarm-tenant-{S_TENANT}-git"
+
+
+def _iso_ago(seconds: int) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _kind_record(kind: str, tenant: str, principal: str, by: str, **extra: dict) -> dict:
+    record = _record(**extra)
+    fields = record["fields"]
+    fields.update(tenant_id=_s(tenant), principal=_s(principal), kind=_s(kind),
+                  display_name=_s(principal.split("@")[0]))
+    fields["decision"]["mapValue"]["fields"]["by"] = _s(by)
+    if kind == "service":
+        fields["limits"]["mapValue"]["fields"].update(max_active={"integerValue": "4"})
+    return record
+
+
+def _group_world(directory_age: int | None = 3600) -> dict:
+    world = _world()
+    world["firestore"].pop(f"workspaces/{TENANT}")
+    extra = {}
+    if directory_age is not None:
+        extra["directory"] = {"mapValue": {"fields": {
+            "checked_at": {"timestampValue": _iso_ago(directory_age)}, "readable": {"booleanValue": True}}}}
+    world["firestore"][f"workspaces/{G_TENANT}"] = _kind_record("group", G_TENANT, GROUP, ADMIN, **extra)
+    return world
+
+
+def _service_world(principal: str = SERVICE, by: str = OWNER, owner_role: str = "owner",
+                   account: dict | None = None) -> dict:
+    world = _world()
+    world["firestore"].pop(f"workspaces/{TENANT}")
+    tenant = _user_tenant(principal)
+    world["firestore"][f"workspaces/{tenant}"] = _kind_record("service", tenant, principal, by)
+    world["firestore"][f"admin_roles/{OWNER}"] = {"fields": {"role": _s(owner_role)},
+                                                  "updateTime": "2026-10-01T00:00:00Z"}
+    world["accounts"][principal] = account if account is not None else {
+        "policy": {"version": 1, "etag": "BwX="}, "keys": [], "uid": SERVICE_UID}
+    return world
+
+
+def _rec(job: Job, tenant: str) -> dict:
+    return job.read()["firestore"][f"workspaces/{tenant}"]["fields"]
+
+
+def _step_order(stderr: str) -> list[str]:
+    """The steps a run announced, in order (`step` in common.sh)."""
+    import re
+
+    return re.findall(r"^== ([AS][0-9]) ", stderr, re.M)
+
+
+def _kind_run(tmp_path_factory, name: str, world: dict) -> dict:
+    def run(job: Job) -> subprocess.CompletedProcess[str]:
+        job.write(world)
+        return job.create()
+
+    return _once(tmp_path_factory, name, run)
+
+
+@pytest.fixture(scope="session")
+def service_created(tmp_path_factory) -> dict:
+    """ONE full create of a service workspace per session (`_once`)."""
+    return _kind_run(tmp_path_factory, "service-created", _service_world())
+
+
+@pytest.fixture(scope="session")
+def group_created(tmp_path_factory) -> dict:
+    """ONE full create of a group workspace per session (`_once`)."""
+    return _kind_run(tmp_path_factory, "group-created", _group_world())
+
+
+def _proc(result: dict) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess([], result["returncode"], result["stdout"], result["stderr"])
+
+
+def _gcloud_calls(world: dict) -> list[list[str]]:
+    return [c["argv"] for c in world.get("calls", []) if c["tool"] == "gcloud"]
+
+
+def _index(calls: list[dict], match) -> list[int]:
+    return [i for i, c in enumerate(calls) if match(c)]
+
+
+# -- service ----------------------------------------------------------------
+
+
+def test_a_service_create_runs_s1_a2_to_a8_s2_a9_in_that_order(service_created: dict) -> None:
+    proc = _proc(service_created)
+    out = _out(proc)
+    assert proc.returncode == 0, out
+    assert not service_created["stopped"], f"the guard refused a call a service workspace needs:\n{out}"
+    # A1 twice: the claim, then a kind's own A1 checks (the tenant id is free).
+    assert _step_order(proc.stderr) == ["A1", "A1", "S1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "S2", "A9"], out
+    record = service_created["world"]["firestore"][f"workspaces/{S_TENANT}"]["fields"]
+    assert _field(record, "state") == "ready", out
+    assert _steps(record) == {s: "done" for s in ("A1", "S1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "S2", "A9")}
+    # S1 reads the account before anything is made; S2 is the last write,
+    # after A8's documents, and A9 reads its member back.
+    calls = service_created["world"]["calls"]
+    s1 = _index(calls, lambda c: c["tool"] == "gcloud" and c["argv"][:4] == ["iam", "service-accounts", "describe", SERVICE])
+    made = _index(calls, lambda c: c["tool"] == "gcloud" and bool(_changes([c["argv"]])))
+    a8 = _index(calls, lambda c: c["tool"] == "curl" and "PATCH" in c["argv"]
+                and any(f"/pools/tenant%3A{S_TENANT}" in a or f"/pools/tenant:{S_TENANT}" in a for a in c["argv"]))
+    s2 = _index(calls, lambda c: c["tool"] == "gcloud" and c["argv"][:3] == ["iap", "web", "add-iam-policy-binding"])
+    reads = _index(calls, lambda c: c["tool"] == "gcloud" and c["argv"][:3] == ["iap", "web", "get-iam-policy"])
+    assert s1 and made and a8 and len(s2) == 1 and len(reads) == 2, (s1, made, a8, s2, reads)
+    assert s1[0] < made[0], "S1 must read the account before any write"
+    assert max(a8) < s2[0], "S2 must come after A8's documents"
+    assert reads[0] < s2[0] < reads[1], "S2 reads before it adds, and A9 reads the member back"
+    assert s2[0] == max(made), "S2 is the run's last change"
+
+
+def test_a_service_is_admitted_on_the_api_backend_only_and_its_account_is_never_written(
+        service_created: dict) -> None:
+    world = service_created["world"]
+    assert set(world.get("iap", {})) == {FRONT_DOOR}, sorted(world.get("iap", {}))
+    assert FRONT_DOOR == "swarm-ui-backend" and not FRONT_DOOR.endswith("-ui-ui-backend")
+    policy = world["iap"][FRONT_DOOR]
+    assert _members(policy, ACCESSOR) == {"domain:saga.xyz", f"serviceAccount:{SERVICE}"}
+    assert {b["role"] for b in policy["bindings"]} == {ACCESSOR}
+    adds = [a for a in _gcloud_calls(world) if a[:3] == ["iap", "web", "add-iam-policy-binding"]]
+    assert adds == [["iap", "web", "add-iam-policy-binding", "--project", PROJECT,
+                     "--resource-type=backend-services", f"--service={FRONT_DOOR}", f"--role={ACCESSOR}",
+                     f"--member=serviceAccount:{SERVICE}", "--condition=None", "--format=json"]]
+    # The caller's own account: read, never written.
+    assert world["accounts"][SERVICE]["policy"] == {"version": 1, "etag": "BwX="}
+    assert not [a for a in _gcloud_calls(world) if SERVICE in a and a[:3] != ["iam", "service-accounts", "describe"]
+                and a[:3] != ["iap", "web", "add-iam-policy-binding"]]
+    record = world["firestore"][f"workspaces/{S_TENANT}"]["fields"]
+    assert _field(record, "service", "unique_id") == SERVICE_UID
+    assert _field(record, "service", "front_door", "backend") == FRONT_DOOR
+    assert _field(record, "service", "front_door", "admitted_at")
+
+
+def test_a_service_gets_a_team_slot_with_no_twin_and_a_labelled_namespace(service_created: dict) -> None:
+    world = service_created["world"]
+    assert set(world["secrets"]) == {S_SLOT}, sorted(world["secrets"])
+    assert world["secrets"][S_SLOT]["labels"]["tenant"] == S_TENANT
+    assert _members(world["secrets"][S_SLOT]["policy"], "roles/secretmanager.secretAccessor") == {
+        f"serviceAccount:{S_WORKER}"}
+    namespace = world["k8s"][f"Namespace//{S_NAMESPACE}"]
+    assert namespace["metadata"]["labels"]["swarm.saga.xyz/workspace"] == WORKSPACE
+    tenant = world["firestore"][f"tenants/{S_TENANT}"]["fields"]
+    assert (_field(tenant, "kind"), _field(tenant, "principal"), _field(tenant, "max_active"),
+            _field(tenant, "service_account"), _field(tenant, "display_name")) == (
+        "user", SERVICE, "4", S_WORKER, "reports-bot")
+    assert "directory_group" not in tenant
+    assert set(world["writes"]) == {f"workspaces/{S_TENANT}", f"tenants/{S_TENANT}", f"pools/tenant:{S_TENANT}"}
+
+
+def _deny_listed_account() -> str:
+    for line in COMMON.read_text().splitlines():
+        entry = line.strip().strip('"')
+        if entry.endswith(f"@{PROJECT}.iam.gserviceaccount.com"):
+            return entry
+    raise AssertionError("SHARED_DENY_LIST names no service account of the project")
+
+
+@pytest.mark.parametrize("principal,account", [
+    (_deny_listed_account(), None),
+    (f"swarm-api@{PROJECT}.iam.gserviceaccount.com", None),
+    ("reports-bot@other-project-1.iam.gserviceaccount.com", None),
+    (SERVICE, {}),
+    (SERVICE, {"policy": {"version": 1}, "keys": [], "uid": SERVICE_UID, "disabled": True}),
+], ids=["shared-deny-list", "platform-account", "another-project", "absent", "disabled"])
+def test_s1_stops_for_the_owner_before_any_write(job: Job, principal: str, account: dict | None) -> None:
+    world = _service_world(principal=principal, account=account)
+    if account == {}:
+        world["accounts"].pop(principal)
+    if account and account.get("disabled"):
+        world["accounts"][principal] = account
+    job.write(world)
+    proc = job.create()
+    out = _out(proc)
+    assert proc.returncode == STOPPED, out
+    tenant = _user_tenant(principal)
+    record = _rec(job, tenant)
+    assert _field(record, "state") == "needs_owner", out
+    assert _steps(record)["S1"] == "held" and _field(record, "steps", "S1", "code") == "SERVICE_ACCOUNT_REFUSED"
+    assert _changes(job.calls("gcloud")) == [], "S1 refused after something was made"
+    assert job.read().get("writes", []) and set(job.read()["writes"]) == {f"workspaces/{tenant}"}
+    assert not job.read().get("iap"), "nothing reached the front door"
+
+
+@pytest.mark.parametrize("by,owner_role,needle", [
+    (ADMIN, "owner", "WORKSPACE_APPROVAL_OWNER_ONLY"),
+    (OWNER, "admin", "WORKSPACE_APPROVAL_OWNER_ONLY"),
+], ids=["approved-by-an-admin", "image-owner-not-owner-in-admin-roles"])
+def test_a1_refuses_a_service_not_approved_by_the_platform_owner(job: Job, by: str, owner_role: str,
+                                                                 needle: str) -> None:
+    world = _service_world(by=by, owner_role=owner_role)
+    job.write(world)
+    before = copy.deepcopy(_rec(job, S_TENANT))
+    proc = job.create()
+    out = _out(proc)
+    assert proc.returncode == 1 and needle in proc.stderr, out
+    assert job.read().get("writes", []) == [], out
+    assert _rec(job, S_TENANT) == before
+    assert _changes(job.calls("gcloud")) == []
+
+
+def test_a1_refuses_a_service_retry_not_asked_by_the_platform_owner(job: Job) -> None:
+    world = _service_world()
+    world["firestore"][f"workspaces/{S_TENANT}"]["fields"].update(
+        state=_s("failed"),
+        retry={"mapValue": {"fields": {"by": _s(ADMIN), "at": {"timestampValue": "2099-01-01T00:00:00Z"}}}})
+    job.write(world)
+    proc = job.create()
+    assert proc.returncode == 1 and "WORKSPACE_APPROVAL_OWNER_ONLY" in proc.stderr, _out(proc)
+    assert job.read().get("writes", []) == []
+
+
+def test_a_front_door_iap_refuses_stops_for_the_owner(job: Job, service_created: dict) -> None:
+    """K1 not granted, or O1 found the number-form name matches nothing
+    (§4.5): the owner admits the account by hand (FRONT_DOOR_OWNER)."""
+    world = copy.deepcopy(service_created["world"])
+    world["calls"], world["writes"] = [], []
+    world["iap"] = {}
+    world["firestore"][f"workspaces/{S_TENANT}"]["fields"].update(
+        state=_s("failed"),
+        retry={"mapValue": {"fields": {"by": _s(OWNER), "at": {"timestampValue": "2099-01-01T00:00:00Z"}}}})
+    world["fail"] = [{"tool": "gcloud", "words": ["iap", "web", "add-iam-policy-binding"], "times": 1,
+                      "stderr": "ERROR: (gcloud.iap.web.add-iam-policy-binding) PERMISSION_DENIED: "
+                                "The caller does not have permission"}]
+    job.write(world)
+    proc = job.create()
+    out = _out(proc)
+    assert proc.returncode == STOPPED, out
+    record = _rec(job, S_TENANT)
+    assert _field(record, "state") == "needs_owner"
+    assert _steps(record)["S2"] == "held" and _field(record, "steps", "S2", "code") == "FRONT_DOOR_OWNER", out
+
+
+def test_an_account_the_owner_already_admitted_finishes_with_the_read_alone(job: Job, service_created: dict) -> None:
+    """FRONT-DOOR-READ (part of #847): the deployer may read the API backend's
+    IAP policy (swarmFrontDoorReader) but not change it. The owner has added
+    the account through frontend_iap_members and pressed Retry: S2 reads it
+    there, makes no change call, and the run finishes. Any add would be refused."""
+    world = copy.deepcopy(service_created["world"])
+    world["calls"], world["writes"] = [], []
+    assert f"serviceAccount:{SERVICE}" in world["iap"][FRONT_DOOR]["bindings"][0]["members"]
+    world["firestore"][f"workspaces/{S_TENANT}"]["fields"].update(
+        state=_s("failed"),
+        retry={"mapValue": {"fields": {"by": _s(OWNER), "at": {"timestampValue": "2099-01-01T00:00:00Z"}}}})
+    world["fail"] = [{"tool": "gcloud", "words": ["iap", "web", "add-iam-policy-binding"], "times": 1,
+                      "stderr": "ERROR: (gcloud.iap.web.add-iam-policy-binding) PERMISSION_DENIED: "
+                                "The caller does not have permission"}]
+    job.write(world)
+    proc = job.create()
+    out = _out(proc)
+    assert proc.returncode == 0, out
+    record = _rec(job, S_TENANT)
+    assert _field(record, "state") == "ready", out
+    assert _steps(record)["S2"] != "held", out
+    assert not [a for a in _gcloud_calls(job.read()) if a[:3] == ["iap", "web", "add-iam-policy-binding"]]
+    assert [a for a in _gcloud_calls(job.read()) if a[:3] == ["iap", "web", "get-iam-policy"]], "S2 read nothing"
+
+
+def test_verify_finds_a_service_missing_from_the_front_door(job: Job, service_created: dict) -> None:
+    world = copy.deepcopy(service_created["world"])
+    world["calls"], world["writes"] = [], []
+    world["iap"][FRONT_DOOR]["bindings"][0]["members"].remove(f"serviceAccount:{SERVICE}")
+    job.write(world)
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    out = _out(proc)
+    assert proc.returncode == 1, out
+    record = _rec(job, S_TENANT)
+    assert (_field(record, "failure", "step"), _field(record, "failure", "object")) == ("A9", "front door member")
+    assert _changes(job.calls("gcloud")) == []
+
+
+def test_verify_finds_a_service_account_made_again_under_the_same_name(job: Job, service_created: dict) -> None:
+    world = copy.deepcopy(service_created["world"])
+    world["calls"], world["writes"] = [], []
+    world["accounts"][SERVICE]["uid"] = "998877665544332211009"
+    job.write(world)
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    assert proc.returncode == 1, _out(proc)
+    assert _field(_rec(job, S_TENANT), "failure", "object") == "service account"
+
+
+# -- group ------------------------------------------------------------------
+
+
+def test_a_group_create_makes_its_team_slot_label_and_group_tenant(group_created: dict) -> None:
+    proc = _proc(group_created)
+    out = _out(proc)
+    assert proc.returncode == 0, out
+    assert not group_created["stopped"], f"the guard refused a call a group workspace needs:\n{out}"
+    world = group_created["world"]
+    record = world["firestore"][f"workspaces/{G_TENANT}"]["fields"]
+    assert _field(record, "state") == "ready", out
+    assert _steps(record) == {f"A{i}": "done" for i in range(1, 10)}
+    # A6: the TEAM slot and its twin, empty, the worker on the slot only.
+    slot, twin = f"swarm-tenant-{G_TENANT}-git", f"swarm-tenant-{G_TENANT}-git-refresh"
+    assert set(world["secrets"]) == {slot, twin}, sorted(world["secrets"])
+    assert {world["secrets"][s]["labels"]["tenant"] for s in (slot, twin)} == {G_TENANT}
+    assert _members(world["secrets"][slot]["policy"], "roles/secretmanager.secretAccessor") == {
+        f"serviceAccount:{G_WORKER}"}
+    assert world["secrets"][twin]["policy"].get("bindings", []) == []
+    # A7: the label, on the Namespace and nowhere else.
+    labelled = [k for k, v in world["k8s"].items()
+                if "swarm.saga.xyz/workspace" in ((v.get("metadata") or {}).get("labels") or {})]
+    assert labelled == [f"Namespace//{G_NAMESPACE}"], labelled
+    assert world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"]["swarm.saga.xyz/workspace"] == WORKSPACE
+    # A8: a group tenant the directory resolves.
+    tenant = world["firestore"][f"tenants/{G_TENANT}"]["fields"]
+    assert (_field(tenant, "kind"), _field(tenant, "principal"), _field(tenant, "directory_group"),
+            _field(tenant, "display_name"), _field(tenant, "namespace")) == (
+        "group", GROUP, True, "research", G_NAMESPACE)
+    assert not world.get("iap") and not [a for a in _gcloud_calls(world) if a[:1] == ["iap"]]
+    assert set(world["writes"]) == {f"workspaces/{G_TENANT}", f"tenants/{G_TENANT}", f"pools/tenant:{G_TENANT}"}
+
+
+@pytest.mark.parametrize("age", [25 * 3600, None], ids=["25-hours-old", "never-checked"])
+def test_a1_fails_a_group_whose_directory_check_is_stale(job: Job, age: int | None) -> None:
+    job.write(_group_world(directory_age=age))
+    proc = job.create()
+    out = _out(proc)
+    assert proc.returncode == 1, out
+    record = _rec(job, G_TENANT)
+    assert _field(record, "state") == "failed", out
+    assert (_field(record, "failure", "step"), _field(record, "failure", "code"),
+            _field(record, "failure", "retryable")) == ("A1", "DIRECTORY_CHECK_STALE", True), out
+    assert _changes(job.calls("gcloud")) == []
+    assert set(job.read()["writes"]) == {f"workspaces/{G_TENANT}"}
+
+
+def _tenant_doc(principal: str, kind: str, **extra: dict) -> dict:
+    return {"fields": {"tenant_id": _s("x"), "kind": _s(kind), "principal": _s(principal), **extra},
+            "updateTime": "2026-10-01T00:00:00.000001Z"}
+
+
+@pytest.mark.parametrize("make,code", [
+    (lambda w: w["firestore"].__setitem__(f"tenants/{G_TENANT}", _tenant_doc(
+        GROUP, "group", managed_by=_s("swarm-terraform"))), "WORKSPACE_ID_TERRAFORM"),
+    (lambda w: w["firestore"].__setitem__(f"pools/tenant:{G_TENANT}", {
+        "fields": {"name": _s(f"tenant:{G_TENANT}"), "managed_by": _s("swarm-terraform")}}), "WORKSPACE_ID_TERRAFORM"),
+    (lambda w: w["firestore"].__setitem__(f"tenants/{G_TENANT}", _tenant_doc(
+        "research@elsewhere.example", "group")), "WORKSPACE_ID_TAKEN"),
+    (lambda w: w["firestore"].__setitem__(f"tenants/{G_TENANT}", _tenant_doc(GROUP, "user")), "WORKSPACE_ID_TAKEN"),
+], ids=["terraform-tenant", "terraform-pool", "another-groups-tenant", "a-user-tenant"])
+def test_a1_refuses_a_group_whose_tenant_is_someone_elses_before_any_write(job: Job, make, code: str) -> None:
+    """A group `research@` of any domain slugs to `research`; Terraform's
+    `eng` would too. A2-A7 would reach that tenant's worker, grants, slot and
+    namespace, so A1 stops it first (security review of WK-JOB)."""
+    world = _group_world()
+    make(world)
+    job.write(world)
+    proc = job.create()
+    out = _out(proc)
+    assert proc.returncode == 1, out
+    record = _rec(job, G_TENANT)
+    assert (_field(record, "failure", "step"), _field(record, "failure", "code")) == ("A1", code), out
+    assert _changes(job.calls("gcloud")) == [], "a write came before A1 refused"
+    assert set(job.read()["writes"]) == {f"workspaces/{G_TENANT}"}
+
+
+def test_a1_refuses_a_service_whose_id_is_a_persons(job: Job) -> None:
+    """`bogdan@<project>.iam.gserviceaccount.com` derives `u-bogdan`, the id
+    of bogdan@saga.xyz's personal workspace: never adopted."""
+    world = _service_world()
+    world["firestore"][f"tenants/{S_TENANT}"] = _tenant_doc("someone@saga.xyz", "user")
+    job.write(world)
+    proc = job.create()
+    out = _out(proc)
+    assert proc.returncode == 1, out
+    record = _rec(job, S_TENANT)
+    assert (_field(record, "failure", "step"), _field(record, "failure", "code")) == ("A1", "WORKSPACE_ID_TAKEN"), out
+    assert _changes(job.calls("gcloud")) == [] and not job.read().get("iap")
+
+
+def test_a1_fails_a_group_whose_directory_check_is_dated_in_the_future(job: Job) -> None:
+    job.write(_group_world(directory_age=-30 * 86400))
+    proc = job.create()
+    assert proc.returncode == 1, _out(proc)
+    assert _field(_rec(job, G_TENANT), "failure", "code") == "DIRECTORY_CHECK_STALE"
+    assert _changes(job.calls("gcloud")) == []
+
+
+def test_verify_never_takes_the_migrated_shortcut_for_a_service(job: Job) -> None:
+    """Only a person's record predates approval (§3.3): a service record marked
+    migrated still needs the platform owner's approval."""
+    world = _service_world(by=ADMIN)
+    world["firestore"][f"workspaces/{S_TENANT}"]["fields"].update(
+        state=_s("ready"), migrated={"booleanValue": True})
+    job.write(world)
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    assert proc.returncode == 1 and "WORKSPACE_APPROVAL_OWNER_ONLY" in proc.stderr, _out(proc)
+    assert job.read().get("writes", []) == []
+
+
+def test_verify_finds_a_group_namespace_without_its_label(job: Job, group_created: dict) -> None:
+    world = copy.deepcopy(group_created["world"])
+    world["calls"], world["writes"] = [], []
+    del world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"]["swarm.saga.xyz/workspace"]
+    job.write(world)
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    assert proc.returncode == 1, _out(proc)
+    record = _rec(job, G_TENANT)
+    assert (_field(record, "failure", "code"), _field(record, "failure", "object")) == (
+        "NAMESPACE_LABEL_MISSING", "Namespace")
+
+
+# -- the guard, for a service's expectation ------------------------------------
+
+
+def _service_expectation(job: Job, tmp: Path) -> dict[str, str]:
+    record = tmp / "service-record.json"
+    record.write_text(json.dumps(dict(_service_world()["firestore"][f"workspaces/{S_TENANT}"],
+                                      name=f"projects/{PROJECT}/databases/swarm/documents/workspaces/{S_TENANT}")))
+    job.init_guard()
+    done = subprocess.run([str(GUARD), "expect", "--record", str(record)], env=job.env,
+                          capture_output=True, text=True, timeout=120, check=False)
+    assert done.returncode == 0, done.stderr
+    return json.loads(job.expect.read_text())
+
+
+def _check(job: Job, *argv: str) -> subprocess.CompletedProcess[str]:
+    Path(str(job.expect) + ".stop").unlink(missing_ok=True)
+    return subprocess.run([str(GUARD), "check", "--", "gcloud", *argv], env=job.env,
+                          capture_output=True, text=True, timeout=120, check=False)
+
+
+def _admit(member: str = f"serviceAccount:{SERVICE}", service: str = FRONT_DOOR,
+           verb: str = "add-iam-policy-binding", role: str = ACCESSOR) -> list[str]:
+    return ["iap", "web", verb, "--project", PROJECT, "--resource-type=backend-services",
+            f"--service={service}", f"--role={role}", f"--member={member}", "--condition=None"]
+
+
+def test_the_guard_names_a_services_principal_and_the_api_backend(job: Job, tmp_path: Path) -> None:
+    exp = _service_expectation(job, tmp_path)
+    assert (exp["kind"], exp["tenant_id"], exp["service_principal"], exp["front_door_backend"]) == (
+        "service", S_TENANT, SERVICE, FRONT_DOOR)
+    assert exp["forge_slot"] == S_SLOT and "forge_slot_twin" not in exp
+    assert exp["namespace_label"] == WORKSPACE
+
+
+@pytest.mark.parametrize("argv,allowed", [
+    (_admit(), True),
+    (_admit(member=f"serviceAccount:other-bot@{PROJECT}.iam.gserviceaccount.com"), False),
+    (_admit(member="allAuthenticatedUsers"), False),
+    (_admit(service="swarm-ui-ui-backend"), False),
+    (_admit(role="roles/iap.admin"), False),
+    (_admit(verb="remove-iam-policy-binding"), False),
+], ids=["the-approved-account", "another-account", "everyone", "the-console-backend", "another-role", "a-removal"])
+def test_c10_admits_only_the_approved_account_on_the_api_backend(job: Job, tmp_path: Path, argv: list[str],
+                                                                 allowed: bool) -> None:
+    _service_expectation(job, tmp_path)
+    proc = _check(job, *argv)
+    if allowed:
+        assert proc.returncode == 0, proc.stderr
+    else:
+        assert proc.returncode != 0 and ("rule C10" in proc.stderr or "rule C9" in proc.stderr), proc.stderr
+
+
+def test_the_platform_owner_pinned_in_the_image_is_the_environments() -> None:
+    """workspace-calls.json's platform_owner is what A1 holds a service
+    approval to; it must be the owner the environment's tfvars name, for every
+    environment of the project that names one."""
+    import re
+
+    owners = json.loads(RULES_FILE.read_text()).get("platform_owner", {})
+    seen = 0
+    for tfvars in sorted((REPO / "terraform" / "environments").glob("*/*.tfvars")):
+        text = tfvars.read_text()
+        project = re.search(r'^project_id\s*=\s*"([^"]+)"', text, re.M)
+        owner = re.search(r'^platform_owner\s*=\s*"([^"]*)"', text, re.M)
+        if project and owner and owner.group(1):
+            seen += 1
+            assert owners.get(project.group(1)) == owner.group(1).lower(), (tfvars, owners)
+    assert seen >= 1, "no environment names a platform_owner"
+    assert set(owners) <= {re.search(r'^project_id\s*=\s*"([^"]+)"', p.read_text(), re.M).group(1)
+                           for p in (REPO / "terraform" / "environments").glob("*/*.tfvars")}
+
+
+def test_the_terraform_tenants_pinned_in_the_image_are_each_environments() -> None:
+    """workspace-calls.json's terraform_tenants is what the guard refuses a
+    group or service expectation for: every environment's var.tenants keys,
+    read the way kubernetes/render.py reads them for the scope policy."""
+    sys.path.insert(0, str(REPO / "kubernetes"))
+    import render
+
+    pinned = json.loads(RULES_FILE.read_text()).get("terraform_tenants", {})
+    files = sorted((REPO / "terraform" / "environments").glob("*/*.tfvars"))
+    assert files, "no environment tfvars found"
+    assert set(pinned) == {f.parent.name for f in files}, sorted(pinned)
+    for tfvars in files:
+        assert sorted(pinned[tfvars.parent.name]) == sorted(render.terraform_tenants(tfvars)), tfvars
+
+
+@pytest.mark.parametrize("kind,principal,tenant", [
+    ("group", "eng@saga.xyz", "eng"),
+    ("group", "smoke@saga.xyz", "smoke"),
+    ("service", f"oracle-api@{PROJECT}.iam.gserviceaccount.com", "u-or-9a0792"),
+], ids=["eng", "smoke", "u-or-9a0792"])
+def test_the_guard_writes_no_expectation_for_a_terraform_tenant(job: Job, tmp_path: Path, kind: str,
+                                                                 principal: str, tenant: str) -> None:
+    record = tmp_path / "record.json"
+    fields = _kind_record(kind, tenant, principal, OWNER)["fields"]
+    record.write_text(json.dumps({"name": f"projects/{PROJECT}/databases/swarm/documents/workspaces/{tenant}",
+                                  "fields": fields}))
+    job.init_guard()
+    done = subprocess.run([str(GUARD), "expect", "--record", str(record)], env=job.env,
+                          capture_output=True, text=True, timeout=120, check=False)
+    assert done.returncode != 0 and "WORKSPACE_ID_TERRAFORM" in done.stderr, done.stderr
+    assert json.loads(job.expect.read_text())["phase"] == "bootstrap", "an expectation was written"

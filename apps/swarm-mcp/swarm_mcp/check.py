@@ -53,6 +53,16 @@ THE RULES, each with the control that is NOT flagged:
     without deriving at all. A stored QUEUED under a derived RUNNING is the
     cache lagging between two reads (`workflows.state_of`), and is not
     flagged.
+(f) `awaiting_input`: PARKED with AWAITING_INPUT, a workflow step waiting for
+    a member of its tenant to answer (docs/design/human-steps.md §4.5). It is
+    INFORMATION, not a flag: listed under `awaiting_input` with its tenant,
+    its window and how to answer it, never under `flagged`, because a person
+    who has not answered yet is the step working as designed and it holds
+    nothing (invariant 1). It is flagged STUCK only once `expires_at` has
+    passed by more than `EXPIRY_TICKS` ticks of the expiry sweep: the
+    schedule tick ends an overdue wait within one, so a wait still parked
+    after two means the sweep is not running. HUMAN_REQUIRED stays STUCK
+    under (c), as before.
 
 Every age is measured from evidence and says which: the event that entered
 the state when the newest page of events holds it, else a LOWER BOUND from
@@ -75,7 +85,7 @@ from urllib.parse import urlsplit
 
 from swarm_common.states import TERMINAL_STATES
 
-from . import checkout, render, session, workflows
+from . import awaitinput, checkout, render, session, workflows
 from .client import SwarmClient, SwarmError, task_id_of
 from .follow import console_link
 
@@ -119,9 +129,18 @@ _FAILED_DEPENDENCY = frozenset({"FAILED", "CANCELLED", "DEAD_LETTERED"})
 
 STALE = "STALE"
 STUCK = "STUCK"
+#: (f)'s kind: a wait for a person, reported apart from what is flagged.
+AWAITING_INPUT = "awaiting_input"
+#: How often the schedule tick runs its expiry sweep
+#: (`terraform/modules/scheduler/variables.tf`, `schedule_tick_schedule`:
+#: every minute), and how many of them an overdue wait may outlive before it
+#: is STUCK. One tick can miss a wait that expired just after it read; two
+#: cannot, unless the sweep is not running.
+EXPIRY_TICK_SECONDS = 60
+EXPIRY_TICKS = 2
 
 #: The order flagged items are reported in: what needs a person first.
-_RULE_ORDER = {"merge_refused": 0, "parked": 1, "no_heartbeat": 2, "state_disagrees": 3,
+_RULE_ORDER = {"merge_refused": 0, "parked": 1, AWAITING_INPUT: 1, "no_heartbeat": 2, "state_disagrees": 3,
                "waiting_for_capacity": 4}
 
 ALL = ("all", "*")
@@ -505,8 +524,11 @@ def _waiting(task: dict[str, Any], reads: _Reads, now: datetime, window: int) ->
 
 def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
             dependencies: dict[str, Any] | None) -> dict[str, Any] | None:
-    """(c): HUMAN_REQUIRED, CI_PENDING past 90 min, or a dependency that failed."""
+    """(c): HUMAN_REQUIRED, CI_PENDING past 90 min, or a dependency that failed.
+    (f): AWAITING_INPUT, as information, or STUCK once its sweep is overdue."""
     reason = task.get("park_reason")
+    if reason == "AWAITING_INPUT":
+        return _awaiting(task, now)
     if reason == "DEPENDENCY_INCOMPLETE":
         failed = {k: v for k, v in (dependencies or {}).items() if v in _FAILED_DEPENDENCY}
         if not failed:
@@ -534,6 +556,54 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
         text = (f"PARKED on HUMAN_REQUIRED for {evidence['age_is']} {age} min: only a person "
                 "promotes it -- open its console and take control")
     return {"kind": STUCK, "rule": "parked", "reason": text, "evidence": evidence}
+
+
+def _clock(value: datetime | None) -> str:
+    return value.strftime("%H:%M UTC") if value else "an unrecorded time"
+
+
+def _span(seconds: float) -> str:
+    minutes = _minutes(abs(seconds))
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} h {minutes} m" if hours else f"{minutes} m"
+
+
+def _awaiting(task: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """(f): a wait for a person -- information, or STUCK when the sweep is overdue."""
+    held = awaitinput.window(task)
+    block = awaitinput.declaration(task)
+    opened = render.parse_time(held.get("opened_at"))
+    expires = render.parse_time(held.get("expires_at"))
+    evidence = {
+        "park_reason": "AWAITING_INPUT",
+        "tenant": task.get("tenant_id"),
+        "opened_at": _iso(opened),
+        "expires_at": _iso(expires),
+        "form": block.get("form"),
+        "on_expire": block.get("on_expire"),
+    }
+    grace = EXPIRY_TICKS * EXPIRY_TICK_SECONDS
+    if expires is not None and (now - expires).total_seconds() > grace:
+        evidence["overdue_minutes"] = _minutes((now - expires).total_seconds())
+        return {
+            "kind": STUCK, "rule": AWAITING_INPUT,
+            "reason": (f"waiting for a member since {_clock(opened)}, but it expired "
+                       f"{_span((now - expires).total_seconds())} ago and is still parked: the "
+                       f"expiry sweep (every {EXPIRY_TICK_SECONDS}s) has not ended it in "
+                       f"{EXPIRY_TICKS} ticks, so it is not running"),
+            "evidence": evidence,
+        }
+    if expires is None:
+        until = "no expiry was served"
+    elif expires >= now:
+        until = f"expires in {_span((expires - now).total_seconds())}"
+    else:
+        until = f"expired {_span((now - expires).total_seconds())} ago; the next sweep ends it"
+    return {
+        "kind": AWAITING_INPUT, "rule": AWAITING_INPUT,
+        "reason": f"waits for a member of {task.get('tenant_id')} since {_clock(opened)}, {until}",
+        "evidence": evidence,
+    }
 
 
 def _refusal_code(task: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -701,6 +771,7 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
                   pulls: _PullStates | None = None) -> dict[str, Any]:
     reads = _Reads(client, MAX_TASK_READS)
     pulls = pulls or _PullStates()
+    record = session.project_record()
     running, recent, notes = _workflow_lists(client)
     # THIS SESSION'S OWN (SC-SESSION-SCOPE): a list row that already names
     # another session, or names none on a deployment that serves the tag, is
@@ -765,14 +836,16 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
         doc = envelope["workflow"]
         tasks = {str(t.get("id")): t for t in envelope.get("tasks") or [] if isinstance(t, dict) and t.get("id")}
         kind = session.ownership(
-            session.owner_of(listed) or session.owner_of(doc) or session.owner_of_tasks(tasks.values()), sid)
+            session.owner_of(listed) or session.owner_of(doc) or session.owner_of_tasks(tasks.values()), sid,
+            record=record, ident=wid, name=session.stored_name(envelope, wid),
+            in_repository=_in_scope(scope, [t.get("repository_url") for t in tasks.values()]))
+        if kind == "not_this_project":
+            if wid in running_ids:
+                out_of_scope["workflows"] += 1
+            continue
         if kind != "own":
             if wid in running_ids:
                 left_out["workflows"][kind] += 1
-            continue
-        if not _in_scope(scope, [t.get("repository_url") for t in tasks.values()]):
-            if wid in running_ids:
-                out_of_scope["workflows"] += 1
             continue
         workspace = workflows.workspace_of(doc, names, fallback=envelope.get("tenant_id") or tenant)
         where = {"workspace": workspace, "workflow_id": wid}
@@ -818,12 +891,13 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
     singles, singles_gap = _single_tasks(client)
     in_scope_singles: list[dict[str, Any]] = []
     for task in singles:
-        kind = session.ownership(session.owner_of(task), sid)
+        kind = session.ownership(session.owner_of(task), sid, record=record, ident=task_id_of(task),
+                                 in_repository=_in_scope(scope, [task.get("repository_url")]))
+        if kind == "not_this_project":
+            out_of_scope["single_tasks"] += 1
+            continue
         if kind != "own":
             left_out["single_tasks"][kind] += 1
-            continue
-        if not _in_scope(scope, [task.get("repository_url")]):
-            out_of_scope["single_tasks"] += 1
             continue
         workspace = workflows.workspace_of(task, names, fallback=tenant)
         entry = {"task_id": task_id_of(task), "workspace": workspace, "state": task.get("state"),
@@ -847,17 +921,25 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
                                   "why": f"could not be read: {exc}"})
         if flag is None:
             return None
-        return ("flagged", _item(flag["kind"], flag["rule"], flag["reason"], flag["evidence"], task, where))
+        item = _item(flag["kind"], flag["rule"], flag["reason"], flag["evidence"], task, where)
+        if flag["kind"] == AWAITING_INPUT:
+            item["next"] = (f"swarm_workflow_input {{workflow_id: {where.get('workflow_id')!r}, "
+                            f"step_id: {where.get('step_id')!r}}}, or its console link")
+            return (AWAITING_INPUT, item)
+        return ("flagged", item)
 
+    awaiting: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max(1, min(8, len(jobs)))) as pool:
         for outcome in pool.map(run, jobs):
             if outcome is None:
                 continue
-            (flagged if outcome[0] == "flagged" else unchecked).append(outcome[1])
+            bucket = {"flagged": flagged, AWAITING_INPUT: awaiting}.get(outcome[0], unchecked)
+            bucket.append(outcome[1])
 
     out: dict[str, Any] = {
         "tenant_id": tenant,
         "flagged": flagged,
+        "awaiting_input": awaiting,
         "running": {"workflows": in_scope_running, "single_tasks": in_scope_singles},
         "out_of_scope": out_of_scope,
         "other_sessions": left_out,
@@ -935,6 +1017,9 @@ def run(
                   "stuck": sum(1 for i in flagged if i["kind"] == STUCK),
                   "stale": sum(1 for i in flagged if i["kind"] == STALE)},
         "flagged": flagged,
+        # (f): steps waiting for a person, as information -- never counted
+        # as stuck or stale, and never a reason for the watch to alarm.
+        "awaiting_input": [i for r in per_tenant for i in r["awaiting_input"]],
         "running": {
             "workflows": [w for r in per_tenant for w in r["running"]["workflows"]],
             "single_tasks": [t for r in per_tenant for t in r["running"]["single_tasks"]],

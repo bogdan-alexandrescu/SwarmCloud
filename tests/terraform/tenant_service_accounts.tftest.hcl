@@ -36,6 +36,9 @@ variables {
   }
 }
 
+# Every tenant below is one of dev's own keys: var.tenants is frozen to them
+# (tenants_frozen.tftest.hcl), and a fixture outside them would make each
+# refusal here pass on the freeze instead of on the guard it names.
 run "an_account_under_two_tenants_is_refused" {
   command = plan
 
@@ -55,8 +58,8 @@ run "an_account_under_two_tenants_is_refused" {
   # would make that depend on rendering order. Case differs on purpose.
   variables {
     tenants = {
-      eng      = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
-      research = { kind = "group", principal = "research@saga.xyz", providers = [], service_accounts = ["SWARM-CI-FIX@saga-agents-staging.iam.gserviceaccount.com"] }
+      eng   = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
+      smoke = { kind = "group", principal = "smoke@saga.xyz", providers = [], service_accounts = ["SWARM-CI-FIX@saga-agents-staging.iam.gserviceaccount.com"] }
     }
   }
 
@@ -294,8 +297,8 @@ run "an_account_that_is_another_tenants_principal_is_refused" {
   # It already has a tenant of its own; a listing would give it a second.
   variables {
     tenants = {
-      eng     = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
-      "u-bot" = { kind = "user", principal = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com", providers = [] }
+      eng           = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
+      "u-sw-c90291" = { kind = "user", principal = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com", providers = [] }
     }
   }
 
@@ -319,8 +322,8 @@ run "the_listing_renders_as_a_json_list_with_the_accounts_uid" {
 
   variables {
     tenants = {
-      eng      = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
-      research = { kind = "group", principal = "research@saga.xyz", providers = [] }
+      eng   = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
+      smoke = { kind = "group", principal = "smoke@saga.xyz", providers = [] }
     }
   }
 

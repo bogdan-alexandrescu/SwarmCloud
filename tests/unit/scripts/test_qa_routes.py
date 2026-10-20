@@ -1,0 +1,134 @@
+"""The visual-QA route list covers the nav (QA-CAPTURE; docs/design/visual-qa.md §4.3).
+
+`apps/swarm-ui/qa/routes.json` is what `swarm_qa capture` sweeps, one group
+per capture step. A tab missing from it is a page no QA run ever looks at, and
+nothing in the run would say so: the sweep finds no defects on a screen it
+never opened, which is CLAUDE.md's "empty output is not success". So this
+holds the list to the console's own declarations, the way test_issue_forms.py
+holds the issue forms:
+
+* every `SECTIONS` tab in App.tsx is a route, and every route names a tab,
+  pane or page that exists;
+* every route's `path` is the router's path for its address -- FIXED in
+  paths.ts for a page, `/agents/live/<task>/<pane>` for a task pane -- since
+  the console moved from hashes to History-API paths (2026-10-01), which the
+  design's illustrative `#overview/now` predates;
+* every task pane (`TASK_PANES`, plus Details, the bare task) is captured, on
+  the fixture task the route list names, which must exist in the fixture
+  build's task list;
+* every `settings/*` page in FIXED is captured;
+* the list parses as `swarm_qa` reads it, and a mockup it names exists.
+
+The SECTIONS parser is IMPORTED from test_nav_headings_agree.py, not
+restated: a second regex over the same array is the mirrored copy
+docs/mirrored-values.md warns about.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import re
+import sys
+from pathlib import Path
+
+from control_plane.test_nav_headings_agree import APP_TSX, SRC, _balanced, _read, _sections
+
+REPO = Path(__file__).resolve().parents[3]
+ROUTES = REPO / "apps" / "swarm-ui" / "qa" / "routes.json"
+PATHS_TS = SRC / "paths.ts"
+API_TS = SRC / "api.ts"
+SWARM_QA = REPO / "images" / "agent-runtime-browser" / "swarm_qa.py"
+#: The task's own page, `/agents/<tab>/<id>`, is its Details pane.
+DETAIL = "detail"
+
+
+def _routes() -> dict:
+    return json.loads(_read(ROUTES))
+
+
+def _all_routes() -> list[tuple[str, dict]]:
+    out = [(group, route) for group, routes in _routes()["groups"].items() for route in routes]
+    assert out, "routes.json lists no route; a sweep of it would capture nothing"
+    return out
+
+
+def _fixed() -> dict[str, str]:
+    text = _read(PATHS_TS)
+    decl = "export const FIXED: Readonly<Record<string, string>> = "
+    block = _balanced(text, text.index("{", text.index(decl) + len(decl) - 1), "{", "}")
+    pairs = dict(re.findall(r"^\s*'([a-z0-9/-]+)':\s*'(/[^']*)'", block, re.M))
+    assert "overview/now" in pairs and "settings/keys" in pairs, "FIXED parsed to too little"
+    return pairs
+
+
+def _task_panes() -> list[str]:
+    m = re.search(r"export const TASK_PANES = \[([^\]]*)\]", _read(PATHS_TS))
+    assert m, "TASK_PANES is not in paths.ts"
+    panes = re.findall(r"'([a-z-]+)'", m.group(1))
+    assert panes, "TASK_PANES parsed to nothing"
+    return panes
+
+
+def test_every_sections_tab_is_in_a_route_group():
+    tabs = {f"{sid}/{tid}" for sid, _label, section_tabs in _sections(_read(APP_TSX)) for tid, _ in section_tabs}
+    sections = {sid for sid, _label, _tabs in _sections(_read(APP_TSX))}
+    addresses = {route["address"] for _group, route in _all_routes()}
+    missing = sorted(tabs - addresses)
+    assert not missing, f"tabs in SECTIONS that no QA route group captures: {missing}; add each to apps/swarm-ui/qa/routes.json"
+    stale = sorted(a for a in addresses if a.split("/")[0] in sections and a.split("/")[1] != "task" and a not in tabs)
+    assert not stale, f"routes naming a tab SECTIONS no longer has: {stale}"
+
+
+def test_every_route_path_is_the_routers_path():
+    fixed = _fixed()
+    task = _routes()["fixture_task"]
+    for group, route in _all_routes():
+        address, path = route["address"], route["path"]
+        seg = address.split("/")
+        if seg[:2] == ["work", "task"]:
+            assert seg[2] == task, f"{group}/{route['id']}: a task pane on {seg[2]}, not the fixture task {task}"
+            pane = seg[3] if len(seg) > 3 else None
+            want = f"/agents/live/{task}" + (f"/{pane}" if pane else "")
+        else:
+            assert address in fixed, f"{group}/{route['id']}: {address!r} is not an address in FIXED (paths.ts)"
+            want = fixed[address]
+        assert path == want, f"{group}/{route['id']}: path {path!r}, but the router serves {address!r} at {want!r}"
+
+
+def test_every_task_pane_and_settings_page_is_captured():
+    task = _routes()["fixture_task"]
+    addresses = {route["address"] for _group, route in _all_routes()}
+    panes = {f"work/task/{task}"} | {f"work/task/{task}/{p}" for p in _task_panes()}
+    assert len(panes) == 1 + len(_task_panes())
+    assert not sorted(panes - addresses), f"task panes no route captures: {sorted(panes - addresses)}"
+    settings = {a for a in _fixed() if a.startswith("settings/")}
+    assert settings and not sorted(settings - addresses), f"settings pages no route captures: {sorted(settings - addresses)}"
+    # The fixture task is a task the fixture build lists, so its panes render.
+    assert re.search(rf"mk\('{re.escape(task)}',", _read(API_TS)), f"{task} is not in api.ts fixtureTasks"
+
+
+def test_route_ids_are_unique_file_name_safe_and_ready_selectors_are_set():
+    seen: set[str] = set()
+    groups = _routes()["groups"]
+    assert len(groups) >= 6, "six capture groups (visual-qa.md §4.3), so each capture step is about as long"
+    for group, route in _all_routes():
+        assert re.fullmatch(r"[a-z0-9][a-z0-9-]*", group), group
+        rid = route["id"]
+        assert re.fullmatch(r"[a-z0-9][a-z0-9-]*", rid) and "--" not in rid, f"{group}/{rid}: not a file-name-safe id"
+        assert rid not in seen, f"route id {rid!r} is in two groups; a report could not tell them apart"
+        seen.add(rid)
+        assert isinstance(route.get("ready"), str) and route["ready"].strip(), f"{group}/{rid}: no ready selector"
+
+
+def test_the_list_reads_as_swarm_qa_reads_it_and_every_mockup_exists():
+    spec = importlib.util.spec_from_file_location("swarm_qa_routes_check", SWARM_QA)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    document = module.load_routes(ROUTES)
+    assert document["format"] == 1
+    ids = {route["id"] for _group, route in _all_routes()}
+    for mockup in document["mockups"]:
+        assert (REPO / mockup["path"]).is_file(), f"mockup {mockup['id']}: {mockup['path']} does not exist"
+        assert mockup["compare_with"] in ids, f"mockup {mockup['id']} compares with no route"

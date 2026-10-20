@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import { Em, Mark, attemptLabel, isParked, parkedOutcome, type ChipTone } from './AgentDetail'
+import { AttemptModel, Em, Mark, attemptLabel, isParked, parkedOutcome, type ChipTone } from './AgentDetail'
 import { Count, ToneMark } from './components'
 import { loadAgentDetail, loadAttempts } from './api'
 import { instant, spanText } from './duration'
@@ -244,6 +244,9 @@ function Body({ t }: { t: AttemptTimeline }) {
   const endMissing =
     t.task !== null && t.events !== null && TERMINAL_STATES.has(t.task.state) && !t.events.some(isTerminalEvent)
   const lastEvent = t.events?.[t.events.length - 1]
+  // The highest generation is the latest attempt: the one the task's
+  // `result_summary` -- and so the CLI's reported models -- belongs to.
+  const latest = t.attempts.reduce<AttemptRow | null>((best, a) => (best === null || a.generation > best.generation ? a : best), null)
   return (
     <>
       <div className="ctl-toolbar">
@@ -336,7 +339,8 @@ function Body({ t }: { t: AttemptTimeline }) {
             built from this toolbar's own `say` strings. */}
       </div>
       {groups.map((g) => (
-        <AttemptCard key={g.key} g={g} eventsRead={t.events !== null} prev={prev} />
+        <AttemptCard key={g.key} g={g} eventsRead={t.events !== null} prev={prev} task={t.task}
+          isLatest={g.attempt !== null && g.attempt.attempt_id === latest?.attempt_id} />
       ))}
       <p className="ctl-card-foot">
         <span>reading these cards:</span>
@@ -351,11 +355,17 @@ function AttemptCard({
   g,
   eventsRead,
   prev,
+  task,
+  isLatest,
 }: {
   g: Group
   eventsRead: boolean
   /** Each event's predecessor on the page, by event id (`previousOf`). */
   prev: ReadonlyMap<string, TaskEvent>
+  /** The task, for its model class and its stream's models; null when that read failed. */
+  task: Task | null
+  /** The latest attempt: the only one the task's result summary describes. */
+  isLatest: boolean
 }) {
   const a = g.attempt
   const out = a === null ? null : outcome(a)
@@ -385,6 +395,11 @@ function AttemptCard({
           // FIVE `<dt>/<dd>` PAIRS BECAME ONE STRIP, and every absence keeps
           // its key and its slot. A row that disappears when its value is null
           // is indistinguishable from a row that was never going to be there.
+          // ONE ABSENCE, ONE GLYPH (V261, VQA2-R13). `exec — none`, `ran —
+          // none` and `peak rss — not measured` drew the em dash AND the mark
+          // for one missing value; the mark is the fact (its words and its
+          // sentence), so it stands alone. `exit` has no mark, so its em dash
+          // stays.
           <ul className="ctl-facts">
             <li className="ctl-fact">
               <b>att</b>
@@ -400,13 +415,10 @@ function AttemptCard({
             <li className={`ctl-fact${a.execution_name === null ? ' is-absent' : ''}`}>
               <b>exec</b>
               {a.execution_name === null ? (
-                <>
-                  <Em />{' '}
-                  <Mark
-                    kind="zero"
-                    say="This attempt was never dispatched, so no execution was ever named. That is a fact about the attempt, not a missing record."
-                  />
-                </>
+                <Mark
+                  kind="zero"
+                  say="This attempt was never dispatched, so no execution was ever named. That is a fact about the attempt, not a missing record."
+                />
               ) : (
                 <span className="mono">{a.execution_name}</span>
               )}
@@ -414,17 +426,14 @@ function AttemptCard({
             <li className={`ctl-fact${ranText === null ? ' is-absent' : ''}`}>
               <b>ran</b>
               {ranText ?? (
-                <>
-                  <Em />{' '}
-                  <Mark
-                    kind={a.started_at === null ? 'zero' : 'absent'}
-                    say={
-                      a.started_at === null
-                        ? 'This attempt was created and nothing ever ran, so there is no duration to measure. That is a fact about the attempt rather than a missing record.'
-                        : 'This attempt has a start time and no readable finish time, so how long it ran cannot be computed from what was recorded.'
-                    }
-                  />
-                </>
+                <Mark
+                  kind={a.started_at === null ? 'zero' : 'absent'}
+                  say={
+                    a.started_at === null
+                      ? 'This attempt was created and nothing ever ran, so there is no duration to measure. That is a fact about the attempt rather than a missing record.'
+                      : 'This attempt has a start time and no readable finish time, so how long it ran cannot be computed from what was recorded.'
+                  }
+                />
               )}
             </li>
             {/* A null exit code means still running or never finished. It is
@@ -439,13 +448,10 @@ function AttemptCard({
             <li className={`ctl-fact${a.peak_rss_bytes === null ? ' is-absent' : ''}`}>
               <b>peak rss</b>
               {a.peak_rss_bytes === null ? (
-                <>
-                  <Em />{' '}
-                  <Mark
-                    kind="absent"
-                    say="Peak RSS is written at the end of an attempt. This attempt has none recorded, so what it used is unknown — it is a missing record, never a zero."
-                  />
-                </>
+                <Mark
+                  kind="absent"
+                  say="Peak RSS is written at the end of an attempt. This attempt has none recorded, so what it used is unknown — it is a missing record, never a zero."
+                />
               ) : (
                 // `bytesLabel`, AS THE DETAIL PANE PRINTS IT (AG-21). This
                 // was `/ 1e9` and `GB`: the same attempt read `18.6 MiB` in
@@ -459,6 +465,9 @@ function AttemptCard({
               <b>ckpt</b>
               {a.checkpoints.length}
             </li>
+            {/* The model this attempt ran and the task's class (#1435), and
+                both models when the CLI ran another -- Details' own fact. */}
+            <AttemptModel a={a} task={task} isLatest={isLatest} />
           </ul>
         )}
 

@@ -56,8 +56,8 @@ describe('the timeline in words', () => {
   })
 
   it('names another person, and says "You" only for the reader', () => {
-    expect(actionWords(line({ event: 'control_taken', by: 'dave@saga.xyz', you: false }))).toBe('dave@saga.xyz took control')
-    expect(actionWords(line({ event: 'control_taken', by: 'dave@saga.xyz', you: true }))).toBe('You took control')
+    expect(actionWords(line({ event: 'control_taken', by: 'dave@example.com', you: false }))).toBe('dave@example.com took control')
+    expect(actionWords(line({ event: 'control_taken', by: 'dave@example.com', you: true }))).toBe('You took control')
     expect(actionWords(line({ event: 'control_taken' }))).toBe('A person took control')
   })
 

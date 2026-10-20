@@ -176,7 +176,11 @@ describe('R1/A: the side cards stack each label above its value', () => {
         }
       }
       expect(seen, 'the sweep visited the facts').toBeGreaterThanOrEqual(15)
-    })
+      // ~16s on an idle machine (a computed-style read per property per fact,
+      // over 15+ facts): over half the 30s suite default, so a busy CI shard
+      // timed it out at 30s on run 39329360300 with nothing wrong. Own budget,
+      // as frame.overscroll and keyboard already carry; a hang still fails.
+    }, 120_000)
   }
 
   it('draws the issue\'s state, labels and comments as values a reader can see', async () => {
@@ -211,36 +215,44 @@ describe('B/R2/D11: the page head never leaves the column', () => {
       const head = container.querySelector('.rn-run .c-phead')!
       expect(painted(head, 'flex-wrap', env)).toBe('wrap')
       const block = head.querySelector(':scope > div.head')!
-      expect(painted(block, 'display', env), 'the `?` stays on the title\'s row').toBe('contents')
+      // V096/V208 (2026-10-16): the title and its `?` are one block, at most
+      // the column's width, the `?` right after the title.
+      expect(painted(block, 'display', env), 'the `?` stays on the title\'s row').toBe('flex')
+      expect(painted(block, 'max-width', env)).toBe('100%')
       const h1 = head.querySelector('h1')!
-      // V096: the title takes what the `?` leaves on the first row.
-      expect(painted(h1, 'flex', env)).toBe('1 1 0')
+      expect(painted(h1, 'flex', env)).toBe('0 1 auto')
+      expect(painted(h1, 'min-width', env)).toBe('0')
       // Clamped to two lines, except a prose title on a phone, which RT-31
       // (runs.css) wraps to its end so a touch reader sees all of it.
       expect(painted(h1, '-webkit-line-clamp', env)).toBe(env === PHONE ? 'unset' : '2')
       expect(h1.getAttribute('title')).toBe(LONG_TITLE)
-      // #138: no sub-line; the head's second row is its actions, which take
-      // what the row leaves and never pass the column.
+      // #138: no sub-line; the head's actions follow on the title's row when
+      // they fit (V208) and wrap when not, and never pass the column.
       expect(head.querySelector(':scope > .sub'), 'a sub-line is back in the head').toBeNull()
       const acts = head.querySelector(':scope > .c-acts')!
-      expect(painted(acts, 'flex', env)).toBe('1 0 100%')
+      expect(painted(acts, 'flex', env)).toBe('0 1 auto')
       expect(painted(acts, 'min-width', env)).toBe('0')
       expect(painted(acts, 'max-width', env)).toBe('100%')
       // The refresh in them is cut, whole in its title, rather than pushed off.
       const refresh = acts.querySelector<HTMLElement>('.c-refresh')!
       expect(painted(refresh, 'text-overflow', env)).toBe('ellipsis')
       expect(refresh.getAttribute('title')).toBeTruthy()
-      // The meta (now the count note's chip, out of the head) is cut too.
-      const meta = container.querySelector('.rn-run .c-count-note .rn-meta')!
+      // The meta (now the count note's chip, out of the head) is cut too,
+      // fact by fact since V209.
+      const meta = container.querySelector('.rn-run .c-count-note .rn-meta .rn-meta-i')!
       expect(painted(meta, 'text-overflow', env)).toBe('ellipsis')
     })
   }
 
-  it('fits the reference heading on a phone once it is alone on its row (D11)', async () => {
+  it('fits the reference heading on a phone, the `?` wrapping under it rather than cutting it (D11, V096)', async () => {
     const { container } = await mount(run({ issue_read: null }))
     const h1 = container.querySelector('.rn-run.is-ref .c-phead h1')!
+    // V096 (2026-10-16): the `?` stays beside a reference that fits with it,
+    // and wraps under one that does not -- never shrinking the reference.
+    const block = h1.parentElement!
+    expect(painted(block, 'flex-wrap', PHONE)).toBe('wrap')
+    expect(painted(h1, 'max-width', PHONE)).toBe('100%')
     // The phone column: 390 less the 16px gutter a side.
-    expect(painted(h1, 'flex', PHONE)).toBe('1 0 100%')
     expect(textPx(REF, h1, PHONE)).toBeLessThanOrEqual(390 - 32)
   })
 
@@ -252,10 +264,12 @@ describe('B/R2/D11: the page head never leaves the column', () => {
     expect(button).not.toBeNull()
     expect(button.getAttribute('title')).toContain(RUN_ID)
     expect(button.getAttribute('aria-expanded')).toBe('false')
-    expect(painted(button, 'white-space', PHONE) ?? 'nowrap').not.toBe('normal')
+    // Each fact is one line until opened (V209: the chip wraps between them).
+    const fact = button.querySelector('.rn-meta-i')!
+    expect(painted(fact, 'white-space', PHONE)).toBe('nowrap')
     fireEvent.click(button)
     expect(button.getAttribute('aria-expanded')).toBe('true')
-    expect(painted(button, 'white-space', PHONE)).toBe('normal')
+    expect(painted(fact, 'white-space', PHONE)).toBe('normal')
   })
 })
 
@@ -376,7 +390,7 @@ describe('F/N18: the lead is cut on what it renders, and can be read whole', () 
 describe('R11: the Runs list sizes Workflow and By to what they hold', () => {
   it('fits a workflow id and an operator address whole at 1440, with the issue keeping room', async () => {
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
-      runs: [run({ state: 'DONE', workflow_id: WF, created_by: 'bogdan.a@saga.xyz' })], next_page_token: null,
+      runs: [run({ state: 'DONE', workflow_id: WF, created_by: 'ann.a@example.com' })], next_page_token: null,
     }), { status: 200, headers: JSON_HEADERS })) as unknown as typeof fetch
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
@@ -394,7 +408,7 @@ describe('R11: the Runs list sizes Workflow and By to what they hold', () => {
     const wf = row.querySelector('td[data-label="Workflow"] .rn-cut')!
     expect(room('workflow', 'Workflow')).toBeGreaterThanOrEqual(textPx(WF, wf, WIDE))
     const by = row.querySelector('td[data-label="By"] .rn-cut')!
-    expect(room('by', 'By')).toBeGreaterThanOrEqual(textPx('bogdan.a@saga.xyz', by, WIDE))
+    expect(room('by', 'By')).toBeGreaterThanOrEqual(textPx('ann.a@example.com', by, WIDE))
     // And the issue reference stays whole beside them (browser QA D11).
     const ref = row.querySelector('td[data-label="Issue"] .rn-issue-ref')!
     expect(room('issue', 'Issue'), 'the issue reference is cut').toBeGreaterThanOrEqual(textPx(REF, ref, WIDE))

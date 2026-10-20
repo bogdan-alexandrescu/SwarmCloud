@@ -4,8 +4,8 @@
                                                 and which your tasks here would use
     PUT    /v1/provider-keys/{provider}/user    store YOUR key, in your personal tenant
     DELETE /v1/provider-keys/{provider}/user    destroy it
-    PUT    /v1/provider-keys/{provider}/tenant  store the tenant key (admins)
-    DELETE /v1/provider-keys/{provider}/tenant  destroy it (admins)
+    PUT    /v1/provider-keys/{provider}/tenant  store the tenant key (its admins)
+    DELETE /v1/provider-keys/{provider}/tenant  destroy it (its admins)
     POST   /v1/provider-keys/{provider}/links   a one-time link to the console's key form
 
 THE KEY IS ACCEPTED ON THE TWO PUTS AND NOWHERE ELSE, and no route returns it,
@@ -18,9 +18,12 @@ NO ROUTE NAMES A PERSON OR A TENANT. The user routes act on the caller's own
 personal tenant, derived from the verified email; the tenant routes on
 `tenant_scope`, the caller's selected tenant through the collision guard.
 The bodies forbid every field they do not name, so a `user` or `tenant_id`
-is a 422 rather than ignored. "Admin" is the platform's `is_admin`
-(`admin_auth`): there is no per-tenant admin role to ask instead, exactly as
-on the Git token routes.
+is a 422 rather than ignored. "Admin" is the group workspace's `admin`
+(docs/design/workspace-roles.md §4.8, Q6): a workspace admin, or a platform
+admin, who holds `admin` in every group workspace (Q5).
+`workspace_secrets.workspace_admin` asks the role; a caller it does not let
+through meets the full-admin rule these routes had before roles, so the
+`role_admin_required` switch, off, reports a member and never admits one.
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from swarm_common.models import Tenant
 
 from ..auth import AuthContext, require_admin
 from ..credentials import validate_key_material
-from ..deps import AppContext, admin_auth, current_auth, get_context, tenant_scope
+from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..errors import NotFound, ValidationFailed
 from ..provider_keys import (
     TENANT,
@@ -46,6 +49,7 @@ from ..provider_keys import (
     resolve_provider_key,
 )
 from ..schemas import StrictModel
+from ..workspace_secrets import workspace_admin
 from .judgment import jev_for
 
 router = APIRouter(prefix="/v1/provider-keys", tags=["provider-keys"])
@@ -143,24 +147,26 @@ def delete_user_key(
 def put_tenant_key(
     provider: str,
     body: ProviderKeyWrite,
-    auth: AuthContext = Depends(admin_auth),
+    auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     provider = check_provider(provider)
+    tenant = _group_tenant(ctx, auth, tenant_id)
     validate_key_material(body.api_key)
-    return _store(ctx, auth, _group_tenant(ctx, tenant_id), provider, TENANT, body)
+    return _store(ctx, auth, tenant, provider, TENANT, body)
 
 
 @router.delete("/{provider}/tenant")
 def delete_tenant_key(
     provider: str,
-    auth: AuthContext = Depends(admin_auth),
+    auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     provider = check_provider(provider)
-    return _destroy(ctx, auth, _group_tenant(ctx, tenant_id), provider, TENANT)
+    tenant = _group_tenant(ctx, auth, tenant_id)
+    return _destroy(ctx, auth, tenant, provider, TENANT)
 
 
 @router.post("/{provider}/links", status_code=status.HTTP_201_CREATED)
@@ -173,25 +179,35 @@ def mint_link(
 ) -> dict:
     """A one-time link to the console's key form, for the /sc flow: single
     use, `KEY_LINK_TTL`, bound to this caller, scope and tenant. Minted only
-    for a write this caller could make: their own workspace for `user`, an
-    admin for `tenant`."""
+    for a write this caller could make: their own workspace for `user`, the
+    workspace's admin for `tenant`."""
     provider = check_provider(provider)
     if body.scope == USER:
         target = own_personal_tenant(ctx.store, ctx.db, auth).tenant_id
     else:
-        # The full-admin rule: with no route, no narrower capability (a pool
-        # admin's) gets through.
-        require_admin(auth)
+        _require_tenant_admin(ctx, auth, ctx.store.get_tenant(tenant_id))
         target = tenant_id
     return _keys(ctx).mint_link(email=auth.email, scope=body.scope, provider=provider,
                                 tenant_id=target, console=ctx.settings.console_url)
 
 
-def _group_tenant(ctx: AppContext, tenant_id: str) -> Tenant:
-    """The selected tenant for a TENANT key, which must be a group's. In a
-    personal workspace the tenant key would be the same secret as that
-    person's own key, recorded under the wrong scope: that is `.../user`."""
+def _require_tenant_admin(ctx: AppContext, auth: AuthContext, tenant: Tenant | None) -> None:
+    """The tenant key is its group workspace's admin's (Q6); else the
+    full-admin rule: with no route, no narrower capability (a pool admin's)
+    gets through, and an unanswered directory is 503."""
+    if tenant is not None and workspace_admin(ctx.roles, auth, tenant):
+        return
+    require_admin(auth)
+
+
+def _group_tenant(ctx: AppContext, auth: AuthContext, tenant_id: str) -> Tenant:
+    """The selected tenant for a TENANT key, which must be a group's, once the
+    caller is its admin -- asked first, so a caller who is not learns nothing
+    about the tenant document. In a personal workspace the tenant key would be
+    the same secret as that person's own key, recorded under the wrong scope:
+    that is `.../user`."""
     tenant = ctx.store.get_tenant(tenant_id)
+    _require_tenant_admin(ctx, auth, tenant)
     if tenant is None:
         raise NotFound(f"tenant {tenant_id!r} does not exist yet")
     if tenant.kind == "user":

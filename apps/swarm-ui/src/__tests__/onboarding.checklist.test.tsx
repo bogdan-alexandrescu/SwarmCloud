@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import { painted } from './marks'
+import { COMPANY_NAME } from '../../test/companyName'
 
 type Step = { step: string; state: string; code?: string | null; copy?: string | null; evidence?: Record<string, unknown>; issues?: unknown[] }
 
@@ -187,7 +188,7 @@ describe('the Setup page draws the server-derived checklist', () => {
   })
 })
 
-const INSTALL_URL = 'https://github.com/apps/swarmcloud-saga/installations/new'
+const INSTALL_URL = 'https://github.com/apps/swarmcloud-example/installations/new'
 
 const NOT_INSTALLED = doc([
   { step: 'signed_in', state: 'done', evidence: { email: 'dev@swarm.example.com', tenant_id: 'eng' } },
@@ -195,7 +196,7 @@ const NOT_INSTALLED = doc([
   {
     step: 'app_installed',
     state: 'todo',
-    evidence: { needed: true, read: true, source: 'github', login: 'octo-dev', installed: [], not_installed: ['octo-dev'], install_url: INSTALL_URL },
+    evidence: { needed: true, read: true, source: 'github', login: 'octo-dev', installed: [], not_installed: ['octo-dev'], install_url: INSTALL_URL, app_name: 'SwarmCloud' },
   },
   { step: 'orgs_enabled', state: 'todo', evidence: { waiting_for: 'app_installed' } },
   { step: 'repos_chosen', state: 'todo', evidence: { waiting_for: 'app_installed' } },
@@ -213,7 +214,7 @@ describe('the Install the App step (#780, 2026-10-08)', () => {
     const inst = stepEl('app_installed')
     expect(inst.getAttribute('aria-current')).toBe('step')
     expect(visible(inst)).toContain('Install the App')
-    expect(visible(inst)).toContain("connected as @octo-dev, but SwarmCloud Saga isn't installed anywhere yet")
+    expect(visible(inst)).toContain("connected as @octo-dev, but SwarmCloud isn't installed anywhere yet")
     expect(visible(inst)).toContain('Connecting authorised the App to act as you')
     const link = within(inst).getByRole('link', { name: 'Install the App' })
     expect(link.getAttribute('href')).toBe(INSTALL_URL)
@@ -222,6 +223,22 @@ describe('the Install the App step (#780, 2026-10-08)', () => {
     const before = calls.filter((c) => c.url === '/v1/onboarding').length
     fireEvent.click(within(inst).getByRole('button', { name: 'Re-check' }))
     await waitFor(() => expect(calls.filter((c) => c.url === '/v1/onboarding').length).toBe(before + 1))
+  })
+
+  it('says "the SwarmCloud GitHub App" when the API serves no App name', async () => {
+    const unnamed = {
+      ...NOT_INSTALLED,
+      steps: NOT_INSTALLED.steps.map((s) =>
+        s.step === 'app_installed' ? { ...s, evidence: { ...s.evidence, app_name: null } } : s,
+      ),
+    }
+    answer(unnamed)
+    const { OnboardingScreen } = await load()
+    render(<OnboardingScreen />)
+    await screen.findByRole('list', { name: 'Setup steps' })
+    const inst = stepEl('app_installed')
+    expect(visible(inst)).toContain("connected as @octo-dev, but the SwarmCloud GitHub App isn't installed anywhere yet")
+    expect(visible(inst)).not.toMatch(COMPANY_NAME)
   })
 
   it('names where the App is installed once it is, and offers no install', async () => {

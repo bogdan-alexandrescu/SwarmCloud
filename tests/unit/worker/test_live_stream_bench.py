@@ -15,7 +15,10 @@ from agent_worker.livegate import bench
 
 
 def test_the_benchmark_measures_every_part_it_reports() -> None:
-    result = asyncio.run(bench.run(seconds=0.4, frames=2, sizes=("iphone",), levels=(1,)))
+    # The session window is 1.5 s, not 0.4: on a loaded `-n auto` runner a
+    # 0.4 s window saw one scroll update or none (`updates_per_s` 0.0, run
+    # 39099038437); 1.5 s still saw six or more with 30 copies on 6 cores.
+    result = asyncio.run(bench.run(seconds=1.5, frames=2, sizes=("iphone",), levels=(1,)))
     frames, session, levels = result["frames"], result["session"], result["levels"]
     assert set(frames) == {f"iphone/{s}/{v}" for s in bench.SCENARIOS for v in ("novnc", "recorder")}
     assert set(session) == {"iphone/idle/control", "iphone/idle/watch", "iphone/scroll/control",

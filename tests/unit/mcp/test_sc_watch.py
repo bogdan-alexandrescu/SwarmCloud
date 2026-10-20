@@ -702,7 +702,10 @@ def test_a_row_the_session_already_shows_is_excluded_by_id(launcher):
 def test_attach_by_hand_still_attaches_after_a_check(launcher):
     launch.for_all(_project_api(), repository=APP, new_only=True)
     again = launch.for_all(_project_api())  # `/sc attach --all`, unfiltered: unchanged
-    assert _launched(again) == (["wf_ours", "wf_theirs"], ["task_mine", "task_elsewhere"])
+    launched, tasks = _launched(again)
+    # Both, in the board order (BOARD-ORDER): two tasks of the same age are
+    # ordered by id, which is not what this test is about.
+    assert (launched, sorted(tasks)) == (["wf_ours", "wf_theirs"], ["task_elsewhere", "task_mine"])
     assert "already_attached" not in again
 
 

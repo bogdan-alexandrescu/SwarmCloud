@@ -88,7 +88,7 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.models import EndCause, utcnow
-from swarm_common.profiles import RUNNER_PROFILES
+from swarm_common.profiles import RUNNER_PROFILES, step_model_class
 from swarm_common.states import TERMINAL_STATES, TaskState
 
 from .codec import as_datetime
@@ -168,7 +168,11 @@ _CACHE_MAX_ENTRIES = 256
 #: `publish_refused` from its text. A stored day counted under 6 has no
 #: `intended` key and counted both under `runner_error`. CLASSIFIER_VERSION
 #: moves to 3 with it: a text rule was added.
-DERIVE_VERSION = 7
+#: 8 (2026-10-18, #1435 MODEL-LEDGER): an ended tuple carries `model`,
+#: `model_spend` and `model_class`, and an arrival `model_class`, for the
+#: `model` and `model_class` groups. A stored day counted under 7 has none of
+#: those columns, so `_decode_rows` refuses it and it is re-derived.
+DERIVE_VERSION = 8
 CLASSIFIER_VERSION = 3
 
 #: Firestore caps a document at 1 MiB. A day whose tuples pass this many bytes
@@ -922,7 +926,18 @@ DEFAULT_SPAN = "14d"
 BUCKETS = ("hour", "day", "week", "month")
 SCOPES = ("tenant", "platform")
 KINDS = ("all", "standalone", "steps")
-GROUPS = ("runner_profile", "submitted_by", "tenant_id")
+GROUPS = ("runner_profile", "submitted_by", "tenant_id", "model", "model_class")
+
+#: The `model` group's keys that are not a model ID (docs/design/model-per-step.md
+#: §4.4). A model ID never contains a space, so neither can collide with one.
+#: NOT_RECORDED: the task's final started attempt has no `Attempt.model` --
+#: written before contract request 103, or on a runner that runs no model.
+#: NOT_STARTED: no attempt of the task started, so it ran no model at all.
+NOT_RECORDED = "not recorded"
+NOT_STARTED = "not started"
+#: The `model_class` group's key for a task on a profile with no classes
+#: (codex, mock, ...), which `step_model_class` resolves to None.
+NO_MODEL_CLASS = "no class"
 COMPARES = ("none", "previous")
 #: The keys of the response a caller may ask for alone, with `section` (#377),
 #: in the order the response carries them. Everything else -- the resolved
@@ -1380,8 +1395,18 @@ ENDED_COLS: tuple[str, ...] = (
     "retry_att_started",
     "retry_att_reporting",
     "nonfinal_exits",
+    # The final STARTED attempt's `Attempt.model`, None when it recorded none,
+    # and NOT_STARTED when no attempt started (#1435).
+    "model",
+    # [[model, cost_usd, started, reporting], ...] over the started attempts,
+    # one entry per model: a pin moved between two attempts (R6) bills each
+    # model its own attempts, not the final one's.
+    "model_spend",
+    # The task's RESOLVED class, `step_model_class` at derive time; see
+    # `_model_class_of`.
+    "model_class",
 )
-ARRIVED_COLS: tuple[str, ...] = ("id", "created", "profile", "submitted_by", "step")
+ARRIVED_COLS: tuple[str, ...] = ("id", "created", "profile", "submitted_by", "step", "model_class")
 
 
 def _int(value: Any, default: int = 0) -> int:
@@ -1406,6 +1431,46 @@ def _spend(attempts: Iterable[Mapping[str, Any]]) -> tuple[float | None, int, in
     reported = [float(a["cost_usd"]) for a in started if a.get("cost_usd") is not None]
     cost = _money(sum(reported)) if reported else None
     return cost, len(started), len(reported)
+
+
+def _model_spend(attempts: Sequence[Mapping[str, Any]]) -> tuple[Any, list[list[Any]]]:
+    """(the final started attempt's model, per-model spend), attempts in order.
+
+    The model is the one the task's outcome is counted under; the spend is
+    each model's own started attempts, by `_spend`'s rule.
+    """
+    started = [a for a in attempts if a.get("started_at") is not None]
+    if not started:
+        return NOT_STARTED, []
+    by_model: dict[str | None, list[Mapping[str, Any]]] = {}
+    for a in started:
+        by_model.setdefault(a.get("model") or None, []).append(a)
+    spend = []
+    for model, mine in by_model.items():
+        cost, n, reporting = _spend(mine)
+        spend.append([model, cost, n, reporting])
+    return started[-1].get("model") or None, spend
+
+
+def _model_class_of(task: Mapping[str, Any]) -> str:
+    """The class the task ran: `step_model_class`, the rule the API, the
+    scheduler and the worker all apply, so a step that named none is its
+    profile's default (R3: opus), never a row of its own.
+
+    A profile with no classes is NO_MODEL_CLASS. A stored class the
+    resolution refuses -- or one on a profile the catalogue no longer has --
+    was never dispatched as any class, so it is shown as stored rather than
+    as a class it did not run.
+    """
+    requested = task.get("model_class")
+    profile = RUNNER_PROFILES.get(str(task.get("runner_profile")))
+    if profile is None:
+        return str(requested) if requested else NO_MODEL_CLASS
+    try:
+        resolved = step_model_class(profile, requested)
+    except ValueError:
+        return str(requested)
+    return resolved or NO_MODEL_CLASS
 
 
 def tuple_from_docs(
@@ -1464,6 +1529,7 @@ def tuple_from_docs(
     )
     submitted_by = task.get("submitted_by")
     timeout = task.get("timeout_seconds")
+    model, model_spend = _model_spend(ordered)
     return {
         "id": task.get("id"),
         "state": state,
@@ -1498,6 +1564,9 @@ def tuple_from_docs(
         "retry_att_started": retry_started,
         "retry_att_reporting": retry_reporting,
         "nonfinal_exits": [a.get("exit_code") for a in ordered[:-1]],
+        "model": model,
+        "model_spend": model_spend,
+        "model_class": _model_class_of(task),
     }
 
 
@@ -1509,6 +1578,7 @@ def arrival_from_doc(task: Mapping[str, Any]) -> dict[str, Any]:
         "profile": task.get("runner_profile"),
         "submitted_by": str(submitted_by).strip().lower() if submitted_by else "",
         "step": task.get("workflow_id") is not None,
+        "model_class": _model_class_of(task),
     }
 
 
@@ -2034,6 +2104,10 @@ def _group_key(t: Mapping[str, Any], by: str) -> str:
         return str(t.get("tenant"))
     if by == "submitted_by":
         return str(t.get("submitted_by") or "")
+    if by == "model":
+        return str(t.get("model") or NOT_RECORDED)
+    if by == "model_class":
+        return str(t.get("model_class") or NO_MODEL_CLASS)
     return str(t.get("profile"))
 
 
@@ -2049,11 +2123,25 @@ def _groups(
     def row_for(key: str) -> dict[str, Any]:
         return rows.setdefault(key, {"tally": _Tally(), "k": [0] * buckets, "n": [0] * buckets})
 
-    for _, t in placed_arrived:
-        row_for(_group_key(t, by))["tally"].submitted += 1
+    # A task's model is known only once an attempt of it starts, so an arrival
+    # is in no model's row and the `model` group's `submitted` is null.
+    if by != "model":
+        for _, t in placed_arrived:
+            row_for(_group_key(t, by))["tally"].submitted += 1
     for i, t in placed_ended:
         row = row_for(_group_key(t, by))
-        row["tally"].add_ended(t)
+        if by == "model":
+            # The outcome under the final attempt's model, and each model's
+            # own attempts' cost under that model (`model_spend`).
+            row["tally"].add_ended({**t, "cost_usd": None, "att_started": 0, "att_reporting": 0})
+            for model, cost, started, reporting in t.get("model_spend") or ():
+                tally = row_for(str(model or NOT_RECORDED))["tally"]
+                tally.cost_attempts += _int(started)
+                tally.cost_reporting += _int(reporting)
+                if cost is not None:
+                    tally.cost_sum += float(cost)
+        else:
+            row["tally"].add_ended(t)
         outcome = _OUTCOME[t["state"]]
         if outcome == "succeeded":
             row["k"][i] += 1
@@ -2073,7 +2161,7 @@ def _groups(
         out.append(
             {
                 "key": key,
-                "submitted": tally.submitted,
+                "submitted": None if by == "model" else tally.submitted,
                 "ended": tally.ended,
                 "succeeded": tally.succeeded,
                 "failed": tally.failed,

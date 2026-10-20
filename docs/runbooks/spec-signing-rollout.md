@@ -29,10 +29,14 @@ after **2026-10-20T00:00:00Z** whatever the configuration says
 | the names of both, spelled once | [`terraform/modules/spec_signing_key`](../../terraform/modules/spec_signing_key/main.tf) | both roots |
 | `SPEC_VERIFY_KEYS`, `SPEC_SIGNING_KEY`, `SPEC_SIGNATURE_MODE`, `SPEC_LEGACY_CUTOVER` on every Cloud Run worker Job and on the scheduler (which copies them onto every Job it creates, Cloud Run and GKE); the signing version (`output.spec_signing_key_version`), which #353 puts on swarm-api as `SPEC_SIGNING_KEY_VERSION` | [`terraform/infra/spec_signing.tf`](../../terraform/infra/spec_signing.tf), values in [`dev.tfvars`](../../terraform/environments/dev/dev.tfvars) | the release |
 | the `swarm-spec-verify-keys` ConfigMap in each tenant namespace, the GKE pods' **fallback** | [`kubernetes/render.py`](../../kubernetes/render.py) from `terraform output -json spec_verify_keys_configmap`, applied by [`kubernetes/apply.sh`](../../kubernetes/apply.sh) `--spec-verify-keys` | the release's `deploy` job, when `vars.APPLY_TENANT_NAMESPACES` is `true` |
+| `SPEC_VERIFY_KEYS` on the workspace job `swarm-workspace-apply`, and its SHA-256 in the job's fixed command, which is what group and service **approvals** are verified against | [`terraform/bootstrap/workspace_deployer.tf`](../../terraform/bootstrap/workspace_deployer.tf), read from dev's key at plan | **the owner's bootstrap apply**, never a release: see [Rotation](#rotation) |
 | the alert on a refusal | [`terraform/modules/monitoring`](../../terraform/modules/monitoring/alerts.tf), `spec-signature-invalid` | the release |
 
 Nobody holds `roles/cloudkms.signerVerifier`, and no tenant or worker account
-holds any role on the key. Workers get the public keys in their Job's
+holds any role on the key. Nor does the workspace job's identity,
+`swarm-workspace-deployer` (owner decision 2026-10-19: no new IAM for approval
+verification): it verifies against the keys in its own job spec, which the
+owner's bootstrap apply reads at plan. Workers get the public keys in their Job's
 environment, on both backends, with a read-only mount as the fallback on GKE:
 no KMS call, no quota and no IAM at attempt start.
 
@@ -221,16 +225,45 @@ Cloud KMS does not rotate asymmetric keys; rotate by hand, in this order:
    created with. The GKE ConfigMap (the fallback) follows only if that
    release's `deploy` job ran with `vars.APPLY_TENANT_NAMESPACES=true`;
    otherwise re-apply it by hand (see [GKE](#gke)) before step 4;
-3. set `spec_signing_key_version = N+1` in `dev.tfvars` and release;
-4. once no non-terminal task names version N, disable it
-   (`gcloud kms keys versions disable N ...`) and release.
+3. **re-apply bootstrap** (the owner: `terraform -chdir=terraform/bootstrap
+   apply`), so the workspace job's `SPEC_VERIFY_KEYS`, and the pin of it in
+   the job's command, hold N and N+1. Check the plan shows the job's `env`
+   and `command` changing and nothing else you did not expect;
+4. set `spec_signing_key_version = N+1` in `dev.tfvars` and release;
+5. once no non-terminal task names version N, disable it
+   (`gcloud kms keys versions disable N ...`), release, and re-apply
+   bootstrap.
+
+**Why step 3 is separate, and must come before step 4.** The workspace job
+(`swarm-workspace-apply`) verifies swarm-api's signature on every group and
+service approval and retry against the `SPEC_VERIFY_KEYS` in its own job spec
+(`images/workspace-apply/entry.py`), never against Cloud KMS at run time: its
+identity holds no role on the key (owner decision 2026-10-19). That job lives
+in `terraform/bootstrap`, so its keys refresh **only when the owner applies
+bootstrap**, unlike workers' keys, which refresh on every release. If step 4
+lands first, swarm-api signs with a version the job does not hold, and every
+group and service approval stops at `needs_owner` with `APPROVAL_UNSIGNED`
+(fail closed: nothing is granted) until bootstrap is applied. Personal
+workspaces are not verified and keep running. A record that stopped this way
+is not retryable. Once bootstrap is applied, an admin denies it and approves
+it again, which signs it afresh.
+
+The same holds in the other direction: in step 5, until bootstrap is
+re-applied the job still trusts the disabled version. The job runs only
+approvals swarm-api signed, so that window is the one revocation already
+has (below), and it lasts as long as the bootstrap apply waits.
 
 The plan warns (`check "spec_signing_version_is_trusted"`) when
-`spec_signing_key_version` names a version that is not enabled.
+`spec_signing_key_version` names a version that is not enabled. Nothing
+warns when the workspace job's keys lag behind the key, but a bootstrap plan
+reads the key's enabled versions afresh, so `terraform -chdir=terraform/bootstrap
+plan` shows a change to the job's `env` and `command` exactly when they lag.
 
 ## Revocation
 
-Disable the version. From the next release on it is absent from every
+Disable the version, then release **and re-apply bootstrap** (the workspace
+job's copy follows only the bootstrap apply; see [Rotation](#rotation)).
+From the next release on it is absent from every
 worker's `SPEC_VERIFY_KEYS` (the Cloud Run Jobs, and the scheduler, which puts
 its copy on every GKE Job it creates from then on), and every task signed by
 it is refused as `foreign_key_version`. The GKE ConfigMap is the fallback and

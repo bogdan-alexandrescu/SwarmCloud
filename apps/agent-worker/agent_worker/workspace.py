@@ -123,6 +123,14 @@ def walk_tree(root: Path) -> Iterator[tuple[Path, list[str], list[str]]]:
 #: archived either (`checkpoint.CheckpointManager.create`).
 REPO_DIR_NAME = "repo"
 
+#: `work/repos/`: one link per additional repository a task reads beside its
+#: own (docs/design/multi-repository-steps.md §4.4, #1434), each to its
+#: read-only checkout on the cache volume (`extrarepos`). Beside
+#: `REPO_DIR_NAME` and never under it, which is what keeps the harvest of
+#: `work/repo` from ever carrying an additional checkout back. Left out of
+#: the checkpoint and the standalone upload when the task has any.
+REPOS_DIR_NAME = "repos"
+
 
 @dataclass(frozen=True)
 class Workspace:

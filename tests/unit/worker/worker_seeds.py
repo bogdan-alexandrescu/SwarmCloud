@@ -30,7 +30,12 @@ from agent_worker.lifecycle import Worker, WorkerDeps
 from agent_worker.logs import build_logger
 from agent_worker.objectstore import LocalObjectStore
 from swarm_common.models import pool_names_for, utcnow
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
+from swarm_common.profiles import (
+    MODEL_CLASSES,
+    RESOURCE_CLASSES,
+    RUNNER_PROFILES,
+    resolve_backend,
+)
 from swarm_common.states import TaskState
 
 import spec_keys
@@ -253,6 +258,14 @@ def build_worker(
     # (contract request 34). A test that is about the keys sets its own.
     overrides.setdefault("spec_signing_key", spec_keys.SIGNING_KEY)
     overrides.setdefault("spec_verify_keys", dict(spec_keys.VERIFY_KEYS))
+    # The MODEL a classed profile's execution carries, as the scheduler and
+    # terraform render one onto every such Job: without it the worker ends
+    # the step `model_not_pinned` before its agent (MODEL-WORKER,
+    # docs/design/model-per-step.md §4.5). A test about the pin sets its own.
+    if profile.default_model_class is not None:
+        overrides.setdefault(
+            "model", f"claude-{MODEL_CLASSES[profile.default_model_class].family}-5-5"
+        )
     config = WorkerConfig(
         task_id=task_id,
         attempt_id=attempt_id,

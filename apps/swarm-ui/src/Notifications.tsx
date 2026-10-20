@@ -34,6 +34,24 @@ import { Icon, PANEL_PAGES, PANEL_TITLE } from './Spine'
 import { timeAgo } from './types'
 import './styles/notifications.css'
 
+/** Where the muted line sends the reader: Settings › Profile (Spine.tsx `PROFILE_PATH`). */
+const PROFILE_HREF = '/settings/profile'
+
+/**
+ * THE MUTED ITEMS THAT NEED YOU (user-profile.md §4.6, Q3). Every topic may be
+ * muted, and a muted item leaves the list and the badge; the API counts it in
+ * `muted.needs_you`. So a muted approval is QUIET, never invisible: one line
+ * under the list says how many, and where to change it. Muted updates are not
+ * announced. Read off the feed defensively: an API before PROFILE-BELL sends
+ * no `muted`, which is no muted item.
+ */
+export function mutedNeedsYou(feed: NotificationFeed | null): number {
+  const muted = (feed as { muted?: unknown } | null)?.muted
+  if (typeof muted !== 'object' || muted === null) return 0
+  const n = (muted as { needs_you?: unknown }).needs_you
+  return typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : 0
+}
+
 /** The phone band: the spine is the 44px phone header below 760px (Spine.tsx). */
 export const NOTIFICATIONS_PHONE_QUERY = '(max-width: 759px)'
 
@@ -183,6 +201,10 @@ export function NotificationBell({ go }: { go: (to: string) => void }) {
           data={data}
           why={why}
           onClose={() => close(true)}
+          onProfile={() => {
+            close(false)
+            go(PROFILE_HREF)
+          }}
           onOpen={(item) => {
             close(false)
             go(item.href)
@@ -201,6 +223,7 @@ function NotificationPanel({
   data,
   why,
   onClose,
+  onProfile,
   onOpen,
 }: {
   id: string
@@ -209,9 +232,11 @@ function NotificationPanel({
   data: NotificationFeed | null
   why: string | null
   onClose: () => void
+  onProfile: () => void
   onOpen: (item: NotificationItem) => void
 }) {
   const count = data?.unread_needs_you ?? 0
+  const muted = mutedNeedsYou(data)
   const unread = data === null ? false : data.items.some((i) => !i.read)
   const { needs, updates } = orderFeed(data?.items ?? [])
   const now = Date.now()
@@ -250,6 +275,21 @@ function NotificationPanel({
           {needs.length > 0 && <Group title="Needs you" items={needs} now={now} onOpen={onOpen} />}
           {updates.length > 0 && <Group title="Updates" items={updates} now={now} onOpen={onOpen} />}
         </div>
+      )}
+      {muted > 0 && (
+        <p className="nt-why nt-muted">
+          {muted} muted item{muted === 1 ? ' needs' : 's need'} you ·{' '}
+          <a
+            href={PROFILE_HREF}
+            onClick={(e: ReactMouseEvent<HTMLAnchorElement>) => {
+              if (!routedClick(e)) return
+              e.preventDefault()
+              onProfile()
+            }}
+          >
+            change in Settings › Profile
+          </a>
+        </p>
       )}
       <p className="nt-foot">Read items clear after 30 days</p>
     </div>

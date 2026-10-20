@@ -32,7 +32,7 @@ import {
 } from '../signoutState'
 import { painted } from './marks'
 
-const EMAIL = 'bogdan@saga.xyz' // the fixture `GET /v1/tenants/me` principal (api.ts fixtureMe)
+const EMAIL = 'alice@example.com' // the fixture `GET /v1/tenants/me` principal (api.ts fixtureMe)
 
 beforeEach(() => {
   window.localStorage.clear()
@@ -89,7 +89,7 @@ describe('where the control is', () => {
   })
 
   for (const theme of ['dark', 'light'] as const) {
-    it(`is an icon beside the avatar on the collapsed spine (${theme})`, async () => {
+    it(`is an icon at the foot of the collapsed spine (${theme})`, async () => {
       document.documentElement.setAttribute('data-theme', theme)
       window.localStorage.setItem('swarm.shell.collapsed', '1')
       const c = await signedIn()
@@ -99,8 +99,11 @@ describe('where the control is', () => {
       expect(btn, 'no Sign out on the collapsed spine').not.toBeNull()
       expect(btn!.getAttribute('aria-label')).toBe('Sign out')
       expect(btn!.querySelector('.sk-out-l'), 'the spine has no room for the word').toBeNull()
-      // Next to the person: immediately before their avatar.
-      expect(btn!.nextElementSibling?.classList.contains('sk-av')).toBe(true)
+      // At the spine's foot, and only Profile below it: Profile is the
+      // spine's last item since NAV-FOOT (#1672).
+      const next = btn!.nextElementSibling
+      expect(next?.getAttribute('data-sec'), 'Profile does not follow Sign out at the foot').toBe('profile')
+      expect(next!.nextElementSibling, 'something follows Profile at the foot').toBeNull()
       // The spine is one blue in both themes, so its ink is a fixed light value.
       expect(painted(btn!, 'color', { width: 1440, theme })).not.toBeNull()
     })
@@ -172,7 +175,7 @@ describe('the way back in', () => {
   it('tells the same account coming back from a different one', () => {
     window.sessionStorage.setItem(SIGNED_OUT_KEY, EMAIL)
     expect(returnedAs(EMAIL)).toBe('same')
-    expect(returnedAs('someone@saga.xyz')).toBe('other')
+    expect(returnedAs('someone@example.com')).toBe('other')
     // A different account is the sign-out working: nothing more to say.
     expect(window.sessionStorage.getItem(SIGNED_OUT_KEY)).toBeNull()
     expect(returnedAs(EMAIL)).toBeNull()
@@ -225,6 +228,6 @@ describe('the storage this console owns', () => {
 describe('iapFronted', () => {
   it('is false for this machine and bare addresses, true for a named host', () => {
     for (const h of ['localhost', '127.0.0.1', '0.0.0.0', '[::1]', 'box.local', 'ui.localhost', '192.168.1.20']) expect(iapFronted(h), h).toBe(false)
-    for (const h of ['swarm.saga.xyz', 'swarm.example.test']) expect(iapFronted(h), h).toBe(true)
+    for (const h of ['swarm.example.com', 'swarm.example.test']) expect(iapFronted(h), h).toBe(true)
   })
 })

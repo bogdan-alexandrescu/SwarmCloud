@@ -68,7 +68,7 @@ const ME: Me = {
   tenant: {
     tenant_id: 'u-bogdan',
     kind: 'user',
-    principal: 'someone@saga.xyz',
+    principal: 'someone@example.com',
     display_name: 'Bogdan',
     created_at: '2026-09-01T00:00:00Z',
     max_active: 4,
@@ -80,7 +80,7 @@ const ME: Me = {
     gcs_prefix: 'tenants/u-bogdan',
     namespace: 'swarm-tenant-u-bogdan',
   },
-  principal: { email: 'someone@saga.xyz', domain: 'saga.xyz', groups: [], is_admin: false },
+  principal: { email: 'someone@example.com', domain: 'example.com', groups: [], is_admin: false },
   environment: 'dev',
   environment_declared: false,
 }
@@ -478,10 +478,14 @@ describe('CH-21: a position in the navigation means one thing, at every width', 
     for (const hash of ROUTES) {
       window.history.replaceState(null, '', `/${hash}`)
       const { container, unmount } = render(<App />)
-      // Links since #503 (`a.sk-ri`): Submit, the five sections, Help, API reads.
-      const items = [...container.querySelectorAll('.sk-spine .sk-ri')].map((b) => (b.textContent ?? '').trim())
+      // Links since #503 (`a.sk-ri`): Submit, four sections, Help, then
+      // Profile at the foot (NAV-FOOT, #1672; API reads is a Capacity page
+      // now) -- each by its label, as Profile's icon is the person's
+      // initials. No Admin (NAV-ADMIN-ROLE; part of #1633): nobody read here
+      // is known to administer anything.
+      const items = [...container.querySelectorAll('.sk-spine .sk-ri')].map((b) => ((b.querySelector('small') ?? b).textContent ?? '').trim())
       unmount()
-      expect(items.length, `${hash}: the spine holds fewer than Submit, five sections and two utilities`).toBe(8)
+      expect(items.length, `${hash}: the spine holds fewer than Submit, four sections, Help and Profile`).toBe(7)
       if (first === null) first = items
       expect(items, `${hash}: the spine is not the one every other route draws`).toEqual(first)
     }

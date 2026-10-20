@@ -4,7 +4,7 @@ Multi-tenant from V1, not retrofitted. Retrofitting tenancy means retrofitting
 every IAM binding, every storage path and every secret name at once, while
 production data already exists in the single-tenant shapes.
 
-**A tenant is a Google group.** `eng@saga.xyz` is one tenant whose members share
+**A tenant is a Google group.** `eng@example.com` is one tenant whose members share
 a quota budget, provider keys and artifacts. A user in no registered group falls
 back to a personal tenant `u-<local-part>`, so nobody is ever hard-blocked from
 the platform. A person whose personal workspace is **ready** acts in it by
@@ -78,7 +78,7 @@ worker can write today, what phase 0 of #1457 closes and what design B closes;
 the residual is stated there rather than implied.
 
 ```bash
-./scripts/register-tenant.sh --group eng@saga.xyz \
+./scripts/register-tenant.sh --group eng@example.com \
     --providers anthropic,openai --max-active 40 --capacity-units 80
 ```
 
@@ -98,7 +98,7 @@ credentials and any limit not typed again goes back to its default. To add one
 provider, use `--add-provider` (section 5), which changes nothing else. It will
 **refuse** if `tenants/<id>` already names a different principal or kind: that
 is not idempotency, it is re-pointing a tenant, and one
-`--group contractors@saga.xyz --tenant eng` would otherwise hand every member of
+`--group contractors@example.com --tenant eng` would otherwise hand every member of
 `contractors@` eng's provider keys, artifact prefix and budget.
 
 The script creates the GKE side by calling `kubernetes/apply.sh`, so a
@@ -154,10 +154,21 @@ stay fast, so answers are cached per `(caller, group)` with a short TTL
 ### Priority order matters
 
 `TENANT_GROUPS` is ordered, and the **first match wins**. A user in both
-`eng@saga.xyz` and `research@saga.xyz` must land in the same tenant on every
+`eng@example.com` and `research@example.com` must land in the same tenant on every
 request — the tenant determines which secrets they get, which GCS prefix their
 artifacts land in, and which budget they spend. Non-deterministic resolution
 would scatter one person's work across two tenants.
+
+**A group workspace the job made is registered by being `ready`.** Its group
+joins the list after every `TENANT_GROUPS` entry, in the order the records
+became ready (`apps/swarm-api/swarm_api/auth.py::Authenticator._tenant_groups`).
+A Terraform group therefore always wins, and a job-made group is a member's
+default only when no Terraform group is above it (owner answer Q4 (a)).
+Membership is still asked one group at a time, with `x-goog-user-project`,
+and a failed lookup is a 503, as for any registered group (Q5 (a)). A group
+record not yet `ready` is in nobody's choices. If the registry cannot be read,
+swarm-api serves its last good read for 10 minutes and then answers 503
+`registry_unavailable`, never a guess.
 
 ### The tenant switcher: `X-Swarm-Tenant` selects, it never grants
 
@@ -176,13 +187,22 @@ caller's **choices**:
    `tenants/u-<you>` is `kind: user` with your email as its principal **and**
    `workspaces/u-<you>` is `ready` with that same principal. Both principal
    checks matter: the frozen slug keeps only the local part, so
-   `bob@saga.xyz` and `bob@partner.com` derive the same `u-bob`, and only the
+   `bob@example.com` and `bob@partner.com` derive the same `u-bob`, and only the
    principal says whose it is. `approved` is not enough: the build has not made
    the service account, namespace and secrets yet, and the workspace gate
    refuses a submit there anyway. A service identity, the schedule tick, the
    rollup sweeper and a listed service account are never offered one.
 2. **Then every registered tenant group** Cloud Identity confirmed for this
    caller on this request, in admin order.
+3. **A service account's own service tenant, only when the header names it**
+   (HW-ACCEPT-ID, owner decision 2026-10-19): a service account may name its
+   own service tenant in `X-Swarm-Tenant` -- `tenant_id_for_user(<verified
+   email>)`, when `tenants/<that id>` is `kind: user` with exactly that email
+   as principal, and the caller is not a worker, a job or a listed account --
+   and its default is unchanged. No `workspaces/` record is asked for: a
+   service tenant has none. This is how release acceptance answers its
+   await-input steps as swarm-verify in `u-sw-c90291`
+   (docs/design/human-steps.md §4.2.2).
 
 **The default — no header — is the first choice** (owner decision 2026-10-12
 15:55 PDT: personal by default, groups are what you switch to). So a person
@@ -192,6 +212,60 @@ group acts in their personal tenant, exactly as before. Every caller that needs
 a group must send the header: the console and the plugin do once a tenant is
 picked; CI, smoke and acceptance call as service accounts, which keep the
 group default.
+
+**A default you chose comes before that rule** (docs/design/user-profile.md
+§4.5). A person picks a default workspace on Settings › Profile; it is stored
+in their own `user_preferences` document, whose id is an HMAC of their email
+under `swarm-child-key`, so no tenant agent can plant one. In authentication,
+after the personal workspace is placed, `Authenticator._with_default` reads
+that document (through a 15-second per-instance cache, `Preferences.cached`)
+and, **when the stored default is one of your choices**, moves it to the
+front. Choices are what it chooses from, exactly as the header does: the
+preference selects and never grants. A group you have left is ignored
+(`default_ignored: "not_a_member"`), and so is your own workspace while it is
+not ready (`"not_ready"`); the stored value is kept, and applies again when it
+is a choice again. `_select_tenant` is unchanged, so **every explicit choice
+still wins**: the console's switch, `SWARM_TENANT` or the plugin's tenant
+option, and `--tenant` all send the header. `GET /v1/tenants/mine` keeps
+listing exactly `tenant_choices`, so its first entry is still the tenant a
+headerless request acts in; that entry carries `is_default: true` and
+`default_source` — `profile`, `personal`, `first_group` or `unavailable` —
+and every other entry `is_default: false`. A service identity, the schedule
+tick, the rollup sweeper and a listed service account never read preferences.
+The document also names you: `AuthContext.display_name`, the name your
+agent's commits carry, is the stored name when you set one, else your token's
+`name` claim, else your email's local part (Q11).
+
+**If your preferences cannot be read, a request that names no workspace is a
+`503 preferences_unavailable`** (Q9), raised before the route body runs, so
+nothing is submitted or read. Its message says how to name a workspace: the
+console's switcher, `SWARM_TENANT` or the `/sc` plugin's tenant option, or
+`--tenant`. It never falls back to the computed default, for the same reason
+a failed personal-workspace read does not: you may have moved your default
+away from it, and the fallback would file your work in a workspace you did
+not choose — another secret, another GCS prefix. A request that names its
+workspace does not need the default and is served as before. Three routes act
+in no workspace and are served anyway, with `default_source: "unavailable"`
+and today's order: `GET /v1/tenants/me`, `GET /v1/tenants/mine` and
+`GET /v1/profile`, the closed list `auth.PREFERENCE_FREE_ROUTES`. They are
+what a person needs to see their choices and pick one; the bell
+(`GET /v1/notifications`) is not among them, because its items belong to a
+workspace. The check is `auth.require_known_default`, made in the per-route
+gate every authenticated request reaches (`require_continuation_route`).
+
+The stored default applies where the API's authenticator is built with the
+preferences store (`Authenticator(..., preferences=...)`); an authenticator
+built without one reads nothing and keeps the rule above, exactly as before
+the profile. **The deployed API does not pass it yet**:
+`deps.build_context` builds its `Authenticator` without `preferences=`, so in
+every deployed process a headerless request still acts in the group or
+personal default, `AuthContext.preferences` is `None`, the stored display name
+does not name commits and the 503 above never fires. Wiring it is the
+one-line `preferences=build_preferences(db, settings)` in `deps.py`, a file
+no lane of docs/design/user-profile.md §6 holds; it waits on the owner's
+go-ahead, and on a decision about an environment with no `swarm-child-key`,
+where `Preferences.read_many` raises `PreferencesUnavailable` and every
+headerless request from a person would become that 503.
 
 Anything else — another group's tenant, **another person's `u-` tenant**, your
 own `u-` tenant before its workspace is ready, a tenant that does not exist, an
@@ -226,7 +300,7 @@ entry, by being the one person its documents name. So:
 * **Tenant id and tenant principal move together.** The header replaces both
   from one entry, so they still describe the same tenant and the store's
   collision check (`assert_tenant_scope`, `ensure_tenant`) keeps working. Two
-  groups whose ids collide (`eng@saga.xyz`, `eng@partner.com`) appear once, as
+  groups whose ids collide (`eng@example.com`, `eng@partner.com`) appear once, as
   the first in admin order — the one the id selects.
 * **Admin is unaffected.** `is_admin`, `is_pool_admin` and the caller's groups
   are about the person, not the tenant, and the header does not touch them. An
@@ -334,6 +408,52 @@ level; a re-run that finds the binding adds nothing. It never extends to
 `-git-merge` or `-git-review`: those GitHub App keys keep only their own
 accessors (`docs/merge-step.md` §1.3), and swarm-api never needs to sign as an
 App. Without this grant the preview answers `no_access` for every tenant.
+
+**A person's forge slot, `swarm-tenant-<tenant>-git-u-<hex>`, is the other
+exception, and isolation between the people inside one group tenant is NOT
+yet in force.** Every member of a group tenant runs agents as the tenant's
+one worker account, and an agent can mint that account's token. While that
+account can read the slots (owner decision D7,
+[git-tokens.md](git-tokens.md#built-for-780-per-person-slots-the-migration-policy-retiring-the-tenant-token)),
+isolation between tenants holds but isolation between the people inside one
+tenant does not -- and it still can, in every environment: the tenant
+worker's binding, `forge_slot_reader` in
+`terraform/bootstrap/forge_user_slots.tf`, stands, held by
+`tests/terraform/forge_app.tftest.hcl`, run
+`the_tenant_worker_reads_only_its_tenants_base_user_slots`, to its tenant's
+base slots. The owner decided on 2026-10-11 that secrets are user-scoped
+(#1041). Built, behind the `forge_broker` switch (FORGE_BROKER,
+`terraform/infra/child_tasks.tf`), off by default and off in dev
+([design/user-scoped-secrets.md](design/user-scoped-secrets.md)); with it on:
+
+* the worker obtains the slot from swarm-api's broker,
+  `POST /v1/attempts/forge-credential`
+  (`apps/swarm-api/swarm_api/credbroker.py::ForgeCredentialBroker.release`),
+  signed with its attempt key
+  (`apps/agent-worker/agent_worker/forgebroker.py::ForgeBroker.fetch`), and
+  only for the current attempt of a task whose signed `submitted_by` owns
+  the slot and still holds the grant. Bob's attempt asking for Alice's slot
+  is refused before Secret Manager is read
+  (`tests/unit/control_plane/test_forge_credential_broker.py::test_bobs_attempt_is_refused_alices_slot_and_reads_no_secret`);
+* the scheduler issues the attempt key's nonce to every attempt whose signed
+  `forge_credential` is a user slot, children included
+  (`apps/scheduler/scheduler/dispatch.py::worker_env`), and swarm-api builds
+  a child, slot included, only from a parent whose signature verifies
+  (`apps/swarm-api/swarm_api/children.py::ChildService._read_parent`);
+* the tenant token, repository tokens, the App keys and every provider key
+  stay team credentials, read as described above.
+
+Only then does swarm-api become the slot's only reader: removing
+`forge_slot_reader` is a later, separate owner change and bootstrap apply,
+made only after `forge_broker` has been on in that environment and a live
+run passed (`forge_broker` needs `enable_child_tasks`, after the nonce
+measurement of [design/child-tasks.md §9](design/child-tasks.md#9-phase-2)
+item 2 on which the guarantee rests -- made in dev on 2026-10-11, not in
+prod). With the switch off the worker reads a person's slot with its own
+account, as before; were the binding removed first, that read would be
+refused and every user-slot task would fail closed
+([design/user-scoped-secrets.md §5](design/user-scoped-secrets.md#5-iam-the-worker-loses-its-read-of-user-slots);
+[runbooks/github-app.md](runbooks/github-app.md), step 2).
 
 #### What the forge credential must be allowed
 
@@ -633,7 +753,7 @@ described above. See [security.md](security.md#authentication) and
 ```bash
 # Register. A re-run rewrites the whole record, --providers included, so it is
 # not how a provider is added: see --add-provider below.
-./scripts/register-tenant.sh --group eng@saga.xyz --providers anthropic,openai
+./scripts/register-tenant.sh --group eng@example.com --providers anthropic,openai
 
 # Add a provider key. Never passed as an argument: argv is readable via ps.
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin
@@ -734,7 +854,7 @@ not move.
 
 ## 6. The personal fallback tenant
 
-A caller in no registered group gets `u-<local-part>` (so `alice@saga.xyz` ->
+A caller in no registered group gets `u-<local-part>` (so `alice@example.com` ->
 `u-alice`). Three properties:
 
 * the `u-` prefix cannot collide with a group-derived tenant id, because group
@@ -744,14 +864,87 @@ A caller in no registered group gets `u-<local-part>` (so `alice@saga.xyz` ->
   tenant — one namespace, one service account, one set of provider keys — is the
   exact cross-tenant merge this design exists to prevent. So whenever the slug is
   not a faithful rendering of the local part, `swarm_common.identity` appends a
-  6-character digest of the full principal. `eng.team@saga.xyz` becomes
-  `eng-9aef5b`, not `eng-team`;
+  6-character digest of the full principal. `eng.team@example.com` becomes
+  `eng-585e84`, not `eng-team`;
 * the tenant is real — own GSA, own prefix, own pools — so a personal task is
   isolated exactly like a group's.
 
 This exists so that onboarding never requires a group change first. It is also
-why `tenant:<id>` pools are created on demand rather than only by Terraform: a
-personal tenant appears the first time its owner submits.
+why `tenant:<id>` pools are created on demand rather than only by Terraform.
+Until the workspace gate, a personal tenant's documents appeared the first
+time its owner submitted, with no identity, namespace or bucket grant behind
+them, and its work failed at dispatch. With `WORKSPACE_GATE` on, they are made
+only by the workspace job, after an admin's approval, together with
+everything behind them: [§7](#7-a-persons-personal-workspace).
+
+### Service tenants: a service account's own `u-` tenant
+
+A service account in no registered group resolves the same way, to
+`tenant_id_for_user(<its email>)`. The workspace gate exempts service
+identities. There are two kinds of service tenant. **The two that exist** are
+declared in `terraform/environments/dev/dev.tfvars` as `kind = "user"` with the
+account as its principal, and `terraform/infra/variables.tf` admits a user-kind
+tenant only for a service account. **Since 2026-10-19 a new one is a service
+workspace** made by the job, and `var.tenants` is frozen to the tenants it
+already has (below). The two:
+
+| Tenant | Principal | Why it is its own tenant |
+|---|---|---|
+| `u-sw-c90291` | `swarm-verify@saga-agents-staging.iam.gserviceaccount.com` | The verification gate's suites (smoke, e2e, race) run on the `mock` profile and need a tenant with jobs to dispatch to. |
+| `u-or-9a0792` | `oracle-api@saga-agents-staging.iam.gserviceaccount.com` | The oracle-api client application submits workflows on its own behalf (owner decision 2026-10-18, #1568). |
+
+**oracle-api is never a member of `eng@saga.xyz`, and never a
+`service_accounts` listing under it.** Either would file its work in eng, under
+eng's worker account, eng's provider keys, eng's GCS prefix and eng's
+namespace (invariant 9), and against eng's ceiling. As its own tenant it
+reaches nothing of anybody else's. It is in no registered group, so it has no
+membership for `X-Swarm-Tenant` to choose, and a header naming `eng` is a
+`403 tenant_not_member`.
+
+Each service tenant has to be admitted in three places, and the three must
+agree:
+
+1. **The front door.** `frontend_iap_members` in
+   `terraform/bootstrap/terraform.tfvars` grants it
+   `roles/iap.httpsResourceAccessor` on both IAP backends. The owner applies
+   that layer. The committed line is the record of the apply, because a `-var`
+   not written there makes the next bootstrap plan remove the grant.
+2. **swarm-api's domain check.** A service account's domain is never
+   `saga.xyz`, so it is listed in `ALLOWED_USERS`
+   (`terraform/infra/locals.tf`). That list widens which verified identities are
+   admitted, never whether the token was verified.
+3. **The tenant.** It is declared in `dev.tfvars` under the id the frozen
+   module computes. Both ids carry a digest, because each address is lossy and
+   too long to slug. They are recomputed by a test (`test_oracle_api_tenant.py`,
+   `test_verify_identity_grants.py`) and never typed in from memory.
+
+**A service workspace passes the same three places with no Terraform.** An
+admin files it from Admin › Tenants › New workspace, and **only the platform
+owner approves it** (owner answer Q2 (a)), because it is the one kind that
+admits a new principal. The account must be this project's, with no `swarm-`
+id and not on the shared deny-list (Q7 (a)). The job's step S1 checks that
+and records the account's unique id. Then:
+
+1. **The front door** is step S2: the account becomes
+   `roles/iap.httpsResourceAccessor` on the API backend only, never the
+   console's (`scripts/register-tenant.sh` (`ws_s2() {`)). It runs only once
+   the owner has granted the deployer K1 (workspaces.md §0, O1). Until then,
+   IAP refuses the call and the run stops for the owner as `FRONT_DOOR_OWNER`,
+   and the owner adds the account to `frontend_iap_members` as above.
+2. **swarm-api's check** is the registry, not `ALLOWED_USERS`: a `ready`
+   service record admits its account
+   (`apps/swarm-api/swarm_api/registry.py::WorkspaceRegistry.admitted_services`),
+   and only a token whose subject is the unique id S1 recorded. A record not yet
+   `ready` answers `403 WORKSPACE_NOT_READY` instead of the domain message.
+3. **The tenant** is step A8's `tenants/<id>`, under the same derived id.
+
+The three agree because one record drives all three, and the inner gate,
+swarm-api's, opens last: only once A9 has read every object back.
+
+Both tenants declare **no providers** and run at 4/8. swarm-verify's suites
+need no key. oracle-api is lent a pool Claude account by the owner instead of
+holding a key of its own. Its forge token is `swarm-tenant-u-or-9a0792-git`,
+stored with `scripts/create-secrets.sh --stdin` and never in the repository.
 
 ### Tenant ids are capped at 11 characters
 
@@ -773,12 +966,14 @@ that share a long prefix still get different ids.
 
 | Principal | Resolves to |
 |---|---|
-| `eng@saga.xyz` | `eng` |
-| `research@saga.xyz` | `research` |
-| `platform-eng@saga.xyz` | `plat-af1226` |
-| `eng.team@saga.xyz` | `eng-9aef5b` |
-| `alice@saga.xyz` | `u-alice` |
-| `alice.smith@saga.xyz` | `u-al-36b536` |
+| `eng@example.com` | `eng` |
+| `research@example.com` | `research` |
+| `platform-eng@example.com` | `plat-c58519` |
+| `eng.team@example.com` | `eng-585e84` |
+| `alice@example.com` | `u-alice` |
+| `alice.smith@example.com` | `u-al-7dcd3a` |
+| `swarm-verify@saga-agents-staging.iam.gserviceaccount.com` | `u-sw-c90291` |
+| `oracle-api@saga-agents-staging.iam.gserviceaccount.com` | `u-or-9a0792` |
 
 The cost is readability: past 11 characters an id is mostly digest. This
 section used to record an unresolved conflict here — the frozen module capped
@@ -786,3 +981,167 @@ ids at 22, sized for register-tenant.sh's old `swarm-t-` prefix, so ids of 12 to
 22 characters resolved and could not be provisioned. The frozen module has
 since moved to the one prefix that exists, and `swarm-t-` is gone from every
 provisioning path and from the quota broker's allow-list (#176).
+
+---
+
+## 7. A person's personal workspace
+
+A person's `u-<you>` tenant is a **workspace**: the same boundaries a group
+tenant has (worker account, artifact prefix, forge slot, namespace, tenant and
+pool documents), made for one person after an admin approves it. The design,
+with every owner decision, is [workspaces.md](workspaces.md) (#847); this
+section is what exists and how it is operated.
+
+**Why it is not Terraform and not first-sight creation.** Two things failed
+before it. A personal tenant written on first sight had documents and nothing
+behind them, so its work failed at dispatch with a missing-identity error
+(§6). And a personal tenant in tfvars puts the list of people in a public
+repository and makes every new person a release. So people live in Firestore
+(`workspaces/`, `people/`), and a guarded job makes each person's resources
+(WD3, WD4). Since 2026-10-19 the same job makes new group and service
+workspaces too, filed from Admin › Tenants. Terraform keeps only the tenants it
+already held, with `var.tenants` frozen to them
+([design/workspace-kinds.md](design/workspace-kinds.md) §8).
+
+### 7.1 Request, approve, apply
+
+| step | where | what happens |
+|---|---|---|
+| request | the console's setup checklist ("Request your workspace"), `sc setup` / `/sc:setup`, or the bridge tool `swarm_setup_workspace` | `POST /v1/workspace` writes `workspaces/u-<you>` in `requested`, with an opaque id `w-` and six hex digits. An admin's own request is approved in the same call |
+| request, by an admin, any kind | **Admin › Tenants › New workspace**: Personal (naming the person), Group or Service | `POST /v1/admin/workspaces` with `{kind, principal, display_name}`. A personal or group record is approved in the same call. A service record waits for the platform owner |
+| approve | **Admin → People**, the **Waiting for you** card: every open request, oldest first, with Approve and Deny beside it (`apps/swarm-ui/src/People.tsx` `WaitingCard`) | `POST /v1/admin/workspaces/{workspace_id}/approve` records the approver and publishes the workspace id. A denial needs a reason, shown to the person |
+| start | Pub/Sub topic `swarm-workspace-apply` → Eventarc trigger → the Workflows definition `swarm-workspace-apply`, running as `swarm-workspace-dispatch` | the workflow checks the id against `^w-[0-9a-f]{6}$` and the mode against `create\|limits`, then runs the Cloud Run job with those two arguments and nothing else |
+| apply | the **Cloud Run job `swarm-workspace-apply`**, as `swarm-workspace-deployer` | `images/workspace-apply/entry.py` discards the environment it was given, `scripts/workspace-apply.sh` installs the call guard, and `scripts/register-tenant.sh --workspace <w-id>` runs A1 to A9 |
+
+It is a Cloud Run job in the project, **not** Cloud Build and not a GitHub
+workflow (WD2, re-decided 2026-10-10). Why: the job's logs stay in the
+project, out of a public CI log, and swarm-api, the service every user's token
+reaches, holds only `pubsub.publisher` on one topic. It can publish an opaque
+id; it cannot choose the job's arguments, environment, task count or timeout.
+Publishing is `WORKSPACE_APPLY_PUBLISH` (`workspace_apply_publish`, on in dev
+since 2026-10-11). The Cloud Scheduler job `swarm-workspace-sweep` calls
+`POST /v1/admin/workspaces/sweep` every 10 minutes: it re-publishes an approved
+record whose execution never claimed it, applies pending loans, and logs
+`workspace_stuck` for the `workspace-stuck` alert.
+
+**The steps**, each recorded on the record as `steps.<id>` (which is what
+People shows live):
+
+| id | step |
+|---|---|
+| A1 | claim the record in one transaction: `approved` (or `failed` / `needs_owner` with an admin's retry recorded after the last claim) by an email that is an admin in `admin_roles/` **now** (for a service, the platform owner); write the guard's expectation file from it. A group whose directory check is over 24 hours old fails `DIRECTORY_CHECK_STALE` |
+| S1 | a service only: read the account. It must be this project's, enabled, not `swarm-`, not on the shared deny-list. Record its unique id. Its IAM is never written |
+| A2 | inspect an existing worker account, read only; foreign bindings or a user-managed key stop the run |
+| A3 | create `swarm-agent-worker-u-<you>` if absent |
+| A4 | Workload Identity for the namespace's two Kubernetes service accounts; act-as for the scheduler and the reconciler |
+| A5 | the two `tenants/u-<you>/`-conditioned bucket grants, the `.tenant` marker (create-only, `ifGenerationMatch=0`), and, on the WD9 fallback, the worker's Firestore, telemetry and bucket-metadata roles |
+| A6 | the empty forge slot and its `-refresh` twin; the worker reads the slot, never the twin. A group's slot is the team slot `swarm-tenant-<g>-git`; a service's has no twin |
+| A7 | the namespace, `kubernetes/apply.sh`, with the record's quota; a group's or service's carries `swarm.saga.xyz/workspace: <w-id>` |
+| A8 | the tenant and pool documents with the record's limits |
+| S2 | a service only: admit the account at the front door, on the API backend only |
+| A9 | re-read every object made; only then `ready` |
+
+A ceiling change from People runs `--mode limits`: A1, A7 and A8 only, no IAM
+call.
+
+### 7.2 What bounds the job
+
+The deployer identity holds account-IAM power that Google cannot narrow to a
+name prefix in this shared project (workspaces.md §2.4). Three things bound it
+instead, and each was needed on the first real run:
+
+* **The call guard** (`scripts/lib/workspace-guard.sh`, rules in
+  `scripts/lib/workspace-calls.json`). The job's `gcloud`, `kubectl` and `curl`
+  are shims in `scripts/lib/guard-bin/`; a call runs only if one rule matches
+  it whole, with every member and condition checked against the approved
+  record. No removal, deletion or key creation is ever allowed (C9). A refused
+  call never reaches Google or the cluster: the record goes to `needs_owner`
+  with the step, and People shows "Waiting for the platform owner".
+* **The deployer's admission policies** on the swarm cluster
+  (`kubernetes/policies/workspace-provisioner-scope.yaml`):
+  `swarm-workspace-deployer-scope` and its `-namespaces`, `-roles` and
+  `-rolebindings` companions. Server-side, the deployer may only create or
+  update a `swarm-tenant-u-*` namespace, or one it created carrying the
+  `swarm.saga.xyz/workspace` label, and the kinds and names the tenant render
+  produces in it, with Roles carrying exactly the rendered rules. It refuses
+  by name every namespace Terraform declares, and an update that adds the
+  label to an unlabelled namespace. This is what turns the deployer's cluster
+  RBAC from "any namespace" into "a namespace the job made". The policy's allowed NetworkPolicy names
+  include `swarm-allow-live-egress`, and an absent or null `rules` list on the
+  empty `swarm-worker` Role means no rules (PR 1220).
+* **The WD9 fallback is on.** IAM does not accept one grant to "every personal
+  worker" (W0), so the job grants each worker its database, telemetry and
+  bucket-metadata roles itself at A5, under guard rules C4 and C5 that admit
+  exactly those roles for exactly that member (`wd9_fallback: true`, owner
+  decision 2026-10-12, PR 1217).
+
+### 7.3 Where the job's logs are
+
+Cloud Run writes the execution's output to Cloud Logging as
+`resource.type="cloud_run_job"`, `resource.labels.job_name="swarm-workspace-apply"`.
+The bootstrap's sink routes those entries to the **restricted log bucket
+`swarm-workspace-apply`**, and a project exclusion of the same name keeps them
+out of `_Default`. Why: `saga-agents-staging` is shared, and anyone with log
+viewing there reads `_Default`. The bucket is readable by the project's owners
+and logging admins and by `workspace_log_readers`. Log lines name the workspace
+id only; the record holds a failure **code**, and the console serves the copy
+from it. Read an execution's lines from the bucket's log view, or open the run
+link on the person's row in People.
+
+### 7.4 After ready: a Claude account, retries, the gate
+
+* **A ready workspace runs nothing until it has a Claude account** (WD6). The
+  person adds their own, or asks for a loan (`POST /v1/workspace/loan-request`,
+  the checklist's second step), and an admin lends a group's account from
+  People (`PUT /v1/admin/people/{workspace_id}/loan`). A lend to a workspace
+  not yet `ready` is **pending**, not refused: the worker account it must
+  grant does not exist yet, so the sweep applies it once the workspace is
+  ready. **Reclaim** lets running work finish; new claude-code work parks
+  `CREDENTIAL_MISSING`.
+* **Retry.** A `failed` or `needs_owner` row has **Retry**,
+  `POST /v1/admin/workspaces/{workspace_id}/retry`, which records the admin's
+  retry and publishes again. Every step reads before it writes, so a re-run
+  makes only what is missing.
+* **The gate.** `WORKSPACE_GATE` (`workspaces.gate_from_env`), off by default.
+  On, a submission that resolves to a personal tenant whose workspace is not
+  `ready`, or that has no Claude account, is refused (`403
+  WORKSPACE_NOT_READY`, `NO_CLAUDE_ACCOUNT`), and `tenant_for` no longer writes
+  `tenants/u-*` on first sight. Group submissions are never gated (WD7). It
+  ships off and is turned on per environment, in its tfvars
+  (`workspace_gate`, rendered by `terraform/infra/locals.tf`), only after one
+  real approval has gone end to end (WD8): turning it on refuses every person
+  without a `ready` record. **Dev: on from W10 (2026-10-13), once its pull
+  request is merged; prod: off.**
+
+### 7.5 The first end-to-end run, 2026-10-12 to 13
+
+The evidence that the path above works, read live on 2026-10-13:
+
+* `devops@saga.xyz` requested `w-7f9285` (tenant `u-devops`) at
+  2026-10-12 22:31Z, and an admin approved it at 2026-10-13 00:02Z.
+* The first executions stopped, each on something only a real run could show,
+  and each was fixed: the deployer's Firestore `datastore.databases.get`
+  (PR 1216); the static walk of every call the job makes, which found the
+  `.tenant` marker had to be create-only, added `iam.serviceAccountKeys.list`,
+  and turned the WD9 fallback on (PR 1217); `workspace_apply_image` re-pinned
+  to that image (PR 1219); and the deployer's Role policy treating a null
+  `rules` list as no rules, with the scope policy re-applied to admit
+  `swarm-allow-live-egress` (PR 1220).
+* The Cloud Run job's execution of 05:03 to 05:05Z ran A1 to A9, and the
+  workspace reached `ready` at 05:05Z. `eng:devops-main` was then lent to it
+  (loan state `lent`).
+
+That run is the precondition WD8 names for turning `WORKSPACE_GATE` on.
+
+### 7.6 Offboarding a person, today
+
+There is no deprovisioning run yet (workspaces.md §7). The guard refuses every
+removal (C9) on purpose, so the job cannot undo what it made, and the separate,
+owner-approved deletion mode §7 describes is not built. A person's tenant is
+offboarded by hand with
+[the offboarding runbook](runbooks/tenant-offboarding.md#a-personal-workspace-made-by-the-workspace-job),
+which says what it removes and what is still left by hand. A group or
+service workspace has
+[its own section there](runbooks/tenant-offboarding.md#a-group-or-service-workspace-made-by-the-workspace-job):
+the record is moved off `ready` first, which drops it from tenant resolution
+at once, and a service's front-door member is removed by the owner.

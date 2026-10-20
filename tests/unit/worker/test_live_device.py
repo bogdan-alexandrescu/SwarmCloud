@@ -58,6 +58,9 @@ from agent_worker.livegate.touch import SCROLL_STEP, TouchInjector
 DESIGN = {
     "desktop": (1440, 900, 1.0, False, "X11; Linux"),
     "iphone-15": (393, 852, 3.0, True, "iPhone OS"),
+    # QA-KIT (owner decision 2026-10-19): the 390-wide phone a visual QA sweep
+    # names, with iPhone 15's mobile flags.
+    "phone-390": (390, 844, 3.0, True, "iPhone OS"),
     "pixel-8": (412, 915, 2.625, True, "Android"),
     "iphone-se": (375, 667, 2.0, True, "iPhone OS"),
     "ipad-7": (810, 1080, 2.0, True, "Macintosh"),

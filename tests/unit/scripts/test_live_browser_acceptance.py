@@ -27,8 +27,10 @@ import importlib.util
 import json
 import random
 import re
+import shutil
 import socket
 import struct
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -599,3 +601,320 @@ def test_the_swarm_verify_image_carries_gnu_sed_for_redact():
     dockerfile = (ROOT / "images" / "swarm-verify" / "Dockerfile").read_text()
     (line,) = [l for l in dockerfile.splitlines() if l.startswith("RUN apk add")]
     assert "sed" in line.split(), line
+
+
+# --------------------------------------------------------------------------
+# The scheduled runs that ended PARKED (lane LIVEBROWSER-SCHED, part of #1333)
+# --------------------------------------------------------------------------
+#
+# 2026-10-15..19, 17 scheduled runs: `returned` FAILED "the task did not
+# finish in time (last state PARKED)" after `handoff` PASSED, the job ending
+# ~17 minutes in (the 900 s settle and its setup). The task had run and asked;
+# PARKED after an attempt is the worker's park, and the one a hand-off makes
+# is HUMAN_REQUIRED, which only a person promotes (swarm_api.handoff).
+
+
+def test_the_viewer_opens_the_live_view_before_it_probes_isolation(tmp_path, monkeypatch):
+    """swarm-api counts a person as watching from the viewer socket's join
+    (`LiveService.watched`), and a hold nobody watches ends after
+    `human_unwatched_seconds` (60). The isolation probes are six API calls
+    and a socket that may wait 20 s for its refusal; run first, they spent
+    the person's minute, the worker parked the hold unwatched, and the task
+    sat PARKED(HUMAN_REQUIRED). A person opens the view first; so does this.
+    MUTATION: call check_isolation before drive_viewer again."""
+    order: list[str] = []
+
+    class Socket:
+        closed = False
+        close_code = None
+
+        def __init__(self, url, headers, timeout=30.0):
+            order.append("socket")
+
+        def send(self, opcode, payload):
+            pass
+
+        def recv(self, timeout):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    def call(self, method, path, body=None, *, tenant=None):
+        if path.endswith("/live/ticket"):
+            return 200, {"ticket": "t" * 8, "session_id": "ls_1"}
+        if path.endswith("/live/control"):
+            order.append("control")
+            return 409, {"error": {"code": "stop_here"}}
+        return 404, None
+
+    session = {"session_id": "ls_1", "state": "open", "human_wait": {"reason": "sign in"}}
+    monkeypatch.setattr(lb, "wait_for_handoff", lambda api, cfg: (session, None))
+    monkeypatch.setattr(lb, "check_isolation",
+                        lambda api, cfg, s, results: order.append("isolation"))
+    monkeypatch.setattr(lb, "WebSocket", Socket)
+    monkeypatch.setattr(lb.Viewer, "pump", lambda self, seconds, until=None: True)
+    monkeypatch.setattr(lb.Api, "call", call)
+    monkeypatch.setattr(lb, "wait_settled", lambda cfg, seconds: "PARKED:HUMAN_REQUIRED")
+    monkeypatch.setattr(lb, "sweep", lambda *a: {})
+    monkeypatch.setattr(lb, "check_recording", lambda *a: None)
+    cfg = lb.Config(task="task_1", tenant="smoke", api="http://127.0.0.1:9", bucket="b",
+                    control_dir=str(tmp_path), results=str(tmp_path / "r.jsonl"), timeout=5,
+                    other_tenant=None, credential="c" * 10, gcs_token=None)
+    lb.run(cfg)
+    assert order == ["socket", "isolation", "control"], order
+
+
+def test_isolation_is_still_judged_when_the_viewer_never_got_a_frame(tmp_path, monkeypatch):
+    """The probes moved behind the first frame; a viewer that fails before it
+    must not leave `isolation` unjudged ("not judged" is a FAIL)."""
+    seen: list[str] = []
+
+    def call(self, method, path, body=None, *, tenant=None):
+        return 503, None  # the ticket cannot be minted: drive_viewer stops at once
+
+    session = {"session_id": "ls_1", "state": "open", "human_wait": {"reason": "sign in"}}
+    monkeypatch.setattr(lb, "wait_for_handoff", lambda api, cfg: (session, None))
+    monkeypatch.setattr(lb, "check_isolation",
+                        lambda api, cfg, s, results: (seen.append("isolation"),
+                                                      results.put("isolation", "PASS", "probed")))
+    monkeypatch.setattr(lb.Api, "call", call)
+    monkeypatch.setattr(lb, "wait_settled", lambda cfg, seconds: "SUCCEEDED")
+    monkeypatch.setattr(lb, "sweep", lambda *a: {})
+    monkeypatch.setattr(lb, "check_recording", lambda *a: None)
+    monkeypatch.setattr(lb, "check_returned", lambda *a: None)
+    results = tmp_path / "r.jsonl"
+    cfg = lb.Config(task="task_1", tenant="smoke", api="http://127.0.0.1:9", bucket="b",
+                    control_dir=str(tmp_path), results=str(results), timeout=5,
+                    other_tenant=None, credential="c" * 10, gcs_token=None)
+    lb.run(cfg)
+    verdicts = {json.loads(l)["check"]: json.loads(l)["verdict"] for l in results.read_text().splitlines()}
+    assert seen == ["isolation"] and verdicts["isolation"] == "PASS"
+
+
+@pytest.mark.parametrize("state,words", [
+    ("PARKED:HUMAN_REQUIRED", ["PARKED", "HUMAN_REQUIRED", "nobody in control"]),
+    ("PARKED:PROVIDER_COOLDOWN:eligible again at 2026-10-19T05:40:00Z",
+     ["PARKED", "PROVIDER_COOLDOWN", "eligible again at 2026-10-19T05:40:00Z"]),
+    ("PARKED", ["PARKED", "no park_reason"]),
+    ("RUNNING", ["RUNNING"]),
+])
+def test_a_task_still_waiting_names_its_state_and_park_reason(state, words):
+    """MUTATION: return the old "did not finish in time (last state ...)"."""
+    verdict, reason = lb.not_run_reason(state)
+    assert verdict == "FAIL"
+    assert "did not finish in time" not in reason
+    for word in words:
+        assert word in reason, (word, reason)
+
+
+def _stuck(doc: dict) -> str:
+    if shutil.which("bash") is None or shutil.which("jq") is None:
+        pytest.skip("bash and jq are required")
+    proc = subprocess.run(
+        ["bash", "-c", 'source "$1"; live_browser_stuck "$2"', "_", str(GROUP), json.dumps(doc)],
+        capture_output=True, text=True, check=True, timeout=30)
+    return proc.stdout
+
+
+@pytest.mark.parametrize("doc,want", [
+    ({"state": "PARKED", "park_reason": "HUMAN_REQUIRED", "attempt_count": 1}, "PARKED:HUMAN_REQUIRED"),
+    ({"state": "PARKED", "park_reason": "PROVIDER_COOLDOWN", "next_eligible_at": "2026-10-19T05:40:00Z"},
+     "PARKED:PROVIDER_COOLDOWN:eligible again at 2026-10-19T05:40:00Z"),
+    ({"state": "PARKED"}, "PARKED"),
+    ({"state": "RUNNING", "park_reason": "HUMAN_REQUIRED"}, "RUNNING"),
+    ({}, "MISSING"),
+])
+def test_the_group_hands_the_viewer_the_park_reason_it_stopped_on(doc, want):
+    """The settle printed only `PARKED`, so the verdict could not say which
+    park. The group reads the task once more and writes the reason, in the
+    `PARKED:<reason>` shape acc_settle already uses for CREDENTIAL_MISSING."""
+    assert _stuck(doc) == want
+
+
+def test_the_group_reads_the_park_reason_when_the_settle_runs_out():
+    text = GROUP.read_text()
+    assert 'live_browser_stuck "${doc}"' in text
+
+
+# --------------------------------------------------------------------------
+# The viewer's watch for the whole hold (lane LIVEBROWSER-WATCH, part of #1333)
+# --------------------------------------------------------------------------
+#
+# Still PARKED(HUMAN_REQUIRED) after LIVEBROWSER-SCHED (scheduled run
+# 39264477271, 2026-10-19 13:56Z). Three defects end that way and the verdict
+# could not tell them apart: the join not counted as watching, the viewer's
+# socket gone or unserved before control, or the worker parking a hold that
+# was being watched.
+
+
+class _QuietSocket:
+    """A console socket that stays open and says nothing; it notes each read."""
+
+    closed = False
+    close_code = None
+
+    def __init__(self, url, headers, timeout=30.0):
+        self.read = threading.Event()
+
+    def send(self, opcode, payload):
+        pass
+
+    def recv(self, timeout):
+        self.read.set()
+        return None
+
+    def close(self):
+        self.closed = True
+
+
+def _cfg(tmp_path):
+    return lb.Config(task="task_1", tenant="smoke", api="http://127.0.0.1:9", bucket="b",
+                     control_dir=str(tmp_path), results=str(tmp_path / "r.jsonl"), timeout=5,
+                     other_tenant=None, credential="c" * 10, gcs_token=None)
+
+
+def test_the_viewer_keeps_reading_its_socket_while_the_probes_run(tmp_path, monkeypatch):
+    """A person with the view open keeps receiving it. Inline, the probes
+    (six API calls and a socket held up to 20 s) left the viewer's socket
+    unread for as long as they took. MUTATION: call `while_watching()` inline
+    in drive_viewer again; the probe sees no read and this fails."""
+    sockets: list[_QuietSocket] = []
+    seen: list[bool] = []
+
+    def socket_(url, headers, timeout=30.0):
+        sockets.append(_QuietSocket(url, headers, timeout))
+        return sockets[-1]
+
+    def call(self, method, path, body=None, *, tenant=None):
+        if path.endswith("/live/ticket"):
+            return 200, {"ticket": "t" * 8, "session_id": "ls_1"}
+        return 409, {"error": {"code": "stop_here"}}  # take control: stop there
+
+    real_pump = lb.Viewer.pump
+    frames = {"waited": False}
+
+    def pump(self, seconds, until=None):
+        if not frames["waited"]:  # the first frame: on screen at once
+            frames["waited"] = True
+            return True
+        return real_pump(self, seconds, until)
+
+    def probe():
+        sockets[0].read.clear()
+        seen.append(sockets[0].read.wait(3.0))
+
+    monkeypatch.setattr(lb, "WebSocket", socket_)
+    monkeypatch.setattr(lb.Viewer, "pump", pump)
+    monkeypatch.setattr(lb.Api, "call", call)
+    api = lb.Api("http://127.0.0.1:9", "c" * 10, "smoke")
+    lb.drive_viewer(api, _cfg(tmp_path), {"session_id": "ls_1"}, "p" * 8, lb.Results(str(tmp_path / "r")),
+                    while_watching=probe)
+    assert seen == [True]
+
+
+def test_what_a_probe_raises_is_raised_once_the_viewer_has_read(monkeypatch):
+    class Viewer:
+        pumped = 0
+
+        def pump(self, seconds, until=None):
+            Viewer.pumped += 1
+            while until is not None and not until():
+                pass
+            return True
+
+    def boom():
+        raise RuntimeError("probe")
+
+    with pytest.raises(RuntimeError, match="probe"):
+        lb.watch_while(Viewer(), boom, seconds=5)
+    assert Viewer.pumped == 1
+
+
+OPENED = "2026-10-19T13:56:40+00:00"
+
+
+@pytest.mark.parametrize("joined,words,absent", [
+    # The join counted: the deadline moved past the one the request opened.
+    ("2026-10-19T13:57:05+00:00", ["moved the hold's deadline", OPENED, "13:57:05"], ["NOT"]),
+    # Not counted: the deadline is the opening one.
+    (OPENED, ["did NOT move", "LiveService.watched"], ["moved the hold's deadline from"]),
+    (None, ["not read after this viewer's join"], ["NOT"]),
+])
+def test_the_hold_says_whether_the_join_was_counted(joined, words, absent):
+    hold = lb.Hold(opened=OPENED, joined=joined)
+    said = hold.describe()
+    for word in words:
+        assert word in said, (word, said)
+    for word in absent:
+        assert word not in said, (word, said)
+
+
+def _event(kind, detail, attempt="att_1"):
+    return {"type": kind, "attempt_id": attempt, "detail": detail}
+
+
+def test_a_human_park_names_its_cause_from_the_tasks_events():
+    """MUTATION: drop the parked event's `cause` from the explanation."""
+    events = [
+        _event("human_handoff_requested", {"request_id": "h-1"}),
+        _event("human_handoff_resolved", {"outcome": "expired", "held_seconds": 61,
+                                          "funnel": {"first_viewer_s": 4, "control_taken_s": None}}),
+        _event("parked", {"park_phase": "human_wait", "cause": "gate_lost"}),
+    ]
+    said = lb.explain_human_park(events, lb.Hold(opened=OPENED, joined="2026-10-19T13:57:05+00:00"))
+    for word in ("asked for help 1 time", "resolved expired after 61 s", "a viewer counted at 4 s",
+                 "parked on gate_lost", "moved the hold's deadline"):
+        assert word in said, (word, said)
+
+
+def test_a_return_that_re_queued_the_task_is_named():
+    """The return landed after the park: READY, a second attempt, a second
+    request nobody watched (LB-RETURN)."""
+    events = [
+        _event("human_handoff_requested", {}),
+        _event("human_handoff_resolved", {"outcome": "expired", "held_seconds": 60,
+                                          "funnel": {"first_viewer_s": None}}),
+        _event("parked", {"park_phase": "human_wait", "cause": "hold_expired"}),
+        _event("ready", {"reason": "human_returned"}),
+        _event("human_handoff_requested", {}, attempt="att_2"),
+    ]
+    said = lb.explain_human_park(events, None)
+    assert "asked for help 2 time" in said
+    assert "with no viewer counted" in said
+    assert "re-queued the task" in said
+
+
+def test_a_parked_verdict_carries_the_holds_readings_and_the_events(tmp_path, monkeypatch):
+    """The scheduled run's `returned` FAIL said only "the hold ran out with
+    nobody in control". It now says what the viewer read of the hold and how
+    the task's hand-offs ended. MUTATION: put not_run_reason's reason alone."""
+    session = {"session_id": "ls_1", "state": "open",
+               "human_wait": {"reason": "sign in", "deadline": OPENED}}
+
+    def call(self, method, path, body=None, *, tenant=None):
+        if path.endswith("/live/session"):  # the join was not counted
+            return 200, {"session": {"human_wait": {"deadline": OPENED}}}
+        if "/events" in path:
+            return 200, {"events": [_event("parked", {"park_phase": "human_wait",
+                                                      "cause": "hold_expired"})]}
+        return 404, None
+
+    def drive(api, cfg, s, password, results, while_watching=None):
+        while_watching()
+        return None
+
+    monkeypatch.setattr(lb, "wait_for_handoff", lambda api, cfg: (session, None))
+    monkeypatch.setattr(lb, "check_isolation", lambda *a: None)
+    monkeypatch.setattr(lb, "drive_viewer", drive)
+    monkeypatch.setattr(lb.Api, "call", call)
+    monkeypatch.setattr(lb, "wait_settled", lambda cfg, seconds: "PARKED:HUMAN_REQUIRED")
+    monkeypatch.setattr(lb, "sweep", lambda *a: {})
+    monkeypatch.setattr(lb, "check_recording", lambda *a: None)
+    cfg = _cfg(tmp_path)
+    lb.run(cfg)
+    lines = [json.loads(l) for l in (tmp_path / "r.jsonl").read_text().splitlines()]
+    (returned,) = [l for l in lines if l["check"] == "returned"]
+    assert returned["verdict"] == "FAIL"
+    for word in ("HUMAN_REQUIRED", "parked on hold_expired", "did NOT move"):
+        assert word in returned["reason"], (word, returned["reason"])
