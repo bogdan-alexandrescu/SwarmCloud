@@ -100,12 +100,31 @@ tests/unit/worker/fixtures/puppeteer-core-25.8.0-*.json). So:
 
 A REFUSAL IS RECORDED BY METHOD NAME ONLY (`cdp_method_refused`), never with
 its parameters, which can carry page text.
+
+THE QA IDENTITY (QI-GATE; docs/design/qa-identity.md §4.4, part of #1649).
+Once the task's QA identity is set (qaidentity.py), the gate adds its
+credential to console requests on its own sessions, and `qa_identity_check`
+keeps the agent's `Fetch` from undoing the rules around it:
+
+* `Fetch.continueRequest` with `url` is refused (`qa_identity_redirect`): a
+  rewritten URL is a redirect the redirect guards never judged;
+* `Fetch.continueRequest` with `headers` for a request the proxy saw paused
+  on the console host is refused (`qa_identity_headers`): the agent could
+  otherwise replace the gate's header, or read it back by echoing it.
+
+The rest of `Fetch` stays the agent's: `continueResponse` and
+`fulfillRequest` change the response, not the request's headers;
+`failRequest` sends nothing; `continueWithAuth` answers with the agent's own
+credentials. A body that reflects the request is the one way in, and the
+proxy scrubs every result for it (`QaIdentity.scrub`). The rule applies from
+the moment the host is set, not only while a credential is unexpired, so an
+expiry between two messages cannot open a window.
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -123,6 +142,8 @@ class PolicyPaths:
 class Refusal:
     method: str
     reason: str
+    #: A refusal's code where the record names one (`qa_identity_*`).
+    cause: str | None = None
 
     def message(self) -> str:
         return f"refused by the live gate's method policy: {self.method} ({self.reason})"
@@ -442,4 +463,27 @@ def check(method: str, params: Mapping[str, Any] | None, paths: PolicyPaths) -> 
         return None
     if method not in ALLOWED_METHODS:
         return Refusal(method, "not on the allowlist")
+    return None
+
+
+#: `qa_identity_check`'s refusals, by cause (module docstring).
+QA_IDENTITY_REFUSALS: Mapping[str, str] = {
+    "qa_identity_redirect": "a rewritten URL is a redirect the QA identity's guards never judged",
+    "qa_identity_headers": "a console request's headers carry the QA identity and are the gate's",
+}
+
+
+def qa_identity_check(method: str, params: Mapping[str, Any] | None,
+                      console_request: Callable[[Any], bool]) -> Refusal | None:
+    """None when the agent may send `method` while the QA identity is set.
+
+    `console_request(requestId)` says whether the proxy saw that request
+    paused on the console host; an id it never saw counts as one (fail closed)."""
+    if method != "Fetch.continueRequest":
+        return None
+    params = params if isinstance(params, Mapping) else {}
+    if "url" in params:
+        return Refusal(method, QA_IDENTITY_REFUSALS["qa_identity_redirect"], "qa_identity_redirect")
+    if "headers" in params and console_request(params.get("requestId")):
+        return Refusal(method, QA_IDENTITY_REFUSALS["qa_identity_headers"], "qa_identity_headers")
     return None

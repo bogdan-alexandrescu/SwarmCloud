@@ -49,11 +49,13 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import socket
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from .qaidentity import OP as QA_IDENTITY_OP
 from .session import OPS as SESSION_OPS
 from .tabs import OPS as TABS_OPS
 
@@ -84,8 +86,12 @@ KEY_BYTES = 32
 #:   (agent_worker/browser_tools.py; BSTATUS-API).
 #: * `tabs_export` / `tabs_restore` -- the open tabs a park keeps, reopened
 #:   before a resumed attempt's agent connects (tabs.py, §5.5.2; issue #1362).
+#: * `qa_identity` -- the task's QA identity: `{host, header, scheme,
+#:   credential, expires_in}` sets or renews it, `{failed: cause}` clears it
+#:   (qaidentity.py; docs/design/qa-identity.md §4.4, QI-GATE). Refused once
+#:   the attempt's wipe has run. Like the tickets, never logged.
 OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "theme", "status",
-                 "egress_ticket", "browser_tools"}) | SESSION_OPS | TABS_OPS
+                 "egress_ticket", "browser_tools", QA_IDENTITY_OP}) | SESSION_OPS | TABS_OPS
 
 #: The first start's marker, in the sidecar's own /tmp (§3.1; the dispatcher
 #: mounts that volume in the sidecar only). Directly in /tmp, not a subdirectory:
@@ -109,6 +115,21 @@ class CtlError(Exception):
 
 class CtlRefused(CtlError):
     """The gate refused the registration or the command."""
+
+
+class OpRefused(Exception):
+    """A handler's refusal with a cause the worker may act on (`qa_identity_host`, ...).
+
+    The reply's `error` is `refused:<code>` rather than `failed`, so the
+    worker can tell "the gate said no, for this reason" from "the gate broke".
+    The code is a short fixed word, never anything the request carried."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code if _CODE.fullmatch(code) else "refused"
+
+
+_CODE = re.compile(r"[a-z0-9_]{1,64}")
 
 
 def _canonical(value: Mapping[str, Any]) -> bytes:
@@ -239,6 +260,9 @@ class CtlServer:
             return self._signed(seq, False, error="unknown_op"), True
         try:
             result = dict(await self._handler(op, args))
+        except OpRefused as exc:
+            log.info("live ctl: op=%s refused cause=%s", op, exc.code)
+            return self._signed(seq, False, error=f"refused:{exc.code}"), True
         except Exception as exc:  # the handler's failure is the worker's to see, not a crash
             log.warning("live ctl: op=%s failed (%s)", op, type(exc).__name__)
             return self._signed(seq, False, error="failed"), True
