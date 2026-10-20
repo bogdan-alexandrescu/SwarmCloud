@@ -20,14 +20,17 @@
  *   QA-096  A workflow whose state was not derived read `state not recorded`
  *           in Recent (the table says `state not derived`), with no mark, so
  *           its name sat 12px out of line with the rows that have one.
+ *   QA-112  `Work` on the rail opens Agents, not Workflows. Left as it is
+ *           (an IA call for the owner); held: Workflows is the panel row
+ *           right after Agents, one click from where Work lands.
  *   QA-022  (from QAFIX-HELP) the content scroller keeps the sticky bar's
  *           height clear at its top, so anything focused or scrolled into
  *           view stops below the bar, not only the `?` glyphs.
  */
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { SkyShell, meterOf, rememberWorkflow } from '../Spine'
+import { SkyShell, hrefOf, meterOf, rememberWorkflow } from '../Spine'
 import type { Capacity } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { build, painted } from './marks'
@@ -174,6 +177,31 @@ describe('QA-096: a workflow with no derived state reads as it does in the table
       // stale row's name starts where the others' marks do.
       expect(painted(slot, 'min-width', env), `at ${env.width}px`).toBe('12px')
     }
+  })
+})
+
+describe('QA-112: Work opens Agents, and Workflows is the next row in the panel it opens', () => {
+  // Left as it is, deliberately: which page Work lands on is the owner's
+  // IA call (asked in the PR). This holds what keeps a workflow one click
+  // from the Work landing, so that call can be made on a true premise.
+  it('the Work rail item lands on Agents, with Workflows a top-level panel row right after it', () => {
+    const go = vi.fn()
+    const { container } = render(
+      <SkyShell section="work" tab="running" agentTab="live" title="x" go={go} foot={null}>
+        {null}
+      </SkyShell>,
+    )
+    const rail = container.querySelector<HTMLAnchorElement>('a.sk-ri[data-sec="work"]')!
+    // MUTATION: point the rail's Work item at work/workflows and this changes, with the owner's answer.
+    expect(rail.getAttribute('href')).toBe(hrefOf('work/running'))
+    const rows = [...container.querySelectorAll<HTMLAnchorElement>('.sk-panel a.sk-pk')].map((a) => a.querySelector('.sk-pl')?.textContent)
+    // MUTATION: move Workflows below Runs, or drop it from PANEL_PAGES.work, and it is no longer next to Agents.
+    expect(rows.slice(0, 2)).toEqual(['Agents', 'Workflows'])
+    const wf = within(container.querySelector<HTMLElement>('.sk-panel')!).getByRole('link', { name: /^Workflows/ })
+    // MUTATION: route the Workflows row anywhere but work/workflows.
+    expect(wf.getAttribute('href')).toBe(hrefOf('work/workflows'))
+    fireEvent.click(wf)
+    expect(go).toHaveBeenCalledWith('work/workflows')
   })
 })
 

@@ -1134,6 +1134,12 @@ const PROFILE_ITEM: { key: 'profile'; label: string; to: string } = { key: 'prof
 
 const SPINE: readonly { key: Exclude<SpineSection, null>; label: string; to: string }[] = [
   { key: 'overview', label: 'Overview', to: 'overview/now' },
+  // WORK STILL OPENS AGENTS (QA-112, part of #1680, left as it is): the same
+  // click opens the Work panel, where Workflows is the row after Agents, so
+  // a workflow is one more click away and never hidden. Opening Workflows
+  // instead would change where every Work link in the console lands. That
+  // is an IA decision for the owner, asked in the PR rather than made here.
+  // spine.qafix.test.tsx holds the panel row.
   { key: 'work', label: 'Work', to: 'work/running' },
   { key: 'automate', label: 'Automate', to: 'automate/schedules' },
   { key: 'capacity', label: 'Capacity', to: 'capacity/pools' },
