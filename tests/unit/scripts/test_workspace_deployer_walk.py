@@ -257,6 +257,7 @@ def grants() -> list[dict]:
                           "reach": _scope(cond and cond.group(1), frozenset({"bucket", "marker"}))})
     assert len(found) >= 10, f"only {len(found)} grants parsed: {[g['name'] for g in found]}"
     found.append(front_door_grant())
+    found.append(front_door_reader_grant())
     return found
 
 
@@ -280,6 +281,28 @@ def front_door_grant() -> dict:
             "reach": frozenset({"front-door"}) if front_door_condition_is_exact() else frozenset()}
 
 
+def front_door_reader_grant() -> dict:
+    """FRONT-DOOR-READ (part of #847): swarmFrontDoorReader, the read alone,
+    bound on the API backend's own IAP policy for the deployer. It is what the
+    deployer holds while the kinds are on and K1 is not, which is the shape
+    O1's failure left (docs/workspaces.md §0). Its reach is "front-door" only
+    if the binding is on the API backend by name, for the deployer, with no
+    condition; anything else reaches nothing here."""
+    text = _uncommented(DEPLOYER_TF.read_text())
+    role = _block(text, r'resource\s+"google_project_iam_custom_role"\s+"front_door_reader"\s*\{')
+    assert 'module.custom_role_ids.ids["front_door_reader"]' in role, "the reader's id is not custom_role_ids'"
+    member = _block(text, r'resource\s+"google_iap_web_backend_service_iam_member"\s+"front_door_reader"\s*\{')
+    name = re.search(r"\n\s*front_door_api_backend_name\s*=\s*([^\n]*)", text)
+    on_api = (re.search(r"\n\s*web_backend_service\s*=\s*local\.front_door_api_backend_name\s*\n", member)
+              and name and name.group(1).strip().endswith(
+                  "? data.google_compute_backend_service.frontend_iap[local.front_door_api_backend].name : \"\""))
+    exact = (bool(on_api)
+             and re.search(r"\n\s*member\s*=\s*local\.workspace_deployer_member\s*\n", member) is not None
+             and re.search(r"\n\s*condition\s*\{", member) is None)
+    return {"name": "swarmFrontDoorReader", "permissions": _permissions(role),
+            "reach": frozenset({"front-door"}) if exact else frozenset()}
+
+
 def front_door_condition_is_exact() -> bool:
     """K1's condition names one IAP backend by `==`, never a prefix, in the
     number form IAP evaluates (§2.1: any other form matched nothing)."""
@@ -295,8 +318,9 @@ def front_door_condition_is_exact() -> bool:
             and ".generated_id" in resource.group(1))
 
 
-def missing(calls: list[tuple[str, tuple[frozenset[str], str]]]) -> dict[str, list[str]]:
-    held = grants()
+def missing(calls: list[tuple[str, tuple[frozenset[str], str]]],
+            held: list[dict] | None = None) -> dict[str, list[str]]:
+    held = grants() if held is None else held
     gaps: dict[str, list[str]] = {}
     for where, (perms, kind) in calls:
         for perm in sorted(perms):
@@ -476,10 +500,33 @@ def test_c10_and_its_read_twin_map_to_k1_and_only_k1() -> None:
     k1 = front_door_grant()
     assert k1["permissions"] == {"iap.webServices.getIamPolicy", "iap.webServices.setIamPolicy"}, k1
     assert k1["reach"] == {"front-door"}, "K1's condition is not an exact match on one backend"
-    # Nothing else the deployer holds reaches an IAP policy.
-    others = [g["name"] for g in grants() if g is not None and g["name"] != k1["name"]
+    # Nothing else the deployer holds reaches an IAP policy but the reader,
+    # which reads it.
+    reader = front_door_reader_grant()
+    others = [g["name"] for g in grants() if g is not None and g["name"] not in (k1["name"], reader["name"])
               and {"iap.webServices.getIamPolicy", "iap.webServices.setIamPolicy"} & g["permissions"]]
     assert not others, others
+
+
+def test_the_front_door_read_maps_to_the_reader_and_a_change_still_needs_k1() -> None:
+    """FRONT-DOOR-READ (part of #847): with K1 not granted, the reader alone
+    covers S2's and A9's read of the API backend's IAP policy, and nothing
+    else: the change call, C10's add, still needs K1's setIamPolicy, so the
+    guard and IAM both still refuse it to a deployer without K1."""
+    reader = front_door_reader_grant()
+    assert reader["permissions"] == {"iap.webServices.getIamPolicy"}, reader
+    assert reader["reach"] == {"front-door"}, "the reader is not bound on the API backend, for the deployer, unconditioned"
+    calls = [(w, need) for w, need in guard_calls(include_local=False) if need[1] == "front-door"]
+    reads = [(w, need) for w, need in calls if w.endswith("iap web get-iam-policy")]
+    changes = [(w, need) for w, need in calls if not w.endswith("iap web get-iam-policy")]
+    assert reads and changes, calls
+    assert not missing(reads, held=[reader]), "the reader does not cover the front-door read"
+    assert missing(changes, held=[reader]) == {
+        "iap.webServices.setIamPolicy on front-door": [w for w, _ in changes]}, "the reader reaches a change"
+    # The guard still admits exactly one change shape on the front door, C10's add.
+    shapes = [tuple(s["command"]) for r in RULES["rules"] for s in r["shapes"]
+              if s.get("command", [])[:2] == ["iap", "web"]]
+    assert sorted(set(shapes)) == [("iap", "web", "add-iam-policy-binding"), ("iap", "web", "get-iam-policy")], shapes
 
 
 def test_the_front_door_is_the_api_backend_terraform_grants_k1_on() -> None:

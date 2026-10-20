@@ -888,6 +888,15 @@ locals {
     team_slot_bind = "resource.name.startsWith(\"projects/${local.workspace_project_number}/secrets/swarm-tenant-\") && (resource.name.endsWith(\"-git\") || resource.name.endsWith(\"-git-refresh\"))"
   }
 
+  # K1 is held only with the switch AND its role on workspace_deployer_roles:
+  # the admitter's own count, below, spelled the same way.
+  front_door_admitter_on = local.workspace_kinds_on && lookup(local.workspace_role_on, "swarmFrontDoorAdmitter", false)
+
+  # The API backend's name as IAP's resource-level IAM takes it. "" when the
+  # backend is not in frontend_iap_backends, so the lookup cannot fail first:
+  # the reader's precondition refuses that, in words.
+  front_door_api_backend_name = contains(var.frontend_iap_backends, local.front_door_api_backend) ? data.google_compute_backend_service.frontend_iap[local.front_door_api_backend].name : ""
+
   # Not in workspace_custom_roles: those are module.custom_role_ids' ids,
   # which terraform/infra shares. This role is defined and granted here alone,
   # and terraform/infra never names it, so its id is spelled here as
@@ -933,6 +942,76 @@ resource "google_project_iam_member" "front_door_admitter" {
   depends_on = [google_service_account.workspace_deployer]
 }
 
+# ---------------------------------------------------------------------------
+# FRONT-DOOR-READ (part of #847, owner decision 2026-10-20): the READ of the
+# API backend's accessor list, never a change to it.
+# ---------------------------------------------------------------------------
+#
+# O1 (2): failed (docs/workspaces.md §0), so K1 is not granted and S2 cannot
+# admit an account. But S2 begins with `gcloud iap web get-iam-policy` on the
+# API backend (scripts/register-tenant.sh ws_s2), and A9 reads it back, and
+# without even the read every service workspace stopped at FRONT_DOOR_OWNER
+# -- the QA console workspace w-267d01 included, on 2026-10-20, though its
+# account qa-console@ was already admitted through frontend_iap_members. With
+# the read, an account the owner has admitted passes S2 and the run finishes;
+# one not yet admitted still stops for the owner, because the change
+# (setIamPolicy) is K1's and this role does not carry it.
+#
+# WHY IT IS SAFE: it shows who may pass IAP on one backend -- the accessor
+# list frontend_iap_members already writes in this repository -- and changes
+# nothing. No setIamPolicy, no settings, no other backend.
+#
+# WHERE IT IS BOUND: on that backend's OWN IAP policy, a resource-level
+# binding, never the project. A project grant is what O1 found Google would
+# not limit to one backend, and in this shared project it would reach the
+# other team's IAP backends too. Never the console's -ui-ui-backend: no
+# service is admitted there, so the job never reads it. No condition: the
+# binding names the one resource itself.
+#
+# OFF WHILE K1 IS ON: swarmFrontDoorAdmitter already carries
+# iap.webServices.getIamPolicy, so a second grant of the read would only be a
+# row to keep in step.
+#
+# NOT VERIFIED LIVE. modules/frontend/main.tf records that roles/iap.admin
+# bound on our two backends was still 403 on getIamPolicy nine and a half
+# minutes later (2026-09-24), and O1 noted the same. If this binding is
+# refused the same way, nothing is lost: S2 stops for the owner as it does
+# today. The owner's check after the apply is one read as the deployer:
+# `gcloud iap web get-iam-policy --resource-type=backend-services
+# --service=<API backend>`.
+
+resource "google_project_iam_custom_role" "front_door_reader" {
+  count = local.workspace_kinds_on && !local.front_door_admitter_on ? 1 : 0
+
+  project     = var.project_id
+  role_id     = module.custom_role_ids.ids["front_door_reader"]
+  title       = "Swarm Front Door Reader"
+  description = "managed-by=swarm-terraform; read the IAP accessor list of the swarm API backend, so a service workspace the owner admitted passes S2 (docs/workspaces.md §0). Bound on that backend only. No setIamPolicy, no settings."
+  stage       = "GA"
+  permissions = [
+    "iap.webServices.getIamPolicy",
+  ]
+}
+
+resource "google_iap_web_backend_service_iam_member" "front_door_reader" {
+  count = length(google_project_iam_custom_role.front_door_reader)
+
+  project             = var.project_id
+  web_backend_service = local.front_door_api_backend_name
+  # Through the resource, so the role exists before it is granted.
+  role   = "projects/${var.project_id}/roles/${google_project_iam_custom_role.front_door_reader[0].role_id}"
+  member = local.workspace_deployer_member
+
+  lifecycle {
+    precondition {
+      condition     = contains(var.frontend_iap_backends, local.front_door_api_backend)
+      error_message = "The front-door read is bound on the API backend (${local.front_door_api_backend}), which frontend_iap_backends does not list. On a fresh project leave enable_workspace_kinds off until the release has created the backends and frontend_iap_backends names them."
+    }
+  }
+
+  depends_on = [google_service_account.workspace_deployer]
+}
+
 resource "google_project_iam_member" "workspace_team_slot_binder" {
   count = local.workspace_kinds_on && lookup(local.workspace_role_on, "swarmWorkspaceSecretBinder", false) ? 1 : 0
 
@@ -953,10 +1032,11 @@ resource "google_project_iam_member" "workspace_team_slot_binder" {
 }
 
 output "workspace_kinds_grants" {
-  description = "What the owner reads a plan against for the workspace-kinds rows (docs/design/workspace-kinds.md §4.5): K1's backend and condition, K2's and K3's conditions. Null while enable_workspace_kinds is off."
+  description = "What the owner reads a plan against for the workspace-kinds rows (docs/design/workspace-kinds.md §4.5): K1's backend and condition, the backend the front-door read is bound on (null while K1 is held), K2's and K3's conditions. Null while enable_workspace_kinds is off."
   value = local.workspace_kinds_on ? {
     front_door_backend = local.front_door_api_backend
     front_door_admit   = local.workspace_kinds_conditions.front_door_admit
+    front_door_reader  = length(google_iap_web_backend_service_iam_member.front_door_reader) > 0 ? google_iap_web_backend_service_iam_member.front_door_reader[0].web_backend_service : null
     team_slot_bind     = local.workspace_kinds_conditions.team_slot_bind
     member_slots       = local.forge_member_slots_any
   } : null

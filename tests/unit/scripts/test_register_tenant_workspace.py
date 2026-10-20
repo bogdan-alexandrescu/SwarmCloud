@@ -1630,6 +1630,31 @@ def test_a_front_door_iap_refuses_stops_for_the_owner(job: Job, service_created:
     assert _steps(record)["S2"] == "held" and _field(record, "steps", "S2", "code") == "FRONT_DOOR_OWNER", out
 
 
+def test_an_account_the_owner_already_admitted_finishes_with_the_read_alone(job: Job, service_created: dict) -> None:
+    """FRONT-DOOR-READ (part of #847): the deployer may read the API backend's
+    IAP policy (swarmFrontDoorReader) but not change it. The owner has added
+    the account through frontend_iap_members and pressed Retry: S2 reads it
+    there, makes no change call, and the run finishes. Any add would be refused."""
+    world = copy.deepcopy(service_created["world"])
+    world["calls"], world["writes"] = [], []
+    assert f"serviceAccount:{SERVICE}" in world["iap"][FRONT_DOOR]["bindings"][0]["members"]
+    world["firestore"][f"workspaces/{S_TENANT}"]["fields"].update(
+        state=_s("failed"),
+        retry={"mapValue": {"fields": {"by": _s(OWNER), "at": {"timestampValue": "2099-01-01T00:00:00Z"}}}})
+    world["fail"] = [{"tool": "gcloud", "words": ["iap", "web", "add-iam-policy-binding"], "times": 1,
+                      "stderr": "ERROR: (gcloud.iap.web.add-iam-policy-binding) PERMISSION_DENIED: "
+                                "The caller does not have permission"}]
+    job.write(world)
+    proc = job.create()
+    out = _out(proc)
+    assert proc.returncode == 0, out
+    record = _rec(job, S_TENANT)
+    assert _field(record, "state") == "ready", out
+    assert _steps(record)["S2"] != "held", out
+    assert not [a for a in _gcloud_calls(job.read()) if a[:3] == ["iap", "web", "add-iam-policy-binding"]]
+    assert [a for a in _gcloud_calls(job.read()) if a[:3] == ["iap", "web", "get-iam-policy"]], "S2 read nothing"
+
+
 def test_verify_finds_a_service_missing_from_the_front_door(job: Job, service_created: dict) -> None:
     world = copy.deepcopy(service_created["world"])
     world["calls"], world["writes"] = [], []

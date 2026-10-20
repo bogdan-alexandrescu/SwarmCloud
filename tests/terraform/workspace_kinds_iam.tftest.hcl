@@ -26,6 +26,14 @@
 #     without the deployer or the user slots, and K1 without the API backend
 #     in frontend_iap_backends.
 #
+#   * FRONT-DOOR-READ (part of #847, owner decision 2026-10-20):
+#     swarmFrontDoorReader holds exactly iap.webServices.getIamPolicy and is
+#     bound, unconditioned, on the API backend's OWN IAP policy for the
+#     deployer alone -- never at the project, never on the console's
+#     -ui-ui-backend. It is made only with the switch on and K1 off (K1's role
+#     already carries the read), and refused without the API backend in
+#     frontend_iap_backends.
+#
 # EVALUATED means the startsWith()/endsWith()/extract() emulation
 # workspace_secrets.tftest.hcl uses: each expression is parsed into its
 # literals and every name below is judged by them, so a widened prefix or a
@@ -109,8 +117,10 @@ run "nothing_is_planned_while_the_switch_is_off" {
       length(google_project_iam_member.front_door_admitter) == 0,
       length(google_project_iam_member.workspace_team_slot_binder) == 0,
       length(google_project_iam_member.forge_member_slots_any_tenant) == 0,
+      length(google_project_iam_custom_role.front_door_reader) == 0,
+      length(google_iap_web_backend_service_iam_member.front_door_reader) == 0,
     ])
-    error_message = "enable_workspace_kinds is off by default, and while it is off no K1, K2 or K3 role or grant is planned"
+    error_message = "enable_workspace_kinds is off by default, and while it is off no K1, K2 or K3 role or grant, and no front-door reader, is planned"
   }
 
   assert {
@@ -197,6 +207,15 @@ run "the_rows_are_k1_to_k3_and_each_is_bounded" {
       startswith(google_project_iam_member.front_door_admitter[0].condition[0].description, "managed-by=swarm-terraform;"),
     ])
     error_message = "K1 is one grant, to swarm-workspace-deployer alone, of swarmFrontDoorAdmitter, with exactly one condition"
+  }
+
+  # K1's role carries the read, so the reader is not made beside it.
+  assert {
+    condition = alltrue([
+      length(google_project_iam_custom_role.front_door_reader) == 0,
+      length(google_iap_web_backend_service_iam_member.front_door_reader) == 0,
+    ])
+    error_message = "with swarmFrontDoorAdmitter granted, swarmFrontDoorReader and its binding are not planned: the admitter already includes the read"
   }
 
   # Equality on the API backend's number-form name. Before O1, no hasOnly().
@@ -468,6 +487,24 @@ run "the_switch_alone_makes_k2_and_k3_and_not_k1" {
     }
   }
 
+  # Different names and ids for the two backends, so a reader bound on the
+  # console's backend would carry its name and fail below.
+  override_data {
+    target = data.google_compute_backend_service.frontend_iap["swarm-ui-backend"]
+    values = {
+      name         = "swarm-ui-backend"
+      generated_id = 4410000000000000001
+    }
+  }
+
+  override_data {
+    target = data.google_compute_backend_service.frontend_iap["swarm-ui-ui-backend"]
+    values = {
+      name         = "swarm-ui-ui-backend"
+      generated_id = 4420000000000000002
+    }
+  }
+
   assert {
     condition = alltrue([
       !contains(var.workspace_deployer_roles, "swarmFrontDoorAdmitter"),
@@ -478,6 +515,52 @@ run "the_switch_alone_makes_k2_and_k3_and_not_k1" {
       length(google_project_iam_member.forge_member_slots_any_tenant) == 3,
     ])
     error_message = "the default role list does not name swarmFrontDoorAdmitter, and keeps swarmWorkspaceProjectReader (K4, unchanged); with the switch alone K2 and K3 are made and K1 is not"
+  }
+
+  # ---- FRONT-DOOR-READ: the read alone, on the API backend alone ----------
+
+  assert {
+    condition = alltrue([
+      length(google_project_iam_custom_role.front_door_reader) == 1,
+      google_project_iam_custom_role.front_door_reader[0].role_id == "swarmFrontDoorReader",
+      google_project_iam_custom_role.front_door_reader[0].project == "saga-agents-staging",
+      google_project_iam_custom_role.front_door_reader[0].stage == "GA",
+      startswith(google_project_iam_custom_role.front_door_reader[0].description, "managed-by=swarm-terraform;"),
+      length(google_project_iam_custom_role.front_door_reader[0].description) <= 300,
+    ])
+    error_message = "the reader's role is swarmFrontDoorReader, GA in this project, describing who manages it in at most GCP's 300 characters"
+  }
+
+  assert {
+    condition     = toset(google_project_iam_custom_role.front_door_reader[0].permissions) == toset(["iap.webServices.getIamPolicy"])
+    error_message = "swarmFrontDoorReader holds exactly iap.webServices.getIamPolicy: no setIamPolicy, no iap.web.* or iap.webTypes.*, no settings, no tunnel"
+  }
+
+  assert {
+    condition = alltrue([
+      length(google_iap_web_backend_service_iam_member.front_door_reader) == 1,
+      google_iap_web_backend_service_iam_member.front_door_reader[0].web_backend_service == "swarm-ui-backend",
+      google_iap_web_backend_service_iam_member.front_door_reader[0].project == "saga-agents-staging",
+      google_iap_web_backend_service_iam_member.front_door_reader[0].member == "serviceAccount:swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com",
+      google_iap_web_backend_service_iam_member.front_door_reader[0].role == "projects/saga-agents-staging/roles/swarmFrontDoorReader",
+      length(google_iap_web_backend_service_iam_member.front_door_reader[0].condition) == 0,
+    ])
+    error_message = "the reader is one binding of swarmFrontDoorReader, to swarm-workspace-deployer alone, on the API backend swarm-ui-backend's own IAP policy, with no condition"
+  }
+
+  # Never at the project, and nothing names the deployer on the console's backend.
+  assert {
+    condition = alltrue(concat(
+      [for m in google_project_iam_member.workspace_deployer : !strcontains(m.role, "swarmFrontDoorReader")],
+      [for b in google_iap_web_backend_service_iam_member.frontend_accessors : b.member != "serviceAccount:swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com"],
+      [google_iap_web_backend_service_iam_member.front_door_reader[0].web_backend_service != "swarm-ui-ui-backend"],
+    ))
+    error_message = "swarmFrontDoorReader is never granted at the project, and swarm-workspace-deployer is named on no IAP backend but the API backend"
+  }
+
+  assert {
+    condition     = output.workspace_kinds_grants.front_door_reader == "swarm-ui-backend"
+    error_message = "the output the owner reads a plan against names the one backend the reader is bound on"
   }
 }
 
@@ -567,4 +650,38 @@ run "k1_without_the_api_backend_is_refused" {
   }
 
   expect_failures = [google_project_iam_member.front_door_admitter]
+}
+
+# The reader needs the API backend; with frontend_iap_backends = [] there is
+# none, and the binding is refused at plan rather than made on no backend.
+run "the_front_door_reader_without_the_api_backend_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_workspace_deployer = true
+    enable_forge_user_slots   = true
+    enable_workspace_kinds    = true
+    frontend_iap_backends     = []
+    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
+  }
+
+  override_data {
+    target = data.google_project.workspace_deployer
+    values = {
+      number = "209012342332"
+    }
+  }
+
+  override_data {
+    target = data.google_project.forge_user_slots
+    values = {
+      number = "209012342332"
+    }
+  }
+
+  expect_failures = [google_iap_web_backend_service_iam_member.front_door_reader]
 }

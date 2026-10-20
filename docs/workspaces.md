@@ -408,11 +408,52 @@ after: identical. No binding names the probe, and the role and the account are d
 
 **What follows, as written below for (2) failing:** `swarmFrontDoorAdmitter`
 stays off `workspace_deployer_roles`, so K1 is not granted.
-`front_door_admit_role_bound` stays false. S2 is an owner step: a service
-workspace stops at `needs_owner` with `FRONT_DOOR_OWNER`, and the owner adds
-its account to `frontend_iap_members`, as for the two Terraform service
-tenants. Group and personal workspaces are unaffected.
-`enable_workspace_kinds` can be turned on with K2 and K3 only.
+`front_door_admit_role_bound` stays false. Group and personal workspaces are
+unaffected. `enable_workspace_kinds` can be turned on with K2 and K3 only.
+
+**S2, the front-door step, in plain words (FRONT-DOOR-READ, owner decision
+2026-10-20).** The setup job may now *read* the list of accounts Google's login
+gate (IAP) lets through to the SwarmCloud API. It still may not change that
+list.
+
+* If the service workspace's account is already on the list, S2 sees it there
+  and the setup carries on and finishes.
+* If it is not, the setup stops at `needs_owner` with `FRONT_DOOR_OWNER`. The
+  owner adds the account to `frontend_iap_members` in
+  `terraform/bootstrap/terraform.tfvars`, applies bootstrap, and presses
+  Retry. The retried run then finds the account on the list and finishes.
+
+Before this, the job could not even read the list, so every service workspace
+stopped at S2, including ones the owner had already admitted. On 2026-10-20
+the QA console workspace `w-267d01` (account `qa-console@`) got through A1 to
+A8 and then held at S2, although `frontend_iap_members` already listed its
+account.
+
+**How the read is granted.** `swarmFrontDoorReader`, a custom role holding
+only `iap.webServices.getIamPolicy`, is bound to `swarm-workspace-deployer`
+on the API backend's own IAP policy (`swarm-ui-backend`, the backend S2
+names). It is not a project grant: O1 showed Google would not limit one of
+those to a single backend, and in this shared project it would reach the
+other team's IAP backends. It is never bound on the console's
+`swarm-ui-ui-backend`. `enable_workspace_kinds` turns it on. It is off
+whenever `swarmFrontDoorAdmitter` is granted, because that role already
+includes the read (`terraform/bootstrap/workspace_deployer.tf`,
+`front_door_reader`).
+
+**Why the read is safe.** It shows one thing: who may pass the gate on one
+backend. That list is already written in this repository as
+`frontend_iap_members`. The read changes nothing. It carries no
+`setIamPolicy` and no settings permission, and the job's call guard still
+admits exactly one change on the gate, C10's add, which IAM refuses without
+K1.
+
+**Not verified live.** On 2026-09-24, `roles/iap.admin` bound on our two
+backends still got a 403 on `getIamPolicy` nine and a half minutes later
+(`terraform/modules/frontend/main.tf`). If this binding is refused the same
+way, nothing is lost: S2 stops for the owner exactly as it did before. After
+the bootstrap apply, the owner checks it with one read made as the deployer:
+`gcloud iap web get-iam-policy --resource-type=backend-services
+--service=swarm-ui-backend`.
 
 1. **The permission names**, read from `gcloud iam roles describe roles/iap.admin`:
    that `iap.webServices.getIamPolicy` and `iap.webServices.setIamPolicy` are
@@ -431,10 +472,11 @@ What each answer turns on, all in `terraform/bootstrap`:
 * (1) and (2) pass: the owner adds `swarmFrontDoorAdmitter` to
   `workspace_deployer_roles` and applies with `enable_workspace_kinds = true`.
   S2 then admits an approved service account itself.
-* (2) fails: K1 cannot be narrowed to one backend and is not granted. S2
-  stays an owner step. The job stops at `needs_owner` with
-  `FRONT_DOOR_OWNER`, and the owner adds the account to
-  `frontend_iap_members` by hand, as for the two Terraform service tenants.
+* (2) fails: K1 cannot be narrowed to one backend and is not granted.
+  Adding an account stays an owner step: the job reads the gate's list
+  (`swarmFrontDoorReader`, above), finishes if the account is already on it,
+  and otherwise stops at `needs_owner` with `FRONT_DOOR_OWNER` until the owner
+  adds it to `frontend_iap_members` and presses Retry.
 * (3) passes: `front_door_admit_role_bound`, set to true, adds the clause to K1.
   Until then that switch stays at its default, off.
 
@@ -1231,7 +1273,7 @@ each lane built, is [design/workspace-kinds.md](design/workspace-kinds.md)
 | account IAM done by | the release deployer, per-account grant | `swarm-workspace-deployer`, under the call guard |
 | database and bucket-metadata roles | per tenant, by the tenancy module | per worker at A5: the WD9 fallback, on since 2026-10-12 |
 | Cloud Run jobs | `cloud_run_jobs` module | the dispatcher, on demand (`ensure_job`) |
-| a service account admitted at the front door by | `frontend_iap_members`, the owner's bootstrap apply | step S2, on the API backend only, once K1 is granted (§0, O1) |
+| a service account admitted at the front door by | `frontend_iap_members`, the owner's bootstrap apply | step S2, on the API backend only, once K1 is granted (§0, O1); until then the owner's `frontend_iap_members`, which S2 reads and accepts |
 | a group registered for resolution by | `TENANT_GROUPS` | its record reaching `ready` (`apps/swarm-api/swarm_api/registry.py::WorkspaceRegistry`) |
 | teardown | `terraform` | a separate, owner-approved run (§7), not built |
 
@@ -1510,7 +1552,7 @@ Nothing from a command's output is shown.
 | `WORKSPACE_ID_TERRAFORM` | no | “The workspace name this request was given already belongs to a workspace the platform's own configuration manages. Nothing was changed, and nothing half-made can run. Ask an admin to look at request {request_id}; this needs a person, not a retry.” |
 | `DIRECTORY_CHECK_STALE` | yes | “Setting up your workspace stopped before anything was made, because the check that its group can be read is more than a day old. Nothing half-made can run: your work stays refused until every step is done. An admin can retry it, which checks the group again; the reference is {request_id}.” (a group whose directory check is older than 24 hours at A1; an admin's retry re-checks it) |
 | `SERVICE_ACCOUNT_REFUSED` | — | “Setting up your workspace stopped before anything was granted, because its service account is not one SwarmCloud can admit. Nothing half-made can run: the account stays refused until every step is done. The platform owner must look at request {request_id} before this can continue.” (`needs_owner` when S1 refuses the account, with the code on the step; `failed`, not retryable, when S1 itself fails) |
-| `FRONT_DOOR_OWNER` | — | “Setting up your workspace stopped at the front door, because admitting its service account to SwarmCloud's API is a grant only the platform owner can make. Nothing half-made can run: the account stays refused until every step is done. The platform owner must act on request {request_id} before this can continue.” (`needs_owner`: IAP refused the deployer at S2; the code is on the step) |
+| `FRONT_DOOR_OWNER` | — | “Setting up your workspace stopped at the front door, because admitting its service account to SwarmCloud's API is a grant only the platform owner can make. Nothing half-made can run: the account stays refused until every step is done. The platform owner must act on request {request_id} before this can continue.” (`needs_owner`: the account is not on the API backend's gate list and IAP refused the deployer's add at S2, or refused its read; the code is on the step. The owner adds the account to `frontend_iap_members`, applies bootstrap and presses Retry) |
 | `FRONT_DOOR_FAILED` | yes | “Setting up your workspace stopped at the front door, because the step that admits its service account to SwarmCloud's API got no answer. Nothing half-made can run: the account stays refused until every step is done. The platform owner can retry it; the reference is {request_id}.” (a service's S2: IAP did not answer; only the platform owner retries a service) |
 | `NAMESPACE_LABEL_MISSING` | no | “Every step reported success, but the final check found your workspace's Kubernetes namespace without the label that ties it to your workspace. Nothing half-made can run: nothing runs in it until the label is there. Ask an admin to look at request {request_id}; this needs a person, not a retry.” (A9: a group's or a service's namespace without its `swarm.saga.xyz/workspace` label) |
 | `APPROVAL_UNSIGNED` | no | “Setting up your workspace stopped before anything was granted, because its approval does not carry SwarmCloud's signature. Nothing half-made can run, and nothing was changed. An admin, or the platform owner for a service account, must deny it and approve it again as shown; a retry does not help. The reference is {request_id}.” (`needs_owner`, written by `images/workspace-apply/entry.py` before step 1: the remedy is a fresh decision, not a Retry) |
