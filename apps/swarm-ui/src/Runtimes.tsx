@@ -520,13 +520,20 @@ function distinguishing(r: Runtime, all: Runtime[]): Distinction[] {
   if (sole((x) => x.resolved_backend)) facts.push({ key: 'runs on', value: 'the only runtime on this backend' })
   if (sole((x) => x.image)) facts.push({ key: 'image', value: 'the only runtime with this image' })
 
-  // THE CREDENTIAL AS ONE FACT: which provider, and which secrets under which
-  // rule -- the whole of what the `cred` row says. A runtime that needs none is
-  // told apart only when it is the only one that needs none; while two need
-  // none, "none spent" describes both and distinguishes neither.
-  const credential = (x: Runtime): string =>
-    x.provider === null ? '' : `${x.provider}|${x.secrets_any_of ? 'any' : 'all'}|${[...x.secrets].sort().join(',')}`
-  if (sole(credential)) facts.push({ key: 'cred', value: 'the only runtime that needs this credential' })
+  // THE CREDENTIAL IS THE PROVIDER (visual QA QA-011, 2026-10-20). This keyed
+  // on the provider AND its secret names, so two runtimes of one vendor that
+  // mount different secrets were each "the only runtime that needs this
+  // credential" while their cred rows both named that vendor. Which secrets a
+  // runtime mounts is its cred row's business; the credential it needs is
+  // whose it is. A runtime that needs none is told apart only when it is the
+  // only one that needs none -- and then it is said as that, because "needs
+  // this credential" under a row reading `none needed` contradicted the row.
+  if (sole((x) => x.provider)) {
+    facts.push({
+      key: 'cred',
+      value: r.provider === null ? 'the only runtime that needs no credential' : 'the only runtime that needs this credential',
+    })
+  }
 
   const timeouts = all.map((x) => x.timeout_seconds)
   if (soleExtreme(r.timeout_seconds, timeouts, 'max')) {
@@ -636,9 +643,11 @@ function RuntimeCard({
             ended. The pairs are unchanged; what they gain is a key COLUMN, so
             finding `mem` is a glance down an edge rather than reading a line. */}
         <ul className="ctl-facts is-rows">
-          <li className="ctl-fact">
+          {/* `rt-runs-on` / `rt-backend` (QA-010): the backend is one token
+              and the declared backend beside it wraps under it, never the other way round. */}
+          <li className="ctl-fact rt-runs-on">
             <b>runs on</b>
-            <span className="mono">{runtime.resolved_backend}</span>
+            <span className="mono rt-backend">{runtime.resolved_backend}</span>
             {platformChose && (
               <span
                 className="rt-declared"
