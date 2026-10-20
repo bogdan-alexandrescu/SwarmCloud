@@ -1440,6 +1440,23 @@ export function StepInspector({
             Open agent →
           </a>
         )}
+        {/* THE STEP'S LOGS, ONE PRESS AWAY (visual QA QA-121, 2026-10-20):
+            a failed step's card said why in one line ('exit status 1: pytest
+            collected 2 failures') and the only way to what the agent printed
+            was Open agent, then its Logs tab. The agent's own path, as Open
+            agent's, with its Logs pane. */}
+        {taskId !== null && (
+          <a
+            className="ctl-link wf-inspect-logs"
+            href={
+              taskState === null
+                ? addressToPath(`work/task/${encodeURIComponent(taskId)}/logs`)
+                : `${agentPath({ id: taskId, state: taskState })}/logs`
+            }
+          >
+            Logs ›
+          </a>
+        )}
         {changes !== null && (
           <a className="ctl-link wf-inspect-changes" href={changes.href} title={changes.say ?? undefined}>
             {/* UNCOUNTED, THE LINK SAYS NO COUNT AT ALL (V111, #1038). It

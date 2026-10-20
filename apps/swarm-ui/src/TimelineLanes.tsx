@@ -1105,6 +1105,7 @@ export function TimelineLanesScreen({
       <div className="tl-ctl" role="group" aria-label="Timeline span and filters">
         <Segmented
           label="Span"
+          className="tl-span"
           value={zoomed ? null : view.span}
           options={LANE_SPANS.map((s) => ({ key: s, label: s }))}
           onChange={(s) => setView({ ...view, span: s, since: null, until: null, back: null })}
@@ -1170,7 +1171,18 @@ export function TimelineLanesScreen({
         </p>
       )}
 
-      <OutcomeStrip strip={strip} lanes={allLanes} view={view} since={win.since} until={win.until} reach={reach} />
+      <OutcomeStrip
+        strip={strip}
+        lanes={allLanes}
+        // `shown` keeps the last read's rows while a re-read is out (`drawn`),
+        // so the counts stay those of the lanes still drawn -- figures for what
+        // is on screen, never zeros for a read that has not landed (QA-093).
+        lanesRead={shown !== null ? 'read' : att.status === 'error' ? 'failed' : 'reading'}
+        view={view}
+        since={win.since}
+        until={win.until}
+        reach={reach}
+      />
 
       {days > SUGGEST_OUTCOMES_DAYS && (
         <p className="tl-note tl-suggest">
@@ -1874,6 +1886,7 @@ export function bothRanges(strip: StripRead, since: number, until: number): stri
 function OutcomeStrip({
   strip,
   lanes,
+  lanesRead,
   view,
   since,
   until,
@@ -1881,6 +1894,15 @@ function OutcomeStrip({
 }: {
   strip: StripRead
   lanes: readonly Lane[]
+  /**
+   * Whether the attempts behind `lanes` have been read (visual QA QA-093 and
+   * QA-095, 2026-10-20). Before they land `lanes` is empty, and fences and
+   * parks counted over it printed '0 generations fenced' and '0 parks, 0
+   * still parked' as measured, beside "Parks and fences count only the lanes
+   * drawn" over no lane at all. Until then the counts' places say why there
+   * is no figure.
+   */
+  lanesRead: 'reading' | 'failed' | 'read'
   view: LanesView
   since: number
   until: number
@@ -1943,7 +1965,16 @@ function OutcomeStrip({
               <b className="tl-n-cancelled">{strip.data.totals.cancelled.total}</b> cancelled
             </span>
           </span>
-          {unread > 0 && fenced === 0 ? (
+          {lanesRead !== 'read' ? (
+            <>
+              <span className="tl-x">
+                fenced <b className="tl-dash">—</b> {lanesRead === 'reading' ? 'reading the lanes' : 'the lanes were not read'}
+              </span>
+              <span className="tl-x">
+                parks <b className="tl-dash">—</b> {lanesRead === 'reading' ? 'reading the lanes' : 'the lanes were not read'}
+              </span>
+            </>
+          ) : unread > 0 && fenced === 0 ? (
             <span className="tl-x">
               fenced <b className="tl-dash">—</b> events not read on {unread} {unread === 1 ? 'lane' : 'lanes'}
             </span>
@@ -1953,7 +1984,7 @@ function OutcomeStrip({
               {unread > 0 && `, events not read on ${unread} ${unread === 1 ? 'lane' : 'lanes'}`}
             </span>
           )}
-          {unread > 0 ? (
+          {lanesRead !== 'read' ? null : unread > 0 ? (
             <span className="tl-x">
               parks <b className="tl-dash">—</b> events not read on {unread} {unread === 1 ? 'lane' : 'lanes'}
             </span>
