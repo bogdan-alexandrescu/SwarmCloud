@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 
 import { offersChildren } from '../AgentChildren'
 import type { TaskPane } from '../App'
@@ -40,6 +40,7 @@ export function paneTabs({
   runs,
   ckpt,
   ckptCount,
+  pane = null,
 }: {
   task: Task | null
   base: string
@@ -49,6 +50,8 @@ export function paneTabs({
   runs: number | null
   ckpt: CheckpointCount | null
   ckptCount: number | string | null
+  /** The pane the address names: its own tab is always on the strip (task-009). */
+  pane?: TaskPane | null
 }): PaneTab[] {
   return [
     // THE QUESTIONS' COUNT (part of #1206): the agent's questions for its
@@ -79,7 +82,12 @@ export function paneTabs({
     { id: 'changes', label: PANE_LABELS.changes, ...changesCount(task), to: `${base}/changes` },
     // CHILDREN HAS AN ADDRESS (U10a D36): `<agent>/children`, as every
     // other pane has one, so the tab moves the URL and a link can open it.
-    ...(task !== null && offersChildren(task)
+    // THE ADDRESS NAMES IT, SO THE STRIP HAS IT (visual QA run 2, task-009):
+    // `/children` on an agent that does not offer children drew the pane
+    // under a strip with no Children tab, and so with no tab selected. The
+    // pane itself says why it is empty; the tab is how the reader sees where
+    // they are. The same rule keeps Browser on `/browser` (`hasBrowser`).
+    ...((task !== null && offersChildren(task)) || pane === 'children'
       ? [
           {
             id: 'children' as const,
@@ -115,6 +123,22 @@ export function paneTabs({
       to: `${base}/checkpoints`,
     },
   ]
+}
+
+/**
+ * WHERE A KEY MOVES IN A TABLIST (visual QA run 2, a11y-keyboard-001): the
+ * WAI-ARIA tabs pattern's keys, from the tab at `at` among `count`. Arrows
+ * wrap at the ends; Home and End go to them. Null for any other key, which
+ * the strip leaves to the browser. Shared by this strip and the list's Live /
+ * Waiting / Recent (Agents.tsx).
+ */
+export function tabStep(key: string, at: number, count: number): number | null {
+  if (count <= 0) return null
+  if (key === 'ArrowRight') return (at + 1) % count
+  if (key === 'ArrowLeft') return (at - 1 + count) % count
+  if (key === 'Home') return 0
+  if (key === 'End') return count - 1
+  return null
 }
 
 /**
@@ -285,8 +309,31 @@ export function AgTabsEdge({
       grew?.disconnect()
     }
   }, [])
+  // THE TABS PATTERN (visual QA run 2, a11y-keyboard-001): the strip said
+  // role=tab and did nothing a tablist does -- every tab was its own Tab
+  // stop and the arrows did nothing. Now the open tab is the strip's one Tab
+  // stop (a roving tabindex), and Left / Right / Home / End move focus and
+  // open the tab they land on: automatic activation, since a pane opens as
+  // fast as a click opens it. `Tabs` (components/Tabs.tsx) draws the buttons
+  // and takes no tabIndex, so it is set on the drawn strip after every draw.
+  useLayoutEffect(() => {
+    const drawn = [...(box.current?.querySelectorAll<HTMLElement>(':scope > .c-tabs > [role="tab"]') ?? [])]
+    const on = drawn.findIndex((el) => el.getAttribute('aria-selected') === 'true')
+    drawn.forEach((el, i) => el.setAttribute('tabindex', i === (on === -1 ? 0 : on) ? '0' : '-1'))
+  })
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    const drawn = [...(box.current?.querySelectorAll<HTMLElement>(':scope > .c-tabs > [role="tab"]') ?? [])]
+    const at = drawn.indexOf(e.target as HTMLElement)
+    if (at === -1 || e.altKey || e.ctrlKey || e.metaKey) return
+    const to = tabStep(e.key, at, drawn.length)
+    const key = to === null ? undefined : barTabs[to]?.key
+    if (to === null || key === undefined) return
+    e.preventDefault()
+    drawn[to]!.focus()
+    if (key !== current) onSelect(key)
+  }
   return (
-    <div className="ag-tabs-edge" ref={box} data-more={more || undefined}>
+    <div className="ag-tabs-edge" ref={box} data-more={more || undefined} onKeyDown={onKey}>
       <Tabs className="ag-split-tabs" label="Agent panes" current={current} tabs={barTabs} onSelect={onSelect} />
       {moreTabs.length > 0 && <MoreTabs tabs={moreTabs} onSelect={onSelect} />}
     </div>
@@ -302,6 +349,8 @@ export function AgTabsEdge({
 function MoreTabs({ tabs, onSelect }: { tabs: readonly TabDef[]; onSelect: (key: string) => void }) {
   const [open, setOpen] = useState(false)
   const host = useRef<HTMLSpanElement>(null)
+  const hidden = `${tabs.length} more ${tabs.length === 1 ? 'tab' : 'tabs'}`
+  const names = tabs.map((t) => t.label).join(', ')
   useEffect(() => {
     if (!open) return
     const away = (e: Event) => {
@@ -323,8 +372,19 @@ function MoreTabs({ tabs, onSelect }: { tabs: readonly TabDef[]; onSelect: (key:
         }
       }}
     >
-      <button type="button" className="ag-tabs-more" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        More <em>{tabs.length}</em> <span aria-hidden="true">▾</span>
+      {/* IT SAYS WHAT IT HOLDS (visual QA QA-116, run 2): `More 2 ▾` at 390
+          read as two hidden tabs or as two checkpoints, and nothing said
+          Checkpoints was behind it. It reads `2 more tabs`, and its name and
+          its title list them. */}
+      <button
+        type="button"
+        className="ag-tabs-more"
+        aria-expanded={open}
+        aria-label={`${hidden}: ${names}`}
+        title={names}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {hidden} <span aria-hidden="true">▾</span>
       </button>
       {open && (
         <div className="c-menu ag-tabs-menu" role="group" aria-label="More agent panes">
