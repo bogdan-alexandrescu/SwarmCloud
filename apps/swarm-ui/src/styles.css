@@ -2829,6 +2829,26 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    a card per attempt, sub-blocks inside it. `--ctl-s3` between cards is the
    region step; nothing here changes the card's own chrome. */
 .att-card + .att-card { margin-top: var(--ctl-s3); }
+/* AN ATTEMPT CARD AT 390 (QA-113, visual QA 2026-10-20). The facts strip
+   wrapped as one ragged line -- `attempt att_… lease lse_… execution …` with
+   each key at the far end of the line its value started on -- and an event
+   row broke wherever its gap, generation and badges ran out of room. On a
+   phone the facts are one per line, and an event's word takes its own line
+   with the gap, the generation and the badges under it. */
+@media (max-width: 560px) {
+  .att-card .ctl-card-body > .ctl-facts { flex-direction: column; align-items: stretch; }
+  .att-card .ctl-card-body > .ctl-facts > .ctl-fact > .mono { min-width: 0; overflow-wrap: anywhere; }
+  .att-card ol.timeline > li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px var(--ctl-s2);
+  }
+  .att-card ol.timeline > li > .ev-type { flex: 1 0 100%; }
+  .att-card ol.timeline > li > .ev-at,
+  .att-card ol.timeline > li > .ev-gen { margin-left: 0; }
+  .att-card ol.timeline > li > .ev-more { flex: 1 0 100%; }
+}
 /* A sub-block's eyebrow and its qualifier on one line. `.ctl-toolbar`'s own
    32px minimum is for a row of controls; a label row does not need it. */
 .att-sub-head { min-height: 0; margin-bottom: var(--ctl-s2); }

@@ -299,9 +299,15 @@ export function StartupProgress({
   if (data === null) {
     if (hideWhenDone) return null
     return (
+      // IN THE CARD, LIKE THE STATE AFTER IT (QA-086). Straight in `.startup`,
+      // a centring flex ROW, the two sentences sat side by side on mismatched
+      // baselines and read `The agent’s browser is starting.Reading its
+      // start-up.` The card is a column: a title, then its line.
       <div className={`startup${overlay ? ' is-overlay' : ''}`} data-testid="startup-progress">
-        <p className="startup-title">The agent’s browser is starting.</p>
-        <p className="startup-say">Reading its start-up.</p>
+        <div className="startup-card">
+          <p className="startup-title">The agent’s browser is starting.</p>
+          <p className="startup-say">Reading its start-up.</p>
+        </div>
       </div>
     )
   }
