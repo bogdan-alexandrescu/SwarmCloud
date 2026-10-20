@@ -25,7 +25,7 @@ each citation names a symbol (`path::qualname`) or quotes text. Search for it.
 
 What the design settles, one line each:
 
-* **Recommended: option B.** A dedicated service account, `swarm-qa-console`,
+* **Recommended: option B.** A dedicated service account, `qa-console`,
   is admitted at the front door. It has its own service workspace and no
   other authority. swarm-api signs a short-lived **IAP service-account JWT**
   for it, whose audience is the console's one host. The worker hands the JWT
@@ -107,7 +107,7 @@ What that means in practice, read from the code at `2af9bed`:
 * An operator submits one workflow, a `claude-code-browser` step with
   `input.qa_identity: "console"`, and walks away. The agent opens
   `https://swarm.saga.xyz`, lands on the Overview signed in as
-  `swarm-qa-console`, and sweeps every page at 1440×900 and 390×844, light
+  `qa-console`, and sweeps every page at 1440×900 and 390×844, light
   and dark, with no hand-off. It sees what a member of the QA workspace sees,
   backed by the real API.
 * The same run cannot see any other workspace's tasks, secrets, people or
@@ -266,7 +266,7 @@ take-control, saves the login, and repeats whenever it lapses.
 
 ### 3.2 Option B: a QA service account, its IAP JWT added by the gate (recommended)
 
-**Shape.** A service account `swarm-qa-console@saga-agents-staging.iam.gserviceaccount.com`
+**Shape.** A service account `qa-console@saga-agents-staging.iam.gserviceaccount.com`
 with **no project roles and no keys**. It is admitted at the front door and
 is the principal of its own service workspace. swarm-api is the only
 principal that can sign as it, and only through `signJwt`. For an attempt
@@ -370,10 +370,10 @@ JWT already issued remains valid until it expires, at most 15 minutes.
 
 | member | role | on | why |
 |---|---|---|---|
-| `serviceAccount:swarm-qa-console@…` | `roles/iap.httpsResourceAccessor` | `swarm-backend` and `swarm-ui-backend` (one `frontend_iap_members` line, owner's bootstrap apply) | to pass IAP for the console's pages and its `/v1` calls |
-| `serviceAccount:swarm-qa-console@…` | principal of service workspace `u-<digest>` | Admin › Tenants › New workspace › Service, approved by the owner (workspace-kinds Q2) | its tenant in swarm-api, with its own GSA, namespace and prefix |
-| `serviceAccount:<swarm-api runtime SA>` | custom `swarmQaJwtSigner` = {`iam.serviceAccounts.signJwt`} | the `swarm-qa-console` service account resource only | swarm-api, and nothing else, signs the JWT |
-| `serviceAccount:swarm-qa-console@…` | *nothing* | the project | no project role, no key, no `actAs` granted to anyone else |
+| `serviceAccount:qa-console@…` | `roles/iap.httpsResourceAccessor` | `swarm-backend` and `swarm-ui-backend` (one `frontend_iap_members` line, owner's bootstrap apply) | to pass IAP for the console's pages and its `/v1` calls |
+| `serviceAccount:qa-console@…` | principal of service workspace `u-<digest>` | Admin › Tenants › New workspace › Service, approved by the owner (workspace-kinds Q2) | its tenant in swarm-api, with its own GSA, namespace and prefix |
+| `serviceAccount:<swarm-api runtime SA>` | custom `swarmQaJwtSigner` = {`iam.serviceAccounts.signJwt`} | the `qa-console` service account resource only | swarm-api, and nothing else, signs the JWT |
+| `serviceAccount:qa-console@…` | *nothing* | the project | no project role, no key, no `actAs` granted to anyone else |
 | any `swarm-agent-worker-*` | *nothing new* | — | fact 1: a worker grant would be the agent's |
 
 **Cost.** An estimated 1,000 lines of code and tests (not counted from a build) across six lanes (§6), one
@@ -473,6 +473,14 @@ see the deployed console.
    need measuring. The design does not silently fall back: Q6 asks.
 7. **Platform admins** with project-level IAM can grant themselves `signJwt`
    on the account, as they can for every account in the project.
+8. **A key can be made for the account.** The project does not enforce
+   `iam.disableServiceAccountKeyCreation` (read 2026-10-20: `booleanPolicy:
+   {}`), and enforcing it would bind the other team's accounts in this shared
+   project too. So anyone holding `iam.serviceAccountKeys.create` here (Owner,
+   Editor, Service Account Key Admin) could mint a long-lived key for
+   `qa-console`, which would pass IAP as it with no lease and no gate. None
+   exists, and none is declared. The owner accepted this as it is on
+   2026-10-20, with no alert and no check added.
 
 ---
 
@@ -774,10 +782,23 @@ New module `apps/agent-worker/agent_worker/qa_identity.py`, modelled on
 
 ### 4.8 Infrastructure (Track C)
 
+> **Amended 2026-10-20 (owner, #1649): the account is `qa-console`, with no
+> `swarm-` prefix.** This design named it `swarm-qa-console`, and QI-IAM built
+> `swarm-qa`. Both start with the platform's prefix, and the workspace flow
+> refuses every such account (`WORKSPACE_SERVICE_PLATFORM`,
+> `swarm_api.workspaces.PLATFORM_SA_PREFIX`), so O3 could not give it the
+> service workspace §2.2 rests on. The owner chose to rename it rather than
+> exempt it, so the platform-account rule stays absolute.
+> `tests/unit/scripts/test_qa_identity_account_name.py` holds the name to the
+> rule. Measured the same day, with the account still named `swarm-qa`: the
+> project does not enforce `iam.disableServiceAccountKeyCreation`
+> (`booleanPolicy: {}`), so O2's "confirm the constraint covers the account"
+> does not hold here. The owner accepted that as a residual risk (§3.7).
+
 `terraform/bootstrap/qa_identity.tf` (new), behind `enable_qa_identity`
 (default false):
 
-* `google_service_account.qa_console`, `swarm-qa-console`, with a description
+* `google_service_account.qa_console`, `qa-console`, with a description
   saying what it is for and that no key may be made. A service account takes
   no labels, so `managed-by=swarm-terraform` cannot be set on it. The lane
   confirms the type is on the destroy guard's unlabelable-type list in

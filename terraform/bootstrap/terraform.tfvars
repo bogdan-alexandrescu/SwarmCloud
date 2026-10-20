@@ -141,7 +141,7 @@ deployer_scoped_roles = ["roles/resourcemanager.projectIamAdmin"]
 #                      eng@saga.xyz. The owner applies this himself; the line
 #                      is the record of that apply, because a -var not
 #                      written here makes the next bootstrap plan remove it.
-#   swarm-qa        -- owner decision 2026-10-19 (#1649, QA-IDENTITY option B):
+#   qa-console      -- owner decision 2026-10-19 (#1649, QA-IDENTITY option B):
 #                      the key-less QA identity a live-browser QA agent signs
 #                      in to the console as, through a 15-minute JWT swarm-api
 #                      signs (qa_identity.tf). It passes IAP here only; it is
@@ -151,13 +151,13 @@ frontend_iap_members = [
   "serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com",
   "serviceAccount:oracle-api@saga-agents-staging.iam.gserviceaccount.com",
   "serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com",
-  "serviceAccount:swarm-qa@saga-agents-staging.iam.gserviceaccount.com",
+  "serviceAccount:qa-console@saga-agents-staging.iam.gserviceaccount.com",
 ]
 
 # QA identity (qa_identity.tf, QI-IAM PR 1657; docs/design/qa-identity.md
-# option B, owner 2026-10-19): the key-less service account swarm-qa, the
+# option B, owner 2026-10-19): the key-less service account qa-console, the
 # custom role swarmQaJwtSigner holding iam.serviceAccounts.signJwt alone, and
-# swarm-qa's own IAM policy granting that role to swarm-api alone. Applied as
+# qa-console's own IAM policy granting that role to swarm-api alone. Applied as
 # its own bootstrap apply, after the workspace-kinds one (owner, 2026-10-19).
 enable_qa_identity = true
 
