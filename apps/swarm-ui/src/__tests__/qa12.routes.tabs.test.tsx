@@ -147,7 +147,7 @@ describe('QA12-18: the tab bar fits', () => {
       fireEvent(window, new Event('resize'))
       const strip = screen.getByRole('tablist', { name: 'Agent panes' })
       await waitFor(() => expect(within(strip).getAllByRole('tab')).toHaveLength(3))
-      const more = screen.getByRole('button', { name: /^More/ })
+      const more = screen.getByRole('button', { name: /^\d+ more tabs?:/ })
       expect(more.getAttribute('aria-expanded')).toBe('false')
       fireEvent.click(more)
       expect(more.getAttribute('aria-expanded')).toBe('true')
@@ -170,7 +170,7 @@ describe('QA12-18: the tab bar fits', () => {
     api.loadTask.mockResolvedValue(ok(agent('RUNNING')))
     render(<AgentSplit taskId={ID} pane="detail" artifact={null} closeTo="work/running/live" go={() => {}} base={`work/task/${ID}`} />)
     await waitFor(() => expect(document.querySelector('.ag-head-title')?.textContent).toBe('fix-heartbeat'))
-    expect(screen.queryByRole('button', { name: /^More/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^\d+ more tabs?:/ })).toBeNull()
   })
 })
 

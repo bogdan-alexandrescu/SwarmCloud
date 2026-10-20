@@ -11,7 +11,7 @@ import { isOverlay } from '../focus'
  * as the split first renders, marks the panel modal while it is an overlay,
  * moves focus in over the list and puts it back on the way out.
  */
-export function useSplitFocus(panel: RefObject<HTMLDivElement>, close: () => void): void {
+export function useSplitFocus(panel: RefObject<HTMLDivElement>, close: () => void, taskId: string | null = null): void {
   /** The element that was focused when this opened. Where Escape puts you back. */
   const opener = useRef<Element | null>(null)
   /** What held focus when this first rendered, and which agent's row it was in. */
@@ -102,6 +102,46 @@ export function useSplitFocus(panel: RefObject<HTMLDivElement>, close: () => voi
     // must not re-capture an opener that is now inside it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // A KEY THAT OPENED AN AGENT MOVES FOCUS INTO IT (visual QA run 2,
+  // a11y-keyboard-002). Above, focus moves in only over an overlay; beside
+  // the list at 1440, Enter on a row opened the panel and left focus on the
+  // row, and the panel's first control was the 9th Tab stop. A row opened by
+  // a key asks (`focusSplitOnOpen`), and the split showing that agent takes
+  // the request -- on its first open, or when it swaps to that agent -- and
+  // makes the asking row the place focus goes back to on close. A pointer
+  // opens no request, so a click beside the list still leaves focus where it
+  // was (V152).
+  const shows = useRef(taskId)
+  shows.current = taskId
+  useEffect(() => {
+    const take = () => {
+      if (asked === null || asked.taskId !== shows.current) return
+      const from = asked.from
+      asked = null
+      opener.current = from
+      panel.current?.focus()
+    }
+    takers.add(take)
+    take()
+    return () => {
+      takers.delete(take)
+    }
+  }, [taskId, panel])
+}
+
+/** The open a key asked for, until the split showing that agent takes it. */
+let asked: { taskId: string; from: HTMLElement } | null = null
+/** Each mounted split's taker: one asked for an agent already open takes it at once. */
+const takers = new Set<() => void>()
+
+/**
+ * Asks the split to take focus when it shows `taskId`, and to give it back to
+ * `from` when it closes. Called by a list row opened by a key (Agents.tsx).
+ */
+export function focusSplitOnOpen(taskId: string, from: HTMLElement): void {
+  asked = { taskId, from }
+  for (const take of [...takers]) take()
 }
 
 /**

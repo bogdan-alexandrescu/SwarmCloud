@@ -137,26 +137,25 @@ describe('QA-029: each list tab is named by the words it shows', () => {
   })
 })
 
-describe('QA-030 and QA-111: the Started sort is named by its words and shows its direction', () => {
-  it('names the button from `Started` and draws a direction in every state', async () => {
+describe('QA-030 and QA-111: the sort is named by its words and shows its direction', () => {
+  it('names the button from the word it shows and draws a direction in every state', async () => {
     serve([row(1, 'FAILED'), row(2, 'SUCCEEDED')])
     await mount()
     const sort = document.querySelector<HTMLElement>('.ag-sort')!
     const seen: string[] = []
     for (let i = 0; i < 3; i++) {
-      // MUTATION: name it `Sort by start time` again -- the visible `Started`
-      // is no longer in its name.
-      expect(sort.getAttribute('aria-label')!.startsWith('Started')).toBe(true)
-      // MUTATION: draw the bare word `Started` while the list is in its own
-      // order -- the control shows no direction at all.
-      expect(flat(sort)).toMatch(/^Started [↓↑⇅]$/)
+      // MUTATION: name it `Sort by start time` again -- the visible word is
+      // no longer the start of its name.
+      expect(sort.getAttribute('aria-label')!.startsWith(flat(sort).split(' ')[0]!)).toBe(true)
+      // MUTATION: draw a bare word -- the control shows no direction at all.
+      expect(flat(sort)).toMatch(/^(Ended|Started) [↓↑]$/)
       seen.push(flat(sort))
       fireEvent.click(sort)
     }
-    // MUTATION: one glyph for two orders.
+    // MUTATION: one label for two orders.
     expect(new Set(seen).size).toBe(3)
-    // The list's own order on Recent is said, as the newest end first.
-    expect(screen.getByRole('button', { name: /^Started: off, newest end first/ })).toBe(sort)
+    // The list's own order on Recent is said, as the newest end first (QA-111, run 2: it read `Started`).
+    expect(screen.getByRole('button', { name: /^Ended: newest end first/ })).toBe(sort)
   })
 
   it('does not offer `Failed first` on a list filtered to one state', async () => {
