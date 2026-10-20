@@ -27,6 +27,7 @@ quietly start behaving like its neighbour, so every test below fails if it does.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -729,11 +730,16 @@ CLAUDE_COMMIT_MESSAGE = (
 def _commit_as_claude(repo: Path, name: str) -> None:
     """Commit the way an agent in the claude-code runner does by default."""
     ident = ["-c", "user.name=Claude", "-c", "user.email=noreply@anthropic.com"]
+    # GIT_AUTHOR_*/GIT_COMMITTER_* outrank `-c user.*`: a shell or container
+    # that exports them would otherwise author this commit as itself.
+    env = {**os.environ,
+           "GIT_AUTHOR_NAME": "Claude", "GIT_AUTHOR_EMAIL": "noreply@anthropic.com",
+           "GIT_COMMITTER_NAME": "Claude", "GIT_COMMITTER_EMAIL": "noreply@anthropic.com"}
     subprocess.run(["git", *ident, "add", "-A"], cwd=str(repo), check=True, capture_output=True)
     subprocess.run(
         ["git", *ident, "commit", "--quiet", "-m",
          CLAUDE_COMMIT_MESSAGE.replace("committed.txt", name)],
-        cwd=str(repo), check=True, capture_output=True,
+        cwd=str(repo), check=True, capture_output=True, env=env,
     )
 
 
