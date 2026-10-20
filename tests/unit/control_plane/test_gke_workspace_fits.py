@@ -148,7 +148,8 @@ def test_a_claude_code_pod_has_disk_for_its_workspace_tmp_and_home_together(tena
     volumes = _disk_volumes(pod)
 
     assert set(volumes) == {"workspace", "tmp", "home"}, volumes
-    assert resources["requests"] == resources["limits"], "invariant 7"
+    # Invariant 7 (CPU alone may burst since contract request RS-1): disk never does.
+    assert resources["requests"]["ephemeral-storage"] == resources["limits"]["ephemeral-storage"]
     assert _gib(resources["limits"]["ephemeral-storage"]) >= sum(volumes.values()), (
         f"the pod may write {sum(volumes.values())} GiB across {volumes} but is evicted "
         f"at {resources['limits']['ephemeral-storage']}"
@@ -235,7 +236,8 @@ def test_a_gke_pods_scratch_volumes_never_add_up_past_its_disk_limit(
     volumes = _disk_volumes(pod)
     limit = _gib(resources["limits"]["ephemeral-storage"])
 
-    assert resources["requests"] == resources["limits"], "invariant 7"
+    # Invariant 7 (CPU alone may burst since contract request RS-1): disk never does.
+    assert resources["requests"]["ephemeral-storage"] == resources["limits"]["ephemeral-storage"]
     assert {"workspace", "tmp", "home"} <= set(volumes), volumes
     assert sum(volumes.values()) <= limit, (
         f"{profile_name}/{resource_class}: the pod may write {sum(volumes.values())} GiB "
