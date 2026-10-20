@@ -781,3 +781,25 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
      padding of its own, and its cell no gap above the Fits table. */
   .cap-mx .is-stacked > table > tbody > tr.cap-mx-exp { padding-top: 0; }
 }
+
+/* QA-009 (visual QA wf_9e9bf74834634db7bcc3, 2026-10-20): THE PAGE SCROLLED
+   SIDEWAYS AT 390, and the box past the edge was a model-class chip. `.c-chip`
+   is `white-space: nowrap`, so `demo-deep · demo-model-deep-2 · default` was
+   one 308px line in a ~220px value column -- right edge 412 on a 390
+   scroller, measured in Chromium against the fixture build. (Backends' and
+   Sizing's hits in that measurement were their visually-hidden 1px heads,
+   which clip and add no scroll width.) The chip now wraps BETWEEN its parts
+   and is never wider than its row; each part keeps one line, so the class
+   and the model ID -- strings a reader pastes -- never break inside. */
+.rt-model-classes > .rt-model-class { flex-wrap: wrap; max-width: 100%; row-gap: 0; }
+.rt-model-classes > .rt-model-class > .mono { white-space: nowrap; }
+
+/* QA-010: `CLOUD_RUN_JO` / `B`. The primitive gives every value of an
+   `is-rows` fact `min-width: 0; overflow-wrap: anywhere` (styles.css, which
+   is right for an image digest), so on `runs on` the backend was the item
+   that shrank to make room for `← AUTO` beside it, and it broke mid-token.
+   A backend is one identifier: it keeps its width and its letters together,
+   and the annotation wraps under it instead when the track is tight. (0,5,0)
+   because the primitive's rule is (0,3,1) and loads after this sheet. */
+.ctl-facts.is-rows > .ctl-fact.rt-runs-on { flex-wrap: wrap; row-gap: 0; }
+.ctl-facts.is-rows > .ctl-fact.rt-runs-on > .rt-backend { flex: none; overflow-wrap: normal; }
