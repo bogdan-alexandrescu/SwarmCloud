@@ -762,3 +762,58 @@ def test_a_derived_tenant_naming_another_principal_is_not_listed(h):
     mine = h.client.get("/v1/tenants/mine", headers=h.as_qa())
     assert mine.status_code == 200, mine.text
     assert mine.json() == []
+
+
+# --------------------------------------------------------------------------
+# The configuration (§4.1)
+# --------------------------------------------------------------------------
+
+
+def test_settings_read_the_account_and_default_to_none(monkeypatch):
+    from swarm_api.settings import ApiSettings
+
+    monkeypatch.setenv("PROJECT_ID", "test-project")
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.delenv("QA_IDENTITY_CONSOLE_ACCOUNT", raising=False)
+    assert ApiSettings.from_env().qa_identity_console_account == ""
+    assert ApiSettings.from_env().qa_identity_lifetime_seconds == 900
+    monkeypatch.setenv("QA_IDENTITY_CONSOLE_ACCOUNT", QA.upper())
+    assert ApiSettings.from_env().qa_identity_console_account == QA
+
+
+def test_terraform_renders_the_bootstrap_account_for_swarm_api_in_dev_only():
+    import re
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[3]
+    infra = (repo / "terraform" / "infra" / "locals.tf").read_text()
+    bootstrap = (repo / "terraform" / "bootstrap" / "qa_identity.tf").read_text()
+    account_id = re.search(r'^\s*qa_account_id\s*=\s*"([^"]+)"', bootstrap, flags=re.M).group(1)
+    rendered = re.search(r'^\s*qa_identity_console_account\s*=\s*(.+)$', infra, flags=re.M)
+    assert rendered, "terraform/infra/locals.tf renders no qa_identity_console_account"
+    expression = rendered.group(1)
+    assert f'"{account_id}@${{var.project_id}}.iam.gserviceaccount.com"' in expression
+    assert 'var.environment == "dev"' in expression and ': ""' in expression
+    assert re.search(r"QA_IDENTITY_CONSOLE_ACCOUNT\s*=\s*local\.qa_identity_console_account", infra)
+
+
+def test_the_authenticator_itself_never_reads_a_bearer_beside_an_assertion(people):
+    """The same rule one layer in, without `main.FrontDoor`'s removal: a
+    caller that reaches `Authenticator.authenticate` with both is judged on
+    the assertion, and with no IAP audience pinned it is refused, never
+    judged on the bearer."""
+    from swarm_api.auth import Authenticator, Unauthenticated
+
+    from .test_live_api import MutableGroups
+
+    verifier = CountingVerifier(_tokens(people))
+    iap = FakeIap()
+    auth = Authenticator(api_settings(), verifier, MutableGroups(people), iap=iap)
+    bearer = "Bearer " + "-".join(("token", "alice"))
+    assert auth.authenticate(bearer, None).email == "alice@example.com"  # the control
+    verifier.seen.clear()
+    assert auth.authenticate(bearer, iap.add("dave@example.com")).email == "dave@example.com"
+    iap.configured = False
+    with pytest.raises(Unauthenticated):
+        auth.authenticate(bearer, _assertion("dave"))
+    assert verifier.seen == []
