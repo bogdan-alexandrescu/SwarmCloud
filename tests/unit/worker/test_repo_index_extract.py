@@ -574,6 +574,51 @@ def test_the_index_holds_the_graph_summary_not_the_graph(tool: Any, tmp_path: Pa
     assert len(tool.dumps(index)) <= tool.MAX_INDEX_BYTES
 
 
+def test_the_index_documents_routes_are_in_the_index_shape(tool: Any, tmp_path: Path) -> None:
+    """repo-index.extract.json's routes validate as `RepoIndexSpec`'s (#1693).
+
+    Measured on ai-studio, 2026-10-20: its 538 routes carried `id`,
+    `language`, `start_line` and `end_line`, no `kind`, and 9 a null handler,
+    so the agent re-mapped them by hand every run and 3 of 19 runs were
+    refused at promotion. The graph keeps the extractor's own route rows."""
+    from swarm_api.repoindex import Route
+
+    facts = tool.extract(fx.build_repo(tmp_path / "repo", _all_fixtures()), tool.Budget())
+    routes = tool.index_document(facts)["routes"]
+    assert len(routes) == len(facts["routes"]) > 0
+    for route in routes:
+        # MUTATION: serve `facts["routes"]` as they are in `index_document`
+        # and every route is refused for its extra keys and missing kind.
+        Route.model_validate(route)
+        # MUTATION: write `"handler": None` and an agent copying it writes
+        # what this repository has seen refused as an empty handler.
+        assert None not in route.values(), route
+    by_key = {(r["kind"], r.get("method"), r.get("path") or r.get("name")): r for r in routes}
+    # HTTP routes keep their method, path and resolved handler.
+    assert by_key[("http", "GET", "/users/{user_id}")]["handler"] == "src/pkg/users.py#get_user"
+    assert by_key[("http", "GET", "/api/users")]["file"] == "web/src/server.js"
+    assert "handler" not in by_key[("http", "POST", "/api/users")]
+    assert by_key[("http", "POST", "/cart/items")]["handler"] == "internal/cart/cart.go#Add"
+    # MUTATION: serve a Terraform block as an `http` route and these turn red.
+    for name in ("google_storage_bucket.artifacts", "module.network", "var.region"):
+        assert by_key[("export", None, name)]["file"] == "infra/main.tf"
+
+
+def test_a_route_value_over_the_index_bounds_is_never_served_cut(tool: Any) -> None:
+    long_handler = "src/a.py#" + "h" * 200
+    served = tool.served_route({"id": "x", "method": "GET", "path": "/a", "file": "src/a.py",
+                                "handler": long_handler, "start_line": 1, "end_line": 2,
+                                "language": "python"})
+    # MUTATION: cut the handler to 200 characters and it names a symbol that
+    # does not exist.
+    assert served == {"kind": "http", "method": "GET", "path": "/a", "file": "src/a.py"}
+    # MUTATION: serve a route whose URL path is over 400 characters and the
+    # whole index is refused.
+    assert tool.served_route({"id": "y", "method": "GET", "path": "/" + "p" * 400,
+                              "file": "src/a.py", "handler": None, "start_line": 1,
+                              "end_line": 1, "language": "python"}) is None
+
+
 def test_the_index_stays_under_its_byte_budget_and_says_what_it_cut(
     tool: Any, tmp_path: Path
 ) -> None:

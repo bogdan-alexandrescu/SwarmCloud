@@ -217,6 +217,7 @@ from .errors import (
 )
 from . import findings_epic as findings_epic_mod
 from . import indexrun as indexrun_mod
+from . import indexspec as indexspec_mod
 from . import forge as forge_mod
 from . import merge as merge_mod
 from . import mergeslot as mergeslot_mod
@@ -978,6 +979,10 @@ class Worker:
         # The base an incremental index run staged (lane IX2), for the graph
         # write's `--base-commit`; None on a full run and on every other task.
         self._index_base: str | None = None
+        # Why promotion would refuse the agent's repo-index.json once its one
+        # repair turn is spent (`indexspec`, #1693); None when it would not,
+        # or on every other task. `_record_finalised` fails the attempt on it.
+        self._index_refused: str | None = None
         # The account this attempt holds, if the pool gave it one. Set once and
         # kept: a credential reload must re-read the SAME account's secret, not
         # move the agent onto a different subscription mid-run.
@@ -1824,9 +1829,24 @@ class Worker:
         budget = min(
             float(indexrun_mod.budgets(cfg.timeout_seconds).graph_write), self._remaining_seconds()
         )
+        # THE DOCUMENT, BY PROMOTION'S RULES (lane INDEX-ROUTES, #1693). The
+        # runner gave the agent one turn to fix what this finds
+        # (`cliagent.INDEX_REPAIR_MAX_TURNS`); what is still wrong fails the
+        # attempt with the errors, and the graph write never stores it.
+        index_path = ws.artifacts / indexrun_mod.INDEX_FILE
+        if agent_ok and index_path.is_file():
+            checked = time.monotonic()
+            self._index_refused = indexspec_mod.refusal(
+                indexspec_mod.problems_of_file(index_path) or [])
+            self._note_index_phase(indexrun_mod.PhaseRecord(
+                "index_check", "ok" if self._index_refused is None else "failed",
+                round(time.monotonic() - checked, 3),
+                reason=self._scrub(self._index_refused) if self._index_refused else None))
         reason = None
         if not agent_ok:
             reason = "the agent did not finish cleanly"
+        elif self._index_refused is not None:
+            reason = f"promotion would refuse {indexrun_mod.INDEX_FILE}"
         elif not (ws.work / indexrun_mod.GRAPH_FILE).is_file():
             reason = "the extractor wrote no graph"
         elif not (ws.artifacts / indexrun_mod.INDEX_FILE).is_file():
@@ -3902,6 +3922,8 @@ class Worker:
                 return self._fail_for_missing_outputs(missing, summary, exit_code=0)
             if title_refused is not None:
                 return self._fail_for_refused_title(title_refused, summary, exit_code=0)
+            if self._index_refused is not None:
+                return self._fail_for_refused_index(self._index_refused, summary, exit_code=0)
             git_summary = summary.get("git")
             leak = git_summary.get("final_tree_leak") if isinstance(git_summary, dict) else None
             if leak:
@@ -6997,6 +7019,31 @@ class Worker:
         )
         self.log.info("the attempt failed for a refused pull request title", task_state=state.value)
         return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _fail_for_refused_index(
+        self, reason: str, summary: dict[str, Any], *, exit_code: int
+    ) -> Outcome:
+        """Fail an index run whose repo-index.json promotion would refuse (#1693).
+
+        The agent was told the errors and given one turn to fix them
+        (`cliagent.INDEX_REPAIR_MAX_TURNS`); `reason` is the same lines,
+        `parse_index`'s wording. FAILED now, not retried: the next scheduled
+        index run starts from a fresh extractor pass, and a retry of this
+        attempt would spend the extractor and the language servers again
+        for the same agent's reading. The end cause is the missing output's,
+        which this is: the one document the run owes is not usable.
+        """
+        error = self._scrub(reason)
+        self._finish_terminal(
+            state=TaskState.FAILED,
+            exit_code=exit_code,
+            error=error,
+            result_summary=summary,
+            end_cause=EndCause.OUTPUTS_MISSING,
+        )
+        self.log.info("the attempt failed: promotion would refuse its repo-index.json",
+                      reason=error)
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _fail_for_final_tree_leak(
         self, reason: str, summary: dict[str, Any], *, exit_code: int

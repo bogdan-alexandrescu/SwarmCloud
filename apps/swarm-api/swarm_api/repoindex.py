@@ -851,7 +851,10 @@ def indexer_prompt(
         # document refuses any other key, so the prompt names the mapping.
         "Copy each of its languages rows with only the seven keys of the shape: drop `reason`, "
         "`parsed`, `lsp` and its other counts, keep `files_covered` as it is, and write "
-        "`fallback` as its `reason` when it gives one, else its `fallback`. Record "
+        "`fallback` as its `reason` when it gives one, else its `fallback`. "
+        # INDEX-ROUTES (#1693): the extractor serves `routes` in `Route`'s
+        # own shape (`repo_index_extract.served_route`).
+        "Its routes are already in the shape: copy them as they are. Record "
         f'"extractor": {{"ran": true, "command": "{EXTRACTOR_COMMAND}", "version": '
         '"<its extractor.version>"}. If it did not run -- it is not installed in this '
         f"image, or {PHASES_FILE} says it failed or timed out, or {EXTRACT_FILE} is "
@@ -874,7 +877,9 @@ def indexer_prompt(
         "languages 50. No other keys: a document with any other key is refused. A "
         "repository too large for the bounds is indexed at directory granularity, and the "
         'lists you cut are named in "truncated" -- never padded to look complete. '
-        f'"commit_sha" must be exactly {commit_sha}.\n\n'
+        f'"commit_sha" must be exactly {commit_sha}. Before you finish, the worker checks '
+        f"{INDEX_FILE} against this shape with promotion's own rules, and names what is "
+        "wrong for you to fix once; a document still refused fails the run.\n\n"
         f"THE GRAPH IS NOT YOURS TO WRITE. Once you exit, the worker stores {GRAPH_FILE} as "
         f"shards under {destination}/ and sets \"graph.manifest_digest\" in {INDEX_FILE}, "
         "which promotion checks against the manifest it wrote. Finish the index and exit; "

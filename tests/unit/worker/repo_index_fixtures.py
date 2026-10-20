@@ -365,3 +365,18 @@ def build_repo(
             "commit", "-q", "-m", f"change at {when}",
         )
     return root
+
+
+def minimal_index(commit_sha: str = "a" * 40, *, kind: str = "full",
+                  base_sha: str | None = None) -> dict:
+    """The smallest repo-index.json `RepoIndexSpec` accepts, for a worker test
+    whose agent writes one: the worker refuses any other before its graph write
+    (`agent_worker.indexspec`, lane INDEX-ROUTES, #1693)."""
+    document = {
+        "schema": "swarm.repo-index/v1", "commit_sha": commit_sha, "branch": "main",
+        "built_at": "2026-10-20T06:00:00+00:00", "kind": kind,
+        "extractor": {"ran": True, "command": "swarm-repo-index", "version": "3"},
+    }
+    if base_sha is not None:
+        document["base_sha"] = base_sha
+    return document

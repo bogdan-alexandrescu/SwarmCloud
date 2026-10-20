@@ -37,6 +37,7 @@ from agent_worker import indexrun, lifecycle
 from agent_worker.lifecycle import Worker
 from swarm_api import repoindex, repositories
 
+import repo_index_fixtures as fx
 from worker_seeds import TENANT, seed_attempt
 
 OWNER, REPO = "Example-Org", "Widgets"
@@ -178,7 +179,7 @@ def _seed_index_run(db: Any, *, repo_index: str | None = None) -> None:
         runner_profile="indexer",
         task_input={"prompt": "index it", "steps": 1, "sleep_seconds": 0.05,
                     "artifact_name": indexrun.INDEX_FILE,
-                    "artifact_text": json.dumps({"schema": "swarm.repo-index/v1"})},
+                    "artifact_text": json.dumps(fx.minimal_index("a" * 40))},
     )
     db.doc(f"tenants/{TENANT}")["credentials"] = ["anthropic"]
     task = db.doc("tasks/task_1")
@@ -222,9 +223,12 @@ def test_the_worker_runs_extract_then_agent_then_graph_write(
 
     phases = db.doc("tasks/task_1")["result_summary"]["repo_index_phases"]
     # The prompt names no kept commits, so the sweep is skipped and says why.
-    assert [p["phase"] for p in phases] == ["extract", "agent", "graph_write", "index_sweep"]
-    assert phases[3]["status"] == "skipped" and phases[3]["reason"], phases
-    phases = phases[:3]
+    # The agent's document is checked with promotion's rules before the write
+    # stores it (`indexspec`, #1693).
+    assert [p["phase"] for p in phases] == ["extract", "agent", "index_check", "graph_write",
+                                            "index_sweep"]
+    assert phases[4]["status"] == "skipped" and phases[4]["reason"], phases
+    phases = [phases[0], phases[1], phases[3]]
     assert all(p["status"] == "ok" for p in phases), phases
     assert all(isinstance(p["seconds"], float) and p["seconds"] > 0 for p in phases), phases
     assert phases[0]["seconds"] >= 0.2
