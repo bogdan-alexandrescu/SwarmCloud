@@ -161,7 +161,8 @@ def test_the_extractor_version_is_bumped_so_the_first_run_after_release_is_full(
     # is refused by `graph_carry_refusal`, so the first run is full and
     # measures every server.
     # MUTATION: leave INDEXER_EXTRACTOR_VERSION at "3" and this is red.
-    assert repoindex.INDEXER_EXTRACTOR_VERSION == "4"
+    # (At least 4: lane INDEX-LANGS raised it to 5 for terraform-ls.)
+    assert int(repoindex.INDEXER_EXTRACTOR_VERSION) >= 4
     refusal = repoindex.graph_carry_refusal(
         {"version": "3", "blob_ids": True, "files_not_listed": 0, "truncated": []})
     assert refusal is not None

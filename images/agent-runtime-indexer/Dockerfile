@@ -3,9 +3,8 @@
 # agent-runtime-indexer -- agent-runtime-base plus the repository index's
 # toolchain: the tree-sitter extractor (`swarm-repo-index`), the graph shard
 # writer (`swarm-repo-graph`), and the language servers of its LSP pass
-# (pyright, typescript-language-server and gopls; terraform-ls is specified
-# but not installed, see the languageservers stage) with the Go toolchain
-# gopls runs `go list` with. docs/repo-index.md §3.5, lanes RI3, RI9 and RI10;
+# (pyright, typescript-language-server, gopls and terraform-ls) with the Go
+# toolchain gopls runs `go list` with. docs/repo-index.md §3.5, lanes RI3, RI9 and RI10;
 # docs/worker-images.md for why it is its own image.
 #
 # WHY NOT IN agent-runtime-base (#625). Every claude-code and codex start
@@ -30,8 +29,9 @@
 # image plus three directories: non-root (uid 10001; root only while
 # installing, and USER swarm:swarm before anything runs), no docker socket,
 # tini as PID 1, the same ENTRYPOINT. Every download is verified: the Go
-# tarball by sha256, gopls and its raised golang.org/x modules through the
-# module checksum database, the npm servers by the lockfile's sha512 integrity, the
+# tarball by sha256, gopls, terraform-ls and their raised golang.org/x
+# modules through the module checksum database (and terraform-ls's module
+# zip by a sha256 pinned here too), the npm servers by the lockfile's sha512 integrity, the
 # tree-sitter wheels with --require-hashes.
 #
 # PYTHON_IMAGE IS agent-runtime-base's PYTHON_IMAGE, digest and all: the
@@ -50,7 +50,7 @@ ARG MIRROR_DOCKER_HUB=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirro
 ARG BASE_IMAGE
 
 # ---------------------------------------------------------------------------
-# languageservers: the Go toolchain and gopls for the
+# languageservers: the Go toolchain, gopls and terraform-ls for the
 # repository index's LSP pass (docs/repo-index.md §3.5, lane RI10). The two
 # npm servers (pyright, typescript-language-server) are installed in the
 # runtime stage below from images/agent-runtime-indexer/repo-index/lsp/package-lock.json.
@@ -78,9 +78,10 @@ ARG GO_SHA256=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
 # the result is linked with the Go above, which also clears the stdlib CVEs.
 # The build then reads each binary's own module list (`go version -m`) and
 # fails if a bump did not land, so a pin that stops applying is loud.
-# terraform-ls is NOT built (owner decision 2026-10-05): its source build
-# answered 0 references in the LSP self-test (main a3621325), so it is out of
-# the image until it resolves (lsp/servers.py DISABLED_SERVERS, lane IDX).
+# terraform-ls was out of the image from 2026-10-05 (that day's source build
+# answered 0 references in the LSP self-test, main a3621325) until 2026-10-20
+# (lane INDEX-LANGS, part of #1693, owner decision): built as below it answers
+# references across a module's files, and the self-test requires an HCL edge.
 # Raising a pin: take the "fixed version" trivy prints, then read the pinned
 # modules' OWN requirements on the proxy (curl proxy.golang.org/<mod>/@v/<v>.mod):
 # the x/* modules require each other, so a pin below what another pin needs
@@ -97,6 +98,23 @@ ARG GO_SHA256=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
 ARG GOPLS_VERSION=0.24.0-pre.1
 ARG X_MOD_VERSION=0.41.0
 ARG X_TEXT_VERSION=0.42.0
+# terraform-ls 0.39.0 (checkpoint-api.hashicorp.com's current_version and
+# proxy.golang.org's @latest on 2026-10-20). Its go.mod requires x/crypto
+# v0.54.0 and x/net v0.57.0; osv.dev (read 2026-10-20) has x/crypto fixed at
+# 0.55.0 (CVE-2026-56854) and 0.56.0 (CVE-2026-78662, -56855), and x/net at
+# 0.60.0 (CVE-2026-78659, -78660, -78663, -78669, -97032). x/net 0.60.0
+# requires x/crypto 0.57.0 and x/text 0.42.0, so those are the pins: a higher
+# x/net (0.61.0) would pull x/text 0.43.0 past X_TEXT_VERSION and fail the
+# linked-version check. Every `go` line is 1.26.0 or older, under GO_VERSION.
+# TERRAFORM_LS_SHA256 is the sha256 of the module's zip as proxy.golang.org
+# serves it (`curl -sL https://proxy.golang.org/github.com/hashicorp/
+# terraform-ls/@v/v<version>.zip | sha256sum`): the module checksum database
+# already verifies those bytes, and this pin makes a raised version a reviewed
+# change to this file, as GO_SHA256 does for the toolchain.
+ARG TERRAFORM_LS_VERSION=0.39.0
+ARG TERRAFORM_LS_SHA256=7ac775b112c025aa426f4ae107b7632e7553270e76f136a7b09cfeff4108dda5
+ARG X_CRYPTO_VERSION=0.57.0
+ARG X_NET_VERSION=0.60.0
 
 # EVERY DOWNLOAD HERE RETRIES (2026-10-14, PR 1281's flake table): `curl -fsSL
 # --retry 5 --retry-all-errors --retry-connrefused`, 1+2+4+8+16 s of backoff at
@@ -118,6 +136,8 @@ RUN curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/go.tar.g
  && echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - \
  && tar -C /usr/local -xzf /tmp/go.tar.gz \
  && rm -rf /tmp/go.tar.gz /usr/local/go/test
+# check_module_zip MODULE VERSION SHA256: download the module (verified by the
+# checksum database) and check its zip against the sha256 pinned above.
 # build_server MODULE VERSION OUT MODULE@FIX...: copy the module's verified
 # source out of the read-only module cache, raise the named dependencies,
 # build, and assert each raised version is what the binary was linked with.
@@ -135,6 +155,11 @@ RUN export PATH="/usr/local/go/bin:${PATH}" GOPATH=/tmp/gopath GOCACHE=/tmp/goca
       done; \
       chmod 0755 "${out}"; \
     }; \
+    check_module_zip() { \
+      local zip; zip="$(go mod download -json "$1@v$2" \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["Zip"])')" || return 1; \
+      echo "$3  ${zip}" | sha256sum -c - || return 1; \
+    }; \
     three_tries() { \
       local attempt; for attempt in 1 2 3; do \
         "$@" && return 0; \
@@ -145,8 +170,13 @@ RUN export PATH="/usr/local/go/bin:${PATH}" GOPATH=/tmp/gopath GOCACHE=/tmp/goca
     }; \
     three_tries build_server golang.org/x/tools/gopls "${GOPLS_VERSION}" /usr/local/bin/gopls \
       "golang.org/x/mod@v${X_MOD_VERSION}" "golang.org/x/text@v${X_TEXT_VERSION}" \
+ && three_tries check_module_zip github.com/hashicorp/terraform-ls "${TERRAFORM_LS_VERSION}" "${TERRAFORM_LS_SHA256}" \
+ && three_tries build_server github.com/hashicorp/terraform-ls "${TERRAFORM_LS_VERSION}" /usr/local/bin/terraform-ls \
+      "golang.org/x/mod@v${X_MOD_VERSION}" "golang.org/x/text@v${X_TEXT_VERSION}" \
+      "golang.org/x/crypto@v${X_CRYPTO_VERSION}" "golang.org/x/net@v${X_NET_VERSION}" \
  && rm -rf /tmp/src /tmp/gopath /tmp/gocache \
- && /usr/local/bin/gopls version
+ && /usr/local/bin/gopls version \
+ && /usr/local/bin/terraform-ls version
 
 # ---------------------------------------------------------------------------
 # runtime: agent-runtime-base, by digest, plus the toolchain
@@ -212,8 +242,8 @@ RUN chmod 0644 /opt/repo-index/repo_graph_shards.py /opt/repo-index/repo_index_h
  && chmod 0755 /usr/local/bin/swarm-repo-graph
 
 # The language servers of the index's LSP pass (docs/repo-index.md §3.5,
-# lane RI10): pyright, tsserver (through typescript-language-server) and
-# gopls, each linked into /opt/repo-index/servers/bin, the ONLY
+# lane RI10): pyright, tsserver (through typescript-language-server), gopls
+# and terraform-ls, each linked into /opt/repo-index/servers/bin, the ONLY
 # place lsp/servers.py resolves a server from -- never PATH, which an agent
 # can change. The lsp/ package is the driver swarm-repo-index imports.
 #
@@ -230,6 +260,7 @@ RUN chmod 0644 /opt/repo-index/repo_graph_shards.py /opt/repo-index/repo_index_h
 # into the servers' bin directory only, not onto the agent's PATH.
 COPY --from=languageservers /usr/local/go /usr/local/go
 COPY --from=languageservers /usr/local/bin/gopls /opt/repo-index/servers/bin/
+COPY --from=languageservers /usr/local/bin/terraform-ls /opt/repo-index/servers/bin/
 COPY images/agent-runtime-indexer/repo-index/lsp/ /opt/repo-index/lsp/
 RUN cp /opt/repo-index/lsp/package.json /opt/repo-index/lsp/package-lock.json /opt/repo-index/servers/ \
  && cd /opt/repo-index/servers \
@@ -239,7 +270,7 @@ RUN cp /opt/repo-index/lsp/package.json /opt/repo-index/lsp/package-lock.json /o
  && ln -s ../node_modules/.bin/typescript-language-server /opt/repo-index/servers/bin/typescript-language-server \
  && ln -s /usr/local/go/bin/go /opt/repo-index/servers/bin/go \
  && chmod -R a+rX,go-w /opt/repo-index/lsp /opt/repo-index/servers \
- && for s in pyright-langserver typescript-language-server gopls go; do \
+ && for s in pyright-langserver typescript-language-server gopls terraform-ls go; do \
       test -x "/opt/repo-index/servers/bin/$s" || { echo "language server missing: $s" >&2; exit 1; }; \
     done
 

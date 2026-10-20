@@ -19,8 +19,8 @@ The properties asserted here, read from the files that ship:
     resolves the digest, and the Dockerfile refuses a base given by tag;
   * every other FROM in it is pinned by digest, to the SAME Python the base
     is built on;
-  * gopls is compiled from module source with the golang.org/x pins of #661,
-    and terraform-ls (owner, 2026-10-05) and HashiCorp's zip are not in it;
+  * gopls and terraform-ls are compiled from module source with the
+    golang.org/x pins of #661, and HashiCorp's zip is not in it;
   * every build arg its build config passes is one the Dockerfile declares;
   * the build and the promotion both carry it, and the scheduled scan reads it.
 
@@ -85,18 +85,22 @@ def test_the_indexer_image_carries_the_whole_toolchain():
     assert not (REPO / "images" / "agent-runtime-base" / "repo-index").exists()
 
 
-def test_gopls_is_compiled_from_source_with_the_raised_x_modules():
+def test_gopls_and_terraform_ls_are_compiled_from_source_with_the_raised_x_modules():
     """#661 moved with the toolchain: release 37289476429's trivy scan refused
-    the vendor binaries, so gopls is built from its module with x/mod and
-    x/text raised, and the build reads its own module list to prove it."""
+    the vendor binaries, so gopls and terraform-ls are built from their
+    modules with the flagged golang.org/x modules raised, and the build reads
+    each binary's module list to prove it. terraform-ls returned on
+    2026-10-20 (lane INDEX-LANGS, part of #1693); HashiCorp's zip did not."""
     code = _code(INDEXER)
     assert "build_server golang.org/x/tools/gopls" in code
-    for arg in ("X_MOD_VERSION", "X_TEXT_VERSION"):
+    # MUTATION: drop the terraform-ls build and this is red.
+    assert "build_server github.com/hashicorp/terraform-ls" in code
+    for arg in ("X_MOD_VERSION", "X_TEXT_VERSION", "X_CRYPTO_VERSION", "X_NET_VERSION",
+                "TERRAFORM_LS_VERSION", "TERRAFORM_LS_SHA256"):
         assert arg in _args(code), arg
     assert 'go version -m "${out}"' in code
     assert "go install" not in code
     assert "releases.hashicorp.com" not in code
-    assert "terraform-ls" not in code
     assert "unzip" not in code
 
 

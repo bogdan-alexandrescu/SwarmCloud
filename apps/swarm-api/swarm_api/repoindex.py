@@ -280,8 +280,10 @@ MAX_INCREMENTAL_CHANGES = 300
 #: KG2: module-object call edges, communities, search, fingerprints, flows.
 #: "4" since lane INDEX-BUDGETS (#1693): each server's grant and cost are
 #: recorded, and a version-3 graph has neither, so the first run after the
-#: release is full and measures every server.
-INDEXER_EXTRACTOR_VERSION = "4"
+#: release is full and measures every server. "5" since lane INDEX-LANGS
+#: (#1693): HCL is asked of terraform-ls, and a version-4 graph's HCL row is
+#: `unsupported` with no `lsp` edge an incremental run could carry.
+INDEXER_EXTRACTOR_VERSION = "5"
 #: §3.4 and §3.5: a change to a build or test configuration, a lockfile, a CI
 #: workflow or a language server's configuration changes what `commands`,
 #: `test_map` and the graph mean everywhere, so it forces a full run. The

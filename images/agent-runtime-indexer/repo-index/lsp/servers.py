@@ -122,13 +122,17 @@ SERVERS: dict[str, ServerSpec] = {
     ),
 }
 
-# terraform-ls is NOT in the image for now (owner decision 2026-10-05). The
-# vendor zip carried HIGH CVEs (release 37289476429), and a source build with
-# the golang.org/x modules raised answered 0 references in the image's LSP
-# self-test (main a3621325, "hcl: ok, 0 lsp edge(s)"). So HCL is indexed by
-# tree-sitter alone and reports `unsupported` in the LSP pass. The spec is kept
-# here so lane IDX can re-enable it in agent-runtime-indexer once it resolves.
-DISABLED_SERVERS: dict[str, ServerSpec] = {"terraform-ls": SERVERS.pop("terraform-ls")}
+# A server specified here but left out of the image goes in DISABLED_SERVERS,
+# so its language reports `unsupported` instead of `failing` on every run.
+# Empty since 2026-10-20 (lane INDEX-LANGS, part of #1693): terraform-ls had
+# been out since 2026-10-05, when the vendor zip carried HIGH CVEs (release
+# 37289476429) and that day's source build answered 0 references in the
+# image's self-test (main a3621325). terraform-ls 0.39.0 compiled from source
+# with Go 1.27.1 and the raised golang.org/x modules answers references
+# across a module's files (measured 2026-10-20 against this driver,
+# tests/unit/worker/test_repo_index_lsp_servers.py), and the self-test now
+# requires an `lsp` edge for HCL as for the other four languages.
+DISABLED_SERVERS: dict[str, ServerSpec] = {}
 
 
 # The paths the LSP pass never opens, on every repository (lane INDEX-SITES,

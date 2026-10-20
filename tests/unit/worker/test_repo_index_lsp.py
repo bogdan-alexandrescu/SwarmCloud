@@ -1068,12 +1068,15 @@ def test_the_four_servers_are_the_ones_section_3_5_names(lsp: Any) -> None:
     assert servers["tsserver"].languages == ("typescript", "javascript")
     assert servers["gopls"].command == ("gopls", "serve")
     assert [name for name, s in servers.items() if s.call_hierarchy] == ["pyright", "tsserver", "gopls"]
-    # terraform-ls is kept as a spec but not installed (owner 2026-10-05): its
-    # source build resolved nothing, so HCL is tree-sitter only for now.
-    assert "terraform-ls" not in servers
-    tfls = lsp.DISABLED_SERVERS["terraform-ls"]
+    # terraform-ls is back in the image (lane INDEX-LANGS, owner 2026-10-20):
+    # a source build linked with Go 1.27.1 answers references, which the
+    # build's self-test now requires for HCL as for the other four.
+    # MUTATION: keep terraform-ls in DISABLED_SERVERS and this is red.
+    tfls = servers["terraform-ls"]
     assert tfls.command == ("terraform-ls", "serve")
+    assert tfls.languages == ("hcl",)
     assert tfls.references and not tfls.call_hierarchy
+    assert lsp.DISABLED_SERVERS == {}
     # gopls never downloads a module (§3.5 "no dependencies are installed").
     assert servers["gopls"].env["GOPROXY"] == "off"
     assert servers["gopls"].env["GOTOOLCHAIN"] == "local"
@@ -1133,15 +1136,18 @@ def test_the_image_installs_the_four_servers_pinned(lsp: Any) -> None:
     # trivy flagged raised to their fixed versions (release 37289476429 was
     # refused on them), never taken as a vendor binary, and the build fails
     # if a raised version is not what the binary was linked with.
-    for arg in ("X_MOD_VERSION", "X_TEXT_VERSION"):
+    for arg in ("X_MOD_VERSION", "X_TEXT_VERSION", "X_CRYPTO_VERSION", "X_NET_VERSION"):
         assert re.search(rf"^ARG {arg}=\d+\.\d+\.\d+$", text, re.M), arg
     assert "releases.hashicorp.com/terraform-ls" not in text
     assert 'go version -m "${out}"' in text
     builds = dict(re.findall(r'build_server (\S+) "\$\{(\w+)\}" /usr/local/bin/', text))
+    # MUTATION: drop the terraform-ls build_server line and this is red.
     assert builds == {
         "golang.org/x/tools/gopls": "GOPLS_VERSION",
+        "github.com/hashicorp/terraform-ls": "TERRAFORM_LS_VERSION",
     }, builds
-    assert "/usr/local/bin/terraform-ls" not in text
+    assert re.search(r"^ARG TERRAFORM_LS_VERSION=\d+\.\d+\.\d+$", text, re.M)
+    assert re.search(r"^ARG TERRAFORM_LS_SHA256=[0-9a-f]{64}$", text, re.M)
     # npm packages from the lockfile, its integrity hashes, no install scripts.
     assert "npm ci --ignore-scripts" in text
     package = json.loads((LSP_DIR / "package.json").read_text(encoding="utf-8"))

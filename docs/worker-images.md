@@ -208,11 +208,14 @@ claude-code agent on a bigger image, by name, with no image or command of
 their own (invariant 10). Making it platform-only needs a catalogue field, a
 contract change of its own.
 
-**terraform-ls is not in the image.** Its source build answered 0 references
-in the LSP self-test (owner decision 2026-10-05), so it stays a
-`DISABLED_SERVERS` spec in `lsp/servers.py` until it resolves. gopls is
-compiled from module source with the golang.org/x modules trivy flagged
-raised (#661); HashiCorp's prebuilt zip is not used.
+**terraform-ls is back in the image (2026-10-20, lane INDEX-LANGS, part of
+#1693).** It was out from 2026-10-05, when its source build answered 0
+references in the LSP self-test. Like gopls it is compiled from module source
+with the golang.org/x modules trivy flagged raised (#661), and its module zip
+is checked against a sha256 pinned in the Dockerfile; HashiCorp's prebuilt
+zip is not used. The build's `--lsp-self-test` now requires an `lsp` edge for
+HCL, as for Python, TypeScript, JavaScript and Go, so a terraform-ls that
+resolves nothing fails the build instead of shipping.
 
 **trivy joined the base on 2026-10-06 (#442).** BUILD_PROMPT_V2 §2.12 and the
 owner's decision on #442 put all eleven toolbox tools in agent-runtime-base;
