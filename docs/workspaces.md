@@ -447,11 +447,20 @@ backend. That list is already written in this repository as
 admits exactly one change on the gate, C10's add, which IAM refuses without
 K1.
 
-**Not verified live.** On 2026-09-24, `roles/iap.admin` bound on our two
-backends still got a 403 on `getIamPolicy` nine and a half minutes later
-(`terraform/modules/frontend/main.tf`). If this binding is refused the same
-way, nothing is lost: S2 stops for the owner exactly as it did before. After
-the bootstrap apply, the owner checks it with one read made as the deployer:
+**Verified live, 2026-10-20.** The bootstrap apply that added this binding
+finished at 06:09Z (2 added: the role and its binding on `swarm-ui-backend`).
+The retry of the QA console workspace `w-267d01`, which had stopped at S2,
+reached `ready` at 06:11Z, and its log reads "front door: swarm-ui-backend
+already admits the account". That is the read succeeding: without it S2 stops
+for the owner, as it had before.
+
+This differs from 2026-09-24, when `roles/iap.admin` bound on our two backends
+still got a 403 on `getIamPolicy` nine and a half minutes later
+(`terraform/modules/frontend/main.tf`). Why that binding was refused and this
+custom role is not is not known, so do not read the result as "any
+backend-level IAP grant works". If a later apply is refused the way September's
+was, nothing is lost: S2 stops for the owner exactly as it did before. The
+check is one read made as the deployer:
 `gcloud iap web get-iam-policy --resource-type=backend-services
 --service=swarm-ui-backend`.
 

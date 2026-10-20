@@ -688,6 +688,7 @@ default:
 | **K2** | `swarmWorkspaceSecretBinder` (exists), a **second** binding | `swarm-workspace-deployer` | the project | `resource.name.startsWith("projects/<number>/secrets/swarm-tenant-") && (resource.name.endsWith("-git") \|\| resource.name.endsWith("-git-refresh"))` | A6 for a group's team slot. A service's `u-` slot is already inside the existing binding |
 | **K3** | the three forge-slot roles swarm-api holds (`forge_slot_version_adder`, `forge_slot_version_manager`, `forge_refresh_reader`), one any-tenant binding each | `swarm-api` | the project | `resource.name.startsWith("projects/<number>/secrets/swarm-tenant-") && resource.name.extract("/secrets/swarm-tenant-{t}-git-u-") != ""` | a job-made group's members' user slots, under Q6 (a). swarm-api holds the same per tenant today |
 | **K4** | `swarmWorkspaceProjectReader` (exists) | unchanged | | | listed so the role-list validation in `terraform/bootstrap/variables.tf` is updated in the same change |
+| **K5** | custom `swarmFrontDoorReader`: `iap.webServices.getIamPolicy` only | `swarm-workspace-deployer` | the API backend's own IAP policy (`swarm-ui-backend`), a resource-level binding, never the project | none: the binding names the one resource | Added 2026-10-20 (owner decision, PR 1687) because O1 showed K1 cannot be narrowed to one backend. S2 can then see that the owner already admitted a service and finish, instead of stopping. It cannot change the list. Off whenever K1 is on, since K1's role carries the same read. Verified live 2026-10-20 06:11Z (`docs/workspaces.md`, "Verified live") |
 
 **Not granted:** any IAP role on `-ui-backend`, `roles/iap.admin`, any
 `iap.web.*` or `iap.webTypes.*` permission (all backends), anything on the
@@ -1248,6 +1249,12 @@ reader can check it rather than trust it.
   job-made service passes, and
   `docs/runbooks/tenant-offboarding.md` disabling and removing a group or
   service workspace. Held by `tests/unit/scripts/test_docs_describe_what_was_built.py`.
+* **FRONT-DOOR-READ (K5, after O1).** `google_project_iam_custom_role.front_door_reader`
+  and `google_iap_web_backend_service_iam_member.front_door_reader` in
+  `terraform/bootstrap/workspace_deployer.tf` grant the deployer
+  `iap.webServices.getIamPolicy` on the API backend alone, and only while
+  `swarmFrontDoorAdmitter` is not granted. Applied 2026-10-20 06:09Z, and
+  verified by the QA console workspace `w-267d01` passing S2 at 06:11Z.
 
 **Where the code departs from §4**, each found by reading it:
 
