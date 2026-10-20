@@ -76,7 +76,7 @@ env:
 jobs:
   validate:
     name: fmt / validate / tflint
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     steps:
       - uses: actions/checkout@v5
 
@@ -125,7 +125,7 @@ jobs:
 
   test:
     name: terraform test
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     steps:
       - uses: actions/checkout@v5
 
@@ -157,7 +157,7 @@ jobs:
     # than going quiet -- silence has meant "did not run" here far more often
     # than "nothing to report".
     name: plan (not run on a pull request)
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # A merge queue entry cannot plan either (its ref is not main), so it
     # says so there too.
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
@@ -188,7 +188,7 @@ jobs:
 
   checkov:
     name: checkov
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     steps:
       - uses: actions/checkout@v5
 

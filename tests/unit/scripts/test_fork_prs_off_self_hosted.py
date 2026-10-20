@@ -18,11 +18,19 @@ except the ones GUARDED_SECRETS names for that job (owner decision
 2026-10-14: secrets on ephemeral self-hosted VMs accepted). A new job that silently uses a hosted image fails here,
 and so does a job that keeps a hosted entry after its credential is gone.
 
-The approved expression, with its capacity escape hatch: the repo variable
+OWNER DECISION, 2026-10-20: main's own runs go first. A push or a dispatch on
+`main` (main's CI run, every release and hotfix) resolves to GitHub-hosted
+ubuntu-24.04, so it never queues behind lane pull requests on the pool (two
+releases failed that morning waiting 45 minutes for a queued image build).
+Pull requests, lane-branch pushes and merge-queue entries keep the pool. The
+clause is scoped by event, not by ref alone: `pull_request_target` and
+`schedule` also run with `github.ref` = main, and they stay where they were.
+
+The approved expression, with its capacity escape hatch and main's clause: the repo variable
 SELF_HOSTED_CI set to `off` sends every guarded job back to GitHub-hosted
 ubuntu-24.04 (unset, or anything else, means the pool):
 
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
 
 THE SHORT FORM. A workflow no fork's pull request can start does not need
 the fork clause, and two of the repository's own guards forbid the text it is
@@ -74,6 +82,8 @@ HOSTED = re.compile(r"^(ubuntu|windows|macos)-[\w.-]+$")
 FORK_GATED = re.compile(
     r"^\$\{\{\s*"
     r"\(vars\.SELF_HOSTED_CI == 'off'"
+    r" \|\| \(\(github\.event_name == 'push' \|\| github\.event_name == 'workflow_dispatch'\)"
+    r" && github\.ref == 'refs/heads/main'\)"
     r" \|\| \(\(github\.event_name == 'pull_request' \|\| github\.event_name == 'pull_request_target'\)"
     r" && github\.event\.pull_request\.head\.repo\.full_name != github\.repository\)\)"
     r" && '([^']+)' \|\| fromJSON\('(\[[^']*\])'\)"
@@ -270,7 +280,10 @@ def test_no_job_runs_a_fork_pr_on_a_self_hosted_runner() -> None:
 
 
 APPROVED = (
-    "${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request'"
+    "${{ (vars.SELF_HOSTED_CI == 'off'"
+    " || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch')"
+    " && github.ref == 'refs/heads/main')"
+    " || ((github.event_name == 'pull_request'"
     " || github.event_name == 'pull_request_target')"
     " && github.event.pull_request.head.repo.full_name != github.repository))"
     " && 'ubuntu-24.04' || fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"bogdan-ci\"]') }}"
@@ -387,7 +400,19 @@ REPOSITORY = "bogdan-alexandrescu/SwarmCloud"
 _CONTEXT_PATH = re.compile(r"\b(?:vars|github)(?:\.[A-Za-z_][\w-]*)+")
 
 
-def resolve(runs_on: str, *, event: str, fork: bool, hatch: str = "") -> object:
+#: The ref GitHub gives each event when a test names none: a lane branch for a
+#: push or dispatch, the merge ref for a pull request, the base branch for
+#: pull_request_target and schedule, the queue ref for a merge group.
+_DEFAULT_REF = {
+    "pull_request": "refs/pull/1/merge",
+    "pull_request_target": "refs/heads/main",
+    "schedule": "refs/heads/main",
+    "merge_group": "refs/heads/gh-readonly-queue/main/pr-1-0000000",
+}
+MAIN = "refs/heads/main"
+
+
+def resolve(runs_on: str, *, event: str, fork: bool, hatch: str = "", ref: str | None = None) -> object:
     """What GitHub would put in `runs-on` for this event: evaluates the
     expression's &&/|| (which, as in Python's and/or, return an operand), with
     `github.event.pull_request` null on a push as it is on GitHub. `hatch` is
@@ -399,6 +424,7 @@ def resolve(runs_on: str, *, event: str, fork: bool, hatch: str = "") -> object:
     values = {
         "vars.SELF_HOSTED_CI": hatch,
         "github.event_name": event,
+        "github.ref": ref if ref is not None else _DEFAULT_REF.get(event, "refs/heads/swarm/task_lane"),
         "github.repository": REPOSITORY,
         "github.event.pull_request.head.repo.full_name": (
             ("someone/SwarmCloud" if fork else REPOSITORY) if is_pr else None
@@ -443,6 +469,28 @@ def test_the_approved_expression_resolves(event: str, fork: bool, hatch: str, ex
     assert resolve(APPROVED, event=event, fork=fork, hatch=hatch) == expected
 
 
+@pytest.mark.parametrize(
+    ("event", "fork", "hatch", "ref", "expected"),
+    [
+        # Main's own runs go first, on GitHub-hosted (owner decision 2026-10-20).
+        ("push", False, "", MAIN, "ubuntu-24.04"),
+        ("workflow_dispatch", False, "", MAIN, "ubuntu-24.04"),
+        # A lane branch and a dispatch elsewhere keep the pool.
+        ("push", False, "", "refs/heads/swarm/task_abc", POOL),
+        ("workflow_dispatch", False, "", "refs/heads/fix/x", POOL),
+        # Events that also carry ref = main are not main's runs: they keep the pool.
+        ("pull_request_target", False, "", MAIN, POOL),
+        ("schedule", False, "", MAIN, POOL),
+        # A fork PR is still hosted whatever its ref says.
+        ("pull_request_target", True, "", MAIN, "ubuntu-24.04"),
+    ],
+)
+def test_mains_own_runs_go_hosted(event: str, fork: bool, hatch: str, ref: str, expected: object) -> None:
+    # MUTATION: drop the main clause from APPROVED and the workflows -- a push to main resolves to the pool.
+    # MUTATION: scope it by `github.ref == 'refs/heads/main'` alone -- pull_request_target and schedule go hosted.
+    assert resolve(APPROVED, event=event, fork=fork, hatch=hatch, ref=ref) == expected
+
+
 def test_resolve_can_come_out_the_other_way() -> None:
     """The control: the inverted fork check sends a fork PR to the pool, and
     the pre-hatch spelling ignores the hatch. If resolve() could not tell
@@ -450,6 +498,9 @@ def test_resolve_can_come_out_the_other_way() -> None:
     inverted = APPROVED.replace("!=", "==")
     assert resolve(inverted, event="pull_request", fork=True) == POOL
     assert resolve(PRE_HATCH, event="push", fork=False, hatch="off") == POOL
+    # The main clause is what moves main: point it at another ref and a push to main keeps the pool.
+    elsewhere = APPROVED.replace("github.ref == 'refs/heads/main'", "github.ref == 'refs/heads/nowhere'")
+    assert resolve(elsewhere, event="push", fork=False, ref=MAIN) == POOL
 
 
 def test_every_guarded_job_in_the_workflows_resolves_safely() -> None:
@@ -466,6 +517,9 @@ def test_every_guarded_job_in_the_workflows_resolves_safely() -> None:
         if FORK_GATED.match(runs_on.strip()):
             for event in ("pull_request", "pull_request_target"):
                 assert resolve(runs_on, event=event, fork=True) == "ubuntu-24.04", name
+            # Main's own runs go hosted; a same-repository PR keeps the pool.
+            assert resolve(runs_on, event="push", fork=False, ref=MAIN) == "ubuntu-24.04", name
+            assert resolve(runs_on, event="pull_request", fork=False) == POOL, name
         assert resolve(runs_on, event="push", fork=False, hatch="off") == "ubuntu-24.04", name
         assert resolve(runs_on, event="push", fork=False) == POOL, name
     assert seen, "no guarded job found: the loop asserted over nothing"
