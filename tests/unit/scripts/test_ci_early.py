@@ -33,8 +33,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_worker import merge
-
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO / ".github" / "workflows"
 LANE_BRANCHES = "swarm/**"
@@ -122,6 +120,10 @@ def test_a_lane_push_is_cancelled_by_the_next_push_to_its_branch():
 def test_the_merge_step_holds_every_run_at_the_head_whatever_its_event(runs, state):
     """The property the push triggers rely on to keep "every required check
     green at head" exact. MUTATION (merge.py): let the newest run of a name win."""
+    # Imported here, not at module top: test_collection_stays_cheap holds every
+    # module under tests/unit/scripts to collecting without the service stack.
+    from agent_worker import merge
+
     assert merge.required_check_state(runs) == state
 
 
