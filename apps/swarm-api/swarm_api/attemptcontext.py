@@ -59,9 +59,31 @@ already refused to let overlap in parallel.
 requests read, none unread or truncated, no undeclared lane or task, no list
 cut at its cap. The worker's tool says UNKNOWN for what was not read.
 
+THE GRAPH CONTEXT (lane GRAPH-STAGING, part of #1694):
+
+    POST /v1/attempts/{attempt_id}/context/graph
+         {the attempt's fencing fields, nothing else}
+      -> {repo_id, registration, versions, tenant_settings, workspace_settings}
+
+is what `agent_worker.graphstage` stages a step's graph snapshot from: the
+registration of the task's SIGNED repository, its kept index versions (the
+promoted one among them) and the two settings documents its decision reads.
+The worker could not read them itself: the versions are a Firestore query,
+and the tenant worker's role has `entities.get` but no `entities.list`
+(docs/design/tenant-settings-integrity.md §1.3). On 2026-10-19/20, 73 of 74
+implement steps staged no graph, 33 of them refused with PermissionDenied.
+Design B (#1464) closes the worker's direct access rather than widening it,
+so this service reads, with the same three checks as the in-flight route and
+in the same order, and the caller names nothing but its attempt. A
+registration that is absent and one that is another tenant's are the same
+answer: none. It is `swarm_api.attemptstate.AttemptState.repository` and
+`context`'s graph subset for an attempt that is NOT switched to the state
+routes, proven with the child path's attempt key it always registers.
+
 INVARIANTS. Nothing here creates infrastructure demand (1), touches capacity
 (2, 3) or the lease (5: a fenced call is refused, never released). Every read
-is the attempt's own tenant's (9). The caller names paths only (10).
+is the attempt's own tenant's (9). The caller names paths only (10), and the
+graph context route not even those.
 """
 
 from __future__ import annotations
@@ -71,6 +93,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
+from google.api_core import exceptions as gexc
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 from swarm_common.states import TaskState
@@ -79,8 +102,11 @@ from . import territory as _territory
 from .childkey import AttemptTuple
 from .children import ChildService, ChildUnauthenticated, ChildUnproven, _lease_is_live, parse_body
 from .errors import ApiError, ValidationFailed
+from .attemptstate import REPOSITORIES, TENANT_SETTINGS, StateUnavailable, jsonable, owner_repo
 from .gittools import REQUEST_ID, GitToolRefused, task_repository
 from .issueruns import MAX_STEP_FILES, TERMINAL_RUN_STATES, IssueRuns
+from .mergesettings import COLLECTION as WORKSPACE_SETTINGS
+from .repoindex import KEPT_VERSIONS, VERSIONS_COLLECTION
 from .repositories import repo_id_for
 from .store import LEASES, TASKS, Store
 from .verdictpublish import spec_refusal
@@ -140,6 +166,18 @@ class InFlightBody(BaseModel):
     @classmethod
     def _normalised(cls, files: list[str]) -> list[str]:
         return sorted(dict.fromkeys(_territory.normalise_entry(f) for f in files))
+
+
+class GraphContextBody(BaseModel):
+    # Strict: a repository, a repo_id or a commit in the body is a 422
+    # (invariant 10). Exactly what `agent_worker.graphroute.GraphContextRoute` sends.
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str = Field(min_length=1, max_length=64)
+    task_id: str = Field(min_length=1, max_length=128)
+    attempt_id: str = Field(min_length=1, max_length=128)
+    lease_id: str = Field(min_length=1, max_length=128)
+    generation: StrictInt = Field(ge=1)
 
 
 def repository_key(url: Any) -> str | None:
@@ -211,7 +249,35 @@ class AttemptContext:
                  len(answer["tasks_undeclared"]), answer["complete"])
         return answer
 
-    def _prove(self, body: InFlightBody, attempt: AttemptTuple, *, raw: bytes,
+    def handle_graph(self, attempt_id: str, raw: bytes, *, authorization: str | None,
+                     proof: str | None, timestamp: str | None, path: str) -> dict[str, Any]:
+        """`POST .../context/graph`: who, the fence, the signed spec, then the read."""
+        self.children._require_configured()
+        if len(raw) > MAX_BODY_BYTES:
+            raise ContextRefused(f"a graph context request is at most {MAX_BODY_BYTES} bytes")
+        body: GraphContextBody = parse_body(GraphContextBody, raw)
+        attempt = AttemptTuple(body.tenant_id, body.task_id, attempt_id, body.lease_id,
+                               body.generation)
+        self._prove(body, attempt, raw=raw, authorization=authorization, proof=proof,
+                    timestamp=timestamp, path=path)
+        task = self._fence(attempt)
+        unverified = spec_refusal(self.settings, task, attempt.task_id)
+        if unverified:
+            raise ContextRefused(f"spec_unverified: {unverified}")
+        try:
+            answer = self.graph_context(attempt, task)
+        except gexc.GoogleAPIError as exc:
+            # A retryable 503, the state routes' own: never a 409, which the
+            # worker reads as the fence.
+            raise StateUnavailable(
+                f"the state store did not answer ({type(exc).__name__}); retry") from None
+        # Counts only: a commit or a setting is the tenant's.
+        log.info("graph context tenant=%s task=%s attempt=%s registered=%s versions=%d",
+                 attempt.tenant_id, attempt.task_id, attempt.attempt_id,
+                 answer["registration"] is not None, len(answer["versions"]))
+        return answer
+
+    def _prove(self, body: InFlightBody | GraphContextBody, attempt: AttemptTuple, *, raw: bytes,
                authorization: str | None, proof: str | None, timestamp: str | None,
                path: str) -> None:
         """The git tools' proof (`GitTools._prove`): one 403 for every cause."""
@@ -238,7 +304,40 @@ class AttemptContext:
                                 "superseded, and nothing was read")
         return task
 
-    # -- the answer ----------------------------------------------------------
+    # -- the answers ---------------------------------------------------------
+
+    def graph_context(self, attempt: AttemptTuple, task: Mapping[str, Any]) -> dict[str, Any]:
+        """The signed repository's registration and kept versions, and the
+        settings `graphstage.decide` reads, every id derived here (invariant 9)."""
+        tenant_id = attempt.tenant_id
+        repo = owner_repo(task.get("repository_url"))
+        repo_id = repo_id_for(tenant_id, *repo) if repo is not None else None
+        registration: dict[str, Any] | None = None
+        versions: list[dict[str, Any]] = []
+        if repo_id is not None:
+            ref = self.db.collection(REPOSITORIES).document(repo_id)
+            snap = ref.get()
+            found = (snap.to_dict() or {}) if snap.exists else None
+            if found is not None and found.get("tenant_id") == tenant_id:
+                registration = found
+                # The kept 20 and one more, as `AttemptState.repository` reads
+                # them: an answer this long may have been cut short, and the
+                # worker reads it so (`indexrun.ROUTE_VERSIONS_SERVED`).
+                rows = ref.collection(VERSIONS_COLLECTION).limit(KEPT_VERSIONS + 1).stream()
+                versions = [{"id": row.id, **(row.to_dict() or {})} for row in rows]
+        return {
+            "ok": True,
+            "repo_id": repo_id,
+            "registration": jsonable(registration),
+            "versions": jsonable(versions),
+            "tenant_settings": jsonable(self._own(TENANT_SETTINGS, tenant_id)),
+            "workspace_settings": jsonable(self._own(WORKSPACE_SETTINGS, tenant_id)),
+        }
+
+    def _own(self, collection: str, tenant_id: str) -> dict[str, Any] | None:
+        snap = self.db.collection(collection).document(tenant_id).get()
+        return (snap.to_dict() or {}) if snap.exists else None
+
 
     def in_flight(self, attempt: AttemptTuple, task: Mapping[str, Any], owner: str, repo: str,
                   files: list[str]) -> dict[str, Any]:

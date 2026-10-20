@@ -154,7 +154,7 @@ from urllib.parse import urlsplit
 from swarm_common.models import check_additional_repositories
 
 from . import graph_ticket as graph_ticket_mod
-from . import indexrun
+from . import graphroute, indexrun
 
 # --------------------------------------------------------------------------
 # names the runners, CTXQ-P and the tests share
@@ -605,23 +605,25 @@ def write_snapshot(store: Any, *, where: indexrun.Target, version: Version,
 
 def _candidates(registration: Any, index_state: Mapping[str, Any],
                 options: Mapping[str, Any]) -> list[Version]:
-    """The promoted current version first, then the other kept ones, newest first."""
+    """The promoted current version, read by its id: the direct path's one candidate.
+
+    NO LISTING (lane GRAPH-STAGING, part of #1694). This read once went on to
+    list the other kept versions (`limit(MAX_VERSIONS_READ).stream()`), a
+    Firestore query the tenant worker's role cannot run: it has
+    `entities.get`, not `entities.list` (tenant-settings-integrity.md §1.3),
+    and the query's PermissionDenied failed the whole staging, the promoted
+    version included. The older versions now come only from swarm-api, which
+    lists them server-side (`graphroute`, `state/repository`); a worker
+    reading Firestore directly -- one with no attempt key, or whose route was
+    not answered -- stages the promoted version or nothing.
+    """
     versions = registration.collection(indexrun.VERSIONS_COLLECTION)
-    out: list[Version] = []
     current = index_state.get("current_sha")
-    if isinstance(current, str) and _SHA.match(current):
-        snap = versions.document(current).get(**options)
-        found = _version_of(snap.to_dict() if snap.exists else None, current)
-        if found is not None:
-            out.append(found)
-    others: list[Version] = []
-    for row in versions.limit(MAX_VERSIONS_READ).stream(**options):
-        data = row.to_dict() or {}
-        found = _version_of(data, str(data.get("commit_sha") or ""))
-        if found is not None and found.sha != current:
-            others.append(found)
-    others.sort(key=lambda v: v.built_at, reverse=True)
-    return out + others
+    if not isinstance(current, str) or not _SHA.match(current):
+        return []
+    snap = versions.document(current).get(**options)
+    found = _version_of(snap.to_dict() if snap.exists else None, current)
+    return [found] if found is not None else []
 
 
 def _served_candidates(rows: Sequence[Mapping[str, Any]],
@@ -668,6 +670,10 @@ class StageResult:
     ticket_file: Path | None = None
     #: Why `service` was asked for and the attempt staged instead (§8.2).
     fallback: str | None = None
+    #: Why swarm-api's graph context route was not read from (lane
+    #: GRAPH-STAGING); None when it was, or when the tenant reads the state
+    #: routes. Logged, not recorded: `stage.json` keeps its shape.
+    route: str | None = None
 
     @property
     def delivery(self) -> str:
@@ -765,26 +771,44 @@ def stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, ta
           call_options: Mapping[str, Any] | None = None,
           clock: Callable[[], float] = time.monotonic,
           service: ServiceRoute | None = None,
-          unserved: str | None = None) -> StageResult:
+          unserved: str | None = None,
+          graph_context: graphroute.GraphContextRoute | None = None) -> StageResult:
     """Decide and stage (or pin), timed on `clock`. Every failure is a reason;
     only the fence, GraphTicketFenced, is raised (invariant 5).
 
     `unserved` is why this graph cannot be served whatever the setting says,
     beside `ServiceRoute.unavailable`: an additional repository's when the
-    step's own graph was not served (§4.9). It is staged instead."""
+    step's own graph was not served (§4.9). It is staged instead.
+
+    `graph_context` is swarm-api's answer for the task's OWN repository
+    (`graphroute`, lane GRAPH-STAGING), read in place of Firestore when the
+    tenant is not switched to the state routes. Never an additional
+    repository's: the route serves the signed `repository_url` only."""
     started = clock()
+    route_note: str | None = None
     try:
+        if graph_context is not None and indexrun.state_routes(db) is None:
+            # An unswitched tenant: the documents from swarm-api's
+            # `context/graph`, one call. A 409 is the fence and is raised;
+            # any other non-answer reads by document id, as the role allows.
+            try:
+                graph_context.fetch()
+            except graphroute.GraphContextUnavailable as unavailable:
+                route_note, graph_context = str(unavailable), None
+        else:
+            graph_context = None
         result = _stage(db=db, store=store, tenant_id=tenant_id,
                         repository_url=repository_url, task_id=task_id, checkout=checkout,
                         base_sha=base_sha, context_dir=context_dir,
                         options=dict(call_options or {}), service=service or ServiceRoute(),
-                        unserved=unserved)
+                        unserved=unserved, graph_context=graph_context)
     except graph_ticket_mod.GraphTicketFenced:
         raise
     except StageRefused as refused:
         result = StageResult(False, str(refused))
     except Exception as exc:  # noqa: BLE001 -- a staging failure never fails the attempt
         result = StageResult(False, f"staging failed ({type(exc).__name__})")
+    result.route = route_note
     result.seconds = round(clock() - started, 3)
     return result
 
@@ -792,16 +816,22 @@ def stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, ta
 def _stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, task_id: str,
            checkout: Path | None, base_sha: str | None, context_dir: Path,
            options: dict[str, Any], service: ServiceRoute,
-           unserved: str | None = None) -> StageResult:
+           unserved: str | None = None,
+           graph_context: graphroute.GraphContextRoute | None = None) -> StageResult:
     where = indexrun.target(tenant_id, repository_url)
     if isinstance(where, str):
         return StageResult(False, where)
-    state = indexrun.state_routes(db)
+    # A switched tenant's state client, else the graph context route that
+    # `stage` found answered (lane GRAPH-STAGING): read alike.
+    state: Any = indexrun.state_routes(db)
+    if state is None:
+        state = graph_context
     candidates_of: Callable[[Mapping[str, Any]], list[Version]]
     if state is not None:
-        # A switched tenant (`indexrun.state_routes`): the registration and its
-        # versions from `state/repository`, both settings documents from one
-        # `state/context`, every id derived by swarm-api. No Firestore call.
+        # A switched tenant (`indexrun.state_routes`), or the graph context
+        # route: the registration and its versions from `state/repository`,
+        # both settings documents from one `state/context`, every id derived
+        # by swarm-api. No Firestore call.
         served = indexrun.route_repository(state, where)
         if isinstance(served, str):
             return StageResult(False, served)
@@ -936,7 +966,8 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
             probe: Callable[[str, Path], str | None] | None = None,
             secret_env_names: Iterable[str] = (),
             additional_repositories: Sequence[Mapping[str, Any]] | None = None,
-            repos_dir: Path | None = None) -> dict[str, str]:
+            repos_dir: Path | None = None,
+            graph_context: graphroute.GraphContextRoute | None = None) -> dict[str, str]:
     """Stage (or pin) for this attempt and return the runner's variables.
 
     Raises only `graph_ticket.GraphTicketFenced`, the fence (invariant 5);
@@ -965,6 +996,11 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
     None): each entry's graph is pinned and served beside the step's own,
     or staged (`prepare_additional`). The returned variables are the step's
     own: the shim finds the additional pins under the context directory.
+
+    `graph_context` is the attempt's `graphroute.GraphContextRoute`: where an
+    unswitched tenant's step reads its own repository's registration,
+    versions and settings, so the worker lists no Firestore documents
+    (lane GRAPH-STAGING). None reads by document id.
     """
     try:
         if profile_name == indexrun.INDEXER_PROFILE or not offers_graph(runner_argv) \
@@ -978,7 +1014,8 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
                                url=service_url, probe=probe)
         result = stage(db=db, store=store, tenant_id=tenant_id, repository_url=repository_url,
                        task_id=task_id, checkout=checkout, base_sha=base_sha,
-                       context_dir=context_dir, call_options=call_options, service=service)
+                       context_dir=context_dir, call_options=call_options, service=service,
+                       graph_context=graph_context)
         if not result.served:
             # A restored checkpoint's pin is not this attempt's decision either.
             remove_pin(context_dir)
@@ -997,7 +1034,7 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
                      arm=result.decision.arm if result.decision else None,
                      delivery=result.delivery, seconds=result.seconds,
                      bytes=result.facts.get("bytes"), blobs=result.facts.get("blobs"),
-                     fallback=result.fallback)
+                     fallback=result.fallback, route=result.route)
         prepare_additional(
             context_dir, entries=additional_repositories,
             primary_unserved=None if result.served else (result.fallback or result.reason),

@@ -488,7 +488,9 @@ def route_repository(
         return f"the state route serves no registration {where.repo_id} for this task"
     registration = answer.get("registration")
     if not isinstance(registration, Mapping) or registration.get("tenant_id") != where.tenant_id:
-        return f"the registration {where.repo_id} has no document this tenant can read"
+        # The direct path's words (`graphstage._stage`): to this tenant, an
+        # absent registration and another tenant's are the same fact.
+        return "the repository is not registered in this workspace"
     versions = answer.get("versions")
     rows = [row for row in versions if isinstance(row, Mapping)] \
         if isinstance(versions, list) else []

@@ -178,6 +178,17 @@ no `entities.list`:
 returned 403 in dev. Whether these three fail live was not measured. Under
 design B they become routes, so the question disappears.
 
+*Measured since (lane GRAPH-STAGING, part of #1694):* the third one fails
+live. On 2026-10-19/20, 73 of 74 implement steps staged no graph, 33 with
+`staging failed (PermissionDenied)` from `_candidates`' `index_versions`
+list. It no longer lists: an unswitched tenant's step reads its registration,
+kept versions and settings from swarm-api's
+`POST /v1/attempts/{attempt_id}/context/graph` (`swarm_api.attemptcontext`,
+the worker's `agent_worker.graphroute`), signed with the child path's attempt
+key, and a worker with no key reads the promoted version by id. The worker's
+role gains nothing. `kept_commits` (#1693) is the same refused query and
+still lists on the direct path.
+
 ### 1.4 What "done" lets someone do that they cannot today
 
 * **An operator can offer a workspace to a second team without trusting the

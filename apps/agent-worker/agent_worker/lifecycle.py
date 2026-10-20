@@ -152,6 +152,7 @@ from . import gitops as gitops_mod
 from . import forgebroker as forgebroker_mod
 from . import spendprice as spendprice_mod
 from . import graph_ticket as graph_ticket_mod
+from . import graphroute as graphroute_mod
 from . import graphstage as graphstage_mod
 from . import handoff as handoff_mod
 from . import inputs as inputs_mod
@@ -1079,6 +1080,11 @@ class Worker:
         self.graph_ticket = graph_ticket_mod.GraphTicket(
             config, children=self.children, logger=deps.logger
         )
+        # The step's graph context, read by swarm-api (lane GRAPH-STAGING, part
+        # of #1694): the registration, kept index versions and settings
+        # `graphstage` stages from, so an unswitched tenant's worker lists no
+        # Firestore documents its role cannot list. Signs with the same key.
+        self.graph_context = graphroute_mod.GraphContextRoute(config, children=self.children)
         # The workspace secrets release (docs/design/workspace-secrets.md
         # §3.3, lane SEC-RELEASE): once per attempt, before the runner exists,
         # signed with the child path's attempt key. Inert for a profile whose
@@ -7964,7 +7970,8 @@ class Worker:
                     log=self.log, mark=self._mark_graph_ready,
                     graph_ticket=self.graph_ticket, private_dir=ws.private,
                     backend=self.cfg.backend, service_url=self.cfg.graph_service_url,
-                    secret_env_names=self.cfg.profile.secrets)
+                    secret_env_names=self.cfg.profile.secrets,
+                    graph_context=self.graph_context)
             except graph_ticket_mod.GraphTicketFenced as exc:
                 raise FencedWriteRefused(
                     self.cfg.generation, -1, str(exc), write="graph ticket"

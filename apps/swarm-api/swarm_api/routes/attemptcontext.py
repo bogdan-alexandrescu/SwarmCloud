@@ -1,7 +1,8 @@
 """The in-flight route (docs/design/context-quality.md §4.2 layer I, §4.4; lane CTXQ-I).
 
-`POST /v1/attempts/{attempt_id}/context/inflight` is WORKER-ONLY, like the git
-tools' `/v1/attempts/{attempt_id}/git/{tool}`: it declares neither
+`POST /v1/attempts/{attempt_id}/context/inflight`, and `.../context/graph` beside
+it (lane GRAPH-STAGING), are WORKER-ONLY, like the git
+tools' `/v1/attempts/{attempt_id}/git/{tool}`: they declare neither
 `current_auth` nor `tenant_scope`, because no person may call it and the
 tenant is the worker's ID token checked against the body, then the attempt
 key. The handler only reads the RAW body (the attempt proof signs its exact
@@ -40,6 +41,33 @@ async def in_flight(
     raw = await request.body()
     return await run_in_threadpool(
         lambda: service.handle(
+            attempt_id,
+            raw,
+            authorization=_presented(authorization, serverless_authorization),
+            proof=proof,
+            timestamp=timestamp,
+            path=request.url.path,
+        )
+    )
+
+
+@router.post("/v1/attempts/{attempt_id}/context/graph")
+async def graph_context(
+    attempt_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    serverless_authorization: str | None = Header(
+        default=None, alias="X-Serverless-Authorization"
+    ),
+    proof: str | None = Header(default=None, alias=PROOF_HEADER),
+    timestamp: str | None = Header(default=None, alias=TIMESTAMP_HEADER),
+    service: AttemptContext = Depends(attempt_context),
+) -> dict:
+    # What the worker stages the step's graph snapshot from (lane
+    # GRAPH-STAGING): read here, because the worker's role cannot list.
+    raw = await request.body()
+    return await run_in_threadpool(
+        lambda: service.handle_graph(
             attempt_id,
             raw,
             authorization=_presented(authorization, serverless_authorization),
