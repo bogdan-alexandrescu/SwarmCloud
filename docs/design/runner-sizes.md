@@ -1,8 +1,10 @@
 # Runner sizes: CPU that bursts, memory that does not, and sizes an admin sets
 
-**Status: designed 2026-10-20 (lane RUNNER-SIZES-DESIGN, part of #1689).
-Nothing here is built.** The owner reads it and answers §7 before any build
-lane starts. The two halves of the issue that are not this document are
+**Status: designed 2026-10-20 (lane RUNNER-SIZES-DESIGN, part of #1689), and
+answered by the owner the same day: every §7 question took its
+recommendation, and contract requests RS-1 to RS-4 were accepted (§5, §7
+"The owner's answers").** Build lanes follow §6: phase 1 first, phase 2 after
+phase 1's canary. The two halves of the issue that are not this document are
 being built beside it: close-to-real-time CPU and memory use with
 throttling (lanes LIVE-UTIL-API and LIVE-UTIL-UI), and the live browser's
 new 2-core agent share (lane BROWSER-SPLIT).
@@ -933,7 +935,7 @@ names.
 
 ### RS-1. `profiles.py`, `CONTRACT.md`: invariant 7 amended for CPU; `ResourceClass.cpu_limit`
 
-**Status:** PROPOSED by RUNNER-SIZES-DESIGN, 2026-10-20, part of #1689. Owner
+**Status:** ACCEPTED by the owner 2026-10-20 (proposed by RUNNER-SIZES-DESIGN, part of #1689). Owner
 decision of 2026-10-20 ("CPU limits may be higher than requests ... memory
 stays fixed").
 
@@ -1014,7 +1016,7 @@ which reads the cgroup first.
 
 ### RS-2. `profiles.py`: the frozen bounds, the derived units, `check_size`
 
-**Status:** PROPOSED, 2026-10-20, part of #1689.
+**Status:** ACCEPTED by the owner 2026-10-20 (proposed the same day, part of #1689).
 
 #### The change
 
@@ -1063,7 +1065,7 @@ outside them.
 
 ### RS-3. `profiles.py`: `ResourceSize` and `effective_class`
 
-**Status:** PROPOSED, 2026-10-20, part of #1689.
+**Status:** ACCEPTED by the owner 2026-10-20 (proposed the same day, part of #1689).
 
 #### The change
 
@@ -1113,7 +1115,7 @@ Nothing that exists.
 
 ### RS-4. `models.py`: `Attempt` records the size it was rendered at
 
-**Status:** PROPOSED, 2026-10-20, part of #1689.
+**Status:** ACCEPTED by the owner 2026-10-20 (proposed the same day, part of #1689).
 
 #### What is true today
 
@@ -1292,6 +1294,21 @@ names the merged lanes.
 ## 7. Owner questions
 
 Recommendation first in each. Also in `questions.json`.
+
+**The owner's answers, 2026-10-20 (about 11:00Z and 15:55Z).** Every answer took the recommendation:
+
+| Q | Answer |
+|---|---|
+| Q1 burst limit | A: limit = 2 × request, with requests unchanged |
+| Q2 lower the request | A: no, keep the request at 4 |
+| Q3 Cloud Run profiles | A: they stay at the code defaults, listed as "does not follow" |
+| Q4 who may change sizes | A: any platform admin, with a reason required; every version is audited and restorable |
+| Q5 `disk_gib` editable | A: no, it is shown and not edited |
+| Q6 a memory cut below recent use | A: allowed with a typed confirmation; the preview shows the 7-day max and the p95 |
+| Q7 order of delivery | A: phase 1 first, then phase 2 after its canary |
+| Q8 fairness above the request | A: accept it |
+
+Contract requests RS-1 to RS-4 (§5) were all accepted on 2026-10-20, so phase 2 starts after phase 1's canary without a further sign-off.
 
 **Q1. The burst limit per class.**
 * **A (recommended): limit = 2 × request, requests unchanged** (standard
