@@ -538,7 +538,8 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     @app.exception_handler(InvalidTransition)
     async def transition_handler(request: Request, exc: InvalidTransition) -> JSONResponse:
         payload = Conflict(str(exc), detail={"from": exc.frm.value, "to": exc.to.value})
-        return JSONResponse(status_code=payload.status_code, content=payload.to_payload())
+        return JSONResponse(status_code=payload.status_code,
+                            content=scrub(payload.to_payload(), _scrub_values(request)))
 
     @app.exception_handler(RequestValidationError)
     async def validation_handler(

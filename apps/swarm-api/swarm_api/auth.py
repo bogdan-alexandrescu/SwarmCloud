@@ -1625,7 +1625,7 @@ def _claimed_email(assertion: str) -> str | None:
         return None
     try:
         payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
-    except (binascii.Error, ValueError):
+    except (binascii.Error, ValueError, RecursionError):
         return None
     email = payload.get("email") if isinstance(payload, dict) else None
     return str(email).strip().lower() if isinstance(email, str) else ""
