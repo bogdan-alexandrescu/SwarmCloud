@@ -440,6 +440,9 @@ class QaInjector:
         self._sessions: dict[str, _Target] = {}
         self._attaching: set[str] = set()
         self._frames: dict[str, tuple[str | None, str | None]] = {}  # frameId -> (parentId, url)
+        #: The main frames of the pages the gate attached to (a page's main
+        #: frame id is its targetId): the only frames that may end a parent walk.
+        self._mains: set[str] = set()
         self._added = _Bounded()
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
@@ -502,6 +505,7 @@ class QaInjector:
             self._sessions[session] = _Target(target_id, "page")
             # The page's main frame id is its targetId; its URL is known before
             # its first `frameNavigated` reaches this session.
+            self._mains.add(target_id)
             self._frames.setdefault(target_id, (None, url if isinstance(url, str) else None))
             await self._setup(session, framed=True)
         finally:
@@ -511,12 +515,29 @@ class QaInjector:
         try:
             if framed:
                 await self._quietly("Page.enable", {}, session)
+                # `Page.enable` reports frames from now on; the ones already
+                # there are learnt from the tree, or a frame of an open page
+                # would have no known parent (and so no header).
+                tree = await self._quietly("Page.getFrameTree", {}, session) or {}
+                self._learn_tree(tree.get("frameTree"))
             await self._enable(session)
             await self._quietly("Target.setAutoAttach",
                                 {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True}, session)
         finally:
             if waiting:
                 await self._quietly("Runtime.runIfWaitingForDebugger", {}, session)
+
+    def _learn_tree(self, node: Any, depth: int = 0) -> None:
+        if not isinstance(node, Mapping) or depth > 64:
+            return
+        frame = node.get("frame") or {}
+        frame_id = frame.get("id")
+        if isinstance(frame_id, str):
+            parent = frame.get("parentId")
+            known = self._frames.get(frame_id, (None, None))[0]
+            self._frames[frame_id] = (parent if isinstance(parent, str) else known, str(frame.get("url", "")))
+        for child in node.get("childFrames") or []:
+            self._learn_tree(child, depth + 1)
 
     # ------------------------------------------------------------- events
 
@@ -546,7 +567,12 @@ class QaInjector:
             info = params.get("targetInfo") or {}
             if isinstance(child, str):
                 kind = str(info.get("type", ""))
-                self._sessions[child] = _Target(str(info.get("targetId", "")), kind)
+                target_id = str(info.get("targetId", ""))
+                self._sessions[child] = _Target(target_id, kind)
+                parent = info.get("parentFrameId")
+                if kind == "iframe" and isinstance(parent, str) and target_id:
+                    # An out-of-process frame's id is its targetId; Chromium names its parent here.
+                    self._frames[target_id] = (parent, self._frames.get(target_id, (None, None))[1])
                 self._spawn(self._setup(child, framed=kind == "iframe",
                                         waiting=params.get("waitingForDebugger") is True))
         elif method == "Target.detachedFromTarget":
@@ -573,14 +599,19 @@ class QaInjector:
             self._sessions.pop(session, None)
 
     def top_origin(self, frame_id: Any) -> str | None:
-        """The origin of `frame_id`'s top-level frame, from the gate's own frame map."""
+        """The origin of `frame_id`'s top-level frame, from the gate's own frame map.
+
+        The walk ends only at a page's main frame. A frame whose parent the
+        gate never learnt -- an out-of-process frame reporting no `parentId`,
+        under a page whose `frameAttached` it did not see -- has no known top
+        and gets no header: it must not be taken for a top frame itself."""
         seen = 0
         while isinstance(frame_id, str) and seen < 64:
             parent, url = self._frames.get(frame_id, (None, None))
             if frame_id not in self._frames:
                 return None
             if parent is None:
-                return origin_of(url)
+                return origin_of(url) if frame_id in self._mains else None
             frame_id = parent
             seen += 1
         return None

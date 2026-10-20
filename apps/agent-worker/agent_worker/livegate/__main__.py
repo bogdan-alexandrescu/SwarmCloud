@@ -1857,8 +1857,14 @@ class LiveGate:
         host = self.qa.host
         if host is None:
             return False
-        if isinstance(expect, str) and expect.split(":", 1)[0] == host:
-            return True
+        if isinstance(expect, str) and expect:
+            # A bare host (handoff.expect_refusal), read as a URL's host too.
+            try:
+                named = urlsplit(expect if "://" in expect else f"https://{expect}").hostname
+            except ValueError:
+                named = None
+            if named == host:
+                return True
         target = self.pages.current if self.pages is not None else None
         if target is None or self.proxy is None:
             return False
