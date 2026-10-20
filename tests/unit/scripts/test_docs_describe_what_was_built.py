@@ -1265,3 +1265,176 @@ def test_workspaces_doc_names_the_workspace_roles_card():
                          ids=lambda p: p.name)
 def test_workspace_roles_docs_cite_only_what_resolves(doc: Path):
     _assert_cites_resolve(doc)
+
+
+# --------------------------------------------------------------------------
+# QI-DOCS (part of #1649): a browser agent signs in to the console as the QA
+# identity, and the documents say what was built
+# --------------------------------------------------------------------------
+#
+# docs/design/qa-identity.md was written before any lane built it. Its §8
+# records what each build-plan lane landed and where the code departs from
+# the design; §4.9 and §6 carry the owner's 2026-10-20 decision that M2 is
+# not a gate before the build. docs/design/live-browser.md §5.5.1 notes the
+# console host the session carry leaves out, and docs/workspaces.md §6.6 the
+# QA account's service workspace. Every header, constant, route, code and
+# name they state is read from the code here, so a lane landing or a value
+# changing fails until the documents follow.
+
+QI_DESIGN = DOCS / "design" / "qa-identity.md"
+QI_MEASURED = DOCS / "design" / "qa-identity-measurements.md"
+LIVE_BROWSER = DOCS / "design" / "live-browser.md"
+QI_BUILT = "## 8. Measurements and what was built"
+QI_M = "### 4.9 Measurements before the build (M1–M5) and the owner's steps"
+QI_CARRY = "### 5.5.1 Reusing a signed-in session (LB-7)"
+QI_WORKSPACE = "### 6.6 The QA identity's service workspace (qa-identity, #1649)"
+QI_GATE_PY = "apps/agent-worker/agent_worker/livegate/qaidentity.py"
+QI_WORKER_PY = "apps/agent-worker/agent_worker/qa_identity.py"
+QI_API_PY = "apps/swarm-api/swarm_api/qa_identity.py"
+QI_SESSION_PY = "apps/agent-worker/agent_worker/livegate/session.py"
+QI_FRONT_DOOR = "apps/swarm-api/swarm_api/main.py::FrontDoor.__call__"
+QI_DECIDED = "Amended 2026-10-20"
+
+
+def _qi_lanes() -> list[str]:
+    plan = _section(_text(QI_DESIGN), "## 6. Build plan")
+    lanes = re.findall(r"^\|[^|\n]*\| \*\*(QI-[A-Z]+)\*\*", plan, flags=re.M)
+    assert len(lanes) >= 10 and "QI-DOCS" in lanes, lanes
+    return lanes
+
+
+def _qi_entry(raw: str, lane: str) -> str:
+    """§8's entry for one lane: from `**<lane> (` to the next lane's entry."""
+    start = raw.index(f"**{lane} (")
+    nxt = re.search(r"^\* \*\*QI-", raw[start + 1:], flags=re.M)
+    return _flat(raw[start: start + 1 + nxt.start()] if nxt else raw[start:])
+
+
+def _qi_built(lane: str) -> bool:
+    """Whether the lane's work is on this tree, read from the files its §6 row names."""
+    browser = _text(REPO / "images" / "agent-runtime-browser" / "swarm_browser.py")
+    accept = _text(REPO / "tests" / "acceptance" / "test_live_browser.py")
+    marks = {
+        "QI-CONTRACT": (REPO / "tests/unit/common/test_qa_identity_contract.py").is_file(),
+        "QI-IAM": (REPO / "terraform/bootstrap/qa_identity.tf").is_file(),
+        "QI-API": (REPO / QI_API_PY).is_file(),
+        "QI-GATE": (REPO / QI_GATE_PY).is_file(),
+        "QI-WORKER": (REPO / QI_WORKER_PY).is_file(),
+        "QI-UI": (REPO / "apps/swarm-ui/src/QaIdentityGrants.tsx").is_file(),
+        "QI-MCP": (REPO / "tests/unit/mcp/test_qa_identity_details.py").is_file(),
+        "QI-INSTRUCT": "qa-identity.md" in browser or "QA identity" in browser,
+        "QI-DOCS": True,
+        "QI-ACCEPT": "qa_identity" in accept,
+    }
+    assert lane in marks, f"§6 names a lane {lane} this test does not know how to read"
+    return marks[lane]
+
+
+def test_qa_identity_design_no_longer_says_nothing_is_built():
+    head = _flat(_text(QI_DESIGN).split("\n---\n", 1)[0])
+    assert "Nothing in it is built" not in head
+    assert "**Status: built" in head and "§8" in head
+
+
+def test_qa_identity_design_records_what_every_lane_built():
+    raw = _section(_text(QI_DESIGN), QI_BUILT)
+    body = _flat(raw)
+    assert "Nothing yet" not in body
+    for lane in _qi_lanes():
+        assert f"**{lane} (" in raw, f"§8 has no entry for {lane}"
+        entry = _qi_entry(raw, lane)
+        if _qi_built(lane):
+            assert "not built" not in entry, f"{lane} is on this tree; §8 says it is not built"
+        else:
+            assert f"**{lane} (not built" in entry, f"{lane} is not on this tree; §8 must say so"
+    # Departure 1: the header is `Authorization`, never `Proxy-Authorization` (M3).
+    header = f"{QI_GATE_PY}::HEADER"
+    assert f"`{header}`" in raw and '"Authorization"' in _cited_symbol(*header.split("::"))
+    assert "Chromium refuses" in body
+    # Departure 2: guard 2 strips a header by the credential in its value, not by name.
+    strip = f"{QI_GATE_PY}::QaInjector"
+    assert f"`{strip}`" in raw
+    assert "by its value" in body
+    # Departure 3: swarm-api removes the credential headers beside an assertion.
+    removed = "apps/swarm-api/swarm_api/main.py::CREDENTIAL_HEADERS"
+    assert f"`{removed}`" in raw and 'b"authorization"' in _cited_symbol(*removed.split("::"))
+    # Departure 4: M4's fix lists the service tenant when it is already the default.
+    listed = "apps/swarm-api/swarm_api/auth.py::Authenticator._list_own_service_default"
+    assert f"`{listed}`" in raw
+    _cited_symbol(*listed.split("::"))
+    # The renewal point, read from the worker.
+    renew = f"{QI_WORKER_PY}::RENEW_FRACTION"
+    assert f"`{renew}`" in raw and "1 / 3" in _cited_symbol(*renew.split("::"))
+    # The QA workspace cannot be granted its own identity.
+    from swarm_api.qa_identity import QaIdentitySelf
+
+    assert f"`{QaIdentitySelf.code}`" in body
+
+
+def test_qa_identity_design_4_9_records_that_m2_is_not_a_gate():
+    """The owner's 2026-10-20 decision, and either the M2 reading or that it is
+    still to come, matching what the measurements document holds."""
+    raw = _section(_text(QI_DESIGN), QI_M)
+    body = _flat(raw)
+    assert QI_DECIDED in body and "M2 is not a gate before the build" in body
+    assert "`proxy_authorization_present`" in body
+    assert f"`{QI_FRONT_DOOR}`" in raw
+    assert "proxy_authorization_present=" in _cited_symbol(*QI_FRONT_DOOR.split("::"))
+    measured = _text(QI_MEASURED)
+    m2 = _flat(_section(measured, _heading(measured, "### M2")))
+    if re.search(r"proxy_authorization_present=(true|false)", m2):
+        assert "M2 was read" in body and "qa-identity-measurements.md" in body
+    else:
+        assert "still to come" in body and "qa-identity-measurements.md" in body
+
+
+def test_qa_identity_design_6_records_what_qi_api_and_qi_gate_wait_for():
+    body = _flat(_section(_text(QI_DESIGN), "## 6. Build plan"))
+    assert QI_DECIDED in body and "M2 is not a gate before the build" in body
+    assert "QI-API waits for M1, M3 and M4" in body
+    assert "QI-GATE waits for M1, M3 and M5" in body
+
+
+def test_live_browser_5_5_1_notes_the_qa_identity_host_is_never_carried():
+    raw = _section(_text(LIVE_BROWSER), QI_CARRY)
+    body = _flat(raw)
+    assert "The QA identity's console host is never carried" in body
+    assert "qa-identity.md" in body
+    for scope in ("carry", "login", "park"):
+        assert scope in body, scope
+    excluded = f"{QI_SESSION_PY}::SessionCarry._excluded"
+    assert f"`{excluded}`" in raw and "sent_to" in _cited_symbol(*excluded.split("::"))
+    imported = f"{QI_SESSION_PY}::SessionCarry.import_jar"
+    assert f"`{imported}`" in raw and "self._excluded" in _cited_symbol(*imported.split("::"))
+    refused = "apps/agent-worker/agent_worker/livegate/__main__.py::LiveGate.pause"
+    assert f"`{refused}`" in raw and "qa_identity_host" in _cited_symbol(*refused.split("::"))
+    assert "`qa_identity_host`" in body
+
+
+def test_workspaces_doc_describes_the_qa_identitys_service_workspace():
+    from swarm_api.qa_identity import GRANTS_COLLECTION, QaIdentitySelf
+
+    text = _text(WORKSPACES_DOC)
+    head = _flat(text.split("\n---\n", 1)[0])
+    assert "design/qa-identity.md" in head and "§6.6" in head
+    raw = _section(text, QI_WORKSPACE)
+    body = _flat(raw)
+    locals_tf = _text(LOCALS_TF)
+    assert '"qa-console@${var.project_id}.iam.gserviceaccount.com"' in locals_tf
+    assert "`qa-console@<project>.iam.gserviceaccount.com`" in body
+    assert 'var.environment == "dev"' in locals_tf and "dev only" in body
+    assert "Admin › Tenants › New workspace › Service" in body
+    assert "no account is lent" in body
+    assert f"`{GRANTS_COLLECTION}`" in body and f"`{QaIdentitySelf.code}`" in body
+    own = f"{QI_API_PY}::own_tenant"
+    assert f"`{own}`" in raw and "tenant_id_for_user" in _cited_symbol(*own.split("::"))
+    routes = _text(REPO / "apps" / "swarm-api" / "swarm_api" / "routes" / "qa_identity.py")
+    for path in ("/qa-identities/mine", "/admin/qa-identities/{identity}/grants/{tenant_id}"):
+        assert f'"{path}"' in routes, path
+        assert f"`/v1{path}`" in body, path
+    assert "`WORKSPACE_SERVICE_PLATFORM`" in body
+
+
+@pytest.mark.parametrize("doc", (QI_DESIGN, LIVE_BROWSER, WORKSPACES_DOC), ids=lambda p: p.name)
+def test_qa_identity_docs_cite_only_what_resolves(doc: Path):
+    _assert_cites_resolve(doc)
