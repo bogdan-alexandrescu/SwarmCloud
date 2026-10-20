@@ -678,9 +678,19 @@ New module `apps/agent-worker/agent_worker/livegate/qaidentity.py`:
   there, and such flows are person-only or admin-only anyway (fact 9).
 * **Redirect guard 2, at the `Request` stage** (`*`). On any paused request
   whose parsed host is not exactly `<host>`, if its `request.headers` holds
-  `<header>` (case-insensitive), the gate continues it with that header
-  removed and records `qa_identity_header_stripped`. Otherwise it continues
-  it unchanged. This is the second guard, for a redirect guard 1 did not
+  a header whose value carries the held QA credential (any name, compared
+  case-insensitively by name and exactly by value), the gate continues it
+  with that header removed and records `qa_identity_header_stripped`.
+  Otherwise it continues it unchanged.
+
+  **Amended 2026-10-20 (owner decision, PR 1724): by value, not by name.**
+  The guard first stripped `<header>` by name. M3 then moved the header from
+  `Proxy-Authorization`, which no page sets, to `Authorization`, which many
+  pages set for their own logins. Stripping by name would remove every
+  other site's bearer credential for the whole attempt. The guard therefore
+  removes only a header that carries the QA credential, and leaves another
+  site's own `Authorization` untouched
+  (`apps/agent-worker/agent_worker/livegate/qaidentity.py`, module docstring). This is the second guard, for a redirect guard 1 did not
   see (a response the `Response` stage was not offered, for example). It
   costs one gate round trip on every request the browser makes while an
   identity is held; with no identity held the gate does not enable the `*`
