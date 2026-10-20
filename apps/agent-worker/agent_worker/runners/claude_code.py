@@ -273,6 +273,8 @@ from ..jevkey import BACKEND_ENV as JEV_BACKEND_ENV
 from ..jevkey import INTERNAL_BACKENDS as JEV_INTERNAL_BACKENDS
 from ..jevkey import KEY_FILE_ENV as JEV_KEY_FILE_ENV
 from ..logs import StructuredLogger
+from ..qa_identity import NOTICE_NAME as _QA_NOTICE_NAME
+from ..qa_identity import requested as qa_identity_requested
 from .base import RunnerContext, RunnerFailure, run_runner
 from ..livegate.presets import PRESETS as DEVICE_PRESETS
 from .cliagent import CliAgentSpec, agent_working_directory, cli_stream_files, run_cli_agent
@@ -444,6 +446,30 @@ LIVE_BROWSER_DEV_BROWSER_NOTE = (
     "drives the same live browser the person watches. After every "
     "`swarm-handoff wait` returns, run `dev-browser stop` before your next "
     "script, so it re-attaches to the pages as the person left them."
+)
+
+#: QI-INSTRUCT (docs/design/qa-identity.md §4.7; owner decisions 2026-10-19,
+#: part of #1649). Appended to `LIVE_BROWSER_NOTE` only when the task's input
+#: names an identity the frozen catalogue offers (`qa_identity.requested`):
+#: the gate then adds the QA account's IAP credential to console requests, so
+#: the console is signed in. A task that names none is not told, because its
+#: console is not signed in. The hand-off is refused there (`qa_identity_host`,
+#: Q7): a person's own sign-in would hand the agent that person's workspaces.
+#: The notice is the worker's (`qa_identity.NOTICE_NAME`), in the hand-off spool
+#: whenever the browser holds no credential.
+QA_IDENTITY_NOTE = (
+    "This browser is already signed in to the SwarmCloud console as its QA "
+    "identity, a service account that is a member of its own QA workspace: open "
+    "console pages directly and you see what a member of that workspace sees, "
+    "and nothing of any other workspace or of the admin screens. Do not run "
+    "`swarm-handoff request` for a console page; it is refused there "
+    "(`qa_identity_host`), because a person's own sign-in would give you their "
+    "workspaces. If a console page shows a Google sign-in, never type a password "
+    "or an address into it: read $SWARM_HANDOFF/" + _QA_NOTICE_NAME + ", which "
+    "exists only while the browser is signed out of the console and says why. "
+    "Finish what you can check without the console, and say in your answer that "
+    "the console sign-in was unavailable, naming the cause it gives. Hand-offs "
+    "for other sites work as above."
 )
 
 #: THE BROWSER TOOL (BSTATUS-API, contract request 77, owner decision
@@ -952,10 +978,13 @@ SPEC = CliAgentSpec(
 
 
 def live_browser_note(choice: browser_tools.Choice, *, search: bool,
-                      jev_internal: bool = False) -> str:
+                      jev_internal: bool = False, qa_identity: str | None = None) -> str:
     """The note an agent with the live browser is given: the selected tool
-    first, then the live browser's rules, then each tool's strength."""
+    first, then the live browser's rules, the QA identity's when the task
+    named one, then each tool's strength."""
     parts = [BROWSER_TOOL_LEAD[choice.selected], LIVE_BROWSER_NOTE]
+    if qa_identity:
+        parts.append(QA_IDENTITY_NOTE)
     for tool in choice.tools:
         if tool == "jev" and jev_internal:
             parts.append(BROWSER_TOOL_STRENGTH_JEV_INTERNAL)
@@ -1142,7 +1171,12 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             if not jev:
                 jev_key_file, jev_internal = "", False
             browser_tools.write_state(env.get(HANDOFF_ENV, ""), choice)
-            note = live_browser_note(choice, search=bool(search_spool), jev_internal=jev_internal)
+            # The QA identity (QI-INSTRUCT): read as the worker reads it, so
+            # the agent is told the console is signed in exactly when the
+            # worker asks the gate to sign it in.
+            note = live_browser_note(
+                choice, search=bool(search_spool), jev_internal=jev_internal,
+                qa_identity=qa_identity_requested({"input": ctx.payload}))
         else:
             env[BROWSERS_PATH_ENV] = browsers
         # A new dict on the same context: `run_runner` holds this object.
