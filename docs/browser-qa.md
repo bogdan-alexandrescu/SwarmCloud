@@ -126,21 +126,24 @@ To test a branch rather than `main`, change `repository_ref`; nothing else.
 | `capture-<group>`, one per group in [`apps/swarm-ui/qa/routes.json`](../apps/swarm-ui/qa/routes.json) | `claude-code-browser`, `playwright`, `haiku` | starts the fixture build (`npm run dev` in `apps/swarm-ui`, no network) and runs `python -m swarm_qa capture` for its group at `desktop` and `phone-390`, `light` and `dark`. Writes `capture-<group>.tar`: the PNGs, each page's text, ARIA snapshot and console errors, and `manifest.json`. `capture-task` also runs axe-core |
 | `review-<group>` | `claude-code`, `opus` | opens every PNG in its group's capture and writes `findings-<group>.json` (one entry per defect, with a crop PNG) and `review-<group>.tar`. `reviewed` is the number of images it opened |
 | `flow-find-failure`, `flow-workflow-graph` | `claude-code-browser`, `jev`, `sonnet` | a goal, reached as a person would, at desktop and then at `phone-390` or in dark mode; a GIF of each run under `flows/` |
-| `flow-submit-form` | `claude-code-browser`, `playwright`, `sonnet` | the submit form at desktop and at `phone-390`, a screenshot at each step, and what the model says each screenshot showed |
+| `flow-submit-form` | `claude-code-browser`, `playwright`, `sonnet` | the submit form at desktop and at `phone-390`, at most 12 screenshots per preset, and what the model says each screenshot showed. It stops at 35 minutes, or at its first browser tool timeout, and bundles what it reached |
 | `a11y-keyboard` | `claude-code-browser`, `playwright`, `sonnet` | keyboard-only navigation of every section, unnamed controls, reduced motion and deuteranopia |
-| `report` | `claude-code`, `opus` | merges every finding into `findings.json` and writes `report.md`, with each finding's crop, each flow's GIF, and a check of every review's `reviewed` count against what its capture should have produced |
+| `report` | `claude-code`, `opus` | waits for the reviews and `a11y-keyboard` only; merges every finding into `findings.json` and writes `report.md`, with each finding's crop and a check of every review's `reviewed` count against what its capture should have produced |
+| `flow-report` | `claude-code`, `opus` | waits for the three flows only; writes `flows.md` and `flows.json`: each flow's GIFs, whether its goal was reached, and what the model said it saw in each `flow-submit-form` screenshot. A failed flow costs this report, never `report` (visual QA run 2 lost its whole report to one flow; [design §8](design/visual-qa.md#8-what-the-runs-taught)) |
 
 The six groups are the route list's: `overview-automate`, `work-a`, `work-b`,
 `capacity`, `admin` and `task`. Every tab of the console's navigation is in
 one of them, and `tests/unit/scripts/test_qa_routes.py` fails when a tab is
 added without a route. `tests/unit/mcp/test_qa_workflow_template.py` fails
-when a group has no capture and review step here, when the report misses a
-review or a flow, or when the file stops being a spec the platform takes.
+when a group has no capture and review step here, when a report misses a
+review or a flow or waits on a step that is not its own, or when the file stops being a spec the platform takes.
 
 ### What you get
 
 The report step's artifacts, in the console's Artifacts pane: `report.md`,
-`findings.json`, every finding's crop PNG and every flow's GIF, shown inline.
+`findings.json` and every finding's crop PNG; the flow-report step's:
+`flows.md`, `flows.json`, every flow's GIF and the screenshots it cites, shown
+inline.
 Each capture's and review's tarball stays on its own step.
 
 A finding is reported, not filed. To file them, follow CLAUDE.md's issue
