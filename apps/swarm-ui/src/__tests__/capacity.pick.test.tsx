@@ -479,8 +479,8 @@ describe('Provider quota draws one word one way (#503)', () => {
     expect(th.closest('tr')!.querySelector('td[data-label="State"] [data-mark="warn"]')).not.toBeNull()
   })
 
-  it('fits the table to the page: fixed layout, the long pool name ellipsized', () => {
+  it('fits the table to the page: fixed layout, the long pool name wrapped (QA-057)', () => {
     expect(CAPACITY_CSS).toMatch(/\.quota-table\s*>\s*table\s*\{[^}]*table-layout:\s*fixed/)
-    expect(CAPACITY_CSS).toMatch(/\.quota-feeds a\s*\{[^}]*text-overflow:\s*ellipsis/)
+    expect(CAPACITY_CSS).toMatch(/\.quota-feeds a\s*\{[^}]*white-space:\s*normal/)
   })
 })

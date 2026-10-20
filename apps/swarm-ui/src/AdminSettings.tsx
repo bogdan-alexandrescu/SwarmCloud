@@ -727,8 +727,8 @@ export function unitsWord(n: number): string {
  * WHAT SET A POOL'S CEILING, NEVER A BLANK CELL (browser QA D32, 2026-10-04).
  * #132 left the configured case empty so the column would not restate the
  * Ceiling, and every row then read as a cell nobody filled in. The configured
- * case is a faint dot (G5-19), named for a screen reader; AIMD and provider
- * quota stand out in ink.
+ * case is the word in the dim ink (QA-099, run 2); AIMD and provider quota
+ * stand out in ink.
  */
 export function AdmSetBy({ pool }: { pool: Pool }) {
   const by = setBy(pool)
@@ -737,13 +737,16 @@ export function AdmSetBy({ pool }: { pool: Pool }) {
   // NAMED FOR THE MOUSE TOO (VQA V190): the word was on `aria-label` alone,
   // so a sighted reader hovering a lone `·` learnt nothing. Its own `title`
   // says the word and the sentence why, whatever cell it is drawn in.
-  // A DRAWN DISC, NOT THE GLYPH (visual QA QA-099, 2026-10-20): a 3px `·`
-  // in the faint ink read as an empty cell. `.adm-setby-cfg`
-  // (styles/admin.css) draws a 6px disc in the dim ink and sets the glyph at
-  // size 0; the glyph stays in the text, as Pools' dot keeps it.
+  // THE WORD, QUIETER, NOT A MARK (visual QA QA-099, run 2, 2026-10-20).
+  // A 3px `·` read as an empty cell; PR 1707's 6px disc was a mark a
+  // sighted reader still had no word, legend or tooltip for beside `AIMD
+  // back-off` in words -- only the accessibility tree said `configured`.
+  // The word is now printed, in the dim ink at the cell's size
+  // (`.adm-setby-cfg`, styles/admin.css), so the overrides in full ink still
+  // stand out from it, which is what G5-19 hid the word for.
   return by.term === 'configured' ? (
-    <span className="adm-setby-cfg" role="img" aria-label="configured" title={`configured. ${by.detail}`}>
-      ·
+    <span className="adm-setby-cfg" title={`configured. ${by.detail}`}>
+      configured
     </span>
   ) : (
     <>{by.term}</>
@@ -1304,8 +1307,8 @@ function PoolRow({
           )}
         </span>
       </td>
-      {/* EMPTY WHERE THE CEILING IS THE CONFIGURED VALUE (#132): `configured`
-          on every such row was the column restating the Ceiling beside it.
+      {/* `configured` IN THE DIM INK WHERE THE CEILING IS THE CONFIGURED
+          VALUE (#132, QA-099): never blank, and quieter than an override.
           The column itself is in every family now (#503). */}
       <td role="cell" data-label="Set by" className="adm-setby" title={by.detail}>
         <AdmSetBy pool={pool} />

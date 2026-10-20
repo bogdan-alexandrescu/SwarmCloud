@@ -489,21 +489,15 @@
 /* The figure heads keep their right alignment and take the heads' sans (D16),
    at every width: `table.pools .n` is the cells' mono. */
 table.ten-table > thead > tr > th.n { font-family: var(--font); }
-/* `configured` IS A DRAWN DISC (visual QA QA-099, 2026-10-20). It was the
-   `·` glyph in `--text-faint`, about 3px at the cell's size, and the
-   operator could not tell it from an empty cell. A 6px disc in the dim ink
-   is plainly a mark and still quieter than the terms in ink that stand out
-   beside it (AIMD back-off, provider quota); the glyph stays in the text at
-   size 0. The tone is `--text-dim`, which keeps 3:1 as a graphic on the
-   edited row's tint too (5.94:1 light, 6.59:1 dark, VQA V065 above). */
+/* `configured` IS THE WORD, IN THE DIM INK (visual QA QA-099, run 2,
+   2026-10-20). It was the `·` glyph in `--text-faint`, then (PR 1707) a 6px
+   disc; either way a sighted reader had a mark with no word, legend or
+   tooltip they would think to hover for, while `AIMD back-off` beside it
+   was in words. The word at the cell's size in `--text-dim` reads, and is
+   still quieter than the overrides in ink (G5-19's reason for hiding it).
+   `--text-dim` clears AA on the edited row's tint too (VQA V065 above). */
 .adm-setby-cfg {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background-color: var(--text-dim);
-  font-size: 0;
-  vertical-align: middle;
+  color: var(--text-dim);
   cursor: help;
 }
 /* A POOL KEY BREAKS AT A COLON, NEVER MID-WORD (QA G5-11, 2026-10-07).

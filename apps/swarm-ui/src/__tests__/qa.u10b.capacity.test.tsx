@@ -110,8 +110,7 @@ describe('D32: Set by is never blank, and a unit is a unit', () => {
 
   it('says configured on a Pool limits row too', () => {
     const { container } = render(<AdmSetBy pool={pool('global', 1, 40)} />)
-    expect(container.textContent).toBe('·')
-    expect(container.querySelector('[aria-label="configured"]')).not.toBeNull()
+    expect(container.textContent).toBe('configured')
     const { container: c2 } = render(<AdmSetBy pool={pool('runner:a', 1, 10, { hard_limit: 20, adaptive_target: 10 })} />)
     expect(c2.textContent).toBe('AIMD back-off')
   })

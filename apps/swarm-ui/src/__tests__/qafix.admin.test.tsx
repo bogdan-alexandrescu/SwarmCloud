@@ -8,7 +8,8 @@
 //           (`Admins only…`) could not be reached by keyboard
 //   QA-043  the phone card's Last changed wrapped to a line starting `· 40 → 20`
 //   QA-045  In use and Ceiling drew their figures in two faces, two alignments
-//   QA-099  `configured` was a 3px `·` a sighted reader took for an empty cell
+//   QA-099  `configured` was a 3px `·`, then a 6px disc, with no word a sighted
+//           reader could read (run 2): it is now the word, in the dim ink
 //   QA-042  `Platform counts` and `Absent, zero, unread and stale` read as one link
 //   QA-098  `Platform ticks` sat 18px under the cards with nothing marking a
 //           change of subject
@@ -219,29 +220,6 @@ describe('QA-045: In use and Ceiling draw their figures alike', () => {
       // value column while `20` starts at its edge.
       expect(painted(figure, 'text-align', PHONE)).toBe('left')
       expect(painted(figure, 'width', PHONE)).toBe('auto')
-    }
-  })
-})
-
-describe('QA-099: `configured` is a mark a sighted reader can see', () => {
-  it('draws a 6px disc in the dim ink in place of the glyph, named for a screen reader', async () => {
-    viewport(1440)
-    await limits([pool('global')])
-    const dot = document.querySelector('#limit-global td[data-label="Set by"] .adm-setby-cfg')!
-    expect(screen.getByRole('img', { name: 'configured' })).toBe(dot)
-    // The glyph stays in the text, as Pools' dot has it (qa.c6d.pools), but
-    // the mark a reader sees is the drawn disc.
-    expect(dot.textContent).toBe('·')
-    for (const env of [WIDE, PHONE]) {
-      // MUTATION: leave the glyph at the cell's size: a 3px `·` over the disc.
-      expect(painted(dot, 'font-size', env)).toBe('0')
-      // MUTATION: put the `·` glyph back as the only mark: no box is drawn.
-      expect(painted(dot, 'display', env)).toBe('inline-block')
-      expect(painted(dot, 'width', env)).toBe('6px')
-      expect(painted(dot, 'height', env)).toBe('6px')
-      expect(painted(dot, 'border-radius', env)).toBe('50%')
-      // MUTATION: paint it `--text-faint`, the tone that read as nothing.
-      expect(painted(dot, ['background-color', 'background'], env)).toBe('var(--text-dim)')
     }
   })
 })

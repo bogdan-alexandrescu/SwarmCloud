@@ -240,7 +240,7 @@
 /* Provider quota (capacity.html frame 11): eight columns that fit 1440 with
    the nav open. Fixed layout with the widths below, so Reported is never
    pushed past the card's edge; the pool name is the one long value, and it
-   ellipsizes with its whole name in its title. */
+   wraps at its colons (QA-057, run 2). */
 .quota-table > table { table-layout: fixed; width: 100%; }
 /* THE WIDTHS FOLLOW WHAT EACH COLUMN HOLDS (visual QA V005, V013, V156,
    2026-10-16). Tenant had 11% -- `cu… tomation`, no tenant recognisable --
@@ -260,7 +260,9 @@
    content (the widths above, as the percentages gave them at 1054), Tenant
    keeps its share, and Feeds pool sets no width: a fixed table gives an auto
    column what is left. At 1054 that is ~160px, what its 15% was; at ~1300 it
-   is ~400px, the whole of `provider:anthropic:tenant:u-bogdan`.
+   is ~400px, the whole of `provider:anthropic:tenant:u-bogdan`. Run 2 shot
+   1440 with the nav open, the ~1054 table, so the name still did not fit on
+   one line there: it now wraps rather than being cut (`.quota-feeds a`).
    EACH PX WIDTH IS CAPPED AT ITS OLD SHARE (`min(Npx, N%)`, QA-057 review).
    In bare px the bounded columns are 724px: a 1280px viewport with the nav
    open (a ~894px table) left Feeds pool ~27px, and below ~1250px the fixed
@@ -275,16 +277,33 @@
 .quota-table col.quota-c-last { width: min(136px, 13%); }
 .quota-table col.quota-c-rep { width: min(76px, 7%); }
 .quota-table thead th { white-space: normal; }
+/* THE POOL NAME WRAPS AT ITS COLONS, WHOLE (QA-057, visual QA run 2). At
+   1440 the column is ~160px and the name up to ~265px, so a one-line name
+   was always cut -- twice once its tail split (`…:ten… u-bogdan`).
+   `PoolName` (QuotaDetail.tsx) offers a `<wbr>` after each colon. */
 .quota-feeds a {
   display: block;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* EACH SEGMENT IS ONE RUN WHILE IT FITS, as Pool limits' `.adm-key-seg`
+   (styles/admin.css, VQA V076, V160): an inline block no wider than the
+   cell does not break at the hyphen in `u-bogdan` while it fits a line, and
+   one that cannot fit any line still wraps rather than run into Requests
+   left. An inline block takes no underline from its link, so it takes the
+   link's own (`inherit`), hover colour included. */
+.quota-feeds .quota-pool-seg {
+  display: inline-block;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-decoration: inherit;
 }
 /* CUT IN THE MIDDLE (visual QA V005, V020; QuotaDetail.tsx `MiddleCut`): the
-   head of an id shrinks first and the tail -- the pool's `tenant:<id>`, a
-   tenant's last eight -- is kept, the `.cap-sub` pattern. The tenant row
-   head clips inside its column instead of printing over State. */
+   head of an id shrinks first and the tail -- a tenant's last eight -- is
+   kept, the `.cap-sub` pattern. The tenant row head clips inside its column
+   instead of printing over State. (The Feeds pool name wraps instead,
+   above.) */
 .quota-cut { display: flex; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; }
 /* The head's box ends where its ellipsis does (`text-align: end`): cut at a
    glyph boundary it is up to one character wider than what it prints, and
@@ -292,22 +311,6 @@
    at all until it alone is wider than the column (`max-width`). */
 .quota-cut > .quota-cut-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; text-align: end; }
 .quota-cut > .quota-cut-tail { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
-/* A TAIL WIDER THAN THE COLUMN GIVES WAY IN ITS MIDDLE (V020, 2026-10-16):
-   `tenant:customer-succ…tomation`, never `tenant:customer-succes…`. The id's
-   last eight never shrink; the head is gone by then, down to its `…`. */
-.quota-cut > .quota-cut-tail.is-split { display: flex; min-width: 0; }
-.quota-cut-tail.is-split > .quota-cut-mid { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
-.quota-cut-tail.is-split > .quota-cut-end { flex: none; white-space: pre; }
-/* THE FEEDS POOL IS ONE LINK WITH ONE UNDERLINE (V020). Underlined per
-   fragment, the head and the tail read as two links with a gap that changed
-   row to row. The line is the cut box's edge, as wide as the name drawn;
-   the head keeps its END (`…anthropic:`) by ellipsizing at its start, so no
-   slack falls between the halves. The inner span keeps the id's own order. */
-.quota-feeds a.ctl-link { text-decoration: none; }
-.quota-feeds a > .quota-cut { display: inline-flex; vertical-align: top; border-bottom: 1px solid currentColor; }
-.quota-feeds .quota-cut > .quota-cut-head { direction: rtl; text-align: start; min-width: 1em; }
-.quota-feeds .quota-cut > .quota-cut-head > span { direction: ltr; unicode-bidi: isolate; }
-.quota-feeds .quota-cut > .quota-cut-tail { max-width: calc(100% - 1em); }
 .quota-table tbody th.quota-tenant { overflow: hidden; }
 /* "TIME NOT RECORDED" HOLDS ONE LINE (visual QA V013, 2026-10-16). In 9% it
    printed over Reported; wrapped, it made its row ~12px taller than the rest.
@@ -375,10 +378,26 @@
    SCOPED, NOT SHARED (the owner's choice, 2026-10-20). QAFIX-CAPACITY wrote
    it into the shared `.ctl-mark.is-partial` rule, which squared every partial
    mark on every screen; everywhere else the mark is as it was before. */
+/* THE DASHES ARE DRAWN, NOT LEFT TO THE BROWSER (QA-049, visual QA run 2,
+   capacity-003). Squared, the dashed side still read as cut: a browser fits a
+   dashed border's pattern so the edge starts and ends on a dash, a 2px
+   border's dash is ~6px, and on a mark ~19px tall that is one tick at the
+   top, one at the bottom and a gap between. The border stays 2px wide but
+   transparent, and a 2px strip of `currentColor` on, 2px off, painted over it
+   from the border box's top, runs the full height as four even dashes -- a
+   dashed rule, the "partial" shape, not a broken outline. */
 .acct-page .ctl-mark.is-partial,
 .quota-page .ctl-mark.is-partial {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
+  border-right-style: solid;
+  border-right-color: transparent;
+  border-right-width: 2px;
+  background-image: repeating-linear-gradient(to bottom, currentColor 0 2px, transparent 2px 4px);
+  background-size: 2px 100%;
+  background-position: right top;
+  background-repeat: no-repeat;
+  background-origin: border-box;
 }
 
 .acct-split {
@@ -762,7 +781,7 @@
 .acct-pct-win { color: var(--text-faint); }
 
 /* G5-23: `Quota cap (units)` and `429s (this run)` hold one line each, in
-   the widths above (Feeds pool takes what they leave; its name is cut only when that is too little). */
+   the widths above (Feeds pool takes what they leave; its name wraps at its colons when that is too little). */
 .quota-table thead th.quota-nowrap { white-space: nowrap; }
 
 /* G5-08: ON A PHONE A CAPACITY TABLE IS A RECORD PER ROW (capacityPoll

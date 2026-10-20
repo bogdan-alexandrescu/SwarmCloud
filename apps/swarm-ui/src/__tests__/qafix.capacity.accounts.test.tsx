@@ -90,7 +90,8 @@ describe('QA-049: the partial mark draws its dashed edge straight', () => {
     const fact = [...document.querySelectorAll('.ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'unread docs')!
     const mark = fact.querySelector<HTMLElement>('.ctl-mark.is-partial')!
     expect(mark.textContent).toBe('partial')
-    expect(painted(mark, 'border-right-style', WIDE)).toBe('dashed')
+    // Solid and transparent since run 2: the dashes are drawn over it (below).
+    expect(painted(mark, 'border-right-style', WIDE)).toBe('solid')
     // MUTATION: drop `border-top-right-radius: 0` / `border-bottom-right-radius: 0`
     // from `.acct-page .ctl-mark.is-partial` (styles/capacity.css), or the
     // `acct-page` wrapper in Accounts.tsx -- the dashes run round the mark's rounded

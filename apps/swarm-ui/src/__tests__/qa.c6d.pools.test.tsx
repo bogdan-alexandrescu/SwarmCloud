@@ -140,9 +140,9 @@ describe('G5-19: Set by draws nothing loud for "configured"', () => {
     expect(dot.getAttribute('aria-label')).toBe('configured')
   })
 
-  it('is the same dot on a Pool limits row', () => {
+  it('is the word, quieter, on a Pool limits row (QA-099, run 2)', () => {
     const { container } = render(<AdmSetBy pool={pool('global', 1, 40)} />)
-    expect(container.textContent).toBe('·')
-    expect(container.querySelector('.adm-setby-cfg')?.getAttribute('aria-label')).toBe('configured')
+    expect(container.textContent).toBe('configured')
+    expect(container.querySelector('.adm-setby-cfg')).not.toBeNull()
   })
 })

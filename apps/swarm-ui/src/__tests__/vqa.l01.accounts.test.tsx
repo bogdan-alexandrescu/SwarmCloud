@@ -484,13 +484,13 @@ describe('V005/V020/V013: Provider quota cuts ids in the middle and keeps the 42
     expect(painted(tail, 'max-width', WIDE)).toBe('100%')
   })
 
-  it('keeps the Feeds pool\'s tenant whole and cuts its provider prefix', async () => {
+  it('keeps the Feeds pool\'s tenant whole, and its prefix too (QA-057, run 2)', async () => {
     const row = await quotaRow()
     const link = row.querySelector('.quota-feeds a')!
     expect(link.textContent).toBe(`provider:anthropic:tenant:${LONG}`)
     expect(screen.getByRole('link', { name: `provider:anthropic:tenant:${LONG}` })).toBe(link)
-    expect(link.querySelector('.quota-cut-tail')!.textContent).toBe(`tenant:${LONG}`)
-    expect(link.querySelector('.quota-cut-head')!.textContent).toBe('provider:anthropic:')
+    expect(link.querySelector('.quota-cut')).toBeNull()
+    expect([...link.querySelectorAll('.quota-pool-seg')].at(-1)!.textContent).toBe(LONG)
   })
 
   it('keeps `time not recorded` inside Last 429, on one line', async () => {
