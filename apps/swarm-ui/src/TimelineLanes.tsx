@@ -1174,6 +1174,9 @@ export function TimelineLanesScreen({
       <OutcomeStrip
         strip={strip}
         lanes={allLanes}
+        // `shown` keeps the last read's rows while a re-read is out (`drawn`),
+        // so the counts stay those of the lanes still drawn -- figures for what
+        // is on screen, never zeros for a read that has not landed (QA-093).
         lanesRead={shown !== null ? 'read' : att.status === 'error' ? 'failed' : 'reading'}
         view={view}
         since={win.since}
