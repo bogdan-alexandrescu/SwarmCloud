@@ -1425,6 +1425,14 @@ def test_workspaces_doc_describes_the_qa_identitys_service_workspace():
     assert 'var.environment == "dev"' in locals_tf and "dev only" in body
     assert "Admin › Tenants › New workspace › Service" in body
     assert "no account is lent" in body
+    # What the QA account submits parks at admission; the WD6 gate exempts it.
+    gate = "apps/swarm-api/swarm_api/workspaces.py::Workspaces.applies_to"
+    assert f"`{gate}`" in raw and "is_service_identity" in _cited_symbol(*gate.split("::"))
+    admit = "apps/scheduler/scheduler/loop.py::Scheduler._admit_one"
+    assert f"`{admit}`" in raw
+    assert "ParkReason.CREDENTIAL_MISSING" in _cited_symbol(*admit.split("::"))
+    assert "parks `CREDENTIAL_MISSING` at scheduler admission, before any lease" in body
+    assert "stays `QUEUED`" not in body
     assert f"`{GRANTS_COLLECTION}`" in body and f"`{QaIdentitySelf.code}`" in body
     own = f"{QI_API_PY}::own_tenant"
     assert f"`{own}`" in raw and "tenant_id_for_user" in _cited_symbol(*own.split("::"))

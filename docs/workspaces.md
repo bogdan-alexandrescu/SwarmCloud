@@ -2063,10 +2063,16 @@ workspace. That is why it is recorded here.
   `GET /v1/tenants/mine` lists it as the default (qa-identity.md §8,
   QI-API).
 * **Member rights, and no account is lent** (Q3 (a)). The QA account can
-  exercise submit and cancel flows in its own workspace. Under WD6 a
-  workspace with no Claude account runs nothing, so what it submits stays
-  `QUEUED` and costs nothing (invariant 1). Do not lend it one without the
-  owner's decision: that is Q3 (b), which was not chosen.
+  exercise submit and cancel flows in its own workspace. The WD6 submission
+  gate does not judge it: it exempts every service account
+  (`apps/swarm-api/swarm_api/workspaces.py::Workspaces.applies_to`). So
+  its task is accepted, and a task whose profile needs a provider then parks
+  `CREDENTIAL_MISSING` at scheduler admission, before any lease
+  (`apps/scheduler/scheduler/loop.py::Scheduler._admit_one`), because the
+  tenant has no key and no pool account. It does not stay `QUEUED`, as Q3 (a)
+  in qa-identity.md §7 put it; the code is the fact. A `PARKED` task costs
+  nothing (invariant 1). Do not lend it one without the owner's decision:
+  that is Q3 (b), which was not chosen.
 * **Who may use it** is a separate grant, not membership. A platform admin
   grants a consuming tenant (`eng` first, Q2 (a)), with a reason, in
   Admin › Tenants › QA identity. The grant is a `qa_identity_grants`
