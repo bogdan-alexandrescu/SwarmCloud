@@ -112,9 +112,17 @@ describe('G4-26: a step not reached yet dims its controls, never its labels', ()
 
   it('dims the controls themselves', () => {
     const host = dimStep()
-    for (const sel of ['input[type="radio"]', '.dsp-repo', 'select', 'textarea']) {
+    for (const sel of ['.dsp-repo', 'select', 'textarea']) {
       expect(opacityOf(host.querySelector(sel)!), `${sel} is not dimmed`).toBeLessThan(1)
     }
+  })
+
+  // NOT ITS RADIOS (visual QA run 2, work-b-006): a radio's ring is the only
+  // mark its option carries, and `.55` took the 3:1 ring to about 1.9:1.
+  it('leaves the radios at full strength', () => {
+    const host = dimStep()
+    // MUTATION: let `.sb-step.is-dim input` reach radios again and this is .55.
+    expect(opacityOf(host.querySelector('input[type="radio"]')!)).toBe(1)
   })
 })
 
