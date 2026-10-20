@@ -737,7 +737,7 @@ gets `jev_decide(state, questions)`, an MCP tool served by `swarm-jev`
   8 calls and 120k tokens.
 * **The backend** comes from the workspace's judgment-backend setting
   (JUDGE-SELECT):
-  * **Internal Jev** (the default) and **Internal Laya** are the Saga
+  * **Internal Jev** (the default) and **Internal Laya** are the internal
     decision API over the tailnet. No credential exists anywhere in the
     agent's process tree. `state` is sent JSON-stringified, because the API
     takes a string.

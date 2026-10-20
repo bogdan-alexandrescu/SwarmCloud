@@ -247,7 +247,7 @@ paused separately by another operator or by the quota broker.
 # First registration. A re-run rewrites the whole record (see section 1), so it
 # is not how a provider is added.
 make register-tenant GROUP=eng@saga.xyz
-make register-tenant USER_EMAIL=alice@saga.xyz
+make register-tenant USER_EMAIL=alice@example.com
 
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin
 make add-provider TENANT=eng PROVIDER=anthropic   # grant + list; keeps eng's other providers

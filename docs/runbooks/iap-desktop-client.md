@@ -5,7 +5,7 @@ minutes, plus up to ten for IAM to propagate. **Changes:** one OAuth client in
 the project, and one IAP setting on each of the platform's own two backend
 services. Nothing on the other team's backends.
 
-The worked values below are Saga's `dev` deployment (`saga-agents-staging`,
+The worked values below are this repository's `dev` deployment (`saga-agents-staging`,
 project number `209012342332`, `https://swarm.saga.xyz`, backends
 `swarm-ui-backend` and `swarm-ui-ui-backend`). Another deployment substitutes
 its own.
@@ -218,7 +218,7 @@ If it prints `did not accept it: ... 401`, IAP is refusing the token: step 4 is
 not applied, or has not propagated.
 A **403 that names you** is the other gate — `roles/iap.httpsResourceAccessor`,
 granted through `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`
-(`domain:saga.xyz` already covers every Saga account).
+(`domain:saga.xyz` already covers every account in that domain).
 
 ## Step 6 — tell developers
 

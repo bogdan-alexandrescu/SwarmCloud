@@ -290,12 +290,12 @@ backend**. Owner decisions, 2026-10-14:
 
 | backend | where page text goes | needs |
 |---|---|---|
-| **Internal Jev** (`internal-jev`, the DEFAULT) | Saga's decision API, `/jev/v1/decide`, on the company tailnet | the cluster's tailnet egress |
+| **Internal Jev** (`internal-jev`, the DEFAULT) | the internal decision API, `/jev/v1/decide`, on the company tailnet | the cluster's tailnet egress |
 | **Internal Laya** (`internal-laya`) | the same API's `/laya/v1/decide` | the cluster's tailnet egress |
-| **TypeSafe** (`typesafe`) | api.typesafe.ai -- outside Saga | a TypeSafe key ([provider-keys.md](../provider-keys.md)) |
+| **TypeSafe** (`typesafe`) | api.typesafe.ai -- outside your network | a TypeSafe key ([provider-keys.md](../provider-keys.md)) |
 
 **Why internal is the default.** It keeps page text -- which can be a signed-in
-person's own data -- inside Saga, and it needs no TypeSafe key, so a workspace
+person's own data -- inside your network, and it needs no TypeSafe key, so a workspace
 can use Jev before anyone has set one. TypeSafe stays a choice, and the console
 says what it costs: "sends page text to TypeSafe; needs a key".
 
@@ -345,12 +345,12 @@ internal backend it sends **no TypeSafe key**: upstream jev-browser 0.2.0
 refuses to start without `TYPESAFE_API_KEY` and sends it as a Bearer token, so
 the wrapper replaces it with a fixed marker that is not a key, and the adapter
 sends its own placeholder in its place on every request. A stored value the code does not know, or a settings read that fails, is
-read as the default -- the backend that sends nothing outside Saga.
+read as the default -- the backend that sends nothing outside your network.
 
 **The code-context work reuses this setting.** The context-quality design
 (CTXQ-DESIGN) judges code context with the same decision API; it reads this
 same per-workspace `judgment_backend` and its availability rather than adding a
-second switch, so a workspace that chose to keep page text inside Saga keeps
+second switch, so a workspace that chose to keep page text inside your network keeps
 its code there too.
 
 **Not verified here.** No unit test can reach the tailnet. The decision API
@@ -368,7 +368,7 @@ Jev** (the default), **Internal Laya** or **TypeSafe**. The network path and
 the setting belong to lanes JUDGE-NET and JUDGE-SELECT. This section is about
 the request shape (JUDGE-ADAPT).
 
-Upstream jev-browser speaks TypeSafe's API. Saga's internal decision API
+Upstream jev-browser speaks TypeSafe's API. The internal decision API
 (`decision-api-staging` on the tailnet, `/jev` or `/laya` +
 `/v1/decide`) answers in the same shape (`choice`, `probabilities`,
 `confidence`, `noul`), but it is **not wire-compatible on the request side**.

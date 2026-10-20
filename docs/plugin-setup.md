@@ -4,7 +4,7 @@ The `sc` Claude Code plugin is a **client**, like `gh` or `kubectl`: you point
 it at *your* SwarmCloud deployment, and it signs you in there as yourself. It
 carries no deployment of its own. Until 2026-09-25 it did — it found
 `https://swarm.saga.xyz` by reading this repository's Terraform variables, so
-everyone who installed it was pointed at Saga's cluster — and this page
+everyone who installed it was pointed at this deployment's cluster — and this page
 describes what replaced that.
 
 ## What you need from your operator
@@ -28,7 +28,7 @@ the bridge sends it to that configured `*.run.app` address and nowhere else.
 A team deployment behind IAP needs all three values, and its operator creates
 the client once for everybody —
 [runbooks/iap-desktop-client.md](runbooks/iap-desktop-client.md) is that
-one-time step for Saga's deployment, and the same shape for any other.
+one-time step for this repository's deployment, and the same shape for any other.
 
 ## Install
 
@@ -200,7 +200,7 @@ process opens and fail if a `.tfvars` file is opened outside this mode.
 | `sc login` succeeds with `warning … not as you` | a service-account identity outranks your sign-in here | unset the variable it names, or run from outside GCP |
 | `/mcp` shows `plugin:sc:swarmcloud` failed | the tag `sc-v<version>` for the installed version is not pushed yet, or `uv` is not on the `PATH` Claude Code started with | push the tag ([plugin/README.md](../plugin/README.md), "Releasing a version"), or start with `SWARM_MCP_FROM=<checkout>/apps/swarm-mcp` |
 
-## Worked example: Saga's `dev` deployment
+## Worked example: this repository's `dev` deployment
 
 | Value | |
 |---|---|

@@ -139,10 +139,10 @@ need that a person does not:
   minutes later the row reads `ready`, and the bot's first `POST /v1/tasks`
   is admitted in its own tenant. No tfvars line, no bootstrap apply, no
   release and no `kubernetes/apply.sh` were needed.
-* An admin chooses **Group**, types `research@saga.xyz` and submits. Members
+* An admin chooses **Group**, types `research@example.com` and submits. Members
   of the group see `research` in their workspace switcher once it is `ready`.
   Their work runs under research's own account, GCS prefix and namespace.
-* An admin chooses **Personal**, types `carol@saga.xyz` and submits (if Q1
+* An admin chooses **Personal**, types `carol@example.com` and submits (if Q1
   answers yes). Carol signs in for the first time to a ready workspace.
 * Before `ready`, none of them can run anything, and nothing of theirs holds
   capacity.
@@ -200,8 +200,8 @@ need that a person does not:
   misfiled task cannot be recovered. A new registered group adds that failure
   mode for every caller below it in priority.
 * **A group slug can collide.** `tenant_id_for_group` slugs the local part
-  only, so `eng@saga.xyz` and `eng@other.example` share `eng`. A group
-  `u-eng@saga.xyz` derives `u-eng`, the id of `eng@saga.xyz`'s personal
+  only, so `eng@example.com` and `eng@other.example` share `eng`. A group
+  `u-eng@example.com` derives `u-eng`, the id of `eng@example.com`'s personal
   workspace (`store.py::assert_tenant_scope`). One tenant's user-slot names can
   also start with another's (`eng` and `eng-git-u-x`), which
   `forge_nested_tenants` refuses for Terraform tenants only.
@@ -1030,7 +1030,7 @@ in the shape of `docs/contract-change-requests.md`:
 > **WK-C. `identity.py`: a job-made group's tenant id carries a `g-` prefix.**
 >
 > *What is true today.* `tenant_id_for_group(email)` returns the slug of the
-> local part, with no prefix. `eng@saga.xyz` gives `eng`.
+> local part, with no prefix. `eng@example.com` gives `eng`.
 >
 > *The change.* A second function, `tenant_id_for_workspace_group(email)`,
 > returns `g-` + the same slug. `resolve_tenant` takes, beside

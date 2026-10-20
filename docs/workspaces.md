@@ -96,7 +96,7 @@ What it settles, one line each:
   shipped off and turned on after one real end-to-end approval (§5, WD8).
 
 The names below are placeholders where a real one is not needed.
-`alice@saga.xyz` is a new person, their tenant is `u-alice`, and their
+`alice@example.com` is a new person, their tenant is `u-alice`, and their
 workspace id is `w-3f9a2c`. `<project>` is the platform's project and
 `<number>` is its project number.
 
@@ -432,7 +432,7 @@ Run job reads one record from it by workspace id.
 |---|---|---|---|
 | `tenant_id` | string | swarm-api | `u-alice`; equals the document id. **Private**: it is derived from the email, so it is a name |
 | `workspace_id` | string | swarm-api | `w-3f9a2c`: `w-` and 6 hex digits from `secrets.token_hex(3)`, **random, not derived from the email**, so nobody can recover it by hashing a guessed address. It is unique (§1.3). This is the only id that appears in anything public |
-| `principal` | string | swarm-api | `alice@saga.xyz`, lower-cased, from the verified token, never from the body |
+| `principal` | string | swarm-api | `alice@example.com`, lower-cased, from the verified token, never from the body |
 | `state` | string | swarm-api, the job | §1.2 |
 | `request_id` | string | swarm-api | a fresh UUID for each accepted request or retry; the job logs it, privately |
 | `requested_at`, `requested_via` | timestamp, string | swarm-api | `console`, `plugin` or `api` |
@@ -1626,7 +1626,7 @@ parallel. Both states come from `GET /v1/onboarding`
 
 ```
 Set up SwarmCloud                                              2 of 7 done
- ✓ Signed in as alice@saga.xyz
+ ✓ Signed in as alice@example.com
  ○ Request your workspace
    Your own isolated space to run agents in: an identity, a storage area and
    a Kubernetes namespace that only your work uses. An admin approves it, and
@@ -1698,7 +1698,7 @@ request) and then reports the record. It does not wait inside the tool.
 
 ```
 $ /sc:setup
-SwarmCloud setup — alice@saga.xyz
+SwarmCloud setup — alice@example.com
   ✓ signed in
   ○ workspace          not requested
   ○ claude account     none
@@ -1759,10 +1759,10 @@ once per 10 minutes per person (`principal`, `first_seen`, `last_seen`,
 ```
 People                                                   12 people · 2 pending
  Person            Teams        GitHub      Workspace         Claude account     Last active
- alice@saga.xyz    eng          connected   ◐ requested       none               3 min ago     [Approve] [Deny]
- bogdan@saga.xyz   eng, admin   connected   ✓ ready w-91c0de  own (2)            now
- carol@saga.xyz    —            —           ✓ ready w-7a12f4  lent by eng        2 days ago
- dan@saga.xyz      eng          connected   ✕ failed (Namespace)  none           1 h ago      [Retry]
+ alice@example.com eng          connected   ◐ requested       none               3 min ago     [Approve] [Deny]
+ bob@example.com   eng, admin   connected   ✓ ready w-91c0de  own (2)            now
+ carol@example.com —            —           ✓ ready w-7a12f4  lent by eng        2 days ago
+ dan@example.com   eng          connected   ✕ failed (Namespace)  none           1 h ago      [Retry]
 ```
 
 * **Teams**: the group tenants the person resolves to, checked per registered
@@ -1774,7 +1774,7 @@ People                                                   12 people · 2 pending
 * **Last activity**: the later of `last_seen` and the last submission.
 
 **2. Pending requests.** `requested` records sort first. **Approve** asks for
-one confirmation ("Create a workspace for alice@saga.xyz with 8 agents? A CI
+one confirmation ("Create a workspace for alice@example.com with 8 agents? A CI
 job will create its identity and namespace."), then the row shows the run's
 steps live, from the record's `steps`, with a link to the job's execution for
 those who can read its restricted log bucket (the owner and

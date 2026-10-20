@@ -174,7 +174,7 @@ These are the issue's acceptance tests, made concrete for the three roles:
 * A platform admin names `alice@` the first admin of `eng`. From then on
   `eng` manages its own secrets, MCP servers and provider keys with no
   platform admin involved.
-* A platform admin who is not in `eng@saga.xyz` selects `eng` in the
+* A platform admin who is not in `eng@example.com` selects `eng` in the
   switcher, rotates its provider key, and that action appears in
   `admin_audit` as `via: "platform_admin"`. The same admin selecting
   `u-carol` is refused `tenant_not_member`, as today.
@@ -203,7 +203,7 @@ These are the issue's acceptance tests, made concrete for the three roles:
   default role" is one value per workspace.
 * **A registered group can derive a personal workspace's id.** The group
   slug adds no prefix while the personal slug adds `u-`, so a group
-  `u-eng@saga.xyz` derives `u-eng`, the same id as `eng@saga.xyz`'s personal
+  `u-eng@example.com` derives `u-eng`, the same id as `eng@example.com`'s personal
   workspace (`store.py::assert_tenant_scope`, docstring). Anything that lets
   a platform admin select group workspaces by id must therefore never offer
   an id in the `u-` namespace (§4.2.2).
@@ -327,7 +327,7 @@ person's role.
 ### 3.2 Design B: role groups, where each role is a Google group (declined, Q4)
 
 The workspace's admins bind more Google groups to roles, for example
-`eng-viewers@saga.xyz → viewer`. A person's role is the highest role among
+`eng-viewers@example.com → viewer`. A person's role is the highest role among
 the bound groups Cloud Identity confirms they are in.
 
 * **Latency:** one more `checkTransitiveMembership` per bound group per
@@ -660,13 +660,13 @@ reaches any group workspace, §4.2).
   "kind": "group",
   "default_role": "member",
   "default_source": "migration",         // "migration" until an admin sets it, then "grant"
-  "me": {"email": "carol@saga.xyz", "role": "viewer", "source": "override",
-         "granted_by": "alice@saga.xyz", "granted_at": "2026-10-20T09:14:03.120Z",
+  "me": {"email": "carol@example.com", "role": "viewer", "source": "override",
+         "granted_by": "alice@example.com", "granted_at": "2026-10-20T09:14:03.120Z",
          "via": "member"},
   "people": [
-    {"email": "alice@saga.xyz", "role": "admin", "source": "override",
-     "granted_by": "ops@saga.xyz", "granted_at": "…", "granted_via": "platform_admin"},
-    {"email": "carol@saga.xyz", "role": "viewer", "source": "override", "…": "…"}
+    {"email": "alice@example.com", "role": "admin", "source": "override",
+     "granted_by": "ops@example.com", "granted_at": "…", "granted_via": "platform_admin"},
+    {"email": "carol@example.com", "role": "viewer", "source": "override", "…": "…"}
   ],
   "roles": [
     {"name": "viewer", "summary": "Sees everything in this workspace; changes nothing."},
@@ -729,9 +729,9 @@ Profile reads (§4.11).
 ```
 workspace_role_grants/{auto-id}
   tenant_id:   "eng"
-  subject:     "carol@saga.xyz"   // lower-cased; "*" for the workspace default
+  subject:     "carol@example.com"   // lower-cased; "*" for the workspace default
   role:        "viewer"           // viewer | member | admin; null = "back to the default" (subject != "*")
-  granted_by:  "alice@saga.xyz"
+  granted_by:  "alice@example.com"
   granted_at:  "2026-10-20T09:14:03.120Z"   // swarm-api's clock, written as a string, covered by the MAC
   via:         "console" | "cli" | "platform_admin"
   reason:      "moved to read-only for the audit"   // <= 200 chars, redacted (redaction.py) before it is written
@@ -1046,7 +1046,7 @@ apart, ROLES-API-CORE uses a second, non-switchable code,
 Every 403 body is the shape `errors.py::to_payload` already produces:
 `{"code", "message", "detail": {"tenant_id", "role", "required", "source",
 "admins"}}`. For example: "Your role in eng is viewer; this needs member or
-above. Ask an admin of eng (alice@saga.xyz) to change it. Nothing was
+above. Ask an admin of eng (alice@example.com) to change it. Nothing was
 submitted." `detail.admins` names up to three workspace admins, so the
 person knows whom to ask. That is not a leak: every member can already read
 the roster (Q7).

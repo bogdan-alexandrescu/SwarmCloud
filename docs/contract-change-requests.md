@@ -145,8 +145,8 @@ long*. A group whose local part is already a clean, short string starting with
 
 | principal | function | tenant id |
 |---|---|---|
-| `u-eng@saga.xyz` (a group) | `tenant_id_for_group` | `u-eng` |
-| `eng@saga.xyz` (a user) | `tenant_id_for_user` | `u-eng` |
+| `u-eng@example.com` (a group) | `tenant_id_for_group` | `u-eng` |
+| `eng@example.com` (a user) | `tenant_id_for_user` | `u-eng` |
 
 Same GSA, same secret prefix, same GCS prefix, same namespace — the cross-tenant
 merge invariant 9 exists to prevent. `store.py:232` compounds it by deriving
@@ -184,8 +184,8 @@ doing now and expensive later: the same change made after such a group exists is
 a data migration across four services.
 
 Whoever applies it should also add the collision to `tests/unit` as a case, not
-merely as a regression guard: `tenant_id_for_group("u-eng@saga.xyz") !=
-tenant_id_for_user("eng@saga.xyz")` is the property, and it is currently false.
+merely as a regression guard: `tenant_id_for_group("u-eng@example.com") !=
+tenant_id_for_user("eng@example.com")` is the property, and it is currently false.
 
 ### The unfrozen half, which does not need this request
 

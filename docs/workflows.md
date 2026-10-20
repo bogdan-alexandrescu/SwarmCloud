@@ -808,7 +808,7 @@ sweep reads nothing, and nothing below changes how any workflow runs; setting
    "on_expire": "default",
    "default": {"verdict": "MERGE", "findings": []},
    "remind_after_seconds": 14400,
-   "remind": ["owner@saga.xyz"]}}
+   "remind": ["owner@example.com"]}}
 ```
 
 A `revise` step then declares `"depends_on": ["review"]` and

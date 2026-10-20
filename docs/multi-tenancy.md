@@ -4,7 +4,7 @@ Multi-tenant from V1, not retrofitted. Retrofitting tenancy means retrofitting
 every IAM binding, every storage path and every secret name at once, while
 production data already exists in the single-tenant shapes.
 
-**A tenant is a Google group.** `eng@saga.xyz` is one tenant whose members share
+**A tenant is a Google group.** `eng@example.com` is one tenant whose members share
 a quota budget, provider keys and artifacts. A user in no registered group falls
 back to a personal tenant `u-<local-part>`, so nobody is ever hard-blocked from
 the platform. A person whose personal workspace is **ready** acts in it by
@@ -78,7 +78,7 @@ worker can write today, what phase 0 of #1457 closes and what design B closes;
 the residual is stated there rather than implied.
 
 ```bash
-./scripts/register-tenant.sh --group eng@saga.xyz \
+./scripts/register-tenant.sh --group eng@example.com \
     --providers anthropic,openai --max-active 40 --capacity-units 80
 ```
 
@@ -98,7 +98,7 @@ credentials and any limit not typed again goes back to its default. To add one
 provider, use `--add-provider` (section 5), which changes nothing else. It will
 **refuse** if `tenants/<id>` already names a different principal or kind: that
 is not idempotency, it is re-pointing a tenant, and one
-`--group contractors@saga.xyz --tenant eng` would otherwise hand every member of
+`--group contractors@example.com --tenant eng` would otherwise hand every member of
 `contractors@` eng's provider keys, artifact prefix and budget.
 
 The script creates the GKE side by calling `kubernetes/apply.sh`, so a
@@ -154,7 +154,7 @@ stay fast, so answers are cached per `(caller, group)` with a short TTL
 ### Priority order matters
 
 `TENANT_GROUPS` is ordered, and the **first match wins**. A user in both
-`eng@saga.xyz` and `research@saga.xyz` must land in the same tenant on every
+`eng@example.com` and `research@example.com` must land in the same tenant on every
 request — the tenant determines which secrets they get, which GCS prefix their
 artifacts land in, and which budget they spend. Non-deterministic resolution
 would scatter one person's work across two tenants.
@@ -187,7 +187,7 @@ caller's **choices**:
    `tenants/u-<you>` is `kind: user` with your email as its principal **and**
    `workspaces/u-<you>` is `ready` with that same principal. Both principal
    checks matter: the frozen slug keeps only the local part, so
-   `bob@saga.xyz` and `bob@partner.com` derive the same `u-bob`, and only the
+   `bob@example.com` and `bob@partner.com` derive the same `u-bob`, and only the
    principal says whose it is. `approved` is not enough: the build has not made
    the service account, namespace and secrets yet, and the workspace gate
    refuses a submit there anyway. A service identity, the schedule tick, the
@@ -300,7 +300,7 @@ entry, by being the one person its documents name. So:
 * **Tenant id and tenant principal move together.** The header replaces both
   from one entry, so they still describe the same tenant and the store's
   collision check (`assert_tenant_scope`, `ensure_tenant`) keeps working. Two
-  groups whose ids collide (`eng@saga.xyz`, `eng@partner.com`) appear once, as
+  groups whose ids collide (`eng@example.com`, `eng@partner.com`) appear once, as
   the first in admin order — the one the id selects.
 * **Admin is unaffected.** `is_admin`, `is_pool_admin` and the caller's groups
   are about the person, not the tenant, and the header does not touch them. An
@@ -753,7 +753,7 @@ described above. See [security.md](security.md#authentication) and
 ```bash
 # Register. A re-run rewrites the whole record, --providers included, so it is
 # not how a provider is added: see --add-provider below.
-./scripts/register-tenant.sh --group eng@saga.xyz --providers anthropic,openai
+./scripts/register-tenant.sh --group eng@example.com --providers anthropic,openai
 
 # Add a provider key. Never passed as an argument: argv is readable via ps.
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin
@@ -854,7 +854,7 @@ not move.
 
 ## 6. The personal fallback tenant
 
-A caller in no registered group gets `u-<local-part>` (so `alice@saga.xyz` ->
+A caller in no registered group gets `u-<local-part>` (so `alice@example.com` ->
 `u-alice`). Three properties:
 
 * the `u-` prefix cannot collide with a group-derived tenant id, because group
@@ -864,8 +864,8 @@ A caller in no registered group gets `u-<local-part>` (so `alice@saga.xyz` ->
   tenant — one namespace, one service account, one set of provider keys — is the
   exact cross-tenant merge this design exists to prevent. So whenever the slug is
   not a faithful rendering of the local part, `swarm_common.identity` appends a
-  6-character digest of the full principal. `eng.team@saga.xyz` becomes
-  `eng-9aef5b`, not `eng-team`;
+  6-character digest of the full principal. `eng.team@example.com` becomes
+  `eng-585e84`, not `eng-team`;
 * the tenant is real — own GSA, own prefix, own pools — so a personal task is
   isolated exactly like a group's.
 
@@ -966,12 +966,12 @@ that share a long prefix still get different ids.
 
 | Principal | Resolves to |
 |---|---|
-| `eng@saga.xyz` | `eng` |
-| `research@saga.xyz` | `research` |
-| `platform-eng@saga.xyz` | `plat-af1226` |
-| `eng.team@saga.xyz` | `eng-9aef5b` |
-| `alice@saga.xyz` | `u-alice` |
-| `alice.smith@saga.xyz` | `u-al-36b536` |
+| `eng@example.com` | `eng` |
+| `research@example.com` | `research` |
+| `platform-eng@example.com` | `plat-c58519` |
+| `eng.team@example.com` | `eng-585e84` |
+| `alice@example.com` | `u-alice` |
+| `alice.smith@example.com` | `u-al-7dcd3a` |
 | `swarm-verify@saga-agents-staging.iam.gserviceaccount.com` | `u-sw-c90291` |
 | `oracle-api@saga-agents-staging.iam.gserviceaccount.com` | `u-or-9a0792` |
 
