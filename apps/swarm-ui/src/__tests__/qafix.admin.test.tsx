@@ -246,6 +246,35 @@ describe('QA-099: `configured` is a mark a sighted reader can see', () => {
   })
 })
 
+// QAFIX2-CAPACITY (visual QA run 2, wf_b6e2441b419f423a84eb, admin-010): the
+// 6px disc PR 1707 drew was still a mark with no word, legend or tooltip a
+// sighted reader could find, beside `AIMD back-off` in words.
+describe('QA-099 (run 2): `configured` is a word a sighted reader can read', () => {
+  it('prints `configured` in the Set by cell, quieter than the overrides in ink', async () => {
+    viewport(1440)
+    await limits([pool('global'), pool('runner:eng', { hard_limit: 20, adaptive_target: 10, effective_limit: 10 })])
+    const cell = document.querySelector('#limit-global td[data-label="Set by"]')!
+    // MUTATION: put the disc back (`·` at size 0) -- the cell reads as empty.
+    expect(cell.textContent).toBe('configured')
+    const word = cell.querySelector<HTMLElement>('.adm-setby-cfg')!
+    expect(word.getAttribute('role'), 'a word is text, not an image').toBeNull()
+    for (const env of [WIDE, PHONE]) {
+      // MUTATION: keep `font-size: 0` from the disc -- the word is there and unseen.
+      expect(painted(word, 'font-size', env)).not.toBe('0')
+      expect(painted(word, 'width', env)).toBeNull()
+      // MUTATION: paint it `--text-faint`, the tone that read as nothing.
+      expect(painted(word, 'color', env)).toBe('var(--text-dim)')
+      expect(painted(word, ['background-color', 'background'], env)).toBeNull()
+    }
+    // The override stays the one in ink.
+    const aimd = [...document.querySelectorAll('td[data-label="Set by"]')].find((c) => c.textContent === 'AIMD back-off')
+    // MUTATION: drop the AIMD branch of setBy -- this row reads `configured` too.
+    expect(aimd?.textContent).toBe('AIMD back-off')
+    // MUTATION: drop the word's title -- a mouse learns nothing about why.
+    expect(word.getAttribute('title')).toBe('configured. The configured hard limit of 20 is what applies.')
+  })
+})
+
 describe('QA-042: the two help links on Platform counts read as two', () => {
   it('rules a separator between the links without adding a word to either name', async () => {
     api.loadMe.mockResolvedValue(session(true))

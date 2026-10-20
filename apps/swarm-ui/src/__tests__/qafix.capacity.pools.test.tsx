@@ -283,3 +283,47 @@ describe('QA-049 on Provider quota: a partial mark there has the squared dashed 
     expect(painted(mark, ['border-bottom-right-radius', 'border-radius'], WIDE)).toBe('0')
   })
 })
+
+// QAFIX2-CAPACITY (visual QA run 2, wf_b6e2441b419f423a84eb, capacity-002):
+// the slack PR 1714 gave Feeds pool does not exist at 1440 -- the table is
+// ~1054px and the column still ~160px -- so the middle cut ran: `…opic:tenant:eng`,
+// and `…:ten… u-bogdan` with two ellipses once the tail split too.
+describe('QA-057 (run 2): the Feeds pool name reads whole, wrapping at its colons', () => {
+  function quota(tenant: string, provider = 'anthropic'): QuotaState {
+    return {
+      provider, tenant_id: tenant, state: 'AVAILABLE', updated_at: new Date().toISOString(),
+      configured_hard_max: 50, adaptive_target: null, quota_derived_limit: null, requests_remaining: 120,
+      tokens_remaining: null, reset_at: null, cooldown_until: null, last_429_at: null,
+      retry_after_seconds: null, success_count: 10, rate_limit_count: 0, effective_limit: 50,
+    }
+  }
+
+  it('prints every pool whole, with a break offered only after each colon', async () => {
+    api.loadAdminQuota.mockResolvedValue(ok({ quota: [quota('eng'), quota('u-bogdan'), quota('eng', 'openai'), quota('u-bogdan', 'openai')] }))
+    render(<QuotaDetailScreen />)
+    await screen.findAllByRole('rowheader', { name: 'u-bogdan' }, WAIT)
+    const names = ['provider:anthropic:tenant:eng', 'provider:anthropic:tenant:u-bogdan', 'provider:openai:tenant:eng', 'provider:openai:tenant:u-bogdan']
+    for (const name of names) {
+      const link = screen.getByRole('link', { name })
+      expect(link.textContent).toBe(name)
+      // MUTATION: put MiddleCut back on the pool -- its head and tail boxes
+      // each ellipsize, which is the double cut `…:ten… u-bogdan`.
+      expect(link.querySelector('.quota-cut'), `${name} is still cut`).toBeNull()
+      // MUTATION: drop the `<wbr>`s -- the name has no break but its hyphen.
+      expect(link.querySelectorAll('wbr')).toHaveLength(3)
+      for (const env of [WIDE, PHONE]) {
+        // MUTATION: leave the link `nowrap` with `text-overflow: ellipsis` --
+        // at 1440 the ~160px column cuts the name to `…opic:tenant:eng`.
+        expect(painted(link, 'white-space', env)).toBe('normal')
+        expect(painted(link, 'text-overflow', env)).not.toBe('ellipsis')
+        expect(painted(link, ['overflow-x', 'overflow'], env)).not.toBe('hidden')
+        // MUTATION: `overflow-wrap: normal` -- a tenant id wider than the
+        // column overflows into Requests left instead of wrapping.
+        expect(painted(link, 'overflow-wrap', env)).toBe('anywhere')
+      }
+      // MUTATION: keep `text-decoration: none` (the underline was the cut
+      // box's border) -- the wrapped name is a link with no underline.
+      expect(painted(link, 'text-decoration', WIDE)).toBe('underline')
+    }
+  })
+})
