@@ -403,9 +403,9 @@
 .acct-split {
   display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; align-items: start;
   border: 1px solid var(--line); border-radius: 10px;
-  /* `clip`, NOT `hidden` (visual QA V157): `hidden` made the card a scroll
-     container, and a sticky pane sticks to its nearest one -- the card, which
-     never scrolls -- instead of the page. The corners clip the same. */
+  /* `clip`, NOT `hidden` (visual QA V157): `hidden` makes the card a scroll
+     container, so the page's scrollIntoView would have one more box to move
+     and a wheel over the card could scroll it. The corners clip the same. */
   background: var(--surface); overflow: clip;
 }
 @media (min-width: 901px) {
@@ -423,18 +423,19 @@
    pane drew its detail at the top of a 3,000px column, ~1,600px above the row
    just chosen, so the click looked like it did nothing. Now neither half
    stretches; the divider is both halves' edge (the pane overlaps the list's
-   by 1px), so it runs as far as the longer one. On a desktop the pane sticks
-   under the page head while the list scrolls past -- the chosen account is
-   always in view.
-   ONE SCROLLER (capacity-010, visual QA run 2, 2026-10-20). The pane was also
-   capped at the window and scrolled itself, so at 1440 two scrollbars stood
-   side by side and `save classes` sat below an inner fold. It is no longer a
-   scroll container: a detail taller than the window is scrolled by the page,
-   like the rest of the screen. */
+   by 1px), so it runs as far as the longer one.
+   ONE SCROLLER, NO STICKY (capacity-010, visual QA run 2, 2026-10-20). The
+   pane was capped at the window and scrolled itself, so at 1440 two
+   scrollbars stood side by side and `save classes` sat below an inner fold.
+   It is no longer a scroll container, and it no longer sticks: a sticky pane
+   taller than the window stays pinned at top 0 while the list scrolls, so
+   its lower half stays below the fold until the card's end comes into view
+   -- with 40 accounts, `save classes` was out of reach again. The page is
+   the one scroller, and choosing a row brings the pane into view instead
+   (Accounts.tsx Pool's `scrollIntoView`). */
 @media (min-width: 901px) {
   .acct-split > .acct-list { border-right: 1px solid var(--line); }
   .acct-split > .acct-pane {
-    position: sticky; top: 0;
     margin-left: -1px; border-left: 1px solid var(--line);
   }
 }

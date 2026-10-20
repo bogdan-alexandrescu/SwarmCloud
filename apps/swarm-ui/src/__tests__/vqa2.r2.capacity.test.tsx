@@ -175,11 +175,11 @@ describe('V004: History\'s figures give the phone\'s Holder their slack', () => 
   })
 })
 
-describe('V068/V157: neither half of the card stretches; the pane sticks in view', () => {
+describe('V068/V157: neither half of the card stretches; the page brings the pane into view', () => {
   it('sizes each half to what it holds, the divider on both edges', () => {
     const split = build('div.acct-split', hosts)
     expect(painted(split, 'align-items', WIDE)).toBe('start')
-    // `clip`: a sticky pane sticks to the page's scroller, not to the card.
+    // `clip`, not `hidden`: the card is not a scroll container.
     expect(painted(split, ['overflow', 'overflow-y'], WIDE)).toBe('clip')
     const pane = build('div.acct-split > div.acct-pane', hosts)
     expect(painted(pane, 'border-left', WIDE)).toBe('1px solid var(--line)')
@@ -187,10 +187,13 @@ describe('V068/V157: neither half of the card stretches; the pane sticks in view
     expect(painted(build('div.acct-split > section.acct-list', hosts), 'border-right', WIDE)).toBe('1px solid var(--line)')
   })
 
-  it('sticks the desktop pane under the page head and lets the page scroll a long detail', () => {
+  it('lets the page scroll a long detail: the desktop pane neither sticks nor scrolls itself', () => {
     const pane = build('div.acct-split > div.acct-pane', hosts)
-    expect(painted(pane, 'position', WIDE)).toBe('sticky')
-    expect(painted(pane, 'top', WIDE)).toBe('0')
+    // capacity-010 review: a sticky pane taller than the window stays pinned
+    // at top 0 while a 40-account list scrolls, so `save classes` stays below
+    // the fold until the card's end. The pane is in the page's flow.
+    // MUTATION: put `position: sticky; top: 0` back on the pane and this reads `sticky`.
+    expect(painted(pane, 'position', WIDE)).not.toBe('sticky')
     // capacity-010 (visual QA run 2): a pane that scrolled itself stood a
     // second scrollbar beside the page's and cut `save classes` at an inner
     // fold. The page is the one scroller.
@@ -202,14 +205,13 @@ describe('V068/V157: neither half of the card stretches; the pane sticks in view
     expect(painted(pane, 'position', PHONE)).not.toBe('sticky')
   })
 
-  it('opens a chosen account at its top and brings the pane into view', async () => {
+  it('brings the pane into view when an account is chosen', async () => {
     await accounts(many(40))
     const pane = document.querySelector<HTMLElement>('.acct-split > .acct-pane')!
-    pane.scrollTop = 900
     scrolled.length = 0
     fireEvent.click(row('u-bogdan:acct-38'))
     await waitFor(() => expect(document.querySelector('.acct-pane-detail h3')!.textContent).toBe('acct-38'), WAIT)
-    expect(pane.scrollTop).toBe(0)
+    // MUTATION: drop the effect's scrollIntoView and a row low in the list opens a pane above the window.
     const shown = scrolled.filter((s) => s.el === pane)
     expect(shown.map((s) => s.arg)).toEqual([{ block: 'nearest' }])
   })

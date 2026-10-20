@@ -644,17 +644,14 @@ function Pool({
   // shorter detail -- State, Replace, Remove's typed confirmation -- not its
   // name; focus fell to <body> with the row it was on. The page is scrolled
   // to the pane and focus goes to `‹ Accounts`, its first control. On a
-  // desktop the pane sticks in view (styles/capacity.css `.acct-split >
-  // .acct-pane`); it no longer scrolls itself (capacity-010), so resetting its
-  // `scrollTop` only matters if a narrower rule ever makes it a scroller
-  // again. The page moves the least that shows the pane: near the list's end
-  // the card's foot holds a sticky pane partly above the window.
+  // desktop the pane neither sticks nor scrolls itself (capacity-010,
+  // styles/capacity.css `.acct-split > .acct-pane`), so it sits at the top of
+  // the card; the page moves the least that shows it.
   const paneRef = useRef<HTMLDivElement | null>(null)
   const opened = shown !== null && shown.explicit ? shown.account.account_id : null
   useEffect(() => {
     const pane = paneRef.current
     if (opened === null || pane === null) return
-    pane.scrollTop = 0
     pane.scrollIntoView?.({ block: phone ? 'start' : 'nearest' })
     if (phone) pane.querySelector<HTMLButtonElement>('.acct-back')?.focus({ preventScroll: true })
     // Only when the choice changes: a poll's re-render must not move the page.

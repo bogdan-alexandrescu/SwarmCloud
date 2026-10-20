@@ -158,6 +158,21 @@ describe('capacity-006: `Sets it apart` names the classes and the credential for
   })
 })
 
+describe('capacity-006: one `cred` line when the provider and the any-one-of form are both its own', () => {
+  it('says the provider line alone, never two `cred` lines', async () => {
+    const t = topology()
+    // scribe is now the only `vendor` runtime AND the only any-one-of one.
+    t.runtimes.viewport = { ...t.runtimes.viewport, provider: 'third' }
+    api.loadRuntimeTopology.mockResolvedValue(ok(t))
+    render(<RuntimesScreen />)
+    await screen.findByText('Sizing', undefined, WAIT)
+    const creds = apart('scribe').filter((l) => l.startsWith('cred'))
+    // MUTATION: turn the any-one-of `else if` into a plain `if` and scribe
+    // gains a second `cred` line; this reads two.
+    expect(creds).toEqual(['cred: the only runtime that needs this credential'])
+  })
+})
+
 describe('capacity-007: `← AUTO` stays with the backend it was resolved to', () => {
   it('puts the declared backend in the value column, beside CLOUD_RUN_JOB', async () => {
     await shown()
@@ -175,6 +190,11 @@ describe('capacity-007: `← AUTO` stays with the backend it was resolved to', (
       // MUTATION: drop `flex-wrap: wrap` from `.rt-runs-on-value` and
       // backend plus annotation overflow a narrow card; this reads null.
       expect(painted(value, 'flex-wrap', env)).toBe('wrap')
+      // MUTATION: set `.rt-runs-on-value` to `display: block` and `← AUTO`
+      // drops onto its own line under CLOUD_RUN_JOB at 1440; this reads block.
+      expect(painted(value, 'display', env)).toBe('inline-flex')
+      // MUTATION: drop the gap and `← AUTO` touches the backend; this reads null.
+      expect(painted(value, 'gap', env)).toBe('0 var(--ctl-s2)')
     }
   })
 })
