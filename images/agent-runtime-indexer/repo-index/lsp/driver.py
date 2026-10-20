@@ -109,6 +109,27 @@ died -- a pyright out of memory answers from a half-built program -- and
 nothing in the protocol says from which answer on, so its language falls
 back to `ast` whole, as above.
 
+LESS WORK (lane INDEX-SITES, part of #1693). Two kinds of request are
+never sent, because no answer to them could be kept or used:
+
+  a site whose name is neither the simple name of a symbol anywhere in the
+  repository nor bound by an import in its own file (`Site.imported`):
+  `rows.append()`, `os.getcwd()`, `len()`. A definition becomes an edge
+  only at a location that is a known symbol's name (`_symbol_named_at`),
+  and the only way a call's name reaches a symbol of another name is an
+  import that renames it (`from .store import fetch as get_row`), so such
+  a site's answer is discarded every time. It stays `ast` and is counted
+  as `sites_skipped_external`, never as `unresolved`
+  a file under the platform's exclusions (servers.py LSP_EXCLUDED_PATHS:
+  migrations, alembic revisions, docs/): tree-sitter parsed it and its
+  `ast` edges stand, but it is never opened -- neither phase asks about
+  it, and it is not `covered`. Counted as `files_excluded` and
+  `sites_excluded`
+
+Neither is counted in a cut's "N of M files (K of S sites)", nor in the
+sites `measured_cost` scales a cut server's grant by: they are not work
+the server was given.
+
 THE ENVIRONMENT. A server reads the checkout, which is untrusted input, so
 it gets a minimal environment built here -- PATH, a throwaway HOME and
 caches, the locale and the spec's own variables -- and none of the
@@ -137,7 +158,7 @@ from urllib.parse import unquote, urlparse
 
 from .client import (BudgetExceeded, LspClient, RequestTimeout, ServerError,
                      ServerExited)
-from .servers import DEFAULT_BIN_DIR, SERVERS, ServerSpec
+from .servers import DEFAULT_BIN_DIR, LSP_EXCLUDED_PATHS, SERVERS, ServerSpec, lsp_excluded
 
 # §2.5's confidences for `lsp` evidence.
 LSP_DECLARED = 0.95
@@ -281,6 +302,8 @@ class LspOptions:
     workspace_share: float = WORKSPACE_SHARE
     memory_limit_mib: int | None = None
     max_consecutive_timeouts: int = MAX_CONSECUTIVE_TIMEOUTS
+    #: Gitignore-style globs of the files no server opens (module doc, "less work").
+    excluded_paths: tuple[str, ...] = LSP_EXCLUDED_PATHS
 
 
 @dataclass(frozen=True)
@@ -295,6 +318,9 @@ class Site:
     kind: str  # call, inherit or route_handler
     qualified: bool = False
     via_receiver: bool = False
+    #: `name` is bound by an import in this file, so a definition may land
+    #: on a symbol of another name (module doc, "less work").
+    imported: bool = False
 
 
 @dataclass(frozen=True)
@@ -330,6 +356,8 @@ class PassResult:
     memory_limit_mib: int
     #: The costs the shares followed, as given (`LspOptions.server_costs`).
     server_costs: dict[str, float] = field(default_factory=dict)
+    #: The globs no server opened (`LspOptions.excluded_paths`).
+    excluded_paths: tuple[str, ...] = ()
 
 
 def run_pass(root: Path, files: Mapping[str, str], symbols: Sequence[Mapping[str, Any]],
@@ -394,7 +422,8 @@ def run_pass(root: Path, files: Mapping[str, str], symbols: Sequence[Mapping[str
     return PassResult(edges=edges, languages=languages, servers=versions,
                       request_timeout_seconds=options.request_timeout_seconds,
                       server_budget_seconds=budget, total_budget_seconds=total,
-                      memory_limit_mib=memory_mib, server_costs=costs)
+                      memory_limit_mib=memory_mib, server_costs=costs,
+                      excluded_paths=tuple(options.excluded_paths))
 
 
 # --- positions --------------------------------------------------------------
@@ -474,7 +503,8 @@ class _ServerRun:
         #: Whether the budget, not the server, ended phase 1 (`_cut`).
         self.budget_cut = False
         self.counts = {"requests": 0, "resolved": 0, "unresolved": 0, "request_timeouts": 0,
-                       "errors": 0, "edges": 0, "symbols_skipped": 0}
+                       "errors": 0, "edges": 0, "symbols_skipped": 0, "sites_skipped_external": 0,
+                       "files_excluded": 0, "sites_excluded": 0}
         self._warming = True
         self._workspace_limit: float | None = None
         self._consecutive = 0
@@ -482,6 +512,8 @@ class _ServerRun:
         self.symbols_by_path: dict[str, list[Mapping[str, Any]]] = {}
         for symbol in symbols:
             self.symbols_by_path.setdefault(symbol["path"], []).append(symbol)
+        # Every name an answer could be kept at (`_symbol_named_at`).
+        self._known_names = {simple_name(symbol["id"]) for symbol in symbols}
         self.sites_by_path: dict[str, list[Site]] = {}
         for site in sites:
             if site.language in languages:
@@ -626,16 +658,28 @@ class _ServerRun:
             if self.files[path] not in self.languages:
                 continue
             language_id = self.spec.language_ids.get(posixpath.splitext(path)[1])
-            if language_id is not None:
-                paths.append((path, language_id))
+            if language_id is None:
+                continue
+            if lsp_excluded(path, self.options.excluded_paths):
+                # Parsed, never opened (module doc, "less work").
+                self.counts["files_excluded"] += 1
+                self.counts["sites_excluded"] += len(self.sites_by_path.get(path, []))
+                continue
+            paths.append((path, language_id))
+        # Only the sites an answer could become an edge at are asked.
+        asked: dict[str, list[Site]] = {}
+        for path, _ in paths:
+            own = self.sites_by_path.get(path, [])
+            kept = [site for site in own if not self._external(site)]
+            self.counts["sites_skipped_external"] += len(own) - len(kept)
+            asked[path] = sorted(kept, key=lambda s: (s.line, s.name, s.caller, s.kind))
         # Phase 1, every site's definition: the per-site answer §3.5 is for.
         # A file counts as covered once every one of its sites was asked, so
         # a cut keeps exactly the files before the one it landed in.
         self._files_total = len(paths)
-        self._sites_total = sum(len(self.sites_by_path.get(path, [])) for path, _ in paths)
+        self._sites_total = sum(len(sites) for sites in asked.values())
         for path, language_id in paths:
-            sites = sorted(self.sites_by_path.get(path, []),
-                           key=lambda s: (s.line, s.name, s.caller, s.kind))
+            sites = asked[path]
             if sites:
                 self._open(client, path, language_id,
                            lambda document, lines: [self._definition(client, document, lines, site)
@@ -681,6 +725,11 @@ class _ServerRun:
             self.counts["symbols_skipped"] = total - asked
             self.reason = (f"call hierarchy and references cut at their {_seconds(share)}-second share "
                            f"of the {_seconds(self.budget)}-second budget: {asked} of {total} symbols asked")
+
+    def _external(self, site: Site) -> bool:
+        """No answer about `site` could be kept: its name is no repository symbol's
+        and no import in its file binds it (module doc, "less work")."""
+        return not site.imported and site.name not in self._known_names
 
     def _open(self, client: LspClient, path: str, language_id: str, queries: Any) -> None:
         lines = self._read(path)
