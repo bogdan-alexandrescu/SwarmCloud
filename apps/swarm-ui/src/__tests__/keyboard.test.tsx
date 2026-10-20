@@ -555,7 +555,9 @@ describe('keyboard traversal', () => {
     await act(async () => {
       row!.focus()
     })
-    expect(document.activeElement, 'the row is not focusable').toBe(row)
+    // The row is not a button around its copy-id button (visual QA QA-032):
+    // focus given to it passes to its opener, the empty button over the row.
+    expect(document.activeElement, 'the row is not focusable').toBe(row!.querySelector(':scope > .cr-open'))
 
     await act(async () => {
       fireEvent.click(row!)
@@ -664,8 +666,8 @@ describe('keyboard traversal', () => {
     // returns when it closes, so the node clicked is gone: the property is that
     // focus is on the row of the SAME agent, not on <body>.
     const back = document.activeElement as HTMLElement | null
-    expect(back?.matches('.row.clickable'), 'closing the drawer did not put focus back on a row').toBe(true)
-    expect(back?.getAttribute('data-task-id'), 'focus came back to a different agent\'s row').toBe(rowTaskId)
+    expect(back?.matches('.row.clickable > .cr-open'), 'closing the drawer did not put focus back on a row').toBe(true)
+    expect(back?.closest('[data-task-id]')?.getAttribute('data-task-id'), 'focus came back to a different agent\'s row').toBe(rowTaskId)
     unmount()
   }, 60000)
 

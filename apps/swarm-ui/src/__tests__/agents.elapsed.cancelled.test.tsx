@@ -9,6 +9,10 @@
 // The compact row (the list beside an open agent, #432) has room on line one
 // for the figure only, so there the qualifier is the cell's `title`.
 //
+// THE FIGURE IS ON LINE TWO since visual QA QA-110 (2026-10-20): a finished
+// row's right-hand column is when it ended, and its run length is `.cr-ran`,
+// `ran 12m 0s`, beside the profile and the owner. The qualifier went with it.
+//
 // MUTATION: drop `cancelSpan` from TaskRow. The CANCELLED test fails.
 // MUTATION: drop `cancelSpan` from CompactRow. The compact test fails.
 
@@ -46,7 +50,7 @@ async function whenCell(t: Task, open = false): Promise<HTMLElement> {
   } satisfies Result<TaskPage>)
   const { container } = render(<AgentsScreen onOpen={() => {}} taskId={open ? t.id : null} />)
   // ONE ROW AT EVERY WIDTH (agents.html V1, #503): the compact row, open or not.
-  const sel = '.row.is-compact .when'
+  const sel = '.row.is-compact .cr-ran'
   await waitFor(() => expect(container.querySelector(sel)).not.toBeNull())
   return container.querySelector<HTMLElement>(sel)!
 }
@@ -62,8 +66,8 @@ describe('the Agents list elapsed figure on a cancelled task', () => {
     // title and accessible name are the whole qualifier (U10a D20: the
     // sentence pushed the hash off the line), and the figure's title says it
     // too. The mark is the line's LAST part, so it is what gives way.
-    expect(cell.textContent).toBe('12m 0s')
-    expect(cell.getAttribute('title')).toBe(`12m 0s ${LABEL}`)
+    expect(cell.textContent).toBe('ran 12m 0s')
+    expect(cell.getAttribute('title')).toBe(`ran 12m 0s ${LABEL}`)
     const note = cell.closest('.row')!.querySelector('.cr-sub .when-note')!
     expect(note.textContent).toBe(CANCEL_NOTE)
     expect(note.textContent!.length, 'the mark is the sentence again').toBeLessThan(12)
@@ -74,15 +78,15 @@ describe('the Agents list elapsed figure on a cancelled task', () => {
 
   it('leaves a SUCCEEDED task’s elapsed figure unlabelled', async () => {
     const cell = await whenCell(finished('SUCCEEDED'))
-    expect(cell.textContent).toBe('12m 0s')
+    expect(cell.textContent).toBe('ran 12m 0s')
     expect(cell.closest('.row')!.textContent).not.toContain('last start to cancel')
     expect(cell.getAttribute('title')).toBeNull()
   })
 
   it('carries the label as the title of a compact row beside an open agent', async () => {
     const cell = await whenCell(finished('CANCELLED'), true)
-    expect(cell.textContent).toBe('12m 0s')
-    expect(cell.getAttribute('title')).toBe(`12m 0s ${LABEL}`)
+    expect(cell.textContent).toBe('ran 12m 0s')
+    expect(cell.getAttribute('title')).toBe(`ran 12m 0s ${LABEL}`)
     const done = await whenCell(finished('SUCCEEDED', { id: 'task_cccccccc00000000000c' }), true)
     expect(done.getAttribute('title')).toBeNull()
   })

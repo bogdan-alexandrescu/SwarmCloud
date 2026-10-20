@@ -22,7 +22,13 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { Result } from '../fetch'
 import type { Task, TaskPage, TaskState } from '../types'
 
-const api = vi.hoisted(() => ({ loadTasks: vi.fn() }))
+// THE ATTEMPT READ FAILS HERE, so a row's try is the task's own counter
+// (`useRuns`). Unanswered, a row holds `attempt … of N` until its documents
+// are read (visual QA QA-026); qa.p12.agentslist.test.tsx covers the read.
+const api = vi.hoisted(() => ({
+  loadTasks: vi.fn(),
+  loadAttempts: vi.fn(async () => ({ status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: 'no' } })),
+}))
 
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
@@ -178,7 +184,7 @@ describe('the list is the compact list, and its figures say what they are', () =
     expect(rows.querySelector('.row.is-head'), 'the compact list grew a head row').toBeNull()
     const agent = rows.querySelector('.row.clickable')!
     expect(agent.classList.contains('is-compact')).toBe(true)
-    expect(agent.querySelector('.cr-try')?.textContent).toBe('attempt 1 of 3')
+    await waitFor(() => expect(agent.querySelector('.cr-try')?.textContent).toBe('attempt 1 of 3'))
     expect(agent.querySelector('.cr-try')?.getAttribute('aria-label')).toBe('attempt 1 of 3')
   })
 
@@ -215,7 +221,7 @@ describe('an attempt count over its cap looks like one', () => {
     const cells = [...container.querySelectorAll('.row.clickable .cr-try')]
     expect(cells).toHaveLength(1)
     const over = cells[0]!
-    expect(over.textContent).toBe('attempt 4 of 3')
+    await waitFor(() => expect(over.textContent).toBe('attempt 4 of 3'))
     expect(over.classList.contains('is-over'), '4/3 is drawn like any other count').toBe(true)
     expect(over.getAttribute('aria-label') ?? '').toMatch(/1 over the ceiling/)
     const spent = [...container.querySelectorAll<HTMLElement>('.row.clickable')].find((r) => r.dataset.taskId === 'task_bbbbbbbb00000000000b')!
@@ -247,15 +253,17 @@ describe('the row the inspector has open says so', () => {
       [task('task_aaaaaaaa00000000000a', 'RUNNING'), task(open, 'RUNNING')],
       open,
     )
-    const current = container.querySelectorAll('.row[aria-current]')
+    // On the row's opener, the element focus and a screen reader land on
+    // since the row stopped being a button (visual QA QA-032).
+    const current = container.querySelectorAll('.row > .cr-open[aria-current]')
     expect(current, 'no row, or more than one, is marked open').toHaveLength(1)
     expect(current[0]!.getAttribute('aria-current')).toBe('true')
-    expect(current[0]!.querySelector('.id')?.getAttribute('title')).toBe(open)
+    expect(current[0]!.closest('.row')!.querySelector('.id')?.getAttribute('title')).toBe(open)
   })
 
   it('marks none when nothing is open', async () => {
     const container = await land([task('task_aaaaaaaa00000000000a', 'RUNNING')], null)
-    expect(container.querySelector('.row[aria-current]')).toBeNull()
+    expect(container.querySelector('.row [aria-current]')).toBeNull()
   })
 })
 
@@ -662,11 +670,12 @@ describe('a reason shared by neighbouring rows is said once (#100)', () => {
     expect(shown[3]).not.toBe(WAIT)
     // Hidden from sight, never from the row's name.
     for (const r of rows.slice(0, 3)) {
-      // The row, not its id line's copy button, whose name carries the id
-      // too (#94).
-      const named = screen.getAllByRole('button', { name: new RegExp(r.querySelector('.id')!.textContent!) }).filter((b) => b.classList.contains('row'))
+      // The row's opener, not its id line's copy button, whose name carries
+      // the id too (#94). The opener is an empty button over the row
+      // (visual QA QA-032), so the reason is in its name, not its text.
+      const named = screen.getAllByRole('button', { name: new RegExp(r.querySelector('.id')!.textContent!) }).filter((b) => b.classList.contains('cr-open'))
       expect(named).toHaveLength(1)
-      expect(named[0]!.textContent).toContain(WAIT)
+      expect(named[0]!.getAttribute('aria-label')).toContain(WAIT)
       expect(r.textContent).toContain(WAIT)
     }
   })

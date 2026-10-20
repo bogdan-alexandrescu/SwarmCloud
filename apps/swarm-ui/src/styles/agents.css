@@ -132,6 +132,24 @@
   padding-top: 6px;
   padding-bottom: 6px;
 }
+/* THE ROW'S OPENER (visual QA QA-032, 2026-10-20): an empty button over the
+   whole row, so the row is not a button around the copy-id button (axe
+   nested-interactive). It draws nothing but the focus ring the row drew; the
+   id line is raised above it, so the copy and a drag-select of the id are
+   theirs. The row is its containing block. */
+.row.is-compact { position: relative; }
+.row.is-compact > .cr-open {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.row.is-compact > .cr-open:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.row.is-compact .tid { position: relative; z-index: 1; }
 .row.is-compact > .sk-st > .sk-st-w { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .row.is-compact > .cr-name { grid-column: name; min-width: 0; }
 /* THE NAME CELL STACKS (#94): the name, then the id line UNDER it. Without
@@ -151,6 +169,8 @@
   color: var(--text);
 }
 .row.is-compact > .when { grid-column: age; white-space: nowrap; }
+/* A ROW WITH NO TIME TO GIVE KEEPS ITS COLUMN (QA-079): blank, not collapsed. */
+.row.is-compact > .when:empty { min-width: 1px; }
 .row.is-compact > .cr-sub,
 .row.is-compact > .why { grid-column: name / -1; }
 /* TWO LINES, AT EVERY WIDTH (V061, visual QA #1038). The clamp was the
@@ -244,7 +264,7 @@
    wrapper, a child of `.work`; naming what goes is what keeps the marks and
    the » that brings the list back. */
 @media (min-width: 1100px) {
-  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > :not(.sk-st):not(.cr-vh) { display: none; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > :not(.sk-st):not(.cr-vh):not(.cr-open) { display: none; }
   :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > .cr-vh {
     display: block; position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
   }
@@ -577,6 +597,13 @@
    with its buttons. */
 @media (max-width: 560px) {
   .ag-logs-bar > .ag-logs-streams.c-seg.is-sm { height: auto; }
+  /* ONE HEIGHT ACROSS THE FILTER ROW (visual QA QA-080, 2026-10-20): the
+     profile select takes the phone's 44px target (styles.css, `.ag-filter
+     select`), and the search field and `Started` stayed at their 32px base,
+     so the row's three controls stood at three heights. They take the same
+     target. After their base rules above, which they must beat. */
+  .ag-find > input,
+  .ag-sort { min-height: 44px; }
 }
 .ag-logs-attempt { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: var(--t-meta); }
 .ag-logs-attempt select {
