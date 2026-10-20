@@ -10,6 +10,7 @@ an arbitrary command, because neither is read from the environment.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -54,6 +55,24 @@ def _int_env(name: str, default: int) -> int:
         return int(raw)
     except ValueError as exc:
         raise ConfigError(f"{name} must be an integer, got {raw!r}") from exc
+
+
+def _sized_env(name: str) -> float | None:
+    """A size the scheduler rendered for this container, or None.
+
+    LENIENT, unlike `_int_env`: a sized figure is what the attempt's CPU and
+    memory readings are drawn against, never what the attempt does, so a
+    malformed, non-positive or non-finite value is dropped and the catalogue
+    is read instead. A telemetry figure never fails an attempt.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) and value > 0 else None
 
 
 
@@ -418,6 +437,18 @@ class WorkerConfig:
     cloud_run_job: str | None = None
     #: RUNNER_JOB_NAME, set by the GKE dispatcher's render (self-consistency only).
     runner_job_name: str | None = None
+    # --- the size the scheduler rendered (SIZES-WORKER-1, part of #1689) ---
+    # docs/design/runner-sizes.md §4.4: SWARM_SIZED_CPU_LIMIT and
+    # SWARM_SIZED_MEMORY_GIB name THIS container's CPU limit and memory as
+    # the scheduler rendered them, platform-derived and never from a task
+    # document (invariant 10). Once CPU bursts and sizes are an admin
+    # setting, the frozen catalogue no longer says what the container was
+    # given. None when unset (a scheduler from before SIZES-SCHED-1) or
+    # malformed: the catalogue is read instead, as before.
+    #: Cores the container may burst to; below cgroup `cpu.max` in `_cpu_limit`.
+    sized_cpu_limit: float | None = None
+    #: The container's memory, request AND limit (invariant 7), in GiB.
+    sized_memory_gib: float | None = None
     #: The clock the legacy window is read against. None is the wall clock;
     #: a test injects one to stand past SPEC_LEGACY_UNTIL.
     spec_clock: Callable[[], datetime] | None = field(default=None, compare=False, hash=False)
@@ -460,12 +491,17 @@ class WorkerConfig:
         return resolve_backend(self.profile).value
 
     def memory_limit_bytes_of(self, resource_class: str) -> int:
-        """`resource_class`'s memory, which is request AND limit (invariant 7).
+        """The container's memory, which is request AND limit (invariant 7).
 
-        A method taking the class, not a property of this config: the config
-        knows only the profile's class, and the limit that matters is the
-        container's (#205). There is no disk counterpart; nothing read one.
+        `sized_memory_gib` first: what the scheduler rendered this container
+        with (SIZES-WORKER-1). Only without it, `resource_class`'s catalogue
+        memory -- a method taking the class, not a property of this config,
+        because the config knows only the profile's class, and the limit that
+        matters is the container's (#205). There is no disk counterpart;
+        nothing read one.
         """
+        if self.sized_memory_gib is not None:
+            return int(self.sized_memory_gib * 1024 * 1024 * 1024)
         return RESOURCE_CLASSES[resource_class].memory_gib * 1024 * 1024 * 1024
 
     @property
@@ -625,4 +661,6 @@ class WorkerConfig:
             task_timeout_env=_int_env("TASK_TIMEOUT_SECONDS", 0) if timeout_env else None,
             cloud_run_job=os.environ.get("CLOUD_RUN_JOB", "").strip() or None,
             runner_job_name=os.environ.get("RUNNER_JOB_NAME", "").strip() or None,
+            sized_cpu_limit=_sized_env("SWARM_SIZED_CPU_LIMIT"),
+            sized_memory_gib=_sized_env("SWARM_SIZED_MEMORY_GIB"),
         )
