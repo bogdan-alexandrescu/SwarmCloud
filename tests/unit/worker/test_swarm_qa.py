@@ -28,7 +28,9 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import struct
+import subprocess
 import sys
 import tarfile
 import zlib
@@ -96,6 +98,103 @@ def _white(_x, _y):
 
 
 # --------------------------------------------------------------------------
+# A DOM under node, for the scripts the capture evaluates in the page
+# --------------------------------------------------------------------------
+
+#: The page's scripts run against a DOM of boxes this program builds from a
+#: list of nodes: what each scrolls (`sh` / `ch` / `cw`, scrollHeight,
+#: clientHeight, clientWidth), its overflow-y, its tag, classes and
+#: attributes, its own text, whether it has no box (`hidden`), and its
+#: parent. Selectors are the shapes the scripts and the
+#: route list use: `tag`, `.class`, `[attr="v"]`, `[attr*="v"]`, `*`,
+#: descendant and comma.
+_DOM_PROGRAM = r"""
+const spec = JSON.parse(process.argv[1]);
+const els = spec.nodes.map((n) => ({
+  localName: n.tag, tagName: n.tag.toUpperCase(), id: n.id || '', className: n.cls || '',
+  classList: (n.cls || '').split(' ').filter(Boolean), _attrs: n.attrs || {}, _oy: n.oy || 'visible',
+  scrollHeight: n.sh || 0, clientHeight: n.ch || 0, clientWidth: n.cw || 0, scrollTop: 0, parentElement: null,
+  _text: n.text || '', _hidden: n.hidden || false,
+}));
+spec.nodes.forEach((n, i) => { els[i].parentElement = n.parent === undefined ? null : els[n.parent]; });
+const simple = (el, s) => {
+  const m = s.match(/^([a-z0-9*]*)((?:\.[\w-]+)*)(?:\[([\w-]+)(\*?)="([^"]*)"\])?$/);
+  if (!m) throw new SyntaxError('unsupported selector ' + s);
+  if (m[1] && m[1] !== '*' && m[1] !== el.localName) return false;
+  for (const c of m[2].split('.').filter(Boolean)) if (!el.classList.includes(c)) return false;
+  if (!m[3]) return true;
+  const value = m[3] === 'class' ? el.className : el._attrs[m[3]];
+  return m[4] ? typeof value === 'string' && value.includes(m[5]) : value === m[5];
+};
+const one = (el, sel) => {
+  const parts = sel.trim().split(/\s+/);
+  if (!simple(el, parts.pop())) return false;
+  for (let up = el.parentElement; parts.length && up; up = up.parentElement) {
+    if (simple(up, parts[parts.length - 1])) parts.pop();
+  }
+  return parts.length === 0;
+};
+const all = (sel) => els.filter((el) => sel.split(',').some((s) => one(el, s)));
+els.forEach((el) => {
+  el.matches = (s) => all(s).includes(el);
+  el.contains = (o) => { for (let x = o; x; x = x.parentElement) if (x === el) return true; return false; };
+  el.getClientRects = () => (el._hidden ? [] : [{}]);
+});
+globalThis.window = globalThis;
+globalThis.innerHeight = spec.inner_height;
+globalThis.document = {
+  documentElement: els[0], scrollingElement: els[0], body: els[1],
+  querySelectorAll: all, querySelector: (s) => all(s)[0] || null,
+};
+globalThis.getComputedStyle = (el) => ({ overflowY: el._oy, visibility: 'visible' });
+globalThis.NodeFilter = { SHOW_TEXT: 4 };
+document.createTreeWalker = (root) => {
+  const texts = els.filter((el) => el._text && root.contains(el)).map((el) => ({ data: el._text, parentElement: el }));
+  let i = 0;
+  return { nextNode: () => texts[i++] || null };
+};
+const fn = (0, eval)('(' + process.argv[2] + ')');
+process.stdout.write(JSON.stringify(fn(JSON.parse(process.argv[3]))));
+"""
+
+
+def _node() -> str:
+    node = shutil.which("node")
+    if node is None:
+        if os.environ.get("CI"):
+            pytest.fail("node is not on PATH in CI, so the page's own scripts cannot run here; "
+                        "these must not pass by skipping")
+        pytest.skip("node is not installed here; CI runs the page's scripts")
+    return node
+
+
+def _run_js(expression: str, dom: dict, arg) -> object:
+    done = subprocess.run([_node(), "-e", _DOM_PROGRAM, json.dumps(dom), expression, json.dumps(arg)],
+                          capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def _console_dom(*, ready_inside: bool = True) -> dict:
+    """The console's shape (Spine.tsx): the document does not scroll; the
+    route's content scrolls inside `div.ctl-scroll`, under `div.sk-main`,
+    beside a rail that scrolls a little of its own. `ready_inside=False`
+    puts the route's ready element in a pane beside the scroller instead."""
+    nodes = [
+        {"tag": "html", "sh": 900, "ch": 900, "cw": 1440},
+        {"tag": "body", "parent": 0, "sh": 900, "ch": 900, "cw": 1440},
+        {"tag": "nav", "cls": "sk-rail", "parent": 1, "oy": "auto", "sh": 1300, "ch": 900, "cw": 64},
+        {"tag": "div", "cls": "sk-main", "parent": 1, "oy": "hidden", "sh": 900, "ch": 900, "cw": 1376},
+        {"tag": "div", "cls": "ctl-scroll", "parent": 3, "oy": "auto", "sh": 3000, "ch": 840, "cw": 1376},
+        {"tag": "main", "parent": 4, "sh": 3000, "ch": 3000, "cw": 1376},
+        {"tag": "h1", "parent": 5, "sh": 40, "ch": 40, "cw": 600},
+    ]
+    if not ready_inside:
+        nodes.append({"tag": "div", "cls": "ag-split", "parent": 3, "sh": 60, "ch": 60, "cw": 1376})
+    return {"inner_height": 900, "nodes": nodes}
+
+
+# --------------------------------------------------------------------------
 # A fake live browser
 # --------------------------------------------------------------------------
 
@@ -131,6 +230,19 @@ class FakePage:
         self.clock = _Clock(self.log)
         self.handlers = {}
         self.closed = False
+        # A DOM for MEASURE_JS to run against under node (`_run_js`); None
+        # answers with `scroll_height` and `viewport_height` as before.
+        self.dom = None
+        # path -> how long, in ms after the load, the page shows a "reading…"
+        # marker; None for a page that never stops reading.
+        self.pending = {}
+        self.elapsed = 0
+        # What the console keeps in the profile across loads (localStorage):
+        # the fake app writes one key per page it loaded, as RecentWorkflows
+        # fills from storage after /workflows was opened.
+        self.storage = {}
+        self.init_scripts = []
+        self.loaded_with = {}
 
     def set_viewport_size(self, *_a, **_kw):
         raise AssertionError("swarm_qa resized the page; the gate owns the size")
@@ -140,7 +252,24 @@ class FakePage:
 
     def goto(self, url, **kw):
         self.url = url
+        self.elapsed = 0
         self.log.append(("goto", url, kw.get("wait_until")))
+        reset = getattr(self.qa, "reset_state_script", None)
+        origin = "/".join(url.split("/")[:3])
+        if reset is not None and reset(origin) in self.init_scripts:
+            self.storage.clear()
+        self.loaded_with[url] = sorted(self.storage)
+        self.storage["visited:" + url[len(origin):]] = "1"
+
+    def add_init_script(self, script=None, **_kw):
+        self.init_scripts.append(script)
+
+    def wait_for_timeout(self, ms):
+        self.elapsed += ms
+        self.log.append(("wait", ms))
+
+    def _path(self):
+        return "/" + "/".join(self.url.split("/")[3:])
 
     def wait_for_load_state(self, state=None, **_kw):
         self.log.append(("load_state", state))
@@ -154,7 +283,14 @@ class FakePage:
         if expression == self.qa.FONTS_READY_JS:
             return True
         if expression == self.qa.MEASURE_JS:
+            if self.dom is not None:
+                return _run_js(expression, self.dom, arg)
             return [self.scroll_height, self.viewport_height]
+        if expression == getattr(self.qa, "PENDING_JS", None):
+            if self._path() not in self.pending:
+                return []
+            clears = self.pending[self._path()]
+            return ['"reading…" in button.c-refresh'] if clears is None or self.elapsed < clears else []
         if expression == self.qa.SCROLL_JS:
             self.log.append(("scroll", arg))
             return None
@@ -170,11 +306,11 @@ class FakePage:
     def screenshot(self, **kw):
         assert "path" not in kw, "swarm_qa names its files itself"
         assert not kw.get("full_page"), "a full-page capture is a downscaled image to the model"
-        self.log.append(("shot", self.url, (self.media or {}).get("color_scheme"), dict(kw)))
+        self.log.append(("shot", self.url, (self.media or {}).get("color_scheme"), dict(kw), self.elapsed))
         return _png(3, 2, _white)
 
     def inner_text(self, selector, **_kw):
-        return f"text of {self.url} under {selector}"
+        return f"text of {self.url} under {selector}; storage at load {self.loaded_with.get(self.url)}"
 
     def locator(self, _selector):
         return _Locator(self)
@@ -442,6 +578,130 @@ def test_decode_png_reads_every_row_filter(qa):
     w, h, rgba = qa.decode_png(_png(7, 10, gradient))
     assert (w, h) == (7, 10)
     assert rgba == bytes(v for y in range(10) for x in range(7) for v in gradient(x, y))
+
+
+# --------------------------------------------------------------------------
+# QA-TOOLS-FIX (part of #1649): the first visual-QA run's capture defects
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("ready, ready_inside", [("main h1", True), (".ag-split", False)])
+def test_a_page_whose_content_scrolls_inside_a_nested_div_is_captured_in_segments(qa, world, ready, ready_inside):
+    """QA-003: the console's document does not scroll, `div.ctl-scroll` does.
+    The scroller is the route's content's nearest scrolling ancestor or, when
+    the content has none, the largest element that scrolls -- never a class
+    named in the tool, and never the 64 px rail that scrolls a little too."""
+    # MUTATION: look for a scroller only in the document, `main` and
+    # `[role=dialog]` (MEASURE_JS before this lane) and every route is one
+    # segment: 900 of 900 px, no room.
+    routes = json.loads(world.routes.read_text(encoding="utf-8"))
+    routes["groups"]["work-a"] = [{"id": "runs", "address": "work/runs", "path": "/runs", "ready": ready}]
+    world.routes.write_text(json.dumps(routes), encoding="utf-8")
+    world.page.dom = _console_dom(ready_inside=ready_inside)
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    (entry,) = _manifest(bundle)["routes"]
+    # 3000 px of content in an 840 px scroller is four segments (the default cap).
+    assert entry["images"] == [f"work-a/runs--desktop--light--s{i}.png" for i in (1, 2, 3, 4)], entry
+    assert entry["scroller"] == "div.ctl-scroll", entry
+    scrolls = [e[1] for e in world.page.log if e[0] == "scroll"]
+    assert scrolls == [0, 840, 1680, 2520], "one scroller-height at a time, by the scroller's own height"
+
+
+def test_a_page_whose_document_scrolls_is_still_measured_by_the_document(qa):
+    dom = {"inner_height": 900, "nodes": [
+        {"tag": "html", "sh": 2000, "ch": 900, "cw": 1440},
+        {"tag": "body", "parent": 0, "sh": 2000, "ch": 2000, "cw": 1440},
+        {"tag": "main", "parent": 1, "sh": 2000, "ch": 2000, "cw": 1440},
+        {"tag": "h1", "parent": 2, "sh": 40, "ch": 40, "cw": 600},
+    ]}
+    assert _run_js(qa.MEASURE_JS, dom, "main h1") == [2000, 900, "document"]
+
+
+def test_a_route_is_shot_only_after_its_reading_marker_clears(qa, world):
+    """QA-027 (with 018, 023, 033, 034, 090): the preview build reads on
+    timers, with no network traffic, so network idle and the ready selector
+    are both met while the pane still says "reading…"."""
+    # MUTATION: shoot as soon as the ready selector is visible (the capture
+    # before this lane) and the /runs shots are taken at 0 ms, mid-read.
+    world.page.pending = {"/runs": 600}
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    shots = [e for e in world.page.log if e[0] == "shot" and e[1].endswith("/runs")]
+    assert shots and all(s[4] >= 600 for s in shots), [s[4] for s in shots]
+    manifest = _manifest(bundle)
+    runs = next(r for r in manifest["routes"] if r["id"] == "runs")
+    assert runs["status"] == "captured" and runs["settled"] is True, runs
+    assert manifest["failed"] == []
+
+
+def test_a_route_that_never_settles_is_reported_and_its_wait_is_bounded(qa, world):
+    # MUTATION: no settle wait, and the never-ending read is shot as if it
+    # were the page, with nothing in `failed` to say so.
+    world.page.pending = {"/timeline": None}
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0, "the other route was captured"
+    manifest = _manifest(bundle)
+    (failed,) = manifest["failed"]
+    assert failed["id"] == "timeline" and "settle" in failed["error"] and "reading…" in failed["error"], failed
+    (timeline,) = [r for r in manifest["routes"] if r["id"] == "timeline"]
+    assert timeline["status"] == "unsettled" and timeline["settled"] is False, timeline
+    assert timeline["pending"] == ['"reading…" in button.c-refresh'], timeline
+    waited = sum(e[1] for e in world.page.log if e[0] == "wait")
+    assert qa.SETTLE_TIMEOUT_MS <= waited <= qa.SETTLE_TIMEOUT_MS + qa.SETTLE_POLL_MS, waited
+
+
+def test_the_pending_markers_are_what_the_page_draws(qa):
+    """PENDING_JS, run: a drawn skeleton, a busy region, the head's refresh
+    while it reads and a drawn "reading…" are pending; the same with no box
+    (display: none) is not on the image, so is not."""
+    # MUTATION: drop the `shown` check and the hidden skeleton keeps a
+    # settled page "reading" until the timeout.
+    def page(*extra):
+        return {"inner_height": 900, "nodes": [
+            {"tag": "html", "sh": 900, "ch": 900}, {"tag": "body", "parent": 0, "sh": 900, "ch": 900},
+            {"tag": "main", "parent": 1, "text": "Runs"}, *extra]}
+
+    assert _run_js(qa.PENDING_JS, page(), None) == []
+    assert _run_js(qa.PENDING_JS, page({"tag": "div", "cls": "skeleton ctl-skeleton-row", "parent": 2, "hidden": True},
+                                       {"tag": "span", "cls": "ov-reading", "parent": 2, "text": "reading…",
+                                        "hidden": True}), None) == []
+    assert _run_js(qa.PENDING_JS, page(
+        {"tag": "div", "cls": "skeleton ctl-skeleton-row", "parent": 2},
+        {"tag": "span", "cls": "ol-skel-bar is-static", "parent": 2},
+        {"tag": "div", "cls": "wfl is-loading", "attrs": {"aria-busy": "true"}, "parent": 2},
+        {"tag": "button", "cls": "c-refresh", "attrs": {"aria-label": "Reading"}, "parent": 2},
+        {"tag": "span", "cls": "ov-reading", "parent": 2, "text": "tenant reading…"},
+    ), None) == ["div.skeleton.ctl-skeleton-row", "span.ol-skel-bar.is-static", "div.wfl.is-loading",
+                 "button.c-refresh", '"reading…" in span.ov-reading']
+
+
+def test_the_pending_markers_are_the_consoles_own():
+    """PENDING_JS looks for what the console draws while a read is in flight;
+    a marker renamed there and not here is a capture that stops waiting."""
+    qa = _module()
+    styles = (REPO / "apps" / "swarm-ui" / "src" / "styles.css").read_text(encoding="utf-8")
+    shell = (REPO / "apps" / "swarm-ui" / "src" / "Shell.tsx").read_text(encoding="utf-8")
+    for cls in (".skeleton", ".ctl-pending", ".c-refresh"):
+        assert cls in qa.PENDING_JS and re.search(re.escape(cls) + r"\b", styles), cls
+    assert "aria-label={reading ? 'Reading'" in shell and "'reading…'" in shell
+    assert "reading…" in qa.PENDING_JS and "aria-busy" in qa.PENDING_JS
+
+
+def test_two_captures_in_a_row_start_from_the_same_clean_state(qa, world):
+    """QA-077: the capture's tab is the live browser's one profile, so what
+    one route left in storage (RecentWorkflows' list) drew the next route's
+    sidebar, and the sidebar depended on capture order."""
+    # MUTATION: drop the storage reset and the second route of each run sees
+    # the first's key, and the second run sees the first run's.
+    texts = []
+    for _ in range(2):
+        code, out, _bundle = _capture(qa, world)
+        assert code == 0
+        texts.append({p.relative_to(out).as_posix(): p.read_text(encoding="utf-8")
+                      for p in sorted(out.rglob("*.txt"))})
+    assert len(texts[0]) == 8 and texts[0] == texts[1], "two captures in a row differ"
+    assert all(t.endswith("storage at load []") for t in texts[0].values()), texts[0]
 
 
 # --------------------------------------------------------------------------

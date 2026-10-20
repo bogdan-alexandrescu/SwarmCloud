@@ -25,7 +25,9 @@ import importlib.util
 import json
 import secrets
 import struct
+import sys
 import threading
+import types
 import urllib.error
 import urllib.request
 import zlib
@@ -375,6 +377,89 @@ def test_the_recorder_writes_the_gif_from_its_frames_and_stops_on_the_stop_file(
     assert frames.closed
     assert result["frames"] == 3 and result["stopped"] == cmd.STOP_ASKED
     assert len(_read_gif(path.read_bytes())["frames"]) == 3
+
+
+def test_the_recorder_screenshots_through_its_page_and_opens_no_second_cdp_session(tmp_path, monkeypatch):
+    """QA-002: `context.new_cdp_session(page)` asks the gate for a browser
+    session of its own (`Target.attachToBrowserTarget`), which the gate
+    refuses -- "a second browser session is the proxy's to open" -- so every
+    frame of the first run was 'frame skipped: Error'. The recorder takes the
+    path the agent's own screenshots take: the page's screenshot, on the
+    session its connection already has."""
+    # MUTATION: open `context.new_cdp_session(page)` for Page.captureScreenshot
+    # (the recorder before this lane) and capture() returns None every tick.
+    cmd = _command()
+    refused = []
+    shots = []
+
+    class Page:
+        main_frame = object()
+
+        def on(self, *_a):
+            pass
+
+        def evaluate(self, expression, *_a):
+            if "visibilityState" in expression:
+                return "visible"
+            return [1440, 900, 2, 0, 0]
+
+        def screenshot(self, **kw):
+            shots.append(kw)
+            return _png(16, 10, lambda x, y: RED + (255,))
+
+    page = Page()
+
+    class Context:
+        pages = [page]
+
+        def on(self, *_a):
+            pass
+
+        def new_cdp_session(self, _page):
+            refused.append("Target.attachToBrowserTarget")
+            raise RuntimeError("refused by the live gate's method policy: Target.attachToBrowserTarget")
+
+    class Browser:
+        contexts = [Context()]
+
+        def new_browser_cdp_session(self):
+            refused.append("Target.attachToBrowserTarget")
+            raise RuntimeError("refused by the live gate's method policy: Target.attachToBrowserTarget")
+
+    class Playwright:
+        stopped = False
+
+        class chromium:
+            @staticmethod
+            def connect_over_cdp(endpoint, **_kw):
+                assert endpoint == "http://127.0.0.1:9222"
+                return Browser()
+
+        def stop(self):
+            self.stopped = True
+
+    api = types.ModuleType("playwright.sync_api")
+    api.sync_playwright = lambda: types.SimpleNamespace(start=Playwright)
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", api)
+
+    frames = cmd.LiveFrames("http://127.0.0.1:9222")
+    shot = frames.capture()
+    assert refused == [], "the recorder asked the gate for a second CDP session"
+    assert shot is not None and shot.startswith(b"\x89PNG"), "the frame was skipped"
+    (kw,) = shots
+    # The page on screen, at CSS size, and nothing done to the person's page
+    # to take it: no caret hidden, no animation stopped, no full page.
+    assert kw.get("scale") == "css" and kw.get("type") == "png", kw
+    assert kw.get("caret") == "initial" and kw.get("animations") == "allow", kw
+    assert not kw.get("full_page") and kw.get("timeout") == cmd.CAPTURE_TIMEOUT_MS, kw
+    # And it is a frame of the GIF, as before.
+    flow = cmd.FlowGif(tmp_path / "flows" / "f.gif", max_width=8, max_height=8)
+    assert flow.add_png(shot, at=0.0) == cmd.FRAME_ADDED
+    flow.close(at=1.0)
+    frames.close()
+    gif = _read_gif((tmp_path / "flows" / "f.gif").read_bytes())
+    assert len(gif["frames"]) == 1
 
 
 def test_record_start_refuses_without_a_live_browser_or_with_a_bad_name(tmp_path, monkeypatch, capsys):

@@ -50,14 +50,20 @@ killed between frames still leaves one.
 What a flow costs, and its caps. The image carries NO image library (its
 Dockerfile installs Playwright and Chromium, nothing that writes a GIF), so
 the encoder below is the standard library's: zlib to read Chromium's PNG,
-LZW written here. Frames are taken at CSS size, at most MAX_FRAME_WIDTH x
-MAX_FRAME_HEIGHT (a 1440x900 desktop is captured at 720x450, a 390x844 phone
-as it is), and coloured from a fixed 216-colour cube with no dithering: a
-flow is evidence of what happened, the PNG screenshots are the fidelity.
-MEASURED 2026-10-20 (this lane, Python 3.11, one core): a 720x450 frame costs
-0.07 s of CPU when Chromium filtered it None/Sub/Up and 0.29 s all-Paeth, and
-0.42 s and 434 KB for random noise, the worst case -- a UI page is tens of
-KB, and a frame that changed a few rows is that band only. That CPU is the
+LZW written here. Frames are taken by the page's own screenshot at CSS size
+and fitted to at most MAX_FRAME_WIDTH x MAX_FRAME_HEIGHT (a 1440x900 desktop
+becomes 720x450, a 390x844 phone stays as it is), and coloured from a fixed
+216-colour cube with no dithering: a flow is evidence of what happened, the
+PNG screenshots are the fidelity. The recorder takes the screenshot through
+the session its own connection already holds for the page, never a CDP
+session of its own: the gate refuses a second browser session, and the first
+QA run recorded nothing for it (QA-002, QA-TOOLS-FIX). So the 1440x900 PNG is
+decoded here, not one Chromium had already halved. MEASURED 2026-10-20
+(QA-TOOLS-FIX, Python 3.11, one core, FlowGif.add_png on a synthetic
+1440x900 RGBA PNG): 0.08 s of CPU filtered Up, 0.15 s and 433 KB for
+unfiltered random noise, and 1.61 s all-Paeth, the worst case (it was 0.29 s
+when Chromium returned 720x450) -- a UI page is tens of KB, and a frame that
+changed a few rows is that band only. That CPU is the
 agent container's (requests == limits), which is why the interval has a
 floor; a frame waits for the one before it, never piles up. A flow stops itself at MAX_FLOW_FRAMES frames,
 MAX_FLOW_BYTES bytes (before the frame that would pass it; under the 20 MiB
@@ -576,15 +582,10 @@ class LiveFrames:
     navigated last.
     """
 
-    _VIEW = ("() => { const v = window.visualViewport; return [v ? v.width : innerWidth, "
-             "v ? v.height : innerHeight, devicePixelRatio, v ? v.pageLeft : scrollX, "
-             "v ? v.pageTop : scrollY]; }")
-
     def __init__(self, endpoint):
         self.endpoint = endpoint
         self._playwright = None
         self._context = None
-        self._sessions = {}
         self._last = None
         self._navigated = False
 
@@ -616,7 +617,6 @@ class LiveFrames:
                 self._navigated = True
 
         page.on("framenavigated", navigated)
-        page.on("close", lambda _p: self._sessions.pop(page, None))
 
     def _on_screen(self, pages):
         for page in reversed(pages):
@@ -635,19 +635,18 @@ class LiveFrames:
             page = self._on_screen(list(context.pages))
             if page is None:
                 return None
-            width, height, ratio, left, top = page.evaluate(self._VIEW)
-            scale = min(1.0, MAX_FRAME_WIDTH / max(1.0, width), MAX_FRAME_HEIGHT / max(1.0, height))
-            session = self._sessions.get(page)
-            if session is None:
-                session = self._sessions[page] = context.new_cdp_session(page)
-            shot = session.send("Page.captureScreenshot", {
-                "format": "png",
-                "clip": {"x": left, "y": top, "width": width, "height": height,
-                         "scale": scale / max(0.01, ratio)},
-            })
-            import base64
-
-            return base64.b64decode(shot["data"])
+            # The page's own screenshot, on the session this connection's
+            # Playwright already holds for the page -- the path the agent's
+            # browser_take_screenshot takes. NEVER `context.new_cdp_session`:
+            # that asks for a browser session of the recorder's own
+            # (`Target.attachToBrowserTarget`), which the gate refuses
+            # (cdppolicy.DENIED: "a second browser session is the proxy's to
+            # open"), and every frame of the first QA run was skipped for it
+            # (QA-002). CSS size; FlowGif fits it to MAX_FRAME_WIDTH x
+            # MAX_FRAME_HEIGHT. caret="initial" and animations="allow" leave
+            # the person's page as it is: the defaults would inject a style.
+            return page.screenshot(type="png", scale="css", caret="initial", animations="allow",
+                                   timeout=CAPTURE_TIMEOUT_MS)
         except Exception as exc:
             sys.stderr.write("frame skipped: %s\n" % type(exc).__name__)
             self.close()
@@ -674,7 +673,6 @@ class LiveFrames:
 
     def close(self):
         playwright, self._playwright, self._context = self._playwright, None, None
-        self._sessions = {}
         if playwright is not None:
             try:
                 playwright.stop()
