@@ -987,6 +987,7 @@ indexrun.py`):
 | `stage_base` *(incremental runs only, lane IX2, §3.4)* | the base's `repo-index.json` by the staged-input path, then `swarm-repo-graph read --commit <base_sha> --manifest-digest <recorded> --out $SWARM_WORK_DIR/repo-graph.base.json` | sized from the base graph's size, which its index's `graph.symbols` and `graph.edges` give at 600 bytes each: 20 s + 1.5 s a MB, at most half the extractor's budget (180 s of an incremental run's 360), which is also what an index without counts gets (#1469) |
 | `extract` | `swarm-repo-index --repo <checkout> --out $SWARM_WORK_DIR/repo-index.extract.json --graph-out $SWARM_WORK_DIR/repo-graph.json --lsp-total-budget-seconds <extract - 180>`, and one `--lsp-server-cost <server>=<seconds>` for each cost the signed prompt names (§3.5) | 0.4 of the task's timeout, 720 s: twice the ~6 minutes measured |
 | `agent` | the runner, from the extractor's output | what is left, less the write's reserve |
+| `index_check` *(lane INDEX-ROUTES, #1693)* | the agent's `repo-index.json` against `RepoIndexSpec`, by the worker's restatement (`agent_worker/indexspec.py`) | none: a pure check, milliseconds |
 | `graph_write` | `swarm-repo-graph write --graph ... --index $SWARM_ARTIFACTS_DIR/repo-index.json --repo-id <r> --destination tenants/<t>/repos/<r>/graph` | 0.15 of the task's timeout, 270 s, reserved before the agent starts |
 
 Why each rule:
@@ -1002,6 +1003,21 @@ Why each rule:
   `graph.manifest_digest`, which promotion reads as "no graph"; the write is
   resumable, so the next run completes it. A timeout is a less certain
   index, never a lost one (§3.5).
+* **The one phase that does fail the run is `index_check`** (#1693).
+  Measured on ai-studio, 2026-10-20: 3 of 19 runs were refused at promotion
+  (`routes.N.kind` missing, `routes.520.handler` empty, `modules.4.purpose`
+  over 300 characters), after the agent had exited, so the whole run was
+  spent for nothing. Now the claude-code runner checks the document with
+  promotion's own rules while the session can still be continued and gives
+  the agent ONE repair turn naming exactly those `field: message` lines
+  (`cliagent.INDEX_REPAIR_MAX_TURNS`); a document still refused fails the
+  attempt with them, and the graph write never stores it. The worker image
+  carries neither swarm_api nor pydantic, so `indexspec` restates the spec;
+  `tests/unit/worker/test_index_output_repair.py` holds it to promotion's
+  answers, line for line. The extractor serves its routes in the index's own
+  shape (`served_route`: `kind` `http` with method and path, or `export` for
+  a Terraform block's address; no null keys), so the agent copies them as
+  they are instead of re-mapping 538 rows by hand.
 * **Each phase's duration is recorded**, in the step's
   `result_summary.repo_index_phases` and in the phases file, so "where did
   the 30 minutes go" is answered from the run, not from a log search.

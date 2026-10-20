@@ -50,6 +50,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 from .. import expected_outputs as expected_mod
+from .. import indexspec
 from .. import issue as issue_mod
 from ..cachedirs import AGENT_CACHE_ENV
 from ..gitidentity import GIT_IDENTITY_ENV
@@ -992,6 +993,16 @@ TITLE_REPAIR_MAX_TURNS = 1
 #: `lifecycle.PR_TITLE_FILE`; named here because the runner never imports the
 #: worker.
 PR_TITLE_NAME = "pr-title.txt"
+#: An index run's repo-index.json that promotion would refuse
+#: (`agent_worker.indexspec`) is given ONE turn naming the errors (lane
+#: INDEX-ROUTES, #1693): 3 of 19 ai-studio runs were refused for a shape the
+#: agent can fix in one pass once it is told which fields. A document still
+#: refused after it fails the attempt (`lifecycle.Worker._index_after_agent`).
+INDEX_REPAIR_MAX_TURNS = 1
+#: `indexrun.INDEXER_PROFILE`, the profile whose runs owe a repo-index.json;
+#: `SWARM_RUNNER_PROFILE` is the worker's (`lifecycle._build_child_env`).
+INDEXER_PROFILE = "indexer"
+RUNNER_PROFILE_ENV = "SWARM_RUNNER_PROFILE"
 
 #: At most this many items of each kind are named in a prompt or recorded per
 #: turn. The runner's whole output reaches `result_summary.runner.output`
@@ -1054,7 +1065,10 @@ PUBLISH_PARAGRAPH = (
 )
 
 
-def repair_prompt(missing: Sequence[str], flagged: Sequence[str], artifacts_dir: Path | str) -> str:
+def repair_prompt(
+    missing: Sequence[str], flagged: Sequence[str], artifacts_dir: Path | str,
+    index_problems: Sequence[str] = (),
+) -> str:
     """The one user message a repair turn is given: what failed, exactly."""
     directory = PurePosixPath(os.path.abspath(os.fspath(artifacts_dir)))
     lines = [
@@ -1078,6 +1092,15 @@ def repair_prompt(missing: Sequence[str], flagged: Sequence[str], artifacts_dir:
         lines += [f"- {entry}" for entry in flagged[:REPAIR_LIST_CAP]]
         if len(flagged) > REPAIR_LIST_CAP:
             lines.append(f"- and {len(flagged) - REPAIR_LIST_CAP} more")
+    if index_problems:
+        # `indexspec.problems` already stops at the 20 promotion names.
+        lines.append(
+            f"{directory / indexspec.INDEX_FILE} does not match {indexspec.SCHEMA}, and "
+            "promotion refuses it. Fix each of these fields in that file (field: problem), "
+            "keep only the keys the shape names, and write it again; you get this one "
+            "turn, and a document still refused fails the run:"
+        )
+        lines += [f"- {entry}" for entry in index_problems]
     return "\n".join(lines)
 
 
@@ -1683,16 +1706,37 @@ def run_cli_agent(
                 flagged_now, repair_scan_error = credential_lines(scan_repo)
             return missing_now, flagged_now
 
+        # AN INDEX RUN'S DOCUMENT (#1693), checked with promotion's rules. An
+        # absent file is not this check's: the worker skips the graph write.
+        index_run = os.environ.get(RUNNER_PROFILE_ENV) == INDEXER_PROFILE
+
+        def index_check() -> list[str]:
+            if not index_run:
+                return []
+            return indexspec.problems_of_file(
+                Path(ctx.artifacts_dir) / indexspec.INDEX_FILE) or []
+
         ctx.report["repair_turns"] = 0
         missing, flagged = run_checks()
+        index_problems = index_check()
+        index_turns = 0
         if repair_scan_error is not None:
             log.warning(
                 "the publish credential scan could not run before the step ended; "
                 "the publish runs it again",
                 error=repair_scan_error,
             )
-        while missing or flagged:
-            if repair_turns >= TITLE_REPAIR_MAX_TURNS and not flagged \
+        while True:
+            ask_index = index_problems if index_turns < INDEX_REPAIR_MAX_TURNS else []
+            if not (missing or flagged or ask_index):
+                if index_problems:
+                    log.warning(
+                        f"{indexspec.INDEX_FILE} is still refused after its repair turn; "
+                        "the worker fails the attempt with the errors",
+                        index_problems=index_problems,
+                    )
+                break
+            if repair_turns >= TITLE_REPAIR_MAX_TURNS and not flagged and not ask_index \
                     and list(missing) == [PR_TITLE_NAME]:
                 # Only the title is still missing: it had its one follow-up
                 # turn (Proposal B), and the worker decides the rest.
@@ -1739,11 +1783,15 @@ def run_cli_agent(
                 f"{REPAIR_MAX_TURNS}, resuming the session with what failed",
                 missing_outputs=missing[:REPAIR_LIST_CAP],
                 credential_lines=flagged[:REPAIR_LIST_CAP],
+                index_problems=ask_index,
                 remaining_seconds=round(remaining, 1),
             )
-            text = repair_prompt(missing, flagged, ctx.artifacts_dir)
+            if ask_index:
+                index_turns += 1
+            text = repair_prompt(missing, flagged, ctx.artifacts_dir, ask_index)
             resume_pass(session, text, remaining)
             after_missing, after_flagged = run_checks()
+            index_problems = index_check()
             # What a turn fixed is what it was asked to fix and no longer fails.
             # A credential line is named by `path:line rule`, so one that only
             # moved when an earlier line was removed reads as fixed here and as
@@ -1754,13 +1802,17 @@ def run_cli_agent(
                 "credential_lines": flagged[:REPAIR_LIST_CAP],
                 "fixed_outputs": [n for n in missing if n not in after_missing][:REPAIR_LIST_CAP],
                 "fixed_lines": [e for e in flagged if e not in after_flagged][:REPAIR_LIST_CAP],
+                **({"index_problems": list(ask_index),
+                    "index_fixed": bool(ask_index) and not index_problems}
+                   if index_run else {}),
             })
             ctx.report["repairs"] = repairs
             missing, flagged = after_missing, after_flagged
-        if missing or flagged:
+        if missing or flagged or index_problems:
             unresolved = {
                 "missing_outputs": missing[:REPAIR_LIST_CAP],
                 "credential_lines": flagged[:REPAIR_LIST_CAP],
+                **({"index_problems": index_problems} if index_run else {}),
             }
 
     # JEV'S POST-STEPS (lane CTXQ-JW; `judge.poststeps`). The planner's plan

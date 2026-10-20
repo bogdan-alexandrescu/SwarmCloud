@@ -223,9 +223,12 @@ def test_the_worker_runs_extract_then_agent_then_graph_write(
 
     phases = db.doc("tasks/task_1")["result_summary"]["repo_index_phases"]
     # The prompt names no kept commits, so the sweep is skipped and says why.
-    assert [p["phase"] for p in phases] == ["extract", "agent", "graph_write", "index_sweep"]
-    assert phases[3]["status"] == "skipped" and phases[3]["reason"], phases
-    phases = phases[:3]
+    # The agent's document is checked with promotion's rules before the write
+    # stores it (`indexspec`, #1693).
+    assert [p["phase"] for p in phases] == ["extract", "agent", "index_check", "graph_write",
+                                            "index_sweep"]
+    assert phases[4]["status"] == "skipped" and phases[4]["reason"], phases
+    phases = [phases[0], phases[1], phases[3]]
     assert all(p["status"] == "ok" for p in phases), phases
     assert all(isinstance(p["seconds"], float) and p["seconds"] > 0 for p in phases), phases
     assert phases[0]["seconds"] >= 0.2

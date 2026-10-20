@@ -3665,6 +3665,42 @@ def _served_edge(entry: dict) -> dict:
     return {**entry, "evidence": evidence, "also_evidence": sorted(also)}
 
 
+#: swarm-api's `repoindex.Route` bounds, per key (#1693). A value over one is
+#: never served cut: a handler cut to 200 characters names a symbol that does
+#: not exist, so an optional one is left out and a route whose file, path or
+#: method is over is not served at all (and `routes` is named in `truncated`).
+ROUTE_BOUNDS = {"file": 400, "method": 10, "path": 400, "name": 200, "handler": 200}
+
+
+def served_route(route: dict) -> dict | None:
+    """A route in repo-index.json's own shape (`swarm_api.repoindex.Route`), or
+    None when it cannot be served whole.
+
+    Measured on ai-studio, 2026-10-20: the extractor's 538 routes carried
+    `id`, `language`, `start_line` and `end_line`, no `kind`, and 9 a null
+    handler, so the agent re-mapped them by hand every run and 3 of 19 runs
+    were refused at promotion. The graph keeps the extractor's own rows; the
+    index serves these, which the agent copies as they are. An HTTP route
+    (FastAPI, Flask, Express, net/http, gin/chi) is `http` with its method and
+    URL path; a Terraform resource, module or variable -- the surface another
+    root reaches -- is `export`, named by its address. A key with no value is
+    left out rather than written null.
+    """
+    if route.get("language") == "hcl":
+        served = {"kind": "export", "name": route["path"], "file": route["file"]}
+    else:
+        served = {"kind": "http", "method": route["method"], "path": route["path"],
+                  "file": route["file"]}
+    for key, value in list(served.items()):
+        if key != "kind" and (not isinstance(value, str) or not value
+                              or len(value) > ROUTE_BOUNDS[key]):
+            return None
+    handler = route.get("handler")
+    if isinstance(handler, str) and 0 < len(handler) <= ROUTE_BOUNDS["handler"]:
+        served["handler"] = handler
+    return served
+
+
 def _test_map_keep_order(items: list[dict]) -> list[dict]:
     """The test map, most worth keeping first: every source's best edge, then
     every source's second, and so on (G4-07).
@@ -3699,6 +3735,9 @@ def index_document(facts: dict, graph_bytes: bytes | None = None,
     if graph_bytes is None:
         graph_bytes = dumps(graph_document(facts))
     truncated = set(facts["truncated"]) - _GRAPH_TRUNCATIONS
+    routes = [served for served in map(served_route, facts["routes"]) if served is not None]
+    if len(routes) < len(facts["routes"]):
+        truncated.add("routes")
     index: dict[str, Any] = {
         "schema": SCHEMA,
         "kind": facts["kind"],
@@ -3707,7 +3746,7 @@ def index_document(facts: dict, graph_bytes: bytes | None = None,
         "base_sha": facts["base_sha"],
         "built_at": facts["built_at"],
         "modules": facts["modules"],
-        "routes": facts["routes"],
+        "routes": routes,
         "test_map": [_served_edge(t) for t in facts["test_map"]],
         "hot_spots": facts["hot_spots"],
         "languages": facts["languages"],
@@ -3747,13 +3786,16 @@ def index_document(facts: dict, graph_bytes: bytes | None = None,
     keep_first: dict[str, Callable[[dict], Any]] = {
         "hot_spots": lambda h: (-h["changes"], h["path"]),
         "graph.most_called": lambda m: (-m["callers"], m["symbol"]),
-        "routes": lambda r: (r["file"], r["start_line"], r["method"], r["path"]),
         "modules": lambda m: (-m["lines"], m["path"]),
     }
 
     def keep_order(name: str, items: list[dict]) -> list[dict]:
         if name == "test_map":
             return _test_map_keep_order(items)
+        if name == "routes":
+            # Served in the facts' order (file, line, method, path), which a
+            # served route no longer carries the line of: the first are kept.
+            return list(items)
         return sorted(items, key=keep_first[name])
 
     # The index's own bound on the test map (§2.2: 4,000 edges): the graph
