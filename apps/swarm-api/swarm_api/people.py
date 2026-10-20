@@ -429,8 +429,14 @@ class People:
         rules: ws.KindRules | None = None,
         signer: Any = None,
         verify_settings: Any = None,
+        firestore_off_tenants: tuple[str, ...] = (),
     ) -> None:
         self._db = db
+        # WORKER_FIRESTORE_OFF_TENANTS (#1457 design B): whose job-made
+        # workspace worker gets no Firestore role. Written on the record as
+        # `worker_firestore_access` by `_access_patch` at every approval,
+        # retry and ceiling change; empty, the default, is today's grant.
+        self._firestore_off = tuple(firestore_off_tenants or ())
         # Signs every approval and retry (`ws.sign_approval`, lane
         # WK-SIGNED-APPROVAL): the step-spec KMS signer. None only where
         # `specsigning.signer_from_settings` allows it (local development and
@@ -512,6 +518,14 @@ class People:
         snap = _snapshot(txn.get(self._db.collection(TENANTS).document(tenant_id)))
         return snap.exists and (snap.to_dict() or {}).get("managed_by") == TERRAFORM_MANAGED
 
+    def _access_patch(self, record: Mapping[str, Any]) -> dict[str, bool]:
+        """The record's Firestore switch as the cutover list has it now
+        (`ws.worker_firestore_access`). The job reads the record, so writing
+        it with each action that starts a run is what makes a change to the
+        list reach a workspace: its next approval, retry or ceiling change."""
+        return {ws.WORKER_FIRESTORE_ACCESS: ws.worker_firestore_access(
+            str(record.get("tenant_id") or ""), self._firestore_off)}
+
     def _approve_in(self, txn: Any, record: Mapping[str, Any], *, by: str,
                     auto: bool = False, is_owner: bool = False,
                     action: str | None = None,
@@ -557,6 +571,7 @@ class People:
             # unless this verifies over the record (R8, `ws.sign_approval`).
             ws.APPROVAL: ws.sign_approval(self._signer, record, decided_by=by, decided_at=at,
                                           request_id=str(record.get("request_id") or "")),
+            **self._access_patch(record),
         }
         if directory is not None:
             patch["directory"] = dict(directory)
@@ -860,6 +875,7 @@ class People:
                 ws.APPROVAL: ws.sign_approval(self._signer, record, decided_by=by,
                                               decided_at=now, request_id=request_id),
                 "failure": None,
+                **self._access_patch(record),
                 "history": [*(record.get("history") or []), {
                     "request_id": record.get("request_id"),
                     "state": state,
@@ -917,10 +933,13 @@ class People:
         def _apply(txn: Any) -> dict[str, Any]:
             ref, record = self._resolve(txn, workspace_id)
             previous = dict(record.get("limits") or {})
-            txn.update(ref, {"limits": limits})
+            # The one admin action on a ready record, so the one that brings
+            # a cut-over tenant's switch to it before its next A9.
+            patch = {"limits": limits, **self._access_patch(record)}
+            txn.update(ref, patch)
             self._audit(txn, "limits", workspace_id, by, {
                 "previous": previous, "limits": limits, "state": ws.state_of(record)})
-            return {**record, "limits": limits}
+            return {**record, **patch}
 
         record = _apply(transaction)
         tenant_id = record["tenant_id"]

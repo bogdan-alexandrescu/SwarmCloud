@@ -376,6 +376,10 @@ WS_WRITE_EXPR=""
 WS_FORGE_SLOT=""
 WS_FORGE_TWIN=""
 WS_FIRESTORE_ROLE=""
+# The tenant's Firestore switch, from the guard's expectation (A1): "true" is
+# today's grant, "false" none (#1457 design B; see ws_load_names).
+WS_FIRESTORE_ACCESS="true"
+WS_FIRESTORE_WITHHELD=""
 WS_META_ROLE=""
 WS_FALLBACK="false"
 WS_LABEL=""
@@ -724,6 +728,24 @@ ws_load_names() {
   WS_SERVICE="$(ws_expect service_principal)"
   WS_FRONT_DOOR="$(ws_expect front_door_backend)"
   WS_FIRESTORE_ROLE="$(ws_expect firestore_role)"
+  # The job-made path's --worker-firestore-access (lane ISO-WS-FIRESTORE):
+  # swarm-api writes it on the record from WORKER_FIRESTORE_OFF_TENANTS and the
+  # guard copies it here. Absent is true. False leaves `firestore_role` out of
+  # the expectation, so C5 admits no database binding and A5 makes none; the
+  # role's name is kept for A9, which then requires it ABSENT.
+  # Not through ws_expect: its `// ""` reads a false as absent, which here
+  # would be the grant the record withholds. An expectation written before
+  # the switch holds no key, and that is true.
+  WS_FIRESTORE_ACCESS="$(jq -r 'if has("worker_firestore_access") then (.worker_firestore_access | tostring) else "true" end' \
+    "${SWARM_CALL_GUARD}")"
+  case "${WS_FIRESTORE_ACCESS}" in
+    true) [[ -n "${WS_FIRESTORE_ROLE}" ]] \
+            || die "the guard's expectation grants the worker database role but names none; nothing past A1 can run" ;;
+    false) [[ -z "${WS_FIRESTORE_ROLE}" ]] \
+             || die "the guard's expectation withholds the worker database role but still names it; nothing past A1 can run"
+           WS_FIRESTORE_WITHHELD="projects/${PROJECT_ID}/roles/$(ws_expect firestore_role_id)" ;;
+    *) die "the guard's expectation says worker_firestore_access '${WS_FIRESTORE_ACCESS}'; nothing past A1 can run" ;;
+  esac
   WS_META_ROLE="$(ws_expect bucket_metadata_role)"
   WS_CONTEXT="gke_${PROJECT_ID}_$(ws_expect gke_location)_$(ws_expect gke_cluster)"
   # One switch, read from the guard's own rules, so the script makes the WD9
@@ -1301,6 +1323,27 @@ ws_bucket_has() {
     "$1" >/dev/null 2>&1
 }
 
+# The Firestore roles the worker holds in a project POLICY, on one line: the
+# worker database role (by its name under false, WS_FIRESTORE_WITHHELD, else
+# WS_FIRESTORE_ROLE) or any predefined roles/datastore.* role, conditioned or
+# not. Empty when there is none, which is what A9 requires under
+# worker_firestore_access false.
+ws_firestore_bound_roles() {
+  jq -r --arg m "serviceAccount:${WS_WORKER_EMAIL}" \
+    --arg r "${WS_FIRESTORE_WITHHELD:-${WS_FIRESTORE_ROLE}}" '
+    [(.bindings? // [])[] | select(any(.members[]?; . == $m))
+     | select(.role == $r or (.role | startswith("roles/datastore.")))
+     | .role + (if .condition != null then " (conditioned)" else "" end)] | unique | join(", ")' "$1"
+}
+
+# True when the worker holds a Firestore role in POLICY -- and when POLICY
+# cannot be read, so an unreadable answer never passes for "none".
+ws_firestore_bound() {
+  local roles
+  roles="$(ws_firestore_bound_roles "$1" 2>/dev/null)" || return 0
+  [[ -n "${roles}" ]]
+}
+
 # The .tenant marker, create-only: ONE Storage JSON API upload with
 # ifGenerationMatch=0 (the guard's expectation builds the URL, C4), which needs
 # storage.objects.create on tenants/ and nothing else -- exactly what the
@@ -1378,7 +1421,16 @@ ws_a5() {
     fi
     ws_call "${WS_WORK}/project-policy.json" gcloud projects get-iam-policy "${PROJECT_ID}" --format=json \
       || { ws_show_err; return 1; }
-    for role in "${WS_FIRESTORE_ROLE}" roles/logging.logWriter roles/monitoring.metricWriter; do
+    local -a project_roles=(roles/logging.logWriter roles/monitoring.metricWriter)
+    if [[ "${WS_FIRESTORE_ACCESS}" == "true" ]]; then
+      project_roles=("${WS_FIRESTORE_ROLE}" "${project_roles[@]}")
+    else
+      ok "access: worker database role withheld (worker_firestore_access false): the worker reaches its state through swarm-api"
+      if ws_firestore_bound "${WS_WORK}/project-policy.json"; then
+        warn "the worker still holds a Firestore role an earlier grant made, which this job never removes (C9); A9 fails until the owner does"
+      fi
+    fi
+    for role in "${project_roles[@]}"; do
       ws_bucket_has "${WS_WORK}/project-policy.json" "${role}" "" && continue
       ws_call /dev/null gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
         --member "serviceAccount:${WS_WORKER_EMAIL}" --role "${role}" --condition None --quiet \
@@ -1674,10 +1726,31 @@ ws_a9() {
     ws_bucket_has "${WS_WORK}/bucket-policy.json" "${WS_META_ROLE}" "" || { ws_object "bucket grant"; return 1; }
     ws_call "${WS_WORK}/project-policy.json" gcloud projects get-iam-policy "${PROJECT_ID}" --format=json \
       || { ws_show_err; ws_object "project grant"; return 1; }
-    for role in "${WS_FIRESTORE_ROLE}" roles/logging.logWriter roles/monitoring.metricWriter; do
+    local -a project_roles=(roles/logging.logWriter roles/monitoring.metricWriter)
+    [[ "${WS_FIRESTORE_ACCESS}" != "true" ]] || project_roles=("${WS_FIRESTORE_ROLE}" "${project_roles[@]}")
+    for role in "${project_roles[@]}"; do
       ws_bucket_has "${WS_WORK}/project-policy.json" "${role}" "" || { ws_object "project grant"; return 1; }
     done
-    n=$((n + 4))
+    n=$((n + 1 + ${#project_roles[@]}))
+  fi
+  # The switch's other half (lane ISO-WS-FIRESTORE): under false the worker
+  # holds NO Firestore role on the project, whichever run or hand made it --
+  # read on the fallback or not, since a binding is a binding. The job never
+  # removes one (C9); the owner does, with the command printed here.
+  if [[ "${WS_FIRESTORE_ACCESS}" == "false" ]]; then
+    if [[ "${WS_FALLBACK}" != "true" ]]; then
+      ws_call "${WS_WORK}/project-policy.json" gcloud projects get-iam-policy "${PROJECT_ID}" --format=json \
+        || { ws_show_err; ws_object "project grant"; return 1; }
+    fi
+    if ws_firestore_bound "${WS_WORK}/project-policy.json"; then
+      err "  the worker still holds $(ws_firestore_bound_roles "${WS_WORK}/project-policy.json" 2>/dev/null || printf 'a role the policy did not show'), and its record says worker_firestore_access false"
+      # Named without the CLI's leading word: this job never makes the call
+      # (C9), and test_workspace_deployer_walk.py maps every one it names.
+      dim "  the owner removes it, as the operator path prints: projects remove-iam-policy-binding ${PROJECT_ID} --member serviceAccount:${WS_WORKER_EMAIL} --role <role> --condition <None, or the binding's>"
+      ws_object "project grant"
+      return 1
+    fi
+    n=$((n + 1))
   fi
   # The forge slot, its twin (a service's team slot has none, §4.6), and who
   # reads them.
