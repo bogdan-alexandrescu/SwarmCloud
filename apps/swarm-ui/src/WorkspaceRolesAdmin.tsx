@@ -10,7 +10,7 @@ import {
   type Result,
 } from './api'
 import { Button, Card, Dash } from './components'
-import { UrRefresh, useUrRead, type UrRead } from './RepositoriesParts'
+import { useUrRead, type UrRead } from './RepositoriesParts'
 import { DEFAULT_ROLES } from './roles'
 import {
   timeAgo,
@@ -71,14 +71,22 @@ function dataOf<T>(r: Result<T>): T | null {
   return r.status === 'ok' || r.status === 'stale' ? r.data : null
 }
 
-/** Admin › People's Workspace roles card. */
-export function WorkspaceRolesCard() {
-  const first = useUrRead(() => loadAdminWorkspacesRoles(null), 'workspace-roles-admin:list')
+/**
+ * The list's first page, read by the page that draws the card: Admin › People
+ * renews it from its head's one refresh, as every other page renews its reads,
+ * rather than from a second refresh beside the card's title (QA-066).
+ */
+export function useWorkspaceRolesList(): UrRead<AdminWorkspaceRolesPage> {
+  return useUrRead(() => loadAdminWorkspacesRoles(null), 'workspace-roles-admin:list')
+}
+
+/** Admin › People's Workspace roles card, over the first page its page read (`useWorkspaceRolesList`). */
+export function WorkspaceRolesCard({ first }: { first: UrRead<AdminWorkspaceRolesPage> }) {
   // The tokens of the pages read after the first, in order.
   const [more, setMore] = useState<string[]>([])
   const next = (token: string) => setMore((was) => (was.includes(token) ? was : [...was, token]))
   return (
-    <Card className="wra-card" title="Workspace roles" action={<UrRefresh reads={[first]} />}>
+    <Card className="wra-card" title="Workspace roles">
       <p className="ur-hint">
         Each group workspace&rsquo;s default role, its admins and the people with a role of their own. A group workspace has no admin until
         one is named here; a personal workspace&rsquo;s only admin is its person.

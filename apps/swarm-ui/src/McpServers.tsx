@@ -217,8 +217,10 @@ export function McpServersScreen() {
   const list = useUrRead(loadMcpServers, 'mcp-servers')
   return (
     <div className="pk-page">
-      <PageHead title="MCP servers" />
-      <Card title="Registered MCP servers" action={<UrRefresh reads={[list]} />}>
+      <PageHead title="MCP servers" help="mcp-servers">
+        <UrRefresh reads={[list]} />
+      </PageHead>
+      <Card title="Registered MCP servers">
         <p className="pk-lead">
           The MCP servers a task&rsquo;s agent may call during its run, by name. A task names them on Submit; the
           worker reaches each one for the agent and holds its credential, which the agent never sees. SwarmCloud

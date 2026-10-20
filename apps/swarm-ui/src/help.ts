@@ -89,6 +89,7 @@ export type TopicId =
   | 'catalogue-from-route'
   | 'checkpoints'
   | 'clipboard-secure-context'
+  | 'code-intelligence'
   | 'cpu-figures'
   | 'credential-names-not-values'
   | 'credential-refresh-sweep'
@@ -99,6 +100,7 @@ export type TopicId =
   | 'dispatch-strategies'
   | 'event-paging'
   | 'failure-classes'
+  | 'github-connect'
   | 'input-as-submitted'
   | 'input-is-opaque'
   | 'integrate-needs-final-step'
@@ -108,6 +110,7 @@ export type TopicId =
   | 'lending-narrows-isolation'
   | 'lent-account'
   | 'masking-is-serve-time'
+  | 'mcp-servers'
   | 'never-assigned-pool'
   | 'no-amber-band'
   | 'not-a-machine-inventory'
@@ -170,6 +173,7 @@ export type TopicId =
   | 'withheld-total'
   | 'workflow-stages'
   | 'workspace-memory'
+  | 'workspace-roles'
 
 /** The Help section's headings, in the order it renders them. */
 export type HelpGroupId =
@@ -1671,6 +1675,60 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'So the comparison is shown with the number of rows it was computed over, and the conclusion is left to a reader who can see both.',
     ],
   },
+
+  // THE SETTINGS PAGES' OWN `?` (QA-066, lane QAFIX-PAGEHEAD, part of #1680).
+  // A Settings page belongs to no section, so its head had no `?` to borrow:
+  // each says what the page is for, who may change what, and where its data
+  // comes from. The facts are the pages' own headers: WorkspacePeople.tsx,
+  // McpServers.tsx, CodeIntelligence.tsx and GitHubConnect.tsx.
+  'workspace-roles': {
+    group: 'the-platform',
+    title: 'Everyone holds the workspace’s default role unless they are named apart from it',
+    short:
+      'A group workspace gives every member its default role, and lists only the people given a role of their own. Every member reads the roles; only the workspace’s admin, or a platform admin, changes them. Who is in the workspace is the Google group’s to say.',
+    long: [
+      'The roles are the workspace’s own role record: its default, the people given a role of their own, what each role permits, and the latest role and platform-admin events. Every member reads all of it, whatever their role.',
+      'Setting a person’s role, returning a person to the default and setting the default are offered only to the workspace’s admin, or to a platform admin, who is admin in every group workspace. The API is the gate; everyone else reads the roles without the controls. The default is never the admin role, because an admin is named one person at a time.',
+      'The platform cannot list a Google group’s members, so the people who hold the default are not named one by one. A role given to someone not yet in the group is stored and applies when they join.',
+      'A personal workspace has only its person, who is its admin and cannot be replaced, so nothing in one can be changed.',
+    ],
+  },
+
+  'mcp-servers': {
+    group: 'submitting-work',
+    title: 'A task’s agent calls only the MCP servers its workspace registered',
+    short:
+      'A workspace registers MCP servers by name, and a task names the ones its agent may call. The worker reaches each server for the agent and holds its credential, which the agent never sees. Every member reads the list; only its manager registers, edits, enables or disables one.',
+    long: [
+      'The list is the workspace’s registrations, read from the MCP servers route: each server’s name, address and transport, how its credential is supplied, and when a task of the workspace last attached it.',
+      'Every member reads the list. Registering, editing, enabling and disabling are offered only to its manager: a platform admin for a group workspace, the person for their own. The API is the gate. A server is disabled, never removed, so the question of which address an attempt called keeps its answer.',
+      'A registration carries no credential. A per-task server’s credential is sent by the caller with each task; a workspace-secret server’s is the workspace secret granted to it. SwarmCloud never calls a registered address itself: the first request a server sees is a worker’s, from one of the platform’s outbound addresses, which the server’s owner can allowlist.',
+    ],
+  },
+
+  'code-intelligence': {
+    group: 'the-platform',
+    title: 'Only one switch sends a workspace’s code anywhere',
+    short:
+      'Repository context is built from the platform’s own index and never leaves it. Sending code to Jev is the one switch that sends excerpts out, and it stays off until the workspace’s owner or a platform admin turns it on. Every other member reads it without being able to change it.',
+    long: [
+      'Two settings decide what a step is given about its repository’s code. Repository context, a ranked pack and the graph tools, is built from the platform’s own index, and nothing leaves the platform for it. Each repository turns it on, off or to inherit on its own Settings tab.',
+      'Sending code to Jev passes excerpts of the workspace’s code, with the task’s title and changed paths, to the judgment backend chosen under Settings › API keys. It is off for every workspace until someone turns it on. Secret-shaped files, any excerpt in which a credential is found, the task’s registered secrets and the agent’s transcript are never sent.',
+      'The switch is one field of the workspace’s settings document, read from the code intelligence route. Only the workspace’s owner or a platform admin can change it; every other member sees it read-only.',
+    ],
+  },
+
+  'github-connect': {
+    group: 'the-platform',
+    title: 'Connecting GitHub stores a token nobody is shown',
+    short:
+      'GitHub sends you back once you authorise the SwarmCloud GitHub App, and the console posts that answer once and says which account you are connected as. The token goes from GitHub to Secret Manager and is never drawn. A refused or expired answer is fixed by starting again.',
+    long: [
+      'Connect GitHub sends you to GitHub to authorise the SwarmCloud GitHub App for your own account. GitHub sends the browser back with a one-time answer, which the console posts once to the onboarding exchange route and clears from the address bar before the reply arrives.',
+      'When the exchange succeeds, SwarmCloud acts as your GitHub account through the App. The token went from GitHub to Secret Manager, and the console never shows it, in text or in an address. The accounts and orgs the connection reaches are read from the onboarding route; which of them your workspace uses is chosen in Access.',
+      'The answer is single use, so a refused or expired one is never posted again: Try again starts a fresh authorisation.',
+    ],
+  },
 }
 
 /**
@@ -2132,6 +2190,22 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'clipboard-secure-context': {
     subject: 'A refused clipboard',
     act: { say: 'Select the link on screen and copy it by hand.' },
+  },
+  'workspace-roles': {
+    subject: 'Workspace roles',
+    act: { say: 'Ask the workspace’s admin, or a platform admin, to change a role; who is in the workspace changes in its Google group.' },
+  },
+  'mcp-servers': {
+    subject: 'Registered MCP servers',
+    act: { say: 'Name a registered server on Submit for a task’s agent to call it; ask the workspace’s manager to register one.', at: 'submit' },
+  },
+  'code-intelligence': {
+    subject: 'Sending code to Jev',
+    act: { say: 'Read what is sent and what never is before turning the switch on; repository context is set per repository.' },
+  },
+  'github-connect': {
+    subject: 'Connecting GitHub',
+    act: { say: 'After a refusal press Try again; choose the orgs the connection reaches in Access.' },
   },
 }
 

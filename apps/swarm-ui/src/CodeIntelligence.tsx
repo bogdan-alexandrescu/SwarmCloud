@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from 'react'
-import { loadCodeIntelligence, loadJudgment, putCodeIntelligence, type JevBackend } from './api'
+import { loadCodeIntelligence, loadJudgment, putCodeIntelligence, type CodeIntelligence, type JevBackend, type Judgment } from './api'
 import { Banner, Card } from './components'
-import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
+import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { timeAgo } from './types'
 import './styles/keys.css'
@@ -47,21 +47,25 @@ const NEVER: readonly string[] = [
 ]
 
 export function WorkspaceSettingsScreen() {
+  // Read here, not in the card, so the page's one refresh sits in its head
+  // beside the `?` like every other page's (QA-066).
+  const ci = useUrRead(loadCodeIntelligence, 'code-intelligence')
+  // Only to name where Jev's judgments go; the switch does not wait on it.
+  const judgment = useUrRead(loadJudgment, 'judgment')
   return (
     <div className="pk-page">
-      <PageHead title="Workspace" />
-      <CodeIntelligenceCard />
+      <PageHead title="Workspace" help="code-intelligence">
+        <UrRefresh reads={[ci, judgment]} />
+      </PageHead>
+      <CodeIntelligenceCard ci={ci} judgment={judgment} />
     </div>
   )
 }
 
-export function CodeIntelligenceCard() {
-  const ci = useUrRead(loadCodeIntelligence, 'code-intelligence')
-  // Only to name where Jev's judgments go; the switch does not wait on it.
-  const judgment = useUrRead(loadJudgment, 'judgment')
+function CodeIntelligenceCard({ ci, judgment }: { ci: UrRead<CodeIntelligence>; judgment: UrRead<Judgment> }) {
   const backend = judgment.state.status === 'ok' || judgment.state.status === 'stale' ? judgment.state.data.jev.backend : null
   return (
-    <Card title="Code intelligence" action={<UrRefresh reads={[ci, judgment]} />}>
+    <Card title="Code intelligence">
       <p className="pk-lead">
         What a step on this workspace&rsquo;s repositories is given about its code. Repository context &mdash; a ranked
         pack and the graph tools, built from the platform&rsquo;s own index &mdash; is set per repository on its

@@ -78,8 +78,8 @@ afterEach(() => {
 describe('the Code intelligence switch', () => {
   it('is off by default when the workspace has never set it', async () => {
     api(codeIntel({ served: false }))
-    const { CodeIntelligenceCard } = await load()
-    render(<CodeIntelligenceCard />)
+    const { WorkspaceSettingsScreen } = await load()
+    render(<WorkspaceSettingsScreen />)
     const t = await toggle()
     expect(t.checked).toBe(false)
     expect(visible(document.body)).toMatch(/off \(default\)/i)
@@ -87,8 +87,8 @@ describe('the Code intelligence switch', () => {
 
   it('says what leaves the platform when it is on, and where it goes', async () => {
     api(codeIntel())
-    const { CodeIntelligenceCard } = await load()
-    render(<CodeIntelligenceCard />)
+    const { WorkspaceSettingsScreen } = await load()
+    render(<WorkspaceSettingsScreen />)
     await toggle()
     const text = visible(document.body)
     // What is sent, and what never is (§5.4).
@@ -107,8 +107,8 @@ describe('the Code intelligence switch', () => {
 
   it('names TypeSafe as leaving your network when that is the judgment backend', async () => {
     api(codeIntel(), { backend: 'typesafe' })
-    const { CodeIntelligenceCard } = await load()
-    render(<CodeIntelligenceCard />)
+    const { WorkspaceSettingsScreen } = await load()
+    render(<WorkspaceSettingsScreen />)
     await toggle()
     await waitFor(() => expect(visible(document.body)).toMatch(/TypeSafe.*outside your network/i))
     expect(document.body.textContent).not.toMatch(COMPANY_NAME)
@@ -126,8 +126,8 @@ describe('the Code intelligence switch', () => {
         return null
       },
     })
-    const { CodeIntelligenceCard } = await load()
-    render(<CodeIntelligenceCard />)
+    const { WorkspaceSettingsScreen } = await load()
+    render(<WorkspaceSettingsScreen />)
     const t = await toggle()
     expect(t.disabled).toBe(false)
     fireEvent.click(t)
@@ -138,8 +138,8 @@ describe('the Code intelligence switch', () => {
 
   it('reverts and says why when the write is refused', async () => {
     api(codeIntel(), { write: (m) => (m === 'PUT' ? { status: 403, body: { code: 'FORBIDDEN', message: 'only the owner or an admin' } } : null) })
-    const { CodeIntelligenceCard } = await load()
-    render(<CodeIntelligenceCard />)
+    const { WorkspaceSettingsScreen } = await load()
+    render(<WorkspaceSettingsScreen />)
     fireEvent.click(await toggle())
     const alert = await screen.findByRole('alert')
     expect(visible(alert)).toMatch(/not changed/i)
@@ -148,8 +148,8 @@ describe('the Code intelligence switch', () => {
 
   it('is read-only for a member who is neither the owner nor an admin', async () => {
     const { calls } = api(codeIntel({ canEdit: false, jev: true }))
-    const { CodeIntelligenceCard } = await load()
-    render(<CodeIntelligenceCard />)
+    const { WorkspaceSettingsScreen } = await load()
+    render(<WorkspaceSettingsScreen />)
     const t = await toggle()
     expect(t.disabled).toBe(true)
     expect(t.checked).toBe(true)

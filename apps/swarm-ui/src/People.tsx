@@ -17,11 +17,11 @@ import { trapTab } from './focus'
 import { ApprovedWaiting, JobSteps, waitingOf } from './OnboardingWorkspace'
 import { PersonName } from './PersonName'
 import { Mark } from './primitives'
-import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
+import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import { PageHead, usePoll } from './Shell'
 import { tableMode, usePhoneTables } from './capacityPoll'
-import { PersonWorkspaceRoles, WorkspaceRolesCard } from './WorkspaceRolesAdmin'
-import type { AdminAuditEntry, AdminHolder, LendableAccount, PeopleDoc, PersonClaudeAccount, PersonRow, WorkspaceState } from './types'
+import { PersonWorkspaceRoles, useWorkspaceRolesList, WorkspaceRolesCard } from './WorkspaceRolesAdmin'
+import type { AdminAuditEntry, AdminHolder, AdminWorkspaceRolesPage, LendableAccount, PeopleDoc, PersonClaudeAccount, PersonRow, WorkspaceState } from './types'
 import { timeAgo } from './types'
 import './styles/repositories.css'
 import './styles/onboarding.css'
@@ -1390,7 +1390,7 @@ export function BuildingOff({ doc }: { doc: PeopleDoc }) {
   )
 }
 
-function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
+function PeopleBody({ doc, reload, roles }: { doc: PeopleDoc; reload: () => void; roles: UrRead<AdminWorkspaceRolesPage> }) {
   const rows = pendingFirst(Array.isArray(doc.people) ? doc.people : [])
   const phone = usePhoneTables()
   // The drawer follows the person, not a snapshot of their row: each read
@@ -1452,7 +1452,7 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
       </Card>
       {/* ROLES-UI-ADMIN: each group workspace's default and admins, and how
           its first admin is named (workspace-roles.md §4.8, Q2). */}
-      <WorkspaceRolesCard />
+      <WorkspaceRolesCard first={roles} />
       <div className="pp-side">
         <Admins doc={doc} reload={reload} />
         <Audit entries={Array.isArray(doc.audit) ? doc.audit : []} />
@@ -1465,6 +1465,8 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
 /** Admin › People. */
 export function PeopleScreen() {
   const people = useUrRead(loadPeople, 'people')
+  // The Workspace roles card's list, renewed by this head's one refresh (QA-066).
+  const roles = useWorkspaceRolesList()
   const data = people.state.status === 'ok' || people.state.status === 'stale' ? people.state.data : null
   // A row waiting on something the platform will not do by itself is not moving.
   const moving =
@@ -1475,11 +1477,11 @@ export function PeopleScreen() {
   return (
     <div className="ur-page pp-page">
       <PageHead title="People">
-        <UrRefresh reads={[people]} />
+        <UrRefresh reads={[people, roles]} />
       </PageHead>
       <p className="ur-sub">Everyone who has signed in, what they are waiting for, and who is an admin.</p>
       <UrRegion state={people.state} route="GET /v1/admin/people" what="People" plural onRetry={people.reload} lines={6}>
-        {(d) => <PeopleBody doc={d} reload={people.reload} />}
+        {(d) => <PeopleBody doc={d} reload={people.reload} roles={roles} />}
       </UrRegion>
     </div>
   )

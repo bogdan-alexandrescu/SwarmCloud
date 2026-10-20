@@ -850,9 +850,13 @@ function glyphAnchors(): Map<string, number> {
  * and capped it at 20. RAISED BY THE DETAILS TAB, BY NAME: five for its
  * cards beyond the one `?` the file already drew (`PER_CARD_SCREENS`), and
  * one for the split header's dispatch chips (AgentSplit.tsx), which the same
- * pick draws with a plain-language `?`. Everything else is still held to 20.
+ * pick draws with a plain-language `?`. RAISED AGAIN BY FOUR, BY NAME (QA-066,
+ * lane QAFIX-PAGEHEAD, part of #1680): the page-head `?` of Settings › People
+ * and roles, Settings › MCP servers, Settings › Workspace and Connect GitHub,
+ * pages in no section, so with no section question to borrow they drew none.
+ * Everything else is still held to 20.
  */
-const GLYPH_CEILING = 20 + 5 + 1
+const GLYPH_CEILING = 20 + 5 + 1 + 4
 
 /** Per screen. Two is one always-drawn glyph plus one that only a branch draws. */
 const GLYPH_CEILING_PER_FILE = 2
@@ -869,7 +873,7 @@ const GLYPH_CEILING_PER_FILE = 2
  */
 const PER_CARD_SCREENS: ReadonlyMap<string, number> = new Map([['AgentDetail.tsx', 6]])
 
-test('the console draws no more help glyphs in total than its ceiling of twenty-six', () => {
+test('the console draws no more help glyphs in total than its ceiling of thirty', () => {
   const counts = glyphAnchors()
   const total = [...counts.values()].reduce((a, b) => a + b, 0)
   const breakdown = [...counts.entries()]

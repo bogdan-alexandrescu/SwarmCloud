@@ -47,8 +47,10 @@ export function WorkspacePeopleScreen() {
   const roles = useUrRead(loadWorkspaceRoles, 'workspace-roles')
   return (
     <div className="pk-page wp-page">
-      <PageHead title="People and roles" />
-      <Card title="Roles in this workspace" action={<UrRefresh reads={[roles]} />}>
+      <PageHead title="People and roles" help="workspace-roles">
+        <UrRefresh reads={[roles]} />
+      </PageHead>
+      <Card title="Roles in this workspace">
         <UrRegion state={roles.state} route={ROUTE} what="This workspace's roles" plural onRetry={roles.reload}>
           {(d) => <Roles data={d} onChange={roles.reload} />}
         </UrRegion>

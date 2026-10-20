@@ -819,7 +819,7 @@ export function GitHubCallbackScreen({ go }: { go: (to: string) => void }) {
 
   return (
     <div className="ur-page ur-gh-page">
-      <PageHead title="Connect GitHub" />
+      {view.kind !== 'ok' && <CallbackHead />}
       {view.kind === 'posting' ? (
         <Card className="ur-gh">
           <p className="ur-sub" role="status">
@@ -852,26 +852,45 @@ export function GitHubCallbackScreen({ go }: { go: (to: string) => void }) {
   )
 }
 
+/**
+ * THE PAGE'S ONE HEAD, WRITTEN ONCE (QA-066): its `?` in every view, and the
+ * refresh in its actions only once there is a read to renew -- the orgs a
+ * finished connection reaches, which `Connected` reads and passes in. Before,
+ * that refresh sat beside the card's title, the one place no other page puts it.
+ */
+function CallbackHead({ children }: { children?: ReactNode }) {
+  return (
+    <PageHead title="Connect GitHub" help="github-connect">
+      {children}
+    </PageHead>
+  )
+}
+
 function Connected({ data, go }: { data: GitHubExchangeResponse | null; go: (to: string) => void }) {
   const doc = useUrRead(loadOnboarding, 'onboarding')
   const login = data?.connection?.forge_login ?? null
   return (
-    <Card className="ur-gh" title={login !== null ? `Connected as @${login}` : 'Connected'} action={<UrRefresh reads={[doc]} />}>
-      <p className="ur-sub" role="status">
-        SwarmCloud now acts as {login !== null ? <b>@{login}</b> : 'your GitHub account'} through the SwarmCloud GitHub
-        App. The token went from GitHub to Secret Manager; it is never shown here.
-      </p>
-      <UrRegion state={doc.state} route="GET /v1/onboarding" what="The orgs this connection reaches" onRetry={doc.reload} lines={1} plural>
-        {(d) => <Owners doc={d} />}
-      </UrRegion>
-      <div className="ur-gh-acts">
-        <UrNavButton to={GT_PAGE} go={go} kind="primary" size="sm">
-          Back to Git tokens
-        </UrNavButton>
-        <UrNavButton to={ACCESS_PAGE} go={go} size="sm">
-          Choose orgs in Access
-        </UrNavButton>
-      </div>
-    </Card>
+    <>
+      <CallbackHead>
+        <UrRefresh reads={[doc]} />
+      </CallbackHead>
+      <Card className="ur-gh" title={login !== null ? `Connected as @${login}` : 'Connected'}>
+        <p className="ur-sub" role="status">
+          SwarmCloud now acts as {login !== null ? <b>@{login}</b> : 'your GitHub account'} through the SwarmCloud GitHub
+          App. The token went from GitHub to Secret Manager; it is never shown here.
+        </p>
+        <UrRegion state={doc.state} route="GET /v1/onboarding" what="The orgs this connection reaches" onRetry={doc.reload} lines={1} plural>
+          {(d) => <Owners doc={d} />}
+        </UrRegion>
+        <div className="ur-gh-acts">
+          <UrNavButton to={GT_PAGE} go={go} kind="primary" size="sm">
+            Back to Git tokens
+          </UrNavButton>
+          <UrNavButton to={ACCESS_PAGE} go={go} size="sm">
+            Choose orgs in Access
+          </UrNavButton>
+        </div>
+      </Card>
+    </>
   )
 }
