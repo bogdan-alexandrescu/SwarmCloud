@@ -177,9 +177,12 @@ def test_the_pod_carries_what_the_browser_image_needs(tenant):
     assert env["RUNNER_PROFILE"] == PROFILE
     assert env.get("MODEL") == "claude-opus-5-5"
     resources = worker["resources"]
-    assert resources["requests"] == resources["limits"], "invariant 7: no bursting"
+    # Invariant 7 as amended by contract request RS-1 (SIZES-SCHED-1): memory
+    # never bursts; CPU requests the class and may burst to its limit.
+    assert resources["requests"]["memory"] == resources["limits"]["memory"], "invariant 7"
     assert resources["limits"]["memory"] == f"{RESOURCE_CLASSES['browser'].memory_gib}Gi"
-    assert str(resources["limits"]["cpu"]) == str(RESOURCE_CLASSES["browser"].cpu)
+    assert resources["requests"]["cpu"] == f"{int(RESOURCE_CLASSES['browser'].cpu * 1000)}m"
+    assert resources["limits"]["cpu"] == f"{int(RESOURCE_CLASSES['browser'].cpu_limit_cores * 1000)}m"
     mounts = {m["name"]: m["mountPath"] for m in worker["volumeMounts"]}
     assert mounts.get("dshm") == "/dev/shm"
     dshm = next(v for v in spec["volumes"] if v["name"] == "dshm")
