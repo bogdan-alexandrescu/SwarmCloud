@@ -286,7 +286,7 @@ sys.path.insert(0, str(Path(repo_root) / "apps" / "common"))
 
 from swarm_common import states as S                      # noqa: E402
 from swarm_common.models import EndCause, ProviderState, WorkflowStep, pool_names_for  # noqa: E402
-from swarm_common.profiles import RESOURCE_CLASSES        # noqa: E402
+from swarm_common.profiles import default_sizes           # noqa: E402
 
 SRC = Path(types_path).read_text()
 REPORT = []
@@ -356,25 +356,31 @@ def compare_set(name, from_ts, from_py, shape):
         )
 
 
-# -- 1. the unit weights ---------------------------------------------------
+# -- 1. the unit weights, against the CODE DEFAULTS --------------------------
 # The one place the UI copies a NUMBER out of the frozen catalogue. Admission
 # counts weighted units, so a wrong weight here misreports how much of the
 # budget a task will cost before anyone submits it.
+#
+# Since contract requests 109-111 (runner sizes, #1689) an admin may resize a
+# class, and the units follow the size, so the live weights are served by
+# GET /v1/resource-classes and can differ from this bundled copy. What this
+# holds is the copy against the code DEFAULTS (version 0, default_sizes),
+# which is all a bundled fallback can be; it is named so in the report.
 units_ts = ts_number_map("RESOURCE_UNITS")
-units_py = dict((name, rc.units) for name, rc in RESOURCE_CLASSES.items())
+units_py = dict((name, size.units) for name, size in default_sizes().items())
 if units_ts is None:
-    emit("MISSING", "RESOURCE_UNITS", "no `export const RESOURCE_UNITS = {...}` found")
+    emit("MISSING", "RESOURCE_UNITS (code defaults)", "no `export const RESOURCE_UNITS = {...}` found")
 elif units_ts == units_py:
     emit(
         "OK",
-        "RESOURCE_UNITS",
-        "%s match swarm_common.profiles"
+        "RESOURCE_UNITS (code defaults)",
+        "%s match swarm_common.profiles.default_sizes"
         % " ".join("%s=%d" % kv for kv in sorted(units_py.items())),
     )
 else:
     emit(
         "DRIFT",
-        "RESOURCE_UNITS",
+        "RESOURCE_UNITS (code defaults)",
         "frozen %s  //  types.ts %s"
         % (json.dumps(units_py, sort_keys=True), json.dumps(units_ts, sort_keys=True)),
     )
