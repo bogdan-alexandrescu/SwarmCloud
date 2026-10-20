@@ -993,6 +993,12 @@ run "every_project_role_the_verify_identity_holds_is_grantable" {
     condition = alltrue([
       contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, google_project_iam_member.verify_reads_firestore.role),
       contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, google_project_iam_member.verify_reads_run.role),
+      # VERIFY-GKE-READ (part of #1754): the conditioned clusterViewer. Red
+      # until terraform/bootstrap lists roles/container.clusterViewer, which is
+      # the owner's change: without it the release's apply 403s at the grant.
+      # MUTATION: drop this line and the release finds the gap mid-apply.
+      alltrue([for k, m in google_project_iam_member.verify_views_swarm_cluster : contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, m.role)]),
+      length(google_project_iam_member.verify_views_swarm_cluster) == 1,
     ])
     error_message = "terraform/infra/verify.tf grants a project-level role the scoped projectIamAdmin may not grant; add it to deployer_grantable_project_roles"
   }
