@@ -14,8 +14,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from swarm_api.workspaces import PLATFORM_SA_PREFIX
-
 REPO = Path(__file__).resolve().parents[3]
 
 
@@ -27,6 +25,10 @@ def _qa_account_id() -> str:
 
 
 def test_the_qa_account_can_own_a_service_workspace() -> None:
+    # Imported here, not at module top: test_collection_stays_cheap holds
+    # tests/unit/scripts free of the service stack at collection time.
+    from swarm_api.workspaces import PLATFORM_SA_PREFIX
+
     address = f"{_qa_account_id()}@saga-agents-staging.iam.gserviceaccount.com"
     assert not address.startswith(PLATFORM_SA_PREFIX), (
         f"{address} would be refused by the workspace flow (WORKSPACE_SERVICE_PLATFORM), "
