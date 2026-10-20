@@ -3151,24 +3151,30 @@ def _lsp_sites(facts: dict[str, Facts]) -> list:
     than through a module, an imported name, a class of this file or the
     enclosing class: a server can only resolve that through the type it
     inferred for the object, which §2.5 trusts at 0.8, not 0.95.
+
+    `imported` marks a site whose name an import in its file binds: the
+    driver asks only those and the ones named like a repository symbol,
+    since no other answer could be kept (lsp/driver.py, "less work").
     """
     sites = []
     for path in sorted(facts):
         fact = facts[path]
-        declared = set(_SAME_SCOPE_QUALIFIERS) | set(fact.aliases) | set(fact.bindings)
-        declared |= {lsp_pass.simple_name(s["id"]) for s in fact.symbols}
+        imported = set(fact.aliases) | set(fact.bindings)
         for imp in fact.imports:
             if imp.get("alias"):
-                declared.add(imp["alias"])
+                imported.add(imp["alias"])
             if isinstance(imp.get("path"), str):
-                declared.add(imp["path"].rstrip("/").rsplit("/", 1)[-1])
+                imported.add(imp["path"].rstrip("/").rsplit("/", 1)[-1])
+        declared = set(_SAME_SCOPE_QUALIFIERS) | imported
+        declared |= {lsp_pass.simple_name(s["id"]) for s in fact.symbols}
         for kind, items in (("call", fact.calls), ("inherit", fact.inherits),
                             ("route_handler", fact.handlers)):
             for caller, name, qualifier, line in items:
                 sites.append(lsp_pass.Site(
                     language=fact.language, path=path, caller=caller, name=name, line=line,
                     kind=kind, qualified=qualifier is not None,
-                    via_receiver=qualifier is not None and qualifier not in declared))
+                    via_receiver=qualifier is not None and qualifier not in declared,
+                    imported=name in imported))
         # A Terraform reference (`var.region`, `module.network.id`) is asked
         # at its last resolved label, which terraform-ls answers with the
         # block that declares it.
@@ -3452,9 +3458,13 @@ def _languages(files: list[dict], lsp_result: Any = None,
         entry["files_covered"] = entry.get("files_covered", 0) + (f.get("lsp") is True)
         if f["status"] in ("parsed", "timed_out", "failed", "too_large", "over_budget"):
             entry[f["status"]] += 1
+    # A file under the LSP pass's exclusions is never covered, by design, so
+    # it does not make an incremental run's `ok` language `partial`.
+    excluded = () if lsp_result is None else lsp_result.excluded_paths
     for language, entry in table.items():
         ran = None if lsp_result is None else lsp_result.languages.get(language)
         uncovered = any(f["language"] == language and f["status"] == "parsed" and f.get("lsp") is not True
+                        and not lsp_pass.lsp_excluded(f["path"], excluded)
                         for f in files)
         if carried is not None and ran is not None and entry["status"] == "ok" and uncovered:
             entry.update(status="partial", fallback="ast", reason=(

@@ -258,6 +258,156 @@ def test_a_definition_outside_the_known_symbols_adds_no_edge(tool: Any, lsp: Any
     assert python["lsp"]["unresolved"] >= 2
 
 
+# ---------------------------------------------------------------------------
+# Less work: sites no answer could resolve, and paths the pass never opens
+# ---------------------------------------------------------------------------
+
+
+# use.py asks four call sites: `rows.append` and `os.getcwd` name nothing in
+# the repository and nothing this file imports, so no answer to them could
+# be kept (`_symbol_named_at` drops a location that is not a known symbol's
+# name); `get_row` is bound by an import (an alias of store.fetch) and
+# `helper` is a repository symbol, so both are asked.
+EXTERNAL_APP: dict[str, str] = {
+    "pkg/__init__.py": "",
+    "pkg/store.py": "def fetch(key):\n    return key\n",
+    "pkg/use.py": (
+        "import os\n"  # 1
+        "from .store import fetch as get_row\n"  # 2
+        "\n"  # 3
+        "\n"  # 4
+        "def load(rows):\n"  # 5
+        "    rows.append(1)\n"  # 6
+        "    os.getcwd()\n"  # 7
+        "    get_row(rows)\n"  # 8
+        "    return helper(rows)\n"  # 9
+        "\n"  # 10
+        "\n"  # 11
+        "def helper(rows):\n"  # 12
+        "    return rows\n"  # 13
+    ),
+}
+
+
+def test_a_site_naming_nothing_in_the_repository_or_its_imports_is_not_asked(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    # #1693: pyright had >=86,805 sites on ai-studio and asked every one, a
+    # call on a list or into the standard library included, though no
+    # answer to those could ever become an edge.
+    repo = fx.build_repo(tmp_path / "repo", EXTERNAL_APP)
+    spec = _fake(lsp, tmp_path, {"definitions": {
+        "pkg/use.py:7": {"path": "pkg/store.py", "line": 0, "character": 4, "name": "fetch"},
+        "pkg/use.py:8": {"path": "pkg/use.py", "line": 11, "character": 4, "name": "helper"},
+    }})
+    index = tool.extract(repo, tool.Budget(), lsp=_options(lsp, spec))
+    asked = sorted(p["position"]["line"] for p in _asked(_log(tmp_path), "textDocument/definition")
+                   if p["textDocument"]["uri"].endswith("/pkg/use.py"))
+    # MUTATION: ask every site again in `_ServerRun._session()` (drop the
+    # `_external` filter) and lines 5 and 6 are asked too.
+    assert asked == [7, 8]
+    python = _language(index, "python")
+    # MUTATION: drop the `sites_skipped_external` count in `_ServerRun` and
+    # this is a KeyError.
+    assert python["lsp"]["sites_skipped_external"] == 2
+    assert python["status"] == "ok"
+    # MUTATION: skip on "not a repository symbol" alone, ignoring the
+    # file's imports (`Site.imported`), and `get_row` is never asked: this
+    # edge is not `lsp`.
+    assert _edge(index, "pkg/use.py#load", "pkg/store.py#fetch")["evidence"] == "lsp"
+    assert _edge(index, "pkg/use.py#load", "pkg/use.py#helper")["evidence"] == "lsp"
+    # A skipped site was never a request: it is not counted as unresolved.
+    assert python["lsp"]["unresolved"] == 0
+
+
+
+# The platform's LSP exclusions (servers.py LSP_EXCLUDED_PATHS): migrations,
+# alembic revisions and docs/ are parsed by tree-sitter like any file, but
+# no server is asked about them -- each call in a migration is a site the
+# pass paid for and impact never selects a test by.
+EXCLUDED_APP: dict[str, str] = {
+    "app/__init__.py": "",
+    "app/models.py": "def save(row):\n    return row\n",
+    "app/use.py": "from app.models import save\n\n\ndef run():\n    return save(5)\n",
+    "app/migrations/__init__.py": "",
+    "app/migrations/0001_initial.py": "from app.models import save\n\n\ndef forwards():\n    return save(1)\n",
+    "migrations/0002_top.py": "from app.models import save\n\n\ndef top():\n    return save(2)\n",
+    "alembic/versions/abc_add.py": "from app.models import save\n\n\ndef upgrade():\n    return save(3)\n",
+    "docs/conf.py": "from app.models import save\n\n\ndef setup():\n    return save(4)\n",
+}
+EXCLUDED = ("app/migrations/__init__.py", "app/migrations/0001_initial.py", "migrations/0002_top.py",
+            "alembic/versions/abc_add.py", "docs/conf.py")
+
+
+def test_the_lsp_exclusions_match_as_gitignore_globs(lsp: Any) -> None:
+    # `**/` is zero or more directories, so a top-level migrations/ is one;
+    # `docs/**` is the root's docs/ only.
+    # MUTATION: match with fnmatch in `lsp_excluded()` and the top-level
+    # migrations/ and alembic/ paths read False.
+    assert [lsp.lsp_excluded(path) for path in (
+        "migrations/0001.py", "app/migrations/0001.py", "a/b/migrations/x/y.py",
+        "alembic/versions/abc.py", "svc/alembic/versions/abc.py", "docs/conf.py", "docs/a/b.py",
+    )] == [True] * 7
+    # MUTATION: anchor nothing in `_glob_regex()` and src/docs/ reads True.
+    assert [lsp.lsp_excluded(path) for path in (
+        "app/migrations.py", "app/migrations_util/x.py", "alembic/env.py", "src/docs/conf.py",
+        "docsite/x.py", "app/use.py",
+    )] == [False] * 6
+    assert lsp.LSP_EXCLUDED_PATHS == ("**/migrations/**", "**/alembic/versions/**", "docs/**")
+
+
+def test_excluded_paths_are_parsed_but_never_opened_in_the_server(tool: Any, lsp: Any,
+                                                                   tmp_path: Path) -> None:
+    repo = fx.build_repo(tmp_path / "repo", EXCLUDED_APP)
+    spec = _fake(lsp, tmp_path, {"definitions": {
+        "app/use.py:4": {"path": "app/models.py", "line": 0, "character": 4, "name": "save"},
+    }})
+    index = tool.extract(repo, tool.Budget(), lsp=_options(lsp, spec))
+    log = _log(tmp_path)
+    opened = {p["textDocument"]["uri"].split(repo.resolve().as_uri() + "/", 1)[1]
+              for p in _asked(log, "textDocument/didOpen")}
+    # MUTATION: drop the `lsp_excluded` test from `_ServerRun._session()`'s
+    # paths and every excluded file with a site or an exported function is
+    # opened (phase 1 and phase 2 alike).
+    assert opened & set(EXCLUDED) == set()
+    assert "app/use.py" in opened  # the control: a file outside them is asked
+    asked = {p["textDocument"]["uri"] for p in _asked(log, "textDocument/definition")
+             + _asked(log, "textDocument/prepareCallHierarchy")}
+    assert not any(uri.endswith(path) for uri in asked for path in EXCLUDED)
+    rows = _file_rows(index)
+    # Tree-sitter still parses them and their `ast` edges stand.
+    assert {path: rows[path]["status"] for path in EXCLUDED} == {path: "parsed" for path in EXCLUDED}
+    assert _edge(index, "docs/conf.py#setup", "app/models.py#save")["evidence"] == "ast"
+    assert _edge(index, "alembic/versions/abc_add.py#upgrade", "app/models.py#save")["evidence"] == "ast"
+    assert _edge(index, "app/use.py#run", "app/models.py#save")["evidence"] == "lsp"
+    # No server answered them, so no row says it did.
+    assert [path for path in EXCLUDED if rows[path]["lsp"]] == []
+    python = _language(index, "python")
+    assert python["status"] == "ok"
+    # MUTATION: drop the `files_excluded` / `sites_excluded` counts in
+    # `_ServerRun._session()` and these are KeyErrors.
+    assert (python["lsp"]["files_excluded"], python["lsp"]["sites_excluded"]) == (5, 4)
+
+
+def test_an_incremental_run_does_not_turn_partial_over_an_excluded_file(tool: Any, lsp: Any,
+                                                                        tmp_path: Path) -> None:
+    # An excluded file is never covered, by design. An incremental run turns
+    # an `ok` language `partial` while a carried file is uncovered, so
+    # without this every incremental run of a repository with a migration
+    # would report `partial` -- the banner flipping #1693 already names.
+    repo = fx.build_repo(tmp_path / "repo", EXCLUDED_APP)
+    spec = _fake(lsp, tmp_path, {}, name="basefake")
+    full = tool.extract(repo, tool.Budget(), lsp=_options(lsp, spec))
+    assert _language(full, "python")["status"] == "ok"
+    base = tool.Base(sha=full["commit_sha"], graph=tool.graph_document(full),
+                     index=tool.index_document(full))
+    _commit(repo, {"app/use.py": "from app.models import save\n\n\ndef run():\n    return save(6)\n"})
+    index = tool.extract(repo, tool.Budget(), base=base, lsp=_options(lsp, _fake(lsp, tmp_path, {})))
+    assert index["kind"] == "incremental" and index["changes"]["affected"] == ["app/use.py"]
+    # MUTATION: count excluded files as uncovered in `_languages()` and this
+    # reads `partial`.
+    assert _language(index, "python")["status"] == "ok", _language(index, "python")["reason"]
+
+
 def test_workspace_configuration_is_answered_from_the_spec(tool: Any, lsp: Any, tmp_path: Path) -> None:
     repo = fx.build_repo(tmp_path / "repo", fx.MIXED_UNSUPPORTED)
     spec = _fake(lsp, tmp_path, {"ask_config": True},
