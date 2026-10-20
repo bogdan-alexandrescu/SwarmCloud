@@ -134,7 +134,7 @@ describe('the session read, as the API serves it, draws a Browser tab', () => {
     expect(s.you.can_open).toBe(true)
     // Nobody is in control, so nobody switches the device (LB-DEV-B).
     expect(s.you.can_switch_device).toBe(false)
-    expect(s.you.email).toMatch(/@/)
+    expect(s.you.email).toBe('alice@example.com')
     expect(s.you.email).toBe(servedSession('session.open.json').you.email)
     expect(s.controller).toBeNull()
     expect(s.human_wait?.expect).toBe('github.com')
@@ -156,7 +156,7 @@ describe('the session read, as the API serves it, draws a Browser tab', () => {
     const s = data(await loadLiveSession(TASK)).session!
     expect(s.origin?.registrable_domain).toBe('github.com')
     expect(s.device).toEqual({ preset: 'iphone-15', orientation: 'portrait', touch: true })
-    expect(s.controller?.email).toMatch(/@/)
+    expect(s.controller?.email).toBe('dave@example.com')
     expect(s.controller?.email).toBe(servedSession('session.reported.json').controller?.email)
     expect(s.you.can_preempt).toBe(true)
     // dave holds control, not alice: her device bar stays disabled.
@@ -216,7 +216,7 @@ describe('the control and ticket routes', () => {
     const init = fetchMock.mock.calls[0]![1]!
     expect(JSON.parse(String(init.body))).toEqual(fixture('control.take.request.json'))
     const taken = data(r) as LiveRead
-    expect(taken.session?.controller?.email).toMatch(/@/)
+    expect(taken.session?.controller?.email).toBe('alice@example.com')
     expect(taken.session?.controller?.email).toBe(servedSession('control.taken.json').controller?.email)
   })
 
@@ -237,7 +237,7 @@ describe('the control and ticket routes', () => {
   it('device.switched.json: the controller may switch, and the device is what the gate reported', async () => {
     serve(fixture('device.switched.json'))
     const s = data(await loadLiveSession(TASK)).session!
-    expect(s.controller?.email).toMatch(/@/)
+    expect(s.controller?.email).toBe('alice@example.com')
     expect(s.controller?.email).toBe(servedSession('device.switched.json').controller?.email)
     expect(s.you.can_switch_device).toBe(true)
     expect(s.device).toEqual({ preset: 'iphone-15', orientation: 'landscape', touch: false })
@@ -283,7 +283,7 @@ describe('recordings and the action timeline (§7)', () => {
     expect(actions.find((a) => a.method === 'Input.insertText')!.length).toBe(12)
     // LB-V3: who took control, the device and its rotation, and why a refusal.
     const taken = actions.find((a) => a.event === 'control_taken')!
-    expect(taken.by).toMatch(/@/)
+    expect(taken.by).toBe('alice@example.com')
     expect(taken.you).toBe(true)
     const device = actions.find((a) => a.event === 'device_changed')!
     expect([device.preset, device.orientation, device.touch]).toEqual(['iphone-15', 'portrait', true])

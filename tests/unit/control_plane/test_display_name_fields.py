@@ -48,7 +48,7 @@ NAMES = {ADA: "Ada Lovelace", BOB: "Bob Smith", UNSEEN: "Una Seen", CAROL: "Caro
 #: caller's OWN preferences (their saved default workspace) on every request;
 #: that one-person read is authentication's, not the name lookup these tests
 #: count, so the recorder neither counts it nor fails it.
-CALLER = "alice@saga.xyz"
+CALLER = "alice@example.com"
 
 
 class CountingFirestore:

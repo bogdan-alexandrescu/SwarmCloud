@@ -47,7 +47,7 @@
       }
     ],
     "you": {
-      "email": "alice@saga.xyz",
+      "email": "alice@example.com",
       "can_control": false,
       "can_preempt": false,
       "can_open": false,

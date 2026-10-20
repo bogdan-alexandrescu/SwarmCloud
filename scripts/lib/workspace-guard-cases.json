@@ -11,7 +11,7 @@
         "stringValue": "w-3f9a2c"
       },
       "principal": {
-        "stringValue": "alice@saga.xyz"
+        "stringValue": "alice@example.com"
       },
       "state": {
         "stringValue": "applying"
@@ -45,7 +45,7 @@
       "change": {
         "fields": {
           "principal": {
-            "stringValue": "bob@saga.xyz"
+            "stringValue": "bob@example.com"
           }
         }
       }
@@ -85,7 +85,7 @@
       "change": {
         "fields": {
           "principal": {
-            "stringValue": "u-eng@saga.xyz"
+            "stringValue": "u-eng@example.com"
           },
           "tenant_id": {
             "stringValue": "u-eng"
@@ -133,7 +133,7 @@
       "change": {
         "fields": {
           "principal": {
-            "stringValue": "eng@saga.xyz"
+            "stringValue": "eng@example.com"
           },
           "tenant_id": {
             "stringValue": "eng"
@@ -2494,7 +2494,7 @@
           "stringValue": "w-3f9a2c"
         },
         "principal": {
-          "stringValue": "research@saga.xyz"
+          "stringValue": "research@example.com"
         },
         "kind": {
           "stringValue": "group"
