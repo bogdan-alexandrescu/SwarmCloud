@@ -271,6 +271,7 @@ from .metrics import (
     ResourceUsage,
     attempt_cpu_fields,
     cgroup_cpu_limit_cores,
+    cgroup_memory_max,
     combine_usage,
 )
 from .objectstore import ObjectStore
@@ -443,6 +444,22 @@ SWAP_UNUSABLE = "unusable"
 #: One heartbeat event per this many lease heartbeats. The lease is refreshed
 #: every interval; the event stream would be unreadable at that rate.
 HEARTBEAT_EVENT_EVERY = 5
+#: Utilisation points one HEARTBEAT event carries at most, newest kept
+#: (LIVE-UTIL-API, #1689). 30 x `metrics.POINT_SECONDS` is 150 s, one heartbeat
+#: period at the platform's interval; a beat that came later than that loses
+#: its oldest points rather than growing the event.
+HEARTBEAT_POINTS = 30
+#: The size one HEARTBEAT event's detail is held under, serialised. 30 points
+#: of four short keys are about 2 KiB; this is the bound a test holds, so a
+#: change that lets the series grow is caught before it reaches every event.
+HEARTBEAT_DETAIL_MAX_BYTES = 4096
+
+
+def _rounded3(value: float | None) -> float | None:
+    """Three decimals, and None -- not measured -- kept None."""
+    return None if value is None else round(float(value), 3)
+
+
 #: What an index run's phase may write to each of its captures (lane IX1).
 #: The extractor prints one summary line and the writer one JSON report; the
 #: cap only bounds a tool gone wrong, and the tail -- its last error -- is kept.
@@ -820,6 +837,11 @@ class Worker:
         # export, the HEARTBEAT series -- is the attempt's, not one runner's.
         self._sampler: ResourceSampler | None = None
         self._runner_usage: list[ResourceUsage] = []
+        #: The utilisation series' clock (#1689): `time.monotonic()` at the
+        #: attempt's first runner, shared by every runner's sampler, and the
+        #: points a reaped runner took that no heartbeat has carried yet.
+        self._series_origin: float | None = None
+        self._pending_points: list[dict[str, Any]] = []
         self._metrics_exported = False
         self._last_checkpoint: CheckpointRecord | None = None
         self._restored_from: CheckpointRecord | None = None
@@ -9134,16 +9156,73 @@ class Worker:
         typed fields on the attempt (`_record_cpu`), which replaced this
         interim home; the reconciler's stuck-browser judgement
         (`reconciler.progress`) is what still reads `cpu_seconds` here.
+
+        AND USE OVER TIME (LIVE-UTIL-API, #1689, owner request 2026-10-20),
+        which `GET /v1/tasks/{id}/utilisation` serves:
+
+          series                the 5-second points taken since the previous
+                                beat (`ResourceSampler.sample_point`), the
+                                newest `HEARTBEAT_POINTS`, each served once;
+          series_clock          now, on the points' clock, so a reader dates a
+                                point as this event's `at` less
+                                `series_clock - t`;
+          memory_limit_bytes    what `mem` is a fraction of: cgroup
+                                `memory.max`, else the sized class's;
+          throttled_seconds,    the attempt's throttling, every runner so far.
+          peak_throttled_share, They would sit beside the CPU figures on the
+          mean_throttled_share  attempt, but `Attempt` is frozen: contract
+                                change request 107 asks for typed fields.
+
+        The detail is held under `HEARTBEAT_DETAIL_MAX_BYTES`.
         """
         usage = self._attempt_usage()
         cpu_seconds = usage.cpu_seconds if usage else None
+        points = self._pending_points
+        self._pending_points = []
+        points.extend(self._drain_points())
+        series_clock: float | None = None
+        if self._series_origin is not None:
+            series_clock = time.monotonic() - self._series_origin
+        if self._sampler is not None:
+            try:
+                series_clock = self._sampler.series_elapsed()
+            except Exception as exc:
+                self.log.warning("could not read the series clock", error=f"{type(exc).__name__}: {exc}")
         return {
             "elapsed_seconds": round(self._child.elapsed_seconds, 1) if self._child else 0,
             "peak_rss_bytes": usage.peak_rss_bytes if usage else None,
             "checkpoints": self.checkpoints.seq,
             "cpu_seconds": round(cpu_seconds, 3) if cpu_seconds is not None else None,
             "cpu_source": usage.cpu_source if usage else None,
+            "series": points[-HEARTBEAT_POINTS:],
+            "series_clock": round(series_clock, 1) if series_clock is not None else None,
+            "memory_limit_bytes": self._memory_limit_bytes(),
+            "throttled_seconds": _rounded3(usage.throttled_seconds if usage else None),
+            "peak_throttled_share": _rounded3(usage.peak_throttled_share if usage else None),
+            "mean_throttled_share": _rounded3(usage.mean_throttled_share if usage else None),
         }
+
+    def _drain_points(self) -> list[dict[str, Any]]:
+        """The live sampler's points since the last drain; [] without one. Never raises:
+        a heartbeat goes out, and extends nothing less, whatever the series did."""
+        if self._sampler is None:
+            return []
+        try:
+            return list(self._sampler.drain_points())
+        except Exception as exc:
+            self.log.warning("could not read utilisation points", error=f"{type(exc).__name__}: {exc}")
+            return []
+
+    def _memory_limit_bytes(self) -> int | None:
+        """The container's memory limit: cgroup `memory.max`, else the sized class's."""
+        enforced = cgroup_memory_max()
+        if enforced is not None:
+            return enforced
+        try:
+            limit = int(self.cfg.memory_limit_bytes_of(self._memory_class()))
+        except Exception:
+            return None
+        return limit if limit > 0 else None
 
     def _record_cpu(self, *, periodic: bool = False) -> None:
         """The attempt's CPU, as typed fields on its own document. Never raises.
@@ -13087,10 +13166,13 @@ class Worker:
         # sizes the container from the task's class, and a workflow step may
         # narrow `browser` (16 GiB) to `standard` (8 GiB): judged against the
         # profile's 16, a run at 7.9 of its 8 GiB raised no near miss.
+        if self._series_origin is None:
+            self._series_origin = time.monotonic()
         self._sampler = ResourceSampler(
             pid_provider=lambda: child.pid,
             disk_provider=ws.disk_bytes,
             memory_limit_bytes=self.cfg.memory_limit_bytes_of(self._memory_class()),
+            series_origin=self._series_origin,
         )
         self._sampler.start()
 
@@ -13101,6 +13183,8 @@ class Worker:
         # Kept, not replaced by the next runner's sampler: that replacement is
         # what made every figure below describe the last runner only.
         self._runner_usage.append(usage)
+        # And its points since the last heartbeat, for the next one to carry.
+        self._pending_points.extend(self._drain_points())
         self._sampler = None
         # THE ATTEMPT'S PEAKS, not this runner's. `record_resource_usage`
         # merge-sets absolute values, so writing each runner's own peak let a

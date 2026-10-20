@@ -59,6 +59,8 @@ from ..schemas import TaskBatchCreate, TaskCreate
 from ..startup import startup_of
 from ..task_accounts import accounts_for, accounts_for_attempts
 from ..task_input import TaskMasking, input_copy, masking_for
+from ..utilisation import MAX_ATTEMPTS as UTILISATION_ATTEMPTS
+from ..utilisation import utilisation_of
 from ..waiting import waiting_for_page
 from ..waker import TASK_FINISHED, ring
 
@@ -551,6 +553,27 @@ def read_startup(
     """
     task = ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by)
     return startup_of(ctx.db, task, ctx.startup_estimates)
+
+
+@router.get("/{task_id}/utilisation")
+def read_utilisation(
+    task_id: str,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The task's CPU, memory and throttling over time, newest attempt first (LIVE-UTIL-API).
+
+    The owner, 2026-10-20 (#1689): use over time, not only a limit and a
+    peak, and throttling measured. Points every 5 s, from the worker's
+    HEARTBEAT events, while the task runs and after; the console polls it.
+    The same scope as `GET /v1/tasks/{id}`: another tenant's task, or another
+    submitter's for a continuation-scoped caller, is the same 404 as a
+    missing one. See `swarm_api.utilisation` for the shape and the reads.
+    """
+    task = ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by)
+    attempts = ctx.store.list_attempts(tenant_id, task_id, limit=UTILISATION_ATTEMPTS)
+    return utilisation_of(ctx.db, task, attempts, read_at=ctx.now())
 
 
 @router.get("/{task_id}/attempts")
