@@ -1,10 +1,11 @@
 # QA identity: a browser agent signs in to the console behind IAP without a person typing a password
 
-**Status: design (2026-10-19). Nothing in it is built.** Lane QA-IDENTITY of
+**Status: built on `main`, except the agent's instructions and the
+acceptance run (2026-10-20).** §8 records what each lane of §6 landed and where the code
+departs from this design. Written 2026-10-19 as a design, lane QA-IDENTITY of
 [#1649](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/1649). The
 owner decided on 2026-10-19 that this lane designs first, and that the owner
-picks before any code is written. The open decisions are in §7 and in this
-lane's `questions.json`.
+picks before any code is written. The owner's answers are in §7.
 
 The request, from #1649: a SwarmCloud workflow sweeps every console page at
 1440×900 and 390 wide, light and dark. It attaches a screenshot per finding
@@ -816,6 +817,35 @@ swarm-api from a bootstrap output, or empty.
 
 ### 4.9 Measurements before the build (M1–M5) and the owner's steps
 
+> **Amended 2026-10-20 (owner, #1649): M2 is not a gate before the build.**
+> Nothing on swarm-api shows request headers, so whether IAP passes the
+> gate's header through cannot be observed from outside before swarm-api
+> logs it. QI-API was therefore built as if IAP does pass it through:
+> beside an IAP assertion, swarm-api's front door
+> (`apps/swarm-api/swarm_api/main.py::FrontDoor.__call__`) removes
+> `Authorization`, `Proxy-Authorization` and `X-Serverless-Authorization`
+> before any route runs (`apps/swarm-api/swarm_api/main.py::CREDENTIAL_HEADERS`),
+> its error pages scrub those values, a request carrying an assertion is
+> judged on the assertion alone
+> (`apps/swarm-api/swarm_api/auth.py::Authenticator._authenticate`), and it
+> logs `authorization_present` and `proxy_authorization_present`, each
+> `true` or `false`, never a value. M2 is read from the
+> `proxy_authorization_present` log line after QI-API deploys. So QI-API
+> waited for M1, M3 and M4, and QI-GATE for M1, M3 and M5 (§6).
+>
+> **The M2 reading is still to come.** As of 2026-10-20,
+> [qa-identity-measurements.md](qa-identity-measurements.md) ("M2: not
+> measured before the build") records the decision and no reading. One
+> thing to read with it: M3 measured that Chromium refuses to add
+> `Proxy-Authorization`, so the gate sends `Authorization`
+> (`apps/agent-worker/agent_worker/livegate/qaidentity.py::HEADER`). For
+> the gate's own requests the line that answers M2 is therefore
+> `authorization_present`, which the same log line carries;
+> `proxy_authorization_present` answers it for the header this section
+> first named. M3's follow-on, that swarm-api ignores an `Authorization`
+> header when an assertion is present, is held by the code cited above, not
+> yet by a reading.
+
 No lane past QI-CONTRACT starts until M1 to M3 and M5 are recorded, dated, in
 `docs/design/qa-identity-measurements.md` (new, §8). Each is run by the owner, or by a lane the owner authorises,
 **with the QA account after step O2**:
@@ -939,6 +969,14 @@ Considered and **not** requested:
 
 ## 6. Build plan
 
+> **Amended 2026-10-20 (owner, #1649): M2 is not a gate before the build**
+> (§4.9). Row 0's measurements no longer all gate the build: QI-API waits for
+> M1, M3 and M4, and QI-GATE waits for M1, M3 and M5. The order-2 rows'
+> "after CONTRACT and M1–M4" and "after CONTRACT, M1–M3 and M5" are read
+> that way.
+> M2 is recorded in `docs/design/qa-identity-measurements.md` from swarm-api's
+> `proxy_authorization_present` log line after QI-API deploys.
+
 Lanes are split by territory: **no file appears in two rows**. Every lane
 pushes its tests alone to the PR branch first, and its fix to `<branch>-fix`.
 It runs its area's unit tests, then `scripts/changed-guards.sh` and
@@ -1049,7 +1087,87 @@ identity?**
 
 ## 8. Measurements and what was built
 
-Nothing yet. M1–M5 are recorded in `docs/design/qa-identity-measurements.md`
-by lane 0, each with a date, the command, its result and the control. What
-each build lane lands is recorded by QI-DOCS in the documents its row names,
-and in each lane's pull request.
+Recorded 2026-10-20 by lane QI-DOCS, read from `main` at `9f945b0`. M1, M3,
+M4 and M5 are in
+[qa-identity-measurements.md](qa-identity-measurements.md), each with a
+date, the command, its result and the control: M1 passes, M3 found that
+Chromium refuses `Proxy-Authorization`, M4 passed in part (the account
+resolves to its workspace, which `GET /v1/tenants/mine` did not list) and M5
+found an added header follows no redirect. M2 is still to come (§4.9). What
+each lane of §6 landed, in its order:
+
+* **M1–M5 (measured 2026-10-20, M2 still to come).** See above and §4.9.
+* **QI-CONTRACT (built).** Contract request 106 in
+  `docs/contract-change-requests.md`: `claude-code-browser` declares
+  `qa_identity` with the one choice `console`, and no other profile
+  declares it.
+* **QI-IAM (built, and applied by the owner).**
+  `terraform/bootstrap/qa_identity.tf` behind `enable_qa_identity`. The
+  account is `qa-console`, not `swarm-qa` (the §4.8 amendment), and the
+  owner's applies added `swarmQaJwtSigner` for swarm-api alone and, later,
+  the front-door read `swarmFrontDoorReader` for the workspace job on the
+  API backend, which let O3's workspace reach `ready`. The project does not
+  enforce `iam.disableServiceAccountKeyCreation`; the owner accepted that
+  as a residual risk (§3.7).
+* **QI-API (built).** `apps/swarm-api/swarm_api/qa_identity.py`: the grants
+  in `qa_identity_grants`, each change with its `admin_audit` row in one
+  transaction, read at submission and again at every signing; the signing
+  route, fenced like the egress ticket and held to 12 credentials an
+  attempt an hour. Where it departs from or adds to the design:
+  - swarm-api tells the gate to send `Authorization`, because M3 measured
+    Chromium refusing `Proxy-Authorization`.
+  - Beside an IAP assertion, the front door removes the credential headers
+    before any route runs
+    (`apps/swarm-api/swarm_api/main.py::CREDENTIAL_HEADERS`), rather than
+    only scrubbing error pages: M2 is unmeasured, so it is built as if IAP
+    passes them through (§4.9).
+  - M4's empty list is fixed by listing a service account's own tenant
+    when it is already the default
+    (`apps/swarm-api/swarm_api/auth.py::Authenticator._list_own_service_default`).
+    It selects nothing new.
+  - The QA workspace's own tenant cannot be granted its own identity
+    (`qa_identity_self`).
+  - The account is rendered for dev only (`terraform/infra/locals.tf`,
+    `local.qa_identity_console_account`), which is Q8 (a).
+* **QI-GATE (built).** `apps/agent-worker/agent_worker/livegate/qaidentity.py`.
+  Where it departs from §4.4:
+  - The header is `Authorization`
+    (`apps/agent-worker/agent_worker/livegate/qaidentity.py::HEADER`):
+    Chromium refuses `Fetch.continueRequest` that adds
+    `Proxy-Authorization` (M3).
+  - Redirect guard 2 strips a header from another host's request by its
+    value, when the value carries a credential the gate held, not by name
+    (`apps/agent-worker/agent_worker/livegate/qaidentity.py::QaInjector`).
+    Stripping every `Authorization` header from every other site would
+    break any site's own API sign-in for the whole attempt.
+    `proxy-authorization` is still removed by name from what the agent
+    reads.
+  - Both redirect guards are built although M5 found neither one
+    load-bearing on this Chromium.
+  - The hand-off on the console host is refused (`qa_identity_host`), and
+    the session carry leaves the host out ([live-browser.md](live-browser.md)
+    §5.5.1).
+* **QI-WORKER (built).** `apps/agent-worker/agent_worker/qa_identity.py`:
+  renewed with a third of the credential's life left
+  (`apps/agent-worker/agent_worker/qa_identity.py::RENEW_FRACTION`), so a
+  15-minute credential at 10 minutes (Q5 (a)). A first refusal of
+  `qa_identity_not_granted` or `qa_identity_unconfigured` fails the attempt
+  before the agent starts; a later refusal tells the gate and writes
+  `qa-identity.md` for the agent.
+* **QI-UI (built).** Admin › Tenants › QA identity
+  (`apps/swarm-ui/src/QaIdentityGrants.tsx`), the submit form's option when
+  `GET /v1/qa-identities/mine` says `granted`, and the task page's
+  "Signed in as QA identity" badge (`apps/swarm-ui/src/BrowserBadges.tsx`).
+* **QI-MCP (built).** A step that names the identity shows
+  `QA identity: console` (`apps/swarm-mcp/swarm_mcp/details.py`).
+* **QI-INSTRUCT (not built on 2026-10-20).**
+  `images/agent-runtime-browser/swarm_browser.py` does not yet tell the
+  agent that the console is signed in, that it must not ask for a hand-off
+  there, or what `qa-identity.md` means. Until it does, an agent that asks
+  is refused `qa_identity_host` by the gate.
+* **QI-DOCS (built, this record).** [live-browser.md](live-browser.md)
+  §5.5.1 notes the excluded host, and [workspaces.md](../workspaces.md)
+  §6.6 records the QA workspace.
+* **QI-ACCEPT (not built on 2026-10-20).** `tests/acceptance/test_live_browser.py`
+  has no QA identity case yet. No run as the QA account has been recorded,
+  so nothing above has been seen working end to end on dev.

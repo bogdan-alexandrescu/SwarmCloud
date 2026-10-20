@@ -1897,6 +1897,34 @@ create with that resource type.
   and `_revoked`, with names only.
 * Secrets follow the forge-token rule: Secret Manager only, read at run time.
 
+**The QA identity's console host is never carried (QI-GATE, recorded
+2026-10-20; [qa-identity.md](qa-identity.md) §4.4, part of #1649).** A task
+that names `input.qa_identity` has its browser signed in to this
+deployment's console as the QA service account, by a credential the gate
+adds to console requests. While it does, the console host is left out of
+everything this section moves:
+
+* **Export** (carry, login and park alike) drops every cookie that would be
+  sent to the console host, its own and its parent domains', and the
+  console origin's local storage
+  (`apps/agent-worker/agent_worker/livegate/session.py::SessionCarry._excluded`).
+  Nothing IAP sets for the QA account can enter a carry secret or a named
+  login, where a later step or another task would pick it up.
+* **Import** drops the same cookies and storage from a carried jar
+  (`apps/agent-worker/agent_worker/livegate/session.py::SessionCarry.import_jar`).
+  Otherwise a person's own console session, carried from an earlier
+  hand-off, would sign the agent in as that person beside the QA identity.
+* **A hand-off on the console host is refused** with `handoff_refused`,
+  cause `qa_identity_host`
+  (`apps/agent-worker/agent_worker/livegate/__main__.py::LiveGate.pause`;
+  owner's Q7). A person typing their own sign-in there would hand the agent
+  every workspace that person belongs to. A hand-off on any other site works
+  as above.
+
+Only the console host is excluded. Other sites' sessions are carried as
+before, in personal tenants only. Not verified: no run as the QA account has
+yet exercised this on dev (qa-identity.md §8, QI-ACCEPT).
+
 User-scoped forge tokens and provider keys are a separate question (they are
 per tenant today), filed on its own issue.
 
