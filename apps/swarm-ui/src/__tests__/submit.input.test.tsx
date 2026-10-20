@@ -560,8 +560,11 @@ describe('the `?` on "Lay out the plan" opens workflow-stages', () => {
     await screen.findByRole('button', { name: 'Submit this workflow' }, { timeout: 4000 })
     const heading = [...container.querySelectorAll('.sbf-move-h')].find((h) => h.textContent?.includes('Lay out the plan'))
     expect(heading, 'no "Lay out the plan" heading').toBeDefined()
-    const glyph = heading!.querySelector('button[aria-label^="Help: "]')
+    // AFTER the <h2>, in the row it shares with it (QAFIX-HELP): inside, its
+    // name ran on into the heading's.
+    const glyph = heading!.parentElement!.querySelector('.sbf-move-head > :not(h2) button[aria-label^="Help: "], .sbf-move-head > button[aria-label^="Help: "]')
     expect(glyph, 'the plan step has no `?`').not.toBeNull()
+    expect(heading!.contains(glyph), 'the `?` is inside the heading').toBe(false)
     expect(glyph!.getAttribute('aria-label')).toBe(`Help: ${HELP['workflow-stages'].title}`)
   })
 })

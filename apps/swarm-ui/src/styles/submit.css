@@ -103,6 +103,21 @@
 }
 .sbf-runners.is-cards .sbf-runner > input[type='radio']:checked { border: 4px solid var(--sk-ac); }
 .sbf-runners.is-cards .sbf-runner > input[type='radio']:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+/* AND THE DISPATCH STRATEGY'S RADIOS THE SAME WAY (visual QA QA-075,
+   2026-10-20). `.dsp-option > input` in styles.css only tinted the native
+   control, and in dark mode an unchosen native radio is a filled grey disc --
+   so "A PR per step" and "Open a pull request" sat under the runner cards'
+   outlined rings in a second vocabulary for the same pick-one control. */
+.dsp-option > input[type='radio'] {
+  appearance: none;
+  flex: none;
+  width: 14px; height: 14px;
+  margin: 2px 0 0;
+  border: 1.5px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+}
+.dsp-option > input[type='radio']:checked { border: 4px solid var(--sk-ac); }
 
 /* EVERY CARD FILLS ITS ROW (visual QA QA-068). The grid stretches each `li`
    to its row, but the label inside kept its own height, so a two-line card
@@ -415,6 +430,21 @@
 .sbf-field.has-remove > * { grid-column: 1 / -1; }
 .sbf-field.has-remove > .sbf-key { grid-row: 1; grid-column: 1; }
 .sbf-field.has-remove > .sbf-remove { grid-row: 1; grid-column: 2; justify-self: start; align-self: center; }
+/* ON A PHONE, ITS OWN LINE AFTER THE VALUE (visual QA QA-107, 2026-10-20).
+   At 390px a setting of one's own -- name box, type select, remove -- does not
+   fit on one line: `.sbf-key` wrapped the type select under the name while
+   "remove" stayed beside the name, so the row read name, remove, type. Here
+   it takes its place in source order instead: name, type, value, remove. */
+@media (max-width: 560px) {
+  .sbf-field.has-remove > .sbf-remove { grid-row: auto; grid-column: 1 / -1; }
+}
+
+/* A STEP'S `?` IS AFTER ITS HEADING, NOT IN IT (QAFIX-HELP, 2026-10-20), as
+   `PageHead` draws the h1's: inside the <h2> the glyph's own name ran on into
+   the heading's, so "Choose a runner" was announced as "Choose a runner Help:
+   …". The row is the heading's line; the heading keeps its type. */
+.sbf-move-head { display: flex; align-items: center; gap: var(--ctl-s2); margin: 0 0 var(--ctl-s3); }
+.sbf-move-head > .sbf-move-h { margin: 0; }
 
 /* THE BROWSER TOOL (BSTATUS-SUBMIT, owner decision 2026-10-14). A segmented
    control of native radios: the radio is hidden visually but keeps the
