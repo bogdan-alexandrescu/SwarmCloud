@@ -1331,6 +1331,27 @@ def test_spot_and_backoff_are_the_rules_that_deny(policy_docs):
     assert "quantity(" in pod_expressions
 
 
+def test_cpu_may_burst_to_twice_its_request_and_memory_may_not(policy_docs):
+    """Invariant 7 as amended by contract request RS-1 (2026-10-20): memory
+    request == limit, and a CPU limit lies between its request and twice it.
+    Both policies still demanded CPU equality when SIZES-SCHED-1 (PR 1742)
+    rendered limit 8 over request 4, and refused every GKE job from about
+    19:24Z on 2026-10-20 until the policies were changed."""
+    lim, req = "quantity(c.resources.limits['cpu'])", "quantity(c.resources.requests['cpu'])"
+    mem_req, mem_lim = "quantity(c.resources.requests['memory'])", "quantity(c.resources.limits['memory'])"
+    for name in ("swarm-worker-pod-constraints", "swarm-worker-job-constraints"):
+        policy = one(policy_docs, "ValidatingAdmissionPolicy", name)
+        flat = re.sub(r"\s+", "", " ".join(v["expression"] for v in policy["spec"]["validations"]))
+        # MUTATION: requiring cpu requests == limits again turns this red.
+        assert f"{req}.compareTo({lim})==0" not in flat, name
+        # MUTATION: letting a cpu limit fall below its request turns this red.
+        assert f"{lim}.compareTo({req})>=0" in flat, name
+        # MUTATION: dropping the 2x ceiling (no request added to itself) turns this red.
+        assert f"{lim}.compareTo({req}.add({req}))<=0" in flat, name
+        # MUTATION: relaxing memory to anything but equality turns this red.
+        assert f"{mem_req}.compareTo({mem_lim})==0" in flat, name
+
+
 def test_the_rendered_browser_job_satisfies_the_advisory_policy(policy_docs):
     """The template is what the advisories describe; if it did not pass them,
     flipping the binding to Deny could never be a one-line change."""
