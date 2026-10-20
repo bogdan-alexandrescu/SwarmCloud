@@ -549,3 +549,14 @@ def test_the_instructions_name_both_commands_in_one_line_each():
     lines = [line for line in guide.splitlines() if "swarm-handoff record start" in line]
     assert len(lines) == 1 and "swarm-handoff record stop" in lines[0]
     assert len([line for line in guide.splitlines() if "swarm-handoff serve <dir>" in line]) == 1
+
+
+def test_the_caps_the_note_states_are_the_commands():
+    from agent_worker.runners import claude_code
+
+    cmd = _command()
+    note = claude_code.LIVE_BROWSER_NOTE
+    assert f"{cmd.MAX_FLOW_FRAMES} frames" in note
+    assert f"{cmd.MAX_FLOW_BYTES // (1024 * 1024)} MiB" in note
+    assert f"{cmd.MAX_FLOW_SECONDS // 60} minutes" in note
+    assert cmd.FLOW_INTERVAL_MS == 1000 and "every second" in note
