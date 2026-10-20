@@ -265,6 +265,19 @@
    tenant with no key of its own carries the amber warning, not a red tag. */
 .ten-status { white-space: nowrap; }
 
+/* "BEING CREATED" AND NEW WORKSPACE ARE ONE ROW (#1678). They sat in
+   `.ob-acts`, onboarding's actions row -- inline-flex, packed right, no
+   `align-items` -- and the h2 kept the browser's top margin, so the button
+   was drawn ~18px above the heading and beside it. Out of `.section > h2`'s
+   reach, the heading takes that rule's type here, and the row takes its 10px
+   below, so this section spaces its heading as its siblings do. On a phone
+   the button wraps under the heading, full width, a 44px target. */
+.ten-bc-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.ten-bc-head > h2 { font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; color: var(--text); margin: 0; }
+@media (max-width: 719px) {
+  .ten-bc-head > .c-btn { flex: 1 1 100%; height: auto; min-height: 44px; }
+}
+
 /* AN IDENTITY AND ITS COPY CONTROL (#134, Activity.tsx `Ident`). The value is
    the item that gives way; the control keeps its width. (The wide table's
    rules for the pair come after these, below, so they win at 900px up.) The status beside it
