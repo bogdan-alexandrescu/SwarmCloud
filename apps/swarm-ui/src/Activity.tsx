@@ -71,6 +71,7 @@ import {
 } from './outcomes'
 import { Button, NamedMark, Segmented, StateMark, WarnMark } from './components'
 import { NewWorkspaceDialog, WorkspaceTimeline } from './NewWorkspace'
+import { QaIdentityGrants } from './QaIdentityGrants'
 import { WORKSPACE_POLL_MS } from './OnboardingWorkspace'
 import { Absent, Mark } from './primitives'
 import { CountNote, Id, PageHead, RefreshControl, Screen, useClaimPageAge, useIdleStop, usePoll } from './Shell'
@@ -1758,6 +1759,10 @@ export function TenantsScreen() {
       {(d) => (
         <>
           {caller?.admin === true && <BeingCreated owner={caller.owner} />}
+          {/* THE QA IDENTITY'S GRANTS (QI-UI, docs/design/qa-identity.md §4.6): an
+              admin's panel, mounted only for an admin -- its read is
+              `require_admin`, and a non-admin is asked nothing. */}
+          {caller?.admin === true && <QaIdentityGrants tenants={d.tenants.map((t) => t.tenant_id).sort()} />}
           <WithTenantPools roster={d}>
           {(pools) => (
             <section className="section">

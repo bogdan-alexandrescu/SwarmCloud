@@ -181,9 +181,45 @@ const JEV_WHY: Record<NonNullable<LiveBrowserTools['jev']['reason']>, string> = 
 
 const CHANGE_TOOL = 'The tool is chosen with Browser tool on Submit when a task starts; it does not change while the task runs.'
 
-/** The strip's badges, right-aligned after the control state; null renders nothing at all. */
-export function BrowserBadges({ status, now = Date.now() }: { status: LiveBrowserTools | null; now?: number }) {
-  if (status === null) return null
+/**
+ * [Signed in as QA identity (console)] (lane QI-UI, docs/design/qa-identity.md
+ * §4.6): the task's input named the QA identity, so the browser holds the QA
+ * account's session on this console, not the submitter's. It is a fact of the
+ * TASK, read off its input by the caller, so it is drawn whether or not the
+ * live read carries a `browser` object.
+ */
+function QaIdentityBadge({ identity }: { identity: string }) {
+  return (
+    <Badge kind="qa-identity" tone="note" label={`Signed in as QA identity (${identity})`}>
+      <span className="bb-line">
+        This task asked for the QA identity: the browser is signed in to this console as the QA account, not as the person who
+        submitted it, and what it does here is done in the QA workspace.
+      </span>
+      <span className="bb-line">The platform adds the credential to the console’s own requests; the agent never holds it.</span>
+      <span className="bb-line bb-how">
+        It is chosen on Submit, and only a workspace a platform admin has granted (Admin › Tenants › QA identity) is offered it.
+      </span>
+    </Badge>
+  )
+}
+
+/** The strip's badges, right-aligned after the control state; null and no QA identity renders nothing at all. */
+export function BrowserBadges({
+  status,
+  now = Date.now(),
+  qaIdentity = null,
+}: {
+  status: LiveBrowserTools | null
+  now?: number
+  /** The QA identity the task's input named (`qaIdentityOf`), or null. */
+  qaIdentity?: string | null
+}) {
+  if (status === null)
+    return qaIdentity === null ? null : (
+      <span className="bb-row" data-testid="browser-badges">
+        <QaIdentityBadge identity={qaIdentity} />
+      </span>
+    )
   const sel = status.tool_selected
   // Jev picked and off for a known reason: the attempt runs on Playwright.
   const jevFellBack = sel === 'jev' && !status.jev.enabled && status.jev.reason !== null
@@ -213,6 +249,7 @@ export function BrowserBadges({ status, now = Date.now() }: { status: LiveBrowse
 
   return (
     <span className="bb-row" data-testid="browser-badges">
+      {qaIdentity !== null && <QaIdentityBadge identity={qaIdentity} />}
       <Badge kind="tool" tone={jevFellBack ? 'warn' : 'plain'} label={toolLabel}>
         <span className="bb-line">
           {sel === 'auto'

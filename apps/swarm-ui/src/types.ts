@@ -6235,3 +6235,53 @@ export interface PreferencesSaved {
   notifications: ProfileNotifications
   revision: number
 }
+
+// ---------------------------------------------------------------------------
+// The QA identity (lane QI-UI, docs/design/qa-identity.md §4.3 and §4.6; part
+// of #1649). The shapes `swarm_api/qa_identity.py` serves: `mine` to any
+// member, `admin_list` and `grant_to_api` to a platform admin. A NAME and a
+// grant, never a credential: the JWT goes from swarm-api to the worker only.
+// ---------------------------------------------------------------------------
+
+/** One identity as `GET /v1/qa-identities/mine` serves it: this workspace's grant and nothing else. */
+export interface QaIdentityMineEntry {
+  identity: string
+  /** False when the deployment has no QA account: every request naming it is refused. */
+  configured: boolean
+  granted: boolean
+}
+
+export interface QaIdentityMine {
+  identities: QaIdentityMineEntry[]
+}
+
+/** A grant as `admin_list` lists it. `state` is `granted` or `revoked`; a revoke keeps the row. */
+export interface QaIdentityGrant {
+  tenant_id: string
+  state: 'granted' | 'revoked' | string
+  granted_by: string | null
+  granted_at: string | null
+  reason: string | null
+}
+
+/** One identity as `GET /v1/admin/qa-identities` serves it to an admin. */
+export interface QaIdentityAdminEntry {
+  identity: string
+  /** The console host the credential is bound to; empty when not configured. */
+  host: string
+  /** The QA service account's email; empty when not configured. */
+  account: string
+  configured: boolean
+  grants: QaIdentityGrant[]
+}
+
+export interface QaIdentityList {
+  identities: QaIdentityAdminEntry[]
+}
+
+/** What `PUT` and `DELETE /v1/admin/qa-identities/{identity}/grants/{tenant_id}` answer: the grant document. */
+export interface QaIdentityGrantDoc extends QaIdentityGrant {
+  identity: string
+  revoked_by: string | null
+  revoked_at: string | null
+}

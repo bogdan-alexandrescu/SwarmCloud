@@ -43,6 +43,7 @@ import type {
   DefaultRoleChange, PersonRoleChange, PersonRoles, PersonWorkspaceRole, RoleSummary, WorkspaceRoleEvent, WorkspaceRoleMe,
   WorkspaceRoleOverride, WorkspaceRoles, WorkspaceRoster,
   AdminWorkspaceRoles, AdminWorkspaceRolesPage,
+  QaIdentityGrantDoc, QaIdentityList, QaIdentityMine,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -6801,6 +6802,54 @@ export async function loadAdminWorkspaces(filter: { kind?: WorkspaceKind; state?
     const rows = (raw as { workspaces?: unknown } | null)?.workspaces
     return Array.isArray(rows) ? rows.map(normAdminWorkspace) : []
   })
+}
+
+// The QA identity (lane QI-UI; docs/design/qa-identity.md §4.3, §4.6; part of #1649). The routes are
+// swarm_api/routes/qa_identity.py's. An identity is a NAME from the catalogue's closed list (`console`), and a grant is
+// addressed by workspace id: no URL or body here names an account, a host or a credential (invariant 10). The fixture
+// build answers each as not served, so the Submit option is never offered there.
+
+/** `GET /v1/qa-identities/mine` (any member): whether THIS workspace may name each identity. An unshaped answer is none. */
+export async function loadQaIdentityMine(): Promise<Result<QaIdentityMine>> {
+  return readAs(route('/v1/qa-identities/mine'), (raw) => {
+    const rows = (raw as { identities?: unknown } | null)?.identities
+    return {
+      identities: Array.isArray(rows)
+        ? rows
+            .filter((r): r is Record<string, unknown> => typeof r === 'object' && r !== null && typeof (r as { identity?: unknown }).identity === 'string')
+            .map((r) => ({ identity: r.identity as string, configured: r.configured === true, granted: r.granted === true }))
+        : [],
+    }
+  })
+}
+
+/** `GET /v1/admin/qa-identities` (admin): each identity, its host and account, and every grant, revoked ones kept. */
+export async function loadQaIdentities(): Promise<Result<QaIdentityList>> {
+  return readAs(route('/v1/admin/qa-identities'), (raw) => {
+    const rows = (raw as { identities?: unknown } | null)?.identities
+    return {
+      identities: Array.isArray(rows)
+        ? rows.map((r) => {
+            const e = (typeof r === 'object' && r !== null ? r : {}) as QaIdentityList['identities'][number]
+            return { ...e, grants: Array.isArray(e.grants) ? e.grants : [] }
+          })
+        : [],
+    }
+  })
+}
+
+/** `PUT /v1/admin/qa-identities/{identity}/grants/{tenant_id}` (admin): grant, with a reason of 1-200 characters. */
+export async function grantQaIdentity(identity: string, tenantId: string, reason: string): Promise<Result<QaIdentityGrantDoc>> {
+  return writeTo(route('/v1/admin/qa-identities/{identity}/grants/{tenant_id}', { identity, tenant_id: tenantId }), 'PUT', { reason }) as Promise<
+    Result<QaIdentityGrantDoc>
+  >
+}
+
+/** `DELETE /v1/admin/qa-identities/{identity}/grants/{tenant_id}` (admin): revoke; the API keeps the document, `revoked`. */
+export async function revokeQaIdentity(identity: string, tenantId: string): Promise<Result<QaIdentityGrantDoc>> {
+  return writeTo(route('/v1/admin/qa-identities/{identity}/grants/{tenant_id}', { identity, tenant_id: tenantId }), 'DELETE') as Promise<
+    Result<QaIdentityGrantDoc>
+  >
 }
 
 /** `PUT /v1/admin/people/{workspace_id}/loan` (admin): lend an account to the person (`lend: true`) or reclaim it. */

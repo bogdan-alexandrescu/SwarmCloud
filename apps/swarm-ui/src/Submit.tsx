@@ -33,6 +33,7 @@ import { clearTaskPrefill, peekTaskPrefill } from './submitPrefill'
 import { Mark } from './primitives'
 import { ModelClassSelect, RoomFact, RunnerPicker, sentModelClass, useProviderKeys } from './RunnerPicker'
 import { AUTO, BROWSER_TOOL_KEY, BrowserToolPicker, declaredBrowserTools, jevAllowed, profileEgress, useJevJudgment, useTypesafeKey, withBrowserTool } from './BrowserToolPicker'
+import { QA_IDENTITY_KEY, QaIdentityOption, declaredQaIdentities, useGrantedQaIdentity, withQaIdentity } from './QaIdentityGrants'
 import { useRoleGate } from './Profile'
 import { MCP_SERVERS_KEY, McpServerPicker, clearCredentials, declaredMcpServers, loadMcpServers, offeredMcpServers, readCredentials, withMcpServers, type McpServerList } from './McpServers'
 import { FailedPanel, Screen, useSubmitAs } from './Shell'
@@ -1072,6 +1073,15 @@ function Form({ capacity }: { capacity: Capacity }) {
   const judgment = useJevJudgment(tools !== null)
   const tool = tools !== null && tools.includes(browserTool) && (browserTool !== 'jev' || jevAllowed(typesafe, judgment)) ? browserTool : AUTO
 
+  // THE QA IDENTITY (QI-UI, docs/design/qa-identity.md §4.6): offered only for
+  // a profile that declares `qa_identity` AND only once
+  // `GET /v1/qa-identities/mine` says this workspace is granted -- otherwise
+  // the click meets a 403 `qa_identity_not_granted`. Unticked sends nothing,
+  // and a tick the form no longer offers (another runner, a revoke) is not sent.
+  const qaOffered = useGrantedQaIdentity(declaredQaIdentities(profile))
+  const [qaOn, setQaOn] = useState(false)
+  const qaSent = qaOffered !== null && qaOn ? qaOffered : null
+
   // THE MCP SERVERS (MCP-UI; docs/design/registered-mcp-servers.md §4.3):
   // drawn only for a profile that declares `mcp_servers`, offering the
   // workspace's enabled registrations that profile may use. A pick the list no
@@ -1147,6 +1157,7 @@ function Form({ capacity }: { capacity: Capacity }) {
   const pick = (name: string) => {
     setChosen(name)
     setBrowserTool(AUTO)
+    setQaOn(false)
     setModelClass(null)
     setMcpPicked([])
     forgetCredentials()
@@ -1161,10 +1172,15 @@ function Form({ capacity }: { capacity: Capacity }) {
       ? { ok: false, message: `the setting ${BROWSER_TOOL_KEY} is set twice and an object has one value per key` }
       : { ok: true, input: withBrowserTool(typed.input, tool) }
   // The MCP picks the same way: a typed `mcp_servers` beside them is set twice.
-  const built: BuiltInput = !withTool.ok || mcpNames.length === 0 ? withTool
+  const withMcp: BuiltInput = !withTool.ok || mcpNames.length === 0 ? withTool
     : Object.prototype.hasOwnProperty.call(withTool.input, MCP_SERVERS_KEY)
       ? { ok: false, message: `the setting ${MCP_SERVERS_KEY} is set twice and an object has one value per key` }
       : { ok: true, input: withMcpServers(withTool.input, mcpNames) }
+  // The QA identity the same way: a typed `qa_identity` beside the tick is set twice.
+  const built: BuiltInput = !withMcp.ok || qaSent === null ? withMcp
+    : Object.prototype.hasOwnProperty.call(withMcp.input, QA_IDENTITY_KEY)
+      ? { ok: false, message: `the setting ${QA_IDENTITY_KEY} is set twice and an object has one value per key` }
+      : { ok: true, input: withQaIdentity(withMcp.input, qaSent) }
   const missing = missingRequired(fields, required)
   // THE REPOSITORY THE CLICK PUSHES TO, from the draft `submit` sends: the
   // trimmed URL, and only while the chosen strategy pushes at all (#115).
@@ -1224,6 +1240,7 @@ function Form({ capacity }: { capacity: Capacity }) {
   const another = () => {
     setChosen('')
     setBrowserTool(AUTO)
+    setQaOn(false)
     setModelClass(null)
     setMcpPicked([])
     setMcpLifetimes({})
@@ -1389,6 +1406,7 @@ function Form({ capacity }: { capacity: Capacity }) {
                 <BrowserToolPicker tools={tools} value={tool} onChange={setBrowserTool} typesafe={typesafe} judgment={judgment}
                   egress={profileEgress(profile)} />
               )}
+              {qaOffered !== null && <QaIdentityOption identity={qaOffered} checked={qaOn} onChange={setQaOn} />}
               {mcpMax !== null && (
                 <McpServerPicker list={mcpList} profile={chosen} max={mcpMax} picked={mcpNames} onPick={setMcpPicked}
                   fields={mcpFields} filled={mcpFilled} onFilled={onMcpFilled}
