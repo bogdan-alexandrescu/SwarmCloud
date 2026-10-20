@@ -45,7 +45,7 @@ function f(over: Partial<InputField> = {}): InputField {
 
 async function form() {
   const view = render(<SubmitScreen />)
-  const button = await screen.findByRole('button', { name: 'Submit one task' }, { timeout: 4000 })
+  const button = await screen.findByRole('button', { name: 'Start one agent' }, { timeout: 4000 })
   return { ...view, button }
 }
 
@@ -92,7 +92,7 @@ describe('QA-101: a form that cannot be sent says what is missing', () => {
     expect((button as HTMLButtonElement).disabled).toBe(true)
     // MUTATION: drop the `sbf-why` line and the disabled button is described
     // by nothing, which is exactly what the QA run read.
-    expect(screen.getByRole('button', { name: 'Submit one task', description: 'Not ready: choose a runner.' })).toBe(button)
+    expect(screen.getByRole('button', { name: 'Start one agent', description: 'Not ready: choose a runner.' })).toBe(button)
   })
 
   it('a runner chosen without its required key names the key', async () => {
@@ -100,7 +100,7 @@ describe('QA-101: a form that cannot be sent says what is missing', () => {
     pickRunner(container, 'claude-code')
     // MUTATION: leave `missing` out of the reasons and this reads only the
     // runner's absence -- or nothing, once one is chosen.
-    expect(screen.getByRole('button', { name: 'Submit one task', description: 'Not ready: fill in prompt.' })).toBe(button)
+    expect(screen.getByRole('button', { name: 'Start one agent', description: 'Not ready: fill in prompt.' })).toBe(button)
   })
 
   it('a form that can be sent carries no such line', async () => {

@@ -35,7 +35,7 @@ afterEach(() => {
 describe('G: an agent is named from what it is', () => {
   it('names a step by its step, a lone browser task a browser check, and any other lone task by its profile', () => {
     expect(agentName(task({ id: 'task_02e9705a1c2d', runner_profile: 'browser', step_id: null }))).toBe('browser check · 02e9705a')
-    expect(agentName(task({ id: 'task_a073aff5', runner_profile: 'claude-code', step_id: null }))).toBe('claude-code task · a073aff5')
+    expect(agentName(task({ id: 'task_a073aff5', runner_profile: 'claude-code', step_id: null }))).toBe('claude-code agent · a073aff5')
     expect(agentName(task({ id: 'task_a073aff5', runner_profile: 'codex', step_id: 'implement' }))).toBe('implement')
   })
 
@@ -47,7 +47,7 @@ describe('G: an agent is named from what it is', () => {
       expect(r).not.toBeNull()
       return r!
     })
-    expect(row.querySelector('.cr-name b')?.textContent).toBe('mock task · 108ef29c')
+    expect(row.querySelector('.cr-name b')?.textContent).toBe('mock agent · 108ef29c')
     expect(row.querySelector('.cr-name b')?.getAttribute('title')).toBe('task_108ef29c')
   })
 
@@ -55,7 +55,7 @@ describe('G: an agent is named from what it is', () => {
     window.location.hash = '#work/task/task_a073aff5'
     render(<App />)
     await waitFor(() => {
-      expect(document.querySelector('.ctl-crumb [aria-current="page"]')?.textContent).toBe('claude-code task · a073aff5')
+      expect(document.querySelector('.ctl-crumb [aria-current="page"]')?.textContent).toBe('claude-code agent · a073aff5')
     })
   })
 })

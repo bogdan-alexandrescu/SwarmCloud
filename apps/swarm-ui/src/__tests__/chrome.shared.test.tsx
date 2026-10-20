@@ -321,7 +321,7 @@ describe("CH-2: the head's read age is the screen's own", () => {
     })
     // The crumb names the agent humanly (U8 G); the full id stays reachable as its title.
     await waitFor(() => expect(document.querySelector('.ctl-crumb [aria-current="page"]')?.getAttribute('title')).toBe('tsk_done'))
-    expect(document.querySelector('.ctl-crumb')?.textContent).toContain('task · done')
+    expect(document.querySelector('.ctl-crumb')?.textContent).toContain('agent · done')
     await waitFor(() => expect(refreshSays()).toMatch(AN_AGE), { timeout: 5000 })
     await act(async () => {
       window.location.hash = '#work/running/recent/succeeded'

@@ -425,7 +425,7 @@ function draftForm(useSubmitAs: () => string | null) {
     return (
       <form>
         <input aria-label="draft" value={draft} onChange={(e) => setDraft(e.target.value)} />
-        <button type="submit">{as === null ? 'Submit one task' : `Submit as ${as}`}</button>
+        <button type="submit">{as === null ? 'Start one agent' : `Submit as ${as}`}</button>
       </form>
     )
   }
@@ -510,7 +510,7 @@ describe('an unsent form across a tenant switch (2A)', () => {
     })
     const field = await screen.findByLabelText('draft')
     fireEvent.change(field, { target: { value: 'half a prompt' } })
-    expect(screen.getByRole('button', { name: 'Submit one task' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Start one agent' })).toBeTruthy()
     await waitFor(() => expect(switcher()).not.toBeNull())
     const readsBefore = formReads
 

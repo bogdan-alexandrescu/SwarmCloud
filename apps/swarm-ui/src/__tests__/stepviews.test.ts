@@ -118,7 +118,7 @@ describe('stepTimes', () => {
   it('draws nothing for a task nobody read, and does not call it idle', () => {
     const t = stepTimes({ kind: 'unknown', taskId: 'tx' }, T0)
     expect(t.spans).toEqual([])
-    expect(t.mark?.text).toBe('task unread')
+    expect(t.mark?.text).toBe('not joined')
     expect(t.mark?.note).toMatch(/not idle/)
   })
 
@@ -433,7 +433,7 @@ describe('attemptsInOrder and attemptFacts', () => {
     expect(fact(attemptFacts(fresh, attemptPhase('PARKED', true), T0), 'took').text).toBe('never started')
     expect(fact(attemptFacts(fresh, attemptPhase('LEASED', false), T0), 'took').text).toBe('never started')
     // Unread: nobody knows which.
-    expect(fact(attemptFacts(fresh, attemptPhase(null, true), T0), 'took').text).toBe('task unread')
+    expect(fact(attemptFacts(fresh, attemptPhase(null, true), T0), 'took').text).toBe('not joined')
   })
 
   it('keeps the first line of an error on the surface and the whole of it underneath', () => {

@@ -129,7 +129,7 @@ describe('RunnerPicker: every row says its room and its key', () => {
 describe('both Submit forms pick a runner from the same picker', () => {
   it('the task form shows room and key on every row once the providers read lands', async () => {
     const { container } = render(<SubmitScreen />)
-    await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+    await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
     await waitFor(() => expect(visible(row(container, 'claude-code').querySelector('.sbf-runner-key'))).toBe('anthropic key present'), WAIT)
     expect(visible(row(container, 'claude-code').querySelector('.sbf-runner-room'))).toMatch(/^0 can start now/)
     expect(visible(row(container, 'mock').querySelector('.sbf-runner-room'))).toBe('15 more can start now')
@@ -191,7 +191,7 @@ const valueOf = (f: HTMLElement | null) =>
 describe('the task send panel lists what the click commits to', () => {
   it('names the cost and the room of the chosen runner, in the decided phrase', async () => {
     const { container } = render(<SubmitScreen />)
-    await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+    await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
     fireEvent.click(container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="browser"]')!)
     // 1 unit since contract request 79 (it was 2): the browser class is now
     // the standard class's size on its own image.
@@ -205,7 +205,7 @@ describe('the task send panel lists what the click commits to', () => {
 
   it('draws the cost and room as undecided before a runner is chosen', async () => {
     const { container } = render(<SubmitScreen />)
-    await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+    await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
     for (const k of ['cost', 'room']) {
       const f = fact(container, k)
       expect(f, `no ${k} fact in the panel`).not.toBeNull()
@@ -216,7 +216,7 @@ describe('the task send panel lists what the click commits to', () => {
 
   it('names the repository as owner/repo only when the strategy pushes', async () => {
     const { container } = render(<SubmitScreen />)
-    await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+    await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
     // The default strategy publishes nothing, so there is no repository to name.
     expect(fact(container, 'repository')).toBeNull()
     const pr = container.querySelector<HTMLInputElement>('input[type="radio"][value="direct-pr"]')

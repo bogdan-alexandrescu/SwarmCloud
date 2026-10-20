@@ -85,7 +85,7 @@ describe('the task form', () => {
   for (const c of CASES) {
     it(`draws a 403 ${c.name} as the banner, with the form live before it`, async () => {
       const { container } = render(<SubmitScreen />)
-      const go = (await screen.findByRole('button', { name: 'Submit one task' }, WAIT)) as HTMLButtonElement
+      const go = (await screen.findByRole('button', { name: 'Start one agent' }, WAIT)) as HTMLButtonElement
       const radio = container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="mock"]')!
       fireEvent.click(radio)
       const calls = refuseWrite('/v1/tasks', { status: 403, body: c.body })
@@ -98,7 +98,7 @@ describe('the task form', () => {
 
   it('keeps drawing any other 403 as the failure panel, not a banner', async () => {
     const { container } = render(<SubmitScreen />)
-    const go = (await screen.findByRole('button', { name: 'Submit one task' }, WAIT)) as HTMLButtonElement
+    const go = (await screen.findByRole('button', { name: 'Start one agent' }, WAIT)) as HTMLButtonElement
     fireEvent.click(container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="mock"]')!)
     refuseWrite('/v1/tasks', { status: 403, body: { code: 'forbidden', message: 'Refused for another reason.' } })
     fireEvent.click(go)

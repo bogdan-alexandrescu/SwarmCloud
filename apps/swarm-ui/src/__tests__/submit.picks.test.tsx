@@ -62,7 +62,7 @@ describe('/submit is a page of its own in the frame', () => {
   })
 
   it('gives the two forms a trail back to the chooser', async () => {
-    for (const [path, h1] of [['/submit/task', 'Submit a task'], ['/submit/workflow', 'Submit a workflow'], ['/submit/issue', 'Submit from a GitHub issue']] as const) {
+    for (const [path, h1] of [['/submit/task', 'Start an agent'], ['/submit/workflow', 'Submit a workflow'], ['/submit/issue', 'Submit from a GitHub issue']] as const) {
       window.history.replaceState(null, '', path)
       const { unmount } = render(<App />)
       await screen.findByRole('heading', { name: h1, level: 1 }, WAIT)
@@ -91,7 +91,7 @@ describe('the chooser draws the three picked cards', () => {
     expect(cards).toHaveLength(3)
     const [task, wf, issue] = cards as [HTMLElement, HTMLElement, HTMLElement]
     for (const c of cards) expect(c.querySelector('h2 svg'), 'a chooser card has no icon').not.toBeNull()
-    expect(visible(task.querySelector('h2'))).toBe('Submit a task')
+    expect(visible(task.querySelector('h2'))).toBe('Start an agent')
     expect(visible(wf.querySelector('h2'))).toBe('Submit a workflow')
     expect(visible(task.querySelector('kbd'))).toBe('T')
     expect(visible(wf.querySelector('kbd'))).toBe('W')
@@ -100,7 +100,7 @@ describe('the chooser draws the three picked cards', () => {
     // No route printed as monospace text.
     expect(visible(container)).not.toMatch(/\/submit\/(task|workflow|issue)/)
 
-    fireEvent.click(within(task).getByRole('button', { name: 'Start a task' }))
+    fireEvent.click(within(task).getByRole('button', { name: 'Start an agent' }))
     expect(go).toHaveBeenLastCalledWith('work/new')
     fireEvent.click(within(wf).getByRole('button', { name: 'Start a workflow' }))
     expect(go).toHaveBeenLastCalledWith('work/new-workflow')
@@ -161,7 +161,7 @@ function runnerCard(root: HTMLElement, name: string): HTMLElement {
 describe('the task form is F1', () => {
   it('draws the runners as two-column cards with size, backend and how many can start now', async () => {
     const { container } = render(<SubmitScreen />)
-    await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+    await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
     const list = container.querySelector<HTMLElement>('.sbf-runners')!
     expect(list.classList.contains('is-cards'), 'the runner list is not the card grid').toBe(true)
     expect(rules(SUBMIT_CSS)).toMatch(/\.sbf-runners\.is-cards\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/)
@@ -182,7 +182,7 @@ describe('the task form is F1', () => {
 
   it('draws steps 2 and 3 as cards, dimmed until a runner is chosen', async () => {
     const { container } = render(<SubmitScreen />)
-    await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+    await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
     const steps = () => [...container.querySelectorAll<HTMLElement>('form.sbf .sb-step')]
     expect(steps()).toHaveLength(3)
     expect(steps().map((s) => s.classList.contains('is-dim'))).toEqual([false, true, true])
@@ -196,13 +196,13 @@ describe('the task form is F1', () => {
 
   it('says where the task lands and what that costs, and the disabled button is pale accent', async () => {
     const { container } = render(<SubmitScreen />)
-    await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+    await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
     const panel = container.querySelector<HTMLElement>('.sbf-send')!
     const lands = [...panel.querySelectorAll('.ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'lands as')
     expect(lands, 'no "lands as" row').toBeDefined()
     expect(visible(lands!)).toContain('READY or PARKED · costs nothing')
     expect(visible(panel)).toContain('Nothing runs until the scheduler admits it into every pool it needs.')
-    const go = within(panel).getByRole('button', { name: 'Submit one task' })
+    const go = within(panel).getByRole('button', { name: 'Start one agent' })
     // The canonical primary button (components.html A): the accent fill, and
     // ONE disabled treatment that pales it.
     expect(go.className).toContain('c-btn is-primary')

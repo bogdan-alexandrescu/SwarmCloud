@@ -82,7 +82,7 @@ afterEach(() => {
 describe('V126: the pool holding a runner at zero', () => {
   it('is mono at the fact\'s own size, kept whole, with its name in the title', async () => {
     const { container } = render(<SubmitScreen />)
-    await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+    await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
     const radio = container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="claude-code"]')!
     const room = radio.closest('label')!.querySelector<HTMLElement>('.sbf-runner-room')!
     expect(visible(room)).toMatch(/^0 can start now · held by \S+/)
@@ -123,7 +123,7 @@ describe('V135 and V136: Start from a recent one', () => {
     const { container } = render(<SubmitChooser go={() => {}} />)
     const recent = container.querySelector<HTMLElement>('.sb-recent')!
     await waitFor(() => expect(visible(recent)).toMatch(/who you are is unknown here \(Busy\.\)/))
-    expect(visible(recent)).toContain('Tasks not read: Tasks timed out.')
+    expect(visible(recent)).toContain('Agents not read: Tasks timed out.')
     expect(recent.querySelectorAll('.sb-recent-i').length).toBe(0)
 
     const retry = within(recent).getByRole('button', { name: 'Try again' })

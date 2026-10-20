@@ -131,14 +131,14 @@ const offered = (group: HTMLElement) => within(group).getAllByRole('checkbox').m
 
 async function taskForm(profile: string): Promise<HTMLElement> {
   const r = render(<SubmitScreen />)
-  await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+  await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
   fireEvent.click(r.container.querySelector<HTMLInputElement>(`input[name="runner-profile"][value="${profile}"]`)!)
   const prompt = r.container.querySelector<HTMLTextAreaElement>('.sbf-build textarea')
   if (prompt !== null) fireEvent.change(prompt, { target: { value: 'which service owns the endpoint the web app calls?' } })
   return r.container
 }
 
-const taskButton = () => screen.getByRole('button', { name: 'Submit one task' }) as HTMLButtonElement
+const taskButton = () => screen.getByRole('button', { name: 'Start one agent' }) as HTMLButtonElement
 
 beforeEach(async () => {
   mocks.loadCapacity.mockResolvedValue(await capacity())

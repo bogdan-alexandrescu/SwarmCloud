@@ -112,7 +112,7 @@ describe('R15: your recent submissions', () => {
     expect(link.getAttribute('href')).toBe('/runs/run_mine')
     link.click()
     expect(go).toHaveBeenCalledWith('work/runs?run=run_mine')
-    expect(visible(recent.querySelector('.sb-recent-scope'))).toBe('Among your newest 4 tasks, the tenant’s newest 2 workflows, its newest 2 issue runs.')
+    expect(visible(recent.querySelector('.sb-recent-scope'))).toBe('Among your newest 4 agents, the tenant’s newest 2 workflows, its newest 2 issue runs.')
   })
 
   it('lists nothing, and says why, when who you are was not read', async () => {

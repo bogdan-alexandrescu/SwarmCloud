@@ -12,7 +12,7 @@
 //     `POST /v1/access/grants/{repo_id}/verify` for an App connection, the
 //     token's `POST /v1/git-tokens/{id}/verify` for a stored token -- and
 //     re-reads the steps;
-//   * Run a test task opens Submit with claude-code, a harmless prompt and
+//   * Run a test agent opens Submit with claude-code, a harmless prompt and
 //     the chosen repository already filled in, and the default strategy that
 //     pushes nothing;
 //   * the orgs line never says "appear here once it has" while the step
@@ -138,7 +138,7 @@ describe('the page opens on three steps, ticked from the onboarding read', () =>
     const pick = within(row(s, 3)).getByRole('combobox', { name: 'Repository to check' })
     expect(Array.from((pick as HTMLSelectElement).options).map((o) => o.textContent)).toEqual(['example-org/example-api', 'example-org/example-web'])
     expect(within(row(s, 3)).getByRole('button', { name: 'Check access' })).toBeTruthy()
-    expect(within(row(s, 3)).getByRole('button', { name: 'Run a test task' })).toBeTruthy()
+    expect(within(row(s, 3)).getByRole('button', { name: 'Run a test agent' })).toBeTruthy()
   })
 
   it('nothing connected: step 1 offers Connect GitHub, steps 2 and 3 wait for it and offer nothing', async () => {
@@ -264,13 +264,13 @@ describe('Try it uses the existing verify routes', () => {
     expect(calls.filter((c) => c.method === 'POST').map((c) => c.url)).toEqual(['/v1/git-tokens/tok_mine/verify'])
   })
 
-  it('Run a test task opens Submit with claude-code, a harmless prompt and the chosen repository', async () => {
+  it('Run a test agent opens Submit with claude-code, a harmless prompt and the chosen repository', async () => {
     routes(() => TWO_DONE)
     const { go } = await mount()
     const s = await steps()
     await waitFor(() => expect(row(s, 3)).toBeTruthy(), WAIT)
     fireEvent.change(within(row(s, 3)).getByRole('combobox', { name: 'Repository to check' }), { target: { value: 'repo_1111111111111111' } })
-    fireEvent.click(within(row(s, 3)).getByRole('button', { name: 'Run a test task' }))
+    fireEvent.click(within(row(s, 3)).getByRole('button', { name: 'Run a test agent' }))
     expect(go).toHaveBeenCalledWith('work/new')
     const { peekTaskPrefill } = await import('../submitPrefill')
     const p = peekTaskPrefill()

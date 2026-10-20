@@ -487,7 +487,7 @@ describe('walkthrough G: a lane label leads with its name, state and duration', 
     expect(row.querySelector('.tl-lab small')!.textContent).not.toContain('task_plan')
     // A lone task is named from what it is, not by its id.
     const solo = document.querySelector<HTMLElement>('.tl-row[data-lane="task_solo"] .tl-name')!
-    expect(solo.textContent).toBe('claude-code task · solo')
+    expect(solo.textContent).toBe('claude-code agent · solo')
     // A lane that never ran has no duration: there is nothing it held.
     const never = document.querySelector<HTMLElement>('.tl-row[data-lane="task_publish"]')
     if (never !== null) expect(never.querySelector('.tl-dur')).toBeNull()
@@ -657,18 +657,18 @@ describe('VQA2-R9: the bars at now and the standalone lane names', () => {
     expect(laneLayout([{ from: 99, to: 99.5 }], [{ pct: 99.5, end: true }], null)).toEqual({ bars: [{ left: 99, width: 0.5 }], marks: [99.5] })
   })
 
-  // V212: `claude-code task · a073aff5` was ellipsized from its end, so the
+  // V212: `claude-code agent · a073aff5` was ellipsized from its end, so the
   // short id -- the only part that tells two standalone lanes apart -- was
-  // the part cut: "claude-code task · a0…".
+  // the part cut: "claude-code agent · a0…".
   // MUTATION: render the name as one text node, or drop `.tl-name-id`'s flex: none.
   it('V212: keeps a standalone lane’s short id whole and lets the kind give way', async () => {
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     await waitFor(() => expect(lane('task_solo')?.querySelector('.tl-name')).toBeTruthy())
     const name = lane('task_solo').querySelector<HTMLElement>('.tl-name')!
-    expect(name.textContent).toBe('claude-code task · solo')
+    expect(name.textContent).toBe('claude-code agent · solo')
     const kind = name.querySelector('.tl-name-k')
     const id = name.querySelector('.tl-name-id')
-    expect(kind?.textContent).toBe('claude-code task')
+    expect(kind?.textContent).toBe('claude-code agent')
     expect(id?.textContent, 'the id is not a part of its own').toBe(' · solo')
     expect(painted(name, 'display', { width: 1440 })).toBe('inline-flex')
     expect(painted(id!, 'flex', { width: 1440 }), 'the id can shrink').toBe('none')
