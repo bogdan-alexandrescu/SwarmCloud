@@ -330,6 +330,11 @@ export interface SpacingGroup {
    * shrinking a few cards does not. They sum to 930, over the 800 the single sweep held.
    */
   floor: number
+  /**
+   * Boxes centred sideways that only this slice's routes render, each argued
+   * as `CENTRED_SIDEWAYS` asks, and held beside it by the same equality.
+   */
+  centred?: readonly string[]
 }
 
 /**
@@ -356,7 +361,17 @@ export interface SpacingGroup {
 export const SPACING_GROUPS: readonly SpacingGroup[] = [
   { name: 'work', routes: ['overview/now', 'work/running'], floor: 120 },
   { name: 'runs', routes: ['work/workflows', 'work/runs', 'work/timeline'], floor: 160 },
-  { name: 'submit', routes: ['work/new', 'work/new-workflow', 'work/new-issue'], floor: 140 },
+  // THE STEP'S `?` (QAFIX-SUBMIT-TASK, after QAFIX-HELP). "Choose a runner"
+  // and "Lay out the plan" draw HelpCard's 14px disc after their <h2>, not
+  // inside it, so the heading is named by its words alone -- and the walk in
+  // from the step card's border, which stopped at the <h2>'s own text, now
+  // reaches the disc. Its "?" is centred in a fixed 14px with no border of
+  // its own, so there is no edge for that ink to crowd; the card's inset is
+  // measured off the heading beside it, as it was.
+  {
+    name: 'submit', routes: ['work/new', 'work/new-workflow', 'work/new-issue'], floor: 140,
+    centred: ['button.help-glyph [left] width 14px, centred', 'button.help-glyph [right] width 14px, centred'],
+  },
   // Automate › Schedules (docs/schedules.md §6.1) rides with Work's setup pages:
   // one route, and a slice is a file of its own (the slice test).
   { name: 'setup', routes: ['work/repositories', 'work/setup', 'work/access', 'automate/schedules', 'automate/approvals'], floor: 90 },
@@ -427,8 +442,9 @@ export function spacingGroup(name: string): void {
       // Per slice, and equal to the single sweep's assertion only while the
       // list is empty: an entry argued back onto it must be keyed to the slice
       // whose routes render that box, or every other slice fails on it.
-      expect(r.dark.centred).toEqual(CENTRED_SIDEWAYS)
-      expect(r.light.centred).toEqual(CENTRED_SIDEWAYS)
+      const centred = [...CENTRED_SIDEWAYS, ...(group.centred ?? [])].sort()
+      expect(r.dark.centred).toEqual(centred)
+      expect(r.light.centred).toEqual(centred)
 
       expect(lines(r.dark)).toEqual([])
       expect(lines(r.light)).toEqual([])
