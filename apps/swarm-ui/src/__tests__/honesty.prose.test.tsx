@@ -550,9 +550,11 @@ describe('Overview, with every help card closed', () => {
     const poll = head!.querySelector('.c-acts > .c-refresh')
     expect(poll, 'the cadence left the head’s refresh control').not.toBeNull()
     expect(textOf(poll)).toContain(every)
-    expect(poll!.getAttribute('aria-label')).toContain(`re-reads ${every}`)
+    // Its name is the words it shows, then the press (QA-031: a name that
+    // reworded them as `re-reads every N` failed axe label-content-name-mismatch).
+    expect(poll!.getAttribute('aria-label')).toMatch(new RegExp(`^${every} · read .* · refresh$`))
     // ...and no sentence about re-reading is on the surface: the control says
-    // it in its few words, its name says it in full. `textOf` would read the
+    // it in its few words. `textOf` would read the
     // HelpCard's visually-hidden copy straight back out, which is exactly the
     // trap `visibleText` exists for, so the claim is made against that.
     expect(visibleText()).not.toContain('re-read every')

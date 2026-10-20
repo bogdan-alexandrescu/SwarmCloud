@@ -2248,8 +2248,13 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
   color: var(--text-faint) !important;
 }
 
+/* A REFRESH THAT CANNOT BE PRESSED YET KEEPS ITS INK (QA-004, 2026-10-20).
+   It is disabled while the first read is in flight (`⟳ reading…`) and while a
+   429 holds the poll (`paused 30 s`), which every page shows on every first
+   read. An `opacity: .5` here halved `--text-dim` to 2.2:1 in light and 3.0:1
+   in dark; the words are a reading the person needs, so they stay at full
+   strength and only the cursor says the press is not available. */
 .c-refresh[disabled] {
-  opacity: .5;
   cursor: not-allowed;
 }
 
