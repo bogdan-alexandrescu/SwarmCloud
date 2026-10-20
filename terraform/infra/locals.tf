@@ -647,6 +647,24 @@ locals {
   # serves nothing yet, so it is not a link either.
   console_url = var.enable_frontend && var.frontend_hostname != "" ? "https://${var.frontend_hostname}" : ""
 
+  # THE QA IDENTITY's account (docs/design/qa-identity.md §4.1, §4.8; lane
+  # QI-API, part of #1649), rendered for swarm-api as
+  # QA_IDENTITY_CONSOLE_ACCOUNT. Empty means the deployment has no QA identity:
+  # swarm-api refuses every submission naming one (422) and every signing
+  # request (503) `qa_identity_unconfigured`.
+  #
+  # The account is terraform/bootstrap/qa_identity.tf's `qa-console` (its
+  # `qa_account_id`), made by the owner's bootstrap apply with
+  # enable_qa_identity, which also binds swarmQaJwtSigner on it for swarm-api
+  # alone and admits it at IAP. This root does not read the bootstrap's state
+  # and has no switch of its own for it, so the address is spelt from the same
+  # project here, in DEV ONLY: owner decision Q8 (a), dev first; prod gets its
+  # own account and workspace only after QI-ACCEPT is green on dev. Without a
+  # console URL there is no host to sign the JWT for, so it is empty too. A
+  # switch in variables.tf would replace the environment test; that file is
+  # Track C's and is asked for in QI-API's questions.json.
+  qa_identity_console_account = var.environment == "dev" && local.console_url != "" ? "qa-console@${var.project_id}.iam.gserviceaccount.com" : ""
+
   # Saga's decision API through the cluster's ONE Tailscale egress Service in
   # swarm-system (JUDGE-NET; owner decision 2026-10-14). Non-empty is what
   # makes the internal Jev judgment backends available (swarm_api.judgment)
@@ -977,6 +995,10 @@ locals {
       # The console origin every served task and workflow's `links.console` is
       # built from (swarm_api.settings `console_url`). See local.console_url.
       SWARM_CONSOLE_URL = local.console_url
+
+      # The QA identity's account (swarm_api.settings
+      # `qa_identity_console_account`). See local.qa_identity_console_account.
+      QA_IDENTITY_CONSOLE_ACCOUNT = local.qa_identity_console_account
 
       # Whether the internal Jev judgment backends are available
       # (swarm_api.judgment). See local.internal_decision_api_url.

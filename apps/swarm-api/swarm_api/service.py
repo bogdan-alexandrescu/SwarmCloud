@@ -63,6 +63,7 @@ from .extrarepos import Limits, Resolver, refuse_unless_enabled, requested_any, 
 from . import refusals
 from .errors import ApiError, BrowserToolUnavailable, Forbidden, NotFound, ValidationFailed
 from .browser_logins import refuse_unless_personal
+from .qa_identity import refuse_unless_granted
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .forge import (
     FirestoreSlotIndex,
@@ -636,6 +637,12 @@ class SubmissionService:
             profile, spec.input, step_id=step_id,
             repository_url=repository_url or spec.repository_url,
         )
+        # The QA identity only for a tenant a platform admin granted it to
+        # (docs/design/qa-identity.md §4.3): a task, a batch task, a workflow
+        # step and a child all come through here, after the catalogue has
+        # refused any other value or profile. Signing reads the grant again.
+        refuse_unless_granted(self._settings, self._store.db, tenant.tenant_id, spec.input,
+                              step_id=step_id)
         # The browser tool it names can run for it (BSTATUS-API): after the
         # declaration, which has already refused a name outside the enum.
         self._refuse_unavailable_browser_tool(
@@ -1177,6 +1184,8 @@ class SubmissionService:
                     profile, step.input, step_id=step.step_id,
                     repository_url=spec.repository_url,
                 )
+                refuse_unless_granted(self._settings, self._store.db, tenant.tenant_id,
+                                      step.input, step_id=step.step_id)
                 # Its MCP servers, against the workflow's one map (§4.3).
                 mcp_modes.update(self.check_mcp_servers(
                     profile, step.input, tenant.tenant_id, credentials=spec.mcp_credentials,

@@ -9,18 +9,23 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from swarm_common.identity import AuthError
 from swarm_common.states import InvalidTransition
 
 from .access import AccessService, build_access
+from .auth import qa_origin_refused
 from .deps import AppContext, build_context
 from .errors import ApiError, Conflict, RateLimited, Unauthenticated
 from .forgeapp import ForgeApp, build_forge_app
@@ -63,6 +68,7 @@ from .routes import (
     provider_keys,
     people,
     platform,
+    qa_identity,
     repositories,
     roles,
     runs,
@@ -78,6 +84,7 @@ from .routes import (
     workspace_secrets,
     workspaces,
 )
+from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
 
 from swarm_common.logging_setup import configure_logging
@@ -106,7 +113,141 @@ UNCAPTURED_ROUTES = frozenset({
     # An await-input answer (docs/design/human-steps.md §4.6): a person's
     # form and up to 16 MiB of their files.
     await_input.INPUT_ROUTE,
+    # The QA identity's credential (docs/design/qa-identity.md §4.3): the
+    # third route that serves credential material.
+    qa_identity.ISSUE_ROUTE,
 })
+
+# --------------------------------------------------------------------------
+# The front door: credential headers beside an IAP assertion, and the scrubber
+# (docs/design/qa-identity.md §4.3 "Standing rule", §4.9; lane QI-API)
+# --------------------------------------------------------------------------
+
+#: The IAP assertion header. Present means the request came through IAP.
+IAP_ASSERTION_HEADER = b"x-goog-iap-jwt-assertion"
+#: Headers that carry a credential meant for something in front of swarm-api.
+#: Beside an IAP assertion they are REMOVED before any route runs (§4.9, M3
+#: measured NO: the QA browser's gate sends the QA account's IAP JWT in
+#: `Authorization`, and if IAP passes it through (M2, unmeasured) no route
+#: may read it, use it or reflect it). Without an assertion they stay: that is
+#: how a worker inside the VPC presents its ID token.
+CREDENTIAL_HEADERS = frozenset({
+    b"authorization", b"proxy-authorization", b"x-serverless-authorization",
+})
+#: Every header whose value is scrubbed from an error page.
+SCRUBBED_HEADERS = CREDENTIAL_HEADERS | {
+    IAP_ASSERTION_HEADER, b"cookie", b"x-swarm-attempt-proof",
+}
+#: Where `FrontDoor` leaves the scrubbed headers' values for the error
+#: handlers, which no longer see the removed ones. In the request's own
+#: scope, so it lives exactly as long as the request.
+SCRUB_STATE = "_scrub_values"
+REDACTED = "[redacted]"
+#: A piece of a header value shorter than this is not scrubbed on its own:
+#: "Bearer" is not a secret, and replacing short words would garble messages.
+_MIN_PIECE = 8
+_MIN_SEGMENT = 16
+
+QA_ORIGIN_MESSAGE = (
+    "the QA identity's writes are accepted only from the console's own origin"
+)
+
+
+def _present(names: set[bytes], name: bytes) -> str:
+    return "true" if name in names else "false"
+
+
+class FrontDoor:
+    """Pure ASGI, so it covers the websocket upgrade as well as HTTP.
+
+    For a request carrying an IAP assertion it: logs, once, whether
+    `Authorization`, `Proxy-Authorization` and `X-Serverless-Authorization`
+    arrived -- `true` or `false`, never a value -- so M2 is read from the logs
+    after deploy; removes those three headers; and refuses a QA-account write
+    from another origin 403 `qa_identity_origin` (`auth.qa_origin_refused`)
+    before any route runs. For every request it leaves the scrubbed headers'
+    values where the error handlers find them.
+    """
+
+    def __init__(self, app: Any, *, owner: FastAPI) -> None:
+        self.app = app
+        self.owner = owner
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        if scope.get("type") not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        headers = list(scope.get("headers") or [])
+        state = scope.setdefault("state", {})
+        state[SCRUB_STATE] = tuple(
+            v.decode("latin-1") for k, v in headers if k.lower() in SCRUBBED_HEADERS)
+        assertion = next(
+            (v.decode("latin-1") for k, v in headers if k.lower() == IAP_ASSERTION_HEADER), None)
+        if assertion is None:
+            await self.app(scope, receive, send)
+            return
+        names = {k.lower() for k, _ in headers}
+        log.info("iap request authorization_present=%s proxy_authorization_present=%s "
+                 "serverless_authorization_present=%s",
+                 _present(names, b"authorization"), _present(names, b"proxy-authorization"),
+                 _present(names, b"x-serverless-authorization"))
+        scope = {**scope, "headers": [(k, v) for k, v in headers
+                                      if k.lower() not in CREDENTIAL_HEADERS]}
+        if scope["type"] == "http":
+            origin = next((v.decode("latin-1") for k, v in headers if k.lower() == b"origin"),
+                          None)
+            ctx = self.owner.state.ctx
+            refused = await run_in_threadpool(
+                qa_origin_refused, ctx.settings, getattr(ctx.authenticator, "iap", None),
+                method=str(scope.get("method") or ""), origin=origin, assertion=assertion)
+            if refused:
+                log.info("qa identity write refused: origin %s",
+                         "absent" if origin is None else "not the console's")
+                refusal = QaIdentityOrigin(QA_ORIGIN_MESSAGE)
+                response = JSONResponse(status_code=refusal.status_code,
+                                        content=refusal.to_payload())
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+def _scrub_values(request: Request) -> list[str]:
+    """Every value, and every long piece of one, of the scrubbed headers this
+    request carried, longest first so a whole value goes before its parts."""
+    values = (request.scope.get("state") or {}).get(SCRUB_STATE)
+    if values is None:
+        values = tuple(v for k, v in request.headers.items()
+                       if k.lower().encode("latin-1") in SCRUBBED_HEADERS)
+    found: set[str] = set()
+    for value in values:
+        value = value.strip()
+        if len(value) >= _MIN_PIECE:
+            found.add(value)
+        for piece in re.split(r"[\s,;]+", value):
+            if len(piece) >= _MIN_PIECE:
+                found.add(piece)
+            for segment in re.split(r"[.=]", piece):
+                if len(segment) >= _MIN_SEGMENT:
+                    found.add(segment)
+    return sorted(found, key=len, reverse=True)
+
+
+def scrub(content: Any, values: list[str]) -> Any:
+    """`content` with every one of `values` replaced by "[redacted]", through
+    dicts and lists. swarm-api never echoes a request header (§4.3): no route
+    does today (the audit is in QI-API's pull request), and this holds every
+    later route's error page to it."""
+    if not values:
+        return content
+    if isinstance(content, str):
+        for value in values:
+            content = content.replace(value, REDACTED)
+        return content
+    if isinstance(content, dict):
+        return {scrub(k, values): scrub(v, values) for k, v in content.items()}
+    if isinstance(content, (list, tuple)):
+        return [scrub(v, values) for v in content]
+    return content
 
 
 def _forbidden_field_hint(errors: list[dict[str, Any]]) -> str | None:
@@ -328,6 +469,13 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # Await-input steps (docs/design/human-steps.md §4.6, lane HW-API-ANSWER):
     # a person answers a workflow step; the card and the bridge read it.
     app.include_router(await_input.router)
+    # The QA identity (docs/design/qa-identity.md §4.3, lane QI-API): the
+    # worker's credential, in UNCAPTURED_ROUTES; a member's read of its own
+    # workspace's grant; and the platform admin's grants.
+    app.include_router(qa_identity.router)
+
+    # Inner to `observe`, so a request it refuses is still counted.
+    app.add_middleware(FrontDoor, owner=app)
 
     @app.middleware("http")
     async def observe(request: Request, call_next):
@@ -372,7 +520,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
         if isinstance(exc, Unauthenticated):
             headers["WWW-Authenticate"] = 'Bearer realm="swarm", error="invalid_token"'
         return JSONResponse(
-            status_code=exc.status_code, content=exc.to_payload(), headers=headers
+            status_code=exc.status_code,
+            content=scrub(exc.to_payload(), _scrub_values(request)),
+            headers=headers,
         )
 
     @app.exception_handler(AuthError)
@@ -380,7 +530,8 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
         # Messages from the frozen identity module are token-free by contract.
         return JSONResponse(
             status_code=401,
-            content={"code": "unauthenticated", "message": str(exc)},
+            content=scrub({"code": "unauthenticated", "message": str(exc)},
+                          _scrub_values(request)),
             headers={"WWW-Authenticate": 'Bearer realm="swarm", error="invalid_token"'},
         )
 
@@ -412,7 +563,18 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
             body["detail"]["invariant"] = (
                 "API callers pick a runner_profile BY NAME (CONTRACT.md invariant 10)"
             )
-        return JSONResponse(status_code=422, content=body)
+        return JSONResponse(status_code=422, content=scrub(body, _scrub_values(request)))
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error_handler(request: Request, exc: StarletteHTTPException) -> Any:
+        # FastAPI's own answer (404, 405 and any route's HTTPException), with
+        # its detail scrubbed like every other error page here.
+        scrubbed = StarletteHTTPException(
+            status_code=exc.status_code,
+            detail=scrub(exc.detail, _scrub_values(request)),
+            headers=getattr(exc, "headers", None),
+        )
+        return await http_exception_handler(request, scrubbed)
 
     return app
 
