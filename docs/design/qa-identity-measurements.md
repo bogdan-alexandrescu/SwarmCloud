@@ -4,7 +4,9 @@ The measurements [qa-identity.md](qa-identity.md) §4.9 requires before
 QI-API and QI-GATE are built. Each is dated and comes with the control that
 shows it could have come out the other way. This file records **M3 and M5**,
 which concern only the image's Chromium. M1, M2 and M4 need the QA account and
-are not measured here (last section).
+are not measured here (last section). M3's `Authorization` result was then
+measured again over https, against a public echo with a real certificate
+(["M3 over https"](#m3-over-https-2026-10-20)).
 
 ## The browser, and what could not be measured
 
@@ -24,8 +26,8 @@ the `agent-runtime-browser` image on `claude-code-browser`.**
   harness speaks raw CDP over a stdlib websocket. It sends the messages the
   gate sends (`Target.attachToTarget` flattened, `Fetch.enable`,
   `Fetch.continueRequest`) with no client library in between.
-* **https could not be loaded, so every observation at an echo is over
-  http.** The gate's method policy refuses
+* **https could not be loaded at the loopback echoes, so every observation
+  at them is over http.** (The gap this left is closed below.) The gate's method policy refuses
   `Security.setIgnoreCertificateErrors` ("lets a man-in-the-middle
   certificate pass"), and the image's policy sets
   `SSLErrorOverrideAllowed: false`. Each https navigation to the echoes'
@@ -40,9 +42,13 @@ the `agent-runtime-browser` image on `claude-code-browser`.**
     `livegate/egress.py`), so no proxy took part in either scheme.
 
   Whether Chromium **sends** an added `Authorization` over a TLS connection
-  was not observed. That is the one gap, and it is a question in this
-  lane's PR. The operator's M1 closes it for free: M1 reaches the real
-  console over https with a valid certificate.
+  was not observed by this lane. **That gap is closed**: lane
+  QI-MEASURE-HTTPS (2026-10-20 02:18Z) sent the same `Fetch.continueRequest`
+  from the same live browser to `https://postman-echo.com/headers`, over
+  TLS 1.3 with a publicly trusted certificate, and the echo received
+  `authorization` with the value sent. `Proxy-Authorization` was refused
+  over https exactly as over http. See
+  ["M3 over https"](#m3-over-https-2026-10-20).
 
 The harness (end of this file) reads what each echo received from the
 echo's own server-side log, not from the page. Header values are made at run
@@ -74,8 +80,9 @@ plus the header in the row.
 `Fetch.continueRequest`. It does not drop the header silently, either: it
 refuses the call. A gate that adds the header this way would get a CDP error
 on every console request, and the request would stay paused until something
-continued it. **`Authorization` is accepted and reaches the origin** (over
-http; see above). Under §4.9 the gate therefore uses `Authorization`, and M2
+continued it. **`Authorization` is accepted and reaches the origin**, over
+http here and over https with a real certificate in
+["M3 over https"](#m3-over-https-2026-10-20). Under §4.9 the gate therefore uses `Authorization`, and M2
 must also show that swarm-api ignores an `Authorization` header when an IAP
 assertion is present.
 
@@ -85,6 +92,191 @@ The control could have come out the other way. With the same handler,
 adds nothing. "Unsafe header" appears nowhere in this repository: it is
 Chromium's message, not the gate's. The gate's refusals read "refused by the
 live gate's method policy".
+
+## M3 over https (2026-10-20)
+
+**Measured 2026-10-20 02:18:58Z, lane QI-MEASURE-HTTPS (part of #1649), from
+the same live browser as above: `Chrome/153.0.8010.12`** (`Browser.getVersion`'s
+`product`), reached over CDP at `$SWARM_CDP_ENDPOINT`. It closes the one gap
+QI-MEASURE-CHROMIUM left: whether Chromium sends an added `Authorization`
+over a TLS connection.
+
+**The echo.** `https://postman-echo.com/headers` answers, as JSON, the
+request headers it received. The live browser's egress loaded it, so
+`https://httpbin.org/headers`, the fallback, was not needed and was not
+tried. Every run's main response read, from `Network.responseReceived`:
+status 200, `h2`, `securityState` `secure`, TLS 1.3, certificate subject
+`postman-echo.com`, issuer `YE2`, valid to 2026-12-23. The remote address was
+the echo's own (`162.159.142.41:443`), not a loopback forwarder, so no proxy
+took part and the TLS session ran from Chromium to the echo's front end. The
+certificate is publicly trusted: no certificate error was overridden or
+could have been (see above).
+
+**Sent.** Three runs, each in a new tab, on the same messages as the harness
+below: `Target.attachToTarget` flattened, `Fetch.enable` with one pattern,
+`*`, at the `Request` stage, and a top-level GET of the echo. The one
+`Fetch.requestPaused` was answered with `Fetch.continueRequest`, carrying the
+paused request's headers plus the header in the row. Each run made its own
+value at run time (`"qa-measure-" + secrets.token_hex(8)`, never a
+credential), shown here only as `<value>`.
+
+**Received.** Read from the page's own JSON body, through `Runtime.evaluate`
+on `document.body.innerText`, and compared with that run's value. Each
+request carried these 17 headers, plus whatever the row adds: `accept`,
+`accept-encoding`, `accept-language`, `cookie`, `host`, `if-none-match`,
+`priority`, `sec-ch-ua`, `sec-ch-ua-mobile`, `sec-ch-ua-platform`,
+`sec-fetch-dest`, `sec-fetch-mode`, `sec-fetch-site`, `sec-fetch-user`,
+`upgrade-insecure-requests`, `user-agent` and `x-forwarded-proto`
+(`https`). `cookie` and `if-none-match` are the echo's own, from earlier
+loads in the same browser, and `x-forwarded-proto` is added by the echo's
+front end. Their values are not recorded.
+
+| run | `Fetch.continueRequest` | the echo received |
+|---|---|---|
+| control: nothing added | accepted | the 17 headers; **no `authorization`**, no `proxy-authorization` |
+| `Authorization` added, value `Bearer <value>` | accepted | the 17 headers **plus `authorization`, value `Bearer <value>`**: the same value that was sent |
+| `Proxy-Authorization` added, value `Bearer <value>` | **refused by Chromium: `Unsafe header: Proxy-Authorization`** (the request stays paused) | the request, after the harness continued it unmodified: the 17 headers, **no `proxy-authorization`** |
+
+**The http result holds over TLS.** Chromium 153 sends an `Authorization`
+added by `Fetch.continueRequest` on an https request with a valid
+certificate, unchanged, and refuses `Proxy-Authorization` at the call, with
+the same message as over http. The connection here was HTTP/2 where the
+loopback echoes spoke HTTP/1.1, so the header also survives HTTP/2's
+lower-cased header encoding. M3's answer, and §4.9's consequence (the gate
+uses `Authorization`), stand as recorded above.
+
+The control could have come out the other way. The control run went to the
+same URL, in the same browser, with the same handler, and the echo showed no
+`authorization`, so the header in the second run is the one the harness
+added, not one the browser or the echo supplies. Its value matched the
+run's own value exactly.
+
+**The harness.** `lib.py` is the harness in [The harness](#the-harness)
+below, from `import base64` up to `# ---- the echoes`, followed by its
+section from `# ---- CDP over a stdlib websocket` up to
+`# ---- one measurement`: the imports, the `CDP` class and `browser_ws()`,
+unchanged. The run recorded above is `/opt/venv/bin/python3 https_harness.py
+> out.json`, exit 0, with `lib.py` beside it. Its output, every header value
+masked, is the lane's artifact `qi-measure-https/out.json`. The block
+below, extracted from this file and run again at 02:19:54Z, gave the same
+result in every row.
+
+```python
+"""M3 over https: the doc's raw-CDP harness, against a public echo with a real certificate.
+
+Reuses the CDP class and browser_ws() from docs/design/qa-identity-measurements.md
+(lib.py is extracted verbatim from that file's harness). Each run opens a new tab,
+attaches flattened, Fetch.enable '*' at the Request stage, and answers the
+top-level request's pause with Fetch.continueRequest carrying the paused
+request's headers plus the one added header. What the echo received is read
+from the page's own JSON body (Runtime.evaluate on document.body.innerText).
+Every run has its own value, made at run time; it is not a credential.
+"""
+exec(open(__file__.rsplit("/", 1)[0] + "/lib.py").read())  # the doc harness's imports, CDP, browser_ws()
+
+TARGETS = ["https://postman-echo.com/headers", "https://httpbin.org/headers"]
+
+
+def run(cdp, url, header=None):
+    value = "qa-measure-" + secrets.token_hex(8)
+    target = cdp.call("Target.createTarget", {"url": "about:blank"})["targetId"]
+    session = cdp.call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
+    paused, continued, outcome, tls = [], {}, None, None
+    try:
+        cdp.call("Page.enable", session=session)
+        cdp.call("Runtime.enable", session=session)
+        cdp.call("Network.enable", session=session)
+        cdp.call("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]},
+                 session=session)
+        nav_id = cdp.post("Page.navigate", {"url": url}, session)
+        deadline = time.time() + 30
+        while outcome is None and time.time() < deadline:
+            try:
+                msg = cdp.next_message(deadline)
+            except socket.timeout:
+                break
+            if msg.get("id") in continued:
+                entry, request_id = continued.pop(msg["id"])
+                if "error" in msg:
+                    entry["continue_refused"] = msg["error"].get("message")
+                    retry = cdp.post("Fetch.continueRequest", {"requestId": request_id}, session)
+                    continued[retry] = ({"url": entry["url"], "action": "retry unmodified"}, request_id)
+                    paused.append(continued[retry][0])
+                else:
+                    entry["continue_result"] = "ok"
+                continue
+            if msg.get("id") == nav_id:
+                if "error" in msg or msg.get("result", {}).get("errorText"):
+                    outcome = msg.get("error", msg.get("result", {}).get("errorText"))
+                continue
+            if msg.get("sessionId") != session or "method" not in msg:
+                continue
+            if msg["method"] == "Network.responseReceived" and msg["params"]["response"]["url"] == url:
+                r = msg["params"]["response"]
+                sd = r.get("securityDetails") or {}
+                tls = {"status": r.get("status"), "protocol": r.get("protocol"),
+                       "security_state": r.get("securityState"),
+                       "remote": f"{r.get('remoteIPAddress')}:{r.get('remotePort')}",
+                       "tls_protocol": sd.get("protocol"), "subject": sd.get("subjectName"),
+                       "issuer": sd.get("issuer"),
+                       "valid_to": time.strftime("%Y-%m-%d", time.gmtime(sd["validTo"])) if sd.get("validTo") else None}
+            elif msg["method"] == "Page.loadEventFired":
+                outcome = "loaded"
+            elif msg["method"] == "Fetch.requestPaused":
+                ev = msg["params"]
+                req = ev["request"]
+                entry = {"url": req["url"], "redirect": "redirectedRequestId" in ev,
+                         "header_names_at_pause": sorted(k.lower() for k in req["headers"]),
+                         "action": "continued unmodified"}
+                params = {"requestId": ev["requestId"]}
+                if header and req["url"] == url and "redirectedRequestId" not in ev:
+                    params["headers"] = [{"name": k, "value": v} for k, v in req["headers"].items()]
+                    params["headers"].append({"name": header, "value": "Bearer " + value})
+                    entry["action"] = f"continued with {header} added"
+                paused.append(entry)
+                continued[cdp.post("Fetch.continueRequest", params, session)] = (entry, ev["requestId"])
+        body = cdp.call("Runtime.evaluate", {"expression": "document.body ? document.body.innerText : ''",
+                                             "returnByValue": True}, session=session)
+        text = body.get("result", {}).get("value", "")
+        href = cdp.call("Runtime.evaluate", {"expression": "location.href", "returnByValue": True},
+                        session=session).get("result", {}).get("value")
+    finally:
+        cdp.call("Target.closeTarget", {"targetId": target})
+    try:
+        got = {k.lower(): v for k, v in json.loads(text)["headers"].items()}
+        # Names only: a value is shown as <value> when it is this run's value,
+        # and as "..." otherwise (the echo's own cookies are not recorded).
+        received = {k: ("<value>" if value in v else "...") for k, v in got.items()}
+        parse = "ok"
+    except (ValueError, KeyError, TypeError) as exc:
+        got, received, parse = {}, {}, f"not JSON: {exc}; first 200 chars: {text[:200]!r}"
+    result = {"get": url, "final_url": href, "header_added": header, "outcome": outcome, "response": tls,
+              "fetch_paused": paused, "body_parse": parse,
+              "echo_received_names": sorted(received), "echo_received": received}
+    for name in ("authorization", "proxy-authorization"):
+        result[f"echo_got_{name}"] = name in got
+        result[f"echo_{name}_is_bearer_value"] = got.get(name) == "Bearer " + value
+    return result
+
+
+ws, how, proc = browser_ws()
+cdp = CDP(ws)
+try:
+    version = cdp.call("Browser.getVersion")
+    out = {"browser": how, "product": version.get("product"),
+           "measured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "targets": {}}
+    for url in TARGETS:
+        t = {"control": run(cdp, url)}
+        out["targets"][url] = t
+        if t["control"]["outcome"] != "loaded" or t["control"]["body_parse"] != "ok":
+            continue
+        t["authorization"] = run(cdp, url, "Authorization")
+        t["proxy_authorization"] = run(cdp, url, "Proxy-Authorization")
+        break
+finally:
+    cdp.sock.close()
+json.dump(out, sys.stdout, indent=2)
+```
 
 ## M5: does an added header follow a cross-origin redirect? (2026-10-20)
 
@@ -540,8 +732,8 @@ Two things from the measurements above change what the operator measures:
   things: that swarm-api ignores an `Authorization` header when an IAP
   assertion is present (§4.9, M3), and whether IAP passes the header
   through, which decides the audit of routes that echo a request.
-* **M1's first request also closes the https gap above.** It is an https
-  request with a valid certificate. If the operator sends it from the
-  image's Chromium, with the header added by `Fetch.continueRequest` as the
-  gate will add it, a 200 shows that Chromium sends an added `Authorization`
-  over TLS.
+* **The https gap no longer waits on M1.** ["M3 over https"](#m3-over-https-2026-10-20)
+  shows the image's Chromium sends an `Authorization` added by
+  `Fetch.continueRequest` over TLS with a valid certificate. M1's first
+  request still shows it against the console's own front door, where IAP,
+  not an echo, is what reads the header.
