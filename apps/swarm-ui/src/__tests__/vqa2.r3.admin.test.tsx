@@ -297,12 +297,12 @@ describe('V160: a pool id segment longer than the line wraps inside the card', (
   })
 })
 
-describe('V190: the configured dot says what it means to a mouse', () => {
+describe('V190: configured says what it means to a mouse', () => {
   it('carries its own title, with the word and the sentence', async () => {
     viewport(1440)
     await limits([pool('global', { hard_limit: 20, effective_limit: 20 })])
     const dot = document.querySelector('#limit-global td[data-label="Set by"] .adm-setby-cfg')!
-    expect(dot.getAttribute('aria-label')).toBe('configured')
+    expect(dot.textContent).toBe('configured')
     // MUTATION: drop the span's `title`.
     expect(dot.getAttribute('title')).toBe('configured. The configured hard limit of 20 is what applies.')
     expect(won(dot, 'cursor', WIDE)).toBe('help')

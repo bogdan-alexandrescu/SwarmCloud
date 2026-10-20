@@ -90,7 +90,8 @@ describe('QA-049: the partial mark draws its dashed edge straight', () => {
     const fact = [...document.querySelectorAll('.ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'unread docs')!
     const mark = fact.querySelector<HTMLElement>('.ctl-mark.is-partial')!
     expect(mark.textContent).toBe('partial')
-    expect(painted(mark, 'border-right-style', WIDE)).toBe('dashed')
+    // Solid and transparent since run 2: the dashes are drawn over it (below).
+    expect(painted(mark, 'border-right-style', WIDE)).toBe('solid')
     // MUTATION: drop `border-top-right-radius: 0` / `border-bottom-right-radius: 0`
     // from `.acct-page .ctl-mark.is-partial` (styles/capacity.css), or the
     // `acct-page` wrapper in Accounts.tsx -- the dashes run round the mark's rounded
@@ -161,5 +162,40 @@ describe('QA-051: a window that already reset reads `cleared`, not `clears clear
     // MUTATION: drop `clears ` for every value -- a countdown loses its label.
     const live = lines.find((l) => l !== reset && /\dh|\dm/.test(l.textContent ?? ''))!
     expect(live.textContent).toMatch(/^clears \d/)
+  })
+})
+
+// QAFIX2-CAPACITY (visual QA run 2, wf_b6e2441b419f423a84eb, capacity-003):
+// squared, the dashed side still drew as one tick at the top and one at the
+// bottom. A browser fits a dashed border's pattern to the edge so that it
+// starts and ends on a dash; a 2px dash pattern is ~6px long, and on a mark
+// 19px tall that leaves two dashes and one gap -- the "cut" the run saw.
+describe('QA-049 (run 2): the partial mark\'s dashed side on Accounts is a rule of even dashes', () => {
+  it('draws the right edge as a 2px-on, 2px-off pattern down the mark\'s full height', async () => {
+    await mount([account({ stale: true, observed_at: new Date(Date.now() - 3 * 86_400_000).toISOString() })], 1)
+    const marks = [...document.querySelectorAll<HTMLElement>('.acct-page .ctl-mark.is-partial')]
+    // `unread docs` in the footer and `last read 3d ago` in the detail pane.
+    expect(marks.length, 'no partial marks on Accounts').toBeGreaterThanOrEqual(2)
+    for (const mark of marks) {
+      // MUTATION: leave the right border dashed in currentColor -- the browser's
+      // own dash fitting draws it as two ticks with a gap between again.
+      expect(painted(mark, ['border-right-color', 'border-right', 'border-color', 'border'], WIDE)).toBe('transparent')
+      // MUTATION: drop the gradient -- the mark loses its dashed side, and
+      // with it the shape that says "partial" in greyscale.
+      expect(painted(mark, ['background-image', 'background'], WIDE)).toBe(
+        'repeating-linear-gradient(to bottom, currentColor 0 2px, transparent 2px 4px)',
+      )
+      // MUTATION: size it `100% 100%` -- the dashes fill the mark, under the word.
+      expect(painted(mark, ['background-size', 'background'], WIDE)).toBe('2px 100%')
+      expect(painted(mark, ['background-position', 'background'], WIDE)).toBe('right top')
+      expect(painted(mark, ['background-repeat', 'background'], WIDE)).toBe('no-repeat')
+      // MUTATION: let it default to `padding-box` -- the strip is drawn inside
+      // the transparent border instead of on it, and the edge is blank.
+      expect(painted(mark, ['background-origin', 'background'], WIDE)).toBe('border-box')
+      expect(painted(mark, ['border-right-width', 'border-right', 'border-width', 'border'], WIDE)).toBe('2px')
+    }
+    // A 12px mark at line-height 1.45 with 1px top and bottom borders is ~19px:
+    // a 4px period draws four whole dashes down it, never two.
+    expect(Math.floor((12 * 1.45 + 2) / 4)).toBeGreaterThanOrEqual(4)
   })
 })

@@ -8,7 +8,8 @@
 //           (`Admins only…`) could not be reached by keyboard
 //   QA-043  the phone card's Last changed wrapped to a line starting `· 40 → 20`
 //   QA-045  In use and Ceiling drew their figures in two faces, two alignments
-//   QA-099  `configured` was a 3px `·` a sighted reader took for an empty cell
+//   QA-099  `configured` was a 3px `·`, then a 6px disc, with no word a sighted
+//           reader could read (run 2): it is now the word, in the dim ink
 //   QA-042  `Platform counts` and `Absent, zero, unread and stale` read as one link
 //   QA-098  `Platform ticks` sat 18px under the cards with nothing marking a
 //           change of subject
@@ -223,26 +224,32 @@ describe('QA-045: In use and Ceiling draw their figures alike', () => {
   })
 })
 
-describe('QA-099: `configured` is a mark a sighted reader can see', () => {
-  it('draws a 6px disc in the dim ink in place of the glyph, named for a screen reader', async () => {
+// QAFIX2-CAPACITY (visual QA run 2, wf_b6e2441b419f423a84eb, admin-010): the
+// 6px disc PR 1707 drew was still a mark with no word, legend or tooltip a
+// sighted reader could find, beside `AIMD back-off` in words.
+describe('QA-099 (run 2): `configured` is a word a sighted reader can read', () => {
+  it('prints `configured` in the Set by cell, quieter than the overrides in ink', async () => {
     viewport(1440)
-    await limits([pool('global')])
-    const dot = document.querySelector('#limit-global td[data-label="Set by"] .adm-setby-cfg')!
-    expect(screen.getByRole('img', { name: 'configured' })).toBe(dot)
-    // The glyph stays in the text, as Pools' dot has it (qa.c6d.pools), but
-    // the mark a reader sees is the drawn disc.
-    expect(dot.textContent).toBe('·')
+    await limits([pool('global'), pool('runner:eng', { hard_limit: 20, adaptive_target: 10, effective_limit: 10 })])
+    const cell = document.querySelector('#limit-global td[data-label="Set by"]')!
+    // MUTATION: put the disc back (`·` at size 0) -- the cell reads as empty.
+    expect(cell.textContent).toBe('configured')
+    const word = cell.querySelector<HTMLElement>('.adm-setby-cfg')!
+    expect(word.getAttribute('role'), 'a word is text, not an image').toBeNull()
     for (const env of [WIDE, PHONE]) {
-      // MUTATION: leave the glyph at the cell's size: a 3px `·` over the disc.
-      expect(painted(dot, 'font-size', env)).toBe('0')
-      // MUTATION: put the `·` glyph back as the only mark: no box is drawn.
-      expect(painted(dot, 'display', env)).toBe('inline-block')
-      expect(painted(dot, 'width', env)).toBe('6px')
-      expect(painted(dot, 'height', env)).toBe('6px')
-      expect(painted(dot, 'border-radius', env)).toBe('50%')
+      // MUTATION: keep `font-size: 0` from the disc -- the word is there and unseen.
+      expect(painted(word, 'font-size', env)).not.toBe('0')
+      expect(painted(word, 'width', env)).toBeNull()
       // MUTATION: paint it `--text-faint`, the tone that read as nothing.
-      expect(painted(dot, ['background-color', 'background'], env)).toBe('var(--text-dim)')
+      expect(painted(word, 'color', env)).toBe('var(--text-dim)')
+      expect(painted(word, ['background-color', 'background'], env)).toBeNull()
     }
+    // The override stays the one in ink.
+    const aimd = [...document.querySelectorAll('td[data-label="Set by"]')].find((c) => c.textContent === 'AIMD back-off')
+    // MUTATION: drop the AIMD branch of setBy -- this row reads `configured` too.
+    expect(aimd?.textContent).toBe('AIMD back-off')
+    // MUTATION: drop the word's title -- a mouse learns nothing about why.
+    expect(word.getAttribute('title')).toBe('configured. The configured hard limit of 20 is what applies.')
   })
 })
 

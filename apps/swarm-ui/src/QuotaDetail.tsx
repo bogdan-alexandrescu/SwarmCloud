@@ -1,3 +1,5 @@
+import { Fragment } from 'react'
+
 import { loadAdminQuota } from './api'
 import { QUOTA_POLL_MS, capacityPoll, poolHref, tableMode, usePhoneTables } from './capacityPoll'
 import type { TopicId } from './help'
@@ -267,7 +269,7 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
           admission enforces, of the same age as the cap. */}
       <td role="cell" data-label={FEEDS_POOL} className="quota-feeds">
         <a className="ctl-link mono" href={poolHref('capacity/pools', pool)} title={pool} aria-label={pool}>
-          <MiddleCut text={pool} tail={poolTail(pool)} keep={8} />
+          <PoolName pool={pool} />
         </a>
         <PoolCeiling q={q} />
       </td>
@@ -317,26 +319,17 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
 
 /**
  * AN ID CUT IN THE MIDDLE, NEVER AT ITS END (visual QA V005, V020;
- * 2026-10-11). The Feeds pool link was end-truncated, so
- * `provider:anthropic:tenant:…` hid the tenant -- the one part that differs
- * row to row -- and a long tenant id in the row head printed over State. The
- * console cuts ids in the middle elsewhere (TaskRef's `task_…` and the last
- * eight); here the head shrinks first and the tail is kept, as two boxes of
- * one line: the head gives way and the tail does not, so only a tail wider
- * than the whole column is cut itself. The whole id is the cell's title, and
- * the text is unchanged for a copy. The two boxes are flex items, which an
- * accessible-name walk joins with a space (`u-bogdan- research`), so the
- * element that holds a cut id names itself with the whole id (`aria-label`).
+ * 2026-10-11): the tenant row head. A long tenant id printed over State;
+ * here the head shrinks first and the tail -- the id's last eight, as
+ * TaskRef keeps a task's -- does not, as two boxes of one line, so only a
+ * tail wider than the whole column is cut itself. The whole id is the
+ * cell's title, and the text is unchanged for a copy. The two boxes are flex
+ * items, which an accessible-name walk joins with a space (`u-bogdan-
+ * research`), so the element that holds a cut id names itself with the
+ * whole id (`aria-label`).
  */
-function MiddleCut({ text, tail, keep }: { text: string; tail: number; keep?: number }) {
+function MiddleCut({ text, tail }: { text: string; tail: number }) {
   const cut = Math.max(0, text.length - tail)
-  const rest = text.slice(cut)
-  // THE TAIL IS CUT IN ITS OWN MIDDLE TOO (visual QA V020, 2026-10-16). A
-  // pool's tail is `tenant:<id>`, and a long id made the tail alone wider
-  // than the column: it was end-cut, `tenant:customer-succes…`, the one part
-  // that differs row to row lost. `keep` holds the id's last characters, so
-  // the tail gives way in its middle once the head is gone.
-  const end = keep === undefined ? 0 : Math.min(keep, Math.max(0, rest.length - 'tenant:'.length))
   return (
     <span className="quota-cut">
       {cut > 0 && (
@@ -344,22 +337,44 @@ function MiddleCut({ text, tail, keep }: { text: string; tail: number; keep?: nu
           <span>{text.slice(0, cut)}</span>
         </span>
       )}
-      {end === 0 ? (
-        <span className="quota-cut-tail">{rest}</span>
-      ) : (
-        <span className="quota-cut-tail is-split">
-          <span className="quota-cut-mid">{rest.slice(0, rest.length - end)}</span>
-          <span className="quota-cut-end">{rest.slice(rest.length - end)}</span>
-        </span>
-      )}
+      <span className="quota-cut-tail">{text.slice(cut)}</span>
     </span>
   )
 }
 
-/** The pool's tail is its `tenant:<id>` -- what differs between rows. */
-function poolTail(pool: string): number {
-  const at = pool.lastIndexOf('tenant:')
-  return at === -1 ? Math.min(pool.length, 12) : pool.length - at
+/**
+ * THE FEEDS POOL NAME IS PRINTED WHOLE, BROKEN ONLY AT ITS COLONS (visual QA
+ * QA-057, run 2, 2026-10-20). It was cut in the middle (V020), and at 1440
+ * with the nav open -- a ~1054px table, every other column as wide as what
+ * it holds -- the column is ~160px, so the cut always ran: run 1 saw
+ * `…anthropic:tenant:eng`, and run 2, after the slack went to this column,
+ * still `…opic:tenant:eng`, and `…:ten… u-bogdan` once the tail split too:
+ * two ellipses, and the slack of a cut box as a stray space. There is no
+ * width to find for it at 1440: `provider:anthropic:tenant:u-bogdan` is
+ * ~265px of mono. So the name wraps instead, the way Pool limits' row heads
+ * do (`keyBreaks`, AdminSettings.tsx): a `<wbr>` after each colon is its
+ * break, each segment is one run that does not split at a hyphen while it
+ * fits a line (`.quota-pool-seg`, styles/capacity.css), and the text is the
+ * pool's exactly, for a copy and for the link's name.
+ */
+function PoolName({ pool }: { pool: string }) {
+  const parts = pool.split(':')
+  return (
+    <>
+      {parts.map((part, i) =>
+        i < parts.length - 1 ? (
+          <Fragment key={i}>
+            <span className="quota-pool-seg">{`${part}:`}</span>
+            <wbr />
+          </Fragment>
+        ) : (
+          <span className="quota-pool-seg" key={i}>
+            {part}
+          </span>
+        ),
+      )}
+    </>
+  )
 }
 
 /** A tenant id keeps its last eight, as a task reference does. */
