@@ -135,7 +135,8 @@ describe('both Submit forms pick a runner from the same picker', () => {
     expect(visible(row(container, 'mock').querySelector('.sbf-runner-room'))).toBe('15 more can start now')
     expect(visible(row(container, 'mock').querySelector('.sbf-runner-key'))).toBe('no key needed')
     const codex = row(container, 'codex')
-    expect(visible(codex.querySelector('.sbf-runner-key'))).toBe('openai key missing')
+    // A refused runner names no key (visual QA QA-105): its reason is the one line.
+    expect(codex.querySelector('.sbf-runner-key')).toBeNull()
     expect(codex.querySelector('input')!.disabled).toBe(true)
     expect(visible(codex.querySelector('.sbf-runner-off'))).toMatch(/Use claude-code/)
   })

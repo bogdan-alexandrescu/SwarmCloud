@@ -447,7 +447,10 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
               <b>tenant</b>
               {tenant === null ? <i className="ctl-em">&mdash; not served</i> : <code>{tenant}</code>}
             </li>
-            <li className="ctl-fact">
+            {/* UNDER ITS KEY, NOT BESIDE IT (visual QA QA-073): the longest
+                value in the card wrapped into a right-aligned column beside
+                "lands as". `in-fact-long` stacks it, left-aligned. */}
+            <li className="ctl-fact in-fact-long">
               <b>lands as</b>
               {approval === 'required'
                 ? 'PLANNING, then PLANNED · a planned run holds no capacity'
