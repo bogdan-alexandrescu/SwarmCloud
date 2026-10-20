@@ -260,14 +260,20 @@
    content (the widths above, as the percentages gave them at 1054), Tenant
    keeps its share, and Feeds pool sets no width: a fixed table gives an auto
    column what is left. At 1054 that is ~160px, what its 15% was; at ~1300 it
-   is ~400px, the whole of `provider:anthropic:tenant:u-bogdan`. */
+   is ~400px, the whole of `provider:anthropic:tenant:u-bogdan`.
+   EACH PX WIDTH IS CAPPED AT ITS OLD SHARE (`min(Npx, N%)`, QA-057 review).
+   In bare px the bounded columns are 724px: a 1280px viewport with the nav
+   open (a ~894px table) left Feeds pool ~27px, and below ~1250px the fixed
+   table outgrew its card and pushed Reported past its edge -- the regression
+   V005/V013 exist to prevent. Capped, a table narrower than 1054 gives every
+   column its old percentage again, so Feeds pool never has less than 15%. */
 .quota-table col.quota-c-tenant { width: 16%; }
-.quota-table col.quota-c-state { width: 168px; }
-.quota-table col.quota-c-cap { width: 116px; }
-.quota-table col.quota-c-left { width: 104px; }
-.quota-table col.quota-c-429s { width: 124px; }
-.quota-table col.quota-c-last { width: 136px; }
-.quota-table col.quota-c-rep { width: 76px; }
+.quota-table col.quota-c-state { width: min(168px, 16%); }
+.quota-table col.quota-c-cap { width: min(116px, 11%); }
+.quota-table col.quota-c-left { width: min(104px, 10%); }
+.quota-table col.quota-c-429s { width: min(124px, 12%); }
+.quota-table col.quota-c-last { width: min(136px, 13%); }
+.quota-table col.quota-c-rep { width: min(76px, 7%); }
 .quota-table thead th { white-space: normal; }
 .quota-feeds a {
   display: block;
