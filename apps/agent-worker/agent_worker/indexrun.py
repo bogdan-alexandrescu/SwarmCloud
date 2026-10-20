@@ -18,8 +18,9 @@ runs them, in this order, around the agent:
                                     --index <artifacts>/repo-index.json ...
     index_sweep    swarm-repo-graph sweep --keep-commit <sha> ... (best effort)
 
-Each with its own timeout (`budgets`), sized to the task's own timeout -- 30
-minutes for a full run (`swarm_api.repoindex.FULL_TIMEOUT_SECONDS`) -- and
+Each with its own timeout (`budgets`), sized to the task's own timeout --
+which swarm-api sizes to the repository (`swarm_api.repoindex.
+index_timeout_seconds`: 30, 60 or 120 minutes for a full run) -- and
 each phase's duration is recorded (`PhaseRecord`), in the step's
 `result_summary` and in `work/repo-index.phases.json`, where the agent can
 read why the extractor did not run when it did not.
@@ -149,6 +150,14 @@ BASE_LINE = "swarm-index-base: "
 #: (`swarm_api.repoindex.KEEP_LINE`): a line of its own, the prefix and
 #: space-separated 40-hex shas. Signed, like BASE_LINE; see the module doc.
 KEEP_LINE = "swarm-index-keep: "
+#: The prompt line that names what each language server cost in the previous
+#: full run (`swarm_api.repoindex.LSP_COST_LINE`; lane INDEX-BUDGETS, part of
+#: #1693): space-separated `server=seconds`. Signed, like BASE_LINE; passed
+#: to the extractor as `--lsp-server-cost`, whose LSP pass grants each server
+#: its share of the total in proportion (lsp/driver.py, `planned_needs`).
+LSP_COST_LINE = "swarm-index-lsp-cost: "
+#: The most seconds one cost may name: more than any index run's timeout.
+MAX_LSP_COST_SECONDS = 86_400
 #: A base index larger than the index's own bound (§2.2) is not one swarm-api promoted.
 MAX_BASE_INDEX_BYTES = 512 * 1024
 
@@ -299,8 +308,11 @@ def budgets(timeout_seconds: int, *, base_graph_bytes: int | None = None) -> Bud
 
     1,800 s (a full run) gives 720 s to extract, 540 s of it to the LSP
     pass, and 180 s reserved for the graph write and 90 s for the sweep
-    after it: the agent has at least the 810 s between. Never more than the
-    task has. The base read is sized from
+    after it: the agent has at least the 810 s between. Every share follows
+    the timeout, so the larger runs swarm-api gives larger repositories
+    (lane INDEX-BUDGETS, #1693) give the LSP pass 1,260 s of 3,600 and
+    2,700 s of 7,200 -- the time pyright ran out of on ai-studio. Never more
+    than the task has. The base read is sized from
     `base_graph_bytes` (`base_graph_bytes()`), up to half the extractor's
     budget, which is also what an unknown size gets.
     """
@@ -390,7 +402,8 @@ def phase_env(*, home: Path, tmp: Path, tenant_id: str, bucket: str) -> dict[str
 
 
 def extractor_argv(
-    program: str, *, checkout: Path, work: Path, lsp_total: int, base_sha: str | None = None
+    program: str, *, checkout: Path, work: Path, lsp_total: int, base_sha: str | None = None,
+    lsp_costs: Mapping[str, int] | None = None,
 ) -> list[str]:
     argv = [
         program, "--repo", str(checkout), "--out", str(work / EXTRACT_FILE),
@@ -400,6 +413,8 @@ def extractor_argv(
     if base_sha is not None:
         argv += ["--base-sha", base_sha, "--base-index", str(work / BASE_INDEX_FILE),
                  "--base-graph", str(work / BASE_GRAPH_FILE)]
+    for server, seconds in sorted((lsp_costs or {}).items()):
+        argv += ["--lsp-server-cost", f"{server}={seconds}"]
     return argv
 
 
@@ -468,6 +483,34 @@ def requested_base(task_input: Any) -> str | None:
         return None
     found = set(_BASE_LINE.findall(prompt))
     return found.pop() if len(found) == 1 else None
+
+
+_LSP_COST_LINE = re.compile(r"^" + re.escape(LSP_COST_LINE) + r"(.*)$", re.MULTILINE)
+_LSP_COST = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]{0,39})=([1-9][0-9]{0,4})$")
+
+
+def lsp_costs(task_input: Any) -> dict[str, int] | None:
+    """What each server cost in the previous full run, from the SIGNED prompt's
+    one `LSP_COST_LINE`; None -- and so the equal split -- when there is no
+    line, two, or any pair that is not a server name and whole seconds named
+    once. A malformed line is not partly believed: it was not written by
+    `swarm_api.repoindex.indexer_prompt`."""
+    prompt = task_input.get("prompt") if isinstance(task_input, Mapping) else None
+    if not isinstance(prompt, str):
+        return None
+    found = _LSP_COST_LINE.findall(prompt)
+    if len(found) != 1:
+        return None
+    costs: dict[str, int] = {}
+    for pair in found[0].split():
+        match = _LSP_COST.match(pair)
+        if match is None or match.group(1) in costs:
+            return None
+        seconds = int(match.group(2))
+        if seconds > MAX_LSP_COST_SECONDS:
+            return None
+        costs[match.group(1)] = seconds
+    return costs or None
 
 
 # --------------------------------------------------------------------------
@@ -715,9 +758,10 @@ def last_line(path: Path, limit: int = 300) -> str | None:
 __all__ = [
     "BASE_GRAPH_FILE", "BASE_INDEX_FILE", "BaseVersion", "Budgets", "EXTRACTOR_COMMAND",
     "EXTRACT_FILE", "GRAPH_FILE", "GRAPH_WRITER_COMMAND", "INDEXER_PROFILE", "INDEX_FILE",
-    "KEEP_LINE", "MAX_BASE_INDEX_BYTES", "PHASES_FILE", "PhaseRecord", "SWEEP_PHASE", "Target",
+    "KEEP_LINE", "LSP_COST_LINE", "MAX_BASE_INDEX_BYTES", "MAX_LSP_COST_SECONDS", "PHASES_FILE", "PhaseRecord", "SWEEP_PHASE", "Target",
     "base_graph_bytes", "budgets", "content_digest", "extractor_argv", "graph_read_argv",
-    "graph_write_argv", "is_index_run", "kept_commits", "last_line", "phase_env", "repo_id_for",
+    "graph_write_argv", "is_index_run", "kept_commits", "last_line", "lsp_costs", "phase_env",
+    "repo_id_for",
     "requested_base", "resolve", "resolve_base", "sweep_argv", "sweep_refusal",
     "sweep_retention", "target",
     "write_phases",

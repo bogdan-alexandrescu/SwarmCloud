@@ -15,8 +15,9 @@ from .client import (BudgetExceeded, LspClient, LspError, RequestTimeout, Server
 from .driver import (LSP_DECLARED, LSP_INFERRED, NO_SERVER_REASON, STATUS_FAILING, STATUS_OK,
                      STATUS_PARTIAL, STATUS_TIMED_OUT, STATUS_UNSUPPORTED, LanguageResult, LspEdge,
                      LspOptions,
-                     PassResult, Site, default_memory_limit_mib, run_pass, server_budget_seconds,
-                     simple_name, total_budget_seconds)
+                     PassResult, Site, default_memory_limit_mib, grant_seconds, measured_cost,
+                     planned_needs, run_pass, server_budget_seconds, simple_name,
+                     total_budget_seconds)
 from .servers import DEFAULT_BIN_DIR, DISABLED_SERVERS, SERVERS, ServerSpec
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "LspClient", "LspEdge", "LspError", "LspOptions", "NO_SERVER_REASON", "PassResult",
     "RequestTimeout", "SERVERS", "STATUS_FAILING", "STATUS_OK", "STATUS_PARTIAL", "STATUS_TIMED_OUT",
     "STATUS_UNSUPPORTED", "ServerError", "ServerExited", "ServerSpec", "Site",
-    "default_memory_limit_mib", "run_pass", "server_budget_seconds", "session_rss_bytes",
+    "default_memory_limit_mib", "grant_seconds", "measured_cost", "planned_needs", "run_pass",
+    "server_budget_seconds", "session_rss_bytes",
     "simple_name", "total_budget_seconds",
 ]
