@@ -1138,7 +1138,7 @@ on what produces them.
 **Why `flow-submit-form` ran 45 minutes.** Read on 2026-10-20 from the
 attempt's own artifacts, `gs://swarm-artifacts-saga-agents-staging/tenants/eng/tasks/task_cfe142a3ee35418abcdb/attempts/att_d1b50da5a215417d93f7/`
 (`claude-code.stdout.log`, and the gate's `live/actions-*.live.jsonl`); the
-API's task read answered 401 to this lane. The flow never reached the form:
+API's task-document read answered 401 to this lane. The flow never reached the form:
 
 1. At 11:28:34Z the agent ran `swarm-handoff device desktop; swarm-handoff
    record start flow-submit-form-desktop`, and in the same second

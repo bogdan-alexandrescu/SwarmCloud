@@ -34,7 +34,7 @@ What the design settles, in one line each:
   code (§4).
 * **The size is pinned at admission.** The scheduler reads the current
   version, charges units from it, records it on the attempt, and renders the
-  pod from that record. A running task keeps the size it was admitted with
+  pod from that record. A running agent keeps the size it was admitted with
   (§4.4).
 * **Cloud Run-backed profiles do not follow the setting and cannot burst**
   (§3, §4.7).
@@ -79,7 +79,7 @@ reason to move it.
    console — today it is a frozen-contract change, a pull request and a
    release — sees the units and the cost it implies before saving, and can
    see who changed what, when and why, and restore an earlier version.
-3. The next admission follows the change; a running task is untouched.
+3. The next admission follows the change; a running agent is untouched.
 
 ---
 
@@ -141,7 +141,7 @@ other two).
 * **Cloud Run** (`CloudRunJobDispatcher._build_job`): `limits` only, `cpu`
   and `memory`; "the platform never sets a request below the limit, so
   requests == limits holds." Cloud Run pins resources on the **Job**
-  resource; a `RunJobRequest`'s overrides carry arguments, environment, task
+  resource; a `RunJobRequest`'s overrides carry arguments, environment, Cloud Run task
   count and timeout, never resources. That is why `job_id_for` gives a step
   that named a smaller class a Job of its own
   (`swarm-job-<tenant>-<profile>-<class>`).
@@ -177,9 +177,9 @@ Throttling (`cpu.stat` `nr_throttled`, `throttled_usec`) is LIVE-UTIL's.
 ### 2.1 The invariants it touches
 
 **1 — only LEASED/DISPATCHED/STARTING/RUNNING create demand.** Preserved.
-Nothing here creates a pod or a Job for a task that is not leased. A size
+Nothing here creates a pod or a Job for an agent that is not leased. A size
 change writes two Firestore documents and nothing else; it does not touch a
-queued, parked or ready task, which costs nothing before and after. A size
+queued, parked or ready agent, which costs nothing before and after. A size
 version is read at admission, the moment demand begins.
 
 **2 — all-or-nothing reservation in one transaction.** Preserved, untouched.
@@ -241,7 +241,7 @@ name**; no route accepts a CPU, a memory figure or a limit from a caller.
 
 and this container has no kubeconfig context at all (`kubectl config
 get-contexts` lists none), so the pinned kubectl (`kubectl_bin`, v1.36.5
-here) had nothing to read through. That is a real block: the task's
+here) had nothing to read through. That is a real block: the agent's
 identity is the `eng` worker account, which correctly cannot read the
 cluster. The fix round of the same day retried both reads with the same
 result (403 on the describe; `kubectl_bin` resolved, `get-contexts` empty).
@@ -631,8 +631,8 @@ In `apps/scheduler/scheduler/loop.py`, the admission path becomes:
 
 1. Once per drain pass, `sizes.current(store)` reads the pointer and its
    version, validates it, and caches it for the pass. (One `get` of two
-   documents; the drain loop already reads every READY task.)
-2. For a task, `sized = sizes.for_task(version, task, profile, backend)`:
+   documents; the drain loop already reads every READY agent.)
+2. For an agent, `sized = sizes.for_task(version, task, profile, backend)`:
    the class's size from the version for a GKE profile, the **code default**
    for a Cloud Run profile (§4.7), with `units` derived.
 3. `acquire_lease(task, units=sized.units, ...)` — the frozen transaction,
@@ -646,10 +646,10 @@ In `apps/scheduler/scheduler/loop.py`, the admission path becomes:
 
 A size change between step 1 and step 3 is harmless: the lease charged
 `sized.units` and the pod is rendered from `sized`; they agree by
-construction. The task simply took the version of its pass. **A running task
+construction. The agent simply took the version of its pass. **A running agent
 keeps the size it was admitted with**, because nothing re-renders a running
-pod or re-charges a lease. A retried task is a new admission and takes the
-version current then; a parked task released its lease and is re-admitted
+pod or re-charges a lease. A retried agent is a new admission and takes the
+version current then; a parked agent released its lease and is re-admitted
 the same way, which is invariant 1 working (it costs nothing while parked,
 so there is nothing to keep).
 
@@ -734,7 +734,7 @@ written →
 ```
 
 `pools` reads the current pool documents (`hard_limit` in units) and says how
-many tasks of each class they admit before and after. `recent_use` reads the
+many agents of each class they admit before and after. `recent_use` reads the
 last 7 days of attempts of that class (the LIVE-UTIL records once they ship,
 the attempt summary fields until then) so a cut below what was used is
 visible before it is saved. Its CPU shares are §4.9's readings, `null` where
@@ -796,8 +796,8 @@ A new tab beside **Pool limits** in the Admin section
   `:preview` call (debounced, 400 ms) is the authority and its refusals
   replace the client's.
 * **Cost and units preview**: per class, units before → after and dollars
-  an hour per task before → after, and the pools table: "global admits 40
-  standard tasks → 20". A CPU limit change shows "$0.00 / hour: Autopilot
+  an hour per agent before → after, and the pools table: "global admits 40
+  standard agents → 20". A CPU limit change shows "$0.00 / hour: Autopilot
   bills requests"; a Cloud Run-fixed profile is listed under "does not
   follow" with the reason (§4.7).
 * **Recent use** beside memory: max and p95 peak over 7 days, from the
@@ -1159,8 +1159,8 @@ Nothing: optional fields.
 
 #### Invariants
 
-**5**: the record is per attempt, so a retried task's new size never
-rewrites an old attempt's. **7**: the record is what makes "a running task
+**5**: the record is per attempt, so a retried agent's new size never
+rewrites an old attempt's. **7**: the record is what makes "a running agent
 keeps its admitted size" checkable after the fact.
 
 ---
@@ -1244,13 +1244,13 @@ Files: `apps/scheduler/scheduler/sizes.py` (new),
 `apps/scheduler/scheduler/dispatch.py`,
 `tests/unit/scheduler/test_admission_follows_size.py` (new),
 `tests/unit/scheduler/test_scheduler_reads_size_versions.py` (new). Red
-first: with version 2 making `standard` 6/12, a READY claude-code task is
+first: with version 2 making `standard` 6/12, a READY claude-code agent is
 leased with `units == 2` and its manifest requests 6 / 12 GiB; the attempt
 document records `size_version: 2` and the sized fields; a live-browser
 attempt records `sized_live_split` equal to the two containers its manifest
 renders, and a non-live attempt records it as `None`; a version change
 **after** the lease and before dispatch does not change the manifest; a
-`mock` task (Cloud Run) still gets the default and units 1 whatever the
+`mock` agent (Cloud Run) still gets the default and units 1 whatever the
 version says; a malformed version leases at the default and logs at ERROR;
 `test_scheduler_reads_size_versions.py` (§4.3) parses
 `terraform/modules/iam/bindings.tf` and fails unless the scheduler's
