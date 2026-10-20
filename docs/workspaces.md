@@ -383,11 +383,36 @@ Read by the operator with `gcloud` against `saga-agents-staging`.
 
 ### O1, the owner's three live reads of the front door (workspace-kinds §4.5)
 
-**Not yet recorded (read 2026-10-19).** O1 is the owner's, not an agent's:
-three things IAP has never been shown to accept in this project, checked on
-one throwaway binding to a test service account that is removed afterwards.
-The service kind's front-door admit, S2, rests on them. This entry is where
-their answers are written, dated, when the owner has them.
+**Recorded 2026-10-19, 20:20-20:35Z (13:20-13:35 PDT).** Run by the owner's
+session on the owner's approval of the exact temporary rows: a throwaway
+service account `swarm-o1-probe`, a throwaway custom role `swarmO1Probe`
+(the two permissions below) and one conditioned project binding, all removed
+afterwards. Both backends' IAP policies were snapshotted before and compared
+after: identical. No binding names the probe, and the role and the account are deleted.
+
+1. **Passes.** `gcloud iam roles describe roles/iap.admin` holds
+   `iap.webServices.getIamPolicy` and `iap.webServices.setIamPolicy`. `gcloud iam
+   list-testable-permissions` on the project lists both as GA, with custom-role
+   support `SUPPORTED`. A custom role holding exactly those two was created.
+2. **Fails.** The project binding to that role was conditioned on
+   `resource.name == "projects/209012342332/iap_web/compute/services/817602226733443034"`,
+   the API backend `swarm-ui-backend`, by number. With it, the probe's `gcloud iap web
+   get-iam-policy` was refused (`IAM_PERMISSION_DENIED`) on the API backend
+   as well as on `swarm-ui-ui-backend`, every 30 s for 10 minutes. So the
+   number-form name does not admit the permission. This agrees with the
+   2026-09-24 measurement that a `startsWith` condition on the project-id form
+   matched nothing, and that a role bound on the backend itself grants no
+   `iap.webServices.*` on it.
+3. **Not run.** It decides only the extra clause on K1, and (2) means K1 is
+   not granted.
+
+**What follows, as written below for (2) failing:** `swarmFrontDoorAdmitter`
+stays off `workspace_deployer_roles`, so K1 is not granted.
+`front_door_admit_role_bound` stays false. S2 is an owner step: a service
+workspace stops at `needs_owner` with `FRONT_DOOR_OWNER`, and the owner adds
+its account to `frontend_iap_members`, as for the two Terraform service
+tenants. Group and personal workspaces are unaffected.
+`enable_workspace_kinds` can be turned on with K2 and K3 only.
 
 1. **The permission names**, read from `gcloud iam roles describe roles/iap.admin`:
    that `iap.webServices.getIamPolicy` and `iap.webServices.setIamPolicy` are
