@@ -90,7 +90,7 @@ route. It releases a slot only to an attempt whose agent's server-side
 `submitted_by` owns the slot, and the attempt has to prove two things:
 
 * that it is that agent's **worker**, not the agent beside it, with the
-  attempt key of child-agents §3.2;
+  attempt key of child-tasks.md §3.2;
 * that it is the **current** attempt (invariant 5).
 
 Then, once the broker has been on and a live run passed, the worker's own
@@ -422,7 +422,7 @@ not set `enable_child_tasks`. Child agents on is still not the broker on: that
 is `forge_broker`, a separate switch, off in both. Nothing in this design
 weakens the measurement's gate; it adds a second reason to keep it:
 
-* the measurement is a precondition of `enable_child_tasks` (child-agents
+* the measurement is a precondition of `enable_child_tasks` (child-tasks.md
   §9 item 2) **and** of the broker, which needs the same key
   (`forge_broker` refuses to plan without `enable_child_tasks`);
 * the broker is a precondition of removing `forge_slot_reader` in an
@@ -434,7 +434,7 @@ weakens the measurement's gate; it adds a second reason to keep it:
 
 If the measurement finds the read possible, the nonce cannot travel in the
 execution's environment, the broker ships off, and the choice in §2 goes
-back to the owner with the measurement (the same stop child-agents §9 item 2
+back to the owner with the measurement (the same stop child-tasks.md §9 item 2
 prescribes), rather than shipping the race.
 
 **The rollout order.** Each step a precondition of the next, per
@@ -486,7 +486,7 @@ submitter's token, which is no more than today:
 
 * The worker uses the token on the agent's behalf. An agent can already push
   as its own submitter through its worker. That is the point of the slot.
-* The residual of child-agents §3.2 still applies. If neither a key nor a
+* The residual of child-tasks.md §3.2 still applies. If neither a key nor a
   tombstone was registered, an agent that rewrites its own agent back to
   `STARTING` could register a key of its own. It still cannot spend another
   attempt's nonce, so the most it gains is its **own** submitter's slot, for

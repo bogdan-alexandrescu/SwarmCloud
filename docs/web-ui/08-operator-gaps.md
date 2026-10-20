@@ -176,7 +176,7 @@ was opened and read.
    PUT genuinely has no marker, and a terraform-created one has a marker nothing reads.
    Getting it onto the screen does **not** need a contract change: `store.py` is unfrozen,
    so a `list_pools_raw()` returning the snapshot dict beside the typed pool is the fix.
-2b. **A pool created by an admin PUT with no limit gets `hard_limit = 1_000_000.**
+2b. **A pool created by an admin PUT with no limit gets `hard_limit = 1_000_000`.**
    `UNLIMITED_HARD_LIMIT` (`store.py:96`) is the default in `upsert_pool`'s create branch
    (`store.py:630-631`). A binding-constraint column that reads `capped by
    hard_limit=1000000` is a lie dressed as a cap; the UI renders `uncapped` for that
@@ -185,14 +185,14 @@ was opened and read.
    `ControlPlane.record_attempt_start`
    (`apps/agent-worker/agent_worker/control.py::ControlPlane.record_attempt_start`) writes exactly sixteen keys and
    neither is among them. The runbook's "peak RSS by profile" therefore needs a join from
-   every attempt to its task — 200 extra document reads for a 200-attempt panel.
+   every attempt to its agent's task document — 200 extra document reads for a 200-attempt panel.
 4. **The event TTL is configured on a field nothing writes.**
    `terraform/modules/firestore/indexes.tf:249-264` sets a TTL policy on
    `var.event_ttl_field`, default `"expires_at"`
    (`terraform/modules/firestore/variables.tf:67-71`). No event writer sets it:
    `TaskEvent` (`models.py:219-228`) has no such field, `event_to_firestore`
    (`codec.py:139-142`) is `asdict(event)`, and the worker's explicit dict
-   (`apps/agent-worker/agent_worker/control.py::ControlPlane._event_write`) does not include it. **Task events never expire**, despite the
+   (`apps/agent-worker/agent_worker/control.py::ControlPlane._event_write`) does not include it. **Agent events never expire**, despite the
    comment at `indexes.tf:249-250` saying that without a TTL the subcollection grows
    without bound. Any event-derived feed sits on an unbounded collection.
 5. **The account sweep's result is keyed by label, not by account.**

@@ -275,7 +275,7 @@ separate service: [Q4](#q4-which-service-executes).
 
 ### 2.1 Which one: the agent's own forge slot, read by swarm-api
 
-The tools use **exactly the credential the agent's end-of-agent publish would
+The tools use **exactly the credential the agent's end-of-run publish would
 use**. That is the slot the agent's **signed** `forge_credential` names:
 
 * `git` → `swarm-tenant-<t>-git`;

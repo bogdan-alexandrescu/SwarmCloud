@@ -290,9 +290,9 @@ def test_contract_request_filed_bodies_keep_their_wording():
         "## 99. next entry\n\nA task is admitted.\n"
     )
     # MUTATION: drop the FILED_UNCHANGED exemption -> both lines reported -> red.
-    assert [n for n, _ in prose_tasks(planted, history_rows=True)] == [9]
+    assert [n for n, _ in prose_tasks(planted, history_rows=True)] == [11]
     # MUTATION: apply the exemption without history_rows (to every doc) -> red.
-    assert [n for n, _ in prose_tasks(planted)] == [5, 9]
+    assert [n for n, _ in prose_tasks(planted)] == [5, 11]
 
 
 def _firestore_index_names() -> set[str]:
