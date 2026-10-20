@@ -10713,10 +10713,24 @@ span.sk-ttile { cursor: default; }
 .sk-top { display: none; }
 .sk-scrim { position: fixed; inset: 0; background: rgba(6, 16, 30, .5); z-index: 25; }
 @media (max-width: 759px) {
-  .sk-app { flex-direction: column; }
+  /* `--sk-pbar-h` IS THE PHONE HEADER'S HEIGHT, AND THE ONE PLACE IT IS SET
+     (QA-116, owner 2026-10-20: "Start under the header"). The header takes
+     its height from it and the open task (`.ag-split.ctl-drawer`,
+     agents.css) starts at its foot, so the two cannot drift, at 44px or
+     compacted to 36px (`is-scrolled`, below). On `.sk-app`, which holds both,
+     not on `:root`: it changes with the app's scroll state. Each use carries
+     a fallback for a reader of the sheet alone (spaceprobe.ts), as
+     `--ctl-bar-h` does (notifications.css). */
+  .sk-app { flex-direction: column; --sk-pbar-h: 44px; }
   /* Sticky as well as first in the column: the page scrolls in `.ctl-scroll`
      beneath it, and nothing can take the menu out of reach (#139). */
   .sk-pbar { display: flex; align-items: center; gap: 8px; padding: 0 12px; height: 44px; background: var(--sk-spine-top); color: #eef4fa; position: sticky; top: 0; z-index: 15; }
+  /* ITS HEIGHT IS `--sk-pbar-h`, and this overrides the 44px in the rule
+     above. That line cannot be edited: its spine-colour token reads as an
+     API key to the worker's publish scan (rules.py openai_key), so any
+     change re-adds it and the diff is refused. The fallback is never drawn:
+     `.sk-app` always holds the header. */
+  .sk-pbar { height: var(--sk-pbar-h, auto); }
   /* Eased so the compaction below is not a jump; reduced motion stops it. */
   .sk-pbar { transition: height 120ms ease-out; }
   .sk-pbar .sk-ibtn { color: #eef4fa; }
@@ -10780,8 +10794,9 @@ span.sk-ttile { cursor: default; }
   /* THE HEADER GIVES BACK ITS HEIGHT ON SCROLL (#139): 36px once the page is
      under it (`scrollBand` in Spine.tsx). The menu, the mark, the page, the
      tenant and the environment all stay; only the padding goes, so §6.15's
-     25% chrome budget is spent on the dock and not on an empty band. */
-  .sk-app.is-scrolled .sk-pbar { height: 36px; }
+     25% chrome budget is spent on the dock and not on an empty band. Set
+     as `--sk-pbar-h`, so an open task's top follows the header up. */
+  .sk-app.is-scrolled { --sk-pbar-h: 36px; }
 }
 /* The compaction is the phone chrome's only motion, 120ms; under reduced
    motion the header simply takes its new height. `Top` jumps rather than
