@@ -1,4 +1,4 @@
-# Runner git tools: the platform does the git work a runner asks for mid-task, and the runner never holds a token
+# Runner git tools: the platform does the git work a runner asks for mid-run, and the runner never holds a token
 
 **Status: DESIGN, for the owner's approval (#1225). Nothing described here is
 built.** The owner decided on 2026-10-13 at about 02:05 PDT, on #1225: "design
@@ -20,7 +20,7 @@ read on 2026-10-13 at `cd49267`.
 **A runner holds no forge credential while its agent runs, and that is
 deliberate.** The worker publishes at the end of the attempt
 (`apps/agent-worker/agent_worker/lifecycle.py::Worker._publish_git`). It does
-not read the task's forge token until three things have happened:
+not read the agent's forge token until three things have happened:
 
 * every process the agent started is dead (`Worker.reap_before_publish`; the
   reasoning is in `apps/agent-worker/agent_worker/procman.py`, in the block
@@ -40,7 +40,7 @@ repository the token is about to be used in. For the same reason the carrier
 push refuses to run "while the runner is running"
 (`Worker._carrier_push`). The owner accepted that narrowing on 2026-10-02.
 
-**Consequence: a mid-task tool cannot run in the runner's container.**
+**Consequence: a mid-run tool cannot run in the runner's container.**
 Anything the worker does with a token while the agent is alive, the agent can
 reach: through the credential file, through `/proc/<pid>/environ` of a git
 subprocess, or through a loopback proxy it can connect to as well as the
@@ -52,9 +52,9 @@ What else exists and is reused here, not rebuilt:
 
 | piece | where | what it already does |
 |---|---|---|
-| attempt key | `apps/agent-worker/agent_worker/children.py::AttemptKey`, `apps/swarm-api/swarm_api/childkey.py` | An Ed25519 key that lives only in the worker's non-dumpable heap. The worker registers it with a one-use nonce while the task is STARTING, before the agent exists. It signs method, path, body hash and timestamp. **This is the only thing that proves "the worker, not the agent"**: the agent can mint the same Google ID token its worker mints (childkey.py's module docstring). |
+| attempt key | `apps/agent-worker/agent_worker/children.py::AttemptKey`, `apps/swarm-api/swarm_api/childkey.py` | An Ed25519 key that lives only in the worker's non-dumpable heap. The worker registers it with a one-use nonce while the agent is STARTING, before the agent exists. It signs method, path, body hash and timestamp. **This is the only thing that proves "the worker, not the agent"**: the agent can mint the same Google ID token its worker mints (childkey.py's module docstring). |
 | worker → API auth | `apps/swarm-api/swarm_api/children.py::ChildService.authenticate_worker`, `ChildService.verify_proof` | The ID token must be audience-pinned and must name the tenant's worker service account. The proof is then checked against the registered key. Every failure is the same 403. |
-| fence check | `apps/swarm-api/swarm_api/children.py::_lease_is_live` | In one transaction it checks: `task.current_lease_id`, `current_generation`, the lease's task, attempt and generation, `released_at is None`, and that the lease has not expired. A failure is 409 `child_submit_fenced`. The worker then ends the attempt without touching the lease (`Worker._exit_fenced_mid_run`). |
+| fence check | `apps/swarm-api/swarm_api/children.py::_lease_is_live` | In one transaction it checks: `task.current_lease_id`, `current_generation`, the lease's agent, attempt and generation, `released_at is None`, and that the lease has not expired. A failure is 409 `child_submit_fenced`. The worker then ends the attempt without touching the lease (`Worker._exit_fenced_mid_run`). |
 | agent → worker channel | `children.py::ChildPath` (`prepare`, `has_requests`, `tick`) | A file spool under `work/.swarm-children/`, announced in `SWARM_CHILDREN`. The worker validates each request and relays it. The worker's run loop ticks it on every control poll. |
 | slot read by swarm-api | `apps/swarm-api/swarm_api/forge.py::SecretManagerForgeTokens.read_slot` | Reads `swarm-tenant-<t>-git`, `-git-u-<hex>` and `-git-r-<hex>` through bindings Terraform already grants swarm-api (`terraform/bootstrap/forge_user_slots.tf`, `forge_refresh_reader`). The secret name always comes from `Tenant.secret_name`. |
 | CI read at a head sha | `apps/swarm-api/swarm_api/forgewrite.py::GitHubWriter.check_runs`, `commit_statuses`, `branch_rules`, `job_log_tail`; `apps/swarm-api/swarm_api/forgechecks.py::evaluate` | What `apps/swarm-api/swarm_api/issueci.py::_read_ci` uses to call a pull request green, pending or red. |
@@ -69,10 +69,10 @@ What else exists and is reused here, not rebuilt:
   docstring says "Nothing starts it today", and
   `apps/agent-worker/agent_worker/runners/claude_code.py` passes no
   `--mcp-config`.
-* There is no per-tenant list of *other* repositories a task may read. The
+* There is no per-tenant list of *other* repositories an agent may read. The
   `repositories` collection (`apps/swarm-api/swarm_api/repositories.py`)
   calls itself "OPT-IN CONTEXT, NOT A GATE".
-* Nothing records the forge calls a task makes.
+* Nothing records the forge calls an agent makes.
 
 ---
 
@@ -82,15 +82,15 @@ What else exists and is reused here, not rebuilt:
 
 The runner sees **five tools** in one MCP server named `swarm-git`. All five
 take only what the agent legitimately chooses. None of them takes a
-repository URL for the task's own repository, a token, a remote or a refspec.
+repository URL for the agent's own repository, a token, a remote or a refspec.
 
 | tool | arguments | returns |
 |---|---|---|
-| `git_fetch` | `ref`: a branch or tag name, or a 40-hex sha, in **the task's own repository** | the sha `ref` resolved to. The objects land in the agent's clone as `refs/remotes/origin/<ref>` (a sha lands as `refs/swarm/fetched/<sha>`). |
+| `git_fetch` | `ref`: a branch or tag name, or a 40-hex sha, in **the agent's own repository** | the sha `ref` resolved to. The objects land in the agent's clone as `refs/remotes/origin/<ref>` (a sha lands as `refs/swarm/fetched/<sha>`). |
 | `git_rebase_onto` | `ref`, as for `git_fetch` | `{onto, head, conflicts: [paths]}`. It is `git_fetch(ref)` followed by `git rebase <fetched>` in the agent's clone. On a conflict the rebase is **left in progress** with the conflicted paths listed, for the agent to resolve and `git rebase --continue` itself. |
-| `git_push_branch` | `branch`, optional. When given, it must be one of the branches this task may push (§1.2); otherwise it is the task's own branch. | `{branch, old_sha, new_sha}` |
+| `git_push_branch` | `branch`, optional. When given, it must be one of the branches this agent may push (§1.2); otherwise it is the agent's own branch. | `{branch, old_sha, new_sha}` |
 | `read_private` | `repo` (`owner/name`), `path`, `ref` (a sha is recommended; a branch or tag is resolved and the sha returned) | a file's text (at most 1 MiB), or a directory listing (names, types, sizes) |
-| `pr_checks` | `pr`, optional: a pull request number **in the task's own repository**. Without it, the pull request whose head is this task's branch. | `{head_sha, state: green\|pending\|red\|none, rows: [{name, status, conclusion, required}], log_tail?}`, where `log_tail` is up to 8 KiB of each red row's job log, redacted |
+| `pr_checks` | `pr`, optional: a pull request number **in the agent's own repository**. Without it, the pull request whose head is this agent's branch. | `{head_sha, state: green\|pending\|red\|none, rows: [{name, status, conclusion, required}], log_tail?}`, where `log_tail` is up to 8 KiB of each red row's job log, redacted |
 
 **Why these five and no more.** These are #1225's operations, and the tools
 are the whole capability. In particular:
@@ -117,15 +117,15 @@ API's check holds either way.
 
 | refusal (code) | tools | rule |
 |---|---|---|
-| `not_this_tasks_branch` | push | The branch must be one the task may push. That set is **derived server-side from the task's signed spec**: `continuation.publish_branch` (its own `swarm/<task id>`, or the `swarm/<continued task id>` it continues), and for a `single-pr` amender `Worker._pr_author_branch`. Nothing in the request is used as a branch name except to compare it with that set. Another task's branch, `main`, and any branch outside `swarm/` are all refused here. |
+| `not_this_tasks_branch` | push | The branch must be one the agent may push. That set is **derived server-side from the agent's signed spec**: `continuation.publish_branch` (its own `swarm/<task id>`, or the `swarm/<continued task id>` it continues), and for a `single-pr` amender `Worker._pr_author_branch`. Nothing in the request is used as a branch name except to compare it with that set. Another agent's branch, `main`, and any branch outside `swarm/` are all refused here. |
 | `protected_branch` | push | The repository's default branch, read from the forge and never assumed to be `main`. Also any branch whose ruleset or protection the forge reports (`GitHubWriter.branch_rules`). That check is defence in depth: a `swarm/` branch is never a protected branch. |
 | `non_fast_forward` | push | **The push is never forced.** If the new tip does not descend from the branch's current tip, GitHub refuses the push and the refusal is relayed with both shas, so the agent can run `git_rebase_onto` or `git_fetch` again. A rebase of a branch that is already pushed therefore needs the owner's answer to [Q1](#q1-a-rebased-branch-that-is-already-pushed). |
-| `strategy_pushes_nothing` | push | The task's strategy promises not to push: `collect` without `carrier: branches`, or a `single-pr` reader. This is the promise `Worker._publish_git` keeps at the end ("THE CALLER'S STRATEGY IS A PROMISE"). A mid-task tool must not break it either. |
+| `strategy_pushes_nothing` | push | The agent's strategy promises not to push: `collect` without `carrier: branches`, or a `single-pr` reader. This is the promise `Worker._publish_git` keeps at the end ("THE CALLER'S STRATEGY IS A PROMISE"). A mid-run tool must not break it either. |
 | `forge_write_refused` | push | The submitter's grant is read again before every push, as `Worker._forge_write_refusal` does at the end: no `can_push` grant, a revoked grant, or a read-only `forge_credential` (`apps/agent-worker/agent_worker/secrets.py::forge_read_only`). |
-| `leak_found` | push | The worker's own gate, before anything is uploaded. Each new commit's added text and the final tree go through the same scans as the end-of-task publish (`_leaks_in_added_text`, `final_tree_leak`). The answer names `path:line rule`, never the match. |
+| `leak_found` | push | The worker's own gate, before anything is uploaded. Each new commit's added text and the final tree go through the same scans as the end-of-agent publish (`_leaks_in_added_text`, `final_tree_leak`). The answer names `path:line rule`, never the match. |
 | `foreign_author` | push | `gitops.py::verify_worker_authorship`, as at the end. |
 | `repo_not_allowlisted` | read_private | `repo` must be on the tenant's allowlist (§2.3). A repository that does not exist, or that the credential cannot read, gets **the same answer**, so the tool cannot be used to probe which repositories exist. |
-| `other_repository` | fetch, rebase, push, pr_checks | These four act on the task's own repository only. `read_private` is the only tool that takes a repository. |
+| `other_repository` | fetch, rebase, push, pr_checks | These four act on the agent's own repository only. `read_private` is the only tool that takes a repository. |
 | `bad_ref` / `bad_path` | all | `ref` goes through `gitops.py::validate_ref`. `path` is refused if it is absolute or contains `..`, an empty segment, a backslash or a control character (the rule `checkpoint_content.py` uses). |
 | `too_large` | fetch, push, read_private | Bundle cap (default 256 MiB, owner [Q6](#q6-limits)), file cap of 1 MiB. Both are said in the refusal. |
 | `fenced` (HTTP 409) | all | The attempt is no longer the lease holder (§1.4). This is not a tool error the agent can act on. The worker ends the attempt (invariant 5). |
@@ -167,7 +167,7 @@ agent ──MCP stdio──> swarm-git shim ──spool file──> worker (non-
    *Why a spool and not a Unix socket or a loopback port:* a socket the
    worker listens on is one the agent can connect to as well. Since the
    worker checks every request regardless, that would only be equivalent to
-   the spool, and the spool is the shape the child-task path already has, has
+   the spool, and the spool is the shape the child-agent path already has, has
    had reviewed, and ticks in the run loop.
 
 2. **The worker.** The relay is part of the object that already holds the
@@ -201,7 +201,7 @@ agent ──MCP stdio──> swarm-git shim ──spool file──> worker (non-
       registered);
    3. `_lease_is_live` (invariant 5).
 
-   Only then does it read the task, verify its spec signature
+   Only then does it read the agent, verify its spec signature
    (`apps/swarm-api/swarm_api/specsigning.py`) and derive the policy. The
    handlers:
 
@@ -240,7 +240,7 @@ What swarm-api gains is the `git` binary in its image and longer requests,
 bounded by the caps in §1.2. The owner may still prefer the isolation of a
 separate service: [Q4](#q4-which-service-executes).
 
-### 1.4 How the call is bound to this task and this fencing generation
+### 1.4 How the call is bound to this agent and this fencing generation
 
 * **This attempt.** Only the worker that registered the attempt key can sign
   for it. The registration is one-use and attested
@@ -249,7 +249,7 @@ separate service: [Q4](#q4-which-service-executes).
   the route directly. It can only use the spool, which is the tool surface.
 * **This generation (invariant 5).** The body carries
   `tenant_id, attempt_id, lease_id, generation` (the `_AttemptFields` shape),
-  and `_lease_is_live` compares them with the task and lease in one
+  and `_lease_is_live` compares them with the agent and lease in one
   transaction. A stale worker gets 409 `git_fenced`. Its relay raises the
   same way `ChildSubmitFenced` does, and the worker ends the attempt through
   `Worker._exit_fenced_mid_run`: it does not run the agent further and it
@@ -261,10 +261,10 @@ separate service: [Q4](#q4-which-service-executes).
   non-forced push cannot overwrite what the new holder pushed. It can only be
   refused as `non_fast_forward`.
 * **Every attempt needs a key.** Today the scheduler issues
-  `SWARM_CHILD_NONCE` only when `child_key` is configured and the task is not
+  `SWARM_CHILD_NONCE` only when `child_key` is configured and the agent is not
   itself a child (`apps/scheduler/scheduler/dispatch.py`, "THE CHILD PATH").
-  Git tools need the attempt key on child tasks too. So lane G2 issues the
-  nonce to every attempt of a task whose profile offers git tools, and the
+  Git tools need the attempt key on child agents too. So lane G2 issues the
+  nonce to every attempt of an agent whose profile offers git tools, and the
   worker keeps "the key is registered" separate from "the child path is
   offered". A child still may not submit children (`ChildDepthExceeded` is
   unchanged).
@@ -273,10 +273,10 @@ separate service: [Q4](#q4-which-service-executes).
 
 ## 2. The credential
 
-### 2.1 Which one: the task's own forge slot, read by swarm-api
+### 2.1 Which one: the agent's own forge slot, read by swarm-api
 
-The tools use **exactly the credential the task's end-of-task publish would
-use**. That is the slot the task's **signed** `forge_credential` names:
+The tools use **exactly the credential the agent's end-of-agent publish would
+use**. That is the slot the agent's **signed** `forge_credential` names:
 
 * `git` → `swarm-tenant-<t>-git`;
 * `git-u-<hex>` → the submitter's user slot;
@@ -289,8 +289,8 @@ read at publish by the worker's `secrets.py::forge_suffix` and
 
 *Why this one and not the GitHub App:*
 
-* **No new rights.** A mid-task push can do nothing the final push of the
-  same task could not do. The tools add *when*, not *what*.
+* **No new rights.** A mid-run push can do nothing the final push of the
+  same agent could not do. The tools add *when*, not *what*.
 * **Attribution and grants are kept.** On a personal tenant `u-<user>`, and
   on any group tenant with `REPOSITORY_GRANTS_ENFORCED`, the push is the
   submitter's and is limited by their `forge_grants` row. A platform App
@@ -337,17 +337,17 @@ another slot.
 
 ### 2.3 The private-read allowlist
 
-`read_private` reads a repository **other than** the task's own, so it needs
+`read_private` reads a repository **other than** the agent's own, so it needs
 a gate the push does not:
 
 * **The allowlist:** a per-tenant list of `owner/name` on the `repositories`
   collection. Each entry is a repository record with a new field
   `readable_by_tasks: true`, set by a tenant admin through
   `PATCH /v1/repositories/{repo_id}`, and audited in `admin_audit` the way
-  `repositories._platform_audit` audits a platform change. Nothing a task
+  `repositories._platform_audit` audits a platform change. Nothing an agent
   carries can add an entry.
 * **The credential:** the allowlisted repository's own `git-r-<hex>` slot if
-  one is registered (`gittokens.py::provider_suffix`); otherwise the task's
+  one is registered (`gittokens.py::provider_suffix`); otherwise the agent's
   slot from §2.1. The read is always a GET. If the credential cannot read the
   repository, the answer is `repo_not_allowlisted`, as for a repository not
   on the list.
@@ -357,7 +357,7 @@ already exists per tenant and per repository, with an id no caller chooses
 (`repositories.py::repo_id_for`), and it is where a tenant admin already
 manages a repository. A new field on `Tenant` would be a frozen-contract
 change (`apps/common/swarm_common/models.py::Tenant`), and this does not need
-one. The owner may prefer per-task declaration as well:
+one. The owner may prefer per-agent declaration as well:
 [Q3](#q3-the-private-read-allowlist).
 
 ### 2.4 Additional repositories: a checkout at a pinned commit, not a tool
@@ -385,8 +385,8 @@ before the agent starts. No tool is involved, and nothing above changes:
   or the ref was the problem. The frozen contract cannot hold a `git-r-`
   slot on an entry at all (`ADDITIONAL_FORGE_CREDENTIAL`).
 * **Pinned and signed.** Each ref is resolved at submission to a 40-hex
-  commit and signed into the task (spec format 4), so a fetch or a
-  `read_private` call mid-task cannot move what the agent is reading.
+  commit and signed into the agent (spec format 4), so a fetch or a
+  `read_private` call mid-run cannot move what the agent is reading.
 * **GKE agent profiles only.** The checkouts live on the pod's cache volume,
   which a Cloud Run attempt does not have. Other profiles are refused
   `additional_repositories_unsupported_profile`.
@@ -395,20 +395,20 @@ before the agent starts. No tool is involved, and nothing above changes:
   refused `too_many_additional_repositories` (422), naming the limit. The
   frozen contract's ceiling of 10 is a guard on the stored shape, not the
   limit.
-* **Never written to.** The tools above still act on the task's own
+* **Never written to.** The tools above still act on the agent's own
   repository only (`other_repository`). No push credential for an
   additional repository is ever issued. The worker points each checkout's
   push URL nowhere. Only `work/repo` is harvested, pushed or checkpointed.
 
 ---
 
-## 3. The fallback: a per-task GitHub App installation token
+## 3. The fallback: a per-agent GitHub App installation token
 
 ### 3.1 When it is used instead of the tools
 
 **Recommended: not built now.** It would be built only if the owner answers
 [Q2](#q2-the-fallback-token) with B, and it would be used only for a
-repository whose record says `runner_token: true` **and** a task whose
+repository whose record says `runner_token: true` **and** an agent whose
 profile allows it. It is never a default, and it is never used on a
 repository where the tools are available. It is for a repository whose
 workflow needs a git operation the five tools do not cover, until a tool
@@ -450,7 +450,7 @@ does.
 * **A worker that dies without reaching `finally`:** GitHub expires the
   token after one hour. The audit row records `expires_at`, so the console
   can show that a token was left to expire rather than revoked.
-* **Never re-minted on resume.** A parked task's next attempt asks for a new
+* **Never re-minted on resume.** A parked agent's next attempt asks for a new
   token with its own generation.
 
 ### 3.4 Why it is acceptable, and what it gives up
@@ -464,7 +464,7 @@ does.
     partitioned from Firestore, keeps a working token until it is revoked or
     expires.
   * **Branch scope.** The token can push any unprotected branch in the
-    repository, including another task's `swarm/` branch, and can force-push
+    repository, including another agent's `swarm/` branch, and can force-push
     one. GitHub's only limit is branch protection on the repository.
   * **The audit.** The platform sees only the mint and the revoke, not the
     calls made with the token.
@@ -503,10 +503,10 @@ happened but was not recorded is a gap, but refusing to report a push that
 happened would be worse.
 
 **Where it is read.** A tenant member reads it through
-`GET /v1/tasks/{task_id}/git-calls`, tenant-scoped like the task itself, 404
-otherwise. The worker also writes counts into the task's
+`GET /v1/tasks/{task_id}/git-calls`, tenant-scoped like the agent itself, 404
+otherwise. The worker also writes counts into the agent's
 `result_summary.git_tools` (`pushes`, `fetches`, `reads`, `refusals`), so the
-existing task views show that the tools were used without a new screen. A
+existing agent views show that the tools were used without a new screen. A
 console screen is a later choice, not part of this plan.
 
 ---
@@ -571,7 +571,7 @@ tool that would wrap one is not added:
   (a reset connection, a GitHub 5xx) is therefore as final as a refusal.
 
 **Which of these happened to these two workflows has not been measured
-here.** The answer is in each build task's
+here.** The answer is in each build agent's
 `result_summary.git.publish_reason` and `publish_failed`, and the build lane
 reads them first.
 
@@ -593,13 +593,13 @@ reads them first.
 2. **The tools.** An agent can `git_push_branch` as soon as it has a
    coherent commit, and again before it finishes. The final publish is then
    a fast-forward of a branch that already exists. If the final push is still
-   lost, the review clones the last mid-task push instead of finding no
+   lost, the review clones the last mid-run push instead of finding no
    branch.
 
 ### 6.2 No git operations on existing branches; no private reads; cannot watch CI
 
 `git_fetch`, `git_rebase_onto` and `git_push_branch` cover the rebase onto
-main, the conflict fix and the stacked catch-up, on a branch the task may
+main, the conflict fix and the stacked catch-up, on a branch the agent may
 push (§1.2). Pushing a *rebased* branch that is already on the remote needs
 [Q1](#q1-a-rebased-branch-that-is-already-pushed).
 
@@ -685,12 +685,12 @@ The call sites: `apps/swarm-api/swarm_api/store.py::Store.get_workflow`, and
 | # | lane | depends on | territory (files) | red-first tests (each must fail first, for the stated reason) |
 |---|---|---|---|---|
 | **G1** | **DELIVERABLE-BRANCH**: a step whose branch is its deliverable fails when the branch was not pushed; transient push failures are retried once | none | `apps/agent-worker/agent_worker/lifecycle.py` (`_publish_failed`, `_opens_pull_request`, `_published_nothing`, `_publish_checked`), `apps/agent-worker/agent_worker/gitops.py` (`push_branch`), `docs/workflows.md` (the #872 paragraph), new `tests/unit/worker/test_publish_deliverable_branch.py` | An `integrate` contributor whose push raises `GitError` ends FAILED with `publish_failed:` (today SUCCEEDED). A `carrier: branches` collect step, a `single-pr` amender, and a step another step `builds_on` behave the same way. A PR step whose publish declined for `can_push=False` ends FAILED. A push that fails once with a connection reset and then succeeds is published. A `collect` step without a carrier still SUCCEEDS with nothing pushed (the control). |
-| **G2** | **ATTEMPT-KEY-FOR-ALL**: every attempt of a task whose profile offers git tools registers an attempt key, children included | none | `apps/scheduler/scheduler/dispatch.py` (the child-path nonce block), `apps/swarm-api/swarm_api/children.py` (`ChildService.register_key` accepting a child task's registration while submits stay depth-refused), new `tests/unit/control_plane/test_attempt_key_every_attempt.py` | The nonce is in a child task's environment when git tools are offered (today it is absent). A child task's key registers. A child's `submit` is still `child_depth_exceeded`. A task that is not offered git tools gets no nonce when it is a child (the control). |
-| **G3** | **WORKER-GIT-LIB**: the worker's half of each tool as a library (validation, scan, bundle build and apply, local rebase, signed call) and the `swarm-git` shim | none | new `apps/agent-worker/agent_worker/gittools.py`, new `apps/agent-worker/agent_worker/gitmcp/` (`__init__.py`, `__main__.py`, `server.py`), new `tests/unit/worker/test_gittools.py`, new `tests/unit/worker/test_gitmcp.py` | The tests are against a local bare repository standing in for origin and a fake API, with no network. A spool push naming `main`, another task's branch, or a name outside `swarm/` is refused before any request. A commit adding a credential-shaped line (built at runtime) is `leak_found` with `path:line rule` and no match text. The bundle holds exactly `<remote tip>..HEAD`. A rebase conflict leaves the rebase in progress and lists the paths. A request is signed and its proof verifies with `childkey.py`'s verifier. A 409 raises the fenced error. The shim's tool schemas fit the 2k-token budget `graphmcp` holds. |
+| **G2** | **ATTEMPT-KEY-FOR-ALL**: every attempt of an agent whose profile offers git tools registers an attempt key, children included | none | `apps/scheduler/scheduler/dispatch.py` (the child-path nonce block), `apps/swarm-api/swarm_api/children.py` (`ChildService.register_key` accepting a child agent's registration while submits stay depth-refused), new `tests/unit/control_plane/test_attempt_key_every_attempt.py` | The nonce is in a child agent's environment when git tools are offered (today it is absent). A child task's key registers. A child's `submit` is still `child_depth_exceeded`. An agent that is not offered git tools gets no nonce when it is a child (the control). |
+| **G3** | **WORKER-GIT-LIB**: the worker's half of each tool as a library (validation, scan, bundle build and apply, local rebase, signed call) and the `swarm-git` shim | none | new `apps/agent-worker/agent_worker/gittools.py`, new `apps/agent-worker/agent_worker/gitmcp/` (`__init__.py`, `__main__.py`, `server.py`), new `tests/unit/worker/test_gittools.py`, new `tests/unit/worker/test_gitmcp.py` | The tests are against a local bare repository standing in for origin and a fake API, with no network. A spool push naming `main`, another agent's branch, or a name outside `swarm/` is refused before any request. A commit adding a credential-shaped line (built at runtime) is `leak_found` with `path:line rule` and no match text. The bundle holds exactly `<remote tip>..HEAD`. A rebase conflict leaves the rebase in progress and lists the paths. A request is signed and its proof verifies with `childkey.py`'s verifier. A 409 raises the fenced error. The shim's tool schemas fit the 2k-token budget `graphmcp` holds. |
 | **G4** | **API-GIT-EXEC** (security review): swarm-api's git execution as a library: scratch repository, credential file, fetch→bundle, bundle→push, scrubbing | none | new `apps/swarm-api/swarm_api/gitexec.py`, `images/swarm-api/Dockerfile` (adds `git`), `terraform/bootstrap/forge_user_slots.tf` (swarm-api reads `-git-r-` slots), new `tests/unit/control_plane/test_gitexec.py` | Against `file://` bare repositories: a push of a non-fast-forward bundle is refused `non_fast_forward` and the remote is unchanged. A push never sends `--force`; the argv is asserted. The credential file is gone after success, failure and exception. A git stderr carrying `https://x-access-token:<runtime-built>@` comes back scrubbed. A fetch bundle excludes the haves. A bundle over the cap is `too_large` before anything is unpacked. |
-| **G5** | **API-GIT-TOOLS** (security review, with G4): the route, authentication, fence, policy, allowlist, audit and audit read; all five tools wired | G2, G4 | new `apps/swarm-api/swarm_api/gittools.py`, new `apps/swarm-api/swarm_api/routes/gittools.py`, `apps/swarm-api/swarm_api/main.py` (one `include_router`), `apps/swarm-api/swarm_api/repositories.py` (`readable_by_tasks`), new `tests/unit/control_plane/test_git_tools_api.py` | An unproven request is 403, the same for every cause. A stale generation is 409 and writes a `fenced` audit row. A push to `main` is `protected_branch` (#1225 acceptance). A push to another task's `swarm/` branch is `not_this_tasks_branch` (#1225 acceptance). A push from a `collect` task is `strategy_pushes_nothing`. A read-only grant is `forge_write_refused`. `read_private` on a repository not on the list, and on one that does not exist, get identical answers. No audit row contains the fake token, built at runtime. `pr_checks` returns red with the failing row's redacted log tail. |
-| **G6** | **WORKER-WIRING**: the relay goes inside `ChildPath`, and the runners name the shim | G2, G3, G5 | `apps/agent-worker/agent_worker/children.py` (`ChildPath.prepare`, `has_requests`, `tick` compose `gittools`; the key is registered separately from the child path being offered), `apps/agent-worker/agent_worker/runners/claude_code.py`, `apps/agent-worker/agent_worker/runners/codex.py`, new `tests/unit/worker/test_git_tools_wiring.py` | claude-code's argv carries `--mcp-config` naming `agent_worker.gitmcp` when the attempt is offered git tools (today it carries none). A child task gets git tools but not `SWARM_CHILDREN`. A fenced git call ends the attempt through the fenced exit without releasing the lease. **The runner's environment contains no variable whose name or value matches `token`, case-insensitive** (#1225 acceptance: `env \| grep -i token` empty). |
-| **G7** | **ACCEPTANCE**: the #1225 acceptance on a deployed environment | G1, G6 | new `tests/acceptance/test_runner_git_tools.py`, and the acceptance group it joins (the lane reads `accept.yml`'s group list; `.github/workflows/` is edited only if the group list lives there, and then only that list) | Five checks. 1: a lane rebases its PR branch onto main, resolves a planted conflict, pushes, and reads `pr_checks`, with `env \| grep -i token` empty in the runner. 2: `read_private` reads an allowlisted repository at a sha. 3: a push to `main` is refused. 4: a push to another task's branch is refused. 5: a build step whose push is made to fail ends FAILED, not SUCCEEDED. |
+| **G5** | **API-GIT-TOOLS** (security review, with G4): the route, authentication, fence, policy, allowlist, audit and audit read; all five tools wired | G2, G4 | new `apps/swarm-api/swarm_api/gittools.py`, new `apps/swarm-api/swarm_api/routes/gittools.py`, `apps/swarm-api/swarm_api/main.py` (one `include_router`), `apps/swarm-api/swarm_api/repositories.py` (`readable_by_tasks`), new `tests/unit/control_plane/test_git_tools_api.py` | An unproven request is 403, the same for every cause. A stale generation is 409 and writes a `fenced` audit row. A push to `main` is `protected_branch` (#1225 acceptance). A push to another agent's `swarm/` branch is `not_this_tasks_branch` (#1225 acceptance). A push from a `collect` agent is `strategy_pushes_nothing`. A read-only grant is `forge_write_refused`. `read_private` on a repository not on the list, and on one that does not exist, get identical answers. No audit row contains the fake token, built at runtime. `pr_checks` returns red with the failing row's redacted log tail. |
+| **G6** | **WORKER-WIRING**: the relay goes inside `ChildPath`, and the runners name the shim | G2, G3, G5 | `apps/agent-worker/agent_worker/children.py` (`ChildPath.prepare`, `has_requests`, `tick` compose `gittools`; the key is registered separately from the child path being offered), `apps/agent-worker/agent_worker/runners/claude_code.py`, `apps/agent-worker/agent_worker/runners/codex.py`, new `tests/unit/worker/test_git_tools_wiring.py` | claude-code's argv carries `--mcp-config` naming `agent_worker.gitmcp` when the attempt is offered git tools (today it carries none). A child agent gets git tools but not `SWARM_CHILDREN`. A fenced git call ends the attempt through the fenced exit without releasing the lease. **The runner's environment contains no variable whose name or value matches `token`, case-insensitive** (#1225 acceptance: `env \| grep -i token` empty). |
+| **G7** | **ACCEPTANCE**: the #1225 acceptance on a deployed environment | G1, G6 | new `tests/acceptance/test_runner_git_tools.py`, and the acceptance group it joins (the lane reads `accept.yml`'s group list; `.github/workflows/` is edited only if the group list lives there, and then only that list) | Five checks. 1: a lane rebases its PR branch onto main, resolves a planted conflict, pushes, and reads `pr_checks`, with `env \| grep -i token` empty in the runner. 2: `read_private` reads an allowlisted repository at a sha. 3: a push to `main` is refused. 4: a push to another agent's branch is refused. 5: a build step whose push is made to fail ends FAILED, not SUCCEEDED. |
 | G8 | *Only if [Q2](#q2-the-fallback-token) = B*: **RUNNER-TOKEN** fallback | G5, G6 | new `apps/swarm-api/swarm_api/runnertoken.py`, `apps/swarm-api/swarm_api/routes/gittools.py` is **not** touched (G5 registers a `/git/token` route only if Q2 = B was answered before G5 started; otherwise this lane adds `routes/runnertoken.py` and one line in `main.py`, which G5 has finished with), new `apps/agent-worker/agent_worker/runnertoken.py`, `scripts/create-secrets.sh` (the `git-runner` provider), new tests | Requires a token mint naming one repository and exactly the three permissions. Requires a revoke on every attempt end, and an audit row with `revoked`. Requires that the App key is never read by the worker. |
 | G9 | **STATUS-404** (the separate defect, §6.3), filed as its own issue | none | `apps/swarm-api/swarm_api/store.py` (`Store.get_workflow`), `apps/swarm-mcp/swarm_mcp/workflows.py` (`fetch`), new `tests/unit/control_plane/test_workflow_other_tenant_404.py` | A workflow stored under tenant A, read with tenant B resolved, answers `workflow_not_in_tenant` naming B (today a bare `not found`). The bridge's status for a workflow it launched re-reads with the launch's tenant. |
 
@@ -726,12 +726,12 @@ A rebase rewrites history, so pushing the result over an already-pushed
 `swarm/` branch is not a fast-forward. #1225 asks both "refuse force-push"
 and "rebase its PR branch onto main … push".
 
-* **A. Lease-guarded rewrite of the task's own branch (recommended).**
+* **A. Lease-guarded rewrite of the agent's own branch (recommended).**
   `git_push_branch` may replace the branch only with
   `--force-with-lease=<branch>:<sha>`, where `<sha>` is the tip swarm-api
-  itself recorded for this task (its last audited push, or the tip at the
+  itself recorded for this agent (its last audited push, or the tip at the
   attempt's first fetch). It is never a sha the agent supplies. The rewrite
-  can only replace this task's own earlier work, never a commit someone else
+  can only replace this agent's own earlier work, never a commit someone else
   pushed meanwhile, and the audit records it as `rewrite: true`. A blind
   force is still refused.
 * **B. Merge, never rewrite.** `git_rebase_onto` becomes `git_update_from`,
@@ -757,9 +757,9 @@ and "rebase its PR branch onto main … push".
 
 * **A. Per tenant, on the repository record (recommended):**
   `readable_by_tasks`, set by a tenant admin and audited.
-* **B. A + per task:** the spec also names the repositories it will read,
+* **B. A + per agent:** the spec also names the repositories it will read,
   and the API takes the intersection.
-* **C. Per task only**, signed in the spec.
+* **C. Per agent only**, signed in the spec.
 
 ### Q4. Which service executes
 
@@ -787,12 +787,12 @@ branch that a lane fixes.
   and 20 pushes per attempt-hour, and an 8 KiB log tail per red row.
 * **B. Different numbers**, given by the owner.
 
-### Q7. Move the end-of-task publish onto the same platform path
+### Q7. Move the end-of-agent publish onto the same platform path
 
 * **A. Later, as its own design (recommended).** After the tools ship, the
   final push can use the same swarm-api push. The worker would then hold no
   forge token at all, which removes the reap-then-read ordering. This changes
-  the publish path every task uses, so it is its own decision with its own
+  the publish path every agent uses, so it is its own decision with its own
   measurements.
 * **B. Now, inside this build.**
 * **C. Never.**
@@ -805,13 +805,13 @@ Answered in one sitting; every recommendation was taken.
 
 | # | question | answer |
 |---|---|---|
-| Q1 | A rebased branch that is already pushed | **A.** Lease-guarded rewrite of the task's own branch, against the tip swarm-api recorded; blind force refused; audited as a rewrite. |
+| Q1 | A rebased branch that is already pushed | **A.** Lease-guarded rewrite of the agent's own branch, against the tip swarm-api recorded; blind force refused; audited as a rewrite. |
 | Q2 | The fallback token | **A.** Do not build it. G8 is not built. |
 | Q3 | Where the private-read allowlist lives | **A.** Per tenant, on the repository record (`readable_by_tasks`), set by a tenant admin and audited. |
 | Q4 | Which service executes | **A.** swarm-api, which gains the git binary. |
-| Q5 | Branches outside `swarm/` | **A.** Not now. Only task-derived `swarm/` branches. |
+| Q5 | Branches outside `swarm/` | **A.** Not now. Only agent-derived `swarm/` branches. |
 | Q6 | Limits | **A.** As written in §1.2. |
-| Q7 | The end-of-task publish | **A.** Later, as its own design. |
+| Q7 | The end-of-agent publish | **A.** Later, as its own design. |
 
 The build therefore runs G1–G7 and G9 (§7), and no G8.
 

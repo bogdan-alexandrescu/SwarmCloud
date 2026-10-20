@@ -5,7 +5,7 @@ The structural claim this platform makes:
 > Queued work costs nothing. Only `LEASED`, `DISPATCHED`, `STARTING` and
 > `RUNNING` create infrastructure demand.
 
-Ten thousand `QUEUED` tasks are ten thousand Firestore documents — cents per
+Ten thousand `QUEUED` agents are ten thousand Firestore documents — cents per
 month. The same backlog expressed as pending Kubernetes pods is a cluster
 autoscaler buying nodes to satisfy scheduling requests that will not be satisfied
 for hours. That difference is the single largest cost decision in the design, and
@@ -35,13 +35,13 @@ agent-hour.
 **Today no TTL is set: Claude Code's default is in force.** Nothing below is
 built. The section records a measurement, the owner's decision not to act on it
 yet, and where the knob would go, so the question is not re-measured from
-scratch. The full working, with the per-task table, is in
+scratch. The full working, with the per-agent table, is in
 [issue #323](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/323).
 `tests/unit/scripts/test_prompt_cache_ttl_doc.py` fails if the runner starts
 setting a TTL while this section still says the default is in force.
 
 **What was measured** (read 2026-09-29, tenant `eng`, 47 of the 50 newest
-terminal claude-code tasks; the other 3 had no `structured_output`). Prices are
+terminal claude-code agents; the other 3 had no `structured_output`). Prices are
 Opus 5.5 list per MTok: cache write $5 at 5m and $8 at 1h, cache read $0.20,
 output $20.
 
@@ -58,12 +58,12 @@ output $20.
 
 The largest single line was cache writes at the 1h rate, larger than output.
 The 1h TTL pays only when a request follows the previous one by more than
-5 minutes. Over 1,574 main-chain requests, 5 did, one in each of 5 tasks. 4 of
-those 5 tasks would have cost *more* at 5m, because the prefix is re-written
+5 minutes. Over 1,574 main-chain requests, 5 did, one in each of 5 agents. 4 of
+those 5 agents would have cost *more* at 5m, because the prefix is re-written
 after each gap. The gap-adjusted row charges that re-write.
 
-Per-task totals come from the result's `modelUsage`, not its top-level `usage`
-block. `usage` covers only the last init/success pair, so a task the worker
+Per-agent totals come from the result's `modelUsage`, not its top-level `usage`
+block. `usage` covers only the last init/success pair, so an agent the worker
 resumed is under-counted. `task_9be4128488d342208947` was the one case where the
 two disagreed.
 
@@ -77,7 +77,7 @@ observed split, main chain 1h and subagent 5m, matches the subscription column.
 On a subscription the dollars above are notional (`costBasis: "list"`). What
 is actually consumed is plan quota.
 
-**Quota cannot settle it.** Under 1h, a median task drew about 0.3% of a 5h
+**Quota cannot settle it.** Under 1h, a median agent drew about 0.3% of a 5h
 window and the p90 about 1.6%. That rests on one `eng:team` reading, so treat it
 as medium confidence. The data cannot separate a 1h write's quota draw from a
 5m write's, because every main-chain write in it was 1h. No amount of history
@@ -87,7 +87,7 @@ SwarmCloud.
 
 **The decision.** Owner, 2026-09-29: no TTL change. The controlled A/B that
 would answer the quota question is parked as not worth two 5h windows. It is
-about 30 tasks per arm on one account with a fresh 5h window, the arms differing
+about 30 agents per arm on one account with a fresh 5h window, the arms differing
 only in the TTL, sampling `sc accounts --json` every 5 minutes. The method and
 commands are in the issue. Any of these would reopen it:
 
@@ -190,7 +190,7 @@ happens, at admission, which is why they are the controls this platform keeps.
 
 **Owner decision 2026-10-08 (SD4, [schedules.md §4.3](schedules.md#43-budgets-and-what-they-can-and-cannot-promise)):
 per-type dollar caps, for schedules only.** The 2026-10-01 decision above still
-holds for everything that is not scheduled: tasks, workflows and issue runs
+holds for everything that is not scheduled: agents, workflows and issue runs
 started by hand. Nothing in admission reads these figures, no tenant-wide
 budget exists, `monthly_budget_usd` is still refused, and the scheduler is
 unchanged. What the caps bound is the **firing**, the moment a schedule decides
@@ -318,7 +318,7 @@ An agent that hangs costs money until something stops it:
 `max_in_worker_retry_delay_seconds` is the rule that stops workers being billed
 to wait. Anything longer than 45 seconds means checkpoint, park, release the
 lease, exit. Forty workers sleeping through a 20-minute rate-limit window is
-13 agent-hours of nothing; the same forty tasks parked cost zero.
+13 agent-hours of nothing; the same forty agents parked cost zero.
 
 Raising this value is the easiest way to accidentally multiply the bill.
 
@@ -362,8 +362,8 @@ decision.
 
 Terraform creates budget-shaped alerts (`create_alerts`, `alert_emails`) for
 control-plane 5xx, failing job executions, a stopped safety tick, dead-lettered
-wake messages and tasks exhausting every attempt. The last one matters for cost:
-tasks dead-lettering in volume means work is being paid for repeatedly and thrown
+wake messages and agents exhausting every attempt. The last one matters for cost:
+agents dead-lettering in volume means work is being paid for repeatedly and thrown
 away.
 
 ---
@@ -375,9 +375,9 @@ away.
 2. **Raising `global` without raising provider caps.** More agents contend for the
    same provider quota, so each one runs slower while billing the same — you pay
    more for the same throughput.
-3. **Long timeouts on exploratory profiles.** A 2-hour timeout on a task that
+3. **Long timeouts on exploratory profiles.** A 2-hour timeout on an agent that
    should take 10 minutes bills the full 2 hours when it hangs.
-4. **Retry storms.** `max_attempts` x a task that always fails is a multiplier on
+4. **Retry storms.** `max_attempts` x an agent that always fails is a multiplier on
    both compute and tokens. Watch the dead-letter alert.
 5. **Artifacts without lifecycle rules.** Checkpoints every 120 s, never expired,
    grows without bound.

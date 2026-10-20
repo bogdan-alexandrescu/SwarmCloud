@@ -1,6 +1,6 @@
 # The agent inspector's Artifacts pane, and CPU in Details (#184)
 
-What the task drawer shows about what an agent took in and produced, where each
+What the agent drawer shows about what an agent took in and produced, where each
 figure comes from, and the constraints behind the choices. The owner's
 decisions of 2026-09-25 are on issue #184; this file records how the UI keeps
 them and why, so they are not quietly undone.
@@ -27,8 +27,8 @@ benefit. The new pane's address is `#work/task/<id>/artifacts`.
 | Section | Source | Notes |
 |---|---|---|
 | Prompt | `GET /v1/tasks/{id}/input` | The prompt as the API **masked** it, wrapped, and the rest of the input as JSON below it; otherwise the whole input as JSON. `masked N` beside the eyebrow counts what the block draws. `no prompt` only when the key is missing. Never `task.input`, and never the raw input in place of a copy that could not be read. See [The input, masked](#the-input-masked). |
-| Repository | `task.repository_url`, `repository_ref`, `result_summary.git.base` | Nothing when no repository was asked for. The cloned commit is `reported at finish` while the task runs. |
-| Staged files | `metadata.input_from` joined with `result_summary.staged_inputs` (`dag.ts` `taskInputsOf`) and, for a workflow step, `GET /v1/workflows/{id}` | Each file links to the upstream run's own Artifacts pane, labelled with its step. The file is read from the **upstream** task's artifact routes, because the staged copy is never uploaded separately. An upstream object removed since reads `removed from the upstream run`, and the size shown stays the staged size. |
+| Repository | `task.repository_url`, `repository_ref`, `result_summary.git.base` | Nothing when no repository was asked for. The cloned commit is `reported at finish` while the agent runs. |
+| Staged files | `metadata.input_from` joined with `result_summary.staged_inputs` (`dag.ts` `taskInputsOf`) and, for a workflow step, `GET /v1/workflows/{id}` | Each file links to the upstream run's own Artifacts pane, labelled with its step. The file is read from the **upstream** agent's artifact routes, because the staged copy is never uploaded separately. An upstream object removed since reads `removed from the upstream run`, and the size shown stays the staged size. |
 | Answer | `GET /v1/tasks/{id}/answer` | First in Outputs, rendered with the existing Markdown renderer (React elements, never HTML). `not yet` while running, `no answer recorded` after an end with none. A runner-summary fallback is marked, because that summary is capped at 2,000 characters. |
 | Files | `GET /v1/tasks/{id}/artifacts?limit=200`, then `result_summary.artifacts` for anything past that page | The viewer is chosen by the server's `kind`, not by a name rule in the client. Images are drawn from the raw route; binary files are described. Every row has `download` (the raw route) and `copy gsutil`. Before the last attempt ends the list is `uploaded when the attempt ends`, never "none". See [One page of the listing](#one-page-of-the-listing-and-the-rest-of-the-manifest). |
 | Logs | `GET /v1/tasks/{id}/transcript`, `GET /v1/tasks/{id}/logs?stream=…` | `transcript` (steps), `stdout` and `stderr` (the agent CLI's own), and `runner (platform)`: the runner process's streams, which the Details panel used to present as the agent's output. |
@@ -46,7 +46,7 @@ expired sign-in arrives as a page) reads `image could not be loaded`, never a
 blank box.
 
 Nothing in the client builds an object key, a prefix or a `gs://` URI to send.
-A file is named by the name its manifest spells, on the task that owns it.
+A file is named by the name its manifest spells, on the agent that owns it.
 
 ### One page of the listing, and the rest of the manifest
 
@@ -59,13 +59,13 @@ page token.
 The pane's first version sent no `limit`. A browser run that took 60 screenshots
 drew 50 rows and a chip reading 50, with no mark. The last ten screenshots, which
 were the final page states, could not be viewed or downloaded from the pane.
-The Details pane's own file list, which read the manifest off the task, showed
+The Details pane's own file list, which read the manifest off the agent, showed
 all 60. So the pane drew a partial read as if it were the whole list. (Details'
 list has since been removed, as a duplicate of this one: see
 [Details, after the follow-up](#details-after-the-follow-up).)
 
 It now asks for `limit=200` (`ARTIFACT_PAGE_LIMIT`). Any file past that page is
-listed from the task's own `result_summary.artifacts`, which is the same record
+listed from the agent's own `result_summary.artifacts`, which is the same record
 the route serves. The note beside the count reads `N of M listed`, with the
 `partial` mark. A row past the page reads `from the task's manifest · kind not
 served`, because the server named no kind for it and the client does not keep a
@@ -81,10 +81,10 @@ to count against and the route returned a full page, the note reads
 
 ### Live
 
-While the task is not terminal and the pane is open, it re-reads every 5 s
+While the agent is not terminal and the pane is open, it re-reads every 5 s
 (`ARTIFACTS_POLL_MS`), which is the worker's `live_log_interval_seconds`. A
 faster poll re-reads the same object, and a slower one shows a tail a whole
-interval behind. One poll is the task, the transcript and one log read (the
+interval behind. One poll is the agent, the transcript and one log read (the
 agent's stderr and the runner's two streams). The answer, the listing and the
 workflow are read only when something can have changed. That is about 0.6
 requests a second against the 20-per-second per-principal budget. The agent's
@@ -96,7 +96,7 @@ it. The age moves on the shared 5 s clock between reads. A live tail is
 republished every interval even when nothing changed, so that age is the
 publisher's liveness, not new output.
 
-Polling stops once the task is terminal and its finish is in: the answer is
+Polling stops once the agent is terminal and its finish is in: the answer is
 settled, and the transcript and logs are final objects. Otherwise it stops
 30 s after `completed_at`, the Details pane's `DRAWER_SETTLE_MS`.
 
@@ -123,8 +123,8 @@ record.
 
 * The facts row (source, format, masked, the object's location, `show
   records`) is drawn only over a **published** stream. It was drawn whatever
-  the stream's status, so a task that had published nothing read `source live
-  [not measured] · masked 0` above `nothing published yet`, and a browser task
+  the stream's status, so an agent that had published nothing read `source live
+  [not measured] · masked 0` above `nothing published yet`, and a browser agent
   `source — · masked 0`.
 * A thinking step whose text is `""` is drawn as `thinking` and a real-zero
   mark, like a redacted one, not as an expandable that opens onto nothing.
@@ -238,11 +238,11 @@ never goes back to `task.input`:
   and no client reads a raw one (see `docs/agent-output.md`).
 
 The input never changes after submission, so a copy that was read is kept
-per task (`loadTaskInputOnce`) and shared between the two panes. Each pane
+per agent (`loadTaskInputOnce`) and shared between the two panes. Each pane
 asks through it on its own poll, the drawer's 10 s and this pane's 5 s: a copy
 already read is answered from memory without a request, and one that failed
 is asked for again, so one failure does not last until the drawer is
-reopened. One request per task is in flight at a time, whoever asks. The copy
+reopened. One request per agent is in flight at a time, whoever asks. The copy
 is not part of either pane's main read: Details used to read it inside
 `loadAgentRun`'s `Promise.all`, so the whole drawer waited on it, and it now
 reads it itself, as this pane does, so a slow copy blanks only the input
@@ -306,7 +306,7 @@ drawer's own event page that carries a figure (`interimReading`) and labels it
 `heartbeat event`. A heartbeat with the key and no value is not a reading.
 With cpu-seconds only, the peak and mean rows draw em dashes, never zeros; the
 mean row keeps `N cpu-s`, and the strip says `cpu-seconds only`. No read is
-added for this. The page is the task's first 200 events, so a long run's
+added for this. The page is the agent's first 200 events, so a long run's
 newest reading on it can be an early one, and the mark says so; on a full page
 the strip says `page full; newer readings may exist`. When the event read
 failed there is no page to look at, and the row says `events not read`, not

@@ -7,7 +7,7 @@ asked on 2026-10-04 for "a way to visualize the permissions the git token has
 on a given repo or set of repos. We might need to manage different git tokens
 per repo and per user or tenant." This is a sibling of
 [repo-index.md](repo-index.md) rather than a section of it, because a forge
-token is used by every task that clones or publishes, registered repository
+token is used by every agent that clones or publishes, registered repository
 or not, and because the rules that keep it secret deserve one place to be
 read in full. The screens are drawn in
 [web-ui/mockups/repositories.html](web-ui/mockups/repositories.html#tokens)
@@ -19,7 +19,7 @@ What the design settles, in one line each:
   Secret Manager secret named through the frozen `Tenant.secret_name`, under
   the tenant's own name, read only by the tenant's own identities (§1, §2).
 * **The resolution order is the owner's to pick**; two orders are written out
-  with what each costs. When nothing fits, the task parks
+  with what each costs. When nothing fits, the agent parks
   `CREDENTIAL_MISSING`, at no cost, as it does today (§3).
 * **What a token can do is computed server-side and served as labels**:
   per token and repository, eight capabilities as `ok` / `missing` /
@@ -27,7 +27,7 @@ What the design settles, in one line each:
   verified". The token itself is never returned, logged or rendered (§5, §6).
 * **Phase 1 needs no frozen-contract change**: the registry, the probe and the
   views work for the tenant default token as it is today. Using a repository
-  or user token in a task needs one request (E), written in §8.
+  or user token in an agent needs one request (E), written in §8.
 
 ---
 
@@ -67,7 +67,7 @@ accepts `git-u-<hex>`.
 **Readers: the tenant's worker account and swarm-api, until the broker is
 on (#1041).** The owner decided on 2026-10-11 that secrets are user-scoped,
 not tenant-scoped, superseding U1 (D7). Under U1 the tenant's worker account
-reads every member's slot, so an agent in Bob's task can mint its worker's
+reads every member's slot, so an agent in Bob's agent can mint its worker's
 token and read Alice's slot by name, and only the worker's code keeps the two
 apart. **That is still how every environment runs:** the fix below is built
 behind `forge_broker` (FORGE_BROKER, `terraform/infra/child_tasks.tf`), which
@@ -76,10 +76,10 @@ been on in dev and a live run passed
 ([design/user-scoped-secrets.md](design/user-scoped-secrets.md), built,
 switched off). With the switch on:
 
-* swarm-api releases a user slot only to the current attempt of a task that
+* swarm-api releases a user slot only to the current attempt of an agent that
   slot's owner submitted, through `POST /v1/attempts/forge-credential`
   (`apps/swarm-api/swarm_api/credbroker.py::ForgeCredentialBroker.release`).
-  The attempt proves itself with the attempt key that child tasks already
+  The attempt proves itself with the attempt key that child agents already
   register, the task's spec signature must verify, and the slot is
   recomputed from the signed `submitted_by`
   (`apps/swarm-api/swarm_api/credbroker.py::decide_slot`);
@@ -113,9 +113,9 @@ the guarantee rests on; design §5,
 [runbooks/github-app.md](runbooks/github-app.md), step 2). Until the broker is
 on, the worker reads a person's slot with the read it still holds.
 
-**Which token a task uses, as built.** Submission resolves it
+**Which token an agent uses, as built.** Submission resolves it
 (`apps/swarm-api/swarm_api/service.py::SubmissionService._resolve_forge`) and
-signs it into the task. The worker obtains that slot at runtime and nothing
+signs it into the agent. The worker obtains that slot at runtime and nothing
 else: a user slot from the broker, the tenant token or a repository token by
 its own direct read.
 
@@ -130,26 +130,26 @@ its own direct read.
 **The migration policy (owner decisions D4, 2026-10-07 and 2026-10-08).**
 People are refused once enforcement is on. Service submissions keep the tenant
 token: repository indexing, schedules, and the release's acceptance suite in
-the smoke tenant. Such a task shows its credential as tenant token, service
+the smoke tenant. Such an agent shows its credential as tenant token, service
 submission (`apps/swarm-api/swarm_api/codec.py::forge_credential_source`).
 The switch is `var.repository_grants_enforced` in each environment's tfvars:
 on in dev, off in prod, which registers no App
 ([api-refusals.md](api-refusals.md)). One caveat while a switch is off: an
-ungranted person's task also runs with `git`, and the label is derived from
-the credential alone, so that task reads "service submission" too.
+ungranted person's agent also runs with `git`, and the label is derived from
+the credential alone, so that agent reads "service submission" too.
 
 **How to retire the tenant token.** This is the owner's step, and it is a
 procedure, not a console button. The Access page never got the "retire the
 tenant token" button §3.5 of onboarding.md once sketched, because service
 submissions still read the token.
 
-1. Turn enforcement on for the environment, so no person's task reads `git`
+1. Turn enforcement on for the environment, so no person's agent reads `git`
    any more.
 2. Confirm nothing else does. Every service submission does (indexing,
    schedules, acceptance), and so does swarm-api's own issue preview and
-   open-work read (`SecretManagerForgeTokens`, §0). The API serves each task's
+   open-work read (`SecretManagerForgeTokens`, §0). The API serves each agent's
    `forge_credential_source`. No screen counts them yet, so the check is a
-   read of the tenant's tasks over the last fortnight. A tenant that still
+   read of the tenant's agents over the last fortnight. A tenant that still
    runs service submissions keeps the token, or first moves them to another
    credential.
 3. Disable the token's enabled version. `gcloud secrets versions list
@@ -252,7 +252,7 @@ named under tenant `eng` is never bound to `ops`'s account, so a repository
 token or a user token is as isolated between tenants as `-git` is now.
 
 **Within a tenant, a user token is readable by the tenant's worker account,
-which every task of that tenant runs as.** The resolver (§3) decides that
+which every agent of that tenant runs as.** The resolver (§3) decides that
 Alice's token is used only for Alice's dispatches; IAM does not. The worker
 keeps the credential out of the agent's sight (`gitops.py`: the agent is
 never told the path and the file is gone before it starts), which is the same
@@ -301,17 +301,17 @@ self-service, and S1 adds no platform privilege.
 
 ---
 
-## 3. Resolution: which token a task uses
+## 3. Resolution: which token an agent uses
 
 ### 3.1 The order — two options, for the owner
 
-When a task needs a token for a repository, swarm-api resolves it at
+When an agent needs a token for a repository, swarm-api resolves it at
 submission (§8 says why there, not in the worker), from the records of the
-task's **own** tenant:
+agent's **own** tenant:
 
 * **(R1) user > repo > tenant.** The dispatching user's token if they have
   one covering the repository, else the repository's, else the tenant
-  default. Everything the task does on the forge — clone, push, open the
+  default. Everything the agent does on the forge — clone, push, open the
   pull request, comment — is the user. Simplest to explain; a user whose
   personal token cannot push to a repository the tenant token can is
   refused where R2 would have succeeded (the probe shows it in advance).
@@ -322,7 +322,7 @@ task's **own** tenant:
   merging. Least privilege on the user's token — it needs only
   `pull_requests: write` — and a user without one still dispatches.
 
-In both, the dispatching user is the task's `submitted_by`
+In both, the dispatching user is the agent's `submitted_by`
 (`apps/common/swarm_common/models.py::Task.submitted_by`), the verified email from the ID
 token, never a field a caller sets (invariant 10: a caller picks a runner
 profile and a repository by name, never a credential).
@@ -330,12 +330,12 @@ profile and a repository by name, never a credential).
 ### 3.2 When nothing fits
 
 If no record covers the repository, or the one that does is `expired` or
-`revoked`, the task parks **`CREDENTIAL_MISSING`** — the existing state, at
-no cost (invariant 1: a parked task creates no infrastructure demand) — with
+`revoked`, the agent parks **`CREDENTIAL_MISSING`** — the existing state, at
+no cost (invariant 1: a parked agent creates no infrastructure demand) — with
 an event detail naming the scopes tried and why each was passed over
 (`user: none registered`, `repo: expired 2026-09-30`, `tenant: none`), by
 name and never by value. Registering or rotating a token that covers it
-moves the task back to `QUEUED`, as registering any missing credential does.
+moves the agent back to `QUEUED`, as registering any missing credential does.
 A token whose last probe says a capability the step needs is `missing`
 (push, for a publishing step) parks the same way with that reason; one whose
 probe says `unknown` is used, because refusing on "unknown" would refuse
@@ -361,7 +361,7 @@ every fine-grained PAT (§5.2).
 * **Rotation** adds a new secret version (`create-secrets.sh --stdin
   --disable-previous`, or §4.2's register box if the owner allows it); the
   record's `last4` and `rotated_at` change and the probe runs at once. A
-  worker reads `latest` when it starts, so a task in flight keeps the version
+  worker reads `latest` when it starts, so an agent in flight keeps the version
   it read, and the next attempt gets the new one.
 * **Expiry** is read from the forge on every probe: GitHub answers a request
   made with an expiring PAT with the `github-authentication-token-expiration`
@@ -384,17 +384,17 @@ health, ...). **All of them resolve their slot in one place,
 `forge.resolve_forge_slot`** (read through `SecretManagerForgeTokens.token_for`);
 nothing else in `apps/swarm-api` names the `-git` slot to read it, and
 `tests/unit/control_plane/test_forge_slot_resolution.py` fails if something
-does. The order, the same rule a task's `forge_credential` follows
+does. The order, the same rule an agent's `forge_credential` follows
 (`SubmissionService._resolve_forge`):
 
 1. **the person's own user slot in this tenant**, `git-u-<hex>` of their
    email, when the read is made on behalf of a person (the route's
    authenticated caller) and their slot's `git_tokens` record exists and is
-   neither `expired` nor `revoked` — the credential their own task would run
+   neither `expired` nor `revoked` — the credential their own agent would run
    with;
 2. **the tenant's `-git` slot**, when the tenant document lists `git` among
    its `credentials` or its tenant-default record exists — what a service
-   task uses, and what every read used before INDEX-USER-SLOT;
+   agent uses, and what every read used before INDEX-USER-SLOT;
 3. **a personal tenant's owner's user slot** (`u-<user>`, `kind: user`, its
    `principal`'s `git-u-<hex>`), when its record exists — the slot the guided
    onboarding's "Connect GitHub" makes, and normally the only GitHub
@@ -417,7 +417,7 @@ Not resolved here: a person's per-owner fallback slot (D5, `owner_suffix`) —
 server-side reads use the person's base user slot — and repository slots
 (`git-r-`), which no Terraform yet lets swarm-api read (§2).
 
-**Service submissions clone with the same rule (INDEX-CRED).** A task
+**Service submissions clone with the same rule (INDEX-CRED).** An agent
 submitted on the tenant's behalf rather than a person's — an index run
 (Index now and the repository poll both submit with `service_submission`),
 a `repo-index-refresh` schedule's, a service account's — runs on
@@ -426,21 +426,21 @@ above. `SubmissionService._resolve_forge` calls it; there is no second copy.
 Until INDEX-CRED that submission path hard-coded `git`, so on 2026-10-14
 u-bogdan's Try it passed for `sagaxyz/ai-studio` through the owner's
 connection slot while every index run of it cloned with a `-git` slot the
-workspace never had and failed "Repository not found". A person's own task
-keeps its own slot first (their grant, §3.1); a person's ungranted task while
+workspace never had and failed "Repository not found". A person's own agent
+keeps its own slot first (their grant, §3.1); a person's ungranted agent while
 `REPOSITORY_GRANTS_ENFORCED` is off takes the service rule too, since "the
 tenant token" it used to fall back to does not exist in a personal
 workspace. Schedules and issue runs that submit *as their owner* are person
 submissions and run on that person's slot.
 
-* **Recorded truthfully.** The task's `metadata.forge_credential_source`
+* **Recorded truthfully.** The agent's `metadata.forge_credential_source`
   (reserved: no caller may send it) says `tenant` or `owner`, so the API's
   `forge_credential_source` reads "tenant token, service submission" or
   "owner's GitHub connection, service submission" — a bare `git-u-` slot
   name cannot tell the owner's connection run for the tenant from a
-  person's own task.
+  person's own agent.
 * **Refused up front when it cannot clone.** In a personal workspace with no
-  usable slot at all, a service task on a repository whose registration says
+  usable slot at all, a service agent on a repository whose registration says
   it is private (or internal) is refused 409 `no_forge_credential` with
   `no_github_credential`'s sentence, and nothing is queued. Only a personal
   workspace: its credentials are exactly the records its connection writes,
@@ -501,7 +501,7 @@ of `ok` / `missing` / `unknown` with a one-line reason:
 
 | capability | what needs it | how it is read (non-mutating) |
 |---|---|---|
-| **clone / read** | every task | `GET /repos/{o}/{r}`: 200 is `ok`, 404 is `missing` ("not visible to this token") |
+| **clone / read** | every agent | `GET /repos/{o}/{r}`: 200 is `ok`, 404 is `missing` ("not visible to this token") |
 | **push branches** | publishing steps | the repository's `permissions.push`, and for a classic PAT the `repo` (or, public only, `public_repo`) scope; confirmed by asking for the push service advertisement (`info/refs?service=git-receive-pack`), which GitHub answers only for a credential that may push and which writes nothing |
 | **open pull requests** | publishing steps | `pull_requests: write` in an App token's permissions; for a classic PAT, `repo` scope plus push; for a fine-grained PAT, `unknown` (§5.2) |
 | **read checks** | the merge step, the selected-tests gate | `GET /repos/{o}/{r}/commits/{default_branch}/check-runs?per_page=1`: 200 `ok`, 403 `missing` |
@@ -602,7 +602,7 @@ Probe results are kept per pair in `git_token_checks/{token_id}_{repo_id}`
 **Phase 1 needs none.** The registry, the probe and every view work on
 swarm-api documents; the tenant default token is the existing `-git`.
 
-**Request (E), for using a repository or user token in a task**, to be filed
+**Request (E), for using a repository or user token in an agent**, to be filed
 in [contract-change-requests.md](contract-change-requests.md) when the owner
 picks this design:
 

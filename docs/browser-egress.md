@@ -9,7 +9,7 @@ EGRESS-PROXY, owner decision 2026-10-13 (~20:40 PDT), part of #1030.
 
 ## 0. Why this exists
 
-The live-browser analysis of 26 browser tasks (the operator's
+The live-browser analysis of 26 browser agents (the operator's
 `scratchpad/lb-analysis/ANALYSIS.md`, on the laptop, not in this repository)
 found that **Google answered 429 and redirected to `/sorry/` on 3 of 3 real
 searches**. The likely reason is that every SwarmCloud agent leaves through
@@ -62,7 +62,7 @@ price can be substituted directly.
 on the vendor's own documentation before signing:
 
 1. **User/password auth with a session id in the username or password.** This
-   is how a task keeps one IP (section 2.4).
+   is how an agent keeps one IP (section 2.4).
 2. **Sub-users, or zones, with a traffic cap and auto-disable.** This is the
    budget cap and the outer kill switch (sections 3.5, 5).
 3. **A TLS-wrapped proxy endpoint (`https://` proxy), or a documented reason
@@ -75,9 +75,9 @@ on the vendor's own documentation before signing:
    explains why this needs a written answer and why a dashboard checkbox is
    not enough.
 
-### 1.3 Expected GB per browser task
+### 1.3 Expected GB per browser agent
 
-No per-task byte count exists yet, because nothing meters the browser's
+No per-agent byte count exists yet, because nothing meters the browser's
 traffic today. Section 6 adds that meter. Until then, here is an estimate from
 published page weights.
 
@@ -87,7 +87,7 @@ default (`livegate/presets.py`), so use **W ≈ 2.9 MB** per full page load. The
 browser profile is a fresh memory volume on each attempt (live-browser.md
 §5.5), so the first load of every site is uncached. A repeat load on the same
 site re-fetches only part of the page, so take a cache factor **c ≈ 0.6**
-(40% served from cache) across a task. Add **10%** for TLS handshakes, HTTP
+(40% served from cache) across an agent. Add **10%** for TLS handshakes, HTTP
 headers and CONNECT overhead.
 
 ```
@@ -98,7 +98,7 @@ typical (search, research, a form, a check) P = 25, c = 0.6 : 25 × 2.9 × 0.6 �
 heavy   (QA of an SPA or a news site, 4 MB)  P = 80, c = 0.5 : 80 × 4.0 × 0.5 × 1.1 = 176 MB ≈ 0.18 GB
 ```
 
-**Planning figure: 0.10 GB per task**, which is twice the typical case and
+**Planning figure: 0.10 GB per agent**, which is twice the typical case and
 allows for the background traffic below. **Ceiling: 0.25 GB** for a
 heavy-QA mix. One video page can exceed every number here, which is why
 section 3.5 adds a per-attempt byte cap.
@@ -247,7 +247,7 @@ password. The exact syntax is vendor-specific, and `swarm-egress` renders it
 from one template per vendor. It is never built in the pod.
 
 * **Session id = a hash of `(tenant_id, task_id, attempt_id)`, truncated.**
-  It is opaque to the vendor, so no tenant or task name leaves the platform.
+  It is opaque to the vendor, so no tenant or agent name leaves the platform.
   It is stable for the whole attempt, which covers the sign-in, the agent's
   use of the session afterwards, and the "fresh page" context.
 * **The sticky lifetime is set to the vendor's maximum.** For Oxylabs that is
@@ -425,7 +425,7 @@ where the vendor stores its logs.
   both (Q5), and live-browser agents now get a `search` tool that queries
   the Brave Search API through swarm-api and opens the results in the live
   browser. See [search-tool.md](search-tool.md).
-* **The vendor's acceptable use.** Our tenants' agents run arbitrary tasks.
+* **The vendor's acceptable use.** Our tenants' agents run arbitrary agents.
   One agent that credential-stuffs, mass-creates accounts or scrapes a
   forbidden category puts **our** vendor account at risk, and a suspension
   stops every tenant's proxied browsing. The controls are: tenant opt-in
@@ -478,7 +478,7 @@ There are three layers, from fastest to most independent:
 | 7 | `swarm-egress` has `requests == limits`. The gate's forwarder runs inside the sidecar's existing share of the `browser` class (live-browser.md §8.2). |
 | 8 | Unchanged. |
 | 9 | `swarm-egress` and the vendor account are **shared platform infrastructure**, like the `swarm-live` relay. Isolation is kept by a per-tenant ticket, a per-tenant session id, per-tenant byte accounting and caps, and per-tenant opt-in. Phase 3 can give each tenant its own vendor sub-user if the owner wants billing separated. |
-| 10 | **A caller never names a proxy, a country or a vendor.** Routing is per tenant and profile, set by the platform. A task input carrying such a field is refused, as any backend parameter is. |
+| 10 | **A caller never names a proxy, a country or a vendor.** Routing is per tenant and profile, set by the platform. An agent input carrying such a field is refused, as any backend parameter is. |
 
 **Frozen contract.** None of this needs a change to `apps/common/swarm_common/`
 if the switch lives in platform configuration (section 6.1). If the owner
@@ -510,9 +510,9 @@ cheaper than any commitment.
 
 ### 4.2 ISP / static: per IP
 
-The pool size is set by **concurrency and per-IP search rate, not by task
+The pool size is set by **concurrency and per-IP search rate, not by agent
 count.** One IP per concurrent proxied attempt keeps sign-ins apart. If many
-tasks share a few IPs, those IPs build the same reputation `swarm-nat-ip-0`
+agents share a few IPs, those IPs build the same reputation `swarm-nat-ip-0`
 has, so size the pool at **2 × peak concurrent browser attempts, and at least
 10**. At **$2.50-$3.00 per IP/month**:
 
@@ -602,19 +602,19 @@ page_load_p95_ms}`. It holds **counts only**, never a URL or a query,
 consistent with "nothing carried here is logged" (`livegate/__main__.py`).
 The bytes come from the forwarder for proxied attempts, and from
 Chromium's own `Network` totals on the gate's session for direct ones. That
-gives the GB-per-task number that section 1.3 had to estimate.
+gives the GB-per-agent number that section 1.3 had to estimate.
 
 **Phases.**
 
 * **Phase 0, baseline (direct, nothing bought).** Ship `egress_stats` with
-  `route: direct` first. Run a fixed set of **30 search-led browser tasks**
-  (the 26 analysed tasks plus enough search-heavy ones to reach 30 Google
+  `route: direct` first. Run a fixed set of **30 search-led browser agents**
+  (the 26 analysed agents plus enough search-heavy ones to reach 30 Google
   searches or more) and count `/sorry`. Thirty is the smallest set that can
   distinguish "always blocked" (3/3 so far) from "blocked one time in five" at
   a useful confidence. Three cannot. Measure the background-traffic hosts for
   the bypass list (section 2.3) in the same run.
 * **Phase 1, A/B on the operator's own tenant.** Switch on one tenant. Run
-  the same 30 tasks proxied, through **both** a rotating-residential trial and
+  the same 30 agents proxied, through **both** a rotating-residential trial and
   an ISP trial if the vendor offers both. Compare the `sorry` rate,
   `captcha` rate, GB/task, and page-load p50/p95 against phase 0.
   **Success:** a `sorry` rate under 10% with the proxy, against the phase-0
@@ -651,7 +651,7 @@ These are also in the lane's `questions.json`.
   proxy endpoint, and acceptable use for agent browsing and sign-ins.
 
 **Q2. Rotating residential or ISP/static?**
-* **ISP**: fixed cost (~$25-$120/month at our scale), one stable IP per task
+* **ISP**: fixed cost (~$25-$120/month at our scale), one stable IP per agent
   across parks and carried sessions, and no residential-sourcing question.
   Its risk is a weaker reputation with Google.
 * **Rotating residential**: the best reputation, but metered ($120-$2,400/month
@@ -722,7 +722,7 @@ The owner holds the Bright Data account, KYC and credential. The credential is s
   Both are checked by the build lane's tests and the image's `selftest.py`.
 * **GKE FQDN network policy on this Autopilot cluster**, for pinning
   `swarm-egress` to the vendor's hostname.
-* **The 26-task analysis itself** is on the operator's laptop. This document
+* **The 26-agent analysis itself** is on the operator's laptop. This document
   relies on its quoted finding (3 of 3 searches answered 429 `/sorry`) and on
   the NAT configuration measured in the 2026-10-09 incident, not on a re-run.
 
@@ -765,7 +765,7 @@ browser attempt runs direct.
   CONNECT, and is not one-use.
 * **Fencing in swarm-egress.** swarm-egress has no Firestore, as the relay has
   none (live.tf says why). It fences in memory instead. It remembers the
-  highest generation it has seen per task, refuses a lower one with
+  highest generation it has seen per agent, refuses a lower one with
   `stale_generation`, and closes the older generation's open tunnels as soon
   as a newer one appears. A tunnel also closes when its ticket expires, so a
   stale worker that swarm-api will not renew loses egress within one ticket
@@ -1010,7 +1010,7 @@ what `allow-egress-proxy.yaml` selects. That NetworkPolicy already opens TCP
 
 Built: the scheduler's half of the switch. A GKE pod is dispatched for
 residential egress when **all four** hold, read from the scheduler's own
-environment and never from the task (invariant 10):
+environment and never from the agent (invariant 10):
 
 * the live-browser sidecar is on (`LIVE_BROWSER_SIDECAR`), so there is a
   `display` container and a Chromium to route;

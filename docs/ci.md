@@ -818,7 +818,7 @@ two holes followed from it:
 * On a `skip_build` prod redeploy, `promote` is skipped the moment `approval`
   succeeds, so the apply is the very next job. A reviewer who approved and
   cancelled a second later still got a prod apply.
-* `deploy`'s GKE proof (prod; dev's is accept.yml's) dispatches a browser task into the
+* `deploy`'s GKE proof (prod; dev's is accept.yml's) dispatches a browser agent into the
   environment. It was `always() && steps.verify.outcome == 'success'`, so a
   cancel that landed on the smoke test still dispatched it.
 
@@ -1221,20 +1221,20 @@ held the lock, and every later push queued behind it. `release-dev` is
 ### Six at once does not fit, so it is two waves
 
 The suite submits for the `smoke` tenant. Its ceiling is **20** concurrent
-tasks: `max_active = capacity_units = 20` in `dev.tfvars`, `tenants.smoke`.
-Each group's peak of tasks in flight, read from its group file:
+agents: `max_active = capacity_units = 20` in `dev.tfvars`, `tenants.smoke`.
+Each group's peak of agents in flight, read from its group file:
 
 | group | peak | why |
 |---|---|---|
-| mock | ~13 | twelve tasks and a two-step workflow, submitted before it waits |
-| generic | ~8 | one task per command row |
+| mock | ~13 | twelve agents and a two-step workflow, submitted before it waits |
+| generic | ~8 | one agent per command row |
 | workflow | ~4 | four workflow roots |
-| claude-code | ~3 | three tasks |
-| browser | ~3 | three tasks |
+| claude-code | ~3 | three agents |
+| browser | ~3 | three agents |
 | git-tools | ~5 | its lane and a two-step build workflow, then the build pair beside the rebase lane and the reader |
-| live-browser | 1 | one task; on a schedule since 2026-10-14, not in a wave ([below](#live-browser-runs-on-a-schedule)) |
+| live-browser | 1 | one agent; on a schedule since 2026-10-14, not in a wave ([below](#live-browser-runs-on-a-schedule)) |
 
-Without live-browser that is about 36, over the ceiling. A task over the ceiling queues
+Without live-browser that is about 36, over the ceiling. An agent over the ceiling queues
 rather than fails (invariant 1: `QUEUED` costs nothing). But every check has a
 settle deadline, and time spent in the queue comes out of it. So the groups
 run in **two waves**:
@@ -1273,7 +1273,7 @@ an accepting job:
 A post-release run's `quiesce` cancels every other in-progress `accept.yml` run
 and every running `swarm-verify` execution. That includes a scheduled
 live-browser run in flight. A cancelled scheduled run files nothing and does
-not count toward the streak. Its peak of one task fits beside either wave if
+not count toward the streak. Its peak of one agent fits beside either wave if
 the two overlap.
 
 **Coming back.** `scripts/accept-live-browser-streak.sh` reads the completed
@@ -1298,10 +1298,10 @@ distinct causes, some in the same run:
 
 | cause | runs | where |
 |---|---|---|
-| `returned`: the task was still **`PARKED`** at the 900 s deadline, after the hand-off, the take-over and the typing had all passed | 5 (every run from 2026-10-14 00:24 on) | began with HANDOFF-POLICY (PR 1264), which parks a hold after one unwatched minute: `apps/swarm-api/swarm_api/handoff.py` (`HUMAN_UNWATCHED_SECONDS`, `opening_deadline`), the worker's park in `apps/agent-worker/agent_worker/lifecycle.py` (`park_human_required`). The scripted viewer (`tests/acceptance/test_live_browser.py`) holds control through the wait, so either it does not count as watching, or a returned task is not woken from the park |
+| `returned`: the agent was still **`PARKED`** at the 900 s deadline, after the hand-off, the take-over and the typing had all passed | 5 (every run from 2026-10-14 00:24 on) | began with HANDOFF-POLICY (PR 1264), which parks a hold after one unwatched minute: `apps/swarm-api/swarm_api/handoff.py` (`HUMAN_UNWATCHED_SECONDS`, `opening_deadline`), the worker's park in `apps/agent-worker/agent_worker/lifecycle.py` (`park_human_required`). The scripted viewer (`tests/acceptance/test_live_browser.py`) holds control through the wait, so either it does not count as watching, or a returned agent is not woken from the park |
 | `recording`: "2 object(s) under live/ are not recording segments" | 8 | **harness bug, fixed here.** The stray check matched any `/live/` in the object name, so it counted the worker's log tails `logs/live/agent_stdout.tail.log` and `agent_stderr.tail.log` (`agent_worker/runners/streams.py`). It now judges only `<attempt>/live/` (`stray_live_objects`) |
-| `returned`: the task succeeded, but its answer and `session-code.txt` do not hold the code the typed password makes | 4, plus 1 whose reason was lost (below) | the agent's second read of `#code` after `swarm-handoff wait` exits 0, through the live browser as BROWSER-ENFORCE (PR 1248) reshaped it: `images/agent-runtime-browser/swarm_browser.py`, `swarm-handoff` |
-| `handoff`: the task ended `SUCCEEDED` without asking for help | 3 (2026-10-12 to 10-13 03:18, none since) | the agent skipped `swarm-handoff request`; the prompt is `LIVE_BROWSER_PROMPT` in `scripts/acceptance/groups/live-browser.sh` |
+| `returned`: the agent succeeded, but its answer and `session-code.txt` do not hold the code the typed password makes | 4, plus 1 whose reason was lost (below) | the agent's second read of `#code` after `swarm-handoff wait` exits 0, through the live browser as BROWSER-ENFORCE (PR 1248) reshaped it: `images/agent-runtime-browser/swarm_browser.py`, `swarm-handoff` |
+| `handoff`: the agent ended `SUCCEEDED` without asking for help | 3 (2026-10-12 to 10-13 03:18, none since) | the agent skipped `swarm-handoff request`; the prompt is `LIVE_BROWSER_PROMPT` in `scripts/acceptance/groups/live-browser.sh` |
 | `handoff`: still `RUNNING` at the deadline | 1 | one run, 2026-10-12 14:52 |
 
 One more harness bug blanked the reasons in all of these. 13 of the 14 logs
@@ -1404,7 +1404,7 @@ The trade-off the owner accepted: in the **shared** project
 future** — the other team's, and swarm's own merge job `swarm-job-eng-merge` —
 not only swarm-verify and the worker jobs. What it allows on any of them is
 the role and no more: get a job, start an execution (with overridden
-arguments), read executions and tasks, cancel a running execution. No create,
+arguments), read executions and agents, cancel a running execution. No create,
 update, delete or IAM permission, so it cannot change what a job runs or who
 may run it; `tests/terraform/bootstrap.tftest.hcl` holds both the absent
 condition and those permissions. What bounds the account is that only
@@ -2120,10 +2120,10 @@ fixer by hand and push the fix-up from a laptop.
    then each failed job keeps an equal share of its tail, 16 KiB in all
    (`LOG_EXCERPT_MAX_BYTES`). `redact` is a pattern list and not a boundary
    (its own header says so); what makes a leak survivable is that the excerpt
-   is stored as a task's input, which the API serves masked.
+   is stored as an agent's input, which the API serves masked.
 3. **One step, through the API, by name.** It submits a one-step workflow:
    runner profile `claude-code`, the excerpt in `input.prompt`, strategy
-   `direct-pr`, and `continues_task` naming the red branch's task. No image,
+   `direct-pr`, and `continues_task` naming the red branch's agent. No image,
    command, backend or resource field exists to send (invariant 10).
 4. **The fix lands on the red branch.** The worker clones `swarm/<task-id>`
    rather than main, and pushes the fix onto it rather than onto a branch of
@@ -2134,7 +2134,7 @@ fixer by hand and push the fix-up from a laptop.
    `MAX_FIX_ATTEMPTS` (two; the script says why) one more comment says it
    stopped. A submission the API refuses is a comment and a red fixer run, and
    does not count as an attempt.
-6. **How the fix step ended is a comment too.** When the fix task reaches a
+6. **How the fix step ended is a comment too.** When the fix agent reaches a
    terminal state, swarm-api posts one comment on the pull request: the fix
    task's id, its console link, its state, and one paragraph -- the commit it
    pushed, or why nothing was pushed, and the agent's own account cut to a
@@ -2158,7 +2158,7 @@ CI reads. The tick's answer carries `ci_fix` (posted, waiting, failed) and
   `metadata.ci_fix` = `{pull_request, run_id, head_sha, attempt,
   max_attempts}` on the workflow. The API accepts it only beside
   `continues_task`, refuses any other key in it (the post-back's record
-  above all), and stamps `ci_fix.postback = "pending"` on the fix task.
+  above all), and stamps `ci_fix.postback = "pending"` on the fix agent.
 * **Only to the pull request of the continued branch.** The tick reads the
   pull request with the tenant's token and posts only if its head branch is
   `swarm/<the continued task>`; anything else is given up as
@@ -2176,13 +2176,13 @@ CI reads. The tick's answer carries `ci_fix` (posted, waiting, failed) and
 * **The token needs `Issues: Read and write`** on the repository -- the same
   permission an issue run's comments need ([multi-tenancy.md](multi-tenancy.md)).
   Without it the fix still runs and pushes; the tick reports
-  `writeback_forbidden` for the task and retries until it gives up.
+  `writeback_forbidden` for the agent and retries until it gives up.
 
-### Why a step may push to another task's branch
+### Why a step may push to another agent's branch
 
 `continues_task` is a TASK ID, never a branch name: the worker derives the
 branch from it with the prefix it pushed under, as the integrator derives its
-contributors'. The API refuses it unless the task is in the caller's own tenant
+contributors'. The API refuses it unless the agent is in the caller's own tenant
 (another tenant's reads exactly like a missing one), was itself `direct-pr` in
 the same repository, and the workflow is `direct-pr` with one step and no
 `repository_ref`. A continuation of a continuation continues the original
@@ -2190,29 +2190,29 @@ branch.
 
 Since #454's CI loop a tenant MEMBER may also continue an `integrate`
 workflow's **integrator**: it pushes `swarm/<its own task id>` through the same
-`publish_branch` a `direct-pr` task does, and opens the workflow's one pull
+`publish_branch` a `direct-pr` agent does, and opens the workflow's one pull
 request from it, so an issue run's fix round lands on the run's pull request.
 A contributor is still refused (its branch has no pull request).
 
 **What the CI fixer may continue** (owner decision 2026-10-06). Its
-continuation-scoped account reaches exactly the tasks that opened a pull
+continuation-scoped account reaches exactly the agents that opened a pull
 request from their own branch, in its own tenant:
 
-* a `direct-pr` task -- the reach contract request 30 reviewed;
+* a `direct-pr` agent -- the reach contract request 30 reviewed;
 * an `integrate` workflow's **integrator**. Every SwarmCloud lane pull
   request is opened by one (the workflow's final fix step), so a fixer
-  limited to `direct-pr` tasks could fix none of them: its first real run,
+  limited to `direct-pr` agents could fix none of them: its first real run,
   on PR #740, was refused `422 invalid_dispatch`. The fix pushes to the same
   `swarm/<integrator task>` branch, so that pull request updates, and the
   per-pull-request cap and the post-back above work unchanged, both keyed on
-  the integrator as the continued task. The integrator is recognised by the
+  the integrator as the continued agent. The integrator is recognised by the
   `role` the API recorded in its dispatch block when the workflow was
   submitted -- a reserved key no caller can write -- never by anything the
   fixer sends.
 
 Still refused to it, each as `422 invalid_dispatch`: any other step of a
 workflow (a contributor's branch has no pull request of its own, so a fix
-there reaches nobody), any task of another tenant (read exactly like a
+there reaches nobody), any agent of another tenant (read exactly like a
 missing one), a chain of continuations whose root is neither of the two, and
 a merge-only continuation (a merge is a member's power, not a push). Widening
 the reach to integrators lets a stolen fixer token push to every lane pull
@@ -2262,7 +2262,7 @@ it is not configured, and submits nothing.
   refuses the repository-wide forms. The plan also refuses an account that is
   the deployer, or that is not in `frontend_iap_members`.
 * **Its tenant must be the tenant that owns the swarm pull requests.** The API
-  refuses to continue another tenant's task, by design. So the account is
+  refuses to continue another tenant's agent, by design. So the account is
   LISTED on that tenant, in `tenants.<tenant>.service_accounts` in
   `terraform/environments/<env>/<env>.tfvars`, which resolves it by exact
   email and unique id (contract request 30). It is NOT added to the tenant's
@@ -2338,14 +2338,14 @@ authenticates and is refused.
 
 * On the next red `swarm/<task>` pull request, the `ci-fix` run is green and
   the pull request has a comment `CI fixer: attempt 1 of 2.` naming the
-  workflow and the fix task. `gh run list --workflow ci-fix.yml --limit 5`
+  workflow and the fix agent. `gh run list --workflow ci-fix.yml --limit 5`
   lists the runs; a run that is SKIPPED was not a red `application` run on a
   `swarm/` branch of this repository (the job's `if:`).
-* The fix task is in the console under its id, in `eng`, and its branch is the
+* The fix agent is in the console under its id, in `eng`, and its branch is the
   pull request's. Its push re-runs `application` on the pull request.
-* Within a minute or two of the task ending, a second comment,
+* Within a minute or two of the agent ending, a second comment,
   `CI fixer: attempt 1 of 2 ended <STATE>.`, with the console link and the
-  outcome. If it does not come, the `merge_wake` tick's answer names the task
+  outcome. If it does not come, the `merge_wake` tick's answer names the agent
   and the code in `ci_fix_failures` (`writeback_forbidden`: the token lacks
   `Issues: write`; `pull_request_mismatch`: the pull request is not on the
   continued branch).
@@ -2378,7 +2378,7 @@ derived from its group's address by the frozen
 of `eng`'s pull requests -- every fix would be refused as "not a task in your
 tenant". A group member is also a full member of its tenant, able to submit
 any work, where the listing above makes the account continuation-scoped (it
-may only continue a `direct-pr` task or an integrator; contract request 30
+may only continue a `direct-pr` agent or an integrator; contract request 30
 and the 2026-10-06 decision above). The listing
 already keeps the account out of `eng@saga.xyz`. Mapping a second group onto
 `eng` is a frozen-contract change, and whether to make it is the owner's
@@ -3386,7 +3386,7 @@ the same commit. By job and cause:
 
 | job | times | test or step | cause | done |
 |---|---:|---|---|---|
-| `unit tests (2/4)` | 2 | `test_live_api.py::test_the_viewer_socket_extends_the_hold_while_it_is_open` (PRs 1267 and 1268) | the test left the socket's `with` as soon as it read the close, but the app still writes its `viewer_left` audit after closing; leaving the `with` makes the TestClient cancel the app's task mid-teardown, which surfaced as `CancelledError` from the portal | fixed: the test waits for the `viewer_left` row inside the session, as do the two other socket tests with the same shape |
+| `unit tests (2/4)` | 2 | `test_live_api.py::test_the_viewer_socket_extends_the_hold_while_it_is_open` (PRs 1267 and 1268) | the test left the socket's `with` as soon as it read the close, but the app still writes its `viewer_left` audit after closing; leaving the `with` makes the TestClient cancel the app's agent mid-teardown, which surfaced as `CancelledError` from the portal | fixed: the test waits for the `viewer_left` row inside the session, as do the two other socket tests with the same shape |
 | `unit tests (2/4)` | 1 | `test_forge_token_isolation.py::test_no_agent_process_is_alive_when_the_publish_token_is_used` | `_pid_alive` called only a `Z` process dead: a read while init reaped the killed daemon saw `X (dead)`, or failed with ESRCH and fell back to `kill(pid, 0)`, which succeeds on a zombie -- so a process the reaper had already seen dead read as alive a moment later | fixed: every state after death reads dead |
 | `release workflow wiring (actionlint)` | 2 | the actionlint download | rhysd's download script curls the release tarball with no `-f` and no retry; GitHub's release download answered an error page (92 bytes; 1,812 bytes after 19 s) and `tar` read it as the archive (`gzip: stdin: not in gzip format`) | fixed: the tarball is fetched directly with `-f` and retries, checked against its pinned sha256, and cached |
 | `build images` | 1 | `agent-runtime-base` | a Cloud Build docker step exited 22 (curl's HTTP-error status) | not fixed: a network fetch in the image build |
@@ -3844,7 +3844,7 @@ each per-tenant worker job once with `--args=--self-test`.
 execution of each Cloud Run job after a new image digest spends **30-59 s
 importing the image** (ContainerReady "Imported container image in Xs"), and
 every later start pays 1-3 s. That is about 3 % of starts. Without a warm run,
-each job's first tenant task after a release pays the import on top of Cloud
+each job's first tenant agent after a release pays the import on top of Cloud
 Run's own 70-200 s provisioning. The owner decided the same day that one
 post-deploy run per job absorbs it. This is a different thing from the warm
 capacity the owner declined on 2026-09-30 (invariant 1): nothing is left
@@ -3854,7 +3854,7 @@ running. Each execution exits as soon as Cloud Run starts it.
 image's ENTRYPOINT stays `python -m agent_worker`. On `--self-test` the worker
 prints one line and exits 0 before it reads its configuration
 (`agent_worker.__main__.self_test`). It takes no lease, builds no Firestore
-client and touches no task state. The execution carries no `TASK_ID` or
+client and touches no agent state. The execution carries no `TASK_ID` or
 `ATTEMPT_ID`, so the reconciler leaves it alone. It logs it once
 (`CloudRunBackend.list_executions`) and has no authority over it.
 
@@ -3869,7 +3869,7 @@ occupies a whole worker shape in the region while it starts.
 
 **It never fails the release.** If a warm execution fails, or the listing
 fails, the script prints a warning and exits 0. The cost is one slower first
-task. The step also sets `continue-on-error`. In the prod release it runs
+agent. The step also sets `continue-on-error`. In the prod release it runs
 only when the verify step succeeded, because warming the previous digest would
 warm nothing, and only under `!cancelled()`, because it executes jobs in the
 environment. That puts it under the prod gate's checks
@@ -3890,7 +3890,7 @@ so. `release.yml` does not pass that file yet: its deploy job has no `actions:
 read` to fetch the earlier artifact, and another lane is restructuring that
 workflow. Until it does, the script skips, by name, each listed job that is
 pinned by digest and already has a successful execution on that same image.
-That is the import already paid, by the last warm run or by a tenant task. A
+That is the import already paid, by the last warm run or by a tenant agent. A
 job new in this release (a new tenant or profile) has no such execution and is
 warmed even when no digest changed, which comparing manifests alone would
 miss.
@@ -3935,11 +3935,11 @@ largest gap that still read 1-3 s.
 `accept.yml` runs `scripts/acceptance/` after every dev deploy
 ([acceptance.md](acceptance.md) says what each check asserts; [the release
 timeline](#the-release-timeline) says why it is not a release job any more). Until
-2026-10-05 its tasks were submitted as swarm-verify, which resolves to `eng`,
+2026-10-05 its agents were submitted as swarm-verify, which resolves to `eng`,
 and cloned and opened pull requests on this platform's own public repository.
 The history analysis of that day (#628) counted 58 fixture pull requests
 ("Fix add()...") opened and closed there since 09-30, each one running full CI,
-and acceptance as 62% of eng's tasks, so eng's success rates and failure
+and acceptance as 62% of eng's agents, so eng's success rates and failure
 classes could not be read; the `smoke` tenant had none. The owner decided the
 same day that acceptance runs in `smoke` against a private sandbox repository,
 and that nothing in acceptance can name the public one.
@@ -3974,7 +3974,7 @@ taken (docs/design/human-steps.md §4.2.2). `groups/workflow.sh` derives that
 id at run time (`u-sw-c90291` for swarm-verify) from the email
 `GET /tenants/me` verified, with `common.sh`'s `personal_tenant_id`, and sends
 it as `X-Swarm-Tenant` for those two workflows only; cleanup cancels their
-tasks in that tenant.
+agents in that tenant.
 
 **What the suite refuses.** Before any group runs, `run.sh` asks GitHub
 anonymously for the repository and refuses a 200 (public) or an unanswered
@@ -4022,7 +4022,7 @@ runner instead, which does hold the sandbox token:
 What still runs only in the suite: the pull request was opened, its title is
 the agent's (`pull_request_text.title`), the artifacts exist and the patch
 replaces the bug line. The one comparison the runner cannot make is the PR
-title against the task's `pr-title.txt` artifact, which lives behind the API
+title against the agent's `pr-title.txt` artifact, which lives behind the API
 inside the VPC; it checks the title is a non-empty fact rather than a task id
 instead. An operator run with `SWARM_ACCEPTANCE_GITHUB_TOKEN` set measures that
 in the suite too.
@@ -4048,7 +4048,7 @@ in the suite too.
      -d '{"fields": {"principal": {"stringValue": "smoke@saga.xyz"}}}'
    ```
 
-   `smoke` has never run a task, so no work changes hands.
+   `smoke` has never run an agent, so no work changes hands.
 3. **Merge the `dev.tfvars` change** (the release applies it): `tenants.smoke`
    gets `principal = "smoke@saga.xyz"`, `directory_group = true` and
    `providers = ["anthropic"]`, and `pool_limits.providers.anthropic` goes from

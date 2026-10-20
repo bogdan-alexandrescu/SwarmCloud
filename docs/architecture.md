@@ -56,7 +56,7 @@ agent, as a Cloud Run Job execution or a GKE Job pod.
 
 **A lease, not a container, is what "running" means.**
 
-`swarm_common.states` defines twelve task states, of which exactly four hold
+`swarm_common.states` defines twelve agent states, of which exactly four hold
 capacity:
 
 ```
@@ -69,7 +69,7 @@ SUBMITTED -> QUEUED -> READY -> LEASED -> DISPATCHED -> STARTING -> RUNNING -> S
 `CONCURRENCY_STATES = {LEASED, DISPATCHED, STARTING, RUNNING}`.
 
 `QUEUED`, `PARKED` and `READY` are Firestore documents and nothing else. Ten
-thousand queued tasks produce zero pods, zero Cloud Run executions, zero nodes
+thousand queued agents produce zero pods, zero Cloud Run executions, zero nodes
 and zero dollars. This is why the platform never uses "pending pods" as a
 backlog: a pending pod is a scheduling request the cluster autoscaler answers by
 buying a node.
@@ -109,11 +109,11 @@ Woken by Pub/Sub, the scheduler runs **one bounded drain and exits**:
 
 * promote what has become runnable (dependencies satisfied, credentials now
   present, cooldowns about to expire);
-* read a slice of `READY` tasks;
+* read a slice of `READY` agents;
 * interleave them round-robin across tenants, with starvation aging inside each
   tenant;
 * for each, run the admission transaction; on `AdmissionDenied`, record
-  `blocked_by` and **move to the next task** rather than stopping.
+  `blocked_by` and **move to the next agent** rather than stopping.
 
 It is bounded three independent ways — wall clock, admissions, passes — because
 a scheduler that runs long is a scheduler that gets killed mid-transaction.
@@ -144,7 +144,7 @@ matters most:
    secret is read, before the runner starts;
 2. STARTING -> RUNNING;
 3. create an isolated workspace;
-4. restore the checkpoint an earlier attempt of this task recorded, and
+4. restore the checkpoint an earlier attempt of this agent recorded, and
    nothing on a first attempt (#347; [checkpointing.md](checkpointing.md#3-restore)
    says why the prefix is not listed);
 5. optional shallow clone;
@@ -180,15 +180,15 @@ a far cheaper mistake than two agents on one workspace.
 
 **The fence is never written alone.** Until #560 the generation was invalidated
 first, in a transaction of its own, before the kill. When the kill then failed,
-the pass returned with the task fenced and the lease still held. Every later
+the pass returned with the agent fenced and the lease still held. Every later
 pass saw a superseded lease whose execution "belonged" to the obsolete-generation
 rule, and that rule's kill failed the same way, so nothing more was ever
-written. On 2026-10-04 four DISPATCHED tasks held their leases like that for ten
+written. On 2026-10-04 four DISPATCHED agents held their leases like that for ten
 hours, one with a cancel pressed on it. Now a pass that cannot finish the repair
 writes nothing, and the next pass starts again from a clean state.
 
 **A worker that never started is its own evidence, after a bounded wait.** The
-lease never heartbeated, the attempt records no start, and the task never
+lease never heartbeated, the attempt records no start, and the agent never
 reached RUNNING. Once the lease is `NEVER_STARTED_RELEASE_SECONDS` old (20
 minutes; 2.5 times the dispatch deadline, nearly five times the slowest start
 measured), the repair goes ahead even if the kill is not confirmed or the
@@ -198,11 +198,11 @@ exits (invariant 5). A worker that **did** start is still held until something
 proves its execution gone (#450). Until the wait is over, the hold is listed in
 the pass's `held_past_ttl` and logged at ERROR once an hour, with the time left.
 
-**A cancel with no live worker ends the task at once.** The API cancels a
-DISPATCHED or STARTING task outright when its worker never started, or when its
+**A cancel with no live worker ends the agent at once.** The API cancels a
+DISPATCHED or STARTING agent outright when its worker never started, or when its
 generation is fenced and its lease has been silent for 90 s. In the cancel's
-own transaction it releases the lease and fences the generation. A task with a
-live worker is only flagged, and the worker ends it. A LEASED task is left to
+own transaction it releases the lease and fences the generation. An agent with a
+live worker is only flagged, and the worker ends it. A LEASED agent is left to
 the scheduler, which is between admission and dispatch and finishes a flagged
 cancel itself.
 
@@ -215,7 +215,7 @@ belongs to whoever created it first.
 
 | Collection | Holds | Written by |
 |---|---|---|
-| `tasks/{id}` | the task and its denormalised admission inputs | api, scheduler, worker, reconciler |
+| `tasks/{id}` | the agent and its denormalised admission inputs | api, scheduler, worker, reconciler |
 | `tasks/{id}/events/{id}` | append-only audit trail | everything |
 | `attempts/{id}` | one execution: backend, execution name, exit code, peak RSS | scheduler, worker |
 | `leases/{id}` | the authoritative capacity reservation | admission / release transactions only |
@@ -228,7 +228,7 @@ Firestore has no joins, so a task document carries everything admission needs �
 tenant, provider, resource class, runner profile, priority — and the hot path is
 one query plus the pool documents.
 
-`pool_names_for()` produces every pool a task must hold simultaneously:
+`pool_names_for()` produces every pool an agent must hold simultaneously:
 
 ```
 global
@@ -341,7 +341,7 @@ at once; doing it first costs a fraction of that.
 ### Auth is Google ID tokens, with no shared platform token
 
 A shared bearer token carries no identity. Without identity there is no tenant to
-attribute a task to, no way to scope a list response, and no boundary to
+attribute an agent to, no way to scope a list response, and no boundary to
 enforce — so multi-tenancy would be decorative. Tokens are verified per request
 and the hosted domain must be `saga.xyz`.
 

@@ -151,7 +151,7 @@ state of each is in the table above.**
 
 * also caused by: iam.serviceAccounts.get denied (gcloud's own wording for it is "(or it may not exist)" — already captured as a non-auth fixture at scripts/lib/auth-guard.sh:95), session expired between the guarded describe at account.sh:231-235 and this call, wrong PROJECT_ID, or the SA existing under a different n
 
-* leads to: The secretAccessor grant on the short-lived secret is silently skipped, so the tenant's worker cannot read the access token the broker publishes — every task for that tenant fails at credential load. The operator is sent to re-run register-tenant.sh, which creates/updates the service account and say
+* leads to: The secretAccessor grant on the short-lived secret is silently skipped, so the tenant's worker cannot read the access token the broker publishes — every agent for that tenant fails at credential load. The operator is sent to re-run register-tenant.sh, which creates/updates the service account and say
 
 **`scripts/concurrency-test.sh:45`** — the global pool has no limit configured; run 'make infra' first
 
@@ -235,7 +235,7 @@ state of each is in the table above.**
 
 * also caused by: fs_request (scripts/lib/common.sh:544-555) runs curl with no -f, no status capture and no error check at all, so a Firestore REST error body ({"error":{"code":401|403|429,...}}) flows straight into `if .fields then doc else null end` -> null -> `.state // "MISSING"`. Causes: the cached _ACCESS_TOKEN
 
-* leads to: 'MISSING' asserts the task vanished from the authoritative store, so the operator hunts for a scheduler or reconciler that deleted a task — after wait_for_state has already burned the entire timeout polling an endpoint that was returning 403 every two seconds.
+* leads to: 'MISSING' asserts the agent vanished from the authoritative store, so the operator hunts for a scheduler or reconciler that deleted an agent — after wait_for_state has already burned the entire timeout polling an endpoint that was returning 403 every two seconds.
 
 **`scripts/pause-swarm.sh:74`** — warn "pool ${pool} does not exist; skipping (refusing to create a pool with no limit)", then a state file carrying pools:[] (107-112), ok "recorded ${STATE_FILE}", and ok "admission paused", exit 0.
 
@@ -303,7 +303,7 @@ state of each is in the table above.**
 
 * leads to: status.sh is the incident dashboard. An operator debugging "work sits in READY while pools are idle" reads a control plane with zero services, zero jobs and zero executions and concludes the deployment is gone — escalating a redeploy, or chasing a phantom outage — when the services are up and only t
 
-**`scripts/status.sh:68`** — warn "Firestore database '...' does not exist yet -- run 'make infra'" (214); every task count then renders 0, leases 'none active', pools 'no pools configured yet', and finally ok "nothing needs atte
+**`scripts/status.sh:68`** — warn "Firestore database '...' does not exist yet -- run 'make infra'" (214); every agent count then renders 0, leases 'none active', pools 'no pools configured yet', and finally ok "nothing needs atte
 
 * also caused by: fs_database_exists (common.sh:664) is gcloud ... >/dev/null 2>&1: an expired session, missing datastore.databases.get, or a wrong PROJECT_ID / FIRESTORE_DATABASE. db_ok=false then skips every collect() branch, so states, leases, pools and quota keep their empty initialisers instead of being marked u
 
@@ -406,17 +406,17 @@ state of each is in the table above.**
 
 * also caused by: select_docs feeds through `fs_list | jq -r '.[]?.name'` or `fs_query | jq -r '... .name'`, both of which emit nothing for an error body (verified), and the `|| true` on line 210 discards the exit status on top of that. So UNAUTHENTICATED, PERMISSION_DENIED, a timeout, and a FAILED_PRECONDITION for a
 
-* leads to: This is the tenant-offboarding / data-retention tool. "purged 0 document(s)" with a zero exit is recorded as a completed deletion, so the tenant's tasks, leases and events stay in Firestore while someone signs off that they are gone — and nobody re-runs it, because it reported that there was nothing
+* leads to: This is the tenant-offboarding / data-retention tool. "purged 0 document(s)" with a zero exit is recorded as a completed deletion, so the tenant's agents, leases and events stay in Firestore while someone signs off that they are gone — and nobody re-runs it, because it reported that there was nothing
 
-**`scripts/race-test.sh:117`** — FAIL — tasks accepted concurrently: 0 < 19 (assert_ge at line 127)
+**`scripts/race-test.sh:117`** — FAIL — agents accepted concurrently: 0 < 19 (assert_ge at line 127)
 
 * also caused by: `2>/dev/null || true` in each background subshell discards submit_task's own 'POST /v1/tasks returned HTTP ...' line and the response body — the only place the cause is recorded. Every submission failing for one shared reason (a token that expired between suites, run.invoker revoked, the API scaling
 
-* leads to: Reads as the platform failing to accept tasks submitted in parallel, sending the reader into the all-or-nothing capacity reservation transaction (invariant 2) with zero evidence — the per-request errors were thrown away and cannot be recovered without another full run.
+* leads to: Reads as the platform failing to accept agents submitted in parallel, sending the reader into the all-or-nothing capacity reservation transaction (invariant 2) with zero evidence — the per-request errors were thrown away and cannot be recovered without another full run.
 
 **`scripts/race-test.sh:159`** — t_info "checked 0 task(s) with attempts" (168) followed by a PASS from assert_eq "0" "${BAD_GENERATIONS}" "tasks with duplicate attempt generations" (169).
 
-* also caused by: gens comes from fs_query attempts ... 2>/dev/null (157-158): a denied or throttled query returns an error object that yields no rows, identical to a task that genuinely has no attempts yet. Every task skips, the counter stays 0, and the assertion compares 0 to 0.
+* also caused by: gens comes from fs_query attempts ... 2>/dev/null (157-158): a denied or throttled query returns an error object that yields no rows, identical to an agent that genuinely has no attempts yet. Every agent skips, the counter stays 0, and the assertion compares 0 to 0.
 
 * leads to: Invariant 5 (every attempt carries a distinct fencing generation) is reported as verified by a run that read zero attempt documents. The PASS line is what a reviewer reads; the 'checked 0' t_info sits just above it in the same green block.
 
@@ -504,7 +504,7 @@ The workers logged:
 running the agent and without touching the lease. The fault is upstream: the
 reconciler reclaimed the lease before the worker had finished cold-starting,
 pulling its image and cloning the repository. The replacement then hit the same
-wall, three times, and the task never ran at all.
+wall, three times, and the agent never ran at all.
 
 `heartbeat_grace_seconds` defaults to 90. A Cloud Run Job cold start plus an
 image pull plus a shallow clone can exceed that under load -- this fan-out ran
@@ -518,6 +518,6 @@ judgement was correct at the time it was made. The question is whether 90
 seconds is the right budget for a worker that has to pull an image before it can
 say anything.
 
-Not fixed. Recorded because a task that silently never runs, three times, is the
+Not fixed. Recorded because an agent that silently never runs, three times, is the
 most expensive failure shape on this list.
 

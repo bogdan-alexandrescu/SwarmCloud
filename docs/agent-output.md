@@ -1,11 +1,11 @@
 # What an agent took in and produced: the read path behind the Artifacts tab
 
-The task drawer has three panes: Details, Attempts and Artifacts. The
-Artifacts pane shows a task's inputs, its outputs and its logs, and updates
-every 5 seconds while the task runs (#184, owner decisions of 2026-09-25).
+The agent drawer has three panes: Details, Attempts and Artifacts. The
+Artifacts pane shows an agent's inputs, its outputs and its logs, and updates
+every 5 seconds while the agent runs (#184, owner decisions of 2026-09-25).
 This document covers the backend half: what the worker writes, what the API
 serves, and the reasons for both, including where an agent is told to put its
-deliverables and what a task with no repository uploads from its working
+deliverables and what an agent with no repository uploads from its working
 folder (owner decisions of 2026-09-26). Each section records a constraint that
 a later change could silently break.
 
@@ -14,9 +14,9 @@ a later change could silently break.
 The owner decided this. A signed GCS URL would skip the two checks that every
 served byte must pass:
 
-* **The tenant boundary (invariant 9).** Each route resolves the task through
-  `tenant_scope` and then `Store.get_task`. Another tenant's task gets the same
-  404 as a task that does not exist. Object keys are rebuilt from the task
+* **The tenant boundary (invariant 9).** Each route resolves the agent through
+  `tenant_scope` and then `Store.get_task`. Another tenant's agent gets the same
+  404 as an agent that does not exist. Object keys are rebuilt from the task
   document's own tenant and id. They are never taken from the request or from
   the stored `uri`, which is compared and not followed.
 * **Read-time redaction.** The worker scrubs only the registered literal
@@ -191,12 +191,12 @@ as key lines. Every scan is linear, not one backtracking pattern: a lazy
 BEGIN-to-END regex is quadratic on text with many BEGIN markers and no END,
 and agent output can take that shape.
 
-## Where an agent's deliverables go, and a task with no repository
+## Where an agent's deliverables go, and an agent with no repository
 
 The post-deploy QA of #184 found a hole the Artifacts tab could not show
-around. `task_0e5b1f8b7bc1448fafdf`, a claude-code task with no repository,
+around. `task_0e5b1f8b7bc1448fafdf`, a claude-code agent with no repository,
 wrote `answer.md` and `primes.txt` in its working folder. Only
-`$SWARM_ARTIFACTS_DIR` was ever uploaded, so the task SUCCEEDED and its
+`$SWARM_ARTIFACTS_DIR` was ever uploaded, so the agent SUCCEEDED and its
 Outputs held the runner's logs and nothing the agent made. No prompt had told
 it where a deliverable goes unless a later workflow step expected one (#149).
 
@@ -211,11 +211,11 @@ The owner decided three things on 2026-09-26 (recorded on #184):
 
    **It is information, in the owner's words, not an order.** The first build
    said "Write deliverables to ...", from a paraphrase of the decision. That
-   order reached every repository task too, and decision 3 says a repository
-   task's deliverable is its diff or pull request: an agent asked to write
+   order reached every repository agent too, and decision 3 says a repository
+   agent's deliverable is its diff or pull request: an agent asked to write
    `docs/design.md`, and told last thing to write deliverables to the
    artifacts folder, can put the document there and leave the pull request
-   empty (#225 review). A test holds a repository task's prompt to this one
+   empty (#225 review). A test holds a repository agent's prompt to this one
    line and no order.
 
    It is built once, by `expected_outputs.deliverables_line`, and appended by
@@ -229,15 +229,15 @@ The owner decided three things on 2026-09-26 (recorded on #184):
    rule, and the tests that held it now hold the line instead. The line must
    never carry a word the rate-limit or credential heuristics look for: a CLI
    that echoes its prompt would turn it into evidence.
-2. **A task with no repository also uploads what its agent CREATED in its
+2. **An agent with no repository also uploads what its agent CREATED in its
    working folder**, when the attempt ends (`agent_worker.standalone_outputs`).
-3. **A repository task is unchanged.** Its diff or pull request is the
+3. **A repository agent is unchanged.** Its diff or pull request is the
    deliverable, plus the artifacts folder. `result_summary.workdir_outputs` is
-   absent on such a task, and nothing is named `workdir/`.
+   absent on such an agent, and nothing is named `workdir/`.
 
 What decision 2 does, and the reason for each rule:
 
-* **Which tasks.** No repository URL (read from the same two places the clone
+* **Which agents.** No repository URL (read from the same two places the clone
   reads it), and a runner whose child is a provider's coding-agent CLI:
   claude-code and codex, the runners the line reaches
   (`runners.streams.cli_agent_spec`). Not `mock`, which writes `progress/`
@@ -255,8 +255,8 @@ What decision 2 does, and the reason for each rule:
 * **A resumed attempt.** A checkpoint restores `work/`, so an earlier
   attempt's files are on disk before this runner starts. They still count as
   created, unless they are a staged input: the platform puts nothing else in a
-  standalone task's `work/`. The manifest a reader sees is the final
-  attempt's, and without this a task that parked once would show only what
+  standalone agent's `work/`. The manifest a reader sees is the final
+  attempt's, and without this an agent that parked once would show only what
   its last attempt wrote.
 * **Named `workdir/<path>`**, in the same manifest as every artifact
   (`result_summary.artifacts`). The Artifacts tab lists and serves them
@@ -296,7 +296,7 @@ What decision 2 does, and the reason for each rule:
     UTF-8, a protobuf string field -- so a Firestore write -- cannot carry a
     lone surrogate, and the worker logs UTF-8 to stdout. One such name in the
     summary made `finish` raise, and the next attempt restored the same file
-    from the checkpoint and failed the same way, until the task had spent
+    from the checkpoint and failed the same way, until the agent had spent
     every attempt. The name is listed as the bytes it was, `caf\xe9.txt`,
     spelled the way `ls -b` and the API's checkpoint listing spell it. That
     is a display and never a key. The artifacts folder had the same hole: a
@@ -352,9 +352,9 @@ what happens to a file written to `$SWARM_ARTIFACTS_DIR`. A file caught in the
 working folder is a net under the agent that wrote somewhere else, not a
 second place to write.
 
-## A task with a repository: the worker publishes, the agent titles it
+## An agent with a repository: the worker publishes, the agent titles it
 
-The observer's report of 2026-10-08 read 32 pull requests and their tasks'
+The observer's report of 2026-10-08 read 32 pull requests and their agents'
 answers. 31 answers said no pull request existed because the agent had no
 GitHub credentials, which was true of the agent and false of the step: the
 worker pushes the committed branch and opens the pull request after the agent
@@ -363,7 +363,7 @@ because the worker never asked an issue step for `pr-title.txt` and titled the
 pull request from the issue without saying so. The owner decided two things.
 
 **Proposal A: one fixed paragraph ends every prompt with a repository.** A
-claude-code or codex task whose agent starts in a checkout gets, after the
+claude-code or codex agent whose agent starts in a checkout gets, after the
 deliverables line and the questions sentence:
 
 ```
@@ -372,7 +372,7 @@ You do not push or open a pull request; the worker publishes your committed bran
 
 It is `cliagent.PUBLISH_PARAGRAPH`, appended once in `run_cli_agent` for both
 CLIs, and fixed text, so a test holds it and it carries none of the rate-limit
-or credential markers a CLI that echoes its prompt would trip. A task with no
+or credential markers a CLI that echoes its prompt would trip. An agent with no
 repository does not get it, and neither does a resumed session, which already
 holds it. It goes to every step with a repository, a review included: the
 worker's strategy, not the agent, decides whether anything is pushed.
@@ -486,10 +486,10 @@ rebase: the decision is made at the fresh clone. The checks still run.
 Found by reading on 2026-09-26 (#228), not measured: every file in the
 artifacts folder that fitted `max_artifact_bytes` became one entry in
 `result_summary.artifacts`, with no count cap. `result_summary` is a field of
-the task's Firestore document, which Firestore limits to 1 MiB. An entry is
+the agent's Firestore document, which Firestore limits to 1 MiB. An entry is
 about 160 bytes at ordinary name lengths, so an agent that left about 6,000
 small files there would have taken the document past the limit: `finish`
-refused, `_safe_finish` refused again, and the task lost a result that may
+refused, `_safe_finish` refused again, and the agent lost a result that may
 have succeeded. The fake Firestore the unit tests use does not enforce the
 limit, which is why nothing caught it. Since #225 every CLI prompt names the
 folder, so more agents write there.
@@ -513,7 +513,7 @@ The rules this needed, and why:
 
 * **Which 500.** The names a later step's `expected_outputs` declares come
   first, so a declared output is never the one dropped. There are at most 49
-  of them for one task: each dependant's `input_from` maps one upstream step
+  of them for one agent: each dependant's `input_from` maps one upstream step
   to one filename, and a workflow has at most 50 steps including this one.
   Then the files the platform writes into the folder: the agent CLI's stream
   captures and transcript, which `agent_streams` and the tab's answer and
@@ -610,9 +610,9 @@ still runs in `work/`; only the agent moves. The rules, and why:
 * **Staged inputs stay in `work/`, and the prompt names them.** They cannot move
   into the checkout without becoming part of the agent's diff. The prompt line
   the worker adds (`expected_outputs.agent_instructions`, the one place #184 put
-  it) gains, only for a repository task with staged inputs, "Earlier steps of
+  it) gains, only for a repository agent with staged inputs, "Earlier steps of
   this workflow gave you these files, which are outside the repository:" and
-  one absolute path per file. A task with no repository keeps its prompt
+  one absolute path per file. An agent with no repository keeps its prompt
   exactly: it starts in `work/`, where "read scan-01.md" already works. A
   caller's own `input.staged_inputs` is dropped with a WARNING, like
   `input.expected_outputs`, because the line speaks for the platform.
@@ -629,7 +629,7 @@ still runs in `work/`; only the agent moves. The rules, and why:
   WARNING. The link is never checkpointed, like `work/artifacts`.
 
 **The code profile runs a pinned model, and a step picks which by class.** No
-Job set `MODEL`, so the CLI's default ran: the QA task of 2026-09-26 ran
+Job set `MODEL`, so the CLI's default ran: the QA agent of 2026-09-26 ran
 `claude-sonnet-5`, not the `claude-opus-5-5` the operator's local lanes run.
 #226 pinned one model per profile. Since #1435 (design B, owner decisions of
 2026-10-17, [design/model-per-step.md](design/model-per-step.md)) a step may
@@ -664,12 +664,12 @@ How a step gets its model, and what refuses it:
   and, on the Cloud Run fallback, the per-execution override that replaces the
   Job's default-class `MODEL` for that execution only. It never reads
   `Task.model`, `input` or `metadata`. A class with no pin returns the lease
-  and the task as `model_not_pinned`; it never falls back to the default
+  and the agent as `model_not_pinned`; it never falls back to the default
   class or to the CLI's own.
 * **The worker checks the model before the CLI starts.**
   `apps/agent-worker/agent_worker/specverify.py::check_model` resolves the
   class from the **signed** spec (a class is covered by spec format 5, so a
-  class rewritten onto a task fails verification) and holds `MODEL` to that
+  class rewritten onto an agent fails verification) and holds `MODEL` to that
   class with `ModelClass.admits`. A classed profile whose execution carries no
   `MODEL` ends `model_not_pinned`; a `MODEL` of another class ends
   `model_class_mismatch`. Neither runs the agent. `MODEL` is held to the
@@ -683,11 +683,11 @@ How a step gets its model, and what refuses it:
   the console's Submit form both let a caller send it, so a caller did choose
   the model. Two changes closed that. #213 (contract request 25) made the API
   refuse every key a profile's `RunnerProfile.inputs` does not declare, and
-  claude-code declares none, so `input.model` gets 422 `invalid_input` on a
-  task, a batch and a workflow step, and nothing is created
+  claude-code declares none, so `input.model` gets 422 `invalid_input` on an
+  agent, a batch and a workflow step, and nothing is created
   (`tests/unit/control_plane/test_input_model_is_refused.py` pins it for this
   key). #226 made the runner never read `input.model` at all, and the worker
-  drops a stored one with a WARNING: a task queued before the refusal
+  drops a stored one with a WARNING: an agent queued before the refusal
   shipped, or a profile whose inputs are not declared yet (`browser`,
   `generic`, #218), which the API bounds by size alone. What a caller may
   send is `model_class`, a name from a four-word vocabulary; an ID sent as a
@@ -752,7 +752,7 @@ applicable" instead of "absent".
 An attempt made before this change has no live or final agent objects. For
 that attempt only, the log route falls back to the manifest entry named by
 the runner's convention and serves it as `source: "artifact"`. The reference
-task, `task_73b5f4d9ca3641fbb914`, is such an attempt. The fallback is used
+agent, `task_73b5f4d9ca3641fbb914`, is such an attempt. The fallback is used
 only for the attempt the manifest describes. The manifest belongs to the
 final attempt, and an earlier attempt must not be shown the final attempt's
 output as its own.
@@ -777,7 +777,7 @@ as soon as there is any data. It is pinned by
 ## claude-code prints stream-json
 
 With `--output-format json`, the CLI prints ONE object when it finishes and
-nothing before that. The reference task ran for 89.6 s and seven turns, and
+nothing before that. The reference agent ran for 89.6 s and seven turns, and
 none of those turns were recorded: its stdout and `claude-transcript.json`
 hold the same final object, one of them re-indented.
 
@@ -920,7 +920,7 @@ open question for the owner.
   `\"`. An agent's `export DB_PASSWORD="<v>"` was served with its backslash
   masked and `<v>` in clear, under a count of 1, and a curl body's
   `{"api_key": "<v>"}` was not matched at all. Both now go through
-  `redaction.JsonMasker`, as the task's input does: every string and key
+  `redaction.JsonMasker`, as the agent's input does: every string and key
   masked decoded, a value under a credential's name masked whole. The served
   text is the same `json.dumps` as before (indented for the input, one line
   for `raw`), so a clean record reads as it did. The masker errs toward
@@ -940,7 +940,7 @@ open question for the owner.
 `GET /v1/tasks/{id}/answer` serves the LAST `result` event's `result`, found
 in the final agent log, then the pre-change artifact, then the live tail.
 It does not use `result_summary.runner.summary`, which `cliagent._summarise`
-cuts at 2,000 characters. The reference task's answer is 7,124 characters.
+cuts at 2,000 characters. The reference agent's answer is 7,124 characters.
 The summary is used only when no result event exists, and it is then marked
 `complete: false` when it is at the cap.
 
@@ -952,7 +952,7 @@ The answer route gives one of four answers:
 * `absent`: the attempt ended and left nothing.
 * `unreadable`: a read failed, and nothing further down the chain is tried.
 
-## The task's input is masked too, with a count
+## The agent's input is masked too, with a count
 
 The owner decided on 2026-09-25 (#184) that the Artifacts pane's Inputs and
 the drawer's Details show "a read-time-redacted copy of the task's input,
@@ -1091,30 +1091,30 @@ a screen never goes back to the raw document to find out. Under a string
 prompt, both panes draw `rest` below it. They draw `full` only when there is no
 prompt string, so the prompt is never on screen twice.
 
-The UI reads the copy once per task, because an input never changes. A copy
+The UI reads the copy once per agent, because an input never changes. A copy
 that could not be read, or an API that does not serve one, is drawn as that.
 The raw input is never drawn in its place. A failed copy is asked for again
 with the next poll of the pane that draws it, and the read is Details' own:
 it is not part of the drawer's `loadAgentRun`, so a slow copy blanks only the
 input blocks.
 
-### Masked everywhere: every route that serves a task (2026-09-26)
+### Masked everywhere: every route that serves an agent (2026-09-26)
 
 PR #210 masked what the screens drew and left `GET /v1/tasks/{id}` serving
 the input as submitted, to the tenant that submitted it. The owner closed
 that on #184: "The API never serves a credential-shaped string back, even to
 the submitter." So `codec.task_to_api`, the one serializer every task route
 goes through, serves the input `task_input.TaskMasking` masks, with
-`input_redaction_count` beside it. That covers the task, the task list, the
-create and batch responses, the cancel response, and a workflow read's tasks.
-A workflow's steps serve their input masked by **their task's own masker**,
+`input_redaction_count` beside it. That covers the agent, the agent list, the
+create and batch responses, the cancel response, and a workflow read's agents.
+A workflow's steps serve their input masked by **their agent's own masker**,
 each with its own count (`codec._step_to_api`): the frozen `Workflow` has no
-metadata, but every step task carries the workflow's, so a literal the
+metadata, but every step agent carries the workflow's, so a literal the
 workflow's metadata names is masked in `steps[i].input` exactly as in
 `tasks[i].input` of the same response. The list route, which reads the step
-tasks' states anyway, uses the tasks it read; a step whose task the read budget
+agents' states anyway, uses the agents it read; a step whose agent the read budget
 left unread borrows a sibling's copy of the workflow metadata, and a workflow
-none of whose step tasks were read serves its step inputs as `null` with
+none of whose step agents were read serves its step inputs as `null` with
 `input_masked_by: "not_read"`. The task document is unchanged: masking is at
 read time, and the runner reads what was submitted.
 
@@ -1123,16 +1123,16 @@ which found "nothing serves the raw input" false as first written):
 
 | where | what it held | now |
 |---|---|---|
-| `last_error`, each attempt's `error`, each event's `detail` | the agent's stderr tail, which echoes whatever the prompt made it run | every string masked by the task's masker -- the rules and every literal the input and metadata named -- with `last_error_redaction_count`, `error_redaction_count`, `detail_redaction_count`. String by string, never by key: the keys are the platform's (`credential` in a park's detail is which kind of credential, not one). |
-| `result_summary` | the agent's own summary text (up to 4,000 characters), its output tails | the same, with `result_summary_redaction_count`. An artifact's `name` and `uri`, a staged input's `filename` and `path`, and ids (`task_input.LOOKUP_KEYS`, in `result_summary` and in an event's `detail`) are masked by `TaskMasking.name`, the function that masks `metadata.input_from` and `metadata.expected_outputs` (#296), and counted. A client matches these exactly, and the text rules would take `eye-tracking-summary.md` for a JWT, so `name` leaves a clean name byte for byte. They were once served as stored, which served a credential-shaped filename, or one carrying a literal the task named, in clear beside its masked declared copy; the API never serves a credential-shaped string back (owner decision 2026-09-26). Because `name` is deterministic and masks both copies, a masked staged or produced name still equals the masked declared one: mask, then match. The artifact listing (`GET /v1/tasks/{id}/artifacts`) still serves names as stored, because `/artifacts/content` is fetched by that exact name. |
+| `last_error`, each attempt's `error`, each event's `detail` | the agent's stderr tail, which echoes whatever the prompt made it run | every string masked by the agent's masker -- the rules and every literal the input and metadata named -- with `last_error_redaction_count`, `error_redaction_count`, `detail_redaction_count`. String by string, never by key: the keys are the platform's (`credential` in a park's detail is which kind of credential, not one). |
+| `result_summary` | the agent's own summary text (up to 4,000 characters), its output tails | the same, with `result_summary_redaction_count`. An artifact's `name` and `uri`, a staged input's `filename` and `path`, and ids (`task_input.LOOKUP_KEYS`, in `result_summary` and in an event's `detail`) are masked by `TaskMasking.name`, the function that masks `metadata.input_from` and `metadata.expected_outputs` (#296), and counted. A client matches these exactly, and the text rules would take `eye-tracking-summary.md` for a JWT, so `name` leaves a clean name byte for byte. They were once served as stored, which served a credential-shaped filename, or one carrying a literal the agent named, in clear beside its masked declared copy; the API never serves a credential-shaped string back (owner decision 2026-09-26). Because `name` is deterministic and masks both copies, a masked staged or produced name still equals the masked declared one: mask, then match. The artifact listing (`GET /v1/tasks/{id}/artifacts`) still serves names as stored, because `/artifacts/content` is fetched by that exact name. |
 | `repository_url` | a caller-supplied URL, often with the forge token in it | refused at submission when it carries userinfo that can hold a credential (`validation.check_repository_url`, a 422 naming the tenant's git secret as the way to clone a private repository); one stored before is served with the userinfo masked, `repository_url_redaction_count` beside it |
-| `input.json` in a checkpoint | the whole input, as the worker wrote it | excluded from every archive, under any label (owner decision 2026-09-27): the worker rewrites it at every attempt's prepare, after the restore, so nothing needs it restored; one in an older archive is served by the checkpoint file view whole, through the task's masker. The prompt is still in the archive, in the CLI's session transcript: see the #244 paragraph below |
-| the runner's `child started` line | the prompt, inside argv | the prompt's length; `/logs` also masks the task's literals in every window |
+| `input.json` in a checkpoint | the whole input, as the worker wrote it | excluded from every archive, under any label (owner decision 2026-09-27): the worker rewrites it at every attempt's prepare, after the restore, so nothing needs it restored; one in an older archive is served by the checkpoint file view whole, through the agent's masker. The prompt is still in the archive, in the CLI's session transcript: see the #244 paragraph below |
+| the runner's `child started` line | the prompt, inside argv | the prompt's length; `/logs` also masks the agent's literals in every window |
 
 **One path still serves it as stored, and the owner has ruled** (issue #244,
 2026-09-27): the whole checkpoint archive (`GET /v1/tasks/{id}/checkpoints/
 {n}/content`) is served byte for byte and unredacted, to the tenant that owns
-the task (owner decision 2026-09-24). Excluding `input.json` does not close
+the agent (owner decision 2026-09-24). Excluding `input.json` does not close
 that. `HOME` is `work/`, so a CLI runner writes its OWN session transcript
 there too -- `work/.claude/projects/<cwd>/<session>.jsonl` for Claude Code,
 `work/.codex/sessions/.../*.jsonl` for Codex -- and it holds the prompt word
@@ -1142,10 +1142,10 @@ for byte, because the tenant downloading it is the same tenant whose prompt
 it is. The per-file checkpoint view masks it, one window at a time, the same
 as any other text member; only the whole-archive download does not.
 
-A task's masker is kept per task (`task_input.masking_for`): the list route
+An agent's masker is kept per agent (`task_input.masking_for`): the list route
 masks every row, the UI reads 200 rows, and `JsonMasker` over a 256 KiB input
 measured 57 ms, so a page of large prompts cost about 11 s of CPU on every
-refresh. The cache is keyed on the task and a digest of its input and metadata,
+refresh. The cache is keyed on the agent and a digest of its input and metadata,
 so a changed document is a miss, never a stale answer, and it is bounded by
 size (32 MiB) and entries.
 
@@ -1155,8 +1155,8 @@ reads `input.prompt` gets the masked prompt. Where two keys of one object mask
 to the same text, the second is served as `<masked key> (2)`, because an
 object cannot hold a key twice.
 
-A literal the task named is masked when it comes back as a JSON **number**,
-on every route, by one rule: `JsonMasker.number`. A task that submits
+A literal the agent named is masked when it comes back as a JSON **number**,
+on every route, by one rule: `JsonMasker.number`. An agent that submits
 eight or more digits as a string under a credential's name, and whose agent
 echoes `{"n": <the same digits>}`, gets the number served as the JSON string `"********"` and counted,
 whether it is the number itself, inside a longer one, or `N.0`. Before #387
@@ -1183,7 +1183,7 @@ Details drew `task.metadata` raw between two masked blocks, and
 **same masker** as its input, so a literal the metadata names as a credential
 is masked in the prompt, and a value the prompt assigns (`DB_PASSWORD=<v>`) is
 masked in the metadata. It is served with `metadata_redaction_count` on the
-task, and as `/input`'s `metadata` block (`value`, `redaction_count`,
+agent, and as `/input`'s `metadata` block (`value`, `redaction_count`,
 `platform_keys`). Details draws only that block, with its own `masked N`.
 
 **The keys the platform writes stay readable, and one fact tells them apart.**
@@ -1200,7 +1200,7 @@ masker like every caller key. A label is never credential-shaped, so it is
 served as written, and a credential put there is masked. Exempting them by name
 would be a place to store a secret the API serves raw.
 
-**What this costs.** Every task a route serves is masked on the way out: the
+**What this costs.** Every agent a route serves is masked on the way out: the
 list route masks up to a page of inputs, each up to `max_input_bytes`
 (256 KiB). The rules are linear on 256 KiB (about 25 ms for the key/value
 rule, PR #210) and at most 256 learned literals are carried, but a page of
@@ -1208,7 +1208,7 @@ large inputs has not been measured on Cloud Run.
 
 **One known difference.** A workflow step's input is masked with the step's
 own masker. The frozen `Workflow` has no metadata, so a literal named only in
-the task's caller metadata is masked on the task and not on the step.
+the agent's caller metadata is masked on the agent and not on the step.
 
 ## CPU in Details: peak and mean of the limit, as typed attempt fields
 
@@ -1238,7 +1238,7 @@ attempt's, meaning every runner it started, combined.
   when nothing was measured, not even the limit.
 * **The limit** is cgroup v2 `cpu.max` when that says anything. Otherwise it
   is the catalogue cpu of the class the container was *sized* with, which is
-  the task's own class and not the profile's. Which of the two supplied it is
+  the agent's own class and not the profile's. Which of the two supplied it is
   no longer recorded (see below).
 * **The HEARTBEAT event is back to what it carried before #188:**
   `elapsed_seconds`, `peak_rss_bytes`, `checkpoints`, the cumulative
@@ -1253,7 +1253,7 @@ attempt's, meaning every runner it started, combined.
   moved to `swarm_api.attempt_state`.
 * **The attempt document is not fenced** for these writes, like the memory
   peaks beside them. It is the attempt's own document, and the fence guards
-  the task, its lease and its event stream, none of which this touches. The
+  the agent, its lease and its event stream, none of which this touches. The
   tenant-mismatch exit writes nothing.
 
 ### When the reading was taken, and where its limit came from (request #26)
@@ -1291,7 +1291,7 @@ like one that wrote a second ago. **Contract request #26 was accepted on #184
 Attempts that ran between #188's deploy to dev (about 23:08 UTC on
 2026-09-25) and this change's deploy carry their CPU only on HEARTBEAT
 events. A read-only look at dev's Firestore at 23:16 UTC that day visited the
-40 newest tasks. It found one such task, `task_49dde08b768b49748588` (mock,
+40 newest agents. It found one such agent, `task_49dde08b768b49748588` (mock,
 the #188 deploy's smoke), with two interim readings, one of them `final`.
 Every attempt that runs before this change deploys adds another.
 
@@ -1309,7 +1309,7 @@ HEARTBEAT of that attempt on the drawer's own event page that carries a
 count. When that event has no cores, the peak and mean rows draw em dashes, the
 mean row keeps the cpu-seconds, and the strip says `cpu-seconds only`. The
 reader adds no server read, because the page is already held. The page is the
-task's first 200 events, oldest first, so on a long attempt the newest reading
+agent's first 200 events, oldest first, so on a long attempt the newest reading
 on it can be an early one. The mark says so, and when the page is full (200
 events) and the reading is not the one taken at exit, the strip says
 `page full; newer readings may exist`. When no heartbeat on the page carries a
@@ -1326,4 +1326,4 @@ Keeping the server-side reader for those attempts was the alternative. It was
 not chosen, because the owner's decision was that the typed fields replace
 the path. That reader cost an events query per drawer read. The UI reader
 costs nothing, because it reads the page the drawer already holds, and the
-price is that it sees only the task's first 200 events.
+price is that it sees only the agent's first 200 events.

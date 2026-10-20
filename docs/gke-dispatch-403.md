@@ -83,7 +83,7 @@ profiles and split exactly along one line:
 | `browser` | `GKE_AUTOPILOT` | FAILED 6, CANCELLED 2 |
 
 `browser` is the only profile whose resolved backend is `GKE_AUTOPILOT`. Every
-one of its attempts failed with the message above. All **seven** browser tasks
+one of its attempts failed with the message above. All **seven** browser agents
 this deployment had ever accepted, over two days, had failed the same way. The
 capability shipped broken; it was never a regression.
 

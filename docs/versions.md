@@ -209,7 +209,7 @@ make build push
 ```
 
 **Agent CLIs.** `CLAUDE_CODE_VERSION` and `CODEX_VERSION` are build args pinned
-in the Dockerfile. Bump deliberately and run `make smoke` plus one real task per
+in the Dockerfile. Bump deliberately and run `make smoke` plus one real agent per
 affected profile — a CLI's output format changes more often than its flags.
 
 **Scanners.** checkov and trivy update their rule sets constantly; a green build

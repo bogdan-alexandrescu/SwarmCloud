@@ -46,13 +46,13 @@ defaulted to 0. What this lane changed, and why:
 * **Two rounds by default.** A workflow spec takes `fix_rounds` (0-5), the
   same budget as `metadata.merge_fix_rounds`; given both, they must agree.
   Submission resolves it once (`validation.resolve_fix_rounds`) and stamps
-  it on the merge task as `metadata.merge_fix_rounds`, which the wake tick
+  it on the merge agent as `metadata.merge_fix_rounds`, which the wake tick
   and the worker already read. Neither given: **2** beside a merge step
   (`LANE_FIX_ROUNDS_DEFAULT`), the PR-side fixer's own bound; **0** for an
   issue run's workflow, whose own loop (`--fix-rounds`) fixes CI before it
   submits its merge -- two loops on one pull request would race each
   other's pushes; and **0** for a `merge_pr` workflow (#352), which refuses
-  any other number: its branch is no task's, so no round could push to it,
+  any other number: its branch is no agent's, so no round could push to it,
   and rounds asked for and never possible would park the worker on
   `ci_fix_pending` until its six-hour bound. `fix_rounds: 0` keeps the behaviour from before this lane:
   red refuses `checks_failed` at once, and nothing is re-run. Conflict
@@ -75,18 +75,18 @@ defaulted to 0. What this lane changed, and why:
 * **Each round is a step of the lane's workflow.** The round is still its
   own one-step continuation workflow (it must be: it is submitted, signed and
   admitted like any other). After it is submitted the tick appends a step to
-  the merge task's workflow -- `ci-fix:<n>` or `conflict-fix:<n>`, naming the
-  round's task -- so `GET /v1/workflows/<id>` and the console show it beside
+  the merge agent's workflow -- `ci-fix:<n>` or `conflict-fix:<n>`, naming the
+  round's agent -- so `GET /v1/workflows/<id>` and the console show it beside
   implement, review, fix and merge. A caller's step id cannot hold `:`, so the
   id alone marks a step only the platform appended; the append is guarded on
-  the workflow being the tenant's and holding the merge task.
+  the workflow being the tenant's and holding the merge agent.
 * **The rollup counts the round steps as rounds.** `swarm_rollup.derive`
   ranks them like any step while they run or wait (a running round is a
   RUNNING workflow; it holds capacity), but leaves them out of the terminal
   severity while the workflow has steps of its own: the merge step's ending
   is the verdict on its rounds. Round 1 FAILED, round 2 SUCCEEDED, merge
   SUCCEEDED is a SUCCEEDED workflow; a merge that refused after its rounds is
-  FAILED on its own state. `counts` still says what each round's task is, and
+  FAILED on its own state. `counts` still says what each round's agent is, and
   `fix_round_steps` names them. The reconciler's stall check derives the same
   answer, because it decodes step ids (not inputs) and calls the same rule.
 * **What a round is told.** A CI round's prompt carries the failing jobs'
@@ -98,12 +98,12 @@ defaulted to 0. What this lane changed, and why:
   fenced as data. Unreadable, the round runs without the list. A round runs
   the continued step's resource class when that step ran the round's profile.
 
-**Invariants.** 1-3: a re-run creates no task; a round is an ordinary task
+**Invariants.** 1-3: a re-run creates no agent; a round is an ordinary agent
 admitted like any other, and the merge step stays PARKED, holding nothing,
 while either runs. 5: unchanged -- the worker accepts a round's head only
 from its signed spec (`agent_worker.merge._fix_round_heads`). 9: every read
-and the re-run use the merge task's own tenant's token, and a round is
-submitted as the merge task's submitter only while they are a member. 10:
+and the re-run use the merge agent's own tenant's token, and a round is
+submitted as the merge agent's submitter only while they are a member. 10:
 the round's profile is `claude-code`, chosen by the platform.
 
 **Frozen contract.** `Workflow` has no field for the budget and
@@ -120,22 +120,22 @@ same two files (`apps/agent-worker/agent_worker/merge.py`,
 `apps/swarm-api/swarm_api/mergewake.py`).
 
 **#1073: the PR-side CI fixer's head was `head_moved`.** Measured on PR 1071
-(workflow wf_ca1fa9e2701642db890e, merge task task_f745c31a39014359bccd):
+(workflow wf_ca1fa9e2701642db890e, merge agent task_f745c31a39014359bccd):
 `scripts/ci-fix.sh`, run by GitHub Actions on the red pull request, submitted
-fix task task_b87630a30d7b43428d8f, which pushed ed1b9056... to the branch
+fix agent task_b87630a30d7b43428d8f, which pushed ed1b9056... to the branch
 while the merge step was parked. The step accepted only the head its workflow
 pushed, its own CI-fix rounds' heads, and GitHub's base merges of them, so it
 refused a fix the platform itself had made.
 
 Such a head now counts as one of the workflow's fix rounds -- **proved from the
 platform's own records, never from the commit**. The worker queries the
-tenant's tasks whose `metadata.ci_fix.pull_request` is this pull request and
+tenant's agents whose `metadata.ci_fix.pull_request` is this pull request and
 whose `metadata.dispatch.continues` is the branch's root
 (`agent_worker.inputs.find_ci_fix_tasks`, the same two equality filters
-swarm-api's own cap counts with in `cifix._attempts_made`) and accepts a
-task's recorded `pushed_head` only when (`merge._ci_fixer_heads`):
+swarm-api's own cap counts with in `cifix._attempts_made`) and accepts an
+agent's recorded `pushed_head` only when (`merge._ci_fixer_heads`):
 
-* the task is this tenant's, and its signed spec verifies (against its own
+* the agent is this tenant's, and its signed spec verifies (against its own
   signed workflow: the fixer is a separate workflow);
 * its SIGNED dispatch block `continues` the root whose branch the pull request
   is on, and its SIGNED `repository_url` is this merge's repository;
@@ -145,7 +145,7 @@ task's recorded `pushed_head` only when (`merge._ci_fixer_heads`):
 The commit's author and message are never read: anyone with push access
 writes both. The `ci_fix` record is tenant-writable, as the opener's pushed
 head always was; a forged one can name only a head pushed to this branch of
-this repository by a task whose spec swarm-api signed. A head the fixer
+this repository by an agent whose spec swarm-api signed. A head the fixer
 recorded for another pull request, or any head no record names, is still
 `head_moved`.
 
@@ -158,7 +158,7 @@ workflow, which is why no test saw it. Rounds are now verified against the
 workflow their entry names, and the world's verifier applies the real rule.
 
 **#1076: a CONFLICTING pull request was waited on for checks GitHub never
-runs.** Measured on PR 1028 (workflow wf_14b4278c117f47fda785, merge task
+runs.** Measured on PR 1028 (workflow wf_14b4278c117f47fda785, merge agent
 task_9c21161ee37a46b48f0e): `checks_timeout` after 366 min, while GitHub
 reported mergeable CONFLICTING and "no checks reported". The step read
 mergeability only once the checks were green, and GitHub runs no workflow on
@@ -176,7 +176,7 @@ CI-fix round:
   agent for as long as it takes;
 * the tick claims the round in `metadata.merge_fix.conflict_rounds`, beside
   the CI-fix `rounds` and counted apart from them, under the same guarded
-  transaction, and submits as the merge task's submitter, while still a
+  transaction, and submits as the merge agent's submitter, while still a
   member, a one-step `direct-pr` claude-code continuation of the pull
   request's branch (`mergewake.conflict_fix_continuation`) that merges the
   base in and resolves every conflict keeping both sides' intent;
@@ -217,10 +217,10 @@ takes the same path. `merge_conflict` is a step failure code in
 `swarm_api.refusals` switch.
 
 **Invariants.** Every wait is a `CI_PENDING` park holding no lease, pool count
-or Job (1, 3, 4); a round is an ordinary admitted task. The rounds are bounded
+or Job (1, 3, 4); a round is an ordinary admitted agent. The rounds are bounded
 twice: by `MERGE_CONFLICT_ROUNDS_MAX`, and by `MERGE_CI_MAX_SECONDS` on the
 step's park, past which a conflict wait is `merge_conflict` too. Every forge
-write is still behind the fencing recheck (5). The fixer's task is read under
+write is still behind the fencing recheck (5). The fixer's agent is read under
 the merge's tenant only (9).
 
 **Not verified here:** a conflict round end to end against GitHub. The
@@ -255,14 +255,14 @@ by at most one merge step.
   `MERGE_SLOT_MAX_WAITS`), not on the CI wakes, and does not run the
   `checks_timeout` clock. swarm-api's wake tick skips these parks: their
   checks are green, so a reading would wake them for nothing.
-* Waiters are taken **in submission order** (the task's `created_at`). A
-  release hands the slot to the first waiter whose task has not ended and
-  writes that task's wake marker, so the scheduler promotes it on its next
+* Waiters are taken **in submission order** (the agent's `created_at`). A
+  release hands the slot to the first waiter whose agent has not ended and
+  writes that agent's wake marker, so the scheduler promotes it on its next
   drain; the fallback instant covers a lost mark.
 * The slot is a **lease**: `MERGE_SLOT_LEASE_SECONDS` (45 min, three CI
   fallbacks), renewed by every attempt of the holder. A crashed holder's
-  slot frees when the lease runs out, or at once when its task is read
-  terminal. Every slot write is fenced on the attempt's task and lease
+  slot frees when the lease runs out, or at once when its agent is read
+  terminal. Every slot write is fenced on the attempt's agent and lease
   (invariant 5), and the holder re-reads the slot's generation immediately
   before each update and merge call.
 * Released on every exit: merged, refused (a red head included), failed and
@@ -355,7 +355,7 @@ outcome is one of three:
 
 **A wait is a park, not a retry.** In one fenced transaction the worker
 writes PARKED with **`CI_PENDING`** as the park reason. It records three
-things on the task:
+things on the agent:
 
 * the head it is waiting at;
 * the pending check names, in `blocked_by`;
@@ -370,7 +370,7 @@ waiting is not failing, so a slow CI does not use up the step's attempts.
 Past the bound, a wake counts like any attempt, so a pull request whose CI
 never settles still ends at `max_attempts`.
 
-A `CI_PENDING` task is PARKED. It holds **no capacity**: no lease, no pool
+A `CI_PENDING` agent is PARKED. It holds **no capacity**: no lease, no pool
 count, no Job execution (invariants 1 and 3). The park reason is new, and it
 is a frozen-contract change: request (A) at the end of this section.
 
@@ -398,20 +398,20 @@ minute. It has the same shape and OIDC identity as `issue_run_advance`
 * swarm-api admits that account to this one route besides its three
   (`apps/swarm-api/swarm_api/auth.py::ROLLUP_SWEEPER_ROUTES`).
 
-For each of the tenant's `CI_PENDING` tasks, the route makes one indexed
+For each of the tenant's `CI_PENDING` agents, the route makes one indexed
 query: `tenant_id`, `state`, `park_reason`. It reads the pull request's
 check runs and statuses at the recorded head. It reads with the tenant's own
 `-git` token, through
 `apps/swarm-api/swarm_api/forge.py::SecretManagerForgeTokens`. That is the
 same credential, and the same reads, that the issue-run CI loop already makes
-(`apps/swarm-api/swarm_api/issueci.py::from_checks`). A task is read at most
+(`apps/swarm-api/swarm_api/issueci.py::from_checks`). An agent is read at most
 once per `apps/swarm-api/swarm_api/issueci.py::CI_READ_SECONDS`.
 
 When nothing it waits on is still pending, the route writes
-`merge_wait.wake_requested_at` in a transaction guarded on the task still
+`merge_wait.wake_requested_at` in a transaction guarded on the agent still
 being PARKED/`CI_PENDING`. "Nothing still pending" covers every check
 completed, the head moved, the pull request closed or merged, or
-mergeability computed. That write is the route's only write to the task.
+mergeability computed. That write is the route's only write to the agent.
 
 **Why the tick, and why swarm-api rather than the scheduler:**
 
@@ -435,7 +435,7 @@ a `CI_PENDING` park to READY in either of two cases:
   token never strands a merge.
 
 The promotion is guarded on the state and park reason it read, and writes
-READY alone (invariant 1). A task that has used its last attempt is
+READY alone (invariant 1). An agent that has used its last attempt is
 dead-lettered, as `_end_exhausted_retry` does.
 
 **A forged marker is harmless.** Firestore has no document-level IAM, so any
@@ -536,16 +536,16 @@ That step therefore parks only on mergeability or a behind branch.
 A workflow that is not an issue run gets the same loop on request, as MS7.
 `metadata.merge_fix_rounds` is 0-5 and defaulted to 0; since SPEED-D2
 (2026-10-14, the first section of this document) it is stamped on every
-merge task, 2 unless the spec says otherwise. When the tick reads a
+merge agent, 2 unless the spec says otherwise. When the tick reads a
 red required check for a `CI_PENDING` merge with rounds left, it claims the
 round in the merge task's metadata in a guarded transaction, then submits
 the continuation the issue-run loop already builds
 (`apps/swarm-api/swarm_api/issueci.py::ci_fix_workflow`): `continues_task`
-names the task that pushed the head, under the tenant. The merge stays
+names the agent that pushed the head, under the tenant. The merge stays
 parked until that continuation ends and CI settles at the head it pushed.
 
-On wake, the worker accepts the new head only if the task that pushed it
-continues the signed target's task. That is the rule
+On wake, the worker accepts the new head only if the agent that pushed it
+continues the signed target's agent. That is the rule
 `apps/swarm-api/swarm_api/issueci.py::_pushing_task` applies, rechecked by
 the worker from GitHub and the task store.
 
@@ -679,11 +679,11 @@ Superseded, in the 2026-09-29 sections below and on epic #352, by the
 
 * **1. Only LEASED/DISPATCHED/STARTING/RUNNING create demand.** The step
   holds a lease only while it reads and acts, which takes seconds. A
-  `CI_PENDING` task is PARKED and costs nothing, and the wake tick runs in
+  `CI_PENDING` agent is PARKED and costs nothing, and the wake tick runs in
   swarm-api and holds no lease. The scheduler's promotion writes READY
   alone; only admission takes capacity.
 * **2. All-or-nothing reservation.** This is unchanged. Each wake is admitted
-  like any task, in admission's one transaction.
+  like any agent, in admission's one transaction.
 * **3. Concurrency counts from LEASED.** This is unchanged. A parked merge is
   not counted; a woken one is counted from its lease.
 * **4. Never sleep through a long wait.** This is the point of the
@@ -773,7 +773,7 @@ chose the second; it is built (2026-10-07), as below.
 `WorkflowCreate.merge_pr: {number, head_sha}` beside ONE `merge` step under
 `direct-pr` (`swarm merge <pr> --sha <head>`, or `swarm_workflow`'s
 `merge_pr`). It is the merge-only continuation's shape with the caller naming
-the pull request instead of the task that opened it, and it reuses
+the pull request instead of the agent that opened it, and it reuses
 everything after submission: the signed `merge_target` names `{number,
 head_sha, base}`, and the worker's merge action pins `head_sha` exactly as it
 pins a pushed head, then runs the same gate -- open, not from a fork, the
@@ -798,8 +798,8 @@ the current head, so the caller looks at what changed); a closed or merged
 pull request; one not in the registered repository, from a fork, or on a
 base other than the registered default branch; any step but the one merge
 step; a `continues_task` (two pull requests), a `repository_ref` (the head is
-the ref) or `merge_fix_rounds` (a CI-fix round continues the task that pushed
-the branch, and no task pushed this one) beside it; any strategy but
+the ref) or `merge_fix_rounds` (a CI-fix round continues the agent that pushed
+the branch, and no agent pushed this one) beside it; any strategy but
 `direct-pr`. The pull request is read ONCE, with the tenant's own `-git`
 token (invariant 9); a tenant with no `-git` secret is 409. A
 continuation-scoped account is refused before any read: `merge_pr` is new
@@ -1065,7 +1065,7 @@ None of the existing members fits:
   attempt, which is today's behaviour;
 * `DEPENDENCY_INCOMPLETE` is promoted when the workflow's upstream steps end,
   which they already have;
-* `CHILDREN_INCOMPLETE` names child tasks, and the observer tools treat it
+* `CHILDREN_INCOMPLETE` names child agents, and the observer tools treat it
   that way (`apps/swarm-mcp/swarm_mcp/progress.py::_PARKED_BECAUSE`).
 
 MS1 files it in `docs/contract-change-requests.md`. MS2 applies it on
@@ -1124,7 +1124,7 @@ and what each one overrides below:
    repository that is still open, with the comment
    `Closed by #<pr>, merged by SwarmCloud task <task_id>`. A `part of #N`
    pull request names no closing reference, so it closes nothing. New; §5.4
-   only recorded the merging task.
+   only recorded the merging agent.
 4. **An opt-in final step, a platform default or per job.** `merge_by_default`
    (Firestore `control/settings`, served and set by `/v1/admin/settings`,
    default **off**), and a workflow's `metadata.merge` `"on"` | `"off"`,
@@ -1143,10 +1143,10 @@ and what each one overrides below:
 What the built step checks, and how this differs from §4-§5:
 
 * **Which pull request (§3, §4.1).** The signed dispatch block
-  `merge_target` names the task that opened it -- the integrator, or the one
+  `merge_target` names the agent that opened it -- the integrator, or the one
   `direct-pr` step -- and the review. The number and the pushed head are that
-  task's recorded result: claims, so the live pull request must be that
-  task's own `swarm/<id>` branch (or the branch it continues), from no fork.
+  agent's recorded result: claims, so the live pull request must be that
+  agent's own `swarm/<id>` branch (or the branch it continues), from no fork.
   No `merges` block, no proof step.
 * **The pinned sha (§4.2).** The head the opening step pushed. The pull
   request's head must equal it (`head_moved` otherwise, and on a 409 from
@@ -1204,12 +1204,12 @@ no closing reference and close nothing -- #569 again -- and before the CI loop
 could fix a red check, so a red or slow CI would fail the workflow, and the
 run with it. So the compiled workflow and every CI fix round say
 `metadata.merge: "off"`, and the CI loop (`issueci._merge`) submits ONE
-merge-only continuation -- `continues_task` naming the run's task that pushed
-the green head (the integrator, or the newest fix round's task), and one
+merge-only continuation -- `continues_task` naming the run's agent that pushed
+the green head (the integrator, or the newest fix round's agent), and one
 `merge` step -- once CI is green at that head AND the keyword block is
 recorded written, and only when the review's verdict is `MERGE`. The run
 stays CHECKING while the merge runs and is DONE when GitHub reports the pull
-request merged; a review verdict other than `MERGE`, a head no task of the run
+request merged; a review verdict other than `MERGE`, a head no agent of the run
 pushed, or a merge the step refused is FAILED with the reason, the pull
 request left open and green for a person, and no merge is resubmitted for
 that head. A CI fix round is not re-reviewed (#454): the merge after one
@@ -1217,22 +1217,22 @@ rests on the review's verdict of the code before the round and on green
 required checks. A merge-only continuation is a tenant member's: the
 continuation-scoped CI-fixer account (request 30) is refused one.
 
-**A merge-only continuation verifies its task against THAT task's workflow
-(#900).** The task it merges ran in an earlier workflow -- the run's, or a
-fix round's -- and the merge runs in its own. Verifying the task's signed
+**A merge-only continuation verifies its agent against THAT agent's workflow
+(#900).** The agent it merges ran in an earlier workflow -- the run's, or a
+fix round's -- and the merge runs in its own. Verifying the agent's signed
 spec against the merge's own workflow, as every other upstream is, made
 every issue run's auto-merge end `spec_unverified ... workflow_mismatch`. So
-the signed `merge_target` also names `pull_request_workflow`, the task's
+the signed `merge_target` also names `pull_request_workflow`, the agent's
 workflow as swarm-api read it from the task's record at submission
 (`continuation.resolve_continuation`), and the worker verifies the task's
 spec against that (`merge._verify_opener`): a forged or edited spec is still
 `signature_mismatch`, an honest spec of any other workflow still
 `workflow_mismatch`. Authority is bound twice, separately from the
 signature. The issue-run loop refuses to submit unless the run's record names
-that task and workflow (`issueci.merge_target_unbound`: `run.pr_task_id` of
-`run.workflow_id`, or a CI-fix task of one of `run.ci_fix_workflows`), and
+that agent and workflow (`issueci.merge_target_unbound`: `run.pr_task_id` of
+`run.workflow_id`, or a CI-fix agent of one of `run.ci_fix_workflows`), and
 the worker refuses (`workflow_mismatch`) unless its own signed dispatch block
-`continues` the branch the task's pull request is on. A merge inside the
+`continues` the branch the agent's pull request is on. A merge inside the
 workflow that opened the pull request names no `pull_request_workflow` and is
 checked against its own workflow exactly as before.
 
@@ -1310,7 +1310,7 @@ with the section that carries the detail:
   **Round 4, joint review with CR 34: two more corrections, not just one
   more mechanism.** First, `post-verdict`'s read of `review.json` was still
   declared as ordinary `input_from`, which resolves through the upstream
-  task's tenant-writable `result_summary` — exactly the kind of
+  agent's tenant-writable `result_summary` — exactly the kind of
   attacker-writable pointer B1 exists to route around. Fixed:
   `post-verdict` computes the object's GCS path itself from its own signed
   spec (#342) and reads it directly, never through the generic staging
@@ -1406,7 +1406,7 @@ The owner's requirements (2026-09-29, #295), which every section below answers:
    environment or a log (#219).
 4. Merge only when **every required check is green at that head** and the
    review's verdict is **MERGE**. Otherwise the step fails and says why.
-5. The pull request records **which task merged it**.
+5. The pull request records **which agent merged it**.
 
 ---
 
@@ -1479,7 +1479,7 @@ Three consequences follow, and the design does not pretend otherwise:
    second bullet says a tenant identity can write any Firestore document
    whose id it knows, and a step learns every sibling step's task id from the
    workflow document. So an `implement` agent — the very first thing to run —
-   can rewrite the still-`PARKED` `review` task's `prompt` before `review`
+   can rewrite the still-`PARKED` `review` agent's `prompt` before `review`
    ever starts, and the review agent would then honestly follow corrupted
    instructions and reach a genuine, unforced `MERGE` verdict about a change
    it was never actually asked to judge. **This reopens B1**: `post-verdict`'s
@@ -1521,19 +1521,19 @@ by itself, or be cancelled separately from the proof it would be part of.
 ### 1.2 A stage (a platform-inserted step kind, e.g. `WorkflowStep.kind: "merge"`)
 
 The scheduler, or a control-plane service, would perform the merge when the
-workflow's other steps succeeded, with no task and no worker.
+workflow's other steps succeeded, with no agent and no worker.
 
 **Rejected.** It needs a new field on the frozen `WorkflowStep` and on `Task`.
-It needs a second execution path in the scheduler for a step that is not a
-task: no lease, no fencing generation (invariant 5), no attempt, no end cause.
+It needs a second execution path in the scheduler for a step that is not an
+agent: no lease, no fencing generation (invariant 5), no attempt, no end cause.
 The worst problem is that it puts a tenant's merge credential in a shared
 control-plane process that serves every tenant. That makes a tenant's key
 reachable from outside the tenant, which invariant 9 forbids.
 
 ### 1.3 A runner profile (`runner_profile: "merge"`) — CHOSEN
 
-A merge step is an ordinary task whose profile names **no runner**. The worker
-performs the merge itself. Everything true of a task stays true:
+A merge step is an ordinary agent whose profile names **no runner**. The worker
+performs the merge itself. Everything true of an agent stays true:
 
 * admission holds it to the same pools and the same all-or-nothing transaction
   (invariants 1–3). Until its parents succeed it is `PARKED(DEPENDENCY_INCOMPLETE)`
@@ -1566,7 +1566,7 @@ What this needs from the frozen contract, requested in
 * The catalogue entry `merge`: `image="agent-runtime-base"`,
   `resource_class="standard"`, `backend=CLOUD_RUN_JOB`, `runner_argv=()`,
   `provider="git-merge"`, `secrets=()`, `inputs={}`, `timeout_seconds=600`.
-  * `provider="git-merge"` is what already parks a task
+  * `provider="git-merge"` is what already parks an agent
     `CREDENTIAL_MISSING`, at no cost, for a tenant that has not registered
     the credential. It is also what keeps Terraform's `job_matrix` from
     creating a merge Job for that tenant.
@@ -1737,7 +1737,7 @@ tenant registered against an Enterprise Server instance, to that tenant's forge
 host as recorded outside anything a tenant identity can write. A task document
 can carry a `repository_url`, and §0 already treats everything a tenant
 identity writes as a claim, so the merge worker never reads a host, an owner
-or a repo name out of the task, the workflow document or `result_summary.git`.
+or a repo name out of the agent, the workflow document or `result_summary.git`.
 It refuses to start (`CANNOT_START`, `forge_host_invalid`, §6 row 14) if that
 record is missing or its host does not match the pinned form
 (`api.github.com`, or the registered Enterprise Server host exactly). This is
@@ -1790,7 +1790,7 @@ legitimate reason to answer any of these calls with one.
 
 The same host and owner/repo record is what the `-git` publish path (used by
 `_publish_git` for `direct-pr` and `integrate`) needs too, and does not have
-today — it reads `repository_url` from the task. That gap is not fixed by
+today — it reads `repository_url` from the agent. That gap is not fixed by
 this design; #307 covers the clone side of it, and the publish side should be
 filed the same way (§7 lists it as out of scope for the merge step
 specifically, since a merge step that trusts its own control-plane record
@@ -1938,7 +1938,7 @@ step actually saw.
 
 `proof.json` is staged the ordinary way: `merge` declares
 `"input_from": {"proof": "proof.json"}`, and swarm-api records
-`metadata.expected_outputs` on the `proof` task, so a proof that does not
+`metadata.expected_outputs` on the `proof` agent, so a proof that does not
 write its outcome fails **its own** attempt, retryably, and the merge never
 starts ([workflows.md](workflows.md#artifacts-pass-by-reference)). `fix`
 stages `review.json` the ordinary way too — `"input_from": {"review":
@@ -1969,13 +1969,13 @@ agent's self-graded test run would not change what "PROVED" means anyway.
 
 **The pull request number and the pinned sha are NOT staged artifacts.** They
 are facts only a worker knows: which commit it cloned and what it pushed. They
-are read from the upstream tasks' `result_summary.git`, by the task ids that
+are read from the upstream agents' `result_summary.git`, by the task ids that
 the merge step's dispatch block names — **corrected, joint review with CR 34,
 2026-09-29: `merges: {author, review, post-verdict, fix, proof}`, not
 `{author, review, fix, proof}`.** `post-verdict` names no git operation and
 so contributes nothing to the `result_summary.git` equality chain (§4.2), but
 `merge`'s signed-spec verification (§0 consequence 4, #342) needs its task id
-too: `merge` verifies the **union** of every upstream task's signed spec —
+too: `merge` verifies the **union** of every upstream agent's signed spec —
 `author`, `review`, `post-verdict`, `fix`, `proof` — not only the subset that
 happens to feed `merge`'s own `input_from` (which today is `proof` alone; §6
 row 42 states this explicitly). Two reasons the pull request number and sha
@@ -2082,7 +2082,7 @@ there. It depends on `review` alone.
 stage `review.json` the ordinary way.** An earlier draft of this paragraph
 said `input_from`, and so did §4.1 and §6a row 4. The ordinary `input_from`
 staging path (`agent_worker/inputs.py:12,298,387`) resolves an artifact's GCS
-location using fields the upstream task's own `result_summary` carries — a
+location using fields the upstream agent's own `result_summary` carries — a
 Firestore field the tenant identity writes, and so, by §0, a claim, not a
 fact. Routing the one read this whole design depends on through a
 tenant-writable pointer would mean a `fix` or `proof` agent could redirect
@@ -2096,7 +2096,7 @@ mutable:**
 gs://<bucket>/tenants/<tenant>/verdicts/<workflow_id>/<review task id>/review.json
 ```
 
-`workflow_id` is `post-verdict`'s own task's workflow id; `<review task id>`
+`workflow_id` is `post-verdict`'s own agent's workflow id; `<review task id>`
 is the upstream task id named in `post-verdict`'s own dispatch block, under
 the key **`verdict_source: {review: <review task id>}`** — named here,
 round-5 re-review, so the key is not left implicit — the same way
@@ -2190,9 +2190,9 @@ bindings, not adding a third:
    alone**, per the owner's decision, round-5 re-review: `objectCreator`
    grants only `storage.objects.create`, never `update` or `delete`, so the
    review SA cannot overwrite an object once written, by design, not merely
-   by convention. **A failed review becomes a new task, at a new path, not a
+   by convention. **A failed review becomes a new agent, at a new path, not a
    retry that overwrites the old one** — task ids are unique, so a fresh
-   attempt at review (dispatched as a new task, however the caller chooses
+   attempt at review (dispatched as a new agent, however the caller chooses
    to recover from a failure) lands at
    `tenants/<t>/verdicts/<workflow_id>/<new review task id>/review.json`, a
    path the old attempt, and any attacker who only knew the old task id,
@@ -2202,11 +2202,11 @@ bindings, not adding a third:
    (round-5 re-review, minor named MAJOR):** `review` is still an
    agent-running `claude-code-review` profile (§1.3), so its worker needs
    the *same* two-binding shape the ordinary tenant SA has — `objectViewer`
-   and the excluding-`verdicts/` `objectUser` — scoped to its own task's
+   and the excluding-`verdicts/` `objectUser` — scoped to its own agent's
    ordinary artifact and checkpoint paths under `tenants/<t>/`, for the same
    reasons every other agent-running profile needs them (staging its own
    inputs, writing its own checkpoint, §1.3's restore note). The review SA
-   is not exempt from the platform's ordinary per-task GCS access merely
+   is not exempt from the platform's ordinary per-agent GCS access merely
    because it also holds the `verdicts/` grant; it needs both.
 
 **Conditions of this shape require Uniform bucket-level access on the
@@ -2283,12 +2283,12 @@ cross-workflow one unconditionally — corrected, joint review with CR 34,
   with GCS's compare-and-swap precondition, so whichever write reaches a
   given exact path *first* wins, and every later write to that same path
   fails outright. What this buys is real but narrow: **the legitimate side
-  of a lost race fails loudly** — a genuine `review` task whose write
+  of a lost race fails loudly** — a genuine `review` agent whose write
   collides with an attacker's prior write gets a precondition failure it can
   surface as an attempt failure, rather than silently losing to an
   overwrite. It does not close R8. Three premises the earlier draft relied
   on to claim full closure are false:
-  * **a same-task retry reuses the same path, it does not move to a new
+  * **a same-agent retry reuses the same path, it does not move to a new
     one.** The path is `f(workflow_id, review task id)` (§4.3), and a task's
     id is stable across its own attempts — only the attempt id changes on
     retry. "A failed review becomes a new task and a new path" was true only
@@ -2296,7 +2296,7 @@ cross-workflow one unconditionally — corrected, joint review with CR 34,
     retry of the same failed attempt, which is the ordinary recovery path
     and lands at the identical, already-poisoned path;
   * **"`post-verdict` only starts once `review` succeeded" rests on the
-    task's `state` field, which #342 does not sign and which is itself
+    agent's `state` field, which #342 does not sign and which is itself
     tenant-writable (CR 34 lists this gap).** Dependency promotion reads
     `state`, not the spec signature; #342 protects the *prompt* a step
     executes, not the *execution-outcome record* the scheduler trusts to
@@ -2304,7 +2304,7 @@ cross-workflow one unconditionally — corrected, joint review with CR 34,
     an unpoisoned path can, by the same §0 grant, also write `review`'s task
     document's `state` straight to `SUCCEEDED` — a **plant-then-state-
     rewrite** attack: plant a forged `review.json` at the correct path, then
-    set `state: SUCCEEDED` on the review task directly, without ever running
+    set `state: SUCCEEDED` on the review agent directly, without ever running
     a real review agent or winning any GCS race at all;
   * **misdirecting `post-verdict` needs only a Firestore write, not a GCS
     race, because the pull request number it acts on comes from the
@@ -2328,11 +2328,11 @@ instructions the review agent acted on.** Everything above protects
 `review.json` — the review agent's **output** — from tampering, before or
 after it is written. None of it protects the review agent's **input**: the
 `prompt` its task document carries, which any tenant identity can rewrite
-while the review task still sits `PARKED` (§0, consequence 4, BLOCKER). An
+while the review agent still sits `PARKED` (§0, consequence 4, BLOCKER). An
 `implement` agent that rewrites `review`'s prompt before `review` starts gets
 an honest `post-verdict`, honestly anchoring an honest verdict — about
 instructions nobody who matters actually wrote. **This design depends on
-#342** (signed step specs): `post-verdict` must verify the `review` task's
+#342** (signed step specs): `post-verdict` must verify the `review` agent's
 signed spec, not only stage its `review.json`, before trusting either the
 verdict or the sha it claims to have judged. §7 T14 names this threat
 directly; B1 is closed only once #342 ships.
@@ -2373,7 +2373,7 @@ an App-anchored one.
 ## 5. What the merge step asks GitHub, and what counts as green
 
 Every call goes to the pinned forge host (§2.1b: `api.github.com`, or the
-tenant's registered Enterprise Server host — never a host read from the task),
+tenant's registered Enterprise Server host — never a host read from the agent),
 scoped to the control-plane `owner`/`repo` and the one pull request number
 (§4.2), through `forge._request`, with the installation token, API version
 `2022-11-28`. No credentialed request follows a redirect (§2.1b): a `3xx`
@@ -2531,7 +2531,7 @@ not model occurred, and the step says so in `result_summary` rather than
 recording provenance that claims more certainty than the worker actually has.
 Everything else is §6.
 
-### 5.4 The pull request records which task merged it
+### 5.4 The pull request records which agent merged it
 
 In two places, because they fail differently:
 
@@ -2549,8 +2549,8 @@ In two places, because they fail differently:
   ```
 
   The review line names the GitHub object the merge step actually trusted
-  (§4.3, §5.2a) — the review's own id, and the `post-verdict` task that
-  posted it, distinct from the `review` task that judged — rather than
+  (§4.3, §5.2a) — the review's own id, and the `post-verdict` agent that
+  posted it, distinct from the `review` agent that judged — rather than
   restating the tenant-writable `review.json` claim as if it were the proof.
   The proof line says plainly that it is not the same kind of claim: it names
   what `proof.json` reported, not a GitHub object, because §4.3 does not
@@ -2635,7 +2635,7 @@ is the merge step's end causes only.
 | 39 | the worker died after the merge and before `finish` | — | the reconciler requeues it, the next attempt hits row 34, and it ends SUCCEEDED |
 | 40 | the merge succeeded and the comment did not | — | SUCCEEDED, `recorded_on_pull_request: false` (§5.4) |
 | 41 | the merge succeeded, and the post-merge re-read of `base.ref` (§5.3, §9) disagrees with the pre-merge one | `base_mismatch_recorded` | SUCCEEDED, with the discrepancy flagged in `result_summary` rather than asserted away |
-| 42 | the signed spec of `author`, `review`, `post-verdict`, `fix` or `proof` does not verify — the union `merge` depends on (§4.2), whether or not that task's output feeds `merge`'s own `input_from` (§0 consequence 4, §7 T14/R7) | `spec_unverified` | `MERGE_REFUSED` — checked early, alongside row 8, before any credential is read |
+| 42 | the signed spec of `author`, `review`, `post-verdict`, `fix` or `proof` does not verify — the union `merge` depends on (§4.2), whether or not that agent's output feeds `merge`'s own `input_from` (§0 consequence 4, §7 T14/R7) | `spec_unverified` | `MERGE_REFUSED` — checked early, alongside row 8, before any credential is read |
 
 **Interop with CR 34, corrected round-5 re-review, 2026-09-29: CR 33 keeps
 its own `*_REFUSED`/`*_FAILED` vocabulary as the `end_cause` — the owner did
@@ -2664,7 +2664,7 @@ checkpoint. The pin makes a repeated merge either a no-op (row 34) or a refusal
 
 ### 6a. `post-verdict`'s own failure modes
 
-A separate, much shorter table: `post-verdict` is its own task, with its own
+A separate, much shorter table: `post-verdict` is its own agent, with its own
 attempts and its own typed end causes. **Pinned here, round-3 re-review
 (minor):** `EndCause.VERDICT_REFUSED` and `EndCause.VERDICT_FAILED`, the same
 two-way split `MERGE_REFUSED`/`MERGE_FAILED` makes (§6) — a condition for
@@ -2682,7 +2682,7 @@ though it has not been filed.
 | 2 | cancel requested before the review is posted | — | `CANCEL_REQUESTED` |
 | 3 | the step ran past its timeout | — | `TIMEOUT` |
 | 4 | no object exists at the computed verdicts-prefix path (§4.3), or it is not the schema §4.1 requires | `verdict_unreadable` | `INPUTS_UNAVAILABLE`, retryable only if the read itself failed transiently (not if the object is simply absent — `review` fails its own attempt first in that case) |
-| 5 | the `review` task's signed spec does not verify (§0 consequence 4, §7 T14) | `spec_unverified` | `VERDICT_REFUSED` |
+| 5 | the `review` agent's signed spec does not verify (§0 consequence 4, §7 T14) | `spec_unverified` | `VERDICT_REFUSED` |
 | 6 | the `-git-review` secret is missing, or this account cannot read it | — | `CANNOT_START` |
 | 7 | the review App key was rejected, or the App is not installed on this repository | — | `CANNOT_START` |
 | 8 | the verdicts prefix's bucket or path cannot be resolved at all (a deploy-time misconfiguration, not a per-request condition) | `verdict_prefix_unavailable` | `CANNOT_START` |
@@ -2692,7 +2692,7 @@ though it has not been filed.
 | 12 | a retried attempt runs after a previous one already posted a review at this `commit_id` | — | **SUCCEEDED**, treated as already done — GitHub allows more than one review from the same App on a pull request, so a second `APPROVE` at the same commit is redundant, not harmful, and the merge step's read (§5.2a) already takes the *latest* one |
 
 Row 5 is what makes #342 a real dependency rather than a cross-reference:
-`post-verdict` will not carry a verdict forward from a `review` task whose
+`post-verdict` will not carry a verdict forward from a `review` agent whose
 signed spec it cannot verify, whatever `review.json` says. **This row exists
 only once #342 ships — before that, `post-verdict` cannot run at all, because
 the merge step is not enabled for any tenant (§10's precondition). "#342 is
@@ -2731,11 +2731,11 @@ review**, or **the merge credential**.
 | T7 | post a fake green check (a commit status or a check run with a required name) using `-git` | required checks are pinned to GitHub Actions' `app_id` (15368), and (M5) any required check with **no** `app_id` is refused outright rather than falling back to a legacy commit status. A status or check from any other token or App does not count (§5.2) |
 | T8 | retitle the pull request after the review, to change the headline on `main` | `title_changed`: the live title must equal `review.json.title`. The subject is taken from the live pull request at the same read that pins the head |
 | T9 | point the merge at a different pull request by rewriting the author's `result_summary.git.pull_request` | the live pull request's `head.ref` must be `swarm/<author task id>`, a name derived from the author's task id, and `head.sha` must be `pinned` (§4.2), both read against the control-plane `owner`/`repo` record (§2.1b, B2), never a repository name the task document supplies. Another pull request cannot satisfy both |
-| T10 | rewrite the merge task's own dispatch block (`merges`), which is a Firestore document, to name different upstream tasks | the block is a claim like every other (§0). What holds is the chain of equalities: the merge lands only a pull request whose live head is `pinned`, and only when a **GitHub review object**, not a Firestore or GCS claim, says `APPROVED` at exactly that sha. Pointing the block elsewhere can at most land a head some genuinely-approved review passed. It cannot land the attacker's unreviewed head (§4.3) |
+| T10 | rewrite the merge agent's own dispatch block (`merges`), which is a Firestore document, to name different upstream agents | the block is a claim like every other (§0). What holds is the chain of equalities: the merge lands only a pull request whose live head is `pinned`, and only when a **GitHub review object**, not a Firestore or GCS claim, says `APPROVED` at exactly that sha. Pointing the block elsewhere can at most land a head some genuinely-approved review passed. It cannot land the attacker's unreviewed head (§4.3) |
 | T11 | prompt-inject the reviewer, with text in the diff that tells it to answer MERGE | **not stopped by this design.** The verdict is only as good as the reviewer model reading attacker-authored text; B1 makes the resulting `APPROVE` harder to *fabricate* without a real review step, but does nothing about a real review step reaching the wrong conclusion. What limits the damage is the rest of the gate: required checks green at the exact head, a proof at that head, no protected-path changes, and a human's standing ability to revert. This is residual risk **R1** |
 | T12 | merge it directly with `-git`, bypassing the step completely | **narrowed by M1, not closed.** Ruleset `main-protection` (§0.3) removed the direct-push bypass `enforce_admins: false` used to allow: an administrator can no longer push straight past the required checks. What it did **not** yet restrict is *who* may use the ordinary PR-merge route — today that is still anyone with write access, which includes any identity holding `-git`. M2's second ruleset (restrict-updates, with a bypass list naming the Apps) is what would close that, and whether GitHub honours an App name in a bypass list on a personal repository is **not verified**; a dry run comes first (§8, §11 Q3). This residual is **R5** |
 | T13 | an agent adds the `ready` label to its own pull request, which `auto-merge.yml` trusts as the human review decision | **not stopped by this design — an accepted risk (M3, owner decision 2026-09-29: keep `-git`'s PAT for agent pushes).** Any agent can read `-git` (§0) and so can call the label API directly, without needing the merge step at all. Two things limit what it buys: the label's effect is **head-bound** (`auto-merge.yml`'s `--match-head-commit`), so a later, un-reviewed push does not silently ride an old `ready`; and #219's ordering means the *credential a running agent could otherwise scrape from a worker's memory* is held only by the **worker**, and only after the agent has been reaped — which stops a memory-leak style theft of a token the agent does not already have, but does nothing for `-git`, which the agent can read directly regardless. This residual is **R6** |
-| T14 | rewrite a downstream step's own `prompt`/`input`/`input_from` in its Firestore task document before that step starts — for example, `implement` rewrites the still-`PARKED` `review` task's `prompt` to bias its judgement, or rewrites what `post-verdict` or `merge` would read as their own effective instructions | **BLOCKER, round-3 re-review, 2026-09-29 — not stopped until #342 ships.** §0 already grants any tenant identity write access to any Firestore document whose id it knows; a step's own spec was never excepted. This is a different attack from T10 (rewriting the *merge task's* dispatch block) and from T11 (influencing the review agent through diff *content* it reads): T14 rewrites the *instructions* a later step is handed before that step ever starts, so the later step's own execution is completely honest and still wrong. **Owner decision: signed step specs (S0 issue #342).** swarm-api signs each step's canonical spec at submission with a KMS key only it holds; every worker verifies its own spec's signature before starting an agent or a worker action, and `post-verdict` and `merge` additionally verify the **upstream** specs the artifacts they trust depend on (`post-verdict` verifies `review`'s spec; `merge` verifies the union — `author`'s, `review`'s, `post-verdict`'s, `fix`'s and `proof`'s — §4.2, §6 row 42). This design uses CR 34's own field names verbatim, not new ones: the signed spec's `spec_signature`, `spec_key_version` and `spec_format` fields on the task document, and `signature_mismatch` (corrected, final review — not `SPEC_SIGNATURE_INVALID`) as one of the `<why>` values a failed verification reports (§6, §6a). This residual is **R7**, and it is the reason B1 is not fully closed by §4.3 alone (§0 consequence 4, §10) |
+| T14 | rewrite a downstream step's own `prompt`/`input`/`input_from` in its Firestore task document before that step starts — for example, `implement` rewrites the still-`PARKED` `review` agent's `prompt` to bias its judgement, or rewrites what `post-verdict` or `merge` would read as their own effective instructions | **BLOCKER, round-3 re-review, 2026-09-29 — not stopped until #342 ships.** §0 already grants any tenant identity write access to any Firestore document whose id it knows; a step's own spec was never excepted. This is a different attack from T10 (rewriting the *merge agent's* dispatch block) and from T11 (influencing the review agent through diff *content* it reads): T14 rewrites the *instructions* a later step is handed before that step ever starts, so the later step's own execution is completely honest and still wrong. **Owner decision: signed step specs (S0 issue #342).** swarm-api signs each step's canonical spec at submission with a KMS key only it holds; every worker verifies its own spec's signature before starting an agent or a worker action, and `post-verdict` and `merge` additionally verify the **upstream** specs the artifacts they trust depend on (`post-verdict` verifies `review`'s spec; `merge` verifies the union — `author`'s, `review`'s, `post-verdict`'s, `fix`'s and `proof`'s — §4.2, §6 row 42). This design uses CR 34's own field names verbatim, not new ones: the signed spec's `spec_signature`, `spec_key_version` and `spec_format` fields on the task document, and `signature_mismatch` (corrected, final review — not `SPEC_SIGNATURE_INVALID`) as one of the `<why>` values a failed verification reports (§6, §6a). This residual is **R7**, and it is the reason B1 is not fully closed by §4.3 alone (§0 consequence 4, §10) |
 
 **Residual risks, stated plainly:**
 
@@ -2765,7 +2765,7 @@ review**, or **the merge credential**.
   forging a verdict, or misdirecting `post-verdict` onto the wrong pull
   request — is R8, below, and stays OPEN.** A round-5 draft of this
   document claimed write-once plus `objectCreator`-only closed the
-  write-path attack; that claim rested on three false premises (a same-task
+  write-path attack; that claim rested on three false premises (a same-agent
   retry moving to a new path; dependency promotion depending on a signed
   state; `post-verdict`'s PR number being trustworthy) all corrected in
   §4.3, and the owner decided R8 stays open rather than building the fix
@@ -2890,19 +2890,19 @@ review**, or **the merge credential**.
     same-path race fail loudly instead of silently losing — it does not
     decide who wins, and does not stop an attacker who wins from having
     their write consumed;
-  * a same-task retry reuses the same path (task id is stable across
+  * a same-agent retry reuses the same path (task id is stable across
     attempts), so "the retry lands somewhere the attacker doesn't know" does
     not hold;
   * dependency promotion (`post-verdict` starting only once `review`
-    "succeeded") reads the task's `state` field, which #342 does not sign
+    "succeeded") reads the agent's `state` field, which #342 does not sign
     and which is tenant-writable like every other Firestore field §0
     already treats as a claim — a **plant-then-state-rewrite** attack plants
-    a forged `review.json` at the correct path, then sets the review task's
+    a forged `review.json` at the correct path, then sets the review agent's
     `state` to `SUCCEEDED` directly, with no race and no need to beat a real
     review agent to anything;
   * `post-verdict` can be misdirected onto the *wrong pull request* with
     only a Firestore write, no GCS access at all: the PR number it acts on
-    comes from the author task's `result_summary` (§4.2), which is exactly
+    comes from the author agent's `result_summary` (§4.2), which is exactly
     as tenant-writable as `review`'s own.
 
   The minted `-git-review` installation token compounds all of this: it is

@@ -6,7 +6,7 @@ UX/UI and in the claude code plugin /sc in a safe way"*. This document covers
 the API half (lane KEYS-API). The console form (`apps/swarm-ui`) and the `/sc`
 command (`apps/swarm-mcp`, `plugin/`) are follow-on lanes.
 
-**What uses these keys (JEV-RUNNER, 2026-10-14).** A live-browser task's
+**What uses these keys (JEV-RUNNER, 2026-10-14).** A live-browser agent's
 `jev` MCP server (jev-browser, which sends page text and labels to
 `api.typesafe.ai`; the owner accepted that). The worker resolves the key by
 the order in §2 and hands it to that one server process
@@ -37,7 +37,7 @@ the same write-only store every tenant provider key goes through.
 
 | route | who | what |
 |---|---|---|
-| `GET /v1/provider-keys/typesafe` | any member | your key's status, your selected tenant's, and which your tasks there would use |
+| `GET /v1/provider-keys/typesafe` | any member | your key's status, your selected tenant's, and which your agents there would use |
 | `PUT /v1/provider-keys/typesafe/user` | anyone with a ready personal workspace | store **your own** key, in `u-<you>` |
 | `DELETE /v1/provider-keys/typesafe/user` | the same | destroy it |
 | `PUT /v1/provider-keys/typesafe/tenant` | admins | store the selected tenant's key |
@@ -77,7 +77,7 @@ line, no NUL.
 provider, present)` is a pure function:
 
 1. the submitter's own key, `swarm-tenant-u-<submitter>-typesafe`, if set;
-2. else the task tenant's, `swarm-tenant-<tenant>-typesafe`, if set;
+2. else the agent tenant's, `swarm-tenant-<tenant>-typesafe`, if set;
 3. else none.
 
 Only the submitter's own key is ever a candidate, and the function takes the
@@ -92,7 +92,7 @@ personal workspace (422) and point to `.../user`.
 **Why a person's key lives in their personal tenant, not the group's.** A
 secret is bound to a tenant's worker account, and every member of a group
 tenant runs as that one account. A key stored "for alice" in the group's
-tenant would be readable by every member's tasks. `u-<alice>` has an account
+tenant would be readable by every member's agents. `u-<alice>` has an account
 only alice's work runs as. The user routes refuse with 404 until that
 workspace is `ready` and its tenant document names this email (the same check
 that offers it as the default tenant, `auth.PersonalTenants`), because the
@@ -100,11 +100,11 @@ frozen slug drops the domain: `alice@partner.com` derives `u-alice` too. `DELETE
 name this email: a person whose workspace has left `ready` can still destroy
 their own key.
 
-**A personal key on a group task.** A task alice submits in a group tenant
+**A personal key on a group agent.** An agent alice submits in a group tenant
 runs as the group's account, which cannot read `swarm-tenant-u-alice-*`. The
 worker then logs `jev_key_unreadable` and uses the tenant key if one is set.
 Granting the group account on alice's secret gives her key to **every**
-member's tasks, so it is never a prefix and never a default. It is one row
+member's agents, so it is never a prefix and never a default. It is one row
 per (group, person) in `terraform/bootstrap/typesafe_user_keys.tf`
 (`typesafe_user_key_readers`), applied by the owner, and the row is the
 person's consent: the same trade the owner accepted for GitHub user slots
@@ -117,12 +117,12 @@ Owner decision Q8 of [the workspace secrets design](design/workspace-secrets.md#
 moves the TypeSafe key out of the agent pod: a platform forwarder in
 swarm-system adds it to jev's and the judge's requests to api.typesafe.ai. The
 same order picks the key. `POST /v1/attempts/{id}/typesafe-ticket` runs
-`resolve_provider_key` for the fenced task's tenant and its submitter's
+`resolve_provider_key` for the fenced agent's tenant and its submitter's
 confirmed personal tenant, and puts only the chosen secret's id and version in
 a short-lived ticket MAC'd under `swarm-typesafe-fwd-key`. The forwarder reads
 that version with its own identity
 (`terraform/bootstrap/typesafe_forwarder.tf`), so no worker account needs to
-read the key. That also covers a personal key on a group task without a
+read the key. That also covers a personal key on a group agent without a
 `typesafe_user_keys.tf` row, once jev uses the forwarder. The route, the
 Kubernetes objects and the Terraform exist, all off by default. The forwarder
 itself, `apps/swarm-typesafe-fwd/` (SEC-INJECT-B, 2026-10-16), is built and
@@ -151,7 +151,7 @@ document it cannot read as TypeSafe. No GKE profile reaches Cloud Run today:
 the scheduler routes by the catalogue, and the `cloud_run_fallback_profiles`
 Jobs are idle rollbacks. So the guard holds only for a rollback, and for
 `claude-code-review`, which is CLOUD_RUN_JOB by contract (contract request
-84). A refusal returns the task to READY, holding nothing, and at the retry
+84). A refusal returns the agent to READY, holding nothing, and at the retry
 cap it ends FAILED with `typesafe_judge_needs_gke`. A park before the lease
 needs the drain loop, and is a question on the lane's PR. The design's §3.5
 lists what remains.

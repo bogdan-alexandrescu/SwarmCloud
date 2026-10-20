@@ -19,11 +19,11 @@ past one machine and does not consume the local session's context.
 |---|---|
 | `swarm_dispatch` | "Run an agent in SwarmCloud instead of locally." Returns a task id immediately. |
 | `swarm_wait` | Block until terminal, return commits, files changed, patch uri, PR. |
-| `swarm_status` | State of one or more tasks, immediately. |
-| `swarm_result` | What a task produced — and when there is no PR, **why**, with six distinct reasons. |
-| `swarm_apply` | Apply a task's changes into a local tree, `--3way` always, so a conflict leaves ordinary markers instead of failing atomically. |
+| `swarm_status` | State of one or more agents, immediately. |
+| `swarm_result` | What an agent produced — and when there is no PR, **why**, with six distinct reasons. |
+| `swarm_apply` | Apply an agent's changes into a local tree, `--3way` always, so a conflict leaves ordinary markers instead of failing atomically. |
 | `swarm_integrate` | Several agents' work onto ONE branch, applied in order so each patch lands on the accumulated result. |
-| `swarm_cancel` | Cancel running tasks; work stays checkpointed and harvestable. |
+| `swarm_cancel` | Cancel running agents; work stays checkpointed and harvestable. |
 | `swarm_overview` / `accounts` / `capacity` / `agents` / `trouble` | Read-only cluster state. |
 
 `swarm_apply`'s three-way discipline and `swarm_result`'s six-reason absence

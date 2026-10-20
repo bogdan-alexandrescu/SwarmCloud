@@ -13,8 +13,8 @@ What it is not is nothing.
 
 ## Method
 
-Four real `claude-code` tasks were already running (agents working on this
-repository). Thirty `mock` tasks were submitted in one batch on top.
+Four real `claude-code` agents were already running (agents working on this
+repository). Thirty `mock` agents were submitted in one batch on top.
 
 `mock` was chosen over `claude-code` deliberately: it shares the `global`,
 `tenant:u-bogdan`, `resource:standard` and `backend:CLOUD_RUN_JOB` pools, so
@@ -56,7 +56,7 @@ and `units_held` is summed by the API at read time. Agreement across all
 three is what "counted from LEASED" looks like from the outside.
 
 **Invariant 1 — QUEUED, PARKED and READY create no infrastructure demand.**
-Thirteen tasks sat in READY holding zero units. They were refused, recorded
+Thirteen agents sat in READY holding zero units. They were refused, recorded
 why, and cost nothing while they waited.
 
 **And the drift check does not cry wolf.** `sum(lease.units)` equalled
@@ -66,7 +66,7 @@ and this is the harder half of trusting it.
 
 ## What this did NOT test
 
-**`race-test`'s question: does the last free slot go to exactly one task?**
+**`race-test`'s question: does the last free slot go to exactly one agent?**
 This probe filled a pool and watched the overflow be refused. It never
 created the specific race where two admissions contend for one remaining
 slot. That is the subtlest of the three guarantees and remains unproven here.
@@ -78,6 +78,6 @@ tenant.
 ## Cleanup
 
 The thirteen refused probes were cancelled rather than left to drain, because
-they were competing for slots with real work. Cancellation on a READY task
+they were competing for slots with real work. Cancellation on a READY agent
 releases immediately -- `released_immediately: true` -- since nothing had
 been dispatched.

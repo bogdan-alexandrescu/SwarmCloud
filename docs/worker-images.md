@@ -1,6 +1,6 @@
 # Worker images: what each carries, and what it costs every start
 
-Three images run tasks. Each is built from the repository root by
+Three images run agents. Each is built from the repository root by
 `scripts/build-images.sh`, promoted by digest by `scripts/push-images.sh`, and
 scanned (trivy, HIGH and CRITICAL) before promotion and weekly after it.
 
@@ -85,7 +85,7 @@ still stands, because it keeps +188 MB out of every start that runs the base.
 
 The toolbox stays in the base. Agents use those tools in ordinary claude-code
 work (BUILD_PROMPT_V2 §2.12). The repo-index toolchain is used by one kind of
-task, the index run, so it moved.
+agent, the index run, so it moved.
 
 **Before and after.** agent-runtime-base goes back to the toolbox-only
 726-728 MB the bisect measured, instead of the 916 MB the toolchain made it;
@@ -230,7 +230,7 @@ its pin in the Dockerfile.
 
 ## Where an agent's caches go (CACHE-SCRATCH)
 
-**Why.** On 2026-10-15 three claude-code tasks were evicted twice each with
+**Why.** On 2026-10-15 three claude-code agents were evicted twice each with
 `Usage of EmptyDir volume "workspace" exceeds the limit "5Gi"` and were not
 retried: task_41ae250f and task_c6a07695 (CI-fix rounds on PR 1338) and
 task_44c61c77 (BROWSER-CLASS implement). The 5 GiB workspace volume held the
@@ -289,6 +289,6 @@ anything a tool writes under HOME regardless.
 ## Adding to a worker image
 
 Measure what you add with `scripts/image-sizes.sh --layers` after it ships, and
-`--diff` it against the release before. A tool one kind of task needs belongs
-in an image that task's profile runs, not in agent-runtime-base. If the tool
+`--diff` it against the release before. A tool one kind of agent needs belongs
+in an image that agent's profile runs, not in agent-runtime-base. If the tool
 lands in the base, every agent start pays for it.

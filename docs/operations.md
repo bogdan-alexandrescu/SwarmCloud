@@ -183,7 +183,7 @@ nothing. The second line is the bill.
 
 | Section | What to look for |
 |---|---|
-| Tasks | `PARKED` climbing -> quota or credentials; `READY` climbing with idle pools -> scheduler not draining |
+| Agents | `PARKED` climbing -> quota or credentials; `READY` climbing with idle pools -> scheduler not draining |
 | Leases | expired leases still holding capacity -> the reconciler is behind |
 | Concurrency pools | `active/effective_limit`; a pool at its limit is the one to raise |
 | Provider quota | `EXHAUSTED`/`COOLDOWN` per (provider, tenant) |
@@ -214,7 +214,7 @@ Limits live in Firestore, so this needs no redeploy:
 ./scripts/api.sh PUT /admin/limits/runner/claude-code '{"hard_limit": 60}'
 ```
 
-Lowering a limit never kills anything: running tasks keep their leases and the
+Lowering a limit never kills anything: running agents keep their leases and the
 pool admits nothing until `active` falls below the new ceiling. Fold changes you
 mean to keep into `terraform/environments/<env>/<env>.tfvars`, or the next apply
 will revert them.
@@ -260,7 +260,7 @@ make add-provider TENANT=eng PROVIDER=anthropic   # grant + list; keeps eng's ot
 
 The key is never an argument (argv is readable through `ps`) and is never echoed.
 
-A tenant without a key for a profile's provider is not an error: tasks park as
+A tenant without a key for a profile's provider is not an error: agents park as
 `CREDENTIAL_MISSING`, cost nothing, and start by themselves when the key
 arrives. A tenant with no key is still admitted if a pool account it owns or is
 lent can run the profile. That is `claude-code` only, never `browser`: see
@@ -268,7 +268,7 @@ lent can run the profile. That is `claude-code` only, never `browser`: see
 
 ---
 
-## 6. Investigating one task
+## 6. Investigating one agent
 
 ```bash
 TASK=tsk_...
@@ -351,7 +351,7 @@ what an out-of-band change looks like from there.
 
 **Not to a manifest from before PR #44, and never a revert of #44.** Any
 `swarm-api` image built before #44 cannot decode the `cancel_requested` events
-written since. It returns 500 on those tasks' event pages for as long as it
+written since. It returns 500 on those agents' event pages for as long as it
 serves, not just one rollout. Roll forward instead.
 [disaster-recovery.md §3](disaster-recovery.md#3-a-control-plane-service-is-broken)
 says why, and gives the one-line check for a rollback target.
@@ -416,11 +416,11 @@ Terraform creates these when `create_alerts = true`:
 |---|---|---|
 | `safety-tick-stopped` | no scheduler tick in 10 minutes | check Cloud Scheduler job and the scheduler's Cloud Run service |
 | `control-plane-5xx` | a service is failing requests | `make logs SERVICE=<name>` |
-| `job-executions-failing` | agent executions failing | inspect one task's events and worker logs |
+| `job-executions-failing` | agent executions failing | inspect one agent's events and worker logs |
 | `generation-fencing` | workers exiting on stale generations | the reconciler is racing live workers; check lease timeouts |
 | `wake-messages-dead-lettered` | the scheduler is not acking pushes | scheduler errors, or Firestore unreachable |
 | `scheduler-not-draining` | wake backlog sustained | raise scheduler instances or leases/run |
-| `tasks-dead-lettered` | tasks exhausting every attempt | a broken runner or a bad repository; also a cost problem |
+| `tasks-dead-lettered` | agents exhausting every attempt | a broken runner or a bad repository; also a cost problem |
 
 `generation-fencing` firing repeatedly deserves attention even though the system
 is behaving correctly — it means the reconciler keeps deciding live workers are
@@ -475,11 +475,11 @@ RUN=run_...
   writeback_error, history: [.history[] | "\(.at) \(.from) -> \(.to) by \(.by)"]}'
 ```
 
-Where it is waiting tells you whose task to read:
+Where it is waiting tells you whose agent to read:
 
 | state | it is waiting on | read next |
 |---|---|---|
-| `PLANNING` | the planner task | `GET /tasks/<planner_task_id>`: a planner `QUEUED`/`PARKED` is capacity, not the run ([section 6](#6-investigating-one-task)) |
+| `PLANNING` | the planner agent | `GET /tasks/<planner_task_id>`: a planner `QUEUED`/`PARKED` is capacity, not the run ([section 6](#6-investigating-one-agent)) |
 | `PLANNED` | a person: approve, edit or reject | nothing is running and nothing is held (invariant 1) |
 | `RUNNING` | the compiled workflow | `GET /workflows/<workflow_id>` |
 | `CHECKING` | CI on the pull request's head | `pull_request.checks`; `check_counts` (passed/failed/pending/skipped), `check_list` (each check's name, state and link, capped at 50 with `check_list_truncated`) and `ci_url` say which checks; `merged`/`merged_at` once GitHub reports it merged; `pull_request.read_error` if CI could not be read. On a run stored before these were recorded each serves `null`, never `0` |

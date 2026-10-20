@@ -162,16 +162,16 @@ else saved, never a second name this product may emit, and
 - Liveness badge (shared component)
 
 **[alerts-errors](05-alerts-errors.md)**
-- Trouble board — platform state banner (dispatch pause + task counts)
+- Trouble board — platform state banner (dispatch pause + agent counts)
 - Trouble board — failures that need a human, tenant-scoped
 - Trouble board — parked work by ParkReason
 - Trouble board — why the queue is not moving (blocked_by joined to pools)
 - Trouble board — provider health and quota (per provider, per tenant)
-- Task timeline (per-task event stream, error banner, GCS log paths)
+- Agent timeline (per-agent event stream, error banner, GCS log paths)
 
 **[user-activity](07-user-activity.md)**
 - A1 — Activity (tenant timeline: stacked outcome chart read out by its legend, three figures on the metric strip, runner-profile split)
-- A1 — Token spend, summed from task results and marked partial (the coverage bar was replaced by its foot, TS-12)
+- A1 — Token spend, summed from agent results and marked partial (the coverage bar was replaced by its foot, TS-12)
 - A2 — People (per-engineer table + engineer drawer, derived from A1's rows at zero extra reads)
 - A4 — Tenants (admin roster: tenant_id, kind, principal, enabled, max_active, capacity_units, credential chips)
 - A4 — Platform-wide state counts (admin, behind an explicit button, 5-minute cache)
@@ -204,8 +204,8 @@ is under `/v1`.
 | Agents table — fencing-generation indicator | partly shipped: `task_to_api` serves `current_generation` and `current_lease_id`; no screen reads them | `apps/swarm-api/swarm_api/codec.py::task_to_api` |
 | Agent detail — attempt and pod panel | shipped: `GET /v1/tasks/{id}/attempts` and `GET /v1/attempts`; execution name, peak RSS and OOM near miss on the detail | `apps/swarm-api/swarm_api/routes/tasks.py::list_attempts`, `apps/swarm-api/swarm_api/routes/attempts.py::list_attempts`, `apps/swarm-ui/src/AgentDetail.tsx` (`function AttemptCard({`) |
 | Per-engineer agent grouping / owner filter | still blocked: `GET /v1/tasks` takes no `submitted_by` filter; the owner column is client-side | `apps/swarm-api/swarm_api/routes/tasks.py::list_tasks` |
-| Cross-tenant 'all agents' admin table | still blocked: every task list is scoped to the caller's tenant | `apps/swarm-api/swarm_api/deps.py::tenant_scope` |
-| Agent-spawns-sub-agent social graph | still blocked: a worker still cannot create a task | — |
+| Cross-tenant 'all agents' admin table | still blocked: every agent list is scoped to the caller's tenant | `apps/swarm-api/swarm_api/deps.py::tenant_scope` |
+| Agent-spawns-sub-agent social graph | still blocked: a worker still cannot create an agent | — |
 | Worker Console | partly shipped: `GET /v1/tasks/{id}/logs` serves a live tail the worker publishes to the bucket; still no Cloud Logging relay | `apps/swarm-api/swarm_api/routes/tasks.py::read_logs`, `apps/swarm-ui/src/Artifacts.tsx` (`export function LogBody({`) |
 | Live Transcript | shipped: the worker runs stream-json and `GET /v1/tasks/{id}/transcript` serves it redacted | `apps/agent-worker/agent_worker/procman.py::StreamCapture`, `apps/swarm-api/swarm_api/routes/tasks.py::read_transcript` |
 | Browser Filmstrip | partly shipped: the artifact byte route exists and images render inline, one artifact at a time | `apps/swarm-api/swarm_api/routes/tasks.py::read_artifact_raw`, `apps/swarm-ui/src/Artifacts.tsx` (`function ImageFigure({`) |
@@ -220,8 +220,8 @@ is under `/v1`.
 | Trouble board — silent workers | shipped: `GET /v1/admin/leases`, counted by the Overview checks | `apps/swarm-api/swarm_api/routes/admin.py::list_leases`, `apps/swarm-ui/src/checks.ts` (`leaseLiveliness(l, page.thresholds).kind === 'silent'`) |
 | Trouble board — admitted but never dispatched | shipped: the same route, filtered on `dispatch_overdue` | `apps/swarm-api/swarm_api/routes/admin.py::list_leases`, `apps/swarm-ui/src/checks.ts` (`const overdue = rows.filter((l) => l.dispatch_state === 'LEASED' && l.dispatch_overdue)`) |
 | Trouble board — failures that need a human, platform-wide | partly shipped: a FAILED check over the caller's own tenant; no cross-tenant route | `apps/swarm-api/swarm_api/routes/tasks.py::list_tasks`, `apps/swarm-ui/src/checks.ts` (`function failureCheck(`) |
-| Task timeline — per-attempt facts strip | shipped: `GET /v1/tasks/{id}/attempts`, drawn with exit code, RSS and OOM | `apps/swarm-api/swarm_api/routes/tasks.py::list_attempts`, `apps/swarm-ui/src/AttemptTimeline.tsx` (`function AttemptCard({`) |
-| Activity stream | still blocked: events are per task only | `apps/swarm-api/swarm_api/routes/tasks.py::list_events` |
+| Agent timeline — per-attempt facts strip | shipped: `GET /v1/tasks/{id}/attempts`, drawn with exit code, RSS and OOM | `apps/swarm-api/swarm_api/routes/tasks.py::list_attempts`, `apps/swarm-ui/src/AttemptTimeline.tsx` (`function AttemptCard({`) |
+| Activity stream | still blocked: events are per agent only | `apps/swarm-api/swarm_api/routes/tasks.py::list_events` |
 | Signals — the eleven metric charts | still blocked: no Monitoring proxy, and swarm-api holds no `monitoring.viewer` | `terraform/modules/iam/bindings.tf` (`"swarm-api" = concat(local.telemetry_roles, [`) |
 | Signals — alert policy register | still blocked, for the same reason | `terraform/modules/iam/bindings.tf` (`"swarm-api" = concat(local.telemetry_roles, [`) |
 | Signals — what is firing right now | still refused for v1 | — |
@@ -242,7 +242,7 @@ is under `/v1`.
 | O4 — Deploy Truth | still blocked | — |
 | O5 — Control-Action Trail | partly shipped: the latest actor on pools; no audit collection | `apps/swarm-api/swarm_api/routes/admin.py::set_global_limit` |
 | O6 — Alerts panel | still blocked | `terraform/modules/iam/bindings.tf` (`"swarm-api" = concat(local.telemetry_roles, [`) |
-| O6 — Platform error feed | still blocked: events are per task only | `apps/swarm-api/swarm_api/routes/tasks.py::list_events` |
+| O6 — Platform error feed | still blocked: events are per agent only | `apps/swarm-api/swarm_api/routes/tasks.py::list_events` |
 | O7 — Account health (admin slice) | partly shipped: accounts, refresh and history routes and the Accounts screen exist, tenant-scoped; no admin slice | `apps/swarm-api/swarm_api/routes/accounts.py::list_accounts`, `apps/swarm-ui/src/Accounts.tsx` (`export function AccountsScreen() {`) |
 | F1 — The gate | partly shipped: the external ALB, IAP and assertion verification exist (where `enable_frontend` is set); no "authenticated but not admitted" page | `terraform/modules/frontend/main.tf` (`# The front door. An external Application Load Balancer, with IAP, in front of`), `apps/swarm-api/swarm_api/auth.py::IapAssertionVerifier` |
 | F2 — Identity and tenant bar | shipped: `GET /v1/tenants/me`, in the shell | `apps/swarm-api/swarm_api/routes/tenants.py::get_me`, `apps/swarm-ui/src/Spine.tsx` (`const loadFrameMe = () => loadMe({ frame: true })`) |
@@ -265,7 +265,7 @@ is under `/v1`.
 | screen | blocked on |
 |---|---|
 | Agents table — cost and token column | P8: commit the uncommitted _usage_summary() worker change and redeploy agent-runtime-base; then CR entry 2 for typed Attempt fields if the numbers mus |
-| Agents table — fencing-generation indicator (column 7 glyph) | P1: task_to_api drops current_generation and current_lease_id even though Task carries them |
+| Agents table — fencing-generation indicator (column 7 glyph) | P1: task_to_api drops current_generation and current_lease_id even though Agent carries them |
 | Agent detail — attempt and pod panel (execution_name, exit_code, peak_rss_bytes, oom_near_miss, heartbeat_at) | P1: attempts and leases have no API read path at all |
 | Per-engineer agent grouping / owner filter (server-side) | P5: no submitted_by query param and no composite index covering it |
 | Cross-tenant 'all agents in the cluster' admin table | P9: every list method starts from an equality filter on tenant_id and no admin branch exists |
@@ -299,8 +299,8 @@ is under `/v1`.
 | Trouble board — silent workers (unreleased leases, heartbeat age vs the reconciler's own thresholds) | P5 — GET /v1/leases; there is no attempts or leases endpoint anywhere in swarm-api |
 | Trouble board — admitted but never dispatched (LEASED past dispatch_deadline) | P5 — GET /v1/leases (the index leases-state-dispatch-deadline already exists) |
 | Trouble board — failures that need a human, platform-wide | P6 — a new Firestore index (state ASC, created_at DESC) plus an admin-gated route; without the index Firestore returns FAILED_PRECONDITION, not a slow |
-| Task timeline — per-attempt facts strip (exit_code, peak RSS, peak disk, OOM near miss, execution name) | P4 — GET /v1/attempts; the attempts collection is rich and no HTTP route reaches it |
-| Activity stream (cross-task event feed, tenant-scoped and admin cross-tenant) | P1 (GET /v1/events collection-group route — no code calls collection_group() today) and P2 (index events tenant_id/type/at, which is also the cost con |
+| Agent timeline — per-attempt facts strip (exit_code, peak RSS, peak disk, OOM near miss, execution name) | P4 — GET /v1/attempts; the attempts collection is rich and no HTTP route reaches it |
+| Activity stream (cross-agent event feed, tenant-scoped and admin cross-tenant) | P1 (GET /v1/events collection-group route — no code calls collection_group() today) and P2 (index events tenant_id/type/at, which is also the cost con |
 | Signals — the eleven metric charts reused verbatim from dashboard.tf | P9 — a Monitoring proxy in swarm-api that builds filters server-side from tile names, plus roles/monitoring.viewer on the swarm-api service account |
 | Signals — alert policy register with an 'ever observed?' column | P10 — alertPolicies.list through the same proxy |
 | Signals — what is firing right now | refused for v1: Monitoring v3 exposes no open-incident endpoint and only email notification channels exist; replaced by a clearly-labelled computed co |
@@ -308,7 +308,7 @@ is under `/v1`.
 | Reconciler passes / 'what is broken right now' | P7 — reconciler findings are computed per pass and discarded; nothing persists them, and detected-but-skipped findings leave no trace in Firestore at  |
 | Admin action log (who paused dispatch, who lowered a limit) | P8 — set_dispatch_paused overwrites one document and pool limit writes record no actor at all |
 | Dead-letter queue | refused: TaskState.DEAD_LETTERED is never written by any code path (exhausted retries go to FAILED), so the screen would be permanently empty and indi |
-| Pub/Sub dead-lettered message list | refused: reading the DLQ either acks (destroying the messages) or leaves them redelivered, and the payload is a wake doorbell with no tenant or task i |
+| Pub/Sub dead-lettered message list | refused: reading the DLQ either acks (destroying the messages) or leaves them redelivered, and the payload is a wake doorbell with no tenant or agent i |
 
 **[user-activity](07-user-activity.md)**
 
@@ -331,7 +331,7 @@ is under `/v1`.
 | O4 — Deploy Truth | P13 for the intended digest (the manifest is a local file written before push-images.sh's own failure check), and D1/P12 for the live digest |
 | O5 — Control-Action Trail | P8 — there is no audit collection; pools have no updated_by, control/dispatch keeps only the latest actor, admin actions are an unlabelled Prometheus  |
 | O6 — Alerts panel | D1 then P12 — alertPolicies.list is not reachable from swarm-api |
-| O6 — Platform error feed | P3 — GET /v1/tasks/{id}/events is per-task; no cross-task route exists (the collection-group index does) |
+| O6 — Platform error feed | P3 — GET /v1/tasks/{id}/events is per-agent; no cross-task route exists (the collection-group index does) |
 | O7 — Account health (admin slice) | P6 must land first or the state column paints green over a dead account; then P7 for any route at all over the accounts collection |
 
 **[reachability](01-reachability.md)**
@@ -355,7 +355,7 @@ is under `/v1`.
 | A model-driven browser agent, without which 'watch a Claude agent do visual QA' describes nothing. The browser profile is a script | live-logs | large |
 | Account-to-agent assignment: call choose() at admission, record the assignment on the lease, install the account credential in the | accounts | large |
 | TaskEvent needs an `expires_at` field, or the events TTL must be withdrawn. indexes.tf configures a Firestore TTL on events using  | alerts-errors | small |
-| Optional: a denormalised attempts_exhausted boolean on Task, so 'failures that need a human' becomes a server-side query instead o | alerts-errors | small |
+| Optional: a denormalised attempts_exhausted boolean on Agent, so 'failures that need a human' becomes a server-side query instead o | alerts-errors | small |
 | Apply contract-change request #2 (docs/contract-change-requests.md:100): add optional input_tokens, output_tokens, cache_read_inpu | user-activity | large |
 | Contract change REQUEST (never an edit): type runner_profile and resource_class on Attempt, as optional fields defaulting to None. | operator-gaps | small |
 | Accept a list of token audiences. Settings.api_audience is a single string and GoogleTokenVerifier takes audience: str, but a brow | reachability | small |

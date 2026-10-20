@@ -26,14 +26,14 @@ Read, not guessed from the names. Line counts are the screen's own file.
 | Nav item | File | The question it answers | Who asks it |
 |---|---|---|---|
 | Home | `ControlRoom.tsx` | Is the platform healthy right now, and what is the first thing to look at | Anyone, on arrival |
-| Trouble | `Trouble.tsx` (+`Leases.tsx`) | What is wrong, derived from seven independent reads: dispatch paused, failures needing a human, parked work by reason, why the queue is not moving, provider health, silent workers, admitted-but-never-dispatched | An admin at 3am; a user whose task "isn't doing anything" |
+| Trouble | `Trouble.tsx` (+`Leases.tsx`) | What is wrong, derived from seven independent reads: dispatch paused, failures needing a human, parked work by reason, why the queue is not moving, provider health, silent workers, admitted-but-never-dispatched | An admin at 3am; a user whose agent "isn't doing anything" |
 | Capacity | `Capacity.tsx` | Which ceiling is the binding one, pool by pool, plus per-profile headroom | An operator whose work is not being admitted |
 | Holders | `Holders.tsx` | What is holding capacity right now, and do the two records of that agree (lease sum vs pool counter) | An operator chasing a suspected leak |
 | Agents | `Agents.tsx` → `AgentDetail.tsx` | What is running / waiting / finished, and for one agent: why, timeline, output, placement, input | Everyone. The main screen |
-| Workflows | `Workflows.tsx` | The DAG, with step state joined from the tasks each step created | Someone running a multi-step job |
+| Workflows | `Workflows.tsx` | The DAG, with step state joined from the agents each step created | Someone running a multi-step job |
 | Activity | `Activity.tsx` | What happened over a window of N rows: outcome chart, four tiles, runner split, per-engineer table | A lead, weekly |
 | Quota | `QuotaDetail.tsx` | Whose provider quota is in trouble, per provider per tenant. Admin | An admin during a squeeze |
-| Counts | `PlatformCounts.tsx` | Task counts by state, tenant and platform. Admin, behind a button because it is one Firestore `count()` per state | An admin, rarely |
+| Counts | `PlatformCounts.tsx` | Agent counts by state, tenant and platform. Admin, behind a button because it is one Firestore `count()` per state | An admin, rarely |
 | Tenants | `Activity.tsx` | The tenant roster: kind, principal, credentials, identity, enabled. Admin | An admin, rarely |
 | Settings | `AdminSettings.tsx` + `Accounts.tsx` | Two unrelated things: the editable pool ceilings, and the Claude subscription account pool | An admin; and anyone whose account died |
 
@@ -48,7 +48,7 @@ Read, not guessed from the names. Line counts are the screen's own file.
 - **Home and Trouble are the same screen at two magnifications.** Home shows
   pools needing attention and a dispatch pill; Trouble shows the same
   dispatch state plus six more checks. Home's value is that it is short.
-- **Counts and Activity both count tasks.** Activity counts the rows it
+- **Counts and Activity both count agents.** Activity counts the rows it
   loaded and says so; Counts runs server-side aggregations and is expensive.
   They are not redundant, but they are the same question at two costs.
 - **Tenants is a roster, not an activity view**, and sat under Activity's
@@ -58,7 +58,7 @@ Read, not guessed from the names. Line counts are the screen's own file.
 
 **Four finished screens that no route pointed at.** `Profiles.tsx` (the
 runner-profile catalogue — what you may ask for, what it weighs, which pools
-it touches), `Submit.tsx` (submit one task), `SubmitWorkflow.tsx` (submit a
+it touches), `Submit.tsx` (submit one agent), `SubmitWorkflow.tsx` (submit a
 DAG) and `AttemptTimeline.tsx` (every attempt with its generation, backend,
 exit code, peak RSS, checkpoint count, and the events grouped under the
 attempt that wrote them). `git log -S` confirms `App.tsx` has never imported
@@ -78,10 +78,10 @@ label did not name.
 | Section | id | The question | Panes |
 |---|---|---|---|
 | **Overview** | `overview` | Is the platform healthy right now, and if not, what is the first thing to look at? | Overview |
-| **Work** | `work` | What is running, what has already run, what did it produce — and why has mine not moved? | Agents · Workflows · Timeline · Submit a task · Submit a workflow |
+| **Work** | `work` | What is running, what has already run, what did it produce — and why has mine not moved? | Agents · Workflows · Timeline · Submit an agent · Submit a workflow |
 | **Automate** | `automate` | What runs here by itself, on a schedule, and what is waiting on me to approve? | Schedules · Approvals |
 | **Capacity** | `capacity` | What kinds of agent can run here, is there room for another, which ceiling is the binding one, and what is holding what there is? | Pools · Runtimes · Profile headroom · Holders · Accounts · Provider quota |
-| **Admin** | `admin` | What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer? | Pool limits · Tenants · Platform counts · People · Workspaces you admin |
+| **Admin** | `admin` | What is each ceiling set to, who is registered to use this platform, how many agents are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer? | Pool limits · Tenants · Platform counts · People · Workspaces you admin |
 
 **Automate** was added on 2026-10-08 by the owner's decision SD1
 ([schedules.md §6.1](../schedules.md#61-placement-sd1)): a different question
@@ -196,7 +196,7 @@ where the answer to "will it start" lives — Work and Capacity are one click
 apart.
 
 **The two submit tabs are called "Submit a task" and "Submit a workflow", not
-"New agent" and "New workflow".** `Submit.tsx` creates a task at `READY` or
+"New agent" and "New workflow".** `Submit.tsx` creates an agent at `READY` or
 `PARKED` and then says, in the panel it renders on success, "That is not a
 running agent" — because invariant 1 is that neither state holds capacity. A
 tab promising an agent over a page explaining you have not got one is a
@@ -316,7 +316,7 @@ answering to the old name, and `#work/task/<id>` — the address in every
 workflow node and every saved deep link — would have resolved to the section
 and dropped the task id, opening the list instead of the agent.
 
-`#work/task/<id>` is explicit so that a task whose id happens to spell a
+`#work/task/<id>` is explicit so that an agent whose id happens to spell a
 pane name cannot be mistaken for one; the old bare `#agents/<id>` is still
 accepted, after the pane names have had their chance to match.
 
@@ -651,7 +651,7 @@ four were spread over **ten destinations**:
 | what is running? | Agents, Workflows, Timeline |
 | why is this one stuck? | Agents → drawer, Holders, Pools, Provider quota |
 | how much has this cost? | Timeline, Accounts, Platform counts |
-| can I start something? | Submit a task, Submit a workflow, Runtimes, Profile headroom |
+| can I start something? | Submit an agent, Submit a workflow, Runtimes, Profile headroom |
 
 ### What moved
 
@@ -721,7 +721,7 @@ failure mode is worse than a dead link:
 `history` aliases to `work`. `work` is the section that owns the agent drawer,
 and `fromHash` reads a Work tail matching no tab as a **task id** — deliberately,
 so that `#agents/<id>` from the old nav still opens the agent. Put those
-together and `#history/counts` opens the agent inspector for a task called
+together and `#history/counts` opens the agent inspector for an agent called
 "counts": a spinner, then a not-found panel, on a hash that used to be a
 working link to the platform's own ledger.
 

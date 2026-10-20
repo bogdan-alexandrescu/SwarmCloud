@@ -10,7 +10,7 @@ dispatched 03:46:05 → starting 03:49:14 (+3m09s) → running +0.1s → succeed
 
 **Three minutes nine seconds of Cloud Run cold start against eighteen seconds
 of agent.** Every suite in this repository calls that run a pass, because it
-*is* a pass — the task succeeded, no capacity leaked, no invariant was
+*is* a pass — the agent succeeded, no capacity leaked, no invariant was
 violated. The UI renders the whole thing as the single word "dispatched".
 Nothing anywhere turns 189 seconds into a figure anyone can compare against
 last week.
@@ -101,10 +101,10 @@ counted, and fails as `anomalous_samples`.
 | `reconcile` | ~10s | under a cent | **no — it reads logs, it does not trigger a pass** |
 | `cost` | ~15s | under a cent | no — reads history |
 | `ui` | ~1m | free | no — drives a browser at a UI you are running |
-| `dispatch` | ~2m on `mock` | cents | **submits tasks**, cancels them on exit |
-| `admission` | ~3m on `mock` | cents | **submits a 150-task backlog**, cancels on exit |
+| `dispatch` | ~2m on `mock` | cents | **submits agents**, cancels them on exit |
+| `admission` | ~3m on `mock` | cents | **submits a 150-agent backlog**, cancels on exit |
 | `contention` | ~3.5m | well under a dollar | **writes only to a dedicated bench database** (`swarm-bench`); refuses the live one |
-| `coldstart` | ~1m | under a cent | no — reads the event log of tasks that already ran |
+| `coldstart` | ~1m | under a cent | no — reads the event log of agents that already ran |
 | `cache-ttl` | ~1m | under a cent | no — reads attempts; prints a table, not a verdict |
 
 `dispatch` and `admission` on `--profile claude-code` **spend real provider
@@ -123,7 +123,7 @@ at 1711ms and `/v1/providers` at 896ms while everything else answered under
 300ms — and a single "API p95" averages exactly that away.
 
 **`/v1/stats` gets three metrics, not one.** `service.stats()` issues one
-Firestore `count()` per task state, and Firestore bills an aggregation per 1000
+Firestore `count()` per agent state, and Firestore bills an aggregation per 1000
 index entries **scanned**. So that route's latency and cost grow with
 *history*, not with load — a threshold on its raw latency fires on a perfectly
 healthy platform that has simply been running for a month, and an operator
@@ -165,7 +165,7 @@ no Firestore access at all, so it runs as any identity that can call the API.
 
 ### `admission` — throughput under a backlog
 
-`scripts/bench-admission.sh`. 150 tasks, which is `concurrency-test.sh`'s shape
+`scripts/bench-admission.sh`. 150 agents, which is `concurrency-test.sh`'s shape
 on purpose so the two runs are comparable. The rate is computed from
 `lease_acquired` timestamps — first lease to last — not from how long the
 script took to notice, because polling rate is the script's property and the
@@ -214,7 +214,7 @@ shell and the Python refuse the environment's `FIRESTORE_DATABASE`, `swarm`,
 before a client is built. Pool limits are set at 10⁹, so capacity never binds:
 a denial would be a short-circuit that reads as a fast admission. A run lock
 (`bench_lock/contention`) refuses a second concurrent run, whose writes would be
-counted as this run's contention. Cleanup deletes this run's tasks, leases and
+counted as this run's contention. Cleanup deletes this run's agents, leases and
 pools and nothing else.
 
 **The bench database must have the live database's concurrency mode**
@@ -258,15 +258,15 @@ scripts/bench-contention.sh --database swarm-bench-b17 --provider none
 
 `scripts/bench-coldstart.sh`. The owner's ruling on #363 is to measure cold
 start before shortening it. `bench-dispatch.sh` measures it by submitting
-tasks, which on `claude-code` spends provider tokens and samples a handful of
-fresh runs. This reads the event log of the newest terminal tasks instead and
+agents, which on `claude-code` spends provider tokens and samples a handful of
+fresh runs. This reads the event log of the newest terminal agents instead and
 feeds it through the same `benchstat.py segments` decomposition, so it emits
 the same `dispatch.cold_start` (`dispatched → running`) and its two halves, at
 p50/p95/p99 with n, for the cold starts real work actually paid.
 
-`runner_profile` comes from the task and `backend` from its `lease_acquired`
+`runner_profile` comes from the agent and `backend` from its `lease_acquired`
 event's detail, which the scheduler writes. An event with no backend is
-labelled `unknown`, not guessed from the frozen profile catalogue. A task that
+labelled `unknown`, not guessed from the frozen profile catalogue. An agent that
 was dispatched and never reached `running` is a null sample, so it fails the
 gate rather than improving the figure.
 
@@ -288,7 +288,7 @@ runner profile the table prints what can be read:
 | `cost 5m` | the cache cost as billed, in base-input-token equivalents |
 | `1h no reuse` | the same writes at 2×: the floor of the downside |
 | `1h best` | 1h if every write in a 5–60-minute resume became a read |
-| `x-att share` | share of writes made by attempts that started 5–60 min after the task's previous attempt ended |
+| `x-att share` | share of writes made by attempts that started 5–60 min after the agent's previous attempt ended |
 
 `x-att share` is an **upper bound** for that one source, since not every write
 in a resumed attempt is the earlier prefix, and it **cannot see** gaps inside
@@ -324,7 +324,7 @@ Zero passes found in the window is itself the finding, not the absence of one:
 a reconciler that has not run in six hours is a platform whose stale leases are
 not being reclaimed. It is recorded as not-measured, which fails.
 
-### `cost` — spend per task
+### `cost` — spend per agent
 
 `scripts/bench-cost.sh`. A change that doubles token usage — a longer system
 prompt, a retry that re-sends context, a checkpoint restore that replays
@@ -332,9 +332,9 @@ history — is invisible to every latency benchmark here. Wall time can even
 *improve* while the bill doubles.
 
 It sums across **attempts**, not `result_summary`: that is written once at
-terminal state, so a task that failed twice and succeeded on the third carries
-only the third attempt's numbers, and a per-task cost that omits the two failed
-ones understates every retried task on the platform.
+terminal state, so an agent that failed twice and succeeded on the third carries
+only the third attempt's numbers, and a per-agent cost that omits the two failed
+ones understates every retried agent on the platform.
 
 **It is also a regression test for the spend fields.** `attempt_from_dict`
 dropped all five of them once, and the unit test that should have caught it

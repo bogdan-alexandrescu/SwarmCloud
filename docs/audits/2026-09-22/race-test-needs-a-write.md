@@ -30,14 +30,14 @@ VPC, because swarm-api's ingress refuses a laptop
 targets pass:
 
     smoke-test        10/10
-    concurrency-test   5/5   150 tasks, pool-over-limit samples 0, peak global 2 of 50
+    concurrency-test   5/5   150 agents, pool-over-limit samples 0, peak global 2 of 50
     race-test         fails at step 1
 
         [1] Narrow runner:mock to 1 slot(s)
          fail Firestore PATCH returned HTTP 403
 
 Nothing is broken. `scripts/race-test.sh` narrows `pools/runner:mock` to one
-slot so that twelve tasks have something to contend for, and narrowing a pool is
+slot so that twelve agents have something to contend for, and narrowing a pool is
 a Firestore **write**. The verify identity cannot write Firestore.
 
 ## What the verify identity actually holds
@@ -255,7 +255,7 @@ producing, in the cleanup path of the test written to catch it.
 
 It matters beyond the log. The case the line exists for is the one where the
 narrow *succeeded* and the restore then failed: `runner:mock` is left pinned at
-one slot on a live deployment, every `mock` task afterwards serialises behind a
+one slot on a live deployment, every `mock` agent afterwards serialises behind a
 single lease, and the only record says it was put back.
 
 Three faults, all fixed in `scripts/race-test.sh` and covered by
@@ -265,12 +265,12 @@ Three faults, all fixed in `scripts/race-test.sh` and covered by
   status, and names `scripts/pool-limit.sh --pool … --limit …` when it did not
   take;
 * `trap restore EXIT INT TERM` ran the handler and then **resumed the suite**. A
-  signal during the sampling loop restored the ceiling, cancelled every task,
+  signal during the sampling loop restored the ceiling, cancelled every agent,
   and then carried on asserting "the narrowed pool is never over its limit"
   against a pool that was no longer narrowed — and could exit 0. INT and TERM
   now re-raise;
 * re-entry: the signal handler calls `restore` and exits, which fires the EXIT
-  trap and enters `restore` again, cancelling every task twice. It is now
+  trap and enters `restore` again, cancelling every agent twice. It is now
   idempotent.
 
 ## The three suites nobody has run in-VPC
@@ -313,7 +313,7 @@ The consequence is not just an inaccurate number. `assert_eq "0"
 run would read as a platform defect.
 
 **The cost, stated before anyone runs it.** The defaults are `--count 100
---rate 10 --profile mock --timeout 900`: **100 real mock tasks** against the
+--rate 10 --profile mock --timeout 900`: **100 real mock agents** against the
 live dev platform, each a real Cloud Run job execution, submitted by tenant
 `u-sw-c90291` whose `max_active` is 2. It cancels what it created unless
 `--keep`. Against a `global` pool of 20 and a tenant ceiling of 2 the backlog
@@ -346,7 +346,7 @@ Three separate blocks, in the order it hits them:
 2. It drives quota state with `fs_patch` on that document — the same Firestore
    write race-test needs, on a different collection.
 3. Its default profile is `claude-code`, which has a provider, so an admitted
-   task would need a credential this identity deliberately cannot read.
+   agent would need a credential this identity deliberately cannot read.
 
 Making it runnable means giving the verification tenant a **real provider
 subscription**. That is a larger widening than anything discussed above: it puts
@@ -366,7 +366,7 @@ proof rather than a sympathetic edit.
 
 ## What was not verified
 
-* **Nothing was run against the live platform.** No task was submitted, no pool
+* **Nothing was run against the live platform.** No agent was submitted, no pool
   was narrowed, no suite was executed in the VPC. Every claim about race-test's
   behaviour comes from the offline harness, and every claim about IAM comes from
   read-only `gcloud` calls named above.

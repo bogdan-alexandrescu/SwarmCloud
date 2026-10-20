@@ -213,7 +213,7 @@ The five fields below are now on `Attempt`, and
 `agent_worker.control.record_spend` populates them from the summary
 `_usage_summary` extracts before truncation. A field the runner did not report
 is omitted rather than written as zero -- `None` means "not reported" and `0`
-means "cost nothing", and a mock task is genuinely the second while an
+means "cost nothing", and a mock agent is genuinely the second while an
 unparseable result is the first.
 
 The original request follows, unchanged, as the record of what was asked for.
@@ -258,7 +258,7 @@ cost_usd: float | None = None
 
 Optional, defaulting to `None`, so every existing document remains valid and no
 migration is required. `None` means "not reported", which is genuinely different
-from zero -- a mock task reports nothing and did not cost nothing by accident.
+from zero -- a mock agent reports nothing and did not cost nothing by accident.
 
 ### What it costs, and what it buys
 
@@ -290,7 +290,7 @@ commit message, which is not a place anybody looks for an open decision.
 carrying `metadata.input_from` past every DAG check, is closed on the unfrozen
 side. The owner decided that the key is reserved, like `dispatch`.
 `reject_reserved_metadata` now refuses it from callers with 422
-`invalid_dispatch`, on a task, a batch and a workflow's own `metadata`, whatever
+`invalid_dispatch`, on an agent, a batch and a workflow's own `metadata`, whatever
 its value, and creates nothing. Workflow expansion is the only writer, and a
 step's own `input_from` is the only declaration a caller can make, so the
 `validate_dag` filename checks #64 added (PR #65) see every declaration that
@@ -378,17 +378,17 @@ ids it named still carried no dependency edge. That check was removed when #151
 reserved the key, below: there is no valid workflow-level value left to check.
 
 Be precise about what that is and is not. It is **not** a tenant escape:
-`inputs.fetch_upstream_task` (`inputs.py:226-254`) refuses a task belonging to
+`inputs.fetch_upstream_task` (`inputs.py:226-254`) refuses an agent belonging to
 another tenant, and `inputs.artifact_key` (`:327-352`) builds the object key
 from *this* attempt's tenant, so a cross-tenant artifact is unreachable by
 construction. It is an **ordering** bypass inside one tenant: the caller names
-any of their own tasks, with no dependency edge and no guarantee the upstream
+any of their own agents, with no dependency edge and no guarantee the upstream
 ran. A typed field gives the API one field to validate on every path, instead of
 one path validating a key the other path waves through.
 
 **Closed on the unfrozen side, 2026-09-25 (#151).** The paragraphs above describe
 the code before that date. The owner chose to refuse the key from callers rather
-than validate it for a standalone task. `reject_reserved_metadata` now reserves
+than validate it for a standalone agent. `reject_reserved_metadata` now reserves
 `input_from` alongside `dispatch`, so a `POST /v1/tasks` (or a batch) carrying it
 gets 422 `invalid_dispatch` and nothing is created. A workflow whose own
 `metadata` carries it is refused the same way, whatever the value, which also
@@ -434,9 +434,9 @@ well today. Two things then need doing on the **unfrozen** side regardless, and
 neither needs this request:
 
 * `reject_reserved_metadata` should reserve `input_from`, or `_build_task`
-  should validate it for a standalone task. **Done** the first way, by owner
+  should validate it for a standalone agent. **Done** the first way, by owner
   decision on #151 (2026-09-25): the key is refused from callers on every path
-  that creates a task, and only workflow expansion writes it.
+  that creates an agent, and only workflow expansion writes it.
 * `swarm-ui/src/types.ts` should declare `input_from` as
   `Record<string, string>`. **Done**, along with the fixture in `api.ts` that
   built it as a bare string, and `check-contract-parity.sh` section 5 now
@@ -527,7 +527,7 @@ run is a far worse diagnosis than a refusal at setup."
 
 * The half a type fixes: with `bytes` a required int at the boundary, the `0`
   has nowhere to come from. "Not reported" becomes a parse failure naming the
-  upstream task and the file, instead of a silent zero -- and this module has
+  upstream agent and the file, instead of a silent zero -- and this module has
   already decided, in its own docstring, that a declared input which cannot be
   resolved fails the attempt rather than degrading quietly.
 * The half it does not: the cap is computed from **declared** sizes and never
@@ -627,7 +627,7 @@ The two copies **did** disagree, and the direction of the disagreement is the
 point. The reconciler added the scheme; the scheduler did not. So every GKE
 dispatch failed on a URL urllib3 could not route -- and it failed *after*
 admission had already taken the lease. Invariant 3 counts concurrency from
-`LEASED`, so the slot is held by a task committed to a backend that will never
+`LEASED`, so the slot is held by an agent committed to a backend that will never
 start it. The reconciler, which is what would notice, was reading the same
 cluster through the copy that worked.
 
@@ -700,7 +700,7 @@ The accepted vocabularies are `DISPATCH_STRATEGIES` (`:155`) and
 **Two things read it back.**
 
 * `codec.dispatch_of` (`:101-120`) -- for API callers. Fills absent fields with
-  the API's defaults so a task predating the feature reads as
+  the API's defaults so an agent predating the feature reads as
   `collect`/`checkpoints` rather than null, and `codec.workflow_dispatch`
   (`:122-149`) rolls that up to the workflow.
 * `apps/agent-worker/agent_worker/lifecycle.py::Worker._dispatch_block` and the four beside it -- for the worker. Five accessors:
@@ -726,7 +726,7 @@ worker _dispatch_carrier body:
     return value if value in ("patches", "branches") else "patches"
 ```
 
-`checkpoints` -- the value on every task swarm-api has ever written that did not
+`checkpoints` -- the value on every agent swarm-api has ever written that did not
 ask for branches -- is not in the worker's accepted set, so `_dispatch_carrier()`
 returns `"patches"` for it. And `"patches"` is a value swarm-api cannot produce:
 `_accepted_value` (`validation.py:233-240`) refuses it at submission with the
@@ -794,7 +794,7 @@ inside the block, with no change to `apps/common/swarm_common/`. So the block
 now has five fields, and this request covers all five.
 
 * **What it is.** A task id. swarm-api writes it only on the one step of a
-  `direct-pr` workflow submitted with `continues_task`, after checking the task
+  `direct-pr` workflow submitted with `continues_task`, after checking the agent
   is the caller's own, was itself `direct-pr`, and is in the same repository,
   and after resolving a chain of continuations to its root
   (`swarm_api/continuation.py`). The worker derives `<prefix><id>` from it,
@@ -814,7 +814,7 @@ now has five fields, and this request covers all five.
   change that would remove the copy. **Requested, not made.**
 
 `codec.dispatch_of` does not serve `continues`: the workflow create response
-echoes it as `dispatch.continues_task`, and adding it to every task's
+echoes it as `dispatch.continues_task`, and adding it to every agent's
 `dispatch` would change a response shape several clients hold exactly.
 
 ---
@@ -826,7 +826,7 @@ echoes it as `dispatch.continues_task`, and adding it to every task's
 ### The problem
 
 Nothing ever wrote `Workflow.state` after submission. It is now derived from the
-step tasks and written back, and the derivation lives in
+step agents and written back, and the derivation lives in
 `apps/swarm-api/swarm_api/rollup.py`. It lives there because that is the only
 place it CAN live and still be used by more than one service — and it is used by
 exactly one.
@@ -910,10 +910,10 @@ class Workflow:
     state: TaskState
 ```
 
-A workflow is not a task, and the task vocabulary is the one available to
+A workflow is not an agent, and the task vocabulary is the one available to
 describe it. Most of it transfers cleanly — SUCCEEDED, FAILED, CANCELLED,
 DEAD_LETTERED, RUNNING, READY, PARKED and QUEUED all mean at the workflow level
-what they mean at the task level. Two things do not:
+what they mean at the agent level. Two things do not:
 
 * **There is no word for a partial failure.** A workflow whose steps are
   SUCCEEDED, FAILED and CANCELLED derives FAILED, and "FAILED" is not wrong — but
@@ -921,7 +921,7 @@ what they mean at the task level. Two things do not:
   `rollup.counts` carries that today, and a caller filtering on state alone
   cannot see it.
 * **`LEASED`, `DISPATCHED` and `STARTING` are meaningless for a workflow.** They
-  describe one task's relationship to one lease. The derivation collapses all
+  describe one agent's relationship to one lease. The derivation collapses all
   four capacity-holding states into RUNNING for exactly that reason, so three of
   the twelve values are unreachable for a workflow and nothing says so.
 
@@ -1309,9 +1309,9 @@ so every one of those attempts burned a fencing generation as well as a lease.
 
 ### Why
 
-TWO paths return a task to READY and only one enforced the cap.
+TWO paths return an agent to READY and only one enforced the cap.
 
-`reconciler/store.py` checked it, on the path that REPAIRS a task to READY.
+`reconciler/store.py` checked it, on the path that REPAIRS an agent to READY.
 `scheduler/store.py`'s `return_to_ready_after_failed_dispatch` -- reached
 whenever a dispatch fails after the lease is taken -- wrote
 `state: READY` unconditionally.
@@ -1329,7 +1329,7 @@ spaced the attempts out and never counted them. A backoff is not a cap.
 
 A FREE FUNCTION as well as a method because the two enforcement points do not
 both hold a `Task`: the reconciler decides inside a Firestore transaction from
-the raw document, where constructing one would mean decoding a task to read two
+the raw document, where constructing one would mean decoding an agent to read two
 integers.
 
 ### Why it belongs in the frozen contract
@@ -1353,7 +1353,7 @@ bug.
 
 ### Also fixed on the way past
 
-A task sent to FAILED by this path was getting a `next_eligible_at`, which
+An agent sent to FAILED by this path was getting a `next_eligible_at`, which
 promises a retry that is not coming and renders in the console as a scheduled
 attempt. It now gets a `completed_at` and no eligibility time.
 
@@ -1366,7 +1366,7 @@ never in that object, so every check was one attempt behind, and
 `max_attempts` 3 bought four attempts. `task_b568a623be8645eb87c6` ended FAILED
 at 4/3 on 2026-09-24.
 
-"Proved by" above did not catch this because the tests handed the store a Task
+"Proved by" above did not catch this because the tests handed the store an Agent
 already carrying the post-increment count, which is a number the production
 caller never has. `return_to_ready_after_failed_dispatch` now reads the count
 from the document inside a transaction, as the reconciler always did. Its tests
@@ -1405,7 +1405,7 @@ argument against it:
 ### Why an event is not enough
 
 * **"Which attempts ran on account X"** -- S6's question, i.e. which agent spent
-  this subscription's quota -- is a read of every task's `events` subcollection,
+  this subscription's quota -- is a read of every agent's `events` subcollection,
   filtered on `detail.cause` and `detail.account_id` in client code. The two
   collection-group indexes on `events` (`terraform/modules/firestore/indexes.tf`,
   `events-tenant-at`, `events-task-at`) do not cover a field inside `detail`,
@@ -1468,7 +1468,7 @@ field would be one the scheduler writes empty and never knows.
 ### If it is declined
 
 S6 stays unanswerable except by scanning event subcollections, and the console
-cannot show "this account's attempts" without an N+1 over tasks. What is left to
+cannot show "this account's attempts" without an N+1 over agents. What is left to
 live with is the event: its `detail` shape (`cause`, `account_id`, `provider`)
 becomes the contract of record by default, and should then be written down as
 one, in `docs/`, so that every reader applies the same "last kept assignment"
@@ -1478,7 +1478,7 @@ rule.
 
 ## 14. `models.py`: a sub-agent has nowhere to name its parent
 
-**Status:** APPLIED 2026-10-02. ACCEPTED 2026-10-02 (owner decision OD-B15-1), WITH the rules in its amendment: accepted by the owner 2026-10-02, when they chose to build child tasks (D15). `Task.parent_task_id` and `Task.parent_attempt_id` are in `apps/common/swarm_common/models.py`, set only by swarm-api's children route (`apps/swarm-api/swarm_api/children.py`).
+**Status:** APPLIED 2026-10-02. ACCEPTED 2026-10-02 (owner decision OD-B15-1), WITH the rules in its amendment: accepted by the owner 2026-10-02, when they chose to build child agents (D15). `Task.parent_task_id` and `Task.parent_attempt_id` are in `apps/common/swarm_common/models.py`, set only by swarm-api's children route (`apps/swarm-api/swarm_api/children.py`).
 
 Filed 2026-09-24 as a request. The cancellation and capacity rules it asked to
 be decided with the field are in the amendment at the end of this entry. Raised as S1 / B31
@@ -1489,7 +1489,7 @@ in [`docs/web-ui/ui-audit-and-build-prompt.md`](web-ui/ui-audit-and-build-prompt
 
 The brief asked for "workflows of agents **and sub-agents**". A workflow step
 is a `Task` with `workflow_id`, `step_id` and `depends_on` (`models.py:172-205`).
-There is no parent/child relationship between tasks anywhere -- not in the
+There is no parent/child relationship between agents anywhere -- not in the
 frozen model, not in the API, not in the UI.
 
 `depends_on` is not one. It is ORDER: a step runs after the steps it names have
@@ -1508,7 +1508,7 @@ its own could therefore name itself. There is nowhere typed to put that name:
   `dict`. A child could carry `metadata.parent_task_id` by convention -- the
   same shape request #3 records for `input_from`.
 * A convention in `metadata` is **unvalidated**: any caller can claim any
-  parent, including a task in another tenant (invariant 9), and a UI drawing a
+  parent, including an agent in another tenant (invariant 9), and a UI drawing a
   tree from it would draw whatever a caller typed.
 * It is **unindexed**: "this task's children" is a scan.
 
@@ -1605,7 +1605,7 @@ nothing that authorises a submission travels through the environment, a
 mounted file or `work/` and stays valid while the agent runs. The scheduler
 passes only a one-use registration nonce, which the worker spends between the
 fence and `STARTING -> RUNNING`; registration is first-wins per generation, is
-refused once the task is `RUNNING`, and is attested by swarm-api with its own
+refused once the agent is `RUNNING`, and is attested by swarm-api with its own
 key (`swarm-child-key`, held only by `swarm-scheduler` and `swarm-api`) at a
 document id no tenant identity can compute. A worker without memory protection
 spends the nonce on a tombstone and offers no child path. The route re-reads
@@ -1636,14 +1636,14 @@ starts. So:
 
 The await refunds the attempt admission counted, up to
 `max_child_await_resumes` (4), so waiting is not failing. Depth is 1; fan-out
-is capped at 16 children per task across all its attempts. An agent that exits
+is capped at 16 children per agent across all its attempts. An agent that exits
 0 with live children is awaited anyway: a parent never succeeds over running
 children.
 
 **OD-B15-4 -- Cancellation.** Cancelling a parent cancels its non-terminal
 children: the API's cancel cascades at once, and a scheduler sweep guarantees
 it. A parent that ends `FAILED` or `DEAD_LETTERED` with live children has them
-cancelled too. A retried or fenced parent keeps them: they belong to the task,
+cancelled too. A retried or fenced parent keeps them: they belong to the agent,
 and the next attempt finds them. An awaiting parent past
 `child_await_max_seconds` (one day) has its outstanding children cancelled and
 is then promoted. A child's end never cascades upward. Every cascade is
@@ -1794,7 +1794,7 @@ runner runs, not only at exit), `cpu_wall_seconds`, `cpu_limit_cores`,
 reading stays on every fifth heartbeat; one more, with `final: true`, is
 emitted when each runner is reaped, and never by an attempt that has been
 fenced. `GET /v1/tasks/{id}/attempts?include=usage` serves the newest reading
-per attempt from ONE descending read of the task's events
+per attempt from ONE descending read of the agent's events
 (`swarm_api.attempt_usage`), with a status that says what the reading is
 (`final`, `live`, `last_reading`, `never_ran`, `absent`, `beyond_window`,
 `unread`). It works; it is not queryable across attempts, and it costs an
@@ -1928,7 +1928,7 @@ Both services would call it. Two decisions go with it:
   function would raise `ValueError`, and the dispatcher would wrap it.
 * **Whether `detect.sanitised` should use `k8s_name` too.** `sanitised` matches
   label-derived ids back to document ids, and labels also pass through
-  `sanitize_name` with the 63-character cap. Task and attempt ids are 25
+  `sanitize_name` with the 63-character cap. Agent and attempt ids are 25
   characters, so the cap is unreachable there today.
 
 ### What it would break if accepted
@@ -1960,7 +1960,7 @@ on `Attempt`, a sub-agent's parent) are NOT accepted by this and are still
 open.**
 
 Recorded 2026-09-24 from incident `wf_ebb3ab2d65664707a559` (where it was filed
-as CR-1). Found while the incident's stuck tasks were read event by event. It
+as CR-1). Found while the incident's stuck agents were read event by event. It
 did not cause that incident.
 
 ### What was applied
@@ -1972,7 +1972,7 @@ did not cause that incident.
   the flag and `CANCELLED` only for the transition it makes itself (SUBMITTED,
   QUEUED, READY, PARKED to CANCELLED). `detail.phase` is still written on both,
   so a reader of the old discriminator keeps working.
-* The terminal `cancelled` for a task that held capacity was already written by
+* The terminal `cancelled` for an agent that held capacity was already written by
   whoever finishes it, and is unchanged: the worker (`control.finish`), the
   reconciler (F-3, `repair.py`), the scheduler (`SchedulerStore.cancel`).
 * **History is read, not rewritten.** Events stored before this change keep
@@ -1982,7 +1982,7 @@ did not cause that incident.
   served legacy request is the same shape as a new one. A `cancelled` with
   `phase: cancelled` or with no phase is a real cancel and is untouched. No
   migration was written: this lane writes no live data, and the read is one
-  line where a migration is a write to every task's history.
+  line where a migration is a write to every agent's history.
 * Four readers can see the raw legacy row, and each applies the same reading to
   it. Only one reads Firestore directly: `scripts/load-test.sh`, through
   `testlib.sh`'s `task_events`. The other three read through the API. They
@@ -2026,9 +2026,9 @@ That happens in two situations, and only the first one ends by itself:
   ([operations.md §7](operations.md#7-deploying-a-change),
   [disaster-recovery.md §3](disaster-recovery.md#3-a-control-plane-service-is-broken)).
   The `cancel_requested` events written since the deploy are permanent. A
-  pre-change image fails on them for as long as it serves, on every task that
+  pre-change image fails on them for as long as it serves, on every agent that
   was cancelled while it held capacity. The console Timeline, `swarm_follow`
-  and `swarm tail` then report that task's history as unreadable, during an
+  and `swarm tail` then report that agent's history as unreadable, during an
   incident, which is when it is needed most. Reverting this change has the
   same effect. (Corrected 2026-09-24: this record first said the crash "lasts
   one rollout of `swarm-api`", which holds only if nobody rolls back.)
@@ -2050,7 +2050,7 @@ is cancelled". The UI treats it as one of the four terminal events
 (`AgentDetail.tsx`, `TERMINAL_EVENTS`: "a terminal task has one by
 construction"). It is also written when nothing has been cancelled.
 
-`swarm_api.store.request_cancel` handles a task that holds capacity (LEASED,
+`swarm_api.store.request_cancel` handles an agent that holds capacity (LEASED,
 DISPATCHED, STARTING, RUNNING) by setting `cancel_requested = true` and nothing
 else, because the worker or the reconciler has to release the lease. It still
 appends an event of type `CANCELLED`, and only a detail field,
@@ -2062,7 +2062,7 @@ check-2, check-3, check-4 and check-5 of `wf_ebb3ab2d65664707a559` each carry a
 `cancelled` event from the cancel POSTs at 07:40:20–07:40:31Z, with
 `from_state: DISPATCHED` and `phase: cancel_requested`. At 08:55:11Z all four
 were still `DISPATCHED`, with leases unreleased. For more than an hour, every
-consumer that reads the event type saw four cancelled tasks, and the task
+consumer that reads the event type saw four cancelled agents, and the task
 documents said otherwise.
 
 ### The requested change
@@ -2070,7 +2070,7 @@ documents said otherwise.
 Add `EventType.CANCEL_REQUESTED = "cancel_requested"`. `request_cancel` emits it
 when it only sets the flag, and keeps `CANCELLED` for the immediate transition
 it makes itself (SUBMITTED, QUEUED, READY, PARKED to CANCELLED). The terminal
-`cancelled` for a task that held capacity then comes from whoever actually
+`cancelled` for an agent that held capacity then comes from whoever actually
 finishes it:
 
 * the worker (`control.py`, state-to-event map);
@@ -2082,15 +2082,15 @@ finishes it:
 * **It is additive to the enum.** Every writer of existing values is unchanged.
 * **An old reader crashes on the new value.** `swarm_api.codec.event_from_dict`
   decodes a stored event with `EventType(data["type"])`. An API instance on the
-  previous image that lists the events of a task holding a `cancel_requested`
+  previous image that lists the events of an agent holding a `cancel_requested`
   event raises `ValueError` for that page. `swarm-api` is both the only writer
   and a reader, so the exposure is one rolling deploy. It is still a window in
-  which a task's event page can fail. (Corrected after acceptance: a rollback
+  which an agent's event page can fail. (Corrected after acceptance: a rollback
   to an image from before the change reopens it, for as long as the rollback
   lasts. See "What is still true after it" above.)
 * **History keeps the old shape.** Events already written stay
   `type: cancelled, phase: cancel_requested`. A reader that wants the truth
-  about old tasks must keep reading `detail.phase`, unless a one-off migration
+  about old agents must keep reading `detail.phase`, unless a one-off migration
   rewrites them. Nothing here proposes that migration.
 * The UI's `TERMINAL_EVENTS` and any timeline grouping need to show the new type
   as a non-terminal marker. That is a UI change in `apps/swarm-ui`.
@@ -2100,7 +2100,7 @@ finishes it:
 The phase discriminator stays the only signal, so every consumer that treats
 `cancelled` as terminal must also check `detail.phase`. The UI's
 terminal-event check is one such consumer today. A consumer that forgets
-reports a cancelled task that still holds capacity, which is the situation this
+reports a cancelled agent that still holds capacity, which is the situation this
 incident's operators were in.
 
 ---
@@ -2205,7 +2205,7 @@ Nothing warns the next reader of `profiles.py` before they write it.
 
 **Status:** open, recorded 2026-09-24 by the browser-eviction lane. The owner
 asked for browser pods that are stuck without progress, or left running after
-their task finished, to be evicted "with an event naming the reason". The event
+their agent finished, to be evicted "with an event naming the reason". The event
 is written. Its type is borrowed.
 
 ### What is there now, without the contract
@@ -2217,16 +2217,16 @@ runbook `docs/runbooks/browser-eviction.md`) write these events:
   `generation_fenced`, with `detail.finding` and `detail.reason`, is accurate.
   The rules that finish the job on a later pass write their usual
   `lease_released`, then `ready`, `failed` or `cancelled`.
-* **`left_running`.** The task is already terminal, and nothing is fenced. The
+* **`left_running`.** The agent is already terminal, and nothing is fenced. The
   event is `generation_fenced` with `detail.phase: "left_running"`. That type is
   the nearest the frozen `EventType` offers: the reconciler stopped an
   execution of this generation that had no right to run. It is still a
-  borrowed word. A reader of the task timeline sees "generation fenced" after
+  borrowed word. A reader of the agent timeline sees "generation fenced" after
   "succeeded" and must open `detail` to learn it was an eviction.
 
 `EventType` cannot be extended from outside: `swarm_api.codec` parses every
 stored event with `EventType(data["type"])`, so writing an unknown type string
-would break the read path for that task.
+would break the read path for that agent.
 
 ### The requested change
 
@@ -2247,7 +2247,7 @@ Nothing stored. Old events keep their types. The costs:
 
 * **An old reader crashes on the new value.** This is the same window request
   17 describes. `swarm_api.codec` decodes with `EventType(data["type"])`, so an
-  API instance on the previous image fails the event page of any task holding
+  API instance on the previous image fails the event page of any agent holding
   an `execution_evicted` event until the rolling deploy finishes. Request 17
   and this one both add a member to `EventType`, so they are cheapest applied
   together, in one release.
@@ -2353,7 +2353,7 @@ other component read them. The owner decided on 2026-09-25 that a worker that
 cannot start exits 78 and that 78 is non-retryable. So the reconciler now reads
 a finished execution's exit code (a Cloud Run task's
 `last_attempt_result.exit_code`, a GKE pod's `state.terminated.exitCode`). On
-78 it fails the task at once, with no retry. The same change split a second
+78 it fails the agent at once, with no retry. The same change split a second
 code off 78: 69, "a dependency was unavailable before the runner", which the
 reconciler must go on retrying.
 
@@ -2362,14 +2362,14 @@ it cannot import `agent_worker`. The number is therefore stated twice:
 
 * `agent_worker.errors.ExitCode.CONFIG = 78`, which the worker exits with;
 * `reconciler.detect.WORKER_EXIT_CANNOT_START = 78`, which the reconciler
-  fails a task on.
+  fails an agent on.
 
 `tests/unit/worker/test_worker_cannot_start.py::test_the_reconcilers_78_is_the_workers_78`
 holds the two together in CI.
 
 Since #198 the reconciler acts on every OTHER code too, but only to requeue,
 and without naming any of them: an execution that ended with anything but 78
-while its task was still DISPATCHED or STARTING is fenced, released and
+while its agent was still DISPATCHED or STARTING is fenced, released and
 requeued in the pass that sees it (`reconciler.detect.detect_ended_at_startup`),
 with the code quoted in `last_error`. That rule needs no second number, so it
 adds no copy. It does depend on 78 being the only code that must NOT be
@@ -2378,7 +2378,7 @@ repository has had three outages from. Here the failure would be quiet in both
 directions. If the worker's number moved and the reconciler's did not, a worker
 that cannot start would go back to being retried until its attempts ran out.
 If the reconciler's moved onto a code the worker uses for something else, such
-as 69 or 75, tasks that should be retried or parked would be failed.
+as 69 or 75, agents that should be retried or parked would be failed.
 
 ### The requested change
 
@@ -2452,7 +2452,7 @@ scheduler's `credential_for`.
 If they drifted, the failure would be quiet in both directions:
 
 * the scheduler expects the pool and the worker does not ask it: a keyless
-  tenant's task is admitted, a container starts, the worker parks it on
+  tenant's agent is admitted, a container starts, the worker parks it on
   CREDENTIAL_MISSING, and the credential sweep promotes it again on the next
   drain;
 * the worker would ask and the scheduler does not expect it: a tenant the pool
@@ -2515,12 +2515,12 @@ that built `GET /v1/outcomes` (branch `lane/outcomes-api`, #185).
   values and ONE MORE, `INPUTS_UNAVAILABLE = "inputs_unavailable"`. It is the
   same comment's item 4: the worker refusing to stage a declared input
   (`agent_worker.errors.InputUnavailable`) is its own class, and a typed cause
-  that could not say so would have sent those tasks back to the text. 10 of
+  that could not say so would have sent those agents back to the text. 10 of
   dev's 13 "runner errors" on 2026-09-25 were exactly that.
   `CANCELLED_PARENT` is kept as requested: it is what item 2 (split "after a
   cancel" from "after a failure") needs a writer to say.
 * `Task.end_cause: EndCause | None = None`, written by `to_firestore` as its
-  string value. None on a success, on every task that has not ended, and on
+  string value. None on a success, on every agent that has not ended, and on
   every document written before this change.
 * Every terminal writer records it beside `completed_at`, deciding it where the
   terminal state is decided:
@@ -2540,10 +2540,10 @@ that built `GET /v1/outcomes` (branch `lane/outcomes-api`, #185).
     swept passes a failure down, and a failure wins -- or, for a parent
     cancelled before the field existed with no flag, None, which the ledger
     splits by the chain) and `cancel_if_not_started` (WORKFLOW_SWEEP);
-  * the API's cancel, only when that write ends the task (a pending task): a
-    flag on a task holding capacity ends nothing and records nothing.
+  * the API's cancel, only when that write ends the agent (a pending agent): a
+    flag on an agent holding capacity ends nothing and records nothing.
 * `swarm_api.outcomes` reads `end_cause` first and falls back to its text
-  classifier only for a task without one. `DERIVE_VERSION` and
+  classifier only for an agent without one. `DERIVE_VERSION` and
   `CLASSIFIER_VERSION` went 1 -> 2, and a stored day is re-derived when EITHER
   differs (the classifier's version had been written and never read).
 * **Corrected in review, before release (the review of #217):** the cascade
@@ -2566,8 +2566,8 @@ The request as it was filed follows, unchanged.
 ### What is true today
 
 The Timeline's "Why tasks failed" and "Why tasks were cancelled" cards need one
-fixed class per ended task. `Task` carries `state` and a free-text
-`last_error`, and nothing else about why the task ended. So
+fixed class per ended agent. `Task` carries `state` and a free-text
+`last_error`, and nothing else about why the agent ended. So
 `swarm_api.outcomes.classify_failure` and `cancel_cause` infer the class from
 text written by four writers the API image does not carry:
 
@@ -2608,7 +2608,7 @@ class EndCause(str, Enum):
 
 Add `end_cause: EndCause | None = None` to `Task`, set by the four terminal
 writers beside `completed_at`. `classify_failure` would then read the field
-first and fall back to the text only for tasks that ended before it existed.
+first and fall back to the text only for agents that ended before it existed.
 
 ### What it would break if accepted
 
@@ -2696,7 +2696,7 @@ enforce a declaration for every caller. It is recorded under *Amendment
 awaiting the owner* below, and the decision is
 [#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218). A
 second change awaits the owner's confirmation too: the bounded park is counted
-by the task's `attempt_count`, not by the state-file counter the acceptance
+by the agent's `attempt_count`, not by the state-file counter the acceptance
 named, because a failed checkpoint lost that one. It is under *Fixed after the
 second review of #213*, at the end.
 
@@ -2706,7 +2706,7 @@ and 24.
 
 ### What is true today
 
-A runner reads its task's `input`. The mock reads `sleep_seconds`, `steps`,
+A runner reads its agent's `input`. The mock reads `sleep_seconds`, `steps`,
 `fail`, `artifact_text` and more (`agent_worker/runners/mock.py`); the CLI
 runners read `input.prompt` and `input.model` (`runners/cliagent.py`). The
 frozen catalogue says nothing about which keys a profile reads, or which of
@@ -2732,7 +2732,7 @@ Two of #142's asks are **not** declared, and why is what a catalogue field
 would have to carry too. `quota_exhausted` (and `retry_after_seconds`, which
 only shapes it) would let a caller start something they cannot stop: the mock
 raises its rate limit on every attempt, with no count, and a park does not
-spend an attempt, so the task parks and resumes until it is cancelled. A
+spend an attempt, so the agent parks and resumes until it is cancelled. A
 bounded park needs a counter in the mock (a `quota_exhausted_times`, kept in
 its state file the way `credential_revoked_times` keeps its own), which is a
 worker change. And `exit_code` is declared with values refused inside its
@@ -2772,7 +2772,7 @@ undeclared key at submission, for every caller, with the same rule.
 
 ### What it would break if accepted
 
-* **Nothing stored.** No document carries the field; tasks keep their `input`.
+* **Nothing stored.** No document carries the field; agents keep their `input`.
 * **The UI's catalogue mirror** (`apps/swarm-ui/src/types.ts`, section 5 of
   `docs/mirrored-values.md`) would gain a field to follow, or state that it
   does not.
@@ -2812,7 +2812,7 @@ from the hash; `prompt` cannot be declared, because every profile takes it.
 applied, it recorded `quota_exhausted_times` and the parking attempt's id in
 `mock_state.json` before it raised, the park's checkpoint carried the file
 forward, and the next attempt ran. A retry in place is the same attempt and is
-refused again. The count has since moved to the task's `attempt_count`,
+refused again. The count has since moved to the agent's `attempt_count`,
 because a failed checkpoint lost it; see *Fixed after the second review*
 below.
 
@@ -2829,7 +2829,7 @@ before.** The text above says "Empty for every profile that takes only a
 prompt", and neither does: the browser runner refuses an input with neither
 `url` nor `actions`, and the generic runner cannot start without `command`,
 the name of an entry in its own catalogue. Declaring nothing for them would
-have refused every task they run, the smoke suite's GKE row included. The
+have refused every agent they run, the smoke suite's GKE row included. The
 "What it would break" section above assumed an undeclared key is "ignored"
 today; for these two runners it is the work. So which keys they declare, with
 which bounds, is open, and it is the owner's to decide
@@ -2882,7 +2882,7 @@ API's answer equal to the rule's for every available profile.
 **The bridge sends a `None` profile nothing.** That is the bridge's own send
 policy, not a copy of the rule: it sends a key only when a declaration names
 it, and it types `--input` by the declared kind. Letting it send a browser
-task's `actions` is #218's third question.
+agent's `actions` is #218's third question.
 
 **What would retire the amendment**, whichever way #218 goes: declare
 `browser` and `generic` (which needs a list kind, and a decision on a key
@@ -2898,7 +2898,7 @@ decides what `browser` or `generic` declare; that is still #218.
 **A declared number has both bounds, inside the range Firestore stores.**
 `steps`, `sleep_seconds` and `cpu_burn_seconds` were declared with a floor
 only, and Python reads a JSON integer at any length, so `steps: 10**30` passed
-every check and failed when the task was written: a 500 at the store, not a
+every check and failed when the agent was written: a 500 at the store, not a
 422 at the door. `RunnerInput.__post_init__` now refuses a `number` or
 `integer` declared without both `minimum` and `maximum`, and an `integer`
 whose bounds leave the signed 64-bit range. That range is two new names in
@@ -2921,10 +2921,10 @@ attempt only through the park's checkpoint, and `Worker._checkpoint` logs a
 failed upload and parks anyway, as it must for a real provider. So a park
 whose checkpoint failed was followed by another, for as long as uploads kept
 failing: the bound held only while checkpoints did. The count is now the
-task's `attempt_count`, which admission increments in the lease's own
+agent's `attempt_count`, which admission increments in the lease's own
 transaction. The lifecycle writes it into every runner's input beside
 `attempt_id`, assigned rather than defaulted so no caller can set it, and the
-mock parks while it is 1: the task's first attempt, and no other. A mock
+mock parks while it is 1: the agent's first attempt, and no other. A mock
 started without it refuses to simulate the park and fails, which spends an
 attempt that `max_attempts` bounds. The bound itself, one park, is the
 owner's and is unchanged; so is the declaration's own wording, "park the first
@@ -3133,7 +3133,7 @@ profile changed.
 - **The API** (`validation.validate_runner_input`) accepts `issue` for these
   two profiles through the declaration, as it does every declared key, and
   refuses it with 422 `invalid_input` on a submission with no
-  `repository_url`: the issue is the task's repository's, and there would be
+  `repository_url`: the issue is the agent's repository's, and there would be
   nothing to fetch it from.
 - **The worker** (`agent_worker/issue.py`) fetches the issue and its comments
   read-only after the credentials step, writes `work/issue.md`, and fails the
@@ -3144,7 +3144,7 @@ profile changed.
 - **#219.** The token is read by `Worker._git_token`, the clone's path, and
   goes only into the request's `Authorization` header; a redirect to another
   host is refused rather than followed with it.
-- **Invariant 9.** The fetch is against the task's own repository with its own
+- **Invariant 9.** The fetch is against the agent's own repository with its own
   tenant's credential.
 
 ## 29. `models.py`: `EndCause` gains `PUBLISH_REFUSED`
@@ -3156,7 +3156,7 @@ below). Recorded 2026-09-29 from #259.
 **As applied.** `EndCause.PUBLISH_REFUSED = "publish_refused"`, appended
 after `VERDICT_FAILED` so no existing value moved. The worker writes it from
 both call sites, `_fail_for_final_tree_leak` and `_fail_for_refused_title`;
-both stay retryable, so the cause is the task's once its attempts are spent.
+both stay retryable, so the cause is the agent's once its attempts are spent.
 `swarm_api/outcomes.py` gains the failure class `publish_refused` ("publish
 refused"), and `DERIVE_VERSION` moves to 5 so stored days are derived again.
 The UI's `FailureClassKey`, its ledger fixture and a new `END_CAUSES` mirror
@@ -3193,9 +3193,9 @@ class with it.
 ### What it would break if accepted
 
 Nothing that exists: a new enum value. A reader that does not know it falls
-back to its text classifier, as for any task written before `end_cause`
+back to its text classifier, as for any agent written before `end_cause`
 existed. The outcome ledger's cause-to-class map and the UI's class list
-must add it in the same change, or those tasks read as unclassified.
+must add it in the same change, or those agents read as unclassified.
 
 ### Invariants
 
@@ -3264,14 +3264,14 @@ limit, because the owner declined a continuation cap (decision 3,
 **2026-09-29, round 3: "NOT YET" on one mechanical point, folded in without
 another owner round.** The `submitted_by` filter (item 5) was still OPT-IN:
 `get_task`, `list_tasks`, `get_workflow` and `list_workflows` defaulted
-`submitted_by=None`, so a route that reaches a task through a layer round 2
+`submitted_by=None`, so a route that reaches an agent through a layer round 2
 did not personally thread the parameter through -- the artifact service,
 `ctx.inspection`, the transcript or answer service, or one not yet written --
 would keep compiling and keep serving, silently unfiltered. `submitted_by` is
 now a REQUIRED keyword with no default on all four store methods: a missed
 call site is a `TypeError` at the call and a type-check error before that,
 not a silent pass-through. `test_continuation_scope_is_narrow.py` is extended
-to drive every task/workflow-scoped route in `CONTINUATION_ROUTES` at a task
+to drive every task/workflow-scoped route in `CONTINUATION_ROUTES` at an agent
 another `eng` member submitted and assert 404, so a route added to the
 allow-list later without its filter wired through fails on the day it is
 added.
@@ -3280,7 +3280,7 @@ added.
 wording throughout item 5 and its tests was wrong.** Checked directly against
 `apps/swarm-api/swarm_api/store.py` on `main` while implementing this entry
 (`part of #273`): `Store.get_task` today raises `NotFound(f"task {task_id!r}
-not found")` for BOTH a genuinely missing task and another tenant's task --
+not found")` for BOTH a genuinely missing agent and another tenant's agent --
 never "is not a task in your tenant". That phrase belongs to a DIFFERENT code
 path: #273's own `resolve_continuation` wraps its `continues_task` lookup in
 a `DispatchOptionError` carrying that exact sentence, but it never touches
@@ -3297,12 +3297,12 @@ unchanged and was already correct.
 `direct-pr` task" to an `integrate` workflow's integrator as well.** Every
 SwarmCloud lane pull request is opened by an integrator -- the workflow's
 final step, which pushes `<prefix><its own task id>` and opens the one pull
-request `integrate` produces -- so a fixer confined to `direct-pr` tasks fixed
+request `integrate` produces -- so a fixer confined to `direct-pr` agents fixed
 none of them: PR #740's first real run was refused by `resolve_continuation`.
 `_has_own_pull_request` in `apps/swarm-api/swarm_api/continuation.py` now
 admits both, for a member and for a continuation-scoped account alike. What did
 NOT widen: the integrator is told apart by the `role` the API itself wrote into
-the task's dispatch block (a reserved key no caller can write), never by
+the agent's dispatch block (a reserved key no caller can write), never by
 anything the request carries; it must be in the caller's own tenant; an
 `integrate` contributor is still refused (its branch has no pull request of its
 own); a chain of continuations is checked again at its root; and a merge-only
@@ -3322,9 +3322,9 @@ the operator's side.
 `.github/workflows/ci-fix.yml` (#273) federates as
 `swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com` and submits a
 one-step `claude-code` workflow with `continues_task` set to the red swarm
-task. `resolve_continuation` (`apps/swarm-api/swarm_api/continuation.py` on
+agent. `resolve_continuation` (`apps/swarm-api/swarm_api/continuation.py` on
 #273) looks the task up with `store.get_task(tenant_id, requested)` and answers
-"is not a task in your tenant" for another tenant's task exactly as for a
+"is not a task in your tenant" for another tenant's agent exactly as for a
 missing one. The `swarm/` pull requests belong to `eng`, which resolves from
 the Google group `eng@saga.xyz` (`terraform/environments/dev/dev.tfvars`,
 `tenants.eng`, `directory_group = true`).
@@ -3342,7 +3342,7 @@ two ways a caller does:
   requests and submit fix steps.
 - **Being the tenant's principal.** A `kind = "user"` tenant whose principal is
   the account's own email (as `u-sw-c90291` is for `swarm-verify`). That is a
-  tenant of its own, not `eng`, so it owns none of the tasks it must continue.
+  tenant of its own, not `eng`, so it owns none of the agents it must continue.
 
 Without either, the account is also refused before tenant resolution: its
 domain is `saga-agents-staging.iam.gserviceaccount.com`, not `saga.xyz`, so
@@ -3668,9 +3668,9 @@ looked at:
   overwrite `eng`'s provider API key with one the attacker controls.
 - **`GET /v1/attempts` and `GET /v1/outcomes`**: both tenant-wide by design
   (`list_attempts`'s docstring: "Attempts across every TASK of the caller's
-  tenant"), not task-scoped, so neither goes through `Store.get_task` and
+  tenant"), not agent-scoped, so neither goes through `Store.get_task` and
   neither can be narrowed by a `submitted_by` filter the way the task routes
-  can -- there is no task in the call to filter.
+  can -- there is no agent in the call to filter.
 - **The checkpoint-content routes** (`routes/checkpoints.py:53-118`): `GET
   .../checkpoints/{checkpoint_id}/files`, `.../files/{path}`, `.../content`.
   These three don't even declare `auth: AuthContext` -- only `tenant_id: str =
@@ -3770,7 +3770,7 @@ principle, not because it is dangerous. `/v1/resource-classes` and
 catalogue (`platform.py`'s own docstrings: "no store read, no tenant filter"),
 so listing them costs nothing and a client would otherwise have no way to
 interpret `resource_class`/`runtime` names it already receives back on the
-tasks it can read.
+agents it can read.
 
 **`POST /v1/workflows`** stays in `CONTINUATION_ROUTES`, but
 `SubmissionService.submit_workflow`, right beside its existing
@@ -3798,7 +3798,7 @@ def submission_scope(auth: AuthContext = Depends(current_auth)) -> str | None:
     return auth.email if auth.member_scope else None
 ```
 
-Every route in `CONTINUATION_ROUTES` that reads a task or workflow now also
+Every route in `CONTINUATION_ROUTES` that reads an agent or workflow now also
 declares `submitted_by: str | None = Depends(submission_scope)` and passes it
 down to `Store.get_task`/`Store.list_tasks`/`Store.get_workflow`/
 `Store.list_workflows`, which gain the parameter and do the filtering
@@ -3807,11 +3807,11 @@ down to `Store.get_task`/`Store.list_tasks`/`Store.get_workflow`/
 **`submitted_by` is a REQUIRED keyword, with no default, on all four --
 corrected 2026-09-29, round 3 of re-review.** The first draft gave it
 `submitted_by: str | None = None`, which is opt-in: a route or service
-that reaches a task through a layer that never learned about this change --
+that reaches an agent through a layer that never learned about this change --
 the artifact service, `ctx.inspection`, the transcript and answer services,
 `Store`'s OWN internal helpers that call `self.get_task(...)` before doing
 something else -- keeps compiling, keeps passing its existing tests, and
-keeps returning the task, silently, to a caller the filter was supposed to
+keeps returning the agent, silently, to a caller the filter was supposed to
 refuse. `Store.get_task` alone has two such internal callers today
 (`store.py:961` and `:1051`, a tenant check and an artifact-manifest read
 that each call `self.get_task(tenant_id, task_id)` with no third argument),
@@ -3866,7 +3866,7 @@ round 2 intended but did not enforce.** Those three routes gain
 itself now REFUSES to compile or run without the keyword arriving from
 somewhere, so a fourth service layer discovered later -- the artifact
 service, the transcript service, the answer service, or one not yet
-written -- cannot reach a task by forgetting the argument; it can only reach
+written -- cannot reach an agent by forgetting the argument; it can only reach
 one by supplying it, correctly or not, and supplying it wrong is a much
 narrower way to fail than supplying nothing at all.
 
@@ -3900,17 +3900,17 @@ continue are recorded the same way rather than only the first (decision 4,
 "audit records the acting member ... consistently"):
 
 - **`Task.submitted_by` and `Workflow.submitted_by`** are already the verified
-  email (`service.py` sets both from `ctx.email`), so a fixer task already
+  email (`service.py` sets both from `ctx.email`), so a fixer agent already
   carries `swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com`, and the
-  outcome ledger's `submitted_by` grouping separates the bot's tasks from the
+  outcome ledger's `submitted_by` grouping separates the bot's agents from the
   humans' in `eng` with no further change. This covers submit AND continue --
-  a continuation is a normal `Store.create_tasks` call for its one step task,
+  a continuation is a normal `Store.create_tasks` call for its one step agent,
   so it already gets both fields with no extra code.
 - **`AuthContext.tenant_member`** (new, in `auth.py`, default `""`) is the
   listed email when the tenant came from a listing. The `SUBMITTED` event that
   `Store.create_tasks` writes gains `detail["submitted_by"]` and
   `detail["tenant_member"]` -- `"service_account"` for a listed caller, absent
-  otherwise -- so the event trail says, per task, not only who submitted it
+  otherwise -- so the event trail says, per agent, not only who submitted it
   but that the tenant was assigned by a listing rather than by a group. The
   sign-in log line above records the same per request, with no token material
   (the email is already what every other `auth.py` log line names).
@@ -4058,24 +4058,24 @@ expires in at most an hour, and an access token minted by federation the
 same, though "who can mint it" is wider than the token's own lifetime, see
 below -- and constrained by `member_scope = "continuation"` (item 5, above):
 
-- **Submit `continues_task` for ANY `eng` `direct-pr` task that still exists,
+- **Submit `continues_task` for ANY `eng` `direct-pr` agent that still exists,
   with an ARBITRARY PROMPT.** `resolve_continuation` (#273) constrains the
   SHAPE of a continuation -- caller's own tenant, `direct-pr` strategy, one
-  step, no `repository_ref`, the continued task's own repository -- and
+  step, no `repository_ref`, the continued agent's own repository -- and
   constrains NOTHING about the step's own instructions: that field is
-  ordinary caller-supplied task input, read exactly as any other task's is.
+  ordinary caller-supplied agent input, read exactly as any other agent's is.
   A continuation is not "reapply the same fix"; it is "run a new agent
   session, with a prompt of the attacker's choosing, against that repository,
   using `eng`'s forge token to push whatever it produces to that PR's
-  branch." Cannot spend `eng`'s capacity on a genuinely NEW task (no existing
-  `direct-pr` PR to attach to) and cannot touch another tenant's task --
+  branch." Cannot spend `eng`'s capacity on a genuinely NEW agent (no existing
+  `direct-pr` PR to attach to) and cannot touch another tenant's agent --
   `resolve_continuation` and the scope check both still refuse those -- but
   neither of those is much of a ceiling: any `eng` repository with an open
   `swarm/` pull request is reachable, for whatever prompt the attacker sends.
 - **Exfiltrate private repository content through the agent's own
   artifacts.** The account may read `GET /v1/tasks/{id}/artifacts`,
-  `/logs`, `/transcript` and `/answer` for tasks it itself submitted (item 5).
-  A continuation it submits is such a task. So the arbitrary prompt above can
+  `/logs`, `/transcript` and `/answer` for agents it itself submitted (item 5).
+  A continuation it submits is such an agent. So the arbitrary prompt above can
   instruct the agent to copy the contents of any file the checked-out
   repository holds -- not only files related to the original red build --
   into a commit message, an artifact, or its own transcript, and the
@@ -4092,9 +4092,9 @@ below -- and constrained by `member_scope = "continuation"` (item 5, above):
   agent-provider cost against `eng`'s subscription and real capacity against
   `eng`'s `max_active` ceiling (invariant 2 still gates CONCURRENT capacity;
   nothing gates the NUMBER of sequential continuations over time). **Read the
-  tasks it itself submitted** is otherwise the account's only read reach: it
+  agents it itself submitted** is otherwise the account's only read reach: it
   cannot list or read a human `eng` member's other work, and it cannot
-  cancel anything, its own tasks included.
+  cancel anything, its own agents included.
 
 **`.github/workflows/auto-merge.yml` remains a real mitigation, but of a
 narrower thing than the reach above.** A push to a pull request's branch
@@ -4120,7 +4120,7 @@ scope in item 5 (it is `continues_task`-or-nothing, and read-your-own-only)
 and the token-lifetime and who-can-mint analysis below, not a limit on how
 many times or how expensively the account can act within that scope.
 
-Every task it submits still says so in `submitted_by` and in its `SUBMITTED`
+Every agent it submits still says so in `submitted_by` and in its `SUBMITTED`
 event (and, after decision 4's audit fix, every cancel and continuation it
 performs says so too), so what it did is enumerable afterwards, after the
 fact. It is not other tenants, not the admin surface, not the provider key or
@@ -4489,8 +4489,8 @@ Unit, no credentials and no emulator:
   - **a duplicate listing (`tenant_member_for` raising `AuthError`) comes back
     401, not 500,** on both the bearer path and the IAP path -- the symmetric
     `try`/`except` decision 4 adds to `_authenticate_bearer`;
-  - `continues_task` naming an `eng` task is accepted, naming a `u-bogdan`
-    task is refused "is not a task in your tenant";
+  - `continues_task` naming an `eng` agent is accepted, naming a `u-bogdan`
+    agent is refused "is not a task in your tenant";
   - **`CONTINUATION_ROUTES` is swept against every route in every router the
     app includes, and extended in round 3 to a second assertion per
     task/workflow-scoped route** (`tests/unit/control_plane/test_continuation_scope_is_narrow.py`,
@@ -4530,21 +4530,21 @@ Unit, no credentials and no emulator:
     caller and succeeds for an ordinary `eng` member -- `submit_workflow`'s
     own check, since being in `CONTINUATION_ROUTES` only opens the route, not
     every request to it;
-  - **`GET /v1/tasks/{id}` for a task `eng`'s human member submitted** 404s
+  - **`GET /v1/tasks/{id}` for an agent `eng`'s human member submitted** 404s
     ("task 'X' not found", the existing cross-tenant wording) for the listed
     caller, and **the same
-    call for a task the listed caller itself submitted** succeeds -- proving
+    call for an agent the listed caller itself submitted** succeeds -- proving
     the `submitted_by` filter is per-caller, not per-tenant. Also covered by
     the sweep's ownership assertion above; kept as its own named case because
     it is the one this entry's examples build on elsewhere;
-  - **`GET /v1/tasks`** for the listed caller returns only tasks it submitted,
+  - **`GET /v1/tasks`** for the listed caller returns only agents it submitted,
     even when `eng` has others (a LIST assertion, which the sweep's
-    single-task ownership check does not itself make -- `Store.list_tasks`
+    single-agent ownership check does not itself make -- `Store.list_tasks`
     filtering is exercised here specifically);
   - **`GET /v1/tasks/{id}/checkpoints/{checkpoint_id}/files` (and `/files/{path}`,
-    `/content`) for a checkpoint of a task `eng`'s human member submitted**
+    `/content`) for a checkpoint of an agent `eng`'s human member submitted**
     404s for the listed caller, and the same call for the listed caller's OWN
-    task succeeds -- the case that had no seam at all before `submission_scope`
+    agent succeeds -- the case that had no seam at all before `submission_scope`
     was threaded into `checkpoints.py`, and now also caught by the sweep's
     ownership assertion since these three are members of `CONTINUATION_ROUTES`;
   - a new `tests/unit/control_plane/test_store_task_scope_is_required.py`:
@@ -4555,7 +4555,7 @@ Unit, no credentials and no emulator:
     change itself, independent of any route, so it stays red even if every
     route-level test above were somehow satisfied by an accident of fixture
     setup;
-  - the created task's `submitted_by` is the account's email and its
+  - the created agent's `submitted_by` is the account's email and its
     `SUBMITTED` event carries `tenant_member="service_account"`; the same is
     true of a `CANCELLED` event when a FULL member (not the listed caller,
     which cannot reach cancel -- absent from `CONTINUATION_ROUTES`) cancels
@@ -4607,7 +4607,7 @@ the implementing branch and must fail there before the change lands on
   Terraform; nothing a caller sends chooses a tenant.
 - **Invariant 2 (all-or-nothing capacity).** Unaffected in mechanism -- a
   continuation still reserves capacity through the same transaction every
-  other task does -- but worth stating given decision 3: nothing here caps
+  other agent does -- but worth stating given decision 3: nothing here caps
   HOW MANY times a continuation-scoped account can go through that
   transaction over time, only how many it can hold `LEASED` at once (`eng`'s
   `max_active`, invariant 3). The owner accepted that as part of the same
@@ -4636,7 +4636,7 @@ reserved key was needed and nothing frozen was edited.
 
 The frozen `WorkflowStep` has no field for either, so the workflow document
 does not record them. `GET /v1/workflows/{id}` shows a gated step exactly as
-it shows an ungated one; a reader has to open the step's task to see the gate
+it shows an ungated one; a reader has to open the step's agent to see the gate
 (`GET /v1/tasks/{id}`, `dispatch.verdict_gate`). The declaration as the caller
 wrote it, keyed by step id, is not stored anywhere.
 
@@ -4666,7 +4666,7 @@ codec and the UI's step rows would start showing them.
 
 ### If it is declined
 
-The gate stays visible only on the task, and the verdict vocabulary stays in
+The gate stays visible only on the agent, and the verdict vocabulary stays in
 two copies behind a parity test. That test lives in the unit suite, so it
 protects the repository, not a worker image built from an older commit.
 ---
@@ -4696,11 +4696,11 @@ confirmed that on 2026-09-26 as the interim (request 25's table row). It was
 meant to last until #218 was decided.
 
 **It has already stopped work.** #220 found on 2026-09-28 that every browser
-task dispatched through the `sc` plugin failed after it started, with
+agent dispatched through the `sc` plugin failed after it started, with
 "browser runner needs input.url or at least one action". The bridge sends a
 key only when a declaration names it (`swarm_mcp/profiles.py`, `check_inputs`),
 and `browser` declares nothing. So no caller of the plugin can give a browser
-task the one thing it cannot run without, and the refusal arrives after
+agent the one thing it cannot run without, and the refusal arrives after
 admission, after a lease and a GKE pod start.
 
 **What the size bound lets through, and where it fails instead.** Every item
@@ -4803,7 +4803,7 @@ runner's check, because only the runner has the workspace.
 elements are a declared `RunnerInput` (`items`).** It reuses the fields that
 already exist. `minimum` and `maximum` become the length bounds and are
 required, as they are for a number, for the same reason: without them a list
-is unbounded until the task write fails. Each element is checked by the same
+is unbounded until the agent write fails. Each element is checked by the same
 `check`, under the key `actions[3]`, so a refusal names the element that
 failed.
 
@@ -4822,7 +4822,7 @@ refuses keys it does not name. It is not general: the discriminator is always
 That is enough for every input any runner reads today. Two further fields
 serve keys that are not lists. `choices` (string only) covers `command` and
 `wait_until`. `required` is also read for a profile's top-level keys, so a
-`generic` task with no `command` is refused at the door.
+`generic` agent with no `command` is refused at the door.
 
 **Alternatives considered, and why they were not chosen:**
 
@@ -4871,7 +4871,7 @@ service ranges. So the browser can reach:
    triggers a CORS preflight, and the metadata server does not answer the
    preflight in a way that permits the request. The preflight behaviour is
    **not measured here**. The applying change should measure it with a
-   browser task against the live cluster.
+   browser agent against the live cluster.
 2. **The Google API VIPs.** These are authenticated APIs, so they are useless
    without a token.
 3. **The public internet.** That is the browser profile's purpose. The
@@ -4892,7 +4892,7 @@ depth.
 
 * A private address becomes a 422 with the reason, instead of a timeout that
   never says the address was dropped.
-* A URL with `user:password@` is never stored with the task, served by
+* A URL with `user:password@` is never stored with the agent, served by
   the API or shown in the UI. The runner would also echo it
   back as `final_url`.
 * An address the rule can actually see, and that is not global, becomes an
@@ -4942,7 +4942,7 @@ Chromium normalises the same value to that host and opens it.
   second draft (2026-09-29) replaced the single-label rule with "fewer than
   two dots," which caught `kubernetes.default.svc` (only by widening the net
   far past what the bypass needed) but ALSO refused every bare apex domain a
-  browser task might target (`github.com`, one dot). **The owner declined
+  browser agent might target (`github.com`, one dot). **The owner declined
   that trade on 2026-09-29** and asked for the narrow fix instead: keep the
   single-label rule, and add `.svc` to the refused-suffix list next to
   `.internal`, `.local` and `.localhost`. That is what ships below. It also
@@ -5001,7 +5001,7 @@ The rule, as written in the diff, now refuses, **in this order**:
   second draft of this rule (2026-09-29) had widened this to "fewer than two
   dots," to also catch the `.svc` bypass below; the owner declined that
   trade the same day, because it refused every bare apex domain
-  (`github.com`, `example.com`) a browser task's own purpose is to reach.
+  (`github.com`, `example.com`) a browser agent's own purpose is to reach.
   The single-label form is restored, unchanged from the first draft, and
   costs nothing a real page address would ever need;
 * any name under `.internal`, `.local`, `.localhost` or **`.svc`** (new
@@ -5133,7 +5133,7 @@ their source on 2026-09-29:**
   It refuses fields on the **top-level task body** (`image`, `command`,
   `resources`, and the rest of invariant 10's list, checked in
   `swarm_api/main.py` before a runner profile is even resolved). A
-  `generic` task's declared `command` lives under `input`, a separate
+  `generic` agent's declared `command` lives under `input`, a separate
   namespace `FORBIDDEN_CALLER_FIELDS` does not read and has never read --
   `mock`'s existing declarations already put keys under `input` today
   without needing a change there. Declaring `input.command` for `generic`
@@ -6063,7 +6063,7 @@ on `main`, touches neither these lines nor these kinds.
 
 ### What it would break if accepted
 
-* **Nothing stored.** Tasks keep their `input`. The check runs at submission
+* **Nothing stored.** Agents keep their `input`. The check runs at submission
   only.
 * **Callers that send what the declaration refuses** would get 422
   `invalid_input` for input the API accepts today. That is the point, and it
@@ -6094,7 +6094,7 @@ on `main`, touches neither these lines nor these kinds.
     docstrings, which describe `None`. There is no code branch to remove;
     the rule decides.
   * The worker: `browser._check_url` calls `url_refusal`. The runner may keep
-    its own checks, because a task written before this change still reaches
+    its own checks, because an agent written before this change still reaches
     it.
   * The Submit form's `SUGGESTED` for `browser` and `generic`
     (`apps/swarm-ui/src/Submit.tsx`). Today it is a runner census. Section 13
@@ -6129,10 +6129,10 @@ on `main`, touches neither these lines nor these kinds.
 `browser` and `generic` stay `None`. The API goes on bounding them by size,
 and every failure listed under *What is true today* goes on arriving after
 admission, having spent a lease and a pod start. The plugin still cannot
-dispatch a working browser task (#220). The only way around that without a
+dispatch a working browser agent (#220). The only way around that without a
 declaration is a bridge exception for `None` profiles, and question 3
 recommends against it. A private-address `goto` still times out instead of
-being refused, and a URL with a password is still stored with its task.
+being refused, and a URL with a password is still stored with its agent.
 
 ### Preconditions for the applying PR
 
@@ -6145,7 +6145,7 @@ merge without them:
   above ("a cross-origin `fetch()` ... triggers a CORS preflight, and the
   metadata server does not answer the preflight in a way that permits the
   request") is reasoned from the metadata server's documented behaviour, not
-  measured from this cluster. Run a `browser` task against the live GKE pod
+  measured from this cluster. Run a `browser` agent against the live GKE pod
   that attempts exactly that `fetch()` and confirm the token never reaches
   the page before this entry's SSRF posture is relied on for anything.
 * **The worker re-runs `check_inputs` on the payload it reads.** Confirmed
@@ -6219,7 +6219,7 @@ relies on for correctness.
   address logic runs, which is what makes the address logic trustworthy
   again; it is still not the SSRF control (see above), and per-tenant
   isolation stays the network's job regardless.
-* **Invariant 1.** A refusal at submission creates no task. So a task that
+* **Invariant 1.** A refusal at submission creates no agent. So an agent that
   is bound to fail no longer takes a lease, which is less infrastructure
   demand, never more.
 * **Invariant 7.** Unchanged. Nothing here sizes a pod.
@@ -6229,7 +6229,7 @@ relies on for correctness.
 1. **Accept the three new kinds** (`list` with `items`, `object` with
    `variants`, and `argument`), the `url` kind, and the `choices` and
    `required` fields. Or name a smaller shape.
-2. **The either/or on `browser`.** A task with neither `url` nor `actions`
+2. **The either/or on `browser`.** An agent with neither `url` nor `actions`
    passes the declaration and fails at the runner. Options:
    * leave it with the runner (this request);
    * add a profile-level `requires_one_of` to the catalogue;
@@ -6451,7 +6451,7 @@ reach it. They are listed there as rejected, not as fallbacks.
 
 ### Invariants
 
-- **Invariants 1–3.** The merge step is an ordinary task: admitted in the same
+- **Invariants 1–3.** The merge step is an ordinary agent: admitted in the same
   transaction, parked and costing nothing until its parents succeed, and
   counted from `LEASED`.
 - **Invariant 4.** A pending check is a refusal, not a wait. A long forge
@@ -6605,7 +6605,7 @@ reads it, and the document is writable by every agent of the tenant.
   guessed: every step's `task_id` is on the workflow document
   (`WorkflowStep.task_id`), and every step knows its workflow.
 * **So one step can rewrite another's instructions.** In an implement →
-  review → fix chain the implement agent can set the parked review task's
+  review → fix chain the implement agent can set the parked review agent's
   `input.prompt` to "write verdict.json with MERGE", point its
   `metadata.input_from` at a different file, or rewrite the fix step's prompt.
   The real review step then runs the rewritten instructions, with no prompt
@@ -7066,15 +7066,15 @@ close**, the workflow document).
   `gcloud kms keys versions create`); (2) release, so every Job's
   `SPEC_VERIFY_KEYS` holds N and N+1; (3) point swarm-api's
   `SPEC_SIGNING_KEY_VERSION` (a full version name, because an asymmetric key
-  has no primary version) at N+1 and release; (4) once no non-terminal task
+  has no primary version) at N+1 and release; (4) once no non-terminal agent
   names version N, disable it and release. Several enabled versions verify at
   once; that is what makes steps 2 to 4 safe.
 * **Revocation.** Disable the version. With the recommended rendering, every
-  task signed by it is refused from the next release on; with the runtime
+  agent signed by it is refused from the next release on; with the runtime
   alternative, from the next attempt start. A signing identity that was
   compromised could sign anything by submitting it through the API anyway, so
   revocation is about closing the leak, and a release is fast enough for that.
-* **`AsymmetricSign` quota, not verified.** Every task and every workflow step
+* **`AsymmetricSign` quota, not verified.** Every agent and every workflow step
   is one `AsymmetricSign` call at submission (one per step, decision 2), so the
   platform's submission rate is Cloud KMS's request rate for this key. The
   default Cloud KMS asymmetric-sign quota is per project and per region and is
@@ -7097,13 +7097,13 @@ close**, the workflow document).
 #### 4. Signing in swarm-api
 
 * **Where.** In `SubmissionService.submit_tasks` and `submit_workflow`
-  (`apps/swarm-api/swarm_api/service.py`), after every write to the task has
+  (`apps/swarm-api/swarm_api/service.py`), after every write to the agent has
   been made and immediately before `self._store.create_tasks` /
   `create_workflow`. For a workflow that is after the loop that writes
   `metadata.input_from` and after `record_expected_outputs`, both of which run
   after `_build_task`; signing inside `_build_task` would sign a spec missing
   both.
-* **What.** For each task: `canonical_step_spec(task.to_firestore(),
+* **What.** For each agent: `canonical_step_spec(task.to_firestore(),
   task_id=task.id)`, SHA-256, then KMS `AsymmetricSign` with `digest.sha256`
   and `digest_crc32c`, checking `verified_digest_crc32c` and the response's
   `name`. The three fields are set on the `Task`, so they are part of the write
@@ -7113,7 +7113,7 @@ close**, the workflow document).
   every other refusal.
 * **Fails closed.** If KMS cannot sign, the submission answers 503 and nothing
   is stored. After the cutover (below) swarm-api never writes an unsigned
-  task.
+  agent.
 * **One sign call per step**, concurrently for a workflow, as the owner
   decided ("each step's canonical spec"). A per-workflow manifest signed once
   was considered (decision 2).
@@ -7136,12 +7136,12 @@ action reads its secret.
 
 **What it checks, in this order, refusing at the first failure.** Corrected
 from the first draft of this entry, which put the format check first: an
-unsigned legacy task has no `spec_format` either, so checking it before the
-legacy rule refused every legacy task with `unknown_format` instead of
+unsigned legacy agent has no `spec_format` either, so checking it before the
+legacy rule refused every legacy agent with `unknown_format` instead of
 admitting it. The presence/legacy check has to run first.
 
 1. `spec_signature` and `spec_key_version` are present, or the legacy rule
-   below applies (in which case the task runs and checks 2 to 5 are skipped).
+   below applies (in which case the agent runs and checks 2 to 5 are skipped).
 2. `spec_format` is a format this worker knows (1).
 3. `spec_key_version` is `<SPEC_SIGNING_KEY>/cryptoKeyVersions/<digits>` and
    is a key of `SPEC_VERIFY_KEYS`. **Checked as a string, before any key is
@@ -7158,7 +7158,7 @@ admitting it. The presence/legacy check has to run first.
    `SpecNotCanonical` from this call specifically and maps it to
    `SpecSignatureInvalid` with reason `not_canonical`, the same way an
    unverified signature is refused; letting it propagate would crash the
-   worker process instead of failing the task cleanly.
+   worker process instead of failing the agent cleanly.
 5. The execution's own environment agrees with the signed spec:
    `RUNNER_PROFILE`, `TENANT_ID`, `TASK_TIMEOUT_SECONDS`, `REPOSITORY_URL` /
    `REPOSITORY_REF` when set, and the Job's own identity against the Job name
@@ -7224,13 +7224,13 @@ this entry, which said
 `post-verdict` uses `input_from`:** contract request 33's joint review with
 this entry, 2026-09-29, removed `post-verdict`'s `input_from` on purpose --
 the ordinary staging path resolves an artifact's location from the upstream
-task's own `result_summary`, a Firestore field the tenant identity writes,
+agent's own `result_summary`, a Firestore field the tenant identity writes,
 which is exactly the tenant-writable pointer this whole design exists to stop
-trusting. `merge` verifies the **union** of every task its own signed spec
+trusting. `merge` verifies the **union** of every agent its own signed spec
 names: the `dispatch.merges` block (author, review, **post-verdict**, fix,
 proof) and `input_from`. `post-verdict` is in that union because `merge`
 trusts what `post-verdict` posted to GitHub every bit as much as it trusts
-`review`'s verdict file. Each upstream task must pass checks 2 to 4 above
+`review`'s verdict file. Each upstream agent must pass checks 2 to 4 above
 **with no legacy exception**, and in addition carry the acting step's own
 `tenant_id` and `workflow_id` and the role contract request 33's `single-pr`
 table gives it: `reader` for `review` and `proof`, `amender` for `fix`,
@@ -7243,7 +7243,7 @@ an upstream verdict and posts it. (This entry's earlier draft gave
 **The end causes are deliberately not unified with #342's own (the owner's
 decision, 2026-09-29): a worker-action step's own spec failing its own check
 is still `SPEC_SIGNATURE_INVALID`,** exactly as for an agent step. **An
-upstream task failing this check is contract request 33's own concern, not
+upstream agent failing this check is contract request 33's own concern, not
 this entry's, and keeps that entry's own end causes:** `merge` ends
 `EndCause.MERGE_REFUSED`, and `post-verdict` ends `EndCause.VERDICT_REFUSED`
 (contract request 33 names and owns both; this entry only requires that an
@@ -7267,18 +7267,18 @@ carries that spec. It does not prove what that step produced (next section).
 
 #### 6. Rollout: legacy unsigned tasks
 
-Every task written before swarm-api signs carries no signature, and some of
+Every agent written before swarm-api signs carries no signature, and some of
 those will still be parked or queued when the verifying worker ships. Signing
 cannot be retrofitted onto them: re-signing a document as it now stands would
 sign whatever an agent already wrote into it.
 
 * **`SPEC_SIGNATURE_MODE`**, on the worker Jobs: `enforce` (**the default**)
-  or `legacy`. In `legacy`, an unsigned task runs, with a WARNING log and a
+  or `legacy`. In `legacy`, an unsigned agent runs, with a WARNING log and a
   `spec_check: {"reason": "legacy_unsigned"}` note on its event, **only if the
   document's Firestore `create_time` is earlier than `SPEC_LEGACY_CUTOVER`**
   (an RFC 3339 time, the moment the signing swarm-api revision took all
   traffic). `create_time` is set by Firestore and no client can write it, so
-  stripping the signature off a task created after the cutover does not
+  stripping the signature off an agent created after the cutover does not
   qualify it; the tenant's role has no delete, so the document cannot be
   re-created with an earlier one either. `fetch_task` returns the snapshot's
   `create_time` beside the dict for this.
@@ -7286,40 +7286,40 @@ sign whatever an agent already wrote into it.
   `SPEC_LEGACY_UNTIL = 2026-10-20T00:00:00Z` (decision 5). After it the worker
   ignores `legacy`, logs that it did, and enforces. A flag nobody remembers to
   turn off stays off anyway.
-* **Before the end date**, an operator counts non-terminal tasks without
+* **Before the end date**, an operator counts non-terminal agents without
   `spec_signature` (a read-only query) and lets them finish or cancels and
   resubmits them; after it, any left fail `SPEC_SIGNATURE_INVALID` with reason
   `unsigned`.
 * **Worker-action steps never take the legacy path, for themselves or their
   upstream steps.** Contract request 33 is not built yet, so no legacy
-  worker-action task can exist.
+  worker-action agent can exist.
 * **Order:** (1) the key and its IAM (bootstrap), then the contract fields and
   `specsign.py`; (2) swarm-api signs, and its release time becomes
   `SPEC_LEGACY_CUTOVER`; (3) the worker verifies, with `legacy` and the
   cutover set; (4) `enforce` by the end date at the latest. A worker that
-  enforces before swarm-api signs refuses every task, which is why (2) and (3)
+  enforces before swarm-api signs refuses every agent, which is why (2) and (3)
   are separate releases.
 
 #### 7. Continuations and retries
 
-* **A retry is another attempt at the same task.** Same document, same spec,
+* **A retry is another attempt at the same agent.** Same document, same spec,
   same signature, nothing re-signed. That is exactly why no field a retry
   changes (`attempt_count`, `current_generation`, `state`, `next_eligible_at`,
   `startup_refunds`) is covered. The scheduler's
   `return_to_ready_after_failed_dispatch` and the reconciler's
   `repair_task_state` write none of the covered fields, and a test keeps it so.
 * **A continuation (#273's `continues_task`) is a new submission.** It is a
-  `direct-pr` workflow submitted through `submit_workflow`, so its task is
+  `direct-pr` workflow submitted through `submit_workflow`, so its agent is
   signed at its own submission, and the continued task id is inside its signed
   `metadata.dispatch.continues`. An agent therefore cannot point a
-  continuation at another task's branch. The continued task's own signature is
+  continuation at another agent's branch. The continued agent's own signature is
   never consulted: nothing about the continued task's spec is read, only its
   id, from which the worker derives the branch (`continuation.py`).
 * **Contract request 30's continuation-scoped accounts** submit through the
-  same code, so their tasks are signed identically and `submitted_by` records
+  same code, so their agents are signed identically and `submitted_by` records
   the account.
-* **Any future re-run that creates a new task** goes through swarm-api and is
-  signed at its own submission. No path may copy a signature from one task to
+* **Any future re-run that creates a new agent** goes through swarm-api and is
+  signed at its own submission. No path may copy a signature from one agent to
   another; it would not verify anyway, because `task_id` is inside the bytes.
 
 #### 8. The threat model
@@ -7329,7 +7329,7 @@ holding any worker's Firestore grant), of a step's `input` (prompt and
 inputs), `input_from`, `expected_outputs`, dispatch roles, `depends_on`,
 profile, class, timeout, attempt cap or repository, **before or between that
 step's attempts**. The worker refuses it before any credential is read and
-before any agent or action starts. Copying one task's signature onto another,
+before any agent or action starts. Copying one agent's signature onto another,
 moving a spec to another workflow or tenant, forging a new task document, and
 naming a key the platform did not publish are all refused the same way.
 
@@ -7349,9 +7349,9 @@ exposure is otherwise unchanged
   past.
 
   **Fixed separately, ahead of this entry: S0 #347, closed by PR #348.**
-  #348 makes `_restore_checkpoint` accept only the checkpoint this task's own
+  #348 makes `_restore_checkpoint` accept only the checkpoint this agent's own
   earlier attempt recorded on its own attempt document (never
-  `find_latest()`'s scan of the task's GCS prefix), and never restores
+  `find_latest()`'s scan of the agent's GCS prefix), and never restores
   anything on a first attempt. **State it as #348's own body states it, not
   more strongly:** this closes the reproduction in #347 (an implement agent
   planting for a parked review step's first attempt) and, on a retry, every
@@ -7359,7 +7359,7 @@ exposure is otherwise unchanged
   or the recorded one's archive rewritten in place. **It does not stop an
   agent that can also write Firestore.** Firestore has no document-level IAM
   (`multi-tenancy.md`), so on a retry such an agent can still raise the
-  victim task's `attempt_count`, repoint `latest_checkpoint`, and write a
+  victim agent's `attempt_count`, repoint `latest_checkpoint`, and write a
   forged `attempts/<id>` document naming its own planted checkpoint and
   digest -- every check #348 added then passes, because all of it reads
   Firestore fields and documents the tenant identity can write. #348's own
@@ -7369,7 +7369,7 @@ exposure is otherwise unchanged
   (section 1, above), by design -- the scheduler and the worker legitimately
   rewrite both after submission, so signing either would break on the first
   honest write -- and the `attempts/<id>` document is a different Firestore
-  collection entirely, never a candidate for this entry's per-task signature
+  collection entirely, never a candidate for this entry's per-agent signature
   in the first place. Extending coverage to close this was not the owner's
   decision (decision 7 covers only re-checking a signed *parent's* `state`, a
   different field, for a different attack).
@@ -7382,8 +7382,8 @@ exposure is otherwise unchanged
   this entry. Contract request 34 closes the rewritten-prompt path #342
   reproduced; it was never going to also close a checkpoint-planting path
   that reads and writes fields it deliberately does not sign.
-* **Every field that is not covered.** A tenant agent can still write a
-  task's `state`, `result_summary`, `cancel_requested`, `latest_checkpoint`
+* **Every field that is not covered.** A tenant agent can still write an
+  agent's `state`, `result_summary`, `cancel_requested`, `latest_checkpoint`
   and the rest. In particular:
   * **It can mark a parked step READY early**, without touching
     `depends_on`, and the scheduler will admit it. The signature still
@@ -7395,7 +7395,7 @@ exposure is otherwise unchanged
     well; it raises the cost, and does not close it.
   * **It can re-run a finished signed step by rewriting its state.** `state`
     and `end_cause` are both uncovered, so an agent can write a SUCCEEDED or
-    FAILED task's `state` back to `READY` (or `QUEUED`, ahead of admission)
+    FAILED agent's `state` back to `READY` (or `QUEUED`, ahead of admission)
     and have the scheduler dispatch a fresh attempt against the same,
     still-verifying spec -- the signature says nothing about how many times a
     step may run. A re-run costs the tenant's own capacity and attempt cap,
@@ -7463,7 +7463,7 @@ public key. Each goes to CI red first, in the shape CLAUDE.md gives.
   `agent_worker`) is in `SIGNED_METADATA_KEYS`, and `SIGNED_METADATA_KEYS`
   equals swarm-api's `RESERVED_METADATA_KEYS` minus `startup_refunds`.
 * **`tests/unit/control_plane/test_spec_signing_submission.py`** (swarm-api).
-  Every task from `submit_tasks` and `submit_workflow` carries the three
+  Every agent from `submit_tasks` and `submit_workflow` carries the three
   fields, and its signature verifies over its stored form; the signed bytes
   include the task-id-keyed `input_from` and the `expected_outputs`, so a
   signature made before either was written fails this test; a KMS failure is
@@ -7474,12 +7474,12 @@ public key. Each goes to CI red first, in the shape CLAUDE.md gives.
   (`input.prompt`, `input.issue`, `metadata.dispatch.role`,
   `metadata.dispatch.integrates` reordered, a value of `metadata.input_from`,
   `depends_on` reordered or shortened, `repository_ref`): a rewrite after
-  signing ends the task FAILED with `spec_signature_invalid` on attempt 1 of 3,
+  signing ends the agent FAILED with `spec_signature_invalid` on attempt 1 of 3,
   and the fakes record **no runner child, no secret read, no git token read,
   no GCS download and no checkpoint restore**. Parameterised over every
   uncovered field (`state`, `attempt_count`, `result_summary`,
-  `startup_refunds`, `priority`, a caller metadata key): the task runs. A
-  signature copied from another task, a version outside `SPEC_SIGNING_KEY`, a
+  `startup_refunds`, `priority`, a caller metadata key): the agent runs. A
+  signature copied from another agent, a version outside `SPEC_SIGNING_KEY`, a
   version not in `SPEC_VERIFY_KEYS`, a `RUNNER_PROFILE` override that
   disagrees, and (Cloud Run only, where the platform sets `CLOUD_RUN_JOB`
   independently of the scheduler) an execution whose `CLOUD_RUN_JOB` names a
@@ -7495,8 +7495,8 @@ public key. Each goes to CI red first, in the shape CLAUDE.md gives.
   non-finite float, a lone surrogate -- written directly to Firestore, not
   through swarm-api's submission check) is refused `not_canonical`, and the
   worker process does not crash. **The checks run in the order section 5
-  gives**, proven by a legacy-eligible task with no `spec_format` at all
-  (never `unknown_format`) alongside an out-of-window unsigned task that
+  gives**, proven by a legacy-eligible agent with no `spec_format` at all
+  (never `unknown_format`) alongside an out-of-window unsigned agent that
   correctly still gets `unsigned`. The phase log shows `verify_spec` before
   `restore_checkpoint`, `clone`, `stage_inputs`, `credentials` and
   `fetch_issue`.
@@ -7505,7 +7505,7 @@ public key. Each goes to CI red first, in the shape CLAUDE.md gives.
   note. After the cutover: refused. After `SPEC_LEGACY_UNTIL`, with an injected
   clock: refused, and the log says the flag was ignored.
 * **Worker-action upstream checks**, in contract request 33's own test files
-  when it lands: `post-verdict` and `merge` refuse an upstream task that fails
+  when it lands: `post-verdict` and `merge` refuse an upstream agent that fails
   verification, is unsigned (in `legacy` mode too), belongs to another
   workflow or carries the wrong role -- **`post-verdict` included** in
   `merge`'s upstream set, with role `none` (matching contract request 33's own
@@ -7517,12 +7517,12 @@ public key. Each goes to CI red first, in the shape CLAUDE.md gives.
   is reserved for the acting step's own spec, and a test in this entry's own
   suite asserts the two causes are never confused for the acting step's own
   failures.
-* **Writers.** A test that the scheduler's and the reconciler's task updates
+* **Writers.** A test that the scheduler's and the reconciler's agent updates
   (`return_to_ready_after_failed_dispatch`, `cancel`, `repair_task_state` and
   the rest) write no covered field; that **swarm-api's own writes to an
-  existing task** (`Store.request_cancel`/`cancel_workflow`, `store.py`, which
+  existing agent** (`Store.request_cancel`/`cancel_workflow`, `store.py`, which
   patch `cancel_requested`, `state` and `completed_at` -- the only writes
-  swarm-api itself makes to a task it did not just create -- and any future
+  swarm-api itself makes to an agent it did not just create -- and any future
   one) also write no covered field --
   the three signed fields are written once, at creation, and never again
   (section 2's diff comment), so this test fails loudly the day a second
@@ -7543,7 +7543,7 @@ public key. Each goes to CI red first, in the shape CLAUDE.md gives.
   `tests/terraform`).** The rendered `swarm-spec-verify-keys` `ConfigMap`
   carries the same `{version: PEM}` map as `SPEC_VERIFY_KEYS`, lives in the
   tenant's own namespace, and is applied by Terraform's identity, not the
-  scheduler's per-task render; `worker-job-browser.yaml`'s manifest and the
+  scheduler's per-agent render; `worker-job-browser.yaml`'s manifest and the
   dispatcher's rendered Job agree that neither sets `SPEC_VERIFY_KEYS` or
   `SPEC_SIGNING_KEY` in `env:` and both mount the ConfigMap read-only.
   **The write-grant check is wider than one `RoleBinding` lookup, because a
@@ -7583,7 +7583,7 @@ public key. Each goes to CI red first, in the shape CLAUDE.md gives.
 ### What it would break if accepted
 
 * **Nothing stored.** The three fields are optional and an old document
-  decodes with None. What an unsigned task does is the rollout's question
+  decodes with None. What an unsigned agent does is the rollout's question
   (section 6), not the decoder's.
 * **Every writer that creates a task document must sign.** Today that is only
   swarm-api's `Store`. The integration tests that seed task documents
@@ -7619,7 +7619,7 @@ cost.
 
 ### Invariants
 
-- **Invariants 1 to 3.** Unchanged. Signing happens before the task exists;
+- **Invariants 1 to 3.** Unchanged. Signing happens before the agent exists;
   a refusal is an ordinary terminal write that releases the lease in the same
   way as every other.
 - **Invariant 4.** No wait is added. With the recommended rendering,
@@ -7646,7 +7646,7 @@ cost.
 2. **One signature per step, or one per workflow.** Recommended: one per step,
    as decided on 2026-09-29. A per-workflow manifest is one sign call instead
    of N, but every worker would read and verify the whole workflow's specs, and
-   a standalone task would need a second shape.
+   a standalone agent would need a second shape.
 3. **The canonicaliser.** Recommended: RFC 8785 written into `specsign.py`,
    with the `rfc8785` package as a test-only oracle, because `swarm_common`
    takes no dependency.
@@ -7658,13 +7658,13 @@ cost.
    every worker account) revokes faster but returns `setIamPolicy` on the key
    to the deployer.
 5. **The legacy window.** Recommended: `enforce` by default, `legacy` only
-   for tasks whose Firestore `create_time` is before the cutover, and a hard
+   for agents whose Firestore `create_time` is before the cutover, and a hard
    `SPEC_LEGACY_UNTIL` of 2026-10-20.
 6. **What a refusal does.** Recommended: FAILED at once, not retried and not
    parked, with `SPEC_SIGNATURE_INVALID` and an alert.
 7. **A start-time re-check of parent states for every step with `depends_on`**
    (not only worker actions): each signed parent must be SUCCEEDED, or the
-   worker parks the task back as `DEPENDENCY_INCOMPLETE` without running.
+   worker parks the agent back as `DEPENDENCY_INCOMPLETE` without running.
    Recommended: yes, as defence in depth, stated as raising the cost of the
    early-release rewrite rather than closing it.
 8. **Verification at admission too.** Recommended: not now. The worker is the
@@ -7689,7 +7689,7 @@ cost.
 The accepted text above is left as the owner accepted it. Three statements in
 it were found wrong while building it (#353, #354), and one decision was added:
 
-1. **The GKE Job name is derived from the task, not the tenant and profile.**
+1. **The GKE Job name is derived from the agent, not the tenant and profile.**
    Requested change item 5 says the worker compares its identity against "the
    Job name the scheduler derived from `tenant_id` and `runner_profile` (one
    Job per tenant per profile)". That is Cloud Run's rule
@@ -7716,10 +7716,10 @@ it were found wrong while building it (#353, #354), and one decision was added:
    `/etc/swarm/spec-verify-keys` where the environment has none. GKE therefore
    follows the legacy window exactly as Cloud Run does, including
    `SPEC_LEGACY_UNTIL`.
-4. **A worker with no keys at all is CANNOT_START for every task, signed or
+4. **A worker with no keys at all is CANNOT_START for every agent, signed or
    not.** The key check now runs before the legacy rule, so a GKE pod whose
    namespace has no ConfigMap (the volume is `optional`) can neither admit an
-   unsigned task through a mode it could not read nor refuse a tenant's task
+   unsigned agent through a mode it could not read nor refuse a tenant's agent
    as a signature failure: it exits `ExitCode.CONFIG`, the operator's fault,
    loudly.
 
@@ -7733,11 +7733,11 @@ container's `env:`, as on a Cloud Run Job the scheduler creates. The
 `swarm-spec-verify-keys` ConfigMap stays mounted read-only, as the fallback
 the worker reads only when its environment carries no keys (amendment 3
 above). Why: claude-code moved to GKE (PR 866), and onboarding (#847) creates
-a namespace per person with no ConfigMap in it, so every task there ended
+a namespace per person with no ConfigMap in it, so every agent there ended
 `CANNOT_START` under amendment 4.
 
 The tenant still cannot choose its keys. The values come from the
-scheduler's settings and never from `worker_env()`, which a task shapes; a
+scheduler's settings and never from `worker_env()`, which an agent shapes; a
 test holds both dispatchers to that. A pod's manifest is built by the
 scheduler and is not writable from the tenant namespace. The worker still
 fails closed on a missing or bad signature. Only a missing ConfigMap stopped
@@ -7923,7 +7923,7 @@ merge step cannot be enabled for any tenant without this.
 
 ### Invariants
 
-- **Invariants 1–3.** `post-verdict` is an ordinary task: admitted in the
+- **Invariants 1–3.** `post-verdict` is an ordinary agent: admitted in the
   same transaction, parked and costing nothing until `review` succeeds, and
   counted from `LEASED`.
 - **Invariant 4.** A forge failure fails the attempt retryably; the worker
@@ -8016,7 +8016,7 @@ refuse the attempt, never adopt the existing object as this attempt's own
 output.** Because `never_restore_checkpoint=True` skips workspace restore but says
 nothing about the review step's GCS write, and because the platform's own
 retry of a failed attempt reuses the *same* path — `f(workflow_id, review
-task id)`, stable across attempts of one task (merge-step.md §7's R8
+task id)`, stable across attempts of one agent (merge-step.md §7's R8
 discussion) — a naive worker that treats "object already exists" as "already
 done" would adopt whatever is sitting at that path, honest or planted, rather
 than treating a pre-existing object as the refusal it is. The `review`
@@ -8076,7 +8076,7 @@ Job and service account) and `never_restore_checkpoint`:
   `post-verdict` outside a workflow step, or with a null `workflow_id`; for
   `post-verdict` specifically, also without a `verdict_source`** (merge-step.md
   §3's submission refusals) — neither profile is meant to run as a
-  caller-dispatched standalone task, and both derive part of their identity
+  caller-dispatched standalone agent, and both derive part of their identity
   (which workflow's verdict they anchor, or which review they post) from the
   workflow context alone.
 * **Every restatement of the catalogue** — the plugin's bridge,
@@ -8096,7 +8096,7 @@ cannot be enabled for any tenant without this either.
 ### Invariants
 
 - **Invariants 1–3, 5, 10.** Unchanged: `claude-code-review` is an ordinary
-  agent-running task like `claude-code`, admitted, fenced and named the same
+  agent-running agent like `claude-code`, admitted, fenced and named the same
   way.
 - **Invariant 8.** Checkpointing stays on; `never_restore_checkpoint=True` is the
   point of this request, not a violation of it — checkpointing and
@@ -8147,7 +8147,7 @@ Admission writes `lease.dispatch_deadline = now + dispatch_timeout_seconds`
   (`apps/scheduler/scheduler/loop.py`), and into
   `backend_deadline_seconds` for every Cloud Run and GKE dispatch
   (`apps/scheduler/scheduler/dispatch.py`): the backend's hard deadline is the
-  task timeout + the dispatch timeout + `WORKER_FINALISE_BUDGET_SECONDS` (300);
+  agent timeout + the dispatch timeout + `WORKER_FINALISE_BUDGET_SECONDS` (300);
 * **the reconciler** judges a lease that has never heartbeated by
   `dispatch_deadline` alone (`detect_stale_leases`, `reconciler/detect.py`),
   and `MISSING_EXECUTION_GRACE_SECONDS` defaults to it
@@ -8195,7 +8195,7 @@ restating it, and holds all three frozen statements of the default equal.
   reconciler reclaims each at the deadline, now 480 s instead of 300 s. For
   those 180 s the lease is held, and with it the concurrency slot and the
   capacity units across every pool. **Invariants 1 and 3 still hold** (a
-  `LEASED`/`DISPATCHED` task is demand and counts toward concurrency, as it
+  `LEASED`/`DISPATCHED` agent is demand and counts toward concurrency, as it
   must); what changes is how long a dead one is counted. At the 100-agent
   ceiling, a burst of lost dispatches holds its slots up to 8 minutes rather
   than 5. The ended-at-startup rule (#198), on a `*/1` tick, still requeues
@@ -8205,8 +8205,8 @@ restating it, and holds all three frozen statements of the default equal.
 * **The backend's hard deadline grows by 180 s** for every attempt
   (`backend_deadline_seconds`). A wedged lifecycle stops heartbeating and is
   reclaimed by the heartbeat rule long before either deadline, so this is the
-  ceiling for a hung pod, not its expected life. The largest task timeout the
-  API accepts (86 400 s) plus 480 + 300 s stays far inside Cloud Run's task
+  ceiling for a hung pod, not its expected life. The largest agent timeout the
+  API accepts (86 400 s) plus 480 + 300 s stays far inside Cloud Run's agent
   timeout limit.
 * **The overview's workflow-stall threshold (600 s, `apps/swarm-ui/src/checks.ts`)**
   stays above the deadline and above the p90 cold start, the two bounds its
@@ -8394,13 +8394,13 @@ Either of these, at the owner's choice:
 The value stays, unused, and the docs say so where a reader meets it:
 `docs/quota-management.md` §4 marks it never written, `docs/cost-control.md` §2
 says budgets are not built and not planned, and `docs/multi-tenancy.md` says why
-`monthly_budget_usd` is refused. The UI keeps a label for a state no task can
+`monthly_budget_usd` is refused. The UI keeps a label for a state no agent can
 reach, which costs nothing but a misleading line in a list.
 
 ### Invariants
 
 1. Only `LEASED`/`DISPATCHED`/`STARTING`/`RUNNING` create demand: unchanged;
-   this park was never reached, so no task leaves or enters one.
+   this park was never reached, so no agent leaves or enters one.
 2. All-or-nothing reservation: unaffected. `BUDGET_LIMIT` is not a pool.
 10. Callers pick a profile by name: unaffected.
 
@@ -8415,7 +8415,7 @@ reach, which costs nothing but a misleading line in a list.
 `ParkReason` (`apps/common/swarm_common/states.py::ParkReason`) has no value for "this
 task is waiting for tasks it created". The nearest, `DEPENDENCY_INCOMPLETE`
 (`apps/common/swarm_common/states.py::ParkReason.DEPENDENCY_INCOMPLETE`), is the scheduler's: its sweep
-promotes a task parked on it whose `depends_on` is empty immediately, with
+promotes an agent parked on it whose `depends_on` is empty immediately, with
 reason `no_dependencies` (`apps/scheduler/scheduler/loop.py::Scheduler._promote_dependencies`). An awaiting
 parent has an empty `depends_on`.
 
@@ -8437,7 +8437,7 @@ labels, and the console's blocker copy.
 ### If it is declined
 
 The await parks on `DEPENDENCY_INCOMPLETE` with a reserved metadata marker, and
-the scheduler's empty-`depends_on` promotion learns to skip a marked task.
+the scheduler's empty-`depends_on` promotion learns to skip a marked agent.
 That works, and it is the hierarchy-from-dependencies S1 forbids in reverse:
 every reader of the park reason would show an awaiting parent as "a step it
 depends on has not finished yet", which is false, and the marker is in a
@@ -8483,7 +8483,7 @@ request 23 was accepted to end.
 
 ## 42. `specsign.py`: the signed step spec does not cover a child's parent
 
-**Status:** APPLIED 2026-10-02, accepted by the owner 2026-10-02 with request 14 (filed with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15)). `SPEC_FORMAT = 2` and `SPEC_FORMATS = (1, 2)` in `apps/common/swarm_common/specsign.py`; `canonical_step_spec` takes `spec_format`, and the worker verifies each document under the projection its own `spec_format` names. swarm-api signs a task that names no parent at FORMAT 1 (`specsign.signing_format`), so a worker built before format 2 keeps running every non-child task through a rollout that updates swarm-api first; only a child, which needs a worker with the child path anyway, is signed at format 2.
+**Status:** APPLIED 2026-10-02, accepted by the owner 2026-10-02 with request 14 (filed with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15)). `SPEC_FORMAT = 2` and `SPEC_FORMATS = (1, 2)` in `apps/common/swarm_common/specsign.py`; `canonical_step_spec` takes `spec_format`, and the worker verifies each document under the projection its own `spec_format` names. swarm-api signs an agent that names no parent at FORMAT 1 (`specsign.signing_format`), so a worker built before format 2 keeps running every non-child agent through a rollout that updates swarm-api first; only a child, which needs a worker with the child path anyway, is signed at format 2.
 
 ### What is true today
 
@@ -8503,7 +8503,7 @@ projection, which the worker already chooses by `spec_format`.
 ### What it would break if accepted
 
 The worker must accept both formats during the rollout, as it accepted
-unsigned tasks during request 34's. No task written before has the fields, so
+unsigned agents during request 34's. No agent written before has the fields, so
 none changes its digest.
 
 ### If it is declined
@@ -8556,7 +8556,7 @@ another branch has taken it.
 
 ### What is true today
 
-The worker records a subscription account's lifecycle on the task's events
+The worker records a subscription account's lifecycle on the agent's events
 with a `cause` on an event type the frozen `EventType`
 (`apps/common/swarm_common/states.py::EventType`) already has:
 
@@ -8673,7 +8673,7 @@ gains the failure class `published_nothing` ("published nothing"), the UI's
 ### What it would break if accepted
 
 Nothing that exists: a new enum value. A reader that does not know it falls
-back to its text classifier, as for any task written before `end_cause`
+back to its text classifier, as for any agent written before `end_cause`
 existed. The parity script's section 5 and
 `test_every_end_cause_has_exactly_one_class` turn red until every mirror
 follows, which is what they are for.
@@ -8904,7 +8904,7 @@ forge's checks:
   attempt, which is today's behaviour;
 * `DEPENDENCY_INCOMPLETE` is promoted when the workflow's upstream steps
   end, and a merge step's have already ended;
-* `CHILDREN_INCOMPLETE` names child tasks, and the observer tools say so
+* `CHILDREN_INCOMPLETE` names child agents, and the observer tools say so
   (`apps/swarm-mcp/swarm_mcp/progress.py`, `_PARKED_BECAUSE`).
 
 ### The requested change
@@ -8936,7 +8936,7 @@ step's attempts, one per wake.
 
 ### Invariants
 
-- **Invariants 1 and 3.** A `CI_PENDING` task is PARKED: no lease, no pool
+- **Invariants 1 and 3.** A `CI_PENDING` agent is PARKED: no lease, no pool
   count, no Job execution. Only admission takes capacity when it is woken.
 - **Invariant 4.** This is the point of the request: the step parks,
   releases and exits instead of waiting.
@@ -8980,7 +8980,7 @@ planning, the outcome ledger's classes and the UI's and plugin's rows.
 
 ### What it would break if accepted
 
-A stored task or outcome that names either end cause would no longer parse
+A stored agent or outcome that names either end cause would no longer parse
 as an `EndCause`. None should exist, since neither profile has been
 submittable; the cleanup lane reads the store to confirm before it removes
 them.
@@ -9049,11 +9049,11 @@ seeds in `tests/unit/worker/worker_seeds.py`.
   `task.latest_checkpoint` to the new checkpoint. A pointer therefore never
   names a checkpoint whose digest is not yet recorded. A checkpoint recorded
   without a digest adds no entry.
-* **Who reads it.** Only the worker of a LATER attempt of the same task:
+* **Who reads it.** Only the worker of a LATER attempt of the same agent:
   `Worker._recorded_checkpoint` reads the document of the attempt that wrote
   the checkpoint `latest_checkpoint` names (`ControlPlane.fetch_attempt`,
   which refuses another tenant's document), and restores only when that
-  document is this task's, lists the checkpoint id in `checkpoints`, and
+  document is this agent's, lists the checkpoint id in `checkpoints`, and
   records the digest the manifest carries. The restore then checks the
   archive's bytes against it (docs/checkpointing.md, "What is restored").
 * **Who drops it.** swarm-api's `codec.attempt_from_dict` builds an `Attempt`
@@ -9067,7 +9067,7 @@ A retry restores only a checkpoint whose archive digest its earlier attempt
 recorded. The manifest that also carries the digest sits in the bucket, and
 every agent of the tenant can write anywhere under `tenants/<tenant>/`
 (docs/security.md, "Which checkpoint is restored is not chosen from the
-bucket"). Before #348 a restore took whatever the bucket held under the task's
+bucket"). Before #348 a restore took whatever the bucket held under the agent's
 prefix, and `.claude/` -- settings and hooks, which run code -- travels in
 every checkpoint because HOME is `work/`. Binding the restore to a digest in
 Firestore is what refuses an archive rewritten in place, even with its
@@ -9118,7 +9118,7 @@ the empty default, and a retry of that attempt starts from an empty workspace
 once, as docs/checkpointing.md already says. A backfill must **not** compute
 digests from the bucket: the bucket's current bytes are the value the binding
 exists to distrust, and a backfill would bless whatever a planter had already
-put there. How tasks that were mid-retry at deploy are treated is the owner's
+put there. How agents that were mid-retry at deploy are treated is the owner's
 decision recorded on #348; this request takes no position on it and changes
 nothing about it.
 
@@ -9135,7 +9135,7 @@ of the field only by reading the worker.
 
 - **Invariant 1.** No state, lease or pool count changes. The field is
   written by a RUNNING attempt that already holds its lease; a QUEUED, PARKED
-  or READY task creates no demand by having it.
+  or READY agent creates no demand by having it.
 - **Invariant 2.** Untouched: nothing in admission's all-or-nothing
   transaction reads or writes the attempt document.
 - **Invariant 3.** Untouched: concurrency counts from LEASED as before.
@@ -9151,7 +9151,7 @@ of the field only by reading the worker.
   bucket-only writer. Its cost is that a retry of a pre-#348 attempt starts
   clean once.
 - **Invariant 9.** `fetch_attempt` refuses another tenant's attempt
-  document, and the checkpoint must lie in the task's own prefix. Within one
+  document, and the checkpoint must lie in the agent's own prefix. Within one
   tenant this stops a bucket-only writer, not one that also writes Firestore,
   which has no document-level IAM (docs/multi-tenancy.md); that half rests on
   signed step specs (#342).
@@ -9188,7 +9188,7 @@ The request as it was filed follows, unchanged.
 
 ### What is true today
 
-`_ALLOWED` lets a task reach SUCCEEDED only from RUNNING. Every success
+`_ALLOWED` lets an agent reach SUCCEEDED only from RUNNING. Every success
 therefore passes through a lease, a dispatch and a worker, including the one
 success that needs none of them: the gated integrator of an implement ->
 review -> fix workflow whose review said MERGE. That step runs no agent
@@ -9222,13 +9222,13 @@ In `apps/common/swarm_common/states.py`, the PARKED row of `_ALLOWED`:
 
 Nothing that exists writes the transition until this is applied. Once it is:
 
-* a SUCCEEDED task with no attempt and no lease exists. The readers that
+* a SUCCEEDED agent with no attempt and no lease exists. The readers that
   count attempts (the UI's attempt list, the outcome ledger, the MCP
   observer) show none, which is true; `result_summary.published_by:
   "control_plane"` says why;
 * `scripts/lib/check-contract-parity.sh` has no restatement of `_ALLOWED`
   to update (it holds the state names, not the edges);
-* the reconciler repairs leases and live states; a terminal task with no
+* the reconciler repairs leases and live states; a terminal agent with no
   lease is outside every repair it makes.
 
 ### If it is declined
@@ -9248,12 +9248,12 @@ writer beside the scheduler, which invariant 2 exists to prevent.
 - **Invariants 2 and 3.** No pool is reserved or released: nothing was
   reserved.
 - **Invariant 5.** No attempt exists, so there is no generation to fence.
-  swarm-api's write is guarded on its own claim on the task, taken in a
+  swarm-api's write is guarded on its own claim on the agent, taken in a
   transaction on the same PARKED state, and the scheduler does not promote a
   claimed step until the claim is older than its timeout.
 - **Invariant 9.** The pull request is opened with the step's own tenant's
   `-git` token, on the step's own repository, from the branch of the
-  step's own upstream task in the same tenant and workflow.
+  step's own upstream agent in the same tenant and workflow.
 
 ---
 
@@ -9354,7 +9354,7 @@ tfvars is edited by it, and the owner accepts or refuses it.
 
 ### Why
 
-The DISPATCHED -> STARTING wait is lease-held time: the task occupies its
+The DISPATCHED -> STARTING wait is lease-held time: the agent occupies its
 global, tenant, provider, profile, class and backend slots while doing
 nothing, and on Cloud Run that wait is two minutes at the median and three
 and a half at p90, set by a provider step we cannot influence (#363, #625,
@@ -9491,7 +9491,7 @@ touches the 138 s median in `ResourcesAvailable -> Started`.
 ### Invariants
 
 - **Invariant 1.** Unchanged: only LEASED/DISPATCHED/STARTING/RUNNING create
-  demand. A GKE pod is created only for a leased, admitted task, exactly as a
+  demand. A GKE pod is created only for a leased, admitted agent, exactly as a
   Cloud Run execution is. Pending pods are never a backlog: an unschedulable
   pod is a DISPATCHED lease bounded by the dispatch deadline, never a queue.
 - **Invariant 2.** Unchanged: admission still reserves every pool, the
@@ -9529,7 +9529,7 @@ touches the 138 s median in `ResourcesAvailable -> Started`.
 
 **Status:** ACCEPTED by the owner 2026-10-07, APPLIED 2026-10-07 by the pull
 request that adds this entry (part of #780). This is request E of
-[docs/onboarding.md §3.3](onboarding.md#33-how-the-worker-gets-the-per-task-credential)
+[docs/onboarding.md §3.3](onboarding.md#33-how-the-worker-gets-the-per-agent-credential)
 ("With request E (recommended)" and the draft after it), accepted by the
 owner 2026-10-07 for the guided-onboarding work of #780; it supersedes request
 (E) as [git-tokens.md §8](git-tokens.md) sketched it, by adding the access mode
@@ -9539,23 +9539,23 @@ fields at submission is lane OB7, and the worker reading them is lane OB5.
 ### What is true today
 
 `Task` (`apps/common/swarm_common/models.py::Task`) says nothing about which
-forge secret a task uses. The worker reads `Tenant.secret_name("git")`
+forge secret an agent uses. The worker reads `Tenant.secret_name("git")`
 (`Worker._git_token`, through `resolve_git_token`), so registration, clone and
 push all use the one tenant token `swarm-tenant-<tenant>-git`. The
 repository-scoped (`git-r-<hex>`) and per-user (`git-u-<hex>`) slots of
-docs/git-tokens.md exist, and swarm-api can resolve them, but no task can name
+docs/git-tokens.md exist, and swarm-api can resolve them, but no agent can name
 one. `canonical_step_spec` (`apps/common/swarm_common/specsign.py`) signs
 `submitted_by` and the signed metadata keys, and no credential.
 
 ### Why
 
 #780 asks for SwarmCloud to act **as the user**, across more than one GitHub
-org, on repositories the user chose to grant read or write. That needs a task
+org, on repositories the user chose to grant read or write. That needs an agent
 to carry two decisions swarm-api makes at submission (onboarding.md §3.3 step
 1): whose token the worker reads, and whether it may push with it. Both must
 come from somewhere the worker can trust. A tenant's agents can write any task
 document of their tenant (docs/multi-tenancy.md), so an unsigned field would
-let one user's agent point its task at another user's slot in the same tenant,
+let one user's agent point its agent at another user's slot in the same tenant,
 or lift a `read` grant to `write`. Inside the spec signature, a rewrite fails
 the worker's check (`SPEC_SIGNATURE_INVALID`) before anything runs.
 
@@ -9578,46 +9578,46 @@ In `apps/common/swarm_common/models.py`:
   backward compatibility). Both are **written by swarm-api only**, at
   submission, and never accepted from a caller;
 * `Task.__post_init__` refuses a value of any other shape, so a writer cannot
-  construct a malformed task. It checks only these two fields, so no document
+  construct a malformed agent. It checks only these two fields, so no document
   that decodes today is refused.
 
 In `apps/common/swarm_common/specsign.py`, **format 3**: format 2's projection
 plus `forge_credential` and `forge_access`. `SPEC_FORMAT` becomes 3 and
 `SPEC_FORMATS` `(1, 2, 3)`. `signing_format` signs at the oldest format that
-covers every field a task sets: 1 with no parent and no forge field, 2 with a
+covers every field an agent sets: 1 with no parent and no forge field, 2 with a
 parent and no forge field, 3 when either forge field is set. Formats 1 and 2
 **refuse** (`SpecNotCanonical`) a document that sets either forge field. A
 parent added to a format-1 document stays outside the signed bytes (#476); a
 forge field must not, because the worker acts on it itself.
 
-swarm-api's `codec.task_from_dict` reads both back, so a task it decodes and
+swarm-api's `codec.task_from_dict` reads both back, so an agent it decodes and
 writes again keeps its signed fields; a stored value of the wrong shape
-decodes as None rather than making the task unreadable. Neither field is
+decodes as None rather than making the agent unreadable. Neither field is
 served by the API: `test_api_contract_shapes` lists them as deliberate
 omissions until OB7 decides otherwise.
 
 ### What it would break if accepted
 
 Nothing existing. A document without the fields decodes as it does today, and
-a task that sets neither is signed at format 1 or 2 with **the same canonical
+an agent that sets neither is signed at format 1 or 2 with **the same canonical
 bytes as before**: `tests/unit/common/test_specsign.py` pins the SHA-256 of
 both formats as computed before format 3 existed, and verifies a P-256
 signature over that pinned digest against the digest the new code computes.
 A worker built before format 3 knows only formats 1 and 2, and refuses a
-format-3 task as `unknown_format`. Only a task swarm-api resolved a forge
+format-3 agent as `unknown_format`. Only an agent swarm-api resolved a forge
 field for is signed at format 3, and swarm-api writes none until OB7, so the
 rollout order is the worker (OB5) first, then the submission (OB7).
 
 One edge is said plainly: the worker's legacy window (`SPEC_LEGACY_UNTIL`)
-admits an UNSIGNED task created before signing shipped. Such a task has no
+admits an UNSIGNED agent created before signing shipped. Such an agent has no
 signature to protect a forge field, so the worker that reads the fields (OB5)
-must ignore both on an unsigned task and read `git`/`write`, as today.
+must ignore both on an unsigned agent and read `git`/`write`, as today.
 
 ### If it is declined
 
 The "without it" path of onboarding.md §3.3: the worker derives the user slot
 from the signed `submitted_by`, reads the grant for the mode, restates the
-user-hash rule beside swarm-api's under a parity test, and no task can use the
+user-hash rule beside swarm-api's under a parity test, and no agent can use the
 tenant token as a fallback for a user without a grant (decision D4).
 
 ### Invariants
@@ -9629,11 +9629,11 @@ tenant token as a fallback for a user without a grant (decision D4).
 - **Invariant 4.** No wait is added.
 - **Invariant 5.** The worker verifies the signature, fenced as today, before
   it reads anything the fields name; a stale worker still exits without
-  running the agent. A rewrite of either field, or adding one to a task
+  running the agent. A rewrite of either field, or adding one to an agent
   signed without it, fails verification.
 - **Invariants 6, 7 and 8.** Untouched.
 - **Invariant 9.** The field is a suffix, not a secret name: the worker
-  places it with `Tenant.secret_name` under the task's OWN tenant, and the
+  places it with `Tenant.secret_name` under the agent's OWN tenant, and the
   anchored shape admits no other tenant's prefix and no `-refresh` twin, so it
   can never name another tenant's secret.
 - **Invariant 10.** No caller sets either field. swarm-api writes them from
@@ -9755,7 +9755,7 @@ production.
 ### Invariants
 
 - **Invariant 1.** Unchanged: a GKE pod is created only for a leased,
-  admitted task; an unschedulable pod is a DISPATCHED lease bounded by the
+  admitted agent; an unschedulable pod is a DISPATCHED lease bounded by the
   dispatch deadline, never a backlog.
 - **Invariant 2.** Unchanged: admission reserves `runner:claude-code-gke`,
   `backend:GKE_AUTOPILOT` and the rest in the same single transaction.
@@ -9773,7 +9773,7 @@ production.
   GCS prefix, as browser's pods use today.
 - **Invariant 10.** Unchanged: a caller names `claude-code-gke`, and the
   catalogue says where it runs. `MODEL` comes from the scheduler's
-  `WORKER_MODELS`, never from the task (`test_a_tasks_own_model_never_reaches_the_pod`).
+  `WORKER_MODELS`, never from the agent (`test_a_tasks_own_model_never_reaches_the_pod`).
 
 ---
 
@@ -9788,7 +9788,7 @@ nothing else in the frozen package changes.
 
 #166's carry is on main (PR 689 and #712): a parking attempt's uploads are
 recorded (`ControlPlane._record_parked_uploads`), and the attempt that
-finishes the task lists them by reference, `{name, bytes, uri,
+finishes the agent lists them by reference, `{name, bytes, uri,
 carried_from}`, read back through `ControlPlane.parked_uploads`. The only
 runner that parks on demand is `mock` (`quota_exhausted`), and it raises its
 rate limit BEFORE it writes its artifact
@@ -9804,7 +9804,7 @@ by patching the worker's upload to put a file in the artifacts folder.
 runner can show it: a CLI agent cannot be made to meet a provider rate limit on
 demand, and the mock, which can, parks with nothing written. The mock needs to
 write its artifact first, park, and then NOT write it again, so the file the
-task ends with can only have arrived by the carry.
+agent ends with can only have arrived by the carry.
 
 ### The requested change
 
@@ -9845,9 +9845,9 @@ list is a subset by design and does not offer the park keys.
 
 ### What it would break if accepted
 
-Nothing existing. The key is new and optional; a task that does not send it
+Nothing existing. The key is new and optional; an agent that does not send it
 runs exactly as before, and `test_mock_bounded_park.py` still holds the
-one-park bound. A task that sends it to a worker built before this change is
+one-park bound. An agent that sends it to a worker built before this change is
 refused by that worker's re-check of the stored input, as any undeclared key
 is, so the rollout order is the worker image with the API.
 
@@ -9863,7 +9863,7 @@ upload, and the live proof needs a CLI agent to meet a real rate limit.
 - **Invariant 5.** Unchanged: a fenced park records nothing to carry
   (`test_a_fenced_park_records_nothing_to_carry`).
 - **Invariants 6, 7 and 8.** Untouched.
-- **Invariant 9.** Unchanged: the carry is read by id within the task's own
+- **Invariant 9.** Unchanged: the carry is read by id within the agent's own
   tenant and prefix.
 - **Invariant 10.** Preserved: a caller names `mock` and sends a declared
   boolean, data rather than an image, a command or a resource spec.
@@ -9980,7 +9980,7 @@ lists exists: swarm-api and the plugin bridge call `check_inputs`, and
 ### What it would break if accepted
 
 A caller that today sends a browser `url` or `goto` naming any of these hosts
-gets a 422 instead of a task -- a task that would have timed out against a
+gets a 422 instead of an agent -- an agent that would have timed out against a
 dropped address, or opened the metadata server's name to a refused request.
 swarm-api, the plugin bridge and `browser._check_url` all call the one rule,
 so no restatement drifts. `http://example.com./` stays accepted. A 422 for a
@@ -10094,7 +10094,7 @@ integer fields, at **every** format:
 the encoding is a new format. This changes no bytes: every value that had a
 canonical form before keeps the same one, and a float in either field had
 bytes only because JCS could not tell it from the integer. A format-4-only
-check would leave every format-1 document -- every task that names no parent
+check would leave every format-1 document -- every agent that names no parent
 and no forge credential, which is most of them -- exactly as rewritable as
 today.
 
@@ -10117,13 +10117,13 @@ rewritten document ends `SPEC_SIGNATURE_INVALID` with reason
 
 ### What it would break if accepted
 
-* **A stored task whose `timeout_seconds` or `max_attempts` is a double**
+* **A stored agent whose `timeout_seconds` or `max_attempts` is a double**
   fails its worker's check (`not_canonical`) and ends
   `SPEC_SIGNATURE_INVALID` instead of running. No writer this lane read
   stores one, but this was not measured against Firestore: before applying,
-  query the non-terminal tasks for a `doubleValue` in either field.
+  query the non-terminal agents for a `doubleValue` in either field.
 * **A submission that reached the signer with a float there** becomes a 422
-  `NonCanonicalInput` instead of a signed task. swarm-api's schemas declare
+  `NonCanonicalInput` instead of a signed agent. swarm-api's schemas declare
   both fields `int`, so pydantic turns a JSON `3600.0` into `3600` first.
 * Nothing restates the projection: swarm-api, the worker and
   `apps/swarm-api/swarm_api/verdictpublish.py` all call
@@ -10166,7 +10166,7 @@ turns it into `SPEC_SIGNATURE_INVALID` with reason `not_canonical`, and
 
 It **fails closed**: the worker crashes before any runner starts, and the
 signer writes nothing. And it is **unreachable today**: Firestore refuses a
-document nested deeper than 20 levels, so no stored task reaches the worker
+document nested deeper than 20 levels, so no stored agent reaches the worker
 that deep; at swarm-api the `input` is bounded by its profile's declaration
 and the three signed metadata keys are the API's own blocks, and
 `apps/swarm-api/swarm_api/validation.py::validate_storable` already walks a
@@ -10459,8 +10459,8 @@ last address refused; `2001:1::1`, `2001:3::1`, `2001:4:112::1` and
 
 ### What it would break if accepted
 
-A `browser` task whose `url` or `goto` names an address in either range gets
-a 422 instead of a task that would have timed out. swarm-api, the plugin
+A `browser` agent whose `url` or `goto` names an address in either range gets
+a 422 instead of an agent that would have timed out. swarm-api, the plugin
 bridge and the browser runner all call the one rule.
 
 ### If it is declined
@@ -10506,7 +10506,7 @@ the code, not the reason:
 ### Why
 
 A park reason is what a reader -- a person, the UI, a metric -- uses to say
-why a task is not running. "Waiting for CI" for a step whose CI is green is
+why an agent is not running. "Waiting for CI" for a step whose CI is green is
 the wrong answer, and the code that corrects it lives in a tenant-writable
 metadata field that nothing outside the merge path reads.
 
@@ -10546,7 +10546,7 @@ a person reads is wrong.
 - **Invariant 1.** Unchanged: the wait is a park, holding no lease and no
   pool count, whichever reason it carries.
 - **Invariant 5.** Unchanged: the slot's writes are fenced on the
-  attempt's task and lease, under either reason.
+  attempt's agent and lease, under either reason.
 - **Invariants 2-4, 6-10.** Untouched.
 
 ---
@@ -10624,7 +10624,7 @@ ephemeral-storage limit rather than by memory. Index runs share the
 
 ### Invariants
 
-- **Invariant 1.** Unchanged: a GKE pod is created only for a leased task; an
+- **Invariant 1.** Unchanged: a GKE pod is created only for a leased agent; an
   unschedulable pod is a DISPATCHED lease bounded by the dispatch deadline,
   never a backlog.
 - **Invariant 2.** Unchanged: admission reserves the `GKE_AUTOPILOT` backend
@@ -10653,7 +10653,7 @@ Requests 64, 65 and 66 are the follow-up list request 63 recorded.
 Request 63's: a new Cloud Run instance's internet path opens a median
 **20.2 s** after start (n=19), against GKE Autopilot's **1.17 s** (n=148),
 through the same Cloud NAT (`egress_ready_seconds`, #721 (a); PR 986). A
-generic task that names a repository clones it first, and `npm-ci` and
+generic agent that names a repository clones it first, and `npm-ci` and
 `uv-sync` fetch from package registries, so the wait sits inside it.
 
 ### The change
@@ -10688,7 +10688,7 @@ and the docs that named generic's backend name the new one.
 each backend with one profile, preferring one that needs no credential, so
 GKE_AUTOPILOT's row becomes `generic` (its fixture clones this public
 repository and runs `pytest`) instead of `browser`. That row now also proves
-the GKE internet path; it no longer submits a browser task or its page-load
+the GKE internet path; it no longer submits a browser agent or its page-load
 fixture check. `tests/unit/scripts/test_smoke_covers_every_backend.py`
 follows.
 
@@ -10703,13 +10703,13 @@ exist, so no Terraform apply is needed.
 What request 63 recorded for indexer: Autopilot nodes can end a pod by
 auto-repair or pressure eviction, which extended run time does not suppress,
 and periodic checkpointing makes that cost minutes. A full workspace evicts
-the pod instead of failing a write with ENOSPC. Generic tasks share the
+the pod instead of failing a write with ENOSPC. Generic agents share the
 `GKE_AUTOPILOT` backend ceiling (dev 100) with claude-code, browser and
 indexer.
 
 ### Invariants
 
-- **Invariant 1.** Unchanged: a GKE pod is created only for a leased task.
+- **Invariant 1.** Unchanged: a GKE pod is created only for a leased agent.
 - **Invariant 2.** Unchanged: admission reserves the `GKE_AUTOPILOT` backend
   pool instead of `CLOUD_RUN_JOB`, in the same single transaction.
 - **Invariants 3, 4, 5, 8.** Unchanged: the same worker ENTRYPOINT, the
@@ -10799,7 +10799,7 @@ had none since contract request 47 (owner, 2026-10-04): it runs as the
 tenant's worker account and reads the tenant's `-git` secret at merge time
 through `resolve_git_token`. On GKE the pod's KSA is bound to that same
 account, so it reads the same secret. The merge action reads no Job-rendered
-environment (`agent_worker/merge.py` takes its target from the task's
+environment (`agent_worker/merge.py` takes its target from the agent's
 `repository_url`), mounts no secret (`secrets=()`), and starts no runner.
 
 The non-frozen follow-ups are request 64's: `locals.tf` mirrors the backend
@@ -10907,8 +10907,8 @@ scripted `browser` profile.
 1-8 unchanged: the same GKE manifest, requests == limits from the `browser`
 class, on-demand only, checkpointing as claude-code's. **9**: the tenant's own
 namespace, KSA and secret, as claude-code's. **10**: a caller names
-`claude-code-browser`; the image, class and backend are the catalogue's, and a
-task that sends an image is refused as every task is.
+`claude-code-browser`; the image, class and backend are the catalogue's, and an
+agent that sends an image is refused as every agent is.
 
 ---
 
@@ -10967,7 +10967,7 @@ in this change.
 
 ### Invariants
 
-**1**: a `PARKED(HUMAN_REQUIRED)` task holds no lease and creates no demand;
+**1**: a `PARKED(HUMAN_REQUIRED)` agent holds no lease and creates no demand;
 `PARKED` is in `PENDING_STATES` and the capacity sets are unchanged. **4**:
 this is the reason the park exists. 2, 3 and 5-10 unchanged.
 
@@ -10982,7 +10982,7 @@ request that adds this entry (lane LB-L0).
 
 docs/design/live-browser.md sections 4.1 and 4.2: the hand-off has four
 moments a reader of the event timeline must be able to tell apart -- the agent
-asked, a person took control, control ended, the wait is over -- and the task
+asked, a person took control, control ended, the wait is over -- and the agent
 stays `RUNNING` throughout (Q2), so the state history cannot show them.
 
 ### The change
@@ -11031,7 +11031,7 @@ to join `CONCURRENCY_STATES` and gain transitions, and every reader that asks
 "is this attempt running?" -- the reconciler's heartbeat and stale-generation
 checks, the worker's fence checks, release, the UI's state lists, this
 repository's parity script -- would have had to learn it; one that was missed
-would reclaim a holding task or oversubscribe its pool. The field carries the
+would reclaim a holding agent or oversubscribe its pool. The field carries the
 same information and changes no reader that does not want it.
 
 ### The change
@@ -11068,7 +11068,7 @@ Nothing: an optional field with a None default.
 
 ### Invariants
 
-**1, 3**: a holding task is `RUNNING`, holds its lease and is counted from
+**1, 3**: a holding agent is `RUNNING`, holds its lease and is counted from
 `LEASED` like any other attempt; no state was added, so no capacity set
 changed. 2 and 4-10 unchanged (4 is kept by the bounded hold and request 68).
 
@@ -11081,7 +11081,7 @@ request that adds this entry (lane LB-L0).
 
 ### Why
 
-docs/design/live-browser.md sections 3 and 8.1. Whether a task's pod runs the
+docs/design/live-browser.md sections 3 and 8.1. Whether an agent's pod runs the
 display sidecar, and whether swarm-api will open a live session for it, has to
 be a property of the catalogue: a caller names a profile and nothing else
 (invariant 10), and lane L5's dispatcher and lane L9's API both need one place
@@ -11188,14 +11188,14 @@ and changes no frozen type.
 ### What is true today
 
 On 2026-10-11 between 20:58 and 21:05 PDT every claude-code-browser pod's
-`livegate` sidecar crash-looped for about three minutes while the task read
+`livegate` sidecar crash-looped for about three minutes while the agent read
 only "dispatched". The reconciler now reads the pod of a DISPATCHED or
-STARTING task and records the worst container -- `{container, reason,
+STARTING agent and records the worst container -- `{container, reason,
 restarts, message (<= 300 chars), pod_started, attempt_id, seen_at}` -- as
 `metadata.start_problem` (`reconciler.startproblem`,
 `ControlStore.record_start_problem`). swarm-api reserves the key
 (`validation.START_PROBLEM_METADATA_KEY`), masks every string in it in both
-copies it serves, and lifts it to a top-level `start_problem` on the task
+copies it serves, and lifts it to a top-level `start_problem` on the agent
 read (`codec.start_problem_to_api`), as `dispatch` is lifted from
 `metadata.dispatch`.
 
@@ -11234,7 +11234,7 @@ The record stays in `metadata.start_problem`, which is what ships.
 ### Invariants
 
 **1-3** unchanged: it is a record, not a state; nothing that writes it moves
-a state, a lease or a pool. **9**: it is on the tenant's own task and served
+a state, a lease or a pool. **9**: it is on the tenant's own agent and served
 only through the tenant-scoped task routes, masked. 4-8 and 10 unchanged.
 
 ---
@@ -11252,10 +11252,10 @@ STARTUP-API).
 A `claude-code-browser` attempt spends a minute or more between `dispatched`
 and a first picture in the Browser tab: the pod is scheduled, the image is
 pulled, the `display` sidecar launches Chromium and waits for CDP, the worker
-container starts, and only then does the live stream paint. The task's state
-history shows none of it -- the task reads DISPATCHED, then STARTING, then
+container starts, and only then does the live stream paint. The agent's state
+history shows none of it -- the agent reads DISPATCHED, then STARTING, then
 RUNNING -- so the console had nothing to draw a progress bar from. The steps
-are moments in one attempt, not states (the task does not change state for
+are moments in one attempt, not states (the agent does not change state for
 any of them), so they are events, as the hand-off moments of entry 69 are.
 
 ### The change
@@ -11272,7 +11272,7 @@ steps in order `pod_scheduled`, `image_pulling`, `image_pulled`,
 `reconciler.startsteps`), then `browser_launching`, `browser_ready`,
 `first_frame` (written by the worker from the live gate's `status`,
 `agent_worker.handoff.HandoffPath.note_startup`). Each step at most once per
-attempt; a step from a generation that is no longer the task's is not
+attempt; a step from a generation that is no longer the agent's is not
 written. One type with the step in `detail`, not seven types: the existing
 `lease_acquired`, `dispatched`, `starting` and `running` events stay as they
 are and are the bar's first stages. swarm-api serves the steps of the current
@@ -11298,7 +11298,7 @@ in step (`scripts/lib/check-contract-parity.sh` restates none; the console's
 
 **1-3** untouched: an event is a record; writing it creates no demand, holds
 nothing and moves no state, lease or pool. **5**: the reconciler writes a pod
-step only inside a transaction that finds the task still on the lease and
+step only inside a transaction that finds the agent still on the lease and
 generation the pod was read for, and the worker writes only while it is not
 fenced; the route serves only the current attempt's generation. 4, 6-10
 unchanged.
@@ -11317,7 +11317,7 @@ step of the lane's workflow (docs/merge-step.md "Revised 2026-10-14"). Two
 facts about that have no home in the frozen `Workflow`:
 
 1. **The budget.** `Workflow` carries no metadata, so the spec's `fix_rounds`
-   is stored only on the merge TASK (`metadata.merge_fix_rounds`, which the
+   is stored only on the merge AGENT (`metadata.merge_fix_rounds`, which the
    wake tick and the worker read). A reader of the workflow alone cannot say
    how many rounds it was given.
 2. **Which steps the platform appended.** A round's step is an ordinary
@@ -11362,7 +11362,7 @@ for the rollup to read it; until they do, the step-id rule stays.
 
 ### Invariants
 
-**1-3** untouched: a field records a decision; a round is an ordinary task
+**1-3** untouched: a field records a decision; a round is an ordinary agent
 admitted like any other. 4-10 unchanged.
 
 ## 76. `models.py`/`states.py`: `Workflow.after` and `ParkReason.PULL_REQUEST_PENDING` (SPEED-D3)
@@ -11380,10 +11380,10 @@ and one closed without merging fails the workflow (docs/workflows.md
 the frozen contract:
 
 1. **What the workflow waits for.** `Workflow` carries no metadata, so the
-   numbers live on each ROOT step's task as `metadata.after_prs`
+   numbers live on each ROOT step's agent as `metadata.after_prs`
    (`swarm_api.prgate`), with the gate's state (`waiting`, `merged`,
    `closed`). A reader of the workflow alone cannot say what it waits for;
-   the API reads it back off the step tasks (`codec.workflow_to_api`'s
+   the API reads it back off the step agents (`codec.workflow_to_api`'s
    `after_pull_requests`).
 2. **Why a root step is parked.** No `ParkReason` says "waiting for a pull
    request", so a gated root is parked on `DEPENDENCY_INCOMPLETE` with no
@@ -11416,7 +11416,7 @@ class Workflow:
     after: list[int] = field(default_factory=list)
 ```
 
-The gate's state would stay on the root tasks (it is written per task, in a
+The gate's state would stay on the root agents (it is written per agent, in a
 guarded transaction, by the tick); only the park reason and the declaration
 move.
 
@@ -11454,7 +11454,7 @@ The live-browser agent can drive its browser with three tools: the
 Playwright MCP server (`browser_*` tools), the dev-browser CLI (DEVB-INSTALL)
 and the jev-browser MCP server (JEV-IMAGE, JEV-RUNNER). Each is better at
 something different, and jev sends page text to TypeSafe, which a person may
-not want for a given task. The owner's decision: the Submit form offers
+not want for a given agent. The owner's decision: the Submit form offers
 "Browser tool: Auto / Playwright / dev-browser / Jev", Auto by default. What
 a caller may send a runner is the catalogue's declaration (contract request
 25), so the choice has to be declared here or the API refuses it as an
@@ -11491,9 +11491,9 @@ the wrappers') to these choices.
 
 ### Rollback
 
-Put `inputs=_CLI_AGENT_INPUTS` back. A task stored with `browser_tool`
+Put `inputs=_CLI_AGENT_INPUTS` back. An agent stored with `browser_tool`
 keeps it in its input; the runner reads only the names it knows and falls
-back to `auto` for anything else, so an old task still runs.
+back to `auto` for anything else, so an old agent still runs.
 
 ### What it would break
 
@@ -11594,7 +11594,7 @@ owner took that decision the same evening: **"Drop to 1"**. A browser agent
 now weighs what a `standard` one does, which is consistent with what it now
 is: the same 4 vCPU / 8 GiB.
 
-**Why it doubles browser concurrency per pool.** Admission reserves a task's
+**Why it doubles browser concurrency per pool.** Admission reserves an agent's
 `units` in every pool it requires, in one transaction (invariants 2 and 3),
 and a pool admits while `active + units <= limit`. Every pool a browser agent
 requires (`global`, `tenant:<t>`, `resource:browser`, `runner:<profile>`,
@@ -11708,8 +11708,8 @@ must agree on one declaration of a profile's slots:
    a kind the slot refuses (422, SEC-STORE-API), and decides at release time
    which slot each released secret lands in (§3.3 step 4).
 3. **The worker** refuses any released item whose slot its own catalogue does
-   not have (§3.4, the defence in depth kept under option B), and parks a
-   task whose `required` slot has no enabled grant as `CREDENTIAL_MISSING`
+   not have (§3.4, the defence in depth kept under option B), and parks an
+   agent whose `required` slot has no enabled grant as `CREDENTIAL_MISSING`
    before it leases (§4.2).
 
 Today a profile declares only `secrets`, the env-var names of its runner's
@@ -12126,7 +12126,7 @@ which is the drift this request exists to prevent.
 workspace member who writes a grant chooses *which named consumer*, never
 what runs. **9** preserved: a consumer carries no tenant. The tenant of a
 grant is its own field, and the release bounds its query by
-`tenant_id == task.tenant_id`, taken from the task and not from the
+`tenant_id == task.tenant_id`, taken from the agent and not from the
 request (§3.3 step 3). Nothing here can name another workspace. **5**: the
 release that reads grants by consumer is fenced on the attempt's
 generation (SEC-RELEASE), so a stale worker is released nothing whatever
@@ -12143,7 +12143,7 @@ acceptance covers the reuse explicitly.
 
 ### Why
 
-A `required` slot (request 80) with no enabled grant must stop the task
+A `required` slot (request 80) with no enabled grant must stop the agent
 before it leases, at no cost, and start it by itself once someone ticks the
 grant (design §4.2). That is exactly what `ParkReason.CREDENTIAL_MISSING`
 already means for a missing runner provider key. A tenant whose
@@ -12192,7 +12192,7 @@ the PR body raises it.
 
 ### Invariants
 
-**1** is why it exists. The park happens before the lease, so a task
+**1** is why it exists. The park happens before the lease, so an agent
 missing a required secret holds no capacity and no pod. **2-3** unchanged:
 it is never admitted, so nothing is reserved or counted. **4** unchanged:
 it is not a long provider wait inside a worker. 5-10 untouched.
@@ -12245,7 +12245,7 @@ _CLAUDE_CODE_REVIEW = RunnerProfile(
 **(b) Leave it on Cloud Run, and let request 50 retire it.** Then it simply
 never judges with TypeSafe: it never runs. If it is ever re-enabled, it must
 move to GKE first. Until it does, the scheduler's guard refuses a
-TypeSafe-judging attempt of it at dispatch: each refusal returns the task to
+TypeSafe-judging attempt of it at dispatch: each refusal returns the agent to
 READY, and at the retry cap it ends FAILED with `typesafe_judge_needs_gke`.
 
 The lane recommends (b). The profile is retired in all but name, request 50
@@ -12286,7 +12286,7 @@ Design B moves every worker state write behind worker-only swarm-api routes,
 `/v1/attempts/{attempt_id}/state/...`, and each route permits only the
 transitions a worker makes today (design §4.4). The agent can mint its
 worker's ID token, so without that subset the routes would let an agent move
-its own task anywhere `_ALLOWED` permits: back to READY for another attempt,
+its own agent anywhere `_ALLOWED` permits: back to READY for another attempt,
 or into DEAD_LETTERED. The route, the worker's client and the scheduler and
 reconciler tests all need the subset, and until now it was implied only by
 `control.py`'s call sites. One spelling, in the contract, or each restatement
@@ -12329,8 +12329,8 @@ Each edge, and the worker code that writes it (read 2026-10-17 at `766b9af`):
 * **PARKED→READY is not in the set.** The sketch named it for the
   hand-off's "person returned control". The worker's code makes that edge as
   RUNNING→READY (`handoff.py`, `assert_transition(current, TaskState.READY)`
-  with `current` the RUNNING task). PARKED→READY is swarm-api's `human-ready`,
-  a person's route, so a worker that asked for it would be re-queueing a task
+  with `current` the RUNNING agent). PARKED→READY is swarm-api's `human-ready`,
+  a person's route, so a worker that asked for it would be re-queueing an agent
   that holds no capacity. That is the scheduler's decision or a person's
   (invariant 1).
 * **STARTING→READY is not in the set.** No worker path writes it. A worker
@@ -12364,7 +12364,7 @@ unchanged.
 ### Invariants
 
 **5**: the routes run the fence on every edge in the set, in the transaction
-that writes. **1**: no edge moves a task that holds no capacity, and every edge
+that writes. **1**: no edge moves an agent that holds no capacity, and every edge
 into PARKED or READY is paired with a release in the same transaction (design
 §4.2). **3**: no edge enters LEASED, which only admission writes. 2, 4 and 6-10
 are untouched.
@@ -12533,13 +12533,13 @@ a non-string, a bare string and a 32-character name refused for a bound.
 ### Rollback
 
 Put `inputs=_CLI_AGENT_INPUTS` back on `claude-code` and `codex`, and drop the
-spread from `_CLAUDE_CODE_BROWSER_INPUTS`. A task stored with the key fails
+spread from `_CLAUDE_CODE_BROWSER_INPUTS`. An agent stored with the key fails
 `check_inputs` on any re-validation, so roll back only with the registry
 disabled.
 
 ### What it would break
 
-Nothing that exists: a task without the key is unchanged. Eleven unit tests
+Nothing that exists: an agent without the key is unchanged. Eleven unit tests
 in six files outside this lane's territory restated the old declarations.
 The lane left them for the operator's `mcp-contract-operator.patch`; the
 pull request's first CI run was red on exactly these eleven, and its CI fix
@@ -12688,15 +12688,15 @@ change, so nothing is applied; recorded so no lane adds one. Filed by lane
 CALLER-MCP-DESIGN (design §5 request M4), part of #1433.
 
 * **Spec signing:** `input` is already in `canonical_step_spec`, so
-  `mcp_servers` is signed by format 3. The credential is not in the task and
+  `mcp_servers` is signed by format 3. The credential is not in the agent and
   must not be signed into it. `SPEC_FORMAT` stays 3. Held by
-  `tests/unit/common/test_mcp_contract.py`: the canonical spec of a task with
-  `mcp_servers` differs from the same task's without, and carries the list.
+  `tests/unit/common/test_mcp_contract.py`: the canonical spec of an agent with
+  `mcp_servers` differs from the same agent's without, and carries the list.
 * **Park reason:** a disabled registration parks `CREDENTIAL_MISSING`, with
   code `mcp_server_unavailable`, exactly as request 83 reused it for a missing
   secret grant.
-* **Event types:** the relay logs `mcp_call` as a structured log line, not a
-  task event; the attach's audit is its own collection. `EventType` is
+* **Event types:** the relay logs `mcp_call` as a structured log line, not an
+  agent event; the attach's audit is its own collection. `EventType` is
   unchanged.
 
 **Not requested:** `Tenant.secret_name` already spells `mcpc-<hex>`; `Task`
@@ -12748,7 +12748,7 @@ member"), `apps/swarm-mcp/swarm_mcp/progress.py::_PARKED_BECAUSE` and
 every non-test file under `apps/` and `scripts/` that names `HUMAN_REQUIRED`
 must name `AWAITING_INPUT` or be on the test's list with its reason; and the
 human-wait sweep, `human-ready` and the `handoffs` bell source each leave an
-`AWAITING_INPUT` task untouched (a 25-hour-old park is not dead-lettered,
+`AWAITING_INPUT` agent untouched (a 25-hour-old park is not dead-lettered,
 `human-ready` is 409 `not_waiting_for_a_person`, the bell derives nothing).
 
 **Tests:** `tests/unit/common/test_await_input_contract.py` (the member, and
@@ -12757,7 +12757,7 @@ that it holds no capacity) and the readers test above.
 ### Rollback
 
 Delete the member, its restatements and the readers test, but only when no
-task is parked under it, because such a document would decode to an unknown
+agent is parked under it, because such a document would decode to an unknown
 reason.
 
 ### What it would break
@@ -12769,7 +12769,7 @@ until it does, which is the intent.
 
 ### Invariants
 
-**1**: a `PARKED(AWAITING_INPUT)` task holds no lease and creates no demand,
+**1**: a `PARKED(AWAITING_INPUT)` agent holds no lease and creates no demand,
 because `PARKED` is in `PENDING_STATES` and not in `CONCURRENCY_STATES`.
 **4**: no worker waits. 2, 3 and 5-10 are unchanged.
 
@@ -12796,7 +12796,7 @@ in a container, under a lease.
 ```
 
 True says the opposite of `worker_action`: **nothing ever runs this profile,
-anywhere**; the control plane ends its tasks itself. In `__post_init__` the
+anywhere**; the control plane ends its agents itself. In `__post_init__` the
 empty-`runner_argv` refusal admits `control_plane`, and a `control_plane`
 profile is refused if it sets `runner_argv`, `worker_action`, `provider`,
 `secrets`, `secret_slots`, `inputs` or `live_browser`. The scheduler's
@@ -12878,7 +12878,7 @@ no tenant gets a Job for it.
 
 ### Rollback
 
-Delete the entry and its Terraform mirror. No task can name it while it is
+Delete the entry and its Terraform mirror. No agent can name it while it is
 unavailable.
 
 ### What it would break
@@ -12913,7 +12913,7 @@ entry's `forge_credential_source` values are named here too
 ### Why
 
 A step that reasons over a product spread across repositories needs to
-check them out at commits fixed at submission. The task is the only document
+check them out at commits fixed at submission. The agent is the only document
 the worker reads its spec from, and the signed spec is what makes a
 rewritten list fail (invariant 5). An `input` key would be signed but
 untyped, and every reader would re-validate a caller-shaped dict. A
@@ -12963,7 +12963,7 @@ unsigned with its reason.
 Remove the field and the names. A document that carries the field then fails
 to decode wherever `Task(**doc)` is used, so first stop swarm-api writing it
 (`settings.additional_repositories_enabled`, default off) and let those
-tasks end.
+agents end.
 
 ### What it would break
 
@@ -12975,7 +12975,7 @@ sees one more key.
 ### Invariants
 
 **5**: the field is inside the signature (request 96). **9**: `repo_id` is a
-tenant-scoped hash, and the slot is the task's own tenant's. **10**: the
+tenant-scoped hash, and the slot is the agent's own tenant's. **10**: the
 field holds names and commits, never an image, command, resource or backend
 parameter, and swarm-api writes it, never a caller. 1-4 and 6-8 untouched.
 
@@ -13007,10 +13007,10 @@ _FORMAT_4_FIELDS = ("additional_repositories",)
 * `canonical_step_spec`: at formats 1-3, a set list (non-None, non-empty)
   raises `SpecNotCanonical`, as a format-3 field does below 3. At 4 the list
   is projected as stored, in submission order, and the order is in the bytes.
-* `signing_format`: 4 only when the list is set. A task without it keeps
+* `signing_format`: 4 only when the list is set. An agent without it keeps
   signing at 1, 2 or 3, with byte-identical canonical forms (pinned in
   `test_specsign.py::PRE_FORMAT_4_DIGESTS`), so a worker built before format
-  4 verifies every task that does not use the feature. **Rollout order:
+  4 verifies every agent that does not use the feature. **Rollout order:
   workers first, then swarm-api** (and the flag stays off until then), as for
   formats 2 and 3.
 
@@ -13030,12 +13030,12 @@ change `signing_format`, which is what request 91 meant.
 Return `SPEC_FORMAT` to 3 and `SPEC_FORMATS` to `(1, 2, 3)`. A document
 already signed at 4 then fails verification (`SPEC_SIGNATURE_INVALID`) on
 every worker, so first stop the writer (request 95's flag) and let those
-tasks end.
+agents end.
 
 ### What it would break
 
 Nothing signed today: formats 1-3 project the bytes they did. A worker built
-before format 4 refuses a format-4 task as `unknown_format`, which is why
+before format 4 refuses a format-4 agent as `unknown_format`, which is why
 workers roll out first.
 
 ### Invariants
@@ -13051,7 +13051,7 @@ change, so nothing is applied. Recorded so no lane makes one. Part of #1434.
 
 * **`WorkflowStep` / `Workflow` gain no field.** The primary repository is
   not on them either. swarm-api's submission schemas carry the workflow's
-  default list and a step's replacement list (`[]` = none) to each task, so
+  default list and a step's replacement list (`[]` = none) to each agent, so
   the step has one source of truth.
 * **No new resource class and no profile flag.** Only GKE agent profiles take
   additional repositories (the owner's Q4). swarm-api derives that from
@@ -13065,22 +13065,22 @@ change, so nothing is applied. Recorded so no lane makes one. Part of #1434.
 
 **Status:** ACCEPTED by the owner 2026-10-18 (~01:40 UTC, answering lane
 MCP-SCHED's question on PR 1504) and APPLIED by the pull request that adds
-this line. **No reader can write it yet**: the scheduler never holds a task in
+this line. **No reader can write it yet**: the scheduler never holds an agent in
 QUEUED (see "Who reads it"), so the behaviour the owner asked for needed
 request 99 as well. The owner accepted 99 on 2026-10-18 and kept this edge
-beside it; 99 is what ends such a task FAILED now, and nothing writes
+beside it; 99 is what ends such an agent FAILED now, and nothing writes
 QUEUED -> FAILED.
 
 ### Why
 
 [registered-mcp-servers.md](design/registered-mcp-servers.md) §4.10
-("Expiry in the queue"): a task whose per-run MCP credential expired, was
+("Expiry in the queue"): an agent whose per-run MCP credential expired, was
 destroyed or is missing before it is admitted fails `mcp_credential_expired`
 at admission, with no lease. It cannot park, because nobody can hand a queued
-task a new value; it cannot be dead-lettered either, because it did not fail
+agent a new value; it cannot be dead-lettered either, because it did not fail
 its way there through attempts (the owner: "not a dead-letter, not a permanent
 park"). `_ALLOWED` had no edge from a waiting state to FAILED, so MCP-SCHED
-shipped the stopgap: such a task parks CREDENTIAL_MISSING and the credential
+shipped the stopgap: such an agent parks CREDENTIAL_MISSING and the credential
 sweep never promotes it. That holds no capacity (invariant 1), but it never
 ends: a workflow step blocks its workflow and a parent waits on its child.
 
@@ -13099,15 +13099,15 @@ One edge, nothing else.
 The one reader meant to use it is scheduler admission,
 `apps/scheduler/scheduler/loop.py` `Scheduler._admit_one`, on a
 `CredentialAnswer.terminal` answer (`scheduler/credentials.py`, from
-`McpAnswer.terminal` in `scheduler/mcp_admission.py`). **But the task
+`McpAnswer.terminal` in `scheduler/mcp_admission.py`). **But the agent
 admission reads is READY, not QUEUED**: `SchedulerStore.ready_tasks` selects
-`state == "READY"`, and swarm-api stores a new task as READY or PARKED, only
+`state == "READY"`, and swarm-api stores a new agent as READY or PARKED, only
 walking SUBMITTED -> QUEUED in memory (`swarm_api/service.py`, "walk the real
 state machine even though only the end state is stored"). The credential
 sweep, `Scheduler._promote_credentials`, reads PARKED. Neither READY -> QUEUED
 nor PARKED -> QUEUED is an edge, so "promote to QUEUED, then fail" is not a
 path either. So the reader that would write QUEUED -> FAILED has no QUEUED
-task to write it on; request 99 asks for the edges it does have.
+agent to write it on; request 99 asks for the edges it does have.
 
 Every other reader of `_ALLOWED` / `can_transition`, read 2026-10-18 at
 `5ad3656`, is unchanged by the edge:
@@ -13117,7 +13117,7 @@ Every other reader of `_ALLOWED` / `can_transition`, read 2026-10-18 at
 * `swarm_api/verdictpublish.py`, `scheduler/loop.py` (`PARKED -> SUCCEEDED`),
   `reconciler/store.py` (`PARKED -> READY`), `reconciler/checkpoints.py`
   (`state -> READY`): other edges.
-* `reconciler/store.py` `repair_task_state`: repairs tasks with attempts,
+* `reconciler/store.py` `repair_task_state`: repairs agents with attempts,
   never a QUEUED one.
 * `states.worker_may_transition`: QUEUED is not in `WORKER_TRANSITIONS`, so a
   worker still cannot ask for it (request 85).
@@ -13130,7 +13130,7 @@ FAILED -> READY stays an edge, and `mcp_credential_expired` must never take
 it. Today nothing writes FAILED -> READY at all: the scheduler has no retry
 policy module, the worker's retry is RUNNING -> READY (`fail_retryably`) and
 the reconciler's is a requeue of a live attempt (`repair_task_state`, capped by
-`retries_exhausted`). A task failed at admission has no attempt, so neither
+`retries_exhausted`). An agent failed at admission has no attempt, so neither
 path can reach it. If a FAILED -> READY writer is ever added, it must treat
 `mcp_credential_expired` and `mcp_credential_missing` as permanent.
 
@@ -13181,7 +13181,7 @@ destroyed, i.e. revoked; `mcp_credential_missing` for no row), `completed_at`,
 pool and leaves `attempt_count` alone.
 
 **Never retried.** FAILED -> READY stays in the table and nothing writes it
-on such a task: `SchedulerStore.promote_to_ready`, the scheduler's only READY
+on such an agent: `SchedulerStore.promote_to_ready`, the scheduler's only READY
 writer, now refuses any source but PARKED (its guard would otherwise match a
 FAILED snapshot, whose park reason is None like READY's), and
 `tests/unit/scheduler/test_mcp_admission.py` scans `apps/` for any writer
@@ -13192,8 +13192,8 @@ further `models.py` request, not filed.
 
 ### Why
 
-Request 98 was accepted so that admission ends a task with an expired per-run
-MCP credential FAILED, with no lease. Admission holds that task in READY, and
+Request 98 was accepted so that admission ends an agent with an expired per-run
+MCP credential FAILED, with no lease. Admission holds that agent in READY, and
 the credential sweep in PARKED (request 98, "Who reads it"), so the edges that
 do what the owner asked are:
 
@@ -13204,8 +13204,8 @@ do what the owner asked are:
   MCP-SCHED's stopgap left behind is one).
 
 The alternative, READY -> QUEUED and PARKED -> QUEUED followed by request 98's
-edge, adds two edges that move a task backwards through admission for no
-purpose but to reach a third, and lets any writer re-queue a waiting task.
+edge, adds two edges that move an agent backwards through admission for no
+purpose but to reach a third, and lets any writer re-queue a waiting agent.
 
 ### The change
 
@@ -13241,21 +13241,21 @@ back.
 `test_parked_to_succeeded.py` pins the PARKED row and
 `test_queued_to_failed.py` the whole table; both change with it.
 `swarm_api/store.py` `_final_workflow_states` is unchanged (edges out of
-terminal states). A PARKED or READY task reaching FAILED is a new shape for
+terminal states). A PARKED or READY agent reaching FAILED is a new shape for
 the console's waiting lists, which already read state, not history.
 
 **Tests:** `tests/unit/common/test_queued_to_failed.py` pins all 144 pairs
 of the table with 98 and 99 both present, and that QUEUED, READY and PARKED
 are the only sources of FAILED outside the concurrency states;
 `test_parked_to_succeeded.py` pins the PARKED row;
-`tests/unit/scheduler/test_mcp_admission.py` ends a task FAILED from READY
+`tests/unit/scheduler/test_mcp_admission.py` ends an agent FAILED from READY
 and from PARKED for an expired, destroyed and missing row, with no lease, no
 pool moved, no attempt and no retry over two further drains.
 
 ### Rollback
 
 Remove `TaskState.FAILED` from the READY and PARKED rows and the two calls to
-`_fail_unrunnable`; such a task then parks CREDENTIAL_MISSING for good again,
+`_fail_unrunnable`; such an agent then parks CREDENTIAL_MISSING for good again,
 which the owner rejected on 2026-10-18.
 
 ### Invariants
@@ -13435,7 +13435,7 @@ gives: a field inserted mid-class moves every positional argument after it.
 
 ### Why
 
-The class a step asked for is a fact about the task. It must survive retries,
+The class a step asked for is a fact about the agent. It must survive retries,
 be signed, and be read by the scheduler at dispatch and by the worker at
 start. `Task.model` cannot carry it: that is an ID, a record of a pin at
 submission.
@@ -13454,7 +13454,7 @@ swarm-api writes `Task.model_class` at submission only when it differs from
 the profile's default (MODEL-API); it is signed at spec format 5 (request
 104) and resolved by `profiles.step_model_class`.
 
-**Tests:** `tests/unit/common/test_model_classes.py`: a task names no class by
+**Tests:** `tests/unit/common/test_model_classes.py`: an agent names no class by
 default and its stored document carries `model_class: None`; a task's class
 reaches `to_firestore()`; a workflow step keeps the class it names. The codec
 round trip the design names (`swarm_api.codec.task_from_dict` reading
@@ -13464,7 +13464,7 @@ its territory, not this lane's.
 ### Rollback
 
 Delete both fields. A stored value is then ignored and every step runs its
-profile's default. Request 104's format 5 must go first, or a format-5 task
+profile's default. Request 104's format 5 must go first, or a format-5 agent
 would fail verification on a worker whose `Task` lacked the field.
 
 ### What it would break
@@ -13566,21 +13566,21 @@ and includes the field in the projection at format 5.
 **Tests:** `tests/unit/common/test_specsign.py`: a format-5 document has the
 pinned bytes and verifies; rewriting its `model_class` (or removing it)
 changes the digest; a document at formats 1 to 4 with `model_class` added is
-`SpecNotCanonical`; a task with no class (absent or None) signs at the format
+`SpecNotCanonical`; an agent with no class (absent or None) signs at the format
 it signed at before, with the SHA-256 of formats 1 to 4 pinned as computed
 before this change (at a989111).
 
 ### Rollback
 
 Stop writing format 5 (swarm-api stores no non-default class), then remove
-the format once no stored task carries it. A worker that loses format 5 while
-such a task is queued refuses it as `unknown_format`, failing closed.
+the format once no stored agent carries it. A worker that loses format 5 while
+such an agent is queued refuses it as `unknown_format`, failing closed.
 
 ### What it would break
 
-Nothing for a task without a class: its format and bytes are unchanged, and
+Nothing for an agent without a class: its format and bytes are unchanged, and
 nothing sets `model_class` until MODEL-API. A worker built before format 5
-refuses a format-5 task; the design's §4.3 order (worker first, then the API)
+refuses a format-5 agent; the design's §4.3 order (worker first, then the API)
 is what retires those workers before anything writes one. Tests that pinned
 `SPEC_FORMAT == 4` or listed one document per format change with it.
 
@@ -13660,8 +13660,8 @@ waits (`GET /v1/inputs?status=waiting` lists them) if none should be answered.
 Nothing that exists. From then on a member of a tenant can submit a workflow
 with an `await-input` step. Pickers that list available profiles list it as
 usable: `swarm_profiles` (`swarm_mcp.profiles.dispatchable`), as it lists
-`merge`, a workflow step too; and the console's task form, which draws it as an
-ordinary runner until HW-UI lands. Choosing it for a single task is refused
+`merge`, a workflow step too; and the console's agent form, which draws it as an
+ordinary runner until HW-UI lands. Choosing it for a single agent is refused
 422 at the door, naming the workflow route.
 
 ### Invariants
@@ -13681,7 +13681,7 @@ filed here at the next free number by lane QI-CONTRACT, part of #1649.
 ### What is true today
 
 `_CLAUDE_CODE_BROWSER_INPUTS` is `_CLI_AGENT_INPUTS`, `_MCP_SERVER_INPUTS`
-and `browser_tool` (requests 77 and 88). A task that names any other key is
+and `browser_tool` (requests 77 and 88). An agent that names any other key is
 refused `invalid_input` by `check_inputs`. No profile lets a caller say the
 browser should be signed in to anything: an agent that has to reach the
 console behind IAP waits for a person to type a sign-in (#1649, gap 3).
@@ -13723,7 +13723,7 @@ restates no `qa_identity` and compares the Submit form's offers as a subset
 of what a profile declares, so it does not change. `terraform/infra/locals.tf`
 mirrors no profile's inputs.
 
-**Until lane QI-API lands, the name is accepted and does nothing.** A task
+**Until lane QI-API lands, the name is accepted and does nothing.** An agent
 that sends `qa_identity: "console"` passes `check_inputs`, and no worker
 reads the key, so its browser is signed in to nothing, exactly as without it.
 The per-tenant grant (403 `qa_identity_not_granted`) and the unconfigured
@@ -13738,7 +13738,7 @@ non-string as a bound broken on the declared key; and
 
 ### Rollback
 
-Delete the entry. A queued task that names it is then refused by the worker
+Delete the entry. A queued agent that names it is then refused by the worker
 as an undeclared input, failing closed. Revoke every grant first so nothing
 new is submitted.
 
@@ -13782,7 +13782,7 @@ limit (`memory_limit_bytes`, cgroup `memory.max` else the sized class's), on
 each HEARTBEAT event (`agent_worker.lifecycle` `Worker._usage_reading`), and
 `GET /v1/tasks/{id}/utilisation` (`swarm_api.utilisation`) reads the newest
 beat's. That is the interim path request 15 replaced for the CPU figures:
-not queryable across attempts, and a read of the task's HEARTBEAT events per
+not queryable across attempts, and a read of the agent's HEARTBEAT events per
 request.
 
 ### The requested change
@@ -13819,7 +13819,7 @@ they are a series, not an attempt figure.
 Nothing breaks. The figures stay on the HEARTBEAT, and the utilisation route
 keeps reading the newest beat's. What is lost is a query across attempts
 ("which attempts of this profile were throttled last week") without reading
-each task's events.
+each agent's events.
 
 ### Invariants
 

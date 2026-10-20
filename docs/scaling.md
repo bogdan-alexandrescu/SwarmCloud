@@ -16,7 +16,7 @@ limits; the control plane follows.
 ```
 
 No redeploy, no Terraform apply, effective on the next scheduler pass. Lowering
-kills nothing: running tasks keep their leases and the pool simply admits nothing
+kills nothing: running agents keep their leases and the pool simply admits nothing
 until `active` falls below the new ceiling.
 
 The Terraform `pool_limits` in `terraform/environments/<env>/<env>.tfvars` is the
@@ -34,14 +34,14 @@ In rough order of what you will hit:
 |---|---|---|---|
 | `provider:<p>:tenant:<t>` | 5–10 | one tenant's work queues while others run | raise per-tenant provider cap, or add a key |
 | `provider:<p>` | 10–60 | all tenants' work on that provider queues | raise the hard max; AIMD may still cap below it |
-| `tenant:<id>` | 20 | one tenant's tasks queue, platform is idle | raise the tenant's `max_active` |
+| `tenant:<id>` | 20 | one tenant's agents queue, platform is idle | raise the tenant's `max_active` |
 | `global` | 20 (dev) / 100 (prod) | everything queues evenly | raise the global pool |
-| Cloud Run Jobs quota | project quota | dispatch errors, tasks return to READY | request a quota increase |
+| Cloud Run Jobs quota | project quota | dispatch errors, agents return to READY | request a quota increase |
 | Firestore write contention | ~1 write/s per document | admission transactions retry and slow | see §5 |
 | Scheduler drain budget | 45 s / 200 leases / 25 passes | admission latency rises under a large backlog | see §4 |
 
 `status.sh` tells you which one, because it prints `active/effective_limit` for
-every pool. `blocked_by` on a queued task names the exact pool and reason —
+every pool. `blocked_by` on a queued agent names the exact pool and reason —
 `TENANT_LIMIT` and `GLOBAL_CONCURRENCY_LIMIT` are different problems with
 different fixes.
 
@@ -79,7 +79,7 @@ MAX_PASSES_PER_RUN    25
 CANDIDATE_BATCH_SIZE  200
 ```
 
-So one instance admits up to 200 tasks per wake. Sustained throughput is
+So one instance admits up to 200 agents per wake. Sustained throughput is
 `200 / (wake interval)`, and wakes are event-driven (every submission publishes),
 with a 1-minute safety tick as the floor.
 
@@ -99,8 +99,8 @@ If admission latency is the bottleneck rather than capacity:
 
 Round-robin fairness has one interaction worth knowing at scale: the candidate
 query returns the highest-priority slice, so a tenant with more than
-`CANDIDATE_BATCH_SIZE` high-priority tasks can fill it entirely. When the slice
-comes back full, the scheduler tops up with a few `READY` tasks from each
+`CANDIDATE_BATCH_SIZE` high-priority agents can fill it entirely. When the slice
+comes back full, the scheduler tops up with a few `READY` agents from each
 unrepresented tenant, bounded by `MAX_TOPUP_TENANTS` so a pass stays cheap.
 
 ---
@@ -115,8 +115,8 @@ transaction retries.
 At 200 admissions/minute (~3.3/s) the `global` pool is the contended document.
 Mitigations, in order of preference:
 
-1. **Fewer admissions, not faster ones.** Longer tasks admit less often. This is
-   an agent platform: a task is minutes to hours, so 3/s is already a very large
+1. **Fewer admissions, not faster ones.** Longer agents admit less often. This is
+   an agent platform: an agent is minutes to hours, so 3/s is already a very large
    fleet.
 2. **Narrower pools absorb the rest.** Per-tenant and per-provider pools spread
    writes across documents naturally as tenants are added.
@@ -137,7 +137,7 @@ sharding. Two instruments exist:
   Firestore aborting the commit because a pool it read changed, and
   `firestore.transactional` running the body again. Leases, re-runs and
   failures log at INFO or above. A first-run denial is DEBUG, because a full
-  pool denies every READY task on every pass and that is not contention. To
+  pool denies every READY agent on every pass and that is not contention. To
   read it:
 
   ```
@@ -160,8 +160,8 @@ sharding. Two instruments exist:
 1. **any admission aborted.** Firestore exhausted its retries and
    `firestore.transactional` raised. `Scheduler._admit_one` catches only
    `AdmissionDenied` around `acquire_lease`, so the exception ends the whole
-   drain, not just that task. Nothing was reserved, which is the "nothing"
-   half of all-or-nothing, but every READY task behind it waits for the next
+   drain, not just that agent. Nothing was reserved, which is the "nothing"
+   half of all-or-nothing, but every READY agent behind it waits for the next
    wake;
 2. **p95 admission latency above 225 ms.** That is `MAX_RUN_SECONDS` 45 s ÷
    `MAX_LEASES_PER_RUN` 200: above it, a drain spends its time budget on
@@ -192,16 +192,16 @@ transaction, and v1 produced a permanent capacity leak from exactly that shape
 two questions:
 
 * **How is a shard's limit set?** Splitting a limit L into N shards of L/N
-  denies a task whose shard is full while another shard has room, which caps
+  denies an agent whose shard is full while another shard has room, which caps
   the platform below L. The request must say how much below, and why that is
   acceptable.
-* **Which shard does a task take?** A hash of the task id keeps the read set
+* **Which shard does an agent take?** A hash of the task id keeps the read set
   at one shard. Reading every shard to choose one restores the contention the
   sharding exists to remove, because each of those reads conflicts with
   another admitter's write.
 
 Reads are cheap by construction: `status.sh` uses server-side aggregation
-queries, so counting a hundred thousand tasks is one request and zero document
+queries, so counting a hundred thousand agents is one request and zero document
 reads.
 
 ---

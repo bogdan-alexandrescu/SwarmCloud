@@ -16,7 +16,7 @@ measurement that ended it.
 ## 1. Why it was retired
 
 **The measurement, 2026-10-11 10:20Z.** It covers seven days of `clone_timed`
-startup marks across 2,436 tasks, 1,436 of them with a startup mark, taken
+startup marks across 2,436 agents, 1,436 of them with a startup mark, taken
 with the `bundle-report` reader this change removes (posted on #940 that day):
 
 | source | n | failed | p50 s | p90 s | max s |

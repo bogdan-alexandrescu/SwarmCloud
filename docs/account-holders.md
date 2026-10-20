@@ -56,7 +56,7 @@ ages out instead of keeping a task id forever.
 * `google_firestore_field.account_holds_ttl`: a TTL on `expires_at`, with its
   single-field index exempted. It does **not** depend on `var.event_ttl_field`.
   That variable switches off the audit-trail TTLs, and switching it off must
-  not make records that name tasks permanent.
+  not make records that name agents permanent.
 
 `tests/terraform/firestore.tftest.hcl` asserts both.
 
@@ -65,7 +65,7 @@ ages out instead of keeping a task id forever.
 `GET /v1/accounts/{id}/holds` (live holds) and
 `GET /v1/accounts/{id}/holds/history?from=&to=&cursor=&limit=` (records with
 `assigned_at` in `[from, to)`, newest first) refuse any caller that is not a
-platform service account. They name every tenant's tasks, and swarm-api is
+platform service account. They name every tenant's agents, and swarm-api is
 their only caller. Expired holds are filtered with the same `is_expired` the
 counter uses, so a killed worker is not served as a current holder in the
 minutes before the sweep prunes it.
@@ -95,8 +95,8 @@ Any other caller gets a 404, the same answer an unknown id gets.
 
 | viewer | own holds | other tenants' holds |
 |---|---|---|
-| any tenant | task link, attempt number, since when | — |
-| owner of a lent account | (as above) | `N agents · <tenant>`; no task or attempt id |
+| any tenant | agent link, attempt number, since when | — |
+| owner of a lent account | (as above) | `N agents · <tenant>`; no agent or attempt id |
 | borrower | (as above) | a count only; no tenant name |
 
 In the **history**, the same split holds span by span (owner decision
@@ -150,14 +150,14 @@ swarm-api computed.
 | admin (`?scope=platform`, `require_admin` first) | everything | everything |
 
 **A task id is checked before anyone is shown it.** The task id on a hold is
-whatever the worker sent. If the hold's own tenant does not own that task
+whatever the worker sent. If the hold's own tenant does not own that agent
 (`Store.tasks_by_id(hold_tenant, …)`, which answers "missing" and "another
 tenant's" the same way), the hold is served as `verified: false` **without**
 the id to everyone but an admin. It might be another tenant's real task id.
-A hold that named no task is `recorded: false`, shown as *task not recorded*.
+A hold that named no agent is `recorded: false`, shown as *agent not recorded*.
 These are two different facts, and **only an admin is told which is which**:
 the admin sees the foreign claim as `recorded: true`, `verified: false`
-(*unverified*). A tenant is served its own hold naming a task it does not own
+(*unverified*). A tenant is served its own hold naming an agent it does not own
 as `recorded: false`, exactly like a hold that named none, because
 `recorded: true` beside `verified: false` would tell it that a task id it does
 not own exists (#361, owner decision 2026-10-09).
@@ -183,5 +183,5 @@ The broker's assign body is strict (`extra="forbid"`). A worker that sends
 `BrokerUnavailable`, and falls back to the tenant secret. **Deploy the broker
 before, or together with, the worker image.** `release.yml` applies both in
 one terraform apply, but the two do not switch over at the same instant. In
-the gap, a new worker runs on its tenant secret instead of the pool. The task
+the gap, a new worker runs on its tenant secret instead of the pool. The agent
 does not fail, and the gap ends as soon as the broker revision is serving.

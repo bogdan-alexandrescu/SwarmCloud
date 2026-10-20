@@ -193,14 +193,14 @@ A restore refuses a chain longer than 200 or one that loops.
 
 ## 3. Restore
 
-**A restore takes only the checkpoint an earlier attempt of this task
-recorded, and a task's first attempt restores nothing** (#347, owner decision
+**A restore takes only the checkpoint an earlier attempt of this agent
+recorded, and an agent's first attempt restores nothing** (#347, owner decision
 2026-09-29). A resume is by definition a new attempt with a new id, so the
 checkpoint worth restoring was written by an earlier attempt. The worker does
-**not** find it by listing the task's prefix for the newest manifest, which is
+**not** find it by listing the agent's prefix for the newest manifest, which is
 what it did until #347: the tenant's worker account can write anywhere under
 `tenants/<tenant>/`, so any agent of the tenant — an implement step, say —
-could put a checkpoint under another task's prefix before that task ran.
+could put a checkpoint under another agent's prefix before that agent ran.
 HOME is `work/` and `.claude/` is kept in every checkpoint, so the planter's
 `~/.claude/settings.json`, and the hooks in it, arrived in the next step, and a
 hook runs code without persuading any model.
@@ -208,16 +208,16 @@ hook runs code without persuading any model.
 What is restored, and only when every check holds
 (`Worker._recorded_checkpoint`):
 
-1. the task has had an earlier attempt: `attempt_count`, which admission
+1. the agent has had an earlier attempt: `attempt_count`, which admission
    increments in the lease's own transaction, is above 1;
 2. `task.latest_checkpoint` names a checkpoint, and it resolves inside this
-   task's own prefix to a manifest naming this tenant and task
+   agent's own prefix to a manifest naming this tenant and agent
    (`CheckpointManager.find_by_uri`); a pointer anywhere else is refused;
 3. the pointer, the manifest and the archive sit exactly where the
    manifest's own attempt and checkpoint ids put them, and those ids are
    single key segments;
 4. the attempt document of the attempt that wrote it is this tenant's and
-   this task's, lists the checkpoint id in `checkpoints`, and records the
+   this agent's, lists the checkpoint id in `checkpoints`, and records the
    archive's SHA-256 in `checkpoint_sha256` — both written by
    `ControlPlane.record_checkpoint` before it moves the pointer. The restore
    then verifies the archive's bytes against that digest.
@@ -248,7 +248,7 @@ working tree and an agent can put anything in it:
   and named in one log line per restore (at most 20 names, scrubbed, then a
   count), while the rest of the archive restores. uv leaves
   `bin/python -> /usr/local/bin/python3.11` in every build environment, and
-  refusing the archive over it failed every later resume of the task (#286);
+  refusing the archive over it failed every later resume of the agent (#286);
 * **an archive inconsistent with itself is refused whole**, before a byte is
   extracted: a member path that is absolute, holds `..` or appears twice; a
   member whose path passes through a symlink member (`d -> .`, `c -> d/..`,
@@ -317,7 +317,7 @@ CHECKPOINT_INTERVAL_SECONDS=120   # RunnerProfile's default; `mock` declares 30 
 ```
 
 The worker does not choose this. The dispatcher sets `CHECKPOINT_INTERVAL_SECONDS`
-on every attempt from the task's runner profile
+on every attempt from the agent's runner profile
 (`apps/scheduler/scheduler/dispatch.py::worker_env`), so the value lives in the frozen
 catalogue: 120 s for every profile except `mock`, which declares 30 s
 (`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`). The worker's own 120
@@ -363,13 +363,13 @@ make failure-test               # interrupted attempts resume, capacity returns
 make quota-test                 # parking checkpoints before releasing the lease
 ```
 
-To inspect what exists for a task:
+To inspect what exists for an agent:
 
 ```bash
 gsutil ls -r "gs://${ARTIFACT_BUCKET}/tenants/eng/tasks/${TASK_ID}/attempts/"
 ```
 
-and in the task's event stream, `checkpoint_started` / `checkpoint_completed` /
+and in the agent's event stream, `checkpoint_started` / `checkpoint_completed` /
 `checkpoint_restored`:
 
 ```bash

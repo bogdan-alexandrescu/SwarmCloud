@@ -39,7 +39,7 @@ every row including the ones marked Yes.
 | `dispatch_paused` | Firestore `control/dispatch`, read at `apps/swarm-api/swarm_api/store.py:707-714` | Yes — `GET /v1/stats` → `.dispatch_paused` (any caller); `GET /v1/admin/dispatch` adds `.updated_by`, `.reason`, `.updated_at` (admin only, `routes/admin.py:70-75`) |
 | Pool `name / hard_limit / adaptive_target / quota_derived_limit / effective_limit / active / available / enabled / updated_at` | Firestore `pools/{name}`; model `apps/common/swarm_common/models.py:44-79`; serialised `apps/swarm-api/swarm_api/codec.py:215-226` | Yes — `GET /v1/capacity` (tenant-filtered, `service.py:290-332`), `GET /v1/admin/pools` (unfiltered, `routes/admin.py:296-302`) |
 | Runner-profile catalogue: `resource_class, backend, provider, units, pools[]` | `apps/common/swarm_common/profiles.py:118-176`, `RESOURCE_CLASSES` at `:77-81`, `pool_names_for` at `models.py:82-107` | Yes — embedded in `GET /v1/capacity`. **Its `pools[]` is computed for the caller's own tenant, admin or not** — Trap D |
-| Task counts by state (12 states) | `store.count_tasks_by_state` at `store.py:524-533` | Yes — `GET /v1/stats` → `.tasks_by_state`, **scoped to the caller's tenant**; admin also gets `.platform_tasks_by_state` (`service.py:287`) |
+| Agent counts by state (12 states) | `store.count_tasks_by_state` at `store.py:524-533` | Yes — `GET /v1/stats` → `.tasks_by_state`, **scoped to the caller's tenant**; admin also gets `.platform_tasks_by_state` (`service.py:287`) |
 | Which states cost capacity | `apps/common/swarm_common/states.py:35-42` (`CONCURRENCY_STATES`), `:56-63` (`PENDING_STATES`) | Constant, compiled into the UI |
 | Live leases (`lease_id, task_id, attempt_id, tenant_id, generation, pools[], units, state, created_at, dispatch_deadline, expires_at, heartbeat_at, released_at, release_reason`) | Firestore `leases`; model `models.py:114-146`; index `leases-released-expires` at `terraform/modules/firestore/indexes.tf:144-151` | **No.** `LEASES = "leases"` is declared at `store.py:80` and **never used anywhere else in swarm-api**. There is no `lease_to_api` in `codec.py` and no route. → **P1** |
 | Provider/quota health per `(provider, tenant)` | Firestore `quota/{provider}:{tenant_id}`; model `models.py:268-300` | Own tenant only — `GET /v1/providers` (`service.py:334-350`, the sole caller of `list_quota`, at `service.py:336`). `store.list_quota(None)` exists at `store.py:663-668` but **nothing calls it with `None`**. → **P2** |
@@ -56,13 +56,13 @@ pool in the lease's list by `units` (`admission.py:204-208`), where
 `units = RESOURCE_CLASSES[rc].units` ∈ {1, 2, 4}. So `global.active = 8` may be two
 `large` agents or eight `standard` ones. **No label in this section may read "agents"
 over a pool number.** The word is "units". The agent count comes from a different
-place (task counts, or the lease list), and the two are shown side by side with
+place (agent counts, or the lease list), and the two are shown side by side with
 different words, never on the same axis.
 
 **Trap B — `lease.state` only ever holds `LEASED` or `DISPATCHED`.** Admission writes
 `LEASED` (`admission.py:196`), `scheduler/store.py:235-237` writes `DISPATCHED`, and
 **nothing writes `STARTING` or `RUNNING` to the lease document** — the worker advances
-the *task* through those states (`apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_starting`,
+the *agent* through those states (`apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_starting`,
 `apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_running`) and touches the
 lease only to read it (`apps/agent-worker/agent_worker/control.py::ControlPlane.fetch_lease`) and to write `heartbeat_at` / `expires_at`
 (`apps/agent-worker/agent_worker/control.py::ControlPlane.heartbeat`). A "state" column on the lease table would therefore show
@@ -72,7 +72,7 @@ by the *heartbeat age* next to it. For the same reason the API's `dispatch_overd
 not the lease's own predicate: `Lease.dispatch_overdue` is "the deadline has passed" and
 nothing else, which is true of every healthy agent older than the dispatch window (QA,
 2026-10-11: 9 of 13 heartbeating leases flagged). `swarm_api.codec.lease_dispatch_overdue`
-clears it on a first heartbeat or on the lease's task reaching `STARTING`/`RUNNING`, read
+clears it on a first heartbeat or on the lease's agent reaching `STARTING`/`RUNNING`, read
 from documents the routes already fetch, so no write was added to the heartbeat path.
 
 **Trap C — `pool.updated_at` is not a freshness signal.** Terraform bootstraps pool
@@ -220,13 +220,13 @@ header (Trap E). The screen has one scope control at the top — `This tenant ·
 |---|---|---|---|
 | **Holding capacity** | `4 agents · 7 units` | agents = the four `CONCURRENCY_STATES` counts (`states.py:35-42`) summed from `stats.tasks_by_state` (tenant) or `stats.platform_tasks_by_state` (platform, admin only). units = `pools["tenant:<id>"].active` in tenant scope, `pools["global"].active` in platform scope — **the units number must come from the same scope as the agent count**. **Two numbers because they are two quantities** (Trap A). | both |
 | **Global headroom** | `13 of 20 units free · platform-wide` + a bar | `pools["global"].available` and `.effective_limit` — both already computed server-side by `pool_to_api` (`codec.py:215-226`). The UI **does not recompute** `effective_limit`; that formula is frozen-contract logic (`models.py:65-72`) and this repository's rule is that every restatement of it has drifted. Always labelled platform-wide, on both roles' screens, because `global` is shared and is not the caller's own budget. | platform |
-| **Backlog (costs nothing)** | `312 queued · 8 parked` | `stats.tasks_by_state.{SUBMITTED,QUEUED,READY}` summed, and `.PARKED` separately; `platform_tasks_by_state` in platform scope. Subtitle, always present: *"QUEUED, PARKED and READY create no infrastructure demand"* (CONTRACT.md invariant 1). This stops a 10,000-task backlog reading as an outage. | both |
+| **Backlog (costs nothing)** | `312 queued · 8 parked` | `stats.tasks_by_state.{SUBMITTED,QUEUED,READY}` summed, and `.PARKED` separately; `platform_tasks_by_state` in platform scope. Subtitle, always present: *"QUEUED, PARKED and READY create no infrastructure demand"* (CONTRACT.md invariant 1). This stops a 10,000-agent backlog reading as an outage. | both |
 | **Attention** | `2 of 6 checks are raising · 2 checks unavailable` | §3.2 | both |
 
 **Row 2 — headroom by runner profile.** Five rows today (`mock`, `generic`,
 `claude-code`, `codex`, `browser` — `profiles.py:118-176`). This is the honest answer to
-"total cluster capacity", which does not otherwise exist: pools are a **conjunction** — a
-task must clear `global` AND `tenant:` AND `resource:` AND `runner:` AND `backend:` AND
+"total cluster capacity", which does not otherwise exist: pools are a **conjunction** — an
+agent must clear `global` AND `tenant:` AND `resource:` AND `runner:` AND `backend:` AND
 `provider:` AND `provider::tenant:` (`models.py:82-107`) — so capacity is a minimum
 over a set, and it differs per profile. The row header names the tenant these numbers
 are for (Trap D): *"headroom for tenant eng"*, on an admin's screen too.
@@ -278,7 +278,7 @@ existing specification of what a health page should say, and the UI reproduces i
 | # | Check | Source | Available today? |
 |---|---|---|---|
 | 1 | Dispatch is paused | `GET /v1/stats.dispatch_paused` | **Yes** |
-| 2 | N tasks parked | `GET /v1/stats.tasks_by_state.PARKED` | **Yes**, tenant-scoped; platform-wide is admin-only (`platform_tasks_by_state`) |
+| 2 | N agents parked | `GET /v1/stats.tasks_by_state.PARKED` | **Yes**, tenant-scoped; platform-wide is admin-only (`platform_tasks_by_state`) |
 | 3 | N pools paused | `GET /v1/capacity` → `pools.filter(p => p.enabled === false)` | **Yes** (a non-admin sees only the pools it is shown — §3.4) |
 | 4 | N expired leases still holding capacity | `leases` where `released_at == null && expires_at < now` | **No — P1** |
 | 5 | Providers throttled / exhausted | `quota` where `state ∈ {EXHAUSTED, COOLDOWN}` (`models.py:268-276`) | **Own tenant only** via `GET /v1/providers`; platform-wide needs **P2** |
@@ -367,14 +367,14 @@ the `stale` state, with the same amber band and the same dimmed numbers as a fai
 unit per 1000 index entries *matched*. `tasks` has no TTL policy — the only TTL in
 `terraform/modules/firestore/indexes.tf:249-262` is on `tasks/{id}/events`, and it is
 conditional on `event_ttl_field` being set — so the task collection grows monotonically
-forever. At 10 M lifetime tasks, one `/v1/stats` call scans ~10 M index entries across
+forever. At 10 M lifetime agents, one `/v1/stats` call scans ~10 M index entries across
 its 12 queries ≈ 10,000 read units. At a 30 s refresh (2,880 calls/day) that is
 **~29 M read units per day per open browser tab**, and double that for an admin's tab.
 This is the single most expensive thing in the whole UI proposal and it is invisible at
 today's volume.
 
 Three ways out, in order of preference: (a) maintain a counters document updated in the
-same transactions that already move task state; (b) cache the `/v1/stats` payload
+same transactions that already move agent state; (b) cache the `/v1/stats` payload
 server-side for 30 s and serve every viewer from it — one tab's cost regardless of how
 many people watch; (c) at minimum, run the 12 queries concurrently so the latency stops
 being 12 serial round trips. **(b) is the cheap correct answer for a dashboard and

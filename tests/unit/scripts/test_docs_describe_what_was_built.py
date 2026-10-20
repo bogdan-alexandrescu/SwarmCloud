@@ -196,7 +196,7 @@ def test_d10_web_ui_blocked_list_carries_a_dated_recheck():
     for row, route, cite, needle in (
         ("Screen C", "GET /v1/admin/leases", ("apps/swarm-api/swarm_api/routes/admin.py", "list_leases"), "/leases"),
         ("ACC-3", "POST /v1/accounts/authorize", ("apps/swarm-api/swarm_api/routes/accounts.py", "begin_sign_in"), "/authorize"),
-        ("Task timeline", "GET /v1/tasks/{id}/attempts", ("apps/swarm-api/swarm_api/routes/tasks.py", "list_attempts"), "/attempts"),
+        ("Agent timeline", "GET /v1/tasks/{id}/attempts", ("apps/swarm-api/swarm_api/routes/tasks.py", "list_attempts"), "/attempts"),
     ):
         line = next((ln for ln in body.splitlines() if ln.startswith(f"| {row}")), None)
         assert line is not None, row

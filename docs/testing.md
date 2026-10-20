@@ -87,12 +87,12 @@ gets you an HTTP 404 on `/readyz`, not a result.
 
 | Suite | Command | Covers | Does NOT cover |
 |---|---|---|---|
-| `smoke` | `scripts/verify-remote.sh smoke-test` | A mock task runs and releases capacity | Anything about a real agent |
+| `smoke` | `scripts/verify-remote.sh smoke-test` | A mock agent runs and releases capacity | Anything about a real agent |
 | `concurrency` | `scripts/verify-remote.sh concurrency-test` | No pool is ever over its effective limit, at any sample | The moment *between* samples |
-| `race` | `scripts/verify-remote.sh race-test` | The last free slot goes to exactly one task | Any runner profile but `mock` (refused by design, see below) |
+| `race` | `scripts/verify-remote.sh race-test` | The last free slot goes to exactly one agent | Any runner profile but `mock` (refused by design, see below) |
 | `failure` | `scripts/failure-test.sh` | Failure, cancellation and malformed input leak no capacity | — |
 | `e2e` | `scripts/verify-remote.sh e2e-test` | **The seams**: workflow handoff on the BYTES, artifact provenance, spend through the API, sign-in, state agreement across Firestore/API/Cloud Run | The `mock` profile's runner **is** its own workload, so it cannot distinguish a file written by an agent child process from one the runner wrote. That exact distinction is proved offline in `tests/unit/worker/test_agent_seam_end_to_end.py` |
-| `acceptance` | `scripts/verify-remote.sh acceptance/<group>` (groups `mock`, `generic`, `claude-code`, `workflow`, `browser`) | Real tasks judged by their **outputs**: a screenshot's pixels, a patch's lines, staged bytes, a pull request's title, the door's refusals. See [acceptance.md](acceptance.md) | Anything its SKIPs name; it spends subscription quota and opens real pull requests, so it runs on dev only |
+| `acceptance` | `scripts/verify-remote.sh acceptance/<group>` (groups `mock`, `generic`, `claude-code`, `workflow`, `browser`) | Real agents judged by their **outputs**: a screenshot's pixels, a patch's lines, staged bytes, a pull request's title, the door's refusals. See [acceptance.md](acceptance.md) | Anything its SKIPs name; it spends subscription quota and opens real pull requests, so it runs on dev only |
 | `load`, `quota` | `scripts/load-test.sh`, `scripts/quota-test.sh` | Sustained-load percentiles; provider exhaustion parks rather than pays to wait | — |
 
 `make e2e-test` and the rest run directly **from inside** the VPC or the verify
@@ -114,7 +114,7 @@ grant, the suite fails at its first step with a 403 that names
 `admin_pool_users` — a permissions result, not evidence about a race. The
 reasoning is in `docs/audits/2026-09-22/race-test-needs-a-write.md`.
 
-Nothing in `e2e-test` writes to Firestore. Everything it creates is a task or a
+Nothing in `e2e-test` writes to Firestore. Everything it creates is an agent or a
 workflow submitted through the API, and every one is cancelled on the way out.
 
 ### Needs a browser
@@ -246,8 +246,8 @@ good the percentile looks.
 | `reconcile` | ~10s | under a cent | no — it reads logs, it does not trigger a pass |
 | `cost` | ~15s | under a cent | no — reads history |
 | `ui` | ~1m | free | no — drives a browser at a UI you are running |
-| `dispatch` | ~2m on `mock` | cents | **submits tasks**, cancels them on exit |
-| `admission` | ~3m on `mock` | cents | **submits a 150-task backlog**, cancels on exit |
+| `dispatch` | ~2m on `mock` | cents | **submits agents**, cancels them on exit |
+| `admission` | ~3m on `mock` | cents | **submits a 150-agent backlog**, cancels on exit |
 
 `make bench` runs the read-only three (`api`, `reconcile`, `cost`), so the
 default is safe against production. `dispatch` and `admission` on

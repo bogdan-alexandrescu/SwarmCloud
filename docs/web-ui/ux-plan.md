@@ -149,8 +149,8 @@ that lane reported it could not reach because the fixture does not serve it.
 > that fixture in a browser. That is §3 item 2, and it is now unblocked rather
 > than finished.
 
-The two tabs are now called **Submit a task** and **Submit a workflow**, not
-"New agent" and "New workflow" — a task at `READY` is not a running agent, and
+The two tabs are now called **Submit an agent** and **Submit a workflow**, not
+"New agent" and "New workflow" — an agent at `READY` is not a running agent, and
 invariant 1 is that neither state holds capacity, so the old tab promised
 something the page it opened had to take back.
 
@@ -162,7 +162,7 @@ have said. Nine of them opened where they could not be read at all until today.
 
 The number is the finding. A console needing 82 explanatory popovers is a
 console whose labels are not carrying their weight. Cutting the count is a
-design task, not a deletion task: each one is either (a) a label that should be
+design agent, not a deletion agent: each one is either (a) a label that should be
 clearer, (b) a column that should have a unit, or (c) a genuine platform
 concept that belongs in docs with a link.
 
@@ -348,7 +348,7 @@ the form.
 - **Screen-reader output.** Roles and labels exist and are asserted by tests;
   nobody has listened to a screen.
 - **The submit flows end to end against the live API.** Rebuilt and rendered,
-  not driven to a created task.
+  not driven to a created agent.
 - **Error and empty states on every screen.** Fixtures cover several; I
   confirmed a few, not all 15.
 - **Any width between 390 and 1440.** Two points, not a range. The drawer's

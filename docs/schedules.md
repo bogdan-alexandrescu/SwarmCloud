@@ -33,7 +33,7 @@ What it settles, one line each:
   service account, `swarm-schedule-tick` (SD10). Each due slot
   is claimed **exactly once** by creating a firing document in a Firestore
   transaction. There is no GCP job per schedule (§2).
-* **A firing creates ordinary work:** an issue run, a task or a workflow,
+* **A firing creates ordinary work:** an issue run, an agent or a workflow,
   submitted as the schedule's owner in the schedule's tenant, marked
   `metadata.schedule`, and admitted like anything else. A few types make only
   GitHub API calls and no agent work; they run inside swarm-api, use no
@@ -118,7 +118,7 @@ compared with them.
 * **There are no dollar budgets for work that is not scheduled** (owner
   decision 2026-10-01,
   [cost-control.md §2](cost-control.md#2-ceilings-you-actually-own)). That
-  decision still holds for tasks, workflows and issue runs started by hand.
+  decision still holds for agents, workflows and issue runs started by hand.
   The owner set per-type dollar caps for **schedules only** on 2026-10-08
   (SD4, §4.3).
   - `monthly_budget_usd` is refused with a 422.
@@ -397,7 +397,7 @@ must not leak into it.
 | field | type | written by | meaning |
 |---|---|---|---|
 | `schedule_id` | string | swarm-api | `sch_` and 12 hex digits from `secrets.token_hex(6)`. Random, so an id says nothing about its tenant. It equals the document id |
-| `tenant_id` | string | swarm-api | The owner tenant, resolved from the caller exactly as a task's is. **Never a body field.** Every read compares it with the caller's tenant and answers a mismatch with the same 404 as a missing schedule, as `issue_runs` does |
+| `tenant_id` | string | swarm-api | The owner tenant, resolved from the caller exactly as an agent's is. **Never a body field.** Every read compares it with the caller's tenant and answers a mismatch with the same 404 as a missing schedule, as `issue_runs` does |
 | `name` | string | caller | 1-80 characters, unique within the tenant. It is what the console lists |
 | `type` | string | caller | A name from the catalogue (§3), e.g. `issue-sweep`. **By name, never an image, command or profile** (invariant 10). An unknown or unavailable type is a 422 that names the available ones |
 | `scope` | map | caller | `{mode: "repos" \| "all", repo_ids: [...]}`. `repos` lists 1-25 registrations of this tenant. `all` means every registration the tenant has **at firing time**. Platform-scope types (§3.13) take `{mode: "platform"}` and are admin-only |
@@ -476,7 +476,7 @@ claimed ─► awaiting_approval ─► (approved) ─► created ─► done (o
 ```
 
 `awaiting_approval` and `queued` are Firestore documents and nothing else. No
-task, lease or pending pod exists for them (invariant 1). The work is created
+agent, lease or pending pod exists for them (invariant 1). The work is created
 only at `created`.
 
 ### 1.5 Frozen contract
@@ -488,7 +488,7 @@ only at `created`.
 * The link from work to its firing is a new **swarm-api reserved metadata
   key**, `schedule`, added to
   `apps/swarm-api/swarm_api/validation.py::RESERVED_METADATA_KEYS`. A caller
-  cannot forge it. It sits on the task, the workflow and the issue run, so
+  cannot forge it. It sits on the agent, the workflow and the issue run, so
   every surface can say "made by schedule *nightly sweep*".
 * `submitted_by` stays the verified owner's email, as the frozen `Task`
   defines it.
@@ -500,7 +500,7 @@ only at `created`.
   commit identity and membership checks all read it as a person.
 * Every type compiles to work the platform already runs:
   - an issue run;
-  - a `claude-code` or `indexer` task;
+  - a `claude-code` or `indexer` agent;
   - a workflow of `claude-code` steps;
   - a swarm-api API action.
 
@@ -570,11 +570,11 @@ Creating the work happens **after** the transaction, from the firing document
 (§2.7). If that step fails (a 5xx, or a timeout of the route), the firing stays
 `claimed`. The next tick finds claimed firings older than 2 minutes and
 finishes them. Before creating anything, a finisher looks for work already
-carrying `metadata.schedule.firing_id` equal to this firing's id (tasks,
+carrying `metadata.schedule.firing_id` equal to this firing's id (agents,
 workflows and issue runs, §2.7), and adopts what it finds. So a step that
 created the work and then failed to record it cannot create it twice. The
-submission paths have no idempotency key of their own today (child tasks have
-`child_request_id`; top-level tasks and workflows have none), which is why the
+submission paths have no idempotency key of their own today (child agents have
+`child_request_id`; top-level agents and workflows have none), which is why the
 lookup is by the firing's own mark.
 
 ### 2.3 Cron expressions, timezone and the clock
@@ -688,16 +688,16 @@ fails leaves the firing `claimed` for the next tick.
 slot, type}`. An issue run carries the same map on its own document. Reads
 derive `created_by: "schedule:<schedule_id>"` from it.
 
-**Admitted like anything else.** A task the firing creates is `QUEUED` or
+**Admitted like anything else.** An agent the firing creates is `QUEUED` or
 `READY` and costs nothing until admission takes a lease (invariants 1-3). A
 firing never reserves capacity, never waits for it, and does not know whether
 the tenant's pool is full. A full pool is the ordinary queue.
 
 **Types with no agent (Owner decision 2026-10-08, SD8).** `cost-report`,
 `release-health` and `pr-shepherd`'s API actions run **inside swarm-api** as
-a firing whose `work` entry has `kind: api_action`. They create no task,
+a firing whose `work` entry has `kind: api_action`. They create no agent,
 use no capacity and need no worker; the firing record is their history. A
-deterministic API call does not need a model, and a task that made the same
+deterministic API call does not need a model, and an agent that made the same
 call would give an agent a write it does not need.
 
 **Personal workspaces.** The submission gates of
@@ -738,7 +738,7 @@ derived from its steps:
   counted as a failure it made the firing `failed` (#1030's
   `run_21bcbaba3ba14235832a`, 2026-10-12), which reads as the schedule being
   broken and counts toward `CONSECUTIVE_FAILURES`. A run that failed for any
-  other reason (a planner task that failed, an invalid plan, a submission
+  other reason (a planner agent that failed, an invalid plan, a submission
   refused after approval) still fails the firing, and an exception or API
   error in the firing itself is handled as before. The console's History
   shows each refused run under the outcome, in plain words.
@@ -794,20 +794,20 @@ but not part of it. Each entry declares:
 
 No type accepts an image, a command, a profile, a resource class or a backend
 parameter. A type that runs an agent names its profile in code. Invariant 10
-holds for schedules exactly as for tasks.
+holds for schedules exactly as for agents.
 
 | # | type | executor | risk | pushes | default gate | floor | creates | min interval | phase |
 |---|---|---|---|---|---|---|---|---|---|
 | 1 | `issue-sweep` | issue runs | R3 with `merge: auto`, else R2 | yes | plan auto · **approve merge** | plan auto · merge auto, reached only through the audited switch (§4.2, SD3); in a `platform: true` repository only a platform admin may make the switch (Owner decision 2026-10-08) | members | 15 min | 1 |
 | 2 | `issue-plan-only` | issue runs | R1 | no, until approved | **approve plan** | **approve plan** | members | 15 min | 1 |
-| 3 | `repo-index-refresh` | `indexer` tasks | R0 | no | auto | auto | members | 1 h | 1 |
-| 4 | `observer` | one `claude-code` task | R0 | no | auto | auto | members (tenant), owner (platform) | 1 h | 1 |
-| 5 | `epic-triage` | `claude-code` task, then API | R1 | no (comments) | **approve plan** (the ticks) | **approve plan** | members | 6 h | 2 |
+| 3 | `repo-index-refresh` | `indexer` agents | R0 | no | auto | auto | members | 1 h | 1 |
+| 4 | `observer` | one `claude-code` agent | R0 | no | auto | auto | members (tenant), owner (platform) | 1 h | 1 |
+| 5 | `epic-triage` | `claude-code` agent, then API | R1 | no (comments) | **approve plan** (the ticks) | **approve plan** | members | 6 h | 2 |
 | 6 | `pr-shepherd` | API, then continuations | R1 for API actions, R2 for conflict fixes | yes (fixes) | API auto · **approve run** for fixes | auto, fixes included (an admin only) | members | 30 min | 2 |
-| 7 | `ci-flake-hunter` | API, then `claude-code` tasks | R1 | no (issues) | auto | auto | members | 6 h | 2 |
+| 7 | `ci-flake-hunter` | API, then `claude-code` agents | R1 | no (issues) | auto | auto | members | 6 h | 2 |
 | 8 | `dependency-cve-refresh` | workflow | R2 | yes | **approve merge** | **approve merge** | members | 24 h | 2 |
 | 9 | `release-health` | API | R1 | no (an issue) | auto | auto | members; owner for the platform's own repository | 15 min | 2 |
-| 10 | `docs-drift` | `claude-code` task | R1 report, R2 with `fix: true` | with `fix: true` | auto report · **approve merge** | auto report · **approve merge** with `fix` | members | 24 h | 2 |
+| 10 | `docs-drift` | `claude-code` agent | R1 report, R2 with `fix: true` | with `fix: true` | auto report · **approve merge** | auto report · **approve merge** with `fix` | members | 24 h | 2 |
 | 11 | `cost-report` | API | R0 | no | auto | auto | members (tenant), admin (platform) | 24 h | 2 |
 | 12 | `custom-prompt` | workflow from a saved spec | R3 | yes | **approve run + approve merge**; never auto | **approve run + approve merge** | members, with a one-time admin approval of the spec | 6 h | 3 |
 | 13 | `model-prices-refresh` | API | R0 | no | auto | auto | admin, platform scope only | 24 h | 2 |
@@ -906,7 +906,7 @@ every tenant's data within one approval's reach.
   and `fix_rounds`.
 * **Default gate.** Approve plan. It is the floor, so it cannot be lowered.
 * **Produces.** `PLANNED` issue runs and plan comments on the issues.
-* **Blast radius.** One planner task per issue, and plan comments on GitHub.
+* **Blast radius.** One planner agent per issue, and plan comments on GitHub.
   No code changes without a person.
 
 ### 3.3 `repo-index-refresh`
@@ -922,7 +922,7 @@ every tenant's data within one approval's reach.
   refreshes; the change trigger keeps running, and the in-flight rule below
   stops the two from duplicating a run.
 * **Default gate.** Auto. Floor: auto.
-* **Produces.** `indexer` tasks. Their output is the index under the tenant's
+* **Produces.** `indexer` agents. Their output is the index under the tenant's
   prefix, `repos/<repo_id>/`.
 * **Blast radius.** It reads repositories and writes only the tenant's own
   index objects. §8.3 decides how it relates to the existing `index.*`
@@ -932,10 +932,10 @@ every tenant's data within one approval's reach.
 
 * **Does.** It is a read-only self-improvement report over the last
   `window_hours` of the tenant's work. swarm-api computes a **digest** from
-  data it already holds. A `claude-code` task with **no repository** gets the
+  data it already holds. A `claude-code` agent with **no repository** gets the
   digest as data, between delimiter lines carrying the firing id: the issue
   run's open-work pattern, bounded to 48 KiB (`MAX_PLANNER_PROMPT_BYTES` is 64
-  KiB). The task writes `report.md` and `proposals.json`. The digest holds:
+  KiB). The agent writes `report.md` and `proposals.json`. The digest holds:
   - cost per run and per profile, with spend coverage;
   - the median and 95th-percentile start latency (`LEASED` to `RUNNING`);
   - the share of pull requests red on their first CI run;
@@ -957,7 +957,7 @@ every tenant's data within one approval's reach.
   (§4.5). Turning one into a GitHub issue is a click by a person, unless
   `file_issues` is true, in which case they are filed as one epic per the
   CLAUDE.md "Issues" rules: one comment per finding.
-* **Where the epic is filed (owner decision 2026-10-11).** The report's task
+* **Where the epic is filed (owner decision 2026-10-11).** The report's agent
   has no repository, so the schedule names one: `file_issues_repo_id`. It must
   be a registration of the schedule's own tenant (another tenant's id gets the
   same answer as an unregistered one, §5.1) that the schedule's owner can
@@ -986,7 +986,7 @@ every tenant's data within one approval's reach.
 
 ### 3.5 `epic-triage`
 
-* **Does.** For each open issue labelled `epic` in scope, a `claude-code` task
+* **Does.** For each open issue labelled `epic` in scope, a `claude-code` agent
   reads the epic's comments and the repository's default branch. It writes
   `ticks.json`: for each unticked box, the evidence (a merged PR or a commit,
   with the file and the call site) or "still open". swarm-api validates each
@@ -1019,7 +1019,7 @@ every tenant's data within one approval's reach.
   `max_prs_per_firing` (10).
 * **Default gate.** Auto for the API actions. **Approve run** for conflict
   fixes, which push code.
-* **Produces.** Labels, merged-base updates, comments and continuation tasks.
+* **Produces.** Labels, merged-base updates, comments and continuation agents.
 * **Blast radius.** A pull request's labels and branch. Update-branch makes a
   merge commit on the PR's branch, and GitHub may refuse it when the merge
   brings in `.github/workflows/` changes the credential cannot push (S0
@@ -1031,7 +1031,7 @@ every tenant's data within one approval's reach.
   **flake** is a check that failed and then passed at the **same sha**. For the
   top `max_flakes` by count, it files or updates one issue per flaky test
   (title as a fact, label `bug`), optionally with a `claude-code` diagnosis
-  task whose `diagnosis.md` is attached.
+  agent whose `diagnosis.md` is attached.
 * **Parameters.** `window_days` (7), `min_occurrences` (2), `max_flakes` (3)
   and `diagnose` (false).
 * **Default gate.** Auto. Issues are reversible and say who filed them.
@@ -1071,7 +1071,7 @@ every tenant's data within one approval's reach.
 
 ### 3.10 `docs-drift`
 
-* **Does.** A `claude-code` task checks, in the repository's `docs/`:
+* **Does.** A `claude-code` agent checks, in the repository's `docs/`:
   - line citations against the files they name;
   - `path::symbol` citations against the code;
   - stated defaults against the values in code.
@@ -1195,7 +1195,7 @@ disagree with the price setting by more than 10%."
 * **Why a blended rate.** An attempt records one set of token totals and one
   cost, so its four rates cannot be separated. What can be measured is the
   cost of its tokens, so the check compares that.
-* **Not counted.** An attempt whose task says `cost_estimated`: swarm-api
+* **Not counted.** An attempt whose agent says `cost_estimated`: swarm-api
   priced its cost *from the setting*, so it agrees by construction and would
   pull a real disagreement towards zero. Also not counted: running attempts,
   and attempts with no cost, no model or a missing token count. A model with
@@ -1209,7 +1209,7 @@ disagree with the price setting by more than 10%."
   rates. A firing looks for that marker first, so a given disagreement with a
   given setting is opened once, not every night. A changed setting that
   still disagrees opens a new issue. The body holds aggregates only and never
-  names a tenant, task or person. If a firing has a finding but no
+  names a tenant, agent or person. If a firing has a finding but no
   `issue_repository`, or one that is not registered, it **fails**: a check
   that told nobody must not read as a success.
 * **Parameters.** `issue_repository` (`owner/repo`) and `issue_label`
@@ -1336,7 +1336,7 @@ the per-run cap**, never as zero.
 
 How this sits with the owner's decision of 2026-10-01 ("no per-tenant dollar
 budgets"): **that decision still holds for everything that is not scheduled**
-(tasks, workflows and issue runs started by hand). Nothing in admission reads
+(agents, workflows and issue runs started by hand). Nothing in admission reads
 these figures, no tenant-wide budget is created, and the scheduler is
 unchanged. The figures bound what a **schedule** may start, which the owner
 confirmed in SD4. S9 records the carve-out in cost-control.md.
@@ -1481,8 +1481,8 @@ Two approvers racing produce one transition, and the loser gets 409
   stays `DONE`. Nothing merges after expiry without a new approval, which the
   console's "Request merge again" creates.
 
-**A pending approval holds nothing**, before and after expiry. No task, lease
-or slot exists for it, and a plan's planner task has already ended (invariant
+**A pending approval holds nothing**, before and after expiry. No agent, lease
+or slot exists for it, and a plan's planner agent has already ended (invariant
 1). Expiry is a tidy-up of the inbox, not a capacity release. Expired items
 leave the inbox and remain in the schedule's history.
 
@@ -1798,7 +1798,7 @@ All of these are tenant-scoped as in §5.1. The new refusals ship report-only
 | `POST /v1/schedules/{id}:merge-mode` | the SD3 switch (§4.2): `{mode: "approve" \| "auto", revision, confirm?}`. `auto` is allowed to a member who is not the last editor of the gate, scope or spec (`confirm` carries the typed confirmation in a one-person tenant), allowed only to a platform admin (the admin roles of PR 860, `PLATFORM_OWNER` included) in a `platform: true` repository (Owner decision 2026-10-08), and only where the type's floor permits it. `approve` is allowed to any member. Both write a `schedule_audit` entry in the same transaction |
 | `DELETE /v1/schedules/{id}` | delete (the console's typed confirmation is client-side; the route takes `confirm: <name>`) |
 | `POST /v1/schedules/{id}:pause` · `:resume` · `:run` | `:pause` takes `{reason?, cancel_live?, confirm?}`; `:run` takes `{dry_run?}` and makes a `run_now` firing, under the gate's `run` point |
-| `POST /v1/schedules/{id}:pause` with `{cancel_live: true, confirm}` | §2.11's "pause and cancel live runs". Any member of the schedule's tenant. `confirm` is the schedule's `name`, typed exactly (surrounding spaces trimmed, as `DELETE` does); missing or different is 422 `confirmation_required` and nothing moves. The schedule is paused as a plain `:pause` pauses it (a `disabled` one is left `disabled`, since it already makes no firings), then every work item of the schedule's `created` firings in this tenant is cancelled through the platform's own cancel: a task through `POST /v1/tasks/{id}/cancel`'s path, a workflow through `POST /v1/workflows/{id}/cancel`'s, an issue run through its live planner task or workflow. Work already ended is reported, not an error. The firing then ends `cancelled` on the tick's ordinary advance (§2.9). Audit: `pause` (when the state moved) and then one `cancel_live` entry, `by` the caller, `detail: {firings, items: [{kind, id, firing_id, result}]}`. Another tenant's id is the 404 a missing one gets (§5.1) |
+| `POST /v1/schedules/{id}:pause` with `{cancel_live: true, confirm}` | §2.11's "pause and cancel live runs". Any member of the schedule's tenant. `confirm` is the schedule's `name`, typed exactly (surrounding spaces trimmed, as `DELETE` does); missing or different is 422 `confirmation_required` and nothing moves. The schedule is paused as a plain `:pause` pauses it (a `disabled` one is left `disabled`, since it already makes no firings), then every work item of the schedule's `created` firings in this tenant is cancelled through the platform's own cancel: an agent through `POST /v1/tasks/{id}/cancel`'s path, a workflow through `POST /v1/workflows/{id}/cancel`'s, an issue run through its live planner agent or workflow. Work already ended is reported, not an error. The firing then ends `cancelled` on the tick's ordinary advance (§2.9). Audit: `pause` (when the state moved) and then one `cancel_live` entry, `by` the caller, `detail: {firings, items: [{kind, id, firing_id, result}]}`. Another tenant's id is the 404 a missing one gets (§5.1) |
 | `POST /v1/schedules:pause-all` | §2.11's "pause all of a tenant's schedules". Any member of the caller's tenant, which is the only tenant it reaches. `{confirm, reason?}`: `confirm` is the caller's tenant id, typed exactly; missing or different is 422 `confirmation_required` and nothing moves. Every `enabled` schedule of the tenant becomes `paused` with the one reason, each in its own transaction with its own audit entry `pause_all` (`by` the caller's email, `detail: {from, to, revision, reason}`). `paused`, `auto_paused` and `disabled` ones are left as they are. Answers `{tenant_id, paused: [ids], unchanged: [ids]}` |
 | `POST /v1/admin/tenants/{tenant_id}/schedules:pause` | §5.3: the same for any tenant, `is_admin` only. `{confirm, reason?}`: `confirm` is the `tenant_id` of the path, typed. An unknown tenant is a 404. Each entry is `admin_pause_all`, `by: admin:<email>`. Live runs are not cancelled (§5.3) |
 | `POST /v1/schedules/{id}:take-ownership` | the caller becomes the owner. Audited |
@@ -1989,7 +1989,7 @@ phases. New files are named without their root.
   refused.
 * **S2.** Two concurrent ticks over one due schedule create **one** firing,
   tested against the Firestore emulator in the integration job. A retried
-  create of a **task or a workflow** returns the first work (the issue run's
+  create of an **agent or a workflow** returns the first work (the issue run's
   lookup by firing id is S5's, and S5 tests it). A schedule paused between the query and the
   transaction fires nothing. Catch-up `skip` and `run_once` after a simulated
   3-hour gap write the expected records. The per-tenant cap of 5 holds.
@@ -2013,7 +2013,7 @@ phases. New files are named without their root.
 * **S5.** Approving a stale digest answers 409. Two approvals of one item make
   one transition. A merge approval after a new push answers 409
   `merge_changed`. An expired plan ends `REJECTED` with reason "expired" and
-  no task exists. The approvals route answers on a running app (`create_app()`
+  no agent exists. The approvals route answers on a running app (`create_app()`
   mounts it). For the hard stops:
   - a planner plan naming `.github/workflows/` ends the run `FAILED` with
     `WORKFLOWS_PATH`, no workflow is submitted, and the issue gets the comment.
@@ -2184,7 +2184,7 @@ schedule starts at `merge: approve`), S5, S7 and their acceptance.
 * (c) One per-tenant daily schedules budget.
 
 **The owner's 2026-10-01 "no dollar budgets" decision still holds for
-non-scheduled work** (tasks, workflows and issue runs started by hand). These
+non-scheduled work** (agents, workflows and issue runs started by hand). These
 figures bound what a schedule may start and nothing else. Changed: §0, §4.3,
 S9 (cost-control.md records the carve-out). No measurement backs the figures.
 
@@ -2233,7 +2233,7 @@ full refreshes **even when the repository re-indexes on change.** Changed:
 `work.kind: api_action`, and use no capacity.
 
 * **(a) Run in swarm-api.**
-* (b) Every firing is a task.
+* (b) Every firing is an agent.
 
 Changed: §2.7. (§1.2 and §3 already named `api_action` and the `api` executor.)
 
@@ -2293,7 +2293,7 @@ on the owner's answer), §4.6. S5 builds it.
    schedule's live work items from creation, which is stricter than `LEASED`
    and is a firing bound, not a pool.
 4. **Workers never sleep through a wait.** No worker waits for an approval:
-   the approval is before the work exists (run), between a planner task that
+   the approval is before the work exists (run), between a planner agent that
    ended and a workflow not yet created (plan), or after a run that is `DONE`
    (merge). The tick never waits inside a request beyond its 240 s budget.
 5. **Fencing.** Unchanged for attempts. The firing's own fence is the creation
@@ -2337,7 +2337,7 @@ an agent, can exceed 48 KiB for a busy tenant. Then the digest is truncated,
 and the report says so.
 
 **The requested change.** `_CLI_AGENT_INPUTS` gains `context`: an object
-reference, `{uri, sha256, bytes}`, to an object under the task's own tenant
+reference, `{uri, sha256, bytes}`, to an object under the agent's own tenant
 prefix, written by swarm-api. The worker stages it as `context.json` after
 checking the digest. The bound is 1 MiB. A caller may not set it. Like
 `input_from`, it is a swarm-api reserved key.
@@ -2348,6 +2348,6 @@ built before it refuse it, so the rollout order is worker, then API.
 **If it is declined.** `observer` keeps the 48 KiB prompt digest, truncated
 with a stated count. That is enough for the 24-hour default.
 
-**Invariants.** 9: the object is under the task's tenant prefix, read by that
+**Invariants.** 9: the object is under the agent's tenant prefix, read by that
 tenant's worker. 10: it is data, not an image, a command or a resource spec.
 Others are untouched.

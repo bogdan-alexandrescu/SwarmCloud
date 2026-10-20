@@ -28,7 +28,7 @@ What is **not** real, and would render as a confident lie if a screen bound to i
 
 The same rule has a second half that is easy to miss: **a state that nothing writes must not be counted, either.** A chip reading `0 need reauth` is a measurement claim, and until P3 lands it is a false one — no account can ever enter `REAUTH_REQUIRED`, so the zero means "never checked", not "all healthy". Every count, filter and chip in this section is gated on its writer existing, not just every gauge.
 
-There is also **no HTTP surface for accounts at all**. The broker exposes `/healthz`, `/readyz`, `/metrics`, `/v1/quota*` and `/v1/quota/sweep` (`main.py:376-551`); swarm-api's routes are health, tasks, workflows, tenants, platform, admin. Every screen below is therefore blocked on at least the read API. I have split the blockers into two tiers and kept them separate throughout, because they are days apart in cost:
+There is also **no HTTP surface for accounts at all**. The broker exposes `/healthz`, `/readyz`, `/metrics`, `/v1/quota*` and `/v1/quota/sweep` (`main.py:376-551`); swarm-api's routes are health, agents, workflows, tenants, platform, admin. Every screen below is therefore blocked on at least the read API. I have split the blockers into two tiers and kept them separate throughout, because they are days apart in cost:
 
 - **Plumbing** (P1, P2, P3, P6, P7, P8, P9, P10) — exposing or persisting data the platform already computes. The store methods exist and are the same ones `account.sh` uses.
 - **Capability** (P4, P5, P11) — the account pool's §2.6 design from `docs/BUILD_PROMPT_V2.md:185-334`, specified and never built, plus the browser onboarding path. Readings, assignment and credential intake are new systems, not new endpoints.

@@ -57,7 +57,7 @@ history.
   person only by an **opaque workspace id**, `w-` and six random hex digits
   (`w-3f9a2c`).
 * **Before the workspace is ready**, the person may sign in, connect GitHub,
-  choose repositories and look around. Every task or workflow submission that
+  choose repositories and look around. Every agent or workflow submission that
   resolves to their personal tenant is refused with `403 WORKSPACE_NOT_READY`
   and a link to the setup step, on the console, the API and the plugin. Team
   (group) submissions are never blocked (WD7).
@@ -152,7 +152,7 @@ workspace id is `w-3f9a2c`. `<project>` is the platform's project and
 * **A personal tenant runs on nothing until someone gives it a credential.** It
   needs its own provider key, or a pool account owned by or lent to it
   (`apps/quota-broker/quota_broker/accounts.py::accounts_serving`; quota-management.md
-  §4). Otherwise its claude-code tasks park `CREDENTIAL_MISSING`. A ready
+  §4). Otherwise its claude-code agents park `CREDENTIAL_MISSING`. A ready
   workspace does not change that, and WD6 turns it into a refusal at submission
   (§5).
 
@@ -660,8 +660,8 @@ in a public GitHub Actions log.
   digest** in the bootstrap variable that pins it today
   (`workspace_apply_builder_image`, renamed `workspace_apply_image` by W4b), and
   that image now carries the code: the guard, `register-tenant.sh`,
-  `kubernetes/` and what they import (§2.2). One task, no retries
-  (`max_retries = 0`: a retry is an admin's action, §1.3), a task timeout of
+  `kubernetes/` and what they import (§2.2). One agent, no retries
+  (`max_retries = 0`: a retry is an admin's action, §1.3), an agent timeout of
   1800 seconds, as the build had.
 * **The identity.** The job runs as `swarm-workspace-deployer` (§2.3), and that
   job is the only thing that may (§2.4).
@@ -726,7 +726,7 @@ grant, §0).
 
 | | (i) swarm-api runs the job | (ii) Pub/Sub → Eventarc → Workflows |
 |---|---|---|
-| **what a compromised swarm-api can do** | start executions with **any arguments and any environment variables**, any task count and any timeout: `runWithOverrides` cannot be narrowed to the arguments. The job's entrypoint must therefore neutralise every override (§2.2 step 0) for swarm-api, the most exposed component, not to hold a lever on the identity with project-wide account-IAM power | publish a message. The workflow forwards a valid id and mode and nothing else, so swarm-api cannot reach the environment, the task count or the timeout. This is today's §2.4 R3, unchanged |
+| **what a compromised swarm-api can do** | start executions with **any arguments and any environment variables**, any agent count and any timeout: `runWithOverrides` cannot be narrowed to the arguments. The job's entrypoint must therefore neutralise every override (§2.2 step 0) for swarm-api, the most exposed component, not to hold a lever on the identity with project-wide account-IAM power | publish a message. The workflow forwards a valid id and mode and nothing else, so swarm-api cannot reach the environment, the agent count or the timeout. This is today's §2.4 R3, unchanged |
 | **install steps** | one IAM binding on the job; no new API | the Workflows and Eventarc APIs (`terraform/infra/main.tf`'s service list), one workflow, one Eventarc trigger, one account and its two grants. All Terraform; where the Pub/Sub service agent was enabled on or before 8 April 2021, it also needs `iam.serviceAccountTokenCreator`, a Terraform grant (W0b (7), §0) |
 | **swarm-api code** | rewritten publish path (W7b), sweep calls `jobs.run`, a synchronous failure lands on the record | none |
 | **latency to the execution starting** | about a second | a few seconds more (Pub/Sub push, Eventarc, a Workflows execution). Both are noise beside the job's own start and its minutes of work |
@@ -780,7 +780,7 @@ other image (`scripts/build-images.sh` `ALL_TARGETS`, already); the job runs it
 The build file's three steps become the job's **entrypoint**, preceded by one
 step a build never needed. The job's `command` is fixed in the job spec, which
 no caller can override (Cloud Run's run overrides carry only arguments,
-environment variables, task count and timeout, plus a Preview "delayed"
+environment variables, agent count and timeout, plus a Preview "delayed"
 execution mode; W0b (2), §0). Steps 1 to 3 are `scripts/workspace-apply.sh`, which replaces
 `scripts/cloudbuild/workspace-apply.yaml` line for line, and step 0 is
 `images/workspace-apply/entry.py` (W6b, W4b; §10):
@@ -791,7 +791,7 @@ execution mode; W0b (2), §0). Steps 1 to 3 are `scripts/workspace-apply.sh`, wh
    from the environment; takes `CLOUD_RUN_EXECUTION` only after checking it
    against `register-tenant.sh`'s `WS_BUILD_RE`, as the run's `build_id`, and
    uses it for nothing but the record and the log; refuses unless
-   `CLOUD_RUN_TASK_COUNT` is `1` (A1's claim would stop a second task anyway);
+   `CLOUD_RUN_TASK_COUNT` is `1` (A1's claim would stop a second agent anyway);
    and then `execve`s step 1 with a **fixed** environment written in that file
    (`PATH`, `HOME`, `PROJECT_ID`, `SWARM_ENV_FILE`, `SWARM_CALL_GUARD`,
    `SWARM_CALL_GUARD_ENFORCE=1`, `SWARM_KUBECTL`, `BUILD_ID`, `NO_COLOR`). This
@@ -956,7 +956,7 @@ by a condition: a grant is either a binding **on the job** or project-wide.
 | **change what it runs** (image, command, environment, account, network) | `run.jobs.update` **and** `iam.serviceAccounts.actAs` on `swarm-workspace-deployer` | nobody holds `actAs` on the deployer at the account level: the bootstrap writes that policy authoritatively empty. So only project-level `actAs` holders (the project's owners and editors, and whoever else W0b's dated listing finds) and the owner's bootstrap apply. `swarm-scheduler` holds `run.jobs.update` project-wide (`swarmJobDispatcher`) **but no `actAs` on the deployer**, so it cannot. **W0b must confirm that Cloud Run checks `actAs` on every update of a job whose account is unchanged** (documentation half read 2026-10-10: creating or updating a job needs it, with no exception stated; the live refusal is pending, §0 W0b (1)); if it does not, the scheduler could swap the image, and the re-decision goes back to the owner before W4b ships |
 | **create another job, service or build as the deployer** | `actAs` on the deployer | the same project-level holders; the alert on any execution, revision or build as the deployer that is not this job's catches one (§2.4) |
 | **start an execution with its arguments** (`run.jobs.run`) | the job's policy, or project-wide | under option (ii) `swarm-workspace-dispatch`, under option (i) swarm-api, by a binding on the job; project-wide, `swarm-scheduler` (`swarmJobDispatcher`), `swarm-accept` (`swarmAcceptanceRunner`), the release deployer (`roles/run.admin`) and the project's owners and editors |
-| **start one with overrides** (`run.jobs.runWithOverrides`) | the same | the same list. An override can replace the arguments, set environment variables, the task count and the timeout. It cannot change the image, the command, the account or the network. **Does it let a caller change anything beyond the workspace id? In the API, yes**: that is why step 0 (§2.2) discards every environment variable, refuses a task count other than one, keeps its own deadline, and step 1 refuses any argument list but `[<w-id>, <mode>]`. With those, an override can choose which approved workspace runs and nothing else |
+| **start one with overrides** (`run.jobs.runWithOverrides`) | the same | the same list. An override can replace the arguments, set environment variables, the agent count and the timeout. It cannot change the image, the command, the account or the network. **Does it let a caller change anything beyond the workspace id? In the API, yes**: that is why step 0 (§2.2) discards every environment variable, refuses an agent count other than one, keeps its own deadline, and step 1 refuses any argument list but `[<w-id>, <mode>]`. With those, an override can choose which approved workspace runs and nothing else |
 | **set the job's IAM** (`run.jobs.setIamPolicy`) | project-wide `roles/run.admin` | the release deployer. The bootstrap writes the job's policy **authoritatively** (`google_cloud_run_v2_job_iam_policy`), so a member added outside it is removed at the next bootstrap apply, and the alert on any change to the job's IAM pages at once |
 | **cancel or delete it** | `run.executions.cancel`, `run.jobs.delete` | `swarm-reconciler` (`swarmJobReaper`) project-wide, and `roles/run.admin`. Availability only: the job carries `managed-by=swarm-terraform`, which `apps/reconciler/reconciler/backends.py::is_gc_eligible` never collects, and re-creating it as the deployer needs `actAs` |
 
@@ -1643,13 +1643,13 @@ Every path that creates work reaches one of them:
 
 * the task routes (single and batch);
 * the workflow route;
-* the issue run's planner task and plan approval in `routes/runs.py`;
+* the issue run's planner agent and plan approval in `routes/runs.py`;
 * the repository indexer;
 * the issue-CI and merge-wake workflows.
 
 The check runs **first**, before validation, signing or any write, through
 `SubmissionService.workspace_gate(ctx, tenant)`, which is new. It runs after
-`tenant_for` resolves the tenant. Child tasks (`routes/children.py`) are
+`tenant_for` resolves the tenant. Child agents (`routes/children.py`) are
 submitted by a running worker of a tenant that is, by construction, admitted,
 so they are not gated.
 
@@ -1706,7 +1706,7 @@ be created: {copy}" for `failed`.
 ### 5.3 Workflows are refused whole
 
 `submit_workflow` checks before compiling any step, so a refused workflow
-creates **no** workflow document, no task and no event. The gate is per
+creates **no** workflow document, no agent and no event. The gate is per
 submission, not per step, so a workflow's steps can never be split between
 admitted and refused. The plan-approve path refuses the approval and leaves
 the run awaiting approval, so approving again once the workspace is ready
@@ -1714,13 +1714,13 @@ works.
 
 ### 5.4 Why the gate is at submission and not also at admission
 
-A task can only exist if it was submitted, and the gate refuses submission
-until `ready`. So, absent a bypass, no `QUEUED` task belongs to a non-ready
+An agent can only exist if it was submitted, and the gate refuses submission
+until `ready`. So, absent a bypass, no `QUEUED` agent belongs to a non-ready
 workspace, and admission has nothing to check. Invariants 1 to 3 are untouched:
 a refused submission creates nothing and holds nothing. Deprovisioning (§7) is
-the one way a ready tenant could stop being ready with tasks queued, and it
+the one way a ready tenant could stop being ready with agents queued, and it
 must drain or cancel them first. A reclaimed loan (§6.4) can leave a ready
-tenant with queued claude-code work and no account; those tasks park
+tenant with queued claude-code work and no account; those agents park
 `CREDENTIAL_MISSING`, as they do today, and hold nothing.
 
 ### 5.5 It ships switched off (WD8)
@@ -1730,7 +1730,7 @@ settings, and read `workspaces/` only when on. The order the owner decided:
 
 1. Everything ships with the gate **off**.
 2. One real person is approved through the console end to end: the workspace
-   reaches `ready`, they add or are lent a Claude account, and a task of theirs
+   reaches `ready`, they add or are lent a Claude account, and an agent of theirs
    runs.
 3. In the same step, the `u-bogdan` record is confirmed `ready` (it is written
    `ready` by the migration, §3.3), every other existing personal tenant with
@@ -2037,7 +2037,7 @@ prod a platform admin enters only the group workspaces they are a member of.
 
 ### 6.6 The QA identity's service workspace (qa-identity, #1649)
 
-Recorded 2026-10-20 by lane QI-DOCS. A `claude-code-browser` task that names
+Recorded 2026-10-20 by lane QI-DOCS. A `claude-code-browser` agent that names
 `input.qa_identity: "console"` has its live browser signed in to the console
 as a QA service account, so that a visual QA run sees the real console
 without a person signing in. What that account can see is exactly one
@@ -2066,11 +2066,11 @@ workspace. That is why it is recorded here.
   exercise submit and cancel flows in its own workspace. The WD6 submission
   gate does not judge it: it exempts every service account
   (`apps/swarm-api/swarm_api/workspaces.py::Workspaces.applies_to`). So
-  its task is accepted, and a task whose profile needs a provider then parks
+  its agent is accepted, and an agent whose profile needs a provider then parks
   `CREDENTIAL_MISSING` at scheduler admission, before any lease
   (`apps/scheduler/scheduler/loop.py::Scheduler._admit_one`), because the
   tenant has no key and no pool account. It does not stay `QUEUED`, as Q3 (a)
-  in qa-identity.md §7 put it; the code is the fact. A `PARKED` task costs
+  in qa-identity.md §7 put it; the code is the fact. A `PARKED` agent costs
   nothing (invariant 1). Do not lend it one without the owner's decision:
   that is Q3 (b), which was not chosen.
 * **Who may use it** is a separate grant, not membership. A platform admin
@@ -2080,14 +2080,14 @@ workspace. That is why it is recorded here.
   `/v1/admin/qa-identities/{identity}/grants/{tenant_id}` and revoked with
   `DELETE` on it. A member reads its own tenant's answer with `GET` on
   `/v1/qa-identities/mine`. The QA workspace's own tenant cannot be
-  granted (`qa_identity_self`): its own tasks would sign in as itself.
-* **What every granted tenant shares.** Each granted tenant's QA tasks see the
+  granted (`qa_identity_self`): its own agents would sign in as itself.
+* **What every granted tenant shares.** Each granted tenant's QA agents see the
   same QA workspace, and anything one of them leaves there, another can
   see (qa-identity.md §3.7). Keep secrets, real repositories and real
   people out of it.
 * **Removing it** is the service-workspace path of
   [runbooks/tenant-offboarding.md](runbooks/tenant-offboarding.md). Revoke
-  every grant first, so that no task signs in to a workspace being taken
+  every grant first, so that no agent signs in to a workspace being taken
   apart.
 
 ## 7. Deprovisioning (a follow-up, not built now)
@@ -2333,7 +2333,7 @@ submissions; team (group) submissions are never blocked.
 
 **Decided 2026-10-08 (owner): (a), made precise.** The gate ships **off**. It
 is turned on only after one real person has been approved through the console
-end to end (workspace ready and a task run), with the existing personal
+end to end (workspace ready and an agent run), with the existing personal
 tenants (`u-bogdan`) marked ready in the same step (§5.5).
 
 ### WD9. Bucket and project grants: role-bounded, or member-bounded?
@@ -2410,9 +2410,9 @@ phases. New files are named without their root.
 | W8 | 3 | the console: the checklist steps, the progress view, the Submit banners, Admin → People; the plugin: `sc setup`, `swarm_setup_workspace`, `/sc:setup`; the issue forms' "Where" list | `apps/swarm-ui/src/GitHubConnect.tsx`, `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/Submit.tsx`, `apps/swarm-ui/src/SubmitWorkflow.tsx`, `apps/swarm-ui/src/App.tsx`, new `People.tsx` in apps/swarm-ui/src, `apps/swarm-mcp/swarm_mcp/sc.py`, `apps/swarm-mcp/swarm_mcp/server.py`, `plugin/commands/setup.md`, `.github/ISSUE_TEMPLATE/` | W1, W7 |
 | W9 | 4 | **the `u-bogdan` migration**: the `removed` blocks in both layers, its removal from `dev.tfvars`, the record, and a `--mode verify` run; the release's plan must read 0 to add, 0 to change, 0 to destroy | `terraform/infra/removed.tf`, `terraform/bootstrap/removed.tf`, `terraform/environments/dev/dev.tfvars`, `scripts/workspace-migrate-record.sh` | W4, W6 |
 | W10 | 8 (was 5) | **Done 2026-10-13**: the first approval end to end through the job (w-7f9285, ready 05:05Z; [multi-tenancy §7.5](multi-tenancy.md#75-the-first-end-to-end-run-2026-10-12-to-13)), the docs below, and `workspace_gate = true` in dev.tfvars, held for the owner's merge. Was: the first real approval end to end, **through the job**, then `WORKSPACE_GATE=on` (WD8); docs: multi-tenancy, offboarding runbook, onboarding, ci.md (the Cloud Run job `swarm-workspace-apply`, how it is started, and where its logs are: the restricted bucket of §2.6), register-tenant.sh's header | `docs/multi-tenancy.md`, `docs/runbooks/tenant-offboarding.md`, `docs/onboarding.md`, `docs/ci.md` | W5, W8, W9, W4b, W6b, W7b |
-| W0b | 6 | **verification for the 2026-10-10 re-decision, no code**, each result dated in this document: **(1), before W4b is applied:** that Cloud Run checks `iam.serviceAccounts.actAs` on the job's account on every `jobs.update` and `jobs.create`, including one that leaves the account unchanged, read from Google's documentation and shown by a refused update from an account holding `run.jobs.update` but no `actAs` (§2.3; if it does not, stop and ask the owner); (2) that `runWithOverrides` carries only arguments, environment variables, task count and timeout, and whether an override may set `CLOUD_RUN_*` or `LD_*` names (§2.2 step 0, §2.4 R6); (3) every principal holding, at the project level in the shared project, `actAs` or token-creator, and `run.jobs.run`, `runWithOverrides`, `update` or `setIamPolicy` (§2.3); and on the first execution after W4b: (4) that its output reaches Cloud Logging without `roles/logging.logWriter`, and its image is pulled without `swarmImagePuller`; (5) that its entries carry `resource.labels.job_name`, land in the restricted bucket and not in `_Default`; (6) that direct VPC egress reaches the control plane: the public endpoint through Cloud NAT in dev, the private endpoint from the swarm subnet where it is private; (7) **option (ii) only:** whether `roles/workflows.invoker` can be granted narrower than the project, and whether this project needs the Pub/Sub service agent's token-creator grant for Eventarc | `docs/workspaces.md` | the owner's choice in §2.1 for (7) |
-| W6b | 6 | **the job's image and entrypoint**: `images/workspace-apply/Dockerfile` copies in, read-only under `/opt/swarm`, `scripts/register-tenant.sh`, `scripts/lib/`, `kubernetes/`, `apps/common/swarm_common` and `quota_broker`, and sets no `ENTRYPOINT` the job relies on (the job's `command` is W4b's); new `entry.py` (§2.2 step 0: discard the environment, metadata-server project and region, `CLOUD_RUN_EXECUTION` checked against `WS_BUILD_RE`, task count one, own 1800-second deadline, `execve` with the fixed environment); new `scripts/workspace-apply.sh` (steps 1 to 3, the build file's lines, with the two-argument check and exit 3 as success), which replaces `scripts/cloudbuild/workspace-apply.yaml`, deleted; `register-tenant.sh`'s header and `BUILD_ID` wording; CODEOWNERS on `entry.py`, `scripts/workspace-apply.sh` and the Dockerfile in place of the build file; the PR-check expectation that the guard and the script now rebuild `workspace-apply`; a unit test that every environment variable handed to `entry.py` is gone in the child, that any argument list but `[<w-id>, <mode>]` is refused, and that a task count other than one is refused | `images/workspace-apply/Dockerfile`, new `images/workspace-apply/entry.py`, new `scripts/workspace-apply.sh`, `scripts/cloudbuild/workspace-apply.yaml` (deleted), `scripts/register-tenant.sh` (comments and the `BUILD_ID` message only), `.github/CODEOWNERS`, `tests/unit/scripts/test_build_images_pr_check.py`, `tests/unit/scripts/test_register_tenant_workspace.py`, new `tests/unit/scripts/test_workspace_apply_entry.py` | W6 (built) |
-| W4b | 7 | **Terraform, owner-approved once**: in `workspace_deployer.tf`, `google_cloud_run_v2_job.workspace_apply` in place of `google_cloudbuild_trigger.workspace_apply` (the image by digest, `command` `python3 -I /opt/swarm/entry.py`, one task, `max_retries = 0`, timeout 1800s, direct VPC egress `ALL_TRAFFIC` into the swarm subnet with the worker network tag, so `modules/network`'s worker-ingress deny covers it, `managed-by=swarm-terraform`) and its authoritative `google_cloud_run_v2_job_iam_policy` naming the chosen dispatcher only; the sink and exclusion filter re-targeted at `resource.type="cloud_run_job" AND resource.labels.job_name="swarm-workspace-apply"`; `workspace_deployer_pull` removed, and `roles/logging.logWriter` if W0b (4) says so; `workspace_apply_builder_image` renamed `workspace_apply_image`, `workspace_apply_repository` removed, the swarm subnet named; the alerts of §2.4 re-targeted, plus the alert on a `jobs.run` from any other caller. **Option (ii):** new `workspace_dispatch.tf` (the account `swarm-workspace-dispatch` with its policy written empty, the workflow, the Eventarc trigger on the existing topic, the run role on the job, the invoker grant) and the workflow's source, and the Workflows and Eventarc APIs in infra's service list. **Option (i):** the topic and its publisher binding removed, and swarm-api's run role bound on the job. `terraform test` for each | `terraform/bootstrap/workspace_deployer.tf`, `terraform/bootstrap/variables.tf`, `terraform/modules/monitoring/workspace_alerts.tf`, `scripts/lib/unlabelable-types.json` (drop `google_cloudbuild_trigger`), `tests/terraform/workspace_deployer.tftest.hcl`, `tests/terraform/personal_workspaces_absent.tftest.hcl`; option (ii) adds new `terraform/bootstrap/workspace_dispatch.tf`, new `terraform/bootstrap/workflows/workspace-apply.yaml`, `terraform/infra/main.tf` (the service list only) and new `tests/terraform/workspace_dispatch.tftest.hcl` | W0b (1), W6b (its image promoted, for the digest), the owner's choice |
+| W0b | 6 | **verification for the 2026-10-10 re-decision, no code**, each result dated in this document: **(1), before W4b is applied:** that Cloud Run checks `iam.serviceAccounts.actAs` on the job's account on every `jobs.update` and `jobs.create`, including one that leaves the account unchanged, read from Google's documentation and shown by a refused update from an account holding `run.jobs.update` but no `actAs` (§2.3; if it does not, stop and ask the owner); (2) that `runWithOverrides` carries only arguments, environment variables, agent count and timeout, and whether an override may set `CLOUD_RUN_*` or `LD_*` names (§2.2 step 0, §2.4 R6); (3) every principal holding, at the project level in the shared project, `actAs` or token-creator, and `run.jobs.run`, `runWithOverrides`, `update` or `setIamPolicy` (§2.3); and on the first execution after W4b: (4) that its output reaches Cloud Logging without `roles/logging.logWriter`, and its image is pulled without `swarmImagePuller`; (5) that its entries carry `resource.labels.job_name`, land in the restricted bucket and not in `_Default`; (6) that direct VPC egress reaches the control plane: the public endpoint through Cloud NAT in dev, the private endpoint from the swarm subnet where it is private; (7) **option (ii) only:** whether `roles/workflows.invoker` can be granted narrower than the project, and whether this project needs the Pub/Sub service agent's token-creator grant for Eventarc | `docs/workspaces.md` | the owner's choice in §2.1 for (7) |
+| W6b | 6 | **the job's image and entrypoint**: `images/workspace-apply/Dockerfile` copies in, read-only under `/opt/swarm`, `scripts/register-tenant.sh`, `scripts/lib/`, `kubernetes/`, `apps/common/swarm_common` and `quota_broker`, and sets no `ENTRYPOINT` the job relies on (the job's `command` is W4b's); new `entry.py` (§2.2 step 0: discard the environment, metadata-server project and region, `CLOUD_RUN_EXECUTION` checked against `WS_BUILD_RE`, agent count one, own 1800-second deadline, `execve` with the fixed environment); new `scripts/workspace-apply.sh` (steps 1 to 3, the build file's lines, with the two-argument check and exit 3 as success), which replaces `scripts/cloudbuild/workspace-apply.yaml`, deleted; `register-tenant.sh`'s header and `BUILD_ID` wording; CODEOWNERS on `entry.py`, `scripts/workspace-apply.sh` and the Dockerfile in place of the build file; the PR-check expectation that the guard and the script now rebuild `workspace-apply`; a unit test that every environment variable handed to `entry.py` is gone in the child, that any argument list but `[<w-id>, <mode>]` is refused, and that an agent count other than one is refused | `images/workspace-apply/Dockerfile`, new `images/workspace-apply/entry.py`, new `scripts/workspace-apply.sh`, `scripts/cloudbuild/workspace-apply.yaml` (deleted), `scripts/register-tenant.sh` (comments and the `BUILD_ID` message only), `.github/CODEOWNERS`, `tests/unit/scripts/test_build_images_pr_check.py`, `tests/unit/scripts/test_register_tenant_workspace.py`, new `tests/unit/scripts/test_workspace_apply_entry.py` | W6 (built) |
+| W4b | 7 | **Terraform, owner-approved once**: in `workspace_deployer.tf`, `google_cloud_run_v2_job.workspace_apply` in place of `google_cloudbuild_trigger.workspace_apply` (the image by digest, `command` `python3 -I /opt/swarm/entry.py`, one agent, `max_retries = 0`, timeout 1800s, direct VPC egress `ALL_TRAFFIC` into the swarm subnet with the worker network tag, so `modules/network`'s worker-ingress deny covers it, `managed-by=swarm-terraform`) and its authoritative `google_cloud_run_v2_job_iam_policy` naming the chosen dispatcher only; the sink and exclusion filter re-targeted at `resource.type="cloud_run_job" AND resource.labels.job_name="swarm-workspace-apply"`; `workspace_deployer_pull` removed, and `roles/logging.logWriter` if W0b (4) says so; `workspace_apply_builder_image` renamed `workspace_apply_image`, `workspace_apply_repository` removed, the swarm subnet named; the alerts of §2.4 re-targeted, plus the alert on a `jobs.run` from any other caller. **Option (ii):** new `workspace_dispatch.tf` (the account `swarm-workspace-dispatch` with its policy written empty, the workflow, the Eventarc trigger on the existing topic, the run role on the job, the invoker grant) and the workflow's source, and the Workflows and Eventarc APIs in infra's service list. **Option (i):** the topic and its publisher binding removed, and swarm-api's run role bound on the job. `terraform test` for each | `terraform/bootstrap/workspace_deployer.tf`, `terraform/bootstrap/variables.tf`, `terraform/modules/monitoring/workspace_alerts.tf`, `scripts/lib/unlabelable-types.json` (drop `google_cloudbuild_trigger`), `tests/terraform/workspace_deployer.tftest.hcl`, `tests/terraform/personal_workspaces_absent.tftest.hcl`; option (ii) adds new `terraform/bootstrap/workspace_dispatch.tf`, new `terraform/bootstrap/workflows/workspace-apply.yaml`, `terraform/infra/main.tf` (the service list only) and new `tests/terraform/workspace_dispatch.tftest.hcl` | W0b (1), W6b (its image promoted, for the digest), the owner's choice |
 | W7b | 7 | **swarm-api. Option (i):** `publish_workspace.py` becomes a caller of `jobs.run` on the one job with the two arguments (same `publish` contract: returns False, never raises, a failure stays `approved` for the sweep), its settings, and the Cloud Run client dependency. **Option (ii):** the module docstring's "Cloud Build trigger" becomes "Eventarc and Workflows start the Cloud Run job", and nothing else | `apps/swarm-api/swarm_api/publish_workspace.py`; option (i) adds `apps/swarm-api/swarm_api/settings.py`, `apps/swarm-api/pyproject.toml` and the publish tests under `tests/unit/control_plane/` | the owner's choice |
 | W11 | 9 | **removal, once the job ships** (the first execution has reached A9 and W0b (4) to (6) are dated): delete `terraform/bootstrap/cloudbuild_connection.tf` (its two custom roles and the two grants to Cloud Build's service agent) and any assertion that names it; the owner then deletes the `swarm-github` connection (`gcloud builds connections delete swarm-github --region=us-central1`), the `swarm-github-github-oauthtoken-*` secret Google's agent made for it, which deleting a connection does not remove, and uninstalls Google's Cloud Build GitHub App from the repository. `cloudbuild.googleapis.com` stays enabled: the release builds every image with Cloud Build. **Terraform half done 2026-10-13**, after the job took w-7f9285 through A1 to A9 to ready at 05:05Z: the file is deleted (a plain deletion, so the owner's next bootstrap apply destroys its four resources; `removed.tf`'s `destroy = false` is for grants that must stay live, and these must not), and `tests/unit/scripts/test_cloudbuild_connection_retired.py` holds every name it declared out of `terraform/`. **The owner's half is open**: the bootstrap apply and the three steps of "W11: retiring the Cloud Build connection" below | `terraform/bootstrap/cloudbuild_connection.tf` (deleted), `terraform/bootstrap/workspace_deployer.tf` (its comment), new `tests/unit/scripts/test_cloudbuild_connection_retired.py`, `tests/terraform/` (none names it, read 2026-10-10 and again 2026-10-13) | W4b applied, W10 |
 | — | later | deprovisioning (§7), with its own guard mode | — | the owner's decision then |
@@ -2539,7 +2539,7 @@ Re-read on 2026-10-10 against WD2's re-decision: every statement below holds
 under the Cloud Run job, under either dispatch option of §2.1.
 
 1. **Demand only from `LEASED`…`RUNNING`.** Requesting, approving and applying
-   a workspace create no task and no lease. A ready, idle workspace holds
+   a workspace create no agent and no lease. A ready, idle workspace holds
    nothing, and the job's execution is not a worker: it runs as
    `swarm-workspace-deployer`, not a tenant's worker identity, holds no lease,
    is created by Terraform and never by the dispatcher, and is no tenant's
@@ -2554,7 +2554,7 @@ under the Cloud Run job, under either dispatch option of §2.1.
    returns once the execution exists, and under option (ii) the workflow calls
    it with `skip_polling`.
 5. **Fencing.** Unchanged. The claim in A1 is the run's own fence: a second
-   execution, whoever started it and with whatever task count, finds
+   execution, whoever started it and with whatever agent count, finds
    `applying` with a live execution and exits, and a guard stop leaves
    nothing half-applied that a later run would trust: every step reads before
    it writes, and A9 re-reads everything before `ready`.

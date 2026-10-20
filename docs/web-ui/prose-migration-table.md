@@ -907,7 +907,7 @@ a component change and not only a prose change (§8).
 | `Accounts:2849` | not AVAILABLE, so nothing will be started on it |
 | `Accounts:2976` | only a person can replace this; it is a sign-in |
 | `Accounts:3073` | {n} agents hold this — move to DRAINING first |
-| `Submit:248` | the task may exist — check Agents before submitting again |
+| `Submit:248` | the agent may exist — check Agents before submitting again |
 | `SubmitWorkflow:359` | the workflow may exist — open the board before resubmitting |
 | `AgentDetail:2006` | do not open a pull request from this branch |
 | `AgentDetail:2025` | open the pull request by hand; re-running duplicates work |
@@ -1046,7 +1046,7 @@ what this table delivers on its own — no more than that.
 | `20 seconds` | `grep -n '20_000' apps/swarm-ui/src/Overview.tsx` | `:108` — same file as the prose at `:1446` |
 | `30 minutes` | `grep -rn 'DEFAULT_STALE_AFTER' apps/quota-broker` | `accounts.py:92`; 5 literal restatements in `Accounts.tsx` (`518`, `738`, `828`, `2834`, `3303`) |
 | resource weights | `sed -n '77,81p' apps/common/swarm_common/profiles.py` | `standard` 1, `browser` 2, `large` 4 — matches the prose, and `units` is on the wire |
-| task states | `grep -n 'class TaskState' -A 14 apps/common/swarm_common/states.py` | 12 members; `REAL_STATES` is 9 — `PlatformCounts.tsx:187` types "nine" out |
+| agent states | `grep -n 'class TaskState' -A 14 apps/common/swarm_common/states.py` | 12 members; `REAL_STATES` is 9 — `PlatformCounts.tsx:187` types "nine" out |
 
 **A correction this check produced.** The first spot-check pass failed 2 of 20.
 Both were legend rows cited at the `<dd>` line rather than the `<dt>` line, which

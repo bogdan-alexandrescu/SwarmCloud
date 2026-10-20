@@ -1,6 +1,6 @@
-# Incident, 2026-09-24: every `browser` task this platform ever accepted
+# Incident, 2026-09-24: every `browser` agent this platform ever accepted
 
-**Impact.** Every task whose runner profile resolved to `GKE_AUTOPILOT` failed,
+**Impact.** Every agent whose runner profile resolved to `GKE_AUTOPILOT` failed,
 from the day the backend shipped until 2026-09-24. `browser` is the only such
 profile, so the platform's entire browser capability was dead. It was never a
 regression: there is no commit that broke it and no earlier state to roll back
@@ -30,7 +30,7 @@ on a writable root. That sentence was false, and it is what hid cause 8. See
 cause 8 in §2; the cause 7 text below is corrected in place.
 
 **Duration.** Two days of active investigation (2026-09-23 to 2026-09-24), seven
-failed browser tasks, three investigations that went to IAM. Causes 1, 3, 5 and 7
+failed browser agents, three investigations that went to IAM. Causes 1, 3, 5 and 7
 below had been in the repository since GKE dispatch was written; cause 6 arrived
 on 2026-09-23 **inside the file written to fix cause 3**, which is the sharpest
 single fact in this record.
@@ -188,7 +188,7 @@ widened a grant in a shared project for no benefit.
 
 ### 5 — Smoke covered only `CLOUD_RUN_JOB`
 
-`make smoke` submitted one `mock` task and called the platform proven. `mock`
+`make smoke` submitted one `mock` agent and called the platform proven. `mock`
 resolves to Cloud Run. `browser` is the only profile on GKE, so the gate could
 not have failed while the entire GKE backend was dead — and did not, for as long
 as it was.
@@ -303,7 +303,7 @@ forbidden` before a container existed.
 ### 8 — The Job replaced the worker lifecycle with the bare runner
 
 Found later on 2026-09-24, while investigating `wf_ebb3ab2d65664707a559`. Four
-of that workflow's browser steps and one standalone task sat in `DISPATCHED`
+of that workflow's browser steps and one standalone agent sat in `DISPATCHED`
 with their leases unreleased, holding all 10 `resource:browser` slots, and no
 cancel could finish them.
 
@@ -313,7 +313,7 @@ is the **runner's** argv, `python -m agent_worker.runners.<x>`. A Kubernetes
 `command` replaces the image ENTRYPOINT, and the ENTRYPOINT of both worker images
 is `tini -- python -m agent_worker`, the worker **lifecycle**. The lifecycle is
 what checks the fencing generation (invariant 5), honours a requested cancel,
-moves the task through STARTING and RUNNING, heartbeats, checkpoints (invariant
+moves the agent through STARTING and RUNNING, heartbeats, checkpoints (invariant
 8), starts the runner as a supervised child, writes the terminal state and
 releases the lease. None of it ran on GKE, ever. A pod that dies without the
 lifecycle leaves its lease for the reconciler, and the reconciler could not read
@@ -378,10 +378,10 @@ describes what the code did at the time.
   `task.timeout_seconds`. The Job's deadline counts from Job creation, including
   node provisioning and the image pull. The lifecycle's deadline counts from its
   own start, minutes later. So the backend always SIGTERMed first. On SIGTERM
-  the lifecycle parks the task as `SCHEDULED_RETRY` rather than failing it, and
-  nothing promotes that park (see §5). A task that ran out of time would have
+  the lifecycle parks the agent as `SCHEDULED_RETRY` rather than failing it, and
+  nothing promotes that park (see §5). An agent that ran out of time would have
   stayed PARKED, and its workflow would have stuck again, this time because of
-  the fix. The backend deadline is now the task timeout plus
+  the fix. The backend deadline is now the agent timeout plus
   `dispatch_timeout_seconds` (the latest a lifecycle can start before the
   reconciler reclaims it) plus a 300s budget for the lifecycle's work after its
   own deadline. `backend_deadline_seconds` in `dispatch.py` is the only place
@@ -398,8 +398,8 @@ are all untested there. See §5.
 
 Specific, and honest about which half of the incident each would have covered.
 
-**Causes 1 through 5: smoke covering every backend.** One `browser` task in
-`make smoke` — that is, one task per *backend* rather than one task — would have
+**Causes 1 through 5: smoke covering every backend.** One `browser` agent in
+`make smoke` — that is, one agent per *backend* rather than one agent — would have
 failed on the day GKE dispatch was written and on every day after. This is the
 highest-value change in the whole incident and it is now in place
 (`scripts/smoke-test.sh`, a row per concrete backend, failing loudly when a
@@ -454,7 +454,7 @@ sees a runner's default path. What is now in place instead is an assertion that
 the two Job specs — the Python dict the dispatcher builds and the YAML templates
 `make lint` validates — agree on the environment keys that decide where the
 runner *writes* (`tests/unit/worker/test_kubernetes_manifests.py:1213`, keys and
-not values, because the values are per-task and the templates carry
+not values, because the values are per-agent and the templates carry
 placeholders). The comment in `dispatch.py` claiming the two "mirror each other
 field for field" had been true and had stopped being true, which is the third
 instance of that same defect in this incident, after the namespace prefix and the
@@ -484,7 +484,7 @@ three investigations did.
 Point kubectl at the swarm cluster first — `make kubectl`, then export the
 `KUBECONFIG` it prints. Everything below assumes it.
 
-**Step 1: read the scheduler's own message, not the task's error.** The tenant-
+**Step 1: read the scheduler's own message, not the agent's error.** The tenant-
 facing `last_error` is a code; the upstream text is in the log.
 
 ```bash
@@ -581,7 +581,7 @@ what to do about them.
 Recorded because an unverified claim in this repository becomes a runbook step
 someone follows at 3am.
 
-* **That a browser task now completes.** As of `ffa82e3` the deployed scheduler
+* **That a browser agent now completes.** As of `ffa82e3` the deployed scheduler
   was still the pre-merge image (tag `7c5276212251`), so causes 1, 6 and 7 are
   fixed in the repository and not yet in the running deployment. The claim these
   commits make is that each named defect was real and is now absent from the
@@ -602,23 +602,23 @@ someone follows at 3am.
   only as an image `ENV` in `agent-runtime-browser`) through to the runner
   child, whose `HOME` is its work directory. Playwright should therefore look
   for Chromium under the workspace rather than `/opt/playwright`. The cheapest
-  proof is one task:
+  proof is one agent:
   `scripts/prove-gke-dispatch.sh --timeout 900`.
 
   *Added 2026-09-24:* that script now exists and the release runs it after
-  every deploy, after the smoke test. It submits one `browser` task and asserts
+  every deploy, after the smoke test. It submits one `browser` agent and asserts
   four things separately — dispatched, and to `GKE_AUTOPILOT`; `SUCCEEDED`; an
   artifact under the tenant's own prefix; its lease released — and on failure
-  prints the attempt's own error, which is where cause 7's traceback appears. A
-  task PARKED on `CREDENTIAL_MISSING` fails at once, saying it proves nothing
+  prints the attempt's own error, which is where cause 7's traceback appears. An
+  agent PARKED on `CREDENTIAL_MISSING` fails at once, saying it proves nothing
   about GKE, rather than waiting out its timeout.
 
   *The lease check, corrected.* The first version read the lease from the
-  task's `current_lease_id`. The worker clears that field in the same write
-  that makes the task terminal (`control.finish()`), so on the real platform
+  agent's `current_lease_id`. The worker clears that field in the same write
+  that makes the agent terminal (`control.finish()`), so on the real platform
   the check failed on every successful run. The fake platform it was tested
   against kept the field, a state the platform never produces, so the tests
-  stayed green. The script now names every lease the task held from its
+  stayed green. The script now names every lease the agent held from its
   events: the scheduler writes `lease_id` on `lease_acquired` and on
   `dispatched`. It then waits up to 60 seconds for each one to read as
   released, because `finish()` writes the terminal state before it releases
@@ -641,8 +641,8 @@ someone follows at 3am.
   merges is the first real run — and it needs the release identity's tenant to
   hold an anthropic credential, or it will fail on `CREDENTIAL_MISSING`, by
   design.
-* **A worker that is SIGTERMed still strands its task.** The lifecycle's SIGTERM
-  path (`_handle_interruption`) parks the task `PARKED/SCHEDULED_RETRY` with
+* **A worker that is SIGTERMed still strands its agent.** The lifecycle's SIGTERM
+  path (`_handle_interruption`) parks the agent `PARKED/SCHEDULED_RETRY` with
   `next_eligible_at=now` and releases the lease. Nothing in the platform moves a
   `SCHEDULED_RETRY` park back to READY. The scheduler sweeps only
   `DEPENDENCY_INCOMPLETE`, `CREDENTIAL_MISSING` and the three `PROVIDER_*`
@@ -650,7 +650,7 @@ someone follows at 3am.
   promoter. [quota-management.md](../quota-management.md) §4 says this reason is
   "unparked by `next_eligible_at`", and no code does that. The deadline fix in
   cause 8 removes the one trigger that was certain to hit. Any other SIGTERM (an
-  instance or node going away) still leaves the task PARKED for ever. That
+  instance or node going away) still leaves the agent PARKED for ever. That
   promoter is not in this change. The frozen state machine allows PARKED to go
   only to READY, CANCELLED or DEAD_LETTERED, and admission does not check the
   retry cap, so whoever builds it has to decide what an interrupted last attempt

@@ -41,7 +41,7 @@ six months is usually that its cost was never recorded.
 
 **Amended 2026-10-01 by owner decision; the spec moved to match the code, not
 the other way round.** This section originally made GKE Autopilot the sole
-execution substrate, with every task a pod, and retired Cloud Run Jobs. That was
+execution substrate, with every agent a pod, and retired Cloud Run Jobs. That was
 never built. What runs is (the last three are #295's, accepted 2026-10-01 and
 disabled for every tenant; no Job exists for them yet):
 
@@ -57,7 +57,7 @@ disabled for every tenant; no Job exists for them yet):
 | `claude-code-review` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (not moved by #939 option A: designed to run as its own account, which a GKE pod cannot be; contract request 66) |
 | `indexer` | GKE Autopilot | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 48, accepted by the owner 2026-10-05; claude-code on `agent-runtime-indexer`; on GKE Autopilot since contract request 63, 2026-10-10, the canary for #939; its tenants' Cloud Run Jobs are kept, idle, as the rollback) |
 | `claude-code-browser` | GKE Autopilot | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 67, accepted by the owner 2026-10-11; claude-code on `agent-runtime-browser` and the `browser` class, so an agent can render and screenshot pages; GKE because Cloud Run cannot size Chromium's `/dev/shm`) |
-| `await-input` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract requests 93 and 94, accepted by the owner 2026-10-17, docs/design/human-steps.md: a `control_plane` profile that nothing runs on any backend -- swarm-api ends its tasks -- so the backend is the catalogue's statement only, and it has no Job (`profiles_without_a_job`); shipped unavailable, available since request D, contract request 105) |
+| `await-input` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract requests 93 and 94, accepted by the owner 2026-10-17, docs/design/human-steps.md: a `control_plane` profile that nothing runs on any backend -- swarm-api ends its agents -- so the backend is the catalogue's statement only, and it has no Job (`profiles_without_a_job`); shipped unavailable, available since request D, contract request 105) |
 
 `BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py::BackendRouter.for_backend`) sends
 `CLOUD_RUN_JOB` to `CloudRunJobDispatcher`
@@ -97,10 +97,10 @@ Run does not, and mandatory periodic checkpointing is what makes those cost
 minutes.
 
 **What this costs, plainly.** Two backends means two dispatchers, two reap
-paths and two log paths, and a dashboard that has to say which one a task ran
+paths and two log paths, and a dashboard that has to say which one an agent ran
 on. That is the "which backend" branching this section originally set out to
 delete, kept on purpose. `kubectl exec` and `kubectl logs -f` exist for browser
-tasks only; a Cloud Run task is read through Cloud Logging and the structured
+agents only; a Cloud Run task is read through Cloud Logging and the structured
 events. The gVisor shape in §2.2 is a render option for GKE pods
 (`kubernetes/render.py::JOB_FILES_GVISOR`, `--runtime gvisor`), not the default, and does not
 apply to Cloud Run Jobs at all.
@@ -131,7 +131,7 @@ undesirable (CONTRACT.md invariant 6).
 
 **Zero-idle stays a property of the workload, and mostly of the bill too.**
 Cloud Run Jobs costs nothing between executions. The GKE side carries the
-cluster management fee (~$0.10/hr list) whether or not a browser task runs;
+cluster management fee (~$0.10/hr list) whether or not a browser agent runs;
 verify that against the actual bill rather than trusting this sentence.
 
 ### 2.2 Isolation: root inside the pod, gVisor underneath
@@ -150,7 +150,7 @@ verify that against the actual bill rather than trusting this sentence.
 
 Agents run as **root with a writable root filesystem** and can `apt-get install`
 anything. This is required: an agent that cannot install the tool it needs is an
-agent that fails at the first unanticipated task.
+agent that fails at the first unanticipated agent.
 
 Root removes most of the in-container defence — read-only rootfs and dropped
 capabilities were doing that work. So the boundary moves down a layer:
@@ -197,7 +197,7 @@ is a measurement, not an argument, and §8.3b is taking it.
   **The decision stands, provisionally.** An agent's wall clock is dominated by
   inference, so 19 extra seconds of file work against minutes of waiting may be
   noise. That is a hypothesis, not a finding. **The number that settles it is a
-  real `claude-code` agent doing a real task, sandboxed and not** — until that
+  real `claude-code` agent doing a real agent, sandboxed and not** — until that
   exists, this is a known risk carried deliberately rather than a solved
   problem.
 
@@ -257,10 +257,10 @@ tenant.
 > ```
 >
 > `sc:remote` is the sc plugin's agent (`plugin/agents/remote.md`; usage at
-> `plugin/README.md` (`and its prompt is what the remote agent is told`)). It dispatches its prompt as one `claude-code` task on
+> `plugin/README.md` (`and its prompt is what the remote agent is told`)). It dispatches its prompt as one `claude-code` agent on
 > the session's repository and pushed branch, follows it, and returns the remote
 > agent's answer, or, given a `schema`, the JSON object parsed from the end of
-> that answer. A schema-mode call can throw when the task does not succeed, so
+> that answer. A schema-mode call can throw when the agent does not succeed, so
 > give the schema a nullable `state`/`error` or catch it; the plugin README says
 > how. Remote steps still mix freely with local `agent()` steps, and each one is
 > an ordinary row in `/workflows`. It stays visibly remote: the step names
@@ -269,7 +269,7 @@ tenant.
 >
 > The `swarm.dispatch` / `swarm.collect` shape below survives as the bridge's
 > MCP tools for a session that is not running a workflow script:
-> `swarm_dispatch` takes one task, or a `tasks` list checked in full and sent as
+> `swarm_dispatch` takes one agent, or a `tasks` list checked in full and sent as
 > one request (`apps/swarm-mcp/swarm_mcp/server.py::_dispatch_batch`), and `swarm_collect`
 > gathers the results.
 
@@ -621,10 +621,10 @@ global number:
    Catches a hung network call, a deadlocked process, a CLI waiting on a prompt
    nobody will answer.
 2. **Token burn with no file changes** — the expensive loop. A research or review
-   task looks *exactly* like this, which is why the threshold is per profile and
+   agent looks *exactly* like this, which is why the threshold is per profile and
    the first action is a warning, not a kill.
 3. **Hard ceilings** — wall clock, tokens, spend. Blunt, predictable, and
-   impossible to argue with. Per profile, overridable per task.
+   impossible to argue with. Per profile, overridable per agent.
 4. **Repetition** — identical tool calls in sequence, or a file edited back and
    forth. Precise, few false positives, and only detectable because §2.7 gives
    structured events.
@@ -641,7 +641,7 @@ without a checkpoint; never terminate without recording which rule fired.
 
 The work agent opens the PR and **exits**, releasing its pod, its memory and its
 slot. A small dedicated merge agent watches CI, merges when green, and watches
-the deploy. On red, it reopens the task with the failure as new input.
+the deploy. On red, it reopens the agent with the failure as new input.
 
 The reason is resource shape, not tidiness: CI can take twenty minutes, and that
 would otherwise be twenty minutes of an 8 GiB pod doing nothing. Merge policy
@@ -770,7 +770,7 @@ installs into its own user paths -- `uv tool`, `npm` prefix, `pip --user`.)
 
 v1 built these and they are correct. They are not rewritten:
 
-* Durable task state in Firestore; infrastructure follows admitted work.
+* Durable agent state in Firestore; infrastructure follows admitted work.
 * Execution leases with fencing generations. A stale worker exits without running
   the agent and without touching the lease.
 * Concurrency counted from `LEASED`, never from `RUNNING`.
@@ -836,7 +836,7 @@ deleted. They carry four of the five profiles.
 
 The original argument — a backend nobody exercises is a backend that rots —
 still holds, and is why the GKE path is not dormant either: the `browser`
-profile exercises it on every browser task.
+profile exercises it on every browser agent.
 
 The control-plane services stay on Cloud Run, and so does most execution.
 
@@ -889,7 +889,7 @@ compared to discovering the answer halfway through.
 >
 > * row 3b: whether `microvm` beats gVisor;
 > * row 4: whether a real `claude-code` agent pays gVisor's 2.5×;
-> * row 5: Autopilot cold start for short agent tasks.
+> * row 5: Autopilot cold start for short agents.
 >
 > The work to take them, the GKE benchmark lane, was removed when the owner
 > kept Cloud Run Jobs primary (2026-10-01, §2.1). `claude-code` ran on Cloud
@@ -911,7 +911,7 @@ compared to discovering the answer halfway through.
 | 3c | ~~Real gVisor overhead?~~ **ANSWERED: 2.5× overall, 5–8× on file traversal** — not the 10–15% assumed | §2.2 — decision held, but now on an explicit hypothesis that agents are inference-bound |
 | 3b | **NEW: `microvm` (kata-clh) is also on the cluster.** A real VM with a real Linux kernel: a STRONGER boundary than gVisor, usually FASTER on syscall-heavy work, at a declared 250m CPU + 130Mi per pod | §2.2 was decided before anyone knew this existed. The benchmark settles it |
 | 4 | Does a REAL agent actually pay that 2.5×, or is it lost in inference latency? | §2.2 — the only measurement that settles root-in-pod |
-| 5 | Autopilot pod cold start, p50 and p99? | if p99 is minutes, short tasks need a different answer |
+| 5 | Autopilot pod cold start, p50 and p99? | if p99 is minutes, short agents need a different answer |
 | 6 | Firestore contention at 100 admissions/min? | §2.11 — measure before designing the sharding |
 | 7 | Does IAP in front of an internal LB actually give the API a usable `hd` claim? | §2.8 and every multi-user claim |
 | 8 | Do multiple subscription accounts, pooled this way, sit right with Anthropic's terms? | §2.6 entirely — worth answering before building on it |

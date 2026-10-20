@@ -12,7 +12,7 @@ Identity-Aware Proxy. It builds most of this repository: a pull request whose
 commit says *"Made by the worker for task …"* was written by a SwarmCloud agent,
 reviewed by another, and merged through the pipeline described below.
 
-> **Status, read from `main` on 2026-10-07.** Agents run end to end: a task is
+> **Status, read from `main` on 2026-10-07.** Agents run end to end: an agent is
 > authenticated, attributed to a tenant, admitted, dispatched to a Cloud Run Job,
 > runs Claude Code or Codex against a cloned repository, checkpoints, and
 > publishes a pull request as the person who dispatched it. Issue runs, the CI
@@ -33,11 +33,11 @@ desired work → durable task state → eligibility + quota check
 ```
 
 Infrastructure follows admitted work. It never leads it. A backlog of ten
-thousand tasks produces zero pods, because nothing creates compute until it
+thousand agents produces zero pods, because nothing creates compute until it
 holds a lease. A worker that hits a long provider wait checkpoints, parks,
 releases its lease and exits; it does not sleep.
 
-The same rule extends upward. A workflow is a graph of tasks; an issue run is a
+The same rule extends upward. A workflow is a graph of agents; an issue run is a
 workflow planned from a GitHub issue; a merge step that waits for CI parks the
 same way a quota wait does. Every layer waits as a Firestore row.
 
@@ -118,7 +118,7 @@ after an attempt's first, and back off while the tree is unchanged.
 Admission reserves every applicable pool — global, tenant, resource class,
 runner profile, backend and, for a provider, the provider and the tenant's share
 of it — in one Firestore transaction or none of them, so a slow start cannot
-oversubscribe and a half-reserved task cannot strand a slot. A pool with no
+oversubscribe and a half-reserved agent cannot strand a slot. A pool with no
 `hard_limit` is refused as `POOL_LIMIT_UNSET` (#374) rather than read as
 unlimited.
 
@@ -160,7 +160,7 @@ start and lists choices with `swarm_tenants`. Browser-fetched downloads carry
 
 Authentication is a Google ID token restricted to a hosted domain. There is no
 shared platform bearer token: a shared secret carries no identity, and without
-identity there is no tenant to attribute a task to.
+identity there is no tenant to attribute an agent to.
 
 **Firestore has no per-database IAM boundary.** IAM Conditions are not evaluated
 on Firestore's data plane, and server SDKs bypass Security Rules, so any swarm
@@ -175,11 +175,11 @@ request carrying it goes through one opener that follows no redirect (#645).
 
 ## How work flows
 
-**A task** is one agent run: a runner profile, an input, a timeout. It moves
+**An agent** is one agent run: a runner profile, an input, a timeout. It moves
 `SUBMITTED → QUEUED → READY → LEASED → DISPATCHED → STARTING → RUNNING`, may sit
 `PARKED` on a quota wait, a dependency or a CI wait, and ends `SUCCEEDED`,
 `FAILED`, `CANCELLED` or `DEAD_LETTERED`; only the four from `LEASED` to
-`RUNNING` hold capacity. A finished task releases its dependants and
+`RUNNING` hold capacity. A finished agent releases its dependants and
 runs one admission pass at once through a `task_finished` wake, with the
 1-minute tick kept as the safety net (#636).
 
@@ -232,12 +232,12 @@ Everything in this section is on `main` as of 2026-10-07 unless it says
 *planned*, with the issue that tracks it.
 
 **The core platform** — authenticated, tenant-attributed, atomically admitted
-tasks; dispatch to Cloud Run Jobs and GKE Autopilot; fencing; lease heartbeats
+agents; dispatch to Cloud Run Jobs and GKE Autopilot; fencing; lease heartbeats
 that outlive a CPU-saturated agent, a checkpoint, the egress wait and the clone
 (#426, #742); a reconciler that fences and repairs dead workers, cancels an
 execution whose cancel is older than 600 s (#627), detects stalled workflows and
 promotes ready parked steps (#616), and gives back account holds an attempt did
-not release (#380). Task results report cost over every attempt, with the last
+not release (#380). Agent results report cost over every attempt, with the last
 attempt as secondary (#681).
 
 **Agents that finish their work.** The claude-code runner refuses background
@@ -245,7 +245,7 @@ commands, runs the expected-outputs check and the publish credential scan before
 it ends, and resumes its session for up to two repair turns naming what failed
 (#618, #624). An agent may ask the owner in `questions.json`; the worker
 validates it and the bridge surfaces it (#693). Every published commit names the
-person who dispatched the task, not a bot (#764, #765), and an issue run's pull
+person who dispatched the agent, not a bot (#764, #765), and an issue run's pull
 request is titled by its issue.
 
 **Issue runs, end to end** (#454) — plan, approval, workflow, pull request, CI
@@ -254,7 +254,7 @@ was issue #808, fixed by worker-built PR #811 and merged on 2026-10-07.
 
 **The CI fixer on red pull requests** (#263). When `application` fails on a
 `swarm/<task-id>` branch, `ci-fix.yml` submits a one-step continuation of the
-task that wrote it, with the redacted failure excerpt; the fix is pushed onto
+agent that wrote it, with the redacted failure excerpt; the fix is pushed onto
 the red branch, never forced. Two tries per pull request in the workflow, a
 ceiling the API also holds, and each outcome is posted on the pull request
 (#728). It can continue an `integrate` workflow's integrator (#754). It was
@@ -308,7 +308,7 @@ plan that changes IAM is held, as the saved plan and its sha256, for the owner's
 review in the `dev-iam` environment and applied unchanged; it never re-plans and
 never runs on prod (#268). After verifying the new digests the release runs one
 `--self-test` execution of each Cloud Run worker job, so the 30-59 s first-run
-image import is not paid by a real task (#363). Release acceptance runs as the
+image import is not paid by a real agent (#363). Release acceptance runs as the
 smoke tenant against a private sandbox repository, never this public one (#628).
 
 **Onboarding** (#780, [`docs/onboarding.md`](docs/onboarding.md)). Designed: a

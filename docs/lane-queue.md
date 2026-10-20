@@ -90,7 +90,7 @@ A lane has one of three **sources**:
 
 | source | where its plan comes from | what it compiles to |
 |---|---|---|
-| `issue` | a planner task, exactly as an issue run's (`planner_task`) | `compile_plan` over the planner's plan |
+| `issue` | a planner agent, exactly as an issue run's (`planner_task`) | `compile_plan` over the planner's plan |
 | `brief` | the caller's brief: title, work items, territory | `compile_plan` over a ONE-step plan built from the brief, `requirements` = the work items, `files` = the territory |
 | `verify` | the caller's brief, read as "check, do not change" | a `collect` workflow (§6) |
 
@@ -103,17 +103,17 @@ does.
 ### 2.2 The states
 
 The lane machine is the lane's own, stored on its own document. It is
-**not** the frozen `TaskState`, and no lane state is written to a task: a
-lane's tasks are ordinary tasks of ordinary workflows, in ordinary task
+**not** the frozen `TaskState`, and no lane state is written to an agent: a
+lane's agents are ordinary agents of ordinary workflows, in ordinary agent
 states.
 
 | state | meaning | holds |
 |---|---|---|
 | `WAITING` | at least one `depends_on` is not merged yet | nothing |
-| `PLANNING` | (`issue` only) the planner task runs | the planner task's lease, like any task |
+| `PLANNING` | (`issue` only) the planner agent runs | the planner agent's lease, like any agent |
 | `PLANNED` | (`issue` only) the plan waits for its approval | nothing |
 | `QUEUED` | dependencies met, plan known; waiting for its territory | nothing |
-| `RUNNING` | territory held; the implement → review → fix workflow runs | territory lock; its tasks' leases while they run |
+| `RUNNING` | territory held; the implement → review → fix workflow runs | territory lock; its agents' leases while they run |
 | `CHECKING` | the pull request is open; CI is read at its head | territory lock |
 | `FIXING` | one continuation is fixing a red CI reading or rebasing (§4.3, §5.1) | territory lock; the round's lease while it runs |
 | `READY` | green at the head, reviewed `MERGE`, keyword block written; labelled `ready` or merge submitted | territory lock |
@@ -350,7 +350,7 @@ LQD review):
   publishes nothing; `fix` stays the workflow's one publisher;
 * the **final review** is `rereview` when `fix` ran and `review` when it was
   skipped (`review` said `MERGE`). `review.round` on the lane records which
-  (1 or 2) and `review.task_id` the task whose `verdict.json` was read;
+  (1 or 2) and `review.task_id` the agent whose `verdict.json` was read;
 * final review `MERGE` → condition 2 holds. Final review `NOT_YET` → the lane
   goes `FAILED` with `error` "the re-review after the fix still says NOT_YET",
   its findings on the lane, the pull request left open for a person — today's
@@ -430,9 +430,9 @@ A lane carries `allow_empty_diff` (default false):
   normal. If the integrator ends with `published_nothing` and the worker's
   `git` summary says zero commits and zero dirty files, the lane reads that
   as "nothing needed changing" and ends `VERIFIED`, recording the reason.
-  The TASK stays `FAILED`, honestly, until the frozen request in §14 lets the
+  The AGENT stays `FAILED`, honestly, until the frozen request in §14 lets the
   worker end it `SUCCEEDED`; the ledger records the lane's outcome, not the
-  task's.
+  agent's.
 
 A `VERIFIED` lane with an issue comments the verification on it, and closes
 it only when the lane says `close_on_verified: true` AND the review confirmed
@@ -600,14 +600,14 @@ that has not moved costs one document read; a lane in `CHECKING` or `READY`
 reads GitHub at most once per `CI_READ_SECONDS`, as an issue run does.
 
 **`apps/scheduler` does not change.** A lane submits its workflows through
-`submit_tasks`, as an issue run does, and its tasks are admitted, leased and
+`submit_tasks`, as an issue run does, and its agents are admitted, leased and
 dispatched exactly like any other's. The lane queue decides *which lanes may
-start* (dependencies, territory); admission decides *when their tasks run*
+start* (dependencies, territory); admission decides *when their agents run*
 (capacity). Keeping those apart is what lets the queue launch every eligible
 lane at once without touching the concurrency invariant: a lane launched into
-a full pool is a set of `QUEUED` tasks, which cost nothing. A lane's priority,
+a full pool is a set of `QUEUED` agents, which cost nothing. A lane's priority,
 if the owner wants one, rides on the existing workflow `priority` (-100 to
-100), which its tasks carry and `apps/scheduler/scheduler/fairness.py`
+100), which its agents carry and `apps/scheduler/scheduler/fairness.py`
 already orders by.
 
 When LQ8 moves issue runs onto lanes, `issue_run_advance` is removed in the
@@ -620,17 +620,17 @@ same change that makes `/v1/runs` a view, so one tick moves each document.
 ### Invariant 1: only LEASED/DISPATCHED/STARTING/RUNNING create demand
 
 A lane in `WAITING`, `PLANNED`, `QUEUED`, `BLOCKED`, `CHECKING` or `READY` is
-a Firestore document and nothing else: no task, no lease, no pending pod. The
-lane's work exists as tasks only while a workflow or a round is submitted,
-and those tasks hold capacity only in the four demand states, like every
-other task. A territory lock is not capacity and never touches a pool; a lane
-waiting for a lock waits as a document, never as a submitted task parked on a
+a Firestore document and nothing else: no agent, no lease, no pending pod. The
+lane's work exists as agents only while a workflow or a round is submitted,
+and those agents hold capacity only in the four demand states, like every
+other agent. A territory lock is not capacity and never touches a pool; a lane
+waiting for a lock waits as a document, never as a submitted agent parked on a
 lock, so the queue cannot become a backlog of pending pods.
 
 ### Invariant 2: capacity is reserved all-or-nothing
 
 The lane queue reserves no capacity at all; every reservation is still the
-admission transaction's, across every pool, for each task as it is admitted.
+admission transaction's, across every pool, for each agent as it is admitted.
 The territory lock borrows the same discipline for its own resource: a lane's
 whole territory, and under T2 its seam tokens, are acquired in one Firestore
 transaction with the lane's move to `RUNNING`, or not at all, so a lane never
@@ -640,10 +640,10 @@ holds half its files while waiting for the rest.
 
 Unchanged and untouched. The queue's own question — "may this lane start" —
 counts lanes holding territory, which is not concurrency, and the answer
-submits a workflow whose tasks are then counted from `LEASED` by admission,
+submits a workflow whose agents are then counted from `LEASED` by admission,
 not from `RUNNING`. The 12-of-40 ceiling measured in §1 was the operator's;
 the lane queue removes it by launching every eligible lane, and admission
-remains the only thing that bounds how many of their tasks hold a slot.
+remains the only thing that bounds how many of their agents hold a slot.
 
 ### Invariant 4: workers never sleep through a long wait
 
@@ -656,7 +656,7 @@ reason a `PLANNED` issue run is a document and not a parked step.
 
 ### Invariant 5: every attempt carries a fencing generation
 
-Lane tasks are ordinary tasks; every attempt keeps its generation and a stale
+Lane agents are ordinary agents; every attempt keeps its generation and a stale
 worker exits without running the agent. The lane adds its own fence of the
 same shape: every transition re-checks the state it moves from in the
 transaction, so the tick and a reader racing produce one move, and a round's
@@ -667,7 +667,7 @@ guarantees.
 ### Invariant 6: Spot is disabled platform-wide
 
 The lane queue chooses no backend, no node pool and no provisioning model;
-every task it submits is `claude-code` resolved by the frozen catalogue
+every agent it submits is `claude-code` resolved by the frozen catalogue
 (`resolve_backend`), which never selects Spot. Nothing in a lane's fields can
 express a Spot preference, and the add-lanes form has no such control, so a
 lane cannot reintroduce the preemption that Spot would bring to Autopilot
@@ -675,7 +675,7 @@ extended run time.
 
 ### Invariant 7: requests == limits
 
-The lane queue sets no resources. Every task it submits takes `claude-code`'s
+The lane queue sets no resources. Every agent it submits takes `claude-code`'s
 resource class from the frozen catalogue, where requests equal limits; a fix
 or rebase round is a continuation of the same profile and class. Nothing a
 caller sends to `POST /v1/lanes` can name a resource class or a size, so no
@@ -683,7 +683,7 @@ lane can ask for a burstable container.
 
 ### Invariant 8: mandatory periodic checkpointing
 
-Every lane task checkpoints like every task: the worker's periodic
+Every lane agent checkpoints like every agent: the worker's periodic
 checkpoints are not optional and the lane does not change their interval. The
 lane queue adds a second layer of survivability above them: a lane's state is
 its document, so a fix round lost to a crash, a cancellation or a reconciler
@@ -721,10 +721,10 @@ of it", one record per lane, and "what did this wave cost and where did its
 time go" by summing them.
 
 It is **not** `GET /v1/outcomes` (docs/outcomes.md,
-`apps/swarm-api/swarm_api/outcomes.py`), which buckets TASKS by when they
-ended. A lane is many tasks across several workflows; its outcome is the
-lane's (`MERGED` is a success even when one of its CI rounds' tasks failed),
-and its cost is every one of those tasks'. The two ledgers share the
+`apps/swarm-api/swarm_api/outcomes.py`), which buckets AGENTS by when they
+ended. A lane is many agents across several workflows; its outcome is the
+lane's (`MERGED` is a success even when one of its CI rounds' agents failed),
+and its cost is every one of those agents'. The two ledgers share the
 honesty rules: **null is not known, 0 is measured**, and a figure is placed by
 the lane's end.
 
@@ -734,7 +734,7 @@ the lane's end.
 |---|---|---|
 | `tenant_id`, `group`, `title`, `source`, `outcome` (`MERGED` \| `VERIFIED` \| `FAILED` \| `CANCELLED`), `lane_attempts` | the lane | never |
 | `created_at`, `ended_at`, `wall_seconds` | the lane's history | never once ended |
-| `cost_usd` | sum of `Attempt.cost_usd` over every attempt of every task of every workflow in `workflows[]`, plus the planner | every attempt unreported |
+| `cost_usd` | sum of `Attempt.cost_usd` over every attempt of every agent of every workflow in `workflows[]`, plus the planner | every attempt unreported |
 | `cost_complete`, `cost_unreported_attempts` | count of attempts whose `cost_usd` is null | never; says whether `cost_usd` is a floor |
 | `input_tokens`, `output_tokens`, `cache_read_input_tokens` | the same sum | as `cost_usd` |
 | `attempts`, `tasks`, `workflows` | counts | never |
@@ -742,7 +742,7 @@ the lane's end.
 | `waiting.dependencies_seconds` | time in `WAITING` | never |
 | `waiting.plan_approval_seconds` | time in `PLANNED` | not an `issue` lane |
 | `waiting.territory_seconds` | time in `QUEUED` | never |
-| `waiting.capacity_seconds` | per task, first attempt's `created_at` − task `created_at`, plus parked spans | a task never admitted |
+| `waiting.capacity_seconds` | per agent, first attempt's `created_at` − agent `created_at`, plus parked spans | an agent never admitted |
 | `waiting.ci_seconds` | `CHECKING` with checks pending | no pull request |
 | `waiting.merge_seconds` | `READY` → `MERGED` | not merged |
 | `review.round`, `review.verdict`, `review.findings` (≤ 20, redacted), `review.minors_count`, `review.requirements_met` | the final review's `verdict.json` (§5.2) | the review never ran |
@@ -757,7 +757,7 @@ the lane's end.
 ### 13.2 Derive, write, drift check
 
 The record is written in the transaction that ends the lane, and re-derived
-by the tick once more after `CI_READ_SECONDS × 2` (a task's spend is recorded
+by the tick once more after `CI_READ_SECONDS × 2` (an agent's spend is recorded
 before its terminal write, docs/outcomes.md "One basis per figure", so a
 re-read after the end is complete). A `:retry` re-opens the lane, and its next
 end rewrites the record with `lane_attempts` + 1 and the costs of both
@@ -799,7 +799,7 @@ not filed by this lane**:
 > its base is FAILED `published_nothing` by the worker
 > (`agent_worker.lifecycle._published_nothing`, request 46), with no way for
 > the step to say an empty diff is its correct outcome. A lane that verifies
-> "already done" therefore ends with a FAILED task.
+> "already done" therefore ends with a FAILED agent.
 > *Requested change:* `claude-code` declares an optional boolean runner input
 > `allow_empty_diff` (default false). When true, the worker ends a
 > pull-request step whose branch has nothing beyond its base `SUCCEEDED`,
@@ -808,8 +808,8 @@ not filed by this lane**:
 > input, so only the API can set it.
 > *What it would break:* nothing that exists; the input is optional. The
 > parity script's runner-input section follows it.
-> *If declined:* the interim of §6 stays: the lane reads the FAILED task as
-> `VERIFIED`, and the outcome ledger of tasks counts it as a failure.
+> *If declined:* the interim of §6 stays: the lane reads the FAILED agent as
+> `VERIFIED`, and the outcome ledger of agents counts it as a failure.
 > *Invariants:* 10 — a boolean input chosen by the API, not by a caller.
 
 ---

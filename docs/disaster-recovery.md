@@ -3,7 +3,7 @@
 What survives what, and how to get back.
 
 The platform is designed so that almost everything is **replayable**: images
-rebuild from git, infrastructure re-applies from Terraform, tasks re-run from
+rebuild from git, infrastructure re-applies from Terraform, agents re-run from
 their inputs. Three things are not replayable, and they are the ones this
 document is really about:
 
@@ -43,12 +43,12 @@ execution disappears
   -> work resumes, having lost at most one checkpoint interval
 ```
 
-Verify with the task's event stream: `generation_fenced` (if the old worker was
+Verify with the agent's event stream: `generation_fenced` (if the old worker was
 still alive), then `lease_acquired`, `checkpoint_restored`, `running`.
 
-If the task instead sits in `LEASED`, termination could not be confirmed on the
+If the agent instead sits in `LEASED`, termination could not be confirmed on the
 backend, and the slot is deliberately **not** released — see
-[troubleshooting.md](troubleshooting.md#a-task-is-stuck-in-leased-or-dispatched).
+[troubleshooting.md](troubleshooting.md#an-agent-is-stuck-in-leased-or-dispatched).
 
 ---
 
@@ -72,7 +72,7 @@ Or revert the commit and let `.github/workflows/application.yml` redeploy.
 cancel that is only requested as a `cancel_requested` event. No `swarm-api`
 image built before it can decode one: `EventType(data["type"])` raises
 `ValueError`, and `GET /v1/tasks/{id}/events` returns 500 for every page that
-holds such an event. That means every task cancelled while it held capacity
+holds such an event. That means every agent cancelled while it held capacity
 since the deploy. The events are permanent, so this lasts as long as the
 rollback does, not just one rollout. The console Timeline, `swarm_follow` and
 `swarm tail` report that history as unreadable, in the middle of the incident
@@ -92,9 +92,9 @@ git grep -q CANCEL_REQUESTED "${tag}" -- apps/common/swarm_common/states.py \
 
 While it is broken:
 
-* **the API being down stops submissions, not the fleet** — running tasks keep
+* **the API being down stops submissions, not the fleet** — running agents keep
   running, and the scheduler keeps draining the queue;
-* **the scheduler being down stops admission** — running tasks keep running, the
+* **the scheduler being down stops admission** — running agents keep running, the
   queue grows, and it costs nothing;
 * **the reconciler being down leaks capacity slowly** — stale leases accumulate,
   so the platform admits less over time. Not urgent for an hour; not something to
@@ -138,7 +138,7 @@ from the live leases. If you must restore while work is in flight:
 
 | Collection | Impact of loss |
 |---|---|
-| `tasks` | task history and queue; resubmittable from inputs if the caller kept them |
+| `tasks` | agent history and queue; resubmittable from inputs if the caller kept them |
 | `leases` | capacity accounting; harmless once nothing is running |
 | `pools` | limits; re-created by `terraform apply` |
 | `tenants` | tenant records; re-created by `register-tenant.sh` |
@@ -146,7 +146,7 @@ from the live leases. If you must restore while work is in flight:
 | `attempts`, `events` | audit trail; not recoverable, not operationally required |
 
 Checkpoints and artifacts live in GCS, not Firestore, so agent work survives a
-total Firestore loss — but the tasks that would resume from them do not, which is
+total Firestore loss — but the agents that would resume from them do not, which is
 why an export before any destructive operation is the habit.
 
 ---
@@ -242,7 +242,7 @@ gcloud secrets versions enable 3 --secret=swarm-tenant-eng-anthropic --project "
 ```
 
 If a secret is destroyed outright, the key is gone and the tenant re-registers
-it. Meanwhile their tasks park as `CREDENTIAL_MISSING` and cost nothing — they
+it. Meanwhile their agents park as `CREDENTIAL_MISSING` and cost nothing — they
 resume automatically when the key returns.
 
 ---

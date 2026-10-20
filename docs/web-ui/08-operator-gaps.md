@@ -222,13 +222,13 @@ was opened and read.
 7. **`operator-gaps.md` understates what is already indexed.** It says a usage-over-a-month
    chart "needs a composite index on `(tenant_id, created_at)`". That index exists:
    `attempts-tenant-created` at `terraform/modules/firestore/indexes.tf:171-178`. So do
-   `attempts-task-created` (`:162-169`), `leases-released-expires` (`:143-150`),
+   `attempts-agent-created` (`:162-169`), `leases-released-expires` (`:143-150`),
    `leases-state-dispatch-deadline` (`:133-140`), `leases-tenant-created` (`:152-159`) and
    the `COLLECTION_GROUP` `events-tenant-at` (`:181-188`). **Several screens the brief
    calls blocked on indexing are blocked only on a route.** No new composite index is
    required by anything in this section; in particular the admin `/stats` tenant-scoped
    count (`state == X AND tenant_id == Y`) is served by the `(tenant_id, state, …)` prefix
-   of `tasks-tenant-state-created` (`indexes.tf:85-93`).
+   of `agents-tenant-state-created` (`indexes.tf:85-93`).
 8. **An admin's `GET /v1/stats` is twenty-four aggregation queries.**
    `count_tasks_by_state` (`store.py:524-533`) issues one COUNT per `TaskState` — twelve
    (`states.py:18-31`) — and `service.stats()` calls it twice when `ctx.is_admin`: once
@@ -351,7 +351,7 @@ the first thing to look at.*
 * **Parked** — `tasks_by_state.PARKED`.
 * **Dead-lettered** — `tasks_by_state.DEAD_LETTERED`, in alert colour when > 0. Labelled
   **"currently dead-lettered"**, never "all time": `count_tasks_by_state`
-  (`store.py:524-533`) counts tasks *in* that state now, and `scripts/purge-data.sh:42`
+  (`store.py:524-533`) counts agents *in* that state now, and `scripts/purge-data.sh:42`
   purges the whole `tasks` collection, so an all-time framing would be wrong the first
   time anyone runs a purge.
 
@@ -403,7 +403,7 @@ nothing queried is the same lie in the other direction. Those chips arrive with 
 | binding constraint | computed client-side from those fields, per the three rules above |
 | oversubscribed flag | computed client-side: `active > effective_limit`, both from `pool_to_api` |
 | holding capacity | `active` of the pool named `global` |
-| task counters | `GET /v1/stats` → `routes/platform.py:13-19` → `service.stats()` (`service.py:271-288`) → `platform_tasks_by_state` (admin) or `tasks_by_state` |
+| agent counters | `GET /v1/stats` → `routes/platform.py:13-19` → `service.stats()` (`service.py:271-288`) → `platform_tasks_by_state` (admin) or `tasks_by_state` |
 | database name, project | `GET /readyz` (`routes/health.py:42-53`) — unauthenticated, returns `database` and `project` |
 | environment (`dev`/`prod`), region | **nowhere.** See below |
 | source strip | the `status`/`error`/`age_seconds` of each envelope (§0.2) |
@@ -445,12 +445,12 @@ And, by design rather than by gap:
 * `GET /v1/admin/dispatch`: one document read.
 * `GET /v1/stats` as admin: **24 aggregation queries** (trap 8). Aggregations bill one read
   per 1000 index entries scanned, minimum one.
-* **Budget: pools and dispatch at 10s; the task counters at 60s, on their own timer.** Do
+* **Budget: pools and dispatch at 10s; the agent counters at 60s, on their own timer.** Do
   not put them on one poll. At 10s a single viewer would issue 8,640 admin `/stats` calls a
   day = 207,360 aggregation queries.
 * **At 100x:** pools at 200 tenants is ~814 documents and `list_pools` truncates at 500
   with no marker (§0.3) — **this breaks first, and silently.** Fix before scale, not after.
-  The counters degrade next: 12 aggregations over a million tasks is ~1000 index entries
+  The counters degrade next: 12 aggregations over a million agents is ~1000 index entries
   per state per scan. The counters should move to a periodically-materialised
   `platform_snapshots/task_counts` document rather than 24 live aggregations per viewer.
 
@@ -498,7 +498,7 @@ And, by design rather than by gap:
   `reading…` per chip. No spinner over the whole page — a whole-page spinner hides which
   source is slow.
 * **Empty — genuinely:** `no pool is constrained` in normal weight, with the total pool
-  count beside it so "none constrained" is distinguishable from "none read". Zero tasks in
+  count beside it so "none constrained" is distinguishable from "none read". Zero agents in
   every state renders `0` in each counter with `queried at HH:MM:SS` beneath. A drained
   group with no members is absent, not rendered as "0 drained".
 * **Broken:** per §0.2. Specifically: if `GET /v1/admin/pools` fails, the pool section is

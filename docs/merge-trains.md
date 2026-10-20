@@ -233,7 +233,7 @@ The step does everything it does in direct mode, in the same order:
 - see its own required checks green.
 
 Then, instead of taking the merge slot and calling merge, it writes its
-entry in `merge_train_entries/{mte_…}`, keyed by (tenant, task). The write
+entry in `merge_train_entries/{mte_…}`, keyed by (tenant, agent). The write
 is a fenced transaction, so a superseded attempt writes nothing
 (invariant 5). The step then parks `CI_PENDING` with
 `merge_train_waiting`:
@@ -258,14 +258,14 @@ is a fenced transaction, so a superseded attempt writes nothing
 
 1. A waiting train and its parked steps hold no lease and no pool count.
    Only the per-tenant tick reads them.
-2. and 3. Untouched: a merge step is admitted like any other task.
+2. and 3. Untouched: a merge step is admitted like any other agent.
 4. The step parks; it never sleeps through the train.
 5. The entry write is fenced on the attempt. The coordinator's entry and
    lane writes are transactions guarded on state and head, so a step that
    re-registered at a new head wins.
 9. Every query filters on the tenant and every document is checked again.
    The token is the tenant's own, read once per tick and never logged. Both
-   the entry and the task are tenant-writable, so a forged entry can at
+   the entry and the agent are tenant-writable, so a forged entry can at
    worst ask the coordinator to land a green pull request of that tenant's
    own repository with that tenant's token. That is something its worker
    identity, holding the same token, can already do.
