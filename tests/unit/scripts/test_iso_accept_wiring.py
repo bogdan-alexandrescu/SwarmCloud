@@ -11,7 +11,7 @@ The acceptance group submits the probe as a `generic` pytest agent, so what it
 can read back is the runner's record: `stdout_tail` on exit 0, and on any
 other exit only `last_error`, which carries the END OF STDERR (runners/
 generic.py). So each check writes one `ISO-ACCEPT-RESULT {json}` line to
-stderr, whatever it concluded, and a probe that could not measure at all
+stdout and to stderr, whatever it concluded, and a probe that could not measure at all
 still writes one per check rather than erroring in its fixture. These tests
 hold that, offline: the probe runs in a subprocess pytest against a copy of
 the file with its metadata and Firestore calls replaced, never the network.
@@ -143,17 +143,18 @@ def _results(stream: str) -> list[dict]:
         ("unmeasurable", 1, "FAIL", "not measured: no metadata server answered (test)"),
     ],
 )
-def test_each_check_writes_its_result_line_to_stderr_whatever_it_concluded(tmp_path, mode, exit_code, verdict, reason):
+def test_each_check_writes_its_result_line_to_both_streams_whatever_it_concluded(tmp_path, mode, exit_code, verdict, reason):
     done, bearer = _run(tmp_path, mode)
     assert done.returncode == exit_code, done.stdout[-2000:] + done.stderr[-2000:]
-    results = _results(done.stderr)
-    # MUTATION: write the result line to stdout (or not at all) -- on a red
-    # probe the generic runner keeps only stderr's tail in last_error, so the
-    # group could not say which check failed or why.
-    assert [r["check"] for r in results] == ["settings", "tenant", "lease"], done.stderr[-2000:]
-    for result in results:
-        assert result["verdict"] == verdict, result
-        assert result["reason"].startswith(reason), result
+    # MUTATION: write the result line to only one of the two streams -- on a
+    # red probe the generic runner keeps only stderr's tail (in last_error),
+    # on a green one only stdout's, so the group could not read the verdicts.
+    for stream in (done.stderr, done.stdout):
+        results = _results(stream)
+        assert [r["check"] for r in results] == ["settings", "tenant", "lease"], stream[-2000:]
+        for result in results:
+            assert result["verdict"] == verdict, result
+            assert result["reason"].startswith(reason), result
     # MUTATION: put the bearer into a Verdict reason or Identity's repr.
     assert bearer not in done.stdout and bearer not in done.stderr
 
@@ -197,7 +198,7 @@ def test_docs_ci_names_the_probe_job_its_report_only_mode_and_the_variable_that_
     section = text.split("### The cross-tenant Firestore probe is report-only until the cutover", 1)
     # MUTATION: delete the section.
     assert len(section) == 2, "docs/ci.md has no section for the cross-tenant probe"
-    body = section[1].split("\n## ", 1)[0].split("\n### ", 1)[0]
+    body = " ".join(section[1].split("\n## ", 1)[0].split("\n### ", 1)[0].split())
     for needle in (
         "ISO_PROBE_REQUIRED",
         "test_cross_tenant_firestore.py",

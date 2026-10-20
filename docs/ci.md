@@ -43,7 +43,7 @@ Three reasons, in the order they cost the most:
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` (**dispatch only** — on a push CI proved the same SHA, [below](#the-release-timeline)) · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy` (verifies the digests; **on prod** also warms, smokes and proves GKE) — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
-| `accept.yml` | `release` **completing** on `main` (`workflow_run`), or manual dispatch on `main` (scope `all`); accepting jobs in `accept-dev-<job>` groups, cancel-in-progress ([below](#the-release-timeline)). Also **every three hours** (`schedule`) and on a dispatch with scope `live-browser`, for the live-browser group alone ([below](#live-browser-runs-on-a-schedule)) | `what dev runs` (the SHA in `releases/dev/applied.json`) · `warm, smoke and GKE proof (dev)` · `put the deployed commit's fixtures on the sandbox` · `acceptance (<group>)` × 6, in two waves · `read back and sweep the sandbox` · `report what was accepted` (a red run opens or updates one `bug` issue). On the schedule: `acceptance (live-browser, scheduled)` · `report the scheduled live-browser group` (its own `bug` issue) — dev only, as its own identity, never the deployer |
+| `accept.yml` | `release` **completing** on `main` (`workflow_run`), or manual dispatch on `main` (scope `all`); accepting jobs in `accept-dev-<job>` groups, cancel-in-progress ([below](#the-release-timeline)). Also **every three hours** (`schedule`) and on a dispatch with scope `live-browser`, for the live-browser group alone ([below](#live-browser-runs-on-a-schedule)) | `what dev runs` (the SHA in `releases/dev/applied.json`) · `warm, smoke and GKE proof (dev)` · `put the deployed commit's fixtures on the sandbox` · `acceptance (<group>)` × 6, in two waves · `acceptance (tenant-isolation)` (the cross-tenant Firestore probe, beside wave 2; report-only until the repository variable `ISO_PROBE_REQUIRED` is `true`, [below](#the-cross-tenant-firestore-probe-is-report-only-until-the-cutover)) · `read back and sweep the sandbox` · `report what was accepted` (a red run opens or updates one `bug` issue). On the schedule: `acceptance (live-browser, scheduled)` · `report the scheduled live-browser group` (its own `bug` issue) — dev only, as its own identity, never the deployer |
 | `hotfix.yml` | push to `main` on the same paths as `release.yml`; or manual dispatch on `main`. Acts only for a pull request merged with the `hotfix` label ([below](#hotfix-releases)) | `is this a hotfix` (reads the label; no Google identity) · `images and scan (dev, hotfix)` · `promote (dev, hotfix)` · `terraform apply (dev, hotfix)` (fails on a plan that changes IAM) · `deploy and smoke (dev, hotfix)` — dev only, concurrency group `hotfix-dev`, release.yml's own stages from `.github/actions/release-*` |
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
 | `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated), #697); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
@@ -1340,6 +1340,66 @@ can accept nothing (a failed release, or a prod release, recognised by the
 `release prod <ref>` run-name that `release.yml` now sets on a dispatch) is
 put in a concurrency group of its own. It therefore cannot cancel a real
 acceptance.
+
+### The cross-tenant Firestore probe is report-only until the cutover
+
+**Owner decision, 2026-10-20 (lane ISO-ACCEPT-WIRE, part of #1457): run the
+probe on every acceptance run now, so the isolation cutover has its proof.**
+Every tenant worker's account holds `swarmTenantWorkerFirestore` across the
+whole `swarm` database, so an agent in one tenant's pod can read and write
+another tenant's documents by id (#1457). Design B moves the worker's state
+onto attempt-signed swarm-api routes and then removes that role
+([tenant-settings-integrity.md](design/tenant-settings-integrity.md) §6).
+[`test_cross_tenant_firestore.py`](../tests/acceptance/fixtures/tenant-isolation/test_cross_tenant_firestore.py)
+is what says the role is gone. From inside a smoke worker, with that worker's
+own credential, it asks Firestore to update `workspace_settings/<B>`, get
+`tenants/<B>` and create under `leases/`. It passes only when all three are
+answered 403 `PERMISSION_DENIED`. It writes nothing either way: each write
+carries a precondition that cannot hold.
+
+**It is red until the cutover, by design.** So `accept.yml`'s `acceptance
+(tenant-isolation)` job has two modes, chosen by the repository variable
+**`ISO_PROBE_REQUIRED`**:
+
+| `ISO_PROBE_REQUIRED` | a red probe | the job | the acceptance issue |
+|---|---|---|---|
+| unset, or anything but `true` | **report-only**: its step is marked failed and a warning names each check's verdict | concludes green | not opened or updated: `report what was accepted` sees a success, and the job is not in the run's failing jobs |
+| `true` | fails the job | concludes red | opened or updated, naming `acceptance (tenant-isolation)` |
+
+Report-only is not a skip. The job runs and shows its result on every run;
+it cannot file it. Only `report-only` is decided by the variable. The probe
+and the group judge the same way in both modes. GitHub compares the value
+without regard to case, so `TRUE` counts as `true`.
+
+**How it runs.** The job starts beside wave 2, after wave 1, because the
+probe is one agent and wave 1's peak is already 20 of smoke's 20. It runs
+`verify-remote.sh acceptance/tenant-isolation`. The group submits one
+`generic` pytest agent in `smoke` against the sandbox's copy of
+`tests/acceptance/fixtures/tenant-isolation/`. Its `working_directory` is that
+directory and `input.paths` names the probe, which is how the probe opts in:
+the generic runner passes the agent's input to no environment variable. The
+other tenant is a tenant id that does not exist, made up at run time. The role
+is granted on the database, and no IAM condition can name a document, so IAM
+answers the same for any id. The group passes only on exit 0 and three
+`ISO-ACCEPT-RESULT` lines that say `PASS`. The probe writes each line to
+stdout and to stderr: the generic runner keeps stdout's tail on exit 0 and
+only stderr's tail (in the agent's `last_error`) on any other exit. A probe that could not measure (no metadata server, or an account
+that is not a tenant worker) reports each check as `not measured`, which is
+red, never a pass.
+
+**What is on `main`, read 2026-10-20.** The probe's result lines (above) and
+this section are. The `tenant-isolation` acceptance group under
+`scripts/acceptance/` and the `accept.yml` job are not yet. ISO-ACCEPT-WIRE's
+pull request carries both as patches, the group's first: a lane cannot push
+workflow files, and the group lies outside that lane's territory. Until both
+land, no acceptance run measures the probe.
+
+**When it becomes required.** The owner sets `ISO_PROBE_REQUIRED=true` after
+the last tenant is cut over, following `docs/runbooks/isolation-cutover.md`
+(lane ISO-IAM-WIRE writes it). Before that, a green probe in report-only mode
+is the evidence the cutover worked. A red probe after the variable is set is
+a tenant-isolation regression: S0 under the issue rules in `CLAUDE.md`, though
+the acceptance issue it lands on does not say so by itself.
 
 ### A red acceptance is an issue, not a blocked deploy
 
