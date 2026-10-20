@@ -234,7 +234,7 @@ function IdentityBlock({
           </span>
         ) : (
           <span className="ur-small">
-            · not configured: this deployment has no QA account, and every task naming it is refused
+            · not configured: this deployment has no QA account, and every agent naming it is refused
           </span>
         )}
       </p>
@@ -304,8 +304,8 @@ export function QaIdentityGrants({ tenants }: { tenants: readonly string[] }) {
     <section className="section" data-testid="qa-identity" aria-labelledby="ten-qa-identity">
       <h2 id="ten-qa-identity">QA identity</h2>
       <p className="ur-hint">
-        A workspace granted here may ask for a browser task signed in to this console as the QA account. Grant it only with a
-        reason; a revoke takes effect at the task’s next credential renewal.
+        A workspace granted here may ask for a browser agent signed in to this console as the QA account. Grant it only with a
+        reason; a revoke takes effect at the agent’s next credential renewal.
       </p>
       {notServed && <p className="ur-hint">This API serves no QA identity routes.</p>}
       {unread !== null && !notServed && <SaidLine said={{ ok: false, error: unread }} />}

@@ -699,7 +699,7 @@ function SchedulesBody({
       <Said notice={notice} />
       {rows.length === 0 ? (
         <Absent kind="zero" heading="No schedules yet" say="This tenant has no schedules: the list was read and is empty.">
-          Recurring work in this tenant, such as an issue sweep, an index refresh or a nightly observer, is listed here. Each firing makes ordinary work: an issue run, a task or a workflow.
+          Recurring work in this tenant, such as an issue sweep, an index refresh or a nightly observer, is listed here. Each firing makes ordinary work: an issue run, an agent or a workflow.
         </Absent>
       ) : (
         <ScheduleList rows={rows} names={names} go={go} onDone={onDone} />

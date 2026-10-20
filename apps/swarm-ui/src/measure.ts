@@ -124,13 +124,13 @@ export const USAGE_NOT_READ: Absence = {
  */
 export const NO_ATTEMPT_YET: Absence = {
   text: 'no attempt yet',
-  note: 'The attempt read succeeded and returned none. This step holds a task and nothing has run under it.',
+  note: 'The attempt read succeeded and returned none. This step holds an agent and nothing has run under it.',
 }
 
 /** The step has no task, so nothing has ever run. */
 export const NEVER_RAN: Absence = {
   text: 'not started',
-  note: 'This step has no task yet, so there is nothing to measure.',
+  note: 'This step has no agent yet, so there is nothing to measure.',
 }
 
 /**
@@ -142,14 +142,14 @@ export const NEVER_RAN: Absence = {
  * exists to prevent.
  */
 export const STATE_UNREAD: Absence = {
-  text: 'task unread',
-  note: 'This step’s task was not in the task read, so none of its figures are available.',
+  text: 'not joined',
+  note: 'This step’s agent was not in the agent read, so none of its figures are available.',
 }
 
 /** A task that reached a terminal state without a `completed_at`. */
 export const FINISH_NOT_RECORDED: Absence = {
   text: 'not recorded',
-  note: 'Written when an attempt ends. This task ended without one, so its duration cannot be computed.',
+  note: 'Written when an attempt ends. This agent ended without one, so its duration cannot be computed.',
 }
 
 // ---------------------------------------------------------------------------

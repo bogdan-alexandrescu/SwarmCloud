@@ -383,7 +383,7 @@ describe('the send panel', () => {
 
   it('TS-16: the task form says it is not ready while its button is disabled', async () => {
     const { container } = render(<SubmitScreen />)
-    const go = await screen.findByRole('button', { name: 'Submit one task' }, { timeout: 4000 })
+    const go = await screen.findByRole('button', { name: 'Start one agent' }, { timeout: 4000 })
     // Nothing chosen yet: the button is disabled, and the heading said "Ready".
     expect(go.hasAttribute('disabled')).toBe(true)
     expect(sendHeading(container), '"Ready to send" over a disabled button').toBe('Not ready to send')
@@ -395,7 +395,7 @@ describe('the send panel', () => {
 
   it('TS-19: names the key a runner needs without a broken article', async () => {
     const { container } = render(<SubmitScreen />)
-    await screen.findByRole('button', { name: 'Submit one task' }, { timeout: 4000 })
+    await screen.findByRole('button', { name: 'Start one agent' }, { timeout: 4000 })
     const facts = (name: string) =>
       container
         .querySelector(`input[name="runner-profile"][value="${name}"]`)!
@@ -469,7 +469,7 @@ describe('TS-15: a required key is named at its field, in the words the API used
 
   it('names the gap in the task send panel as a button that takes the reader to the field', async () => {
     const { container } = render(<SubmitScreen />)
-    await screen.findByRole('button', { name: 'Submit one task' }, { timeout: 4000 })
+    await screen.findByRole('button', { name: 'Start one agent' }, { timeout: 4000 })
     fireEvent.click(container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="claude-code"]')!)
     const panel = container.querySelector<HTMLElement>('.sbf-send')!
     const gap = within(panel).getByRole('button', { name: 'prompt missing' })
@@ -486,7 +486,7 @@ describe('TS-15: a required key is named at its field, in the words the API used
 
   it('says the runner gets no settings only when nothing is required and nothing is set', async () => {
     const { container } = render(<SubmitScreen />)
-    await screen.findByRole('button', { name: 'Submit one task' }, { timeout: 4000 })
+    await screen.findByRole('button', { name: 'Start one agent' }, { timeout: 4000 })
     fireEvent.click(container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="mock"]')!)
     expect(visible(container.querySelector('.sbf-send')!)).toContain('empty — the runner gets no settings')
   })
@@ -537,7 +537,7 @@ describe('TS-20: a stage says "then", and "waits for" is said once, on each step
 describe('TS-23: the forms carry names, facts and the runner notes, and no instructions', () => {
   it('says "no runner chosen" before a runner is chosen, and what a runner that needs nothing needs', async () => {
     const { container } = render(<SubmitScreen />)
-    await screen.findByRole('button', { name: 'Submit one task' }, { timeout: 4000 })
+    await screen.findByRole('button', { name: 'Start one agent' }, { timeout: 4000 })
     expect(screen.getByText('no runner chosen')).toBeTruthy()
     expect(visible(container)).not.toContain('Choose a runner first')
     fireEvent.click(container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="mock"]')!)

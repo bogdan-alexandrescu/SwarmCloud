@@ -185,7 +185,7 @@ function refusal(e: ApiError): string {
 
 /** How a registration's credential reaches the relay, in the table's words. */
 function modeWords(m: McpAuthMode): string {
-  if (m === 'dispatch') return 'per-run, sent by the caller with each task'
+  if (m === 'dispatch') return 'per-run, sent by the caller with each agent'
   return m === 'none' ? 'none' : 'from the workspace store'
 }
 
@@ -220,7 +220,7 @@ export function McpServersScreen() {
       <PageHead title="MCP servers" />
       <Card title="Registered MCP servers" action={<UrRefresh reads={[list]} />}>
         <p className="pk-lead">
-          The MCP servers a task&rsquo;s agent may call during its run, by name. A task names them on Submit; the
+          The MCP servers an agent may call during its run, by name. An agent names them on Submit; the
           worker reaches each one for the agent and holds its credential, which the agent never sees. SwarmCloud
           never calls a registered URL itself: the first request a server sees is a worker&rsquo;s, from one of the
           addresses below.
@@ -365,7 +365,7 @@ function splitTools(raw: string): string[] {
 
 const AUTH_CHOICES: ReadonlyArray<{ mode: McpAuthMode; label: string }> = [
   { mode: 'none', label: 'No credential — the server is open to SwarmCloud’s addresses' },
-  { mode: 'dispatch', label: 'Per-run credential — the caller sends one with each task, and it dies with the task' },
+  { mode: 'dispatch', label: 'Per-run credential — the caller sends one with each agent, and it dies with the agent' },
   { mode: 'workspace_secret', label: 'Workspace secret — the secret this workspace grants to mcp:<name>' },
 ]
 
@@ -436,7 +436,7 @@ function ServerForm({ editing, onDone }: { editing: McpServer | null; onDone: ()
             <input id={`${id}-name`} className="ur-search pk-input" value={name} required maxLength={31} spellCheck={false}
               placeholder="kb" aria-describedby={`${id}-name-why`} onChange={(e) => setName(e.target.value)} />
             <span id={`${id}-name-why`} className="jb-note">
-              What a task names: a lower-case letter, then letters, digits and hyphens. It cannot be changed later.
+              What an agent names: a lower-case letter, then letters, digits and hyphens. It cannot be changed later.
             </span>
           </>
         )}
@@ -631,8 +631,8 @@ export function McpCredentialField({
       </select>
       <span id={`${id}-why`} className="jb-note">
         {scope === 'task'
-          ? 'Sent once with this task, to the worker only, and destroyed when the task ends.'
-          : 'Sent once with this workflow, to the workers of the steps that name it only, and destroyed when its tasks end.'}
+          ? 'Sent once with this agent, to the worker only, and destroyed when the agent ends.'
+          : 'Sent once with this workflow, to the workers of the steps that name it only, and destroyed when its agents end.'}
         {' '}The field is emptied as soon as the platform answers.
       </span>
     </span>
@@ -707,7 +707,7 @@ export function McpServerPicker({
               </div>
             )
           })}
-          {picked.length >= max && <p className="btp-hint">A task names at most {max}.</p>}
+          {picked.length >= max && <p className="btp-hint">An agent names at most {max}.</p>}
         </>
       )}
     </fieldset>

@@ -379,7 +379,7 @@ export function HandoffBanner({
       )}
       {ready.kind === 'done' && (
         <span className="ho-starting">
-          Starting your browser. It is admitted like any task and starts cold, so allow a minute or two; the agent
+          Starting your browser. It is admitted like any agent and starts cold, so allow a minute or two; the agent
           asks again when it is up.
         </span>
       )}
@@ -401,7 +401,7 @@ function ResumingBanner({ children }: { children?: ReactNode }) {
   return (
     <Banner tone="info" role="status" title="Starting your browser again — the agent will ask for you when it is back" actions={children}>
       <span className="ho-starting">
-        You said you are ready. It is admitted like any task and starts cold, so allow a minute or two.
+        You said you are ready. It is admitted like any agent and starts cold, so allow a minute or two.
       </span>
     </Banner>
   )

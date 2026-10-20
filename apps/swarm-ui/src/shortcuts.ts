@@ -49,7 +49,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { key: 'n', label: 'N', scope: 'anywhere', does: 'opens Submit', to: 'submit' },
   { key: '?', label: '?', scope: 'anywhere', does: 'opens this topic' },
   { key: 'Escape', label: 'Esc', scope: 'anywhere', does: 'closes the innermost thing that is open: a help card, a menu, a viewer, the agent' },
-  { key: 't', label: 'T', scope: 'submit', does: 'starts a task', to: TASK_FORM },
+  { key: 't', label: 'T', scope: 'submit', does: 'starts an agent', to: TASK_FORM },
   { key: 'w', label: 'W', scope: 'submit', does: 'starts a workflow', to: WORKFLOW_FORM },
   { key: 'i', label: 'I', scope: 'submit', does: 'starts from a GitHub issue', to: ISSUE_FORM },
   { key: '[', label: '[', scope: 'agent', does: 'folds the list beside it to a strip, and back' },

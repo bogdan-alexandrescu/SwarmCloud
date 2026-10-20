@@ -569,7 +569,7 @@ export function UrConfirmIndex({
           {kind === 'full'
             ? 'A full run re-reads every file and re-resolves every call site with the language servers.'
             : `An incremental run re-reads only what changed since the index at ${base === null ? 'its last commit' : shortSha(base)}.`}{' '}
-          It is a task like any other: it holds capacity from the moment it is leased until it finishes.
+          It is an agent like any other: it holds capacity from the moment it is leased until it finishes.
         </p>
       </Banner>
     </div>

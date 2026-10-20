@@ -24,7 +24,7 @@ const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, 
 describe('no runner is preselected, and an untouched form cannot send', () => {
   it('the task form: nothing chosen, the button disabled, and a submit is refused until a runner is picked', async () => {
     const { container } = render(<SubmitScreen />)
-    const go = await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+    const go = await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
     const radios = [...container.querySelectorAll<HTMLInputElement>('input[name="runner-profile"]')]
     expect(radios.length, 'the picker drew no runners').toBeGreaterThan(1)
     expect(radios.filter((r) => r.checked), 'a runner is preselected').toEqual([])
@@ -72,7 +72,7 @@ describe('no runner is preselected, and an untouched form cannot send', () => {
 describe('"+ Add setting ▾" is one menu, and it adds a setting', () => {
   it('opens on click, lists the runner keys with their notes, and adds the one picked', async () => {
     const { container } = render(<SubmitScreen />)
-    await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+    await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
     fireEvent.click(container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="mock"]')!)
 
     // ONE control, not a tile per key.
@@ -103,7 +103,7 @@ describe('"+ Add setting ▾" is one menu, and it adds a setting', () => {
 
   it('adds a setting of your own, and Escape closes the menu', async () => {
     const { container } = render(<SubmitScreen />)
-    await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+    await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
     fireEvent.click(container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="mock"]')!)
     const add = screen.getByRole('button', { name: /Add setting/ })
     fireEvent.click(add)

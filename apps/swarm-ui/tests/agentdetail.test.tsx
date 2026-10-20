@@ -668,7 +668,7 @@ test('a finished task that never ran has nothing-ran as its output, a real zero'
   assert.ok(!markup.includes('finished with no summary'), 'a task that never ran is drawn as a missing summary')
   // Plain words, no coined term: the mark carries "measured, not failed".
   const raw = surface(cascade())
-  assert.ok(raw.includes('aria-label="No attempt of this task ever started, so there is no result summary."'), 'the never-ran sentence is not the plain one')
+  assert.ok(raw.includes('aria-label="No attempt of this agent ever started, so there is no result summary."'), 'the never-ran sentence is not the plain one')
   assert.ok(!/aria-label="[^"]*real zero/i.test(raw), 'a sentence on this surface still says "real zero"')
 })
 

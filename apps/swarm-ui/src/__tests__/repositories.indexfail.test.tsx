@@ -71,7 +71,7 @@ describe('a repository whose index runs fail says why on its card', () => {
     // The git line is kept, short, as the reason's title -- not drawn as a wall of text.
     expect(fail!.querySelector('.ur-fail-cause')?.getAttribute('title')).toContain('Repository not found')
 
-    const task = Array.from(fail!.querySelectorAll('a')).find((a) => visible(a).includes('task'))
+    const task = Array.from(fail!.querySelectorAll('a')).find((a) => visible(a).includes('agent'))
     expect(task).toBeDefined()
     fireEvent.click(task!)
     expect(go).toHaveBeenCalledWith('work/task/task_6ec590237ef54dc68837')

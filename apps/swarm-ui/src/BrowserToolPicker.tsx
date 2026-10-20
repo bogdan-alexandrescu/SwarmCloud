@@ -207,7 +207,7 @@ function JevOff({ typesafe, judgment }: { typesafe: TypesafeKey; judgment: JevJu
     const why = judgment.jev.reason ?? 'the API gave no reason'
     return (
       <p className="btp-jev-off">
-        Jev is unavailable: this workspace judges with {judgment.jev.label}, and {why}. A task that asks for it runs on
+        Jev is unavailable: this workspace judges with {judgment.jev.label}, and {why}. An agent that asks for it runs on
         Playwright.
       </p>
     )

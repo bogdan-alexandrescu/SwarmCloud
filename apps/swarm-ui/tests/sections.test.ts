@@ -49,7 +49,7 @@ test('Admin asks what each of its tabs answers, in tab order (AH-23)', () => {
     // which moved there. Workspaces you admin's clause, last, since
     // NAV-ADMIN-ROLE (part of #1633, owner decision 2026-10-19 "All under
     // Profile; Admin by role"): a workspace admin reaches Admin for it.
-    'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer?',
+    'What is each ceiling set to, who is registered to use this platform, how many agents are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer?',
   )
 })
 

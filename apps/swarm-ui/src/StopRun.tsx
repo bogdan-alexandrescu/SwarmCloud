@@ -167,10 +167,10 @@ export function earlierAttemptRan(task: {
  */
 function earlierWorkSentence(task: { latest_checkpoint?: string | null }): string {
   return task.latest_checkpoint
-    ? 'An earlier attempt of this task did run, and left a checkpoint. A stopped task is never ' +
+    ? 'An earlier attempt of this agent did run, and left a checkpoint. A stopped agent is never ' +
         'resumed, so stopping gives up resuming from that checkpoint. Whatever artifacts and logs ' +
         'earlier attempts uploaded are left where they are.'
-    : 'An earlier attempt of this task did run. A stopped task is never resumed, so stopping ' +
+    : 'An earlier attempt of this agent did run. A stopped agent is never resumed, so stopping ' +
         'gives up anything a later attempt would have picked up from it. Whatever artifacts and ' +
         'logs earlier attempts uploaded are left where they are.'
 }
@@ -356,8 +356,8 @@ export function StopRun({
                 earlierWorkSentence(task)
               : 'Stopped. It held no capacity, so it went straight to CANCELLED. No attempt had started, so there is nothing to harvest.'
             : started
-              ? 'Stop requested. It is recorded on the task. The agent is still running and still spending until its next heartbeat, when the worker checkpoints, uploads and exits.'
-              : 'Stop requested. It is recorded on the task. No worker has started this attempt, so ' +
+              ? 'Stop requested. It is recorded on the agent. The agent is still running and still spending until its next heartbeat, when the worker checkpoints, uploads and exits.'
+              : 'Stop requested. It is recorded on the agent. No worker has started this attempt, so ' +
                 'nothing is running to act on it yet: a worker that starts sees the request before it ' +
                 'runs anything and stops, and if none starts, the reconciler reclaims the attempt and ' +
                 'finishes it. Until one of those happens the slot stays held.'
@@ -455,7 +455,7 @@ export function StopRun({
   const stops =
     step === null ? task.id : `${task.id} — step ${step.step_id}`
   const stoppingWhat =
-    `Stopping ${stops} is irreversible: the task ends, and no attempt of it is retried or ` +
+    `Stopping ${stops} is irreversible: the agent ends, and no attempt of it is retried or ` +
     `resumed afterwards. `
   const notStartedMechanics =
     'It does not stop instantly — the API records the request, and the slot stays held until a ' +
@@ -510,7 +510,7 @@ export function StopRun({
                   earlierWorkSentence(task) +
                   ' ' +
                   notStartedMechanics
-                : 'Nothing has run yet: no worker has ever started this task, so there is no work to ' +
+                : 'Nothing has run yet: no worker has ever started this agent, so there is no work to ' +
                   'harvest. ' +
                   notStartedMechanics)
         }
@@ -544,7 +544,7 @@ export function StopRun({
                 ? 'none to harvest'
                 : started
                   ? 'kept — checkpoint, artifacts and logs are uploaded first'
-                  : 'none — no worker has ever started this task'}
+                  : 'none — no worker has ever started this agent'}
           </span>
         </li>
         <li className="ctl-fact">

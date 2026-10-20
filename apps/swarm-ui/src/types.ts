@@ -1063,7 +1063,7 @@ export function consequenceOf(
           pushes: false,
           headline: 'No pull request. Nothing is pushed.',
           detail:
-            `Each of the ${plural(n, 'step')} harvests its patch into the task's own GCS ` +
+            `Each of the ${plural(n, 'step')} harvests its patch into the agent's own GCS ` +
             'prefix and the run ends there. Nothing reaches the repository, so this is ' +
             'the only strategy that works with a read-only token.',
         },
@@ -1079,12 +1079,12 @@ export function consequenceOf(
             pullRequests: 1,
             atMost: true,
             pushes: true,
-            headline: 'One pull request, from this task’s branch — none if it changed nothing.',
+            headline: 'One pull request, from this agent’s branch — none if it changed nothing.',
             detail:
-              'The task pushes its own branch and opens one pull request from it. An agent that ' +
+              'The agent pushes its own branch and opens one pull request from it. An agent that ' +
               'changed nothing opens none, which is why this is a ceiling and not a count.',
           },
-          '1 pull request, from this task’s branch',
+          '1 pull request, from this agent’s branch',
         )
       }
       return withOpens(
@@ -1153,7 +1153,7 @@ export function strategyLabel(strategy: DispatchStrategy, scale: 'task' | 'workf
  * claim this UI exists to not make.
  */
 export const CARRIER_NOTE =
-  'Recorded on the task and returned by the API, but no worker code reads it yet. ' +
+  'Recorded on the agent and returned by the API, but no worker code reads it yet. ' +
   'Choosing branches changes one thing today: it makes a repository URL required.'
 
 export const CARRIER_DETAIL: Readonly<Record<DispatchCarrier, string>> = {
@@ -2826,7 +2826,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   PROVIDER_OUTAGE: 'The provider is unavailable.',
   SCHEDULED_RETRY: 'Waiting for a scheduled retry.',
   DEPENDENCY_INCOMPLETE: 'Waiting on an earlier step in its workflow.',
-  CHILDREN_INCOMPLETE: 'Waiting for the child tasks its agent submitted. Holds no capacity.',
+  CHILDREN_INCOMPLETE: 'Waiting for the child agents it submitted. Holds no capacity.',
   CI_PENDING: 'Waiting for the pull request checks to finish. Holds no capacity.',
   BUDGET_EXHAUSTED: 'The budget for this work is spent.',
   CREDENTIAL_MISSING: 'No provider key is registered for this tenant.',
@@ -2966,8 +2966,8 @@ export function ceilingCopy(
     case 'below-units-quota': {
       const limit = b.limit as number
       const fact =
-        `${subject} has a limit of ${limit} unit${limit === 1 ? '' : 's'}, below the ${units} units one task ` +
-        'of this profile weighs, so the task can never be admitted at this limit.'
+        `${subject} has a limit of ${limit} unit${limit === 1 ? '' : 's'}, below the ${units} units one agent ` +
+        'of this profile weighs, so the agent can never be admitted at this limit.'
       return c === 'below-units'
         ? `${fact} Waiting cannot clear it: somebody has to raise the limit to at least ${units}.${held}`
         : `${fact} A provider pool's limit also falls with its quota state, so this does not say who set it; it admits this profile once the limit reaches ${units}.${held}`
@@ -4187,7 +4187,7 @@ export function workflowStartText(
     return { text, title: `no step has started; ${submittedTitle}`, submitted, submittedTitle, kind: 'never' }
   }
   if (start.kind === 'unread') {
-    return { text: 'start not read', title: `the step tasks were not read, so the start is unknown; ${submittedTitle}`, submitted, submittedTitle, kind: 'unread' }
+    return { text: 'start not read', title: `the step agents were not read, so the start is unknown; ${submittedTitle}`, submitted, submittedTitle, kind: 'unread' }
   }
   const at = clockTime(start.at, now)
   const text = at?.text ?? 'start not read'

@@ -104,7 +104,7 @@ function capturePosts() {
 
 async function browserForm() {
   const r = render(<SubmitScreen />)
-  await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+  await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
   fireEvent.click(r.container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="claude-code-browser"]')!)
   const prompt = r.container.querySelector<HTMLTextAreaElement>('.sbf-build textarea')!
   fireEvent.change(prompt, { target: { value: 'open the console and screenshot the Browser tab' } })

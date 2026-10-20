@@ -113,7 +113,7 @@ export function RecordingsPanel({ task }: { task: Pick<Task, 'id' | 'tenant_id'>
       </p>
       {listing.kind === 'reading' ? (
         <p className="art-loading">
-          <Mark kind="pending" say="Reading this task's recordings. The read is in flight." />
+          <Mark kind="pending" say="Reading this agent's recordings. The read is in flight." />
         </p>
       ) : listing.kind === 'unserved' ? (
         <p className="rec-absent">
@@ -128,7 +128,7 @@ export function RecordingsPanel({ task }: { task: Pick<Task, 'id' | 'tenant_id'>
         <>
           {listing.shown.length === 0 ? (
             <p className="rec-absent">
-              <Mark kind="zero" say="The route answered, and listed no recording of this task." /> No recording of this task.
+              <Mark kind="zero" say="The route answered, and listed no recording of this agent." /> No recording of this agent.
             </p>
           ) : (
             <ul className="rec-list">
@@ -151,7 +151,7 @@ export function RecordingsPanel({ task }: { task: Pick<Task, 'id' | 'tenant_id'>
           )}
           {listing.dropped > 0 && (
             <p className="rec-dropped" role="note">
-              {listing.dropped} {listing.dropped === 1 ? 'entry' : 'entries'} the route listed are not this task's recordings
+              {listing.dropped} {listing.dropped === 1 ? 'entry' : 'entries'} the route listed are not this agent's recordings
               in this tenant, and are not shown.
             </p>
           )}

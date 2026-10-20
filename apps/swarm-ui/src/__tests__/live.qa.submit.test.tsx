@@ -60,7 +60,7 @@ afterEach(() => {
 
 async function taskForm(runner = 'mock') {
   const r = render(<SubmitScreen />)
-  await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+  await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
   fireEvent.click(r.container.querySelector<HTMLInputElement>(`input[name="runner-profile"][value="${runner}"]`)!)
   return r.container
 }
@@ -125,7 +125,7 @@ describe('SUB-3: a repository the API will refuse is not ready to send', () => {
     expect(heading(c)).toBe('Ready to send')
     fireEvent.change(repoField(c), { target: { value: 'not a repo' } })
     expect(heading(c)).toBe('Not ready to send')
-    expect((screen.getByRole('button', { name: 'Submit one task' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Start one agent' }) as HTMLButtonElement).disabled).toBe(true)
     fireEvent.click(c.querySelector<HTMLInputElement>('input[name="dispatch-strategy"][value="direct-pr"]')!)
     expect(heading(c)).toBe('Not ready to send')
     fireEvent.submit(c.querySelector('form')!)
@@ -167,7 +167,7 @@ describe('SUB-4: an input over the served limit is not ready to send', () => {
     fireEvent.change(prompt, { target: { value: 'x'.repeat(70_000) } })
     await waitFor(() => expect(heading(c)).toBe('Not ready to send'), WAIT)
     expect(visible(panel(c))).toContain("over the API's 64 KiB limit")
-    expect((screen.getByRole('button', { name: 'Submit one task' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Start one agent' }) as HTMLButtonElement).disabled).toBe(true)
     fireEvent.change(prompt, { target: { value: 'x'.repeat(1_000) } })
     expect(heading(c)).toBe('Ready to send')
   })

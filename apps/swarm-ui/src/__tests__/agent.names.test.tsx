@@ -129,7 +129,7 @@ describe('#94: the inspector is headed by the step, with the id kept and copyabl
   it('names a workflow step by its step, and a standalone task by what it is and its short id', () => {
     expect(agentName(STEP)).toBe('scan-08')
     // Walkthrough G (2026-10-03): a lone task was its bare hash.
-    expect(agentName(runTask({ id: 'task_0123456789abcdef0123', runner_profile: 'claude-code', step_id: null }))).toBe('claude-code task · 01234567')
+    expect(agentName(runTask({ id: 'task_0123456789abcdef0123', runner_profile: 'claude-code', step_id: null }))).toBe('claude-code agent · 01234567')
   })
 
   it('heads the drawer with the step once the run is read', async () => {

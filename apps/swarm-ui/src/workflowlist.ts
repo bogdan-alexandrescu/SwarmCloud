@@ -359,14 +359,14 @@ export function workflowDuration(
     return { ms, live: true, text: `${formatDuration(ms)} so far`, title: `submitted ${w.created_at}; still running` }
   }
   if (taskById === null) {
-    return { ms: null, live: false, text: 'not read', title: 'the step tasks were not read, so the end is unknown' }
+    return { ms: null, live: false, text: 'not read', title: 'the step agents were not read, so the end is unknown' }
   }
   let end = -Infinity
   for (const s of w.steps) {
     if (!s.task_id) continue
     const t = taskById.get(s.task_id)
     if (t === undefined) {
-      return { ms: null, live: false, text: 'not read', title: `step ${s.step_id}'s task was not in the read` }
+      return { ms: null, live: false, text: 'not read', title: `step ${s.step_id}'s agent was not in the read` }
     }
     const done = t.completed_at ? Date.parse(t.completed_at) : NaN
     if (!Number.isFinite(done)) {
@@ -414,7 +414,7 @@ export function rowWhy(w: Workflow, taskById: ReadonlyMap<string, Task> | null):
         return { kind: 'failed', step: s.step_id, why: cause ?? word }
       }
     }
-    return { kind: 'failed-unread', why: 'the failing step was not in the task read' }
+    return { kind: 'failed-unread', why: 'the failing step was not in the agent read' }
   }
   if (derived === null) {
     const r = w.rollup

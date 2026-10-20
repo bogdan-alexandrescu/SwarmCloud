@@ -487,13 +487,15 @@ def test_a_step_with_no_task_is_not_a_dead_link():
 
     RE-POINTED WITH WF-7: the one link to the run is the inspector's, so the
     guard is there -- the anchor is rendered only when the step has a task id,
-    and a step without one says it has no task yet.
+    and a step without one says it has no agent yet.
     """
     inspector = _decl(_src("WorkflowViews.tsx"), "export function StepInspector(")
     assert "{taskId !== null && (" in inspector, (
         "the inspector links every picked step, including steps that have no task to open"
     )
-    assert "has not reached" in inspector or "no task yet" in inspector, (
+    # MUTATION: put "no task yet" back in StepInspector's aria-label and this
+    # fails: the console says "agent" for the running unit (VOCAB-AGENTS-UI).
+    assert "has not reached" in inspector or "no agent yet" in inspector, (
         "a picked step with nothing to open does not say so, so its inertness reads as a bug"
     )
 

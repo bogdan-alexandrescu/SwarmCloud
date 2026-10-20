@@ -117,7 +117,7 @@ export function repositorySchemeRefused(url: string): boolean {
  * and not of this form, where there is no choosing any more (QA G4-28).
  */
 export const CARRIER_FIXED_NOTE =
-  'Recorded on the task and returned by the API, but no worker code reads it yet, ' +
+  'Recorded on the agent and returned by the API, but no worker code reads it yet, ' +
   `so this form sends the default, ${DEFAULT_CARRIER}, and does not offer another.`
 
 /**
@@ -512,7 +512,7 @@ export function DispatchChip({ task }: { task: Task }): ReactNode {
   const d = dispatchOf(task)
   if (d === null) {
     return (
-      <span className="tag unknown" title="This API did not report a dispatch for this task.">
+      <span className="tag unknown" title="This API did not report a dispatch for this agent.">
         dispatch?
       </span>
     )
@@ -523,7 +523,7 @@ export function DispatchChip({ task }: { task: Task }): ReactNode {
       ? `strategy ${d.strategy}: this step opens the workflow's single pull request`
       : d.role === 'contributor'
         ? `strategy ${d.strategy}: this step pushes a branch and opens no pull request`
-        : `strategy ${d.strategy}: this task opens its own pull request`
+        : `strategy ${d.strategy}: this agent opens its own pull request`
   return (
     <span className={`tag ${d.role === 'contributor' ? 'wait' : 'ok'}`} title={title}>
       {d.role === null ? d.strategy : `${d.strategy}/${d.role}`}
@@ -725,7 +725,7 @@ export function AdditionalRepositoriesPicker({ list, picks, onChange, note, erro
         </p>
       ) : data.repositories.length === 0 ? (
         <p className="btp-hint">
-          No repository registered in this workspace is readable by tasks. An admin opens one to tasks on Repositories.
+          No repository registered in this workspace is readable by agents. An admin opens one to agents on Repositories.
         </p>
       ) : (
         <>

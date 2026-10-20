@@ -65,11 +65,11 @@ function capturePosts() {
   return posts
 }
 
-const classSelect = () => screen.queryByRole('combobox', { name: 'task model class' }) as HTMLSelectElement | null
+const classSelect = () => screen.queryByRole('combobox', { name: 'agent model class' }) as HTMLSelectElement | null
 
 async function taskForm(profile: string) {
   const r = render(<SubmitScreen />)
-  await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+  await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
   fireEvent.click(r.container.querySelector<HTMLInputElement>(`input[name="runner-profile"][value="${profile}"]`)!)
   const prompt = r.container.querySelector<HTMLTextAreaElement>('.sbf-build textarea')!
   fireEvent.change(prompt, { target: { value: 'tidy the changelog' } })

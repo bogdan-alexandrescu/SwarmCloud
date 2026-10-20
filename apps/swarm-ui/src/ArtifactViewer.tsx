@@ -279,7 +279,7 @@ function Body({
         heading={absent?.heading ?? 'object not in the bucket'}
         say={
           absent?.say ??
-          "This task's manifest records this artifact and the object is not there. The manifest is the record of what the worker uploaded, so this is a missing object rather than an artifact the agent never wrote."
+          "This agent's manifest records this artifact and the object is not there. The manifest is the record of what the worker uploaded, so this is a missing object rather than an artifact the agent never wrote."
         }
       >
         {data.detail}

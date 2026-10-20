@@ -143,7 +143,7 @@ async function submitAs(role: { name: string; source: string } | null) {
   })
   const { SubmitScreen } = await import('../Submit')
   const { container } = render(<SubmitScreen />)
-  const go = (await screen.findByRole('button', { name: 'Submit one task' }, WAIT)) as HTMLButtonElement
+  const go = (await screen.findByRole('button', { name: 'Start one agent' }, WAIT)) as HTMLButtonElement
   fireEvent.click(container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="mock"]')!)
   return { container, go }
 }

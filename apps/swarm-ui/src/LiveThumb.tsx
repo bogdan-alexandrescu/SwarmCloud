@@ -573,7 +573,7 @@ const STATUS_NOTE: Record<Status, string> = {
   live: 'The masked live view of this step’s browser, at most one frame a second. Open the Browser tab for the full view.',
   reconnecting: 'The live view closed; it reconnects on its own.',
   none: 'This step has no live browser session right now. The card checks again on its own.',
-  unavailable: 'The live view could not be opened. The task may have stopped, or this view may not be allowed.',
+  unavailable: 'The live view could not be opened. The agent may have stopped, or this view may not be allowed.',
 }
 
 export function LiveThumb({

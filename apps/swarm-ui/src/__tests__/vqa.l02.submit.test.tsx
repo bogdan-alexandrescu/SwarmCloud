@@ -73,7 +73,7 @@ afterEach(() => {
 
 async function taskForm() {
   const r = render(<SubmitScreen />)
-  await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
+  await screen.findByRole('button', { name: 'Start one agent' }, WAIT)
   fireEvent.click(r.container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="mock"]')!)
   return r.container
 }
@@ -99,7 +99,7 @@ describe('V002 / V048 / V049: the outcome is drawn beside the button, and a 201 
   it('the task form: the 201 is in the send panel, and the button is "Submit another" until the form changes', async () => {
     const c = await taskForm()
     const posts = answerWrite('/v1/tasks', { status: 201, body: { task: { id: 't_vqa_1', state: 'READY' }, scheduler_woken: true } })
-    fireEvent.click(screen.getByRole('button', { name: 'Submit one task' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start one agent' }))
     const another = await within(panel(c)).findByRole('button', { name: 'Submit another' }, WAIT)
 
     // Drawn in the panel, under the button; nothing is drawn above step 1.
@@ -107,7 +107,7 @@ describe('V002 / V048 / V049: the outcome is drawn beside the button, and a 201 
     expect(visible(card)).toContain('Created at READY')
     expect(c.querySelector('.sbf-build .state'), 'the outcome is still drawn in the build column').toBeNull()
     expect(visible(panel(c).querySelector('h2'))).toBe('Sent')
-    expect(screen.queryByRole('button', { name: 'Submit one task' }), 'the submit button survived the 201').toBeNull()
+    expect(screen.queryByRole('button', { name: 'Start one agent' }), 'the submit button survived the 201').toBeNull()
     expect(another.getAttribute('type')).toBe('button')
 
     // V049: the outcome's parts keep the steps' 12px, at both widths.
@@ -117,7 +117,7 @@ describe('V002 / V048 / V049: the outcome is drawn beside the button, and a 201 
 
     // A change to the form is a new request, and the button says so again.
     fireEvent.change(c.querySelector<HTMLInputElement>('#dsp-repo')!, { target: { value: 'https://github.com/example-org/infra.git' } })
-    expect(screen.getByRole('button', { name: 'Submit one task' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Start one agent' })).toBeTruthy()
     expect(within(panel(c)).queryByRole('button', { name: 'Submit another' })).toBeNull()
     expect(posts).toHaveLength(1)
   })
@@ -125,7 +125,7 @@ describe('V002 / V048 / V049: the outcome is drawn beside the button, and a 201 
   it('the task form: "Submit another" starts a blank form', async () => {
     const c = await taskForm()
     answerWrite('/v1/tasks', { status: 201, body: { task: { id: 't_vqa_2', state: 'READY' }, scheduler_woken: false } })
-    fireEvent.click(screen.getByRole('button', { name: 'Submit one task' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start one agent' }))
     fireEvent.click(await within(panel(c)).findByRole('button', { name: 'Submit another' }, WAIT))
     expect(c.querySelectorAll('input[name="runner-profile"]:checked')).toHaveLength(0)
     expect(visible(panel(c).querySelector('h2'))).toBe('Not ready to send')
@@ -135,7 +135,7 @@ describe('V002 / V048 / V049: the outcome is drawn beside the button, and a 201 
   it('the task form: a failed write is drawn in the panel too', async () => {
     const c = await taskForm()
     answerWrite('/v1/tasks', { status: 500, body: { code: 'internal', message: 'The write failed on purpose.' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Submit one task' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start one agent' }))
     await waitFor(() => expect(visible(panel(c).querySelector('.sbf-outcome'))).toContain('The write failed on purpose.'), WAIT)
     expect(visible(panel(c).querySelector('.sbf-outcome'))).toContain('Check Agents before submitting again.')
     expect(visible(c.querySelector('.sbf-build'))).not.toContain('The write failed on purpose.')
@@ -202,10 +202,10 @@ describe('V052 / V139 / V130: a push with nowhere to push, and the repository it
     const c = await taskForm()
     strategy(c, 'direct-pr')
     expect(visible(panel(c).querySelector('h2'))).toBe('Not ready to send')
-    expect((screen.getByRole('button', { name: 'Submit one task' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Start one agent' }) as HTMLButtonElement).disabled).toBe(true)
     fireEvent.change(c.querySelector<HTMLInputElement>('#dsp-repo')!, { target: { value: 'https://github.com/example-org/infra.git' } })
     expect(visible(panel(c).querySelector('h2'))).toBe('Ready to send')
-    expect((screen.getByRole('button', { name: 'Submit one task' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: 'Start one agent' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('V139: the workflow panel names the repository whenever the strategy pushes, and holds the button without one', async () => {

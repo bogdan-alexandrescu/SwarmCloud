@@ -191,7 +191,7 @@ function strayFrom(s: StrayInput): string {
     case 'submission':
       return 'the submission'
     case 'outside':
-      return `task ${s.source.taskId}, which is not a step of this workflow`
+      return `agent ${s.source.taskId}, which is not a step of this workflow`
     case 'undeclared':
       return `step ${s.source.stepId}, which this step did not declare an input from`
   }
@@ -711,7 +711,7 @@ function waitedCell(t: StepTimes): Cell {
     note: parents + (t.waitedOpen
       ? 'Still waiting. Time queued, parked or being dispatched -- never time run.'
       : t.attempts !== null
-        ? `${from} to the latest start. This task retried, so the earlier attempts are inside this figure.`
+        ? `${from} to the latest start. This agent retried, so the earlier attempts are inside this figure.`
         : `${from} to start: time queued, parked or being dispatched -- never time run.`),
   }
 }
@@ -1485,7 +1485,7 @@ export function StepInspector({
       >
         <span className="ctl-eyebrow wf-scrub-key">attempt</span>
         {taskId === null ? (
-          <span className="ctl-mark is-absent" aria-label="This step has no task yet, so it has no attempts to step through.">
+          <span className="ctl-mark is-absent" aria-label="This step has no agent yet, so it has no attempts to step through.">
             not started
           </span>
         ) : read.kind === 'reading' ? (

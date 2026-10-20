@@ -1184,7 +1184,7 @@ function MemberControl({ taskId, session, reload }: { taskId: string; session: L
           <h4>Let any member take control?</h4>
           <p>
             While the agent asks for help, any member of this tenant can take control of its browser, not only you.
-            This stays on for this task&apos;s later attempts too, until you turn it off here. Every take is in the
+            This stays on for this agent&apos;s later attempts too, until you turn it off here. Every take is in the
             audit, and you can still take control from them.
           </p>
           <span className="live-ask-actions">

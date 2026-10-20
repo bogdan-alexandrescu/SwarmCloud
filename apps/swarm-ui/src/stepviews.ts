@@ -274,15 +274,15 @@ export function stepTimes(state: StepState, now: number, parents: ParentsDone = 
     const m = mark(
       'unstarted',
       'not started',
-      'This step has no task yet: the workflow has not reached it, so there is no time to draw.',
+      'This step has no agent yet: the workflow has not reached it, so there is no time to draw.',
     )
     return { spans: [], mark: m, attempts: null, waitedMs: null, waitedOpen: false, parentsMs: null, ranMs: null, sentence: m.note }
   }
   if (state.kind === 'unknown') {
     const m = mark(
       'unread',
-      'task unread',
-      `Task ${state.taskId} was not in the task read, so none of its times were looked at. That is unknown, not idle.`,
+      'not joined',
+      `Agent ${state.taskId} was not in the agent read, so none of its times were looked at. That is unknown, not idle.`,
     )
     return { spans: [], mark: m, attempts: null, waitedMs: null, waitedOpen: false, parentsMs: null, ranMs: null, sentence: m.note }
   }
@@ -295,7 +295,7 @@ export function stepTimes(state: StepState, now: number, parents: ParentsDone = 
   const retried =
     attempts === null
       ? ''
-      : ` This task has had ${attempts} attempts, so the wait runs to its latest start and includes the earlier ones.`
+      : ` This agent has had ${attempts} attempts, so the wait runs to its latest start and includes the earlier ones.`
 
   // FINISHED, WITH A RECORDED END.
   if (finite(completed)) {
@@ -987,12 +987,12 @@ const NEVER_STARTED: Absence = {
 
 const NOT_STARTED_YET: Absence = {
   text: 'not started yet',
-  note: 'This is the task’s current attempt and its container has not recorded a start yet. The scheduler writes the attempt at dispatch; the start is written when the container begins.',
+  note: 'This is the agent’s current attempt and its container has not recorded a start yet. The scheduler writes the attempt at dispatch; the start is written when the container begins.',
 }
 
 const STILL_RUNNING: Absence = {
   text: 'still running',
-  note: 'This is the current attempt of a running task, so it has no exit code yet.',
+  note: 'This is the current attempt of a running agent, so it has no exit code yet.',
 }
 
 const NO_EXIT_YET: Absence = {
@@ -1006,8 +1006,8 @@ const END_NOT_WRITTEN: Absence = {
 }
 
 const STATE_UNREAD_HERE: Absence = {
-  text: 'task unread',
-  note: 'This is the newest attempt, and its task was not in the task read, so whether it is still to start or still going is unknown.',
+  text: 'not joined',
+  note: 'This is the newest attempt, and its agent was not in the agent read, so whether it is still to start or still going is unknown.',
 }
 
 /** The newest attempt of a waiting task: over, with no end written, and the
@@ -1015,7 +1015,7 @@ const STATE_UNREAD_HERE: Absence = {
 function waitingEnd(state: TaskState): Absence {
   return {
     text: `${state.toLowerCase()}, end not written`,
-    note: `The task is ${state.toLowerCase()}, so this attempt is over. It stopped without writing an end -- a park or a reclaim records none -- so how long it ran is unknown.`,
+    note: `The agent is ${state.toLowerCase()}, so this attempt is over. It stopped without writing an end -- a park or a reclaim records none -- so how long it ran is unknown.`,
   }
 }
 
@@ -1034,7 +1034,7 @@ function waitingEnd(state: TaskState): Absence {
  * what it is.
  */
 const TOOK_NOTE =
-  'Start to finish of this attempt alone: the attempt’s own started_at to its own completed_at. The table’s “ran” times the task instead, from its latest start to its completion -- separate writes, so for a single attempt the two can differ by about a second.'
+  'Start to finish of this attempt alone: the attempt’s own started_at to its own completed_at. The table’s “ran” times the agent instead, from its latest start to its completion -- separate writes, so for a single attempt the two can differ by about a second.'
 
 /**
  * How close the attempt's own span and the task's must be to be ONE RUN
@@ -1057,7 +1057,7 @@ function tookCell(started: number, completed: number, phase: AttemptPhase, now: 
     if (taskRanMs !== null && Math.abs(own - taskRanMs) < SAME_RUN_MS) {
       return measuredCell(
         durationText(taskRanMs),
-        `The same run the Graph and the Table time, from the task’s latest start to its completion. This attempt’s own document records ${durationText(own)}: separate writes of the same moments, so the page prints the run once.`,
+        `The same run the Graph and the Table time, from the agent’s latest start to its completion. This attempt’s own document records ${durationText(own)}: separate writes of the same moments, so the page prints the run once.`,
       )
     }
     return measuredCell(durationText(own), TOOK_NOTE)
@@ -1541,7 +1541,7 @@ export function stepWhy(
       const err = task.last_error ?? ''
       if (err.trim() === '') {
         return task.state === 'FAILED'
-          ? { kind: 'cause', text: 'no error recorded', full: 'This step failed and its task carries no error text.', warn: whyNeedsAction(task, units) }
+          ? { kind: 'cause', text: 'no error recorded', full: 'This step failed and its agent carries no error text.', warn: whyNeedsAction(task, units) }
           : null
       }
       return { kind: 'cause', text: firstLine(err), full: err, warn: whyNeedsAction(task, units) }

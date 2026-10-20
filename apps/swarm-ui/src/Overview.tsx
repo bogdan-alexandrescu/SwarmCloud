@@ -1649,7 +1649,7 @@ const RUNNING_ROWS = 8
  * `GET /v1/tasks` carried no cost.
  */
 const COST_NOT_SERVED =
-  'not served: this API’s GET /v1/tasks carries no attempt totals. A task’s cost is on its attempts; the Recent token cost card sums a sample on refresh instead.'
+  'not served: this API’s GET /v1/tasks carries no attempt totals. An agent’s cost is on its attempts; the Recent token cost card sums a sample on refresh instead.'
 
 /** Why the column is a dash when the API read the attempts and none reported. */
 const COST_NOT_YET =

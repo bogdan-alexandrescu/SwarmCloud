@@ -155,7 +155,7 @@ describe('Try it says what indexing uses and how the repository last indexed', (
     expect(visible(tryIt)).toContain('Every chosen repository passed its clone, push and pull request checks.')
     const note = await within(tryIt).findByTestId('indexing-note', {}, WAIT)
     await waitFor(() => expect(visible(note)).toContain('Indexing uses: your GitHub connection (@octo-dev)'), WAIT)
-    expect(visible(note)).toContain('Try it checks the access your own tasks use; indexing clones with this.')
+    expect(visible(note)).toContain('Try it checks the access your own agents use; indexing clones with this.')
     expect(visible(note)).toContain("Last index of example-org/example-api failed 20m ago: SwarmCloud's GitHub access can't read this repository")
     expect(visible(note)).toContain('Polling stopped; Index now retries.')
   })

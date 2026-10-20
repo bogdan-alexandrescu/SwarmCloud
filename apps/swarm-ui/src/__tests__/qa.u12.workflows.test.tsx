@@ -143,18 +143,24 @@ describe('R8: the page joins its own steps\' tasks', () => {
     expect(container.textContent).not.toMatch(/no task joined/)
   })
 
-  it('gives the Attempts column room for "task unread"', () => {
+  it('gives the Attempts column room for "not joined"', () => {
     const host = document.createElement('div')
     host.innerHTML =
       '<div class="wf-card"><div class="wf-table-box"><div class="ctl-table wf-table"><table><thead><tr>' +
-      '<th data-col="attempts">Attempts</th></tr></thead><tbody><tr data-step="a"><td data-col="attempts" class="is-num">task unread</td></tr></tbody></table></div></div></div>'
+      '<th data-col="attempts">Attempts</th></tr></thead><tbody><tr data-step="a"><td data-col="attempts" class="is-num">not joined</td></tr></tbody></table></div></div></div>'
     document.body.appendChild(host)
     const th = host.querySelector('th')!
     const td = host.querySelector('td')!
     const env: CascadeEnv = { width: 1440, container: 996 }
     const width = Number.parseFloat(painted(th, 'width', env) ?? '0')
     const st = cellStyle(td, env)
-    expect(width - st.pl - st.pr).toBeGreaterThanOrEqual(textPx('task unread', td, env))
+    // MUTATION: name the unread step's absence 'agent unread' (measure.ts
+    // STATE_UNREAD) and the Attempts column would clip it: it is 86px of
+    // 12px mono in the 80px the column leaves. VOCAB-AGENTS-UI retired
+    // 'task unread' for the shorter 'not joined' rather than take 8px from a
+    // column already at its measured floor.
+    expect(width - st.pl - st.pr).toBeGreaterThanOrEqual(textPx('not joined', td, env))
+    expect(width - st.pl - st.pr, 'the 8px the longer word would need are not there').toBeLessThan(textPx('agent unread', td, env))
     host.remove()
   })
 })

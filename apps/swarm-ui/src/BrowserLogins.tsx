@@ -194,7 +194,7 @@ export function SaveAsLoginOffer({
   if (saved !== null) {
     return (
       <Banner tone="info" title={`Saved as ${saved}`} role="status">
-        A task in your workspace uses it with <code>input.browser_login: "{saved}"</code>. Revoke it under Access › Browser
+        An agent in your workspace uses it with <code>input.browser_login: "{saved}"</code>. Revoke it under Access › Browser
         logins.
       </Banner>
     )
@@ -206,7 +206,7 @@ export function SaveAsLoginOffer({
         <Button size="sm" onClick={() => setOpen(true)}>
           Save as login
         </Button>
-        <span className="ur-hint">Keep this sign-in for later tasks in your workspace.</span>
+        <span className="ur-hint">Keep this sign-in for later agents in your workspace.</span>
       </div>
     )
   }
@@ -230,7 +230,7 @@ export function SaveAsLoginOffer({
           saved, at the person's judgement, and the dialog says what that
           lets their agents do. */}
       <Banner tone="warn" title="Every agent you run in your workspace can act as this account">
-        Saving keeps the session signed in on {where}. Until the login expires or is revoked, any task in your workspace that
+        Saving keeps the session signed in on {where}. Until the login expires or is revoked, any agent in your workspace that
         names it starts signed in as this account, and can do there whatever the account can.
       </Banner>
       <label className="ur-subh" htmlFor="lb-save-name">
@@ -335,7 +335,7 @@ function TypedRevoke({ login, onDone, onKeep }: { login: BrowserLogin; onDone: (
           </>
         }
       >
-        Every saved version is destroyed. A task that names {login.name} fails before its agent runs until you save a new
+        Every saved version is destroyed. An agent that names {login.name} fails before its agent runs until you save a new
         one.
         {/* The typed name is inside the warning it confirms (visual QA V233): below it, it read as a separate form. */}
         <span className="lb-revoke-type">
@@ -439,7 +439,7 @@ function PersonalLogins() {
         plural
         empty={
           <EmptyState kind="empty" heading="No browser login saved">
-            After you return control of a task's browser in your workspace, its Browser tab offers Save as login.
+            After you return control of an agent's browser in your workspace, its Browser tab offers Save as login.
           </EmptyState>
         }
       >

@@ -34,7 +34,7 @@ export function JevBackendCard() {
   return (
     <Card title="Jev backend">
       <p className="pk-lead">
-        Where Jev, the browser&rsquo;s judgment model, sends what it is asked to judge for tasks in this workspace.
+        Where Jev, the browser&rsquo;s judgment model, sends what it is asked to judge for agents in this workspace.
       </p>
       <UrRegion state={judgment.state} route={ROUTE} what="the Jev backend" onRetry={judgment.reload}>
         {(d) => <JevBackendChoice tenantId={d.tenant_id} canEdit={d.can_edit} chosen={d.jev.backend} options={d.jev.options}
@@ -128,7 +128,7 @@ function JevBackendChoice({
         })}
       </div>
       {!available && (
-        <p className="warn-text">{`Jev is unavailable for tasks here: ${reason ?? 'its backend cannot be reached'}. Page text is not sent anywhere else instead.`}</p>
+        <p className="warn-text">{`Jev is unavailable for agents here: ${reason ?? 'its backend cannot be reached'}. Page text is not sent anywhere else instead.`}</p>
       )}
       {!canEdit && <p className="ur-small">Only the workspace&rsquo;s owner or a platform admin can change this.</p>}
       {setBy !== null && (

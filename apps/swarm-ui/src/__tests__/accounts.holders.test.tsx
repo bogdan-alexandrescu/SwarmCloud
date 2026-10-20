@@ -3,7 +3,7 @@
 // swarm-api decides what each viewer may see (swarm_api/accountholds.py); this
 // screen renders what arrives and must not blur the cases it is handed:
 //
-//   * a hold whose worker named NO task reads "task not recorded" -- not as an
+//   * a hold whose worker named NO task reads "agent not recorded" -- not as an
 //     unverified one, and not as a blank;
 //   * a hold that named a task its tenant does not own reads "unverified",
 //     with no id to show;
@@ -126,7 +126,7 @@ describe('holding now', () => {
     expect(reads.read).not.toHaveBeenCalled()
   })
 
-  it('links the own task, its attempt and since when, and says "task not recorded" apart from it', async () => {
+  it('links the own task, its attempt and since when, and says "agent not recorded" apart from it', async () => {
     const since = new Date(Date.now() - 38 * MINUTES).toISOString()
     serve({
       holders: holders({
@@ -146,7 +146,7 @@ describe('holding now', () => {
     const rows = [...document.querySelectorAll('.acct-holding-now tbody tr')]
     expect(rows[0]!.querySelectorAll('td')[1]!.textContent).toBe('2')
     expect(screen.getAllByText(/^\d\d:\d\d \(38m\)$/).length).toBe(2)
-    expect(screen.getByText('task not recorded')).toBeTruthy()
+    expect(screen.getByText('agent not recorded')).toBeTruthy()
     // NOT RECORDED IS NOT UNVERIFIED. A regression that folds the two would
     // tell the reader a worker lied when it merely did not say.
     expect(screen.queryByText('unverified')).toBeNull()
@@ -164,7 +164,7 @@ describe('holding now', () => {
 
     expect(await screen.findByText('unverified', undefined, WAIT)).toBeTruthy()
     expect(screen.queryByRole('link', { name: /task/ })).toBeNull()
-    expect(screen.queryByText('task not recorded')).toBeNull()
+    expect(screen.queryByText('agent not recorded')).toBeNull()
   })
 
   it('gives a borrower a count of other tenants and no tenant name', async () => {
@@ -225,7 +225,7 @@ describe('history', () => {
     expect(await screen.findByRole('link', { name: 'task_mine' }, WAIT)).toBeTruthy()
     expect(screen.getByText('3 other agents in this window')).toBeTruthy()
     expect(screen.queryByText('another tenant')).toBeNull()
-    expect(screen.getByText('task not recorded')).toBeTruthy()
+    expect(screen.getByText('agent not recorded')).toBeTruthy()
     // One table row per hold since browser QA D24: held for, then how it ended.
     const first = document.querySelector('.acct-hist tbody tr')!
     expect(first.textContent).toMatch(/30m/)

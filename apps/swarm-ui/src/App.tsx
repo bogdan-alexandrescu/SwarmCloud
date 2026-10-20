@@ -340,7 +340,7 @@ export const SECTIONS: SectionDef[] = [
       // API uses (`POST /v1/tasks`, `TaskCreate`), the same test that named
       // the Runtimes TAB after `/v1/runtimes` (it was a section of its own
       // until the collapse to three; the name came from the route either way).
-      { id: 'new', label: 'Submit a task' },
+      { id: 'new', label: 'Start an agent' },
       { id: 'new-workflow', label: 'Submit a workflow' },
       { id: 'new-issue', label: 'Submit from a GitHub issue' },
     ],
@@ -499,7 +499,7 @@ export const SECTIONS: SectionDef[] = [
     // only the platform's: a workspace admin reaches this section for that
     // one page, which is why the tab carries no `admin: true` mark.
     question:
-      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer?',
+      'What is each ceiling set to, who is registered to use this platform, how many agents are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer?',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
       { id: 'tenants', label: 'Tenants', admin: true },
@@ -546,7 +546,7 @@ const SUBMIT_HELP: SectionQuestionDef = {
   id: SUBMIT,
   label: 'Submit',
   question:
-    'What can I start — a task, a workflow or a GitHub issue — on which runner, and will it run now or wait for room?',
+    'What can I start — an agent, a workflow or a GitHub issue — on which runner, and will it run now or wait for room?',
 }
 
 /**

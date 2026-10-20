@@ -261,7 +261,7 @@ function Body({ t }: { t: AttemptTimeline }) {
           <span className="is-end ctl-card-note">
             <Mark
               kind="unread"
-              say={`The event history could not be read. This is a failed read, not a task with no events; the attempt cards below are complete. ${t.eventsDetail ?? ''}`}
+              say={`The event history could not be read. This is a failed read, not an agent with no events; the attempt cards below are complete. ${t.eventsDetail ?? ''}`}
             />{' '}
             events unread
           </span>
@@ -285,7 +285,7 @@ function Body({ t }: { t: AttemptTimeline }) {
               <>
                 <Mark
                   kind="unread"
-                  say="Zero events came back, yet a task is written with its submitted event in the same batch — so this is a failed query, not an empty history."
+                  say="Zero events came back, yet an agent is written with its submitted event in the same batch — so this is a failed query, not an empty history."
                 />{' '}
                 {pluralise(count, 'event')} · first page
               </>
@@ -312,7 +312,7 @@ function Body({ t }: { t: AttemptTimeline }) {
                 {' · '}
                 <Mark
                   kind="partial"
-                  say={`The task is ${stateWord(t.task.state)} and a terminal task writes a terminal event — none is on this page. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so the newest events are not on it. The end of this task's history is missing, not absent.`}
+                  say={`The agent is ${stateWord(t.task.state)} and a terminal agent writes a terminal event — none is on this page. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so the newest events are not on it. The end of this agent's history is missing, not absent.`}
                 />{' '}
                 {lastEvent === undefined ? 'ends early' : `ends at ${eventWord(lastEvent)}`}
               </>
