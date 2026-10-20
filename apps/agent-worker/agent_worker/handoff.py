@@ -1165,8 +1165,11 @@ class HandoffPath:
         """The QA identity's first credential, before the agent exists (§4.5). Never raises.
 
         `task` is the VERIFIED task document: a task whose input names no
-        identity asks nothing at all. Called once the gate is registered and
-        before the runner starts; a second call asks nothing again. Returns
+        identity asks nothing at all. The lifecycle calls it (`_prepare`,
+        STEP 4b) once the gate is registered and before the agent exists,
+        rather than `prepare` as §4.5 has it: `prepare` returns the agent's
+        variables, and only `_prepare` can end the attempt before the agent
+        starts. A second call asks nothing again. Returns
         the cause that must fail the attempt before its agent starts
         (`qa_identity.FAILS_THE_ATTEMPT`: the first ask refused as not
         granted or unconfigured), else None. Any other failure leaves the

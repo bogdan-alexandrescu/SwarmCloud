@@ -33,14 +33,27 @@ import pytest
 
 from agent_worker import children as children_mod
 from agent_worker import handoff as handoff_mod
+from agent_worker import lifecycle
 from agent_worker import qa_identity
 from agent_worker.hardening import FAILED, PROTECTED, MemoryProtection
 from agent_worker.livegate import ctl as gate_ctl
 from agent_worker.livegate import qaidentity as gate_qa
 from swarm_api import childkey as api_childkey
 from swarm_api import qa_identity as api_qa
+from swarm_common.states import TaskState
 
-from test_handoff import CDP, CTL, CtlRefused, FakeGateClient, FakeLiveRoutes, _Log
+from test_handoff import (  # noqa: F401  (agent and trace are pytest fixtures, used by name)
+    CDP,
+    CTL,
+    CtlRefused,
+    FakeGateClient,
+    FakeLiveRoutes,
+    _live_worker,
+    _Log,
+    agent,
+    trace,
+)
+from worker_seeds import seed_attempt
 
 HOST = "console.example.com"
 LIFE = 900
@@ -382,3 +395,79 @@ def test_a_gate_that_refuses_the_credential_is_failed_closed(tmp_path, db, monke
     assert qa_identity.GATE_REFUSED in _notice(world).read_text()
     (issued,) = world.routes.issued
     assert issued not in _everything_readable(world)
+
+
+def test_a_first_hand_off_the_gate_never_got_runs_signed_out_and_told_why(tmp_path, db, monkeypatch):
+    original = QaGate.call
+
+    def lost(self, op, args):
+        if op == gate_qa.OP and "credential" in args:
+            raise OSError("ctl.sock is not accepting")
+        return original(self, op, args)
+
+    monkeypatch.setattr(QaGate, "call", lost)
+    world = _world(tmp_path, db, task=_task(qa_identity="console"))
+    assert world.fails is None
+    assert world.path.qa.state == "failed" and world.path.qa.cause == qa_identity.GATE_UNREACHABLE
+    assert world.gate.qa_ops()[-1] == {"failed": qa_identity.GATE_UNREACHABLE}
+    assert qa_identity.GATE_UNREACHABLE in _notice(world).read_text()
+    (note,) = [n for n in world.notes if n.get("phase") == "qa_identity"]
+    assert qa_identity.GATE_UNREACHABLE in note["reason"]
+    # The gate takes it on a later poll: signed in, the notice gone.
+    monkeypatch.setattr(QaGate, "call", original)
+    world.clock.at += 120
+    world.path.tick(world.work, lambda: {})
+    assert world.gate.qa.held and world.path.qa.state == "ready"
+    assert not _notice(world).exists()
+
+
+# --------------------------------------------------------------------------
+# The lifecycle: the first credential before the agent, or no agent at all
+# --------------------------------------------------------------------------
+
+
+def _qa_worker(db, worker_factory, trace, monkeypatch, *, refuse=None):  # noqa: F811
+    # The mock profile declares no `qa_identity` input, so the worker's own
+    # recheck of the stored input (`_recheck_runner_input`, tested where it
+    # lives) would refuse it before this path is reached.
+    monkeypatch.setattr(lifecycle, "_recheck_runner_input", lambda profile, stored: None)
+    seed_attempt(db, task_input={"qa_identity": "console"})
+    routes = QaRoutes(db, trace, clock=Clock())
+    routes.refuse = refuse
+    gate = QaGate(trace, Clock())
+    worker = _live_worker(worker_factory, routes, gate, trace, monkeypatch)
+    return worker, routes, gate
+
+
+@pytest.mark.parametrize("status,code", [
+    (403, "qa_identity_not_granted"), (503, "qa_identity_unconfigured"),
+])
+def test_the_lifecycle_fails_the_attempt_before_the_agent_on_a_first_refusal(
+        db, worker_factory, agent, trace, monkeypatch, status, code):  # noqa: F811
+    _, records = agent
+    refusal = children_mod.ChildApiError(status, code, "", retryable=status >= 500)
+    worker, routes, gate = _qa_worker(db, worker_factory, trace, monkeypatch, refuse=refusal)
+    assert worker.run() == lifecycle.ExitCode.FAILED
+    assert records() == [], "the agent started though its QA identity was refused"
+    assert len(routes.qa_calls()) == 1
+    assert gate.qa_ops() == [{"failed": code}]
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.FAILED.value
+    assert task["end_cause"] == "cannot_start"
+    assert task["last_error"].startswith(f"{code}: "), task["last_error"]
+    assert task["result_summary"]["qa_identity"] == {"cause": code}
+    assert db.doc("leases/lease_1")["released_at"] is not None
+
+
+def test_the_lifecycle_hands_the_gate_the_credential_before_the_agent_starts(
+        db, worker_factory, agent, trace, monkeypatch):  # noqa: F811
+    _, records = agent
+    worker, routes, gate = _qa_worker(db, worker_factory, trace, monkeypatch)
+    worker.run()
+    assert records(), "the agent never started"
+    (issued, *_) = routes.issued
+    first = gate.qa_ops()[0]
+    assert first["credential"] == issued and first["host"] == HOST
+    assert trace.index("gate:register") < trace.index("route:qa-identity") \
+        < trace.index("gate:qa_identity")
+    assert db.doc("tasks/task_1")["state"] != TaskState.FAILED.value

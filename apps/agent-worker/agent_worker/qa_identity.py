@@ -80,6 +80,7 @@ SIGN_FAILED = "qa_identity_sign_failed"
 REFUSED = "qa_identity_refused"
 UNREACHABLE = "qa_identity_unreachable"
 GATE_REFUSED = "qa_identity_gate_refused"
+GATE_UNREACHABLE = "qa_identity_gate_unreachable"
 NO_ATTEMPT_KEY = "no_attempt_key"
 WORKER_UNPROTECTED = "worker_unprotected"
 
@@ -89,16 +90,16 @@ FAILS_THE_ATTEMPT = frozenset({NOT_GRANTED, UNCONFIGURED})
 #: swarm-api's codes that say no credential will come for this attempt
 #: (`swarm_api.qa_identity`'s refusals; `not_found` is also another tenant's
 #: task). `qa_identity_unconfigured` is a 503 at signing, and still permanent.
-_PERMANENT = {
-    NOT_GRANTED: NOT_GRANTED,
-    UNCONFIGURED: UNCONFIGURED,
-    "qa_identity_not_requested": "qa_identity_not_requested",
-    "stale_generation": "stale_generation",
-    "lease_not_live": "lease_not_live",
-    "not_found": "not_found",
-    "bad_signature": "bad_signature",
-    "spec_unverified": "spec_unverified",
-}
+_PERMANENT = frozenset({
+    NOT_GRANTED,
+    UNCONFIGURED,
+    "qa_identity_not_requested",
+    "stale_generation",
+    "lease_not_live",
+    "not_found",
+    "bad_signature",
+    "spec_unverified",
+})
 
 #: A `jti` as swarm-api makes it (`secrets.token_hex(16)`); anything else is
 #: not put in a log line.
@@ -123,6 +124,7 @@ _WHY = {
     UNREACHABLE: "SwarmCloud could not be asked for the QA credential just now; it keeps trying",
     REFUSED: "SwarmCloud refused this attempt the QA credential",
     GATE_REFUSED: "the live browser did not take the QA credential",
+    GATE_UNREACHABLE: "the live browser could not be reached to take the QA credential; it keeps trying",
     NO_ATTEMPT_KEY: "the worker has no attempt key to ask with",
     WORKER_UNPROTECTED: "the worker cannot protect a credential in its memory",
     "qa_identity_not_requested": "the task's signed input does not name the QA identity",
@@ -147,9 +149,14 @@ def requested(task: Any) -> str | None:
     return value if isinstance(value, str) and value in IDENTITIES else None
 
 
+def reason(cause: str) -> str:
+    """A cause as a plain sentence, for the agent's notice and the task's error."""
+    return _WHY.get(cause, "the QA identity is unavailable")
+
+
 def notice(cause: str) -> str:
     """What the agent is told while its browser holds no QA credential."""
-    return _NOTICE.format(cause=cause, why=_WHY.get(cause, "the QA identity is unavailable"))
+    return _NOTICE.format(cause=cause, why=reason(cause))
 
 
 class IssueRefused(Exception):
@@ -201,7 +208,7 @@ def issue(cfg: Any, key: Any, api: Any, identity: str, *, now: float) -> Issued:
     except Exception as exc:
         code = str(getattr(exc, "code", "") or "")
         if code in _PERMANENT:
-            raise IssueRefused(_PERMANENT[code], retryable=False) from None
+            raise IssueRefused(code, retryable=False) from None
         if code == SIGN_FAILED:
             raise IssueRefused(SIGN_FAILED, retryable=True) from None
         retryable = getattr(exc, "retryable", None)
@@ -337,7 +344,14 @@ class QaSignIn:
                 self._ended = True
                 self._fail(gate, GATE_REFUSED)
                 return
-            self._retry_later(UNREACHABLE)
+            self._retry_later(GATE_UNREACHABLE)
+            if now < self._expires_at:
+                # The gate still holds a credential that works: ask again later.
+                return
+            if (self.state, self.cause) != ("failed", GATE_UNREACHABLE):
+                # Nothing in the gate (a first hand-off, or the last one
+                # expired): signed out, and the agent and the events say so.
+                self._fail(gate, GATE_UNREACHABLE)
             return
         renewal = self.state == "ready"
         self._expires_at = now + issued.expires_in
@@ -369,5 +383,5 @@ class QaSignIn:
 
 __all__ = [
     "CTL_OP", "FAILS_THE_ATTEMPT", "IDENTITIES", "INPUT_KEY", "NOTICE_NAME", "QA_IDENTITY_PURPOSE",
-    "IssueRefused", "Issued", "QaSignIn", "issue", "notice", "requested",
+    "IssueRefused", "Issued", "QaSignIn", "issue", "notice", "reason", "requested",
 ]
