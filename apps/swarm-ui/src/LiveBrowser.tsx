@@ -33,6 +33,7 @@ import {
 } from './api'
 import { SaveAsLoginOffer } from './BrowserLogins'
 import { BrowserBadges, browserStatusOf } from './BrowserBadges'
+import { qaIdentityOf } from './QaIdentityGrants'
 import { Button } from './components'
 import { HandoffStrip } from './Handoff'
 import { LiveToolMenu } from './LiveToolMenu'
@@ -884,7 +885,7 @@ export function LiveBrowserPane({
               ? 'You are in control.'
               : `${session.controller.email} is in control.`}
         </span>
-        <BrowserBadges status={tools} />
+        <BrowserBadges status={tools} qaIdentity={qaIdentityOf(task.input)} />
         {unused && <AgentUnused task={task} />}
       </div>
   )
