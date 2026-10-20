@@ -294,8 +294,11 @@ export function PlatformCountsScreen() {
         <PlatformTicks />
       </section>
       {/* THE FOOTER EVERY SIBLING PAGE HAS (QA G5-23): what a run returns,
-          and why a state with no row is not a zero. */}
-      <HelpLinks topics={COUNTS_TOPICS} />
+          and why a state with no row is not a zero. `.counts-help`
+          (styles/admin.css) rules the two links apart (QA-042). */}
+      <div className="counts-help">
+        <HelpLinks topics={COUNTS_TOPICS} />
+      </div>
     </>
   )
 }

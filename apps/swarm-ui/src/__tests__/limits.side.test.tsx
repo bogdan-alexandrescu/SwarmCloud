@@ -275,7 +275,9 @@ describe('Pool limits locks Edit for a non-admin (decided 2026-10-01)', () => {
     await screen.findByText(/Admins only/, undefined, WAIT)
     for (const tr of document.querySelectorAll('tbody tr')) {
       const edit = within(tr as HTMLElement).getByRole('button', { name: /^Edit ceiling for / }) as HTMLButtonElement
-      expect(edit.disabled).toBe(true)
+      // aria-disabled, not `disabled` (QA-037): a keyboard reaches the reason.
+      expect(edit.disabled).toBe(false)
+      expect(edit.getAttribute('aria-disabled')).toBe('true')
       expect(edit.getAttribute('aria-label')).toMatch(/Admins only/)
       expect(tr.querySelector('.adm-ceiling')?.textContent).toMatch(/^\d+$/)
     }
@@ -292,7 +294,9 @@ describe('Pool limits locks Edit for a non-admin (decided 2026-10-01)', () => {
       expect(r).not.toBeNull()
       return r as HTMLElement
     }, WAIT)
-    expect((within(row).getByRole('button', { name: 'Edit ceiling for tenant:eng' }) as HTMLButtonElement).disabled).toBe(false)
+    const edit = within(row).getByRole('button', { name: 'Edit ceiling for tenant:eng' }) as HTMLButtonElement
+    expect(edit.disabled).toBe(false)
+    expect(edit.getAttribute('aria-disabled')).toBeNull()
     expect(screen.queryByText(/Admins only/)).toBeNull()
   })
 })
