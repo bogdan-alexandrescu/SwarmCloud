@@ -816,11 +816,11 @@ execution mode; W0b (2), §0). Steps 1 to 3 are `scripts/workspace-apply.sh`, wh
 | A2 | **check the name is free.** If the worker account already exists, read its policy and keys: any binding the mode does not make, or a user-managed key, fails `IDENTITY_NOT_OURS` (the script's existing squat inspection, §2b) | `identity: absent` or `identity: ours` |
 | A3 | **the account.** Create `swarm-agent-worker-u-alice` if absent | `identity: created` |
 | A4 | **its own IAM.** `roles/iam.workloadIdentityUser` for the namespace's two Kubernetes service accounts, and `roles/iam.serviceAccountUser` (act-as) for the scheduler and the reconciler, the grant the script lacks today (§0) | `account bindings: 4` |
-| A5 | **bucket and project grants.** The two `tenants/u-alice/`-conditioned object grants on the artifact bucket and the `.tenant` marker object. The database and bucket-metadata roles are **not** granted here when the one-time principal-set grant exists (WD9, §2.3); on the fallback they are, with the project telemetry roles | `access: granted` |
+| A5 | **bucket and project grants.** The two `tenants/u-alice/`-conditioned object grants on the artifact bucket and the `.tenant` marker object. The database and bucket-metadata roles are **not** granted here when the one-time principal-set grant exists (WD9, §2.3); on the fallback they are, with the project telemetry roles. The database role follows the record's `worker_firestore_access` (§2.7): false grants none | `access: granted` |
 | A6 | **forge slot.** Create the person's empty forge slot and its twin if absent, and grant the worker `secretAccessor` on them | `forge slot: bound` |
 | A7 | **namespace.** `kubernetes/apply.sh` for the tenant, with the record's quota flags (§8) | `namespace: applied` |
 | A8 | **control plane.** Write the tenant and pool documents with the record's limits, as the script's §6 does | `limits: written` |
-| A9 | **verify.** Re-read the account, its policy, the bucket members, the slot binding, every object `kubernetes/render.py::TENANT_FILES` produces, and both documents. Only then set `ready` and `ready_at` | `verified: 41 of 41 objects` |
+| A9 | **verify.** Re-read the account, its policy, the bucket members, the slot binding, every object `kubernetes/render.py::TENANT_FILES` produces, and both documents; under `worker_firestore_access` false, that the worker holds **no** Firestore role on the project (§2.7). Only then set `ready` and `ready_at` | `verified: 41 of 41 objects` |
 
 `--mode limits` runs only A1, A7 and A8: a ceiling change re-applies the
 namespace quota and the documents, and makes no IAM call.
@@ -1158,7 +1158,7 @@ call shapes. A call is allowed only if one rule matches it whole:
 | C2 | `gcloud iam service-accounts create <id>` where `<id>` is the expected worker account id, and nothing else on accounts: no `delete`, `disable`, `update`, `keys …` or `set-iam-policy` | creating `swarm-agent-worker-u-bob` |
 | C3 | `gcloud iam service-accounts add-iam-policy-binding <the expected worker email>` with role `workloadIdentityUser` and a member that is one of the two expected Kubernetes service accounts in `swarm-tenant-<tenant>`, or role `serviceAccountUser` and a member that is the scheduler or the reconciler | a binding on any other account, or `serviceAccountTokenCreator` |
 | C4 | `gcloud storage buckets add-iam-policy-binding gs://<artifact bucket>` with member the expected worker, role `objectViewer` or `objectUser`, and a condition **string-equal** to the expected expression for `tenants/<tenant>/` (these are the fixed shared resource's prefix-conditioned per-person bindings); the `.tenant` marker as one `curl` `POST` to the Storage JSON API's upload URL for `tenants/<tenant>/.tenant` with `ifGenerationMatch=0`, its body naming the expected tenant and workspace, its bearer header on stdin. `gcloud storage cp` is not allowed: it reads the object first. On the WD9 fallback only: the bucket-metadata role for the expected worker | a condition naming another prefix, any other member, or a marker upload without `ifGenerationMatch=0` |
-| C5 | **WD9 fallback only:** `gcloud projects add-iam-policy-binding` with member the expected worker and a role among the worker Firestore role, `logWriter`, `metricWriter`. Under the principal-set grant this rule is off, and any project IAM call stops the run | `roles/editor` |
+| C5 | **WD9 fallback only:** `gcloud projects add-iam-policy-binding` with member the expected worker and a role among the worker Firestore role, `logWriter`, `metricWriter`. Under the principal-set grant this rule is off, and any project IAM call stops the run. The worker Firestore role only while the expectation's `worker_firestore_access` is true (§2.7) | `roles/editor`; the worker Firestore role under `worker_firestore_access` false |
 | C6 | `gcloud secrets create` of the expected forge slot names, and `add-iam-policy-binding` on them with member the expected worker and role `secretAccessor` | a binding on `swarm-tenant-eng-git` |
 | C7 | `kubectl apply` whose every object (the guard reads the `-f` file or stdin) is the `Namespace` `swarm-tenant-<tenant>` or is in that namespace, plus the server dry-run that precedes it; the admission policy of §2.3 checks the same server-side | an object in `swarm-system` |
 | C8 | `curl` `PATCH` or `commit` to the Firestore REST API on exactly `tenants/<tenant>`, `pools/tenant:<tenant>` and `workspaces/<tenant>`, and the metadata server's token endpoint | a write to another tenant's pool |
@@ -1239,6 +1239,50 @@ nothing public is left to protect:
 7. **Outputs.** `terraform/infra`'s `tenant_namespaces` output lists group and
    service tenants only, as today; personal namespaces are not in Terraform at
    all, so the release's namespace step never sees them (§3).
+
+### 2.7 The worker's Firestore switch follows its tenant (#1457, design B)
+
+[`docs/design/tenant-settings-integrity.md`](design/tenant-settings-integrity.md)
+takes every tenant worker off direct Firestore, one tenant at a time (owner
+decision Q7: dev first -- `u-bogdan`, then `eng`, then all -- and only then is
+the role removed). A Terraform tenant is switched by the tenancy module's
+`worker_firestore_access`, an operator-registered one by `register-tenant.sh
+--worker-firestore-access`. **A job-made workspace -- personal, group or
+service, built from Admin › Tenants -- follows the same switch**, and before
+lane ISO-WS-FIRESTORE it did not: A5 granted the worker database role and A9
+required it whatever the switch said, so cutting such a tenant over would have
+failed silently.
+
+**Where it is set.** swarm-api's `WORKER_FIRESTORE_OFF_TENANTS` (comma-separated
+tenant ids, or `*`; empty by default) is the cutover list for this path. swarm-api
+writes it onto the record as `worker_firestore_access` on every admin action that
+starts a run: an approval, a retry and a ceiling change
+(`swarm_api.workspaces.worker_firestore_access`). A ready workspace therefore
+takes a change to the list at its next ceiling change, and its next `verify`
+run checks the outcome.
+
+**How the job reads it.** The guard's `expect` (§2.5) copies the record's value
+into the expectation; **absent is true**, so every record written before the
+switch reads as it did, and anything but a boolean gets no expectation at all.
+
+| `worker_firestore_access` | A5 (on the WD9 fallback) | the guard, C5 | A9 |
+|---|---|---|---|
+| absent or `true` | grants the worker database role, `logWriter` and `metricWriter`, as before | admits all three | requires all three |
+| `false` | grants `logWriter` and `metricWriter` only; removes nothing | the expectation names no `firestore_role`, so the database binding stops the run | requires `logWriter` and `metricWriter`, and **no** Firestore role for the worker: neither the worker database role nor any `roles/datastore.*`, conditioned or not |
+
+**False removes nothing.** A binding an earlier run made stays: removal is never
+the job's (C9). A9 then fails `VERIFY_FAILED` with object `project grant` and
+prints the removal for the owner, who runs it; a `verify` run afterwards passes.
+
+**A forged value.** The record is a Firestore document, and a worker that still
+holds the direct role can write it (R8, §4.5 of
+[`docs/design/workspace-kinds.md`](design/workspace-kinds.md)). Writing `true`
+on a cut-over tenant's record re-grants that tenant's worker the role at its
+next run -- the reach the forging worker already has itself, and only while it
+has it; once every tenant is cut over no worker can write the record. Writing
+`false` withholds a grant and is caught by the workspace failing to start
+work, not hidden. The value is not in the signed approval (`APPROVAL_FIELDS`);
+making it so is a question in the lane's pull request, not a change made here.
 
 ---
 

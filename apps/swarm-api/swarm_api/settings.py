@@ -658,6 +658,18 @@ class ApiSettings:
     #: operator lists a tenant; a tenant listed before that reads its unsigned
     #: settings as unset (fail closed).
     settings_mac_tenants: tuple[str, ...] = ()
+    #: The tenants whose job-made workspace worker gets NO Firestore role
+    #: (WORKER_FIRESTORE_OFF_TENANTS, comma-separated, or `*` for every
+    #: tenant): #1457 design B's per-tenant cutover (owner decision Q7: dev
+    #: first, u-bogdan, then eng, then all) on the in-cloud workspace path,
+    #: the twin of terraform/modules/tenancy `worker_firestore_access` for a
+    #: Terraform tenant. People writes `worker_firestore_access` on the record
+    #: from it at every approval, retry and ceiling change, and the workspace
+    #: job grants and verifies by the record (`workspaces.worker_firestore_access`).
+    #: EMPTY by default, so every workspace keeps today's grant: a tenant is
+    #: listed only once its worker reaches its state through swarm-api's routes,
+    #: since a listed worker still on the direct path gets PermissionDenied.
+    worker_firestore_off_tenants: tuple[str, ...] = ()
     #: The NAT addresses every worker's MCP call leaves through, which a
     #: registered MCP server's operator allowlists (docs/design/registered-
     #: mcp-servers.md §4.9). MCP_EGRESS_ADDRESSES, comma-separated, rendered
@@ -985,6 +997,7 @@ class ApiSettings:
             settings_key=os.environ.get("SWARM_SETTINGS_KEY", "").strip(),
             settings_key_previous=os.environ.get("SWARM_SETTINGS_KEY_PREVIOUS", "").strip(),
             settings_mac_tenants=_csv("SETTINGS_MAC_TENANTS"),
+            worker_firestore_off_tenants=_csv("WORKER_FIRESTORE_OFF_TENANTS"),
             mcp_egress_addresses=_csv("MCP_EGRESS_ADDRESSES"),
             workspace_grant_key=os.environ.get("SWARM_WORKSPACE_GRANT_KEY", "").strip(),
             workspace_grant_key_previous=os.environ.get(

@@ -132,7 +132,7 @@
     },
     {
       "id": "C5",
-      "summary": "WD9 fallback only: the expected worker's database and telemetry roles on the project. Under the principal-set grant this rule is off, and any project IAM call stops the run.",
+      "summary": "WD9 fallback only: the expected worker's database and telemetry roles on the project. Under the principal-set grant this rule is off, and any project IAM call stops the run. The database role only while the expectation's worker_firestore_access is true (absent on the record is true): under false `expect` writes no {firestore_role}, so this shape admits the telemetry roles alone and the database binding stops the run (#1457 design B, lane ISO-WS-FIRESTORE).",
       "shapes": [
         {"tool": "gcloud", "command": ["projects", "add-iam-policy-binding"], "args": ["{project_id}"], "flags": {"--member": "serviceAccount:{worker_email}", "--role": ["{firestore_role}", "roles/logging.logWriter", "roles/monitoring.metricWriter"], "--condition": "None"}, "require": ["--member", "--role", "--condition"], "fallback_only": true}
       ]

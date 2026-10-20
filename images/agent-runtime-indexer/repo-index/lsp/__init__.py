@@ -2,7 +2,8 @@
 
 client.py   one server as a child process over stdio: framing, requests
             with timeouts, the budget, the memory watchdog
-servers.py  the four servers §3.5 names and how each is started
+servers.py  the four servers §3.5 names, how each is started, and the paths
+            the pass never opens
 driver.py   the pass itself: definition, call hierarchy, references, and
             the ok / partial / timed_out / failing / unsupported fallback
 
@@ -18,14 +19,15 @@ from .driver import (LSP_DECLARED, LSP_INFERRED, NO_SERVER_REASON, STATUS_FAILIN
                      PassResult, Site, default_memory_limit_mib, grant_seconds, measured_cost,
                      planned_needs, run_pass, server_budget_seconds, simple_name,
                      total_budget_seconds)
-from .servers import DEFAULT_BIN_DIR, DISABLED_SERVERS, SERVERS, ServerSpec
+from .servers import (DEFAULT_BIN_DIR, DISABLED_SERVERS, LSP_EXCLUDED_PATHS, SERVERS, ServerSpec,
+                      lsp_excluded)
 
 __all__ = [
     "BudgetExceeded", "DEFAULT_BIN_DIR", "DISABLED_SERVERS", "LSP_DECLARED", "LSP_INFERRED", "LanguageResult",
-    "LspClient", "LspEdge", "LspError", "LspOptions", "NO_SERVER_REASON", "PassResult",
+    "LSP_EXCLUDED_PATHS", "LspClient", "LspEdge", "LspError", "LspOptions", "NO_SERVER_REASON", "PassResult",
     "RequestTimeout", "SERVERS", "STATUS_FAILING", "STATUS_OK", "STATUS_PARTIAL", "STATUS_TIMED_OUT",
     "STATUS_UNSUPPORTED", "ServerError", "ServerExited", "ServerSpec", "Site",
-    "default_memory_limit_mib", "grant_seconds", "measured_cost", "planned_needs", "run_pass",
+    "default_memory_limit_mib", "grant_seconds", "lsp_excluded", "measured_cost", "planned_needs", "run_pass",
     "server_budget_seconds", "session_rss_bytes",
     "simple_name", "total_budget_seconds",
 ]

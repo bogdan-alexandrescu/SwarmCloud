@@ -33,9 +33,10 @@ protocol, the budget and the fallbacks are the driver's, for all four.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 # Where the image links every server command (Dockerfile, "language servers").
 DEFAULT_BIN_DIR = Path("/opt/repo-index/servers/bin")
@@ -128,3 +129,42 @@ SERVERS: dict[str, ServerSpec] = {
 # tree-sitter alone and reports `unsupported` in the LSP pass. The spec is kept
 # here so lane IDX can re-enable it in agent-runtime-indexer once it resolves.
 DISABLED_SERVERS: dict[str, ServerSpec] = {"terraform-ls": SERVERS.pop("terraform-ls")}
+
+
+# The paths the LSP pass never opens, on every repository (lane INDEX-SITES,
+# part of #1693). Tree-sitter still parses them -- their symbols, imports and
+# `ast` edges are in the graph as before -- but no server is asked about
+# them: a migration or an alembic revision calls the models a hundred times
+# and is never where impact finds a test, and docs/ is examples and Sphinx
+# configuration. On ai-studio the pass ran out of its budget every full run
+# (16 of 16), so every site asked there was one not asked in application
+# code. Gitignore semantics, matched against the repository-relative path:
+# `**/` is zero or more directories, `*` stays inside one.
+LSP_EXCLUDED_PATHS: tuple[str, ...] = ("**/migrations/**", "**/alembic/versions/**", "docs/**")
+
+
+def _glob_regex(pattern: str) -> re.Pattern[str]:
+    """A gitignore-style glob as an anchored regular expression."""
+    out, i = [], 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out.append("(?:[^/]+/)*")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(out) + r"\Z")
+
+
+def lsp_excluded(path: str, patterns: Sequence[str] = LSP_EXCLUDED_PATHS) -> bool:
+    """Whether the LSP pass leaves `path` to tree-sitter alone."""
+    return any(_glob_regex(pattern).match(path) for pattern in patterns)

@@ -897,6 +897,24 @@ hold its indexer pod up to twice as long (four times over 10,000), only while
 it still has work. The extractor version went to 4 with it, so the first run
 after the release is full and measures every server.
 
+*Revised 2026-10-20 (lane INDEX-SITES, part of #1693):* the pass asks less.
+A site whose name is neither the simple name of a symbol in the repository
+nor bound by an import in its file (`rows.append()`, `os.getcwd()`, `len()`)
+is not asked: a definition becomes an edge only at a known symbol's name, and
+only an import can carry a call to a symbol of another name, so every answer
+to such a site was discarded. It stays `ast` and is counted per language as
+`lsp.sites_skipped_external`. And files under the platform's LSP exclusions
+(`lsp/servers.py` `LSP_EXCLUDED_PATHS`: `**/migrations/**`,
+`**/alembic/versions/**`, `docs/**`, gitignore semantics) are parsed by
+tree-sitter as before but never opened in a server, counted as
+`lsp.files_excluded` and `lsp.sites_excluded`. Why: on ai-studio pyright had
+at least 86,805 sites for its budget, and every request spent on an answer
+that could not be kept, or on a migration impact never selects a test by, was
+one not spent on application code. The cost: an excluded file is never
+`lsp: true`, so a changed migration under a `partial` language is not trusted
+and its impact falls back as any uncovered file does; it does not by itself
+turn an incremental run's `ok` language `partial`.
+
 A language server is memory-hungry (pyright on a large repository holds
 several GiB), and requests equal limits (invariant 7), so the indexer's
 resource class is sized for the server, not for bursting past it. A server
