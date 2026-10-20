@@ -2541,6 +2541,18 @@ untouched. Proposed starting split, to be measured by lane L5: worker 3 vCPU /
 (`GkeJobDispatcher._manifest`, `apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher._manifest`)
 moved to the sidecar.
 
+**Amendment, 2026-10-20: the browser split is 2 + 2 (BROWSER-SPLIT, part of
+#1689).** The owner moved one core from the display to the worker: display
+2 vCPU / 5 GiB, worker 2 vCPU / 3 GiB, still of the class's 4 / 8, so the
+pod's size, its units and its cost do not change, and both containers keep
+`requests == limits`. Measured that day, browser-profile attempts ran with
+`cpu_limit_cores` 1.0, and a lane that runs `npm ci` plus a dev server (the
+visual-QA capture) did it on that one core. The display's measured peak was
+1.90 cores (docs/browser-startup-speed.md §11), so 2 cores leaves it about
+1.05x headroom at its peak; a busier page is CPU-throttled, not killed. The
+memory split is unchanged. `live_display_share()` still refuses a share that
+leaves the worker nothing.
+
 ### 8.3 NetworkPolicy
 
 * **Tenant namespaces: one new egress rule.** The existing egress policy cannot
