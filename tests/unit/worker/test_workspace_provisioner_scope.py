@@ -922,10 +922,20 @@ LABELLED = {WORKSPACE_LABEL: WORKSPACE_ID}
 
 def test_the_workspace_id_labels_the_namespace_and_nothing_else(group_docs):
     """§6 WK-CLUSTER: `--workspace-id w-000000` puts the label on the Namespace
-    and nowhere else; every other document renders as it does without it."""
+    and nowhere else; every other document renders as it does without it.
+
+    One difference besides, and only one: the operator's render of the same
+    namespace ends with swarm-verify's Job read (rbac/verify-rbac.yaml), which
+    the deployer's render leaves out because this policy admits neither its
+    Role nor its subject (render.verify_read_files, VERIFY-GKE-READ)."""
     namespace = _one(group_docs, "Namespace", f"{render.NAMESPACE_PREFIX}{GROUP}")
     assert namespace["metadata"]["labels"][WORKSPACE_LABEL] == WORKSPACE_ID
     plain = _tenant_render(GROUP)
+    # MUTATION: render the verify read into the workspace render too and the
+    # two lengths match while the deployer's apply is refused.
+    assert [(d["kind"], d["metadata"]["name"]) for d in plain[len(group_docs):]] == [
+        ("Role", "swarm-verify-reader"), ("RoleBinding", "swarm-verify-reader")]
+    plain = plain[: len(group_docs)]
     assert len(plain) == len(group_docs)
     for labelled, unlabelled in zip(group_docs, plain):
         if labelled["kind"] == "Namespace":
