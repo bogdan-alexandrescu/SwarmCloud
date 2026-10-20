@@ -1038,7 +1038,7 @@ def _scheduler_settings(**overrides):
 
 def _a_tenant():
     return Tenant(
-        tenant_id=TENANT, kind="group", principal="eng@saga.xyz",
+        tenant_id=TENANT, kind="group", principal="eng@example.com",
         created_at=utcnow(), credentials=["anthropic"],
         service_account=f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com",
         gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/{TENANT}",
@@ -1050,7 +1050,7 @@ def _a_task():
         id="task_1", tenant_id=TENANT, created_at=utcnow(), updated_at=utcnow(),
         state=TaskState.LEASED, runner_profile="claude-code",
         resource_class=RUNNER_PROFILES["claude-code"].resource_class, input={},
-        submitted_by="alice@saga.xyz", provider="anthropic", timeout_seconds=1800,
+        submitted_by="alice@example.com", provider="anthropic", timeout_seconds=1800,
     )
 
 
@@ -1190,7 +1190,7 @@ def test_a_tenant_whose_only_credential_is_a_pool_account_can_be_dispatched():
     from scheduler.dispatch import CloudRunJobDispatcher
 
     pool_only = Tenant(
-        tenant_id=TENANT, kind="group", principal="eng@saga.xyz",
+        tenant_id=TENANT, kind="group", principal="eng@example.com",
         created_at=utcnow(), credentials=[],          # no key of its own
         service_account=f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com",
     )

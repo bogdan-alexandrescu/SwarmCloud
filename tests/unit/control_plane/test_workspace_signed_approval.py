@@ -45,8 +45,8 @@ from .test_workspace_kinds_record import FakePublisher, RecordingDirectory
 REPO = Path(__file__).resolve().parents[3]
 ENTRY = REPO / "images" / "workspace-apply" / "entry.py"
 
-ROOT = "root@saga.xyz"
-DANA = "dana@saga.xyz"
+ROOT = "root@example.com"
+DANA = "dana@example.com"
 REPORTS_BOT = f"reports-bot@{PROJECT}.iam.gserviceaccount.com"
 ROUTE = "/v1/admin/workspaces"
 KEY = f"projects/{PROJECT}/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
@@ -86,7 +86,7 @@ def entry():
 
 @pytest.fixture
 def group_map() -> dict[str, tuple[str, ...]]:
-    return {"alice@saga.xyz": (ENG_GROUP,), ROOT: (ADMIN_GROUP, ENG_GROUP), DANA: (ADMIN_GROUP,)}
+    return {"alice@example.com": (ENG_GROUP,), ROOT: (ADMIN_GROUP, ENG_GROUP), DANA: (ADMIN_GROUP,)}
 
 
 @pytest.fixture
@@ -162,7 +162,7 @@ def test_the_owners_own_service_request_is_signed_as_it_is_approved(client, db, 
 
 
 def test_an_admins_group_approval_verifies_in_the_job(client, db, kms, entry) -> None:
-    response = client.post(ROUTE, json={"kind": "group", "principal": "reports@saga.xyz"},
+    response = client.post(ROUTE, json={"kind": "group", "principal": "reports@example.com"},
                            headers=auth_header("dana"))
     assert response.status_code == 202, response.text
     record = _record(db, "reports")
@@ -275,7 +275,7 @@ def _refused_retry(client, db, publisher, tenant_id: str, workspace_id: str, who
 
 def test_a_retry_of_a_group_record_with_a_forged_decision_is_not_signed(
         client, db, kms, publisher, entry) -> None:
-    filed = client.post(ROUTE, json={"kind": "group", "principal": "reports@saga.xyz"},
+    filed = client.post(ROUTE, json={"kind": "group", "principal": "reports@example.com"},
                         headers=auth_header("dana"))
     assert filed.status_code == 202, filed.text
     workspace_id = filed.json()["workspace_id"]
@@ -337,7 +337,7 @@ def test_a_retry_with_no_verify_keys_signs_no_group_or_service_record(
 
 def test_an_unsigned_stop_is_cleared_by_deny_then_approve_which_verifies(
         client, db, kms, entry) -> None:
-    filed = client.post(ROUTE, json={"kind": "group", "principal": "reports@saga.xyz"},
+    filed = client.post(ROUTE, json={"kind": "group", "principal": "reports@example.com"},
                         headers=auth_header("dana"))
     workspace_id = filed.json()["workspace_id"]
     # What entry.py leaves on a record whose approval did not verify.

@@ -258,7 +258,7 @@ def test_list_marks_a_stale_reading_rather_than_rendering_it_as_a_number(api_con
 def test_a_tenant_id_collision_between_two_groups_is_refused_here_too(
     client, pool, db, method, path, payload
 ):
-    """`eng@saga.xyz` and `eng@partner.com` both derive tenant `eng`.
+    """`eng@example.com` and `eng@partner.com` both derive tenant `eng`.
 
     The frozen `tenant_id_for_group` slugs the local part only, so two
     different Google groups collide on one id. `Store.ensure_tenant` refuses
@@ -270,7 +270,7 @@ def test_a_tenant_id_collision_between_two_groups_is_refused_here_too(
     """
     seed_tenant(db, "eng")
     # The document belongs to a different group with the same slug. alice is in
-    # eng@saga.xyz.
+    # eng@example.com.
     db.docs["tenants/eng"]["principal"] = "eng@partner.com"
 
     kwargs = {"headers": auth_header("alice")}
@@ -641,7 +641,7 @@ def test_no_broker_configured_refuses_rather_than_accepting_anything(db, tokens)
         settings=api_settings(quota_broker_url=""),
         db=db,
         verifier=StaticTokenVerifier(tokens),
-        groups=StaticGroups({"alice@saga.xyz": ("eng@saga.xyz",)}),
+        groups=StaticGroups({"alice@example.com": ("eng@example.com",)}),
         credentials=InMemoryCredentials(),
         waker=NullWaker(),
         # No step-spec signer: this test is about the broker audience, and a
@@ -941,7 +941,7 @@ def test_a_deployed_environment_with_no_audience_is_a_503_naming_the_variable(
         ),
         db=db,
         verifier=StaticTokenVerifier(tokens),
-        groups=StaticGroups({"alice@saga.xyz": ("eng@saga.xyz",)}),
+        groups=StaticGroups({"alice@example.com": ("eng@example.com",)}),
         credentials=InMemoryCredentials(),
         waker=NullWaker(),
         # No step-spec signer: this test is about the broker audience, and a

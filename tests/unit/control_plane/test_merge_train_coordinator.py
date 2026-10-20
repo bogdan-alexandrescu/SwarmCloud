@@ -48,7 +48,7 @@ from . import forge_fakes
 from .conftest import api_settings, seed_task, seed_tenant
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
-OWNER, REPO = "saga-xyz", "widgets"
+OWNER, REPO = "example-org", "widgets"
 REPO_URL = f"https://github.com/{OWNER}/{REPO}"
 API = f"/repos/{OWNER}/{REPO}"
 CHECK = "ci / unit"

@@ -181,7 +181,7 @@ run "infra_plans_nothing_for_u_bogdan_and_still_plans_eng" {
     tenants = {
       eng = {
         kind             = "group"
-        principal        = "eng@saga.xyz"
+        principal        = "eng@example.com"
         directory_group  = true
         display_name     = "Engineering"
         providers        = ["anthropic", "openai"]
@@ -191,7 +191,7 @@ run "infra_plans_nothing_for_u_bogdan_and_still_plans_eng" {
       }
       smoke = {
         kind            = "group"
-        principal       = "smoke@saga.xyz"
+        principal       = "smoke@example.com"
         directory_group = true
         display_name    = "Smoke tests"
         providers       = ["anthropic"]
@@ -267,7 +267,7 @@ run "infra_forgets_every_instance_it_made_for_u_bogdan" {
     tenants = {
       eng = {
         kind             = "group"
-        principal        = "eng@saga.xyz"
+        principal        = "eng@example.com"
         directory_group  = true
         display_name     = "Engineering"
         providers        = ["anthropic", "openai"]
@@ -277,7 +277,7 @@ run "infra_forgets_every_instance_it_made_for_u_bogdan" {
       }
       smoke = {
         kind            = "group"
-        principal       = "smoke@saga.xyz"
+        principal       = "smoke@example.com"
         directory_group = true
         display_name    = "Smoke tests"
         providers       = ["anthropic"]
@@ -307,7 +307,7 @@ run "infra_forgets_every_instance_it_made_for_u_bogdan" {
       # provider, shaped exactly like u-sw-c90291, which stays.
       u-or-9a0792 = {
         kind           = "group"
-        principal      = "w9-stand-in@saga.xyz"
+        principal      = "w9-stand-in@example.com"
         display_name   = "Bogdan (personal)"
         providers      = ["anthropic"]
         max_active     = 80

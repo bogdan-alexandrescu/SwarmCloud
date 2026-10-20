@@ -83,9 +83,17 @@ GitHub-hosted, the rule PR 1184 set for release.yml.
 Every other job spells `runs-on` as one guarded expression:
 
 ```
-${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
 ```
 
+* **Main's own runs go first, on GitHub-hosted runners** (owner decision
+  2026-10-20). A push to `main` or a dispatch on `main` (main's CI run, every
+  release and hotfix) resolves to `ubuntu-24.04`, so it never queues behind
+  lane pull requests on the pool. On 2026-10-20 two releases failed after
+  waiting 45 minutes for an image build whose CI run sat queued behind ~20
+  lane PRs on 8 VMs. The repository is public, so hosted minutes are free.
+  Pull requests, lane-branch pushes (`swarm/**`) and merge-queue entries stay
+  on the pool, as the 2026-10-14 decision asks.
 * **A fork's pull request never reaches the VMs** (owner decision 2026-10-12).
   The repository is public, and a returning contributor's fork PR runs
   without approval.
@@ -4183,7 +4191,8 @@ and the contract-parity script (#591, #611, #614; issue #642). Those tests read
 source and docs **as text**, so an import graph does not find them; their text
 naming the changed file does.
 
-**What it selects.** For a non-empty diff: the fixed guard set (always), every
+**What it selects.** For a non-empty diff: the fixed guard set (always, but only
+its two doc guards for a docs-only diff, below), every
 changed `tests/unit/**/test_*.py`, and every `tests/unit/**/test_*.py` whose
 text names a changed path by repo-relative path or basename. A generic basename
 (`__init__.py`, `package.json`, …) selects by full path only, or it would pick
@@ -4194,6 +4203,39 @@ deadlines so one call stays under the ten minutes a lane allows a command. It
 prints the last lines of the output and keeps the full log only on failure. An
 empty diff runs nothing and exits 0; a base that does not resolve exits 2
 rather than reading as an empty diff.
+
+**A docs-only change selects only the doc guards** (GUARDS-DEDUP, part of
+#1694). Docs-only lanes spent 44-50 min in guards on 2026-10-19/20. When every
+changed path is under `docs/` or ends in `.md`, the script selects
+`test_docs_describe_what_was_built`, `test_docs_spec_amendments` and the tests
+whose text names a changed doc, and runs no contract-parity check. The UI route
+seam and `test_specsign_covers` read source, not docs, and the parity check
+skips `.md` files outright, so none of them can go red on a doc change. A doc
+beside any other path keeps the whole guard set.
+
+**The worker does not run it again on the same tree** (GUARDS-DEDUP). The
+worker's pre-publish gate (`agent_worker/prepublish.py`) re-ran the script on
+code the agent had just passed in 73 of 74 lanes (4.9 h, 2026-10-19/20). Now
+every run that reads its diff from git (not `--files`, not `--list`) records
+how it ended (`passed`, `failed` or `timed_out`), the tree it ran on and its
+base commit in `<git dir>/swarm-changed-guards/` (`all.json`, or
+`shard-k-of-n.json` per part). The tree is the one the publish commits: HEAD
+plus every uncommitted and untracked file, written from a scratch index. The
+gate works out that tree and the base commit **itself** and skips its own run
+only when a record says `passed` on both, for the whole selection or for every
+part of one `--shard` split. It never takes the agent's word for it: a record
+with another tree, another base or any other status means the script runs.
+The skip and its reason go in the pull request's advisory section. The record
+lives in the git directory, so it is never committed.
+
+**A timed-out run is not re-run as-is.** Five lanes hit the 600 s limit in both
+of the gate's rounds, with a fix turn in between that could not fix a timeout.
+A guard run that ran out of time (the script's `ran past` line, or the gate's
+kill at its check limit) is reported as a timeout and kept out of the fix
+prompt. The next round runs it as the parts the script advised (`--shard 1/n`
+... `--shard n/n`, at least two), each its own command under the limit. If
+those time out too, it is published under "Pre-publish checks failed" as
+`changed-guards timed out`.
 
 **A heavy selection runs in parts, each under the 540 s limit** (#1334, PR
 1415). The 540 s is not raised for a selection that needs longer: lane
@@ -4247,6 +4289,48 @@ a changed module without naming its file is not selected), it does not run
 vitest, `terraform test` or anything needing credentials, and a green run proves
 nothing CI has not. `tests/unit/scripts/test_changed_guards.py` holds its
 selection against fixture diffs.
+
+### While it works, a SwarmCloud agent runs only the related tests
+
+```bash
+scripts/related-tests.sh             # print the related test files and the runs that test them
+scripts/related-tests.sh --run       # run those, one after another, in the foreground
+scripts/related-tests.sh --base <rev> | --files <list>|-
+```
+
+**Why** (RELATED-TESTS, part of #1694, owner decision 2026-10-20). Agents ran
+whole suites and lost hours. Measured 2026-10-19/20: 36 vitest runs with no
+file filter at about 22 min each on 4 cores (2.05 h), 8 pytest runs over whole
+`tests/unit` directories (0.73 h), and both out-of-memory kills came from
+`for i in 1 2 3 4; do npx vitest run --shard=$i/4 & done`. The rule an agent
+is given (CLAUDE.md, and the claude-code runner's `RELATED_TESTS_NOTE` when the
+checkout carries this script): related tests through this script; never vitest
+without file arguments; never pytest over a whole directory or with `-n auto`
+across the suite; never parallel shards or background batches polled with
+sleep; `scripts/changed-guards.sh` once at the end.
+
+**What is related** (`scripts/lib/related_tests.py`, standard library only).
+Python: `select_unit_tests.py`'s rules, imported rather than restated -- the
+change's own tests, every test that imports a changed module through any chain
+of imports, every test whose text names a changed path or a script that names
+one -- but **without** its fall-back to the whole suite: where CI would run
+everything, this keeps the files it can name and leaves the rest to CI.
+swarm-ui: the change's own test files and every vitest file that reaches a
+changed module through relative imports (`import ... from`, `export ... from`,
+`import '...'`, `import('...')`, `vi.mock('...')`), transitively -- the graph
+`vitest related` follows, computed from the source so it needs no
+`node_modules` and can be cut into runs. A change to what every component test
+runs under (`vitest.config.ts`, `src/__tests__/setup.ts`, `package.json`, ...)
+is related to no file by import: it is named in a warning and CI runs the suite.
+
+**It never prints an unfiltered command.** Every line names files. A selection
+too big for one run comes back as a few runs: pytest cut by
+`unit_test_durations.json` weight into parts of at most ~540 CI-seconds
+(changed-guards.sh's `SHARD_HINT_WEIGHT`), vitest in runs of at most 50 files
+(~2.5 min at the whole suite's ~2.9 s a file). `--run` runs them in turn, each
+under 540 s, and stops at the first red; a run that times out is not re-run
+as-is. `tests/unit/scripts/test_related_tests.py` holds the selection for a
+UI-only, a Python-only and a mixed change, and that no command is unfiltered.
 
 ## Where the suites are documented
 

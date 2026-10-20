@@ -150,10 +150,10 @@ def db() -> RecordingFirestore:
 def group_map() -> dict[str, tuple[str, ...]]:
     """alice and dave in eng, bob in research, root an admin in eng."""
     return {
-        "alice@saga.xyz": (ENG_GROUP,),
-        "bob@saga.xyz": (RESEARCH_GROUP,),
-        "dave@saga.xyz": (ENG_GROUP,),
-        "root@saga.xyz": (ADMIN_GROUP, ENG_GROUP),
+        "alice@example.com": (ENG_GROUP,),
+        "bob@example.com": (RESEARCH_GROUP,),
+        "dave@example.com": (ENG_GROUP,),
+        "root@example.com": (ADMIN_GROUP, ENG_GROUP),
     }
 
 
@@ -188,7 +188,7 @@ def client(db, tokens, group_map, objects, clock, sm, pool) -> TestClient:
 
 def seed_personal(db: FakeFirestore, user: str) -> None:
     tenant_id = f"u-{user}"
-    owner = f"{user}@saga.xyz"
+    owner = f"{user}@example.com"
     seed_tenant(db, tenant_id)
     db.docs[f"tenants/{tenant_id}"].update(kind="user", principal=owner, display_name=owner)
     db.docs[f"workspaces/{tenant_id}"] = {
@@ -315,7 +315,7 @@ def test_the_list_serves_records_and_grants_never_a_value_or_a_length(client, se
     assert body["can_manage"] is False
     [row] = body["secrets"]
     assert row["name"] == "typesafe-key" and row["kind"] == "api_key"
-    assert row["created_by"] == "root@saga.xyz" and row["created_at"]
+    assert row["created_by"] == "root@example.com" and row["created_at"]
     assert [g["consumer"] for g in row["grants"] if g["enabled"]] == ["tool:jev-browser"]
     assert len(row["versions"]) == 1
     text = json.dumps(row)
@@ -605,7 +605,7 @@ def test_every_write_has_its_audit_row_in_the_same_transaction(client, seeded, c
         records = [p for p in paths if p.startswith("workspace_secret")]
         assert len(audit_rows) == 1 and records, paths
     for entry in audits(seeded):
-        assert entry["by"] in ("root@saga.xyz", "alice@saga.xyz") and entry["at"]
+        assert entry["by"] in ("root@example.com", "alice@example.com") and entry["at"]
         assert entry["detail"]["secret_id"] == entry["target_secret_id"]
 
 

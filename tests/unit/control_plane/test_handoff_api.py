@@ -136,7 +136,7 @@ def seed_attempt(db, attempt: Attempt, *, state: str = "RUNNING", **extra: Any) 
         {
             "current_lease_id": t.lease_id,
             "current_generation": t.generation,
-            "submitted_by": "alice@saga.xyz",
+            "submitted_by": "alice@example.com",
             "runner_profile": "mock",
             "timeout_seconds": 3600,
             "attempt_count": 1,
@@ -490,7 +490,7 @@ def test_a_person_cannot_write_human_wait_on_submit(client, db):
 # --------------------------------------------------------------------------
 
 
-def seed_parked(db, *, task_id: str = TASK, submitted_by: str = "alice@saga.xyz",
+def seed_parked(db, *, task_id: str = TASK, submitted_by: str = "alice@example.com",
                 reason: str = "HUMAN_REQUIRED", **extra: Any) -> dict[str, Any]:
     doc = seed_task(db, task_id=task_id, tenant_id="eng", state="PARKED", park_reason=reason,
                     next_eligible_at=datetime.now(timezone.utc) - timedelta(minutes=1))
@@ -507,7 +507,7 @@ def test_the_submitter_promotes_a_human_park_to_ready(live_client, db):
     assert doc["park_reason"] is None
     assert doc["next_eligible_at"] is None
     # Recorded, so the next attempt's worker opens the hand-off at once.
-    assert doc["metadata"][HUMAN_READY_METADATA_KEY]["by"] == "alice@saga.xyz"
+    assert doc["metadata"][HUMAN_READY_METADATA_KEY]["by"] == "alice@example.com"
     ready = [e for e in _events(db) if e["type"] == "ready"]
     assert ready and ready[0]["detail"]["reason"] == "human_ready"
     # Invariant 1: READY holds nothing; no lease was made here.
@@ -567,7 +567,7 @@ def test_a_service_account_submission_with_no_human_owner_is_any_members(live_cl
 def test_a_workflows_human_owner_stands_in_for_a_service_account(live_client, db):
     seed_tenant(db, "eng")
     db.docs["workflows/wf_1"] = {"id": "wf_1", "tenant_id": "eng",
-                                 "submitted_by": "alice@saga.xyz"}
+                                 "submitted_by": "alice@example.com"}
     doc = seed_parked(db, submitted_by=f"swarm-ci-fix@{PROJECT}.iam.gserviceaccount.com",
                       workflow_id="wf_1")
     refused = live_client.post(f"/v1/tasks/{TASK}/human-ready", headers=auth_header("root"))
@@ -728,7 +728,7 @@ def test_a_new_hand_off_forgets_a_return_from_before_it(live_client, db):
     attempt = Attempt()
     doc = running(live_client, db, attempt, metadata={
         HUMAN_RETURNED_METADATA_KEY: {"attempt_id": ATTEMPT, "generation": 1,
-                                      "by": "alice@saga.xyz"}})
+                                      "by": "alice@example.com"}})
     assert request_handoff(live_client, attempt).status_code == 201
     assert HUMAN_RETURNED_METADATA_KEY not in doc["metadata"]
 

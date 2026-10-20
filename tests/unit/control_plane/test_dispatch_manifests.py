@@ -55,7 +55,7 @@ def tenant() -> Tenant:
     return Tenant(
         tenant_id="eng",
         kind="group",
-        principal="eng@saga.xyz",
+        principal="eng@example.com",
         created_at=NOW,
         service_account=f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com",
         gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/eng",
@@ -74,7 +74,7 @@ def make_task(profile_name: str = "claude-code") -> Task:
         runner_profile=profile_name,
         resource_class=profile.resource_class,
         input={},
-        submitted_by="alice@saga.xyz",
+        submitted_by="alice@example.com",
         provider=profile.provider,
         timeout_seconds=1800,
     )
@@ -1063,7 +1063,7 @@ def test_neither_backend_will_run_work_for_a_tenant_that_can_have_no_service_acc
     unprovisioned = Tenant(
         tenant_id="newteam-long",
         kind="group",
-        principal="newteam@saga.xyz",
+        principal="newteam@example.com",
         created_at=NOW,
         service_account=None,
         namespace="swarm-tenant-newteam",

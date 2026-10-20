@@ -77,7 +77,7 @@ def lane_merge(db, github, *, rounds: int = 2) -> dict:
     doc["workflow_id"] = LANE
     db.docs[f"workflows/{LANE}"] = {
         "workflow_id": LANE, "tenant_id": "eng", "created_at": NOW, "updated_at": NOW,
-        "state": "RUNNING", "submitted_by": "alice@saga.xyz", "on_step_failure": "fail_workflow",
+        "state": "RUNNING", "submitted_by": "alice@example.com", "on_step_failure": "fail_workflow",
         "priority": 0, "cancel_requested": False,
         "steps": [
             {"step_id": "fix", "runner_profile": "claude-code", "input": {}, "depends_on": [],
@@ -221,7 +221,7 @@ def test_no_rounds_asked_keeps_todays_behaviour_no_rerun_and_a_red_wake(
     assert body["report"]["woken"] == 1, body
     assert _wait(db)["wake_reason"] == "red"
     assert github.reruns == [] and _fix_workflows(db) == []
-    assert ("POST", f"/repos/saga-xyz/widgets/actions/jobs/{github._next}/rerun") \
+    assert ("POST", f"/repos/example-org/widgets/actions/jobs/{github._next}/rerun") \
         not in github.writes()
 
 
@@ -283,7 +283,7 @@ def test_a_conflict_whose_files_cannot_be_read_still_gets_its_round(db, wake_cli
     lane_merge(db, github, rounds=2)
     github.pulls[NUMBER].update(mergeable=False, mergeable_state="dirty")
     github.check_runs.pop(HEAD, None)
-    github.refuse[("GET", f"/repos/saga-xyz/widgets/pulls/{NUMBER}/files")] = 403
+    github.refuse[("GET", f"/repos/example-org/widgets/pulls/{NUMBER}/files")] = 403
 
     body = _tick(wake_client).json()
 

@@ -166,6 +166,16 @@ sweeps the blobs no remaining manifest names. At most `MAX_SWEEP_DELETES`
 objects go per sweep, in batched `gcloud storage rm` calls; whatever is past
 the bound waits for the next run. Without `--keep-commit` it retires nothing.
 
+OUT OF THE WRITE (lane INDEX-RETENTION, part of #1693). Measured 2026-10-20
+on ai-studio: the write's own sweep timed out in 19 of 19 runs, reading 163
+manifests one at a time after a write of 86-97 s. The worker now runs `write
+--no-sweep` and then `sweep` as a phase of its own, with the commits swarm-api
+named in the signed prompt. The kept manifests are read `SWEEP_READ_PROCESSES`
+at a time, and the report says what was deleted and what is held, in copies
+(manifests) and bytes, so the repository page can say it. Every key it deletes
+is checked to be under `tenants/<tenant>/repos/<repo_id>/`, whatever a
+listing answers (invariant 9).
+
 WHERE IT WRITES (lane RI9b; run by the worker since lane IX1). The worker
 runs `swarm-repo-graph write --graph <file> --repo-id <r> --destination
 tenants/<t>/repos/<r>/graph --tenant <t> --store gs://<bucket> --index
@@ -309,6 +319,11 @@ BATCH_FILES = 500
 #: and the agent, so nothing else wants them, and each gcloud is a few
 #: hundred MB at most of the class's 8 GiB.
 GET_PROCESSES = 4
+#: Manifests the sweep reads side by side, one `gcloud storage cat` each: the
+#: download's bound, for the download's reasons. Measured 2026-10-20 on
+#: ai-studio (#1693): 163 manifests read one at a time ran the graph write's
+#: sweep out of its budget in 19 of 19 runs.
+SWEEP_READ_PROCESSES = GET_PROCESSES
 #: Upload rounds: a round whose batch stopped on a blob that appeared
 #: meanwhile (a 412) is followed by one for what is still absent.
 UPLOAD_ROUNDS = 3
@@ -544,6 +559,10 @@ class LocalStore:
                 rows.append((key, moment))
         return rows
 
+    def list_sized(self, prefix: str) -> list[tuple[str, datetime | None, int | None]]:
+        return [(key, created, self._path(key).stat().st_size)
+                for key, created in self.list(prefix)]
+
     def get(self, key: str) -> bytes:
         try:
             return self._path(key).read_bytes()
@@ -594,6 +613,15 @@ def _gcloud(argv: list[str], data: bytes | None = None) -> bytes:
     return done.stdout
 
 
+def _size(value: Any) -> int | None:
+    """An object's size from a listing, which gives it as a number or a string."""
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return None
+    return size if size >= 0 else None
+
+
 def _parse_time(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -616,8 +644,8 @@ class GcsStore:
     def _url(self, key: str) -> str:
         return f"gs://{self.bucket}/{key}"
 
-    def _rows(self, prefix: str) -> list[tuple[str, datetime | None, str | None]]:
-        """(key, created, base64 MD5) for every live object under `prefix`."""
+    def _rows(self, prefix: str) -> list[tuple[str, datetime | None, str | None, int | None]]:
+        """(key, created, base64 MD5, size) for every live object under `prefix`."""
         try:
             raw = self._run(["gcloud", "storage", "ls", "--json", self._url(prefix) + "**"])
         except StoreError as exc:
@@ -629,7 +657,7 @@ class GcsStore:
         except ValueError:
             raise StoreError(f"gcloud storage ls answered something that is not JSON for "
                              f"{prefix}") from None
-        out: list[tuple[str, datetime | None, str | None]] = []
+        out: list[tuple[str, datetime | None, str | None, int | None]] = []
         for row in rows if isinstance(rows, list) else []:
             key = self._key_of(row)
             if key is None or not key.startswith(prefix):
@@ -639,7 +667,8 @@ class GcsStore:
             created = _parse_time(row.get("creation_time") or meta.get("timeCreated")
                                   or meta.get("creation_time"))
             md5 = meta.get("md5Hash") or meta.get("md5_hash") or row.get("md5_hash")
-            out.append((key, created, md5 if isinstance(md5, str) and md5 else None))
+            out.append((key, created, md5 if isinstance(md5, str) and md5 else None,
+                        _size(meta.get("size", row.get("size")))))
         return sorted(out, key=lambda r: r[0])
 
     def _key_of(self, row: Any) -> str | None:
@@ -665,10 +694,13 @@ class GcsStore:
         return _GENERATION.sub("", url[len(head):]) or None
 
     def list(self, prefix: str) -> list[tuple[str, datetime | None]]:
-        return [(key, created) for key, created, _md5 in self._rows(prefix)]
+        return [(key, created) for key, created, _md5, _size in self._rows(prefix)]
+
+    def list_sized(self, prefix: str) -> list[tuple[str, datetime | None, int | None]]:
+        return [(key, created, size) for key, created, _md5, size in self._rows(prefix)]
 
     def md5s(self, prefix: str) -> dict[str, str | None]:
-        return {key: md5 for key, _created, md5 in self._rows(prefix)}
+        return {key: md5 for key, _created, md5, _size in self._rows(prefix)}
 
     def get(self, key: str) -> bytes:
         try:
@@ -1562,23 +1594,74 @@ def check_keep(commits: Iterable[str]) -> frozenset[str]:
     return kept
 
 
+def _list_sized(store: Store, prefix: str) -> list[tuple[str, datetime | None, int | None]]:
+    """(key, created, size) under `prefix`, only keys that ARE under it; a
+    store that cannot say sizes gives None for each."""
+    sized = getattr(store, "list_sized", None)
+    rows = sized(prefix) if callable(sized) else \
+        [(key, created, None) for key, created in store.list(prefix)]
+    return [row for row in rows if isinstance(row[0], str) and row[0].startswith(prefix)]
+
+
+def _total(sizes: Iterable[int | None]) -> int | None:
+    """The sum, or None when any size is unknown: a total that leaves objects out
+    would under-state what is held."""
+    total = 0
+    for size in sizes:
+        if size is None:
+            return None
+        total += size
+    return total
+
+
+def _read_references(store: Store, keys: list[str]) -> tuple[set[str], str | None]:
+    """Every blob the manifests at `keys` name, read SWEEP_READ_PROCESSES at a
+    time, or (empty, why) for the first in key order that cannot be read."""
+    def read(key: str) -> set[str] | Exception:
+        try:
+            return referenced_blobs(json.loads(store.get(key).decode("utf-8")))
+        except (StoreError, ValueError, UnicodeDecodeError) as exc:
+            return exc
+
+    if not keys:
+        return set(), None
+    with ThreadPoolExecutor(max_workers=min(SWEEP_READ_PROCESSES, len(keys))) as pool:
+        results = list(pool.map(read, keys))
+    referenced: set[str] = set()
+    for key, found in zip(keys, results):
+        if isinstance(found, Exception):
+            return set(), (f"{key} could not be read ({found}); a manifest the sweep "
+                           "cannot read is references it cannot see")
+        referenced |= found
+    return referenced, None
+
+
 def sweep(store: Store, *, tenant_id: str, repo_id: str, now: datetime | None = None,
           grace: timedelta = SWEEP_GRACE, keep: Iterable[str] | None = None,
           max_deletes: int = MAX_SWEEP_DELETES) -> dict:
     """Retire what no kept version names, then delete the blobs no manifest names.
 
     `keep` is the set of commits whose index versions swarm-api still holds
-    (the last 20, §2.3), which the worker reads and passes as `--keep-commit`.
-    With it, every manifest and every index copy of a commit NOT in `keep` and
-    older than `grace` is deleted first, and its references stop counting.
-    Without it (None) no manifest or index copy is deleted: what the sweep did
-    before lane IX3, and what a run that could not read the versions gets.
+    (the repository's `keep_versions`, the promoted one and the run's own),
+    which swarm-api names in the index task's signed prompt and the worker
+    passes as `--keep-commit`. With it, every manifest and every index copy of
+    a commit NOT in `keep` and older than `grace` is deleted first, and its
+    references stop counting. Without it (None) no manifest or index copy is
+    deleted: what the sweep did before lane IX3, and what a run given no keep
+    set gets.
 
     Blobs: deleted only when no remaining manifest names them and older than
     `grace`. Deletes nothing at all, and says why in `refused`, if any
     manifest it keeps cannot be read. At most `max_deletes` objects go per
     sweep; a retired manifest past the bound is kept for the next sweep and
     its references still count, so the bound can only delay a deletion.
+
+    Only keys under `tenants/<tenant_id>/repos/<repo_id>/` are listed and
+    deleted, whatever the store's listing answers (invariant 9). The report
+    says, besides the counts above, what was held before (`held_before`:
+    copies -- manifests -- and bytes), what was deleted (`deleted_copies`,
+    `deleted_bytes`) and what is held after (`held_copies`, `held_bytes`);
+    a byte total is None when the store gave any object no size.
     """
     now = now or datetime.now(timezone.utc)
     kept = None if keep is None else check_keep(keep)
@@ -1589,9 +1672,11 @@ def sweep(store: Store, *, tenant_id: str, repo_id: str, now: datetime | None = 
     def old(created: datetime | None) -> bool:
         return created is not None and now - created >= grace
 
+    sizes: dict[str, int | None] = {}
     retire: list[str] = []
     readable: list[str] = []
-    for key, created in store.list(f"{root}/"):
+    for key, created, size in _list_sized(store, f"{root}/"):
+        sizes[key] = size
         if key.startswith(blob_prefix) or not key.endswith("/manifest.json"):
             continue
         commit = _commit_in(key, f"{root}/", "manifest.json")
@@ -1601,15 +1686,17 @@ def sweep(store: Store, *, tenant_id: str, repo_id: str, now: datetime | None = 
             readable.append(key)
     retire_index: list[str] = []
     kept_indexes = 0
-    if kept is not None:
-        for key, created in store.list(index_prefix):
-            commit = _commit_in(key, index_prefix, INDEX_NAME)
-            if commit is None:
-                continue
-            if commit in kept or not old(created):
-                kept_indexes += 1
-            else:
-                retire_index.append(key)
+    for key, created, size in _list_sized(store, index_prefix):
+        sizes[key] = size
+        commit = _commit_in(key, index_prefix, INDEX_NAME)
+        if kept is None or commit is None:
+            continue
+        if commit in kept or not old(created):
+            kept_indexes += 1
+        else:
+            retire_index.append(key)
+    copies_before = len(readable) + len(retire)
+    bytes_before = _total(sizes.values())
     budget = max(0, max_deletes)
     retiring = retire[:budget]
     readable += retire[budget:]
@@ -1619,26 +1706,39 @@ def sweep(store: Store, *, tenant_id: str, repo_id: str, now: datetime | None = 
     truncated = len(retiring) < len(retire) or len(retiring_index) < len(retire_index)
     report = {"manifests": len(readable), "retired_manifests": 0, "retired_indexes": 0,
               "kept_indexes": kept_indexes, "deleted": 0, "kept_referenced": 0,
-              "kept_young": 0, "truncated": truncated, "refused": None}
+              "kept_young": 0, "truncated": truncated, "refused": None,
+              "kept_commits": len(kept) if kept is not None else 0,
+              "held_before": {"copies": copies_before, "bytes": bytes_before},
+              "deleted_copies": 0, "deleted_bytes": 0,
+              "held_copies": copies_before, "held_bytes": bytes_before}
+    deleted: list[str] = []
+
+    def settle() -> dict:
+        gone = _total(sizes.get(key) for key in deleted)
+        report["deleted_copies"] = report["retired_manifests"]
+        report["deleted_bytes"] = gone
+        report["held_copies"] = copies_before - report["retired_manifests"]
+        report["held_bytes"] = None if bytes_before is None or gone is None \
+            else bytes_before - gone
+        return report
+
     # Every manifest that stays is read BEFORE anything is deleted.
-    referenced: set[str] = set()
-    for key in readable:
-        try:
-            referenced |= referenced_blobs(json.loads(store.get(key).decode("utf-8")))
-        except (StoreError, ValueError, UnicodeDecodeError) as exc:
-            report["refused"] = (f"{key} could not be read ({exc}); a manifest the sweep "
-                                 "cannot read is references it cannot see")
-            return report
+    referenced, refused = _read_references(store, readable)
+    if refused is not None:
+        report["refused"] = refused
+        return settle()
     try:
         _delete_many(store, retiring + retiring_index)
     except StoreError as exc:
         report["refused"] = (f"retiring {len(retiring)} manifests and {len(retiring_index)} "
                              f"index copies failed ({exc}); no blob was swept")
-        return report
+        return settle()
+    deleted += retiring + retiring_index
     report["retired_manifests"] = len(retiring)
     report["retired_indexes"] = len(retiring_index)
     doomed: list[str] = []
-    for key, created in store.list(blob_prefix):
+    for key, created, size in _list_sized(store, blob_prefix):
+        sizes.setdefault(key, size)
         match = _BLOB_NAME.match(key[len(blob_prefix):])
         if match is None:
             continue
@@ -1656,9 +1756,10 @@ def sweep(store: Store, *, tenant_id: str, repo_id: str, now: datetime | None = 
         _delete_many(store, doomed)
     except StoreError as exc:
         report["refused"] = f"deleting {len(doomed)} unreferenced blobs failed ({exc})"
-        return report
+        return settle()
+    deleted += doomed
     report["deleted"] = len(doomed)
-    return report
+    return settle()
 
 
 # --- the CLI ------------------------------------------------------------------

@@ -81,7 +81,7 @@ from .conftest import (
 SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 BUCKET = f"swarm-artifacts-{PROJECT}"
-REPO_URL = "https://github.com/saga-xyz/widgets"
+REPO_URL = "https://github.com/example-org/widgets"
 HEAD = "c" * 40
 IMPL = "task_impl000001"
 REVIEW = "task_review0001"
@@ -633,7 +633,7 @@ def test_every_other_case_declines_and_rings_the_parent(
     if case == "branch_moved":
         github.branches[f"swarm/{IMPL}"] = "d" * 40
     if case == "github_refuses":
-        github.refuse[("POST", "/repos/saga-xyz/widgets/pulls")] = 422
+        github.refuse[("POST", "/repos/example-org/widgets/pulls")] = 422
 
     body = _push(client).json()
 
@@ -646,7 +646,7 @@ def test_every_other_case_declines_and_rings_the_parent(
     assert marker["state"] == "declined" and marker["code"] == code
     assert github.pulls == {}
     if case != "github_refuses":
-        assert ("POST", "/repos/saga-xyz/widgets/pulls") not in _writes(github)
+        assert ("POST", "/repos/example-org/widgets/pulls") not in _writes(github)
     # The parent's wake: the scheduler resolves the step again, now unheld.
     assert waker.rung == [("task_finished",
                            {"task_id": REVIEW, "tenant_id": "eng", "state": "SUCCEEDED"})]
@@ -751,17 +751,17 @@ def test_the_token_in_the_body_declines(db, objects, client, github, waker, stor
 # --------------------------------------------------------------------------
 
 #: Another member of the tenant: their user slot, and the grant behind it.
-MEMBER = "dana@saga.xyz"
+MEMBER = "dana@example.com"
 USER_SLOT = gittokens.provider_suffix(gittokens.Scope.USER, user=MEMBER)
 
 
 def _grant(db, *, mode: str = "write", tenant_id: str = "eng") -> str:
     """The member's grant on the step's repository, by swarm-api's own id recipe."""
-    repo_id = repo_id_for("eng", "saga-xyz", "widgets")
+    repo_id = repo_id_for("eng", "example-org", "widgets")
     doc_id = access.grant_id_for("eng", MEMBER, repo_id)
     db.docs[f"{forgeapp.GRANTS}/{doc_id}"] = {
         "tenant_id": tenant_id, "user": MEMBER, "user_hash": forgeapp.user_hash(MEMBER),
-        "repo_id": repo_id, "repository": "saga-xyz/widgets", "mode": mode,
+        "repo_id": repo_id, "repository": "example-org/widgets", "mode": mode,
     }
     return f"{forgeapp.GRANTS}/{doc_id}"
 
@@ -796,7 +796,7 @@ def _rewrite(fix: dict, case: str) -> None:
     elif case == "credential_swapped":
         fix["forge_credential"] = USER_SLOT
     elif case == "repository_swapped":
-        fix["repository_url"] = "https://github.com/saga-xyz/other"
+        fix["repository_url"] = "https://github.com/example-org/other"
     elif case == "foreign_key":
         LocalSpecSigner().sign_document(fix, fix["id"])
     elif case == "unknown_format":
@@ -947,8 +947,8 @@ def test_a_second_delivery_publishes_once(db, objects, client, github, waker, co
     assert again["report"]["published"] == [] and again["report"]["declined"] == []
     assert len(github.pulls) == 1
     assert [w for w in _writes(github) if w[0] == "POST"] == [
-        ("POST", "/repos/saga-xyz/widgets/git/refs"),
-        ("POST", "/repos/saga-xyz/widgets/pulls"),
+        ("POST", "/repos/example-org/widgets/git/refs"),
+        ("POST", "/repos/example-org/widgets/pulls"),
     ]
     assert len(waker.rung) == 1
 
@@ -1074,7 +1074,7 @@ def test_a_step_that_is_not_a_gated_integrator_is_never_held(db, make_scheduler,
 def test_the_fake_github_routes_are_the_ones_the_writer_calls(github):
     """The fake's new routes answer at the paths `GitHubWriter` builds."""
     writer = forgewrite.GitHubWriter(send=github, locate=github.locate, fetch=github.fetch)
-    ref = forgewrite.IssueRef(owner="saga-xyz", repo="widgets", number=0)
+    ref = forgewrite.IssueRef(owner="example-org", repo="widgets", number=0)
     token = "t" + secrets.token_hex(8)
     assert writer.default_branch(ref, token) == "main"
     assert writer.branch_head(ref, f"swarm/{IMPL}", token) == HEAD
@@ -1084,7 +1084,7 @@ def test_the_fake_github_routes_are_the_ones_the_writer_calls(github):
     with pytest.raises(forgewrite.ForgeWriteError):
         writer.create_branch(ref, "swarm/new", "e" * 40, token)
     paths = {urlparse(url).path for _, url, _, _ in github.calls}
-    assert "/repos/saga-xyz/widgets" in paths
+    assert "/repos/example-org/widgets" in paths
 
 
 # --------------------------------------------------------------------------

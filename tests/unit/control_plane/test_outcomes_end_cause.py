@@ -88,7 +88,7 @@ def _task(**extra):
     return models.Task(
         id="task_1", tenant_id="eng", created_at=now, updated_at=now,
         state=models.TaskState.FAILED, runner_profile="mock", resource_class="standard",
-        input={}, submitted_by="alice@saga.xyz", **extra,
+        input={}, submitted_by="alice@example.com", **extra,
     )
 
 

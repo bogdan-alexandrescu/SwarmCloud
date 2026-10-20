@@ -43,7 +43,7 @@ from swarm_api.validation import (
 
 from .conftest import auth_header
 
-REPO = "https://github.com/saga-xyz/example.git"
+REPO = "https://github.com/example-org/example.git"
 
 
 def _task_doc(db, task_id: str) -> dict:

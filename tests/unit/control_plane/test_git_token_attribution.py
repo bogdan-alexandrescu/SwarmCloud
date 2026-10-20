@@ -36,11 +36,11 @@ TOKEN_SHAPES = re.compile(
 def group_map() -> dict[str, tuple[str, ...]]:
     """conftest's map with a second, non-admin member of eng: `dave`."""
     return {
-        "alice@saga.xyz": (ENG_GROUP,),
-        "dave@saga.xyz": (ENG_GROUP,),
-        "bob@saga.xyz": (RESEARCH_GROUP,),
-        "carol@saga.xyz": (),
-        "root@saga.xyz": (ADMIN_GROUP, ENG_GROUP),
+        "alice@example.com": (ENG_GROUP,),
+        "dave@example.com": (ENG_GROUP,),
+        "bob@example.com": (RESEARCH_GROUP,),
+        "carol@example.com": (),
+        "root@example.com": (ADMIN_GROUP, ENG_GROUP),
     }
 
 
@@ -69,7 +69,7 @@ def test_yours_is_true_only_on_the_callers_own_user_token(client, eng_with_git, 
 
     as_alice = _listed(client, "alice")
     assert as_alice[alice_id]["yours"] is True
-    assert as_alice[alice_id]["owner"] == "alice@saga.xyz"
+    assert as_alice[alice_id]["owner"] == "alice@example.com"
     assert as_alice[alice_id]["last4"] == FAKE_VALUE[-4:]
     assert as_alice[dave_id]["yours"] is False
     # A tenant token is nobody's own, admin or not.
@@ -82,8 +82,8 @@ def test_yours_is_true_only_on_the_callers_own_user_token(client, eng_with_git, 
     # An admin is told whose each is, and that neither is theirs.
     as_root = _listed(client, "root")
     assert as_root[alice_id]["yours"] is False
-    assert as_root[alice_id]["owner"] == "alice@saga.xyz"
-    assert as_root[dave_id]["owner"] == "dave@saga.xyz"
+    assert as_root[alice_id]["owner"] == "alice@example.com"
+    assert as_root[dave_id]["owner"] == "dave@example.com"
 
 
 def test_another_members_record_carries_no_email(client, eng_with_git) -> None:
@@ -103,12 +103,12 @@ def test_another_members_record_carries_no_email(client, eng_with_git) -> None:
 
 
 def test_an_admins_email_reaches_admins_only(client, eng_with_git) -> None:
-    registered = client.post("/v1/git-tokens", json={"scope": "repository", "repository": "saga-xyz/widgets"},
+    registered = client.post("/v1/git-tokens", json={"scope": "repository", "repository": "example-org/widgets"},
                              headers=auth_header("root"))
     assert registered.status_code == 201, registered.text
     repo_slot = registered.json()["token"]["token_id"]
-    assert registered.json()["token"]["registered_by"] == "root@saga.xyz"
-    assert _listed(client, "root")[repo_slot]["registered_by"] == "root@saga.xyz"
+    assert registered.json()["token"]["registered_by"] == "root@example.com"
+    assert _listed(client, "root")[repo_slot]["registered_by"] == "root@example.com"
     as_alice = _listed(client, "alice")[repo_slot]
     assert as_alice["registered_by"] is None and as_alice["yours"] is False
     assert "root@" not in str(as_alice)
@@ -120,10 +120,10 @@ def test_yours_cannot_be_claimed_by_the_request(client, eng_with_git) -> None:
     alice_id = _register_user(client, "alice")
     # No query, header or body field names the caller: only the verified identity does.
     for headers in (
-        {**auth_header("dave"), "X-Swarm-User": "alice@saga.xyz"},
-        {**auth_header("dave"), "X-Goog-Authenticated-User-Email": "accounts.google.com:alice@saga.xyz"},
+        {**auth_header("dave"), "X-Swarm-User": "alice@example.com"},
+        {**auth_header("dave"), "X-Goog-Authenticated-User-Email": "accounts.google.com:alice@example.com"},
     ):
-        response = client.get("/v1/git-tokens?user=alice@saga.xyz&yours=true", headers=headers)
+        response = client.get("/v1/git-tokens?user=alice@example.com&yours=true", headers=headers)
         assert response.status_code == 200, response.text
         record = {t["token_id"]: t for t in response.json()["tokens"]}[alice_id]
         assert record["yours"] is False and record["owner"] is None
@@ -133,7 +133,7 @@ def test_the_revoke_answer_follows_the_same_rule(client, eng_with_git) -> None:
     alice_id = _register_user(client, "alice")
     revoked = client.delete(f"/v1/git-tokens/{alice_id}", headers=auth_header("root"))
     assert revoked.status_code == 200, revoked.text
-    assert revoked.json()["token"]["owner"] == "alice@saga.xyz"
+    assert revoked.json()["token"]["owner"] == "alice@example.com"
     as_dave = _listed(client, "dave")[alice_id]
     assert as_dave["state"] == "revoked"
     assert as_dave["revoked_by"] is None and as_dave["owner"] is None
@@ -147,17 +147,17 @@ def test_without_a_viewer_nothing_is_yours_and_no_email_is_served() -> None:
     from swarm_api.gittokens import record_for_slot
 
     record: GitTokenRecord = record_for_slot(
-        "eng", "user", user="Alice@Saga.xyz", registered_by="alice@saga.xyz",
+        "eng", "user", user="Alice@Example.com", registered_by="alice@example.com",
         now=datetime(2026, 10, 5, tzinfo=timezone.utc),
     )
     bare = record.to_api()
     assert bare["yours"] is False and bare["owner"] is None and bare["registered_by"] is None
-    mine = record.to_api(viewer=Viewer(email=" ALICE@saga.xyz"))
-    assert mine["yours"] is True and mine["owner"] == "alice@saga.xyz"
-    theirs = record.to_api(viewer=Viewer(email="dave@saga.xyz"))
+    mine = record.to_api(viewer=Viewer(email=" ALICE@example.com"))
+    assert mine["yours"] is True and mine["owner"] == "alice@example.com"
+    theirs = record.to_api(viewer=Viewer(email="dave@example.com"))
     assert theirs["yours"] is False and theirs["user"] is None
-    admin = record.to_api(viewer=Viewer(email="root@saga.xyz", is_admin=True))
-    assert admin["yours"] is False and admin["owner"] == "alice@saga.xyz"
+    admin = record.to_api(viewer=Viewer(email="root@example.com", is_admin=True))
+    assert admin["yours"] is False and admin["owner"] == "alice@example.com"
 
 
 def test_no_attribution_response_carries_a_token(client, eng_with_git, db) -> None:

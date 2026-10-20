@@ -32,7 +32,7 @@ def _tenant(tenant_id: str):
     from swarm_common.models import Tenant
 
     return Tenant(tenant_id=tenant_id, kind="user" if tenant_id.startswith("u-") else "group",
-                  principal=f"{tenant_id}@saga.xyz", created_at=datetime.now(timezone.utc))
+                  principal=f"{tenant_id}@example.com", created_at=datetime.now(timezone.utc))
 
 
 def _denied(tenant_id: str, provider: str) -> str:

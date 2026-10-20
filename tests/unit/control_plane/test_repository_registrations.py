@@ -30,14 +30,14 @@ from swarm_api import repositories
 from .conftest import auth_header
 from .repo_fakes import GitHubRepos, TenantTokens, make_client, repo_entry
 
-WIDGETS = repo_entry("saga-xyz/widgets", default_branch="develop", private=True)
+WIDGETS = repo_entry("example-org/widgets", default_branch="develop", private=True)
 
 
 @pytest.fixture
 def make(db, tokens, group_map, objects):
     def build(transport=None, secrets_reader=None):
         secrets_reader = secrets_reader or TenantTokens()
-        transport = transport or GitHubRepos(repos={"saga-xyz/widgets": WIDGETS})
+        transport = transport or GitHubRepos(repos={"example-org/widgets": WIDGETS})
         client = make_client(
             db, tokens, group_map, objects, forge_tokens=secrets_reader, transport=transport
         )
@@ -46,7 +46,7 @@ def make(db, tokens, group_map, objects):
 
 
 def _register(client, user="alice", **body):
-    payload = {"repository": "saga-xyz/widgets", **body}
+    payload = {"repository": "example-org/widgets", **body}
     return client.post("/v1/repositories", json=payload, headers=auth_header(user))
 
 
@@ -66,18 +66,18 @@ def test_registration_reads_the_forge_once_and_stores_the_record(make, db):
     body = response.json()
     record = body["repository"]
     assert body["created"] is True
-    assert record["repo_id"] == _expected_id("eng", "saga-xyz/widgets")
+    assert record["repo_id"] == _expected_id("eng", "example-org/widgets")
     assert record["tenant_id"] == "eng"
     assert record["forge"] == "github"
-    assert (record["owner"], record["repo"]) == ("saga-xyz", "widgets")
-    assert record["repository"] == "saga-xyz/widgets"
-    assert record["repository_url"] == "https://github.com/saga-xyz/widgets"
+    assert (record["owner"], record["repo"]) == ("example-org", "widgets")
+    assert record["repository"] == "example-org/widgets"
+    assert record["repository_url"] == "https://github.com/example-org/widgets"
     # From the forge, not from a guess.
     assert record["default_branch"] == "develop"
     assert record["default_branch_source"] == "forge"
     assert record["visibility"] == "private"
     assert record["allowed_profiles"] == ["claude-code"]
-    assert record["created_by"] == "alice@saga.xyz"
+    assert record["created_by"] == "alice@example.com"
     assert record["access"] == {
         "token_scope": "tenant",
         "secret_name": "swarm-tenant-eng-git",
@@ -95,7 +95,7 @@ def test_registration_reads_the_forge_once_and_stores_the_record(make, db):
     # One read, of the repository, with the caller's tenant's token.
     assert secrets_reader.asked == ["swarm-tenant-eng-git"]
     assert [url for url, _ in transport.calls] == [
-        "https://api.github.com/repos/saga-xyz/widgets"
+        "https://api.github.com/repos/example-org/widgets"
     ]
     stored = db.docs[f"repositories/{record['repo_id']}"]
     assert stored["tenant_id"] == "eng" and stored["default_branch"] == "develop"
@@ -118,7 +118,7 @@ def test_the_token_goes_to_one_header_and_is_never_stored_or_served(make, db):
 def test_registering_twice_is_idempotent(make, db):
     client, _, transport = make()
     first = _register(client)
-    second = _register(client, repository="Saga-XYZ/Widgets")
+    second = _register(client, repository="Example-Org/Widgets")
     assert first.status_code == 201
     assert second.status_code == 200, second.text
     assert second.json()["created"] is False
@@ -139,9 +139,9 @@ def test_a_default_branch_override_is_kept_and_says_so(make):
 
 def test_the_forge_spelling_of_the_name_is_stored(make):
     client, _, _ = make()
-    record = _register(client, repository="SAGA-XYZ/WIDGETS").json()["repository"]
-    assert record["repository"] == "saga-xyz/widgets"
-    assert record["repo_id"] == _expected_id("eng", "saga-xyz/widgets")
+    record = _register(client, repository="EXAMPLE-ORG/WIDGETS").json()["repository"]
+    assert record["repository"] == "example-org/widgets"
+    assert record["repo_id"] == _expected_id("eng", "example-org/widgets")
 
 
 def test_two_tenants_register_the_same_repository_as_two_records(make, db):
@@ -149,7 +149,7 @@ def test_two_tenants_register_the_same_repository_as_two_records(make, db):
     eng = _register(client, user="alice").json()["repository"]
     research = _register(client, user="bob").json()["repository"]
     assert eng["repo_id"] != research["repo_id"]
-    assert research["repo_id"] == _expected_id("research", "saga-xyz/widgets")
+    assert research["repo_id"] == _expected_id("research", "example-org/widgets")
     assert research["access"]["secret_name"] == "swarm-tenant-research-git"
     assert secrets_reader.asked == ["swarm-tenant-eng-git", "swarm-tenant-research-git"]
 
@@ -160,15 +160,15 @@ def test_two_tenants_register_the_same_repository_as_two_records(make, db):
 
 @pytest.mark.parametrize("repository", [
     "widgets",
-    "saga-xyz/widgets/extra",
-    "saga-xyz/",
+    "example-org/widgets/extra",
+    "example-org/",
     "/widgets",
-    "-saga/widgets",
-    "saga-xyz/.hidden",
-    "saga-xyz/..",
-    "saga xyz/widgets",
-    "https://github.com/saga-xyz/widgets",
-    "saga-xyz/widgets#12",
+    "-example-org/widgets",
+    "example-org/.hidden",
+    "example-org/..",
+    "example org/widgets",
+    "https://github.com/example-org/widgets",
+    "example-org/widgets#12",
     "a" * 40 + "/widgets",
 ])
 def test_a_repository_that_is_not_owner_slash_repo_is_refused(make, repository):
@@ -239,7 +239,7 @@ def test_a_repository_the_token_cannot_see_is_refused_no_access(make, db):
 
 
 def test_a_token_without_pull_is_refused_no_access(make, db):
-    transport = GitHubRepos(repos={"saga-xyz/widgets": repo_entry("saga-xyz/widgets", pull=False)})
+    transport = GitHubRepos(repos={"example-org/widgets": repo_entry("example-org/widgets", pull=False)})
     client, _, _ = make(transport=transport)
     response = _register(client)
     assert response.status_code == 403
@@ -249,7 +249,7 @@ def test_a_token_without_pull_is_refused_no_access(make, db):
 
 @pytest.mark.parametrize("status", [401, 403])
 def test_a_refused_token_is_no_access(make, status):
-    client, _, _ = make(transport=GitHubRepos(status={"/repos/saga-xyz/widgets": status}))
+    client, _, _ = make(transport=GitHubRepos(status={"/repos/example-org/widgets": status}))
     response = _register(client)
     assert response.status_code == 403
     assert response.json()["code"] == "no_access"
@@ -257,7 +257,7 @@ def test_a_refused_token_is_no_access(make, status):
 
 @pytest.mark.parametrize("status", [500, 429, 301])
 def test_any_other_answer_is_read_failed(make, db, status):
-    client, _, _ = make(transport=GitHubRepos(status={"/repos/saga-xyz/widgets": status}))
+    client, _, _ = make(transport=GitHubRepos(status={"/repos/example-org/widgets": status}))
     response = _register(client)
     assert response.status_code == 502
     assert response.json()["code"] == "read_failed"
@@ -282,7 +282,7 @@ def test_a_tenant_without_a_git_secret_is_told_how_to_store_one(make, db):
 
 
 def test_an_answer_that_is_not_a_repository_is_read_failed(make):
-    transport = GitHubRepos(repos={"saga-xyz/widgets": {"full_name": "other/name"}})
+    transport = GitHubRepos(repos={"example-org/widgets": {"full_name": "other/name"}})
     client, _, _ = make(transport=transport)
     response = _register(client)
     assert response.status_code == 502
@@ -404,7 +404,7 @@ def test_delete_unregisters(make, db):
 
 
 def test_the_list_pages(make, db):
-    names = [f"saga-xyz/repo-{i:02d}" for i in range(5)]
+    names = [f"example-org/repo-{i:02d}" for i in range(5)]
     transport = GitHubRepos(repos={n: repo_entry(n) for n in names})
     client, _, _ = make(transport=transport)
     for name in names:

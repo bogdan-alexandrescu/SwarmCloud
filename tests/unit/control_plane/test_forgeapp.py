@@ -174,7 +174,7 @@ class FakeGitHub:
             return _json(401, {"message": "A JSON web token could not be decoded",
                                "documentation_url": "https://docs.github.com/rest"})
         return _json(200, {"id": self.app_id, "slug": self.app_slug, "name": "SwarmCloud",
-                           "owner": {"login": "saga"}, "description": "<script>"})
+                           "owner": {"login": "example-org"}, "description": "<script>"})
 
 
 def _unb64(part: str) -> bytes:
@@ -359,11 +359,11 @@ def _connect(api: TestClient, github: FakeGitHub, user: str = "alice") -> dict[s
     return answer.json()
 
 
-def _suffix(email: str = "alice@saga.xyz") -> str:
+def _suffix(email: str = "alice@example.com") -> str:
     return provider_suffix("user", user=email)
 
 
-def _connection_doc(db, email: str = "alice@saga.xyz", tenant: str = "eng") -> dict[str, Any]:
+def _connection_doc(db, email: str = "alice@example.com", tenant: str = "eng") -> dict[str, Any]:
     return db.docs[f"forge_connections/{forgeapp.connection_id_for(tenant, email)}"]
 
 
@@ -397,7 +397,7 @@ def test_authorize_answers_githubs_url_with_a_state_stored_only_as_its_hash(api,
     pending = db.dump("forge_authorizations/")
     assert list(pending) == [f"forge_authorizations/{forgeapp.state_hash(state)}"]
     doc = next(iter(pending.values()))
-    assert doc["tenant_id"] == "eng" and doc["user"] == "alice@saga.xyz"
+    assert doc["tenant_id"] == "eng" and doc["user"] == "alice@example.com"
     assert doc["surface"] == "plugin" and doc["used_at"] is None
     assert doc["expires_at"] == T0 + timedelta(minutes=10)
     assert state not in json.dumps(db.dump(), default=str)
@@ -534,7 +534,7 @@ def test_the_exchange_stores_both_tokens_in_the_users_slots_and_returns_none(
     assert connection["access_expires_at"] == (T0 + timedelta(hours=8)).isoformat()
 
     doc = _connection_doc(db)
-    assert doc["tenant_id"] == "eng" and doc["user"] == "alice@saga.xyz"
+    assert doc["tenant_id"] == "eng" and doc["user"] == "alice@example.com"
     assert doc["state"] == "active" and doc["forge"] == "github"
     record = GitTokenRecord.from_firestore(db.docs[f"{COLLECTION}/{doc['token_id']}"])
     assert record.kind == "app_user" and record.scope.value == "user"
@@ -551,7 +551,7 @@ def test_the_exchange_stores_both_tokens_in_the_users_slots_and_returns_none(
 
 def test_a_reconnect_replaces_the_tokens_and_reactivates_the_connection(api, github, slots, db):
     _connect(api, github)
-    db.docs[f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@saga.xyz')}"][
+    db.docs[f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@example.com')}"][
         "state"] = "refresh_failed"
     again = _connect(api, github)
     assert again["connection"]["state"] == "active"
@@ -569,10 +569,10 @@ def test_the_sweep_refreshes_a_connection_near_expiry_and_leaves_the_rest(
     github.login = "root-gh"
     _connect(api, github, "root")
     first_refresh = slots.latest("eng", _suffix() + "-refresh")
-    root_refresh = slots.latest("eng", _suffix("root@saga.xyz") + "-refresh")
+    root_refresh = slots.latest("eng", _suffix("root@example.com") + "-refresh")
     # alice: 1h59m left; root: pushed out to 7h left.
     clock.at = T0 + timedelta(hours=6, minutes=1)
-    db.docs[f"forge_connections/{forgeapp.connection_id_for('eng', 'root@saga.xyz')}"][
+    db.docs[f"forge_connections/{forgeapp.connection_id_for('eng', 'root@example.com')}"][
         "access_expires_at"] = clock.at + timedelta(hours=7)
 
     answer = api.post(REFRESH, headers=auth_header("root"))
@@ -586,7 +586,7 @@ def test_the_sweep_refreshes_a_connection_near_expiry_and_leaves_the_rest(
     new_access, new_refresh = github.issued[-2], github.issued[-1]
     assert slots.latest("eng", _suffix()) == new_access
     assert slots.latest("eng", _suffix() + "-refresh") == new_refresh
-    assert slots.latest("eng", _suffix("root@saga.xyz") + "-refresh") == root_refresh
+    assert slots.latest("eng", _suffix("root@example.com") + "-refresh") == root_refresh
     doc = _connection_doc(db)
     assert doc["access_expires_at"] == clock.at + timedelta(hours=8)
     assert doc["refreshed_at"] == clock.at and doc["refresh_lease"] is None
@@ -710,7 +710,7 @@ def test_disconnect_revokes_at_github_and_disables_the_slots(
     assert slots.latest("eng", _suffix()) is None
     assert slots.latest("eng", _suffix() + "-refresh") is None
     doc = _connection_doc(db)
-    assert doc["state"] == "revoked" and doc["revoked_by"] == "alice@saga.xyz"
+    assert doc["state"] == "revoked" and doc["revoked_by"] == "alice@example.com"
     record = GitTokenRecord.from_firestore(db.docs[f"{COLLECTION}/{doc['token_id']}"])
     assert record.state is TokenState.REVOKED
     _assert_no_value_anywhere(db, [answer.text, caplog.text], github.issued + [app_secret.value])
@@ -731,8 +731,8 @@ def test_disconnect_after_github_refused_the_refresh_still_disconnects(api, gith
 
 def test_disconnect_deletes_the_callers_grants_only(api, github, db):
     _connect(api, github)
-    mine = forgeapp.user_hash("alice@saga.xyz")
-    theirs = forgeapp.user_hash("root@saga.xyz")
+    mine = forgeapp.user_hash("alice@example.com")
+    theirs = forgeapp.user_hash("root@example.com")
     db.docs[f"forge_grants/eng__{mine}__repo_1"] = {"tenant_id": "eng", "user_hash": mine}
     db.docs[f"forge_grants/eng__{theirs}__repo_1"] = {"tenant_id": "eng", "user_hash": theirs}
     db.docs[f"forge_grants/research__{mine}__repo_1"] = {"tenant_id": "research",
@@ -804,9 +804,9 @@ def _sweep_not_configured(api: TestClient, db) -> None:
     assert idle.json()["configured"] is False and idle.json()["refreshed"] == 0
     assert "not configured" in idle.json()["message"]
     assert "docs/runbooks/github-app.md" in idle.json()["message"]
-    db.docs[f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@saga.xyz')}"] = {
-        "connection_id": forgeapp.connection_id_for("eng", "alice@saga.xyz"),
-        "tenant_id": "eng", "user": "alice@saga.xyz", "state": "active"}
+    db.docs[f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@example.com')}"] = {
+        "connection_id": forgeapp.connection_id_for("eng", "alice@example.com"),
+        "tenant_id": "eng", "user": "alice@example.com", "state": "active"}
     _not_configured(api.post(REFRESH, headers=SWEEPER_HEADERS))
 
 

@@ -52,7 +52,7 @@
       }
     ],
     "you": {
-      "email": "alice@saga.xyz",
+      "email": "alice@example.com",
       "can_control": true,
       "can_preempt": false,
       "can_open": true,

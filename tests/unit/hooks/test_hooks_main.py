@@ -105,7 +105,7 @@ def test_create_receiver_wires_the_injected_parts():
     delivery = push(key)
     reply = app.handle("POST", "/github/events", delivery.headers(), lambda n: delivery.body[:n])
     assert reply.outcome == "forwarded"
-    assert forwarded == ["Saga-XYZ/Widgets"] and store_calls == [delivery.delivery]
+    assert forwarded == ["Example-Org/Widgets"] and store_calls == [delivery.delivery]
 
 
 @pytest.mark.parametrize("name,value,word", [
@@ -214,11 +214,11 @@ def test_the_forward_is_one_post_of_the_name_with_an_id_token_for_swarm_api():
         return Response(200, {"report": {}})
 
     forward = ApiForwarder(API, API, mint=mint, post=post)
-    assert forward("Saga-XYZ/Widgets") == 200
+    assert forward("Example-Org/Widgets") == 200
     assert audiences == [API]
     ((url, kwargs),) = posts
     assert url == API + "/v1/admin/repositories/push"
-    assert kwargs["json"] == {"forge": "github", "full_name": "Saga-XYZ/Widgets"}
+    assert kwargs["json"] == {"forge": "github", "full_name": "Example-Org/Widgets"}
     assert kwargs["headers"] == {"Authorization": "Bearer " + token}
     assert kwargs["timeout"] > 0
     assert kwargs.get("allow_redirects") is False
@@ -245,8 +245,8 @@ def test_the_forwarded_body_is_what_repository_push_accepts():
 
     posts: list[dict] = []
     ApiForwarder(API, API, mint=lambda a: "t",
-                 post=lambda url, **k: posts.append(k["json"]) or Response(200))("Saga-XYZ/Widgets")
+                 post=lambda url, **k: posts.append(k["json"]) or Response(200))("Example-Org/Widgets")
     model = RepositoryPush.model_validate(posts[0])
-    assert model.full_name == "Saga-XYZ/Widgets" and model.forge == "github"
+    assert model.full_name == "Example-Org/Widgets" and model.forge == "github"
     assert set(posts[0]) == set(RepositoryPush.model_fields)
     assert json.dumps(posts[0])

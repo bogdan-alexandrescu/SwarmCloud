@@ -165,7 +165,7 @@ def test_the_status_comment_is_edited_in_place_through_approval_and_done(client,
     # The plan comment says who approved, by the address's local part only.
     plan = _bodies(writes, "plan", run["id"])[0]["body"]
     assert "**Approved** by alice" in plan
-    assert "alice@saga.xyz" not in plan
+    assert "alice@example.com" not in plan
     assert len(writes.on_issue(42)) == 2
 
 
@@ -188,7 +188,7 @@ def test_a_lost_comment_id_is_recovered_by_its_marker_not_posted_again(client, d
     healed = _run(client, run["id"]).json()["run"]
     assert (healed["plan_comment_id"], healed["status_comment_id"]) == ids
     assert len(writes.on_issue(42)) == 2
-    assert ("POST", "/repos/saga-xyz/widgets/issues/42/comments") not in writes.writes()[2:]
+    assert ("POST", "/repos/example-org/widgets/issues/42/comments") not in writes.writes()[2:]
 
 
 def test_a_comment_quoting_the_marker_is_not_adopted(client, db, objects, writes):
@@ -270,7 +270,7 @@ def test_a_tenant_without_a_forge_credential_still_gets_a_run(db, tokens, group_
         forge_writer=forgewrite.GitHubWriter(send=writes),
     )
     client = TestClient(create_app(ctx), raise_server_exceptions=False)
-    created = client.post("/v1/runs", headers=auth_header("alice"), json={"issue": "saga-xyz/widgets#42"})
+    created = client.post("/v1/runs", headers=auth_header("alice"), json={"issue": "example-org/widgets#42"})
     assert created.status_code == 201, created.text
     assert "no_forge_credential" in _doc(db, created.json()["run"]["id"])["writeback_error"]
     assert not writes.calls
@@ -286,7 +286,7 @@ def test_the_token_is_only_ever_in_the_authorization_header(client, db, objects,
     token = _eng_token(forge_tokens)
     assert writes.calls
     for method, url, headers, body in writes.calls:
-        assert url.startswith("https://api.github.com/repos/saga-xyz/widgets/")
+        assert url.startswith("https://api.github.com/repos/example-org/widgets/")
         assert token not in url
         assert token not in (body or b"").decode()
         assert headers["Authorization"] == f"Bearer {token}"
@@ -323,9 +323,9 @@ def test_another_tenants_run_cannot_be_patched(db):
 def _bare_run(**fields) -> IssueRun:
     now = datetime(2026, 10, 3, tzinfo=timezone.utc)
     base = dict(
-        id="run_abc123", tenant_id="eng", created_by="alice@saga.xyz", created_at=now,
+        id="run_abc123", tenant_id="eng", created_by="alice@example.com", created_at=now,
         updated_at=now, state=RunState.PLANNING,
-        issue=IssueRef(owner="saga-xyz", repo="widgets", number=42),
+        issue=IssueRef(owner="example-org", repo="widgets", number=42),
         plan_approval="required", auto_merge=False, fix_rounds=3, planner_task_id="tsk_1",
     )
     base.update(fields)
@@ -362,8 +362,8 @@ def test_the_plan_comment_carries_everything_the_issue_asks_for():
         "estimate": "3 agent-hours",
         "requirements": ["Sort by name", "Keep the header accessible"],
         "overlaps": [
-            {"ref": "saga-xyz/widgets#9", "kind": "pull_request", "note": "already adds sort helpers"},
-            {"ref": "saga-xyz/widgets#7", "kind": "issue", "note": "edits the same list"},
+            {"ref": "example-org/widgets#9", "kind": "pull_request", "note": "already adds sort helpers"},
+            {"ref": "example-org/widgets#7", "kind": "issue", "note": "edits the same list"},
         ],
         "steps": [{**PLAN["steps"][0], "files": ["src/widgets/list.py"],
                    "tests": ["test_sorts_by_name"], "estimate": "1h"}],
@@ -375,8 +375,8 @@ def test_the_plan_comment_carries_everything_the_issue_asks_for():
     for expected in (
         "**Mode:** workflow", "**Estimate:** 3 agent-hours", "**Revision:** 3", "`sha256:abc`",
         "1. Sort by name", "2. Keep the header accessible",
-        "[saga-xyz/widgets#9](https://github.com/saga-xyz/widgets/pull/9) (pull request): already adds sort helpers",
-        "[saga-xyz/widgets#7](https://github.com/saga-xyz/widgets/issues/7) (issue)",
+        "[example-org/widgets#9](https://github.com/example-org/widgets/pull/9) (pull request): already adds sort helpers",
+        "[example-org/widgets#7](https://github.com/example-org/widgets/issues/7) (issue)",
         "`src/widgets/list.py`", "test_sorts_by_name", "— 1h", "Approval: pending",
         f"{CONSOLE}/runs/run_abc123",
     ):
@@ -408,7 +408,7 @@ def test_every_body_stays_under_githubs_limit():
 def test_the_status_comment_shows_the_pull_request_the_fix_round_and_the_failure():
     run = _bare_run(
         state=RunState.RUNNING, workflow_id="wf_1", ci_fix_round=2,
-        pull_request={"number": 57, "url": "https://github.com/saga-xyz/widgets/pull/57",
+        pull_request={"number": 57, "url": "https://github.com/example-org/widgets/pull/57",
                       "head_sha": "a" * 40, "checks": "red"},
     )
     body = issuecomments.render_status_comment(run, console_origin=CONSOLE)
@@ -469,7 +469,7 @@ def test_the_block_replaces_itself_and_no_other_line_closes_the_issue():
 def test_sync_pull_request_records_the_pr_and_writes_the_keyword(client, db, objects, writes, api_context):
     run = _planned(client, db, objects)
     writes.pulls[57] = {
-        "number": 57, "html_url": "https://github.com/saga-xyz/widgets/pull/57",
+        "number": 57, "html_url": "https://github.com/example-org/widgets/pull/57",
         "head": {"sha": "c" * 40, "ref": "swarm/x"}, "body": "Closes #42 maybe", "state": "open",
         "merged": False,
     }
@@ -477,7 +477,7 @@ def test_sync_pull_request_records_the_pr_and_writes_the_keyword(client, db, obj
     after = issuesync.sync_pull_request(api_context, stored, 57, closes=False, unmet=["b"])
     assert after.pull_request["head_sha"] == "c" * 40
     assert after.to_api()["pull_request"] == {
-        "number": 57, "url": "https://github.com/saga-xyz/widgets/pull/57",
+        "number": 57, "url": "https://github.com/example-org/widgets/pull/57",
         "head_sha": "c" * 40, "checks": None,
         # The sync read the pull request, so `merged` is that read's; what only
         # the CI loop records (#503) is null before it reads, never 0, and so
@@ -495,7 +495,7 @@ def test_sync_pull_request_records_the_pr_and_writes_the_keyword(client, db, obj
 # the writer on its own
 # --------------------------------------------------------------------------
 
-REF = IssueRef(owner="saga-xyz", repo="widgets", number=42)
+REF = IssueRef(owner="example-org", repo="widgets", number=42)
 
 
 @pytest.mark.parametrize(

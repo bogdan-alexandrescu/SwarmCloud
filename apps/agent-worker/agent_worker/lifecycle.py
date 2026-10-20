@@ -152,6 +152,7 @@ from . import gitops as gitops_mod
 from . import forgebroker as forgebroker_mod
 from . import spendprice as spendprice_mod
 from . import graph_ticket as graph_ticket_mod
+from . import graphroute as graphroute_mod
 from . import graphstage as graphstage_mod
 from . import handoff as handoff_mod
 from . import inputs as inputs_mod
@@ -270,6 +271,7 @@ from .metrics import (
     ResourceUsage,
     attempt_cpu_fields,
     cgroup_cpu_limit_cores,
+    cgroup_memory_max,
     combine_usage,
 )
 from .objectstore import ObjectStore
@@ -442,6 +444,22 @@ SWAP_UNUSABLE = "unusable"
 #: One heartbeat event per this many lease heartbeats. The lease is refreshed
 #: every interval; the event stream would be unreadable at that rate.
 HEARTBEAT_EVENT_EVERY = 5
+#: Utilisation points one HEARTBEAT event carries at most, newest kept
+#: (LIVE-UTIL-API, #1689). 30 x `metrics.POINT_SECONDS` is 150 s, one heartbeat
+#: period at the platform's interval; a beat that came later than that loses
+#: its oldest points rather than growing the event.
+HEARTBEAT_POINTS = 30
+#: The size one HEARTBEAT event's detail is held under, serialised. 30 points
+#: of four short keys are about 2 KiB; this is the bound a test holds, so a
+#: change that lets the series grow is caught before it reaches every event.
+HEARTBEAT_DETAIL_MAX_BYTES = 4096
+
+
+def _rounded3(value: float | None) -> float | None:
+    """Three decimals, and None -- not measured -- kept None."""
+    return None if value is None else round(float(value), 3)
+
+
 #: What an index run's phase may write to each of its captures (lane IX1).
 #: The extractor prints one summary line and the writer one JSON report; the
 #: cap only bounds a tool gone wrong, and the tail -- its last error -- is kept.
@@ -819,6 +837,11 @@ class Worker:
         # export, the HEARTBEAT series -- is the attempt's, not one runner's.
         self._sampler: ResourceSampler | None = None
         self._runner_usage: list[ResourceUsage] = []
+        #: The utilisation series' clock (#1689): `time.monotonic()` at the
+        #: attempt's first runner, shared by every runner's sampler, and the
+        #: points a reaped runner took that no heartbeat has carried yet.
+        self._series_origin: float | None = None
+        self._pending_points: list[dict[str, Any]] = []
         self._metrics_exported = False
         self._last_checkpoint: CheckpointRecord | None = None
         self._restored_from: CheckpointRecord | None = None
@@ -939,12 +962,14 @@ class Worker:
         self._last_beat_started: float | None = None
         self._deadline = time.monotonic() + config.timeout_seconds
         # THE RUNNER'S OWN DEADLINE. The task's, except on an index run, whose
-        # graph write runs AFTER the agent (lane IX1, `indexrun`): its budget
-        # is taken off the agent's time before the agent starts, so an agent
-        # that uses all of its time still leaves the write its own.
+        # graph write runs AFTER the agent (lane IX1, `indexrun`), and the
+        # sweep after it (lane INDEX-RETENTION): both budgets are taken off
+        # the agent's time before the agent starts, so an agent that uses all
+        # of its time still leaves each its own.
         self._runner_deadline = self._deadline
         if indexrun_mod.is_index_run(config.runner_profile):
-            self._runner_deadline -= indexrun_mod.budgets(config.timeout_seconds).graph_write
+            reserve = indexrun_mod.budgets(config.timeout_seconds)
+            self._runner_deadline -= reserve.graph_write + reserve.sweep
         # An index run's phases, in order, as they end (lane IX1); None on
         # every other task. `_finalise` puts them in the result summary.
         self._index_phases: list[indexrun_mod.PhaseRecord] | None = None
@@ -1079,6 +1104,11 @@ class Worker:
         self.graph_ticket = graph_ticket_mod.GraphTicket(
             config, children=self.children, logger=deps.logger
         )
+        # The step's graph context, read by swarm-api (lane GRAPH-STAGING, part
+        # of #1694): the registration, kept index versions and settings
+        # `graphstage` stages from, so an unswitched tenant's worker lists no
+        # Firestore documents its role cannot list. Signs with the same key.
+        self.graph_context = graphroute_mod.GraphContextRoute(config, children=self.children)
         # The workspace secrets release (docs/design/workspace-secrets.md
         # §3.3, lane SEC-RELEASE): once per attempt, before the runner exists,
         # signed with the child path's attempt key. Inert for a profile whose
@@ -1807,27 +1837,17 @@ class Worker:
             self._note_index_phase(
                 indexrun_mod.PhaseRecord("graph_write", "skipped", 0.0, reason=reason)
             )
+            self._note_index_phase(indexrun_mod.PhaseRecord(
+                indexrun_mod.SWEEP_PHASE, "skipped", 0.0,
+                reason=f"the graph write did not run ({reason}); nothing is retired"))
             return None
         assert not isinstance(where, str) and program is not None
         self.phases.enter("index_graph_write")
-        # RETENTION OF repos/ (§2.3, lane IX3): the commits whose versions
-        # swarm-api still holds, so the writer's sweep retires every other
-        # commit's manifest and index copy. Unread, nothing is retired.
-        try:
-            keep = indexrun_mod.kept_commits(
-                self.db, tenant_id=cfg.tenant_id, where=where, own=self._index_commit(),
-                call_options=self.control.call_options("tenant"),
-            )
-        except Exception as exc:
-            keep = f"the kept versions could not be read ({type(exc).__name__})"
-        if isinstance(keep, str):
-            self.log.info("index retention skipped; the sweep retires nothing", reason=keep)
         ran = self._run_index_phase(
             "graph_write",
             indexrun_mod.graph_write_argv(
                 program, work=ws.work, artifacts=ws.artifacts, where=where,
                 bucket=cfg.artifact_bucket, base_sha=self._index_base,
-                keep=None if isinstance(keep, str) else keep,
             ),
             cwd=ws.work,
             env=env,
@@ -1835,6 +1855,54 @@ class Worker:
         )
         if isinstance(ran, Outcome):
             return ran
+        self._note_index_phase(ran)
+        return self._index_sweep(program, where, env, left=max(0.0, budget - ran.seconds))
+
+    def _index_sweep(
+        self, program: str, where: indexrun_mod.Target, env: dict[str, str], *, left: float
+    ) -> Outcome | None:
+        """RETENTION OF repos/ (§2.3; lane INDEX-RETENTION, part of #1693), after the write.
+
+        Best effort: the run's outcome never depends on it. It keeps the
+        commits swarm-api named in the signed prompt (`indexrun.kept_commits`),
+        and reads no database for them. Its budget is its own reserve plus
+        whatever the write left of its own. Only a stop the supervision would
+        honour mid-agent -- a fence, a cancel, a SIGTERM, an outage past the
+        lease -- ends the attempt here, exactly as during the write.
+        """
+        cfg, ws = self.cfg, self.ws
+        assert ws is not None
+        keep = indexrun_mod.kept_commits((self._task or {}).get("input"),
+                                         own=self._index_commit())
+        budget = min(float(indexrun_mod.budgets(cfg.timeout_seconds).sweep) + left,
+                     self._remaining_seconds())
+        reason = keep if isinstance(keep, str) else (
+            "the task's time is spent" if budget < 1 else None)
+        if reason is not None:
+            self.log.info("index retention skipped; nothing is retired", reason=reason)
+            self._note_index_phase(indexrun_mod.PhaseRecord(
+                indexrun_mod.SWEEP_PHASE, "skipped", 0.0, reason=reason))
+            return None
+        assert not isinstance(keep, str)
+        self.phases.enter("index_sweep")
+        ran = self._run_index_phase(
+            indexrun_mod.SWEEP_PHASE,
+            indexrun_mod.sweep_argv(program, where=where, bucket=cfg.artifact_bucket, keep=keep),
+            cwd=ws.work,
+            env=env,
+            timeout=budget,
+        )
+        if isinstance(ran, Outcome):
+            return ran
+        try:
+            stdout = (ws.logs / f"repo-index.{indexrun_mod.SWEEP_PHASE}.stdout.log").read_text(
+                "utf-8", "replace")
+        except OSError:
+            stdout = ""
+        ran.retention = indexrun_mod.sweep_retention(stdout)
+        refused = indexrun_mod.sweep_refusal(stdout)
+        if ran.status == "ok" and refused is not None:
+            ran.reason = self._scrub(refused)
         self._note_index_phase(ran)
         return None
 
@@ -7964,7 +8032,8 @@ class Worker:
                     log=self.log, mark=self._mark_graph_ready,
                     graph_ticket=self.graph_ticket, private_dir=ws.private,
                     backend=self.cfg.backend, service_url=self.cfg.graph_service_url,
-                    secret_env_names=self.cfg.profile.secrets)
+                    secret_env_names=self.cfg.profile.secrets,
+                    graph_context=self.graph_context)
             except graph_ticket_mod.GraphTicketFenced as exc:
                 raise FencedWriteRefused(
                     self.cfg.generation, -1, str(exc), write="graph ticket"
@@ -9087,16 +9156,73 @@ class Worker:
         typed fields on the attempt (`_record_cpu`), which replaced this
         interim home; the reconciler's stuck-browser judgement
         (`reconciler.progress`) is what still reads `cpu_seconds` here.
+
+        AND USE OVER TIME (LIVE-UTIL-API, #1689, owner request 2026-10-20),
+        which `GET /v1/tasks/{id}/utilisation` serves:
+
+          series                the 5-second points taken since the previous
+                                beat (`ResourceSampler.sample_point`), the
+                                newest `HEARTBEAT_POINTS`, each served once;
+          series_clock          now, on the points' clock, so a reader dates a
+                                point as this event's `at` less
+                                `series_clock - t`;
+          memory_limit_bytes    what `mem` is a fraction of: cgroup
+                                `memory.max`, else the sized class's;
+          throttled_seconds,    the attempt's throttling, every runner so far.
+          peak_throttled_share, They would sit beside the CPU figures on the
+          mean_throttled_share  attempt, but `Attempt` is frozen: contract
+                                change request 107 asks for typed fields.
+
+        The detail is held under `HEARTBEAT_DETAIL_MAX_BYTES`.
         """
         usage = self._attempt_usage()
         cpu_seconds = usage.cpu_seconds if usage else None
+        points = self._pending_points
+        self._pending_points = []
+        points.extend(self._drain_points())
+        series_clock: float | None = None
+        if self._series_origin is not None:
+            series_clock = time.monotonic() - self._series_origin
+        if self._sampler is not None:
+            try:
+                series_clock = self._sampler.series_elapsed()
+            except Exception as exc:
+                self.log.warning("could not read the series clock", error=f"{type(exc).__name__}: {exc}")
         return {
             "elapsed_seconds": round(self._child.elapsed_seconds, 1) if self._child else 0,
             "peak_rss_bytes": usage.peak_rss_bytes if usage else None,
             "checkpoints": self.checkpoints.seq,
             "cpu_seconds": round(cpu_seconds, 3) if cpu_seconds is not None else None,
             "cpu_source": usage.cpu_source if usage else None,
+            "series": points[-HEARTBEAT_POINTS:],
+            "series_clock": round(series_clock, 1) if series_clock is not None else None,
+            "memory_limit_bytes": self._memory_limit_bytes(),
+            "throttled_seconds": _rounded3(usage.throttled_seconds if usage else None),
+            "peak_throttled_share": _rounded3(usage.peak_throttled_share if usage else None),
+            "mean_throttled_share": _rounded3(usage.mean_throttled_share if usage else None),
         }
+
+    def _drain_points(self) -> list[dict[str, Any]]:
+        """The live sampler's points since the last drain; [] without one. Never raises:
+        a heartbeat goes out, and extends nothing less, whatever the series did."""
+        if self._sampler is None:
+            return []
+        try:
+            return list(self._sampler.drain_points())
+        except Exception as exc:
+            self.log.warning("could not read utilisation points", error=f"{type(exc).__name__}: {exc}")
+            return []
+
+    def _memory_limit_bytes(self) -> int | None:
+        """The container's memory limit: cgroup `memory.max`, else the sized class's."""
+        enforced = cgroup_memory_max()
+        if enforced is not None:
+            return enforced
+        try:
+            limit = int(self.cfg.memory_limit_bytes_of(self._memory_class()))
+        except Exception:
+            return None
+        return limit if limit > 0 else None
 
     def _record_cpu(self, *, periodic: bool = False) -> None:
         """The attempt's CPU, as typed fields on its own document. Never raises.
@@ -13040,10 +13166,13 @@ class Worker:
         # sizes the container from the task's class, and a workflow step may
         # narrow `browser` (16 GiB) to `standard` (8 GiB): judged against the
         # profile's 16, a run at 7.9 of its 8 GiB raised no near miss.
+        if self._series_origin is None:
+            self._series_origin = time.monotonic()
         self._sampler = ResourceSampler(
             pid_provider=lambda: child.pid,
             disk_provider=ws.disk_bytes,
             memory_limit_bytes=self.cfg.memory_limit_bytes_of(self._memory_class()),
+            series_origin=self._series_origin,
         )
         self._sampler.start()
 
@@ -13054,6 +13183,8 @@ class Worker:
         # Kept, not replaced by the next runner's sampler: that replacement is
         # what made every figure below describe the last runner only.
         self._runner_usage.append(usage)
+        # And its points since the last heartbeat, for the next one to carry.
+        self._pending_points.extend(self._drain_points())
         self._sampler = None
         # THE ATTEMPT'S PEAKS, not this runner's. `record_resource_usage`
         # merge-sets absolute values, so writing each runner's own peak let a

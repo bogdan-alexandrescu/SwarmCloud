@@ -169,7 +169,7 @@ def test_a_login_slot_needs_a_live_record_of_this_workspace(live, db, slots) -> 
 
 def test_a_non_personal_tenant_is_refused_a_slot(live, db, slots) -> None:
     attempt = Attempt(tenant="eng", task="task_eng_browser")
-    seed_attempt(live, db, attempt, submitted_by="alice@saga.xyz", worker_token=ENG_WORKER)
+    seed_attempt(live, db, attempt, submitted_by="alice@example.com", worker_token=ENG_WORKER)
     db.docs["tasks/task_eng_browser"]["workflow_id"] = WORKFLOW
 
     response = slot_post(live, attempt, "swarm-tenant-eng-browser-wf-" + WORKFLOW,
@@ -182,7 +182,7 @@ def test_a_non_personal_tenant_is_refused_a_slot(live, db, slots) -> None:
 
 @pytest.mark.parametrize("change", [
     {"kind": "group"},              # a group whose id happens to start u-
-    {"principal": "someone-else@saga.xyz"},  # kind user, principal not this id's
+    {"principal": "someone-else@example.com"},  # kind user, principal not this id's
 ])
 def test_a_u_tenant_that_is_not_a_persons_is_refused(live, db, slots, change) -> None:
     attempt = Attempt()

@@ -72,10 +72,10 @@ def swarm(db, monkeypatch) -> SwarmClient:
         settings=api_settings(),
         db=db,
         verifier=StaticTokenVerifier(
-            {"token-alice": {"email": "alice@saga.xyz", "email_verified": True,
-                             "sub": "sub-alice", "hd": "saga.xyz"}}
+            {"token-alice": {"email": "alice@example.com", "email_verified": True,
+                             "sub": "sub-alice", "hd": "example.com"}}
         ),
-        groups=StaticGroups({"alice@saga.xyz": (f"{TENANT}@saga.xyz",)}),
+        groups=StaticGroups({"alice@example.com": (f"{TENANT}@example.com",)}),
         credentials=InMemoryCredentials(),
         waker=NullWaker(),
         metrics=ApiMetrics(),

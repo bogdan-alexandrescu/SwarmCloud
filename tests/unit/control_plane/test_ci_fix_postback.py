@@ -53,7 +53,7 @@ SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 CONSOLE = "https://console.example.test"
 NOW = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
-REPO_URL = "https://github.com/saga-xyz/widgets"
+REPO_URL = "https://github.com/example-org/widgets"
 HEAD = "a" * 40
 PUSHED = "c" * 40
 PR = 77

@@ -75,7 +75,7 @@ REGION = "us-central1"
 PIN_PREFIX = "--spec-verify-keys-sha256="
 KEY = f"projects/{PROJECT}/locations/{REGION}/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
 VERSION = KEY + "/cryptoKeyVersions/1"
-OWNER = "owner@saga.xyz"
+OWNER = "owner@example.com"
 SERVICE = f"reports-bot@{PROJECT}.iam.gserviceaccount.com"
 DOC_NAME = f"projects/{PROJECT}/databases/swarm/documents/workspaces/u-re-75c2e5"
 
@@ -263,7 +263,7 @@ def _refused_unsigned(rc: int, run: Run, cloud: FakeCloud) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("kind,principal,tenant", [
     ("service", SERVICE, "u-re-75c2e5"),
-    ("group", "research@saga.xyz", "research"),
+    ("group", "research@example.com", "research"),
 ])
 def test_an_approval_signed_by_swarm_api_verifies_in_the_job(entry, tmp_path, kind, principal, tenant):
     key = KmsKey()
@@ -310,13 +310,13 @@ def test_a_retry_signed_by_swarm_api_verifies_in_the_job(entry, tmp_path):
 # A record edited after signing is refused, and nothing is granted.
 # ---------------------------------------------------------------------------
 def _edit_decided_by(r: dict) -> None:
-    r["decision"]["by"] = "mallory@saga.xyz"
-    r["approval"]["decided_by"] = "mallory@saga.xyz"
+    r["decision"]["by"] = "mallory@example.com"
+    r["approval"]["decided_by"] = "mallory@example.com"
 
 
 EDITS = [
     pytest.param(_edit_decided_by, id="decision.by-and-its-copy"),
-    pytest.param(lambda r: r["decision"].update(by="mallory@saga.xyz"), id="decision.by"),
+    pytest.param(lambda r: r["decision"].update(by="mallory@example.com"), id="decision.by"),
     pytest.param(lambda r: r.update(principal=f"intruder@{PROJECT}.iam.gserviceaccount.com"), id="principal"),
     pytest.param(lambda r: r.update(kind="group"), id="kind"),
     pytest.param(lambda r: r.update(tenant_id="u-in-0a1b2c"), id="tenant"),
@@ -347,7 +347,7 @@ def test_the_control_the_unedited_record_runs(entry, tmp_path):
 
 @pytest.mark.parametrize("kind,principal,tenant", [
     ("service", SERVICE, "u-re-75c2e5"),
-    ("group", "research@saga.xyz", "research"),
+    ("group", "research@example.com", "research"),
 ])
 def test_a_group_or_service_record_with_no_signature_is_refused(entry, tmp_path, kind, principal, tenant):
     """What a worker can write: the decision naming the owner, and no signature."""
@@ -509,15 +509,15 @@ def test_no_kms_grant_in_terraform_names_the_workspace_deployer():
 # Personal records: not verified (questions.json), and pinned all the same.
 # ---------------------------------------------------------------------------
 def test_a_personal_record_with_no_signature_keeps_working(entry, tmp_path):
-    record = _record("personal", "alice@saga.xyz", "u-alice")
-    record["decision"]["by"] = "admin@saga.xyz"
+    record = _record("personal", "alice@example.com", "u-alice")
+    record["decision"]["by"] = "admin@example.com"
     cloud = FakeCloud(entry, [record])
     rc, run = _main(entry, tmp_path, cloud, _keys(KmsKey()))
     assert rc == 0 and cloud.commits == []
     [(_, _, env)] = run.execs
     assert json.loads(env["SWARM_APPROVAL_PIN"]) == {
         "workspace_id": WORKSPACE, "tenant_id": "u-alice", "kind": "personal",
-        "principal": "alice@saga.xyz", "verified": False}
+        "principal": "alice@example.com", "verified": False}
 
 
 def test_an_unapproved_record_is_left_to_a1_and_pinned_unverified(entry, tmp_path):
@@ -537,7 +537,7 @@ def test_an_unapproved_record_is_left_to_a1_and_pinned_unverified(entry, tmp_pat
 # The two halves agree, and the job's ECDSA is right.
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("principal", [
-    "plain@saga.xyz", "quote\"and\\back@saga.xyz", "tab\tnew\nline@x", "ünï©ødé@saga.xyz", "😀@saga.xyz",
+    "plain@example.com", "quote\"and\\back@example.com", "tab\tnew\nline@x", "ünï©ødé@example.com", "😀@example.com",
     "  @x", "\x00\x1f\x7f@x",
 ])
 def test_the_job_signs_over_the_same_bytes_as_swarm_api(entry, principal):

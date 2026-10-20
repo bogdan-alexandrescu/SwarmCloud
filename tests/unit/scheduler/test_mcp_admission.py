@@ -554,7 +554,7 @@ def test_a_task_without_a_server_reads_nothing_new_and_records_nothing_new(
 def test_a_task_without_a_server_parks_and_promotes_with_the_same_detail(db):
     """A provider-key park's detail and its promotion's are what they were."""
     seed_tenant(db, TENANT)
-    tenant = Tenant(tenant_id=TENANT, kind="group", principal="eng@saga.xyz",
+    tenant = Tenant(tenant_id=TENANT, kind="group", principal="eng@example.com",
                     created_at=datetime.now(timezone.utc))
     profile = RUNNER_PROFILES[PROFILE]
     pool = loop_mod.AccountPool.unwired(scheduler_settings())
@@ -602,13 +602,13 @@ def _task(task_id: str = "task_k", servers: list[str] | None = ("kb",), *,
         id=task_id, tenant_id=TENANT, created_at=NOW, updated_at=NOW,
         state=TaskState.LEASED, runner_profile=profile,
         resource_class=RUNNER_PROFILES["mock"].resource_class,
-        input=inputs, submitted_by="alice@saga.xyz", parent_task_id=parent,
+        input=inputs, submitted_by="alice@example.com", parent_task_id=parent,
     )
 
 
 def _tenant() -> Tenant:
     return Tenant(
-        tenant_id=TENANT, kind="group", principal="eng@saga.xyz", created_at=NOW,
+        tenant_id=TENANT, kind="group", principal="eng@example.com", created_at=NOW,
         credentials=("anthropic",),
         gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/{TENANT}",
     )

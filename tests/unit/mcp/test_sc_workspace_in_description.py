@@ -1,7 +1,7 @@
 """The run is named by its workflow or task; the workspace is in its description (SC-WS-DESC).
 
 Owner request, 2026-10-14, seeing the rows after plugin 0.5.35: "instead of
-[eng@saga.xyz] in the main row name, we should have it in the description of
+[eng@example.com] in the main row name, we should have it in the description of
 the workflow or task instead". Held here:
 
 * THE NAME. A `/sc:swarmcloud` run's meta.name is `SC · <name> · N steps`
@@ -92,14 +92,14 @@ def _spec(label: str, steps: int = 2) -> dict:
 
 
 def test_a_workflow_run_is_named_by_its_workflow_alone(_plugin_root):
-    out = launch.for_spec(_spec("gate"), _Me("eng", "eng@saga.xyz"))
+    out = launch.for_spec(_spec("gate"), _Me("eng", "eng@example.com"))
     name, _ = _meta(out["script_path"])
     assert out["title"] == name == "SC · gate · 2 steps"
     assert "[" not in name and "eng" not in name
 
 
 def test_a_long_workflow_name_is_cut_at_150_and_keeps_its_step_count(_plugin_root):
-    out = launch.for_spec(_spec("word " * 60, steps=12), _Me("eng", "eng@saga.xyz"))
+    out = launch.for_spec(_spec("word " * 60, steps=12), _Me("eng", "eng@example.com"))
     name, _ = _meta(out["script_path"])
     assert len(name) <= workflows.TITLE_CHARS
     assert name.startswith("SC · word") and name.endswith("… · 12 steps")
@@ -110,7 +110,7 @@ def test_a_long_workflow_name_is_cut_at_150_and_keeps_its_step_count(_plugin_roo
 
 
 def test_a_task_run_is_named_by_its_label_alone(_plugin_root):
-    out = launch.for_tasks([{"task_id": "task_a", "label": "lane-a", "workspace": "eng@saga.xyz"}])
+    out = launch.for_tasks([{"task_id": "task_a", "label": "lane-a", "workspace": "eng@example.com"}])
     name, _ = _meta(out["script_path"])
     assert out["title"] == name == "SC · lane-a · task"
     several = launch.for_tasks([
@@ -132,12 +132,12 @@ def test_an_attached_workflow_is_named_by_its_workflow_alone(_plugin_root, monke
         "workflow": {"workflow_id": wid, "tenant_id": "eng", "steps": [{}, {}, {}]},
         "tasks": [{"metadata": {"title": "nightly"}}],
     })
-    out = launch.for_attach(_Me("eng", "eng@saga.xyz"), "wf_a")
+    out = launch.for_attach(_Me("eng", "eng@example.com"), "wf_a")
     name, description = _meta(out["script_path"])
     assert out["title"] == name == "SC · nightly · 3 steps"
-    assert description.startswith("Workspace: eng@saga.xyz (eng) · ")
+    assert description.startswith("Workspace: eng@example.com (eng) · ")
     # The row's own workspace still travels to run.js for its step rows.
-    assert out["args"]["workspace"] == "eng@saga.xyz"
+    assert out["args"]["workspace"] == "eng@example.com"
 
 
 # --------------------------------------------------------------------------
@@ -146,9 +146,9 @@ def test_an_attached_workflow_is_named_by_its_workflow_alone(_plugin_root, monke
 
 
 def test_a_workflow_runs_description_starts_with_its_workspace(_plugin_root):
-    out = launch.for_spec(_spec("gate"), _Me("eng", "eng@saga.xyz"))
+    out = launch.for_spec(_spec("gate"), _Me("eng", "eng@example.com"))
     _, description = _meta(out["script_path"])
-    assert description.startswith("Workspace: eng@saga.xyz (eng) · Started by: ")
+    assert description.startswith("Workspace: eng@example.com (eng) · Started by: ")
     assert "· SC · gate · 2 steps: " in description
 
 
@@ -185,10 +185,10 @@ def test_a_clipped_description_keeps_the_workspace(_plugin_root, monkeypatch):
         "workflow": {"workflow_id": wid, "tenant_id": "eng", "steps": [{}]},
         "tasks": [{"metadata": {"title": long_name}}],
     })
-    out = launch.for_attach(_Me("eng", "eng@saga.xyz"), workflow_id)
+    out = launch.for_attach(_Me("eng", "eng@example.com"), workflow_id)
     _, description = _meta(out["script_path"])
     assert len(description) == launch.DESCRIPTION_CHARS and description.endswith("…"), "it was clipped"
-    assert description.startswith("Workspace: eng@saga.xyz (eng) · Started by: ")
+    assert description.startswith("Workspace: eng@example.com (eng) · Started by: ")
 
 
 def test_no_workspace_reported_says_so_rather_than_omitting_it(_plugin_root):
@@ -224,15 +224,15 @@ def test_attach_all_names_runs_alone_and_describes_each_workspace(_plugin_root, 
     ]})
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 1, "tasks": [
         {"task_id": "task_a", "label": "lane-a", "workspace": "eng", "claude_session": SESSION}]})
-    client = types.SimpleNamespace(tenants_mine=lambda: [{"tenant_id": "eng", "display_name": "eng@saga.xyz"}])
+    client = types.SimpleNamespace(tenants_mine=lambda: [{"tenant_id": "eng", "display_name": "eng@example.com"}])
     out = launch.for_all(client)
     got = [(l["title"], _meta(l["script_path"])[1].split(" · Started by: ")[0]) for l in out["launches"]]
     assert got == [
-        ("SC · flow 00 · 3 steps", "Workspace: eng@saga.xyz (eng)"),
+        ("SC · flow 00 · 3 steps", "Workspace: eng@example.com (eng)"),
         ("SC · flow 01 · 1 step", "Workspace: u-bogdan"),
-        ("SC · lane-a · task", "Workspace: eng@saga.xyz (eng)"),
+        ("SC · lane-a · task", "Workspace: eng@example.com (eng)"),
     ]
-    assert out["launches"][0]["args"]["workspace"] == "eng@saga.xyz"
+    assert out["launches"][0]["args"]["workspace"] == "eng@example.com"
 
 
 # --------------------------------------------------------------------------
@@ -250,13 +250,13 @@ def test_the_skill_doc_states_the_title_format_launch_writes(_plugin_root):
     assert "`SC · <name> · N steps`" in text and "`SC · <label> · task`" in text
     assert "`Workspace: <workspace> (<tenant>) · Started by: " in text and "`Workspace: not reported`" in text
     # The stated formats, filled in, are launch.py's output.
-    flow = launch.for_spec(_spec("gate", steps=4), _Me("eng", "eng@saga.xyz"))
+    flow = launch.for_spec(_spec("gate", steps=4), _Me("eng", "eng@example.com"))
     assert flow["title"] == "SC · <name> · N steps".replace("<name>", "gate").replace("N", "4")
     task = launch.for_tasks([{"task_id": "task_a", "label": "lane-a", "workspace": "eng"}])
     assert task["title"] == "SC · <label> · task".replace("<label>", "lane-a")
     _, description = _meta(flow["script_path"])
     assert description.startswith("Workspace: <workspace> (<tenant>) · "
-                                  .replace("<workspace>", "eng@saga.xyz").replace("<tenant>", "eng"))
+                                  .replace("<workspace>", "eng@example.com").replace("<tenant>", "eng"))
 
 
 def test_the_launch_tool_description_states_the_same_format():

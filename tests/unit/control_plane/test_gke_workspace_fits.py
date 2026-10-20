@@ -77,7 +77,7 @@ def tenant() -> Tenant:
     return Tenant(
         tenant_id="eng",
         kind="group",
-        principal="eng@saga.xyz",
+        principal="eng@example.com",
         created_at=NOW,
         service_account=f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com",
         gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/eng",
@@ -96,7 +96,7 @@ def _pod(tenant: Tenant, profile_name: str, resource_class: str | None = None) -
         runner_profile=profile_name,
         resource_class=resource_class or profile.resource_class,
         input={},
-        submitted_by="eng@saga.xyz",
+        submitted_by="eng@example.com",
         provider=profile.provider,
         timeout_seconds=7200,
     )

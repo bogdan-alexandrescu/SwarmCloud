@@ -158,6 +158,12 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
     ? []
     : POOL_FAMILY_ORDER.filter((f) => entries.some(([, p]) => p.pools.some((n) => poolKind(n) === f)))
   const span = families.length + 3
+  // A TIE OUTLINES SEVERAL CELLS ON ONE ROW (QA-056, 2026-10-20): mock's row
+  // outlined Global, Resource classes and Backends, all 15 free, under a
+  // caption naming one outlined cell. The caption follows what is drawn.
+  const tied = entries.some(
+    ([, p]) => matrixRow(p, byName).filter((c) => families.includes(c.family) && c.binding).length > 1,
+  )
 
   return (
     <div className="cap-mx">
@@ -290,7 +296,9 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
       <p className="cap-mx-note">
         {phone
           ? 'Runs out first names the pool with leased/ceiling units. Open a profile for every pool it clears.'
-          : 'Each cell is the units free in that pool, leased/ceiling under it. The outlined cell runs out first.'}
+          : tied
+            ? 'Each cell is the units free in that pool, leased/ceiling under it. The outlined cells run out first; several on one row run out together.'
+            : 'Each cell is the units free in that pool, leased/ceiling under it. The outlined cell runs out first.'}
       </p>
     </div>
   )

@@ -113,7 +113,7 @@ def test_a_session_the_api_would_not_take_is_not_sent(monkeypatch):
 
 
 def test_a_403_is_surfaced_verbatim(claude_session):
-    message = ("403 forbidden: only dana@saga.xyz, who launched this task, or an admin "
+    message = ("403 forbidden: only dana@example.com, who launched this task, or an admin "
                "may answer its questions")
     api = RecordingApi(refuse=SwarmError(message, status=403, code="forbidden"))
 

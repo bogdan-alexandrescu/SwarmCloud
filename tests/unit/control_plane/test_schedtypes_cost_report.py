@@ -50,7 +50,7 @@ from .test_schedtypes_issue_sweep import (  # noqa: F401 -- fixtures
     writes,
 )
 
-BOB = "bob@saga.xyz"
+BOB = "bob@example.com"
 
 
 def report_schedule(db, *, params: dict | None = None, scope_mode: str = "repos",
@@ -90,13 +90,13 @@ def attempt(db, attempt_id: str, task_id: str, *, tenant_id: str = "eng", cost: 
 def seed_work(db) -> None:
     """eng: three attempts in the day (one with no cost), one a week back; research: one."""
     task(db, "t1", schedule_id="sch_sweep")
-    task(db, "t2", profile="codex", person=BOB, repository="saga-xyz/gadgets")
+    task(db, "t2", profile="codex", person=BOB, repository="example-org/gadgets")
     task(db, "t3", repository=None)
     attempt(db, "a1", "t1", cost=1.5)
     attempt(db, "a2", "t1", cost=2.0)
     attempt(db, "a3", "t2", cost=None)
     attempt(db, "a4", "t3", cost=4.0, hours_ago=72)
-    task(db, "r1", tenant_id="research", person="carol@saga.xyz")
+    task(db, "r1", tenant_id="research", person="carol@example.com")
     attempt(db, "ra1", "r1", tenant_id="research", cost=99.0)
 
 
@@ -137,9 +137,9 @@ def test_the_report_is_the_tenants_own_spend_by_four_dimensions_with_coverage(db
         "codex": {"attempts": 1, "attempts_with_cost": 0, "cost_usd": None, "lower_bound": True},
     }
     assert set(by(report, "schedule")) == {"sch_sweep", cost_report.UNSCHEDULED}
-    assert set(by(report, "repository")) == {REPOSITORY, "saga-xyz/gadgets"}
+    assert set(by(report, "repository")) == {REPOSITORY, "example-org/gadgets"}
     assert set(by(report, "person")) == {ALICE, BOB}
-    assert "carol@saga.xyz" not in str(report)
+    assert "carol@example.com" not in str(report)
 
 
 def test_a_week_reaches_back_seven_days(db, ctx) -> None:
@@ -280,7 +280,7 @@ def test_the_platform_variant_is_aggregates_across_tenants_and_never_posted(db, 
     assert detail["scope"] == "platform" and set(detail["by"]) == {"tenant", "profile"}
     assert by(detail, "tenant")["research"]["cost_usd"] == 99.0
     assert by(detail, "tenant")["eng"]["cost_usd"] == 3.5
-    for private in (ALICE, BOB, "carol@saga.xyz", REPOSITORY, "sch_sweep"):
+    for private in (ALICE, BOB, "carol@example.com", REPOSITORY, "sch_sweep"):
         assert private not in str(detail)
     assert comment["outcome"] == "failed" and comment["detail"]["code"] == cost_report.PLATFORM_NOT_POSTED
     assert writes.calls == []

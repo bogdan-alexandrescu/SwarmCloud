@@ -54,12 +54,12 @@ run "dev_s_four_tenants_still_plan" {
     tenants = {
       eng = {
         kind      = "group"
-        principal = "eng@saga.xyz"
+        principal = "eng@example.com"
         providers = ["anthropic"]
       }
       smoke = {
         kind      = "group"
-        principal = "smoke@saga.xyz"
+        principal = "smoke@example.com"
         providers = ["anthropic"]
       }
       "u-sw-c90291" = {
@@ -96,7 +96,7 @@ run "a_subset_of_dev_s_tenants_still_plans" {
     tenants = {
       eng = {
         kind      = "group"
-        principal = "eng@saga.xyz"
+        principal = "eng@example.com"
         providers = ["anthropic"]
       }
     }
@@ -124,9 +124,9 @@ run "prod_s_three_tenants_still_plan" {
     immutable_image_tags = true
 
     tenants = {
-      eng      = { kind = "group", principal = "eng@saga.xyz", providers = ["anthropic", "openai"], max_active = 40 }
-      research = { kind = "group", principal = "research@saga.xyz", providers = ["anthropic"], max_active = 20 }
-      smoke    = { kind = "group", principal = "swarm-smoke@saga.xyz", providers = [], max_active = 2 }
+      eng      = { kind = "group", principal = "eng@example.com", providers = ["anthropic", "openai"], max_active = 40 }
+      research = { kind = "group", principal = "research@example.com", providers = ["anthropic"], max_active = 20 }
+      smoke    = { kind = "group", principal = "swarm-smoke@example.com", providers = [], max_active = 2 }
     }
   }
 
@@ -149,7 +149,7 @@ run "the_refusal_names_the_design_and_the_job" {
 
   variables {
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = ["anthropic"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = ["anthropic"] }
     }
   }
 
@@ -174,12 +174,12 @@ run "a_fifth_dev_tenant_is_refused" {
     tenants = {
       eng = {
         kind      = "group"
-        principal = "eng@saga.xyz"
+        principal = "eng@example.com"
         providers = ["anthropic"]
       }
       research = {
         kind      = "group"
-        principal = "research@saga.xyz"
+        principal = "research@example.com"
         providers = ["anthropic"]
       }
     }
@@ -224,8 +224,8 @@ run "a_fourth_prod_tenant_is_refused" {
     immutable_image_tags = true
 
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = ["anthropic"], max_active = 40 }
-      ops = { kind = "group", principal = "ops@saga.xyz", providers = [], max_active = 2 }
+      eng = { kind = "group", principal = "eng@example.com", providers = ["anthropic"], max_active = 40 }
+      ops = { kind = "group", principal = "ops@example.com", providers = [], max_active = 2 }
     }
   }
 
@@ -242,7 +242,7 @@ run "a_tenant_in_an_environment_with_no_frozen_set_is_refused" {
   variables {
     environment = "staging"
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = ["anthropic"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = ["anthropic"] }
     }
   }
 

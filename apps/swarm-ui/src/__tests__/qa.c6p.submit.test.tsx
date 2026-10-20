@@ -6,7 +6,8 @@
  *          about 2.3:1. Only the controls are dimmed now; every label keeps
  *          its token at full strength (>= 4.5:1, both themes).
  *   G4-28  the carrier was a live select for a value the platform ignores. It
- *          is a disabled select reading "checkpoints (fixed)".
+ *          is plain text reading "checkpoints (fixed)" (QA-074, the owner's
+ *          2026-10-20 choice over a disabled select).
  *   G4-30  a refused runner read "Not enabled yet. Use claude-code" on a card
  *          and "not enabled yet. use claude-code" in a workflow option, and
  *          the issue form called runners that can start now "unavailable".
@@ -22,8 +23,8 @@
  *   G4-35  the workflow form's two radio groups were two card styles. "If a
  *          step fails" is drawn as the dispatch control's card.
  *
- * MUTATIONS: put `opacity` back on `.sb-step.is-dim`; drop `disabled` from the
- * carrier select; `.toLowerCase()` the option reason again; restore
+ * MUTATIONS: put `opacity` back on `.sb-step.is-dim`; draw the carrier as a
+ * select again; `.toLowerCase()` the option reason again; restore
  * "unavailable" in the issue form's summary; lowercase "Strategy"; drop the
  * platform mark or the ordering; print `clockTime` again; draw `sb-option`
  * again -- each turns a case below red.
@@ -134,12 +135,22 @@ function dispatch(scale: 'task' | 'workflow', strategy: 'collect' | 'direct-pr',
 }
 
 describe('G4-28: the carrier is shown fixed, not offered', () => {
-  it('is a disabled select reading "checkpoints (fixed)"', () => {
-    const { container } = dispatch('workflow', 'collect')
-    const select = container.querySelector<HTMLSelectElement>('#dsp-carrier')!
-    expect(select.disabled, 'the carrier is a live control').toBe(true)
-    expect([...select.options].map((o) => o.textContent)).toEqual(['checkpoints (fixed)'])
-    expect(select.value).toBe('checkpoints')
+  it('is plain text reading "checkpoints (fixed)", and the draft keeps the default it sends', () => {
+    let changed = 0
+    const { container } = render(
+      createElement(DispatchChoice, {
+        draft: { strategy: 'collect', carrier: 'checkpoints', repositoryUrl: '' },
+        onChange: () => { changed += 1 },
+        steps: 3,
+        scale: 'workflow',
+        terminals: ['report'],
+      }),
+    )
+    // MUTATION: draw the disabled select again (QA-074, owner 2026-10-20: text, not a control).
+    expect(container.querySelector('select'), 'the carrier is a control').toBeNull()
+    expect(container.querySelector('#dsp-carrier')!.textContent).toBe('checkpoints (fixed)')
+    // Nothing on the form can move the carrier off the default it sends.
+    expect(changed).toBe(0)
   })
 })
 

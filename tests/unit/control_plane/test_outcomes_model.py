@@ -50,7 +50,7 @@ def _task(task_id: str, *, state: str = "SUCCEEDED", **overrides):
         "created_at": T0,
         "completed_at": T0 + timedelta(hours=1),
         "runner_profile": "claude-code",
-        "submitted_by": "alice@saga.xyz",
+        "submitted_by": "alice@example.com",
         "workflow_id": "wf",
         "step_id": task_id,
         "attempt_count": 1,

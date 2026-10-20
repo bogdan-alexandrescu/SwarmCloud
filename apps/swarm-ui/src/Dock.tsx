@@ -62,6 +62,14 @@ import { AGE_TICK_MS, useNow } from './useNow'
  */
 const HELP_TOPIC: TopicId = 'api-reads'
 
+/**
+ * The ` · ` after a fact. Text, so the prose budget still reads it; its own
+ * span, so a phone can take it away (`.ctl-dock-sep`, QA-039).
+ */
+function Sep() {
+  return <span className="ctl-dock-sep"> · </span>
+}
+
 export function Dock() {
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
   // The ages on this strip are the whole point of it, so they move on their
@@ -270,28 +278,33 @@ export function Dock() {
             the prose budget tests count the text nodes a reader can see, and
             moving punctuation into generated content would change what those
             read without changing what the screen says. */}
+        {/* THE SEPARATOR IS INSIDE THE FACT IT FOLLOWS, IN ITS OWN SPAN
+            (visual QA QA-039, 2026-10-20). As bare text between facts a
+            ` · ` could not be taken away, and at 390px the strip broke after
+            one and left it hanging at the end of the first line. On a phone
+            the separators step aside and the facts are spaced instead, so
+            the route count and the p95 come back (D39 had dropped them to
+            hold one line, and the line wrapped anyway). */}
         <span className="ctl-dock-facts">
-          {/* `is-wide`: not drawn on a phone, where the strip is one line
-              (U10a D39). Each carries its own separator, so none dangles. */}
-          <span className="ctl-dock-fact is-wide">
+          <span className="ctl-dock-fact">
             {s.routes} route{s.routes === 1 ? '' : 's'}
-            {' · '}
+            <Sep />
           </span>
           {/* An em dash, never a 0: no sample is not a fast response. */}
-          <span className="ctl-dock-fact is-wide">
+          <span className="ctl-dock-fact">
             {s.p95Ms === null ? <span className="ctl-em">p95 &mdash;</span> : `p95 ${fmtLatency(s.p95Ms)}`}
-            {' · '}
+            <Sep />
           </span>
           <span className={`ctl-dock-fact${s.failed > 0 ? ' ctl-dock-bad' : ''}`}>
             {s.failed} failed
+            <Sep />
           </span>
           {s.adminOnly > 0 && (
-            <>
-              {' · '}
-              <span className="ctl-dock-fact">{s.adminOnly} admin-only</span>
-            </>
+            <span className="ctl-dock-fact">
+              {s.adminOnly} admin-only
+              <Sep />
+            </span>
           )}
-          {' · '}
           <span className="ctl-dock-fact">
             {s.newestSuccessAt === null ? (
               <span className="ctl-em">nothing has loaded</span>

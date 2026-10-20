@@ -1,0 +1,165 @@
+// VISUAL QA 2026-10-20, LANE QAFIX-CAPACITY (part of #1680): the Accounts
+// findings of workflow wf_9e9bf74834634db7bcc3. Each case holds the property
+// the finding was about -- the rule the cascade picks for the rendered mark,
+// the accessible name, the words on the row -- not the markup's shape.
+//
+//   QA-049  The `partial` mark's dashed right edge is square, not a broken curve,
+//           on Accounts and Provider quota only (owner 2026-10-20).
+//   QA-050  At 390 the Add button gives way, not the `6 accounts` count.
+//   QA-051  A reset binding window reads `cleared · 5h`, never `clears cleared`.
+
+import { cleanup, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import type { AccountsBoard } from '../api'
+import type { Result } from '../fetch'
+import type { Account, AccountsPage, Tenant } from '../types'
+import type { CascadeEnv } from './cssgate'
+import { painted } from './marks'
+
+const api = vi.hoisted(() => ({
+  loadAccountsBoard: vi.fn(),
+  beginAccountSignIn: vi.fn(),
+  finishAccountSignIn: vi.fn(),
+  refreshAccount: vi.fn(),
+  removeAccount: vi.fn(),
+  setAccountLending: vi.fn(),
+  setAccountState: vi.fn(),
+}))
+vi.mock('../api', () => api)
+
+const { AccountsScreen } = await import('../Accounts')
+
+const WAIT = { timeout: 5000 } as const
+const WIDE: CascadeEnv = { width: 1440 }
+const PHONE: CascadeEnv = { width: 390 }
+
+afterEach(() => {
+  cleanup()
+  window.history.replaceState(null, '', '/')
+  document.body.innerHTML = ''
+  vi.clearAllMocks()
+})
+
+function ok<T>(data: T): Result<T> {
+  return { status: 'ok', data, fetchedAt: Date.now(), serverAt: '2026-10-20T12:00:00Z' }
+}
+
+function account(over: Partial<Account>): Account {
+  return {
+    account_id: 'eng:alice-personal',
+    owner_tenant: 'eng',
+    label: 'alice-personal',
+    provider: 'anthropic-subscription',
+    state: 'AVAILABLE',
+    reason: '',
+    lend_to: [],
+    assigned: 7,
+    windows: {},
+    observed_at: null,
+    stale: false,
+    unreadable_by: [],
+    unreadable_now: [],
+    last_assigned_at: null,
+    ...over,
+  }
+}
+
+async function mount(accounts: Account[], unreadable = 0): Promise<void> {
+  const tenants = [{ tenant_id: 'eng' }] as Tenant[]
+  api.loadAccountsBoard.mockResolvedValue(
+    ok({
+      page: {
+        accounts,
+        tenant_id: 'eng',
+        unreadable_documents: unreadable > 0 ? ['eng:broken-doc'] : [],
+        unreadable_document_count: unreadable,
+      } as AccountsPage,
+      tenants,
+      tenantsDetail: null,
+      readAt: Date.now(),
+    } as AccountsBoard),
+  )
+  render(<AccountsScreen />)
+  await screen.findAllByText(accounts[0]!.account_id, undefined, WAIT)
+}
+
+describe('QA-049: the partial mark draws its dashed edge straight', () => {
+  it('squares the dashed side, beside `unread docs`, and keeps the solid side round', async () => {
+    await mount([account({})], 1)
+    const fact = [...document.querySelectorAll('.ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'unread docs')!
+    const mark = fact.querySelector<HTMLElement>('.ctl-mark.is-partial')!
+    expect(mark.textContent).toBe('partial')
+    expect(painted(mark, 'border-right-style', WIDE)).toBe('dashed')
+    // MUTATION: drop `border-top-right-radius: 0` / `border-bottom-right-radius: 0`
+    // from `.acct-page .ctl-mark.is-partial` (styles/capacity.css), or the
+    // `acct-page` wrapper in Accounts.tsx -- the dashes run round the mark's rounded
+    // corner again and the edge reads as clipped. Both corners fail.
+    expect(painted(mark, ['border-top-right-radius', 'border-radius'], WIDE)).toBe('0')
+    expect(painted(mark, ['border-bottom-right-radius', 'border-radius'], WIDE)).toBe('0')
+    // MUTATION: set `border-radius: 0` on the whole mark instead -- the solid
+    // side loses the radius every other mark has.
+    expect(painted(mark, ['border-top-left-radius', 'border-radius'], WIDE)).toBe('var(--ctl-radius-sm)')
+  })
+})
+
+describe('QA-049, scoped to Accounts (owner 2026-10-20): the account\'s own partial mark is squared too', () => {
+  it('squares the dashed side of the `partial` beside a stale reading on the chosen account', async () => {
+    await mount([account({ stale: true, observed_at: new Date(Date.now() - 3 * 86_400_000).toISOString() })])
+    const marks = [...document.querySelectorAll<HTMLElement>('.acct-split .ctl-mark.is-partial')]
+    expect(marks.length, 'no partial mark on the stale account').toBeGreaterThan(0)
+    for (const mark of marks) {
+      // MUTATION: scope the squared rule to the `unread docs` fact alone --
+      // the account's own mark, on the same page, keeps the broken curve.
+      expect(painted(mark, ['border-top-right-radius', 'border-radius'], WIDE)).toBe('0')
+      expect(painted(mark, ['border-bottom-right-radius', 'border-radius'], WIDE)).toBe('0')
+    }
+  })
+})
+
+describe('QA-050: the account count is not what gives way at 390', () => {
+  it('drops the button\'s second word on a phone, and keeps its name whole', async () => {
+    await mount([account({})])
+    // MUTATION: remove `aria-label="Add account"` -- a phone reader would hear
+    // `Add` alone once the word is hidden; this query is the name's guard.
+    const add = screen.getByRole('button', { name: 'Add account' })
+    const what = add.querySelector<HTMLElement>('.acct-add-what')!
+    expect(what.textContent).toBe(' account')
+    // MUTATION: delete the `@media (max-width: 560px) .acct-add-what` rule --
+    // the full `Add account` stays at 390 and the count is cut to `1 ac…`.
+    expect(painted(what, 'display', PHONE)).toBe('none')
+    // MUTATION: hide the word at every width -- a desktop with room loses it.
+    expect(painted(what, 'display', WIDE)).toBeNull()
+    // The count itself is the full phrase in the header.
+    const note = document.querySelector('.acct-list-head .ctl-card-note')!
+    expect(note.textContent).toBe('1 account')
+  })
+})
+
+describe('QA-051: a window that already reset reads `cleared`, not `clears cleared`', () => {
+  const RESET = account({
+    account_id: 'eng:retired-laptop',
+    label: 'retired-laptop',
+    state: 'REAUTH_REQUIRED',
+    observed_at: new Date(Date.now() - 5 * 3_600_000).toISOString(),
+    windows: { five_hour: { utilization: 0.4, resets_at: new Date(Date.now() - 5 * 3_600_000).toISOString(), reset: true } },
+  })
+
+  it('drops the countdown label before the past tense, and keeps it on a countdown', async () => {
+    const LIVE = account({
+      account_id: 'eng:alice-personal',
+      observed_at: new Date().toISOString(),
+      windows: { five_hour: { utilization: 0.4, resets_at: new Date(Date.now() + 80 * 60_000).toISOString(), reset: false } },
+    })
+    await mount([RESET, LIVE])
+    const lines = [...document.querySelectorAll<HTMLElement>('.acct-clears')]
+    const reset = lines.find((l) => l.closest('li, [data-account]')?.textContent?.includes('retired-laptop'))!
+    // MUTATION: put `clears ` back unconditionally in ClearsLine -- the row
+    // reads `clears cleared · 5h` again.
+    expect(reset.textContent).toBe('cleared · 5h')
+    expect(reset.textContent).not.toMatch(/clears cleared/)
+    // MUTATION: drop `clears ` for every value -- a countdown loses its label.
+    const live = lines.find((l) => l !== reset && /\dh|\dm/.test(l.textContent ?? ''))!
+    expect(live.textContent).toMatch(/^clears \d/)
+  })
+})

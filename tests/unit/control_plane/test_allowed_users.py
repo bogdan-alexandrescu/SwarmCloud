@@ -1,7 +1,7 @@
 """Who is admitted at all, when there is no organisation to belong to.
 
 Authorisation is by hosted domain, which is exactly right for a company:
-`allowed_domains = ["saga.xyz"]` means the people in that company. It collapses
+`allowed_domains = ["example.com"]` means the people in that company. It collapses
 for everyone else. A single developer on a personal GCP project has no domain
 of their own, so the only value that would admit them is `["gmail.com"]` --
 which authorises every Google account on earth to run agents on their billing
@@ -42,7 +42,7 @@ class _Groups:
 
 class _Settings:
     class core:
-        allowed_domains = ("saga.xyz",)
+        allowed_domains = ("example.com",)
 
     tenant_groups: tuple = ()
     admin_groups: tuple = ()
@@ -61,7 +61,7 @@ def _auth(settings, email):
 
 def test_a_domain_caller_still_works_when_no_users_are_listed():
     """The existing behaviour, unchanged. This is the regression guard."""
-    ctx = _auth(_Settings(), "person@saga.xyz").authenticate(None, "assertion")
+    ctx = _auth(_Settings(), "person@example.com").authenticate(None, "assertion")
     assert ctx.tenant_id == "u-person"
 
 
@@ -106,7 +106,7 @@ def test_it_is_additive_never_subtractive():
     class _Both(_Settings):
         allowed_users = ("ext@agency.example",)
 
-    assert _auth(_Both(), "person@saga.xyz").authenticate(None, "a").tenant_id == "u-person"
+    assert _auth(_Both(), "person@example.com").authenticate(None, "a").tenant_id == "u-person"
     assert _auth(_Both(), "ext@agency.example").authenticate(None, "a").tenant_id == "u-ext"
 
 
@@ -141,7 +141,7 @@ def test_an_empty_list_changes_nothing_at_all():
     class _Empty(_Settings):
         allowed_users = ()
 
-    assert _auth(_Empty(), "person@saga.xyz").authenticate(None, "a").tenant_id == "u-person"
+    assert _auth(_Empty(), "person@example.com").authenticate(None, "a").tenant_id == "u-person"
     with pytest.raises(Forbidden):
         _auth(_Empty(), "person@elsewhere.com").authenticate(None, "a")
 

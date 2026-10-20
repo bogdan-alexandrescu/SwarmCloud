@@ -875,8 +875,8 @@ class Store:
         `principal` is the TENANT's principal -- the group email for a group
         tenant -- not the caller's address. It is checked against the existing
         document on every request, because the frozen `tenant_id_for_group`
-        slugs the local part only: `eng@saga.xyz`, `eng@partner.com`,
-        `eng.team@saga.xyz` and `Eng-Team@saga.xyz` all derive tenant `eng`.
+        slugs the local part only: `eng@example.com`, `eng@partner.com`,
+        `eng.team@example.com` and `Eng-Team@example.com` all derive tenant `eng`.
         Without this check the second group would inherit the first group's
         service account, secrets, GCS prefix and namespace with no error
         anywhere.
@@ -934,11 +934,11 @@ class Store:
         """The READ-side half of the collision check `ensure_tenant` runs.
 
         A tenant id is not a unique key for a principal. The frozen
-        `tenant_id_for_group` slugs the local part only, so `eng@saga.xyz` and
+        `tenant_id_for_group` slugs the local part only, so `eng@example.com` and
         `eng@partner.com` both derive `eng`; and the group path adds no prefix
         while the personal path adds `u-`, so a registered group named
-        `u-eng@saga.xyz` derives the same id as the personal tenant of
-        `eng@saga.xyz`. Two verified, unrelated identities therefore arrive
+        `u-eng@example.com` derives the same id as the personal tenant of
+        `eng@example.com`. Two verified, unrelated identities therefore arrive
         holding the same `tenant_id` string, and every query below filters on
         exactly that string.
 

@@ -220,7 +220,7 @@ def _task(**extra: Any) -> Task:
     return Task(
         id="task_1", tenant_id="eng", created_at=now, updated_at=now,
         state=TaskState.READY, runner_profile="generic", resource_class="standard",
-        input={"prompt": "x", **extra}, submitted_by="alice@saga.xyz",
+        input={"prompt": "x", **extra}, submitted_by="alice@example.com",
     )
 
 

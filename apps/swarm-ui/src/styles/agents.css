@@ -474,7 +474,14 @@
 /* The canonical `Tabs` in its tablist form (components.html A). It scrolls
    sideways when it does not fit the split (Q4), rather than wrapping or being
    cut ("Details Children 0 Att…"); here it only takes its place in the column. */
-.ag-split-tabs { margin: var(--ctl-s2) 0 var(--ctl-s3); scrollbar-width: thin; }
+/* IT SCROLLS SIDEWAYS ONLY (QA-020, QA-024, QA-089, visual QA #1680). Each
+   tab reaches 1px under the strip (`margin-bottom: -1px`, components.css) so
+   its underline lies on the hairline, and `overflow-x: auto` alone makes
+   `overflow-y` auto too: that pixel was a vertical scroll range, and at 390
+   a classic-scrollbar browser drew a scrollbar with its arrows in the middle
+   of the row, over `Attempts 3`. The overlap was already clipped at the
+   padding edge by `auto`; `hidden` clips it the same way and cannot scroll. */
+.ag-split-tabs { margin: var(--ctl-s2) 0 var(--ctl-s3); scrollbar-width: thin; overflow-y: hidden; }
 
 /* --- the column: header, tabs, and the open tab -------------------------- */
 /* THE COLUMN DOES NOT SCROLL; ITS PANE DOES (walkthrough B, owner
@@ -524,6 +531,20 @@
    log's foot is its last line, never under that line. */
 @media (max-width: 1099px) {
   .ag-split.ctl-drawer { bottom: var(--dock-h, 28px); }
+}
+/* ON A PHONE THE OPEN TASK STARTS UNDER THE APP HEADER (QA-116, owner
+   2026-10-20: "Start under the header"). Fixed at `top: 0` and z-index 40
+   (`.drawer`, styles.css) it covered the phone header and its menu, so the
+   only way anywhere was back to the list first. Its top is the header's foot,
+   read from the header's own height (`--sk-pbar-h`, styles.css), so it moves
+   with the header when it compacts to 36px; the fallback is the overlay's
+   own 0, for a reader of this sheet alone. Under the menu's scrim (25) and
+   drawer (26), so the opened menu covers the task; above the page's sticky
+   bars (`.ctl-bar`, 20), which it still covers. The pane tabs stick at the
+   column's own top (QA-019, below), so they need no change. Under the
+   header the task is not modal: `useSplitFocus` reads this `top`. */
+@media (max-width: 759px) {
+  .ag-split.ctl-drawer { top: var(--sk-pbar-h, 0px); z-index: 24; }
 }
 .ag-logs {
   flex: 1 1 auto;
@@ -907,7 +928,14 @@
      the scroller, under a column that does not move (qa.u11a.logs). */
   .ag-split.ctl-drawer:not(.on-logs) { overflow-y: auto; overscroll-behavior: contain; }
   .ag-split:not(.on-logs) > .ag-split-pane { flex: none; overflow: visible; }
-  .ag-split:not(.on-logs) > .ag-tabs-edge { position: sticky; top: 0; z-index: 3; background: var(--bg); }
+  /* AT THE COLUMN'S EDGE, NOT 18px INSIDE IT (QA-019, visual QA #1680). A
+     sticky inset is measured from the scroller's CONTENT edge, inside the
+     drawer's 18px of top padding (`.drawer`, styles.css -- the AG-31
+     correction `.drawer::before` carries). At `top: 0` the strip stuck 18px
+     down and the scrolled content (`Attempt 2 · gen 2`, `model not
+     measured`) showed in the gap above the tabs. The two 18s are held equal
+     by qa.tasktabs.test.tsx. */
+  .ag-split:not(.on-logs) > .ag-tabs-edge { position: sticky; top: -18px; z-index: 3; background: var(--bg); }
 }
 
 /* --- U10a (owner QA, 2026-10-04) ----------------------------------------- */

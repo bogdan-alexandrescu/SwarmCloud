@@ -53,7 +53,7 @@ from .repo_index_fakes import (
 )
 
 ONE, TWO, THREE = sha("one"), sha("two"), sha("three")
-OTHER = "saga-xyz/gadgets"
+OTHER = "example-org/gadgets"
 PUSH_URL = "/v1/admin/repositories/push"
 
 #: The identity the route admits, as `poll_repositories` admits the
@@ -205,8 +205,8 @@ def test_a_push_polls_the_repository_in_every_workspace_that_registered_it(
     # Each run in its own tenant, as its own registration's creator.
     [eng_task] = _tasks(db, "eng")
     [research_task] = _tasks(db, "research")
-    assert eng_task["submitted_by"] == "alice@saga.xyz"
-    assert research_task["submitted_by"] == "bob@saga.xyz"
+    assert eng_task["submitted_by"] == "alice@example.com"
+    assert research_task["submitted_by"] == "bob@example.com"
     assert eng_task["metadata"]["repo_index"] == eng
     assert research_task["metadata"]["repo_index"] == research
     assert _index(db, eng)["in_flight_task_id"] == eng_task["id"]
@@ -215,7 +215,7 @@ def test_a_push_polls_the_repository_in_every_workspace_that_registered_it(
 
 def test_the_name_is_matched_without_regard_to_case(client, db, sweeper):
     repo_id = _register(client)
-    response = _push(client, "Saga-XYZ/Widgets")
+    response = _push(client, "Example-Org/Widgets")
     assert response.status_code == 200, response.text
     assert response.json()["report"]["registrations"] == 1
     [task] = _tasks(db)
@@ -231,7 +231,7 @@ def test_another_repository_is_never_touched(client, db, polls, secrets_reader, 
 
     assert body["report"]["registrations"] == 1
     assert [url for url, _h, _s in polls.calls] == [
-        "https://api.github.com/repos/saga-xyz/widgets/commits/main"
+        "https://api.github.com/repos/example-org/widgets/commits/main"
     ]
     assert secrets_reader.asked == ["swarm-tenant-eng-git"]
     assert [t["metadata"]["repo_index"] for t in _tasks(db)] == [widgets]
@@ -330,7 +330,7 @@ def test_one_registrations_failure_does_not_stop_the_others(client, db, sweeper)
     eng = _register(client, user="alice")
     research = _register(client, user="bob")
     # carol is in no tenant group: the creator as they would read once removed.
-    db.docs[f"repositories/{eng}"]["created_by"] = "carol@saga.xyz"
+    db.docs[f"repositories/{eng}"]["created_by"] = "carol@example.com"
 
     body = _push(client).json()
 
@@ -366,7 +366,7 @@ def test_the_head_stored_is_the_one_read_with_the_workspaces_token(
     assert _index(db, repo_id)["head_sha"] == TWO
     [task] = _tasks(db)
     assert task["repository_ref"] == TWO
-    assert polls.calls[-1][0] == "https://api.github.com/repos/saga-xyz/widgets/commits/main"
+    assert polls.calls[-1][0] == "https://api.github.com/repos/example-org/widgets/commits/main"
 
 
 @pytest.mark.parametrize("body", [
@@ -409,7 +409,7 @@ def test_an_unauthenticated_push_is_refused(client, db):
 def test_the_route_itself_admits_only_its_identity(client, db, as_caller, polls):
     """Past the admin gate, an admin is still not the push's identity."""
     _register(client)
-    as_caller(_caller("root@saga.xyz", admin=True))
+    as_caller(_caller("root@example.com", admin=True))
     response = _push(client)
     assert response.status_code == 403, response.text
     assert polls.calls == [] and _tasks(db) == []

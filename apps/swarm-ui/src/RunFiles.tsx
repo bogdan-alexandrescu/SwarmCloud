@@ -230,6 +230,28 @@ export function useRead<T, C = null>(
   return held.task === task ? held : { task, state: { status: 'loading', since: Date.now() }, asked }
 }
 
+/**
+ * A PATH THAT BREAKS AT ITS SLASHES (QA-088, visual QA 2026-10-20). The
+ * checkpoint prefix and the gs:// uris broke wherever the line ran out --
+ * `checkpoin` / `ts` at 390, `att_aff5_3/ckpt-` / `00002` at 1440 -- because
+ * a `/` between letters is no break opportunity and `overflow-wrap:
+ * anywhere` breaks mid-token instead. Each segment, its slash included, is
+ * its own inline block (`.path-seg`), so a line breaks between segments and
+ * only a segment wider than the line breaks inside itself. The text, and so a
+ * copy or a select, is the path unchanged.
+ */
+export function PathText({ path }: { path: string }) {
+  return (
+    <>
+      {path.split(/(?<=\/)/).map((seg, i) => (
+        <span key={i} className="path-seg">
+          {seg}
+        </span>
+      ))}
+    </>
+  )
+}
+
 function Panel({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="section">
@@ -322,7 +344,9 @@ function CheckpointsView({ task, listing, now }: { task: Task; listing: Checkpoi
           {/* `ckpt-prefix` IS THE HOOK THE SHEET WRAPS (AG-26). A task's
               checkpoint prefix is one unbroken path with no space to break at,
               and in the 480px inspector it ran out of the drawer. */}
-          <code className="mono ckpt-prefix">{page.prefix}</code>
+          <code className="mono ckpt-prefix">
+            <PathText path={page.prefix} />
+          </code>
         </li>
         <li className="ctl-fact">
           <b>found</b>
@@ -819,7 +843,7 @@ function CheckpointRow({
             the tenant boundary in one place. */}
         <span className="ctl-sub rf-uri">
           <code className="mono uri" title={record.uri}>
-            {record.uri}
+            <PathText path={record.uri} />
           </code>
           <Button size="sm" className="copy" onClick={() => navigator.clipboard?.writeText(`gsutil cp -r ${record.uri} .`)}>
             copy gsutil

@@ -62,7 +62,7 @@ from .test_issue_runs import _finish_planner
 
 SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
-OWNER, REPO = "saga-xyz", "widgets"
+OWNER, REPO = "example-org", "widgets"
 REPOSITORY = f"{OWNER}/{REPO}"
 
 NOW = datetime.now(timezone.utc)
@@ -126,7 +126,7 @@ def _context(db, tokens, group_map, objects, github, writes):
     )
 
 
-def _register(db, *, tenant_id="eng", owner=OWNER, repo=REPO, created_by="alice@saga.xyz") -> str:
+def _register(db, *, tenant_id="eng", owner=OWNER, repo=REPO, created_by="alice@example.com") -> str:
     repo_id = repo_id_for(tenant_id, owner, repo)
     db.docs[f"repositories/{repo_id}"] = {
         "repo_id": repo_id, "tenant_id": tenant_id, "forge": "github",
@@ -272,7 +272,7 @@ def test_the_tenants_exclusion_list_skips_by_number_and_by_label():
 def _stored_run(state: RunState, *, number=42, updated=None, wrote=None, run_id="run_prev"):
     at = updated or NOW - timedelta(hours=2)
     return issueruns.IssueRun(
-        id=run_id, tenant_id="eng", created_by="alice@saga.xyz", created_at=at, updated_at=at,
+        id=run_id, tenant_id="eng", created_by="alice@example.com", created_at=at, updated_at=at,
         state=state, issue=IssueRef(owner=OWNER, repo=REPO, number=number),
         plan_approval="auto", auto_merge=True, fix_rounds=2, planner_task_id="t1",
         last_writeback_at=wrote,
@@ -411,11 +411,11 @@ def test_a_repository_with_more_open_pull_requests_than_one_read_is_not_swept(cl
 
 
 def test_a_repository_the_token_cannot_read_is_reported_and_the_rest_swept(client, db, github):
-    _register(db, owner="saga-xyz", repo="gadgets")
+    _register(db, owner="example-org", repo="gadgets")
     github.status = {"/gadgets/issues": 403}
     started, report = _collect(client)
     assert started == [f"{REPOSITORY}#42"]
-    assert report.failures == [{"repository": "saga-xyz/gadgets", "error": "no_access"}]
+    assert report.failures == [{"repository": "example-org/gadgets", "error": "no_access"}]
 
 
 # --------------------------------------------------------------------------

@@ -304,6 +304,9 @@
    workflow and the × share the line and nothing else fits beside them. */
 .wf-inspect-head > .wf-inspect-wf { flex: 1 1 calc(100% - 28px - var(--ctl-s2)); }
 .wf-inspect-head > .wf-inspect-close { flex: none; align-self: flex-start; }
+/* The step's Logs link (QA-121) is drawn as its neighbours, Open agent and
+   Changes, are: the head's meta size in the body face. */
+.wf-inspect-head > .wf-inspect-logs { font: var(--t-meta)/var(--lh-meta) var(--font); }
 
 /* THE INTEGRATOR'S WHOLE ID, CUT ONLY WHERE THE ROW IS NARROWER THAN IT
    (V102). The text is the whole id now; this is what keeps a phone's row from
@@ -322,6 +325,16 @@
   margin-top: var(--ctl-s3);
 }
 .wf-inspect-acts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
+/* WHY A FAILED STEP FAILED, WHOLE (visual QA QA-120). The node's note is one
+   ellipsed line because the layout measured one; the card is where the text
+   is read in full, so it wraps -- every line of the error, breaking even a
+   path with no spaces -- and is never cut. */
+.wf-inspect-cause { display: grid; gap: var(--ctl-s1); }
+.wf-inspect-cause > b { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.wf-inspect-cause-text {
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
 .wf-scrub-more { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 /* ◀ position ▶ as one unit that never wraps (browser QA D30); the shape after
    it shrinks and is cut, whole in its title. */

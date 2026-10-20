@@ -893,6 +893,30 @@ describe('visual QA (VQA-L06)', () => {
     expect(visible(document.querySelector('[data-rule="D9"]'))).toContain('GitHub itself would let the push through')
   })
 
+  it('QA-067: on a phone each folded rule is a legible row: a body-size headline, a marker that reads, a hairline between', async () => {
+    // At 390 px the three rules were micro-size headlines behind a ~6 px ▸ in
+    // 44 px rows with nothing between them: three lines of empty spacing.
+    media(true)
+    api()
+    await mount()
+    const rules = document.querySelector<HTMLElement>('.ac-rules.is-folded')!
+    const items = [...rules.querySelectorAll<HTMLElement>(':scope > li')]
+    expect(items.length).toBe(3)
+    for (const li of items) {
+      const s = li.querySelector<HTMLElement>('summary')!
+      // MUTATION: drop the summary's `font-size: var(--t-body)` -- the headline is micro text again.
+      expect(painted(s, ['font-size', 'font'], PHONE)).toBe('var(--t-body)')
+      // MUTATION: put the marker back at `width: 1em` of micro text (~6 px).
+      expect(painted(s, 'width', PHONE, 'before')).toBe('20px')
+      // MUTATION: drop the marker's `font-size: var(--t-lead)`.
+      expect(painted(s, 'font-size', PHONE, 'before')).toBe('var(--t-lead)')
+      // MUTATION: drop the row's hairline -- the 44 px rows read as gaps again.
+      expect(painted(li, ['border-top', 'border'], PHONE)).toMatch(/^1px solid var\(--line\)$/)
+      // MUTATION: drop the explanation's indent, so it no longer hangs under its headline.
+      expect(painted(li.querySelector('details > p')!, ['margin', 'margin-left'], PHONE)).toBe('0 0 10px 26px')
+    }
+  })
+
   it('V122: on a desktop the policy is the whole list, unfolded', async () => {
     media(false)
     api()

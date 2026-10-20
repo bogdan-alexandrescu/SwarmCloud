@@ -58,11 +58,14 @@ variable "services" {
     service_account_email = string
     image                 = string
     max_instances         = number
-    cpu                   = optional(string, "1")
-    memory                = optional(string, "512Mi")
-    concurrency           = optional(number, 80)
-    request_timeout       = optional(string, "300s")
-    env                   = optional(map(string), {})
+    # A warm floor. 0 -- scale to zero -- for every service that does not set
+    # it; a service that does pays for these instances around the clock.
+    min_instances   = optional(number, 0)
+    cpu             = optional(string, "1")
+    memory          = optional(string, "512Mi")
+    concurrency     = optional(number, 80)
+    request_timeout = optional(string, "300s")
+    env             = optional(map(string), {})
     # Environment variables read from Secret Manager at instance start: name ->
     # { secret id, version }. The VALUE never passes through terraform -- only
     # the reference does -- so it is never in a plan or the state (a managed
@@ -105,6 +108,11 @@ variable "services" {
   validation {
     condition     = alltrue([for k, v in var.services : v.max_instances > 0 && v.max_instances <= 1000])
     error_message = "max_instances must be explicit and between 1 and 1000; an unbounded control plane can outscale its own database."
+  }
+
+  validation {
+    condition     = alltrue([for k, v in var.services : v.min_instances >= 0 && v.min_instances <= v.max_instances])
+    error_message = "min_instances must be between 0 and the service's max_instances: a floor above the ceiling is a revision Cloud Run refuses at deploy."
   }
 
   # allAuthenticatedUsers stays forbidden. It means every Google account on

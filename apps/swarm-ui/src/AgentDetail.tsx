@@ -16,6 +16,7 @@ import { AttemptDurations } from './charts/AttemptPhases'
 import { CheckpointStrip } from './charts/CheckpointStrip'
 import { DiffstatChart } from './charts/Diffstat'
 import { PeakMemoryChart } from './charts/PeakMemory'
+import { UtilisationPanel } from './UtilisationPanel'
 import { TokenSpendChart } from './charts/TokenSpend'
 import { agentName, workflowHref } from './agentlist'
 import { resultIsNewest, stepCostOf, totalCostOf } from './dag'
@@ -445,7 +446,7 @@ export function Run({
       <QuestionsCard task={task} />
       <DecisionCard task={task} readAt={readAt} />
       {lead === 'failed' ? (
-        <DtFailure run={run} links={links} lastLine={lastLine} />
+        <DtFailure run={run} lastLine={lastLine} />
       ) : lead === 'outcome' ? (
         <Output run={run} readAt={readAt} links={links} lead={{ now, listing, links, lastLine, checkpoints }} />
       ) : (
@@ -824,7 +825,7 @@ function DtNow({
  * the whole error -- never truncated, it is the reason the page was opened --
  * then the last thing it logged.
  */
-function DtFailure({ run, links, lastLine }: { run: AgentRun; links: DetailLinks | undefined; lastLine: ReactNode }) {
+function DtFailure({ run, lastLine }: { run: AgentRun; lastLine: ReactNode }) {
   const { task } = run
   const cause = endCauseOf(task)
   const summary = (task.result_summary ?? null) as ResultSummary | null
@@ -851,18 +852,24 @@ function DtFailure({ run, links, lastLine }: { run: AgentRun; links: DetailLinks
     // A CANCEL IS NOT A FAILURE: it leads the same way, on the neutral rule,
     // so an operator's own Stop does not read as the platform's fault.
     <section className={`dt-card dt-now ${task.state === 'CANCELLED' ? 'is-neu' : 'is-bad'}`} data-lead={requested ? 'cancelled' : 'failed'}>
+      {/* NO `Attempts ›` HERE (QA-115). The Progress card under the strip
+          links the same tab, so the page offered two links to one place. */}
       <DtCardHead title={heading}>
-        <DtMore href={tabHref(task, 'attempts')} onClick={links?.attempts}>
-          Attempts
-        </DtMore>
         <HelpCard topic="attempt-documents" />
       </DtCardHead>
       <p className="dt-nfs">
         {cause !== null ? (
           <span className="dt-chip">{cause}</span>
         ) : (
-          <span className="dt-nf is-absent" title="This API wrote no end cause on the task, so why it ended is only what the error below says.">
-            end cause — not recorded
+          // THE ABSENCE SAYS WHERE TO LOOK (QA-115). `end cause — not
+          // recorded` named the gap and stopped; what the task did write
+          // is the reason below it, when there is one.
+          <span className="dt-nf is-absent" title="This API wrote no end cause on the task, so why it ended is only what the text below says.">
+            {requested
+              ? 'no end cause recorded · the stop request below is why'
+              : text
+                ? 'no end cause recorded · the error below is what it wrote'
+                : 'no end cause recorded'}
           </span>
         )}
         {anythingRan(task, run.attempts) ? (
@@ -1648,6 +1655,13 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
         </div>
       ))}
       <p className="dt-note">{note}</p>
+      {/* USE OVER TIME, NOT ONLY THE PEAK (LIVE-UTIL-UI; part of #1689). The
+          rows above are the attempt's peak and mean, which the owner found
+          "always show maximum"; this is CPU and memory per 5 s window of the
+          newest attempt, against its limits, with the throttled windows
+          shaded. It reads its own route, on its own clock while the task
+          runs, and stops once it is finished. */}
+      <UtilisationPanel taskId={task.id} live={!TERMINAL_STATES.has(task.state)} />
       <details className="dt-disc">
         <summary>Details: memory, spend and each attempt over time</summary>
         <Attempts run={run} now={now} />

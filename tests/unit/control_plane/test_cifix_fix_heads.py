@@ -42,7 +42,7 @@ from .test_ci_fix_postback import (  # noqa: F401 - fixtures
     tenant_tokens,
 )
 
-REPOSITORY = "saga-xyz/widgets"
+REPOSITORY = "example-org/widgets"
 
 
 def _round_payload(continues: str, key: str) -> dict[str, Any]:

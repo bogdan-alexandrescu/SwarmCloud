@@ -22,6 +22,10 @@
 /* ---- page head: the canonical `PageHead` (.c-phead), as on every page ---- */
 .ov-page > .c-phead { margin: 0; }
 .ov-tally .sk-st { margin-right: 4px; }
+/* The count note's two units (QA-060): neither breaks inside itself, so the
+   `?` stays with "7/8 reads" and the tenant id stays whole. */
+.ov-scope,
+.ov-tally { white-space: nowrap; }
 .ov-num { font-variant-numeric: tabular-nums; }
 .ov-reading { color: var(--text-faint); }
 
@@ -309,9 +313,15 @@
      line. The page is a two-column grid on a phone: the note on the left of
      the first row, the head's actions on its right, every other region
      across both columns in source order. */
-  .ov-page { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+  /* `baseline`, not `center` (QA-060, 2026-10-20): where the note takes two
+     lines the refresh sits on its first, not floating between the two. */
+  .ov-page { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; }
   .ov-page > * { grid-column: 1 / -1; min-width: 0; }
   .ov-page > .c-count-note { grid-column: 1; grid-row: 1; margin: 0; }
+  /* THE NOTE BREAKS BETWEEN ITS UNITS, AND DROPS ITS DOT TO DO IT (QA-060):
+     the tenant and the tally are flex items, the gap is their separator. */
+  .ov-page > .c-count-note { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; }
+  .ov-page > .c-count-note .ov-sep { display: none; }
 }
 @media (max-width: 560px) {
   /* RECENT FAILURES BEFORE HEADROOM AND THE POOLS (QA G1-07, 2026-10-07):
@@ -333,6 +343,15 @@
      wraps and the link drops under them, at the right edge. */
   .ov-att { flex-wrap: wrap; }
   .ov-att-go { flex-basis: 100%; text-align: right; }
+  /* THE DETAIL IS READABLE BEFORE IT IS CUT (visual QA QA-100, 2026-10-20).
+     With the link on a line of its own the text has the card's width, and a
+     failure card's detail -- "Terminal: nothing will retry them. 1 used
+     every attempt; ..." -- was still cut to the one line its ids line left
+     it on a desktop, a reason with no reason in it. On a phone it runs to
+     four lines, beside an ids line or not; the ids stay one cut line. */
+  .ov-att-t small,
+  .ov-att-t small.is-one { -webkit-line-clamp: 4; }
+  .ov-att-t small.ov-att-ids { -webkit-line-clamp: 1; }
   /* Three across, the figure only: the per-state breakdown is the desktop's. */
   .ov-life { gap: 6px; border: 0; background: none; overflow: visible; }
   .ov-lc { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 7px 8px; gap: 0; }

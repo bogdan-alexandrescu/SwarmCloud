@@ -2,7 +2,7 @@
 `/v1/tenants` (docs/design/workspace-roles.md §4.2.4, §4.3, §4.6, §4.9;
 lane ROLES-API-CORE, part of #1518).
 
-Who is who, in eng (`eng@saga.xyz`) unless said otherwise:
+Who is who, in eng (`eng@example.com`) unless said otherwise:
 
 * `alice`, `bob` -- members, no grant (so `member`, the migration default);
 * `root` -- a platform admin who is ALSO a member of eng;
@@ -39,12 +39,12 @@ from .conftest import ADMIN_GROUP, ENG_GROUP, RESEARCH_GROUP, NoForgeTokens, api
 from .test_roles_store import Clock, Recording
 
 GROUPS = {
-    "alice@saga.xyz": (ENG_GROUP,),
-    "bob@saga.xyz": (ENG_GROUP,),
-    "root@saga.xyz": (ADMIN_GROUP, ENG_GROUP),
-    "ops@saga.xyz": (ADMIN_GROUP,),
-    "carol@saga.xyz": (),
-    "dave@saga.xyz": (ENG_GROUP, RESEARCH_GROUP),
+    "alice@example.com": (ENG_GROUP,),
+    "bob@example.com": (ENG_GROUP,),
+    "root@example.com": (ADMIN_GROUP, ENG_GROUP),
+    "ops@example.com": (ADMIN_GROUP,),
+    "carol@example.com": (),
+    "dave@example.com": (ENG_GROUP, RESEARCH_GROUP),
 }
 SERVICE_ACCOUNT = "robot@proj-123456" + ".iam.gserviceaccount.com"
 ADMIN_SWITCH = "REFUSAL_ROLE_ADMIN_REQUIRED"
@@ -76,7 +76,7 @@ def clock() -> Clock:
 @pytest.fixture
 def app_ctx(db, clock):
     tokens = {f"token-{e.split('@')[0]}": {"email": e, "email_verified": True,
-                                           "sub": f"sub-{e}", "hd": "saga.xyz"}
+                                           "sub": f"sub-{e}", "hd": "example.com"}
               for e in GROUPS}
     return build_context(
         settings=api_settings(platform_admin_reach=True, settings_key=secrets.token_hex(32)),
@@ -150,7 +150,7 @@ def audit_rows(db, action: str) -> list[dict]:
     return [r for r in db.dump("admin_audit/").values() if r["action"] == action]
 
 
-def name_admin(client, who: str = "alice@saga.xyz", tenant: str = "eng") -> None:
+def name_admin(client, who: str = "alice@example.com", tenant: str = "eng") -> None:
     response = client.put(f"/v1/admin/workspaces/{tenant}/roles/person", headers=h("ops"),
                           json={"email": who, "role": "admin"})
     assert response.status_code == 200, response.text
@@ -169,7 +169,7 @@ def test_a_member_putting_a_person_is_403_and_writes_nothing(client, db, monkeyp
     monkeypatch.delenv(ADMIN_SWITCH, raising=False)
     before = roles_state(db)
     response = client.put("/v1/workspace/roles/person", headers=h("alice"),
-                          json={"email": "bob@saga.xyz", "role": "viewer"})
+                          json={"email": "bob@example.com", "role": "viewer"})
     assert response.status_code == 403, response.text
     body = response.json()
     assert body["code"] == "role_admin_required"
@@ -184,26 +184,26 @@ def test_a_workspace_admin_named_by_a_platform_admin_grants_and_revokes(client, 
     named = audit_rows(db, "workspace_role_granted")
     assert len(named) == 1
     assert named[0]["detail"]["via"] == "platform_admin"
-    assert named[0]["target_email"] == "alice@saga.xyz"
+    assert named[0]["target_email"] == "alice@example.com"
 
     clock.tick(seconds=1)
     put = client.put("/v1/workspace/roles/person", headers=h("alice"),
-                     json={"email": "bob@saga.xyz", "role": "viewer", "reason": "audit"})
+                     json={"email": "bob@example.com", "role": "viewer", "reason": "audit"})
     assert put.status_code == 200, put.text
     assert put.json() | {"granted_at": None} == {
-        "email": "bob@saga.xyz", "role": "viewer", "previous_role": "member",
+        "email": "bob@example.com", "role": "viewer", "previous_role": "member",
         "source": "override", "granted_at": None, "member": True}
 
     listed = client.get("/v1/workspace/roles", headers=h("bob")).json()
     assert listed["me"]["role"] == "viewer" and listed["me"]["source"] == "override"
     assert listed["can_manage"] is False
     assert {p["email"]: p["role"] for p in listed["people"]} == {
-        "alice@saga.xyz": "admin", "bob@saga.xyz": "viewer"}
+        "alice@example.com": "admin", "bob@example.com": "viewer"}
     assert [e["action"] for e in listed["audit"]][:2] == ["workspace_role_granted"] * 2
 
     clock.tick(seconds=1)
     cleared = client.request("DELETE", "/v1/workspace/roles/person", headers=h("alice"),
-                             json={"email": "bob@saga.xyz"})
+                             json={"email": "bob@example.com"})
     assert cleared.status_code == 200, cleared.text
     assert cleared.json()["role"] == "member"
     assert len(audit_rows(db, "workspace_role_cleared")) == 1
@@ -234,7 +234,7 @@ def test_a_default_of_viewer_applies_and_a_repeat_is_unchanged(client, db, clock
 def test_a_personal_workspace_write_is_409(client, db):
     before = roles_state(db)
     response = client.put("/v1/workspace/roles/person", headers=h("carol"),
-                          json={"email": "bob@saga.xyz", "role": "viewer"})
+                          json={"email": "bob@example.com", "role": "viewer"})
     assert response.status_code == 409, response.text
     assert response.json()["code"] == "personal_workspace_roles_fixed"
     assert roles_state(db) == before
@@ -259,7 +259,7 @@ def test_a_service_account_is_403_role_person_required(client, db):
 
 def test_an_unknown_role_is_422(client):
     response = client.put("/v1/workspace/roles/person", headers=h("root"),
-                          json={"email": "bob@saga.xyz", "role": "owner"})
+                          json={"email": "bob@example.com", "role": "owner"})
     assert response.status_code == 422 and response.json()["code"] == "unknown_role"
 
 
@@ -270,7 +270,7 @@ def test_a_write_and_its_audit_row_commit_together(client, db, monkeypatch):
     monkeypatch.setattr(roles.RoleStore, "audit_row", staticmethod(fail))
     before = roles_state(db)
     response = client.put("/v1/workspace/roles/person", headers=h("root"),
-                          json={"email": "bob@saga.xyz", "role": "viewer"})
+                          json={"email": "bob@example.com", "role": "viewer"})
     assert response.status_code == 500
     assert roles_state(db) == before  # neither the grant nor its row
 
@@ -279,7 +279,7 @@ def test_no_signing_key_is_503_and_writes_nothing(client, app_ctx, db, monkeypat
     monkeypatch.setattr(app_ctx.roles, "_settings", replace(app_ctx.settings, settings_key=""))
     before = roles_state(db)
     response = client.put("/v1/workspace/roles/person", headers=h("root"),
-                          json={"email": "bob@saga.xyz", "role": "viewer"})
+                          json={"email": "bob@example.com", "role": "viewer"})
     assert response.status_code == 503 and response.json()["code"] == "role_signing_unavailable"
     assert roles_state(db) == before
 
@@ -287,23 +287,23 @@ def test_no_signing_key_is_503_and_writes_nothing(client, app_ctx, db, monkeypat
 def test_a_reason_is_redacted_before_it_is_written(client, db):
     pasted = "ghp_" + secrets.token_hex(18)
     response = client.put("/v1/workspace/roles/person", headers=h("root"),
-                          json={"email": "bob@saga.xyz", "role": "viewer",
+                          json={"email": "bob@example.com", "role": "viewer",
                                 "reason": f"pasted {pasted}"})
     assert response.status_code == 200, response.text
     assert pasted not in repr(db.dump())
 
 
 def test_the_platform_admin_can_read_one_persons_roles_across_workspaces(client):
-    narrow(client, "dave@saga.xyz")
+    narrow(client, "dave@example.com")
     response = client.get("/v1/admin/roles/person", headers=h("ops"),
-                          params={"email": "dave@saga.xyz"})
+                          params={"email": "dave@example.com"})
     assert response.status_code == 200, response.text
     (entry,) = response.json()["workspaces"]
     assert (entry["tenant_id"], entry["role"], entry["granted_via"]) == (
         "eng", "viewer", "platform_admin")
     assert entry["key"]
     assert client.get("/v1/admin/roles/person", headers=h("alice"),
-                      params={"email": "dave@saga.xyz"}).status_code == 403
+                      params={"email": "dave@example.com"}).status_code == 403
 
 
 # -- the platform-admin audit (§4.2.4, Q12) ---------------------------------------
@@ -315,7 +315,7 @@ def test_a_non_member_platform_admins_post_is_audited_before_the_body(client, db
     (row,) = audit_rows(db, "platform_admin_acted")
     # Written BEFORE the route body ran: the body saw it.
     assert probe_calls == [[row]]
-    assert row["target_tenant_id"] == "eng" and row["by"] == "ops@saga.xyz"
+    assert row["target_tenant_id"] == "eng" and row["by"] == "ops@example.com"
     assert row["detail"] == {"method": "POST", "route": "/v1/probe/{thing_id}",
                              "path_params": {"thing_id": "p-1"}, "via": "platform_admin",
                              "reach": "non_member"}
@@ -362,7 +362,7 @@ def test_a_member_platform_admin_whose_role_is_enough_writes_none(client, db, pr
 
 
 def test_a_member_platform_admin_narrowed_to_viewer_is_audited(client, db, probe_calls):
-    narrow(client, "root@saga.xyz")
+    narrow(client, "root@example.com")
     response = client.post("/v1/probe/p-1", headers=h("root"), json={"x": SENTINEL})
     assert response.status_code == 200
     (row,) = audit_rows(db, "platform_admin_acted")
@@ -384,7 +384,7 @@ def test_a_member_platform_admin_narrowed_to_viewer_is_audited(client, db, probe
 
 
 def test_a_narrowed_member_platform_admins_audit_failure_is_503(client, db, probe_calls):
-    narrow(client, "root@saga.xyz")
+    narrow(client, "root@example.com")
     tasks_before = db.paths("tasks/")
     db.broken.add("admin_audit")
     response = client.post("/v1/probe/p-1", headers=h("root"), json={})
@@ -420,7 +420,7 @@ def test_a_member_platform_admin_a_grant_holds_at_member_is_audited_on_admin_wri
     platform admin, so it is a `platform_admin_acted` row before the route
     runs (§4.2.4: "the grant alone would have refused this route")."""
     if held_by == "override":
-        narrow(client, "root@saga.xyz", "member")
+        narrow(client, "root@example.com", "member")
     else:
         # A `*` grant of `member` (written as viewer then back: `member` on
         # no grant at all is 409 role_unchanged).
@@ -432,7 +432,7 @@ def test_a_member_platform_admin_a_grant_holds_at_member_is_audited_on_admin_wri
     clock.tick(seconds=1)
     response = client.post("/v1/probe/p-1", headers=h("root"), json={"x": SENTINEL})
     assert response.status_code == 200, response.text
-    (row,) = [r for r in audit_rows(db, "platform_admin_acted") if r["by"] == "root@saga.xyz"]
+    (row,) = [r for r in audit_rows(db, "platform_admin_acted") if r["by"] == "root@example.com"]
     assert probe_calls == [[r for r in db.dump("admin_audit/").values()
                             if r["action"].startswith("platform_admin_")]]
     assert row["target_tenant_id"] == "eng"
@@ -444,14 +444,14 @@ def test_a_member_platform_admin_a_grant_holds_at_member_is_audited_on_admin_wri
                        ).status_code in (200, 201, 202)
     assert client.get("/v1/probe/p-1", headers=h("root")).status_code == 200
     assert [r for r in db.dump("admin_audit/").values()
-            if r["action"].startswith("platform_admin_") and r["by"] == "root@saga.xyz"] \
+            if r["action"].startswith("platform_admin_") and r["by"] == "root@example.com"] \
         == [row]
     assert SENTINEL not in repr(db.dump("admin_audit/"))
 
 
 def test_a_member_platform_admin_held_at_member_whose_audit_fails_is_503(
         client, db, admin_probe, probe_calls):
-    narrow(client, "root@saga.xyz", "member")
+    narrow(client, "root@example.com", "member")
     db.broken.add("admin_audit")
     response = client.post("/v1/probe/p-1", headers=h("root"), json={})
     assert response.status_code == 503
@@ -460,10 +460,10 @@ def test_a_member_platform_admin_held_at_member_whose_audit_fails_is_503(
 
 
 def test_a_member_platform_admin_granted_admin_writes_none(client, db, admin_probe, probe_calls):
-    narrow(client, "root@saga.xyz", "admin")
+    narrow(client, "root@example.com", "admin")
     assert client.post("/v1/probe/p-1", headers=h("root"), json={}).status_code == 200
     assert [r for r in audit_rows(db, "platform_admin_acted")
-            if r["by"] == "root@saga.xyz"] == []
+            if r["by"] == "root@example.com"] == []
 
 
 def test_a_route_naming_its_workspace_is_audited_against_that_workspace(client, db):
@@ -479,7 +479,7 @@ def test_a_route_naming_its_workspace_is_audited_against_that_workspace(client, 
 
 
 def test_a_non_platform_admin_is_never_audited(client, db):
-    narrow(client, "bob@saga.xyz")
+    narrow(client, "bob@example.com")
     assert client.post("/v1/probe/p-1", headers=h("bob"), json={}).status_code == 200
     assert [r for r in db.dump("admin_audit/").values()
             if r["action"].startswith("platform_admin_")] == []
@@ -488,7 +488,7 @@ def test_a_non_platform_admin_is_never_audited(client, db):
 # -- /v1/tenants ------------------------------------------------------------------
 
 def test_tenants_mine_carries_role_and_via(client):
-    narrow(client, "dave@saga.xyz")
+    narrow(client, "dave@example.com")
     dave = {e["tenant_id"]: e for e in client.get("/v1/tenants/mine", headers=h("dave")).json()}
     assert dave["eng"]["via"] == "member"
     assert dave["eng"]["role"] == {"name": "viewer", "source": "override"}
@@ -532,8 +532,8 @@ def test_credentials_by_a_member_are_403_with_the_switch_on(client, monkeypatch)
     # And the 403 names whom to ask.
     refused = credential(client, "bob")
     assert refused.status_code == 403
-    assert refused.json()["detail"]["admins"] == ["alice@saga.xyz"]
-    assert "alice@saga.xyz" in refused.json()["message"]
+    assert refused.json()["detail"]["admins"] == ["alice@example.com"]
+    assert "alice@example.com" in refused.json()["message"]
     assert credential(client, "root").status_code == 201
     assert credential(client, "carol").status_code == 201
 
@@ -557,7 +557,7 @@ def test_a_failed_role_read_leaves_the_role_field_out(client, db):
 
 
 def test_a_viewer_reads_the_roster(client):
-    narrow(client, "bob@saga.xyz")
+    narrow(client, "bob@example.com")
     response = client.get("/v1/workspace/roles", headers=h("bob"))
     assert response.status_code == 200
     body = response.json()

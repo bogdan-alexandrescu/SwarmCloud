@@ -38,7 +38,7 @@ from swarm_api.waker import NullWaker
 from .conftest import NoForgeTokens, api_settings, auth_header, seed_tenant
 from .fakes import FakeFirestore
 
-ALICE = "alice@saga.xyz"
+ALICE = "alice@example.com"
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 
 #: Key names that may never appear anywhere in the response (§4.2).

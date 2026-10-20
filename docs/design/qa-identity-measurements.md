@@ -718,22 +718,63 @@ finally:
 json.dump(out, sys.stdout, indent=2)
 ```
 
-## M1, M2, M4: not measured here
+## M1, M2, M4: measured by the operator (2026-10-20)
 
-M1, M2 and M4: not measured here. The operator measures them with the QA
-account after the owner's bootstrap apply (O2), as decided on 2026-10-19
-(#1649). They need the QA account, a signed JWT and the deployed front door,
-and this lane holds none of them.
+Run by the operator on the owner's approval. Each run used a temporary
+`swarmQaJwtSigner` grant for the operator on the QA account alone, added for
+the measurement and removed when it finished (06:12:33 to 06:14:12Z for the
+second run). The account's own policy was then re-read: swarm-api alone holds
+the role. The JWT was held in a 0700 temporary directory and never printed.
+Each probe reports only the HTTP status, and whether IAP or the application
+answered (`x-goog-iap-generated-response`).
 
-Two things from the measurements above change what the operator measures:
+### M1: IAP accepts a JWT signed as the QA account (PASSES)
 
-* **M3 is "no", so M1 and M2 use `Authorization: Bearer`, not
-  `Proxy-Authorization`.** M1's JWT goes in `Authorization`. M2 must then show two
-  things: that swarm-api ignores an `Authorization` header when an IAP
-  assertion is present (§4.9, M3), and whether IAP passes the header
-  through, which decides the audit of routes that echo a request.
-* **The https gap no longer waits on M1.** ["M3 over https"](#m3-over-https-2026-10-20)
-  shows the image's Chromium sends an `Authorization` added by
-  `Fetch.continueRequest` over TLS with a valid certificate. M1's first
-  request still shows it against the console's own front door, where IAP,
-  not an echo, is what reads the header.
+| request, JWT `aud` `https://swarm.saga.xyz/*`, 15-minute `exp` | 02:26Z, account `swarm-qa`, no workspace yet | 06:12Z, account `qa-console`, workspace ready |
+|---|---|---|
+| `GET /`, `Proxy-Authorization: Bearer` | 200, the app | 200, the app |
+| `GET /v1/tenants/me`, `Proxy-Authorization: Bearer` | 403, the app (no workspace) | 200, the app |
+| `GET /v1/tenants/me`, `Authorization: Bearer` (the header the gate will use, M3) | 403, the app | 200, the app |
+| the same JWT as a bearer to Cloud Resource Manager `projects.get` | 401 | 401 |
+| control: a JWT with `aud` `https://other.example.com/*` | 401, IAP | 401, IAP |
+| control: no header | 302, IAP sign-in | 302, IAP sign-in |
+
+IAP admits a service-account JWT in either header, refuses another audience,
+and the JWT is useless at a Google API.
+
+### M4: the console resolves the QA account to its own workspace (PARTLY)
+
+06:14Z, account `qa-console`, with its service workspace `w-267d01` ready
+as tenant `u-qa-b260e6`. No `X-Swarm-Tenant` header was sent.
+
+- `GET /v1/tenants/me` returns 200 with tenant `u-qa-b260e6`. A request that
+  names no workspace acts in the QA workspace.
+- `GET /v1/tenants/mine` returns 200 with an **empty list**. The route serves
+  `AuthContext.tenant_choices`: a person's personal workspace and their
+  registered groups. A service account's own workspace is the default
+  (`Authenticator._with_own_service_tenant`) but is never listed. The
+  console's workspace switcher would show the QA account nothing. QI-API
+  decides how it is listed (this design, §4.9 M4).
+
+### M2: not measured before the build (owner, 2026-10-20)
+
+Nothing on swarm-api shows request headers. QI-API builds as if IAP passes the
+header through, and logs `authorization_present` and
+`proxy_authorization_present` (presence only, never the value). M2 is recorded
+from that log after QI-API deploys.
+
+### How the QA workspace was made (O3)
+
+- Admin › Tenants › New workspace › Service for
+  `qa-console@saga-agents-staging.iam.gserviceaccount.com`, 2026-10-20 04:31Z.
+  It was approved at submission, because the operator acted as the platform
+  owner's account.
+- Setup did A1 to A8, then held at S2 with `FRONT_DOOR_OWNER`: the setup job
+  could not read the API backend's IAP policy.
+- After the owner applied the read-only `swarmFrontDoorReader` binding on that
+  backend (PR 1687, applied 06:09Z), the retried run logged "front door:
+  swarm-ui-backend already admits the account", passed A9, and the workspace
+  was `ready` at 06:11Z.
+- This contradicts the 2026-09-24 note in terraform/modules/frontend/main.tf,
+  where `roles/iap.admin` bound on the backend still answered 403: a
+  backend-level grant of `iap.webServices.getIamPolicy` works today.

@@ -667,6 +667,11 @@ body {
   min-width: 0;
   overflow: auto;
   scroll-padding-bottom: var(--ctl-s3);
+  /* THE STICKY BAR IS NOT "IN VIEW" (QAFIX-HELP QA-022, part of #1680): a
+     control focused or scrolled into view stopped under `.ctl-bar`, which
+     covered the first Tab stop. `--ctl-bar-h` is the bar's height, 0 where
+     none is drawn (notifications.css), so a page without one keeps its top. */
+  scroll-padding-top: var(--ctl-bar-h, 0px);
 }
 /* THE GRID MOVED INTO THE CONTENT COLUMN (#503). The frame was the two-row
    grid, so the dock ran the full width of the window -- under the spine and
@@ -2248,8 +2253,16 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
   color: var(--text-faint) !important;
 }
 
+/* A REFRESH THAT CANNOT BE PRESSED YET KEEPS ITS INK (QA-004, 2026-10-20).
+   It is disabled while the first read is in flight (`⟳ reading…`) and while a
+   429 holds the poll (`paused 30 s`), which every page shows on every first
+   read. An `opacity: .5` here halved `--text-dim` to 2.2:1 in light and 3.0:1
+   in dark; the words are a reading the person needs, so they stay at full
+   strength and only the cursor says the press is not available. The `1` is
+   stated, not merely left out: every head sits inside `.app`, whose
+   `:where(.app button:disabled)` fades any disabled button to .45. */
 .c-refresh[disabled] {
-  opacity: .5;
+  opacity: 1;
   cursor: not-allowed;
 }
 
@@ -2816,6 +2829,26 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    a card per attempt, sub-blocks inside it. `--ctl-s3` between cards is the
    region step; nothing here changes the card's own chrome. */
 .att-card + .att-card { margin-top: var(--ctl-s3); }
+/* AN ATTEMPT CARD AT 390 (QA-113, visual QA 2026-10-20). The facts strip
+   wrapped as one ragged line -- `attempt att_… lease lse_… execution …` with
+   each key at the far end of the line its value started on -- and an event
+   row broke wherever its gap, generation and badges ran out of room. On a
+   phone the facts are one per line, and an event's word takes its own line
+   with the gap, the generation and the badges under it. */
+@media (max-width: 560px) {
+  .att-card .ctl-card-body > .ctl-facts { flex-direction: column; align-items: stretch; }
+  .att-card .ctl-card-body > .ctl-facts > .ctl-fact > .mono { min-width: 0; overflow-wrap: anywhere; }
+  .att-card ol.timeline > li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px var(--ctl-s2);
+  }
+  .att-card ol.timeline > li > .ev-type { flex: 1 0 100%; }
+  .att-card ol.timeline > li > .ev-at,
+  .att-card ol.timeline > li > .ev-gen { margin-left: 0; }
+  .att-card ol.timeline > li > .ev-more { flex: 1 0 100%; }
+}
 /* A sub-block's eyebrow and its qualifier on one line. `.ctl-toolbar`'s own
    32px minimum is for a row of controls; a label row does not need it. */
 .att-sub-head { min-height: 0; margin-bottom: var(--ctl-s2); }
@@ -4753,6 +4786,9 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   color: var(--warn);
   border-right-style: dashed;
   border-right-width: 2px;
+  /* ROUND ON BOTH SIDES HERE. The squared dashed side (QA-049) is the
+     Accounts section's alone -- `.acct-page` / `.quota-page` in
+     styles/capacity.css -- by the owner's choice of 2026-10-20. */
 }
 /* NOT ENTITLED IS NOT BROKEN. Blue, solid, no dashes: a non-admin genuinely
    cannot read /v1/admin/*, and painting that as a failure tells someone their
@@ -6371,15 +6407,24 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    `min-height` rather than `height` on the line is what lets it grow. */
 .ctl-dock-facts { min-width: 0; }
 .ctl-dock-fact { white-space: nowrap; }
-/* ONE LINE ON A PHONE (U10a D39, owner QA at 390px, 2026-10-04): the strip
-   wrapped to two lines. F10 above is why it does not ELLIPSE -- the caveats
-   were what fell off -- so on a phone it drops the two facts that are not
-   caveats instead: the route count and the p95, both in the open dock's table.
-   What stays is `failed`, `admin-only` and the age, which fit at 390px
-   (Dock.tsx marks the two `is-wide`); it may still wrap between facts if
-   a longer age ever does not. */
+/* ONE LINE ON A PHONE (U10a D39, owner QA at 390px, 2026-10-04; SUPERSEDED
+   by QA-039 below): D39 hid the route count and the p95 on a phone to hold
+   one line. Nothing is hidden any more; the record stays so the trade is not
+   made again. */
+/* ALL FIVE FACTS ON A PHONE, SPACED RATHER THAN DOTTED (visual QA QA-039,
+   2026-10-20). D39 above dropped the route count and the p95 for one line,
+   and the strip still wrapped at 390px, with its ` · ` hanging at the end of
+   the first line. A separator that dangles where the line breaks says the
+   fact after it is missing. So on a phone the facts are flex items that wrap
+   between themselves, the gap is the separator, and every separator
+   (`.ctl-dock-sep`, inside the fact it follows) steps aside. Two lines are the
+   intended result at 390px: every fact, none dangling. `.ctl-dock-line` has a
+   `min-height` and no ceiling, so the bar grows to hold them. Wider, the line
+   is as it was. */
+.ctl-dock-sep { white-space: normal; }
 @media (max-width: 560px) {
-  .ctl-dock-fact.is-wide { display: none; }
+  .ctl-dock-facts { display: flex; flex-wrap: wrap; column-gap: 10px; row-gap: 0; }
+  .ctl-dock-sep { display: none; }
 }
 .ctl-dock-bad { color: var(--bad-ink); }
 .ctl-dock-caret { margin-left: auto; flex: none; color: var(--text-faint); }
@@ -6498,6 +6543,10 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 /* The checkpoint prefix is a path with no spaces in it, and it overflowed the
    drawer at every width. A path has nowhere to break but anywhere (AG-26). */
 .drawer code { overflow-wrap: anywhere; }
+/* ...but at its slashes first (QA-088): `PathText` in RunFiles.tsx draws each
+   segment of a path as one of these, so a line breaks between segments and
+   only a segment wider than the line breaks inside itself. */
+.path-seg { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
 
 /* -------------------------------------------------------------------------- */
 /* Dispatch: choosing how work gets merged, and reading back what was chosen    */
@@ -6583,15 +6632,17 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    single final step -- so it has no headline and no `.is-none` variant. */
 
 .dsp-repo { width: 100%; max-width: 520px; }
-.dsp-repo, .dsp select {
+.dsp-repo {
   background: var(--surface-2); color: var(--text);
   border: 1px solid var(--ctl-bd); border-radius: 6px; padding: 6px 8px;
 }
-.dsp-repo:focus-visible, .dsp select:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
-/* THE FIXED CARRIER (QA G4-28). A disabled select takes the UA's grey text,
-   which is below contrast in both themes; it is set in the muted token at
-   full strength, and the arrow cursor's "not allowed" says it cannot move. */
-.dsp select:disabled { color: var(--text-dim); opacity: 1; cursor: not-allowed; }
+.dsp-repo:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+/* THE FIXED CARRIER IS A VALUE, NOT A CONTROL (QA G4-28; QA-074, the owner's
+   choice of 2026-10-20). It was a disabled select, then one restyled to look
+   like text; now it is text: no fill, no edge, no chevron to explain away,
+   and no disabled combobox for a screen reader to announce. Body ink, as any
+   value; flush under its label, with no paragraph margin of its own. */
+.dsp-fixed { margin: 0; color: var(--text); }
 
 .dsp-facts { margin: 0; }
 /* The gap above each of the dispatch control's two labelled fields. It was an
@@ -9351,6 +9402,31 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   white-space: nowrap;
 }
 
+/* --- CPU and memory over time (charts/Utilisation.tsx, #1689) ------------- */
+/* Two series hues, each with its own plot and a legend swatch naming it (the
+   palette's rule for a multi-series chart). The limit is a dashed hairline in
+   the text tone, never a series hue: it is a ceiling, not a measurement. The
+   throttled wash is the warn tone at low opacity behind the lines, so it
+   reads in both themes without hiding them. Every colour here is a token
+   both themes define. */
+.ctl-util-line.is-cpu { stroke: var(--series-1); }
+.ctl-util-line.is-mem { stroke: var(--series-2); }
+.ctl-util-dot.is-cpu { fill: var(--series-1); }
+.ctl-util-dot.is-mem { fill: var(--series-2); }
+.ctl-util-limit {
+  stroke: var(--text-dim);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+.ctl-util-throttled { fill: var(--warn); opacity: .22; }
+.ctl-swatch.is-cpu { background: var(--series-1); }
+.ctl-swatch.is-mem { background: var(--series-2); }
+.ctl-swatch.is-limit {
+  height: 0;
+  border-top: 1px dashed var(--text-dim);
+}
+.ctl-swatch.is-throttled { background: var(--warn); opacity: .35; }
+
 /* --- Checkpoint strip ------------------------------------------------------- */
 .ctl-ckpt-track,
 .ctl-ckpt-divider {
@@ -10460,11 +10536,14 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
    /submit and its forms the spine lit Work and the panel lit Agents › Live,
    and Submit never read as where you are. App.tsx `spineOf` gives Submit no
    section; Spine.tsx marks the CTA `aria-current="page"`, and it carries the
-   section items' marker bar and a ring in the spine's ink.
+   section items' marker bar.
+   NO RING (QA-071, part of #1680): a white ring round the tile read as a
+   focus outline left behind, and no other lit item draws one. The lit Work
+   item is its tile and the bar; the CTA's tile is already lit, so the bar is
+   what says "you are here", exactly as on a section.
    The two colours are the spine's top and its sky line, written as values:
    the spine is one blue in both themes, and the tokens' names read as
    provider keys to the worker's publish scan. */
-.sk-ri.sk-cta[aria-current='page'] { box-shadow: 0 0 0 2px #0b3a7a, 0 0 0 4px #fff; }
 .sk-ri.sk-cta[aria-current='page']::before { content: ""; position: absolute; left: -15px; top: 10px; bottom: 10px; width: 3px; border-radius: 2px; background: #7cc8f8; }
 .sk-ri:focus-visible, .sk-pk:focus-visible, .sk-kid:focus-visible, .sk-ibtn:focus-visible { outline: 2px solid var(--sk-sky-line); outline-offset: 2px; }
 .sk-dot { position: absolute; top: 4px; right: 12px; width: 7px; height: 7px; border-radius: 50%; background: #f5c451; box-shadow: 0 0 0 2px var(--sk-spine-top); }
@@ -10518,7 +10597,10 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .sk-cnt.is-alert { color: var(--s-warn); font-weight: 600; }
 .sk-cnt.is-dash { color: var(--ctl-absent); cursor: help; }
-.sk-kids { margin: 2px 0 6px 38px; border-left: 1px solid var(--sk-ln); padding-left: 8px; display: flex; flex-direction: column; }
+/* THE SUB-LIST ENDS WHERE A ROW DOES (QA-055, part of #1680): a 0 right
+   margin ran the lit `.sk-kid` fill into the panel's border, where a lit
+   `.sk-pk` stops 10px short. */
+.sk-kids { margin: 2px 10px 6px 38px; border-left: 1px solid var(--sk-ln); padding-left: 8px; display: flex; flex-direction: column; }
 .sk-kid { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 5px 10px; border: 0; border-radius: var(--r-ctl); background: none; color: var(--text-dim); white-space: nowrap; cursor: pointer; font: var(--t-micro)/var(--lh-micro) var(--font); text-align: left; }
 .sk-kid:hover { background: var(--sk-hv); color: var(--text); }
 .sk-kid.is-on { color: var(--sk-ac); background: var(--sk-acs); font-weight: 600; }
@@ -10694,10 +10776,24 @@ span.sk-ttile { cursor: default; }
 .sk-top { display: none; }
 .sk-scrim { position: fixed; inset: 0; background: rgba(6, 16, 30, .5); z-index: 25; }
 @media (max-width: 759px) {
-  .sk-app { flex-direction: column; }
+  /* `--sk-pbar-h` IS THE PHONE HEADER'S HEIGHT, AND THE ONE PLACE IT IS SET
+     (QA-116, owner 2026-10-20: "Start under the header"). The header takes
+     its height from it and the open task (`.ag-split.ctl-drawer`,
+     agents.css) starts at its foot, so the two cannot drift, at 44px or
+     compacted to 36px (`is-scrolled`, below). On `.sk-app`, which holds both,
+     not on `:root`: it changes with the app's scroll state. Each use carries
+     a fallback for a reader of the sheet alone (spaceprobe.ts), as
+     `--ctl-bar-h` does (notifications.css). */
+  .sk-app { flex-direction: column; --sk-pbar-h: 44px; }
   /* Sticky as well as first in the column: the page scrolls in `.ctl-scroll`
      beneath it, and nothing can take the menu out of reach (#139). */
   .sk-pbar { display: flex; align-items: center; gap: 8px; padding: 0 12px; height: 44px; background: var(--sk-spine-top); color: #eef4fa; position: sticky; top: 0; z-index: 15; }
+  /* ITS HEIGHT IS `--sk-pbar-h`, and this overrides the 44px in the rule
+     above. That line cannot be edited: its spine-colour token reads as an
+     API key to the worker's publish scan (rules.py openai_key), so any
+     change re-adds it and the diff is refused. The fallback is never drawn:
+     `.sk-app` always holds the header. */
+  .sk-pbar { height: var(--sk-pbar-h, auto); }
   /* Eased so the compaction below is not a jump; reduced motion stops it. */
   .sk-pbar { transition: height 120ms ease-out; }
   .sk-pbar .sk-ibtn { color: #eef4fa; }
@@ -10761,8 +10857,9 @@ span.sk-ttile { cursor: default; }
   /* THE HEADER GIVES BACK ITS HEIGHT ON SCROLL (#139): 36px once the page is
      under it (`scrollBand` in Spine.tsx). The menu, the mark, the page, the
      tenant and the environment all stay; only the padding goes, so §6.15's
-     25% chrome budget is spent on the dock and not on an empty band. */
-  .sk-app.is-scrolled .sk-pbar { height: 36px; }
+     25% chrome budget is spent on the dock and not on an empty band. Set
+     as `--sk-pbar-h`, so an open task's top follows the header up. */
+  .sk-app.is-scrolled { --sk-pbar-h: 36px; }
 }
 /* The compaction is the phone chrome's only motion, 120ms; under reduced
    motion the header simply takes its new height. `Top` jumps rather than
@@ -10960,6 +11057,10 @@ span.sk-ttile { cursor: default; }
 /* The Recent (5) switcher under Workflows in the panel (workflows.html C). */
 .sk-recent-h { padding: 2px 10px; font-size: var(--t-micro); color: var(--text-faint); }
 .sk-recent-row { display: flex; gap: 6px; align-items: center; min-width: 0; }
+/* THE MARK'S SLOT IS KEPT WHEN THE MARK IS WITHHELD (QA-096, part of #1680):
+   a row not re-read this load draws no glyph, and its name started 12px left
+   of its neighbours'. The glyph is 12px (`.sk-st svg`). */
+.sk-recent .sk-st { min-width: 12px; }
 .sk-recent-id { overflow: hidden; text-overflow: ellipsis; }
 .sk-recent-all { color: var(--sk-ac); }
 /* (Workflows V2 rules go above this line.) */

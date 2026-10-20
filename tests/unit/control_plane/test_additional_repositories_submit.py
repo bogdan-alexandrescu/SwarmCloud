@@ -50,9 +50,9 @@ from swarm_common.specsign import SPEC_FORMAT
 from .conftest import ENG_GROUP, PROJECT, api_settings, auth_header, seed_grant, seed_tenant
 from .spec_signer import LocalSpecSigner
 
-ALICE = "alice@saga.xyz"
+ALICE = "alice@example.com"
 SERVICE = f"swarm-acceptance@{PROJECT}.iam.gserviceaccount.com"
-PRIMARY = "saga-xyz/widgets"
+PRIMARY = "example-org/widgets"
 WEB = "acme/web"
 SDK = "acme/sdk"
 INFRA = "acme/infra"
@@ -227,7 +227,7 @@ def _set(client, **settings: Any):
 
 def _service_auth() -> AuthContext:
     return AuthContext(
-        principal=Principal(email=SERVICE, subject="sa-1", domain="saga.xyz", groups=()),
+        principal=Principal(email=SERVICE, subject="sa-1", domain="example.com", groups=()),
         tenant_id="eng", is_admin=False, tenant_principal=ENG_GROUP,
     )
 

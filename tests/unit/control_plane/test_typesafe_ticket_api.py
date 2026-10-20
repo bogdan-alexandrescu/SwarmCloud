@@ -90,7 +90,7 @@ def set_key(db, secret_id: str, *, version: int = 3, tenant_id: str = "eng") -> 
     db.docs[f"provider_keys/{secret_id}"] = {
         "tenant_id": tenant_id, "provider": "typesafe", "set": True,
         "version": f"projects/local/secrets/{secret_id}/versions/{version}",
-        "set_by": "root@saga.xyz", "set_at": datetime.now(timezone.utc),
+        "set_by": "root@example.com", "set_at": datetime.now(timezone.utc),
     }
 
 
@@ -221,7 +221,7 @@ def test_a_group_task_never_spends_the_submitters_own_key(ready, ldb):
     """Q3: a personal key reaches a group workspace's task only by per-secret
     opt-in, which this key does not have, so the group's own key is named."""
     client, attempt = ready
-    personal_tenant(ldb, "u-alice", "alice@saga.xyz")
+    personal_tenant(ldb, "u-alice", "alice@example.com")
     set_key(ldb, ALICE_SECRET, version=7, tenant_id="u-alice")
     response = ask(client, attempt)
     assert response.status_code == 201, response.text
@@ -234,7 +234,7 @@ def test_a_group_task_never_spends_the_submitters_own_key(ready, ldb):
 def test_a_group_task_with_only_the_submitters_key_is_refused(ready, ldb):
     client, attempt = ready
     del ldb.docs[f"provider_keys/{TENANT_SECRET}"]
-    personal_tenant(ldb, "u-alice", "alice@saga.xyz")
+    personal_tenant(ldb, "u-alice", "alice@example.com")
     set_key(ldb, ALICE_SECRET, version=7, tenant_id="u-alice")
     response = ask(client, attempt)
     assert response.status_code == 403
@@ -242,7 +242,7 @@ def test_a_group_task_with_only_the_submitters_key_is_refused(ready, ldb):
 
 
 def test_a_namesakes_personal_key_is_never_spent(ready, ldb):
-    """`u-alice` names alice@partner.com, not the submitter alice@saga.xyz:
+    """`u-alice` names alice@partner.com, not the submitter alice@example.com:
     the frozen slug drops the domain, and only the principal says whose it is."""
     client, attempt = ready
     personal_tenant(ldb, "u-alice", "alice@partner.com")

@@ -215,9 +215,11 @@ describe('WA-6: a stop asked for from the console is not an error the agent wrot
 })
 
 describe('WA-21: the detail’s links are the pages’ own paths', () => {
-  it('links the failure card’s Attempts to the agent’s path, under the tab its state is in', async () => {
+  // The failure card's own `Attempts ›` is gone (QA-115: two links, one
+  // place); the Progress card's is the failed agent's link to the tab now.
+  it('links a failed agent’s Attempts tab to the agent’s path, under the tab its state is in', async () => {
     const el = await details(merge(), RUNS)
-    const more = [...el.querySelectorAll<HTMLAnchorElement>('.dt-card[data-lead] a.dt-more')].find((a) => a.textContent?.startsWith('Attempts'))!
+    const more = [...el.querySelectorAll<HTMLAnchorElement>('.dt-card a.dt-more')].find((a) => a.textContent?.startsWith('Attempts'))!
     expect(more.getAttribute('href')).toBe(`/agents/recent/${ID}/attempts`)
   })
 })

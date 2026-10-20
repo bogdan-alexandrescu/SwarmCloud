@@ -18,7 +18,7 @@
 #
 # Re-running is safe for LIMITS and WIRING. It is not a way to re-point a tenant:
 # if tenants/<id> already names a different principal or kind, this refuses,
-# because one `--group contractors@saga.xyz --tenant eng` would otherwise hand
+# because one `--group contractors@example.com --tenant eng` would otherwise hand
 # every member of contractors@ eng's provider keys, artifacts and budget with no
 # prompt and no warning.
 #
@@ -73,12 +73,21 @@
 # is how it works; docs/runbooks/tenant-offboarding.md is how one is removed.
 #
 # Usage:
-#   scripts/register-tenant.sh --group eng@saga.xyz
-#   scripts/register-tenant.sh --user alice@saga.xyz
-#   scripts/register-tenant.sh --group eng@saga.xyz --providers anthropic,openai \
+#   scripts/register-tenant.sh --group eng@example.com
+#   scripts/register-tenant.sh --user alice@example.com
+#   scripts/register-tenant.sh --group eng@example.com --providers anthropic,openai \
 #                              --max-active 40 --capacity-units 80 --budget 2000
-#   scripts/register-tenant.sh --group eng@saga.xyz --dry-run
-#   scripts/register-tenant.sh --group eng@saga.xyz --skip-k8s   # Cloud Run only
+#   scripts/register-tenant.sh --group eng@example.com --dry-run
+#   scripts/register-tenant.sh --group eng@example.com --skip-k8s   # Cloud Run only
+#
+# --worker-firestore-access true|false mirrors terraform/modules/tenancy's
+# `worker_firestore_access`, and defaults the same way: TRUE, the Firestore grant
+# exactly as before the switch existed. `false` grants this tenant's worker no
+# Firestore role at all -- #1457's design B, for after the owner has moved every
+# worker onto swarm-api's attempt-signed state routes. Until then a worker
+# registered with `false` gets PermissionDenied on its first read. It does not
+# remove a grant an earlier run made; section 3 prints the command that does.
+#   scripts/register-tenant.sh --group eng@saga.xyz --worker-firestore-access false
 #
 # A person's workspace, from its approved record, under the call guard only --
 # the Cloud Run job swarm-workspace-apply runs this, through
@@ -89,7 +98,7 @@
 #
 # Add one provider to a tenant that is already registered, keeping the others:
 #   scripts/register-tenant.sh --tenant eng --add-provider git
-#   scripts/register-tenant.sh --group eng@saga.xyz --add-provider openai --dry-run
+#   scripts/register-tenant.sh --group eng@example.com --add-provider openai --dry-run
 # `git` (here or in --providers) also lets swarm-api read that one -git secret,
 # for the issue preview and an issue run's write-back to its issue (which needs
 # the token to hold `issues: write` and `pull_requests: write`, plus
@@ -130,6 +139,8 @@ FULL_ONLY_FLAGS=""
 WORKSPACE_ID=""
 WORKSPACE_GIVEN=0
 WORKSPACE_MODE=""
+# Section 3's Firestore grant. "true" is today's grant; see the header.
+WORKER_FIRESTORE_ACCESS="true"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -142,6 +153,7 @@ while [[ $# -gt 0 ]]; do
     --budget)          BUDGET="$2"; FULL_ONLY_FLAGS+=" $1"; shift 2 ;;
     --display-name)    DISPLAY_NAME="$2"; FULL_ONLY_FLAGS+=" $1"; shift 2 ;;
     --skip-k8s)        SKIP_K8S=1; FULL_ONLY_FLAGS+=" $1"; shift ;;
+    --worker-firestore-access) WORKER_FIRESTORE_ACCESS="${2-}"; FULL_ONLY_FLAGS+=" $1"; shift 2 ;;
     --add-provider)    ADD_PROVIDER="$2"; ADD_PROVIDER_GIVEN=1; shift 2 ;;
     --dry-run|-n)      DRY_RUN=1; shift ;;
     --workspace)       WORKSPACE_ID="$2"; WORKSPACE_GIVEN=1; shift 2 ;;
@@ -151,6 +163,12 @@ while [[ $# -gt 0 ]]; do
     *) die "unknown argument: $1" ;;
   esac
 done
+# Spelled exactly, as terraform's bool: a typo must not fall through to either
+# answer, least of all to a grant the operator meant to withhold.
+case "${WORKER_FIRESTORE_ACCESS}" in
+  true|false) ;;
+  *) die "--worker-firestore-access takes true or false, not '${WORKER_FIRESTORE_ACCESS}'. Nothing was changed." ;;
+esac
 
 # --- W. --workspace: one person's workspace, from its approved record --------
 #
@@ -2588,7 +2606,7 @@ info "limits         max_active=${MAX_ACTIVE} capacity_units=${CAPACITY_UNITS} (
 # both in the field mask, and nothing compared the incoming principal against the
 # one already stored. So a single
 #
-#     register-tenant.sh --group contractors@saga.xyz --tenant eng
+#     register-tenant.sh --group contractors@example.com --tenant eng
 #
 # made every member of contractors@ resolve to tenant eng and inherit eng's
 # provider keys, artifact prefix and budget -- no warning, no confirmation, and
@@ -2822,6 +2840,16 @@ FIRESTORE_ROLE="projects/${PROJECT_ID}/roles/${FIRESTORE_ROLE_ID}"
 # genuine NOT_FOUND, 2 could not tell -- with gcloud's own error printed. It is
 # named for the deny-list checks in destroy.sh; the question it answers is the
 # same one this asks.
+# --worker-firestore-access false: no Firestore role at all, exactly as
+# terraform/modules/tenancy creates no worker_firestore binding when its
+# `worker_firestore_access` is false. The worker then reaches its state only
+# through swarm-api (#1457, design B). A binding an earlier run made is not
+# removed here -- that is the owner's step at the cutover -- but it is named.
+if [[ "${WORKER_FIRESTORE_ACCESS}" == "false" ]]; then
+  ok "no Firestore role for ${GSA_ID} (--worker-firestore-access false): it reaches its state through swarm-api"
+  dim "  a ${FIRESTORE_ROLE##*/} binding an earlier run made is left in place; the owner removes it with"
+  dim "  gcloud projects remove-iam-policy-binding ${PROJECT_ID} --member serviceAccount:${GSA_EMAIL} --role ${FIRESTORE_ROLE} --condition None"
+else
 FS_ROLE_RC=0
 shared_resource_present "custom role ${FIRESTORE_ROLE}" \
   gcloud iam roles describe "${FIRESTORE_ROLE_ID}" \
@@ -2905,6 +2933,7 @@ if [[ "${DRY_RUN}" -eq 0 ]]; then
     dim  "    --condition \"expression=${STALE_EXPR},title=${STALE_TITLE},description=${STALE_DESC}\""
   fi
 fi
+fi # --worker-firestore-access
 
 # GCS, conditioned on this tenant's own prefix. This is the boundary that stops
 # a compromised worker from reading another tenant's artifacts by guessing a path.

@@ -10,7 +10,7 @@ import type { TaskPane } from './App'
 import { ArtifactsScreen } from './Artifacts'
 import { AttemptTimelineScreen } from './AttemptTimeline'
 import { CheckpointsPane } from './CheckpointsPane'
-import { isOverlay, trapTab } from './focus'
+import { trapTab } from './focus'
 import { toggleListSnap, useListSnap } from './listSnap'
 import { useRead } from './RunFiles'
 import { AgentChangesPane } from './WorkflowChanges'
@@ -22,7 +22,7 @@ import { CONCURRENCY_STATES, TERMINAL_STATES, type Task } from './types'
 import { useCheckpointCount } from './agent-split/checkpoints'
 import { SplitTick } from './agent-split/clock'
 import { AgDivider, useListWidth } from './agent-split/divider'
-import { useSplitFocus } from './agent-split/focus'
+import { isModal, useSplitFocus } from './agent-split/focus'
 import { useListGroup } from './agent-split/group'
 import { AgHandoff } from './agent-split/handoff'
 import { AgHead } from './agent-split/head'
@@ -280,6 +280,8 @@ export function AgentSplit({
   return (
     <div
       className={`drawer ctl-drawer ag-split${selected === 'logs' ? ' on-logs' : ''}${selected === 'changes' ? ' on-changes' : ''}`}
+      // A region, not a dialog, once it is laid out under the phone header
+      // (QA-116): `useSplitFocus` sets the role from where the panel sits.
       role="dialog"
       aria-label={`Agent ${taskId}`}
       ref={panel}
@@ -296,7 +298,9 @@ export function AgentSplit({
           close()
           return
         }
-        if (e.key === 'Tab' && panel.current !== null && isOverlay(panel.current)) {
+        // Held in only where it covers the whole screen: under the phone
+        // header (QA-116) Tab goes on to the header above it.
+        if (e.key === 'Tab' && panel.current !== null && isModal(panel.current)) {
           trapTab(e, panel.current)
         }
       }}

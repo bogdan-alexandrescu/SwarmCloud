@@ -8,6 +8,7 @@ import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
 // actually reported it, so an unmeasured sample never becomes a confident zero.
 import { sumReported } from './measure'
 import { TASK_PAGE_LIMIT } from './pageLimits'
+import { normUtilisation, type UtilisationRead } from './utilisation'
 import type { Outcomes } from './outcomes'
 import { ledgerFixture } from './outcomes.fixture'
 import {
@@ -2238,6 +2239,62 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
     fetchedAt: task.fetchedAt,
     error: task.status === 'stale' ? task.error : undefined,
   } as Result<AgentRun>
+}
+
+/**
+ * A task's CPU, memory and throttling over time, `GET /v1/tasks/{id}/utilisation`
+ * (LIVE-UTIL-API, #1696): per attempt, newest first, one point per 5 s window.
+ * Details' chart reads it on its own clock while the task runs
+ * (`UtilisationPanel.tsx`), so a slow or failed read blanks only the chart.
+ *
+ * No empty predicate: `attempts: []` is a task nothing was admitted for, and
+ * the chart says so in words rather than this read calling it empty.
+ */
+export async function loadUtilisation(taskId: string): Promise<Result<UtilisationRead>> {
+  if (USE_FIXTURES) return fixtureUtilisation(taskId)
+  const got = await read<unknown>(route('/v1/tasks/{id}/utilisation', { id: taskId }), () => false)
+  if (got.status === 'ok') return { ...got, data: normUtilisation(got.data) }
+  if (got.status === 'stale') return { ...got, data: normUtilisation(got.data) }
+  return got
+}
+
+/**
+ * Twenty minutes of 5 s points for the fixture: a run that idles, works near
+ * its 4 cores and is throttled at the top, with one window the worker could
+ * not read -- every shape the chart draws, in development.
+ */
+async function fixtureUtilisation(taskId: string): Promise<Result<UtilisationRead>> {
+  const now = Date.now()
+  const n = 240
+  const points = Array.from({ length: n }, (_, i) => {
+    const cpu = i === 120 ? null : Math.min(4, 0.4 + 1.6 * (1 + Math.sin(i / 14)) + (i % 37 === 0 ? 1.5 : 0))
+    return {
+      at: new Date(now - (n - i) * 5_000).toISOString(),
+      cpu_cores: cpu === null ? null : Number(cpu.toFixed(3)),
+      memory_bytes: Math.round((1.5 + i / n * 2.2) * 1024 ** 3),
+      throttled_share: cpu === null ? null : cpu >= 3.6 ? 0.35 : 0,
+    }
+  })
+  return {
+    status: 'ok',
+    fetchedAt: now,
+    data: {
+      task_id: taskId,
+      read_at: new Date(now).toISOString(),
+      attempts: [
+        {
+          attempt_id: 'att_fixture',
+          generation: 1,
+          cpu_limit_cores: 4,
+          memory_limit_bytes: 8 * 1024 ** 3,
+          throttled_seconds: 41.2,
+          peak_throttled_share: 0.35,
+          mean_throttled_share: 0.06,
+          points,
+        },
+      ],
+    },
+  }
 }
 
 async function fixtureAgentRun(taskId: string): Promise<Result<AgentRun>> {
@@ -6404,6 +6461,17 @@ export async function patchRepositoryTrigger(repoId: string, onChange: 'poll' | 
   const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
   if (USE_FIXTURES) return repoNotServed<unknown>(target)
   return write(target, 'PATCH', { index: { on_change: onChange } })
+}
+
+/**
+ * `PATCH /v1/repositories/{repo_id}` with `index.keep_versions` alone
+ * (INDEX-RETENTION): how many past index versions the repository keeps,
+ * 1-100. The same merge and the same members as the change trigger.
+ */
+export async function patchRepositoryKeepVersions(repoId: string, keepVersions: number): Promise<Result<unknown>> {
+  const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
+  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  return write(target, 'PATCH', { index: { keep_versions: keepVersions } })
 }
 
 // ---------------------------------------------------------------------------

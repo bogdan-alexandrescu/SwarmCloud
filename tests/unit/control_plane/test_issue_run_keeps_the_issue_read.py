@@ -42,7 +42,7 @@ from .conftest import api_settings, auth_header
 
 #: Built at runtime: nothing token-shaped is a literal in this file.
 TOKEN = "ghp_" + secrets.token_hex(18)
-REF = "saga-xyz/widgets#42"
+REF = "example-org/widgets#42"
 
 ISSUE = {
     "number": 42,
@@ -51,7 +51,7 @@ ISSUE = {
     "state": "open",
     "comments": 3,
     "labels": [{"name": "bug"}, {"name": "ui"}],
-    "html_url": "https://github.com/saga-xyz/widgets/issues/42",
+    "html_url": "https://github.com/example-org/widgets/issues/42",
 }
 
 
@@ -70,7 +70,7 @@ class FakeTokens:
         return self.tokens[secret_id]
 
 
-ISSUE_URL = "https://api.github.com/repos/saga-xyz/widgets/issues/42"
+ISSUE_URL = "https://api.github.com/repos/example-org/widgets/issues/42"
 
 
 class FakeForge:
@@ -137,7 +137,7 @@ def test_a_run_stores_and_serves_what_the_issue_said_at_submission(make, db, cap
     assert read["labels"] == ["bug", "ui"]
     assert read["state"] == "open"
     assert read["comments"] == 3
-    assert read["url"] == "https://github.com/saga-xyz/widgets/issues/42"
+    assert read["url"] == "https://github.com/example-org/widgets/issues/42"
     assert read["body"] == "Steps: open the list.\n"
     assert read["body_truncated"] is False
     assert read["body_redacted"] is False
@@ -146,7 +146,7 @@ def test_a_run_stores_and_serves_what_the_issue_said_at_submission(make, db, cap
     # The caller's tenant's secret, one read of the issue, at the pinned host.
     assert set(reader.asked) == {"swarm-tenant-eng-git"}
     assert transport.issue_calls == [ISSUE_URL]
-    assert all(url.startswith("https://api.github.com/repos/saga-xyz/widgets/")
+    assert all(url.startswith("https://api.github.com/repos/example-org/widgets/")
                for url in transport.calls)
     # It is on the run document, and every later read serves it.
     assert _stored(db, run["id"])["issue_read"]["title"] == "Widgets cannot be sorted"

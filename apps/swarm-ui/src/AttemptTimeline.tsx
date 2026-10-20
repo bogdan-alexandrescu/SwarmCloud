@@ -8,7 +8,7 @@ import { backendWord, eventWord, stateWord } from './words'
 import { num, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { Screen, timeAgo } from './Shell'
-import { REASON_COPY, TERMINAL_STATES, bytesLabel, type AttemptRow, type Task, type TaskEvent } from './types'
+import { REASON_COPY, TERMINAL_STATES, bytesLabel, pluralise, type AttemptRow, type Task, type TaskEvent } from './types'
 
 /**
  * One task, attempt by attempt. Replaces the flat event list in the drawer, which
@@ -67,12 +67,10 @@ async function loadTimeline(taskId: string): Promise<Result<AttemptTimeline>> {
 }
 
 /**
- * `plural` IS GONE.
- *
- * It existed so this screen could write "3 events" rather than "3 event(s)",
- * which is correct English and was, at every call site, a figure wearing a
- * noun. The noun is the key beside the figure now -- `ev`, `att`, `ckpt` --
- * said once per column rather than once per value.
+ * THE NOUNS ARE WORDS AGAIN (QA-113, visual QA 2026-10-20). `3 att · 9 ev`,
+ * `ckpt`, `peak rss`, `gen` and `2 blind` were keys a reader had to have been
+ * told; nothing on the tab told them. Each figure carries its noun in full,
+ * counted by `pluralise`, and each fact its word.
  */
 
 export function AttemptTimelineScreen({ taskId }: { taskId: string }) {
@@ -83,8 +81,8 @@ export function AttemptTimelineScreen({ taskId }: { taskId: string }) {
       title={taskId}
       load={load}
       summary={(t) =>
-        `${t.attempts.length} att · ` +
-        (t.events === null ? 'events unread' : `${t.events.length} ev`)
+        `${pluralise(t.attempts.length, 'attempt')} · ` +
+        (t.events === null ? 'events unread' : pluralise(t.events.length, 'event'))
       }
       empty={{
         // ONE `real zero`, THE PRIMITIVE'S. `No attempt · real zero` said it a
@@ -289,14 +287,14 @@ function Body({ t }: { t: AttemptTimeline }) {
                   kind="unread"
                   say="Zero events came back, yet a task is written with its submitted event in the same batch — so this is a failed query, not an empty history."
                 />{' '}
-                {count} ev · first page
+                {pluralise(count, 'event')} · first page
               </>
             ) : (
               <span
                 className="att-ev-cap"
                 aria-label={`${count} events, the first page, oldest first. This screen reads one page and does not follow the page token the events route returns, so newer events may exist that it has not fetched.`}
               >
-                {count} ev · first page
+                {pluralise(count, 'event')} · first page
               </span>
             )}
             {blind.length > 0 && (
@@ -306,7 +304,7 @@ function Body({ t }: { t: AttemptTimeline }) {
                   kind="partial"
                   say={`${blind.length} attempt${blind.length === 1 ? ' has' : 's have'} no events on this page. Past one page the newest events — everything belonging to those attempts — are not fetched by this screen.`}
                 />{' '}
-                {blind.length} blind
+                {pluralise(blind.length, 'attempt')} without events
               </>
             )}
             {endMissing && t.task !== null && (
@@ -386,7 +384,7 @@ function AttemptCard({
           {a?.oom_near_miss && <ToneMark tone="bad">OOM near miss</ToneMark>}
         </h2>
         <span className="ctl-card-note">
-          {g.events.length} ev{a !== null && ` · ${backendWord(a.backend)}`}
+          {pluralise(g.events.length, 'event')}{a !== null && ` · ${backendWord(a.backend)}`}
         </span>
       </div>
 
@@ -402,7 +400,7 @@ function AttemptCard({
           // stays.
           <ul className="ctl-facts">
             <li className="ctl-fact">
-              <b>att</b>
+              <b>attempt</b>
               <span className="mono">{a.attempt_id}</span>
             </li>
             {/* THE LEASE AND THE EXECUTION LIVE HERE (agent-details-v3.html
@@ -413,7 +411,7 @@ function AttemptCard({
               <span className="mono">{a.lease_id}</span>
             </li>
             <li className={`ctl-fact${a.execution_name === null ? ' is-absent' : ''}`}>
-              <b>exec</b>
+              <b>execution</b>
               {a.execution_name === null ? (
                 <Mark
                   kind="zero"
@@ -443,14 +441,15 @@ function AttemptCard({
               <b>exit</b>
               {a.exit_code === null ? <Em /> : num(a.exit_code)}
             </li>
-            {/* `peak rss` (G2-11): the figure is the sampled high-water mark,
-                written at exit -- `rss` alone read as the value at exit. */}
+            {/* `peak memory` (G2-11, QA-113): the figure is the sampled
+                high-water mark of the resident set, written at exit -- `rss`
+                alone read as the value at exit, and `peak rss` as jargon. */}
             <li className={`ctl-fact${a.peak_rss_bytes === null ? ' is-absent' : ''}`}>
-              <b>peak rss</b>
+              <b>peak memory</b>
               {a.peak_rss_bytes === null ? (
                 <Mark
                   kind="absent"
-                  say="Peak RSS is written at the end of an attempt. This attempt has none recorded, so what it used is unknown — it is a missing record, never a zero."
+                  say="Peak memory (RSS) is written at the end of an attempt. This attempt has none recorded, so what it used is unknown — it is a missing record, never a zero."
                 />
               ) : (
                 // `bytesLabel`, AS THE DETAIL PANE PRINTS IT (AG-21). This
@@ -462,7 +461,7 @@ function AttemptCard({
               )}
             </li>
             <li className="ctl-fact">
-              <b>ckpt</b>
+              <b>checkpoints</b>
               {a.checkpoints.length}
             </li>
             {/* The model this attempt ran and the task's class (#1435), and
@@ -508,7 +507,7 @@ function AttemptCard({
                     reads here. */}
                 {e.generation !== null && (
                   <span className="ev-gen" title="Fencing generation for this event">
-                    gen {e.generation}
+                    generation {e.generation}
                   </span>
                 )}
                 {/* LB-V6: written without its attempt, so filed here by when it

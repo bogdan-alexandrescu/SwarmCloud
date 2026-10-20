@@ -145,7 +145,7 @@ describe('G2-25: one map words every machine token the inspector prints', () => 
     // The submitted event belongs to no attempt and has a card of its own; the attempt's is the one with a backend.
     const card = [...el.querySelectorAll('.att-card')].find((c) => /lease/.test(visible(c)))!
     expect(card, 'no attempt card').toBeTruthy()
-    expect(visible(card.querySelector('.ctl-card-note'))).toMatch(/ev · Cloud Run$/)
+    expect(visible(card.querySelector('.ctl-card-note'))).toMatch(/events? · Cloud Run$/)
     expect(visible(card)).not.toMatch(/CLOUD_RUN_JOB/)
     const types = [...card.querySelectorAll('.ev-type')].map((t) => t.textContent)
     expect(types).toContain('lease acquired')

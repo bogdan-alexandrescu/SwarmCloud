@@ -93,7 +93,7 @@ class TestTheSchedulerPath:
             id="task_x", tenant_id="eng", runner_profile="browser",
             resource_class="browser", state=TaskState.READY,
             created_at=NOW, updated_at=NOW,
-            input={}, submitted_by='bogdan@saga.xyz',
+            input={}, submitted_by='bogdan@example.com',
             attempt_count=attempts - 1, max_attempts=cap,
         )
         lease = Lease(
@@ -172,7 +172,7 @@ class TestTheSchedulerPath:
         stale = Task(
             id="task_x", tenant_id="eng", runner_profile="browser",
             resource_class="browser", state=TaskState.READY,
-            created_at=NOW, updated_at=NOW, input={}, submitted_by="bogdan@saga.xyz",
+            created_at=NOW, updated_at=NOW, input={}, submitted_by="bogdan@example.com",
             attempt_count=0, max_attempts=3,
         )
         store.return_to_ready_after_failed_dispatch(stale, lease, "gke_create_job_failed")

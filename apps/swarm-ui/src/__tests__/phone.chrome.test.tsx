@@ -109,7 +109,7 @@ async function shellAs(who: Me): Promise<HTMLElement> {
 
 describe('#139 at 390: the header collapses on scroll', () => {
   it('compacts to 36px past its own height and keeps the mark, the env and the tenant in it', async () => {
-    // MUTATION: drop `.sk-app.is-scrolled .sk-pbar`'s height, stop setting
+    // MUTATION: drop `.sk-app.is-scrolled`'s `--sk-pbar-h`, stop setting
     // `is-scrolled`, or drop the mark or the env pill from the header.
     const c = await at('/help')
     const app = c.querySelector<HTMLElement>('.sk-app')!

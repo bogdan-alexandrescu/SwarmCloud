@@ -252,21 +252,27 @@ describe('no element of the detail is covered by a log element, at any split wid
     return r
   }
 
+  // ONE CASE PER SNAP AND PANE, not one per snap walking all five panes: a
+  // case is a whole split render and its CSSOM reads, ~2.5 s idle, and five
+  // in one case went past the 30 s timeout on a loaded CI shard (PR #1707).
+  // A timed-out case leaves its `landed` act scope open, and every later
+  // synchronous render in the file then draws nothing.
+  const STARTS: readonly (readonly [Pane, () => Task])[] = [
+    ['detail', finished],
+    ['logs', running],
+    ['attempts', running],
+    ['artifacts', running],
+    ['checkpoints', running],
+  ]
   for (const snap of SNAPS) {
-    it(`draws the log in the pane's flow and nowhere else, list at ${snap}`, async () => {
-      setListSnap(snap)
-      // The detail column's width at this snap, 1440 wide: what the container
-      // rules in the sheet are evaluated at.
-      const column = snap === 'strip' ? 1000 : snap === 'list' ? 630 : 500
-      const env: CascadeEnv = { width: 1440, container: column }
-      for (const [start, task] of [
-        ['detail', finished()],
-        ['logs', running()],
-        ['attempts', running()],
-        ['artifacts', running()],
-        ['checkpoints', running()],
-      ] as const) {
-        const { unmount, container } = await check(start, task)
+    for (const [start, make] of STARTS) {
+      it(`draws the log in the pane's flow and nowhere else, list at ${snap}, opened on ${start}`, async () => {
+        setListSnap(snap)
+        // The detail column's width at this snap, 1440 wide: what the container
+        // rules in the sheet are evaluated at.
+        const column = snap === 'strip' ? 1000 : snap === 'list' ? 630 : 500
+        const env: CascadeEnv = { width: 1440, container: column }
+        const { unmount, container } = await check(start, make())
         const split = container.querySelector('.ag-split')!
         // No dock, no strip, no grip, no full view: the dock is gone.
         expect(document.querySelector('[class*="ag-logdock"]'), `${start}: a dock element is drawn`).toBeNull()
@@ -298,8 +304,8 @@ describe('no element of the detail is covered by a log element, at any split wid
           expect(line!.closest('.dt-now')).toBe(pane.querySelector('.dt > .dt-now'))
         }
         unmount()
-      }
-    })
+      })
+    }
   }
 })
 

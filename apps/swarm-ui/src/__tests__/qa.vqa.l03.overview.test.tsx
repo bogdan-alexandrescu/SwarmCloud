@@ -210,7 +210,7 @@ describe('V140: a check card’s sub-lines end in an ellipsis, never a hard cut'
     const { container } = render(<Overview.CheckCard problem={p} />)
     const small = container.querySelector('.ov-att-t small')!
     expect(painted(small, 'overflow-wrap', PHONE)).toBe('anywhere')
-    expect(painted(small, '-webkit-line-clamp', PHONE)).toBe('2')
+    expect(painted(small, '-webkit-line-clamp', WIDE)).toBe('2')
   })
   // MUTATION: render `p.detail` as it came.
   it('binds the dash to the word before it, so no line opens on "—"', () => {
@@ -219,6 +219,61 @@ describe('V140: a check card’s sub-lines end in an ellipsis, never a hard cut'
     expect(small.textContent).toContain(`${LONG_WF} — their`)
     expect(small.textContent).not.toMatch(/ —/)
     expect(small.getAttribute('title'), 'the title keeps the text as written').toBe(p.detail)
+  })
+})
+
+describe('QA-100: at phone width a check card\u2019s detail is not cut before it is readable', () => {
+  const p: Problem = {
+    severity: 'bad',
+    n: 2,
+    headline: '2 failed tasks among the 26 most recent · task_a1, task_b2',
+    detail: 'Terminal: nothing will retry them. 1 used every attempt; 1 had attempts left but the cause is not retryable.',
+    href: '#work/tasks',
+  }
+  it('gives the detail four lines on a phone, beside an ids line or not', () => {
+    const { container } = render(<Overview.CheckCard problem={p} />)
+    const ids = container.querySelector('.ov-att-t small.ov-att-ids')!
+    const detail = container.querySelector('.ov-att-t small.is-one')!
+    expect(ids, 'the headline carries ids, so the card draws its ids line').not.toBeNull()
+    expect(detail.textContent).toMatch(/^Terminal: nothing will retry them\./)
+    // At 390 px one line held "Terminal: nothing will retry them. 1 us…".
+    // MUTATION: drop the phone `.ov-att-t small.is-one` clamp -- it is one line again.
+    expect(painted(detail, '-webkit-line-clamp', PHONE)).toBe('4')
+    // MUTATION: drop the phone `.ov-att-t small` clamp -- a card with no ids line keeps two.
+    const plain = render(<Overview.CheckCard problem={{ ...p, headline: '2 failed tasks' }} />).container.querySelector('.ov-att-t small')!
+    expect(plain.classList.contains('is-one')).toBe(false)
+    expect(painted(plain, '-webkit-line-clamp', PHONE)).toBe('4')
+    // The ids stay one cut line, and the desktop keeps its clamp.
+    expect(painted(ids, '-webkit-line-clamp', PHONE)).toBe('1')
+    expect(painted(detail, '-webkit-line-clamp', WIDE)).toBe('1')
+  })
+})
+
+describe('QA-060: the Overview count note never leaves its `?` alone on a line', () => {
+  it('keeps the tally with its `?`, breaks only between the scope and the tally, and drops no dot at the break', async () => {
+    const el = await mount({ tasks: ok({ tasks: [], tenant_id: 'eng', next_page_token: null } as TaskPage) })
+    const note = el.querySelector<HTMLElement>('.ov-page > .c-count-note')!
+    const scope = note.querySelector<HTMLElement>(':scope > .ov-scope')
+    const tally = note.querySelector<HTMLElement>(':scope > .ov-tally')!
+    // MUTATION: render the tenant as bare text again -- it can then break inside "tenant u-bogdan".
+    expect(scope, 'the tenant is not one unit').not.toBeNull()
+    expect(text(scope)).toMatch(/^tenant eng ·$/)
+    expect(tally.querySelector('.ctl-q-glyph, button, a'), 'the `?` is inside the tally').not.toBeNull()
+    // MUTATION: drop `white-space: nowrap` from `.ov-tally` -- the `?` wraps away from "7/8 reads".
+    expect(painted(tally, 'white-space', PHONE)).toBe('nowrap')
+    expect(painted(scope!, 'white-space', PHONE)).toBe('nowrap')
+    // MUTATION: drop the phone flex-wrap on the note, or the rule that takes the
+    // separator away -- the dot hangs at the end of the first line.
+    expect(painted(note, 'display', PHONE)).toBe('flex')
+    expect(painted(note, 'flex-wrap', PHONE)).toBe('wrap')
+    const sep = scope!.querySelector<HTMLElement>('.ov-sep')!
+    expect(painted(sep, 'display', PHONE)).toBe('none')
+    expect(painted(sep, 'display', WIDE)).not.toBe('none')
+    // The text a reader or a test reads is unchanged.
+    expect(text(note)).toMatch(/^tenant eng · \d+\/\d+ reads/)
+    // MUTATION: put the phone row back to `align-items: center` -- the refresh
+    // floats between the note's two lines instead of sitting on its first.
+    expect(painted(note.parentElement!, 'align-items', PHONE)).toBe('baseline')
   })
 })
 

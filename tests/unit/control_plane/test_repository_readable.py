@@ -36,7 +36,7 @@ def _readable(client, user="alice", **params):
 
 
 def _listing(count: int) -> list[dict]:
-    return [repo_entry(f"saga-xyz/repo-{i:04d}") for i in range(count)]
+    return [repo_entry(f"example-org/repo-{i:04d}") for i in range(count)]
 
 
 def test_the_first_page_is_one_github_page(make):
@@ -59,15 +59,15 @@ def test_the_first_page_is_one_github_page(make):
     assert f"per_page={forge.PAGE_SIZE}" in url and "page=1" in url
     first = body["repositories"][0]
     assert first == {
-        "repository": "saga-xyz/repo-0000",
-        "owner": "saga-xyz",
+        "repository": "example-org/repo-0000",
+        "owner": "example-org",
         "repo": "repo-0000",
         "visibility": "private",
         "default_branch": "main",
         "archived": False,
         "can_push": True,
         "can_admin": False,
-        "repo_id": repositories.repo_id_for("eng", "saga-xyz", "repo-0000"),
+        "repo_id": repositories.repo_id_for("eng", "example-org", "repo-0000"),
         "registered": False,
     }
 
@@ -110,27 +110,27 @@ def test_a_page_below_one_is_refused(make, page):
 def test_registered_repositories_are_marked_for_the_tenant_only(make):
     client, _, _ = make(_listing(3))
     assert client.post(
-        "/v1/repositories", json={"repository": "saga-xyz/repo-0001"},
+        "/v1/repositories", json={"repository": "example-org/repo-0001"},
         headers=auth_header("alice"),
     ).status_code == 201
     eng = _readable(client, user="alice").json()["repositories"]
     assert [r["registered"] for r in eng] == [False, True, False]
     research = _readable(client, user="bob").json()["repositories"]
     assert [r["registered"] for r in research] == [False, False, False]
-    assert research[1]["repo_id"] == repositories.repo_id_for("research", "saga-xyz", "repo-0001")
+    assert research[1]["repo_id"] == repositories.repo_id_for("research", "example-org", "repo-0001")
 
 
 def test_entries_that_are_not_a_repository_name_are_skipped_and_counted(make):
     listing = _listing(2) + [
         {"full_name": "bad name/x", "owner": {"login": "bad name"}, "name": "x"},
-        {"full_name": "saga-xyz/.hidden", "owner": {"login": "saga-xyz"}, "name": ".hidden"},
+        {"full_name": "example-org/.hidden", "owner": {"login": "example-org"}, "name": ".hidden"},
         "not a dict",
-        {"owner": {"login": "saga-xyz"}},
+        {"owner": {"login": "example-org"}},
     ]
     client, _, _ = make(listing)
     body = _readable(client).json()
     assert [r["repository"] for r in body["repositories"]] == [
-        "saga-xyz/repo-0000", "saga-xyz/repo-0001"
+        "example-org/repo-0000", "example-org/repo-0001"
     ]
     assert body["skipped"] == 4
 

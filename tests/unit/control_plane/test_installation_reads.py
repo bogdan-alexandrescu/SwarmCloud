@@ -106,7 +106,7 @@ class Clock:
 
 
 def _enable(db, tenant_id: str, owner: str, *, installation: int | None = INSTALLATION,
-            method: str | None = None, user: str = "alice@saga.xyz") -> None:
+            method: str | None = None, user: str = "alice@example.com") -> None:
     """The `forge_orgs` document access.py writes for an enabled owner."""
     doc: dict[str, Any] = {
         "tenant_id": tenant_id, "user": user, "user_hash": forgeapp.user_hash(user),
@@ -321,14 +321,14 @@ def wake_github() -> QueueGitHub:
 def test_the_merge_wake_reads_ci_with_the_installation_token(
         db, tokens, group_map, objects, wake_github):
     tenant_tokens = forge_fakes.AnyTenantTokens()
-    source = FixedSource("saga-xyz")
+    source = FixedSource("example-org")
     client = _wake_client(db, tokens, group_map, objects, wake_github, tenant_tokens, source)
     parked_merge(db)
 
     body = client.post("/v1/admin/merges/wake?tenant_id=eng", headers=SWEEPER_HEADERS).json()
 
     assert body["report"]["waiting"] == 1, body
-    assert ("eng", "saga-xyz", "widgets") in source.asked
+    assert ("eng", "example-org", "widgets") in source.asked
     assert _auths(wake_github.calls) == {f"Bearer {source.value}"}
 
 
@@ -349,7 +349,7 @@ def test_the_merge_wake_falls_back_when_the_mint_fails_and_logs_no_token(
         db, tokens, group_map, objects, wake_github, lines):
     """The real source, over a mint GitHub refuses: the read still happens,
     with the tenant's token, and one line says why -- with no value in it."""
-    _enable(db, "eng", "saga-xyz")
+    _enable(db, "eng", "example-org")
     mints = Mints(status=422)
     jwt = _value()
     source = InstallationTokens(db, app_jwt=lambda: jwt, send=mints, clock=Clock())
@@ -371,7 +371,7 @@ def test_the_merge_wake_falls_back_when_the_mint_fails_and_logs_no_token(
 
 def test_the_merge_wake_reads_with_a_real_minted_token(
         db, tokens, group_map, objects, wake_github, lines):
-    _enable(db, "eng", "saga-xyz")
+    _enable(db, "eng", "example-org")
     mints = Mints()
     source = InstallationTokens(db, app_jwt=_value, send=mints, clock=Clock())
     client = _wake_client(db, tokens, group_map, objects, wake_github,
@@ -395,7 +395,7 @@ class IssueCiSource(FixedSource):
 
 @pytest.fixture
 def issue_source() -> IssueCiSource:
-    return IssueCiSource("saga-xyz")
+    return IssueCiSource("example-org")
 
 
 @pytest.fixture
@@ -452,7 +452,7 @@ def test_the_issue_runs_ci_read_uses_the_installation_token_and_writes_stay_the_
     run = _issue_read(client, clock, running["id"])
 
     assert run["state"] == "CHECKING"
-    assert ("eng", "saga-xyz", "widgets") in issue_source.asked
+    assert ("eng", "example-org", "widgets") in issue_source.asked
     assert _ci_auths(writes, SHA_A) == {f"Bearer {issue_source.value}"}
     user = forge_tokens.issued[next(iter(forge_tokens.issued))]
     for method, _, headers, _ in writes.calls:
@@ -478,7 +478,7 @@ def test_the_issue_runs_ci_read_keeps_the_tenant_token_without_a_source(
 
 def _sweep_client(db, tokens, group_map, objects, github, tenant_tokens, source) -> TestClient:
     seed_tenant(db, "eng")
-    _register(db, "eng", "saga-xyz", "widgets")
+    _register(db, "eng", "example-org", "widgets")
     tokens = dict(tokens)
     tokens["token-sweeper"] = {"email": SWEEPER, "email_verified": True, "sub": "sub-sweeper"}
     context = build_context(
@@ -499,7 +499,7 @@ def test_the_stranded_pr_sweep_reads_with_the_installation_token(
     github.green(sha)
     _opener(db, 7)
     tenant_tokens = forge_fakes.AnyTenantTokens()
-    source = FixedSource("saga-xyz" if installed else "someone-else")
+    source = FixedSource("example-org" if installed else "someone-else")
     client = _sweep_client(db, tokens, group_map, objects, github, tenant_tokens, source)
 
     response = client.post("/v1/admin/stranded-prs/sweep?tenant_id=eng",
@@ -509,7 +509,7 @@ def test_the_stranded_pr_sweep_reads_with_the_installation_token(
     assert len(github.calls) >= 3, github.calls
     (user,) = tenant_tokens.issued.values()
     expected = source.value if installed else user
-    assert github.tokens_sent_for("saga-xyz/widgets") == {f"Bearer {expected}"}
+    assert github.tokens_sent_for("example-org/widgets") == {f"Bearer {expected}"}
 
 
 # --------------------------------------------------------------------------
@@ -530,9 +530,9 @@ class ProbeGitHub:
 def test_the_index_head_poll_reads_with_the_installation_token(installed):
     probe = ProbeGitHub()
     tenant_tokens = forge_fakes.AnyTenantTokens()
-    source = FixedSource("saga-xyz" if installed else "someone-else")
-    tenant = Tenant(tenant_id="eng", kind="group", principal="eng@saga.xyz", created_at=T0)
-    record = {"owner": "saga-xyz", "repo": "widgets", "default_branch": "main",
+    source = FixedSource("example-org" if installed else "someone-else")
+    tenant = Tenant(tenant_id="eng", kind="group", principal="eng@example.com", created_at=T0)
+    record = {"owner": "example-org", "repo": "widgets", "default_branch": "main",
               "repo_id": "repo_x"}
 
     read = read_head_if_changed(record, tenant, etag=None, known_sha=None,

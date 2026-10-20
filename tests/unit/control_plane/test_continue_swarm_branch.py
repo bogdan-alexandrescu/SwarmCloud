@@ -33,7 +33,7 @@ from swarm_api.validation import DispatchOptions
 
 from .conftest import auth_header
 
-REPO = "https://github.com/saga-xyz/example"
+REPO = "https://github.com/example-org/example"
 
 
 def _task_doc(db, task_id: str) -> dict:
@@ -312,7 +312,7 @@ def test_a_different_repository_is_refused(client):
     response = client.post(
         "/v1/workflows",
         headers=auth_header("alice"),
-        json=_fix_workflow(original, repository_url="https://github.com/saga-xyz/other"),
+        json=_fix_workflow(original, repository_url="https://github.com/example-org/other"),
     )
     assert response.status_code == 422, response.text
     assert response.json()["code"] == "invalid_dispatch"

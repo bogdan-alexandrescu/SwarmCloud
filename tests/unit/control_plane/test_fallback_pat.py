@@ -59,10 +59,10 @@ from .spec_signer import LocalSpecSigner
 from .test_access_api import LOGIN, ORG, AccessGitHub, _connect, _enable
 from .test_forgeapp import CLIENT_ID, Clock, FakeAppSecret, FakeSlots
 
-ALICE = "alice@saga.xyz"
-BOB = "bob@saga.xyz"
+ALICE = "alice@example.com"
+BOB = "bob@example.com"
 #: The org that will not install the App: reached through a token.
-PAT_ORG = "saga-xyz"
+PAT_ORG = "example-team"
 REPO = f"{PAT_ORG}/widgets"
 REPO_URL = f"https://github.com/{REPO}.git"
 TOKEN_ROUTE = "/v1/onboarding/github/token"
@@ -244,7 +244,7 @@ def _tasks(db) -> list[dict[str, Any]]:
 
 
 def test_the_owner_slot_suffix_is_git_u_hex_of_email_and_owner():
-    suffix = gittokens.owner_suffix("Alice@Saga.xyz ", "Saga-XYZ")
+    suffix = gittokens.owner_suffix("Alice@Example.com ", "Example-Team")
     assert suffix == _expected_suffix(ALICE, PAT_ORG)
     assert FORGE_CREDENTIAL.fullmatch(suffix), "the frozen contract must accept it"
     # Distinct from the person's App slot, and from the same person's slot
@@ -296,7 +296,7 @@ def test_a_fine_grained_token_is_recorded_as_one(api, github, db):
 def test_a_second_token_for_the_owner_is_a_new_version_of_the_same_slot(api, github, slots):
     assert _store(api, github.pat()).status_code == 200
     second = github.pat()
-    assert _store(api, second, owner="Saga-XYZ").status_code == 200
+    assert _store(api, second, owner="Example-Team").status_code == 200
     assert slots.versions("eng", _slot()) == 2
     assert slots.latest("eng", _slot()) == second
 
@@ -486,12 +486,12 @@ def test_another_persons_owner_slot_is_not_the_submitters(api, github, db):
     seed_grant(db, "eng", ALICE, REPO)
     assert _store(api, github.pat("classic")).status_code == 200
     forge_view = sched.ForgeConnections(db)
-    task = SimpleNamespace(tenant_id="eng", submitted_by="carol@saga.xyz",
+    task = SimpleNamespace(tenant_id="eng", submitted_by="carol@example.com",
                            repository_url=REPO_URL, forge_credential=_slot())
     assert sched.forge_answer(task, forge_view) is sched.ForgeAnswer.CONNECTION_MISSING
     assert worker_secrets.grant_refusal(
         db, tenant_id="eng", suffix=_slot(), repository_url=REPO_URL, write=False,
-        submitted_by="carol@saga.xyz") is not None
+        submitted_by="carol@example.com") is not None
     # Alice's slot for the owner, on a repository of ANOTHER owner, is not hers either.
     other = f"https://github.com/{ORG}/repo-0001.git"
     seed_grant(db, "eng", ALICE, f"{ORG}/repo-0001")

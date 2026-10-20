@@ -33,6 +33,9 @@ The scenario's keys, all optional:
   slow_methods  {"<method>": seconds} -- that method alone answers after
                 the delay, in any mode (a workspace-wide query is slow on
                 a real server while a definition is not)
+  slow_paths    {"<path>": seconds} -- every query about a document at
+                <path> answers after the delay, in any mode (a large file a
+                real server is still checking when its budget runs out)
   ignore_shutdown  if true, `shutdown` and `exit` go unanswered: the
                 server lives until the client kills it, as a wedged one does
 
@@ -157,6 +160,8 @@ def main() -> int:
             time.sleep(scenario["delay"])
         time.sleep(scenario.get("slow_methods", {}).get(method, 0))
         params = message["params"]
+        if isinstance(params.get("textDocument"), dict):
+            time.sleep(scenario.get("slow_paths", {}).get(rel(params["textDocument"]["uri"]), 0))
         if method == "callHierarchy/incomingCalls":
             item = params["item"]
             key = f"{rel(item['uri'])}:{item['selectionRange']['start']['line']}"

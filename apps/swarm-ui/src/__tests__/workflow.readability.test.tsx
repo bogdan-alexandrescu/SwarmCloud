@@ -356,7 +356,12 @@ describe('#110: the workflow step inspector opens next to the picked step', () =
     if (order()[0] === before[0]) fireEvent.click(byStep)
     const sorted = order()
     expect(sorted).toEqual([...before].reverse())
-    // Put the pick down and pick again: the order survives both.
+    // Put the pick down and pick again: the order survives both. `fix` is the
+    // page's own pick on arrival, so its first click brings the card to the
+    // reader and the second puts it down (visual QA QA-120).
+    fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-pick[data-step="fix"]')!)
+    expect(document.querySelector('.wf-panel')).toBeTruthy()
+    expect(order()).toEqual(sorted)
     fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-pick[data-step="fix"]')!)
     expect(document.querySelector('.wf-panel')).toBeNull()
     expect(order()).toEqual(sorted)

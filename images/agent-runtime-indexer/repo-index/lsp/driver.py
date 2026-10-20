@@ -29,18 +29,31 @@ THE FALLBACKS. One server per language, run one at a time (the indexer's
 memory is sized for the largest server, not for four at once):
 
   ok           the server answered to the end; its edges are kept
-  timed_out    it ran past its budget (§3.5's table, by repository size),
-               or stopped answering -- `max_consecutive_timeouts` requests
-               in a row each over the per-request timeout
+  partial      its budget ran out in phase 1 (below) after it had finished
+               some files: the edges of every file whose sites were all
+               asked are kept, the rest of the language is `ast`, and the
+               language's `covered` names the finished files (#1693)
+  timed_out    it ran past its budget before it finished any file with a
+               site (§3.5's table, by repository size), or stopped
+               answering -- `max_consecutive_timeouts` requests in a row
+               each over the per-request timeout
   failing      it is not installed, could not start, refused `initialize`,
                exited or crashed, or exceeded its memory limit
   unsupported  the repository has the language and no server is listed
 
-A server that is stopped keeps NONE of its answers: the language is then
-uniformly `ast`, which is what its status tells a consumer, rather than a
-graph that is `lsp` in the files the server reached and `ast` in the rest
-with nothing to say which. The run still succeeds; a timeout is never a
-failed index, it is a less certain one, and says so.
+A server that is stopped -- hung, crashed, over its memory -- keeps NONE of
+its answers: the language is then uniformly `ast`, which is what its status
+tells a consumer. A budget cut is different, and keeps what it finished: the
+files are asked one at a time in a fixed order, so the files before the one
+the budget ran out in were answered whole, by a server that was still
+answering, and the language says which they are. That is what stops a graph
+being `lsp` in the files the server reached and `ast` in the rest with
+nothing to say which: the extractor marks each file row `lsp: true` or
+`false` from `covered`, and impact trusts a changed file of a `partial`
+language only when its row says it was covered. On ai-studio on 2026-10-20
+the old rule threw away 7,106 resolved sites from a healthy pyright that had
+simply run out of its 270-second share (#1693). The run still succeeds; a
+timeout is never a failed index, it is a less certain one, and says so.
 
 THE TOTAL BUDGET. §3.5's per-server budget is a cap, not a grant: the
 servers run one after another inside ONE indexer step, which swarm-api
@@ -68,7 +81,8 @@ running out ends phase 2 only: the language stays `ok`, keeps every
 definition edge, and its reason says how many symbols were asked ("call
 hierarchy and references cut at their N-second share of the M-second
 budget: a of b symbols asked"). The budget running out in phase 1 is
-`timed_out` as above.
+`partial` as above ("pyright reached N of M files (K of S sites) in its
+270-second budget"), or `timed_out` when no file with a site was finished.
 
 Why a budget cut in phase 2 keeps phase 1's edges while a crash or a
 memory stop in phase 2 keeps none: a cut is the driver's own decision,
@@ -114,6 +128,7 @@ LSP_DECLARED = 0.95
 LSP_INFERRED = 0.8
 
 STATUS_OK = "ok"
+STATUS_PARTIAL = "partial"
 STATUS_TIMED_OUT = "timed_out"
 STATUS_FAILING = "failing"
 STATUS_UNSUPPORTED = "unsupported"
@@ -234,6 +249,10 @@ class LanguageResult:
     reason: str | None
     server: str | None
     counts: dict[str, Any] = field(default_factory=dict)
+    #: The files whose every site was asked and whose edges are kept: every
+    #: file the server served when `ok`, the finished ones when `partial`,
+    #: none otherwise.
+    covered: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -285,8 +304,10 @@ def run_pass(root: Path, files: Mapping[str, str], symbols: Sequence[Mapping[str
             versions[spec.name] = run.server_version
         counts = dict(run.counts, server_version=run.server_version)
         for lang in served:
-            languages[lang] = LanguageResult(run.status, run.reason, spec.name, dict(counts))
-        if run.status == STATUS_OK:
+            languages[lang] = LanguageResult(
+                run.status, run.reason, spec.name, dict(counts),
+                frozenset(path for path in run.covered if files.get(path) == lang))
+        if run.status in (STATUS_OK, STATUS_PARTIAL):
             edges.extend(run.edges)
     for lang in sorted(present - set(languages)):
         languages[lang] = LanguageResult(STATUS_UNSUPPORTED, NO_SERVER_REASON, None)
@@ -362,6 +383,14 @@ class _ServerRun:
         self.reason: str | None = None
         self.server_version: str | None = None
         self.edges: list[LspEdge] = []
+        # Phase 1's progress, file by file (module doc, "the fallbacks"): the
+        # files finished, how many edges and sites they account for, and the
+        # totals a cut's reason is measured against.
+        self.covered: list[str] = []
+        self._covered_edges = 0
+        self._covered_sites = 0
+        self._files_total = 0
+        self._sites_total = 0
         self.counts = {"requests": 0, "resolved": 0, "unresolved": 0, "request_timeouts": 0,
                        "errors": 0, "edges": 0, "symbols_skipped": 0}
         self._warming = True
@@ -428,7 +457,8 @@ class _ServerRun:
             try:
                 self._session(client)
             except BudgetExceeded:
-                self._stop(STATUS_TIMED_OUT, f"over the {_seconds(self.budget)}-second budget for {self.spec.name}")
+                # Phase 2 catches its own cut, so this is initialize or phase 1.
+                self._cut()
             except _Hung as exc:
                 self._stop(STATUS_TIMED_OUT, str(exc))
             except _InitFailed as exc:
@@ -445,7 +475,7 @@ class _ServerRun:
                     self._stop(STATUS_FAILING, f"{self.spec.name} exited with status {code}")
             finally:
                 client.close()
-            if client.memory_exceeded and self.status == STATUS_OK:
+            if client.memory_exceeded and self.status in (STATUS_OK, STATUS_PARTIAL):
                 # It finished its last answer as the watchdog stopped it.
                 self._stop(STATUS_FAILING,
                            f"over the {self.memory_mib} MiB memory limit; {self.spec.name} was stopped")
@@ -453,6 +483,20 @@ class _ServerRun:
     def _stop(self, status: str, reason: str) -> None:
         self.status, self.reason = status, reason
         self.edges = []
+        self.covered = []
+
+    def _cut(self) -> None:
+        """The budget ran out in phase 1: keep the files it finished, if any."""
+        if self._covered_sites == 0:
+            self._stop(STATUS_TIMED_OUT, f"over the {_seconds(self.budget)}-second budget for {self.spec.name}")
+            return
+        self.status = STATUS_PARTIAL
+        self.reason = (f"{self.spec.name} reached {len(self.covered)} of {self._files_total} files "
+                       f"({self._covered_sites} of {self._sites_total} sites) in its "
+                       f"{_seconds(self.budget)}-second budget")
+        # The file the budget ran out in was answered in part: its edges go.
+        del self.edges[self._covered_edges:]
+        self.counts["edges"] = len(self.edges)
 
     def _folder(self) -> dict:
         return {"uri": self.root.as_uri(), "name": self.root.name or "workspace"}
@@ -502,6 +546,10 @@ class _ServerRun:
             if language_id is not None:
                 paths.append((path, language_id))
         # Phase 1, every site's definition: the per-site answer §3.5 is for.
+        # A file counts as covered once every one of its sites was asked, so
+        # a cut keeps exactly the files before the one it landed in.
+        self._files_total = len(paths)
+        self._sites_total = sum(len(self.sites_by_path.get(path, [])) for path, _ in paths)
         for path, language_id in paths:
             sites = sorted(self.sites_by_path.get(path, []),
                            key=lambda s: (s.line, s.name, s.caller, s.kind))
@@ -509,6 +557,9 @@ class _ServerRun:
                 self._open(client, path, language_id,
                            lambda document, lines: [self._definition(client, document, lines, site)
                                                     for site in sites])
+            self.covered.append(path)
+            self._covered_edges = len(self.edges)
+            self._covered_sites += len(sites)
         # Phase 2, the workspace queries: callers the syntax could not see.
         # Each one searches the whole workspace (pyright took up to 60 s a
         # symbol on this repository, against milliseconds a definition), so

@@ -63,7 +63,7 @@ def _tenant(tenant_id: str = "eng") -> Tenant:
     return Tenant(
         tenant_id=tenant_id,
         kind="group",
-        principal=f"{tenant_id}@saga.xyz",
+        principal=f"{tenant_id}@example.com",
         created_at=NOW,
         service_account=f"swarm-agent-worker-{tenant_id}@{PROJECT}.iam.gserviceaccount.com",
         gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/{tenant_id}",

@@ -87,9 +87,53 @@ def test_a_generic_basename_does_not_select_every_test_that_mentions_it():
 
 
 def test_a_path_no_test_reads_selects_only_the_guard_set():
-    result = _run("--list", "--files", str(FIXTURES / "unread.txt"))
+    result = _run("--list", "--files", str(FIXTURES / "unread-code.txt"))
     assert result.returncode == 0, result.stderr
     assert sorted(_selected(result.stdout)) == sorted(GUARDS)
+
+
+# DOCS-ONLY (GUARDS-DEDUP, part of #1694). Docs-only lanes spent 44-50 min in
+# guards on 2026-10-19/20, running the UI route seam, test_specsign_covers and
+# the contract-parity check, none of which reads a doc (the parity check skips
+# `.md` outright). A change made only of docs/** and *.md files selects the two
+# doc guards and the tests that read the changed docs, and nothing else.
+DOC_GUARDS = GUARDS[:2]
+
+
+def test_a_docs_only_change_selects_only_the_doc_guards():
+    result = _run("--list", "--files", str(FIXTURES / "unread.txt"))
+    assert result.returncode == 0, result.stderr
+    # MUTATION: dropping the docs-only branch in changed-guards.sh (selecting
+    # GUARD_TESTS for every diff) turns this red with all four guards.
+    assert sorted(_selected(result.stdout)) == sorted(DOC_GUARDS)
+    # MUTATION: printing/running the parity check for a docs-only diff turns this red.
+    assert "check-contract-parity.sh" not in result.stdout
+    assert "docs-only" in result.stderr
+
+
+def test_a_docs_only_change_still_selects_the_tests_that_read_the_changed_doc():
+    result = _run("--list", "--files", "-", stdin="docs/runbooks/merge-app.md\nCLAUDE.md\n")
+    assert result.returncode == 0, result.stderr
+    selected = _selected(result.stdout)
+    for guard in DOC_GUARDS:
+        assert guard in selected
+    # test_merge_step_docs.py reads docs/runbooks/merge-app.md by name.
+    # MUTATION: skipping the reader grep for a docs-only diff turns this red.
+    assert "tests/unit/scripts/test_merge_step_docs.py" in selected
+    # MUTATION: keeping the non-doc guards for a docs-only diff turns this red.
+    for unit_guard in GUARDS[2:]:
+        assert unit_guard not in selected, unit_guard
+    assert "check-contract-parity.sh" not in result.stdout
+
+
+def test_a_doc_beside_a_code_change_keeps_the_whole_guard_set():
+    # Read from the fixtures: a test naming either path would select itself.
+    both = (FIXTURES / "unread.txt").read_text() + (FIXTURES / "unread-code.txt").read_text()
+    result = _run("--list", "--files", "-", stdin=both)
+    assert result.returncode == 0, result.stderr
+    # MUTATION: reading "any doc changed" as docs-only turns this red.
+    assert sorted(_selected(result.stdout)) == sorted(GUARDS)
+    assert "check-contract-parity.sh" in result.stdout
 
 
 def test_a_changed_test_file_is_selected_itself():
@@ -140,7 +184,7 @@ def test_the_tests_run_in_the_callers_environment_not_common_sh_s(tmp_path: Path
     env.update(NO_COLOR="1", ENV_DUMP=str(dump), SWARM_ENV_FILE=str(tmp_path / "no.env"))
     result = subprocess.run(
         ["bash", str(tmp_path / "scripts" / "changed-guards.sh"), "--files", "-"],
-        cwd=tmp_path, env=env, input="docs/x.md\n", capture_output=True, text=True, timeout=120,
+        cwd=tmp_path, env=env, input="scripts/x.sh\n", capture_output=True, text=True, timeout=120,
     )
     assert result.returncode == 0, result.stderr
     args = (tmp_path / "env.args").read_text()
@@ -232,7 +276,7 @@ def _fake_repo(tmp_path: Path, python_body: str) -> tuple[Path, dict[str, str]]:
         (tmp_path / guard).write_text("")
     weights = {guard: 0.1 for guard in GUARDS}
     for heavy in HEAVY:
-        (tmp_path / heavy).write_text('PATH = "docs/x.md"\n')
+        (tmp_path / heavy).write_text('PATH = "scripts/x.sh"\n')
         weights[heavy] = 300
     (tmp_path / "tests" / "unit" / "scripts" / "unit_test_durations.json").write_text(
         json.dumps(weights))
@@ -257,7 +301,7 @@ def _fake_repo(tmp_path: Path, python_body: str) -> tuple[Path, dict[str, str]]:
 def _run_fake(root: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(root / "scripts" / "changed-guards.sh"), "--files", "-", *args],
-        cwd=root, env=env, input="docs/x.md\n", capture_output=True, text=True, timeout=120,
+        cwd=root, env=env, input="scripts/x.sh\n", capture_output=True, text=True, timeout=120,
     )
 
 

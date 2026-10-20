@@ -78,6 +78,23 @@ export function useProviderKeys(): ProviderKeys {
 }
 
 /**
+ * A ROOM NOBODY COULD MEASURE, as `RoomFact` and `CanStartFact` both say it.
+ *
+ * THE COUNT CLAUSE IS ONE UNIT (visual QA QA-069): in a card's column it
+ * broke as "… pools could not / be read", one word alone on the last line. It
+ * breaks before the count or not at all (`.sb-room-unread` is `nowrap`); the
+ * clause is about 30 characters, well inside the narrowest card.
+ */
+function UnreadRoom({ profile, unread }: { profile: RunnerProfile; unread: number }) {
+  return (
+    <>
+      <Mark kind="unread" say={HELP['room-unknown-not-zero'].short} /> room unknown ·{' '}
+      <span className="sb-room-unread">{unread} of {profile.pools.length} pools could not be read</span>
+    </>
+  )
+}
+
+/**
  * How many more of this runner fit right now, off `headroomFor`.
  *
  * NEVER A ZERO FOR "NOT KNOWN" (TS-23). A measured zero is a digit; a room
@@ -90,12 +107,7 @@ export function RoomFact({ profile }: { profile: RunnerProfile }) {
   const room = headroomFor(profile)
   if (room.agents !== null) return <>room for {room.agents} more</>
   if (room.basis === 'uncapped') return <>no pool caps it</>
-  return (
-    <>
-      <Mark kind="unread" say={HELP['room-unknown-not-zero'].short} /> room unknown ·{' '}
-      {room.unread.length} of {profile.pools.length} pools could not be read
-    </>
-  )
+  return <UnreadRoom profile={profile} unread={room.unread.length} />
 }
 
 /**
@@ -158,12 +170,7 @@ export function CanStartFact({ profile }: { profile: RunnerProfile }) {
     return <>0 can start now{room.binding !== null && <> · held by <span className="sbf-runner-holder" title={room.binding}>{room.binding}</span></>}</>
   }
   if (room.basis === 'uncapped') return <>no pool caps it</>
-  return (
-    <>
-      <Mark kind="unread" say={HELP['room-unknown-not-zero'].short} /> room unknown ·{' '}
-      {room.unread.length} of {profile.pools.length} pools could not be read
-    </>
-  )
+  return <UnreadRoom profile={profile} unread={room.unread.length} />
 }
 
 /** `CanStartFact` as plain text, for an `<option>`, which holds no markup. */
@@ -332,10 +339,17 @@ export function RunnerPicker({ group, label, profiles, chosen, keys, onPick, onl
                 {isPlatformRunner(n) && (
                   <span className="sb-runner-platform" title="The platform submits this runner for its own steps; it is not one people usually choose.">platform</span>
                 )}
+                {/* A REFUSED RUNNER NAMES NO KEY (visual QA QA-105): codex's card
+                    said "openai key missing" in sight and the platform's refusal
+                    only in the reason's tooltip, so the lesser of two true reasons
+                    was the one read. A key cannot make a runner the platform
+                    refuses start; its reason line below is the one reason. */}
                 <span className="sbf-runner-facts">
                   <span className="sb-runner-size">{sizeOf(p)}</span>
-                  {' · '}
-                  <span className="sbf-runner-key"><KeyFact provider={p.provider} keys={keys} /></span>
+                  {!off && <>
+                    {' · '}
+                    <span className="sbf-runner-key"><KeyFact provider={p.provider} keys={keys} /></span>
+                  </>}
                 </span>
                 {off
                   ? <span className="sbf-runner-off" title={p.disabled_reason || undefined}>{offLine(p)}</span>

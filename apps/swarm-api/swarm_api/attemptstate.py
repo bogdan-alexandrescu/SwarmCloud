@@ -1713,9 +1713,14 @@ class AttemptState:
         return doc is None or doc.get("workflow_id") == workflow_id
 
     def repository(self, attempt: AttemptTuple) -> dict[str, Any]:
-        """`indexrun.kept_commits` and `graphstage`'s reads: the registration
+        """`indexrun.resolve_base` and `graphstage`'s reads: the registration
         of the task's signed repository and its kept index versions, read
-        server-side (the worker role could never run that query, §1.3)."""
+        server-side (the worker role could never run that query, §1.3).
+
+        At most KEPT_VERSIONS + 1 of them, and always the promoted one: a
+        repository may keep up to 100 (`index.keep_versions`, lane
+        INDEX-RETENTION), and the promoted version is the base an incremental
+        run builds on, wherever its id sorts."""
         task = self._own_task(attempt)
         repo = owner_repo(task.get("repository_url"))
         if repo is None:
@@ -1727,6 +1732,11 @@ class AttemptState:
             return {"ok": True, "repo_id": repo_id, "registration": None, "versions": []}
         try:
             rows = list(ref.collection(VERSIONS_COLLECTION).limit(KEPT_VERSIONS + 1).stream())
+            current = (registration.get("index") or {}).get("current_sha")
+            if isinstance(current, str) and current and all(row.id != current for row in rows):
+                promoted = ref.collection(VERSIONS_COLLECTION).document(current).get()
+                if promoted.exists:
+                    rows = [promoted, *rows[:KEPT_VERSIONS]]
         except gexc.GoogleAPIError as exc:
             raise StateUnavailable(f"the state store did not answer ({type(exc).__name__})") \
                 from None

@@ -65,9 +65,9 @@ from swarm_api.settings import ApiSettings  # noqa: E402
 from swarm_api.waker import NullWaker  # noqa: E402
 
 PROJECT = "saga-agents-staging"
-ENG_GROUP = "eng@saga.xyz"
-ALICE = "alice@saga.xyz"
-BOB = "bob@saga.xyz"
+ENG_GROUP = "eng@example.com"
+ALICE = "alice@example.com"
+BOB = "bob@example.com"
 CHILD_KEY = "emulator-child-key-not-a-real-secret"
 #: The static verifier's name for eng's worker identity, built at runtime.
 WORKER_ID_TOKEN_NAME = "-".join(("token", "worker", "eng"))
@@ -142,7 +142,7 @@ def api_settings(spec_key: SpecKey) -> ApiSettings:
         environment="test",
         firestore_database="swarm",
         artifact_bucket=f"{PROJECT}-swarm-artifacts",
-        allowed_domains=("saga.xyz",),
+        allowed_domains=("example.com",),
         max_batch_size=100,
         max_input_bytes=256 * 1024,
         max_workflow_steps=50,
@@ -155,7 +155,7 @@ def api_settings(spec_key: SpecKey) -> ApiSettings:
     return ApiSettings(
         core=core,
         tenant_groups=(ENG_GROUP,),
-        admin_groups=("swarm-admins@saga.xyz",),
+        admin_groups=("swarm-admins@example.com",),
         group_cache_ttl_seconds=60,
         dispatch_topic="",
         max_page_size=200,

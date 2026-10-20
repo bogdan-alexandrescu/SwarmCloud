@@ -77,7 +77,7 @@ def seed_personal(db: FakeFirestore, user: str, *, principal: str | None = None,
                   state: str = "ready") -> None:
     """`tenants/u-<user>` and `workspaces/u-<user>`, as the workspace job leaves them."""
     tenant_id = f"u-{user}"
-    owner = principal or f"{user}@saga.xyz"
+    owner = principal or f"{user}@example.com"
     seed_tenant(db, tenant_id)
     db.docs[f"tenants/{tenant_id}"].update(kind="user", principal=owner, display_name=owner)
     db.docs[f"workspaces/{tenant_id}"] = {
@@ -91,11 +91,11 @@ def group_map() -> dict[str, tuple[str, ...]]:
     """alice and dave in eng, bob in research, root an admin in eng; carol in
     no group."""
     return {
-        "alice@saga.xyz": (ENG_GROUP,),
-        "bob@saga.xyz": (RESEARCH_GROUP,),
-        "carol@saga.xyz": (),
-        "dave@saga.xyz": (ENG_GROUP,),
-        "root@saga.xyz": (ADMIN_GROUP, ENG_GROUP),
+        "alice@example.com": (ENG_GROUP,),
+        "bob@example.com": (RESEARCH_GROUP,),
+        "carol@example.com": (),
+        "dave@example.com": (ENG_GROUP,),
+        "root@example.com": (ADMIN_GROUP, ENG_GROUP),
     }
 
 
@@ -260,7 +260,7 @@ def test_a_person_stores_their_own_key_in_their_personal_tenant(client, seeded, 
 
     status = status_of(client, "alice", "eng")
     assert status["user"]["set"] is True
-    assert status["user"]["set_by"] == "alice@saga.xyz"
+    assert status["user"]["set_by"] == "alice@example.com"
     assert status["user"]["version"].endswith("/versions/1")
     assert status["user"]["set_at"]
     assert status["resolution"] == {
@@ -291,7 +291,7 @@ def test_a_personal_tenant_named_for_someone_else_is_not_the_callers(client, see
 
 
 def test_a_namesakes_key_is_never_resolved_for_the_caller(client, seeded):
-    """dave@saga.xyz is in eng; `u-dave` belongs to dave@partner.com, who has
+    """dave@example.com is in eng; `u-dave` belongs to dave@partner.com, who has
     a key in it. The frozen slug derives `u-dave` for both, so a resolver fed
     the email would hand the partner's key to dave's tasks in eng."""
     seed_personal(seeded, "dave", principal="dave@partner.com")
@@ -306,7 +306,7 @@ def test_a_namesakes_key_is_never_resolved_for_the_caller(client, seeded):
 
 
 def test_the_user_key_body_names_no_user_or_tenant(client, seeded, credentials):
-    for field, value in (("user", "bob@saga.xyz"), ("tenant_id", "u-bob"), ("scope", "tenant")):
+    for field, value in (("user", "bob@example.com"), ("tenant_id", "u-bob"), ("scope", "tenant")):
         response = put_user(client, "alice", fake_key(), **{field: value})
         assert response.status_code == 422, (field, response.text)
     assert credentials._versions == {}
@@ -366,7 +366,7 @@ def test_the_tenant_key_is_used_until_the_person_sets_their_own(client, seeded):
     put_tenant(client, "root", fake_key())
     status = status_of(client, "alice", "eng")
     assert status["tenant"] == {
-        "available": True, "set": True, "set_by": "root@saga.xyz",
+        "available": True, "set": True, "set_by": "root@example.com",
         "set_at": status["tenant"]["set_at"], "version": status["tenant"]["version"],
         "secret_id": "swarm-tenant-eng-typesafe", "tenant_id": "eng",
     }
@@ -416,10 +416,10 @@ def test_every_set_and_delete_is_audited_without_the_value(client, seeded):
     entries = sorted(audits(seeded), key=lambda e: e["at"])
     assert [(e["action"], e["by"], e["detail"]["scope"], e["detail"]["tenant_id"])
             for e in entries] == [
-        ("provider_key_set", "alice@saga.xyz", "user", "u-alice"),
-        ("provider_key_deleted", "alice@saga.xyz", "user", "u-alice"),
-        ("provider_key_set", "root@saga.xyz", "tenant", "eng"),
-        ("provider_key_deleted", "root@saga.xyz", "tenant", "eng"),
+        ("provider_key_set", "alice@example.com", "user", "u-alice"),
+        ("provider_key_deleted", "alice@example.com", "user", "u-alice"),
+        ("provider_key_set", "root@example.com", "tenant", "eng"),
+        ("provider_key_deleted", "root@example.com", "tenant", "eng"),
     ]
     for entry in entries:
         assert entry["detail"]["provider"] == TYPESAFE
@@ -467,7 +467,7 @@ def test_a_link_is_a_console_url_and_its_token_is_stored_only_hashed(client, see
     assert list(links) == [f"{LINKS_COLLECTION}/{digest}"]
     assert token not in repr(seeded.docs)
     link = links[f"{LINKS_COLLECTION}/{digest}"]
-    assert link["email"] == "alice@saga.xyz"
+    assert link["email"] == "alice@example.com"
     assert link["scope"] == "user"
     assert link["provider"] == TYPESAFE
     assert link["tenant_id"] == "u-alice"

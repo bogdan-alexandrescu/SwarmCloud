@@ -71,8 +71,8 @@ SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 DECIDED = frozenset({("POST", "/v1/admin/schedules/tick")})
 
 NOW = datetime(2026, 10, 9, 9, 0, 30, tzinfo=timezone.utc)
-ALICE = "alice@saga.xyz"
-CAROL = "carol@saga.xyz"
+ALICE = "alice@example.com"
+CAROL = "carol@example.com"
 
 
 # ---------------------------------------------------------------------------
@@ -570,7 +570,7 @@ def test_a_misspelt_switch_is_off() -> None:
 def test_at_most_five_per_tenant_per_tick(db, ctx) -> None:
     for i in range(8):
         seed_schedule(db, schedule_id=f"sch_eng00000000{i}")
-    seed_schedule(db, schedule_id="sch_research0001", tenant_id="research", owner="bob@saga.xyz",
+    seed_schedule(db, schedule_id="sch_research0001", tenant_id="research", owner="bob@example.com",
                   repo_ids=("rr",))
     report = ticker(ctx).tick()
     by_tenant: dict[str, int] = {}
@@ -626,9 +626,9 @@ def test_schedule_owner_auth_is_an_ordinary_member(ctx) -> None:
     auth = schedulefire.schedule_owner_auth(ctx, {"schedule_id": "sch_1", "tenant_id": "eng", "owner": ALICE})
     assert auth.tenant_id == "eng" and auth.email == ALICE
     assert auth.is_admin is False and auth.member_scope == "" and auth.tenant_member == ""
-    assert auth.tenant_principal == "eng@saga.xyz"
+    assert auth.tenant_principal == "eng@example.com"
     with pytest.raises(schedulefire.ScheduleOwnerNotMember):
-        schedulefire.schedule_owner_auth(ctx, {"schedule_id": "sch_1", "tenant_id": "eng", "owner": "bob@saga.xyz"})
+        schedulefire.schedule_owner_auth(ctx, {"schedule_id": "sch_1", "tenant_id": "eng", "owner": "bob@example.com"})
 
 
 def test_a_caller_cannot_set_the_mark(client) -> None:

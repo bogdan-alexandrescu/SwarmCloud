@@ -136,8 +136,8 @@ export function asSentence(fragment: string): string {
 /**
  * The id of the sentence a refusal prints under one field (VQA V002). The
  * send panel's refusal card names the field and takes the reader to it; where
- * the field has no control that takes focus -- the carrier's select is
- * disabled -- this sentence is where it lands, so it carries `tabIndex={-1}`.
+ * the field has no control that takes focus -- the carrier is plain text
+ * (QA-074) -- this sentence is where it lands, so it carries `tabIndex={-1}`.
  * One form per page, so the key alone is unique.
  */
 export function refusedSayId(field: string): string {
@@ -243,27 +243,28 @@ export function DispatchChoice({
               four-step scale and an inline style is out of the sheet's reach,
               so no spacing rule could ever correct it; the gap above each
               field is `--ctl-s3`, declared once in the sheet. */}
-          <label className="t-label dsp-label" htmlFor="dsp-carrier">
-            what carries work between steps
-          </label>
-          {/* SHOWN FIXED, NOT OFFERED (QA G4-28, 2026-10-07). It was a live
-              select for a value the platform does not act on, so choosing
-              `branches` changed nothing but whether a repository was demanded.
-              Disabled, it still says what the form sends -- the default, as
-              the task form always has -- and a caller cannot spend a choice on
-              it. `onChange` is gone with the choice: nothing here can move the
-              draft's carrier off the default. */}
-          <select id="dsp-carrier" className="mono" value={DEFAULT_CARRIER} disabled
-            aria-describedby="dsp-carrier-note">
-            <option value={DEFAULT_CARRIER}>{DEFAULT_CARRIER} (fixed)</option>
-          </select>
+          {/* NO `<label for>` (QA-074, the owner's choice of 2026-10-20).
+              There is no control to label: the question and its answer are
+              two lines of text, read in order. */}
+          <span className="t-label dsp-label">what carries work between steps</span>
+          {/* SHOWN FIXED, NOT OFFERED (QA G4-28, 2026-10-07), AS TEXT
+              (QA-074, owner 2026-10-20). It was a live select for a value the
+              platform does not act on, so choosing `branches` changed nothing
+              but whether a repository was demanded. Then it was a disabled
+              select, restyled (QAFIX-SUBMIT-OTHER) so it no longer looked
+              choosable -- but a screen reader still announced a disabled
+              combobox. The owner chose plain text: the value the form sends,
+              and nothing to operate. What is sent is the draft's carrier,
+              seeded with DEFAULT_CARRIER and never written from here, exactly
+              as when the select (which had no `onChange`) drew it. */}
+          <p id="dsp-carrier" className="mono dsp-fixed">{DEFAULT_CARRIER} (fixed)</p>
           {/* THE FACT STAYS ON THE SURFACE, AS ONE PLAIN LINE (TS-6). Said on
               every workflow: the value is recorded and the platform does not
               act on it yet, which is why it is fixed, and a caller is
               entitled to know that on the value itself. It was a permanent
               two-sentence `--warn` paragraph -- a warning on a choice nothing
-              is wrong with. The two sentences are this line's accessible name
-              and the select's description; the argument is the help topic. */}
+              is wrong with. The two sentences are this line's accessible name;
+              the argument is the help topic. */}
           <p id="dsp-carrier-note" className="ctl-panel-note" aria-label={CARRIER_FIXED_NOTE}>
             not acted on yet <a href={`#${helpAnchor(CARRIER_HELP)}`}>Why &rarr;</a>
           </p>

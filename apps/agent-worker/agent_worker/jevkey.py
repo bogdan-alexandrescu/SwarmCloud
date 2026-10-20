@@ -15,7 +15,7 @@ tenant's (`swarm-tenant-<tenant>-typesafe`); else none. "Set" is the
 as the audit entry, the same record the status route reads. Confirmed means
 `tenants/u-<user>` is `kind: user` and its principal is the submitter's email:
 the frozen slug keeps only the local part, so `dave@partner.com` and
-`dave@saga.xyz` both derive `u-dave`, and only the principal says whose it is.
+`dave@example.com` both derive `u-dave`, and only the principal says whose it is.
 `candidates` restates the order; tests/unit/worker/test_jev_runner.py holds it
 to swarm-api's function over every combination.
 

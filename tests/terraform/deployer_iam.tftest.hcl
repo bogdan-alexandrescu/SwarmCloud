@@ -939,7 +939,7 @@ run "every_project_role_the_tenancy_module_grants_is_grantable" {
     tenants = {
       eng = {
         kind      = "group"
-        principal = "eng@saga.xyz"
+        principal = "eng@example.com"
         providers = ["anthropic", "git"]
       }
     }

@@ -49,7 +49,7 @@ EXTRACTOR = TOOL_DIR / "repo_index_extract.py"
 DOCKERFILE = REPO_ROOT / "images" / "agent-runtime-indexer" / "Dockerfile"
 
 TENANT = "eng"
-REPO_ID = "gh-saga-xyz-widgets"
+REPO_ID = "gh-example-org-widgets"
 
 
 def _load(name: str, path: Path) -> Any:
@@ -408,7 +408,7 @@ def test_the_sweep_leaves_alone_what_it_did_not_write(shards, tmp_path):
 
 def test_the_sweep_stays_inside_one_registration(shards, tmp_path):
     _write(shards, tmp_path, graph_doc())
-    other = tmp_path / shards.graph_root(TENANT, "gh-saga-xyz-other") / "blobs"
+    other = tmp_path / shards.graph_root(TENANT, "gh-example-org-other") / "blobs"
     other.mkdir(parents=True)
     foreign = other / (hashlib.sha256(b"x").hexdigest() + shards.BLOB_SUFFIX)
     foreign.write_bytes(b"x")

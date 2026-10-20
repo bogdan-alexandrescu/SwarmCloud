@@ -58,7 +58,7 @@ HEAD = "a" * 40
 MOVED = "b" * 40
 NUMBER = 41
 CHECK = "ci / unit"
-REPO_URL = "https://github.com/saga-xyz/widgets"
+REPO_URL = "https://github.com/example-org/widgets"
 
 
 class Clock:
@@ -344,7 +344,7 @@ def test_a_park_with_no_recorded_head_is_left_to_the_fallback(db, wake_client, g
 
 def test_a_repository_off_github_is_never_sent_the_token(db, wake_client, github, tenant_tokens):
     doc = parked_merge(db)
-    doc["repository_url"] = "https://gitlab.com/saga-xyz/widgets"
+    doc["repository_url"] = "https://gitlab.com/example-org/widgets"
     body = _tick(wake_client).json()
     assert body["failures"][0]["code"] == "wait_unrecorded"
     assert github.calls == []
@@ -378,7 +378,7 @@ ROOT = "task_" + "1" * 20
 ROUND_TASK_STATES = ("PARKED", "READY", "RUNNING")
 
 
-def fixable_merge(db, github, *, rounds: int = 1, submitter: str = "alice@saga.xyz",
+def fixable_merge(db, github, *, rounds: int = 1, submitter: str = "alice@example.com",
                   **wait: Any) -> dict:
     """A CI_PENDING merge of ROOT's pull request, red at HEAD, asking for `rounds`."""
     root = seed_task(db, task_id=ROOT, tenant_id="eng", state="SUCCEEDED",
@@ -432,7 +432,7 @@ def test_red_with_rounds_left_claims_a_round_and_submits_one_continuation(db, wa
     (step,) = workflow["steps"]
     assert step["step_id"] == issueci.CI_FIX_STEP
     fix_task = db.docs[f"tasks/{step['task_id']}"]
-    assert fix_task["submitted_by"] == "alice@saga.xyz"
+    assert fix_task["submitted_by"] == "alice@example.com"
     assert fix_task["runner_profile"] == "claude-code"
     assert fix_task["metadata"]["merge"] == "off", "a fix round never carries its own merge"
     assert fix_task["metadata"]["dispatch"]["continues"] == ROOT
@@ -545,7 +545,7 @@ def test_a_round_claimed_and_never_recorded_wakes_the_step_once_lost(db, wake_cl
 
 
 def test_a_submitter_who_left_the_tenant_gets_no_round(db, wake_client, github):
-    fixable_merge(db, github, rounds=2, submitter="carol@saga.xyz")
+    fixable_merge(db, github, rounds=2, submitter="carol@example.com")
 
     body = _tick(wake_client).json()
 
@@ -614,7 +614,7 @@ def pr_side_claim(db, *, head: str = HEAD, state: str = "RUNNING", tenant_id: st
     """A PR-side fix's claim on NUMBER at `head`, and the task holding it."""
     claim_id = "e" * 32
     db.docs[f"{cifix.CLAIMS}/claim-{tenant_id}-{head[:8]}"] = {
-        "tenant_id": tenant_id, "repository": "saga-xyz/widgets",
+        "tenant_id": tenant_id, "repository": "example-org/widgets",
         "pull_request": NUMBER, "head_sha": head, "run_id": 4242,
         "root_task_id": ROOT, "claim_id": claim_id, "claimed_at": claimed_at,
     }
@@ -736,7 +736,7 @@ def test_a_pull_request_still_in_the_queue_is_a_wait_and_its_checks_are_not_read
     method, url, headers, payload = call
     assert method == "POST" and url == "https://api.github.com/graphql"
     variables = json.loads(payload)["variables"]
-    assert variables == {"owner": "saga-xyz", "name": "widgets", "number": NUMBER}
+    assert variables == {"owner": "example-org", "name": "widgets", "number": NUMBER}
     (token,) = tenant_tokens.issued.values()
     assert [k for k, v in headers.items() if token in str(v)] == ["Authorization"]
     assert token not in payload.decode()
@@ -869,7 +869,7 @@ def test_a_conflict_claims_a_conflict_round_and_never_reads_the_checks(
     (step,) = workflow["steps"]
     fix_task = db.docs[f"tasks/{step['task_id']}"]
     assert fix_task["runner_profile"] == "claude-code"
-    assert fix_task["submitted_by"] == "alice@saga.xyz"
+    assert fix_task["submitted_by"] == "alice@example.com"
     assert fix_task["metadata"]["merge"] == "off"
     assert fix_task["metadata"]["dispatch"]["continues"] == ROOT
     assert fix_task["metadata"]["merge_conflict_round"] == {

@@ -117,8 +117,8 @@ class PersonalCloud:
 
     def record(self, workspace_id: str):
         return ("projects/p/databases/swarm/documents/workspaces/u-alice", "2026-10-19T00:00:00Z", {
-            "workspace_id": workspace_id, "tenant_id": "u-alice", "principal": "alice@saga.xyz",
-            "state": "approved", "decision": {"verdict": "approved", "by": "admin@saga.xyz"}})
+            "workspace_id": workspace_id, "tenant_id": "u-alice", "principal": "alice@example.com",
+            "state": "approved", "decision": {"verdict": "approved", "by": "admin@example.com"}})
 
 
 class Recorder:
@@ -339,8 +339,8 @@ _DRIVER = textwrap.dedent("""
             pass
         def record(self, workspace_id):
             return ("n", "t", {"workspace_id": workspace_id, "tenant_id": "u-alice",
-                               "principal": "alice@saga.xyz",
-                               "decision": {"verdict": "approved", "by": "admin@saga.xyz"}})
+                               "principal": "alice@example.com",
+                               "decision": {"verdict": "approved", "by": "admin@example.com"}})
     sys.exit(entry.main(argv, None, metadata=answers.__getitem__, scratch_root=scratch, target=Path(target),
                         cloud=PersonalCloud))
 """ % (PROJECT, REGION))

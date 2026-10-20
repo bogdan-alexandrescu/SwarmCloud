@@ -1,7 +1,11 @@
 # Tenant settings integrity: a tenant's worker cannot change what the control plane does for another tenant
 
-**Status: designed 2026-10-17 (lane ISO-SETTINGS-DESIGN, part of #1457).**
-Nothing here is built. The owner answers §7 before any build lane starts.
+**Status: designed 2026-10-17 (lane ISO-SETTINGS-DESIGN, part of #1457), and
+answered by the owner the same day (§7, "The owner's answers").** Nine of the
+ten build lanes of §6 have merged (PRs 1473-1487). ISO-IAM, the per-tenant switch
+that drops the worker's Firestore role, is PR 1484, still open on 2026-10-20.
+Follow-up lanes ISO-MAC-TF, ISO-API-SETTINGS, ISO-UPSTREAM, ISO-SEARCH and
+ISO-WIRE merged as PRs 1490-1502. No tenant has been cut over yet.
 
 Every file and symbol cited below was read on 2026-10-17 at `35f2a61`. Lines
 move, so each citation names the symbol; search for it.
@@ -177,6 +181,17 @@ no `entities.list`:
 `ControlPlane.parked_uploads`'s docstring records that the same kind of query
 returned 403 in dev. Whether these three fail live was not measured. Under
 design B they become routes, so the question disappears.
+
+*Measured since (lane GRAPH-STAGING, part of #1694):* the third one fails
+live. On 2026-10-19/20, 73 of 74 implement steps staged no graph, 33 with
+`staging failed (PermissionDenied)` from `_candidates`' `index_versions`
+list. It no longer lists: an unswitched tenant's step reads its registration,
+kept versions and settings from swarm-api's
+`POST /v1/attempts/{attempt_id}/context/graph` (`swarm_api.attemptcontext`,
+the worker's `agent_worker.graphroute`), signed with the child path's attempt
+key, and a worker with no key reads the promoted version by id. The worker's
+role gains nothing. `kept_commits` (#1693) is the same refused query and
+still lists on the direct path.
 
 ### 1.4 What "done" lets someone do that they cannot today
 
@@ -869,6 +884,22 @@ after ISO-STATE-API merges, so `dispatch.py` stays one lane's file.
 ## 7. Owner questions
 
 Each is also in this lane's `questions.json`. The recommendation is first.
+
+**The owner's answers, 2026-10-17 00:54Z (PDT 2026-10-16 ~17:40),** recorded on
+PR 1464. Each took the recommendation:
+
+| Q | Answer |
+|---|---|
+| Q1 design | (a) B. The worker reaches its state only through worker-only swarm-api routes scoped by ID token and attempt key, and its Firestore binding is removed |
+| Q2 before B | (a) phase 0 (the dispatcher derives identity, namespace and GCS prefix instead of reading them) plus a MAC on `workspace_settings`, so Request B, the canonical settings block, is in scope |
+| Q3 routes | (a) in swarm-api |
+| Q4 unprotected heap | (a) register the key flagged `unprotected` and run |
+| Q5 reads | (a) they move too, and the role is removed entirely |
+| Q6 outage tolerance | (a) swarm-api minimum instances 2; the 30 s / 120 s timings stay |
+| Q7 cutover | (a) a per-tenant switch, dev first (`u-bogdan`, then `eng`, then all), then the role is removed |
+
+The owner asked for all ten lanes of §6. Contract requests A, B and C (§5) were
+accepted with the design and are recorded in `docs/contract-change-requests.md`.
 
 **Q1. Which design closes #1457?**
 

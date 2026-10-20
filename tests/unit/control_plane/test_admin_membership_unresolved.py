@@ -12,7 +12,7 @@ THE DEFECT:
     member_groups)` over the WHOLE list, and admin groups were concatenated LAST,
     so they were exactly the ones whose failures the priority rule discarded. A
     caller confirmed in `eng` whose `swarm-admins` check failed came back as
-    `("eng@saga.xyz",)` -- silence that `any()` reads as absence -- and every
+    `("eng@example.com",)` -- silence that `any()` reads as absence -- and every
     admin route answered
 
         403  "admin group membership is required for this operation"
@@ -96,8 +96,8 @@ def _client(db, tokens, groups) -> TestClient:
 def admin_map() -> dict[str, tuple[str, ...]]:
     """`root` is an admin AND in eng; `alice` is in eng only."""
     return {
-        "root@saga.xyz": (ADMIN_GROUP, ENG_GROUP),
-        "alice@saga.xyz": (ENG_GROUP,),
+        "root@example.com": (ADMIN_GROUP, ENG_GROUP),
+        "alice@example.com": (ENG_GROUP,),
     }
 
 
@@ -140,7 +140,7 @@ def test_a_confirmed_admin_is_unaffected_by_an_unrelated_failure(db, tokens, adm
     it changes no answer. Here `research` fails, root is confirmed in both
     `swarm-admins` and `eng`, and the admin surface stays open.
     """
-    client = _client(db, tokens, FlakyGroups(admin_map, failing={"research@saga.xyz"}))
+    client = _client(db, tokens, FlakyGroups(admin_map, failing={"research@example.com"}))
 
     response = client.get(ADMIN_ROUTE, headers=auth_header("root"))
     assert response.status_code == 200, response.text
@@ -179,7 +179,7 @@ def test_the_admin_users_escape_hatch_does_not_depend_on_a_group_lookup(
     """
     groups = FlakyGroups(admin_map, failing={ADMIN_GROUP})
     ctx = build_context(
-        settings=api_settings(admin_users=("alice@saga.xyz",)),
+        settings=api_settings(admin_users=("alice@example.com",)),
         db=db,
         verifier=StaticTokenVerifier(tokens),
         groups=groups,
@@ -193,7 +193,7 @@ def test_the_admin_users_escape_hatch_does_not_depend_on_a_group_lookup(
     assert response.status_code == 200, response.text
     assert not any(
         ADMIN_GROUP in candidates for email, candidates in groups.calls
-        if email.lower() == "alice@saga.xyz"
+        if email.lower() == "alice@example.com"
     ), "a named admin must not be gated on the lookup the hatch exists to bypass"
 
 
@@ -210,7 +210,7 @@ def test_an_admin_group_that_is_also_a_tenant_group_is_still_asked_about(
         tenant_groups=(ENG_GROUP, ADMIN_GROUP),
         admin_groups=(ADMIN_GROUP,),
     )
-    groups = FlakyGroups({"root@saga.xyz": (ADMIN_GROUP, ENG_GROUP)}, failing={ADMIN_GROUP})
+    groups = FlakyGroups({"root@example.com": (ADMIN_GROUP, ENG_GROUP)}, failing={ADMIN_GROUP})
     ctx = build_context(
         settings=settings,
         db=db,

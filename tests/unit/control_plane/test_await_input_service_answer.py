@@ -226,7 +226,7 @@ def test_the_principal_is_refused_another_tenants_step(api_context, client, db, 
     # And the gate itself refuses it in a group tenant, whatever context arrives.
     with pytest.raises(awaitinput.Forbidden) as refused:
         awaitinput.member_refusal(api_context, _auth(ORACLE, "eng",
-                                  tenant_principal="eng@saga.xyz"), "eng")
+                                  tenant_principal="eng@example.com"), "eng")
     assert refused.value.detail["reason"] == "person_required"
     assert snapshot(db, objects, eng["review"]) == before
 
@@ -341,7 +341,7 @@ def test_a_tenant_document_rewritten_to_name_another_principal_steers_nothing(
 
 @pytest.mark.parametrize("fields", [
     {"tenant_id": "eng"},                                   # acting in another tenant
-    {"tenant_principal": "eng@saga.xyz"},                   # resolved to another principal
+    {"tenant_principal": "eng@example.com"},                   # resolved to another principal
     {"tenant_via": "platform_admin"},                       # reached, not owned
 ])
 def test_a_context_that_is_not_the_principal_acting_in_its_own_tenant_is_refused(
@@ -366,7 +366,7 @@ def test_a_person_sending_on_behalf_of_is_422(client, db, objects, await_enabled
     # Without it, the person's answer is as before, and names no one else.
     ok = client.post(url(eng), headers=auth_header("alice"), json=verdict())
     assert ok.status_code == 200, ok.text
-    assert ok.json()["answered_by"] == "alice@saga.xyz" and ok.json()["on_behalf_of"] is None
+    assert ok.json()["answered_by"] == "alice@example.com" and ok.json()["on_behalf_of"] is None
 
 
 @pytest.mark.parametrize("configured", ["other-prefix", "swarm-agent-worker"])

@@ -113,7 +113,7 @@ def _seed_fan_in(db, *, stored: TaskState = TaskState.QUEUED) -> None:
         created_at=NOW,
         updated_at=NOW,
         state=stored,
-        submitted_by="alice@saga.xyz",
+        submitted_by="alice@example.com",
         steps=[
             *(
                 WorkflowStep(

@@ -119,7 +119,7 @@ def test_index_now_submits_one_ordinary_task_by_profile_name(client, db, repo_id
     # By NAME, and nothing a caller could have chosen (invariant 10).
     assert task["runner_profile"] == "indexer"  # contract request 48
     assert set(task["input"]) == {"prompt"}
-    assert task["repository_url"] == "https://github.com/saga-xyz/widgets"
+    assert task["repository_url"] == "https://github.com/example-org/widgets"
     assert task["repository_ref"] == ONE
     assert task["priority"] == -50
     assert task["timeout_seconds"] == 1800
@@ -135,12 +135,12 @@ def test_index_now_submits_one_ordinary_task_by_profile_name(client, db, repo_id
 
     stored = db.docs[f"repo_index_runs/{task['id']}"]
     assert stored["tenant_id"] == "eng" and stored["repo_id"] == repo_id
-    assert stored["state"] == task["state"] and stored["requested_by"] == "alice@saga.xyz"
+    assert stored["state"] == task["state"] and stored["requested_by"] == "alice@example.com"
     index = _registration(db, repo_id)["index"]
     assert index["in_flight_task_id"] == task["id"]
     assert index["head_sha"] == ONE and index["head_read_at"] is not None
     # The head was read with the tenant's token, from the default branch.
-    assert any(url.endswith("/repos/saga-xyz/widgets/git/ref/heads/main")
+    assert any(url.endswith("/repos/example-org/widgets/git/ref/heads/main")
                for url, _ in github.calls)
 
 
@@ -239,7 +239,7 @@ def test_a_finished_run_is_promoted_with_its_digest_and_served(client, db, objec
     assert body["freshness"]["index_sha"] == ONE and body["freshness"]["head_sha"] == ONE
     produced = body["produced_by"]
     assert produced["task_id"] and produced["attempt_id"] == "att_1"
-    assert body["summary"].startswith("# Repository index: saga-xyz/widgets")
+    assert body["summary"].startswith("# Repository index: example-org/widgets")
     assert "src/api" in body["summary"]
     stored = _registration(db, repo_id)["index"]
     assert stored["current_sha"] == ONE and stored["current_digest"] == index["digest"]
@@ -424,7 +424,7 @@ def test_the_renderer_lays_out_a_fixture_index():
         fixture_index(ONE, built_at="2026-10-05T09:00:00Z"), repository=REPOSITORY
     )
     lines = text.splitlines()
-    assert lines[0] == "# Repository index: saga-xyz/widgets"
+    assert lines[0] == "# Repository index: example-org/widgets"
     assert f"Describes `{ONE}` on `main`, built 2026-10-05T09:00:00Z (full)." in lines
     assert "Mechanical fields from `swarm-repo-extract` 1." in lines
     assert "## Modules" in lines

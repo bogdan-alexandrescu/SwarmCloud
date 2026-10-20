@@ -45,17 +45,17 @@ variables {
   tenants = {
     eng = {
       kind      = "group"
-      principal = "eng@saga.xyz"
+      principal = "eng@example.com"
       providers = ["anthropic", "git"]
     }
     research = {
       kind      = "group"
-      principal = "research@saga.xyz"
+      principal = "research@example.com"
       providers = ["anthropic"]
     }
     "u-alice" = {
       kind      = "user"
-      principal = "alice@saga.xyz"
+      principal = "alice@example.com"
     }
   }
 
@@ -137,7 +137,7 @@ run "a_tenant_registering_git_review_is_refused" {
   variables {
     environment = "dev"
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = ["anthropic", "git-review"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = ["anthropic", "git-review"] }
     }
     image_refs = {
       "swarm-api"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -165,7 +165,7 @@ run "a_tenant_registering_git_merge_is_refused" {
   variables {
     environment = "dev"
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = ["git", "git-merge"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = ["git", "git-merge"] }
     }
     image_refs = {
       "swarm-api"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -198,8 +198,8 @@ run "no_job_for_a_retired_profile_and_merge_runs_as_the_worker" {
     environment = "dev"
 
     tenants = {
-      eng   = { kind = "group", principal = "eng@saga.xyz", providers = ["anthropic", "git"] }
-      smoke = { kind = "group", principal = "swarm-smoke@saga.xyz", providers = ["anthropic"] }
+      eng   = { kind = "group", principal = "eng@example.com", providers = ["anthropic", "git"] }
+      smoke = { kind = "group", principal = "swarm-smoke@example.com", providers = ["anthropic"] }
     }
 
     image_refs = {

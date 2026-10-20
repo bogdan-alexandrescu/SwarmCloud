@@ -36,8 +36,8 @@ from swarm_api.waker import NullWaker
 
 from .conftest import ENG_GROUP, PROJECT, api_settings, auth_header
 
-ALICE = "alice@saga.xyz"
-REPO = "https://github.com/saga-xyz/example"
+ALICE = "alice@example.com"
+REPO = "https://github.com/example-org/example"
 FIXER = f"swarm-ci-fix@{PROJECT}.iam.gserviceaccount.com"
 FIXER_UID = "104857600000000000001"
 FIXER_HEADERS = {"Authorization": "Bearer token-fixer"}
@@ -128,7 +128,7 @@ def test_a_workflow_step_inherits_the_workflows_submitter(client, db):
 
 def test_metadata_naming_an_identity_is_ignored(client, db):
     task_id = _submit_task(
-        client, metadata={"git_identity": {"name": "Mallory", "email": "mallory@saga.xyz"}},
+        client, metadata={"git_identity": {"name": "Mallory", "email": "mallory@example.com"}},
     )
     assert _identity(db, task_id) == {"name": "alice", "email": ALICE}
 
@@ -138,8 +138,8 @@ def test_a_workflows_metadata_naming_an_identity_is_ignored(client, db):
         "/v1/workflows", headers=auth_header("alice"),
         json={
             "steps": [{"step_id": "a", "runner_profile": "mock", "input": {"prompt": "a"},
-                       "metadata": {"git_identity": {"name": "M", "email": "m@saga.xyz"}}}],
-            "metadata": {"git_identity": {"name": "Mallory", "email": "mallory@saga.xyz"}},
+                       "metadata": {"git_identity": {"name": "M", "email": "m@example.com"}}}],
+            "metadata": {"git_identity": {"name": "Mallory", "email": "mallory@example.com"}},
         },
     )
     assert response.status_code == 201, response.text
@@ -152,7 +152,7 @@ def test_a_dispatch_block_naming_an_identity_is_refused(client, db):
     response = client.post(
         "/v1/tasks", headers=auth_header("alice"),
         json={"runner_profile": "mock", "input": {"prompt": "hi"},
-              "metadata": {"dispatch": {"git_identity": {"name": "M", "email": "m@saga.xyz"}}}},
+              "metadata": {"dispatch": {"git_identity": {"name": "M", "email": "m@example.com"}}}},
     )
     assert response.status_code == 422, response.text
     assert not [key for key in db.docs if key.startswith("tasks/")]
@@ -162,7 +162,7 @@ def test_a_dispatch_block_naming_an_identity_is_refused(client, db):
 def test_a_top_level_identity_field_writes_nothing(client, db, field):
     response = client.post(
         "/v1/tasks", headers=auth_header("alice"),
-        json={"runner_profile": "mock", "input": {"prompt": "hi"}, field: "mallory@saga.xyz"},
+        json={"runner_profile": "mock", "input": {"prompt": "hi"}, field: "mallory@example.com"},
     )
     assert response.status_code == 422, response.text
     assert not [key for key in db.docs if key.startswith("tasks/")]
@@ -239,7 +239,7 @@ def test_a_child_inherits_its_parents_person():
     }
     # A record naming someone else than a human submitter is not trusted.
     assert gitidentity.from_task(
-        {"dispatch": {"git_identity": {"name": "M", "email": "m@saga.xyz"}}}, ALICE
+        {"dispatch": {"git_identity": {"name": "M", "email": "m@example.com"}}}, ALICE
     ) == {"name": "alice", "email": ALICE}
     assert gitidentity.from_task({}, FIXER) is None
 

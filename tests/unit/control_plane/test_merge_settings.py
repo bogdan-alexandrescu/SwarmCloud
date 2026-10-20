@@ -36,7 +36,7 @@ from swarm_common.identity import tenant_id_for_user
 from .conftest import auth_header, seed_tenant
 from .test_repository_hard_stops import commits  # noqa: F401  (fixture)
 
-CAROL = "carol@saga.xyz"
+CAROL = "carol@example.com"
 CAROL_TENANT = tenant_id_for_user(CAROL)
 SWITCH_ON = {refusals.env_name("merge_settings_owner_required"): "on"}
 
@@ -49,9 +49,9 @@ def seeded(db):
     db.docs[f"tenants/{CAROL_TENANT}"].update({"kind": "user", "principal": CAROL})
     for tenant_id, repo in (("eng", "widgets"), ("eng", "gadgets"), ("research", "widgets"),
                             (CAROL_TENANT, "notes")):
-        repo_id = repo_id_for(tenant_id, "saga-xyz", repo)
+        repo_id = repo_id_for(tenant_id, "example-org", repo)
         db.docs[f"repositories/{repo_id}"] = {
-            "repo_id": repo_id, "tenant_id": tenant_id, "owner": "saga-xyz", "repo": repo,
+            "repo_id": repo_id, "tenant_id": tenant_id, "owner": "example-org", "repo": repo,
             "default_branch": "main", "created_at": datetime(2026, 10, 1, tzinfo=timezone.utc),
         }
     return personal
@@ -95,7 +95,7 @@ def test_a_workspace_with_no_settings_merges_directly_with_the_documented_defaul
     assert body["max_train_age_minutes"] == mergesettings.MAX_TRAIN_AGE_DEFAULT == 90
     assert body["can_edit"] is False
     repos = {r["repository"]: r for r in body["repositories"]}
-    assert set(repos) == {"saga-xyz/widgets", "saga-xyz/gadgets"}
+    assert set(repos) == {"example-org/widgets", "example-org/gadgets"}
     assert all(r["override"] == "inherit" and r["effective_mode"] == "direct"
                for r in repos.values())
 
@@ -131,7 +131,7 @@ def test_a_platform_admin_changes_any_workspace(client, db, seeded):
         response = _put(client, tenant_id, "root", {"mode": "train"})
         assert response.status_code == 200, response.text
     assert [e["detail"]["tenant_id"] for e in _audit(db)] == ["eng", "research", CAROL_TENANT]
-    assert all(e["by"] == "root@saga.xyz" for e in _audit(db))
+    assert all(e["by"] == "root@example.com" for e in _audit(db))
 
 
 def test_a_member_who_is_not_the_owner_is_refused_once_the_switch_is_on(
@@ -153,7 +153,7 @@ def test_the_owner_refusal_is_a_switched_refusal_that_ships_off(client, db, seed
     response = _put(client, "eng", "alice", {"mode": "train"})
     assert response.status_code == 200, response.text
     (entry,) = _audit(db)
-    assert entry["by"] == "alice@saga.xyz"
+    assert entry["by"] == "alice@example.com"
 
 
 def test_a_caller_outside_the_workspace_cannot_change_it_whatever_the_switch(
@@ -178,7 +178,7 @@ def test_a_put_that_changes_nothing_audits_nothing(client, db, seeded):
 
 
 def test_the_change_and_its_audit_are_one_transaction(client, db, seeded, commits):  # noqa: F811
-    repo_id = repo_id_for("eng", "saga-xyz", "widgets")
+    repo_id = repo_id_for("eng", "example-org", "widgets")
     commits.clear()
     assert _put(client, "eng", "root", {
         "mode": "train", "repositories": {repo_id: "direct"}}).status_code == 200
@@ -197,8 +197,8 @@ def test_the_change_and_its_audit_are_one_transaction(client, db, seeded, commit
 # --------------------------------------------------------------------------
 
 def test_a_repository_override_beats_the_workspace_mode(client, db, seeded):
-    widgets = repo_id_for("eng", "saga-xyz", "widgets")
-    gadgets = repo_id_for("eng", "saga-xyz", "gadgets")
+    widgets = repo_id_for("eng", "example-org", "widgets")
+    gadgets = repo_id_for("eng", "example-org", "gadgets")
     response = _put(client, "eng", "root", {
         "mode": "direct", "repositories": {widgets: "train"}})
     assert response.status_code == 200, response.text
@@ -235,7 +235,7 @@ def test_effective_mode_resolution(workspace, override, expected):
 
 
 def test_another_workspaces_repository_cannot_be_overridden(client, db, seeded):
-    theirs = repo_id_for("research", "saga-xyz", "widgets")
+    theirs = repo_id_for("research", "example-org", "widgets")
     response = _put(client, "eng", "root", {"repositories": {theirs: "train"}})
     assert response.status_code == 404, response.text
     assert mergesettings.REPO_FIELD not in db.docs[f"repositories/{theirs}"]

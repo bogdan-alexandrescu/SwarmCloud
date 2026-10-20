@@ -274,7 +274,7 @@ def _run(db, tenant: str, run_id: str, state: RunState, steps: list[dict] | None
     owner, name = repository.split("/")
     at = NOW - timedelta(hours=1)
     run = IssueRun(
-        id=run_id, tenant_id=tenant, created_by="alice@saga.xyz", created_at=at, updated_at=at,
+        id=run_id, tenant_id=tenant, created_by="alice@example.com", created_at=at, updated_at=at,
         state=state, issue=IssueRef(owner=owner, repo=name, number=40 + len(run_id)),
         plan_approval="auto", auto_merge=False, fix_rounds=2, planner_task_id="t1",
         plan=None if steps is None else {"summary": "s", "steps": steps},
@@ -562,7 +562,7 @@ def test_territory_reports_the_overlap_with_the_tenants_live_lanes(client, db, i
          [{"step_id": "s1", "title": "t", "prompt": "p", "files": [ORDERS]}])
     _run(db, tenant, "run_elsewhere", RunState.RUNNING,
          [{"step_id": "s1", "title": "t", "prompt": "p", "files": [ORDERS]}],
-         repository="saga-xyz/other")
+         repository="example-org/other")
     answer = _territory(client, indexed["repo_id"], files=[ORDERS], pull_requests=False,
                         exclude_runs=["run_mine"])
     assert answer.status_code == 200, answer.text

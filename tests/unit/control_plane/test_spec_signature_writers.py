@@ -56,7 +56,7 @@ def _scheduler_task(db, signer: LocalSpecSigner, *, attempts: int) -> tuple[Task
     task = Task(
         id="task_x", tenant_id="eng", runner_profile="browser", resource_class="browser",
         state=TaskState.READY, created_at=NOW, updated_at=NOW,
-        input={"prompt": "browse"}, submitted_by="alice@saga.xyz",
+        input={"prompt": "browse"}, submitted_by="alice@example.com",
         attempt_count=attempts - 1, max_attempts=3,
         metadata={"dispatch": {"strategy": "none", "carrier": "checkpoints"}},
         depends_on=["task_parent"], workflow_id="wf_1", step_id="browse",

@@ -43,7 +43,7 @@ from test_repo_graph_shards import (  # noqa: F401 - `shards` is a fixture
     shards,
 )
 
-OTHER_REPO = "gh-saga-xyz-other"
+OTHER_REPO = "gh-example-org-other"
 
 
 def _sha(word: str) -> str:
@@ -291,3 +291,154 @@ def test_the_gcs_sweep_deletes_in_batches(shards, tmp_path):
     for url in (u for call in fake.rm_calls for u in call):
         assert url.startswith(f"gs://{bucket}/tenants/{TENANT}/repos/{REPO_ID}/")
     assert f"gs://{bucket}/{rows[2]['manifest']}" in fake.objects
+
+
+# --------------------------------------------------------------------------
+# lane INDEX-RETENTION (part of #1693): the sweep out of the graph write
+# --------------------------------------------------------------------------
+#
+# Measured 2026-10-20 on ai-studio: the graph write's sweep timed out in 19 of
+# 19 runs, reading 163 manifests one `gcloud storage cat` at a time after a
+# write that itself took 86-97 s. The worker now runs `write --no-sweep` and
+# the sweep as its own phase; the sweep reads manifests side by side, deletes
+# at most MAX_SWEEP_DELETES objects a run, and says what it deleted and holds.
+
+
+class _SlowStore:
+    """A LocalStore whose reads take a while and count how many run at once."""
+
+    def __init__(self, shards: Any, root: Path) -> None:
+        import threading
+
+        self._inner = shards.LocalStore(root)
+        self._lock = threading.Lock()
+        self.active = 0
+        self.peak = 0
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def get(self, key: str) -> bytes:
+        with self._lock:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        time.sleep(0.05)
+        try:
+            return self._inner.get(key)
+        finally:
+            with self._lock:
+                self.active -= 1
+
+
+def test_the_sweep_reads_its_manifests_side_by_side_within_the_bound(shards, tmp_path):
+    rows = _history(shards, tmp_path, 10)
+    store = _SlowStore(shards, tmp_path)
+
+    result = shards.sweep(store, tenant_id=TENANT, repo_id=REPO_ID,
+                          keep=[r["commit"] for r in rows], now=datetime.now(timezone.utc))
+
+    assert result["refused"] is None and result["manifests"] == 10
+    # MUTATION: a serial loop over `store.get` (peak 1), or an unbounded pool.
+    assert 1 < store.peak <= shards.SWEEP_READ_PROCESSES
+    assert shards.SWEEP_READ_PROCESSES == shards.GET_PROCESSES
+
+
+def test_the_sweep_keeps_exactly_the_kept_set_up_to_the_cap(shards, tmp_path):
+    rows = _history(shards, tmp_path, 6)
+    kept = [rows[1]["commit"], rows[4]["commit"]]
+    result = shards.sweep(shards.LocalStore(tmp_path), tenant_id=TENANT, repo_id=REPO_ID,
+                          keep=kept, max_deletes=3, now=datetime.now(timezone.utc))
+
+    # MUTATION: retiring past the cap, or retiring a kept commit.
+    assert result["retired_manifests"] == 3 and result["truncated"] is True
+    for row in rows:
+        if row["commit"] in kept:
+            assert (tmp_path / row["manifest"]).exists() and (tmp_path / row["index"]).exists()
+    assert sum((tmp_path / r["manifest"]).exists() for r in rows) == 3
+    # Run again until done: the kept set is all that is left, and nothing else.
+    for _ in range(5):
+        shards.sweep(shards.LocalStore(tmp_path), tenant_id=TENANT, repo_id=REPO_ID,
+                     keep=kept, max_deletes=3, now=datetime.now(timezone.utc))
+    left = {r["commit"] for r in rows if (tmp_path / r["manifest"]).exists()}
+    assert left == set(kept)
+    assert not any((tmp_path / r["index"]).exists() for r in rows if r["commit"] not in kept)
+
+
+def test_the_cap_is_named_and_is_the_default(shards):
+    import inspect
+
+    module = shards
+    # MUTATION: an unnamed literal, or a default other than the named cap.
+    assert module.MAX_SWEEP_DELETES == 2000
+    assert inspect.signature(module.sweep).parameters["max_deletes"].default == \
+        module.MAX_SWEEP_DELETES
+
+
+def test_the_sweep_says_what_it_deleted_and_what_it_holds(shards, tmp_path):
+    rows = _history(shards, tmp_path, 4)
+    keep = [rows[3]["commit"]]
+    every = {p.relative_to(tmp_path).as_posix(): p.stat().st_size
+             for p in tmp_path.rglob("*") if p.is_file()}
+
+    result = shards.sweep(shards.LocalStore(tmp_path), tenant_id=TENANT, repo_id=REPO_ID,
+                          keep=keep, now=datetime.now(timezone.utc))
+
+    after = {p.relative_to(tmp_path).as_posix(): p.stat().st_size
+             for p in tmp_path.rglob("*") if p.is_file()}
+    gone = set(every) - set(after)
+    # MUTATION: counting objects as bytes, or leaving the held totals out.
+    assert result["deleted_copies"] == 3 == result["retired_manifests"]
+    assert result["deleted_bytes"] == sum(every[k] for k in gone)
+    assert result["held_copies"] == 1
+    assert result["held_bytes"] == sum(after.values())
+    assert result["kept_commits"] == 1
+    assert result["held_before"] == {"copies": 4, "bytes": sum(every.values())}
+
+
+def test_the_sweep_never_deletes_outside_the_registrations_prefix(shards, tmp_path):
+    """Invariant 9: whatever a listing answers, only keys under
+    tenants/<tenant>/repos/<repo_id>/ are ever deleted."""
+    rows = _history(shards, tmp_path, 2)
+    stranger = f"tenants/other-tenant/repos/{REPO_ID}/graph/blobs/{'0' * 64}.jsonl.gz"
+    deleted: list[str] = []
+
+    class Leaky:
+        def __init__(self) -> None:
+            self.inner = shards.LocalStore(tmp_path)
+
+        def list(self, prefix: str):
+            rows = self.inner.list(prefix)
+            # A listing that answers more than it was asked for.
+            return rows + [(stranger, datetime(2020, 1, 1, tzinfo=timezone.utc))]
+
+        def get(self, key: str) -> bytes:
+            return self.inner.get(key)
+
+        def delete(self, key: str) -> None:
+            deleted.append(key)
+            self.inner.delete(key)
+
+    result = shards.sweep(Leaky(), tenant_id=TENANT, repo_id=REPO_ID,
+                          keep=[rows[1]["commit"]], now=datetime.now(timezone.utc))
+
+    # MUTATION: trusting the listing's keys, and deleting the other tenant's blob.
+    assert stranger not in deleted
+    root = f"tenants/{TENANT}/repos/{REPO_ID}/"
+    assert deleted and all(key.startswith(root) for key in deleted)
+    assert result["refused"] is None
+
+
+def test_the_cli_write_with_no_sweep_retires_nothing(shards, tmp_path, monkeypatch):
+    _container(shards, tmp_path, monkeypatch, TENANT_ID=TENANT)
+    store = tmp_path / "bucket"
+    rows = _history(shards, store, 3)
+    graph = tmp_path / "graph.json"
+    graph.write_text(json.dumps(_doc(9)))
+
+    code = shards.main(["write", "--graph", str(graph), "--store", str(store),
+                        "--repo-id", REPO_ID, "--destination", _destination(), "--no-sweep",
+                        "--keep-commit", rows[2]["commit"]])
+
+    # MUTATION: a write that sweeps despite --no-sweep.
+    assert code == 0
+    assert all((store / r["manifest"]).exists() for r in rows)

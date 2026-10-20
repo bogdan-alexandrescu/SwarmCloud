@@ -29,9 +29,9 @@ from swarm_api.waker import NullWaker
 from .conftest import ENG_GROUP, PROJECT, api_settings, auth_header, seed_task, seed_tenant
 from .fakes import FakeQuery
 
-ALICE = "alice@saga.xyz"
-ROOT = "root@saga.xyz"
-OTHER = "dave@saga.xyz"
+ALICE = "alice@example.com"
+ROOT = "root@example.com"
+OTHER = "dave@example.com"
 FIXER = f"swarm-ci-fix@{PROJECT}.iam.gserviceaccount.com"
 FIXER_UID = "104857600000000000002"
 

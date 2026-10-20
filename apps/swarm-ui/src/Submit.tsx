@@ -563,6 +563,24 @@ export function missingRequired(fields: InputField[], required: string[] | null)
 }
 
 /**
+ * The rows `buildInput` leaves out, as the send panel names them (visual QA
+ * QA-102): a setting with no name, or a value left blank, adds no key, and
+ * the panel said "Ready to send" over a row nobody could tell was dropped.
+ * A required key left blank is not here: `missingRequired` names it, and it
+ * blocks the send rather than being left out of it. A row that will not build
+ * at all is `buildInput`'s refusal, not a row left out.
+ */
+export function unsentSettings(fields: InputField[]): string[] {
+  return fields.flatMap((f) => {
+    if (f.required) return []
+    const name = f.name.trim()
+    if (name === '') return ['a setting with no name']
+    const one = buildInput([f])
+    return one.ok && !Object.prototype.hasOwnProperty.call(one.input, name) ? [`${name} (blank)`] : []
+  })
+}
+
+/**
  * The fields a profile starts with, carrying over anything already typed.
  *
  * Switching `claude-code` -> `codex` must not delete the prompt: both demand
@@ -601,6 +619,11 @@ function ValueEditor({ f, id, choices, invalid, describedBy, onBlur, onChange }:
   onBlur?: () => void
   onChange: (next: InputField) => void
 }) {
+  // A SETTING OF ONE'S OWN HAS NO <label> FOR ITS VALUE (visual QA QA-104):
+  // its name is a text box, so nothing could point `htmlFor` here and the
+  // value was a bare "textbox". It is named after the setting it holds. A
+  // suggested key keeps its label (`htmlFor` in `InputFields`).
+  const named = f.own ? `${f.name.trim() || 'setting'} value` : undefined
   if (f.kind === 'flag') {
     return (
       <label className="sbf-flag">
@@ -611,7 +634,7 @@ function ValueEditor({ f, id, choices, invalid, describedBy, onBlur, onChange }:
   }
   if (f.kind === 'number') {
     return (
-      <input id={id} className="mono sbf-num" inputMode="decimal" value={f.text} placeholder="a number"
+      <input id={id} className="mono sbf-num" inputMode="decimal" value={f.text} placeholder="a number" aria-label={named}
         onChange={(e) => onChange({ ...f, text: e.target.value })} />
     )
   }
@@ -620,7 +643,7 @@ function ValueEditor({ f, id, choices, invalid, describedBy, onBlur, onChange }:
       <div className="sbf-list">
         {f.list.map((entry, i) => (
           <input key={i} className="mono" value={entry} id={i === 0 ? id : undefined}
-            placeholder="one entry"
+            placeholder="one entry" aria-label={named === undefined ? undefined : `${named} ${i + 1}`}
             onChange={(e) => onChange({ ...f, list: f.list.map((o, j) => (j === i ? e.target.value : o)) })} />
         ))}
         <div className="sbf-listact">
@@ -635,7 +658,7 @@ function ValueEditor({ f, id, choices, invalid, describedBy, onBlur, onChange }:
   if (f.kind === 'actions') return <BrowserActions f={f} onChange={onChange} />
   if (choices) {
     return (
-      <select id={id} className="mono" value={f.text} aria-invalid={invalid || undefined}
+      <select id={id} className="mono" value={f.text} aria-invalid={invalid || undefined} aria-label={named}
         aria-describedby={describedBy} onBlur={onBlur}
         onChange={(e) => onChange({ ...f, text: e.target.value })}>
         <option value="">choose one…</option>
@@ -654,10 +677,10 @@ function ValueEditor({ f, id, choices, invalid, describedBy, onBlur, onChange }:
         // a long string and also gets the height, and it was being offered
         // "what this agent should do" -- a placeholder describing a different
         // key, which is worse than none at all.
-        placeholder={name === 'prompt' ? 'what this agent should do' : undefined}
+        placeholder={name === 'prompt' ? 'what this agent should do' : undefined} aria-label={named}
         aria-invalid={invalid || undefined} aria-describedby={describedBy} onBlur={onBlur}
         onChange={(e) => onChange({ ...f, text: e.target.value })} />
-    : <input id={id} className="mono" value={f.text} spellCheck={false}
+    : <input id={id} className="mono" value={f.text} spellCheck={false} aria-label={named}
         aria-invalid={invalid || undefined} aria-describedby={describedBy} onBlur={onBlur}
         onChange={(e) => onChange({ ...f, text: e.target.value })} />
 }
@@ -834,6 +857,9 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
               </p>
             )}
             {note && <p className="sbf-note">{note}</p>}
+            {/* A ROW WITH NO NAME IS NOT SENT, AND SAYS SO (visual QA QA-102):
+                `buildInput` skips it, and it looked like any other setting. */}
+            {f.own && key === '' && <p className="sbf-note sbf-unsent">no name — not sent</p>}
           </div>
         )
       })}
@@ -938,9 +964,12 @@ export function SubmitScreen() {
 export function Move({ n, title, aside, dim = false, children }: {
   n: number; title: string; aside?: ReactNode; dim?: boolean; children: ReactNode
 }) {
+  const heading = <h2 className="sbf-move-h"><i className="sbf-move-n" aria-hidden="true">{n}</i>{title}</h2>
   return (
     <section className={`sbf-move sb-step${dim ? ' is-dim' : ''}`}>
-      <h2 className="sbf-move-h"><i className="sbf-move-n" aria-hidden="true">{n}</i>{title}{aside}</h2>
+      {/* THE `?` AFTER THE <h2>, NOT IN IT (QAFIX-HELP), as `PageHead` draws
+          the h1's: inside, its name ran on into the heading's. */}
+      {aside === undefined ? heading : <div className="sbf-move-head">{heading}{aside}</div>}
       {children}
     </section>
   )
@@ -974,6 +1003,8 @@ export function OutcomeSlot({ at, shown, children }: { at: unknown; shown: boole
 
 /** The task form's field-id prefix: the editor and the panel's buttons share it. */
 const TASK_FIELDS = 'task'
+/** The line under the send button that says what a disabled one waits for. */
+const WHY_ID = 'task-send-why'
 
 /**
  * `owner/repo` out of a repository URL, as the send panel names it (#115).
@@ -1155,6 +1186,26 @@ function Form({ capacity }: { capacity: Capacity }) {
   const tooBig = built.ok ? inputSizeProblem(built.input, inputLimit) : null
   const blocked = chosen === '' || !built.ok || missing.length > 0 || (pushes && repo === '') || badRepo || tooBig !== null
     || mcpUnfilled.length > 0
+  // WHAT `blocked` IS WAITING FOR, IN WORDS, BESIDE THE BUTTON IT DISABLES
+  // (visual QA QA-101): an untouched form drew a greyed-out button and no
+  // sentence naming what was missing. One clause per term of `blocked`, in
+  // its order, so the line and the button cannot disagree.
+  const why = [
+    ...(chosen === '' ? ['choose a runner'] : []),
+    ...(chosen !== '' && !built.ok ? [built.message] : []),
+    ...(chosen !== '' && missing.length > 0 ? [`fill in ${missing.join(', ')}`] : []),
+    ...(pushes && repo === '' ? ['give a repository url to push to'] : []),
+    ...(badRepo ? ['give a repository url the API accepts'] : []),
+    ...(chosen !== '' && tooBig !== null ? [tooBig] : []),
+    ...(mcpUnfilled.length > 0 ? [`give ${mcpUnfilled.join(', ')} ${mcpUnfilled.length === 1 ? 'its' : 'their'} credential`] : []),
+  ]
+  const unsent = chosen === '' ? [] : unsentSettings(fields)
+  // ROOM 0 IS A TASK THAT WAITS, NOT ONE REFUSED (visual QA QA-108). The send
+  // is still ready -- the API takes it, and it lands READY or PARKED holding
+  // no capacity (invariant 1) -- but "Ready to send" over a full pool said
+  // nothing about it not starting yet. A measured zero only: an unread room
+  // is never read as none (TS-23).
+  const waits = profile !== null && headroomFor(profile).agents === 0
   // WHAT THIS CLICK WOULD SEND, as one comparable value. After a 201 the
   // button is "Submit another" for as long as the form still says exactly
   // what was sent (VQA V048, owner decision Q1 on #1038): one more click on an
@@ -1422,8 +1473,14 @@ function Form({ capacity }: { capacity: Capacity }) {
                 on a dependency; invariant 1 says neither holds capacity. */}
             <li className="ctl-fact">
               <b>lands as</b>
-              READY or PARKED · costs nothing
+              {waits ? 'READY or PARKED · waits for room · costs nothing' : 'READY or PARKED · costs nothing'}
             </li>
+            {unsent.length > 0 && (
+              <li className="ctl-fact">
+                <b>not sent</b>
+                <i className="sbf-bad">{unsent.join(', ')}</i>
+              </li>
+            )}
             {/* WHAT THE CLICK COMMITS TO (#115), each read from the value the
                 button and the request are built from: the chosen profile's
                 weight and pool count (`in each of`, never `x`, which reads as a
@@ -1466,10 +1523,12 @@ function Form({ capacity }: { capacity: Capacity }) {
           {justSent ? (
             <Button key="another" type="button" kind="primary" full onClick={another}>Submit another</Button>
           ) : (
-            <Button key="submit" type="submit" kind="primary" full disabled={outcome.kind === 'sending' || blocked || refusedAsIs || roleGate !== null}>
+            <Button key="submit" type="submit" kind="primary" full disabled={outcome.kind === 'sending' || blocked || refusedAsIs || roleGate !== null}
+              aria-describedby={blocked && !justSent ? WHY_ID : undefined}>
               {outcome.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit one task' : `Submit as ${submitAs}`}
             </Button>
           )}
+          {blocked && !justSent && <p id={WHY_ID} className="sb-note sbf-why">Not ready: {why.join('; ')}.</p>}
           {roleGate !== null && (
             <p className="sb-note" data-role-gate="member">
               {roleGate}

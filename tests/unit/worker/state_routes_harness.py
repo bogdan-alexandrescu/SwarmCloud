@@ -144,7 +144,7 @@ def seed_attempt(
         db.docs[f"pools/{name}"]["active"] += 1
     doc = seed_task(db, task_id=task_id, tenant_id=TENANT, state=state)
     doc.update({"current_lease_id": lease_id, "current_generation": generation,
-                "submitted_by": "alice@saga.xyz", "attempt_count": 1, "max_attempts": 3,
+                "submitted_by": "alice@example.com", "attempt_count": 1, "max_attempts": 3,
                 **extra})
     db.docs[f"leases/{lease_id}"] = {
         "lease_id": lease_id, "task_id": task_id, "attempt_id": attempt_id,

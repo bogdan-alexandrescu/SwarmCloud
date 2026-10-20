@@ -49,10 +49,10 @@ TOKEN = "ghp_" + "Q7" * 18
 NOT_FOUND = (
     "repository clone failed: git clone exited 128: remote: Repository not found. "
     f"fatal: Authentication failed for 'https://x-access-token:{TOKEN}@github.com/"
-    "saga-xyz/widgets/'"
+    "example-org/widgets/'"
 )
 UNREACHABLE = (
-    "repository clone failed: fatal: unable to access 'https://github.com/saga-xyz/widgets/': "
+    "repository clone failed: fatal: unable to access 'https://github.com/example-org/widgets/': "
     "Could not resolve host: github.com"
 )
 
@@ -85,7 +85,7 @@ def _queued_then_failed(client, db, objects, clock, error: str, **kw) -> str:
     (NOT_FOUND, "runner_error", "access"),
     ("repository clone failed: fatal: could not read Username for 'https://github.com': "
      "terminal prompts disabled", "runner_error", "access"),
-    ("remote: Permission to saga-xyz/widgets.git denied to someone.", "runner_error", "access"),
+    ("remote: Permission to example-org/widgets.git denied to someone.", "runner_error", "access"),
     (UNREACHABLE, "runner_error", "transient"),
     ("repository clone failed: the forge did not answer after 3 tries", "runner_error",
      "transient"),
@@ -106,7 +106,7 @@ def test_a_stored_failure_carries_no_token_and_no_url_credentials():
     assert "x-access-token" not in stored
     assert record["class"] == "access"
     assert record["detail"].startswith("remote: Repository not found.")
-    assert "github.com/saga-xyz/widgets" in record["detail"], "the host and path are kept"
+    assert "github.com/example-org/widgets" in record["detail"], "the host and path are kept"
 
 
 # --------------------------------------------------------------------------
@@ -204,7 +204,7 @@ def test_a_credential_change_lifts_the_backoff(client, db, objects, repo_id, clo
 
     # Setup > Git tokens: a token for this repository is registered.
     record = record_for_slot("eng", Scope.REPOSITORY, repo_id=repo_id,
-                             repository="saga-xyz/widgets", registered_by="alice@saga.xyz",
+                             repository="example-org/widgets", registered_by="alice@example.com",
                              now=clock())
     GitTokens(db, now=clock).register(record)
 

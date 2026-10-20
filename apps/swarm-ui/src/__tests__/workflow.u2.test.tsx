@@ -395,7 +395,9 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
     const note = document.querySelector<HTMLElement>('.c-count-note')!
     const sub = note.textContent ?? ''
     expect(sub.trim().startsWith('·'), `the meta line opens on a dot: "${sub}"`).toBe(false)
-    expect(sub).toContain('4 steps · 1 → 2 → 1')
+    // The shape names its stages (visual QA QA-119): `1 → 2 → 1` alone said
+    // nothing of what it counted.
+    expect(sub).toContain('4 steps in 3 stages (1 → 2 → 1)')
     // The id is still on the page, whole, as the head's chip.
     expect(document.querySelector('.wfp-head .id')!.textContent).toBe('wf_broker')
     // Copy link and Cancel workflow sit in the head's own row.

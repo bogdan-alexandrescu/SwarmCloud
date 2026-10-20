@@ -307,21 +307,168 @@ def test_requests_that_time_out_mark_the_language_timed_out(tool: Any, lsp: Any,
     assert python["fallback"] == "ast"
     assert python["lsp"]["request_timeouts"] == 3
     _no_lsp_edges(index)
+    # A hung server may have been failing before it stopped, so a hang keeps
+    # nothing even where whole files were answered: no file is covered.
+    # MUTATION: keep the finished files' edges on `_Hung` as on a budget cut
+    # and this reads `partial` with files covered.
+    assert python["files_covered"] == 0
+    assert not any(row["lsp"] for row in index["files"])
     assert _edge(index, "src/pkg/users.py#load_user", "src/pkg/store.py#fetch")["evidence"] == "ast"
 
 
-def test_the_server_budget_stops_it_and_discards_its_edges(tool: Any, lsp: Any, tmp_path: Path) -> None:
-    repo = fx.build_repo(tmp_path / "repo", fx.PYTHON_APP)
-    spec = _fake(lsp, tmp_path, {"mode": "slow", "delay": 0.3, "definitions": {
-        "src/pkg/users.py:8": {"path": "src/pkg/store.py", "line": 0, "character": 4, "name": "fetch"},
-    }})
-    index = tool.extract(repo, tool.Budget(), lsp=_options(lsp, spec, server_budget_seconds=1.0))
+# Three files the server meets in this order: a.py (one site, answered at
+# once), b.py (no site) and z.py (ten sites, each answered slowly), so a
+# phase-1 budget cut lands inside z.py after a.py and b.py are finished.
+CUT_APP: dict[str, str] = {
+    "src/__init__.py": "",
+    "src/a.py": "from .b import helper\n\n\ndef first():\n    return helper()\n",
+    "src/b.py": "def helper():\n    return 1\n",
+    "src/z.py": "from .b import helper\n\n\ndef late():\n" + "    helper()\n" * 10,
+}
+# a.py line 5 and z.py line 5, `helper()` -> b.py `def helper`.
+CUT_DEFINITIONS = {
+    "src/a.py:4": {"path": "src/b.py", "line": 0, "character": 4, "name": "helper"},
+    "src/z.py:4": {"path": "src/b.py", "line": 0, "character": 4, "name": "helper"},
+}
+
+
+def _file_rows(index: dict) -> dict[str, dict]:
+    return {row["path"]: row for row in index["files"]}
+
+
+def test_a_phase_1_budget_cut_keeps_the_files_it_finished(tool: Any, lsp: Any, tmp_path: Path) -> None:
+    # #1693: pyright, healthy, ran out of its 270 s share inside phase 1 on
+    # ai-studio and `_stop` threw away 7,106 resolved sites. A cut is the
+    # driver's own decision, taken while the server was still answering, so
+    # every file whose sites were all asked is complete and kept.
+    repo = fx.build_repo(tmp_path / "repo", CUT_APP)
+    spec = _fake(lsp, tmp_path, {"slow_paths": {"src/z.py": 0.6}, "definitions": CUT_DEFINITIONS})
+    index = tool.extract(repo, tool.Budget(), lsp=_options(lsp, spec, server_budget_seconds=3.0))
     python = _language(index, "python")
+    # MUTATION: restore `_stop(STATUS_TIMED_OUT, ...)` on every phase-1
+    # BudgetExceeded in `_ServerRun.run()` and this reads `timed_out`.
+    assert python["status"] == "partial", python["reason"]
+    # MUTATION: drop the reason `_ServerRun.run()` writes for a cut and this
+    # reads "over the 3-second budget for fake".
+    assert re.fullmatch(r"fake reached 3 of 4 files \(1 of \d+ sites\) in its 3-second budget",
+                        python["reason"]), python["reason"]
+    assert python["fallback"] == "ast"
+    # MUTATION: count every file the server serves, not only the finished
+    # ones, in `_languages()` and this reads 4.
+    assert python["files_covered"] == 3
+    # MUTATION: keep `edges = []` in `_stop` for a cut, or drop `partial`
+    # from run_pass's kept statuses, and a.py's edge is `ast` again.
+    assert _edge(index, "src/a.py#first", "src/b.py#helper")["evidence"] == "lsp"
+    # z.py was cut mid-file: its answered sites are not kept, so nothing in
+    # the graph is `lsp` in a file whose row says it is not.
+    assert [e for e in index["call_edges"] if e["from"].startswith("src/z.py")
+            and (e["evidence"] == "lsp" or "lsp" in e["also_evidence"])] == []
+    rows = _file_rows(index)
+    # MUTATION: drop the `lsp` flag `extract()` sets on each file row and
+    # these are KeyErrors; set it from the language's status alone and a.py
+    # reads False.
+    assert {path: rows[path]["lsp"] for path in ("src/__init__.py", "src/a.py", "src/b.py", "src/z.py")} \
+        == {"src/__init__.py": True, "src/a.py": True, "src/b.py": True, "src/z.py": False}
+
+
+def test_a_budget_cut_before_any_file_is_finished_is_timed_out(tool: Any, lsp: Any,
+                                                                 tmp_path: Path) -> None:
+    # The control for the test above: a cut that finished no file with a
+    # site has nothing to keep, so the language is `timed_out`, as before.
+    repo = fx.build_repo(tmp_path / "repo", CUT_APP)
+    spec = _fake(lsp, tmp_path, {"slow_paths": {"src/a.py": 30.0}, "definitions": CUT_DEFINITIONS})
+    index = tool.extract(repo, tool.Budget(), lsp=_options(
+        lsp, spec, server_budget_seconds=1.5, request_timeout_seconds=30.0,
+        warmup_timeout_seconds=30.0))
+    python = _language(index, "python")
+    # MUTATION: report `partial` whenever a file was passed, site or not,
+    # and the empty __init__.py makes this `partial`.
     assert python["status"] == "timed_out"
-    assert "1-second budget" in python["reason"]
-    # A stopped server's partial answers are not kept: the language is
-    # uniformly `ast`, as its status says.
+    assert "1.5-second budget" in python["reason"]
+    assert python["files_covered"] == 0
     _no_lsp_edges(index)
+    assert not any(row["lsp"] for row in index["files"])
+
+
+def test_an_ok_language_covers_every_file_it_parsed(tool: Any, lsp: Any, tmp_path: Path) -> None:
+    repo = fx.build_repo(tmp_path / "repo", CUT_APP)
+    index = tool.extract(repo, tool.Budget(), lsp=_options(
+        lsp, _fake(lsp, tmp_path, {"definitions": CUT_DEFINITIONS})))
+    python = _language(index, "python")
+    assert python["status"] == "ok"
+    # MUTATION: leave `lsp` False on an ok language's rows and impact
+    # distrusts every file of a language whose server finished.
+    assert python["files_covered"] == 4
+    assert all(row["lsp"] for row in index["files"] if row["language"] == "python")
+
+
+def test_without_the_pass_no_file_is_covered(tool: Any, tmp_path: Path) -> None:
+    repo = fx.build_repo(tmp_path / "repo", CUT_APP)
+    index = tool.extract(repo, tool.Budget())
+    assert [row["lsp"] for row in index["files"]] == [False] * len(index["files"])
+
+
+def _commit(repo: Path, changes: dict[str, str]) -> None:
+    env = fx.git_env(repo.parent / (repo.name + "-home"))
+    fx.write_files(repo, changes)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], env=env, check=True)
+    stamp = "@1780086400 +0000"
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "change"],
+                   env={**env, "GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp}, check=True)
+
+
+def _partial_base(tool: Any, lsp: Any, tmp_path: Path, repo: Path) -> Any:
+    spec = _fake(lsp, tmp_path, {"slow_paths": {"src/z.py": 0.6}, "definitions": CUT_DEFINITIONS},
+                 name="cutfake")
+    facts = tool.extract(repo, tool.Budget(), lsp=_options(lsp, spec, server_budget_seconds=3.0))
+    assert _language(facts, "python")["status"] == "partial", _language(facts, "python")["reason"]
+    return tool.Base(sha=facts["commit_sha"], graph=tool.graph_document(facts),
+                     index=tool.index_document(facts))
+
+
+def test_an_incremental_run_carries_an_untouched_files_coverage(tool: Any, lsp: Any,
+                                                                 tmp_path: Path) -> None:
+    # An incremental run asks the server about the affected files only, and
+    # every other file keeps its base edges -- so it keeps its base coverage
+    # too. A server that answered every affected file does not make the
+    # language whole while a carried file was never covered.
+    repo = fx.build_repo(tmp_path / "repo", CUT_APP)
+    base = _partial_base(tool, lsp, tmp_path, repo)
+    _commit(repo, {"src/a.py": "from .b import helper\n\n\ndef first():\n    return helper()\n\n\n"
+                               "def second():\n    return 2\n"})
+    facts = tool.extract(repo, tool.Budget(), base=base, lsp=_options(
+        lsp, _fake(lsp, tmp_path, {"definitions": CUT_DEFINITIONS})))
+    assert facts["kind"] == "incremental" and facts["changes"]["affected"] == ["src/a.py"]
+    rows = _file_rows(facts)
+    # MUTATION: set every row's `lsp` from this run's server alone and z.py,
+    # which no server has finished, reads True.
+    assert (rows["src/a.py"]["lsp"], rows["src/b.py"]["lsp"], rows["src/z.py"]["lsp"]) == (True, True, False)
+    python = _language(facts, "python")
+    # MUTATION: take the run's `ok` without counting the carried rows in
+    # `_languages()` and impact trusts z.py.
+    assert (python["status"], python["files_covered"], python["fallback"]) == ("partial", 3, "ast")
+    assert python["reason"] == ("fake answered every file this run asked about; 3 of 4 files are "
+                                "covered, the rest carried uncovered from the base index")
+
+
+def test_a_base_written_before_file_coverage_takes_its_languages_status(tool: Any, lsp: Any,
+                                                                        tmp_path: Path) -> None:
+    # A graph written before files[].lsp existed has no flag to carry. Its
+    # language's status said it then: `ok` was every file, anything else none.
+    repo = fx.build_repo(tmp_path / "repo", CUT_APP)
+    facts = tool.extract(repo, tool.Budget(), lsp=_options(
+        lsp, _fake(lsp, tmp_path, {"definitions": CUT_DEFINITIONS}, name="okfake")))
+    for row in facts["files"]:
+        del row["lsp"]
+    base = tool.Base(sha=facts["commit_sha"], graph=tool.graph_document(facts),
+                     index=tool.index_document(facts))
+    _commit(repo, {"src/a.py": "from .b import helper\n\n\ndef first():\n    return helper()\n\n\n"
+                               "def second():\n    return 2\n"})
+    index = tool.extract(repo, tool.Budget(), base=base, lsp=_options(
+        lsp, _fake(lsp, tmp_path, {"definitions": CUT_DEFINITIONS})))
+    # MUTATION: read a missing flag as False and the language turns partial.
+    assert _language(index, "python")["status"] == "ok"
+    assert all(row["lsp"] for row in index["files"] if row["language"] == "python")
 
 
 def test_slow_workspace_queries_are_not_a_hung_server(tool: Any, lsp: Any, tmp_path: Path) -> None:

@@ -37,7 +37,7 @@ from swarm_api import repoindex, repositories
 
 from worker_seeds import TENANT, seed_attempt
 
-OWNER, REPO = "Saga-XYZ", "Widgets"
+OWNER, REPO = "Example-Org", "Widgets"
 URL = f"https://github.com/{OWNER}/{REPO}"
 REPO_ID = repositories.repo_id_for(TENANT, OWNER, REPO)
 BASE = hashlib.sha1(b"base").hexdigest()
@@ -62,7 +62,8 @@ open(out, "w").write("{}")
 open(graph, "w").write('{"schema": "swarm.repo-graph/v1"}')
 '''
 
-#: The fake shard tool: `read` writes the base graph, `write` sets the digest.
+#: The fake shard tool: `read` writes the base graph, `write` sets the digest,
+#: `sweep` prints a report the way `repo_graph_shards.main` does.
 FAKE_GRAPH_TOOL = r'''#!PYTHON
 import json, os, sys
 args = sys.argv[1:]
@@ -73,6 +74,19 @@ if args[0] == "read":
         print("swarm-repo-graph: the manifest does not match the digest", file=sys.stderr)
         sys.exit(1)
     open(args[args.index("--out") + 1], "w").write('{"schema": "swarm.repo-graph/v1"}')
+    sys.exit(0)
+if args[0] == "sweep":
+    with open(ORDER, "a") as fh:
+        fh.write("sweep " + json.dumps({"argv": args}) + "\n")
+    if os.environ.get("FAIL_SWEEP"):
+        print("swarm-repo-graph: gcloud storage rm exited 1: AccessDenied", file=sys.stderr)
+        sys.exit(1)
+    kept = sum(1 for part in args if part == "--keep-commit")
+    print(json.dumps({"sweep": {"manifests": kept, "retired_manifests": 3, "retired_indexes": 3,
+                                "kept_indexes": kept, "deleted": 40, "deleted_bytes": 7340032,
+                                "kept_referenced": 9, "kept_young": 0, "truncated": False,
+                                "refused": None, "kept_commits": kept, "held_copies": kept,
+                                "held_bytes": 1048576}}))
     sys.exit(0)
 index = args[args.index("--index") + 1]
 with open(ORDER, "a") as fh:

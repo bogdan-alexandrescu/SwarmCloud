@@ -240,7 +240,9 @@ describe('a non-admin reads every ceiling in every family, Edit locked, one line
     for (const tr of rows) {
       expect(tr.querySelector('.adm-ceiling')?.textContent, `${tr.id} hides its ceiling`).toMatch(/^\d+$/)
       const edit = tr.querySelector<HTMLButtonElement>('button[aria-label^="Edit ceiling for"]')!
-      expect(edit.disabled, `${tr.id} can be edited by a non-admin`).toBe(true)
+      // aria-disabled, not `disabled` (QA-037): the reason stays in the tab order.
+      expect(edit.getAttribute('aria-disabled'), `${tr.id} can be edited by a non-admin`).toBe('true')
+      fireEvent.click(edit)
     }
     expect(screen.getAllByText(/Admins only/)).toHaveLength(1)
     expect(document.querySelector('aside.adm-side')).toBeNull()

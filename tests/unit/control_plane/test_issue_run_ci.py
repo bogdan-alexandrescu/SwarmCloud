@@ -125,7 +125,7 @@ def _workflow_ends(db, workflow_id: str, *, pull: int | None = PR, state="SUCCEE
     git = {"published": True, "publish_reason": "opened"}
     if pull is not None:
         git["pull_request"] = {
-            "number": pull, "url": f"https://github.com/saga-xyz/widgets/pull/{pull}",
+            "number": pull, "url": f"https://github.com/example-org/widgets/pull/{pull}",
             "state": "open", "created": True, "updated": False,
         }
     else:
@@ -398,8 +398,8 @@ def test_the_fix_round_continues_the_runs_integrator_in_its_tenant_and_repositor
     assert workflow["tenant_id"] == "eng"
     (step,) = workflow["steps"]
     task = db.docs[f"tasks/{step['task_id']}"]
-    assert task["tenant_id"] == "eng" and task["submitted_by"] == "alice@saga.xyz"
-    assert task["repository_url"] == "https://github.com/saga-xyz/widgets"
+    assert task["tenant_id"] == "eng" and task["submitted_by"] == "alice@example.com"
+    assert task["repository_url"] == "https://github.com/example-org/widgets"
     assert task["repository_ref"] is None
     assert task["runner_profile"] == "claude-code"
     assert task["input"]["issue"] == 42
@@ -622,7 +622,7 @@ def test_red_wins_over_pending():
 # what the run page shows of a reading (#503)
 # --------------------------------------------------------------------------
 
-ACTIONS = "https://github.com/saga-xyz/widgets/actions/runs/"
+ACTIONS = "https://github.com/example-org/widgets/actions/runs/"
 
 
 def _linked(name, conclusion, status="completed", n=0):
@@ -777,7 +777,7 @@ def test_a_creator_removed_from_the_tenant_fails_the_run_instead_of_a_fix_round(
 
     assert run["state"] == "FAILED"
     assert "no longer a member" in run["error"]
-    assert ("alice@saga.xyz", "eng") in asked
+    assert ("alice@example.com", "eng") in asked
     assert run["ci_fix_round"] == 0 and _rounds(db, running["id"]) == []
     assert len(_docs(db, "workflows")) == 1, "a round was submitted for a removed member"
     assert "test_a" in run["failure_excerpt"]
@@ -811,14 +811,14 @@ def test_an_unresolved_membership_spends_no_round_and_the_next_read_does(
 def _refuse_statuses(writes, sha: str = SHA_A) -> tuple[str, str]:
     """GitHub answers 403 on the commit statuses at `sha` -- an App installation
     without `Commit statuses: read` -- and nothing else."""
-    route = ("GET", f"/repos/saga-xyz/widgets/commits/{sha}/status")
+    route = ("GET", f"/repos/example-org/widgets/commits/{sha}/status")
     writes.refuse[route] = 403
     return route
 
 
 def _unreachable_statuses(writes, sha: str = SHA_A) -> tuple[str, str]:
     """GitHub answers 503 on the commit statuses at `sha`, and nothing else."""
-    route = ("GET", f"/repos/saga-xyz/widgets/commits/{sha}/status")
+    route = ("GET", f"/repos/example-org/widgets/commits/{sha}/status")
     writes.refuse[route] = 503
     return route
 
@@ -936,7 +936,7 @@ def test_a_run_whose_checks_cannot_be_read_fails_at_the_deadline_saying_why(
         "could not read the repository's checks for 12 hours: GitHub writeback failing since "
         + _minute(failing_since) + ": "
     )
-    assert f"the check runs at saga-xyz/widgets@{SHA_A[:12]}" in run["error"]
+    assert f"the check runs at example-org/widgets@{SHA_A[:12]}" in run["error"]
     assert "URLError: TimeoutError" in run["error"]
     assert re.search(r"\((\d+) attempts\)$", run["error"]), run["error"]
     assert "timed out" not in run["error"], "an exception's text is never served"
@@ -1004,7 +1004,7 @@ def test_the_deadline_restarts_when_a_fix_round_returns_the_run_to_checking(
 # says why it is stuck; a refused credential fails the run at once
 # --------------------------------------------------------------------------
 
-_CHECK_RUNS = ("GET", f"/repos/saga-xyz/widgets/commits/{SHA_A}/check-runs")
+_CHECK_RUNS = ("GET", f"/repos/example-org/widgets/commits/{SHA_A}/check-runs")
 
 
 def _minute(moment: datetime) -> str:
@@ -1031,7 +1031,7 @@ def test_a_transient_urlerror_is_retried_and_the_run_recovers(client, db, object
     assert pr["read_failing_since"] == clock.at.isoformat()
     assert pr["read_error"] == (
         f"GitHub writeback failing since {_minute(clock.at)}: writeback_failed: the check runs "
-        f"at saga-xyz/widgets@{SHA_A[:12]} could not be sent to GitHub (URLError: OSError) "
+        f"at example-org/widgets@{SHA_A[:12]} could not be sent to GitHub (URLError: OSError) "
         "(1 attempt)"
     )
 
@@ -1102,7 +1102,7 @@ def test_a_403_on_commit_statuses_fails_the_run_at_once_naming_the_permission(
     # twelve hours of CHECKING only hide the cause and hold the slot.
     running = _to_checking(client, db, objects, writes, clock)
     writes.check(SHA_A, "unit", "success")
-    writes.refuse[("GET", f"/repos/saga-xyz/widgets/commits/{SHA_A}/status")] = 403
+    writes.refuse[("GET", f"/repos/example-org/widgets/commits/{SHA_A}/status")] = 403
 
     run = _read(client, clock, running["id"])
 
@@ -1135,10 +1135,10 @@ def test_green_checks_with_a_failing_comment_writeback_still_end_the_run_done(
     assert _read(client, clock, running["id"])["state"] == "CHECKING"
     writes.check_runs[SHA_A].clear()
     writes.check(SHA_A, "unit", "success")
-    comments = "/repos/saga-xyz/widgets/issues/42/comments"
+    comments = "/repos/example-org/widgets/issues/42/comments"
     writes.raise_for[("POST", comments)] = urllib.error.URLError(OSError("unreachable"))
     for comment_id in list(writes.comments):
-        writes.raise_for[("PATCH", f"/repos/saga-xyz/widgets/issues/comments/{comment_id}")] = (
+        writes.raise_for[("PATCH", f"/repos/example-org/widgets/issues/comments/{comment_id}")] = (
             urllib.error.URLError(OSError("unreachable"))
         )
 

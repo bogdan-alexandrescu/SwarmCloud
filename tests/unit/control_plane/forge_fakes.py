@@ -312,7 +312,7 @@ class GitHubWrites:
 
     def open_pull(self, number: int, sha: str, *, ref: str = "swarm/x", body: str = "") -> None:
         self.pulls[number] = {
-            "number": number, "html_url": f"https://github.com/saga-xyz/widgets/pull/{number}",
+            "number": number, "html_url": f"https://github.com/example-org/widgets/pull/{number}",
             "head": {"sha": sha, "ref": ref}, "base": {"ref": "main"}, "body": body,
             "state": "open", "merged": False,
         }

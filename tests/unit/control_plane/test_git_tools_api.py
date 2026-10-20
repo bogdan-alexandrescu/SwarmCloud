@@ -476,8 +476,8 @@ def test_a_single_pr_reader_pushes_nothing_either(client, db, origin):
 
 
 def test_a_read_only_grant_is_forge_write_refused(client, db, origin, slots):
-    suffix = f"git-u-{user_hash('alice@saga.xyz')}"
-    seed_grant(db, "eng", "alice@saga.xyz", f"{OWNER}/{REPO}", mode="read")
+    suffix = f"git-u-{user_hash('alice@example.com')}"
+    seed_grant(db, "eng", "alice@example.com", f"{OWNER}/{REPO}", mode="read")
     attempt, _ = running_task(client, db, forge_credential=suffix)
     _commit(origin["work"], "c")
     response = call(client, attempt, "git_push_branch", push_fields(origin))
@@ -826,7 +826,7 @@ def test_readable_by_tasks_is_set_by_an_admin_and_audited(client, db):
     assert db.docs[f"repositories/{repo_id}"]["readable_by_tasks"] is True
     entries = [d for p, d in db.docs.items() if p.startswith(f"{AUDIT_COLLECTION}/")]
     assert [e["action"] for e in entries] == ["repository_readable_by_tasks_set"]
-    assert entries[0]["by"] == "root@saga.xyz"
+    assert entries[0]["by"] == "root@example.com"
     assert entries[0]["detail"]["readable_by_tasks"] == {"from": False, "to": True}
 
 

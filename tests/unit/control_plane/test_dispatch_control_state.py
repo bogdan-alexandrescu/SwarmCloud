@@ -22,7 +22,7 @@ def _control(db, *, paused: bool) -> None:
     db.docs[f"{CONTROL}/{CONTROL_DOC}"] = {
         "dispatch_paused": paused,
         "updated_at": datetime.now(timezone.utc),
-        "updated_by": "root@saga.xyz",
+        "updated_by": "root@example.com",
         "reason": "test",
     }
 

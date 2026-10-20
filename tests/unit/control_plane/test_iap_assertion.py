@@ -73,7 +73,7 @@ class _Iap:
 
 class _Settings:
     class core:
-        allowed_domains = ("saga.xyz",)
+        allowed_domains = ("example.com",)
 
     tenant_groups: tuple = ()
     admin_groups: tuple = ()
@@ -96,7 +96,7 @@ def test_a_bad_assertion_does_not_fall_through_to_the_bearer_path():
 
 def test_the_bearer_path_still_works_when_no_assertion_is_present():
     """A direct caller from inside the VPC has no IAP header and must still work."""
-    iap = _Iap(claims={"email": "x@saga.xyz"})
+    iap = _Iap(claims={"email": "x@example.com"})
     auth = Authenticator(_Settings(), _Verifier(), _Groups(), iap=iap)
 
     # The bearer verifier raises, proving the bearer path was the one taken.
@@ -107,7 +107,7 @@ def test_the_bearer_path_still_works_when_no_assertion_is_present():
 
 def test_an_assertion_is_ignored_when_the_verifier_is_not_configured():
     """Belt and braces: with IAP off, an attacker-supplied header changes nothing."""
-    iap = _Iap(claims={"email": "attacker@saga.xyz"})
+    iap = _Iap(claims={"email": "attacker@example.com"})
     iap.configured = False
     auth = Authenticator(_Settings(), _Verifier(), _Groups(), iap=iap)
 
@@ -119,11 +119,11 @@ def test_an_assertion_is_ignored_when_the_verifier_is_not_configured():
 def test_a_verified_assertion_resolves_a_tenant_through_the_shared_path():
     """Domain enforcement and tenant resolution must not differ by how the
     caller arrived -- two copies would be two tenant boundaries."""
-    iap = _Iap(claims={"email": "person@saga.xyz", "sub": "accounts.google.com:1"})
+    iap = _Iap(claims={"email": "person@example.com", "sub": "accounts.google.com:1"})
     auth = Authenticator(_Settings(), _Verifier(), _Groups(), iap=iap)
 
     ctx = auth.authenticate(None, "good.assertion")
-    assert ctx.principal.email == "person@saga.xyz"
+    assert ctx.principal.email == "person@example.com"
     assert ctx.tenant_id == "u-person"
 
 
@@ -141,7 +141,7 @@ def test_an_assertion_from_outside_the_allowed_domain_is_forbidden_not_unauthent
 # -- admin by email, the escape hatch -------------------------------------
 
 class _AdminUserSettings(_Settings):
-    admin_users: tuple = ("bogdan@saga.xyz",)
+    admin_users: tuple = ("bogdan@example.com",)
 
 
 class _MemberGroups:
@@ -155,7 +155,7 @@ class _MemberGroups:
 
 
 def _ctx(settings, groups=()):
-    iap = _Iap(claims={"email": "bogdan@saga.xyz", "sub": "accounts.google.com:1"})
+    iap = _Iap(claims={"email": "bogdan@example.com", "sub": "accounts.google.com:1"})
     auth = Authenticator(settings, _Verifier(), _MemberGroups(groups), iap=iap)
     return auth.authenticate(None, "good.assertion")
 
@@ -182,14 +182,14 @@ def test_the_email_comes_from_the_assertion_not_from_the_caller():
     the same source a group lookup would have started from.
     """
     class _Other(_Settings):
-        admin_users: tuple = ("someone-else@saga.xyz",)
+        admin_users: tuple = ("someone-else@example.com",)
 
     assert _ctx(_Other()).is_admin is False
 
 
 def test_matching_is_case_insensitive():
     class _Upper(_Settings):
-        admin_users: tuple = ("BOGDAN@SAGA.XYZ",)
+        admin_users: tuple = ("BOGDAN@EXAMPLE.COM",)
 
     assert _ctx(_Upper()).is_admin is True
 
@@ -197,6 +197,6 @@ def test_matching_is_case_insensitive():
 def test_group_membership_still_grants_admin_on_its_own():
     """The escape hatch is additive. It must not replace the group path."""
     class _ByGroup(_Settings):
-        admin_groups: tuple = ("swarm-admins@saga.xyz",)
+        admin_groups: tuple = ("swarm-admins@example.com",)
 
-    assert _ctx(_ByGroup(), groups=("swarm-admins@saga.xyz",)).is_admin is True
+    assert _ctx(_ByGroup(), groups=("swarm-admins@example.com",)).is_admin is True

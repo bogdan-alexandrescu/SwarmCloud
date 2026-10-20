@@ -58,8 +58,8 @@ run "an_account_under_two_tenants_is_refused" {
   # would make that depend on rendering order. Case differs on purpose.
   variables {
     tenants = {
-      eng   = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
-      smoke = { kind = "group", principal = "smoke@saga.xyz", providers = [], service_accounts = ["SWARM-CI-FIX@saga-agents-staging.iam.gserviceaccount.com"] }
+      eng   = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
+      smoke = { kind = "group", principal = "smoke@example.com", providers = [], service_accounts = ["SWARM-CI-FIX@saga-agents-staging.iam.gserviceaccount.com"] }
     }
   }
 
@@ -84,7 +84,7 @@ run "a_human_address_is_refused" {
   # A person reaches a tenant through its group, never through a listing.
   variables {
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["bogdan@saga.xyz"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["bogdan@example.com"] }
     }
   }
 
@@ -109,7 +109,7 @@ run "an_iam_member_string_is_refused" {
   # swarm-api compares the bare email from the token; a prefix matches nobody.
   variables {
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
     }
   }
 
@@ -135,7 +135,7 @@ run "a_google_managed_account_is_refused" {
   # listing it would put the whole project in the tenant.
   variables {
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["123456789012-compute@developer.gserviceaccount.com"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["123456789012-compute@developer.gserviceaccount.com"] }
     }
   }
 
@@ -160,7 +160,7 @@ run "an_account_in_another_project_is_refused" {
   # The shape alone fits any project; the pin to var.project_id refuses this.
   variables {
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["swarm-ci-fix@other-project.iam.gserviceaccount.com"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@other-project.iam.gserviceaccount.com"] }
     }
   }
 
@@ -185,7 +185,7 @@ run "an_account_in_admin_users_is_refused" {
   # A listing gives exactly one tenant's rights; an admin entry adds every tenant's.
   variables {
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
     }
     admin_users = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
   }
@@ -210,7 +210,7 @@ run "an_account_in_admin_pool_users_is_refused" {
 
   variables {
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
     }
     admin_pool_users = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
   }
@@ -239,7 +239,7 @@ run "an_account_in_secret_admin_members_is_refused" {
   # variable already reads var.tenants, so the reverse read would be a cycle.
   variables {
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
     }
     secret_admin_members = ["serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
   }
@@ -268,7 +268,7 @@ run "an_account_in_a_tenants_own_secret_admins_is_refused" {
     tenants = {
       eng = {
         kind             = "group"
-        principal        = "eng@saga.xyz"
+        principal        = "eng@example.com"
         providers        = []
         service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
         secret_admins    = ["serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
@@ -297,7 +297,7 @@ run "an_account_that_is_another_tenants_principal_is_refused" {
   # It already has a tenant of its own; a listing would give it a second.
   variables {
     tenants = {
-      eng           = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
+      eng           = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
       "u-sw-c90291" = { kind = "user", principal = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com", providers = [] }
     }
   }
@@ -322,8 +322,8 @@ run "the_listing_renders_as_a_json_list_with_the_accounts_uid" {
 
   variables {
     tenants = {
-      eng   = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
-      smoke = { kind = "group", principal = "smoke@saga.xyz", providers = [] }
+      eng   = { kind = "group", principal = "eng@example.com", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
+      smoke = { kind = "group", principal = "smoke@example.com", providers = [] }
     }
   }
 
@@ -335,7 +335,7 @@ run "the_listing_renders_as_a_json_list_with_the_accounts_uid" {
       {
         email     = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
         kind      = "group"
-        principal = "eng@saga.xyz"
+        principal = "eng@example.com"
         uid       = "104857600000000000001"
       }
     ]
@@ -352,7 +352,7 @@ run "no_listing_renders_an_empty_list" {
 
   variables {
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = [] }
+      eng = { kind = "group", principal = "eng@example.com", providers = [] }
     }
   }
 

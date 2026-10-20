@@ -43,7 +43,7 @@ def _workflow(db, workflow_id: str, steps: int, created_at: datetime) -> Workflo
         created_at=created_at,
         updated_at=created_at,
         state=TaskState.SUCCEEDED,
-        submitted_by="alice@saga.xyz",
+        submitted_by="alice@example.com",
         steps=[
             WorkflowStep(step_id=f"s{i:02d}", runner_profile="mock", input={},
                          depends_on=[], task_id=task_id)

@@ -140,9 +140,12 @@ def _register(tmp: Path, *, skip_k8s: bool = True, **fake_env: str) -> subproces
     env["SWARM_KUBECTL"] = str(bin_dir / "kubectl")
     env["KUBECONFIG"] = str(tmp / "kubeconfig")
     env["NO_COLOR"] = "1"
+    # The example principals are @example.com; the script's own default
+    # domain is the deployment's, so the test names its own.
+    env["ALLOWED_DOMAINS"] = "example.com"
     env.update(fake_env)
 
-    args = [str(SCRIPT), "--group", "eng@saga.xyz", "--dry-run"]
+    args = [str(SCRIPT), "--group", "eng@example.com", "--dry-run"]
     if skip_k8s:
         args.append("--skip-k8s")
     return subprocess.run(args, cwd=REPO, env=env, capture_output=True, text=True, timeout=180)

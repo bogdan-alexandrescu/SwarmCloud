@@ -51,6 +51,29 @@ on 2026-09-25; `attempt_cpu_fields`), written while a runner runs and when it
 is reaped -- that is what Details draws. The cumulative `cpu_seconds` and
 `cpu_source` also ride on every periodic HEARTBEAT event, the one time series
 the platform keeps, for the reconciler's stuck-browser judgement.
+
+USE OVER TIME, AND THROTTLING (LIVE-UTIL-API, #1689). The owner, 2026-10-20: a
+limit and a peak "will always show maximum when in fact the pods do not run at
+max cpu the entire time". So every `POINT_SECONDS` the sampler also takes one
+point -- the cores used over that window, the container's `memory.current`
+(RSS of the runner's process group without a cgroup), and the share of the
+window's CFS periods the container spent throttled, `cpu.stat`
+`nr_throttled / nr_periods` -- and each HEARTBEAT carries the points taken
+since the one before (`Worker._usage_reading`), which
+`GET /v1/tasks/{id}/utilisation` serves. Throttling is MEASURED this way rather
+than inferred from a peak at the limit:
+
+    throttled_seconds     `throttled_usec` over the attempt, in seconds. Summed
+                          across the container's CPUs by the kernel, so it can
+                          exceed the wall time; it is the time work WAITED.
+    peak_throttled_share  the most-throttled window, 0..1
+    mean_throttled_share  throttled periods over all periods, the attempt's
+
+They ride on the HEARTBEAT and not on the attempt document: `Attempt` is the
+frozen contract, and typed fields for them are contract change request 107 in
+docs/contract-change-requests.md. A window in which no CFS period ran (no
+quota, or nothing ran) is a MEASURED 0.0 -- the counters were read and nothing
+was throttled; a cgroup without the counters is None.
 """
 
 from __future__ import annotations
@@ -60,11 +83,23 @@ import os
 import resource
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
 CGROUP_ROOT = Path("/sys/fs/cgroup")
+
+#: One utilisation point per this many seconds (owner request 2026-10-20,
+#: #1689): fine enough to show a 4-core burst between two idle stretches, which
+#: the 60-150 s between HEARTBEAT events averages away, and coarse enough that
+#: `HEARTBEAT_POINTS` of them cover a heartbeat period in one small event.
+POINT_SECONDS = 5.0
+
+#: Points a sampler holds before the oldest is dropped. Twice what one
+#: heartbeat carries (`lifecycle.HEARTBEAT_POINTS`), so a beat that was late
+#: or failed loses its oldest points and never grows the worker's memory.
+POINTS_KEPT = 60
 
 #: Fraction of the memory limit above which an attempt is a near miss.
 NEAR_MISS_FRACTION = 0.90
@@ -91,6 +126,15 @@ class ResourceUsage:
     #: rather than an average of means that weighs a one-second run like a
     #: one-hour one.
     cpu_wall_seconds: float | None = None
+    #: Throttling (LIVE-UTIL-API, #1689); see the module docstring. None until
+    #: a cgroup's `cpu.stat` throttling counters were read twice.
+    throttled_seconds: float | None = None
+    peak_throttled_share: float | None = None
+    mean_throttled_share: float | None = None
+    #: The CFS periods behind the mean, so `combine_usage` weighs a runner by
+    #: how long it ran rather than averaging two runners' means.
+    cpu_periods: int | None = None
+    throttled_periods: int | None = None
 
     def merge_rss(self, value: int) -> None:
         self.peak_rss_bytes = max(self.peak_rss_bytes, int(value))
@@ -115,6 +159,9 @@ def combine_usage(parts: Sequence[ResourceUsage]) -> ResourceUsage | None:
       mean of its own (see `ResourceSampler._min_interval`), so combining
       cannot turn two too-short spans into the "ten cores" that rule exists
       to refuse.
+    * Throttling the same way: `throttled_seconds` and the periods add up,
+      the peak share is the highest, and the mean is throttled periods over
+      all periods -- None only when no runner read the counters.
     * `memory_events` is the latest part's that has any: cgroup counters are
       the container's own running totals, so the latest already includes
       every runner before it.
@@ -150,9 +197,28 @@ def combine_usage(parts: Sequence[ResourceUsage]) -> ResourceUsage | None:
             timed_cpu += cpu
             timed_wall += wall
         any_mean = any_mean or part.mean_cpu_cores is not None
+        if part.throttled_seconds is not None:
+            out.throttled_seconds = (out.throttled_seconds or 0.0) + part.throttled_seconds
+        if part.peak_throttled_share is not None and (
+            out.peak_throttled_share is None or part.peak_throttled_share > out.peak_throttled_share
+        ):
+            out.peak_throttled_share = part.peak_throttled_share
+        if part.cpu_periods is not None and part.throttled_periods is not None:
+            out.cpu_periods = (out.cpu_periods or 0) + part.cpu_periods
+            out.throttled_periods = (out.throttled_periods or 0) + part.throttled_periods
     if any_mean and timed_wall > 0:
         out.mean_cpu_cores = timed_cpu / timed_wall
+    out.mean_throttled_share = throttled_share(out.throttled_periods, out.cpu_periods)
     return out
+
+
+def throttled_share(throttled: int | None, periods: int | None) -> float | None:
+    """Throttled CFS periods over all periods; 0.0 when none ran, None when not read."""
+    if throttled is None or periods is None:
+        return None
+    if periods <= 0:
+        return 0.0
+    return max(0.0, min(1.0, throttled / periods))
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +241,11 @@ def _read_int(path: Path) -> int | None:
 
 def cgroup_memory_current() -> int | None:
     return _read_int(CGROUP_ROOT / "memory.current")
+
+
+def cgroup_memory_max() -> int | None:
+    """cgroup v2 `memory.max`, the limit the kernel enforces; None for `max` or absent."""
+    return _read_int(CGROUP_ROOT / "memory.max")
 
 
 def cgroup_memory_peak() -> int | None:
@@ -261,6 +332,41 @@ def cgroup_cpu_seconds() -> float | None:
             except ValueError:
                 return None
     return None
+
+
+@dataclass(frozen=True)
+class CpuThrottling:
+    """cgroup v2 `cpu.stat` CFS counters, cumulative since the cgroup began."""
+
+    nr_periods: int
+    nr_throttled: int
+    throttled_usec: int
+
+
+def cgroup_cpu_throttling() -> CpuThrottling | None:
+    """The container's throttling counters; None when `cpu.stat` lacks any of the three.
+
+    `nr_periods` and `nr_throttled` count CFS enforcement periods (100 ms by
+    default) that ran and that hit the quota; `throttled_usec` is the time
+    runnable work waited, summed across CPUs. None -- not zeros -- for a
+    missing file or a missing counter (cgroup v1, a kernel without CFS
+    bandwidth), because a throttling share of 0.0 would claim a measurement.
+    """
+    try:
+        text = (CGROUP_ROOT / "cpu.stat").read_text()
+    except OSError:
+        return None
+    values: dict[str, int] = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] in ("nr_periods", "nr_throttled", "throttled_usec"):
+            try:
+                values[parts[0]] = int(parts[1])
+            except ValueError:
+                return None
+    if len(values) != 3:
+        return None
+    return CpuThrottling(values["nr_periods"], values["nr_throttled"], values["throttled_usec"])
 
 
 def cgroup_cpu_limit_cores() -> float | None:
@@ -474,6 +580,12 @@ class SystemCpuMeter:
 # ---------------------------------------------------------------------------
 
 
+def _next_deadline(deadline: float, every: float, now: float) -> float:
+    """The next deadline on the cadence, or one period from now if it fell behind."""
+    following = deadline + every
+    return following if following > now else now + every
+
+
 class ResourceSampler:
     """Background sampler. Start it when the child starts, stop it when it ends."""
 
@@ -487,6 +599,8 @@ class ResourceSampler:
         near_miss_fraction: float = NEAR_MISS_FRACTION,
         cpu_meter: CpuMeter | None = None,
         clock: Callable[[], float] = time.monotonic,
+        point_seconds: float = POINT_SECONDS,
+        series_origin: float | None = None,
     ) -> None:
         self._pid_provider = pid_provider
         self._disk_provider = disk_provider
@@ -508,6 +622,17 @@ class ResourceSampler:
         self._cpu_base: tuple[float, float] | None = None
         self._t_first: float | None = None
         self._t_last: float | None = None
+        # The utilisation series (#1689). A point's `t` is seconds since
+        # `series_origin` on `clock`: the worker passes ONE origin to every
+        # runner's sampler, so an attempt that restarts its runner in place
+        # keeps one clock and its points stay in order.
+        self._point_seconds = point_seconds
+        # Without one, the first point's time (read there, not here: the
+        # clock is read only when a sample is taken).
+        self._origin: float | None = series_origin
+        self._point_base: tuple[float, float | None, CpuThrottling | None] | None = None
+        self._points: deque[dict[str, Any]] = deque(maxlen=POINTS_KEPT)
+        self._points_lock = threading.Lock()
 
     def _meter(self) -> CpuMeter:
         if self._cpu_meter is None:
@@ -573,6 +698,90 @@ class ResourceSampler:
         if span >= self._min_interval:
             self.usage.mean_cpu_cores = self.usage.cpu_seconds / span
 
+    def series_elapsed(self) -> float:
+        """Now, on the clock the points' `t` is on."""
+        now = self._clock()
+        if self._origin is None:
+            self._origin = now
+        return now - self._origin
+
+    def _memory_now(self) -> int | None:
+        """The container's memory now: cgroup `memory.current`, else the group's RSS."""
+        current = cgroup_memory_current()
+        if current is not None:
+            return current
+        pid = self._pid_provider()
+        if not pid:
+            return None
+        try:
+            return process_group_rss(os.getpgid(pid)) or None
+        except (ProcessLookupError, OSError):
+            return None
+
+    def sample_point(self) -> None:
+        """Close the current window into one point, and open the next.
+
+        `{"t", "cpu", "mem", "thr"}`: seconds on the series clock at the
+        window's end, cores used over the window, memory now, and the share of
+        the window's CFS periods that were throttled. Short keys because the
+        points ride on every HEARTBEAT (`lifecycle.HEARTBEAT_DETAIL_MAX_BYTES`).
+        Each is None when it could not be read, never 0. The first call only
+        opens a window. Also keeps the runner's throttling figures current.
+        """
+        now = self._clock()
+        if self._origin is None:
+            self._origin = now
+        try:
+            cpu = self._meter().cumulative()
+        except Exception:
+            cpu = None
+        throttling = cgroup_cpu_throttling()
+        memory = self._memory_now()
+        base = self._point_base
+        self._point_base = (now, cpu, throttling)
+        if base is None:
+            return
+        base_time, base_cpu, base_throttling = base
+        elapsed = now - base_time
+        if elapsed <= 0:
+            return
+        cores: float | None = None
+        if cpu is not None and base_cpu is not None and cpu >= base_cpu:
+            cores = (cpu - base_cpu) / elapsed
+        share: float | None = None
+        if throttling is not None and base_throttling is not None:
+            periods = throttling.nr_periods - base_throttling.nr_periods
+            throttled = throttling.nr_throttled - base_throttling.nr_throttled
+            waited = throttling.throttled_usec - base_throttling.throttled_usec
+            if periods >= 0 and throttled >= 0 and waited >= 0:
+                share = throttled_share(throttled, periods)
+                usage = self.usage
+                usage.cpu_periods = (usage.cpu_periods or 0) + periods
+                usage.throttled_periods = (usage.throttled_periods or 0) + throttled
+                usage.throttled_seconds = (usage.throttled_seconds or 0.0) + waited / 1_000_000
+                if share is not None and (
+                    usage.peak_throttled_share is None or share > usage.peak_throttled_share
+                ):
+                    usage.peak_throttled_share = share
+                usage.mean_throttled_share = throttled_share(
+                    usage.throttled_periods, usage.cpu_periods
+                )
+        point = {
+            "t": round(now - self._origin, 1),
+            "cpu": _rounded(cores),
+            "mem": memory,
+            "thr": _rounded(share),
+        }
+        with self._points_lock:
+            self._points.append(point)
+
+    def drain_points(self) -> list[dict[str, Any]]:
+        """The points taken since the last drain, oldest first; each is served once."""
+        with self._points_lock:
+            out = list(self._points)
+            self._points.clear()
+        return out
+
     def sample_once(self) -> None:
         peak = cgroup_memory_peak()
         if peak is not None:
@@ -596,11 +805,23 @@ class ResourceSampler:
         self.usage.samples += 1
 
     def _run(self) -> None:
-        while not self._stop.wait(self._interval):
-            self.sample_once()
+        # Two cadences on one thread: the 2 s sample behind the peaks, and the
+        # 5 s point behind the series, each on its own deadline so neither
+        # drifts to the other's multiple.
+        next_sample = self._clock() + self._interval
+        next_point = self._clock() + self._point_seconds
+        while not self._stop.wait(max(0.0, min(next_sample, next_point) - self._clock())):
+            now = self._clock()
+            if now >= next_sample:
+                self.sample_once()
+                next_sample = _next_deadline(next_sample, self._interval, now)
+            if now >= next_point:
+                self.sample_point()
+                next_point = _next_deadline(next_point, self._point_seconds, now)
 
     def start(self) -> None:
         self.sample_once()
+        self.sample_point()
         self._thread = threading.Thread(target=self._run, daemon=True, name="swarm-sampler")
         self._thread.start()
 

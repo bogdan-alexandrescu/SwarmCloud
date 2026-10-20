@@ -146,7 +146,7 @@ def test_a_member_creates_a_schedule_in_their_own_tenant(client, db) -> None:
     doc = create(client)
     assert doc["schedule_id"].startswith("sch_")
     assert doc["tenant_id"] == "eng"
-    assert doc["owner"] == doc["created_by"] == "alice@saga.xyz"
+    assert doc["owner"] == doc["created_by"] == "alice@example.com"
     assert doc["state"] == "enabled" and doc["revision"] == 1
     assert doc["next_run_at"] is not None
     assert doc["words"] and doc["tier"] in schedules.TIERS
@@ -195,7 +195,7 @@ def test_a_params_key_the_type_does_not_declare_is_refused_by_name(client, db) -
     ("runner_profile", "claude-code"),
     ("resources", {"cpu": "64"}),
     ("tenant_id", "research"),
-    ("owner", "bob@saga.xyz"),
+    ("owner", "bob@example.com"),
 ])
 def test_a_caller_never_passes_an_image_a_command_or_a_tenant(client, db, field, value) -> None:
     response = client.post("/v1/schedules", json=body(**{field: value}), headers=auth_header("alice"))
@@ -252,11 +252,11 @@ def test_another_tenants_client_request_id_is_not_theirs(client) -> None:
 
 
 def test_a_named_approver_must_be_a_member(client) -> None:
-    response = client.post("/v1/schedules", json=body(gate={"approvers": ["bob@saga.xyz"]}),
+    response = client.post("/v1/schedules", json=body(gate={"approvers": ["bob@example.com"]}),
                            headers=auth_header("alice"))
     assert response.status_code == 422, response.text
     assert response.json()["code"] == "approver_not_member"
-    ok = client.post("/v1/schedules", json=body(gate={"approvers": ["root@saga.xyz"]}),
+    ok = client.post("/v1/schedules", json=body(gate={"approvers": ["root@example.com"]}),
                      headers=auth_header("alice"))
     assert ok.status_code == 201, ok.text
 
@@ -342,7 +342,7 @@ def test_an_edit_carries_its_revision_and_is_audited(client, ctx) -> None:
     assert response.status_code == 200, response.text
     assert response.json()["schedule"]["revision"] == 2
     entry = audit(client, sid)[0]
-    assert entry["action"] == "edit" and entry["by"] == "alice@saga.xyz"
+    assert entry["action"] == "edit" and entry["by"] == "alice@example.com"
     assert entry["detail"]["changed"]["cron"] == {"from": "0 9 * * 1-5", "to": "0 10 * * 1-5"}
     stale = client.patch(f"/v1/schedules/{sid}", json={"revision": 1, "cron": "0 11 * * 1-5"},
                          headers=auth_header("alice"))
@@ -407,14 +407,14 @@ def test_pause_and_resume_are_audited_newest_first(client, ctx, db) -> None:
     assert paused.status_code == 200, paused.text
     doc = stored(db, sid)
     assert doc["state"] == "paused" and doc["next_run_at"] is None
-    assert doc["pause"]["reason"] == "holiday" and doc["pause"]["by"] == "alice@saga.xyz"
+    assert doc["pause"]["reason"] == "holiday" and doc["pause"]["by"] == "alice@example.com"
     at(ctx, NOW + timedelta(minutes=2))
     resumed = client.post(f"/v1/schedules/{sid}:resume", headers=auth_header("root"))
     assert resumed.status_code == 200, resumed.text
     doc = stored(db, sid)
     assert doc["state"] == "enabled" and doc["pause"] is None and doc["next_run_at"] > NOW
     assert [(e["action"], e["by"]) for e in audit(client, sid)] == [
-        ("resume", "root@saga.xyz"), ("pause", "alice@saga.xyz"), ("create", "alice@saga.xyz"),
+        ("resume", "root@example.com"), ("pause", "alice@example.com"), ("create", "alice@example.com"),
     ]
 
 
@@ -432,10 +432,10 @@ def test_take_ownership_moves_whom_firings_submit_as(client, ctx, db) -> None:
     at(ctx, NOW + timedelta(minutes=1))
     response = client.post(f"/v1/schedules/{sid}:take-ownership", headers=auth_header("root"))
     assert response.status_code == 200, response.text
-    assert stored(db, sid)["owner"] == "root@saga.xyz"
+    assert stored(db, sid)["owner"] == "root@example.com"
     entry = audit(client, sid)[0]
     assert entry["action"] == "take_ownership"
-    assert entry["detail"]["owner"] == {"from": "alice@saga.xyz", "to": "root@saga.xyz"}
+    assert entry["detail"]["owner"] == {"from": "alice@example.com", "to": "root@example.com"}
 
 
 def test_run_now_submits_as_the_stored_owner_and_is_in_the_history(client, ctx, db, executor) -> None:
@@ -449,7 +449,7 @@ def test_run_now_submits_as_the_stored_owner_and_is_in_the_history(client, ctx, 
     made = tasks(db)
     assert len(made) == 1
     # As the schedule's owner, in its tenant -- never as the member who clicked.
-    assert made[0]["submitted_by"] == "alice@saga.xyz" and made[0]["tenant_id"] == "eng"
+    assert made[0]["submitted_by"] == "alice@example.com" and made[0]["tenant_id"] == "eng"
     assert made[0]["metadata"][SCHEDULE_METADATA_KEY]["firing_id"] == firing["firing_id"]
     history = client.get(f"/v1/schedules/{sid}", headers=auth_header("alice")).json()["firings"]
     assert [f["firing_id"] for f in history] == [firing["firing_id"]]
@@ -634,7 +634,7 @@ def test_an_admin_disables_and_only_an_admin_re_enables(client, ctx, db) -> None
     assert again.status_code == 409 and again.json()["code"] == "schedule_not_disabled"
     entries = audit(client, sid, "bob")
     assert [(e["action"], e["by"]) for e in entries[:2]] == [
-        ("admin_enable", "admin:root@saga.xyz"), ("admin_disable", "admin:root@saga.xyz"),
+        ("admin_enable", "admin:root@example.com"), ("admin_disable", "admin:root@example.com"),
     ]
     assert entries[1]["tenant_id"] == "research"
 
@@ -642,7 +642,7 @@ def test_an_admin_disables_and_only_an_admin_re_enables(client, ctx, db) -> None
 def test_an_admin_pause_is_the_tenants_to_lift(client, db) -> None:
     sid = create(client, "bob", scope={"mode": "repos", "repo_ids": [THEIR_REPO]})["schedule_id"]
     assert client.post(f"/v1/admin/schedules/{sid}:pause", headers=auth_header("root")).status_code == 200
-    assert stored(db, sid)["pause"]["by"] == "admin:root@saga.xyz"
+    assert stored(db, sid)["pause"]["by"] == "admin:root@example.com"
     # An admin's enable does not override a pause...
     assert client.post(f"/v1/admin/schedules/{sid}:enable", headers=auth_header("root")).status_code == 409
     # ...and the tenant resumes it.
@@ -690,14 +690,14 @@ def test_a_member_pauses_all_of_their_own_tenants_schedules_and_none_of_anothers
     for sid in (first, second):
         doc = stored(db, sid)
         assert doc["state"] == "paused" and doc["next_run_at"] is None
-        assert doc["pause"]["reason"] == "incident" and doc["pause"]["by"] == "alice@saga.xyz"
+        assert doc["pause"]["reason"] == "incident" and doc["pause"]["by"] == "alice@example.com"
         entry = audit(client, sid)[0]
-        assert (entry["action"], entry["by"]) == ("pause_all", "alice@saga.xyz")
+        assert (entry["action"], entry["by"]) == ("pause_all", "alice@example.com")
         assert entry["detail"]["reason"] == "incident"
     # The one already paused keeps its own pause and gets no entry.
-    assert ("pause_all", "alice@saga.xyz") not in _actions(db, already)
+    assert ("pause_all", "alice@example.com") not in _actions(db, already)
     # Another tenant's is untouched, and alice cannot name it.
-    assert stored(db, theirs)["state"] == "enabled" and _actions(db, theirs) == [("create", "bob@saga.xyz")]
+    assert stored(db, theirs)["state"] == "enabled" and _actions(db, theirs) == [("create", "bob@example.com")]
     other = client.post("/v1/schedules:pause-all", json={"confirm": "research"}, headers=auth_header("alice"))
     assert other.status_code == 422
     assert stored(db, theirs)["state"] == "enabled"
@@ -710,7 +710,7 @@ def test_pause_all_needs_the_tenant_id_typed(client, db, payload) -> None:
     response = client.post("/v1/schedules:pause-all", json=payload, headers=auth_header("alice"))
     assert response.status_code == 422, response.text
     assert stored(db, sid)["state"] == "enabled"
-    assert _actions(db, sid) == [("create", "alice@saga.xyz")]
+    assert _actions(db, sid) == [("create", "alice@example.com")]
 
 
 def test_an_admin_pauses_any_tenants_schedules_and_only_that_tenants(client, ctx, db) -> None:
@@ -722,9 +722,9 @@ def test_an_admin_pauses_any_tenants_schedules_and_only_that_tenants(client, ctx
     assert response.status_code == 200, response.text
     assert response.json()["paused"] == [theirs]
     assert stored(db, theirs)["state"] == "paused"
-    assert stored(db, theirs)["pause"]["by"] == "admin:root@saga.xyz"
+    assert stored(db, theirs)["pause"]["by"] == "admin:root@example.com"
     entry = audit(client, theirs, "bob")[0]
-    assert (entry["action"], entry["by"], entry["tenant_id"]) == ("admin_pause_all", "admin:root@saga.xyz",
+    assert (entry["action"], entry["by"], entry["tenant_id"]) == ("admin_pause_all", "admin:root@example.com",
                                                                   "research")
     assert stored(db, mine)["state"] == "enabled"
     # The tenant may lift it.
@@ -743,7 +743,7 @@ def test_the_admin_pause_all_is_typed_admin_only_and_names_a_real_tenant(client,
                           headers=auth_header("root"))
     assert missing.status_code == 404
     assert stored(db, theirs)["state"] == "enabled"
-    assert _actions(db, theirs) == [("create", "bob@saga.xyz")]
+    assert _actions(db, theirs) == [("create", "bob@example.com")]
 
 
 def _task_states(db) -> dict[str, str]:
@@ -770,7 +770,7 @@ def test_cancel_live_cancels_only_that_schedules_live_runs(client, ctx, db, exec
     # audit's newest-first id breaks the tie at random: compare them as a set.
     entries = {e["action"]: e for e in audit(client, target)}
     assert set(entries) == {"create", "run_now", "pause", "cancel_live"}
-    assert entries["cancel_live"]["by"] == "alice@saga.xyz" and entries["cancel_live"]["detail"]["items"] == [item]
+    assert entries["cancel_live"]["by"] == "alice@example.com" and entries["cancel_live"]["detail"]["items"] == [item]
     # The sibling is neither paused nor cancelled.
     assert stored(db, sibling)["state"] == "enabled"
 

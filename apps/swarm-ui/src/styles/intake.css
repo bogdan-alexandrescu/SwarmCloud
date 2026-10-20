@@ -76,6 +76,19 @@
    the card's width, and its value shrinks inside it and is cut, whole in the
    reference's title. */
 .in-send .ctl-fact { max-width: 100%; }
+/* ONE TYPE TREATMENT DOWN THE VALUE COLUMN (visual QA QA-073). The values
+   were the fact's 14px body beside 13px mono identifiers, and the absent one
+   was the UA's italic on top of its absent ink: four treatments in a 300px
+   column. Every value is the meta step now -- the size `.sbf-send` already
+   gives a `<code>` -- and the absent ink alone marks an absence, upright.
+   One class more specific than `.sbf-send .ctl-fact` in styles.css, which
+   loads after this sheet. */
+.sbf-send.in-send .ctl-fact { font-size: var(--t-meta); line-height: var(--lh-meta); }
+.sbf-send.in-send .ctl-fact i { font-style: normal; }
+/* THE LONG VALUE GOES UNDER ITS KEY (QA-073): "lands as" wrapped its two
+   lines into a right-aligned column beside the key, a ragged left edge in the
+   middle of the card. Stacked, it reads from the card's left edge. */
+.sbf-send.in-send .ctl-fact.in-fact-long { flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; }
 /* The meta line's items keep their trailing dot with them (N20). */
 .in-meta > .in-meta-i { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
 .in-row { margin: 0; display: flex; gap: 8px; flex-wrap: wrap; }
@@ -151,15 +164,24 @@
 .in-switch > input:disabled { opacity: .45; cursor: not-allowed; }
 .in-switch-w { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
+/* THE CONTROL EDGE, `--ctl-bd`, AS EVERY OTHER FIELD (visual QA QA-072):
+   `--line` is a divider's hairline, about 1.3:1 on the light surface, and the
+   field read as an empty box with a placeholder in it. */
 .in-rounds {
   flex: none; width: 72px; min-height: 32px; padding: 0 8px;
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  border: 1px solid var(--ctl-bd); border-radius: var(--ctl-radius-sm);
   background: var(--surface); color: var(--text);
   font-size: var(--t-meta); line-height: var(--lh-meta);
 }
 /* THE ERROR EDGE EVERY OTHER FIELD ON THESE FORMS HAS (VQA V132): `--warn`,
    the field editor's (`.sbf-field [aria-invalid]`), doubled by an inset ring
    so it reads as a state and not as a slightly different hairline. */
+/* THE DEFAULT IS A VALUE, NOT A HINT (QA-072). Before an issue is read this
+   field sits in a not-reached step, whose controls fade to .55 (submit.css,
+   G4-26); a faded "3" in a number box is what a placeholder looks like, and
+   it is the value the form will send. The field keeps full strength; the
+   step's radios and switch still say "not reached". */
+.sb-step.is-dim .in-rounds { opacity: 1; }
 .in-choice > .in-rounds[aria-invalid='true'] { border-color: var(--warn); box-shadow: inset 0 0 0 1px var(--warn); }
 
 /* ==========================================================================
@@ -203,7 +225,16 @@
    ('59m ago') are their words' width. */
 .rn-table th[data-col='workflow'] { width: 182px; }
 .rn-table th[data-col='created'] { width: 68px; }
-.rn-table th[data-col='by'] { width: 150px; }
+.rn-table th[data-col='by'] { width: 152px; }
+/* BY IS AN ADDRESS, DRAWN AS THE ROW'S OTHER IDS ARE (visual QA QA-081,
+   2026-10-20): at --t-meta 'operator@example.com' filled its 134px to the
+   pixel and read 'operator@example.co…' at 1440. The card has no pixel to
+   give it -- Issue needs every one it has for a 34-character reference
+   (D11), Run its 24-character id (`new_id`, whatever the preview's shorter
+   ids suggest) -- so the address is drawn at the micro size, as the workflow
+   id and the issue reference are, and the column is 2px wider: a
+   20-character address fits by the conservative table-fit model. */
+.rn-row > td[data-label='By'] { font-size: var(--t-micro); line-height: var(--lh-micro); }
 /* PLAN APPROVAL ON ONE LINE (visual QA V215, 2026-10-16): at 76px its
    header wrapped and made the head row taller than the rows. The header is
    72px drawn; its 14px more came from Created (whose '59m ago' is 51px) and
@@ -466,9 +497,9 @@
      grid quarters cut By to "operator@ex…" (80 of 125px) beside room under
      Plan approval and Workflow, and columns sized to their values still cut
      it by 3px at 400 (13px at 390) once Workflow held an id -- a grid cannot
-     wrap. Each fact now starts at its value's width and grows into what the
-     line leaves, and one that does not fit goes to the next line whole; only
-     a value wider than the card is cut. The run id and its state share the
+     wrap. The facts are flex items that wrap (sized as two fixed pairs since
+     QA-082, below); only a value wider than its column is cut, whole in its
+     title. The run id and its state share the
      first line and the issue takes the second whole: the state follows the
      issue in the table's order, so `order` draws it beside the id. */
   .rn-row {
@@ -481,7 +512,18 @@
   .rn-row > td[data-label='State'] { order: 2; flex: none; align-self: center; text-align: right; }
   .rn-row > td[data-label='Issue'] { order: 3; flex: 0 0 100%; }
   .rn-row > td[data-label='Plan approval'], .rn-row > td[data-label='Workflow'],
-  .rn-row > td[data-label='Created'], .rn-row > td[data-label='By'] { flex: 1 1 auto; font-size: var(--t-micro); line-height: var(--lh-micro); }
+  .rn-row > td[data-label='Created'], .rn-row > td[data-label='By'] { font-size: var(--t-micro); line-height: var(--lh-micro); }
+  /* EVERY CARD ON ONE GRID (visual QA QA-082, 2026-10-20): sized to their
+     values (V206), one card put all four facts on a line and the next
+     wrapped By under them, so Workflow and Created sat at different x from
+     card to card. The facts are two pairs on two lines now, the same on
+     every card: Plan approval and Created in a 96px column ('Plan approval'
+     is ~88px drawn), Workflow and By in the rest of the line after the
+     row's 8px column gap -- 230px at 390, which holds a 23-character
+     workflow id and an operator's address whole (V206's reason for not
+     using quarters still holds: By is never squeezed beside its pair). */
+  .rn-row > td[data-label='Plan approval'], .rn-row > td[data-label='Created'] { flex: 0 0 96px; }
+  .rn-row > td[data-label='Workflow'], .rn-row > td[data-label='By'] { flex: 1 1 calc(100% - 104px); }
   /* THE LABEL ON ITS OWN LINE, NO SEPARATOR (QA G2-19, 2026-10-07): a cell
      whose value is a block (Issue, Workflow, By) put the label alone on a
      line ending in a dangling " · ". Every label is a micro line above its

@@ -76,7 +76,7 @@ def test_merge_by_default_is_off_until_an_admin_turns_it_on(client):
 
     body = _set_default(client, True)
     assert body["merge_by_default"] is True
-    assert body["updated_by"] == "root@saga.xyz"
+    assert body["updated_by"] == "root@example.com"
     again = client.get("/v1/admin/settings", headers=auth_header("root")).json()
     assert again["merge_by_default"] is True and again["settings_document"] == "present"
 

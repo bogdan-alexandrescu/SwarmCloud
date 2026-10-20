@@ -224,7 +224,7 @@ def _leased(db, *, attempts: int = 3, cancel_requested: bool = False) -> tuple[T
     snapshot = Task(
         id="task_x", tenant_id="eng", runner_profile="mock", resource_class="standard",
         state=TaskState.READY, created_at=NOW, updated_at=NOW, input={},
-        submitted_by="alice@saga.xyz", attempt_count=attempts - 1, max_attempts=3,
+        submitted_by="alice@example.com", attempt_count=attempts - 1, max_attempts=3,
     )
     lease = Lease(
         lease_id="lease_x", task_id="task_x", attempt_id="att_x", tenant_id="eng",

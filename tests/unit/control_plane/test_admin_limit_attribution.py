@@ -33,7 +33,7 @@ import pytest
 
 from .conftest import auth_header, seed_pool, seed_tenant
 
-ROOT = "root@saga.xyz"
+ROOT = "root@example.com"
 
 #: Every admin route that writes a pool document, and the pools each one
 #: touches. A route added later that writes a ceiling and is not
@@ -130,7 +130,7 @@ def test_the_attribution_cannot_be_supplied_by_the_caller(client, db):
     response = client.put(
         "/v1/admin/limits/runner/mock",
         headers=auth_header("root"),
-        json={"limit": 1, "admin_changed_by": "someone-else@saga.xyz"},
+        json={"limit": 1, "admin_changed_by": "someone-else@example.com"},
     )
     assert response.status_code == 422, response.text
     doc = db.docs["pools/runner:mock"]

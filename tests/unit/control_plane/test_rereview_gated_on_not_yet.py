@@ -147,7 +147,7 @@ def test_inherit_clears_the_override_to_null_and_audits_it(make, db, commits):  
     assert db.docs[path]["merge_policy"] is None
     cleared = _audit(db)[-1]
     assert cleared["action"] == "repository_merge_policy_set"
-    assert cleared["by"] == "root@saga.xyz"
+    assert cleared["by"] == "root@example.com"
     assert cleared["detail"]["merge_policy"] == {"from": "on_merge_verdict", "to": None}
     writing = [paths for paths in commits if path in paths]
     assert len(writing) == 1

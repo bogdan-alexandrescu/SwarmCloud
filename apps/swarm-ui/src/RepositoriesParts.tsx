@@ -87,6 +87,16 @@ export function UrRefresh({ reads, ageOf = reads }: { reads: readonly UrRead<unk
 }
 
 /**
+ * `what` opens the sentence, so its first letter is a capital (visual QA
+ * QA-062, 2026-10-20): callers write it as the subject of "Reading …" too,
+ * where it is lower case, and "the Jev backend is not served" opened a notice
+ * in lower case. Only the first letter: "Jev" and "Code intelligence" keep theirs.
+ */
+function sentenceCase(what: string): string {
+  return what.charAt(0).toUpperCase() + what.slice(1)
+}
+
+/**
  * A ROUTE THE API DOES NOT SERVE YET (the backend lanes RI1, RI2 and GT1 are
  * building them in parallel). Said in place, so nobody reads an absent region
  * as an empty one -- and never as a failure of something that exists. The
@@ -100,7 +110,7 @@ export function UrNotServed({ route, what, plural = false }: { route: string; wh
   return (
     <div className="ur-notserved" data-notserved={route} title={`Not served: ${route}`}>
       <EmptyState kind="partial" heading="Not served yet">
-        {what} {plural ? 'are' : 'is'} not served by this API yet. Nothing here is a zero: it has not been read.
+        {sentenceCase(what)} {plural ? 'are' : 'is'} not served by this API yet. Nothing here is a zero: it has not been read.
       </EmptyState>
     </div>
   )

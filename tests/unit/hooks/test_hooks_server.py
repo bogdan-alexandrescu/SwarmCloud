@@ -51,7 +51,7 @@ def test_a_signed_push_is_forwarded_over_http(served):
     response, data = _request(port, "POST", "/github/events", delivery.body, delivery.headers())
     assert response.status == 200, data
     assert b"forwarded" in data
-    assert forward.calls == [("Saga-XYZ/Widgets",)]
+    assert forward.calls == [("Example-Org/Widgets",)]
     assert response.getheader("Server") in (None, "swarm-github-hooks")
 
 

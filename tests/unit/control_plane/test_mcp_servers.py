@@ -59,7 +59,7 @@ from swarm_common.profiles import RUNNER_PROFILES
 from .conftest import auth_header, seed_task, seed_tenant
 from .test_child_tasks_api import KEY, _client, worker_tokens  # noqa: F401  (a fixture)
 
-ROOT = "root@saga.xyz"
+ROOT = "root@example.com"
 
 #: The rows' attestation key: the test deployment's `swarm-child-key`.
 KEYS = RowKeys(KEY)
@@ -139,7 +139,7 @@ def test_another_tenants_server_is_404_by_any_route(app_client, db):
     McpServers(db, now=lambda: datetime.now(timezone.utc)).register(
         tenant_id="research", name="kb", url="https://kb.example.com/mcp", description="",
         auth={"mode": "none"}, allowed_profiles=[], allowed_tools=[], limits=None,
-        enabled=True, by="bob@saga.xyz")
+        enabled=True, by="bob@example.com")
     before = json.dumps(servers_in(db), default=str)
     assert app_client.get("/v1/mcp-servers/kb", headers=auth_header("root")).status_code == 404
     assert app_client.get("/v1/mcp-servers", headers=auth_header("root")).json()["servers"] == []
@@ -167,7 +167,7 @@ def test_a_person_manages_their_own_personal_workspace(client, db, on):
     """Q1: a personal workspace is managed by its person."""
     from .test_secret_release import _personal
 
-    _personal(db, "u-carol", "carol@saga.xyz")
+    _personal(db, "u-carol", "carol@example.com")
     response = client.post("/v1/mcp-servers", headers=auth_header("carol"), json=kb())
     assert response.status_code == 201, response.text
     assert response.json()["server"]["tenant_id"] == "u-carol"

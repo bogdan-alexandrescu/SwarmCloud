@@ -54,7 +54,7 @@ def _task(profile: str, *, parent: str | None = PARENT) -> Task:
         id=CHILD, tenant_id="eng", created_at=NOW, updated_at=NOW,
         state=TaskState.LEASED, runner_profile=profile,
         resource_class=RUNNER_PROFILES[profile].resource_class,
-        input={}, submitted_by="alice@saga.xyz", parent_task_id=parent,
+        input={}, submitted_by="alice@example.com", parent_task_id=parent,
     )
 
 
@@ -68,7 +68,7 @@ def _lease(task: Task) -> Lease:
 
 def _tenant() -> Tenant:
     return Tenant(
-        tenant_id="eng", kind="group", principal="eng@saga.xyz", created_at=NOW,
+        tenant_id="eng", kind="group", principal="eng@example.com", created_at=NOW,
         gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/eng",
     )
 

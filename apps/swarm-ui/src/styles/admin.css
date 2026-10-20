@@ -207,14 +207,30 @@
 }
 /* THE CEILING'S SLOT IS A FIXED WIDTH, right-aligned, so the figure lines up
    down the column and `edit` after it starts at the same x in every row. Six
-   characters hold the route's largest limit (100000). */
+   characters hold the route's largest limit (100000).
+   IN USE IS THE SAME SLOT, IN THE SAME FACE (visual QA QA-045, 2026-10-20).
+   In use was a `td.is-num` -- mono, at its column's right edge, under a
+   right-aligned head -- and Ceiling this slot in the cell's sans at its
+   column's left, under a left one: one row drew `0` and `20` in two faces at
+   two alignments. Both figures are now this slot, in the figure face
+   `td.is-num` gives a figure everywhere else (styles.css, mono tabular), and
+   both heads are left over them (AdminSettings.tsx `LIMIT_COLUMNS`). */
+.adm-inuse,
 .adm-ceiling {
   display: inline-block;
   width: 6ch;
-  margin-inline-end: var(--ctl-s2);
   text-align: right;
+  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
 }
+.adm-ceiling { margin-inline-end: var(--ctl-s2); }
+/* A REFUSED EDIT IS DRAWN AS A DISABLED ONE, AND STAYS IN THE TAB ORDER
+   (visual QA QA-037, 2026-10-20). It is `aria-disabled` rather than
+   `disabled`, so a keyboard reaches the reason on it (`Admins only: …`), and
+   `.limit-edit button:disabled` (styles.css) no longer matches it: this is
+   that rule's look, and its hover is held still. */
+.adm-ceiling-cell .limit-edit > button.is-blocked { opacity: .4; cursor: not-allowed; }
+.adm-ceiling-cell .limit-edit > button.is-blocked:hover { color: var(--text-dim); border-color: var(--ctl-bd); }
 .adm-ceiling.is-unset { color: var(--text-dim); }
 /* THE CONFIGURED HARD LIMIT'S SLOT (G5-21): Pools' `/100` (`.cap-was`, the
    micro mono of styles.css) after the effective figure. A fixed width that is
@@ -441,12 +457,55 @@
 /* BEFORE THE FIRST RUN (#135): both cards drawn, each with the neutral
    `not measured` mark and the words `not run yet`, so the page has its shape
    before the press. Not a task-state mark: nothing here is a task. */
+/* PLATFORM TICKS IS A CHANGE OF SUBJECT (visual QA QA-098, 2026-10-20). Its
+   heading sat 18px under the count cards, nearer them than their own titles,
+   and read as a third card that had lost its box. It takes what §13.3 gives a
+   change of subject -- `--ctl-s5` and the hairline, as `.section +
+   .section` draws them -- rather than a card: it is a table of the
+   platform's own machinery, not a panel of figures. Longhands for the reason
+   `.section + .section` gives (styles.css). */
+.counts-ticks {
+  margin-top: var(--ctl-s5);
+  border-top-width: 1px;
+  border-top-style: solid;
+  border-top-color: var(--line-soft);
+  padding-top: var(--ctl-s5);
+}
+.counts-ticks > .sc-h2 { margin-top: 0; }
+/* TWO HELP LINKS ARE TWO (visual QA QA-042, 2026-10-20). `Platform counts`
+   and `Absent, zero, unread and stale` sat 8px apart, both underlined, and
+   read as one phrase. A hairline rule between them parts them without
+   putting a character inside either link's name, as a `::before` `·` would.
+   Scoped to this page's footer: `HelpLinks` (HelpCard.tsx) draws every
+   screen's, and the shared fix is asked in the PR. */
+.counts-help a + a {
+  border-left-width: 1px;
+  border-left-style: solid;
+  border-left-color: var(--line);
+  padding-left: var(--ctl-s2);
+}
 .counts-notrun .ctl-card-body { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--text-dim); font-size: var(--t-meta); }
 
 /* The figure heads keep their right alignment and take the heads' sans (D16),
    at every width: `table.pools .n` is the cells' mono. */
 table.ten-table > thead > tr > th.n { font-family: var(--font); }
-.adm-setby-cfg { color: var(--text-faint); cursor: help; }
+/* `configured` IS A DRAWN DISC (visual QA QA-099, 2026-10-20). It was the
+   `·` glyph in `--text-faint`, about 3px at the cell's size, and the
+   operator could not tell it from an empty cell. A 6px disc in the dim ink
+   is plainly a mark and still quieter than the terms in ink that stand out
+   beside it (AIMD back-off, provider quota); the glyph stays in the text at
+   size 0. The tone is `--text-dim`, which keeps 3:1 as a graphic on the
+   edited row's tint too (5.94:1 light, 6.59:1 dark, VQA V065 above). */
+.adm-setby-cfg {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--text-dim);
+  font-size: 0;
+  vertical-align: middle;
+  cursor: help;
+}
 /* A POOL KEY BREAKS AT A COLON, NEVER MID-WORD (QA G5-11, 2026-10-07).
    `.cap-families` cells wrap anywhere, which split `…:tenant:smok / e` and,
    beside the open editor, `backend:CLOUD_RUN_J / OB`. The row header puts a
@@ -498,4 +557,14 @@ table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg {
   .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-ceiling { grid-column: 2; width: auto; margin: 0; text-align: left; }
   .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-was { grid-column: 3; width: auto; margin: 0; }
   .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .limit-edit { grid-column: 4; }
+  /* In use's figure starts at the value column too (QA-045), like Ceiling's. */
+  .is-stacked > table > tbody > tr > td > .adm-inuse { width: auto; text-align: left; }
+  /* LAST CHANGED, ONE PART A LINE, NO SEPARATORS (visual QA QA-043,
+     2026-10-20). The value column holds ~190px and `ops@example.com · 40 →
+     20 · 3h ago` never fits it, so the break after the author left the next
+     line starting on `·`. In the record each part is its own line and the
+     `·` between them is not drawn; the table keeps its one `·`-led run. */
+  .is-stacked .adm-changed > .adm-changed-by,
+  .is-stacked .adm-changed > .adm-changed-part { display: block; }
+  .is-stacked .adm-changed > .adm-changed-part > .adm-changed-sep { display: none; }
 }

@@ -53,7 +53,7 @@ def _signed_doc() -> dict[str, Any]:
         "id": TASK, "tenant_id": TENANT, "runner_profile": "browser",
         "resource_class": profile.resource_class, "timeout_seconds": profile.timeout_seconds,
         "max_attempts": 3, "provider": profile.provider, "input": {"prompt": "p"},
-        "submitted_by": "alice@saga.xyz", "depends_on": [], "metadata": {},
+        "submitted_by": "alice@example.com", "depends_on": [], "metadata": {},
     }
     return spec_keys.sign_document(doc, TASK)
 

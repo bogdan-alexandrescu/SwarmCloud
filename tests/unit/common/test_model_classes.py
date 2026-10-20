@@ -196,7 +196,7 @@ def _task(**over: object) -> Task:
         runner_profile="claude-code",
         resource_class="standard",
         input={"prompt": "summarise the source"},
-        submitted_by="alice@saga.xyz",
+        submitted_by="alice@example.com",
         **over,  # type: ignore[arg-type]
     )
 

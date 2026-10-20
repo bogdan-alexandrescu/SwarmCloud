@@ -223,7 +223,7 @@ def test_drain_respects_the_admin_pause(db, make_scheduler, dispatcher):
     seed_tenant(db, "eng")
     seed_pool(db, "global", hard_limit=10)
     seed_task(db, task_id="task_1", tenant_id="eng")
-    db.docs["control/dispatch"] = {"dispatch_paused": True, "updated_by": "root@saga.xyz"}
+    db.docs["control/dispatch"] = {"dispatch_paused": True, "updated_by": "root@example.com"}
 
     report = make_scheduler().drain()
 

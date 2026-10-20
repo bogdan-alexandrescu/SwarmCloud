@@ -66,7 +66,7 @@ def task(
     completed: datetime | None = None,
     tenant: str = "eng",
     profile: str = "mock",
-    submitted_by: str = "alice@saga.xyz",
+    submitted_by: str = "alice@example.com",
     workflow_id: str | None = None,
     step_id: str | None = None,
     depends_on: tuple[str, ...] = (),
@@ -154,7 +154,7 @@ def seed_week(db) -> None:
 
     # 23 Sep (bucket 4)
     task(db, "d1", state="DEAD_LETTERED", created=at(23, 1), completed=at(23, 2),
-         profile="generic", attempt_count=3, submitted_by="bob@saga.xyz")
+         profile="generic", attempt_count=3, submitted_by="bob@example.com")
     attempt(db, "a_d1a", task_id="d1", generation=1, created=at(23, 1, 5), started=at(23, 1, 10),
             exit_code=1)
     attempt(db, "a_d1b", task_id="d1", generation=2, created=at(23, 1, 35), started=at(23, 1, 40),
@@ -182,7 +182,7 @@ def seed_week(db) -> None:
 
     db.docs["workflows/wf1"] = {
         "workflow_id": "wf1", "tenant_id": "eng", "created_at": at(21, 10),
-        "updated_at": at(21, 10), "state": "RUNNING", "submitted_by": "alice@saga.xyz",
+        "updated_at": at(21, 10), "state": "RUNNING", "submitted_by": "alice@example.com",
         "steps": [
             {"step_id": "a", "runner_profile": "claude-code", "input": {}, "depends_on": [],
              "task_id": "s1"},
@@ -196,9 +196,9 @@ def seed_week(db) -> None:
 
     # research, on the same days
     task(db, "r1", tenant="research", state="SUCCEEDED", created=at(22, 8), completed=at(22, 10),
-         submitted_by="bob@saga.xyz")
+         submitted_by="bob@example.com")
     task(db, "r2", tenant="research", state="FAILED", created=at(22, 8, 30), completed=at(22, 11),
-         submitted_by="bob@saga.xyz", last_error="boom")
+         submitted_by="bob@example.com", last_error="boom")
     attempt(db, "a_r2", task_id="r2", tenant="research", created=at(22, 10, 30),
             started=at(22, 10, 31), exit_code=1)
 
@@ -395,7 +395,7 @@ def test_workflows_that_failed_name_the_first_failed_step(api, db):
     assert (block["with_ended_steps"], block["with_failed_steps"], block["rows_total"]) == (2, 1, 1)
     row = block["rows"][0]
     assert row["workflow_id"] == "wf1" and row["tenant_id"] == "eng"
-    assert row["submitted_by"] == "alice@saga.xyz"
+    assert row["submitted_by"] == "alice@example.com"
     assert row["first_failed"] == {
         "step_id": "b", "task_id": "f1", "failure_class": "timeout",
         "ended_at": "2026-09-22T13:00:00Z",
@@ -429,7 +429,7 @@ def test_the_filters_narrow_every_figure(api):
     assert (claude["totals"]["succeeded"], claude["totals"]["failed"]) == (1, 1)
     assert claude["totals"]["submitted"] == 2
 
-    bob = ok(api, "alice", submitted_by="BOB@saga.xyz", **WEEK)
+    bob = ok(api, "alice", submitted_by="BOB@example.com", **WEEK)
     assert bob["totals"]["dead_lettered"] == 1 and bob["totals"]["ended"] == 1
 
     steps = ok(api, "alice", kind="steps", **WEEK)
@@ -443,7 +443,7 @@ def test_the_filters_narrow_every_figure(api):
     assert standalone["workflows_failed"]["with_failed_steps"] is None
 
     people = ok(api, "alice", group="submitted_by", **WEEK)["groups"]
-    assert sorted(row["key"] for row in people["rows"]) == ["alice@saga.xyz", "bob@saga.xyz"]
+    assert sorted(row["key"] for row in people["rows"]) == ["alice@example.com", "bob@example.com"]
 
 
 def test_compare_previous_reads_the_span_before(api):
@@ -623,13 +623,13 @@ def test_platform_scope_is_503_when_the_admin_lookup_did_not_answer(db, tokens, 
 
 def test_a_pool_admin_is_not_an_admin_here(db, tokens, group_map, clock):
     tokens = dict(tokens)
-    tokens["token-gate"] = {"email": "gate@saga.xyz", "email_verified": True, "sub": "sub-gate"}
+    tokens["token-gate"] = {"email": "gate@example.com", "email_verified": True, "sub": "sub-gate"}
     seed_week(db)
     client = TestClient(
         create_app(
             _context(
                 db, tokens, StaticGroups(group_map), clock,
-                allowed_users=("gate@saga.xyz",), admin_pool_users=("gate@saga.xyz",),
+                allowed_users=("gate@example.com",), admin_pool_users=("gate@example.com",),
             )
         ),
         raise_server_exceptions=False,

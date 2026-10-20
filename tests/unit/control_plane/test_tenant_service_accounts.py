@@ -3,7 +3,7 @@
 WHAT THIS PINS. `.github/workflows/ci-fix.yml` (#273) runs as
 `swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com` and has to land in
 tenant `eng` to continue `eng`'s red pull requests. A service account is not a
-Workspace principal, and adding it to `eng@saga.xyz` would hand it every grant
+Workspace principal, and adding it to `eng@example.com` would hand it every grant
 that group holds across the company. So `eng` LISTS it in terraform, and
 swarm-api resolves it by an exact match on the email AND the unique id (`sub`)
 its verified token carries -- before any group is consulted, and with rights
@@ -79,7 +79,7 @@ def _authenticator(
     return Authenticator(
         settings,
         StaticTokenVerifier(tokens),
-        groups if groups is not None else StaticGroups({"alice@saga.xyz": (ENG_GROUP,)}),
+        groups if groups is not None else StaticGroups({"alice@example.com": (ENG_GROUP,)}),
         iap=iap,
     )
 
@@ -105,7 +105,7 @@ def test_a_listed_account_resolves_to_its_tenant_with_continuation_scope():
 
 
 def test_an_ordinary_member_has_no_scope_and_no_listing():
-    ctx = _authenticator({"t": _claims("alice@saga.xyz", "sub-alice")}).authenticate(
+    ctx = _authenticator({"t": _claims("alice@example.com", "sub-alice")}).authenticate(
         _bearer("t")
     )
     assert ctx.tenant_id == "eng"
@@ -151,7 +151,7 @@ def test_an_unverified_email_is_refused():
 def test_an_absent_email_verified_is_refused_on_the_listed_bearer_path_only():
     listed = _claims()
     del listed["email_verified"]
-    human = _claims("alice@saga.xyz", "sub-alice")
+    human = _claims("alice@example.com", "sub-alice")
     del human["email_verified"]
     auth = _authenticator({"listed": listed, "human": human})
     with pytest.raises(Unauthenticated):
@@ -199,7 +199,7 @@ def test_iap_and_bearer_resolve_the_same_context_from_differently_shaped_subs(mo
 def test_a_duplicate_listing_is_a_401_not_a_500_on_both_paths(monkeypatch):
     twice = (
         LISTING,
-        TenantMember(email=FIXER, kind="group", principal="research@saga.xyz", uid=FIXER_UID),
+        TenantMember(email=FIXER, kind="group", principal="research@example.com", uid=FIXER_UID),
     )
     iap = _real_iap(monkeypatch, _claims(sub=f"accounts.google.com:{FIXER_UID}"))
     auth = _authenticator({"t": _claims()}, listing=twice, iap=iap)
@@ -299,7 +299,7 @@ def test_no_listing_is_an_empty_tuple(env, raw):
 
 
 def test_a_listing_parses_as_a_list_of_members(env):
-    _listing(env, _entry(email=FIXER.upper(), principal="ENG@saga.xyz", uid=f" {FIXER_UID} "))
+    _listing(env, _entry(email=FIXER.upper(), principal="ENG@example.com", uid=f" {FIXER_UID} "))
     assert ApiSettings.from_env().tenant_service_accounts == (LISTING,)
 
 
@@ -312,7 +312,7 @@ def test_an_object_instead_of_a_list_is_refused(env):
 @pytest.mark.parametrize(
     "entry",
     [
-        pytest.param(_entry(email="bogdan@saga.xyz"), id="human"),
+        pytest.param(_entry(email="bogdan@example.com"), id="human"),
         # A Google-managed service agent whose `gcp-sa-*` half happens to look
         # like a project id: the frozen regex accepts the shape, so it is the
         # pin to THIS project that refuses it (see the test after this one).
@@ -355,7 +355,7 @@ def test_the_project_pin_refuses_what_the_shape_alone_accepts(env):
         ApiSettings.from_env()
 
 
-@pytest.mark.parametrize("second_principal", [ENG_GROUP, "research@saga.xyz"])
+@pytest.mark.parametrize("second_principal", [ENG_GROUP, "research@example.com"])
 def test_a_duplicate_email_is_refused_under_the_same_or_another_tenant(env, second_principal):
     _listing(env, _entry(), _entry(email=FIXER.upper(), principal=second_principal))
     with pytest.raises(ValueError, match="(?i)more than once|duplicate|twice"):
@@ -426,7 +426,7 @@ def test_an_ordinary_submission_has_no_tenant_member_key(client, api_context, db
     assert created.status_code == 201, created.text
     task_id = created.json()["task"]["id"]
     (event,) = _events(api_context, task_id, EventType.SUBMITTED)
-    assert event.detail["submitted_by"] == "alice@saga.xyz"
+    assert event.detail["submitted_by"] == "alice@example.com"
     assert "tenant_member" not in event.detail
 
 

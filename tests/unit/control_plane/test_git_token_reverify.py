@@ -93,7 +93,7 @@ class Ticks:
 
 
 def repos(n: int) -> list[tuple[str, str]]:
-    names = [f"saga-xyz/repo-{i:02d}" for i in range(n)]
+    names = [f"example-org/repo-{i:02d}" for i in range(n)]
     return [(repo_id_for("eng", name), name) for name in names]
 
 
@@ -103,14 +103,14 @@ def tenant(db, credentials=("git",)):
 
 def add_repo_token(db, registry: GitTokens, repo_id: str, name: str) -> GitTokenRecord:
     record = record_for_slot("eng", Scope.REPOSITORY, repo_id=repo_id, repository=name,
-                             registered_by="alice@saga.xyz", now=T0 - timedelta(days=2))
+                             registered_by="alice@example.com", now=T0 - timedelta(days=2))
     registry.register(record)
     return record
 
 
 def add_user_token(db, registry: GitTokens) -> GitTokenRecord:
-    record = record_for_slot("eng", Scope.USER, user="alice@saga.xyz",
-                             registered_by="alice@saga.xyz", now=T0 - timedelta(days=2))
+    record = record_for_slot("eng", Scope.USER, user="alice@example.com",
+                             registered_by="alice@example.com", now=T0 - timedelta(days=2))
     registry.register(record)
     return record
 
@@ -278,7 +278,7 @@ def test_a_revoked_token_is_not_reverified(db, registry, slots, fake) -> None:
     ten = tenant(db)
     (repo_id, name), = repos(1)
     record = add_repo_token(db, registry, repo_id, name)
-    registry.revoke("eng", record.token_id, by="root@saga.xyz", allowed=lambda r: None)
+    registry.revoke("eng", record.token_id, by="root@example.com", allowed=lambda r: None)
     slots.put(record.secret_name, classic_value())
     report = reverify(registry, ten, [(repo_id, name)], slots, fake)
     assert record.secret_name not in slots.asked
@@ -318,8 +318,8 @@ def test_a_pass_over_the_cap_takes_the_rest_on_the_next_tick(
     slots.put("swarm-tenant-eng-git", classic_value())
     users = [add_user_token(db, registry)]
     slots.put(users[0].secret_name, classic_value())
-    second_user = record_for_slot("eng", Scope.USER, user="bob@saga.xyz",
-                                  registered_by="bob@saga.xyz", now=T0 - timedelta(days=2))
+    second_user = record_for_slot("eng", Scope.USER, user="bob@example.com",
+                                  registered_by="bob@example.com", now=T0 - timedelta(days=2))
     registry.register(second_user)
     slots.put(second_user.secret_name, classic_value())
     total = 3 * 50  # 150 pairs: thirty past the cap

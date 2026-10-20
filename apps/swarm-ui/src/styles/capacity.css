@@ -252,14 +252,28 @@
    rendered, 11% gave it 96px inside the cell's gutters and clipped its right
    border), `17m ago` ~70px. Feeds pool gives up the 2% Last 429 needs: its
    name is cut in the middle (V020) and keeps the tenant's last eight. */
+/* THE SLACK GOES TO THE POOL NAME (QA-057, 2026-10-20). Every column was a
+   percentage, so a table wider than the ~1054px the widths were measured on
+   gave each column its share of the slack -- and the one long value, the
+   pool, was still head-cut (`…anthropic:tenant:eng`) beside columns with room
+   to spare. The columns whose content is bounded are now as wide as that
+   content (the widths above, as the percentages gave them at 1054), Tenant
+   keeps its share, and Feeds pool sets no width: a fixed table gives an auto
+   column what is left. At 1054 that is ~160px, what its 15% was; at ~1300 it
+   is ~400px, the whole of `provider:anthropic:tenant:u-bogdan`.
+   EACH PX WIDTH IS CAPPED AT ITS OLD SHARE (`min(Npx, N%)`, QA-057 review).
+   In bare px the bounded columns are 724px: a 1280px viewport with the nav
+   open (a ~894px table) left Feeds pool ~27px, and below ~1250px the fixed
+   table outgrew its card and pushed Reported past its edge -- the regression
+   V005/V013 exist to prevent. Capped, a table narrower than 1054 gives every
+   column its old percentage again, so Feeds pool never has less than 15%. */
 .quota-table col.quota-c-tenant { width: 16%; }
-.quota-table col.quota-c-state { width: 16%; }
-.quota-table col.quota-c-cap { width: 11%; }
-.quota-table col.quota-c-feeds { width: 15%; }
-.quota-table col.quota-c-left { width: 10%; }
-.quota-table col.quota-c-429s { width: 12%; }
-.quota-table col.quota-c-last { width: 13%; }
-.quota-table col.quota-c-rep { width: 7%; }
+.quota-table col.quota-c-state { width: min(168px, 16%); }
+.quota-table col.quota-c-cap { width: min(116px, 11%); }
+.quota-table col.quota-c-left { width: min(104px, 10%); }
+.quota-table col.quota-c-429s { width: min(124px, 12%); }
+.quota-table col.quota-c-last { width: min(136px, 13%); }
+.quota-table col.quota-c-rep { width: min(76px, 7%); }
 .quota-table thead th { white-space: normal; }
 .quota-feeds a {
   display: block;
@@ -348,6 +362,25 @@
 }
 .acct-link:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
 
+/* THE ACCOUNTS SECTION'S OWN SCOPE: Accounts (Subscription accounts) and
+   Provider quota. It draws no box -- `display: contents` -- so wrapping a
+   screen's body in it moves nothing; it only gives a rule somewhere to stop. */
+.acct-page, .quota-page { display: contents; }
+/* A STRAIGHT DASHED EDGE, NOT A DASHED CURVE (QA-049, 2026-10-20), ON THESE
+   SCREENS ONLY. The rounded right corners carried the dashes round the curve,
+   and on a mark one line tall the dashes and the corners met as a broken
+   edge: the outline read as clipped beside `unread docs` and `last read 3d
+   ago`, not as the hole it is. Square on the dashed side only, so the dashes
+   run the full height and the solid side keeps the mark's radius.
+   SCOPED, NOT SHARED (the owner's choice, 2026-10-20). QAFIX-CAPACITY wrote
+   it into the shared `.ctl-mark.is-partial` rule, which squared every partial
+   mark on every screen; everywhere else the mark is as it was before. */
+.acct-page .ctl-mark.is-partial,
+.quota-page .ctl-mark.is-partial {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
 .acct-split {
   display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; align-items: start;
   border: 1px solid var(--line); border-radius: 10px;
@@ -399,6 +432,14 @@
   font: 600 var(--t-meta)/var(--lh-flush) var(--font); cursor: pointer;
 }
 .acct-add svg { width: 12px; height: 12px; }
+/* THE COUNT IS NOT WHAT GIVES WAY AT 390 (QA-050, 2026-10-20). Title, count
+   and `Add account` measured ~352px on one line in ~332px, so the count was
+   cut to `6 ac…`. On a phone the button says `Add` beside its plus -- the
+   heading it sits in already says what is added, and its accessible name is
+   still `Add account` -- which gives back ~50px and the count stays whole. */
+@media (max-width: 560px) {
+  .acct-add-what { display: none; }
+}
 .acct-add:disabled { opacity: .5; cursor: not-allowed; }
 .acct-add:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 
@@ -680,6 +721,23 @@
    track that failed to paint (which has no tick) and from 5% (a fill). */
 .cap-use .ctl-util-track.is-zero { box-shadow: none; }
 .cap-use .ctl-util-track.is-zero > .ctl-util-zero { width: 1px; border-radius: 0; }
+/* A TRACK ON A TINTED ROW IS OUTLINED (QA-053, 2026-10-20). `--surface-2` is
+   the track on a plain row, and a Needs-action row's wash is within ~1.0:1 of
+   it in both themes: on the lavender row only the 0% tick showed. On a tinted
+   row the track is the card's own surface inside a `--line` hairline, which
+   holds it apart from the wash by more than a plain row's track is held from
+   its row. Every track on such a row is outlined, a 0% one too, so G5-20's
+   comparison (an outlined zero reading fuller than a bare 5%) cannot arise
+   within the row. */
+.cap-pools tr.is-paused .ctl-util-track,
+.cap-pools tr.is-warn .ctl-util-track,
+.cap-pools tr.is-bad .ctl-util-track {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+/* THE SUMMARY WRAPS BETWEEN CLAUSES, NEVER INSIDE ONE (QA-054): `tenant
+   u-bogdan` broke at its hyphen at 390. */
+.cap-clause { white-space: nowrap; }
 
 /* G5-15: ONE TASK REFERENCE (TaskRef.tsx). The link, then its copy. */
 .task-ref { display: inline-flex; align-items: baseline; gap: 4px; min-width: 0; max-width: 100%; }
@@ -704,7 +762,7 @@
 .acct-pct-win { color: var(--text-faint); }
 
 /* G5-23: `Quota cap (units)` and `429s (this run)` hold one line each, in
-   the widths above (Feeds pool gave up the room; its name ellipsizes). */
+   the widths above (Feeds pool takes what they leave; its name is cut only when that is too little). */
 .quota-table thead th.quota-nowrap { white-space: nowrap; }
 
 /* G5-08: ON A PHONE A CAPACITY TABLE IS A RECORD PER ROW (capacityPoll

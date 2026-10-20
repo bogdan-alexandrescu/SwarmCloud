@@ -53,7 +53,7 @@ from control_plane.fakes import FakeFirestore
 
 AUTH = {"Authorization": "Bearer token-alice"}
 TENANT = "eng"
-EMAIL = "alice@saga.xyz"
+EMAIL = "alice@example.com"
 AT = datetime(2026, 9, 25, 3, 52, 50, tzinfo=timezone.utc)
 
 
@@ -77,11 +77,11 @@ class World:
                         "email": EMAIL,
                         "email_verified": True,
                         "sub": "sub-alice",
-                        "hd": "saga.xyz",
+                        "hd": "example.com",
                     }
                 }
             ),
-            groups=StaticGroups({EMAIL: (f"{TENANT}@saga.xyz",)}),
+            groups=StaticGroups({EMAIL: (f"{TENANT}@example.com",)}),
             credentials=InMemoryCredentials(),
             waker=NullWaker(),
             metrics=ApiMetrics(),
@@ -353,7 +353,7 @@ def test_doctor_reads_identity_from_the_nested_route_and_trusts_the_measurement(
     assert f"identity    {EMAIL}" in lines, lines
     assert f"tenant      {TENANT}" in lines, lines
     assert "admin       False" in lines, lines
-    assert any(line.startswith("groups") and f"{TENANT}@saga.xyz" in line for line in lines), lines
+    assert any(line.startswith("groups") and f"{TENANT}@example.com" in line for line in lines), lines
     reaches = [line for line in lines if line.startswith("reaches")]
     assert reaches and "measured" in reaches[0], lines
     assert not any(line.startswith(("not team", "not solo")) for line in lines), lines
@@ -511,12 +511,12 @@ def test_tail_prints_one_polls_events_in_the_order_they_happened(swarm, world, c
 
 def test_result_prints_why_a_task_ended(swarm, world, capsys):
     task_id = world.task("task_000000000000000ended", state="CANCELLED")
-    world.set(task_id, last_error="cancelled by alice@saga.xyz before it started")
+    world.set(task_id, last_error="cancelled by alice@example.com before it started")
 
     cli.cmd_result(swarm, argparse.Namespace(task_id=task_id, json=False))
 
     printed = capsys.readouterr().out
-    assert "cancelled by alice@saga.xyz before it started" in printed, printed
+    assert "cancelled by alice@example.com before it started" in printed, printed
     # Never attempted, so there is no parked attempt to go and read.
     assert "parked attempt" not in printed, printed
 

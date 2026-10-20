@@ -29,6 +29,7 @@ import { render, waitFor } from '@testing-library/react'
 import type { AgentRun } from '../api'
 import type { Result } from '../fetch'
 import type { CheckpointRecord, CheckpointsPage, LatestCheckpointPointer } from '../types'
+import { painted } from './marks'
 import { attempt, task } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -172,6 +173,26 @@ describe('the Checkpoints section tells a reclaimed checkpoint from a real zero'
     const code = section.querySelector('code.ckpt-prefix')
     expect(code, 'the prefix carries no class the sheet can wrap').not.toBeNull()
     expect(code!.textContent).toBe(PREFIX)
+  })
+
+  /**
+   * QA-088. The prefix broke mid-token (`checkpoin` / `ts`) because a `/`
+   * between letters is no break opportunity. Each segment is its own inline
+   * block, ending at its slash, and the text is the prefix unchanged.
+   */
+  it('breaks the checkpoint prefix at its slashes, not inside a segment', async () => {
+    const section = await checkpointsSection(agentRun(), emptyPage())
+    const code = section.querySelector('code.ckpt-prefix')!
+    const segs = Array.from(code.querySelectorAll<HTMLElement>('.path-seg'))
+    // MUTATION: draw `{page.prefix}` as one text node again -- no segment to break between.
+    expect(segs.map((s) => s.textContent)).toEqual(['tenants/', 'eng/', 'tasks/', 'tsk_charts/', 'attempts/'])
+    // MUTATION: insert anything between the segments -- a copy of the prefix is no longer the prefix.
+    expect(code.textContent).toBe(PREFIX)
+    for (const env of [{ width: 1440 }, { width: 390 }]) {
+      // MUTATION: drop `.path-seg`'s inline-block -- the segments are one run of text again.
+      expect(painted(segs[0]!, 'display', env)).toBe('inline-block')
+      expect(painted(segs[0]!, 'max-width', env)).toBe('100%')
+    }
   })
 
   /** An empty but CUT listing measured nothing past the cut. */

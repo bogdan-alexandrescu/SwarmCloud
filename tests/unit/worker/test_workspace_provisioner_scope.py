@@ -418,7 +418,7 @@ def _target_pattern(policy_docs: list[dict[str, Any]]) -> re.Pattern[str]:
 
 
 @pytest.mark.parametrize(
-    "email", ["alice@saga.xyz", "Bob.Smith@saga.xyz", "a" * 80 + "@saga.xyz", "o'neil+x@saga.xyz"]
+    "email", ["alice@example.com", "Bob.Smith@example.com", "a" * 80 + "@example.com", "o'neil+x@example.com"]
 )
 def test_every_personal_namespace_the_contract_derives_is_in_scope(policy_docs, email):
     """The frozen contract derives a person's tenant (`tenant_id_for_user`);
@@ -431,7 +431,7 @@ def test_every_personal_namespace_the_contract_derives_is_in_scope(policy_docs, 
 @pytest.mark.parametrize(
     "namespace",
     [
-        f"{render.NAMESPACE_PREFIX}{tenant_id_for_group('eng@saga.xyz')}",
+        f"{render.NAMESPACE_PREFIX}{tenant_id_for_group('eng@example.com')}",
         "swarm-system",
         "kube-system",
         "default",

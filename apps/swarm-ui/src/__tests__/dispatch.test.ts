@@ -375,8 +375,9 @@ describe('TS-6: the carrier is a workflow question, asked once, and its caveat i
 
   it('names the carrier once on the workflow form, fixed (QA G4-28)', () => {
     const { container } = control('workflow')
-    const options = [...container.querySelectorAll('#dsp-carrier option')].map((o) => o.textContent)
-    expect(options, '"checkpoints — Checkpoints"').toEqual(['checkpoints (fixed)'])
+    // MUTATION: draw the disabled select again -- options come back (QA-074, owner 2026-10-20).
+    expect(container.querySelectorAll('#dsp-carrier option')).toHaveLength(0)
+    expect(container.querySelector('#dsp-carrier')!.textContent).toBe('checkpoints (fixed)')
   })
 
   it('says "not acted on yet" in plain ink with a help link, and keeps the full sentence as its name', () => {
@@ -392,7 +393,8 @@ describe('TS-6: the carrier is a workflow question, asked once, and its caveat i
     // The form's own sentence: CARRIER_NOTE speaks of choosing `branches`,
     // which this form no longer offers (QA G4-28).
     expect(note!.getAttribute('aria-label')).toBe(CARRIER_FIXED_NOTE)
-    expect(container.querySelector('#dsp-carrier')!.getAttribute('aria-describedby')).toBe(note!.id)
+    // The note follows the value it qualifies, as plain text after plain text.
+    expect(container.querySelector('#dsp-carrier')!.nextElementSibling).toBe(note)
   })
 })
 

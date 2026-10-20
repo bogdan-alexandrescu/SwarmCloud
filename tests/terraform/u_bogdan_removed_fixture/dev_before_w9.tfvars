@@ -12,13 +12,13 @@
 tenants = {
   eng = {
     kind      = "group"
-    principal = "eng@saga.xyz"
+    principal = "eng@example.com"
     providers = ["anthropic", "openai"]
   }
 
   smoke = {
     kind      = "group"
-    principal = "smoke@saga.xyz"
+    principal = "smoke@example.com"
     providers = ["anthropic"]
   }
 
@@ -30,7 +30,7 @@ tenants = {
 
   w9-stand-in = {
     kind      = "user"
-    principal = "w9-stand-in@saga.xyz"
+    principal = "w9-stand-in@example.com"
     providers = ["anthropic"]
   }
 }

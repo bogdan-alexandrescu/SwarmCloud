@@ -14,8 +14,9 @@ runs them, in this order, around the agent:
     extract        swarm-repo-index --repo <checkout> --out <work>/repo-index.extract.json
                                     --graph-out <work>/repo-graph.json
     agent          the runner, from the extractor's output
-    graph_write    swarm-repo-graph write --graph <work>/repo-graph.json --index
-                                    <artifacts>/repo-index.json ...
+    graph_write    swarm-repo-graph write --no-sweep --graph <work>/repo-graph.json
+                                    --index <artifacts>/repo-index.json ...
+    index_sweep    swarm-repo-graph sweep --keep-commit <sha> ... (best effort)
 
 Each with its own timeout (`budgets`), sized to the task's own timeout -- 30
 minutes for a full run (`swarm_api.repoindex.FULL_TIMEOUT_SECONDS`) -- and
@@ -47,12 +48,25 @@ worker then copies the uploaded object, byte for byte, to
 `tenants/<tenant>/repos/<repo_id>/index/<commit_sha>/repo-index.json`
 (`Target.index_key`; the commit is the signed `repository_ref`), which no
 lifecycle rule matches; promotion records that key in the version once its
-bytes equal the artifact's. Before the graph write it reads the commits
-whose versions swarm-api still holds (`kept_commits`: the last 20, plus
-the promoted one and its own) and passes them as `--keep-commit`, so the
-writer's sweep deletes every other commit's manifest and index copy and
-then the blobs no kept manifest names. swarm-api cannot do either: it
-reads the bucket and may not write or delete.
+bytes equal the artifact's.
+
+WHAT IS RETIRED, AND WHO SAYS SO (lane INDEX-RETENTION, part of #1693).
+swarm-api names the commits to keep -- the repository's newest
+`index.keep_versions` versions (20 by default), the promoted one and the
+run's own -- in the SIGNED prompt, one `KEEP_LINE` (`kept_commits`), the way
+it names a base. The worker reads no database for them: until 2026-10-20 it
+read `index_versions` from Firestore itself, a tenant not switched to the
+state routes was refused that read on every run (PermissionDenied, logged
+since at least 2026-10-15), and nothing was ever retired -- ai-studio held
+163 manifests and ~880 MB where 20 versions were kept. The graph write never
+sweeps (`--no-sweep`): its sweep timed out in 19 of 19 runs there, reading
+163 manifests one at a time after a write of 86-97 s. The sweep is its own
+phase, `index_sweep`, after the write, with its own reserve (`budgets`),
+and best effort: no keep line, no sweep, and a sweep that fails or runs out
+of time is recorded with its reason and never fails the run. Its report --
+copies and bytes deleted, copies and bytes held -- is kept on the phase
+record (`sweep_retention`), which swarm-api serves on the run and the
+repository. swarm-api cannot sweep: it reads the bucket and may not delete.
 
 AN INCREMENTAL RUN'S BASE, BY REFERENCE (§3.4, lane IX2). swarm-api decides
 incremental or full (`swarm_api.repoindex.choose_kind`) and names the base
@@ -131,6 +145,10 @@ VERSIONS_COLLECTION = "index_versions"
 #: (`swarm_api.repoindex.BASE_LINE`): a line of its own, the prefix and a
 #: 40-hex sha. A request, checked; see the module doc.
 BASE_LINE = "swarm-index-base: "
+#: The prompt line that names the commits the sweep keeps
+#: (`swarm_api.repoindex.KEEP_LINE`): a line of its own, the prefix and
+#: space-separated 40-hex shas. Signed, like BASE_LINE; see the module doc.
+KEEP_LINE = "swarm-index-keep: "
 #: A base index larger than the index's own bound (§2.2) is not one swarm-api promoted.
 MAX_BASE_INDEX_BYTES = 512 * 1024
 
@@ -146,11 +164,24 @@ EXTRACT_MIN_SECONDS = 120
 EXTRACT_LSP_RESERVE_SECONDS = 180
 #: The graph write is reserved out of the task's timeout BEFORE the agent
 #: starts, so an agent that uses all its time still leaves the write its
-#: own: 0.15 of 1,800 s is 270 s. One batched upload of a full graph (~370
+#: own: 0.10 of 1,800 s is 180 s. One batched upload of a full graph (~370
 #: blobs, 1.3 MB) takes well under a minute; the serial upload it replaced
-#: took ~3.9 s a blob, ~24 minutes, and could never fit.
-GRAPH_WRITE_SHARE = 0.15
+#: took ~3.9 s a blob, ~24 minutes, and could never fit. It was 0.15 (270 s)
+#: while the write also swept; measured on ai-studio 2026-10-20 the write
+#: alone takes 86-97 s, so 180 s is about twice that, and the other 90 s
+#: of the old reserve became the sweep's own (lane INDEX-RETENTION).
+GRAPH_WRITE_SHARE = 0.10
 GRAPH_WRITE_MIN_SECONDS = 120
+#: The sweep's own reserve, after the write's and taken the same way: 0.05
+#: of 1,800 s is 90 s, and an incremental run's 900 s gets the floor, 60 s.
+#: A sweep with a keep set reads only the kept manifests (at most 102, four
+#: at a time), lists the registration's objects once and deletes at most
+#: `repo_graph_shards.MAX_SWEEP_DELETES` in batches; one that runs past this
+#: is stopped and recorded `timed_out`, and what it deleted stays deleted.
+INDEX_SWEEP_SHARE = 0.05
+INDEX_SWEEP_MIN_SECONDS = 60
+#: The phase's name, in the run's phases and swarm-api's `SWEEP_PHASE`.
+SWEEP_PHASE = "index_sweep"
 #: READING THE BASE GRAPH BACK (`swarm-repo-graph read`, #1469) is sized
 #: from the graph's size, not a share of the extractor's budget. The flat
 #: quarter it had, 90 s of an incremental run's 360, was measured running
@@ -260,20 +291,23 @@ class Budgets:
     lsp_total: int
     graph_write: int
     base_read: int
+    sweep: int
 
 
 def budgets(timeout_seconds: int, *, base_graph_bytes: int | None = None) -> Budgets:
     """Each deterministic phase's timeout, sized to the task's timeout.
 
     1,800 s (a full run) gives 720 s to extract, 540 s of it to the LSP
-    pass, and 270 s reserved for the graph write: the agent has at least the
-    810 s between. Never more than the task has. The base read is sized from
+    pass, and 180 s reserved for the graph write and 90 s for the sweep
+    after it: the agent has at least the 810 s between. Never more than the
+    task has. The base read is sized from
     `base_graph_bytes` (`base_graph_bytes()`), up to half the extractor's
     budget, which is also what an unknown size gets.
     """
     total = max(1, int(timeout_seconds))
     extract = min(total, max(EXTRACT_MIN_SECONDS, int(total * EXTRACT_SHARE)))
     write = min(total, max(GRAPH_WRITE_MIN_SECONDS, int(total * GRAPH_WRITE_SHARE)))
+    sweep = min(total, max(INDEX_SWEEP_MIN_SECONDS, int(total * INDEX_SWEEP_SHARE)))
     lsp = max(30, extract - EXTRACT_LSP_RESERVE_SECONDS)
     ceiling = extract // 2
     if base_graph_bytes is None:
@@ -282,7 +316,8 @@ def budgets(timeout_seconds: int, *, base_graph_bytes: int | None = None) -> Bud
         megabytes = max(0, base_graph_bytes) / (1024 * 1024)
         base_read = min(ceiling, int(BASE_READ_FIXED_SECONDS
                                      + BASE_READ_SECONDS_PER_MB * megabytes))
-    return Budgets(extract=extract, lsp_total=lsp, graph_write=write, base_read=base_read)
+    return Budgets(extract=extract, lsp_total=lsp, graph_write=write, base_read=base_read,
+                   sweep=sweep)
 
 
 def base_graph_bytes(index: Any) -> int | None:
@@ -370,17 +405,29 @@ def extractor_argv(
 
 def graph_write_argv(
     program: str, *, work: Path, artifacts: Path, where: Target, bucket: str,
-    base_sha: str | None = None, keep: Sequence[str] | None = None,
+    base_sha: str | None = None,
 ) -> list[str]:
+    """The write, which never sweeps: the sweep is its own phase (`sweep_argv`)."""
     argv = [
-        program, "write", "--graph", str(work / GRAPH_FILE),
+        program, "write", "--no-sweep", "--graph", str(work / GRAPH_FILE),
         "--repo-id", where.repo_id, "--destination", where.destination,
         "--tenant", where.tenant_id, "--store", f"gs://{bucket}",
         "--index", str(artifacts / INDEX_FILE),
     ]
     if base_sha is not None:
         argv += ["--base-commit", base_sha]
-    for commit in keep or ():
+    return argv
+
+
+def sweep_argv(program: str, *, where: Target, bucket: str, keep: Sequence[str]) -> list[str]:
+    """`swarm-repo-graph sweep` of the registration the SIGNED spec names, under
+    this worker's own tenant and bucket (invariant 9: the tool refuses any
+    other, `repo_graph_shards.resolve_target`), keeping `keep`."""
+    argv = [
+        program, "sweep", "--repo-id", where.repo_id, "--destination", where.destination,
+        "--tenant", where.tenant_id, "--store", f"gs://{bucket}",
+    ]
+    for commit in keep:
         argv += ["--keep-commit", commit]
     return argv
 
@@ -488,7 +535,9 @@ def route_repository(
         return f"the state route serves no registration {where.repo_id} for this task"
     registration = answer.get("registration")
     if not isinstance(registration, Mapping) or registration.get("tenant_id") != where.tenant_id:
-        return f"the registration {where.repo_id} has no document this tenant can read"
+        # The direct path's words (`graphstage._stage`): to this tenant, an
+        # absent registration and another tenant's are the same fact.
+        return "the repository is not registered in this workspace"
     versions = answer.get("versions")
     rows = [row for row in versions if isinstance(row, Mapping)] \
         if isinstance(versions, list) else []
@@ -551,63 +600,79 @@ def resolve_base(
 # retention of tenants/<t>/repos/ (§2.3, lane IX3)
 # --------------------------------------------------------------------------
 
-#: The most versions read for the keep set. swarm-api keeps 20
-#: (`swarm_api.repoindex.KEPT_VERSIONS`); more than this means its pruning is
-#: behind, and the run then retires nothing rather than guess which to keep.
-MAX_KEPT_READ = 200
+_KEEP_LINE = re.compile(r"^" + re.escape(KEEP_LINE) + r"(.*)$", re.MULTILINE)
 
 
-def kept_commits(
-    db: Any, *, tenant_id: str, where: Target, own: str | None,
-    call_options: Mapping[str, Any] | None = None,
-) -> list[str] | str:
+def kept_commits(task_input: Any, *, own: str | None) -> list[str] | str:
     """The commits whose objects under repos/ the sweep must keep, or why there are none.
 
-    Every `index_versions` entry of the registration the SIGNED spec names
-    (swarm-api prunes them to the last 20 at promotion, `_prune_versions`),
-    the promoted `current_sha`, and this run's own commit. A reason (and so
-    no `--keep-commit`, and nothing retired) when the registration is not
-    this tenant's, a version names no sha, or there are more than
-    `MAX_KEPT_READ`: the sweep then works as it did before lane IX3.
+    Read from the SIGNED prompt's one `KEEP_LINE`, which swarm-api writes
+    (`swarm_api.repoindex.kept_commits`: the repository's newest
+    `keep_versions` versions and the promoted `current_sha`), plus this run's
+    own commit. No database is read. A reason -- and so no sweep, and nothing
+    retired -- when the line is absent, appears twice, or names anything but
+    40-hex shas.
     """
-    state = state_routes(db)
-    if state is not None:
-        # A switched tenant: swarm-api runs the read the worker's role never
-        # could (§1.3), and serves at most ROUTE_VERSIONS_SERVED. That many
-        # may be a cut-short list, and keeping too few would let the sweep
-        # delete a kept commit's objects: so it retires nothing.
-        served = route_repository(state, where)
-        if isinstance(served, str):
-            return served
-        data, listed = dict(served[0]), served[1]
-        if len(listed) >= ROUTE_VERSIONS_SERVED:
-            return (f"the state route serves at most {ROUTE_VERSIONS_SERVED} index versions, "
-                    "and this registration may keep more; none is retired")
-        rows: Any = listed
-    else:
-        options = dict(call_options or {})
-        registration = db.collection(REPOSITORIES_COLLECTION).document(where.repo_id)
-        snapshot = registration.get(**options)
-        if not snapshot.exists:
-            return f"the registration {where.repo_id} has no document"
-        data = snapshot.to_dict() or {}
-        if data.get("tenant_id") != tenant_id:
-            return f"the registration {where.repo_id} is not this tenant's"
-        rows = (row.to_dict() or {} for row in registration.collection(
-            VERSIONS_COLLECTION).limit(MAX_KEPT_READ + 1).stream(**options))
-    kept: set[str] = set()
-    for count, row in enumerate(rows, start=1):
-        if count > MAX_KEPT_READ:
-            return f"more than {MAX_KEPT_READ} index versions are kept; none is retired"
-        commit = row.get("commit_sha")
-        if not isinstance(commit, str) or not _SHA.match(commit):
-            return "an index version names no commit; none is retired"
-        kept.add(commit)
-    current = (data.get("index") or {}).get("current_sha")
-    for commit in (current, own):
-        if isinstance(commit, str) and _SHA.match(commit):
-            kept.add(commit)
+    prompt = task_input.get("prompt") if isinstance(task_input, Mapping) else None
+    if not isinstance(prompt, str):
+        return "the task has no prompt to name the kept commits; none is retired"
+    found = _KEEP_LINE.findall(prompt)
+    if not found:
+        return ("swarm-api named no kept commits in the signed prompt (a run submitted "
+                "before per-repository retention, or its versions could not be read); "
+                "none is retired")
+    if len(found) > 1:
+        return "the signed prompt names the kept commits twice; none is retired"
+    commits = found[0].split()
+    if not commits or not all(_SHA.match(commit) for commit in commits):
+        return "the signed prompt's kept commits are not 40-hex shas; none is retired"
+    kept = set(commits)
+    if isinstance(own, str) and _SHA.match(own):
+        kept.add(own)
     return sorted(kept)
+
+
+#: What `sweep_retention` keeps of the sweep's report, under the names the
+#: run's phases and swarm-api (`swarm_api.repoindex.RETENTION_COUNTS`) use.
+_RETENTION_FROM_REPORT = (
+    ("kept_commits", "kept_commits"), ("deleted_copies", "retired_manifests"),
+    ("deleted_indexes", "retired_indexes"), ("deleted_blobs", "deleted"),
+    ("deleted_bytes", "deleted_bytes"), ("held_copies", "held_copies"),
+    ("held_bytes", "held_bytes"),
+)
+
+
+def _sweep_report(stdout: str) -> Mapping[str, Any] | None:
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    try:
+        report = json.loads(lines[-1]).get("sweep") if lines else None
+    except (ValueError, AttributeError):
+        return None
+    return report if isinstance(report, Mapping) else None
+
+
+def sweep_refusal(stdout: str) -> str | None:
+    """Why a sweep that exited 0 deleted nothing (its report's `refused`), or None."""
+    refused = (_sweep_report(stdout) or {}).get("refused")
+    return refused[:300] if isinstance(refused, str) and refused else None
+
+
+def sweep_retention(stdout: str) -> dict[str, Any] | None:
+    """What the sweep did, from the report `swarm-repo-graph sweep` prints as
+    its last stdout line (`{"sweep": {...}}`); None when it printed none.
+    Counts only, and `truncated`: the report's `refused` is the phase's
+    reason, never copied here."""
+    report = _sweep_report(stdout)
+    if report is None:
+        return None
+    out: dict[str, Any] = {}
+    for name, key in _RETENTION_FROM_REPORT:
+        value = report.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            out[name] = value
+    if isinstance(report.get("truncated"), bool):
+        out["truncated"] = report["truncated"]
+    return out
 
 
 def content_digest(data: bytes) -> str:
@@ -624,6 +689,8 @@ class PhaseRecord:
     seconds: float
     exit_code: int | None = None
     reason: str | None = None
+    #: The sweep phase's counts (`sweep_retention`); None on every other phase.
+    retention: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {key: value for key, value in asdict(self).items() if value is not None}
@@ -648,8 +715,10 @@ def last_line(path: Path, limit: int = 300) -> str | None:
 __all__ = [
     "BASE_GRAPH_FILE", "BASE_INDEX_FILE", "BaseVersion", "Budgets", "EXTRACTOR_COMMAND",
     "EXTRACT_FILE", "GRAPH_FILE", "GRAPH_WRITER_COMMAND", "INDEXER_PROFILE", "INDEX_FILE",
-    "MAX_BASE_INDEX_BYTES", "PHASES_FILE", "PhaseRecord", "Target", "base_graph_bytes", "budgets",
-    "content_digest", "extractor_argv", "graph_read_argv", "graph_write_argv", "is_index_run",
-    "last_line", "phase_env", "repo_id_for", "requested_base", "resolve", "resolve_base",
-    "target", "write_phases",
+    "KEEP_LINE", "MAX_BASE_INDEX_BYTES", "PHASES_FILE", "PhaseRecord", "SWEEP_PHASE", "Target",
+    "base_graph_bytes", "budgets", "content_digest", "extractor_argv", "graph_read_argv",
+    "graph_write_argv", "is_index_run", "kept_commits", "last_line", "phase_env", "repo_id_for",
+    "requested_base", "resolve", "resolve_base", "sweep_argv", "sweep_refusal",
+    "sweep_retention", "target",
+    "write_phases",
 ]
