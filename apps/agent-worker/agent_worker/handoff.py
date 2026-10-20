@@ -17,6 +17,8 @@ end of ctl.sock is `agent_worker.livegate.ctl` (lane L3).
       unavailable          this worker's: present when this attempt has no live path
       egress.md            this worker's: present while the proxied browser has no
                            egress (egress_ticket.py; the agent's prompt carries it)
+      qa-identity.md       this worker's: present while a task that named the QA
+                           identity has no credential in the gate (qa_identity.py)
       browser.json         the runner's: the browser tools it registered for the
                            task's `browser_tool`, which this worker forwards to the
                            gate (`browser_tools` on ctl.sock; browser_tools.py)
@@ -99,6 +101,9 @@ from swarm_redaction import redact as redact_text
 from . import browser_tools
 from .browser_resume import BrowserResume, Restored
 from .egress_ticket import BrowserEgress
+from .qa_identity import NOTICE_NAME as QA_NOTICE_NAME
+from .qa_identity import WORKER_UNPROTECTED as QA_WORKER_UNPROTECTED
+from .qa_identity import QaSignIn, requested
 from .errors import ExitCode
 from .hardening import PROTECTED
 from .livegate.tunnel import (
@@ -300,12 +305,15 @@ CDP_PROBE_SECONDS = 2.0
 #: agent exists (browser_resume.py, §5.5.2).
 GATE_OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "theme", "status",
                       "egress_ticket", "browser_tools", "tabs_export", "tabs_restore",
-                      "session_export", "session_import"})
+                      "session_export", "session_import", "qa_identity"})
 
 #: EGRESS-GATE: the agent's notice that its proxied browser has no egress
 #: (`egress_ticket.notice`), in the spool while that is so; the claude-code
 #: runner puts it in the prompt.
 EGRESS_NOTICE_NAME = "egress.md"
+#: QI-WORKER: the agent's notice that the console's QA sign-in is unavailable
+#: (`qa_identity.notice`), in the spool while that is so, beside the egress one.
+QA_IDENTITY_NOTICE_NAME = QA_NOTICE_NAME
 
 #: The browser's start-up steps the gate dates in its `status` (`startup`, in
 #: epoch seconds), in order, for the console's progress bar (STARTUP-API,
@@ -814,6 +822,10 @@ class HandoffPath:
         #: and the note `setup` was given, for a failure found on a later poll.
         self.egress = BrowserEgress(cfg, logger=logger, wall=wall)
         self._note: Callable[[dict[str, Any]], Any] | None = None
+        #: The QA identity's credential (QI-WORKER; qa_identity.py), asked for
+        #: only when the verified task names one (`start_qa_identity`).
+        self.qa = QaSignIn(cfg, logger=logger, wall=wall,
+                           register_secret=getattr(logger, "register_secret", None))
         #: The browser-tool state last forwarded to the gate (BSTATUS-API).
         self._browser_tools_sent: dict[str, Any] | None = None
         #: What a park keeps of the browser and a resumed attempt gets back
@@ -1149,6 +1161,64 @@ class HandoffPath:
         except Exception:  # a note must never stop the attempt
             pass
 
+    def start_qa_identity(self, task: Any) -> str | None:
+        """The QA identity's first credential, before the agent exists (§4.5). Never raises.
+
+        `task` is the VERIFIED task document: a task whose input names no
+        identity asks nothing at all. Called once the gate is registered and
+        before the runner starts; a second call asks nothing again. Returns
+        the cause that must fail the attempt before its agent starts
+        (`qa_identity.FAILS_THE_ATTEMPT`: the first ask refused as not
+        granted or unconfigured), else None. Any other failure leaves the
+        browser signed out of the console and the agent told why
+        (`QA_IDENTITY_NOTICE_NAME`); the task is not failed for it.
+        """
+        try:
+            identity = requested(task)
+            gate = self.gate if self.live else None
+            unavailable = None
+            if getattr(self._memory, "status", None) != PROTECTED:
+                unavailable = QA_WORKER_UNPROTECTED
+            key = getattr(self._children, "_key", None)
+            api = getattr(self._children, "_api", None)
+            fails = self.qa.start(gate, key, api, identity, unavailable)
+        except Exception as exc:  # the QA identity never crashes the attempt
+            self.log.warning("qa identity start failed", error=type(exc).__name__)
+            return None
+        self._qa_failed(self._note, self.qa.cause if self.qa.state == "failed" else None)
+        return fails
+
+    def _qa_failed(self, note: Callable[[dict[str, Any]], Any] | None, cause: str | None) -> None:
+        """The browser holds no QA credential: say so on the attempt's events. Never raises."""
+        if cause is None or note is None:
+            return
+        try:
+            note({"phase": "qa_identity", "live_path": "qa_identity_signed_out",
+                  "reason": f"qa identity {cause}: the browser is signed out of the console"})
+        except Exception:  # a note must never stop the attempt
+            pass
+
+    def _keep_qa_identity(self, root: Path) -> None:
+        """Renew the QA credential when due, and keep the agent's notice current."""
+        if self.gate is None or self._wiped:
+            return
+        key = getattr(self._children, "_key", None)
+        api = getattr(self._children, "_api", None)
+        self._qa_failed(self._note, self.qa.keep(self.gate, key, api))
+        self._write_qa_notice(root)
+
+    def _write_qa_notice(self, root: Path) -> None:
+        target = root / QA_IDENTITY_NOTICE_NAME
+        text = self.qa.notice()
+        if text is None:
+            target.unlink(missing_ok=True)
+            return
+        root.mkdir(parents=True, exist_ok=True)
+        tmp = root / f".{QA_IDENTITY_NOTICE_NAME}.tmp"
+        tmp.unlink(missing_ok=True)
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, target)
+
     def _keep_egress(self, root: Path) -> None:
         """Renew the egress ticket when due, and keep the agent's notice current."""
         if self.gate is None or self._wiped:
@@ -1351,6 +1421,8 @@ class HandoffPath:
         # Rewritten every attempt, as `unavailable` is: present only while
         # THIS attempt's proxied browser has no egress.
         self._write_egress_notice(root)
+        # Likewise present only while THIS attempt's QA credential is missing.
+        self._write_qa_notice(root)
         # This attempt's runner writes its own; a restored checkpoint's is
         # an earlier attempt's registration, never forwarded as this one's.
         (root / browser_tools.STATE_NAME).unlink(missing_ok=True)
@@ -1436,6 +1508,10 @@ class HandoffPath:
             self._keep_egress(root)
         except Exception as exc:  # egress upkeep never crashes the attempt
             self.log.warning("browser egress upkeep failed", error=type(exc).__name__)
+        try:
+            self._keep_qa_identity(root)
+        except Exception as exc:  # nor does the QA identity's
+            self.log.warning("qa identity upkeep failed", error=type(exc).__name__)
         try:
             self._answer_devices(root)
             self._answer_themes(root)
