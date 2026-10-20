@@ -905,3 +905,32 @@ describe('OV-10: the failures figure and the failed-agents list count one popula
     expect(limits.filter((l) => l !== 200), 'a wide Overview did not ask for the 200-row page').toEqual([])
   })
 })
+
+describe('VOCAB-AGENTS (QA-109, part of #1680): Running now and Spend name their empty and unread states by agents', () => {
+  const empty = { status: 'empty' as const, fetchedAt: Date.now() }
+  const broken = { status: 'error' as const, error: { kind: 'server_error' as const, httpStatus: 503, code: null, message: 'boom' } }
+
+  it('says "Agent list unread" on Running now, and "Spend unassembled" over the agent list, when the list fails', async () => {
+    const el = await mountWith({ loadTasks: broken, loadSpend: broken })
+    // MUTATION: put back `heading="Task list unread"` in RunningCard.
+    expect(text(el.querySelector('.ov-running .ctl-empty h3'))).toContain('Agent list unread')
+    expect(text(el.querySelector('.ov-spend .ctl-empty h3'))).toContain('Spend unassembled')
+    // MUTATION: put back `the most recent tasks, and the task list itself` in SpendBody.
+    expect(el.querySelector('.ov-spend .ctl-empty .ctl-mark')?.getAttribute('aria-label')).toContain('Spend is summed from the attempts of the most recent agents, and the agent list itself could not be read.')
+  })
+
+  it('says "No agent exists" on both cards for a tenant with no agents', async () => {
+    const el = await mountWith({ loadTasks: empty, loadSpend: empty })
+    // MUTATION: put back `heading="No task exists"` in RunningCard.
+    expect(text(el.querySelector('.ov-running .ctl-empty h3'))).toContain('No agent exists')
+    // MUTATION: put back `heading="No task exists"` in SpendBody.
+    expect(text(el.querySelector('.ov-spend .ctl-empty h3'))).toContain('No agent exists')
+  })
+
+  it('says "No agent has run" on Spend when the agents on the page have no attempt', async () => {
+    const el = await mountWith({ loadSpend: empty })
+    // MUTATION: put back `heading="No task has run"` in SpendBody.
+    expect(text(el.querySelector('.ov-spend .ctl-empty h3'))).toContain('No agent has run')
+    expect(el.querySelector('.ov-spend .ctl-empty .ctl-mark')?.getAttribute('aria-label')).toContain('Every agent on the page has an attempt count of 0')
+  })
+})

@@ -1596,7 +1596,7 @@ function GroupHead({
     title = 'Standalone'
     note = `${block.lanes.length} ${block.lanes.length === 1 ? 'agent' : 'agents'} in this span`
   } else if (block.kind === 'unread') {
-    title = 'Task not read'
+    title = 'Agent not read'
     note = `${block.lanes.length} ${block.lanes.length === 1 ? 'lane' : 'lanes'}: workflow and profile unknown`
   } else if (block.kind === 'profile') {
     title = block.key

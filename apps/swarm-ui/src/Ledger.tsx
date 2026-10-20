@@ -1112,7 +1112,7 @@ export function CostCard({ data, picked }: { data: Outcomes; picked: string | nu
         ))}
       </p>
       <p className="ol-line">
-        per succeeded task{' '}
+        per succeeded agent{' '}
         {per.n === 0 ? (
           <>— <span className="ol-q">no succeeded agent fully reported</span></>
         ) : per.values_usd !== null && per.n < LOW_N ? (

@@ -1627,15 +1627,68 @@ describe('the help the Timeline links', () => {
     expect(t.title).toBe('Why an agent failed, by class')
     expect(t.short).toMatch(/^Each failed or dead-lettered agent gets one class/)
     // The orphan count the Timeline draws is "N finished agents carry no end time".
-    expect(HELP['outcome-buckets'].long.join(' ')).toMatch(/the chart says how many such agents exist/)
+    // MUTATION: put back `A task that ended with no end time` in help.ts's outcome-buckets.
+    expect(HELP['outcome-buckets'].long.join(' ')).toMatch(/An agent that ended with no end time recorded .* how many such agents exist/)
+    // MUTATION: put back `for a task that ended before causes` in failure-classes' short.
+    expect(t.short).toMatch(/for an agent that ended before causes were recorded/)
   })
 
-  it('describes Reported cost as per attempt, by task end, and not a bill', () => {
+  it('describes Reported cost as per attempt, by agent end, and not a bill', () => {
     const all = HELP['tokens-reported'].long.join(' ')
     expect(all).toMatch(/Reported cost/)
-    expect(all).toMatch(/where the task ended/)
+    // VOCAB-AGENTS: the words of the card note it explains ("by agent end").
+    // MUTATION: put back `where the task ended` in help.ts's tokens-reported.
+    expect(all).toMatch(/every attempt of every agent, and places it in the bucket where the agent ended/)
     expect(all).toMatch(/not a bill/)
     expect(all).not.toMatch(/Token spend/)
+  })
+})
+
+describe('VOCAB-AGENTS (QA-109, part of #1680): the Timeline cards and lines count agents', () => {
+  it('Reported cost: the per-succeeded line and its empty case say agent, in one word', async () => {
+    const d = ledgerFixture()
+    d.totals = {
+      ...d.totals,
+      cost: { ...d.totals.cost, per_succeeded_task: { n: 0, of: 0, p50_usd: null, p95_usd: null, max_usd: null, values_usd: null } },
+    }
+    const c = card(await timeline(d), /^Reported cost/)
+    // MUTATION: put back `per succeeded task` in CostCard (Ledger.tsx).
+    expect(c.textContent).toContain('per succeeded agent — no succeeded agent fully reported')
+    expect(c.textContent).not.toMatch(/\btasks?\b/)
+  })
+
+  it('Reported cost: the outcome split is labelled by the agent that spent it', async () => {
+    const c = card(await timeline(), /^Reported cost/)
+    // MUTATION: put back `the task that spent it` in CostCard's Outcome4 label.
+    expect(c.querySelector('.ol-bought .ol-meter[role="img"]')?.getAttribute('aria-label')).toBe(
+      'reported cost split by the outcome of the agent that spent it',
+    )
+  })
+
+  it('Time to result and Reliability: a real empty span says no agent ended', async () => {
+    const d = ledgerFixture()
+    d.latency = { ...d.latency, by_profile: [] }
+    d.groups = { ...d.groups, rows_total: 0, rows: [] }
+    const root = await timeline(d)
+    // MUTATION: put back `no task that was not cancelled ended` in LatencyCard.
+    expect(card(root, /^Time to result/).querySelector('.ctl-empty .ctl-mark')!.getAttribute('aria-label')).toContain(
+      'No agent that was not cancelled ended in this span.',
+    )
+    // MUTATION: put back `no task ended under these filters` in ReliabilityCard.
+    expect(card(root, /^Reliability/).querySelector('.ctl-empty .ctl-mark')!.getAttribute('aria-label')).toContain(
+      'No agent ended under these filters in this span.',
+    )
+  })
+
+  it('the orphan line and the provenance foot count agents', async () => {
+    const d = ledgerFixture()
+    d.coverage = { ...d.coverage, terminal_without_completed_at: 2, reopened: 3 }
+    const root = await timeline(d)
+    const orphan = [...root.querySelectorAll('.ctl-panel-note')].find((n) => /carry no end time/.test(n.textContent ?? ''))
+    // MUTATION: put back `finished tasks carry no end time` in Activity.tsx's LedgerSection.
+    expect(orphan?.textContent).toMatch(/2 finished agents carry no end time/)
+    // MUTATION: put back `re-ended tasks counted once` in Activity.tsx's Provenance.
+    expect(root.querySelector('.ol-prov')!.textContent).toContain('3 re-ended agents counted once')
   })
 })
 
