@@ -162,7 +162,7 @@ describe('capacity-006: one `cred` line when the provider and the any-one-of for
   it('says the provider line alone, never two `cred` lines', async () => {
     const t = topology()
     // scribe is now the only `vendor` runtime AND the only any-one-of one.
-    t.runtimes.viewport = { ...t.runtimes.viewport, provider: 'third' }
+    t.runtimes.viewport = { ...t.runtimes.viewport!, provider: 'third' }
     api.loadRuntimeTopology.mockResolvedValue(ok(t))
     render(<RuntimesScreen />)
     await screen.findByText('Sizing', undefined, WAIT)
