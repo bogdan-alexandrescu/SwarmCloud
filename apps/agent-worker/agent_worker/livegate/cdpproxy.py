@@ -165,6 +165,19 @@ it too. A tagged connection is that tool's; each command it sends dates
 `TOOL_REPORT_SECONDS` otherwise, so a busy agent is not a report per command.
 An untagged connection, or a tag naming no tool, is served exactly as before
 and attributed to nothing.
+
+THE QA IDENTITY (QI-GATE; docs/design/qa-identity.md §4.4, part of #1649).
+When the gate holds the task's QA identity (`qa`, qaidentity.py), every
+message this proxy sends an agent -- event, reply, held reply, resync -- goes
+through `QaIdentity.scrub` on the agent's link (`_ScrubbedLink`), so the
+credential the gate adds to console requests never reaches the agent, by any
+domain. The proxy also keeps which of the agent's request ids were on the
+console host (`ConsoleRequests`), for the method policy's
+`qa_identity_check` and for a `getResponseBody` the scrub cannot decode
+(`qa_identity_body`). And a person never takes control of a page on the
+console host (`qa_identity_host`, Q7): they would sign in as themselves in a
+browser the agent then drives with their workspaces. Control already held
+ends if the page navigates there.
 """
 
 from __future__ import annotations
@@ -187,6 +200,7 @@ from urllib.parse import urlsplit
 from .. import browser_tools
 from . import cdppolicy
 from .cdppolicy import PolicyPaths
+from .qaidentity import ConsoleRequests, QaIdentity
 from .scripts import ADD_BINDING, ADD_SCRIPT, REMOVE_BINDING, REMOVE_SCRIPT, ScriptRegistry
 
 log = logging.getLogger(__name__)
@@ -463,8 +477,12 @@ class CdpProxy:
         on_agents: Callable[[int], None] | None = None,
         on_tool: Callable[[str, float], None] | None = None,
         wall: Callable[[], float] = time.time,
+        qa: QaIdentity | None = None,
     ) -> None:
         self._send = send_to_chromium
+        #: The task's QA identity, or None (module docstring).
+        self._qa = qa
+        self._console_requests = ConsoleRequests(qa) if qa is not None else None
         self._paths = paths
         self._record = record
         self._on_control_ended = on_control_ended
@@ -627,6 +645,8 @@ class CdpProxy:
             await self._post("Target.detachFromTarget", {"sessionId": session}, None)
             self._refuse_agent()
             return None
+        if self._qa is not None:
+            link = _ScrubbedLink(link, self._qa)
         connection = AgentConnection(link=link, browser_session=session,
                                      client=client if client in browser_tools.TOOLS else None)
         self._owner[session] = connection
@@ -734,6 +754,14 @@ class CdpProxy:
             self._note(method, params, "method_policy")
             await self._reply_error(connection, message, refusal.message())
             return
+        if self._qa is not None and self._qa.armed and self._console_requests is not None:
+            refusal = cdppolicy.qa_identity_check(
+                method, params if isinstance(params, Mapping) else {}, self._console_requests)
+            if refusal is not None:
+                self._record("cdp_method_refused", {"method": method, "cause": refusal.cause or "qa_identity"})
+                self._note(method, params, "method_policy")
+                await self._reply_error(connection, message, refusal.message())
+                return
         if self._mode != _OPEN:
             self._held.append((connection, dict(message)))
             return
@@ -812,6 +840,11 @@ class CdpProxy:
         result = message.get("result")
         if "error" not in message and isinstance(result, dict):
             await self._track(pending, result)
+            if self._undecodable_console_body(pending, result):
+                self._record("cdp_method_refused", {"method": pending.method, "cause": "qa_identity_body"})
+                message = {"error": {"code": _ERROR_CODE, "message": (
+                    f"refused by the live gate: {pending.method} for a console request whose body "
+                    "the gate cannot read for the QA identity")}}
         reply: dict[str, Any] = {"id": pending.agent_id}
         if "error" in message:
             reply["error"] = message["error"]
@@ -823,6 +856,14 @@ class CdpProxy:
             self._held_responses.append((pending, reply))
             return
         await connection.link.send(reply)
+
+    def _undecodable_console_body(self, pending: _Pending, result: Mapping[str, Any]) -> bool:
+        """`qa_identity_body` (module docstring): a body the scrub could not read, on the console host."""
+        if self._qa is None or not self._qa.armed or self._console_requests is None:
+            return False
+        if pending.method not in _BODY_METHODS:
+            return False
+        return self._qa.undecodable_body(result) and self._console_requests(pending.params.get("requestId"))
 
     async def _track(self, pending: _Pending, result: Mapping[str, Any]) -> None:
         session = pending.session
@@ -857,6 +898,13 @@ class CdpProxy:
             # Never the agent's, enabled or not (cdppolicy.py, DEVB-GATE).
             return
         paused = self._mode == _PAUSED
+        if self._console_requests is not None and self._qa is not None and self._qa.armed:
+            if method == "Fetch.requestPaused":
+                url = (params.get("request") or {}).get("url")
+                self._console_requests.note(params.get("requestId"), url)
+                self._console_requests.note(params.get("networkId"), url)
+            elif method == "Network.requestWillBeSent":
+                self._console_requests.note(params.get("requestId"), (params.get("request") or {}).get("url"))
         if method in _CONTEXT_EVENTS:
             self._track_contexts(session, method, params)
         if method == "Target.attachedToTarget":
@@ -940,6 +988,8 @@ class CdpProxy:
             self._granted_blank = False
             if not _https_host(url):
                 self._end_control("insecure_connection")
+            elif self._on_qa_host(url):
+                self._end_control("qa_identity_host")
         elif method == "Target.attachedToTarget" and session in self._gate_sessions:
             child = params.get("sessionId")
             if isinstance(child, str):
@@ -1028,14 +1078,26 @@ class CdpProxy:
                 return self._refuse("security_state_unknown")
         if self._security.get(target_id) != "secure":
             return self._refuse("insecure_connection")
-        if not _https_host(await self._url(target_id)):
+        url = await self._url(target_id)
+        if not _https_host(url):
             return self._refuse("insecure_connection")
+        if self._on_qa_host(url):
+            return self._refuse("qa_identity_host")
         if self._mode != _PAUSED:
             return self._refuse("not_paused")
         self._controlled = target_id
         self._controlled_at = self._wall()
         self._granted_blank = False
         return ControlDecision(True)
+
+    def _on_qa_host(self, url: str) -> bool:
+        """The page is on the console host of the task's QA identity (Q7)."""
+        if self._qa is None or self._qa.host is None:
+            return False
+        try:
+            return urlsplit(url).hostname == self._qa.host
+        except ValueError:
+            return False
 
     async def _url(self, target_id: str) -> str:
         info = (await self.call("Target.getTargetInfo", {"targetId": target_id})).get("targetInfo") or {}
@@ -1180,6 +1242,27 @@ class CdpProxy:
                     await self._call_quietly(
                         "Target.attachToTarget", {"targetId": target, "flatten": True}, connection.browser_session
                     )
+
+
+#: The methods whose result is a response body (`qa_identity_body`).
+_BODY_METHODS = frozenset({"Network.getResponseBody", "Fetch.getResponseBody"})
+
+
+class _ScrubbedLink:
+    """An agent's link, every message through `QaIdentity.scrub` (module docstring)."""
+
+    def __init__(self, link: AgentLink, qa: QaIdentity) -> None:
+        self._link = link
+        self._qa = qa
+
+    async def send(self, message: dict[str, Any]) -> None:
+        await self._link.send(self._qa.scrub(message))
+
+    async def close(self) -> None:
+        await self._link.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._link, name)
 
 
 def _is_blank(url: str) -> bool:

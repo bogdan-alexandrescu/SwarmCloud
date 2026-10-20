@@ -42,6 +42,16 @@ line the same, so a jar over `MAX_JAR_BYTES` sheds its origin storage first and,
 still too large, is not carried at all (`browser_session_too_large`): the next
 step signs in again, which is the group-tenant behaviour and safe.
 
+THE QA IDENTITY'S HOST IS NEVER CARRIED (QI-GATE; docs/design/qa-identity.md
+§4.4, part of #1649). While the task names the QA identity, `excluded_host`
+is the console host, and every export -- carry, login, park -- leaves out the
+cookies that host would be sent (its own and its parent domains') and its
+origin's storage: nothing IAP sets for the QA account may enter LB-7's
+storage, where a later step or another task would carry it. An import made
+then leaves them out too: a person's own console session, carried from an
+earlier hand-off, would otherwise sign the agent in as that person beside the
+QA identity.
+
 NOTHING HERE IS LOGGED OR RECORDED WITH A VALUE. Records carry counts; a cookie
 value, a storage value, a domain or a cookie name never appears in one.
 """
@@ -125,6 +135,13 @@ def _origin(url: Any) -> str | None:
     return f"https://{parts.netloc}"
 
 
+def sent_to(cookie: Mapping[str, Any], host: str) -> bool:
+    """Whether a browser would send `cookie` to `host`: its domain is the host
+    or one the host is under (RFC 6265 domain-match), leading dot or not."""
+    domain = str(cookie.get("domain", "")).lower().lstrip(".")
+    return bool(domain) and (host == domain or host.endswith("." + domain))
+
+
 def valid_jar(jar: Any) -> bool:
     """The shape a stored jar must have before it reaches Chromium."""
     if not isinstance(jar, Mapping) or jar.get("v") != JAR_VERSION:
@@ -161,8 +178,10 @@ class SessionCarry:
         record: Record,
         agent_connected: Callable[[], bool],
         now: Callable[[], float] = time.time,
+        excluded_host: Callable[[], str | None] = lambda: None,
     ) -> None:
         self._call = call
+        self._excluded_host = excluded_host
         self._record = record
         self._agent_connected = agent_connected
         self._now = now
@@ -211,7 +230,7 @@ class SessionCarry:
                 if raw.get("session") is not True and isinstance(expires, (int, float)) and 0 < expires <= now:
                     continue
                 cookie = _cookie_param(raw)
-                if cookie is None:
+                if cookie is None or self._excluded(cookie):
                     continue
                 key = (cookie["name"], cookie["domain"], cookie.get("path"), json.dumps(cookie.get("partitionKey")))
                 if key in seen:
@@ -228,6 +247,14 @@ class SessionCarry:
             return None
         self._record("browser_session_exported", {"cookies": len(cookies), "origins": len(jar["origins"])})
         return jar
+
+    def _excluded(self, cookie: Mapping[str, Any]) -> bool:
+        host = self._excluded_host()
+        return host is not None and sent_to(cookie, host)
+
+    def _excluded_origin(self, origin: str | None) -> bool:
+        host = self._excluded_host()
+        return host is not None and origin is not None and urlsplit(origin).hostname == host
 
     async def _pages(self) -> list[Mapping[str, Any]]:
         result = await self._call("Target.getTargets", {}, None)
@@ -252,6 +279,8 @@ class SessionCarry:
         for page in await self._pages():
             origin = _origin(page.get("url"))
             target = page.get("targetId")
+            if self._excluded_origin(origin):
+                continue
             if origin and isinstance(target, str) and origin not in by_origin and len(by_origin) < MAX_ORIGINS:
                 by_origin[origin] = target
         out: list[dict[str, Any]] = []
@@ -289,10 +318,11 @@ class SessionCarry:
         if not valid_jar(jar):
             self._record("browser_session_import_refused", {"cause": "malformed"})
             raise SessionRefused("the jar is not one this gate exported")
-        cookies = [_cookie_param(c) for c in jar["cookies"]]
+        cookies = [c for c in (_cookie_param(c) for c in jar["cookies"]) if c is not None and not self._excluded(c)]
         if cookies:
             await self._call("Storage.setCookies", {"cookies": cookies}, None)
-        written = await self._import_storage(jar.get("origins") or [])
+        origins = [e for e in jar.get("origins") or [] if not self._excluded_origin(e.get("origin"))]
+        written = await self._import_storage(origins)
         self._record("browser_session_imported", {"cookies": len(cookies), "origins": written})
         return {"cookies": len(cookies), "origins": written}
 

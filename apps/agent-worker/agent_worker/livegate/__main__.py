@@ -56,6 +56,16 @@ egress is unavailable the gate opens a page saying why, which the person
 watching sees and the agent reads; `status` carries the route and its state.
 Without the variable nothing here changes.
 
+THE QA IDENTITY (QI-GATE; docs/design/qa-identity.md §4.4, part of #1649).
+The worker hands the task's QA identity over on ctl.sock (`qa_identity`), and
+the gate holds it for the gate's life (`QaIdentity`), across relaunches: each
+Chromium gets its own `QaInjector`, which adds the credential to console
+requests from console frames on the gate's own sessions. The proxy scrubs it
+from everything the agent receives. A hand-off on the console host is refused
+(`handoff_refused`, cause `qa_identity_host`; Q7) and answered `refused:
+qa_identity_host`; the session carry leaves the host out; the wipe clears the
+credential BEFORE Chromium closes, and the verb is refused after it.
+
 A GATE THAT RESTARTS keeps Chromium closed (ctl.py): when the first start's
 marker is already in /tmp, only ctl.sock is served -- it refuses every
 registration and records `gate_restarted` -- and nothing else starts.
@@ -92,13 +102,14 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from swarm_redaction import redact as redact_text
 
 from .capture import CaptureError, Frame, XvfbFramebuffer
 from .cdppolicy import PolicyPaths
 from .cdpproxy import AgentConnection, AgentLink, CdpError, CdpProxy, PipeTransport, serve_agents
-from .ctl import DEFAULT_MARKER, CtlServer
+from .ctl import DEFAULT_MARKER, CtlServer, OpRefused
 from .device import WINDOW_OVERHANG, DeviceController, XRandrDisplay, captured
 from .. import browser_tools
 from .egress import EgressConfigError, EgressSettings, LocalForwarder, chromium_proxy_args, describe, notice_url
@@ -106,6 +117,8 @@ from .inject import InjectError, XInjector, display_socket
 from .mask import REASON_SWITCHING, MaskCdp, MaskState
 from .pointer import css_to_frame
 from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, Device, UnknownPreset, resolve
+from .qaidentity import OP as QA_IDENTITY_OP
+from .qaidentity import QaIdentity, QaIdentityRefused, QaInjector
 from .report import agent_report, browser_report, device_report, egress_report, encode_report, page_origin
 from .rfb import ControlState, FrameHub, RfbSession, masked
 from .rfb import metrics_log as rfb_metrics_log
@@ -1215,6 +1228,10 @@ class LiveGate:
         self.mux: StreamMux | None = None
         #: The proxied-egress forwarder (egress.py); None when egress is off.
         self.egress: Any = None
+        #: The task's QA identity, for the gate's life; and the injector of
+        #: the Chromium running now (qaidentity.py, QI-GATE).
+        self.qa = QaIdentity(self.record, clock=clock)
+        self.qa_injector: QaInjector | None = None
         self.wiped = False
         #: Chromium's pipe closed (a wipe, or a crash, until a relaunch is up):
         #: nothing needing it is served.
@@ -1324,7 +1341,8 @@ class LiveGate:
         self.touch = TouchInjector(self.injector, self._current, self._current)
         self.control = ControlState(self.touch)
         current = self._current
-        self.carry = SessionCarry(current.call, record=self.record, agent_connected=self._agent_connected)
+        self.carry = SessionCarry(current.call, record=self.record, agent_connected=self._agent_connected,
+                                  excluded_host=lambda: self.qa.host)
         self.tabs = TabKeeper(current.call, record=self.record, agent_connected=self._agent_connected,
                               shown=self._shown_target)
         await self._launch()
@@ -1416,6 +1434,7 @@ class LiveGate:
             on_agents=self._agents_changed,
             on_tool=self._tool_used,
             wall=self._wall,
+            qa=self.qa,
         )
         # A refused agent connection says when the gate takes control back.
         self.proxy.control_lease_seconds = self._lease_seconds
@@ -1423,6 +1442,9 @@ class LiveGate:
             # Decided here, as the proxy is made: a resume before it let the
             # old proxy go, a resume after it lets this one go.
             await self.proxy.pause()
+        if self.qa_injector is not None:
+            await self.qa_injector.close()
+        self.qa_injector = QaInjector(self.proxy, self.qa, record=self.record)
         pipe = self._tasks["pipe"] = asyncio.create_task(self._read_pipe(browser))
         version = asyncio.create_task(self.proxy.call("Browser.getVersion", {}))
         done, _ = await asyncio.wait({pipe, version}, timeout=CHROMIUM_READY_SECONDS,
@@ -1457,6 +1479,9 @@ class LiveGate:
         self.proxy.on_tab_switch = self.pages.tab_switching
         self.proxy.on_tab_switched = self.pages.tab_switched
         await self.pages.start()
+        if self.qa.armed and not self.qa.wiped:
+            # A relaunch: the new browser is signed in before the agent reconnects.
+            await self.qa_injector.start()
         self.cdp_server = await self.deps.serve_cdp(self.proxy, self.cfg.cdp_host, self.cfg.cdp_port)
         self._ready_browser = browser
 
@@ -1614,6 +1639,8 @@ class LiveGate:
         assert self.proxy is not None
         await self.proxy.on_chromium_message(message)
         if "method" in message:
+            if self.qa_injector is not None:
+                self.qa_injector.on_event(message)
             if self.devices is not None:
                 self.devices.on_event(message)
             if self.pages is not None:
@@ -1801,7 +1828,54 @@ class LiveGate:
             return await self.egress_ticket(args)
         if op == browser_tools.CTL_OP:
             return self.set_browser_tools(args)
+        if op == QA_IDENTITY_OP:
+            return await self.qa_identity(args)
         raise ValueError("not an operation of the gate")
+
+    # -- the QA identity (qaidentity.py) -----------------------------------------
+
+    async def qa_identity(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """The worker's `qa_identity`: set, renew or clear the task's QA identity.
+
+        Refused after the wipe (`refused:wiped`) and for a malformed one
+        (`refused:<field>`). The browser's sessions follow at once: the
+        patterns guard 2 needs are enabled only while a credential is held."""
+        if self.wiped:
+            self.record("qa_identity_refused", {"cause": "wiped"})
+            raise OpRefused("wiped")
+        try:
+            result = self.qa.handle(args)
+        except QaIdentityRefused as exc:
+            raise OpRefused(exc.code) from None
+        injector = self.qa_injector
+        if injector is not None and not self.browser_closed:
+            await injector.refresh()
+        return result
+
+    async def _on_qa_host(self, expect: Any) -> bool:
+        """A hand-off would be on the console host: named by `expect`, or the page shown."""
+        host = self.qa.host
+        if host is None:
+            return False
+        if isinstance(expect, str) and expect:
+            # A bare host (handoff.expect_refusal), read as a URL's host too.
+            try:
+                named = urlsplit(expect if "://" in expect else f"https://{expect}").hostname
+            except ValueError:
+                named = None
+            if named == host:
+                return True
+        target = self.pages.current if self.pages is not None else None
+        if target is None or self.proxy is None:
+            return False
+        try:
+            info = (await self.proxy.call("Target.getTargetInfo", {"targetId": target})).get("targetInfo") or {}
+        except CdpError:
+            return False
+        try:
+            return urlsplit(str(info.get("url", ""))).hostname == host
+        except ValueError:
+            return False
 
     def set_browser_tools(self, args: Mapping[str, Any]) -> dict[str, Any]:
         """The worker's `browser_tools`: what the runner registered (BSTATUS-API).
@@ -1906,6 +1980,8 @@ class LiveGate:
             # EGRESS-GATE: the browser's route and, when proxied, its state
             # and counts (egress.py `stats`); never the ticket.
             "egress": self.egress.stats() if self.egress is not None else {"route": "direct"},
+            # QI-GATE: whether the QA identity is held, never the credential.
+            "qa_identity": self.qa.status(),
         }
 
     async def open_tunnel(self, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -2231,6 +2307,11 @@ class LiveGate:
         decision, the same day: taking control keeps the agent's current tab.
         """
         proxy = self._need(self.proxy)
+        if await self._on_qa_host(args.get("expect")):
+            # Q7: a person's sign-in in a browser the agent drives as the QA
+            # account would hand the agent that person's workspaces.
+            self.record("handoff_refused", {"cause": "qa_identity_host"})
+            raise OpRefused("qa_identity_host")
         self._self_paused = False
         await proxy.pause()
         self._handed_off = True
@@ -2283,6 +2364,10 @@ class LiveGate:
         """§5.5: Chromium is closed and the profile directory emptied."""
         if self.wiped:
             return
+        # The credential goes before Chromium does (§4.4), and the verb is refused from here.
+        self.qa.wipe()
+        if self.qa_injector is not None:
+            await self.qa_injector.close()
         self.wiped = True
         self._handed_off = False
         relaunch = self._tasks.pop("relaunch", None)
