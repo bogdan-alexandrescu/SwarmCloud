@@ -2253,8 +2253,11 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
    429 holds the poll (`paused 30 s`), which every page shows on every first
    read. An `opacity: .5` here halved `--text-dim` to 2.2:1 in light and 3.0:1
    in dark; the words are a reading the person needs, so they stay at full
-   strength and only the cursor says the press is not available. */
+   strength and only the cursor says the press is not available. The `1` is
+   stated, not merely left out: every head sits inside `.app`, whose
+   `:where(.app button:disabled)` fades any disabled button to .45. */
 .c-refresh[disabled] {
+  opacity: 1;
   cursor: not-allowed;
 }
 

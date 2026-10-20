@@ -34,11 +34,13 @@ function seen(button: HTMLElement): string {
 
 describe('QA-004: a refresh that cannot be pressed yet is still legible', () => {
   it('paints `⟳ reading…` and `paused N` at full strength, at 4.5:1 on the page in both themes', () => {
+    // Inside `.app`, as every page head is (App.tsx), so the sheet's
+    // `:where(.app button:disabled)` fade is in the cascade being measured.
     render(
-      <>
+      <div className="app">
         <RefreshControl readAt={null} now={NOW} reading onRefresh={() => {}} />
         <RefreshControl readAt={null} now={NOW} pausedUntil={Date.now() + 30_000} onRefresh={() => {}} />
-      </>,
+      </div>,
     )
     const marks = screen.getAllByRole('button')
     expect(marks.map(seen)).toEqual(['reading…', 'paused 30 s'])
@@ -48,7 +50,8 @@ describe('QA-004: a refresh that cannot be pressed yet is still legible', () => 
         for (const width of [WIDE, PHONE]) {
           const env = { ...width, theme }
           // MUTATION: `.c-refresh[disabled] { opacity: .5 }` back in styles.css (the
-          // dim ink halved to 2.2:1 in light, 3.0:1 in dark).
+          // dim ink halved to 2.2:1 in light, 3.0:1 in dark), or its `opacity: 1`
+          // dropped, so the `.app button:disabled` fade paints it at .45.
           const opacity = painted(el, 'opacity', env)
           expect(opacity === null || Number(opacity) === 1, `${theme} ${width.width}: ${seen(el)} is faded to ${opacity}`).toBe(true)
           // MUTATION: a disabled `.c-refresh` given `--text-faint` (or any ink under
