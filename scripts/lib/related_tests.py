@@ -147,7 +147,10 @@ def python_related(root: Path, changed: list[str]) -> list[str]:
     known = set(all_tests)
     chosen = {c for c in changed if c in known}
     changed_py = [c for c in changed if c.endswith(".py") and c.startswith(("apps/", "scripts/", "tests/unit/"))]
-    chosen.update(r for r in sut.import_closure(root, changed_py) if r in known)
+    # The closure parses every module in the repository (~10 s here): only
+    # worth it when a Python file changed.
+    if changed_py:
+        chosen.update(r for r in sut.import_closure(root, changed_py) if r in known)
     virtual = sut.script_closure(root, changed)
     for test in all_tests:
         if test not in chosen:

@@ -261,7 +261,9 @@ def test_the_script_selects_a_mixed_change_and_a_wide_one_as_bounded_runs(tmp_pa
     diff = tmp_path / "diff.txt"
     # types.ts reaches most of the UI suite: it must still come back as named
     # files, in several runs.
-    diff.write_text(f"{UI}/src/types.ts\nscripts/lib/select_unit_tests.py\n")
+    # scripts/related-tests.sh is not Python, so this case skips the import
+    # scan and stays cheap; test_related_tests.py reads it by name.
+    diff.write_text(f"{UI}/src/types.ts\nscripts/related-tests.sh\n")
     result = _run("--files", str(diff))
     assert result.returncode == 0, result.stderr
     commands = _commands(result.stdout)
@@ -296,7 +298,7 @@ def test_run_executes_each_named_run_in_turn_in_the_foreground(tmp_path):
         fake.write_text(f'#!/usr/bin/env bash\nprintf "%s|%s\\n" "${{PWD##*/}}" "{tool} $*" >>"{log}"\n')
         fake.chmod(0o755)
     diff = tmp_path / "diff.txt"
-    diff.write_text(f"{UI}/src/vitestWorkers.ts\nscripts/lib/select_unit_tests.py\n")
+    diff.write_text(f"{UI}/src/vitestWorkers.ts\nscripts/related-tests.sh\n")
     result = _run("--run", "--files", str(diff),
                   env_extra={"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"})
     assert result.returncode == 0, result.stderr
