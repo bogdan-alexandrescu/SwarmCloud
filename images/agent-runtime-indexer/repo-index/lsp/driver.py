@@ -63,10 +63,26 @@ tree-sitter pass. A step killed there produces no index at all, which is
 the one outcome §3.5 rules out. So the pass as a whole gets
 `total_budget_seconds` -- by default LSP_TOTAL_SHARE of §3.5's full-run
 budget for the repository's size -- and each server, when its turn comes,
-is granted the smaller of its §3.5 budget and an equal share of what is
-left of the total among the servers still to run. Time a server does not
-use passes to the ones after it. A server whose turn comes after the total
-has run out is not started: its language is `timed_out`, with that reason.
+is granted the smaller of its §3.5 budget and its share of what is left
+of the total among the servers still to run. Time a server does not use
+passes to the ones after it. A server whose turn comes after the total has
+run out is not started: its language is `timed_out`, with that reason.
+
+THE SHARES FOLLOW WHAT EACH SERVER COST LAST TIME (lane INDEX-BUDGETS,
+part of #1693). An equal split gave pyright 270 s of ai-studio's 540 when
+it needed ~680-890 s, and timed it out in 16 of 16 full runs while the
+other server finished early. So each server's share is in proportion to
+its NEED (`planned_needs`): what it cost in the previous full run
+(`LspOptions.server_costs`, which swarm-api reads from the promoted
+graph's manifest and names in the signed prompt), or, for a server with no
+measurement, the equal share of the total. With no history at all every
+need is equal and this is the equal split exactly. Every run records each
+server's `grant_seconds` and `cost_seconds` in its counts for the next one
+(`measured_cost`): what it used when it finished, or, when its budget cut
+it, its grant scaled by the sites it had over the requests it managed --
+pyright's 270 s x 86,805 / 26,562 is ~882 s. The cost is recorded in
+10-second steps, so two runs that got the same answers still write the same
+bytes.
 
 TWO PHASES. Every site's definition is asked first, across all files; the
 workspace queries (call hierarchy, references) run after. A workspace query
@@ -145,6 +161,11 @@ LARGEST_SERVER_BUDGET = 2_700
 FULL_RUN_BUDGETS = ((2_000, 1_200), (10_001, 3_600))
 LARGEST_FULL_RUN_BUDGET = 7_200
 LSP_TOTAL_SHARE = 0.5
+# `cost_seconds` is recorded rounded up to this step (module doc, "the
+# shares follow what each server cost last time"): fine enough for budgets
+# of 600-2,700 s, coarse enough that the timing noise of a run that got the
+# same answers does not change the graph's bytes.
+COST_STEP_SECONDS = 10
 # Phase 2's share of a server's grant: half, so a slow incomingCalls never
 # takes more than half of what a server was granted and the rest passes on.
 WORKSPACE_SHARE = 0.5
@@ -186,6 +207,46 @@ def total_budget_seconds(source_files: int) -> int:
     return int(full * LSP_TOTAL_SHARE)
 
 
+def planned_needs(names: Sequence[str], costs: Mapping[str, float] | None,
+                  total: float) -> list[float]:
+    """Each server's need, in run order: its measured cost, or the equal share."""
+    equal = total / len(names) if names else 0.0
+    needs = []
+    for name in names:
+        cost = (costs or {}).get(name)
+        known = isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0
+        needs.append(float(cost) if known else equal)
+    return needs
+
+
+def grant_seconds(left: float, needs: Sequence[float], budget: float) -> float:
+    """The grant of the first of `needs`: its proportion of `left`, capped at `budget`."""
+    if left <= 0 or not needs:
+        return 0.0
+    whole = sum(needs)
+    share = left * needs[0] / whole if whole > 0 else left / len(needs)
+    return min(budget, share)
+
+
+def measured_cost(status: str | None, *, elapsed: float, grant: float, requests: int,
+                  sites: int) -> int | None:
+    """What a server needed, in COST_STEP_SECONDS steps; None when nothing was measured.
+
+    Finished (`ok`): the time it used. Cut by its budget (`partial`,
+    `timed_out`): its grant scaled by the sites it had over the requests it
+    made -- in phase 1 every request is a site's definition -- never less
+    than the grant. `failing`, or a cut that asked nothing: no measurement.
+    """
+    if status == STATUS_OK:
+        need = elapsed
+    elif status in (STATUS_PARTIAL, STATUS_TIMED_OUT) and requests > 0 and grant > 0:
+        need = grant * max(1.0, sites / requests)
+    else:
+        return None
+    steps = max(1, -(-int(need * 1000) // (COST_STEP_SECONDS * 1000)))
+    return steps * COST_STEP_SECONDS
+
+
 def _seconds(value: float) -> str:
     return f"{round(value, 1):g}"
 
@@ -214,6 +275,9 @@ class LspOptions:
     warmup_timeout_seconds: float | None = None
     server_budget_seconds: float | None = None
     total_budget_seconds: float | None = None
+    #: What each server (by name) cost in the previous full run, in seconds:
+    #: the shares of the total follow it (`planned_needs`). None: the equal split.
+    server_costs: Mapping[str, float] | None = None
     workspace_share: float = WORKSPACE_SHARE
     memory_limit_mib: int | None = None
     max_consecutive_timeouts: int = MAX_CONSECUTIVE_TIMEOUTS
@@ -264,6 +328,8 @@ class PassResult:
     server_budget_seconds: float
     total_budget_seconds: float
     memory_limit_mib: int
+    #: The costs the shares followed, as given (`LspOptions.server_costs`).
+    server_costs: dict[str, float] = field(default_factory=dict)
 
 
 def run_pass(root: Path, files: Mapping[str, str], symbols: Sequence[Mapping[str, Any]],
@@ -291,10 +357,12 @@ def run_pass(root: Path, files: Mapping[str, str], symbols: Sequence[Mapping[str
         if served:
             planned.append((spec, served))
             claimed.update(served)
+    needs = planned_needs([spec.name for spec, _ in planned], options.server_costs, total)
     for turn, (spec, served) in enumerate(planned):
         left = pass_deadline - time.monotonic()
         run = _ServerRun(Path(root), spec, set(served), files, symbols, sites, options,
-                         min(budget, max(left, 0.0) / (len(planned) - turn)), memory_mib)
+                         grant_seconds(left, needs[turn:], budget), memory_mib)
+        started = time.monotonic()
         if left <= 0:
             run._stop(STATUS_TIMED_OUT, f"the LSP pass's {_seconds(total)}-second total budget "
                                         f"ran out before {spec.name} started")
@@ -302,7 +370,17 @@ def run_pass(root: Path, files: Mapping[str, str], symbols: Sequence[Mapping[str
             run.run()
         if run.server_version is not None:
             versions[spec.name] = run.server_version
-        counts = dict(run.counts, server_version=run.server_version)
+        # What the next run's shares follow (module doc): the grant this
+        # server had, and what it needed, when anything was measured.
+        # A server stopped as hung, crashed or over its memory measured
+        # nothing about what it needs; only a finish or a budget cut did.
+        measured = run.status if run.status == STATUS_OK or run.budget_cut else None
+        cost = measured_cost(measured, elapsed=time.monotonic() - started, grant=run.budget,
+                             requests=run.counts["requests"], sites=run._sites_total)
+        counts = dict(run.counts, server_version=run.server_version,
+                      grant_seconds=round(run.budget, 1))
+        if cost is not None:
+            counts["cost_seconds"] = cost
         for lang in served:
             languages[lang] = LanguageResult(
                 run.status, run.reason, spec.name, dict(counts),
@@ -311,10 +389,12 @@ def run_pass(root: Path, files: Mapping[str, str], symbols: Sequence[Mapping[str
             edges.extend(run.edges)
     for lang in sorted(present - set(languages)):
         languages[lang] = LanguageResult(STATUS_UNSUPPORTED, NO_SERVER_REASON, None)
+    costs = {name: cost for name, cost in sorted((options.server_costs or {}).items())
+             if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0}
     return PassResult(edges=edges, languages=languages, servers=versions,
                       request_timeout_seconds=options.request_timeout_seconds,
                       server_budget_seconds=budget, total_budget_seconds=total,
-                      memory_limit_mib=memory_mib)
+                      memory_limit_mib=memory_mib, server_costs=costs)
 
 
 # --- positions --------------------------------------------------------------
@@ -391,6 +471,8 @@ class _ServerRun:
         self._covered_sites = 0
         self._files_total = 0
         self._sites_total = 0
+        #: Whether the budget, not the server, ended phase 1 (`_cut`).
+        self.budget_cut = False
         self.counts = {"requests": 0, "resolved": 0, "unresolved": 0, "request_timeouts": 0,
                        "errors": 0, "edges": 0, "symbols_skipped": 0}
         self._warming = True
@@ -487,6 +569,7 @@ class _ServerRun:
 
     def _cut(self) -> None:
         """The budget ran out in phase 1: keep the files it finished, if any."""
+        self.budget_cut = True
         if self._covered_sites == 0:
             self._stop(STATUS_TIMED_OUT, f"over the {_seconds(self.budget)}-second budget for {self.spec.name}")
             return

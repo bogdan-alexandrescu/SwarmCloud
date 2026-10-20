@@ -594,7 +594,7 @@ behalf through the same signed `submit_tasks` path every task takes:
 | runner profile | `claude-code` | the only enabled agent profile; a purpose-built profile would be a frozen-contract change (§6.3, optional request B) and is not needed to start |
 | resource class | the profile's own, `standard` | indexing is reading and one tool run, not a build |
 | `repository_url` / `repository_ref` | the registration's URL and the exact sha being indexed | the index describes a commit, not a moving branch |
-| `timeout_seconds` | 1,800 for a full run, 900 for an incremental one | may only shorten the profile's timeout; a run that cannot finish in 30 minutes is a repository that needs the directory-granularity fallback, not more time |
+| `timeout_seconds` | 1,800 for a full run, 900 for an incremental one; since lane INDEX-BUDGETS (#1693) sized by the promoted index's source files, §3.5 | may only shorten the profile's timeout. A fixed 30 minutes held until the LSP pass existed; with it, pyright on a 3,795-file repository needed more than the 270 s a fixed run could give it (`repoindex.index_timeout_seconds`) |
 | `priority` | −50 | below the tenant's default-0 work: an index makes work better, it is not the work |
 | `metadata` | `{"repo_index": "<repo_id>", "commit_sha": "<sha>", "index_kind": "full"}` | how the promotion path (§2.3) finds a finished index run |
 | prompt | fixed, composed by swarm-api; never a caller's text | invariant 10: the caller chooses a repository and a schedule, nothing that runs |
@@ -875,6 +875,28 @@ forces a full run for that language.
 | 2,000 - 10,000 | 60 min | 20 min | 30 min, 10 s per request | one size up |
 | over 10,000 | 120 min | 30 min | 45 min, 10 s per request | the largest the indexer profile allows |
 
+*Revised 2026-10-20 (lane INDEX-BUDGETS, part of #1693):* the timeouts
+swarm-api submits are `repoindex.index_timeout_seconds`, by the promoted
+index's source-file count (its `languages` rows with a grammar, recorded at
+promotion as `index.source_files`): under 2,000, 1,800 s full and 900 s
+incremental (§3.1's values, kept so a small repository's run does not
+change); 2,000 - 10,000, 3,600 s and 1,200 s; over 10,000, 7,200 s -- the
+indexer profile's maximum -- and 1,800 s. An unknown count keeps the first
+row. The worker's phases are shares of that timeout (§3.6), so the LSP pass
+gets 540, 1,260 or 2,700 s. Inside the pass each server is granted in
+proportion to what it cost in the last promoted FULL run (`lsp.cost_seconds`
+on the manifest's language rows, recorded at promotion as `index.lsp_costs`
+and named to the worker in the signed prompt's `swarm-index-lsp-cost:` line),
+capped at the per-server row above; a server with no measurement needs the
+equal share, so with no history this is the equal split. A cut server's cost
+is its grant scaled by the sites it had over the requests it managed: on
+ai-studio pyright's 270 s x 86,805 / 26,562 is ~882 s. Why: a fixed 1,800 s
+gave pyright 270 s there, and it timed out in 16 of 16 full runs while it was
+healthy. The cost: a full run of a repository over 2,000 source files may
+hold its indexer pod up to twice as long (four times over 10,000), only while
+it still has work. The extractor version went to 4 with it, so the first run
+after the release is full and measures every server.
+
 A language server is memory-hungry (pyright on a large repository holds
 several GiB), and requests equal limits (invariant 7), so the indexer's
 resource class is sized for the server, not for bursting past it. A server
@@ -933,7 +955,7 @@ indexrun.py`):
 | phase | what | timeout, of a 1,800 s full run |
 |---|---|---|
 | `stage_base` *(incremental runs only, lane IX2, §3.4)* | the base's `repo-index.json` by the staged-input path, then `swarm-repo-graph read --commit <base_sha> --manifest-digest <recorded> --out $SWARM_WORK_DIR/repo-graph.base.json` | sized from the base graph's size, which its index's `graph.symbols` and `graph.edges` give at 600 bytes each: 20 s + 1.5 s a MB, at most half the extractor's budget (180 s of an incremental run's 360), which is also what an index without counts gets (#1469) |
-| `extract` | `swarm-repo-index --repo <checkout> --out $SWARM_WORK_DIR/repo-index.extract.json --graph-out $SWARM_WORK_DIR/repo-graph.json --lsp-total-budget-seconds <extract - 180>` | 0.4 of the task's timeout, 720 s: twice the ~6 minutes measured |
+| `extract` | `swarm-repo-index --repo <checkout> --out $SWARM_WORK_DIR/repo-index.extract.json --graph-out $SWARM_WORK_DIR/repo-graph.json --lsp-total-budget-seconds <extract - 180>`, and one `--lsp-server-cost <server>=<seconds>` for each cost the signed prompt names (§3.5) | 0.4 of the task's timeout, 720 s: twice the ~6 minutes measured |
 | `agent` | the runner, from the extractor's output | what is left, less the write's reserve |
 | `graph_write` | `swarm-repo-graph write --graph ... --index $SWARM_ARTIFACTS_DIR/repo-index.json --repo-id <r> --destination tenants/<t>/repos/<r>/graph` | 0.15 of the task's timeout, 270 s, reserved before the agent starts |
 

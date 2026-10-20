@@ -171,7 +171,12 @@ EXTRACTOR_NAME = "swarm-repo-index"
 # class), so a version-2 graph lacks edges this version finds, and the graph
 # gains communities, a BM25 term index, signature fingerprints and
 # entry-point flows. A version-2 base is a full run, by the same check.
-EXTRACTOR_VERSION = "3"
+#
+# "4" (lane INDEX-BUDGETS, part of #1693): each language row's `lsp` counts
+# carry the server's `grant_seconds` and `cost_seconds`, which the next run
+# grants its servers from (lsp/driver.py). A version-3 base has neither, so
+# the first run after the release is full and measures every server.
+EXTRACTOR_VERSION = "4"
 
 # §2.5's confidences, by evidence.
 AST_UNIQUE = 0.6
@@ -3129,6 +3134,7 @@ def extract(root: Path, budget: Budget | None = None,
                 "server_budget_seconds": lsp_result.server_budget_seconds,
                 "total_budget_seconds": lsp_result.total_budget_seconds,
                 "memory_limit_mib": lsp_result.memory_limit_mib,
+                "server_costs": dict(lsp_result.server_costs),
             },
             **({} if incremental is None else {"incremental": incremental}),
         },
@@ -3830,6 +3836,20 @@ def _read_json(path: str | None) -> Any:
         return None
 
 
+_SERVER_COST = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]{0,39})=([1-9][0-9]{0,4})$")
+
+
+def _server_costs(parser: argparse.ArgumentParser, values: list[str]) -> dict[str, float] | None:
+    """`--lsp-server-cost NAME=SECONDS`, each at most once; None when none was given."""
+    costs: dict[str, float] = {}
+    for value in values:
+        match = _SERVER_COST.match(value)
+        if match is None or match.group(1) in costs:
+            parser.error(f"--lsp-server-cost {value!r} is not a SERVER=SECONDS named once")
+        costs[match.group(1)] = float(match.group(2))
+    return costs or None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog=EXTRACTOR_NAME,
@@ -3860,6 +3880,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lsp-total-budget-seconds", type=float, default=None,
                         help="the whole LSP pass, every server together (default: half of "
                              "§3.5's full-run budget, by repository size; lsp/driver.py says why)")
+    parser.add_argument("--lsp-server-cost", action="append", default=[], metavar="SERVER=SECONDS",
+                        help="what a server cost in the previous full run; the pass's shares "
+                             "follow it (lsp/driver.py, planned_needs). Repeatable")
     parser.add_argument("--lsp-memory-mib", type=int, default=None,
                         help="stop a server above this resident memory "
                              "(default: 3/4 of the container's limit, or 4096)")
@@ -3884,7 +3907,8 @@ def main(argv: list[str] | None = None) -> int:
     lsp_options = None if args.no_lsp else lsp_pass.LspOptions(
         bin_dir=Path(args.lsp_bin_dir), request_timeout_seconds=args.lsp_request_timeout_seconds,
         server_budget_seconds=args.lsp_server_budget_seconds,
-        total_budget_seconds=args.lsp_total_budget_seconds, memory_limit_mib=args.lsp_memory_mib)
+        total_budget_seconds=args.lsp_total_budget_seconds, memory_limit_mib=args.lsp_memory_mib,
+        server_costs=_server_costs(parser, args.lsp_server_cost))
     base = None
     if args.base_sha:
         # A base that cannot be read makes the run full and says why; it

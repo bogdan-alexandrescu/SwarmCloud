@@ -174,11 +174,46 @@ MAX_SUMMARY_BYTES = 24 * 1024
 INDEXER_PROFILE = "indexer"
 #: Below the tenant's default-0 work: an index makes work better, it is not the work.
 INDEX_PRIORITY = -50
-#: §3.1's timeouts: a run that cannot finish a full read in 30 minutes needs
-#: the directory-granularity fallback, not more time. They may only shorten
-#: the profile's own. §3.5's larger table applies once the LSP pass exists.
+#: §3.1's timeouts, now §3.5's smallest row: under 2,000 source files, and
+#: any repository whose size is not known yet. They may only shorten the
+#: profile's own.
 FULL_TIMEOUT_SECONDS = 1800
 INCREMENTAL_TIMEOUT_SECONDS = 900
+#: §3.5's table, which applies now the LSP pass exists (lane INDEX-BUDGETS,
+#: part of #1693): (below this many source files, full, incremental). A
+#: fixed 1,800 s gave the pass 540 s whatever the size, so on ai-studio
+#: (3,795 source files) pyright had 270 s against the ~680-890 s it needed
+#: and timed out in 16 of 16 sampled full runs. The worker's phase budgets
+#: are shares of this timeout (`agent_worker.indexrun.budgets`), so the pass
+#: grows with it: 1,260 s of 3,600. THE COST: a full run of a repository
+#: over 2,000 files may hold its indexer pod up to twice as long as before
+#: (four times over 10,000), and it holds it only while it has work -- a
+#: run that finishes early ends early.
+INDEX_TIMEOUT_TABLE = ((2_000, FULL_TIMEOUT_SECONDS, INCREMENTAL_TIMEOUT_SECONDS),
+                       (10_001, 3_600, 1_200))
+#: Over 10,000 source files: the full run gets the indexer profile's own
+#: maximum (terraform/infra/locals.tf, `timeout_seconds = 7200`), which a
+#: task may not exceed.
+MAX_INDEX_TIMEOUT_SECONDS = 7_200
+MAX_INCREMENTAL_TIMEOUT_SECONDS = 1_800
+
+
+def index_timeout_seconds(kind: str, source_files: Any) -> int:
+    """§3.5's timeout for a `kind` run of a repository of `source_files`.
+
+    `source_files` is what the promoted index counted (`source_files_of`,
+    recorded at promotion as `index.source_files`); anything that is not a
+    count -- no promoted index yet, one promoted before the count was
+    recorded -- keeps the smallest row, today's timeouts.
+    """
+    full = kind == "full"
+    if isinstance(source_files, int) and not isinstance(source_files, bool) and source_files >= 0:
+        for below, full_seconds, incremental_seconds in INDEX_TIMEOUT_TABLE:
+            if source_files < below:
+                return full_seconds if full else incremental_seconds
+        return MAX_INDEX_TIMEOUT_SECONDS if full else MAX_INCREMENTAL_TIMEOUT_SECONDS
+    return FULL_TIMEOUT_SECONDS if full else INCREMENTAL_TIMEOUT_SECONDS
+
 #: The mechanical extractor lane RI3 ships in the indexer image
 #: (`/usr/local/bin/swarm-repo-index`, images/agent-runtime-indexer/Dockerfile),
 #: which `INDEXER_PROFILE` runs; agent-runtime-base no longer carries it (#625).
@@ -221,6 +256,13 @@ BASE_LINE = "swarm-index-base: "
 #: Firestore itself, which a tenant not switched to the state routes was
 #: refused on every run, so nothing was ever retired.
 KEEP_LINE = "swarm-index-keep: "
+#: The prompt line that names, to the WORKER, what each language server cost
+#: in the last promoted full run (`agent_worker.indexrun.LSP_COST_LINE`; lane
+#: INDEX-BUDGETS, part of #1693): space-separated `server=seconds`, from
+#: `index.lsp_costs` (`lsp_costs_of`). The worker passes it to the extractor,
+#: whose LSP pass grants each server its share of the total in proportion.
+#: In the signed prompt for BASE_LINE's reason.
+LSP_COST_LINE = "swarm-index-lsp-cost: "
 
 #: §3.4: incremental only when the diff touches fewer than this many files.
 #: GitHub's compare lists at most 300 changed files, so a diff of 300 or more
@@ -236,7 +278,10 @@ MAX_INCREMENTAL_CHANGES = 300
 #: submitted, so it gets the full timeout instead of reading the whole
 #: repository inside the incremental one (lane IX2 review). "3" since lane
 #: KG2: module-object call edges, communities, search, fingerprints, flows.
-INDEXER_EXTRACTOR_VERSION = "3"
+#: "4" since lane INDEX-BUDGETS (#1693): each server's grant and cost are
+#: recorded, and a version-3 graph has neither, so the first run after the
+#: release is full and measures every server.
+INDEXER_EXTRACTOR_VERSION = "4"
 #: §3.4 and §3.5: a change to a build or test configuration, a lockfile, a CI
 #: workflow or a language server's configuration changes what `commands`,
 #: `test_map` and the graph mean everywhere, so it forces a full run. The
@@ -761,6 +806,7 @@ def kept_commits(
 def indexer_prompt(
     repository: str, commit_sha: str, branch: str, *, tenant_id: str, repo_id: str,
     base_sha: str | None = None, keep: Sequence[str] | None = None,
+    lsp_costs: Mapping[str, int] | None = None,
 ) -> str:
     """The indexer's instructions. Composed here from the registration; never a caller's text.
 
@@ -829,6 +875,10 @@ def indexer_prompt(
         "prefix."
         # The worker's, not the agent's: the commits its sweep keeps (KEEP_LINE).
         + (f"\n\n{KEEP_LINE}{' '.join(keep)}\n" if keep else "")
+        # ... and what each language server cost last time (LSP_COST_LINE).
+        + (f"\n\n{LSP_COST_LINE}"
+           + " ".join(f"{name}={seconds}" for name, seconds in sorted(lsp_costs.items()))
+           + "\n" if lsp_costs else "")
     )
 
 
@@ -843,7 +893,14 @@ def indexer_task(record: Mapping[str, Any], commit_sha: str, kind: str = "full",
     beside `index_kind`, is this service's own record. `keep` is named the
     same way, in the prompt's `KEEP_LINE` (`kept_commits`); without it the
     worker's sweep retires nothing and says so.
+
+    The timeout follows the promoted index's size (`index_timeout_seconds`,
+    lane INDEX-BUDGETS), and what each language server cost in the last
+    promoted full run is named in `LSP_COST_LINE`; both are read from the
+    registration's own `index`, which only promotion writes.
     """
+    index = record.get("index") or {}
+    index = index if isinstance(index, Mapping) else {}
     if kind == "incremental" and base_sha is None:
         raise ValueError("an incremental index run names its base")
     repository = f"{record['owner']}/{record['repo']}"
@@ -856,11 +913,12 @@ def indexer_task(record: Mapping[str, Any], commit_sha: str, kind: str = "full",
             repository, commit_sha, record["default_branch"],
             tenant_id=record["tenant_id"], repo_id=record["repo_id"],
             base_sha=base_sha if kind == "incremental" else None, keep=keep,
+            lsp_costs=_valid_costs(index.get("lsp_costs")),
         )},
         priority=INDEX_PRIORITY,
         repository_url=record["repository_url"],
         repository_ref=commit_sha,
-        timeout_seconds=FULL_TIMEOUT_SECONDS if kind == "full" else INCREMENTAL_TIMEOUT_SECONDS,
+        timeout_seconds=index_timeout_seconds(kind, index.get("source_files")),
         metadata=metadata,
     )
 
@@ -1335,6 +1393,58 @@ def graph_extractor_record(manifest: Mapping[str, Any] | None) -> dict[str, Any]
         "files_not_listed": _int_or(extractor.get("files_not_listed"), 0),
         "truncated": sorted(str(t) for t in manifest.get("truncated") or []),
     }
+
+
+def source_files_of(document: Mapping[str, Any]) -> int | None:
+    """The source files an index counted: its `languages` rows with a grammar.
+
+    A language without a grammar is never parsed and never a language
+    server's, so it is not what §3.5's table sizes. None when no row has one.
+    """
+    total, seen = 0, False
+    for row in document.get("languages") or []:
+        if not isinstance(row, Mapping) or not row.get("grammar"):
+            continue
+        files = row.get("files")
+        if isinstance(files, int) and not isinstance(files, bool) and files >= 0:
+            total, seen = total + files, True
+    return total if seen else None
+
+
+_SERVER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
+#: The most seconds one recorded cost may name (`agent_worker.indexrun.MAX_LSP_COST_SECONDS`).
+MAX_LSP_COST_SECONDS = 86_400
+
+
+def _valid_costs(costs: Any) -> dict[str, int] | None:
+    """`costs` with every pair the worker would refuse dropped; None when none is left."""
+    if not isinstance(costs, Mapping):
+        return None
+    kept = {
+        name: seconds for name, seconds in costs.items()
+        if isinstance(name, str) and _SERVER_NAME.match(name)
+        and isinstance(seconds, int) and not isinstance(seconds, bool)
+        and 0 < seconds <= MAX_LSP_COST_SECONDS
+    }
+    return kept or None
+
+
+def lsp_costs_of(manifest: Mapping[str, Any] | None) -> dict[str, int] | None:
+    """What each language server cost in a FULL run, from its graph manifest's
+    language rows (`lsp.cost_seconds`, the driver's `measured_cost`), one entry
+    a server; None for an incremental run, whose servers were asked about a
+    few files, or when nothing was measured."""
+    if not isinstance(manifest, Mapping) or manifest.get("kind") != "full":
+        return None
+    costs: dict[str, Any] = {}
+    for row in manifest.get("languages") or []:
+        if not isinstance(row, Mapping):
+            continue
+        counts = row.get("lsp")
+        server = row.get("server")
+        if isinstance(counts, Mapping) and isinstance(server, str):
+            costs.setdefault(server, counts.get("cost_seconds"))
+    return _valid_costs(costs)
 
 
 def graph_carry_refusal(record: Any) -> str | None:
@@ -2711,10 +2821,15 @@ class RepoIndex:
                     current_sha=new, current_digest=digest, current_task_id=task.id,
                     current_built_at=document["built_at"], last_indexed_at=now,
                     last_kind=document["kind"], coverage=coverage(document, manifest),
+                    # What the next run is sized by (`index_timeout_seconds`).
+                    source_files=source_files_of(document),
                 )
                 if document["kind"] == "full":
                     # What `full_every_days` counts from (§3.3, `choose_kind`).
                     index["last_full_at"] = now
+                    # What the next run's servers are granted by: a full
+                    # run's measurement, kept across incremental ones.
+                    index["lsp_costs"] = lsp_costs_of(manifest)
                 # The stored compare was of the previous index; RSA-3.
                 index = settle_relation(index)
             if index.get("in_flight_task_id") == task.id:
@@ -3338,7 +3453,8 @@ def _claim_expired(index: Mapping[str, Any], now: datetime) -> bool:
 
 
 __all__ = [
-    "BASE_INDEX_FILE", "BASE_LINE", "KEEP_LINE", "SWEEP_PHASE", "kept_commits", "retention_of",
+    "BASE_INDEX_FILE", "BASE_LINE", "KEEP_LINE", "LSP_COST_LINE", "INDEX_TIMEOUT_TABLE",
+    "MAX_INDEX_TIMEOUT_SECONDS", "index_timeout_seconds", "lsp_costs_of", "source_files_of", "SWEEP_PHASE", "kept_commits", "retention_of",
     "CONFIG_DIRECTORIES", "CONFIG_FILENAMES", "CONFIG_GLOBS",
     "EXTRACTOR_COMMAND", "GRAPH_WRITER_COMMAND", "HeadRead", "INDEXER_PROFILE", "INDEX_FILE",
     "INDEXER_EXTRACTOR_VERSION", "KindChoice", "MAX_INCREMENTAL_CHANGES", "PHASES_FILE", "RUN_KINDS",
