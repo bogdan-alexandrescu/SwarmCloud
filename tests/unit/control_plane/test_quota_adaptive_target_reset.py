@@ -53,7 +53,7 @@ PROVIDER = "anthropic"
 TENANT = "u-bogdan"
 DOC = f"quota/{PROVIDER}:{TENANT}"
 POOL = f"pools/provider:{PROVIDER}:tenant:{TENANT}"
-ADMIN = "root@saga.xyz"
+ADMIN = "root@example.com"
 
 
 class _Clock:

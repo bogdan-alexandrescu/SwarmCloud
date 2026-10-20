@@ -137,7 +137,7 @@ def test_a_verified_caller_off_the_allowlist_is_403(monkeypatch):
     monkeypatch.setenv("RECONCILER_ALLOWED_INVOKERS", "tick@saga-agents-staging.iam.gserviceaccount.com")
     monkeypatch.setattr(
         "google.oauth2.id_token.verify_oauth2_token",
-        lambda token, request: {"email": "someone-else@saga.xyz"},
+        lambda token, request: {"email": "someone-else@example.com"},
     )
     with pytest.raises(HTTPException) as exc:
         _verify_invoker("Bearer good-token", build_logger())
@@ -145,16 +145,16 @@ def test_a_verified_caller_off_the_allowlist_is_403(monkeypatch):
 
 
 def test_a_verified_caller_on_the_allowlist_passes(monkeypatch):
-    monkeypatch.setenv("RECONCILER_ALLOWED_INVOKERS", "a@saga.xyz, tick@saga.xyz ")
+    monkeypatch.setenv("RECONCILER_ALLOWED_INVOKERS", "a@example.com, tick@example.com ")
     monkeypatch.setattr(
         "google.oauth2.id_token.verify_oauth2_token",
-        lambda token, request: {"email": "tick@saga.xyz"},
+        lambda token, request: {"email": "tick@example.com"},
     )
     _verify_invoker("Bearer good-token", build_logger())
 
 
 def test_the_reconcile_endpoint_enforces_the_allowlist(monkeypatch):
-    monkeypatch.setenv("RECONCILER_ALLOWED_INVOKERS", "tick@saga.xyz")
+    monkeypatch.setenv("RECONCILER_ALLOWED_INVOKERS", "tick@example.com")
     reconciler = _StubReconciler()
     response = _client(reconciler).post("/reconcile")
     assert response.status_code == 401

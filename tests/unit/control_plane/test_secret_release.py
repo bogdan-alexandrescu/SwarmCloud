@@ -78,8 +78,8 @@ from .test_child_tasks_api import (  # noqa: F401  (worker_tokens is a fixture)
 )
 
 SIGNER = LocalSpecSigner()
-ALICE = "alice@saga.xyz"
-ROOT = "root@saga.xyz"
+ALICE = "alice@example.com"
+ROOT = "root@example.com"
 
 
 def fake_value(fill: str = "q") -> str:
@@ -610,7 +610,7 @@ def test_a_group_task_is_known_by_configuration_not_by_its_tenant_document(clien
     """The membership re-check names the group from ApiSettings.tenant_groups,
     the walk tenant resolution makes; a tenant document is agent-writable."""
     _personal_secret(db, sm)
-    db.docs["tenants/eng"]["principal"] = "somewhere-else@saga.xyz"
+    db.docs["tenants/eng"]["principal"] = "somewhere-else@example.com"
     attempt = running(client, db, submitted_by=ALICE)
     assert names(release(client, attempt)) == ["alice-key"]
     assert ENG_GROUP.split("@")[0] == "eng"

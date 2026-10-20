@@ -4,9 +4,9 @@ Owner decisions 2026-10-14. Jev (jev-browser, on the live browser) asks typed
 questions about page state. Its answers can come from three backends, chosen
 per workspace:
 
-  * `internal-jev` -- THE DEFAULT. Saga's own decision API on the company
+  * `internal-jev` -- THE DEFAULT. Your own internal decision API on the
     tailnet (`/jev`), reached through the ONE Tailscale egress Service the
-    operator runs in swarm-system (JUDGE-NET). Page text stays inside Saga,
+    operator runs in swarm-system (JUDGE-NET). Page text stays inside your network,
     and no TypeSafe key is needed or sent.
   * `internal-laya` -- the same API's `/laya` path.
   * `typesafe` -- api.typesafe.ai, jev-browser's own default. Page text goes
@@ -87,7 +87,7 @@ INTERNAL_LAYA = "internal-laya"
 TYPESAFE_BACKEND = "typesafe"
 #: In the order the console offers them.
 BACKENDS = (INTERNAL_JEV, INTERNAL_LAYA, TYPESAFE_BACKEND)
-#: Owner decision 2026-10-14: page text stays inside Saga unless a workspace
+#: Owner decision 2026-10-14: page text stays inside your network unless a workspace
 #: chooses otherwise.
 DEFAULT_BACKEND = INTERNAL_JEV
 INTERNAL_BACKENDS = (INTERNAL_JEV, INTERNAL_LAYA)
@@ -104,7 +104,7 @@ SETTINGS_COLLECTION = "workspace_settings"
 SETTING_FIELD = "judgment_backend"
 AUDIT_JUDGMENT_SET = "judgment_backend_set"
 
-#: Saga's decision API by its TAILNET NAME, over https, as a judging pod calls
+#: The internal decision API by its TAILNET NAME, over https, as a judging pod calls
 #: it: the pod's hostAliases entry resolves the name to JUDGE-NET's egress
 #: Service, which passes TLS through, so the API's own certificate verifies
 #: (owner decision 2026-10-15, #1380). The only value INTERNAL_DECISION_API_URL

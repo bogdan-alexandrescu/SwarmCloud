@@ -118,7 +118,7 @@ def test_an_auto_run_moves_planning_to_planned_to_running_with_no_reader(client,
     assert workflow["tenant_id"] == "eng"
     tasks = _workflow_tasks(db, stored["workflow_id"])
     assert tasks and {t["tenant_id"] for t in tasks} == {"eng"}
-    assert {t["submitted_by"] for t in tasks} == {"alice@saga.xyz"}
+    assert {t["submitted_by"] for t in tasks} == {"alice@example.com"}
     assert SWEEPER not in str(workflow) and SWEEPER not in str(tasks)
 
 
@@ -209,7 +209,7 @@ def test_the_tick_cannot_submit_into_a_tenant_other_than_the_runs_own(
 
     owner = runs_routes.run_owner_auth(ctx, stored)
     assert owner.tenant_id == "eng"
-    assert owner.email == "alice@saga.xyz"
+    assert owner.email == "alice@example.com"
     assert owner.is_admin is False and owner.is_rollup_sweeper is False
     assert owner.member_scope == "" and owner.tenant_member == ""
 
@@ -344,14 +344,14 @@ def test_an_auto_run_whose_creator_left_the_tenant_fails_and_submits_nothing(
 def test_membership_is_asked_of_the_directory_for_the_tenants_one_group(group_map):
     now = datetime.now(timezone.utc)
     authenticator = Authenticator(api_settings(), StaticTokenVerifier({}), StaticGroups(group_map))
-    eng = Tenant(tenant_id="eng", kind="group", principal="eng@saga.xyz", created_at=now)
-    personal = Tenant(tenant_id="u-carol", kind="user", principal="carol@saga.xyz", created_at=now)
+    eng = Tenant(tenant_id="eng", kind="group", principal="eng@example.com", created_at=now)
+    personal = Tenant(tenant_id="u-carol", kind="user", principal="carol@example.com", created_at=now)
 
-    assert authenticator.is_tenant_member("alice@saga.xyz", eng)
-    assert not authenticator.is_tenant_member("bob@saga.xyz", eng)
+    assert authenticator.is_tenant_member("alice@example.com", eng)
+    assert not authenticator.is_tenant_member("bob@example.com", eng)
     assert not authenticator.is_tenant_member("", eng)
-    assert authenticator.is_tenant_member("Carol@saga.xyz", personal)
-    assert not authenticator.is_tenant_member("alice@saga.xyz", personal)
+    assert authenticator.is_tenant_member("Carol@example.com", personal)
+    assert not authenticator.is_tenant_member("alice@example.com", personal)
 
     class Unreachable:
         def groups_for(self, member_email, candidate_groups):
@@ -359,7 +359,7 @@ def test_membership_is_asked_of_the_directory_for_the_tenants_one_group(group_ma
 
     down = Authenticator(api_settings(), StaticTokenVerifier({}), Unreachable())
     with pytest.raises(UpstreamUnavailable):
-        down.is_tenant_member("alice@saga.xyz", eng)
+        down.is_tenant_member("alice@example.com", eng)
 
 
 

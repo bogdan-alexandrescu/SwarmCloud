@@ -184,7 +184,7 @@ def test_the_session_read_serves_live_browser_and_a_session(client, ldb, live):
     session = served["session"]
     assert session["session_id"] == "live_" + ATTEMPT
     assert session["state"] == "open" and session["closed_reason"] is None
-    assert session["you"] == {"email": "alice@saga.xyz", "can_control": True,
+    assert session["you"] == {"email": "alice@example.com", "can_control": True,
                               "can_preempt": False, "can_open": True,
                               "can_switch_device": False}
     assert session["human_wait"]["expect"] == "github.com"
@@ -219,7 +219,7 @@ def test_a_closed_session_says_why(client, ldb, live):
 
 def test_a_member_who_is_not_the_submitter_is_told_they_may_watch_only(client, ldb, live):
     served = _served(client, "GET", "/v1/tasks/{task_id}/live/session", "root")
-    assert served["session"]["you"] == {"email": "root@saga.xyz", "can_control": False,
+    assert served["session"]["you"] == {"email": "root@example.com", "can_control": False,
                                         "can_preempt": False, "can_open": False,
                                         "can_switch_device": False}
 
@@ -237,7 +237,7 @@ def test_the_console_take_body_is_accepted_and_its_mismatch_audited(client, ldb,
     body["preempt"] = False
     served = _served(client, "POST", "/v1/tasks/{task_id}/live/control", "alice", body)
     assert fits(served, fixture("control.taken.json")) == []
-    assert served["session"]["controller"]["email"] == "alice@saga.xyz"
+    assert served["session"]["controller"]["email"] == "alice@example.com"
     taken = audit(ldb, "control_taken")
     assert [r["detail"].get("confirmed_mismatch") for r in taken] == [
         {"expected": "github.com", "actual": "github-signin.example"}]

@@ -18,7 +18,7 @@ from swarm_api.onboarding import Caller, derive
 from .conftest import auth_header
 
 T0 = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
-CAROL = Caller(email="carol@saga.xyz", tenant_id="u-carol")
+CAROL = Caller(email="carol@example.com", tenant_id="u-carol")
 
 
 def _derive(*, workspace=None, accounts=None, loan=None, required=False, caller=CAROL) -> dict:
@@ -57,11 +57,11 @@ def test_the_workspace_step_follows_the_record(state, shown) -> None:
 
 def test_a_denial_shows_its_reason_and_when_to_ask_again() -> None:
     record = _record("denied", decision={"verdict": "denied", "reason": "Use eng.",
-                                         "at": T0, "by": "root@saga.xyz"})
+                                         "at": T0, "by": "root@example.com"})
     step = _step(_derive(workspace=record), "workspace")
     assert step["copy"] == "Not approved: Use eng."
     assert step["evidence"]["request_again_at"] == (T0 + timedelta(hours=24)).isoformat()
-    assert "root@saga.xyz" not in str(step)
+    assert "root@example.com" not in str(step)
 
 
 def test_a_failure_shows_its_code_and_its_copy() -> None:
@@ -149,7 +149,7 @@ def test_the_route_reads_the_persons_own_workspace_from_a_group_tenant(client, d
 
 def test_an_approval_nothing_will_build_says_so_in_the_steps_evidence() -> None:
     record = _record("approved", decision={"verdict": "approved", "at": T0 - timedelta(hours=3),
-                                           "by": "root@saga.xyz", "reason": None})
+                                           "by": "root@example.com", "reason": None})
     view = derive(CAROL, records=[], pair_docs=[], registrations=[], tenant_lists_git=False,
                   now=T0, workspace=record, workspace_publishing=False)
     evidence = _step(view, "workspace")["evidence"]

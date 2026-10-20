@@ -39,7 +39,7 @@ from .conftest import PROJECT, api_settings, auth_header
 from .spec_signer import LocalSpecSigner
 
 PROFILE = "await-input"
-REPO = "https://github.com/saga-xyz/example.git"
+REPO = "https://github.com/example-org/example.git"
 
 
 @pytest.fixture
@@ -73,7 +73,7 @@ def _block(**overrides: Any) -> dict[str, Any]:
         "on_expire": "default",
         "default": {"verdict": "MERGE", "findings": []},
         "remind_after_seconds": 14_400,
-        "remind": ["Owner@saga.xyz"],
+        "remind": ["Owner@example.com"],
     }
     for key, value in overrides.items():
         if value is _DROP:
@@ -166,7 +166,7 @@ def test_the_block_lands_in_the_signed_dispatch_block_normalised(client, db, awa
         "on_expire": "default",
         "default": {"verdict": "MERGE", "findings": []},
         "remind_after_seconds": 14_400,
-        "remind": ["owner@saga.xyz"],
+        "remind": ["owner@example.com"],
     }
     # Only the await step carries it.
     assert "await_input" not in docs["draft"]["metadata"]["dispatch"]
@@ -190,7 +190,7 @@ def test_the_defaults_are_filled_in(client, db, await_enabled):
         "on_expire": "fail",
         "default": None,
         "remind_after_seconds": None,
-        "remind": ["alice@saga.xyz"],
+        "remind": ["alice@example.com"],
     }
 
 
@@ -342,7 +342,7 @@ def test_an_await_step_as_a_standalone_task_is_refused(client, db, await_enabled
 # --------------------------------------------------------------------------
 
 def test_assignees_is_refused_and_points_at_remind(client, db, await_enabled):
-    body = _refused(client, db, _spec(_review(await_input=_block(assignees=["a@saga.xyz"]))),
+    body = _refused(client, db, _spec(_review(await_input=_block(assignees=["a@example.com"]))),
                     "await_input.assignees")
     assert "remind" in body["message"]
 
@@ -379,8 +379,8 @@ def test_assignees_is_refused_and_points_at_remind(client, db, await_enabled):
      "await_input.remind_after_seconds"),
     (_block(remind=["someone@elsewhere.example"]), "await_input.remind"),
     (_block(remind=["not-an-address"]), "await_input.remind"),
-    (_block(remind=[f"p{i}@saga.xyz" for i in range(11)]), "await_input.remind"),
-    (_block(remind="owner@saga.xyz"), "await_input.remind"),
+    (_block(remind=[f"p{i}@example.com" for i in range(11)]), "await_input.remind"),
+    (_block(remind="owner@example.com"), "await_input.remind"),
     (_block(colour="red"), "await_input.colour"),
 ])
 def test_a_bad_block_is_refused_naming_its_field(client, db, await_enabled, block, field):
@@ -442,7 +442,7 @@ def _assert_reserved(response) -> None:
 def test_a_callers_metadata_await_input_is_refused_on_a_task(client, db):
     response = client.post("/v1/tasks", headers=auth_header("alice"), json={
         "runner_profile": "mock", "input": {"prompt": "x"},
-        "metadata": {"await_input": {"answer": {"answered_by": "mallory@saga.xyz"}}},
+        "metadata": {"await_input": {"answer": {"answered_by": "mallory@example.com"}}},
     })
     _assert_reserved(response)
     assert not [k for k in db.docs if k.startswith("tasks/")]

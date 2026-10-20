@@ -463,7 +463,7 @@ def test_the_workflow_detail_route_returns_each_steps_account(client, db):
         "created_at": T0,
         "updated_at": T0,
         "state": "RUNNING",
-        "submitted_by": "alice@saga.xyz",
+        "submitted_by": "alice@example.com",
         "steps": [
             {"step_id": "a", "runner_profile": "claude-code", "resource_class": "standard",
              "input": {}, "depends_on": [], "task_id": "task_w1"},

@@ -93,7 +93,7 @@ def test_a_report_is_one_collect_task_per_repository_marked_and_read_only(db, ct
     assert len(made) == 2
     assert sorted(w["repo_id"] for w in work) == sorted([first, second])
     by_repo = {t["repository_url"]: t for t in made}
-    gadgets = by_repo["https://github.com/saga-xyz/gadgets"]
+    gadgets = by_repo["https://github.com/example-org/gadgets"]
     assert gadgets["repository_ref"] == "trunk"
     for task in made:
         assert task["runner_profile"] == "claude-code" and strategy(task) == "collect"
@@ -236,8 +236,8 @@ def test_a_dry_run_says_what_it_would_send_and_creates_nothing(db, ctx) -> None:
     rows = {row["repository"]: row for row in output["repositories"]}
     assert rows[REPOSITORY]["would"] == "queue" and rows[REPOSITORY]["branch"] == "main"
     assert 0 < rows[REPOSITORY]["prompt_bytes"]
-    assert rows["saga-xyz/gadgets"]["would"] == "refuse: docs_drift_cannot_push"
-    assert rows["saga-xyz/gadgets"]["rights"]["push"]["state"] == "missing"
+    assert rows["example-org/gadgets"]["would"] == "refuse: docs_drift_cannot_push"
+    assert rows["example-org/gadgets"]["rights"]["push"]["state"] == "missing"
 
 
 def test_a_report_dry_run_lists_no_push_rights(db, ctx) -> None:

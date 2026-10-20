@@ -70,7 +70,7 @@ LISTED = f"swarm-ci-fix@{PROJECT_DOMAIN}"
 #: The schedule tick and the rollup sweeper.
 TICK = f"swarm-schedule-tick@{PROJECT_DOMAIN}"
 SWEEPER = f"swarm-rollup@{PROJECT_DOMAIN}"
-PERSON = "alice@saga.xyz"
+PERSON = "alice@example.com"
 
 
 def _seed_user_tenant(db: FakeFirestore, tenant_id: str, principal: str) -> None:

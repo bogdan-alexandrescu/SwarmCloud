@@ -28,7 +28,7 @@ the platform's -- the scheduler's settings and a document only a workspace
 owner or an admin writes through swarm-api -- never a caller's (invariant 10).
 
 A read that fails, or a stored value this code does not know, is the
-DEFAULT, internal-jev: it is the choice that sends nothing outside Saga.
+DEFAULT, internal-jev: it is the choice that sends nothing outside your network.
 
 The names below restate swarm-api's; tests/unit/control_plane/
 test_dispatch_judgment.py holds them equal.
@@ -71,7 +71,7 @@ DEFAULT_BACKEND = INTERNAL_JEV
 SETTINGS_COLLECTION = "workspace_settings"
 SETTING_FIELD = "judgment_backend"
 
-#: Saga's decision API's tailnet name: what its certificate is issued for, and
+#: The internal decision API's tailnet name: what its certificate is issued for, and
 #: what the egress forwarder dials (terraform/infra/tailscale.tf
 #: `tailscale_egress_target`, whose default a test holds equal to this).
 DECISION_API_TAILNET_NAME = "decision-api-staging.taile0bda9.ts.net"

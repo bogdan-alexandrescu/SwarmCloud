@@ -103,11 +103,11 @@ def test_without_a_bucket_the_rows_are_the_spans_figure(api):
 
 def test_a_group_rows_cell_narrows_to_that_rows_tasks(api):
     body = route_tests.ok(api, "alice", **WEEK, group="submitted_by")
-    bob = next(r for r in body["groups"]["rows"] if r["key"] == "bob@saga.xyz")
-    block = rows(api, rows="failed", group="submitted_by", rows_key="bob@saga.xyz")
+    bob = next(r for r in body["groups"]["rows"] if r["key"] == "bob@example.com")
+    block = rows(api, rows="failed", group="submitted_by", rows_key="bob@example.com")
     assert block["total"] == bob["failed"] + bob["dead_lettered"] == 1
     assert ids(block) == ["d1"]
-    assert block["key"] == "bob@saga.xyz" and block["group"] == "submitted_by"
+    assert block["key"] == "bob@example.com" and block["group"] == "submitted_by"
     by_profile = rows(api, rows="failed", rows_key="claude-code")
     assert ids(by_profile) == ["f1"] and by_profile["group"] == "runner_profile"
 
@@ -187,7 +187,7 @@ def test_the_block_is_exactly_the_shape_outcomes_ts_declares(api):
     for params in (
         {"rows": "failed", "rows_at": SEP22},
         {"rows": "cancelled", "rows_at": SEP22},
-        {"rows": "succeeded", "group": "submitted_by", "rows_key": "alice@saga.xyz"},
+        {"rows": "succeeded", "group": "submitted_by", "rows_key": "alice@example.com"},
     ):
         errors += checker.check(rows(api, **params), ("ref", "EndedRows"), "EndedRows", seen)
     assert not errors, "outcomes.ts and the rows block disagree:\n  " + "\n  ".join(errors[:40])

@@ -54,7 +54,7 @@ def tenant() -> Tenant:
     return Tenant(
         tenant_id="u-alice",
         kind="user",
-        principal="alice@saga.xyz",
+        principal="alice@example.com",
         created_at=NOW,
         service_account=f"swarm-agent-worker-u-alice@{PROJECT}.iam.gserviceaccount.com",
         gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/u-alice",
@@ -73,7 +73,7 @@ def _task(profile_name: str, *, model: str | None = None) -> Task:
         runner_profile=profile_name,
         resource_class=profile.resource_class,
         input={},
-        submitted_by="alice@saga.xyz",
+        submitted_by="alice@example.com",
         provider=profile.provider,
         model=model,
         timeout_seconds=1800,

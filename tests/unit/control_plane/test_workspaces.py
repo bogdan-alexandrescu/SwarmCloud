@@ -32,7 +32,7 @@ from fastapi.testclient import TestClient
 
 from .conftest import NoForgeTokens, api_settings, auth_header
 
-CAROL = "carol@saga.xyz"
+CAROL = "carol@example.com"
 WORKSPACE_ID = re.compile(r"^w-[0-9a-f]{6}$")
 
 
@@ -180,7 +180,7 @@ def test_a_group_member_requests_their_personal_workspace_never_the_groups(clien
     response = client.post("/v1/workspace", headers=auth_header("alice"))
     assert response.status_code == 202, response.text
     assert list(_top(db, "workspaces")) == ["workspaces/u-alice"]
-    assert db.docs["workspaces/u-alice"]["principal"] == "alice@saga.xyz"
+    assert db.docs["workspaces/u-alice"]["principal"] == "alice@example.com"
 
 
 @pytest.mark.parametrize("state", ["requested", "approved", "applying", "needs_owner", "ready"])
@@ -197,7 +197,7 @@ def test_a_request_against_a_standing_record_writes_nothing(client, db, state) -
 
 def test_a_request_inside_24_hours_of_a_denial_is_refused(client, db) -> None:
     _record(db, state="denied", decision={
-        "by": "root@saga.xyz", "at": _now() - timedelta(hours=23), "verdict": "denied",
+        "by": "root@example.com", "at": _now() - timedelta(hours=23), "verdict": "denied",
         "reason": "Use the eng space."})
     before = dict(db.docs["workspaces/u-carol"])
     response = client.post("/v1/workspace", headers=auth_header("carol"))
@@ -208,13 +208,13 @@ def test_a_request_inside_24_hours_of_a_denial_is_refused(client, db) -> None:
 
 
 def test_a_request_after_24_hours_reopens_a_denied_record_and_keeps_the_reason(client, db) -> None:
-    denial = {"by": "root@saga.xyz", "at": _now() - timedelta(hours=25), "verdict": "denied",
+    denial = {"by": "root@example.com", "at": _now() - timedelta(hours=25), "verdict": "denied",
               "reason": "Use the eng space."}
     _record(db, state="denied", decision=denial)
     shown = client.get("/v1/workspace", headers=auth_header("carol")).json()
     assert shown["decision"] == {"verdict": "denied", "reason": "Use the eng space.",
                                  "at": denial["at"].isoformat(), "auto": False}
-    assert "root@saga.xyz" not in str(shown)  # `decision.by` never leaves Firestore
+    assert "root@example.com" not in str(shown)  # `decision.by` never leaves Firestore
     response = client.post("/v1/workspace", headers=auth_header("carol"))
     assert response.status_code == 202, response.text
     record = db.docs["workspaces/u-carol"]
@@ -267,7 +267,7 @@ def test_a_service_account_cannot_request_a_workspace(api_context, db) -> None:
                              member_scope="", is_rollup_sweeper=False, tenant_member="")
     with pytest.raises(WorkspaceNotForServiceAccounts):
         _own(caller, api_context)  # type: ignore[arg-type]
-    listed = SimpleNamespace(email="someone@saga.xyz", member_scope="continuation",
+    listed = SimpleNamespace(email="someone@example.com", member_scope="continuation",
                              is_rollup_sweeper=False, tenant_member="")
     with pytest.raises(WorkspaceNotForServiceAccounts):
         _own(listed, api_context)  # type: ignore[arg-type]
@@ -389,7 +389,7 @@ def test_gate_on_every_state_short_of_ready_is_refused(api_context, client, db, 
     _account(db, "acct-own", "u-carol")
     _record(db, state=state,
             decision={"verdict": "denied", "reason": "Use the eng space.", "at": _now(),
-                      "by": "root@saga.xyz"} if state == "denied" else None,
+                      "by": "root@example.com"} if state == "denied" else None,
             failure={"step": "A3", "code": "APPLY_FAILED", "retryable": True,
                      "at": _now()} if state == "failed" else None)
     response = _task(client)
@@ -399,7 +399,7 @@ def test_gate_on_every_state_short_of_ready_is_refused(api_context, client, db, 
     assert response.json()["detail"] == {
         "workspace_id": "w-3f9a2c", "state": state,
         "setup_url": response.json()["detail"]["setup_url"], "setup_command": "/sc:setup"}
-    assert "root@saga.xyz" not in response.text
+    assert "root@example.com" not in response.text
     assert not _top(db, "tasks")
 
 
@@ -458,11 +458,11 @@ def test_gate_on_a_group_tenant_is_never_judged(api_context, client, db) -> None
 @pytest.mark.parametrize("caller", [
     SimpleNamespace(email="swarm-verify@example-proj.iam.gserviceaccount.com",
                     member_scope="", is_rollup_sweeper=False, tenant_member=""),
-    SimpleNamespace(email="bot@saga.xyz", member_scope="continuation",
+    SimpleNamespace(email="bot@example.com", member_scope="continuation",
                     is_rollup_sweeper=False, tenant_member=""),
-    SimpleNamespace(email="rollup@saga.xyz", member_scope="", is_rollup_sweeper=True,
+    SimpleNamespace(email="rollup@example.com", member_scope="", is_rollup_sweeper=True,
                     tenant_member=""),
-    SimpleNamespace(email="member@saga.xyz", member_scope="", is_rollup_sweeper=False,
+    SimpleNamespace(email="member@example.com", member_scope="", is_rollup_sweeper=False,
                     tenant_member="sa@example-proj.iam.gserviceaccount.com"),
 ])
 def test_gate_on_service_accounts_and_listed_identities_are_exempt(caller) -> None:
@@ -537,7 +537,7 @@ def test_gate_off_a_workflow_is_submitted_as_today(client, db) -> None:
 def test_a_sighting_is_recorded_once_per_ten_minutes(client, db) -> None:
     assert client.get("/v1/tenants/me", headers=auth_header("alice")).status_code == 200
     person = db.docs["people/u-alice"]
-    assert person["principal"] == "alice@saga.xyz"
+    assert person["principal"] == "alice@example.com"
     assert person["teams"] == ["eng"]
     assert person["first_seen"] == person["last_seen"]
     seen = person["last_seen"]

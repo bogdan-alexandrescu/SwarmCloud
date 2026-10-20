@@ -75,7 +75,7 @@ def _task(*, parent: str | None = None) -> Task:
     return Task(
         id="task_abc", tenant_id="eng", created_at=NOW, updated_at=NOW,
         state=TaskState.LEASED, runner_profile="mock", resource_class=profile.resource_class,
-        input={}, submitted_by="alice@saga.xyz", parent_task_id=parent,
+        input={}, submitted_by="alice@example.com", parent_task_id=parent,
     )
 
 
@@ -89,7 +89,7 @@ def _lease(task: Task) -> Lease:
 
 def _tenant() -> Tenant:
     return Tenant(
-        tenant_id="eng", kind="group", principal="eng@saga.xyz", created_at=NOW,
+        tenant_id="eng", kind="group", principal="eng@example.com", created_at=NOW,
         gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/eng",
     )
 
@@ -347,7 +347,7 @@ def test_a_failed_dispatch_ends_a_flagged_child_child_cascade(db):
     snapshot = Task(
         id="task_x", tenant_id="eng", runner_profile="mock", resource_class="standard",
         state=TaskState.READY, created_at=NOW, updated_at=NOW, input={},
-        submitted_by="alice@saga.xyz", attempt_count=0, max_attempts=3, parent_task_id=PARENT,
+        submitted_by="alice@example.com", attempt_count=0, max_attempts=3, parent_task_id=PARENT,
     )
     lease = Lease(
         lease_id="lease_x", task_id="task_x", attempt_id="att_x", tenant_id="eng",

@@ -8,9 +8,9 @@ WHY THE DEPENDENCY RATHER THAN `auth.tenant_id`. This docstring used to claim
 that deriving the id from the verified token was the whole boundary -- "there is
 no request a caller can construct that reads another tenant's task". That was
 wrong, and the counterexample is two VERIFIED identities holding the SAME id:
-the frozen `tenant_id_for_group` slugs the local part only, so `eng@saga.xyz`
-and `eng@partner.com` both derive `eng`, and a registered group `u-eng@saga.xyz`
-derives what the personal tenant of `eng@saga.xyz` derives. Submitting was
+the frozen `tenant_id_for_group` slugs the local part only, so `eng@example.com`
+and `eng@partner.com` both derive `eng`, and a registered group `u-eng@example.com`
+derives what the personal tenant of `eng@example.com` derives. Submitting was
 already refused by `ensure_tenant`; listing, reading and CANCELLING were not.
 `tenant_scope` applies that same principal check before any store call here.
 

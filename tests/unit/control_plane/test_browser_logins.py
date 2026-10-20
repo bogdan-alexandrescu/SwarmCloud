@@ -60,8 +60,8 @@ from .conftest import PROJECT, api_settings, auth_header, seed_task, seed_tenant
 #: Built at runtime, never one literal (CLAUDE.md, "Nothing you add may look
 #: like a credential").
 KEY = "-".join(("login", "vault", "test", "key")) + "-" + "k" * 24
-CAROL = "carol@saga.xyz"
-DAVE = "dave@saga.xyz"
+CAROL = "carol@example.com"
+DAVE = "dave@example.com"
 CAROL_TENANT = tenant_id_for_user(CAROL)
 DAVE_TENANT = tenant_id_for_user(DAVE)
 CAROL_WORKER = "-".join(("token", "worker", "carol"))
@@ -126,11 +126,11 @@ class Attempt:
 def group_map() -> dict[str, tuple[str, ...]]:
     # Carol and Dave are in no group: each has a personal tenant of their own.
     return {
-        "alice@saga.xyz": ("eng@saga.xyz",),
-        "bob@saga.xyz": ("research@saga.xyz",),
+        "alice@example.com": ("eng@example.com",),
+        "bob@example.com": ("research@example.com",),
         CAROL: (),
         DAVE: (),
-        "root@saga.xyz": ("swarm-admins@saga.xyz", "eng@saga.xyz"),
+        "root@example.com": ("swarm-admins@example.com", "eng@example.com"),
     }
 
 
@@ -412,7 +412,7 @@ def test_save_takes_a_name_and_an_expiry_and_nothing_else(live, db) -> None:
 
 def test_save_in_a_group_tenant_is_refused_personal_only(live, db) -> None:
     seed_attempt(live, db, Attempt(tenant="eng", task="task_eng_browser"),
-                 submitted_by="alice@saga.xyz", worker_token=ENG_WORKER)
+                 submitted_by="alice@example.com", worker_token=ENG_WORKER)
     response = _save(live, {"name": "github-qa"}, user="alice", task="task_eng_browser")
     assert response.status_code == 403, response.text
     assert response.json()["code"] == BROWSER_LOGIN_PERSONAL_ONLY
@@ -528,7 +528,7 @@ def test_a_named_login_is_used_only_while_it_is_live(live, db) -> None:
 
 def test_a_group_tenants_worker_has_no_login_to_use(live, db) -> None:
     attempt = Attempt(tenant="eng", task="task_eng_browser")
-    seed_attempt(live, db, attempt, submitted_by="alice@saga.xyz", worker_token=ENG_WORKER)
+    seed_attempt(live, db, attempt, submitted_by="alice@example.com", worker_token=ENG_WORKER)
     seed_login(db, tenant_id="eng", name="github-qa")
     response = worker_post(live, attempt, "report", {"event": "used", "name": "github-qa"},
                            token=ENG_WORKER)

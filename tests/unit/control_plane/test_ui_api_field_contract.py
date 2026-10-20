@@ -201,7 +201,7 @@ def seeded(client, db):
 
     db.docs["workflows/wf_1"] = {
         "workflow_id": "wf_1", "tenant_id": "eng", "created_at": NOW - timedelta(minutes=10),
-        "updated_at": NOW, "state": TaskState.RUNNING.value, "submitted_by": "alice@saga.xyz",
+        "updated_at": NOW, "state": TaskState.RUNNING.value, "submitted_by": "alice@example.com",
         "steps": [{"step_id": "s1", "runner_profile": "mock", "input": {"prompt": "a"},
                    "depends_on": [], "resource_class": "standard",
                    "input_from": {"s0": "out.txt"}, "timeout_seconds": 900,

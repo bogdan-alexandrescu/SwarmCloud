@@ -194,7 +194,7 @@ COVERED_REWRITES: dict[str, Callable[[dict[str, Any]], None]] = {
     "repository_ref": _set("repository_ref", "attacker-branch"),
     "workflow_id": _set("workflow_id", "wf_other"),
     "step_id": _set("step_id", "fix"),
-    "submitted_by": _set("submitted_by", "mallory@saga.xyz"),
+    "submitted_by": _set("submitted_by", "mallory@example.com"),
     "resource_class": _set("resource_class", "large"),
     "timeout_seconds": _set("timeout_seconds", 99),
     "max_attempts": _set("max_attempts", 9),
@@ -594,7 +594,7 @@ def _browser_doc() -> dict[str, Any]:
         "id": TASK, "tenant_id": TENANT, "runner_profile": "browser",
         "resource_class": profile.resource_class, "timeout_seconds": profile.timeout_seconds,
         "max_attempts": 3, "provider": profile.provider, "input": {"prompt": "p"},
-        "submitted_by": "alice@saga.xyz", "depends_on": [], "metadata": {},
+        "submitted_by": "alice@example.com", "depends_on": [], "metadata": {},
     }
     return spec_keys.sign_document(doc, TASK)
 

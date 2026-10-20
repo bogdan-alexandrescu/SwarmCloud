@@ -2,7 +2,7 @@
 schedule's firing (docs/design/workspace-roles.md §4.1, §4.2.3, §4.2.4, §4.8,
 Q13; lane ROLES-GATES-AUTOMATE, part of #1518).
 
-Who is who, in eng (`eng@saga.xyz`):
+Who is who, in eng (`eng@example.com`):
 
 * `alice` -- a member with no grant: `member`, the migration default;
 * `vera` -- a member a grant narrowed to `viewer`;
@@ -59,8 +59,8 @@ MEMBER_SWITCH = refusals.env_name("role_member_required")
 ADMIN_SWITCH = refusals.env_name("role_admin_required")
 OWNER_SWITCH = refusals.env_name(codeintel.OwnerRequired.code)
 
-ALICE, VERA, WANDA = "alice@saga.xyz", "vera@saga.xyz", "wanda@saga.xyz"
-ROOT, OPS = "root@saga.xyz", "ops@saga.xyz"
+ALICE, VERA, WANDA = "alice@example.com", "vera@example.com", "wanda@example.com"
+ROOT, OPS = "root@example.com", "ops@example.com"
 GROUPS = {
     ALICE: (ENG_GROUP,),
     VERA: (ENG_GROUP,),
@@ -69,7 +69,7 @@ GROUPS = {
     OPS: (ADMIN_GROUP,),
 }
 SCHEDULE = "sch_000000000001"
-REPO = repo_id_for("eng", "saga-xyz", "widgets")
+REPO = repo_id_for("eng", "example-org", "widgets")
 ACCOUNT = "acct-eng-1"
 
 
@@ -128,7 +128,7 @@ def ctx(db, directory, monkeypatch):
         monkeypatch.delenv(refusals.env_name(code), raising=False)
     seed_tenant(db, "eng")
     tokens = {f"token-{e.split('@')[0]}": {"email": e, "email_verified": True,
-                                           "sub": f"sub-{e}", "hd": "saga.xyz"}
+                                           "sub": f"sub-{e}", "hd": "example.com"}
               for e in GROUPS}
     context = build_context(
         settings=api_settings(platform_admin_reach=True, settings_key=secrets.token_hex(32),
@@ -161,7 +161,7 @@ def client(ctx, services) -> TestClient:
 def seeded(db):
     seed_schedule(db)
     db.docs[f"repositories/{REPO}"] = {
-        "repo_id": REPO, "tenant_id": "eng", "owner": "saga-xyz", "repo": "widgets",
+        "repo_id": REPO, "tenant_id": "eng", "owner": "example-org", "repo": "widgets",
         "default_branch": "main", "created_at": NOW, "index": {},
     }
     return db
@@ -196,16 +196,16 @@ WRITES: list[tuple[str, str, str, Any]] = [
     ("schedule resume", "POST", f"/v1/schedules/{SCHEDULE}:resume", None),
     ("schedule take-ownership", "POST", f"/v1/schedules/{SCHEDULE}:take-ownership", None),
     ("schedule run", "POST", f"/v1/schedules/{SCHEDULE}:run", None),
-    ("repository register", "POST", "/v1/repositories", {"repository": "saga-xyz/gadgets"}),
+    ("repository register", "POST", "/v1/repositories", {"repository": "example-org/gadgets"}),
     ("repository patch", "PATCH", f"/v1/repositories/{REPO}", {"paused": True}),
     ("repository delete", "DELETE", f"/v1/repositories/{REPO}", None),
     ("repository index", "POST", f"/v1/repositories/{REPO}/index", None),
     ("repository index:run", "POST", f"/v1/repositories/{REPO}/index:run", None),
-    ("access enable owner", "POST", "/v1/access/orgs", {"owner": "saga-xyz"}),
-    ("access disable owner", "DELETE", "/v1/access/orgs/saga-xyz", None),
-    ("access install request", "POST", "/v1/access/orgs/saga-xyz/install-request", None),
+    ("access enable owner", "POST", "/v1/access/orgs", {"owner": "example-org"}),
+    ("access disable owner", "DELETE", "/v1/access/orgs/example-org", None),
+    ("access install request", "POST", "/v1/access/orgs/example-org/install-request", None),
     ("access grant", "PUT", f"/v1/access/grants/{REPO}",
-     {"repository": "saga-xyz/widgets", "mode": "read"}),
+     {"repository": "example-org/widgets", "mode": "read"}),
     ("access revoke", "DELETE", f"/v1/access/grants/{REPO}", None),
     ("access verify", "POST", f"/v1/access/grants/{REPO}/verify", None),
     ("account register", "POST", "/v1/accounts", "REGISTER"),
@@ -387,7 +387,7 @@ def test_platform_fields_stay_refused_to_a_workspace_admin(client, db, seeded, m
     assert code_of(response) not in ("role_member_required", "role_admin_required")
     assert state(db) == before
     created = client.post("/v1/repositories", headers=h("wanda"),
-                          json={"repository": "saga-xyz/gadgets", field: value})
+                          json={"repository": "example-org/gadgets", field: value})
     assert created.status_code == 403, created.text
     assert state(db) == before
 

@@ -32,8 +32,8 @@ TERRAFORM_GROUPS = (ENG_GROUP,)
 SERVICE = f"ci-bot@{PROJECT}.iam.gserviceaccount.com"
 
 MEMBERS = {
-    "root@saga.xyz": (ADMIN_GROUP,),
-    "alice@saga.xyz": (ENG_GROUP,),
+    "root@example.com": (ADMIN_GROUP,),
+    "alice@example.com": (ENG_GROUP,),
 }
 
 
@@ -86,16 +86,16 @@ def test_a_platform_admin_not_in_a_ready_job_made_group_gets_it_as_reach(db):
 
 def test_a_platform_admin_may_act_in_a_ready_job_made_group(db):
     auth = authenticator(db)
-    assert auth.may_act_in("root@saga.xyz",
+    assert auth.may_act_in("root@example.com",
                            tenant("research", "group", RESEARCH_GROUP)) == "platform_admin"
     # The same answer a Terraform group gets.
-    assert auth.may_act_in("root@saga.xyz", tenant("eng", "group", ENG_GROUP)) == "platform_admin"
+    assert auth.may_act_in("root@example.com", tenant("eng", "group", ENG_GROUP)) == "platform_admin"
 
 
 def test_the_job_made_reach_is_off_with_the_reach_switch(db):
     auth = authenticator(db, reach=False)
     assert auth.authenticate("Bearer t-root").platform_reach == ()
-    assert auth.may_act_in("root@saga.xyz", tenant("research", "group", RESEARCH_GROUP)) == ""
+    assert auth.may_act_in("root@example.com", tenant("research", "group", RESEARCH_GROUP)) == ""
 
 
 # -- a non-admin is not reached in ----------------------------------------------
@@ -108,7 +108,7 @@ def test_a_non_admin_gets_no_reach_into_a_job_made_group(db):
     assert ctx.platform_reach == ()
     with pytest.raises(TenantNotMember):
         auth.authenticate("Bearer t-alice", None, tenant="research")
-    assert auth.may_act_in("alice@saga.xyz", tenant("research", "group", RESEARCH_GROUP)) == ""
+    assert auth.may_act_in("alice@example.com", tenant("research", "group", RESEARCH_GROUP)) == ""
 
 
 # -- a job-made service workspace is never reached --------------------------------
@@ -123,9 +123,9 @@ def test_a_ready_job_made_service_workspace_is_never_reached(db):
     with pytest.raises(TenantNotMember):
         auth.authenticate("Bearer t-root", None, tenant=service_id)
     # Neither as the service tenant it is, nor dressed as a group tenant.
-    assert auth.may_act_in("root@saga.xyz", tenant(service_id, "service", SERVICE)) == ""
-    assert auth.may_act_in("root@saga.xyz", tenant(service_id, "user", SERVICE)) == ""
-    assert auth.may_act_in("root@saga.xyz", tenant(service_id, "group", SERVICE)) == ""
+    assert auth.may_act_in("root@example.com", tenant(service_id, "service", SERVICE)) == ""
+    assert auth.may_act_in("root@example.com", tenant(service_id, "user", SERVICE)) == ""
+    assert auth.may_act_in("root@example.com", tenant(service_id, "group", SERVICE)) == ""
 
 
 # -- a group record that is not ready is in nobody's reach --------------------------
@@ -141,7 +141,7 @@ def test_a_job_made_group_that_is_not_ready_is_not_reached(state):
     assert reach_ids(ctx) == ["eng"]
     with pytest.raises(TenantNotMember):
         auth.authenticate("Bearer t-root", None, tenant="research")
-    assert auth.may_act_in("root@saga.xyz", tenant("research", "group", RESEARCH_GROUP)) == ""
+    assert auth.may_act_in("root@example.com", tenant("research", "group", RESEARCH_GROUP)) == ""
 
 
 # -- the registry decides a job-made group's reach, and only that ----------------
@@ -158,11 +158,11 @@ def test_may_act_in_a_job_made_group_is_503_when_the_registry_cannot_be_read():
 
     auth = authenticator(Down())  # type: ignore[arg-type]
     with pytest.raises(RegistryUnavailable):
-        auth.may_act_in("root@saga.xyz", tenant("research", "group", RESEARCH_GROUP))
+        auth.may_act_in("root@example.com", tenant("research", "group", RESEARCH_GROUP))
 
 
 def test_may_act_in_a_terraform_group_never_waits_on_the_registry():
     auth = authenticator(Down())  # type: ignore[arg-type]
-    assert auth.may_act_in("root@saga.xyz", tenant("eng", "group", ENG_GROUP)) == "platform_admin"
+    assert auth.may_act_in("root@example.com", tenant("eng", "group", ENG_GROUP)) == "platform_admin"
     # A job-made principal under a Terraform tenant's id is not that tenant.
-    assert auth.may_act_in("root@saga.xyz", tenant("eng", "group", RESEARCH_GROUP)) == ""
+    assert auth.may_act_in("root@example.com", tenant("eng", "group", RESEARCH_GROUP)) == ""

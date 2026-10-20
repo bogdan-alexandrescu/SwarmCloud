@@ -63,7 +63,7 @@ def test_the_list_holds_only_my_unfinished_tasks_outside_any_workflow(swarm, api
     child = _dispatch(swarm, label="a child", prompt="lane d")
     created = _workflow(swarm)
     db.docs[f"tasks/{done}"]["state"] = "SUCCEEDED"
-    db.docs[f"tasks/{theirs}"]["submitted_by"] = "bob@saga.xyz"
+    db.docs[f"tasks/{theirs}"]["submitted_by"] = "bob@example.com"
     db.docs[f"tasks/{child}"]["parent_task_id"] = lane
 
     listing = sc.running_tasks(swarm)

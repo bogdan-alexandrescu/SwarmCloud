@@ -110,8 +110,8 @@ def submitted(api_context, monkeypatch):
 
 def _alice() -> AuthContext:
     return AuthContext(
-        principal=Principal(email="alice@saga.xyz", subject="sub-alice@saga.xyz",
-                            domain="saga.xyz", groups=()),
+        principal=Principal(email="alice@example.com", subject="sub-alice@example.com",
+                            domain="example.com", groups=()),
         tenant_id="eng", is_admin=False, tenant_principal=ENG_GROUP,
     )
 

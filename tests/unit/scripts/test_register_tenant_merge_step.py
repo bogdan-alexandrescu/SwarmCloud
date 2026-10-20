@@ -145,7 +145,7 @@ def _tenant_document(credentials: list[str]) -> str:
     fields = {
         "tenant_id": {"stringValue": "eng"},
         "kind": {"stringValue": "group"},
-        "principal": {"stringValue": "eng@saga.xyz"},
+        "principal": {"stringValue": "eng@example.com"},
         "credentials": {"arrayValue": {"values": values} if values else {}},
         "service_account": {"stringValue": WORKER},
     }
@@ -193,6 +193,9 @@ class Fakes:
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
             "SWARM_ENV_FILE": str(env_file),
             "NO_COLOR": "1",
+            # The example principals below are @example.com; the script's own
+            # default domain is the deployment's, so the test names its own.
+            "ALLOWED_DOMAINS": "example.com",
             "TMPDIR": str(self.scratch),
             "FAKE_LOG": str(self.log),
             "FAKE_TENANT_DOC": str(doc_file),
@@ -345,7 +348,7 @@ OLD_BINDING = {
     },
 }
 
-FULL = ["--group", "eng@saga.xyz", "--skip-k8s"]
+FULL = ["--group", "eng@example.com", "--skip-k8s"]
 
 
 # ---------------------------------------------------------------------------

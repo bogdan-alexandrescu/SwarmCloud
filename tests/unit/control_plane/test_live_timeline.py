@@ -105,7 +105,7 @@ def test_the_b6_sequence_is_on_the_timeline_with_who_and_what(client, ldb, live,
         "touch_toggled", "control_returned", "handoff_resolved",
     ]
     by_event = {a["event"]: a for a in served["actions"]}
-    assert by_event["control_taken"]["by"] == "alice@saga.xyz"
+    assert by_event["control_taken"]["by"] == "alice@example.com"
     assert by_event["control_taken"]["you"] is True
     assert by_event["refused"]["cause"] == "insecure_connection"
     assert {k: by_event["device_changed"][k] for k in ("preset", "orientation", "touch")} == {
@@ -124,7 +124,7 @@ def test_another_member_reads_the_name_not_you(client, ldb, live, clock, objects
     _b6(client, ldb, clock, objects)
     served = _timeline(client, "root")
     taken = next(a for a in served["actions"] if a.get("event") == "control_taken")
-    assert taken["by"] == "alice@saga.xyz" and taken["you"] is False
+    assert taken["by"] == "alice@example.com" and taken["you"] is False
 
 
 def test_the_relays_nameless_copy_of_a_take_is_not_shown_twice(client, ldb, live, clock, objects):
@@ -173,7 +173,7 @@ def test_a_device_choice_reads_as_a_change_a_rotation_or_a_toggle():
     at = "2026-10-12T12:48:09+00:00"
 
     def entry(**detail: Any) -> dict[str, Any]:
-        return {"entry": "device_requested", "email": "alice@saga.xyz", "at": at, "detail": detail}
+        return {"entry": "device_requested", "email": "alice@example.com", "at": at, "detail": detail}
 
     # Looked up by name, so the route tests above fail on their own without it.
     lines = live_module.audit_lines([
@@ -183,7 +183,7 @@ def test_a_device_choice_reads_as_a_change_a_rotation_or_a_toggle():
         entry(preset="iphone-15", orientation="portrait", touch=True),
         entry(preset="pixel-8", orientation="landscape", touch=True),
         entry(preset="1440x900", orientation="portrait", touch=None),
-    ], "alice@saga.xyz")
+    ], "alice@example.com")
     assert [x["event"] for x in lines] == [
         "device_changed", "rotated", "touch_toggled", "device_changed", "device_changed"]
     assert lines[2]["orientation"] == "landscape"

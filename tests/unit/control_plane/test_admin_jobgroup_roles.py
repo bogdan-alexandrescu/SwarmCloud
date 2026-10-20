@@ -52,14 +52,14 @@ from .test_roles_store import Clock, Recording
 SERVICE = f"ci-bot@{PROJECT}.iam.gserviceaccount.com"
 SERVICE_ID = tenant_id_for_user(SERVICE)
 GROUPS = {
-    "alice@saga.xyz": (ENG_GROUP,),
-    "bob@saga.xyz": (RESEARCH_GROUP,),
-    "ops@saga.xyz": (ADMIN_GROUP,),
+    "alice@example.com": (ENG_GROUP,),
+    "bob@example.com": (RESEARCH_GROUP,),
+    "ops@example.com": (ADMIN_GROUP,),
 }
 ROUTES = (
     ("GET", "/v1/admin/workspaces/{t}/roles", None),
-    ("PUT", "/v1/admin/workspaces/{t}/roles/person", {"email": "bob@saga.xyz", "role": "admin"}),
-    ("DELETE", "/v1/admin/workspaces/{t}/roles/person", {"email": "bob@saga.xyz"}),
+    ("PUT", "/v1/admin/workspaces/{t}/roles/person", {"email": "bob@example.com", "role": "admin"}),
+    ("DELETE", "/v1/admin/workspaces/{t}/roles/person", {"email": "bob@example.com"}),
     ("PUT", "/v1/admin/workspaces/{t}/roles/default", {"role": "viewer"}),
 )
 
@@ -77,14 +77,14 @@ def db() -> Recording:
         "workspace_id": "w-0000c1", "ready_at": ready})
     # None of these registers a group workspace a platform admin may reach.
     db.document("workspaces/sales").set({
-        "kind": "group", "principal": "sales@saga.xyz", "state": "applying",
+        "kind": "group", "principal": "sales@example.com", "state": "applying",
         "workspace_id": "w-0000c2", "ready_at": None})
     db.document(f"workspaces/{SERVICE_ID}").set({
         "kind": "service", "principal": SERVICE, "state": "ready",
         "workspace_id": "w-0000c3", "ready_at": ready,
         "service": {"unique_id": "s-" + secrets.token_hex(4)}})
     db.document("workspaces/u-carol").set({
-        "kind": "personal", "principal": "carol@saga.xyz", "state": "ready"})
+        "kind": "personal", "principal": "carol@example.com", "state": "ready"})
     return db
 
 
@@ -96,7 +96,7 @@ def clock() -> Clock:
 @pytest.fixture
 def app_ctx(db, clock):
     tokens = {f"token-{e.split('@')[0]}": {"email": e, "email_verified": True,
-                                           "sub": f"sub-{e}", "hd": "saga.xyz"}
+                                           "sub": f"sub-{e}", "hd": "example.com"}
               for e in GROUPS}
     return build_context(
         settings=api_settings(tenant_groups=(ENG_GROUP,), settings_key=secrets.token_hex(32)),
@@ -133,30 +133,30 @@ def test_the_accessor_is_terraform_groups_then_ready_job_made_groups(app_ctx):
 def test_a_platform_admin_names_a_job_made_groups_first_admin(client, app_ctx, db):
     # MUTATION: `_registered` reading `TENANT_GROUPS` alone, and this is 404.
     response = call(client, "PUT", "/v1/admin/workspaces/research/roles/person",
-                    {"email": "bob@saga.xyz", "role": "admin", "reason": "first admin"})
+                    {"email": "bob@example.com", "role": "admin", "reason": "first admin"})
     assert response.status_code == 200, response.text
     assert response.json() | {"granted_at": None} == {
-        "email": "bob@saga.xyz", "role": "admin", "previous_role": "member",
+        "email": "bob@example.com", "role": "admin", "previous_role": "member",
         "source": "override", "granted_at": None, "member": True}
 
     [row] = audit_rows(db, roles.AUDIT_GRANTED)
     assert row["target_tenant_id"] == "research"
-    assert row["target_email"] == "bob@saga.xyz"
-    assert row["by"] == "ops@saga.xyz"
+    assert row["target_email"] == "bob@example.com"
+    assert row["by"] == "ops@example.com"
     assert row["detail"]["via"] == roles.VIA_PLATFORM_ADMIN
     [doc] = grants(db)
     assert (doc["tenant_id"], doc["subject"], doc["role"], doc["via"]) == (
-        "research", "bob@saga.xyz", "admin", roles.VIA_PLATFORM_ADMIN)
+        "research", "bob@example.com", "admin", roles.VIA_PLATFORM_ADMIN)
     # Signed exactly as a Terraform group's grant: the gates take it.
-    assert app_ctx.roles.person_role("research", "bob@saga.xyz", fresh=True).role == "admin"
+    assert app_ctx.roles.person_role("research", "bob@example.com", fresh=True).role == "admin"
 
     read = call(client, "GET", "/v1/admin/workspaces/research/roles", None)
     assert read.status_code == 200, read.text
-    assert {p["email"]: p["role"] for p in read.json()["people"]} == {"bob@saga.xyz": "admin"}
+    assert {p["email"]: p["role"] for p in read.json()["people"]} == {"bob@example.com": "admin"}
 
     # The same write again is the same refusal a Terraform group gives.
     again = call(client, "PUT", "/v1/admin/workspaces/research/roles/person",
-                 {"email": "bob@saga.xyz", "role": "admin"})
+                 {"email": "bob@example.com", "role": "admin"})
     assert again.status_code == 409, again.text
     assert again.json()["code"] == "role_unchanged"
 
@@ -180,17 +180,17 @@ def test_a_job_made_groups_default_role_can_be_set(client, app_ctx, db):
 
 def test_a_job_made_groups_override_can_be_cleared(client, app_ctx, db, clock):
     put = call(client, "PUT", "/v1/admin/workspaces/research/roles/person",
-               {"email": "bob@saga.xyz", "role": "viewer"})
+               {"email": "bob@example.com", "role": "viewer"})
     assert put.status_code == 200, put.text
     clock.tick(seconds=1)
     cleared = call(client, "DELETE", "/v1/admin/workspaces/research/roles/person",
-                   {"email": "bob@saga.xyz"})
+                   {"email": "bob@example.com"})
     assert cleared.status_code == 200, cleared.text
     assert (cleared.json()["role"], cleared.json()["previous_role"]) == ("member", "viewer")
     [row] = audit_rows(db, roles.AUDIT_CLEARED)
     assert row["target_tenant_id"] == "research"
     assert row["detail"]["via"] == roles.VIA_PLATFORM_ADMIN
-    assert app_ctx.roles.person_role("research", "bob@saga.xyz", fresh=True).role == "member"
+    assert app_ctx.roles.person_role("research", "bob@example.com", fresh=True).role == "member"
 
 
 @pytest.mark.parametrize("tenant_id", [SERVICE_ID, "sales", "u-carol", "nope"])
@@ -215,10 +215,10 @@ def test_a_non_admin_is_403_on_a_job_made_group_and_writes_nothing(
 
 def test_a_platform_admin_reads_a_persons_roles_in_a_job_made_group(client):
     put = call(client, "PUT", "/v1/admin/workspaces/research/roles/person",
-               {"email": "bob@saga.xyz", "role": "admin"})
+               {"email": "bob@example.com", "role": "admin"})
     assert put.status_code == 200, put.text
     response = client.get("/v1/admin/roles/person", headers=h("ops"),
-                          params={"email": "bob@saga.xyz"})
+                          params={"email": "bob@example.com"})
     assert response.status_code == 200, response.text
     assert [(w["tenant_id"], w["group"], w["role"]) for w in response.json()["workspaces"]] == [
         ("research", RESEARCH_GROUP, "admin")]
@@ -238,7 +238,7 @@ def test_no_route_builds_a_registry_per_request(client, app_ctx, monkeypatch):
         response = call(client, method, path.format(t="research"), body)
         assert response.status_code in (200, 409), (method, path, response.text)
     person = client.get("/v1/admin/roles/person", headers=h("ops"),
-                        params={"email": "bob@saga.xyz"})
+                        params={"email": "bob@example.com"})
     assert person.status_code == 200, person.text
 
 
@@ -267,6 +267,6 @@ def test_a_job_made_id_another_principal_already_holds_is_409_and_writes_nothing
     db.document("tenants/research").set({"tenant_id": "research",
                                          "principal": "research@partner.com", "kind": "group"})
     response = call(client, "PUT", "/v1/admin/workspaces/research/roles/person",
-                    {"email": "bob@saga.xyz", "role": "admin"})
+                    {"email": "bob@example.com", "role": "admin"})
     assert response.status_code == 409, response.text
     assert grants(db) == []

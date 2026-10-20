@@ -8,7 +8,7 @@ Two stored settings decide it (owner decisions, 2026-10-14):
   opt a repository in when its workspace has not: the opt-in is the
   workspace admin's decision about what leaves the platform, and a
   repository setting is not that admin's.
-* **The judgment backend** (lane JUDGE-SELECT): `internal-jev` (the Saga
+* **The judgment backend** (lane JUDGE-SELECT): `internal-jev` (the internal
   decision API over the tailnet, the default), `internal-laya`, or
   `typesafe`. The Internal backends take no credential at all; TypeSafe takes
   the workspace's key.

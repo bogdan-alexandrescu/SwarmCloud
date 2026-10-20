@@ -27,7 +27,7 @@ from swarm_api import gitidentity as api_gitidentity
 
 from worker_seeds import seed_attempt, seed_tenant
 
-ALICE = "alice@saga.xyz"
+ALICE = "alice@example.com"
 FIXER = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
 
 
@@ -60,7 +60,7 @@ def test_a_task_with_no_recorded_name_commits_as_the_submitters_local_part():
 
 def test_a_record_naming_someone_other_than_the_signed_submitter_is_not_used():
     # The record is outside the signature; the submitter is inside it.
-    task = _task(ALICE, {"name": "Mallory", "email": "mallory@saga.xyz"})
+    task = _task(ALICE, {"name": "Mallory", "email": "mallory@example.com"})
     assert commit_identity(task) == ("alice", ALICE)
 
 
@@ -89,10 +89,10 @@ def test_a_name_git_would_refuse_is_cleaned():
 def test_input_or_caller_metadata_naming_an_identity_is_ignored():
     task = _task(
         ALICE, {"name": "Alice Example", "email": ALICE},
-        GIT_AUTHOR_NAME="Mallory", git_author_email="mallory@saga.xyz",
+        GIT_AUTHOR_NAME="Mallory", git_author_email="mallory@example.com",
     )
     # A caller's own top-level metadata key: swarm-api stores it, nothing reads it.
-    task["metadata"]["git_identity"] = {"name": "Mallory", "email": "mallory@saga.xyz"}
+    task["metadata"]["git_identity"] = {"name": "Mallory", "email": "mallory@example.com"}
     assert commit_identity(task) == ("Alice Example", ALICE)
 
 

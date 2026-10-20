@@ -58,9 +58,9 @@ pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is requir
 
 PROJECT = "saga-agents-staging"
 WORKSPACE = "w-3f9a2c"
-PRINCIPAL = "alice@saga.xyz"
+PRINCIPAL = "alice@example.com"
 TENANT = "u-alice"
-ADMIN = "root@saga.xyz"
+ADMIN = "root@example.com"
 WORKER = f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com"
 SCHEDULER = f"swarm-scheduler@{PROJECT}.iam.gserviceaccount.com"
 RECONCILER = f"swarm-reconciler@{PROJECT}.iam.gserviceaccount.com"
@@ -136,7 +136,7 @@ for rule in world.get("fail", []):
 service = flags.get("--service", "")
 policies = world.setdefault("iap", {})
 policy = policies.setdefault(service, {"version": 1, "etag": "BwX=", "bindings": [
-    {"role": "roles/iap.httpsResourceAccessor", "members": ["domain:saga.xyz"]}]})
+    {"role": "roles/iap.httpsResourceAccessor", "members": ["domain:example.com"]}]})
 if pos[2] == "add-iam-policy-binding":
     for binding in policy["bindings"]:
         if binding["role"] == flags["--role"] and "condition" not in binding:
@@ -1042,7 +1042,7 @@ def _job_made(world: dict) -> None:
 # `managed_by`, `credentials` and `display_name` included.
 def _terraform_era_tenant(fields: dict) -> None:
     fields.pop("namespace")
-    fields.update(max_active={"doubleValue": 8.0}, capacity_units=_s("8"), principal=_s(" Alice@Saga.xyz "))
+    fields.update(max_active={"doubleValue": 8.0}, capacity_units=_s("8"), principal=_s(" Alice@Example.com "))
 
 
 def _terraform_era_pool(fields: dict) -> None:
@@ -1083,7 +1083,7 @@ def test_verify_refuses_terraforms_documents_on_a_job_made_record(
 
 
 def _mismatched_tenant(fields: dict) -> None:
-    fields.update(principal=_s("mallory@saga.xyz"), service_account=_s(SCHEDULER),
+    fields.update(principal=_s("mallory@example.com"), service_account=_s(SCHEDULER),
                   namespace=_s("swarm-tenant-eng"), max_active={"integerValue": "9"})
 
 
@@ -1143,10 +1143,10 @@ def test_verify_fails_a_missing_document_on_every_record(
 @pytest.mark.parametrize("change,needle", [
     (lambda f: f.update(state=_s("requested")), "WORKSPACE_NOT_APPROVED"),
     (lambda f: f.update(state=_s("denied")), "WORKSPACE_NOT_APPROVED"),
-    (lambda f: f["decision"]["mapValue"]["fields"].update(by=_s("mallory@saga.xyz")), "not an admin"),
+    (lambda f: f["decision"]["mapValue"]["fields"].update(by=_s("mallory@example.com")), "not an admin"),
     (lambda f: f["decision"]["mapValue"]["fields"].update(verdict=_s("denied")), "WORKSPACE_NOT_APPROVED"),
     (lambda f: f.update(tenant_id=_s("u-bob")), "WORKSPACE_ID_TAKEN"),
-    (lambda f: f.update(principal=_s("bob@saga.xyz")), "WORKSPACE_ID_TAKEN"),
+    (lambda f: f.update(principal=_s("bob@example.com")), "WORKSPACE_ID_TAKEN"),
 ], ids=["requested", "denied", "approver-not-admin", "verdict-denied", "tenant-edited", "principal-edited"])
 def test_a1_writes_nothing_for_a_record_it_must_not_run(job: Job, change, needle: str) -> None:
     job.edit(lambda w: change(w["firestore"][f"workspaces/{TENANT}"]["fields"]))
@@ -1231,7 +1231,7 @@ def test_it_refuses_an_expectation_for_another_workspace(job: Job) -> None:
 
 
 @pytest.mark.parametrize("extra", [
-    ["--user", PRINCIPAL], ["--group", "eng@saga.xyz"], ["--tenant", TENANT], ["--providers", "anthropic"],
+    ["--user", PRINCIPAL], ["--group", "eng@example.com"], ["--tenant", TENANT], ["--providers", "anthropic"],
     ["--max-active", "40"], ["--add-provider", "git"], ["--dry-run"], ["--skip-k8s"],
 ])
 def test_operator_flags_are_refused_beside_workspace(job: Job, extra: list[str]) -> None:
@@ -1374,7 +1374,7 @@ OWNER = json.loads(RULES_FILE.read_text()).get("platform_owner", {}).get(PROJECT
 FRONT_DOOR = json.loads(RULES_FILE.read_text()).get("front_door_backend", "")
 ACCESSOR = "roles/iap.httpsResourceAccessor"
 
-GROUP = "research@saga.xyz"
+GROUP = "research@example.com"
 G_TENANT = "research"
 G_WORKER = f"swarm-agent-worker-{G_TENANT}@{PROJECT}.iam.gserviceaccount.com"
 G_NAMESPACE = f"swarm-tenant-{G_TENANT}"
@@ -1515,7 +1515,7 @@ def test_a_service_is_admitted_on_the_api_backend_only_and_its_account_is_never_
     assert set(world.get("iap", {})) == {FRONT_DOOR}, sorted(world.get("iap", {}))
     assert FRONT_DOOR == "swarm-ui-backend" and not FRONT_DOOR.endswith("-ui-ui-backend")
     policy = world["iap"][FRONT_DOOR]
-    assert _members(policy, ACCESSOR) == {"domain:saga.xyz", f"serviceAccount:{SERVICE}"}
+    assert _members(policy, ACCESSOR) == {"domain:example.com", f"serviceAccount:{SERVICE}"}
     assert {b["role"] for b in policy["bindings"]} == {ACCESSOR}
     adds = [a for a in _gcloud_calls(world) if a[:3] == ["iap", "web", "add-iam-policy-binding"]]
     assert adds == [["iap", "web", "add-iam-policy-binding", "--project", PROJECT,
@@ -1732,9 +1732,9 @@ def test_a1_refuses_a_group_whose_tenant_is_someone_elses_before_any_write(job: 
 
 def test_a1_refuses_a_service_whose_id_is_a_persons(job: Job) -> None:
     """`bogdan@<project>.iam.gserviceaccount.com` derives `u-bogdan`, the id
-    of bogdan@saga.xyz's personal workspace: never adopted."""
+    of bogdan@example.com's personal workspace: never adopted."""
     world = _service_world()
-    world["firestore"][f"tenants/{S_TENANT}"] = _tenant_doc("someone@saga.xyz", "user")
+    world["firestore"][f"tenants/{S_TENANT}"] = _tenant_doc("someone@example.com", "user")
     job.write(world)
     proc = job.create()
     out = _out(proc)
@@ -1864,8 +1864,8 @@ def test_the_terraform_tenants_pinned_in_the_image_are_each_environments() -> No
 
 
 @pytest.mark.parametrize("kind,principal,tenant", [
-    ("group", "eng@saga.xyz", "eng"),
-    ("group", "smoke@saga.xyz", "smoke"),
+    ("group", "eng@example.com", "eng"),
+    ("group", "smoke@example.com", "smoke"),
     ("service", f"oracle-api@{PROJECT}.iam.gserviceaccount.com", "u-or-9a0792"),
 ], ids=["eng", "smoke", "u-or-9a0792"])
 def test_the_guard_writes_no_expectation_for_a_terraform_tenant(job: Job, tmp_path: Path, kind: str,

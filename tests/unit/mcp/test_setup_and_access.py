@@ -407,7 +407,7 @@ def test_the_repo_id_recipe_is_swarm_apis():
     """The access routes take the id; this restates swarm-api's recipe. The
     API refuses a wrong one, but a drift is better caught here."""
     repositories = pytest.importorskip("swarm_api.repositories")
-    for name in ("example-user/example-api", "Saga/Widgets"):
+    for name in ("example-user/example-api", "Example-Org/Widgets"):
         owner, repo = name.split("/")
         assert sc.repo_id_for("eng", name) == repositories.repo_id_for("eng", owner, repo)
 

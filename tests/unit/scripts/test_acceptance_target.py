@@ -481,7 +481,7 @@ def test_the_smoke_tenant_is_a_directory_group_whose_principal_slugs_to_smoke():
     # registered directory groups the caller is a confirmed member of fill.
     assert smoke["directory_group"].strip() == "true"
     # The header selects by the id swarm_common.identity derives from the
-    # principal. `swarm-smoke@saga.xyz` derived `swarm-smoke`, which is not
+    # principal. `swarm-smoke@example.com` derived `swarm-smoke`, which is not
     # this tenant.
     assert tenant_id_for_group(_unquote(smoke["principal"])) == "smoke"
 

@@ -17,7 +17,7 @@ variables {
       max_instances         = 20
       cpu                   = "1"
       memory                = "1Gi"
-      invokers              = { eng = "group:eng@saga.xyz" }
+      invokers              = { eng = "group:eng@example.com" }
     }
     "swarm-scheduler" = {
       service_account_email = "swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
@@ -186,7 +186,7 @@ run "a_public_invoker_is_accepted_only_while_ingress_is_restricted" {
   # a layer here, it removes the only one that can identify a tenant.
   #
   # What authenticates a caller is swarm_api.auth: Google ID token signature,
-  # email_verified, the saga.xyz hosted domain, and Cloud Identity group
+  # email_verified, the example.com hosted domain, and Cloud Identity group
   # membership. What keeps the service off the internet is ingress, which this
   # module pins to internal and refuses to set to INGRESS_TRAFFIC_ALL.
   variables {

@@ -384,7 +384,7 @@ class SchedulerSettings:
     #: Default False: off until the owner has seen it on a real PR (owner
     #: decision, 2026-10-01).
     pr_console_links: bool = False
-    #: Saga's decision API through the cluster's Tailscale egress Service
+    #: The internal decision API through the cluster's Tailscale egress Service
     #: (INTERNAL_DECISION_API_URL; JUDGE-NET's switch, terraform
     #: `internal_decision_api_enabled`). Set, a live-browser pod whose
     #: workspace chose an internal judgment backend gets JEV_API_URL under it

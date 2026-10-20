@@ -31,7 +31,7 @@ def _task(**overrides) -> Task:
         runner_profile="claude-code",
         resource_class="standard",
         input={"prompt": "x"},
-        submitted_by="alice@saga.xyz",
+        submitted_by="alice@example.com",
     )
     fields.update(overrides)
     return Task(**fields)
@@ -49,7 +49,7 @@ def test_both_default_to_none_and_a_task_without_them_signs_at_its_old_format():
 def test_a_provider_suffix_is_accepted_and_names_the_tasks_own_tenants_secret(suffix):
     task = _task(forge_credential=suffix, forge_access="read")
     tenant = Tenant(
-        tenant_id=task.tenant_id, kind="group", principal="eng@saga.xyz",
+        tenant_id=task.tenant_id, kind="group", principal="eng@example.com",
         created_at=task.created_at,
     )
     assert tenant.secret_name(task.forge_credential) == f"swarm-tenant-eng-{suffix}"

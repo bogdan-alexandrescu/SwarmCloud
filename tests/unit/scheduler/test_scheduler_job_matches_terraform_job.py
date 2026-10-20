@@ -64,7 +64,7 @@ def _tenant() -> Tenant:
     return Tenant(
         tenant_id="u-alice",
         kind="user",
-        principal="alice@saga.xyz",
+        principal="alice@example.com",
         created_at=NOW,
         service_account=f"swarm-agent-worker-u-alice@{PROJECT}.iam.gserviceaccount.com",
         gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/u-alice",

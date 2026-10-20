@@ -42,7 +42,7 @@ TOKEN_SHAPES = re.compile(
     r"(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN)"
 )
 
-REPO = repo_id_for("eng", "saga-xyz/widgets")
+REPO = repo_id_for("eng", "example-org/widgets")
 REPO_HEX = REPO.removeprefix("repo_")
 
 
@@ -61,16 +61,16 @@ def eng_with_git(db):
 
 
 def test_repo_id_is_repo_index_section_1() -> None:
-    digest = hashlib.sha256(b"eng" + b"github.com/" + b"saga-xyz/widgets").hexdigest()
+    digest = hashlib.sha256(b"eng" + b"github.com/" + b"example-org/widgets").hexdigest()
     assert REPO == "repo_" + digest[:16]
-    assert repo_id_for("eng", "Saga-XYZ/Widgets") == REPO
+    assert repo_id_for("eng", "Example-Org/Widgets") == REPO
 
 
 def test_provider_suffixes_follow_section_2() -> None:
     assert provider_suffix("tenant") == "git"
     assert provider_suffix("repository", repo_id=REPO) == "git-r-" + REPO_HEX
-    email_hex = hashlib.sha256(b"alice@saga.xyz").hexdigest()[:16]
-    assert provider_suffix("user", user="Alice@Saga.xyz") == "git-u-" + email_hex
+    email_hex = hashlib.sha256(b"alice@example.com").hexdigest()[:16]
+    assert provider_suffix("user", user="Alice@Example.com") == "git-u-" + email_hex
 
 
 def test_token_id_is_deterministic_per_slot() -> None:
@@ -128,14 +128,14 @@ def test_registering_a_repository_slot_answers_its_command(client, eng_with_git)
     assert record["scope"] == "repository"
     assert record["repo_ids"] == [REPO]
     assert record["secret_name"] == f"swarm-tenant-eng-git-r-{REPO_HEX}"
-    assert record["registered_by"] == "root@saga.xyz"
+    assert record["registered_by"] == "root@example.com"
     assert record["state"] == "unverified"
     assert body["store_command"] == (
         f"scripts/create-secrets.sh --tenant eng --provider git-r-{REPO_HEX} --stdin"
     )
     # Idempotent on the slot.
     again = client.post(
-        "/v1/git-tokens", json={"scope": "repository", "repository": "saga-xyz/widgets"},
+        "/v1/git-tokens", json={"scope": "repository", "repository": "example-org/widgets"},
         headers=auth_header("root"),
     )
     assert again.status_code == 200, again.text
@@ -156,13 +156,13 @@ def test_a_user_slot_is_always_the_callers_own(client, eng_with_git) -> None:
     )
     assert response.status_code == 201, response.text
     record = response.json()["token"]
-    assert record["user"] == "alice@saga.xyz"
-    email_hex = hashlib.sha256(b"alice@saga.xyz").hexdigest()[:16]
+    assert record["user"] == "alice@example.com"
+    email_hex = hashlib.sha256(b"alice@example.com").hexdigest()[:16]
     assert record["secret_name"] == f"swarm-tenant-eng-git-u-{email_hex}"
     # The email is hashed in the secret's name, never spelled.
     assert "alice" not in record["secret_name"]
     refused = client.post(
-        "/v1/git-tokens", json={"scope": "user", "user": "bob@saga.xyz"},
+        "/v1/git-tokens", json={"scope": "user", "user": "bob@example.com"},
         headers=auth_header("alice"),
     )
     assert refused.status_code == 422, refused.text
@@ -173,7 +173,7 @@ def test_a_repository_slot_needs_a_well_formed_repository(client, eng_with_git) 
         {"scope": "repository"},
         {"scope": "repository", "repo_id": "repo_xyz"},
         {"scope": "repository", "repository": "not a repo"},
-        {"scope": "repository", "repo_id": REPO, "repository": "saga-xyz/widgets"},
+        {"scope": "repository", "repo_id": REPO, "repository": "example-org/widgets"},
         {"scope": "tenant", "repo_id": REPO},
         {"scope": "everything"},
     ):

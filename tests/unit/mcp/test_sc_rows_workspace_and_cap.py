@@ -15,7 +15,7 @@ workflow or task line in the details". Held here:
   that lists or ends a workflow or task names it at its END
   (` · workspace: <workspace>`) -- read off the API's workflow and task
   documents (`tenant_id`), never off the session's configured tenant. Since
-  SC-DESC-DETAILS (owner 2026-10-14: no `[Engineering]` or `[eng@saga.xyz]`
+  SC-DESC-DETAILS (owner 2026-10-14: no `[Engineering]` or `[eng@example.com]`
   in front of any name) no title or row label carries `[<workspace>]`: the
   run's description and each row's details line lead with it instead
   (test_sc_desc_details).

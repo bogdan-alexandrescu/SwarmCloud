@@ -39,7 +39,7 @@ from .conftest import seed_pool, seed_task, seed_tenant
 TENANT = "eng"
 OTHER = "research"
 PERSON = "Ada@Example.com"
-REPOSITORY = "Saga/Widgets"
+REPOSITORY = "Example-Org/Widgets"
 URL = f"https://github.com/{REPOSITORY}.git"
 
 
@@ -377,7 +377,7 @@ def test_credential_for_parks_a_user_slot_on_refresh_failed_and_never_git(db, st
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("email", ["ada@example.com", "  Ada@Example.COM ", "x+y@saga.xyz"])
+@pytest.mark.parametrize("email", ["ada@example.com", "  Ada@Example.COM ", "x+y@example.com"])
 def test_the_user_and_connection_ids_are_swarm_apis(email):
     assert credentials.user_hash(email) == forgeapp.user_hash(email)
     assert credentials.connection_id_for(TENANT, email) == forgeapp.connection_id_for(
@@ -397,14 +397,14 @@ def test_the_user_slot_hash_is_swarm_apis(db, email):
 @pytest.mark.parametrize(
     "url",
     [
-        "https://github.com/Saga/Widgets",
-        "https://github.com/saga/widgets.git",
-        "https://www.github.com/saga/widgets/",
-        "git@github.com:Saga/Widgets.git",
-        "https://github.com:8443/saga/widgets",
-        "https://github.com/saga",
-        "https://github.com/saga/widgets/tree/main",
-        "https://gitlab.com/saga/widgets",
+        "https://github.com/Example-Org/Widgets",
+        "https://github.com/example-org/widgets.git",
+        "https://www.github.com/example-org/widgets/",
+        "git@github.com:Example-Org/Widgets.git",
+        "https://github.com:8443/example-org/widgets",
+        "https://github.com/example-org",
+        "https://github.com/example-org/widgets/tree/main",
+        "https://gitlab.com/example-org/widgets",
         "not a url",
         "",
         None,

@@ -27,8 +27,8 @@ from swarm_api.gittokens import (
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
 REPO = "repo_" + "a" * 16
 OTHER_REPO = "repo_" + "b" * 16
-ALICE = "alice@saga.xyz"
-BOB = "bob@saga.xyz"
+ALICE = "alice@example.com"
+BOB = "bob@example.com"
 
 
 def rec(scope: Scope, *, tenant: str = "eng", repo_id: str | None = None,
@@ -37,7 +37,7 @@ def rec(scope: Scope, *, tenant: str = "eng", repo_id: str | None = None,
         expires_at: datetime | None = None) -> GitTokenRecord:
     record = record_for_slot(
         tenant, scope, repo_id=repo_id, user=user, repo_ids=repo_ids,
-        registered_by="root@saga.xyz", now=NOW - timedelta(days=1),
+        registered_by="root@example.com", now=NOW - timedelta(days=1),
     )
     record.state = state
     record.expires_at = expires_at
@@ -99,7 +99,7 @@ def test_a_user_token_narrowed_to_other_repositories_does_not_author() -> None:
 
 def test_user_match_ignores_case() -> None:
     got = resolve_r2([TENANT, ALICE_TOKEN], tenant_id="eng", repo_id=REPO,
-                     user="Alice@Saga.xyz", now=NOW)
+                     user="Alice@Example.com", now=NOW)
     assert got.author is ALICE_TOKEN
 
 

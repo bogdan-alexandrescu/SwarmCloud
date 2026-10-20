@@ -120,8 +120,8 @@ def test_an_admins_price_change_prices_the_next_estimate_with_no_deploy(client, 
     assert response.status_code == 200, response.text
     haiku = response.json()["model_prices"]["claude-haiku-4-5"]
     assert haiku["input"] == 2.0 and haiku["source"] == "console"
-    assert haiku["updated_by"] == "root@saga.xyz"
-    assert response.json()["updated_by"] == "root@saga.xyz"
+    assert haiku["updated_by"] == "root@example.com"
+    assert response.json()["updated_by"] == "root@example.com"
     # Every other seeded model is kept as it was.
     assert response.json()["model_prices"]["claude-opus-5-5"]["source"] == "code"
     after = _estimate(worker_client, attempt, {"claude-haiku-4-5": USAGE}).json()["cost_usd"]

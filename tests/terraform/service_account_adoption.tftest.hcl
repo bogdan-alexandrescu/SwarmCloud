@@ -102,7 +102,7 @@ run "the_tenant_worker_is_adopted_because_register_tenant_creates_it_first" {
     tenants = {
       eng = {
         kind      = "group"
-        principal = "eng@saga.xyz"
+        principal = "eng@example.com"
         providers = []
       }
     }

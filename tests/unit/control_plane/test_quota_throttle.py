@@ -341,7 +341,7 @@ def test_the_first_rate_limited_answer_stops_the_wake_until_the_reset(db, wake, 
 def _gate(db, task_id: str, number: int) -> dict:
     doc = seed_task(db, task_id=task_id, tenant_id="eng", state="PARKED",
                     park_reason=ParkReason.DEPENDENCY_INCOMPLETE.value)
-    doc["repository_url"] = "https://github.com/saga-xyz/widgets"
+    doc["repository_url"] = "https://github.com/example-org/widgets"
     doc["metadata"] = {prgate.AFTER_PRS_METADATA_KEY: {
         "pull_requests": [number], "merged": [], "state": prgate.STATE_WAITING}}
     return doc
@@ -440,7 +440,7 @@ def test_an_admins_redrive_is_never_deferred(db, stranded):
 # --------------------------------------------------------------------------
 
 def _tenant() -> Tenant:
-    return Tenant(tenant_id="eng", kind="group", principal="eng@saga.xyz",
+    return Tenant(tenant_id="eng", kind="group", principal="eng@example.com",
                   created_at=datetime.now(timezone.utc))
 
 

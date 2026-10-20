@@ -84,14 +84,14 @@ class World:
             verifier=StaticTokenVerifier(
                 {
                     "token-alice": {
-                        "email": "alice@saga.xyz",
+                        "email": "alice@example.com",
                         "email_verified": True,
                         "sub": "sub-alice",
-                        "hd": "saga.xyz",
+                        "hd": "example.com",
                     }
                 }
             ),
-            groups=StaticGroups({"alice@saga.xyz": (f"{TENANT}@saga.xyz",)}),
+            groups=StaticGroups({"alice@example.com": (f"{TENANT}@example.com",)}),
             credentials=InMemoryCredentials(),
             waker=NullWaker(),
             metrics=ApiMetrics(),
@@ -701,7 +701,7 @@ def _legacy_request(world: World, task_id: str) -> None:
         "attempt_id": None,
         "lease_id": None,
         "generation": None,
-        "detail": {"requested_by": "alice@saga.xyz", "from_state": "DISPATCHED",
+        "detail": {"requested_by": "alice@example.com", "from_state": "DISPATCHED",
                    "phase": "cancel_requested"},
     }
 

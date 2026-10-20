@@ -44,11 +44,11 @@ from .repo_fakes import GitHubRepos, TenantTokens, make_client
 from .test_git_token_probe import ProbeForge, Slots, classic_value, fine_grained_value
 
 T0 = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
-OWNER_REPO = "saga-xyz/widgets"
+OWNER_REPO = "example-org/widgets"
 REPO = repo_id_for("eng", OWNER_REPO)
 
 #: GitHub's own sentence for an org that forbids classic tokens.
-CLASSIC_MESSAGE = ("`saga-xyz` forbids access via a personal access token (classic). Please use "
+CLASSIC_MESSAGE = ("`example-org` forbids access via a personal access token (classic). Please use "
                    "a GitHub App, OAuth App, or a personal access token with fine-grained "
                    "permissions.")
 
@@ -68,9 +68,9 @@ def run(value: str, fake: ProbeForge):
 
 
 def test_the_sso_header_is_parsed_without_its_request_part() -> None:
-    header, request = sso_required("saga-xyz")
+    header, request = sso_required("example-org")
     parsed = parse_sso_header(header)
-    assert parsed == {"mode": "required", "org": "saga-xyz", "organization_ids": []}
+    assert parsed == {"mode": "required", "org": "example-org", "organization_ids": []}
     assert request not in json.dumps(parsed)
     assert parse_sso_header("partial-results; organizations=21955855,20582480") == {
         "mode": "partial", "org": None, "organization_ids": [20582480, 21955855]}
@@ -83,15 +83,15 @@ def test_the_sso_header_is_parsed_without_its_request_part() -> None:
 
 
 def test_the_probe_records_an_sso_required_answer_and_never_its_url() -> None:
-    header, request = sso_required("saga-xyz")
+    header, request = sso_required("example-org")
     fake = ProbeForge(status={"repo": 403}, headers={"repo": {"x-github-sso": header}})
     result = run(classic_value(), fake)
-    assert result.sso_required_orgs == ["saga-xyz"]
+    assert result.sso_required_orgs == ["example-org"]
     assert request not in repr(result)
 
 
 def test_the_probe_records_partial_sso_org_ids() -> None:
-    fake = ProbeForge(orgs=["saga-xyz"],
+    fake = ProbeForge(orgs=["example-org"],
                       headers={"orgs": {"x-github-sso": "partial-results; organizations=7,3"}})
     result = run(fine_grained_value(), fake)
     assert result.sso_partial_org_ids == [3, 7]
@@ -122,7 +122,7 @@ def test_an_unanswered_org_read_is_not_an_empty_list() -> None:
 def test_the_probe_records_an_org_that_refuses_classic_tokens() -> None:
     fake = ProbeForge(status={"repo": 403}, body={"repo": {"message": CLASSIC_MESSAGE}})
     result = run(classic_value(), fake)
-    assert result.classic_blocked_orgs == ["saga-xyz"]
+    assert result.classic_blocked_orgs == ["example-org"]
     plain = run(classic_value(), ProbeForge(status={"repo": 403}))
     assert plain.classic_blocked_orgs == []
 
@@ -140,20 +140,20 @@ def test_the_evidence_is_stored_on_the_record_and_served(db, registry) -> None:
     registry.ensure_tenant_default(tenant)
     slots = Slots()
     slots.put("swarm-tenant-eng-git", classic_value())
-    header, request = sso_required("saga-xyz")
+    header, request = sso_required("example-org")
     fake = ProbeForge(status={"repo": 403}, headers={"repo": {"x-github-sso": header}},
-                      orgs=["Saga-Personal", "other-org"])
+                      orgs=["Example-Personal", "other-org"])
     token_id = token_id_for("eng", Scope.TENANT, "")
     stored, _ = registry.probe(tenant, "eng", token_id, tokens=slots, send=fake,
                                repository=OWNER_REPO)
-    assert stored.sso_required_orgs == ["saga-xyz"]
-    assert stored.orgs == ["Saga-Personal", "other-org"]
+    assert stored.sso_required_orgs == ["example-org"]
+    assert stored.orgs == ["Example-Personal", "other-org"]
     doc = db.docs[f"{COLLECTION}/{token_id}"]
-    assert doc["sso_required_orgs"] == ["saga-xyz"] and doc["orgs"] == ["Saga-Personal", "other-org"]
+    assert doc["sso_required_orgs"] == ["example-org"] and doc["orgs"] == ["Example-Personal", "other-org"]
     assert request not in json.dumps(doc, default=str)
     served = stored.to_api()
-    assert served["access_evidence"]["sso_required_orgs"] == ["saga-xyz"]
-    assert served["access_evidence"]["orgs"] == ["Saga-Personal", "other-org"]
+    assert served["access_evidence"]["sso_required_orgs"] == ["example-org"]
+    assert served["access_evidence"]["orgs"] == ["Example-Personal", "other-org"]
     assert served["access_evidence"]["read_at"] == T0.isoformat()
     # A record written before this lane reads with no evidence, not an error.
     old = dict(doc)
@@ -169,17 +169,17 @@ def test_a_later_scoped_probe_that_reads_the_org_clears_its_sso_mark(db, registr
     slots = Slots()
     slots.put("swarm-tenant-eng-git", classic_value())
     token_id = token_id_for("eng", Scope.TENANT, "")
-    header, _ = sso_required("saga-xyz")
+    header, _ = sso_required("example-org")
     registry.probe(tenant, "eng", token_id, tokens=slots, send=ProbeForge(
         status={"repo": 403}, headers={"repo": {"x-github-sso": header}}),
         repository=OWNER_REPO)
-    # Another org's repository, scoped: saga-xyz's mark stands.
+    # Another org's repository, scoped: example-org's mark stands.
     other = ProbeForge(repo={"full_name": "other/thing", "default_branch": "main",
                              "private": True, "permissions": {"pull": True, "push": True}})
     kept, _ = registry.probe(tenant, "eng", token_id, tokens=slots, send=other,
                              repository="other/thing")
-    assert kept.sso_required_orgs == ["saga-xyz"]
-    # saga-xyz read with a 200 now: authorised, so the mark is gone.
+    assert kept.sso_required_orgs == ["example-org"]
+    # example-org read with a 200 now: authorised, so the mark is gone.
     cleared, _ = registry.probe(tenant, "eng", token_id, tokens=slots, send=ProbeForge(),
                                 repository=OWNER_REPO)
     assert cleared.sso_required_orgs == []
@@ -190,20 +190,20 @@ def test_a_later_scoped_probe_that_reads_the_org_clears_its_sso_mark(db, registr
 
 def test_refusal_cause_is_pure_and_names_each_cause() -> None:
     record = record_for_slot("eng", Scope.TENANT, registered_by="swarm-api", now=T0)
-    plain = refusal_cause("saga-xyz", "widgets", record)
+    plain = refusal_cause("example-org", "widgets", record)
     assert plain["code"] == "ACCOUNT_CANNOT_SEE"
     assert "the token's account cannot see this repository" in plain["message"]
-    assert refusal_cause("saga-xyz", "widgets", None)["code"] == "ACCOUNT_CANNOT_SEE"
-    record.sso_required_orgs = ["Saga-XYZ"]
-    sso = refusal_cause("saga-xyz", "widgets", record)
+    assert refusal_cause("example-org", "widgets", None)["code"] == "ACCOUNT_CANNOT_SEE"
+    record.sso_required_orgs = ["Example-Org"]
+    sso = refusal_cause("example-org", "widgets", record)
     assert sso["code"] == "SSO_NOT_AUTHORISED"
     assert sso["message"].startswith(
-        "SSO not authorised for saga-xyz on this token -- authorise it at "
+        "SSO not authorised for example-org on this token -- authorise it at "
         "https://github.com/settings/tokens")
     assert "uses SAML single sign-on" in sso["message"]
     record.sso_required_orgs = []
-    record.classic_blocked_orgs = ["saga-xyz"]
-    classic = refusal_cause("saga-xyz", "widgets", record)
+    record.classic_blocked_orgs = ["example-org"]
+    classic = refusal_cause("example-org", "widgets", record)
     assert classic["code"] == "CLASSIC_PAT_BLOCKED"
     assert "the org restricts classic tokens" in classic["message"]
     assert "does not accept classic personal access tokens" in classic["message"]
@@ -214,13 +214,13 @@ def test_partial_sso_and_the_org_list_shape_the_plain_cause() -> None:
     record.forge_login = "swarm-bot"
     record.orgs = ["other-org"]
     record.sso_partial_org_ids = [3]
-    hidden = refusal_cause("saga-xyz", "widgets", record)
+    hidden = refusal_cause("example-org", "widgets", record)
     assert hidden["code"] == "ACCOUNT_CANNOT_SEE"
-    assert "swarm-bot is not a member of saga-xyz" in hidden["message"]
+    assert "swarm-bot is not a member of example-org" in hidden["message"]
     assert "single sign-on" in hidden["message"]
-    record.orgs = ["Saga-XYZ"]
+    record.orgs = ["Example-Org"]
     record.sso_partial_org_ids = []
-    member = refusal_cause("saga-xyz", "widgets", record)
+    member = refusal_cause("example-org", "widgets", record)
     assert "not a member" not in member["message"]
 
 
@@ -237,7 +237,7 @@ def _evidence(db, **fields) -> None:
 @pytest.fixture
 def refused(db, tokens, group_map, objects):
     def build(status: int | None = None):
-        transport = GitHubRepos(status={"/repos/saga-xyz/widgets": status} if status else None)
+        transport = GitHubRepos(status={"/repos/example-org/widgets": status} if status else None)
         client = make_client(db, tokens, group_map, objects, forge_tokens=TenantTokens(),
                              transport=transport)
         return client.post("/v1/repositories", json={"repository": OWNER_REPO},
@@ -247,19 +247,19 @@ def refused(db, tokens, group_map, objects):
 
 @pytest.mark.parametrize("status", [None, 403])
 def test_a_refused_registration_names_sso(db, refused, status) -> None:
-    _evidence(db, sso_required_orgs=["saga-xyz"])
+    _evidence(db, sso_required_orgs=["example-org"])
     response = refused(status)
     assert response.status_code == 403
     body = response.json()
     assert body["code"] == "no_access"
-    assert "SSO not authorised for saga-xyz on this token" in body["message"]
+    assert "SSO not authorised for example-org on this token" in body["message"]
     assert body["detail"]["cause"] == "SSO_NOT_AUTHORISED"
     assert body["detail"]["secret_name"] == "swarm-tenant-eng-git"
     assert body["detail"]["evidence_at"] == (T0 - timedelta(hours=1)).isoformat()
 
 
 def test_a_refused_registration_names_the_classic_token_policy(db, refused) -> None:
-    _evidence(db, classic_blocked_orgs=["saga-xyz"])
+    _evidence(db, classic_blocked_orgs=["example-org"])
     body = refused(403).json()
     assert body["detail"]["cause"] == "CLASSIC_PAT_BLOCKED"
     assert "the org restricts classic tokens" in body["message"]

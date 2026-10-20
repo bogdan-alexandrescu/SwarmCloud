@@ -1,6 +1,6 @@
 """JUDGE-ADAPT (owner decision 2026-10-14; part of #1030).
 
-jev-browser talks to TypeSafe's API. Saga's internal decision API (Internal
+jev-browser talks to TypeSafe's API. The internal decision API (Internal
 Jev, Internal Laya) answers in the same shape but refuses two request shapes
 jev-browser sends, measured by the operator over Tailscale on 2026-10-14
 (docs/design/live-browser.md, "Judgment backends"):

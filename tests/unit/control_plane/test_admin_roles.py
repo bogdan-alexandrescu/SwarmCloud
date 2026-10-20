@@ -38,17 +38,17 @@ from swarm_api.waker import NullWaker
 from .conftest import ADMIN_GROUP, ENG_GROUP, NoForgeTokens, api_settings, auth_header
 from .fakes import FakeFirestore
 
-OWNER = "owner@saga.xyz"
+OWNER = "owner@example.com"
 #: Any admin-only route: what "is this caller an admin now?" is asked through.
 ADMIN_ROUTE = "/v1/admin/tenants"
 
 PEOPLE = {
-    "alice@saga.xyz": (ENG_GROUP,),
-    "carol@saga.xyz": (),
-    "dave@saga.xyz": (),
-    "root@saga.xyz": (ADMIN_GROUP, ENG_GROUP),
+    "alice@example.com": (ENG_GROUP,),
+    "carol@example.com": (),
+    "dave@example.com": (),
+    "root@example.com": (ADMIN_GROUP, ENG_GROUP),
     OWNER: (ENG_GROUP,),
-    "gate@saga.xyz": (),
+    "gate@example.com": (),
 }
 
 
@@ -58,7 +58,7 @@ def _tokens() -> dict[str, dict[str, Any]]:
             "email": email,
             "email_verified": True,
             "sub": f"sub-{email}",
-            "hd": "saga.xyz",
+            "hd": "example.com",
         }
         for email in PEOPLE
     }
@@ -101,54 +101,54 @@ def db() -> FakeFirestore:
 
 
 def test_migration_writes_each_config_admin_once_and_seeds_the_owner(db):
-    roles = AdminRoles(db, owner=OWNER, config_admins=("Carol@saga.xyz", OWNER),
-                       allowed_domains=("saga.xyz",))
+    roles = AdminRoles(db, owner=OWNER, config_admins=("Carol@example.com", OWNER),
+                       allowed_domains=("example.com",))
     roles.ensure_migrated()
 
     docs = _roles(db)
     assert docs[OWNER]["role"] == "owner"
-    assert docs["carol@saga.xyz"]["role"] == "admin"
-    assert docs["carol@saga.xyz"]["granted_by"] == CONFIG_MIGRATION
-    assert set(docs) == {OWNER, "carol@saga.xyz"}, "the owner is not also migrated as an admin"
+    assert docs["carol@example.com"]["role"] == "admin"
+    assert docs["carol@example.com"]["granted_by"] == CONFIG_MIGRATION
+    assert set(docs) == {OWNER, "carol@example.com"}, "the owner is not also migrated as an admin"
     assert len(_actions(db, "migrate")) == 1
     assert len(_actions(db, "seed_owner")) == 1
 
     before = db.dump()
     # A second process, and a second call in the same one: nothing written.
-    again = AdminRoles(db, owner=OWNER, config_admins=("carol@saga.xyz", OWNER),
-                       allowed_domains=("saga.xyz",))
+    again = AdminRoles(db, owner=OWNER, config_admins=("carol@example.com", OWNER),
+                       allowed_domains=("example.com",))
     again.ensure_migrated()
     roles.ensure_migrated()
     assert db.dump() == before
 
 
 def test_migration_does_not_grant_again_an_admin_removed_after_it(db):
-    roles = AdminRoles(db, owner=OWNER, config_admins=("carol@saga.xyz",),
-                       allowed_domains=("saga.xyz",))
+    roles = AdminRoles(db, owner=OWNER, config_admins=("carol@example.com",),
+                       allowed_domains=("example.com",))
     roles.ensure_migrated()
-    roles.remove("carol@saga.xyz", by=OWNER)
-    assert "carol@saga.xyz" not in _roles(db)
+    roles.remove("carol@example.com", by=OWNER)
+    assert "carol@example.com" not in _roles(db)
 
-    AdminRoles(db, owner=OWNER, config_admins=("carol@saga.xyz",),
-               allowed_domains=("saga.xyz",)).ensure_migrated()
-    assert "carol@saga.xyz" not in _roles(db)
+    AdminRoles(db, owner=OWNER, config_admins=("carol@example.com",),
+               allowed_domains=("example.com",)).ensure_migrated()
+    assert "carol@example.com" not in _roles(db)
 
 
 def test_a_changed_owner_demotes_the_previous_one_to_admin(db):
-    AdminRoles(db, owner="old@saga.xyz").ensure_migrated()
+    AdminRoles(db, owner="old@example.com").ensure_migrated()
     AdminRoles(db, owner=OWNER).ensure_migrated()
     docs = _roles(db)
     assert docs[OWNER]["role"] == "owner"
-    assert docs["old@saga.xyz"]["role"] == "admin"
-    assert [e["target_email"] for e in _actions(db, "owner_changed")] == ["old@saga.xyz"]
+    assert docs["old@example.com"]["role"] == "admin"
+    assert [e["target_email"] for e in _actions(db, "owner_changed")] == ["old@example.com"]
 
 
 def test_the_first_request_runs_the_migration(db):
-    client = _client(db, platform_owner=OWNER, admin_users=("carol@saga.xyz",))
+    client = _client(db, platform_owner=OWNER, admin_users=("carol@example.com",))
     assert client.get("/v1/tenants/me", headers=auth_header("alice")).status_code == 200
     docs = _roles(db)
     assert docs[OWNER]["role"] == "owner"
-    assert docs["carol@saga.xyz"]["role"] == "admin"
+    assert docs["carol@example.com"]["role"] == "admin"
 
 
 # -- grant and remove ----------------------------------------------------------
@@ -158,23 +158,23 @@ def test_grant_makes_an_admin_and_is_audited(db):
     client = _client(db)
     assert client.get(ADMIN_ROUTE, headers=auth_header("carol")).status_code == 403
 
-    response = client.put("/v1/admin/admins/Carol@saga.xyz", headers=auth_header("root"))
+    response = client.put("/v1/admin/admins/Carol@example.com", headers=auth_header("root"))
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["email"] == "carol@saga.xyz"
+    assert body["email"] == "carol@example.com"
     assert body["role"] == "admin"
-    assert body["granted_by"] == "root@saga.xyz"
+    assert body["granted_by"] == "root@example.com"
     assert body["changed"] is True
-    assert _roles(db)["carol@saga.xyz"]["granted_by"] == "root@saga.xyz"
+    assert _roles(db)["carol@example.com"]["granted_by"] == "root@example.com"
 
     [entry] = _actions(db, "grant")
-    assert entry["target_email"] == "carol@saga.xyz"
-    assert entry["by"] == "root@saga.xyz"
+    assert entry["target_email"] == "carol@example.com"
+    assert entry["by"] == "root@example.com"
     assert entry["at"] is not None
 
     assert client.get(ADMIN_ROUTE, headers=auth_header("carol")).status_code == 200
 
-    again = client.put("/v1/admin/admins/carol@saga.xyz", headers=auth_header("carol"))
+    again = client.put("/v1/admin/admins/carol@example.com", headers=auth_header("carol"))
     assert again.status_code == 200
     assert again.json()["changed"] is False
     assert len(_actions(db, "grant")) == 1, "a no-op grant is not a change and is not audited"
@@ -183,16 +183,16 @@ def test_grant_makes_an_admin_and_is_audited(db):
 def test_remove_takes_the_right_away_and_is_audited(db):
     client = _client(db)
     for person in ("carol", "dave"):
-        assert client.put(f"/v1/admin/admins/{person}@saga.xyz",
+        assert client.put(f"/v1/admin/admins/{person}@example.com",
                           headers=auth_header("root")).status_code == 200
     assert client.get(ADMIN_ROUTE, headers=auth_header("carol")).status_code == 200
 
-    response = client.delete("/v1/admin/admins/carol@saga.xyz", headers=auth_header("dave"))
+    response = client.delete("/v1/admin/admins/carol@example.com", headers=auth_header("dave"))
     assert response.status_code == 200, response.text
-    assert response.json() == {"email": "carol@saga.xyz", "removed": True}
-    assert "carol@saga.xyz" not in _roles(db)
+    assert response.json() == {"email": "carol@example.com", "removed": True}
+    assert "carol@example.com" not in _roles(db)
     [entry] = _actions(db, "remove")
-    assert (entry["target_email"], entry["by"]) == ("carol@saga.xyz", "dave@saga.xyz")
+    assert (entry["target_email"], entry["by"]) == ("carol@example.com", "dave@example.com")
     assert entry["detail"] == {"previous_role": "admin"}
 
     # The instance that removed the right forgets it at once.
@@ -201,23 +201,23 @@ def test_remove_takes_the_right_away_and_is_audited(db):
 
 def test_removing_the_last_admin_is_refused(db):
     client = _client(db)
-    assert client.put("/v1/admin/admins/carol@saga.xyz",
+    assert client.put("/v1/admin/admins/carol@example.com",
                       headers=auth_header("root")).status_code == 200
 
-    response = client.delete("/v1/admin/admins/carol@saga.xyz", headers=auth_header("root"))
+    response = client.delete("/v1/admin/admins/carol@example.com", headers=auth_header("root"))
     assert response.status_code == 409
     assert response.json()["code"] == "LAST_ADMIN"
-    assert "carol@saga.xyz" in _roles(db)
+    assert "carol@example.com" in _roles(db)
     assert _actions(db, "remove") == []
 
     # Removing yourself is refused the same way.
-    response = client.delete("/v1/admin/admins/carol@saga.xyz", headers=auth_header("carol"))
+    response = client.delete("/v1/admin/admins/carol@example.com", headers=auth_header("carol"))
     assert response.json()["code"] == "LAST_ADMIN"
 
 
 def test_the_owner_cannot_be_demoted_by_anyone_else(db):
     client = _client(db, platform_owner=OWNER)
-    assert client.put("/v1/admin/admins/carol@saga.xyz",
+    assert client.put("/v1/admin/admins/carol@example.com",
                       headers=auth_header("root")).status_code == 200
 
     for caller in ("root", "carol"):
@@ -239,29 +239,29 @@ def test_the_owner_cannot_be_demoted_by_anyone_else(db):
 
 def test_the_owner_may_remove_an_admin(db):
     client = _client(db, platform_owner=OWNER)
-    assert client.put("/v1/admin/admins/carol@saga.xyz",
+    assert client.put("/v1/admin/admins/carol@example.com",
                       headers=auth_header("root")).status_code == 200
-    response = client.delete("/v1/admin/admins/carol@saga.xyz", headers=auth_header("owner"))
+    response = client.delete("/v1/admin/admins/carol@example.com", headers=auth_header("owner"))
     assert response.status_code == 200, response.text
 
 
 @pytest.mark.parametrize("method", ["put", "delete"])
 def test_a_non_admin_is_refused(db, method):
     client = _client(db, platform_owner=OWNER)
-    response = getattr(client, method)("/v1/admin/admins/alice@saga.xyz",
+    response = getattr(client, method)("/v1/admin/admins/alice@example.com",
                                        headers=auth_header("alice"))
     assert response.status_code == 403
-    assert "alice@saga.xyz" not in _roles(db)
+    assert "alice@example.com" not in _roles(db)
     assert _actions(db, "grant") == [] and _actions(db, "remove") == []
 
 
 @pytest.mark.parametrize("method", ["put", "delete"])
 def test_a_pool_admin_is_refused(db, method):
-    client = _client(db, admin_pool_users=("gate@saga.xyz",))
-    response = getattr(client, method)("/v1/admin/admins/gate@saga.xyz",
+    client = _client(db, admin_pool_users=("gate@example.com",))
+    response = getattr(client, method)("/v1/admin/admins/gate@example.com",
                                        headers=auth_header("gate"))
     assert response.status_code == 403
-    assert "gate@saga.xyz" not in _roles(db)
+    assert "gate@example.com" not in _roles(db)
 
 
 @pytest.mark.parametrize("target", [
@@ -277,13 +277,13 @@ def test_grant_is_only_for_an_allowed_domain_person(db, target):
 
 
 def test_removing_a_config_admin_says_configuration_removes_it(db):
-    client = _client(db, admin_users=("carol@saga.xyz",))
+    client = _client(db, admin_users=("carol@example.com",))
     # The migration gave carol a document; take it away, keep ADMIN_USERS.
-    assert client.put("/v1/admin/admins/dave@saga.xyz",
+    assert client.put("/v1/admin/admins/dave@example.com",
                       headers=auth_header("root")).status_code == 200
-    assert client.delete("/v1/admin/admins/carol@saga.xyz",
+    assert client.delete("/v1/admin/admins/carol@example.com",
                          headers=auth_header("root")).status_code == 200
-    response = client.delete("/v1/admin/admins/carol@saga.xyz", headers=auth_header("root"))
+    response = client.delete("/v1/admin/admins/carol@example.com", headers=auth_header("root"))
     assert response.status_code == 404
     assert response.json()["code"] == "NOT_AN_ADMIN_DOCUMENT"
     assert "ADMIN_USERS" in response.json()["message"]
@@ -300,7 +300,7 @@ class FailingRoles:
 
 
 def test_config_admins_and_the_owner_are_admins_with_firestore_down(db):
-    client = _client(db, platform_owner=OWNER, admin_users=("carol@saga.xyz",))
+    client = _client(db, platform_owner=OWNER, admin_users=("carol@example.com",))
     client.app.state.ctx.authenticator.admin_roles = FailingRoles()
     for caller in ("owner", "carol", "root"):
         assert client.get(ADMIN_ROUTE, headers=auth_header(caller)).status_code == 200, caller
@@ -318,8 +318,8 @@ def test_a_failed_role_read_is_a_503_not_a_403(db):
 
 
 def test_a_firestore_admin_is_an_admin_without_any_config(db):
-    db.document(f"{ROLES_COLLECTION}/dave@saga.xyz").set(
-        {"role": "admin", "granted_by": "root@saga.xyz", "granted_at": None})
+    db.document(f"{ROLES_COLLECTION}/dave@example.com").set(
+        {"role": "admin", "granted_by": "root@example.com", "granted_at": None})
     client = _client(db, admin_groups=())
     assert client.get(ADMIN_ROUTE, headers=auth_header("dave")).status_code == 200
     assert client.get(ADMIN_ROUTE, headers=auth_header("alice")).status_code == 403
@@ -337,12 +337,12 @@ class FailingHolders(AdminRoles):
 
 def test_the_people_read_lists_the_admins_with_the_owner_first(db):
     client = _client(db, platform_owner=OWNER)
-    assert client.put("/v1/admin/admins/carol@saga.xyz",
+    assert client.put("/v1/admin/admins/carol@example.com",
                       headers=auth_header("owner")).status_code == 200
     body = client.get("/v1/admin/people", headers=auth_header("root")).json()
     assert body["admins_error"] is None
     assert [(a["email"], a["role"]) for a in body["admins"]] == [
-        (OWNER, "owner"), ("carol@saga.xyz", "admin")]
+        (OWNER, "owner"), ("carol@example.com", "admin")]
     carol = body["admins"][1]
     assert carol["granted_by"] == OWNER and carol["granted_at"] is not None
     assert "changed" not in carol, "a listing is not a change"

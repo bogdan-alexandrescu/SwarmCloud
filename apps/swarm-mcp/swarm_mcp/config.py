@@ -13,10 +13,10 @@ So the bridge is now a deployment-agnostic CLIENT, shaped like `gh` and
 `kubectl`: named CONTEXTS in a per-user config file, one of them current.
 
     {
-      "current_context": "saga-dev",
+      "current_context": "example-dev",
       "contexts": {
-        "saga-dev": {"url": "https://swarm.saga.xyz",
-                     "oauth_client_id": "123-abc.apps.googleusercontent.com"}
+        "example-dev": {"url": "https://swarm.example.com",
+                        "oauth_client_id": "123-abc.apps.googleusercontent.com"}
       }
     }
 

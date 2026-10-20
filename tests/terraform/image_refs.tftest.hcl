@@ -30,7 +30,7 @@ variables {
   environment = "dev"
 
   tenants = {
-    eng = { kind = "group", principal = "eng@saga.xyz", providers = ["anthropic", "openai"] }
+    eng = { kind = "group", principal = "eng@example.com", providers = ["anthropic", "openai"] }
   }
 
   image_refs = {

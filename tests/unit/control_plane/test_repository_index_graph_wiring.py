@@ -31,17 +31,17 @@ from swarm_api import repograph, repoindex
 
 SHA = "a" * 40
 TENANT = "eng"
-REPO_ID = "gh-saga-xyz-widgets"
+REPO_ID = "gh-example-org-widgets"
 
 
 def _record(tenant: str = TENANT, repo_id: str = REPO_ID) -> dict:
     return {
         "tenant_id": tenant,
         "repo_id": repo_id,
-        "owner": "saga-xyz",
+        "owner": "example-org",
         "repo": "widgets",
         "default_branch": "main",
-        "repository_url": "https://github.com/saga-xyz/widgets",
+        "repository_url": "https://github.com/example-org/widgets",
     }
 
 

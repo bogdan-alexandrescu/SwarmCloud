@@ -53,7 +53,7 @@ from .conftest import (
 from .fakes import FakeFirestore
 
 SERVICE = "ci-runner@saga-agents-staging.iam.gserviceaccount.com"
-ALICE = "alice@saga.xyz"
+ALICE = "alice@example.com"
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 
 
@@ -96,7 +96,7 @@ def account(account_id: str, owner: str, *, lend_to: tuple[str, ...] = ()) -> di
 def seed_personal(db: FakeFirestore, user: str, *, state: str = "ready") -> None:
     """`tenants/u-<user>` and `workspaces/u-<user>`, as the workspace job leaves them."""
     tenant_id = f"u-{user}"
-    owner = f"{user}@saga.xyz"
+    owner = f"{user}@example.com"
     seed_tenant(db, tenant_id)
     db.docs[f"tenants/{tenant_id}"].update(kind="user", principal=owner, display_name=owner)
     db.docs[f"workspaces/{tenant_id}"] = {
@@ -128,10 +128,10 @@ def seed_connection(db: FakeFirestore, tenant_id: str, email: str, **over: Any) 
 def group_map() -> dict[str, tuple[str, ...]]:
     return {
         ALICE: (ENG_GROUP,),
-        "bob@saga.xyz": (RESEARCH_GROUP,),
-        "carol@saga.xyz": (),
-        "dave@saga.xyz": (ENG_GROUP,),
-        "root@saga.xyz": (ADMIN_GROUP, ENG_GROUP),
+        "bob@example.com": (RESEARCH_GROUP,),
+        "carol@example.com": (),
+        "dave@example.com": (ENG_GROUP,),
+        "root@example.com": (ADMIN_GROUP, ENG_GROUP),
         SERVICE: (ENG_GROUP,),
     }
 
@@ -244,7 +244,7 @@ def test_an_unknown_topic_is_422_and_stores_nothing(client, seeded) -> None:
 
 @pytest.mark.parametrize("extra", [
     {"user": ALICE},
-    {"email": "bob@saga.xyz"},
+    {"email": "bob@example.com"},
     {"tenant_id": "eng"},
 ])
 def test_an_unknown_field_is_422_and_stores_nothing(client, seeded, extra) -> None:
@@ -269,10 +269,10 @@ def test_a_missing_field_is_422_rather_than_a_silent_reset(client, seeded) -> No
 
 
 def test_a_query_parameter_naming_a_person_is_422_on_both_routes(client, seeded) -> None:
-    r = client.get("/v1/profile?user=bob@saga.xyz", headers=as_("alice"))
+    r = client.get("/v1/profile?user=bob@example.com", headers=as_("alice"))
     assert r.status_code == 422, r.text
     assert r.json()["detail"]["parameters"] == ["user"]
-    r = client.put("/v1/profile/preferences?user=bob@saga.xyz", headers=as_("alice"),
+    r = client.put("/v1/profile/preferences?user=bob@example.com", headers=as_("alice"),
                    json=body())
     assert r.status_code == 422, r.text
     assert stored(seeded) == []
@@ -406,10 +406,10 @@ def test_a_failed_github_batch_is_named_never_served_as_not_connected(
 
 
 def test_another_members_connection_is_never_served(client, seeded) -> None:
-    seed_connection(seeded, "eng", "dave@saga.xyz", forge_login="dave-gh")
+    seed_connection(seeded, "eng", "dave@example.com", forge_login="dave-gh")
     # And a document at alice's own id that names dave: a collision, not hers.
-    seed_connection(seeded, "eng", ALICE, user="dave@saga.xyz",
-                    user_hash=user_hash("dave@saga.xyz"), forge_login="dave-gh")
+    seed_connection(seeded, "eng", ALICE, user="dave@example.com",
+                    user_hash=user_hash("dave@example.com"), forge_login="dave-gh")
     got = client.get("/v1/profile", headers=as_("alice"))
     assert "dave" not in got.text
     github = {e["tenant_id"]: e for e in got.json()["connections"]["github"]}

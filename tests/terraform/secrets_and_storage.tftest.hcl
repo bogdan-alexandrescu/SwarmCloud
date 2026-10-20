@@ -20,7 +20,7 @@ run "a_provider_key_is_readable_by_exactly_one_identity" {
       eng = {
         providers     = ["anthropic", "openai"]
         accessor      = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
-        admin_members = ["group:eng@saga.xyz"]
+        admin_members = ["group:eng@example.com"]
       }
       research = {
         providers = ["anthropic"]
@@ -294,7 +294,7 @@ run "a_worker_cannot_read_the_refresh_token_it_runs_on" {
       "u-bogdan" = {
         providers     = ["anthropic"]
         accessor      = "serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com"
-        admin_members = ["group:platform@saga.xyz"]
+        admin_members = ["group:platform@example.com"]
       }
     }
   }
@@ -423,7 +423,7 @@ run "a_forge_reader_must_be_a_service_account" {
         accessor  = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
       }
     }
-    forge_readers = ["user:someone@saga.xyz"]
+    forge_readers = ["user:someone@example.com"]
   }
 
   expect_failures = [var.forge_readers]

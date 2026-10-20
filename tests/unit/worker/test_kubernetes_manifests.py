@@ -1037,7 +1037,7 @@ def test_a_rendered_job_names_no_kubernetes_secret_because_none_is_created():
     Identity. A reference to a Secret that does not exist is not a leak, it is a
     pod stuck in CreateContainerConfigError."""
     expected = Tenant(
-        tenant_id=TENANT, kind="group", principal="eng@saga.xyz", created_at=utcnow()
+        tenant_id=TENANT, kind="group", principal="eng@example.com", created_at=utcnow()
     ).secret_name("anthropic")
     assert expected == f"swarm-tenant-{TENANT}-anthropic"
     for profile in ("claude-code", "browser"):
@@ -1724,7 +1724,7 @@ def test_the_service_account_the_renderer_creates_is_the_one_the_dispatcher_name
         Tenant(
             tenant_id=TENANT,
             kind="group",
-            principal="eng@saga.xyz",
+            principal="eng@example.com",
             created_at=utcnow(),
         )
     )
@@ -1980,7 +1980,7 @@ def _dispatcher_job(profile_name: str) -> dict[str, Any]:
     tenant = Tenant(
         tenant_id=TENANT,
         kind="group",
-        principal="eng@saga.xyz",
+        principal="eng@example.com",
         created_at=now,
         service_account=f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com",
         namespace=f"swarm-tenant-{TENANT}",
@@ -1994,7 +1994,7 @@ def _dispatcher_job(profile_name: str) -> dict[str, Any]:
         runner_profile=profile_name,
         resource_class=profile.resource_class,
         input={},
-        submitted_by="alice@saga.xyz",
+        submitted_by="alice@example.com",
         provider=profile.provider,
         # render.py's default: `--timeout` unset means the profile's own.
         timeout_seconds=profile.timeout_seconds,

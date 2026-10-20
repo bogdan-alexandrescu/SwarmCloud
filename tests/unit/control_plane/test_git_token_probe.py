@@ -58,7 +58,7 @@ from .conftest import PROJECT, api_settings, auth_header, seed_tenant
 
 T0 = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
 
-OWNER_REPO = "saga-xyz/widgets"
+OWNER_REPO = "example-org/widgets"
 REPO = repo_id_for("eng", OWNER_REPO)
 
 
@@ -274,7 +274,7 @@ def test_the_push_read_is_basic_auth_to_github_com_only() -> None:
     run(classic_value(), fake)
     (url, headers) = next((u, h) for _, u, h in fake.calls if key_of(u) == "receive_pack")
     assert urlparse(url).hostname == "github.com"
-    assert url.endswith("/saga-xyz/widgets.git/info/refs?service=git-receive-pack")
+    assert url.endswith("/example-org/widgets.git/info/refs?service=git-receive-pack")
     assert headers["Authorization"].startswith("Basic ")
 
 
@@ -546,7 +546,7 @@ def test_verify_refuses_a_repository_the_slot_does_not_cover(probe_client, slots
     token_id = register_repo(probe_client)["token"]["token_id"]
     fake.calls.clear()
     response = probe_client.post(f"/v1/git-tokens/{token_id}/verify",
-                                 json={"repository": "saga-xyz/other"}, headers=auth_header("root"))
+                                 json={"repository": "example-org/other"}, headers=auth_header("root"))
     assert response.status_code == 422, response.text
     assert fake.calls == []
     for body in ({"repository": "not a repo"}, {"value": "x"}, {"repo_id": "repo_zz"}):

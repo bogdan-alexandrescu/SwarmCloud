@@ -213,7 +213,7 @@ def test_the_scan_refuses_a_reader_that_has_not_decided(tmp_path):
 
 
 TASK = "task_await"
-ALICE = "alice@saga.xyz"
+ALICE = "alice@example.com"
 
 
 def _awaiting(db, *, hours: float = 25) -> dict:

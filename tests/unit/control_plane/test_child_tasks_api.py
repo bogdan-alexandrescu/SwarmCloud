@@ -132,7 +132,7 @@ def seed_parent(db, attempt: Attempt, *, state: str = "RUNNING",
         {
             "current_lease_id": t.lease_id,
             "current_generation": t.generation,
-            "submitted_by": "alice@saga.xyz",
+            "submitted_by": "alice@example.com",
             "priority": 7,
             "repository_url": "https://github.com/acme/widgets.git",
             "repository_ref": "main",
@@ -392,7 +392,7 @@ def test_a_signed_request_creates_a_child_the_platform_shapes(child_client, db):
     assert child["tenant_id"] == "eng"
     assert child["parent_task_id"] == PARENT and child["parent_attempt_id"] == ATTEMPT
     # The parent's submitter, priority and repository; never the agent's.
-    assert child["submitted_by"] == "alice@saga.xyz"
+    assert child["submitted_by"] == "alice@example.com"
     assert child["priority"] == 7
     assert child["repository_url"] == "https://github.com/acme/widgets.git"
     assert child["metadata"]["child_request_id"] == "split-1"
@@ -446,7 +446,7 @@ def test_a_child_inherits_its_parents_github_credential_inside_its_signature(
     client = TestClient(create_app(ctx), raise_server_exceptions=False)
     seed_tenant(db, "eng")
     attempt = Attempt()
-    slot = provider_suffix(Scope.USER, user="alice@saga.xyz")
+    slot = provider_suffix(Scope.USER, user="alice@example.com")
     ready_parent(client, db, attempt, forge_credential=slot, forge_access=access)
     made = submit(client, attempt)
     assert made.status_code == 201, made.text

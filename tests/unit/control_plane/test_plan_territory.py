@@ -210,7 +210,7 @@ def test_an_edit_that_resolves_the_conflict_is_accepted():
 # --------------------------------------------------------------------------
 
 def test_the_planner_is_told_the_rule_is_enforced_and_how_it_is_compared():
-    text = issueruns.planner_prompt(IssueRef(owner="saga-xyz", repo="widgets", number=42))
+    text = issueruns.planner_prompt(IssueRef(owner="example-org", repo="widgets", number=42))
     assert "refused" in text
     assert "directory" in text and "prefix" in text
 

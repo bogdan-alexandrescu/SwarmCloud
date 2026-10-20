@@ -55,15 +55,15 @@ def _quota(api, user: str = "alice") -> list[dict]:
 def test_each_credential_the_caller_may_see_is_served_with_its_quota(api, github, db):
     _connect(api, github)
     _enable(api)
-    installation = db.docs[f"forge_orgs/{access.org_id_for('eng', 'alice@saga.xyz', ORG)}"][
+    installation = db.docs[f"forge_orgs/{access.org_id_for('eng', 'alice@example.com', ORG)}"][
         "installation_id"]
-    QUOTAS.observe(connection_credential(forgeapp.connection_id_for("eng", "alice@saga.xyz")),
+    QUOTAS.observe(connection_credential(forgeapp.connection_id_for("eng", "alice@example.com")),
                    _limits(712))
     QUOTAS.observe(tenant_credential("eng"), _limits(4100))
     QUOTAS.observe(installation_credential(installation), _limits(14000, limit=15000))
     # Another tenant's and another person's: never this caller's to see.
     QUOTAS.observe(tenant_credential("research"), _limits(1))
-    QUOTAS.observe(connection_credential(forgeapp.connection_id_for("eng", "bob@saga.xyz")),
+    QUOTAS.observe(connection_credential(forgeapp.connection_id_for("eng", "bob@example.com")),
                    _limits(2))
     QUOTAS.observe(installation_credential(installation + 1), _limits(3))
 

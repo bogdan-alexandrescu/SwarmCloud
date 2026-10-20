@@ -53,26 +53,26 @@ from .test_live_api import (  # noqa: F401 - fixtures are used by name
     seed_running,
 )
 
-WEB_ID = repo_id_for("eng", "saga", "web")
-SDK_ID = repo_id_for("eng", "saga", "sdk")
+WEB_ID = repo_id_for("eng", "example-org", "web")
+SDK_ID = repo_id_for("eng", "example-org", "sdk")
 WEB_SHA = "c" * 40
 WEB_COMMIT = "d" * 40
 
 
 def entry(name: str, repo: str, **over: Any) -> dict[str, Any]:
     return {
-        "name": name, "repo_id": repo_id_for("eng", "saga", repo),
-        "repository": f"saga/{repo}", "repository_url": f"https://github.com/saga/{repo}",
+        "name": name, "repo_id": repo_id_for("eng", "example-org", repo),
+        "repository": f"example-org/{repo}", "repository_url": f"https://github.com/example-org/{repo}",
         "ref": "main", "commit": WEB_COMMIT, "forge_credential": "git",
         "forge_credential_source": "tenant", "size_kib": 1024, **over,
     }
 
 
 def register_extra(db, repo: str, *, tenant_id: str = "eng", **extra: Any) -> str:
-    repo_id = repo_id_for("eng", "saga", repo)
+    repo_id = repo_id_for("eng", "example-org", repo)
     db.docs[f"repositories/{repo_id}"] = {
-        "repo_id": repo_id, "tenant_id": tenant_id, "owner": "saga", "repo": repo,
-        "repository_url": f"https://github.com/saga/{repo}", "readable_by_tasks": True,
+        "repo_id": repo_id, "tenant_id": tenant_id, "owner": "example-org", "repo": repo,
+        "repository_url": f"https://github.com/example-org/{repo}", "readable_by_tasks": True,
         **extra,
     }
     return repo_id
@@ -221,7 +221,7 @@ def test_the_named_repositorys_context_setting_decides(multi, ldb):
 
 def test_a_malformed_repo_id_is_refused_by_shape(multi):
     client, attempt = multi
-    for bad in ("repo_" + "A" * 16, "saga/web", "", 7):
+    for bad in ("repo_" + "A" * 16, "example-org/web", "", 7):
         refused(ask(client, attempt, index_sha=WEB_SHA, repo_id=bad), 422)
 
 

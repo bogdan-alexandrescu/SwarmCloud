@@ -58,10 +58,10 @@ from state_routes_harness import (
     seed_attempt,
 )
 
-OWNER, REPO = "saga", "widgets"
+OWNER, REPO = "example-org", "widgets"
 REPOSITORY = f"{OWNER}/{REPO}"
 URL = f"https://github.com/{REPOSITORY}"
-SUBMITTER = "alice@saga.xyz"
+SUBMITTER = "alice@example.com"
 BASE = "main"
 REPO_ID = indexrun.repo_id_for(TENANT, OWNER, REPO)
 
@@ -201,7 +201,7 @@ def test_a_registration_other_than_the_signed_one_is_refused(api_db, opener):
     from any other URL is answered with a reason, never with that one."""
     state = _opened(api_db, opener)
     _register_repository(api_db)
-    elsewhere = indexrun.target(TENANT, "https://github.com/saga/gadgets")
+    elsewhere = indexrun.target(TENANT, "https://github.com/example-org/gadgets")
     assert not isinstance(elsewhere, str)
     reason = indexrun.kept_commits(state, tenant_id=TENANT, where=elsewhere, own=None)
     assert isinstance(reason, str) and elsewhere.repo_id in reason
@@ -270,7 +270,7 @@ def test_a_slot_that_is_not_the_submitters_reads_as_no_grant(api_db, opener):
     """The route serves only the grant derived from the SIGNED submitter."""
     state = _opened(api_db, opener)
     _grant(api_db)
-    other = f"git-u-{_user_hex('mallory@saga.xyz')}"
+    other = f"git-u-{_user_hex('mallory@example.com')}"
     refusal = worker_secrets.grant_refusal(state, tenant_id=TENANT, suffix=other,
                                            repository_url=URL, write=False,
                                            submitted_by=SUBMITTER)

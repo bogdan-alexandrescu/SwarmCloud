@@ -52,7 +52,7 @@ from swarm_common.models import Tenant
 from .conftest import ENG_GROUP, PROJECT, api_settings, seed_tenant
 from .spec_signer import LocalSpecSigner
 
-OWNER = "alice@saga.xyz"
+OWNER = "alice@example.com"
 PERSONAL = tenant_id_for_user(OWNER)
 PRIVATE = ("sagaxyz", "ai-studio")
 NOW = datetime(2026, 10, 14, 3, 10, tzinfo=timezone.utc)
@@ -75,7 +75,7 @@ def context(db, tokens, group_map):
 
 def _personal_auth() -> AuthContext:
     return AuthContext(
-        principal=Principal(email=OWNER, subject="sub-alice", domain="saga.xyz", groups=()),
+        principal=Principal(email=OWNER, subject="sub-alice", domain="example.com", groups=()),
         tenant_id=PERSONAL,
         is_admin=False,
         tenant_principal=OWNER,
@@ -84,7 +84,7 @@ def _personal_auth() -> AuthContext:
 
 def _eng_auth() -> AuthContext:
     return AuthContext(
-        principal=Principal(email=OWNER, subject="sub-alice", domain="saga.xyz", groups=()),
+        principal=Principal(email=OWNER, subject="sub-alice", domain="example.com", groups=()),
         tenant_id="eng",
         is_admin=False,
         tenant_principal=ENG_GROUP,
@@ -301,7 +301,7 @@ def test_the_repositories_routes_serve_the_index_credential(db, tokens, group_ma
     seed_tenant(db, "eng", credentials=("git",))
     client = make_client(db, tokens, group_map, objects, forge_tokens=TenantTokens(),
                          transport=IndexGitHub(heads={"main": sha("one")}))
-    created = client.post("/v1/repositories", json={"repository": "saga-xyz/widgets"},
+    created = client.post("/v1/repositories", json={"repository": "example-org/widgets"},
                           headers=auth_header("alice"))
     assert created.status_code == 201, created.text
     repo_id = created.json()["repository"]["repo_id"]

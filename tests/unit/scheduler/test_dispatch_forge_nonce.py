@@ -50,7 +50,7 @@ def _task(
     return Task(
         id="task_abc", tenant_id="eng", created_at=NOW, updated_at=NOW,
         state=TaskState.LEASED, runner_profile=profile_name, resource_class=profile.resource_class,
-        input={}, submitted_by="alice@saga.xyz", parent_task_id=parent,
+        input={}, submitted_by="alice@example.com", parent_task_id=parent,
         forge_credential=forge,
     )
 
@@ -65,7 +65,7 @@ def _lease(task: Task) -> Lease:
 
 def _tenant() -> Tenant:
     return Tenant(
-        tenant_id="eng", kind="group", principal="eng@saga.xyz", created_at=NOW,
+        tenant_id="eng", kind="group", principal="eng@example.com", created_at=NOW,
         gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/eng",
     )
 

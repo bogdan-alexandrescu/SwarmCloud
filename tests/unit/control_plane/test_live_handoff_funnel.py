@@ -159,7 +159,7 @@ def test_im_ready_to_the_resumed_attempts_first_frame(client, ldb, clock, caplog
     attempt = Attempt()
     ready_at = clock() - timedelta(seconds=47)
     seed_running(client, ldb, attempt, metadata={
-        HUMAN_READY_METADATA_KEY: {"by": "alice@saga.xyz", "at": ready_at.isoformat()}})
+        HUMAN_READY_METADATA_KEY: {"by": "alice@example.com", "at": ready_at.isoformat()}})
     assert open_session(client, attempt).status_code == 201
     assert session_doc(ldb)["human_ready_at"] == ready_at
     service = _service(ldb, clock)

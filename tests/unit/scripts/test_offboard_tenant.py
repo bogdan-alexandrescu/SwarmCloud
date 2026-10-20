@@ -510,7 +510,7 @@ def world(**over) -> dict:
     `eng`'s offboarding or be touched by it."""
     docs = {
         f"tenants/{TENANT}": {"fields": {"tenant_id": s(TENANT), "kind": s("group"),
-                                         "enabled": b(False), "principal": s("eng@saga.xyz")}},
+                                         "enabled": b(False), "principal": s("eng@example.com")}},
         f"tenants/{NEIGHBOUR}": {"fields": {"tenant_id": s(NEIGHBOUR), "enabled": b(True)}},
         "tasks/task_e1": {"fields": {"tenant_id": s(TENANT), "state": s("SUCCEEDED")}},
         "tasks/task_e2": {"fields": {"tenant_id": s(TENANT), "state": s("PARKED")}},

@@ -178,7 +178,7 @@ def test_one_claude_code_task_per_epic_with_its_boxes_as_data(db, ctx, writes, r
     (task,) = triage_tasks(db)
     assert work == [{"kind": "task", "id": task["id"], "repo_id": None}]
     assert task["runner_profile"] == "claude-code"
-    assert task["repository_url"] == "https://github.com/saga-xyz/widgets"
+    assert task["repository_url"] == "https://github.com/example-org/widgets"
     assert task["repository_ref"] == "main"
     assert task["metadata"]["schedule"] == firing.mark and task["submitted_by"] == ALICE
     assert task["metadata"][epic_triage.METADATA_KEY] == {
@@ -188,7 +188,7 @@ def test_one_claude_code_task_per_epic_with_its_boxes_as_data(db, ctx, writes, r
     begin, end = f"=== EPIC BOXES {fid} ===", f"=== END EPIC BOXES {fid} ==="
     assert prompt.count(begin) == 1 and prompt.count(end) == 1
     data = json.loads(prompt.split(begin + "\n", 1)[1].split("\n" + end, 1)[0])
-    assert data["epic"] == f"saga-xyz/widgets#{EPIC}" and data["default_branch"] == "main"
+    assert data["epic"] == f"example-org/widgets#{EPIC}" and data["default_branch"] == "main"
     assert [b["box"] for b in data["boxes"]] == [b.id for b in boxes_of(writes, cid)]
     assert "outsider" not in prompt and "ticks.json" in prompt
     # Reading only: nothing written to GitHub, and the issue without the label got nothing.
@@ -216,7 +216,7 @@ def test_a_dry_run_creates_nothing_and_writes_nothing(db, ctx, writes, repo_id) 
 
     output = epic_triage.dry_run(firing_for(ctx, triage(db, repo_id)))
 
-    assert output["would_triage"] == [{"epic": f"saga-xyz/widgets#{EPIC}", "boxes": 2}]
+    assert output["would_triage"] == [{"epic": f"example-org/widgets#{EPIC}", "boxes": 2}]
     assert output["profile"] == "claude-code" and 0 < output["prompt_bytes"][0] < 64 * 1024
     assert tasks(db) == [] and plan_approvals(db) == [] and edits(writes) == []
 
@@ -273,7 +273,7 @@ def test_proposed_ticks_are_checked_and_become_one_plan_approval(db, ctx, writes
     (doc,) = plan_approvals(db)
     stale, guard = boxes_of(writes, cid)
     assert doc["kind"] == approvals.PLAN and doc["state"] == approvals.PENDING
-    assert doc["subject"]["epic"] == f"saga-xyz/widgets#{EPIC}" and doc["subject"]["task_id"] == "task_triage1"
+    assert doc["subject"]["epic"] == f"example-org/widgets#{EPIC}" and doc["subject"]["task_id"] == "task_triage1"
     assert [t["box"] for t in doc["ticks"]] == [stale.id]
     assert doc["ticks"][0]["evidence"] == {"pull_request": 12} and doc["ticks"][0]["comment_id"] == cid
     reasons = sorted(r["reason"] for r in doc["refused_ticks"])
@@ -351,7 +351,7 @@ def test_an_approved_tick_is_applied_with_its_evidence_once(db, ctx, writes, rep
     assert ("- [x] **The stale comment says 3** · `apps/x.py` `f()` · lane A · ticked with evidence #12 "
             "(apps/x.py · f()) · approved in SwarmCloud epic-triage") in body
     assert "- [ ] **The guard checks less than its name**" in body
-    assert edits(writes) == [("PATCH", f"/repos/saga-xyz/widgets/issues/comments/{cid}")]
+    assert edits(writes) == [("PATCH", f"/repos/example-org/widgets/issues/comments/{cid}")]
     (action,) = second
     assert action["outcome"] == "succeeded" and len(action["detail"]["applied"]) == 1
     assert action["detail"]["apply_results"][0]["ticked"] == 1
@@ -413,7 +413,7 @@ def test_every_repository_unreadable_is_refused_when_switched_on(db, ctx, github
     with pytest.raises(epic_triage.EpicTriageUnreadable) as caught:
         epic_triage.create(firing_for(ctx, triage(db, repo_id)))
     assert caught.value.code == "epic_triage_unreadable" and caught.value.status_code == 409
-    assert caught.value.detail["failures"][0]["repository"] == "saga-xyz/widgets"
+    assert caught.value.detail["failures"][0]["repository"] == "example-org/widgets"
 
     monkeypatch.setenv("REFUSAL_EPIC_TRIAGE_UNREADABLE", "off")
     assert epic_triage.create(firing_for(ctx, triage(db, repo_id))) == []

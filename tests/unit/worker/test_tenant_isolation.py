@@ -239,7 +239,7 @@ def test_an_archive_symlink_to_a_sibling_that_shares_a_string_prefix_is_skipped(
 
 def _tenant(credentials=("anthropic",)):
     return Tenant(
-        tenant_id=TENANT, kind="group", principal="eng@saga.xyz",
+        tenant_id=TENANT, kind="group", principal="eng@example.com",
         created_at=utcnow(), credentials=list(credentials),
     )
 
@@ -364,10 +364,10 @@ def test_the_clone_uses_the_workers_private_directory_not_the_agents_tmpdir(
 
     monkeypatch.setattr(lifecycle, "shallow_clone", fake_clone)
 
-    info = worker._maybe_clone({"repository_url": "https://github.com/saga/repo.git"})
+    info = worker._maybe_clone({"repository_url": "https://github.com/example-org/repo.git"})
 
     assert info == {
-        "path": "repo", "url": "https://github.com/saga/repo.git",
+        "path": "repo", "url": "https://github.com/example-org/repo.git",
         "ref": None, "commit": "abc1234",
     }
     assert seen["private_dir"] == worker.ws.private
@@ -395,7 +395,7 @@ def test_a_tenant_with_no_clone_token_clones_unauthenticated(
         )
 
     monkeypatch.setattr(lifecycle, "shallow_clone", fake_clone)
-    worker._maybe_clone({"repository_url": "https://github.com/saga/public.git"})
+    worker._maybe_clone({"repository_url": "https://github.com/example-org/public.git"})
 
     assert seen["token"] is None
 

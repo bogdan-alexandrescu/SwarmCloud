@@ -12,7 +12,7 @@ THE DEFECT, MEASURED FROM A LAPTOP ON 2026-09-24, in this order:
     SWARM_IMPERSONATE_SA=swarm-verify@...   -> HTTP 403 "Access denied. For
       scripts/api.sh GET /runtimes             user swarm-verify@..."
 
-    and, from a browser signed in as bogdan@saga.xyz, the SAME API over the
+    and, from a browser signed in as bogdan@example.com, the SAME API over the
     SAME front door:
       GET https://swarm.saga.xyz/v1/runtimes -> 200, five runner profiles
 

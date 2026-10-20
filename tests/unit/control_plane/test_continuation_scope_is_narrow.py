@@ -356,7 +356,7 @@ def test_a_workflow_without_continues_task_is_refused_to_the_listed_account(fixe
 # refusal ever ran).
 # ---------------------------------------------------------------------------
 
-CONTINUATION_REPO = "https://github.com/saga-xyz/example"
+CONTINUATION_REPO = "https://github.com/example-org/example"
 
 
 def _submit_direct_pr_task(fixer_client, headers: dict[str, str], **extra: Any) -> str:

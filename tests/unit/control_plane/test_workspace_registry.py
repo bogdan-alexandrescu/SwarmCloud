@@ -41,8 +41,8 @@ SERVICE = f"ci-bot@{PROJECT}.iam.gserviceaccount.com"
 USERS = ("alice", "bob", "carol", "dave")
 
 MEMBERSHIPS = {
-    ENG_GROUP: {"alice@saga.xyz", "dave@saga.xyz"},
-    RESEARCH_GROUP: {"bob@saga.xyz", "dave@saga.xyz"},
+    ENG_GROUP: {"alice@example.com", "dave@example.com"},
+    RESEARCH_GROUP: {"bob@example.com", "dave@example.com"},
     ADMIN_GROUP: set(),
 }
 
@@ -73,7 +73,7 @@ def seed_service(db: FakeFirestore, account: str = SERVICE, *, state: str = "rea
 
 def claims(*extra: str, verified: Any = True) -> dict[str, dict[str, Any]]:
     out = {
-        f"t-{user}": {"email": f"{user}@saga.xyz", "email_verified": True, "sub": f"s-{user}"}
+        f"t-{user}": {"email": f"{user}@example.com", "email_verified": True, "sub": f"s-{user}"}
         for user in USERS
     }
     for email in extra:
@@ -120,7 +120,7 @@ def authenticator(db: Any, *, groups: Any = None, extra: tuple[str, ...] = (),
         built,
         StaticTokenVerifier(claims(*extra, verified=verified)),
         groups if groups is not None else StaticGroups({
-            f"{u}@saga.xyz": tuple(g for g, m in MEMBERSHIPS.items() if f"{u}@saga.xyz" in m)
+            f"{u}@example.com": tuple(g for g, m in MEMBERSHIPS.items() if f"{u}@example.com" in m)
             for u in USERS
         }),
         registry=WorkspaceRegistry.from_settings(db, built, clock=clock or Clock())
@@ -187,8 +187,8 @@ def test_a_member_of_eng_keeps_eng_as_default_terraform_groups_first():
 def test_registered_groups_follow_ready_at_order():
     db = FakeFirestore()
     seed_group(db, RESEARCH_GROUP, ready_at=at(10))
-    seed_group(db, "ops@saga.xyz", ready_at=at(8))
-    assert registry(db).registered_groups() == ("ops@saga.xyz", RESEARCH_GROUP)
+    seed_group(db, "ops@example.com", ready_at=at(8))
+    assert registry(db).registered_groups() == ("ops@example.com", RESEARCH_GROUP)
 
 
 def test_a_failed_lookup_of_a_job_made_group_is_503_not_a_personal_fallback():
@@ -207,7 +207,7 @@ def test_a_failed_lookup_of_a_job_made_group_is_503_not_a_personal_fallback():
 # -- records that must never register a group -------------------------------
 
 @pytest.mark.parametrize("group,tenant_id", [
-    ("u-bob@saga.xyz", "u-bob"),           # would act in bob's personal tenant
+    ("u-bob@example.com", "u-bob"),           # would act in bob's personal tenant
     (ADMIN_GROUP, "swarm-admins"),         # the admin lookup is kept apart
     ("eng@other.example", "eng"),          # a Terraform group's id
     ("design@other.example", "design"),    # outside the allowed domains
@@ -217,7 +217,7 @@ def test_a_failed_lookup_of_a_job_made_group_is_503_not_a_personal_fallback():
 def test_a_ready_group_record_that_breaks_a_request_rule_is_ignored(group, tenant_id):
     db = FakeFirestore()
     seed_group(db, group, tenant_id=tenant_id, ready_at=at(8))
-    members = {"bob@saga.xyz": (group,)}
+    members = {"bob@example.com": (group,)}
     auth = authenticator(db, groups=StaticGroups(members))
     bob = auth.authenticate("Bearer t-bob")
     assert bob.tenant_id == "u-bob"
@@ -227,8 +227,8 @@ def test_a_ready_group_record_that_breaks_a_request_rule_is_ignored(group, tenan
 
 def test_personal_records_register_nothing():
     db = FakeFirestore()
-    db.document("workspaces/u-bob").set({"principal": "bob@saga.xyz", "state": "ready"})
-    db.document("workspaces/u-carol").set({"kind": "personal", "principal": "carol@saga.xyz",
+    db.document("workspaces/u-bob").set({"principal": "bob@example.com", "state": "ready"})
+    db.document("workspaces/u-carol").set({"kind": "personal", "principal": "carol@example.com",
                                           "state": "ready"})
     reg = registry(db)
     assert reg.registered_groups() == ()
@@ -414,7 +414,7 @@ def test_the_app_built_by_deps_lists_a_ready_job_made_group_in_tenants_mine():
         settings=api_settings(tenant_groups=TERRAFORM_GROUPS),
         db=db,
         verifier=StaticTokenVerifier(claims()),
-        groups=StaticGroups({"bob@saga.xyz": (RESEARCH_GROUP,)}),
+        groups=StaticGroups({"bob@example.com": (RESEARCH_GROUP,)}),
         credentials=InMemoryCredentials(),
         waker=NullWaker(),
         metrics=ApiMetrics(),

@@ -44,7 +44,7 @@ ANSWER = {
     "question": "Keep the old key beside the new one for a release?",
     "choice": "keep",
     "text": "one release, then drop it",
-    "by": "alice@saga.xyz",
+    "by": "alice@example.com",
     "at": "2026-10-13T12:30:00+00:00",
     "history": [],
 }
@@ -79,7 +79,7 @@ def test_swarm_result_carries_the_owner_answers_beside_the_questions(swarm, worl
     assert reply["owner_questions"] == QUESTIONS
     assert [a["choice"] for a in reply["owner_answers"]] == ["keep"]
     assert reply["owner_answers"][0]["text"] == "one release, then drop it"
-    assert reply["owner_answers"][0]["by"] == "alice@saga.xyz"
+    assert reply["owner_answers"][0]["by"] == "alice@example.com"
 
 
 def test_swarm_result_of_an_unanswered_task_carries_no_answers_key(swarm, world):
@@ -129,5 +129,5 @@ def test_sc_task_prints_each_answer():
     text = "\n".join(lines)
     assert "answered" in text
     assert "1. keep" in text and "one release, then drop it" in text
-    assert "alice@saga.xyz" in text
+    assert "alice@example.com" in text
     assert "2. neither" in text

@@ -32,11 +32,11 @@ run "the_owner_reaches_swarm_api" {
   }
 
   variables {
-    platform_owner = "bogdan@saga.xyz"
+    platform_owner = "bogdan@example.com"
   }
 
   assert {
-    condition     = local.service_env["swarm-api"].PLATFORM_OWNER == "bogdan@saga.xyz"
+    condition     = local.service_env["swarm-api"].PLATFORM_OWNER == "bogdan@example.com"
     error_message = "swarm-api reads PLATFORM_OWNER; without it no admin is protected from demotion"
   }
 }

@@ -27,7 +27,7 @@ from swarm_common.profiles import RUNNER_PROFILES
 from datetime import datetime, timezone
 
 TENANT = Tenant(
-    tenant_id="eng", kind="group", principal="eng@saga.xyz",
+    tenant_id="eng", kind="group", principal="eng@example.com",
     created_at=datetime(2026, 1, 1, tzinfo=timezone.utc), credentials=["anthropic"],
 )
 NAMES = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")

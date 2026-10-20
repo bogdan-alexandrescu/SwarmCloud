@@ -36,10 +36,10 @@ from swarm_common.states import TaskState
 from .conftest import NoForgeTokens, api_settings, auth_header, seed_task, seed_tenant
 from .test_people_admin import CAROL, FakePool, FakePublisher, _personal_tenant, _record
 
-ADA = "ada@saga.xyz"
-BOB = "bob@saga.xyz"
-EVE = "eve@saga.xyz"  # submits, never sets a name
-UNSEEN = "unseen@saga.xyz"  # has a name, appears in no response
+ADA = "ada@example.com"
+BOB = "bob@example.com"
+EVE = "eve@example.com"  # submits, never sets a name
+UNSEEN = "unseen@example.com"  # has a name, appears in no response
 
 NAMES = {ADA: "Ada Lovelace", BOB: "Bob Smith", UNSEEN: "Una Seen", CAROL: "Carol Danvers"}
 

@@ -126,7 +126,7 @@ run "the_identity_is_usable_only_by_its_job" {
     enable_workspace_deployer = true
     enable_forge_user_slots   = true
     workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
-    workspace_log_readers     = ["group:swarm-admins@saga.xyz"]
+    workspace_log_readers     = ["group:swarm-admins@example.com"]
   }
 
   override_resource {
@@ -426,7 +426,7 @@ run "its_logs_go_to_a_restricted_bucket_and_not_to_default" {
     enable_workspace_deployer = true
     enable_forge_user_slots   = true
     workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
-    workspace_log_readers     = ["group:swarm-admins@saga.xyz", "user:owner@saga.xyz"]
+    workspace_log_readers     = ["group:swarm-admins@example.com", "user:owner@example.com"]
   }
 
   assert {
@@ -711,7 +711,7 @@ run "a_log_reader_that_is_not_a_person_or_a_group_is_refused" {
   }
 
   variables {
-    workspace_log_readers = ["domain:saga.xyz"]
+    workspace_log_readers = ["domain:example.com"]
   }
 
   expect_failures = [var.workspace_log_readers]

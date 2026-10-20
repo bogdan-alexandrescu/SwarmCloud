@@ -43,9 +43,9 @@ from swarm_common.identity import Principal, tenant_id_for_user
 from .conftest import ENG_GROUP, PROJECT, api_settings, auth_header, seed_grant
 from .spec_signer import LocalSpecSigner
 
-REPO = "saga-xyz/widgets"
+REPO = "example-org/widgets"
 REPO_URL = f"https://github.com/{REPO}.git"
-ALICE = "alice@saga.xyz"
+ALICE = "alice@example.com"
 SERVICE = f"swarm-acceptance@{PROJECT}.iam.gserviceaccount.com"
 
 
@@ -109,7 +109,7 @@ def _service_auth() -> AuthContext:
     build a context (`mergewake._submitter`): the release's acceptance suite
     and tenant automation submit as one."""
     return AuthContext(
-        principal=Principal(email=SERVICE, subject="sa-1", domain="saga.xyz", groups=()),
+        principal=Principal(email=SERVICE, subject="sa-1", domain="example.com", groups=()),
         tenant_id="eng",
         is_admin=False,
         tenant_principal=ENG_GROUP,
@@ -118,7 +118,7 @@ def _service_auth() -> AuthContext:
 
 def _person_auth() -> AuthContext:
     return AuthContext(
-        principal=Principal(email=ALICE, subject="sub-alice", domain="saga.xyz", groups=()),
+        principal=Principal(email=ALICE, subject="sub-alice", domain="example.com", groups=()),
         tenant_id="eng",
         is_admin=False,
         tenant_principal=ENG_GROUP,
@@ -150,8 +150,8 @@ def test_a_granted_person_runs_with_their_slot_and_their_grants_mode(client, db,
 
 def test_the_grant_is_found_whatever_case_or_url_form_the_repository_is_written_in(client, db):
     seed_grant(db, "eng", ALICE, REPO)
-    for url in ("https://github.com/Saga-XYZ/Widgets", "git@github.com:saga-xyz/widgets.git",
-                "https://www.github.com/saga-xyz/widgets/"):
+    for url in ("https://github.com/Example-Org/Widgets", "git@github.com:example-org/widgets.git",
+                "https://www.github.com/example-org/widgets/"):
         response = client.post("/v1/tasks", headers=auth_header("alice"), json=_task(url))
         assert response.status_code == 201, (url, response.text)
         assert response.json()["task"]["forge_access"] == "write"
@@ -159,7 +159,7 @@ def test_the_grant_is_found_whatever_case_or_url_form_the_repository_is_written_
 
 def test_another_persons_grant_is_not_yours(client, db):
     # root is in eng too, and holds the grant; alice does not.
-    seed_grant(db, "eng", "root@saga.xyz", REPO)
+    seed_grant(db, "eng", "root@example.com", REPO)
     response = client.post("/v1/tasks", headers=auth_header("alice"), json=_task())
     assert response.status_code == 403, response.text
     assert response.json()["code"] == REPOSITORY_NOT_GRANTED
@@ -168,7 +168,7 @@ def test_another_persons_grant_is_not_yours(client, db):
 def test_a_grant_in_another_tenant_is_not_a_grant_in_this_one(client, db):
     # bob is in research; his grant there does not reach eng's alice, and
     # alice's own grant in her personal tenant is not one in eng.
-    seed_grant(db, "research", "bob@saga.xyz", REPO)
+    seed_grant(db, "research", "bob@example.com", REPO)
     seed_grant(db, tenant_id_for_user(ALICE), ALICE, REPO)
     response = client.post("/v1/tasks", headers=auth_header("alice"), json=_task())
     assert response.status_code == 403, response.text
@@ -192,7 +192,7 @@ def test_an_ungranted_person_is_refused_403_naming_the_repository(client, db, si
     body = response.json()
     assert body["code"] == "REPOSITORY_NOT_GRANTED"
     assert body["message"] == (
-        "repository saga-xyz/widgets is not granted to you: choose it under Access"
+        "repository example-org/widgets is not granted to you: choose it under Access"
     )
     assert body["detail"]["repository"] == REPO
     # Nothing stored, nothing signed.
@@ -202,10 +202,10 @@ def test_an_ungranted_person_is_refused_403_naming_the_repository(client, db, si
 
 def test_one_ungranted_task_refuses_the_whole_batch(client, db):
     seed_grant(db, "eng", ALICE, REPO)
-    batch = {"tasks": [_task(), _task("https://github.com/saga-xyz/payments")]}
+    batch = {"tasks": [_task(), _task("https://github.com/example-org/payments")]}
     response = client.post("/v1/tasks/batch", headers=auth_header("alice"), json=batch)
     assert response.status_code == 403, response.text
-    assert response.json()["detail"]["repositories"] == ["saga-xyz/payments"]
+    assert response.json()["detail"]["repositories"] == ["example-org/payments"]
     assert not _tasks(db)
 
 
@@ -213,7 +213,7 @@ def test_a_github_url_with_a_port_is_still_github_and_still_refused(client, db):
     # Read as "not GitHub" it would carry no credential, and the worker would
     # read the tenant token D4 withholds from a person.
     response = client.post("/v1/tasks", headers=auth_header("alice"),
-                           json=_task("https://github.com:443/saga-xyz/widgets"))
+                           json=_task("https://github.com:443/example-org/widgets"))
     assert response.status_code == 403, response.text
     assert response.json()["detail"]["repository"] == REPO
 
@@ -291,7 +291,7 @@ def test_a_service_account_is_told_apart_from_a_person():
     assert is_service_submitter(SERVICE)
     assert is_service_submitter("123-compute@developer.gserviceaccount.com")
     assert not is_service_submitter(ALICE)
-    assert not is_service_submitter("gserviceaccount.com@saga.xyz")
+    assert not is_service_submitter("gserviceaccount.com@example.com")
     assert not is_service_submitter(None)
 
 
@@ -309,7 +309,7 @@ def test_a_task_with_no_repository_carries_no_forge_credential(client, db, signe
 
 def test_a_repository_not_on_github_carries_no_forge_credential(client, db):
     response = client.post("/v1/tasks", headers=auth_header("alice"),
-                           json=_task("https://gitlab.com/saga-xyz/widgets.git"))
+                           json=_task("https://gitlab.com/example-org/widgets.git"))
     assert response.status_code == 201, response.text
     (_, doc), = _tasks(db).items()
     assert doc.get("forge_credential") is None

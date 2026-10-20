@@ -38,7 +38,7 @@ def _workflow(db, workflow_id: str, steps: int, created_at: datetime) -> Workflo
         created_at=created_at,
         updated_at=created_at,
         state=TaskState.SUCCEEDED,
-        submitted_by="alice@saga.xyz",
+        submitted_by="alice@example.com",
         steps=[
             WorkflowStep(step_id=f"s{i:02d}", runner_profile="mock",
                          input={"prompt": "write the report " * 20},
@@ -133,7 +133,7 @@ def _other_tenant_workflow(db, workflow_id: str) -> None:
               created_at=T0, workflow_id=workflow_id)
     workflow = Workflow(
         workflow_id=workflow_id, tenant_id="ops", created_at=T0, updated_at=T0,
-        state=TaskState.SUCCEEDED, submitted_by="eve@saga.xyz",
+        state=TaskState.SUCCEEDED, submitted_by="eve@example.com",
         steps=[WorkflowStep(step_id="s", runner_profile="mock", input={}, depends_on=[],
                             task_id=f"task_{workflow_id}")],
     )
@@ -219,4 +219,4 @@ def test_the_store_reads_ids_in_batches_and_checks_the_tenant(db, monkeypatch):
     got = Store(db).workflows_by_id("eng", ["wf_2", "wf_theirs", "wf_0", "wf_2"], submitted_by=None)
     assert [w.workflow_id for w in got] == ["wf_2", "wf_0"]
     assert calls == [3]
-    assert Store(db).workflows_by_id("eng", ["wf_0"], submitted_by="bob@saga.xyz") == []
+    assert Store(db).workflows_by_id("eng", ["wf_0"], submitted_by="bob@example.com") == []

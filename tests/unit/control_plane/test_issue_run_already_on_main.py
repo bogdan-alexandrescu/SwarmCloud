@@ -260,7 +260,7 @@ def test_an_empty_diff_with_one_row_unmet_is_done_comments_and_leaves_the_issue_
     assert "| 2 | no |" in comment["body"]
     assert "stays open" in comment["body"]
     assert not _closed(writes)
-    assert ("PATCH", "/repos/saga-xyz/widgets/issues/42") not in writes.writes()
+    assert ("PATCH", "/repos/example-org/widgets/issues/42") not in writes.writes()
     assert not run["issue_closed"]
 
 
@@ -317,7 +317,7 @@ def test_a_failed_close_is_recorded_and_tried_again(client, db, objects, writes,
     _workflow_changed_nothing(db, objects, running["workflow_id"], {
         "impl-sort-key": _table(True, True), "impl-ui": _table(True, True),
     })
-    writes.refuse[("PATCH", "/repos/saga-xyz/widgets/issues/42")] = 403
+    writes.refuse[("PATCH", "/repos/example-org/widgets/issues/42")] = 403
 
     run = _read(client, clock, running["id"])
 

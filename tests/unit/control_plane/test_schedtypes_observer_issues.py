@@ -172,7 +172,7 @@ def test_taking_ownership_is_held_to_the_new_owners_grant(db, client, switched_o
     seed_grant(db, "eng", ALICE, REPOSITORY, mode="write")
     doc = client.post("/v1/schedules", json=body(file_issues=True, file_issues_repo_id=ours),
                       headers=auth_header("alice")).json()["schedule"]
-    seed_grant(db, "eng", "root@saga.xyz", REPOSITORY, mode="read")
+    seed_grant(db, "eng", "root@example.com", REPOSITORY, mode="read")
 
     response = client.post(f"/v1/schedules/{doc['schedule_id']}:take-ownership", headers=auth_header("root"))
 
