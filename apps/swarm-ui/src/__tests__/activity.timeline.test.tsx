@@ -1621,6 +1621,15 @@ describe('the help the Timeline links', () => {
     expect(all).not.toMatch(/Timeline screen/)
   })
 
+  it('names the failure classes the way the card it explains does: agents (VOCAB-AGENTS, QA-109)', () => {
+    const t = HELP['failure-classes']
+    // MUTATION: put back `title: 'Why a task failed, by class'` in help.ts.
+    expect(t.title).toBe('Why an agent failed, by class')
+    expect(t.short).toMatch(/^Each failed or dead-lettered agent gets one class/)
+    // The orphan count the Timeline draws is "N finished agents carry no end time".
+    expect(HELP['outcome-buckets'].long.join(' ')).toMatch(/the chart says how many such agents exist/)
+  })
+
   it('describes Reported cost as per attempt, by task end, and not a bill', () => {
     const all = HELP['tokens-reported'].long.join(' ')
     expect(all).toMatch(/Reported cost/)
