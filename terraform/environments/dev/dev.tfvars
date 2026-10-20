@@ -835,6 +835,17 @@ workspace_grant_attestation = {
 # egress is applied with kubernetes/apply.sh --swarm-system and reaches the API.
 enable_tailscale_egress = true
 
+# The GitHub push receiver swarm-github-hooks (GS-HOOKS, PR 1406;
+# terraform/infra/github_hooks.tf; docs/runbooks/github-app.md Step 9 step 3).
+# ON in dev as of 2026-10-16 (owner: "turn on the GitHub push receiver"). It
+# runs as the rollup sweeper (owner decision on #1384, with its blast radius
+# stated in the runbook), holds swarmGithubHooksDedup (create-only, applied in
+# the bootstrap the same day, PR 1430), and is invoked by allUsers on this one
+# service. The IAM rows wait at the release's dev-iam gate. Until the owner
+# stores swarm-github-app-webhook-secret (step 4) every signed delivery is a
+# 503; until the App's webhook is ticked (step 5) nothing is delivered.
+enable_github_hooks = true
+
 # The internal Jev and Laya judgment backends (JUDGE-SELECT), ON in dev as of
 # 2026-10-15 ~17:20 PDT (2026-10-16 00:20Z). Verified before switching: the egress joined the
 # tailnet (version 3 of swarm-tailscale-oauth, stored 2026-10-15 19:32Z), and

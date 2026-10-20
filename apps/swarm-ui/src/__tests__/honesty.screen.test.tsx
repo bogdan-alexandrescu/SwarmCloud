@@ -78,7 +78,7 @@ describe('ok', () => {
     // so they are read off the element rather than matched as one string.
     expect(document.querySelector('.c-count-note')?.textContent).toBe('2 rows')
     expect(document.querySelector('.c-phead .c-acts .c-refresh')?.textContent).toBe('⟳ read 0 s ago')
-    expect(screen.getByRole('button', { name: 'Refresh · read 0 s ago' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'read 0 s ago · refresh' })).toBeTruthy()
     // One shape (§6.12): title left, actions right, no line under the title.
     expect(document.querySelector('.sub'), 'the sub-line under the title is back').toBeNull()
   })
@@ -328,7 +328,7 @@ describe('stale', () => {
       </Screen>,
     )
 
-    const refresh = await screen.findByRole('button', { name: /^Refresh · read / })
+    const refresh = await screen.findByRole('button', { name: /^read .* · refresh$/ })
     refresh.click()
 
     await waitFor(() => expect(body().textContent).toContain('The second read failed.'))
@@ -360,7 +360,7 @@ describe('stale', () => {
       </Screen>,
     )
 
-    const refresh = await screen.findByRole('button', { name: /^Refresh · read / })
+    const refresh = await screen.findByRole('button', { name: /^read .* · refresh$/ })
     refresh.click()
     await waitFor(() => expect(screen.queryByText('alpha')).toBeNull())
     expect(screen.getByText('No agents are running')).toBeTruthy()
@@ -445,7 +445,7 @@ describe('the age on the head’s refresh control moves on its own (CH-1, #98)',
     expect(sub()).toBe('⟳ read 0 s ago')
     await advance(60_000)
     expect(sub()).toBe('⟳ read 1 min ago')
-    expect(screen.getByRole('button', { name: 'Refresh · read 1 min ago' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'read 1 min ago · refresh' })).toBeTruthy()
   })
 
   /**
@@ -782,7 +782,7 @@ describe('a screen that polls (AG-1)', () => {
     )
     await advance(0)
     expect(sub()).toBe('⟳ every 5 s · read 0 s ago')
-    expect(screen.getByRole('button', { name: 'Refresh · read 0 s ago · re-reads every 5 s' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'every 5 s · read 0 s ago · refresh' })).toBeTruthy()
   })
 
   /**

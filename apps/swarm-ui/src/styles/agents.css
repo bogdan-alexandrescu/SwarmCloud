@@ -474,7 +474,14 @@
 /* The canonical `Tabs` in its tablist form (components.html A). It scrolls
    sideways when it does not fit the split (Q4), rather than wrapping or being
    cut ("Details Children 0 Att…"); here it only takes its place in the column. */
-.ag-split-tabs { margin: var(--ctl-s2) 0 var(--ctl-s3); scrollbar-width: thin; }
+/* IT SCROLLS SIDEWAYS ONLY (QA-020, QA-024, QA-089, visual QA #1680). Each
+   tab reaches 1px under the strip (`margin-bottom: -1px`, components.css) so
+   its underline lies on the hairline, and `overflow-x: auto` alone makes
+   `overflow-y` auto too: that pixel was a vertical scroll range, and at 390
+   a classic-scrollbar browser drew a scrollbar with its arrows in the middle
+   of the row, over `Attempts 3`. The overlap was already clipped at the
+   padding edge by `auto`; `hidden` clips it the same way and cannot scroll. */
+.ag-split-tabs { margin: var(--ctl-s2) 0 var(--ctl-s3); scrollbar-width: thin; overflow-y: hidden; }
 
 /* --- the column: header, tabs, and the open tab -------------------------- */
 /* THE COLUMN DOES NOT SCROLL; ITS PANE DOES (walkthrough B, owner
@@ -907,7 +914,14 @@
      the scroller, under a column that does not move (qa.u11a.logs). */
   .ag-split.ctl-drawer:not(.on-logs) { overflow-y: auto; overscroll-behavior: contain; }
   .ag-split:not(.on-logs) > .ag-split-pane { flex: none; overflow: visible; }
-  .ag-split:not(.on-logs) > .ag-tabs-edge { position: sticky; top: 0; z-index: 3; background: var(--bg); }
+  /* AT THE COLUMN'S EDGE, NOT 18px INSIDE IT (QA-019, visual QA #1680). A
+     sticky inset is measured from the scroller's CONTENT edge, inside the
+     drawer's 18px of top padding (`.drawer`, styles.css -- the AG-31
+     correction `.drawer::before` carries). At `top: 0` the strip stuck 18px
+     down and the scrolled content (`Attempt 2 · gen 2`, `model not
+     measured`) showed in the gap above the tabs. The two 18s are held equal
+     by qa.tasktabs.test.tsx. */
+  .ag-split:not(.on-logs) > .ag-tabs-edge { position: sticky; top: -18px; z-index: 3; background: var(--bg); }
 }
 
 /* --- U10a (owner QA, 2026-10-04) ----------------------------------------- */
