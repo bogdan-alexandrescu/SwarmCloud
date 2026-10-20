@@ -26,6 +26,7 @@ import type { Result } from '../fetch'
 import { HELP } from '../help'
 import type { AdminWorkspaceView, Capacity, Pool, Profile, Tenant } from '../types'
 import { cascade, type CascadeEnv } from './cssgate'
+import { painted } from './marks'
 
 // The shell's sheet and the Admin section's own (styles/admin.css), in the
 // order the app loads them.
@@ -610,6 +611,66 @@ describe('Tenants: New workspace is an admin’s button (WK-UI-TENANTS)', () => 
     fireEvent.click(button)
     expect(await screen.findByRole('dialog')).toBeTruthy()
     expect(within(screen.getByRole('dialog')).getByRole('tab', { name: 'Service' })).toBeTruthy()
+  })
+})
+
+// THE HEADING AND ITS BUTTON ARE ONE ROW (#1678). Both sat in `.ob-acts`,
+// onboarding's actions row (inline-flex, packed right, no `align-items`), and
+// the `h2` kept the browser's top margin, so New workspace was drawn about
+// 18px above "Being created" and beside it. `painted` reads every shipped
+// sheet in the bundle's order, phone rules included.
+describe('Tenants draws Being created and New workspace on one line (#1678)', () => {
+  async function header(): Promise<{ section: HTMLElement; h2: HTMLElement; button: HTMLElement; row: HTMLElement }> {
+    const section = await beingCreated(await tenantsAs('admin'))
+    const h2 = within(section).getByRole('heading', { name: 'Being created' })
+    const button = within(section).getByRole('button', { name: 'New workspace' })
+    return { section, h2, button, row: h2.parentElement as HTMLElement }
+  }
+
+  it('puts the heading and the button in one header row of the section, outside onboarding’s actions row', async () => {
+    const { section, h2, button, row } = await header()
+    // MUTATION: wrap the button in its own element and this is false.
+    expect(button.parentElement).toBe(row)
+    // MUTATION: nest the row inside another wrapper and this is false.
+    expect(row.parentElement).toBe(section)
+    // MUTATION: put `ob-acts` back on the row and this finds it.
+    expect(h2.closest('.ob-acts')).toBeNull()
+  })
+
+  it('lays the row out across the section, centred, with the heading at no top margin', async () => {
+    const { h2, row } = await header()
+    // MUTATION: leave the row as `.ob-acts` (inline-flex) and this reads inline-flex.
+    expect(painted(row, 'display', WIDE)).toBe('flex')
+    // MUTATION: drop `align-items` and the button rides to the row's top again.
+    expect(painted(row, 'align-items', WIDE)).toBe('center')
+    // MUTATION: `flex-end` packs both to the right, the `.ob-acts` defect.
+    expect(painted(row, 'justify-content', WIDE)).toBe('space-between')
+    // MUTATION: drop the h2's `margin: 0` and the browser's ~18px returns
+    // (the resolver reads that as no rule at all: null).
+    expect(painted(h2, ['margin-top', 'margin'], WIDE)?.split(/\s+/)[0]).toMatch(/^0(px)?$/)
+    // MUTATION: drop the row's bottom margin and the list sits on the heading.
+    // The space is the one a sibling section's heading gets from `.section > h2`.
+    const sibling = document.createElement('section')
+    sibling.className = 'section'
+    const siblingH2 = sibling.appendChild(document.createElement('h2'))
+    document.body.appendChild(sibling)
+    try {
+      const below = (el: Element) => painted(el, ['margin-bottom', 'margin'], WIDE)?.split(/\s+/).at(-1)
+      expect(below(siblingH2)).toBe('10px')
+      expect(below(row)).toBe(below(siblingH2))
+    } finally {
+      sibling.remove()
+    }
+  })
+
+  it('wraps the button under the heading at phone width, full width and a 44px target', async () => {
+    const { button, row } = await header()
+    // MUTATION: drop `flex-wrap: wrap` and a long heading squeezes the button.
+    expect(painted(row, 'flex-wrap', PHONE)).toBe('wrap')
+    // MUTATION: drop the phone rule's min-height and the button is a 30px target.
+    expect(painted(button, 'min-height', PHONE)).toBe('44px')
+    // MUTATION: drop the phone rule's basis and `.c-btn`'s `flex: none` keeps it word-wide.
+    expect(painted(button, ['flex', 'flex-basis'], PHONE)).toMatch(/(^|\s)100%$/)
   })
 })
 
