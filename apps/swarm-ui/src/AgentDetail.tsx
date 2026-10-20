@@ -16,6 +16,7 @@ import { AttemptDurations } from './charts/AttemptPhases'
 import { CheckpointStrip } from './charts/CheckpointStrip'
 import { DiffstatChart } from './charts/Diffstat'
 import { PeakMemoryChart } from './charts/PeakMemory'
+import { UtilisationPanel } from './UtilisationPanel'
 import { TokenSpendChart } from './charts/TokenSpend'
 import { agentName, workflowHref } from './agentlist'
 import { resultIsNewest, stepCostOf, totalCostOf } from './dag'
@@ -1654,6 +1655,13 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
         </div>
       ))}
       <p className="dt-note">{note}</p>
+      {/* USE OVER TIME, NOT ONLY THE PEAK (LIVE-UTIL-UI; part of #1689). The
+          rows above are the attempt's peak and mean, which the owner found
+          "always show maximum"; this is CPU and memory per 5 s window of the
+          newest attempt, against its limits, with the throttled windows
+          shaded. It reads its own route, on its own clock while the task
+          runs, and stops once it is finished. */}
+      <UtilisationPanel taskId={task.id} live={!TERMINAL_STATES.has(task.state)} />
       <details className="dt-disc">
         <summary>Details: memory, spend and each attempt over time</summary>
         <Attempts run={run} now={now} />

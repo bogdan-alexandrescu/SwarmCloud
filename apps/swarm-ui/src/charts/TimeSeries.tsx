@@ -458,7 +458,8 @@ function ChartHead({ title }: { title: string }) {
 // more than a tidy file layout: it is what keeps the absent-value rules in one
 // place. The phase bars, the peak-memory step line, the checkpoint strip and
 // the diffstat (`AttemptPhases.tsx`, `PeakMemory.tsx`, `CheckpointStrip.tsx`,
-// `Diffstat.tsx`) therefore reach visx ONLY through the four exports below,
+// `Diffstat.tsx`) and the utilisation chart (`Utilisation.tsx`) therefore
+// reach visx ONLY through the five exports below,
 // and each export carries one of the rules with it:
 //
 //   linearScale  a domain the caller built from MEASUREMENTS (an `Extent`),
@@ -468,6 +469,8 @@ function ChartHead({ title }: { title: string }) {
 //                largest measurement, never a rounder number past it;
 //   StepLine     `defined` hard-coded, over `ChartPoint`s, so an absence has
 //                no value to plot and breaks the stroke;
+//   SampleLine   the same, drawn straight between samples rather than held:
+//                for a reading that is a window's mean, not a running max;
 //   LinearScale  the type, so a chart can hold a scale without importing
 //                the library to name it.
 //
@@ -585,6 +588,45 @@ export function StepLine({
       className="ctl-chart-line is-step"
       data-testid="step-line"
       data={vertices}
+      x={(p) => x(p.at)}
+      // NaN rather than 0, for the reason given on `TimeSeries`' line.
+      y={(p) => (p.measured ? y(p.value) : Number.NaN)}
+      defined={(p) => p.measured}
+    />
+  )
+}
+
+/**
+ * A line straight through sampled readings, broken at every absence.
+ *
+ * For a reading that is the MEAN OVER A WINDOW -- the utilisation route's CPU
+ * cores per 5 s, its memory at each 5 s -- rather than a running maximum, a
+ * step that holds each value forward would claim the next window measured
+ * the same; the straight segment between two neighbours claims only what a
+ * line chart of samples always claims. `defined` is hard-coded exactly as on
+ * `StepLine`, so an unread sample still ends the subpath. With no run of two
+ * or more measured points there is no line at all.
+ */
+export function SampleLine({
+  points,
+  x,
+  y,
+  className = 'ctl-chart-line',
+  testId,
+}: {
+  points: readonly ChartPoint[]
+  x: (at: number) => number
+  y: (value: number) => number
+  className?: string
+  testId?: string
+}) {
+  const ordered = inTimeOrder(points)
+  if (!measuredRuns(ordered).some((run) => run.length >= 2)) return null
+  return (
+    <LinePath<ChartPoint>
+      className={className}
+      data-testid={testId}
+      data={ordered}
       x={(p) => x(p.at)}
       // NaN rather than 0, for the reason given on `TimeSeries`' line.
       y={(p) => (p.measured ? y(p.value) : Number.NaN)}
