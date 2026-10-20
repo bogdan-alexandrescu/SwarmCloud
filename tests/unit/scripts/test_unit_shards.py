@@ -154,7 +154,8 @@ def test_the_python_shard_count_is_written_once():
     env = _step("python-unit", "pick").get("env") or {}
     assert env.get("SHARD") == "${{ matrix.shard }}", env
     assert env.get("SHARDS") == "${{ strategy.job-total }}", env
-    assert "scripts/lib/unit_shards.py pick" in _step("python-unit", "pick")["run"]
+    pick = _step("python-unit", "pick")["run"]
+    assert pick.strip().splitlines()[-1].strip() == "python3 scripts/lib/unit_shards.py pick", pick
     assert _jobs()["python-unit"]["strategy"].get("fail-fast") is False
 
 
@@ -253,10 +254,9 @@ def test_the_count_refuses_what_it_does_not_model(tmp_path, mode, areas, tests):
 
 def _pick(tmp_path: Path, shard: int, shards: int, *, mode: str = "all", areas: str = "",
           cwd: Path = REPO, durations: Path = DURATIONS) -> tuple[subprocess.CompletedProcess[str], list[str], dict]:
-    step = _step("python-unit", "pick")
-    # The step runs the repository's script from the checkout; a scratch tree
+    # The workflow's pick step runs this script from the checkout
+    # (test_the_python_shard_count_is_written_once holds that); a scratch tree
     # (`cwd`) has no scripts/, so the same script runs from here against it.
-    assert step["run"].strip().splitlines()[-1].strip() == "python3 scripts/lib/unit_shards.py pick", step["run"]
     files = tmp_path / f"shard-{shard}"
     output = tmp_path / f"output-{shard}"
     output.write_text("")
