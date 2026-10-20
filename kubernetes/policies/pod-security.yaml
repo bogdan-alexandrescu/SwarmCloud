@@ -88,17 +88,21 @@ spec:
     - expression: >-
         variables.containers.all(c,
           !has(c.resources) || !has(c.resources.limits) || !has(c.resources.requests) || (
-            (!('cpu' in c.resources.limits) || !('cpu' in c.resources.requests) ||
-              quantity(c.resources.requests['cpu'])
-                .compareTo(quantity(c.resources.limits['cpu'])) == 0) &&
+            (!('cpu' in c.resources.limits) || !('cpu' in c.resources.requests) || (
+              quantity(c.resources.limits['cpu'])
+                .compareTo(quantity(c.resources.requests['cpu'])) >= 0 &&
+              quantity(c.resources.limits['cpu'])
+                .compareTo(quantity(c.resources.requests['cpu'])
+                  .add(quantity(c.resources.requests['cpu']))) <= 0)) &&
             (!('memory' in c.resources.limits) || !('memory' in c.resources.requests) ||
               quantity(c.resources.requests['memory'])
                 .compareTo(quantity(c.resources.limits['memory'])) == 0)))
       message: >-
-        requests must equal limits for cpu and memory. Bursting past a request is
-        precisely what gets a long-running agent container OOM-killed under node
-        pressure, and there is no headroom to absorb it because every resource
-        class is sized as both request and limit.
+        memory requests must equal limits, and a cpu limit must be at least its
+        request and at most twice it (invariant 7 as amended by contract request
+        RS-1, 2026-10-20). Memory past a request is what gets a long-running
+        agent container OOM-killed under node pressure; CPU past it is only
+        throttled, never killed.
       reason: Forbidden
 
     # By the time a policy sees a Pod, LimitRanger has already applied the
@@ -208,13 +212,16 @@ spec:
     - expression: >-
         variables.containers.all(c,
           !has(c.resources) || !has(c.resources.limits) || !has(c.resources.requests) || (
-            (!('cpu' in c.resources.limits) || !('cpu' in c.resources.requests) ||
-              quantity(c.resources.requests['cpu'])
-                .compareTo(quantity(c.resources.limits['cpu'])) == 0) &&
+            (!('cpu' in c.resources.limits) || !('cpu' in c.resources.requests) || (
+              quantity(c.resources.limits['cpu'])
+                .compareTo(quantity(c.resources.requests['cpu'])) >= 0 &&
+              quantity(c.resources.limits['cpu'])
+                .compareTo(quantity(c.resources.requests['cpu'])
+                  .add(quantity(c.resources.requests['cpu']))) <= 0)) &&
             (!('memory' in c.resources.limits) || !('memory' in c.resources.requests) ||
               quantity(c.resources.requests['memory'])
                 .compareTo(quantity(c.resources.limits['memory'])) == 0)))
-      message: "requests must equal limits for cpu and memory."
+      message: "memory requests must equal limits; a cpu limit must be between its request and twice it (invariant 7, RS-1)."
       reason: Forbidden
 
     # The one check that only makes sense on a Job, and the one whose absence is
