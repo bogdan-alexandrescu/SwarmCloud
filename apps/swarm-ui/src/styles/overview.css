@@ -34,7 +34,7 @@
    the h1 by two steps, and told from the card titles by its position, its
    track and its unboxed region, as the heading ladder ranks hierarchy. */
 .ov-lh h2 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
-/* Sans (Q1): `checks 8/8 · 1 found something` is words around a figure, and
+/* Sans (Q1): `checks 8/8 · 1 found 2 problems` is words around a figure, and
    mono is for ids, values, code and timestamps. Tabular, so the figure holds. */
 .ov-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 /* 400px OR MORE A CARD (browser QA D18, 2026-10-04): three across a 1056px
@@ -327,6 +327,12 @@
      pill floats mid-page is the scroller's to reserve, once, for every page
      (lane L14), not each page's. */
   .ov-atts { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  /* THE LINK TAKES A LINE OF ITS OWN (visual QA QA-061, 2026-10-20). Beside
+     the text and `nowrap`, "quota, all tenants · admin →" held about half a
+     390px card and squeezed the title and detail into the rest. The card
+     wraps and the link drops under them, at the right edge. */
+  .ov-att { flex-wrap: wrap; }
+  .ov-att-go { flex-basis: 100%; text-align: right; }
   /* Three across, the figure only: the per-state breakdown is the desktop's. */
   .ov-life { gap: 6px; border: 0; background: none; overflow: visible; }
   .ov-lc { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 7px 8px; gap: 0; }

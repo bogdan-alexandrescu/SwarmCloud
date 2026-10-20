@@ -232,17 +232,20 @@ describe('O1: Needs a look is a row of check cards', () => {
     expect(text(lead)).not.toMatch(/need(s)? attention/)
   })
 
-  it('says how many checks found something, of how many, on this read', async () => {
+  it('says how many checks found how many problems, of how many, on this read', async () => {
     const el = await mount()
     // #98 (owner ruling 2026-10-07): the lead fraction is labelled `checks ran/total`, so it cannot be read as
     // the reads tally or as a count of problems; "derived on this read" moved into its accessible name.
-    // MUTATION: drop the `checks` label or the `found something` clause, or put "derived on this read" back in the visible words.
+    // QA-013 (visual QA 2026-10-20): the problems figure is the cards drawn, so it is not mistaken for the checks that fired.
+    // MUTATION: drop the `checks` label or the `found N problems` clause, or put "derived on this read" back in the visible words.
     const cnt = el.querySelector('#ov-needs .ov-lh .ov-cnt')!
-    const m = /^checks (\d+)\/(\d+) · (\d+) found something/.exec(text(cnt))
+    const m = /^checks (\d+)\/(\d+) · (\d+) found (\d+) problems?$/.exec(text(cnt))
     expect(m, `the lead count reads ${JSON.stringify(text(cnt))}`).not.toBeNull()
     const [ran, total, found] = [Number(m![1]), Number(m![2]), Number(m![3])]
     expect(ran).toBeLessThanOrEqual(total)
     expect(found).toBeLessThanOrEqual(ran)
+    // MUTATION: count the checks that fired as the problems.
+    expect(Number(m![4])).toBe(el.querySelectorAll('#ov-needs a.ov-att').length)
     expect(text(cnt)).not.toMatch(/derived/i)
     expect(cnt.getAttribute('aria-label')).toMatch(new RegExp(`^${ran} of ${total} checks ran and found `))
     expect(cnt.getAttribute('aria-label')).toMatch(/Derived on every read from /)

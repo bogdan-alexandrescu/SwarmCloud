@@ -518,7 +518,7 @@ describe('B4.1: the tokens are actually in the cascade', () => {
     const style = withStyles()
     const section = document.createElement('section')
     section.className = 'ov-lead'
-    section.innerHTML = '<div class="ov-lh"><h2>Needs a look</h2><span class="ov-cnt">checks 8/8 · 3 found something</span></div>'
+    section.innerHTML = '<div class="ov-lh"><h2>Needs a look</h2><span class="ov-cnt">checks 8/8 · 3 found 4 problems</span></div>'
     document.body.appendChild(section)
 
     const seen = getComputedStyle(section.querySelector('.ov-lh h2')!)

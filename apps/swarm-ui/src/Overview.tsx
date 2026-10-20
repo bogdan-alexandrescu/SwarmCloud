@@ -897,10 +897,14 @@ function NeedsALook({ checks }: { checks: Check[] }) {
         >
           {/* THE LEAD FRACTION, LABELLED (#98, owner ruling 2026-10-07):
               `checks 8/8` is how many of the checks ran, so it cannot be
-              read as the reads tally or as a count of problems. */}
+              read as the reads tally or as a count of problems.
+              THE PROBLEMS ARE COUNTED TOO (visual QA QA-013, 2026-10-20):
+              "6 found something" sat over ten cards, one per problem, and
+              read as the card count. The checks that fired are still the
+              figure; the problems they found, one card each, follow it. */}
           {reading.length > 0
             ? `${reading.length} of ${checks.length} checks still reading`
-            : `checks ${ran}/${checks.length} · ${found} found something`}
+            : `checks ${ran}/${checks.length} · ${found} found ${problems.length} ${problems.length === 1 ? 'problem' : 'problems'}`}
           {blind.length > 0 && (
             <span className={blind.every((c) => c.admin) ? 'ov-info' : 'ov-warn'}> · {blind.length} blind</span>
           )}
