@@ -159,14 +159,15 @@ describe('#503: the panel lights the current page, not its parent', () => {
 // ---------------------------------------------------------------------------
 
 describe('#503: every spine item is a link, so it opens in a new tab and copies', () => {
-  it('draws Profile, Submit, the sections, Help and API reads as anchors with a path', async () => {
+  it('draws Submit, the sections, Help and Profile as anchors with a path', async () => {
     // MUTATION: put `<button data-sec>` back.
     const c = await at('/overview')
     const spine = c.querySelector('.sk-spine')!
     expect(spine.querySelectorAll('button[data-sec]')).toHaveLength(0)
     const hrefs = Object.fromEntries([...spine.querySelectorAll<HTMLAnchorElement>('a.sk-ri')].map((a) => [(a.querySelector('small') ?? a).textContent?.trim(), a.getAttribute('href')]))
     expect(hrefs).toEqual({
-      // NAV-PROFILE (#1633): the first item, drawn as the person's initials.
+      // NAV-PROFILE (#1633): drawn as the person's initials; the spine's
+      // last item since NAV-FOOT (#1672).
       Profile: '/settings/profile',
       Submit: '/submit',
       Overview: '/overview',
@@ -176,7 +177,7 @@ describe('#503: every spine item is a link, so it opens in a new tab and copies'
       // No Admin (NAV-ADMIN-ROLE; part of #1633): the fixture person is not a
       // platform admin and administers no group workspace.
       Help: '/help',
-      'API reads': '/api-reads',
+      // No API reads: a Capacity page since NAV-FOOT (#1672).
     })
   })
 

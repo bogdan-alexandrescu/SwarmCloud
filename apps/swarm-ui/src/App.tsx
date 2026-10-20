@@ -446,6 +446,16 @@ export const SECTIONS: SectionDef[] = [
       // works and lands here.
       { id: 'accounts', label: 'Accounts' },
       { id: 'quota', label: 'Provider quota', admin: true },
+      // API READS, A PAGE OF CAPACITY SINCE NAV-FOOT (#1672, owner 2026-10-20).
+      // It sat at the spine's foot as a utility, "deliberately NOT one of the
+      // sections" (REFERENCE, below); the owner moved it here, last, and the
+      // spine's foot keeps Help and Profile only. It answers none of this
+      // section's question -- every row is a read THIS TAB made, not capacity
+      // -- and the question is left as it was rather than widened to fit: a
+      // widening is the owner's call. The id is the path's last segment;
+      // `#reference`, `/reference` and the rebrand's `/api-reads` land here
+      // (`fromAddress`, paths.ts).
+      { id: 'api-reads', label: 'API reads' },
     ],
   },
   {
@@ -510,13 +520,16 @@ export const SECTIONS: SectionDef[] = [
 ]
 
 /**
- * The API surface. Reachable, and deliberately NOT one of the sections.
- *
- * It is a thing you look up once, not a thing you work in, and giving it a
- * section would put it beside the three questions that people arrive with —
- * which is the mistake the old eleven-item nav made eleven times over.
+ * THE OLD ADDRESS OF API READS, and nothing else now. It was a utility route
+ * beside the sections ("a thing you look up once, not a thing you work in")
+ * until NAV-FOOT (#1672, owner 2026-10-20) made it Capacity's last page,
+ * `capacity/api-reads`. `#reference` and `/reference` are in runbooks and
+ * saved links, so `fromAddress` sends this head, whatever follows it, to that
+ * page; no route carries it as its section any more.
  */
 const REFERENCE = 'reference'
+/** API reads' tab under Capacity (NAV-FOOT): SECTIONS' id and the path's last segment. */
+const API_READS_TAB = 'api-reads'
 
 /** The Submit chooser's address (`/submit`). Not a section, like Help. */
 const SUBMIT = SUBMIT_ADDRESS
@@ -806,9 +819,9 @@ const PANE_SEGMENTS: readonly TaskPane[] = ['logs', 'children', 'attempts', 'art
 const DETAIL_SEGMENTS: readonly string[] = ['details', 'detail']
 
 export interface Route {
-  /** A section id, or REFERENCE. */
+  /** A section id, or one of the pages beside them (Help, Submit, Settings). */
   sectionId: string
-  /** Meaningless when sectionId is REFERENCE; carried anyway so Route is flat. */
+  /** Meaningless on a page with no tabs; carried anyway so Route is flat. */
   tab: string
   /** Set when an agent drawer is open over the Agents section. */
   taskId: string | null
@@ -956,7 +969,11 @@ export function fromAddress(full: string): Route {
   // MOVED_PANES entry cannot say -- the destination carries a query.
   if (hash === 'admin/schedules') return fromAddress(ALL_TENANTS_SCHEDULES)
 
-  if (head === REFERENCE) return { sectionId: REFERENCE, tab: '', ...blank }
+  // API READS' OLD ADDRESS (NAV-FOOT, #1672): `#reference`, `/reference` and
+  // anything after either land on Capacity › API reads. The page has no
+  // sub-address and reads no query, so there is no tail it could open
+  // further: the whole of what an old link named is the page itself.
+  if (head === REFERENCE) return { sectionId: CAPACITY, tab: API_READS_TAB, ...blank }
   if (hash === GITHUB_CALLBACK) return { sectionId: GITHUB_CALLBACK, tab: '', ...blank }
   // Settings › API keys and its one-time link, before LEGACY reads `settings`
   // as the eleven-item nav's Pool limits. Only the link's scope is kept.
@@ -1123,7 +1140,6 @@ export function canonical(r: Route): string {
     if (r.taskPane === 'changes' && r.file) return `${base}/changes/${encodeURIComponent(r.file)}`
     return r.taskPane === 'detail' ? base : `${base}/${r.taskPane}`
   }
-  if (r.sectionId === REFERENCE) return REFERENCE
   if (r.sectionId === SUBMIT) return SUBMIT
   if (r.sectionId === GITHUB_CALLBACK) return GITHUB_CALLBACK
   if (r.sectionId === SETTINGS) return r.view ? `${SETTINGS}/${r.tab}?${r.view}` : `${SETTINGS}/${r.tab}`
@@ -1369,21 +1385,19 @@ export function App() {
       ? 'Submit'
       : at.sectionId === HELP
         ? 'Help'
-        : at.sectionId === REFERENCE
-          ? REFERENCE_LABEL
-          : at.sectionId === GITHUB_CALLBACK
-            ? 'Connect GitHub'
-            : at.sectionId === SETTINGS
-              ? at.tab === WORKSPACE_TAB
-                ? WORKSPACE_LABEL
-                : at.tab === MCP_TAB
-                  ? MCP_LABEL
-                  : at.tab === PROFILE_TAB
-                    ? PROFILE_LABEL
-                    : at.tab === PEOPLE_TAB
-                      ? PEOPLE_LABEL
-                      : KEYS_LABEL
-              : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
+        : at.sectionId === GITHUB_CALLBACK
+          ? 'Connect GitHub'
+          : at.sectionId === SETTINGS
+            ? at.tab === WORKSPACE_TAB
+              ? WORKSPACE_LABEL
+              : at.tab === MCP_TAB
+                ? MCP_LABEL
+                : at.tab === PROFILE_TAB
+                  ? PROFILE_LABEL
+                  : at.tab === PEOPLE_TAB
+                    ? PEOPLE_LABEL
+                    : KEYS_LABEL
+            : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
   const object = at.missing ? null : documentObjectOf(at)
   useEffect(() => {
     document.title = documentTitleOf(title, object)
@@ -1421,10 +1435,10 @@ export function App() {
           // over every page, so a section page carried an empty 48px band.
           bell={<NotificationBell go={go} />}
           foot={
-            // THE UTILITY CORNER: Help and API reads at the spine's foot,
-            // links like every spine item (#503). `ctl-nav-util` is
-            // load-bearing: test_nav_headings_agree.py reads this element to
-            // find the API reads link and its label.
+            // THE UTILITY CORNER: Help at the spine's foot, a link like every
+            // spine item (#503). Profile follows it, drawn by the shell
+            // (NAV-FOOT, #1672); API reads, which sat here beside Help, is
+            // Capacity's last page now.
             <div className="ctl-nav-util sk-foot">
               <a
                 className={`sk-ri${at.sectionId === HELP ? ' is-on' : ''}`}
@@ -1439,17 +1453,6 @@ export function App() {
                 <Icon name="help" />
                 <small>Help</small>
               </a>
-              <a
-                className={`sk-ri${at.sectionId === REFERENCE ? ' is-on' : ''}`}
-                aria-current={at.sectionId === REFERENCE ? 'page' : undefined}
-                href={addressToPath(REFERENCE)}
-                onClick={(e) => {
-                  if (!routedClick(e)) return
-                  e.preventDefault()
-                  go(REFERENCE)
-                }}
-              >
-                <Icon name="api" />{REFERENCE_LABEL}</a>
             </div>
           }
         >
@@ -1486,10 +1489,11 @@ export function App() {
                   <ProfileScreen />
                 ) : at.sectionId === SETTINGS && at.tab === PEOPLE_TAB ? (
                   <WorkspacePeopleScreen />
-                ) : at.sectionId === SETTINGS ? (
-                  <ProviderKeysScreen link={at.tab === KEY_LINK_TAB ? { scope: keyLinkScope(at.view ?? ''), token: keyLink.current } : null} />
                 ) : (
-                  <ReferenceScreen failuresOnly={apiFailuresOnly} />
+                  // Settings › API keys and its one-time link: the last page
+                  // that is not a section. API reads was the one after it
+                  // until NAV-FOOT (#1672) made it a Capacity tab.
+                  <ProviderKeysScreen link={at.tab === KEY_LINK_TAB ? { scope: keyLinkScope(at.view ?? ''), token: keyLink.current } : null} />
                 )
               ) : (
                 // THE PAGE (CH-2): its `Screen`s' reads stay its own while the
@@ -1510,6 +1514,7 @@ export function App() {
                     page={at.page ?? null}
                     onView={onView}
                     go={go}
+                    apiFailuresOnly={apiFailuresOnly}
                   />}
                   </FrameAge.Provider>
                 </RoutedPage.Provider>
@@ -1563,8 +1568,6 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
       return 'admin'
     case HELP:
       return 'help'
-    case REFERENCE:
-      return 'api'
     case GITHUB_CALLBACK:
       return 'work'
     // EVERY SETTINGS PAGE LIGHTS PROFILE (NAV-PROFILE; part of #1633): its
@@ -1657,7 +1660,7 @@ function Head({
   // of its own, not API reads (#503), and the two forms lead back to it.
   const submitForm = at.sectionId === WORK && isSubmitPage(at)
   const head = isSubmitPage(at) ? 'Submit'
-    : section?.label ?? (at.sectionId === HELP ? 'Help' : at.sectionId === SETTINGS ? SETTINGS_LABEL : REFERENCE_LABEL)
+    : section?.label ?? (at.sectionId === HELP ? 'Help' : at.sectionId === SETTINGS ? SETTINGS_LABEL : title)
   const home = submitForm ? SUBMIT : section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
   // The open agent by its name once its split has read it (walkthrough G).
   const named = useAgentName(at.taskId)
@@ -1847,7 +1850,7 @@ function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: num
   // and no "reading…" that never resolves (#503). The Submit chooser is not
   // one of them: it reads your recent submissions and carries that read's age
   // on its own refresh (QA G1-05/G4-23).
-  if (at.sectionId === HELP || at.sectionId === REFERENCE) {
+  if (at.sectionId === HELP || (at.sectionId === CAPACITY && at.tab === API_READS_TAB)) {
     return <span className="ctl-em">reads nothing</span>
   }
   // `reads` is about ANOTHER screen until this one's scope has begun (the
@@ -2005,6 +2008,7 @@ function SectionBody({
   page,
   onView,
   go,
+  apiFailuresOnly = false,
 }: {
   sectionId: string
   tab: string
@@ -2021,6 +2025,8 @@ function SectionBody({
   /** Where the Timeline writes a new view; App turns it into the route. */
   onView: (view: string) => void
   go: (to: string) => void
+  /** API reads' filter, set by the panel's "Failures only" row. */
+  apiFailuresOnly?: boolean
 }) {
   const openAgent = (id: string) => go(`${WORK}/task/${encodeURIComponent(id)}`)
   /*
@@ -2108,6 +2114,8 @@ function SectionBody({
       return <HoldersScreen />
     case 'capacity/accounts':
       return <AccountsScreen />
+    case 'capacity/api-reads':
+      return <ReferenceScreen failuresOnly={apiFailuresOnly} />
     case 'capacity/quota':
       return <QuotaDetailScreen />
 

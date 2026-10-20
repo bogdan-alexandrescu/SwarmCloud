@@ -555,7 +555,8 @@ def test_the_data_source_strip_collapses_to_one_line():
         "the per-route cells were deleted rather than collapsed"
     )
     assert "source-cells" in src("DataSources.tsx"), "the per-route cells are gone"
-    assert '<a href="#reference">' in dock, "there is no route to the full detail"
+    # Capacity › API reads since NAV-FOOT (#1672); `#reference` is its old address.
+    assert '<a href="#capacity/api-reads">' in dock, "there is no route to the full detail"
 
 
 def test_the_reauth_button_is_not_behind_the_disclosure():

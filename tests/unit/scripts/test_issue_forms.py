@@ -429,10 +429,10 @@ def _nav_options() -> dict[str, str]:
             name = slabel if len(tabs) == 1 else f"{slabel} › {tlabel}"
             out[paths[f"{sid}/{tid}"]] = f"{UI}{name} ({paths[f'{sid}/{tid}']})"
 
-    # The two utility buttons beside the sections. Read from the same constants
-    # the router and the button use.
-    ref = _const(app, "REFERENCE")
-    out[paths[ref]] = f"{UI}{_const(app, 'REFERENCE_LABEL')} ({paths[ref]})"
+    # The utility button beside the sections: Help. API reads was the second
+    # until NAV-FOOT (#1672) made it Capacity's last tab, which the SECTIONS
+    # loop above reads like every other. Read from the same constants the
+    # router and the button use.
     help_route = _const(_read(HELP_TS), "HELP_ROUTE")
     # The Help screen's name is what the head's crumb prints for it. Anchored on
     # the crumb's own `??` fallback: the same `at.sectionId === HELP ? '...'`

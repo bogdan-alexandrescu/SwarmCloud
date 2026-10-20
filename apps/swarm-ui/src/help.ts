@@ -1697,7 +1697,8 @@ export const HELP_PLACES = {
   'admin/counts': 'Platform counts',
   'automate/schedules': 'Schedules',
   'automate/approvals': 'Approvals',
-  reference: 'API reads',
+  // A Capacity page since NAV-FOOT (#1672); `reference` still lands there.
+  'capacity/api-reads': 'API reads',
 } as const
 
 export type HelpPlace = keyof typeof HELP_PLACES
@@ -1734,7 +1735,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'read-failed': {
     subject: 'A failed read',
-    act: { say: 'Re-read the screen, and if the failure persists, check which route is failing and for how long.', at: 'reference' },
+    act: { say: 'Re-read the screen, and if the failure persists, check which route is failing and for how long.', at: 'capacity/api-reads' },
   },
   'token-cost': {
     subject: 'Token cost',
@@ -1750,7 +1751,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'partial-read': {
     subject: 'Several failed reads',
-    act: { say: 'Look at each failing route on its own; the message describes only the first.', at: 'reference' },
+    act: { say: 'Look at each failing route on its own; the message describes only the first.', at: 'capacity/api-reads' },
   },
   'binding-window': {
     subject: 'Utilisation of an account',
@@ -1826,7 +1827,7 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   },
   'api-reads': {
     subject: 'The reads behind a screen',
-    act: { say: 'Open the reads to see which route is failing and how old its last good payload is.', at: 'reference' },
+    act: { say: 'Open the reads to see which route is failing and how old its last good payload is.', at: 'capacity/api-reads' },
   },
   schedules: {
     subject: 'What a schedule does',

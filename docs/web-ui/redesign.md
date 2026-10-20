@@ -112,7 +112,9 @@ Plus two things in the nav's utility corner rather than among the sections:
 **API reads** (`#reference`) and **Help** (`#help/<topic>`). Both are things
 you look up once, not things you work in. *Why these sections* below gives the
 argument for keeping them out of the sections, and why "API reads" is neither
-of the two names that screen shipped with.
+of the two names that screen shipped with. (Since 2026-10-20 API reads is
+Capacity's last page, at the owner's request, and only Help stays in the
+corner: see *Changed, 2026-10-20* at the end of this file.)
 
 The question is **not** printed on the pane. It was, on all fifteen routes,
 which is six copies of one sentence for Capacity alone and a line of vertical
@@ -769,7 +771,9 @@ that grows by one line per lane is not navigation.
   icon is the person's avatar (their initials, the email in its title); the
   avatar that ended the spine's foot went with it, so the person is drawn
   once. Help and API reads stay at the foot; collapsed, the compact Sign out
-  stays there too, since the panel's is not drawn.
+  stays there too, since the panel's is not drawn. (Reversed 2026-10-20,
+  NAV-FOOT: Profile is the foot's last item and API reads a Capacity page —
+  see the last section of this file.)
 - **Its panel lists five pages, in this order:** Profile, API keys, Workspace,
   MCP servers, People and roles (`PANEL_PAGES.profile` in `Spine.tsx`). The
   person's own pages first, then the selected workspace's. The collapsed
@@ -838,3 +842,52 @@ the tenant block and then found its pages under Profile.
 
 `apps/swarm-ui/src/__tests__/spine.adminrole.test.tsx` holds it; it replaces
 `spine.adminlock.test.tsx`, which held the reversed rule.
+
+## Changed, 2026-10-20 — Profile is the spine foot's last item, API reads is a Capacity page, the signed-in name opens Profile (#1672)
+
+Owner request, 2026-10-20, after NAV-PROFILE and NAV-ADMIN-ROLE shipped
+(lane NAV-FOOT).
+
+**Why.** People look for themselves at the bottom of a sidebar, where the
+avatar sat before NAV-PROFILE moved it under the Hive; the spine's top is
+for the places they work in. API reads was the one utility at the foot that
+is not about the person or about getting help — it is a reading of what this
+tab fetched, which sits with the other readings under Capacity. And the
+signed-in name in the panel foot was plain text, though it is the first
+thing a person clicks to reach their own settings.
+
+**What holds now.**
+
+- **The spine, top to bottom:** the Hive, Submit, Overview, Work, Automate,
+  Capacity, Admin (only for platform and workspace admins, NAV-ADMIN-ROLE's
+  rule, unchanged), then at the foot the bell, Help, collapsed Sign out and,
+  **last, Profile** — at desktop width, on the collapsed spine and in the
+  phone drawer, which draws the same spine. Profile keeps its avatar icon and
+  its panel of five pages (Profile, API keys, Workspace, MCP servers, People
+  and roles). Collapsed, its flyout opens up from the spine's bottom edge
+  (`.sk-flyout.is-profile`) rather than from the fixed top the other
+  sections use.
+- **API reads is Capacity's last tab** (`SECTIONS` in `App.tsx`,
+  `PANEL_PAGES.capacity` in `Spine.tsx`), labelled "API reads", at
+  `/capacity/api-reads`. Its panel row, while it is the open page, carries
+  the same "Every read this tab made / Failures only" pair its own panel
+  had. **Capacity's question was not widened** to cover it: every row on the
+  page is a read this browser tab made, not capacity, and widening a
+  section's question is the owner's call (the note at the top of this file).
+- **The old addresses still land.** `#reference`, `/reference` and the
+  rebrand's `/api-reads`, with anything after them, resolve to
+  `capacity/api-reads` (`fromAddress` in `App.tsx`, `OLD_API_READS_PATHS` in
+  `paths.ts`), and the bar is rewritten once. The page has no sub-address and
+  reads no query, so there is no tail it could open further.
+- **The first name in the signed-in block is a link to `/settings/profile`**,
+  named "<name>, open your profile" for assistive technology. The admin chip,
+  Sign out and the email are unchanged. The block is drawn once, in the
+  panel foot, and the phone drawer holds that panel, so a phone gets the
+  same link. While the name is unread the block still says "reading…" or
+  "not read", as plain text.
+- **The issue forms' "Where" list** names "Capacity › API reads
+  (/capacity/api-reads)" in place of "API reads (/api-reads)";
+  `tests/unit/scripts/test_issue_forms.py` reads it from `SECTIONS`.
+
+`apps/swarm-ui/src/__tests__/nav.foot.test.tsx` holds all of it, with the
+full spine order asserted at each width.
