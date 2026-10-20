@@ -847,6 +847,47 @@ consumer can trust below the file. The indexer runs, in order:
    falls below 0.2, gives `symbol_test_map`. RI0's file-level `test_map` is
    kept and derived from it, so its consumers do not change.
 
+**Which server serves which language, and how each is budgeted** *(revised
+2026-10-20, lane INDEX-LANGS, part of #1693)*. Every language the extractor
+lists has a server (`LANGUAGE_SERVERS` in `repo_index_extract.py`, the specs
+in `lsp/servers.py`), all four installed in `agent-runtime-indexer` and
+resolved only from `/opt/repo-index/servers/bin`:
+
+| language | files | server | command | edges asked | budget |
+|---|---|---|---|---|---|
+| `python` | `.py`, `.pyi` | `pyright` | `pyright-langserver --stdio` | definition per site, then `incomingCalls` per exported symbol | its own grant: a share of the pass's total in proportion to pyright's cost in the last full run, capped at the per-server row below |
+| `typescript` | `.ts`, `.mts`, `.cts`, `.tsx` | `tsserver` | `typescript-language-server --stdio` | definition per site, then `incomingCalls` | one grant for both languages: ONE process loads the workspace once, so TypeScript and JavaScript share tsserver's share, in proportion to its last cost |
+| `javascript` | `.js`, `.jsx`, `.mjs`, `.cjs` | `tsserver` | `typescript-language-server --stdio` | definition per site, then `incomingCalls` | tsserver's share, with TypeScript (above) |
+| `go` | `.go` | `gopls` | `gopls serve` (with `go` beside it, `GOPROXY=off`) | definition per site, then `incomingCalls` | its own grant: a share in proportion to gopls's last cost, capped at the per-server row |
+| `hcl` | `.tf`, `.tfvars` opened; `.hcl` (Packer, `.tftest.hcl`) tree-sitter only | `terraform-ls` | `terraform-ls serve` | definition per site, then `textDocument/references` for variables, locals, resources, data, modules and outputs (it has no call hierarchy) | its own grant: a share in proportion to terraform-ls's last cost, capped at the per-server row |
+
+In every row the workspace phase (call hierarchy or references) gets at most
+half of the server's grant, and time a server does not use passes to the
+servers after it (run order: gopls, pyright, terraform-ls, tsserver). A
+server with no measured cost needs the equal share of the total, so the
+first full run after a server is added splits the pass equally among the
+servers the repository's languages call for.
+
+Why terraform-ls is back: it was specified from the start but out of the
+image from 2026-10-05, when HashiCorp's zip carried HIGH CVEs and that day's
+source build answered no references in the image's self-test, so HCL was
+tree-sitter only and `unsupported` in every index. Owner decision
+2026-10-20: every listed language gets a working pass. terraform-ls 0.39.0
+is now compiled from its module source like gopls (pinned by version and by
+the sha256 of its module zip, with the flagged `golang.org/x` modules
+raised), and it answered across a module's files on 2026-10-20. Two checks
+keep that true: the image build's `--lsp-self-test` requires one `lsp` edge
+for EACH of the five languages (JavaScript included, which tsserver serves
+through another languageId and project than TypeScript), and
+`tests/unit/worker/test_repo_index_lsp_servers.py` runs the driver's pass
+against each real server on a two-file fixture repository wherever the
+binaries are present. The cost: a repository with Terraform has one more
+server sharing the pass, so on its first full run after the release the
+others get a smaller equal share; from the second run terraform-ls's share
+follows what it cost, seconds on a typical module. The extractor version
+went to 5 with it, so that first run is full: a version-4 graph's HCL row
+is `unsupported` with no `lsp` edge an incremental run could carry.
+
 **No dependencies are installed.** A language server resolves third-party
 symbols only against installed packages (a virtualenv, `node_modules`, the Go
 module cache), and installing them runs the repository's own install scripts

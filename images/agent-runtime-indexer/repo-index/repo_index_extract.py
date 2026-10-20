@@ -176,7 +176,13 @@ EXTRACTOR_NAME = "swarm-repo-index"
 # carry the server's `grant_seconds` and `cost_seconds`, which the next run
 # grants its servers from (lsp/driver.py). A version-3 base has neither, so
 # the first run after the release is full and measures every server.
-EXTRACTOR_VERSION = "4"
+#
+# "5" (lane INDEX-LANGS, part of #1693): HCL is asked of terraform-ls. A
+# version-4 base's HCL row is `unsupported` with no `lsp` edge, and an
+# incremental run carries an unchanged file's edges and takes the worse of
+# its own status and the base's, so HCL would stay `unsupported` until some
+# unrelated full run. Refusing the version-4 base makes the first run full.
+EXTRACTOR_VERSION = "5"
 
 # §2.5's confidences, by evidence.
 AST_UNIQUE = 0.6
@@ -305,8 +311,8 @@ LANGUAGE_SERVERS = {
     "typescript": "tsserver",
     "javascript": "tsserver",
     "go": "gopls",
-    # "hcl": terraform-ls is out of the image for now (lsp/servers.py
-    # DISABLED_SERVERS); HCL is tree-sitter only.
+    # Back in the image since 2026-10-20 (lane INDEX-LANGS, part of #1693).
+    "hcl": "terraform-ls",
 }
 
 # extension -> (language, grammar key)
@@ -3881,11 +3887,22 @@ _LSP_SELF_TEST_FILES = {
     "go/go.mod": "module example.com/selftest\n\ngo 1.22\n",
     "go/a.go": "package selftest\n\nfunc Alpha() int {\n\treturn 1\n}\n",
     "go/b.go": "package selftest\n\nfunc Beta() int {\n\treturn Alpha()\n}\n",
+    # tsserver serves JavaScript too, but through another languageId and a
+    # project of its own; a server that resolves one need not resolve both.
+    "js/package.json": "{\"name\": \"selftest\", \"private\": true, \"type\": \"module\"}\n",
+    "js/a.js": "export function alpha() {\n  return 1;\n}\n",
+    "js/b.js": "import { alpha } from \"./a.js\";\n\nexport function beta() {\n  return alpha();\n}\n",
+    # terraform-ls has no call hierarchy: the edge is a reference, from the
+    # local that uses a variable to the variable another file declares.
+    "tf/a.tf": "variable \"alpha\" {\n  type = string\n}\n",
+    "tf/b.tf": "locals {\n  beta = \"x-${var.alpha}\"\n}\n",
 }
 _LSP_SELF_TEST_EDGES = {
     "python": ("py/b.py#beta", "py/a.py#alpha"),
     "typescript": ("ts/b.ts#beta", "ts/a.ts#alpha"),
+    "javascript": ("js/b.js#beta", "js/a.js#alpha"),
     "go": ("go/b.go#Beta", "go/a.go#Alpha"),
+    "hcl": ("tf/b.tf#local.beta", "tf/a.tf#var.alpha"),
 }
 
 
