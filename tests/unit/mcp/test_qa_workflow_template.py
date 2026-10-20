@@ -19,10 +19,23 @@ hold it to what reads it:
   command parsing with `swarm_qa`'s own argument parser and naming presets the
   gate has. A group added to the route list without a step here is a group no
   run looks at.
-* `test_template_report_reads_every_review_and_flow`: the report stages every
-  review's and flow's tarball, each under the name its producer writes; every
-  flow records its GIF with `swarm-handoff record`, the command QA-FLOWS
-  shipped; no step's output goes nowhere.
+* `test_template_report_reads_every_review_and_the_a11y_pass` and
+  `test_flow_report_reads_every_flow_and_nothing_else`: the screen findings
+  and the flows are two reports (QA-TEMPLATE-SPLIT, part of #1680). Visual QA
+  run 2 (`wf_b6e2441b419f423a84eb`, 2026-10-20) lost its whole report to one
+  flow: `flow-submit-form` was killed at its timeout, the platform cancels
+  every dependant of a failed step, and `report` depended on all ten review,
+  flow and a11y steps -- so every finished screen review went unreported.
+  `report` now waits only for the reviews and the a11y pass, `flow-report`
+  only for the flows; each stages each tarball under the name its producer
+  writes, every flow records its GIF with `swarm-handoff record`, the command
+  QA-FLOWS shipped, and no step's output goes nowhere.
+* `test_flow_submit_form_ends_inside_its_timeout`: run 2's flow navigated
+  while its recorder was connecting, the navigation timed out, and one
+  `browser_tabs` call then hung for 1800 s and a second until the kill. The
+  brief opens the page before recording, stops calling browser tools after one
+  times out, caps its screenshots, and carries a budget that ends it with time
+  to bundle.
 * `test_flow_briefs_name_only_pages_in_the_route_list`: a flow brief names
   each page by its path in `routes.json`, never by a nav trail (QA-038: the
   first run's brief said "Work > Submit a task", a trail the console does not
@@ -68,10 +81,14 @@ SWARM_QA = REPO / "images" / "agent-runtime-browser" / "swarm_qa.py"
 #: swarm-api's `core.max_workflow_steps` default; the design counted 17 of it.
 MAX_STEPS = 50
 REPORT = "report"
+#: The flows' own report: a flow that fails costs this, never `report`.
+FLOW_REPORT = "flow-report"
+REPORTS = (REPORT, FLOW_REPORT)
 CAPTURE = "capture-"
 REVIEW = "review-"
-#: The steps whose tarball only the report reads: flows and the a11y pass.
-REPORTED_ALONE = ("flow-", "a11y-")
+FLOW = "flow-"
+#: The step whose tarball only the screen report reads besides the reviews.
+A11Y = "a11y-"
 #: Where the capture steps serve the console: `npm run dev` in apps/swarm-ui,
 #: the fixture build (`USE_FIXTURES`, apps/swarm-ui/src/api.ts).
 FIXTURE_ORIGIN = "http://localhost:5173"
@@ -185,27 +202,97 @@ def test_template_captures_every_route_group():
         assert f"{REVIEW}{group}.tar" in review["prompt"]
 
 
-def test_template_report_reads_every_review_and_flow():
+def _flows(steps: dict[str, dict]) -> list[str]:
+    return sorted(s for s in steps if s.startswith(FLOW) and s not in REPORTS)
+
+
+def test_template_report_reads_every_review_and_the_a11y_pass():
     steps = _steps()
     report = steps[REPORT]
-    fed = sorted(s for s in steps if s.startswith(REVIEW) or s.startswith(REPORTED_ALONE))
-    assert sorted(report["depends_on"]) == fed, "the report waits for every review, flow and a11y pass"
+    fed = sorted(s for s in steps if s.startswith(REVIEW) or s.startswith(A11Y))
+    # MUTATION: add "flow-submit-form" back to report's depends_on and
+    # input_from (run 2's shape, wf_b6e2441b419f423a84eb) and this fails:
+    # one killed flow cancelled the report over six finished reviews.
+    assert sorted(report["depends_on"]) == fed, "the screen report waits for the reviews and the a11y pass only"
     assert report["input_from"] == {s: f"{s}.tar" for s in fed}, "and stages each one's tarball"
+    assert not set(report["depends_on"]) & set(_flows(steps)), "a failed flow must not cancel the screen findings"
     for step_id in fed:
         # The name staged is the name the producer is told to write.
         assert f"{step_id}.tar under $SWARM_ARTIFACTS_DIR" in steps[step_id]["prompt"], step_id
+    prompt = report["prompt"]
+    assert "report.md" in prompt and "findings.json" in prompt
+    # MUTATION: put "then one section per flow with its GIFs embedded" back in
+    # report's prompt and this fails: the flows are flow-report's to write.
+    assert ".gif" not in prompt.lower() and "flow-submit-form" not in prompt, (
+        "the screen report writes no flow section; flow-report does"
+    )
+    assert FLOW_REPORT in prompt, "report.md says where the flows went"
 
-    flows = [s for s in steps if s.startswith("flow-")]
+
+def test_flow_report_reads_every_flow_and_nothing_else():
+    steps = _steps()
+    # MUTATION: delete the flow-report step and this fails on the lookup.
+    flow_report = steps[FLOW_REPORT]
+    flows = _flows(steps)
     assert len(flows) == 3, flows
+    # MUTATION: add "review-task" to flow-report's depends_on and this fails:
+    # a flows report that waits on a review is cancelled by its failure too.
+    assert sorted(flow_report["depends_on"]) == flows, "the flows report waits for the three flows only"
+    assert flow_report["input_from"] == {s: f"{s}.tar" for s in flows}, "and stages each one's tarball"
+    assert flow_report["runner_profile"] == "claude-code", "it reads tarballs; it needs no browser"
+    assert flow_report["model_class"] == "opus", "owner, 2026-10-19 (§7 Q1): opus for the report"
     for step_id in flows:
         prompt = steps[step_id]["prompt"]
+        assert f"{step_id}.tar under $SWARM_ARTIFACTS_DIR" in prompt, step_id
         # QA-FLOWS' recorder: a GIF lands at $SWARM_ARTIFACTS_DIR/flows/<name>.gif.
         assert "swarm-handoff record start " in prompt and "swarm-handoff record stop" in prompt, step_id
         assert "flows/" in prompt and ".gif" in prompt, f"{step_id} does not bundle its GIF"
+    prompt = flow_report["prompt"]
+    # MUTATION: drop "whether its goal was reached" or the flow-submit-form
+    # screenshots from flow-report's prompt and this fails.
+    for part in ("flows.md", "GIF", "whether its goal was reached", "flow-submit-form screenshot",
+                 "$SWARM_ARTIFACTS_DIR"):
+        assert part in prompt, f"flow-report's prompt does not ask for {part!r}"
 
-    # No step's output goes nowhere: every step but the report feeds a later one.
+    # No step's output goes nowhere: every step but the two reports feeds a later one.
     consumed = {parent for s in steps.values() for parent in s.get("input_from", {})}
-    assert consumed == set(steps) - {REPORT}
+    assert consumed == set(steps) - set(REPORTS)
+
+
+#: "Your budget is 35 minutes": the minute at which the flow stops and reports.
+BUDGET = re.compile(r"Your budget is (\d+) minutes")
+#: "at most 12 screenshots per preset".
+SCREENSHOT_CAP = re.compile(r"at most (\d+) screenshots per preset")
+#: Minutes a flow keeps after its budget to stop the recorder, write and bundle.
+WRAP_UP_MINUTES = 10
+
+
+def test_flow_submit_form_ends_inside_its_timeout():
+    step = _steps()["flow-submit-form"]
+    prompt = step["prompt"]
+    # MUTATION: delete "Your budget is 35 minutes" (run 2's brief, killed at
+    # 2700 s with nothing bundled) and this fails on the missing budget.
+    budget = BUDGET.search(prompt)
+    assert budget, "flow-submit-form carries no explicit budget"
+    minutes = int(budget.group(1))
+    assert minutes == 35, minutes
+    assert (minutes + WRAP_UP_MINUTES) * 60 <= step["timeout_seconds"], (
+        f"a {minutes}-minute budget leaves no {WRAP_UP_MINUTES} minutes to bundle inside the timeout"
+    )
+    assert "`date +%s`" in prompt, "the budget is measured from a recorded start"
+    # MUTATION: move "swarm-handoff record start" before the first
+    # browser_snapshot (run 2 started the recorder and navigated in the same
+    # second; the navigation timed out) and this fails.
+    assert prompt.index("browser_snapshot") < prompt.index("swarm-handoff record start"), (
+        "the page is opened and seen before the recorder connects"
+    )
+    # MUTATION: delete the no-retry sentence (run 2 called browser_tabs after
+    # its navigation timed out: 1800 s, then again until the kill) and this fails.
+    assert "do not call it or any other browser tool again" in prompt
+    assert "goal_reached" in prompt, "a stopped flow still says what it reached"
+    # MUTATION: raise the cap to 40 and this fails.
+    cap = SCREENSHOT_CAP.search(prompt)
+    assert cap and int(cap.group(1)) <= 15, "the screenshots are capped per preset"
 
 
 def test_template_names_only_profiles_inputs_and_classes():
@@ -243,7 +330,7 @@ def test_flow_briefs_name_only_pages_in_the_route_list():
     routes = json.loads(ROUTES.read_text(encoding="utf-8"))
     paths = {r["path"] for group in routes["groups"].values() for r in group}
     steps = _steps()
-    flows = sorted(s for s in steps if s.startswith("flow-"))
+    flows = _flows(steps)
     assert flows, "the template has no flow step"
     named_by_flow = {}
     for step_id in flows:
