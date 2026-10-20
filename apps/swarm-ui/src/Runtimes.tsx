@@ -665,7 +665,7 @@ function RuntimeCard({
           {/* `rt-runs-on` / `rt-backend` (QA-010): the backend is one token
               and the declared backend beside it wraps under it, never the other way round.
               ONE VALUE ITEM (capacity-007, run 2): as two items of the fact, a
-              wrapped `← AUTO` went to the row's start, under `runs on`, and read
+              wrapped declared backend (`← ` and its name) went to the row's start, under `runs on`, and read
               as a second key. Inside `rt-runs-on-value` it wraps to the value
               column's x, under the backend it was resolved to. */}
           <li className="ctl-fact rt-runs-on">
