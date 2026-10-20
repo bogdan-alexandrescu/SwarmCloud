@@ -138,10 +138,10 @@ run "the_tick_can_invoke_swarm_api_and_swarm_api_knows_its_address" {
   }
 
   variables {
-    api_invokers             = ["group:eng@saga.xyz"]
+    api_invokers             = ["group:eng@example.com"]
     deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
     tenants = {
-      eng = { kind = "group", principal = "eng@saga.xyz", providers = ["anthropic"] }
+      eng = { kind = "group", principal = "eng@example.com", providers = ["anthropic"] }
     }
   }
 

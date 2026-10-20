@@ -25,7 +25,7 @@ run "the_metrics_read_the_frozen_event_vocabulary" {
     wake_subscription        = "swarm-scheduler-wake-sub"
     dead_letter_subscription = "swarm-scheduler-wake-dlq-sub"
     safety_tick_job          = "swarm-scheduler-tick"
-    alert_emails             = ["platform@saga.xyz"]
+    alert_emails             = ["platform@example.com"]
   }
 
   # Every key here is an EventType VALUE that agent_worker.control.emit() writes
@@ -123,7 +123,7 @@ run "the_alerts_page_on_what_a_human_would_act_on" {
     wake_subscription        = "swarm-scheduler-wake-sub"
     dead_letter_subscription = "swarm-scheduler-wake-dlq-sub"
     safety_tick_job          = "swarm-scheduler-tick"
-    alert_emails             = ["platform@saga.xyz"]
+    alert_emails             = ["platform@example.com"]
   }
 
   # The single most important policy: if the one-minute tick dies quietly, the

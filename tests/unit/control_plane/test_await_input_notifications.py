@@ -32,9 +32,9 @@ from swarm_api.store import Store
 
 from .conftest import auth_header, seed_task, seed_tenant
 
-ALICE = "alice@saga.xyz"
-BOB = "bob@saga.xyz"
-ROOT = "root@saga.xyz"
+ALICE = "alice@example.com"
+BOB = "bob@example.com"
+ROOT = "root@example.com"
 REMIND = 14_400
 
 

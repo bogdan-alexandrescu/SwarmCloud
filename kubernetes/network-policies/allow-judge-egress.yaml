@@ -1,5 +1,5 @@
 # The internal judge's one extra path out of a tenant namespace: TCP 8443 to
-# the decision-api forwarder in swarm-system -- the only route onto Saga's
+# the decision-api forwarder in swarm-system -- the only route onto the internal
 # Tailscale tailnet -- from a pod the dispatcher labelled
 # `swarm-judge: internal`, and nothing else (owner decisions 2026-10-14; lane
 # JUDGE-NET; kubernetes/swarm-system/tailscale-egress.yaml,

@@ -60,7 +60,7 @@ def _request(api, owner: str = PENDING, user: str = "alice"):
 
 
 def _doc(db, owner: str = PENDING, tenant: str = "eng",
-         email: str = "alice@saga.xyz") -> dict[str, Any] | None:
+         email: str = "alice@example.com") -> dict[str, Any] | None:
     return db.docs.get(f"forge_orgs/{access.org_id_for(tenant, email, owner)}")
 
 
@@ -100,8 +100,8 @@ def test_an_install_request_is_recorded_with_no_github_call(api, github, db, cap
     doc = _doc(db)
     assert doc is not None
     assert doc["install_state"] == "requested" and doc["requested_at"] is not None
-    assert doc["tenant_id"] == "eng" and doc["user"] == "alice@saga.xyz"
-    assert doc["user_hash"] == forgeapp.user_hash("alice@saga.xyz")
+    assert doc["tenant_id"] == "eng" and doc["user"] == "alice@example.com"
+    assert doc["user_hash"] == forgeapp.user_hash("alice@example.com")
     _no_value_anywhere(db, github, [answer.text, caplog.text])
 
 
@@ -254,12 +254,12 @@ def test_another_members_or_tenants_owners_never_show_the_request(api, github, d
     assert row is not None and row["install_state"] == "not_installed"
     assert row.get("code") is None
     assert _pending_issues(_orgs_step(api, user="root")) == []
-    assert _doc(db, email="root@saga.xyz") is None
+    assert _doc(db, email="root@example.com") is None
     assert _doc(db, tenant="research") is None
     # A document at alice's id that names another tenant is not hers.
-    db.docs[f"forge_orgs/{access.org_id_for('eng', 'root@saga.xyz', 'third-org')}"] = {
-        "tenant_id": "research", "user": "root@saga.xyz", "owner": "third-org",
-        "user_hash": forgeapp.user_hash("root@saga.xyz"), "install_state": "requested"}
+    db.docs[f"forge_orgs/{access.org_id_for('eng', 'root@example.com', 'third-org')}"] = {
+        "tenant_id": "research", "user": "root@example.com", "owner": "third-org",
+        "user_hash": forgeapp.user_hash("root@example.com"), "install_state": "requested"}
     assert _owner_row(api, owner="third-org", user="root") is None
 
 

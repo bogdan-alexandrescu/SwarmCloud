@@ -49,7 +49,7 @@ from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
 )
 
 PERSON = "Ada@Example.com"
-OWNER, REPO = "Saga", "Widgets"
+OWNER, REPO = "Example-Org", "Widgets"
 GITHUB_URL = f"https://github.com/{OWNER}/{REPO}.git"
 
 

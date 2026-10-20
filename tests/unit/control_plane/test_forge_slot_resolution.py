@@ -40,7 +40,7 @@ from .repo_fakes import make_client
 from .repo_index_fakes import REPOSITORY, IndexGitHub, sha
 
 PROJECT = "p"
-OWNER = "bogdan@saga.xyz"
+OWNER = "bogdan@example.com"
 NOW = datetime(2026, 10, 13, 12, 40, tzinfo=timezone.utc)
 
 
@@ -87,7 +87,7 @@ def _personal(tenant_id: str = "u-bogdan", owner: str = OWNER) -> Tenant:
 
 
 def _group(tenant_id: str = "eng", *, git: bool) -> Tenant:
-    return Tenant(tenant_id=tenant_id, kind="group", principal=f"{tenant_id}@saga.xyz",
+    return Tenant(tenant_id=tenant_id, kind="group", principal=f"{tenant_id}@example.com",
                   created_at=NOW, credentials=["git"] if git else [])
 
 
@@ -120,7 +120,7 @@ def test_a_personal_tenant_with_only_its_owners_user_slot_reads_that_slot(db) ->
     value = _token()
     reader, client = _reader(db, {_user_secret("u-bogdan", OWNER): value})
     github = IndexGitHub(heads={"main": sha("one")})
-    record = {"owner": "saga-xyz", "repo": "widgets", "default_branch": "main"}
+    record = {"owner": "example-org", "repo": "widgets", "default_branch": "main"}
 
     head = read_head(record, _personal(), tokens=reader, forge=forge.GitHubIssues(send=github))
 
@@ -132,7 +132,7 @@ def test_a_personal_tenant_with_only_its_owners_user_slot_reads_that_slot(db) ->
 def test_a_tenant_with_its_git_slot_reads_it_unchanged(db) -> None:
     value = _token()
     reader, client = _reader(db, {"swarm-tenant-eng-git": value})
-    assert reader.token_for(_group(git=True), person="carol@saga.xyz") == value
+    assert reader.token_for(_group(git=True), person="carol@example.com") == value
     assert client.names == [client.secret("swarm-tenant-eng-git")]
 
 
@@ -165,14 +165,14 @@ def test_a_known_git_slot_that_is_refused_still_names_its_grant(db) -> None:
 
 
 def test_a_persons_own_slot_is_preferred_when_present(db) -> None:
-    _user_record(db, "eng", "alice@saga.xyz")
+    _user_record(db, "eng", "alice@example.com")
     mine, tenants = _token(), _token()
-    reader, client = _reader(db, {_user_secret("eng", "alice@saga.xyz"): mine,
+    reader, client = _reader(db, {_user_secret("eng", "alice@example.com"): mine,
                                   "swarm-tenant-eng-git": tenants})
-    assert reader.token_for(_group(git=True), person="alice@saga.xyz") == mine
-    assert reader.token_for(_group(git=True), person="carol@saga.xyz") == tenants
+    assert reader.token_for(_group(git=True), person="alice@example.com") == mine
+    assert reader.token_for(_group(git=True), person="carol@example.com") == tenants
     assert reader.token_for(_group(git=True)) == tenants
-    assert client.names == [client.secret(_user_secret("eng", "alice@saga.xyz")),
+    assert client.names == [client.secret(_user_secret("eng", "alice@example.com")),
                             client.secret("swarm-tenant-eng-git"),
                             client.secret("swarm-tenant-eng-git")]
 
@@ -201,10 +201,10 @@ def test_another_tenants_record_does_not_resolve_a_slot_here(db) -> None:
 # --------------------------------------------------------------------------
 
 def test_index_now_reads_with_the_callers_own_slot(db, tokens, group_map, objects) -> None:
-    _user_record(db, "eng", "alice@saga.xyz")
+    _user_record(db, "eng", "alice@example.com")
     reader, client_secrets = _reader(db, {
         "swarm-tenant-eng-git": _token(),
-        _user_secret("eng", "alice@saga.xyz"): _token(),
+        _user_secret("eng", "alice@example.com"): _token(),
     })
     client = make_client(db, tokens, group_map, objects, forge_tokens=reader,
                          transport=IndexGitHub(heads={"main": sha("one")}))
@@ -218,7 +218,7 @@ def test_index_now_reads_with_the_callers_own_slot(db, tokens, group_map, object
                           headers=auth_header("alice"))
 
     assert started.status_code == 202, started.text
-    assert client_secrets.secret(_user_secret("eng", "alice@saga.xyz")) in client_secrets.names
+    assert client_secrets.secret(_user_secret("eng", "alice@example.com")) in client_secrets.names
     assert client_secrets.secret("swarm-tenant-eng-git") not in client_secrets.names
 
 

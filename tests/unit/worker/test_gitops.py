@@ -73,9 +73,9 @@ def test_a_repository_url_that_could_execute_a_command_is_refused(url):
 @pytest.mark.parametrize(
     "url",
     [
-        "https://github.com/saga/repo.git",
-        "https://github.com/saga/repo",
-        "ssh://git@github.com/saga/repo.git",
+        "https://github.com/example-org/repo.git",
+        "https://github.com/example-org/repo",
+        "ssh://git@github.com/example-org/repo.git",
     ],
 )
 def test_an_ordinary_repository_url_is_accepted(url):
@@ -85,8 +85,8 @@ def test_an_ordinary_repository_url_is_accepted(url):
 def test_scp_style_urls_are_rewritten_to_ssh_so_there_is_one_code_path():
     """`git@host:path` is the trickiest branch: it has no scheme at all, so the
     scheme check would reject every one of them if they were not rewritten."""
-    assert validate_repository_url("git@github.com:saga/repo.git") == (
-        "ssh://git@github.com/saga/repo.git"
+    assert validate_repository_url("git@github.com:example-org/repo.git") == (
+        "ssh://git@github.com/example-org/repo.git"
     )
     # The rewrite must not become a way to smuggle a different scheme back in.
     with pytest.raises(GitError):
@@ -122,7 +122,7 @@ def test_an_absent_ref_is_not_an_error():
 def test_the_credential_file_is_never_written_into_the_agents_tmpdir(tmp_path):
     ws = workspace_mod.create(tmp_path / "ws", "att_1")
     cred = gitops._write_credentials(
-        "https://github.com/saga/repo.git", "ghp_secret_token_value", ws.private
+        "https://github.com/example-org/repo.git", "ghp_secret_token_value", ws.private
     )
 
     assert cred.parent == ws.private
@@ -142,7 +142,7 @@ def test_a_token_with_url_metacharacters_is_percent_encoded(tmp_path):
     """An unencoded `@` or `/` in a token would split the credential entry and
     git would silently match it against the wrong host."""
     cred = gitops._write_credentials(
-        "https://github.com/saga/repo.git", "p@ss/wo:rd#1", tmp_path
+        "https://github.com/example-org/repo.git", "p@ss/wo:rd#1", tmp_path
     )
     line = cred.read_text().strip()
     assert "p%40ss%2Fwo%3Ard%231" in line
@@ -162,7 +162,7 @@ def test_a_directory_at_the_credential_files_name_is_a_git_error(tmp_path, plant
         (target / "inside").write_text("planted\n")
 
     with pytest.raises(GitError) as raised:
-        gitops._write_credentials("https://github.com/saga/repo.git", token, tmp_path)
+        gitops._write_credentials("https://github.com/example-org/repo.git", token, tmp_path)
 
     message = str(raised.value)
     assert token not in message
@@ -177,7 +177,7 @@ def test_an_unwritable_credential_folder_is_a_git_error(tmp_path):
     blocker.write_text("a file where the folder should be\n")
     with pytest.raises(GitError):
         gitops._write_credentials(
-            "https://github.com/saga/repo.git", "tok" + "y" * 30, blocker
+            "https://github.com/example-org/repo.git", "tok" + "y" * 30, blocker
         )
 
 
@@ -190,7 +190,7 @@ def test_a_failed_write_leaves_no_part_written_credential_file(tmp_path, monkeyp
     monkeypatch.setattr(gitops.os, "write", full)
     with pytest.raises(GitError) as raised:
         gitops._write_credentials(
-            "https://github.com/saga/repo.git", "tok" + "z" * 30, tmp_path
+            "https://github.com/example-org/repo.git", "tok" + "z" * 30, tmp_path
         )
     assert "ENOSPC" in str(raised.value)
     assert not (tmp_path / ".git-credentials").exists()
@@ -219,7 +219,7 @@ def test_the_credential_file_is_removed_even_when_the_clone_fails(tmp_path, monk
 
     with pytest.raises(GitError, match="exit 128"):
         gitops.shallow_clone(
-            url="https://github.com/saga/repo.git",
+            url="https://github.com/example-org/repo.git",
             ref="main",
             destination=ws.work / "repo",
             private_dir=ws.private,
@@ -256,7 +256,7 @@ def test_a_sha_ref_uses_fetch_because_a_shallow_clone_cannot_target_a_commit(
     monkeypatch.setattr(gitops, "run_child", fake_run_child)
 
     result = gitops.shallow_clone(
-        url="https://github.com/saga/repo.git",
+        url="https://github.com/example-org/repo.git",
         ref="9f3a1c2b4d5e6f70819a2b3c4d5e6f7081920304",
         destination=ws.work / "repo",
         private_dir=ws.private,
@@ -294,7 +294,7 @@ def test_a_branch_clone_tracks_every_branch_after_its_single_branch_transfer(
     monkeypatch.setattr(gitops, "run_child", fake_run_child)
     destination = ws.work / "repo"
     gitops.shallow_clone(
-        url="https://github.com/saga/repo.git",
+        url="https://github.com/example-org/repo.git",
         ref="lane/x",
         destination=destination,
         private_dir=ws.private,
@@ -361,7 +361,7 @@ def _tenant(credentials):
     return Tenant(
         tenant_id=TENANT,
         kind="group",
-        principal="eng@saga.xyz",
+        principal="eng@example.com",
         created_at=utcnow(),
         credentials=list(credentials),
     )

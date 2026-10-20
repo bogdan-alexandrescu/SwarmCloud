@@ -68,7 +68,7 @@ def _task(**over: object) -> Task:
         "runner_profile": "claude-code",
         "resource_class": "standard",
         "input": {"prompt": "which service owns /v1/orders?"},
-        "submitted_by": "alice@saga.xyz",
+        "submitted_by": "alice@example.com",
         "repository_url": "https://github.com/acme/api",
     }
     kwargs.update(over)

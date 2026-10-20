@@ -25,9 +25,9 @@ from swarm_api import forgeapp
 
 from .conftest import auth_header
 
-ALICE = "alice@saga.xyz"
-ROOT = "root@saga.xyz"
-BOB = "bob@saga.xyz"
+ALICE = "alice@example.com"
+ROOT = "root@example.com"
+BOB = "bob@example.com"
 
 
 def _doc_id(tenant: str, email: str) -> str:

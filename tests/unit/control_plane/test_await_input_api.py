@@ -230,13 +230,13 @@ def test_a_member_answers_and_the_step_succeeds_with_the_form_as_its_artifact(
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["state"] == "SUCCEEDED" and body["replayed"] is False
-    assert body["answered_by"] == "alice@saga.xyz" and body["via"] == "console"
+    assert body["answered_by"] == "alice@example.com" and body["via"] == "console"
     doc = db.docs[f"tasks/{waiting['review']}"]
     assert doc["state"] == "SUCCEEDED" and doc["park_reason"] is None
     summary = doc["result_summary"]
     assert summary["published_by"] == "control_plane"
     assert summary["input"]["source"] == "person"
-    assert summary["input"]["answered_by"] == "alice@saga.xyz"
+    assert summary["input"]["answered_by"] == "alice@example.com"
     entry = summary["artifacts"][0]
     assert entry["name"] == "review.json"
     stored = json.loads(objects.objects[artifact_key(
@@ -332,7 +332,7 @@ class _Response:
 
 @pytest.fixture
 def directory() -> FakeDirectory:
-    return FakeDirectory({ENG_GROUP: {"alice@saga.xyz"}, "research@saga.xyz": {"bob@saga.xyz"}})
+    return FakeDirectory({ENG_GROUP: {"alice@example.com"}, "research@example.com": {"bob@example.com"}})
 
 
 @pytest.fixture
@@ -351,7 +351,7 @@ def test_a_member_removed_after_the_cache_filled_is_403(live_client, db, objects
     park(db, ids["review"])
     # The cache holds "alice is in eng": the next requests pass on it.
     assert live_client.get(url(ids), headers=auth_header("alice")).json()["may_answer"] is True
-    directory.members[ENG_GROUP].discard("alice@saga.xyz")
+    directory.members[ENG_GROUP].discard("alice@example.com")
     checks_before = len(directory.checks)
     # Control: the ordinary request path still answers from the cache.
     assert live_client.get(url(ids), headers=auth_header("alice")).status_code == 200
@@ -361,7 +361,7 @@ def test_a_member_removed_after_the_cache_filled_is_403(live_client, db, objects
     assert response.status_code == 403, response.text
     assert response.json()["detail"]["reason"] == "not_a_member"
     # The decision went to the directory, past the cache.
-    assert (ENG_GROUP, "alice@saga.xyz") in directory.checks[checks_before:]
+    assert (ENG_GROUP, "alice@example.com") in directory.checks[checks_before:]
     assert snapshot(db, objects, ids["review"]) == before
 
 
@@ -386,7 +386,7 @@ def test_a_lookup_failure_is_503_and_nothing_is_written(live_client, db, objects
 
 def _personal_tenant(db) -> Tenant:
     tenant = Tenant(
-        tenant_id="u-carol", kind="user", principal="carol@saga.xyz",
+        tenant_id="u-carol", kind="user", principal="carol@example.com",
         created_at=datetime.now(timezone.utc), display_name="carol", max_active=4,
         capacity_units=8, enabled=True, credentials=[],
         service_account="swarm-agent-worker-u-carol@x.iam.gserviceaccount.com",
@@ -399,14 +399,14 @@ def _personal_tenant(db) -> Tenant:
 
 
 def _person(email: str, tenant_id: str) -> AuthContext:
-    return AuthContext(principal=Principal(email=email, subject="s", domain="saga.xyz", groups=()),
+    return AuthContext(principal=Principal(email=email, subject="s", domain="example.com", groups=()),
                        tenant_id=tenant_id, is_admin=False)
 
 
 def test_a_personal_tenants_step_refuses_anyone_but_its_owner(client, db, api_context):
     _personal_tenant(db)
-    awaitinput.member_refusal(api_context, _person("carol@saga.xyz", "u-carol"), "u-carol")
-    for other in ("alice@saga.xyz", "root@saga.xyz"):   # root is an admin: no bypass
+    awaitinput.member_refusal(api_context, _person("carol@example.com", "u-carol"), "u-carol")
+    for other in ("alice@example.com", "root@example.com"):   # root is an admin: no bypass
         with pytest.raises(awaitinput.Forbidden) as refused:
             awaitinput.member_refusal(api_context, _person(other, "u-carol"), "u-carol")
         assert refused.value.detail["reason"] == "not_a_member"
@@ -421,7 +421,7 @@ def test_an_admin_answers_only_as_a_member(client, db, waiting):
     # root is an admin AND in eng: it answers, as a member.
     response = client.post(url(waiting), headers=auth_header("root"), json=verdict())
     assert response.status_code == 200, response.text
-    assert response.json()["answered_by"] == "root@saga.xyz"
+    assert response.json()["answered_by"] == "root@example.com"
 
 
 # --------------------------------------------------------------------------
@@ -455,7 +455,7 @@ def test_a_second_answer_is_409_already_answered_and_a_replay_is_the_original_20
                          json=verdict(answer_id="r1-root", value="MERGE"))
     assert second.status_code == 409, second.text
     detail = second.json()["detail"]
-    assert detail["reason"] == "already_answered" and detail["answered_by"] == "alice@saga.xyz"
+    assert detail["reason"] == "already_answered" and detail["answered_by"] == "alice@example.com"
 
     # The same answer_id with another payload is not a replay.
     changed = client.post(url(waiting), headers=auth_header("alice"),
@@ -759,7 +759,7 @@ def test_the_step_view_shows_the_wait_and_then_the_answer(client, db, waiting):
     client.post(url(waiting), headers=auth_header("alice"), json=verdict())
     view = client.get(url(waiting), headers=auth_header("alice")).json()
     assert view["status"] == "answered" and view["may_answer"] is False
-    assert view["answer"]["answered_by"] == "alice@saga.xyz"
+    assert view["answer"]["answered_by"] == "alice@example.com"
 
 
 def test_the_bot_is_shown_no_form(client, waiting):

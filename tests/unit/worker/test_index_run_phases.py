@@ -39,7 +39,7 @@ from swarm_api import repoindex, repositories
 
 from worker_seeds import TENANT, seed_attempt
 
-OWNER, REPO = "Saga-XYZ", "Widgets"
+OWNER, REPO = "Example-Org", "Widgets"
 URL = f"https://github.com/{OWNER}/{REPO}"
 
 
@@ -48,7 +48,7 @@ URL = f"https://github.com/{OWNER}/{REPO}"
 # --------------------------------------------------------------------------
 
 def test_the_repo_id_is_the_registrations_own_recipe():
-    for tenant, owner, repo in ((TENANT, OWNER, REPO), ("eng", "saga", "x.y-z")):
+    for tenant, owner, repo in ((TENANT, OWNER, REPO), ("eng", "example-org", "x.y-z")):
         assert indexrun.repo_id_for(tenant, owner, repo) == repositories.repo_id_for(
             tenant, owner, repo
         )

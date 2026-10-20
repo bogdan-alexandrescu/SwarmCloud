@@ -2,7 +2,7 @@
 `/swarmcloud approve` comment (docs/design/workspace-roles.md §4.1, §4.8;
 lane ROLES-GATES-DECIDE, part of #1518).
 
-Who is who, in eng (`eng@saga.xyz`):
+Who is who, in eng (`eng@example.com`):
 
 * `alice`, `dave` -- members, no grant (so `member`, the migration default);
 * `vic` -- in eng's group, narrowed to `viewer` by a signed grant;
@@ -70,19 +70,19 @@ from .test_roles_store import grant
 from .test_schedule_tick import seed_schedule
 
 MEMBER_SWITCH = refusals.env_name("role_member_required")
-VIC = "vic@saga.xyz"
-OPS = "ops@saga.xyz"
+VIC = "vic@example.com"
+OPS = "ops@example.com"
 
 
 @pytest.fixture
 def group_map():
     return {
-        "alice@saga.xyz": (ENG_GROUP,),
-        "dave@saga.xyz": (ENG_GROUP,),
+        "alice@example.com": (ENG_GROUP,),
+        "dave@example.com": (ENG_GROUP,),
         VIC: (ENG_GROUP,),
         OPS: (ADMIN_GROUP,),
-        "bob@saga.xyz": (RESEARCH_GROUP,),
-        "carol@saga.xyz": (),
+        "bob@example.com": (RESEARCH_GROUP,),
+        "carol@example.com": (),
         OWNER: (ADMIN_GROUP, ENG_GROUP),
     }
 
@@ -217,7 +217,7 @@ def test_a_member_approves(client, api_context, db, vic_is_viewer, switch_on):
     response = _decide_as(client, item["approval_id"], "approve", "alice", digest=item["digest"])
     assert response.status_code == 200, response.text
     assert _state(db, item) == approvals.APPROVED
-    assert db.docs[f"approvals/{item['approval_id']}"]["decided_by"] == "alice@saga.xyz"
+    assert db.docs[f"approvals/{item['approval_id']}"]["decided_by"] == "alice@example.com"
 
 
 def test_a_member_approves_a_projected_plan(client, api_context, db, objects, vic_is_viewer, switch_on):
@@ -242,7 +242,7 @@ def test_a_non_member_platform_admin_approves_through_the_reach(
 def test_an_approvers_list_that_does_not_name_the_platform_admin_still_refuses_them(
     client, api_context, db, vic_is_viewer, switch_on,
 ):
-    item = _proposal(api_context, approvers=["alice@saga.xyz"])
+    item = _proposal(api_context, approvers=["alice@example.com"])
     response = _decide_as(client, item["approval_id"], "approve", "ops", "eng", digest=item["digest"])
     assert response.status_code == 403, response.text
     assert response.json()["code"] == "approver_not_allowed"
@@ -252,7 +252,7 @@ def test_an_approvers_list_that_does_not_name_the_platform_admin_still_refuses_t
 def test_an_approvers_list_naming_a_viewer_still_refuses_them(
     client, api_context, db, vic_is_viewer, switch_on,
 ):
-    item = _proposal(api_context, approvers=[VIC, "alice@saga.xyz"])
+    item = _proposal(api_context, approvers=[VIC, "alice@example.com"])
     _role_refused(_decide_as(client, item["approval_id"], "approve", "vic", digest=item["digest"]))
     assert _state(db, item) == approvals.PENDING
     # The list still admits the member it names.
@@ -280,14 +280,14 @@ def test_the_decision_reads_the_role_fresh(client, api_context, db, settings, sw
 def eng_threads(db):
     seed_tenant(db, "eng")
     seed_schedule(db)
-    _connect(db, "alice@saga.xyz", "alice-gh")
+    _connect(db, "alice@example.com", "alice-gh")
     _connect(db, VIC, "vic-gh", user_id=1009)
 
 
 def test_a_viewers_comment_approves_nothing_and_the_reply_names_the_code(
     client, api_context, db, objects, writes, eng_threads, vic_is_viewer, switch_on,
 ):
-    grant(api_context.roles, "dave@saga.xyz", roles.ADMIN)
+    grant(api_context.roles, "dave@example.com", roles.ADMIN)
     run = _planned(client, db, objects)
     _comment(writes, 42, _command(run["plan_digest"]), login="vic-gh", user_id=1009)
 
@@ -299,7 +299,7 @@ def test_a_viewers_comment_approves_nothing_and_the_reply_names_the_code(
     (reply,) = _replies(writes, 42)
     assert "role_member_required" in reply
     # A GitHub thread is not the roster: no admin's address in the reply.
-    assert "dave@saga.xyz" not in reply and "@saga.xyz" not in reply
+    assert "dave@example.com" not in reply and "@example.com" not in reply
 
 
 def test_with_the_switch_off_a_viewers_comment_approves_and_is_logged(

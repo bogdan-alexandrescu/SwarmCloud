@@ -52,7 +52,7 @@ WRITER = TOOL_DIR / "repo_graph_shards.py"
 EXTRACTOR = TOOL_DIR / "repo_index_extract.py"
 DOCKERFILE = REPO_ROOT / "images" / "agent-runtime-indexer" / "Dockerfile"
 TENANT = "eng"
-REPO_ID = "gh-saga-xyz-widgets"
+REPO_ID = "gh-example-org-widgets"
 DAY = 86_400
 T0 = 1_780_000_000
 

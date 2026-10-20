@@ -158,7 +158,7 @@ def seed_run(db, tenant: str, run_id: str, files: list[str], *, workflow_id: str
     owner, name = repository.split("/")
     at = datetime.now(timezone.utc) - timedelta(hours=1)
     IssueRuns(db).create(IssueRun(
-        id=run_id, tenant_id=tenant, created_by="alice@saga.xyz", created_at=at, updated_at=at,
+        id=run_id, tenant_id=tenant, created_by="alice@example.com", created_at=at, updated_at=at,
         state=state, issue=IssueRef(owner=owner, repo=name, number=40 + len(run_id)),
         plan_approval="auto", auto_merge=False, fix_rounds=2, planner_task_id=f"plan_{run_id}",
         plan={"summary": "s", "steps": [{"step_id": "s1", "files": files}]},

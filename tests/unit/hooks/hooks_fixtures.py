@@ -24,7 +24,7 @@ def sign(secret: bytes, body: bytes) -> str:
     return "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest()
 
 
-def push_payload(*, full_name: str = "Saga-XYZ/Widgets", ref: str = "refs/heads/main",
+def push_payload(*, full_name: str = "Example-Org/Widgets", ref: str = "refs/heads/main",
                  default_branch: str = "main", deleted: Any = False,
                  after: str | None = None) -> dict[str, Any]:
     return {

@@ -63,10 +63,10 @@ def test_a_group_and_a_service_record_are_served_with_their_kind_and_w_id(db, cl
     seed_tenant(db, "g-research")
     seed_tenant(db, "s-reports")
     seed_tenant(db, "u-alice")
-    group_id = _record(db, "g-research", "research@saga.xyz", "group")
+    group_id = _record(db, "g-research", "research@example.com", "group")
     service_id = _record(db, "s-reports", "reports-bot@example.iam.gserviceaccount.com", "service")
     # A record written before kinds existed carries no `kind`: it is a person's.
-    personal_id = _record(db, "u-alice", "alice@saga.xyz", None)
+    personal_id = _record(db, "u-alice", "alice@example.com", None)
 
     body, rows = _rows(client)
 
@@ -107,7 +107,7 @@ def test_a_page_of_fifty_reads_the_records_in_one_batch(db, client, monkeypatch)
     for tenant_id in tenant_ids:
         seed_tenant(db, tenant_id)
     for tenant_id in tenant_ids[::2]:
-        _record(db, tenant_id, f"{tenant_id}@saga.xyz", "group")
+        _record(db, tenant_id, f"{tenant_id}@example.com", "group")
 
     batches: list[int] = []
     single_reads: list[str] = []
@@ -147,7 +147,7 @@ def test_a_page_of_fifty_reads_the_records_in_one_batch(db, client, monkeypatch)
 def test_a_failed_read_keeps_the_list_and_says_so(db, client, monkeypatch):
     seed_tenant(db, "eng")
     seed_tenant(db, "g-research")
-    _record(db, "g-research", "research@saga.xyz", "group")
+    _record(db, "g-research", "research@example.com", "group")
     real_get_all = db.get_all
 
     def failing_get_all(references, *args: Any, **kwargs: Any):

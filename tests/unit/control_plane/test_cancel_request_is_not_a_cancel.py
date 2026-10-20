@@ -80,7 +80,7 @@ def test_a_cancel_of_a_task_holding_capacity_is_recorded_as_a_request(client, db
     assert types == [CANCEL_REQUESTED], types
     detail = events[0]["detail"]
     assert detail["from_state"] == "DISPATCHED"
-    assert detail["requested_by"] == "alice@saga.xyz"
+    assert detail["requested_by"] == "alice@example.com"
     # Kept so that a reader written against the old discriminator still reads
     # the new event correctly, and so a served legacy event and a new one are
     # the same shape (see test 4).
@@ -198,13 +198,13 @@ def test_a_stored_legacy_request_is_served_as_a_request_and_real_cancels_are_not
     t0 = datetime(2026, 9, 24, 7, 40, 20, tzinfo=timezone.utc)
     # check-2's row from the incident, as stored.
     _legacy_event(db, "task_old", "ev_a_request", at=t0, detail={
-        "requested_by": "alice@saga.xyz", "from_state": "DISPATCHED",
+        "requested_by": "alice@example.com", "from_state": "DISPATCHED",
         "phase": "cancel_requested",
     })
     # A real cancel written by the old API's immediate path, and the scheduler's
     # cascade cancel, which has never carried a phase. Neither may be touched.
     _legacy_event(db, "task_old", "ev_b_immediate", at=t0 + timedelta(minutes=1), detail={
-        "requested_by": "alice@saga.xyz", "from_state": "QUEUED", "phase": "cancelled",
+        "requested_by": "alice@example.com", "from_state": "QUEUED", "phase": "cancelled",
     })
     _legacy_event(db, "task_old", "ev_c_cascade", at=t0 + timedelta(minutes=2), detail={
         "reason": "an upstream workflow step did not succeed",
@@ -219,7 +219,7 @@ def test_a_stored_legacy_request_is_served_as_a_request_and_real_cancels_are_not
     ], "a stored flag-only cancel was served as a cancel, or a real cancel was served as a request"
     # The detail is served as stored: the reading changes the type, not the record.
     assert events[0]["detail"] == {
-        "requested_by": "alice@saga.xyz", "from_state": "DISPATCHED",
+        "requested_by": "alice@example.com", "from_state": "DISPATCHED",
         "phase": "cancel_requested",
     }
     # Nothing stored was rewritten by reading it.

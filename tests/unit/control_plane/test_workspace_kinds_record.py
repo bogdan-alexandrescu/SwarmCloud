@@ -53,9 +53,9 @@ from .conftest import (
 )
 from .fakes import FakeTransaction
 
-ROOT = "root@saga.xyz"
-DANA = "dana@saga.xyz"
-CAROL = "carol@saga.xyz"
+ROOT = "root@example.com"
+DANA = "dana@example.com"
+CAROL = "carol@example.com"
 REPORTS_BOT = f"reports-bot@{PROJECT}.iam.gserviceaccount.com"
 LISTED_BOT = f"listed-bot@{PROJECT}.iam.gserviceaccount.com"
 ROUTE = "/v1/admin/workspaces"
@@ -109,7 +109,7 @@ def _now() -> datetime:
 @pytest.fixture
 def group_map() -> dict[str, tuple[str, ...]]:
     return {
-        "alice@saga.xyz": (ENG_GROUP,),
+        "alice@example.com": (ENG_GROUP,),
         CAROL: (),
         ROOT: (ADMIN_GROUP, ENG_GROUP),
         DANA: (ADMIN_GROUP,),
@@ -249,7 +249,7 @@ def test_a_persons_own_request_records_the_personal_kind(client, db) -> None:
 # --------------------------------------------------------------------------
 
 def test_a_non_admin_is_refused_and_nothing_is_written(client, db, publisher) -> None:
-    response = _post(client, {"kind": "group", "principal": "reports@saga.xyz"},
+    response = _post(client, {"kind": "group", "principal": "reports@example.com"},
                      user="carol")
     assert response.status_code == 403
     assert _workspace_docs(db) == {}
@@ -258,10 +258,10 @@ def test_a_non_admin_is_refused_and_nothing_is_written(client, db, publisher) ->
 
 
 def test_an_extra_field_is_refused(client, db) -> None:
-    response = _post(client, {"kind": "group", "principal": "reports@saga.xyz",
+    response = _post(client, {"kind": "group", "principal": "reports@example.com",
                               "image": "evil:latest"})
     assert response.status_code == 422
-    response = _post(client, {"kind": "group", "principal": "reports@saga.xyz",
+    response = _post(client, {"kind": "group", "principal": "reports@example.com",
                               "limits": {"max_active": 4, "cpu_request": 64}})
     assert response.status_code == 422
     assert _workspace_docs(db) == {}
@@ -273,12 +273,12 @@ def test_an_extra_field_is_refused(client, db) -> None:
 
 def test_an_admins_group_request_is_approved_with_one_audit_row(client, db, publisher,
                                                                 directory) -> None:
-    response = _post(client, {"kind": "group", "principal": "Reports@saga.xyz",
+    response = _post(client, {"kind": "group", "principal": "Reports@example.com",
                               "display_name": "Reports"})
     assert response.status_code == 202, response.text
     body = response.json()
     assert body["kind"] == ws.GROUP
-    assert body["principal"] == "reports@saga.xyz"
+    assert body["principal"] == "reports@example.com"
     assert body["display_name"] == "Reports"
     assert body["state"] == ws.APPROVED
     record = db.docs["workspaces/reports"]
@@ -293,7 +293,7 @@ def test_an_admins_group_request_is_approved_with_one_audit_row(client, db, publ
 
 def test_the_directory_check_asks_one_group_once_with_the_billing_header(client,
                                                                           directory) -> None:
-    response = _post(client, {"kind": "group", "principal": "reports@saga.xyz"})
+    response = _post(client, {"kind": "group", "principal": "reports@example.com"})
     assert response.status_code == 202, response.text
     checks = [c for c in directory.calls if c["url"].endswith(":checkTransitiveMembership")]
     assert len(checks) == 1
@@ -306,7 +306,7 @@ def test_the_directory_check_asks_one_group_once_with_the_billing_header(client,
 def test_an_unreadable_group_is_refused_and_nothing_is_written(client, db, publisher,
                                                                directory) -> None:
     directory.fail = True
-    response = _post(client, {"kind": "group", "principal": "reports@saga.xyz"})
+    response = _post(client, {"kind": "group", "principal": "reports@example.com"})
     assert response.status_code == 503
     assert _code(response) == "WORKSPACE_GROUP_UNREADABLE"
     assert _workspace_docs(db) == {}
@@ -318,7 +318,7 @@ def test_an_unreadable_group_is_refused_and_nothing_is_written(client, db, publi
 
 
 def test_a_group_whose_id_starts_u_is_reserved(client, db) -> None:
-    response = _post(client, {"kind": "group", "principal": "u-eng@saga.xyz"})
+    response = _post(client, {"kind": "group", "principal": "u-eng@example.com"})
     assert response.status_code == 403
     assert _code(response) == "WORKSPACE_GROUP_ID_RESERVED"
     assert _workspace_docs(db) == {}
@@ -346,8 +346,8 @@ def test_a_terraform_tenants_group_is_refused(client, db) -> None:
 
 
 @pytest.mark.parametrize("existing,requested", [
-    ("eng", "eng-git-u-x@saga.xyz"),
-    ("ops-git-u-x", "ops@saga.xyz"),
+    ("eng", "eng-git-u-x@example.com"),
+    ("ops-git-u-x", "ops@example.com"),
 ])
 def test_nested_ids_collide(client, db, existing, requested) -> None:
     seed_tenant(db, existing)
@@ -360,7 +360,7 @@ def test_nested_ids_collide(client, db, existing, requested) -> None:
 def test_an_id_taken_by_another_principal_is_refused(client, db) -> None:
     seed_tenant(db, "reports")
     db.docs["tenants/reports"]["principal"] = "reports@partner.example"
-    response = _post(client, {"kind": "group", "principal": "reports@saga.xyz"})
+    response = _post(client, {"kind": "group", "principal": "reports@example.com"})
     assert response.status_code == 403
     assert _code(response) == "WORKSPACE_ID_TAKEN"
     assert _workspace_docs(db) == {}
@@ -373,7 +373,7 @@ def test_an_injected_commit_failure_leaves_neither_record_nor_audit(client, db, 
             raise RuntimeError("injected commit failure")
 
     monkeypatch.setattr(db, "transaction", lambda **kw: Failing(db), raising=False)
-    response = _post(client, {"kind": "group", "principal": "reports@saga.xyz"})
+    response = _post(client, {"kind": "group", "principal": "reports@example.com"})
     assert response.status_code == 500
     assert _workspace_docs(db) == {}
     assert _audit(db) == []
@@ -381,11 +381,11 @@ def test_an_injected_commit_failure_leaves_neither_record_nor_audit(client, db, 
 
 
 def test_a_second_identical_request_is_200_and_writes_nothing(client, db, publisher) -> None:
-    first = _post(client, {"kind": "group", "principal": "reports@saga.xyz"})
+    first = _post(client, {"kind": "group", "principal": "reports@example.com"})
     assert first.status_code == 202
     before = copy.deepcopy(db.docs)
     messages = len(publisher.messages)
-    second = _post(client, {"kind": "group", "principal": "reports@saga.xyz"})
+    second = _post(client, {"kind": "group", "principal": "reports@example.com"})
     assert second.status_code == 200, second.text
     assert second.json()["workspace_id"] == first.json()["workspace_id"]
     assert db.docs == before
@@ -402,7 +402,7 @@ def test_approval_and_retry_of_a_group_ask_the_directory_again(client, db, publi
     """§4.2.3: the directory check is repeated at approval and at every
     retry. An outage then is WORKSPACE_GROUP_UNREADABLE with nothing written;
     an answer replaces the record's `directory` with a fresh one."""
-    created = _post(client, {"kind": "group", "principal": "reports@saga.xyz"})
+    created = _post(client, {"kind": "group", "principal": "reports@example.com"})
     assert created.status_code == 202, created.text
     workspace_id = created.json()["workspace_id"]
     decision = {"by": ROOT, "at": _now(),
@@ -592,7 +592,7 @@ def test_a_personal_request_for_who_may_not_have_one_is_refused(client, db, prin
 
 def test_no_response_names_requested_by(client, db) -> None:
     created = _post(client, {"kind": "service", "principal": REPORTS_BOT}, user="dana")
-    group = _post(client, {"kind": "group", "principal": "reports@saga.xyz"})
+    group = _post(client, {"kind": "group", "principal": "reports@example.com"})
     workspace_id = created.json()["workspace_id"]
     bodies = [
         created.text,

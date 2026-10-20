@@ -252,7 +252,7 @@ def _refreshes(github: AccessGitHub) -> list[dict[str, Any]]:
 
 
 def _conn(db) -> dict[str, Any]:
-    return db.docs[f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@saga.xyz')}"]
+    return db.docs[f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@example.com')}"]
 
 
 def _no_value_anywhere(db, github: AccessGitHub, texts: list[str]) -> None:
@@ -294,7 +294,7 @@ def test_owners_are_read_with_the_persons_current_token_and_add_no_version(
             slots.versions("eng", _suffix() + "-refresh")) == versions
     assert github.to("https://api.github.com/user/installations?per_page=100&page=1")[0][
         "headers"]["Authorization"] == f"Bearer {current}"
-    conn = db.docs[f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@saga.xyz')}"]
+    conn = db.docs[f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@example.com')}"]
     assert conn["refresh_lease"] is None
     owners = {row["owner"]: row for row in body["owners"]}
     assert owners[LOGIN]["owner_type"] == "User"
@@ -317,8 +317,8 @@ def test_only_an_installed_owner_is_enabled(api, github, db):
     assert not db.dump("forge_orgs/")
     org = _enable(api)["org"]
     assert org["owner"] == ORG and org["installation_id"] == 11 and org["enabled"] is True
-    doc = db.docs[f"forge_orgs/{access.org_id_for('eng', 'alice@saga.xyz', ORG)}"]
-    assert doc["tenant_id"] == "eng" and doc["user"] == "alice@saga.xyz"
+    doc = db.docs[f"forge_orgs/{access.org_id_for('eng', 'alice@example.com', ORG)}"]
+    assert doc["tenant_id"] == "eng" and doc["user"] == "alice@example.com"
     overview = api.get("/v1/access", headers=auth_header("alice")).json()
     assert [o["owner"] for o in overview["orgs"]] == [ORG]
 
@@ -331,7 +331,7 @@ def test_bodies_forbid_unnamed_fields(api, github):
         assert answer.status_code == 422, answer.text
     repository = f"{ORG}/repo-0001"
     answer = api.put(f"/v1/access/grants/{_rid(repository)}",
-                     json={"repository": repository, "mode": "read", "user": "root@saga.xyz"},
+                     json={"repository": repository, "mode": "read", "user": "root@example.com"},
                      headers=auth_header("alice"))
     assert answer.status_code == 422
     answer = api.post(f"/v1/access/grants/{_rid(repository)}/verify",
@@ -388,7 +388,7 @@ def test_an_sso_refusal_names_the_org_and_its_sso_page(api, github, db):
     assert detail["url"] == f"https://github.com/orgs/{ORG}/sso"
     assert detail["recovery"] == recovery_copy("SSO_NOT_AUTHORISED", owner=ORG,
                                                url=f"https://github.com/orgs/{ORG}/sso")
-    assert db.docs[f"forge_orgs/{access.org_id_for('eng', 'alice@saga.xyz', ORG)}"]["sso"] \
+    assert db.docs[f"forge_orgs/{access.org_id_for('eng', 'alice@example.com', ORG)}"]["sso"] \
         == "required"
 
 
@@ -432,7 +432,7 @@ def test_write_is_refused_where_github_says_no_push_or_archived(api, github, db)
     archived = _grant(api, f"{ORG}/repo-0004")
     assert archived.json()["detail"]["failure_code"] == "REPO_ARCHIVED"
     assert _grant(api, f"{ORG}/repo-0003", mode="read").status_code == 200
-    assert not db.dump(f"forge_grants/eng__{forgeapp.user_hash('alice@saga.xyz')}__"
+    assert not db.dump(f"forge_grants/eng__{forgeapp.user_hash('alice@example.com')}__"
                        f"{_rid(f'{ORG}/repo-0004')}")
 
 
@@ -517,8 +517,8 @@ def test_the_members_view_is_an_admins_and_holds_no_value(api, github, db):
     answer = api.get("/v1/access/members", headers=auth_header("root"))
     assert answer.status_code == 200, answer.text
     members = {m["user"]: m for m in answer.json()["members"]}
-    assert members["alice@saga.xyz"]["connection"]["state"] == "active"
-    assert [g["repository"] for g in members["alice@saga.xyz"]["grants"]] == [f"{ORG}/repo-0001"]
+    assert members["alice@example.com"]["connection"]["state"] == "active"
+    assert [g["repository"] for g in members["alice@example.com"]["grants"]] == [f"{ORG}/repo-0001"]
     _no_value_anywhere(db, github, [answer.text])
 
 
@@ -589,7 +589,7 @@ def test_a_check_github_did_not_answer_is_unknown_not_missing(api, github):
 
 def test_a_failed_connection_is_refused_with_its_recovery_copy(api, github, db):
     _connect(api, github)
-    conn_path = f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@saga.xyz')}"
+    conn_path = f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@example.com')}"
     db.docs[conn_path]["state"] = forgeapp.REFRESH_FAILED
     answer = api.get("/v1/access/orgs", headers=auth_header("alice"))
     assert answer.status_code == 409
@@ -605,7 +605,7 @@ def test_a_refresh_github_refuses_marks_the_connection_failed(api, github, db, c
     answer = api.get("/v1/access/orgs", headers=auth_header("alice"))
     assert answer.status_code == 409
     assert answer.json()["detail"]["failure_code"] == "REFRESH_FAILED"
-    conn = db.docs[f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@saga.xyz')}"]
+    conn = db.docs[f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@example.com')}"]
     assert conn["state"] == forgeapp.REFRESH_FAILED and conn["refresh_lease"] is None
 
 
@@ -613,7 +613,7 @@ def test_a_refresh_running_elsewhere_is_a_409_not_a_second_spend(api, github, db
     _connect(api, github)
     # Expired: there is no current token to fall back on.
     clock.at = T0 + timedelta(hours=8, minutes=1)
-    conn_path = f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@saga.xyz')}"
+    conn_path = f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@example.com')}"
     db.docs[conn_path]["refresh_lease"] = {"holder": "sweep",
                                            "until": clock.at + timedelta(minutes=1)}
     refreshes = len(github.to(forgeapp.TOKEN_URL))

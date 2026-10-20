@@ -49,7 +49,7 @@ def task(
         runner_profile=runner_profile,
         resource_class=resource_class,
         input={},
-        submitted_by="alice@saga.xyz",
+        submitted_by="alice@example.com",
         provider=provider,
     )
 

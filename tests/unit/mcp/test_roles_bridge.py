@@ -47,15 +47,15 @@ _ROLE_WRITE_PATHS = (
 _ROSTER = {
     "tenant_id": "eng", "kind": "group", "default_role": "member",
     "default_source": "migration",
-    "me": {"email": "carol@saga.xyz", "role": "viewer", "source": "override",
-           "granted_by": "alice@saga.xyz", "granted_at": "2026-10-20T09:14:03.120Z",
+    "me": {"email": "carol@example.com", "role": "viewer", "source": "override",
+           "granted_by": "alice@example.com", "granted_at": "2026-10-20T09:14:03.120Z",
            "via": "member"},
     "people": [
-        {"email": "alice@saga.xyz", "role": "admin", "source": "override",
-         "granted_by": "ops@saga.xyz", "granted_at": "2026-10-19T08:00:00Z",
+        {"email": "alice@example.com", "role": "admin", "source": "override",
+         "granted_by": "ops@example.com", "granted_at": "2026-10-19T08:00:00Z",
          "granted_via": "platform_admin"},
-        {"email": "carol@saga.xyz", "role": "viewer", "source": "override",
-         "granted_by": "alice@saga.xyz", "granted_at": "2026-10-20T09:14:03.120Z"},
+        {"email": "carol@example.com", "role": "viewer", "source": "override",
+         "granted_by": "alice@example.com", "granted_at": "2026-10-20T09:14:03.120Z"},
     ],
     "roles": [
         {"name": "viewer", "summary": "Sees everything in this workspace; changes nothing."},
@@ -65,8 +65,8 @@ _ROSTER = {
                                      "provider keys and people's roles."},
     ],
     "can_manage": False,
-    "audit": [{"action": "workspace_role_granted", "by": "alice@saga.xyz",
-               "at": "2026-10-20T09:14:03.120Z", "target_email": "carol@saga.xyz",
+    "audit": [{"action": "workspace_role_granted", "by": "alice@example.com",
+               "at": "2026-10-20T09:14:03.120Z", "target_email": "carol@example.com",
                "detail": {"from": "member", "to": "viewer", "via": "console"}}],
 }
 
@@ -86,16 +86,16 @@ class RecordingApi:
         if (method, path) == ("GET", "/v1/workspace/roles"):
             return json.loads(json.dumps(_ROSTER))
         if (method, path) == ("GET", "/v1/tenants/me"):
-            return {"tenant": {"tenant_id": "eng"}, "principal": {"email": "carol@saga.xyz"},
+            return {"tenant": {"tenant_id": "eng"}, "principal": {"email": "carol@example.com"},
                     "role": {"name": "viewer", "source": "override"}}
         if (method, path) == ("GET", "/v1/tenants/mine"):
             return [
-                {"tenant_id": "u-carol", "display_name": "carol@saga.xyz", "kind": "user",
+                {"tenant_id": "u-carol", "display_name": "carol@example.com", "kind": "user",
                  "via": "personal", "role": {"name": "admin", "source": "personal"},
                  "is_default": True, "default_source": "personal"},
-                {"tenant_id": "eng", "display_name": "eng@saga.xyz", "via": "member",
+                {"tenant_id": "eng", "display_name": "eng@example.com", "via": "member",
                  "role": {"name": "viewer", "source": "override"}, "is_default": False},
-                {"tenant_id": "ops", "display_name": "ops@saga.xyz", "via": "platform_admin",
+                {"tenant_id": "ops", "display_name": "ops@example.com", "via": "platform_admin",
                  "role": {"name": "admin", "source": "platform_admin"}, "is_default": False},
             ]
         if path.startswith("/v1/workspace/roles/"):
@@ -130,7 +130,7 @@ def test_swarm_tenants_carries_each_workspaces_role_and_via():
 def test_an_api_older_than_roles_leaves_role_and_via_absent_not_guessed():
     class Older(RecordingApi):
         def tenants_mine(self):
-            return [{"tenant_id": "eng", "display_name": "eng@saga.xyz"}]
+            return [{"tenant_id": "eng", "display_name": "eng@example.com"}]
 
     (row,) = tenant_listing(Older())["tenants"]
     assert row["role"] is None and row["via"] is None, row
@@ -177,12 +177,12 @@ def test_swarm_roles_returns_the_roster_and_calls_only_get_workspace_roles():
     assert [(method, path) for method, path, _ in api.sent] == [("GET", "/v1/workspace/roles")]
     assert view["tenant_id"] == "eng" and view["default_role"] == "member"
     assert view["me"]["role"] == "viewer" and view["me"]["via"] == "member"
-    assert [p["email"] for p in view["people"]] == ["alice@saga.xyz", "carol@saga.xyz"]
+    assert [p["email"] for p in view["people"]] == ["alice@example.com", "carol@example.com"]
     assert view["audit"][0]["action"] == "workspace_role_granted"
     assert [r["name"] for r in view["roles"]] == ["viewer", "member", "admin"]
     assert view["can_manage"] is False
     assert "sc roles set" in view["change"], view["change"]
-    assert "alice@saga.xyz" in view["text"] and "viewer" in view["text"]
+    assert "alice@example.com" in view["text"] and "viewer" in view["text"]
 
 
 def test_swarm_roles_takes_no_argument():
@@ -201,7 +201,7 @@ def test_sc_roles_is_the_same_read_in_a_terminal():
         if "--json" in argv:
             assert json.loads(out.getvalue())["default_role"] == "member"
         else:
-            assert "alice@saga.xyz" in out.getvalue() and "default" in out.getvalue()
+            assert "alice@example.com" in out.getvalue() and "default" in out.getvalue()
 
 
 # --------------------------------------------------------------------------
@@ -209,10 +209,10 @@ def test_sc_roles_is_the_same_read_in_a_terminal():
 # --------------------------------------------------------------------------
 
 _CHANGES = [
-    (["roles", "set", "dave@saga.xyz", "viewer"], "dave@saga.xyz viewer",
-     ("PUT", "/v1/workspace/roles/person"), {"email": "dave@saga.xyz", "role": "viewer"}),
-    (["roles", "clear", "dave@saga.xyz"], "dave@saga.xyz default",
-     ("DELETE", "/v1/workspace/roles/person"), {"email": "dave@saga.xyz"}),
+    (["roles", "set", "dave@example.com", "viewer"], "dave@example.com viewer",
+     ("PUT", "/v1/workspace/roles/person"), {"email": "dave@example.com", "role": "viewer"}),
+    (["roles", "clear", "dave@example.com"], "dave@example.com default",
+     ("DELETE", "/v1/workspace/roles/person"), {"email": "dave@example.com"}),
     (["roles", "default", "viewer"], "default viewer",
      ("PUT", "/v1/workspace/roles/default"), {"role": "viewer"}),
 ]
@@ -286,14 +286,14 @@ def test_the_confirmation_supplied_on_stdin_sends_nothing(terminal, monkeypatch,
 
 
 def test_the_confirmation_cannot_be_supplied_as_an_argument():
-    for argv in (["roles", "set", "dave@saga.xyz", "viewer", "--confirm", "dave@saga.xyz viewer"],
-                 ["roles", "set", "dave@saga.xyz", "viewer", "--yes"],
+    for argv in (["roles", "set", "dave@example.com", "viewer", "--confirm", "dave@example.com viewer"],
+                 ["roles", "set", "dave@example.com", "viewer", "--yes"],
                  ["roles", "default", "viewer", "-y"]):
         with pytest.raises(SystemExit):
             sc.build_parser().parse_args(argv)
 
 
-@pytest.mark.parametrize("argv", [["roles", "set", "dave@saga.xyz", "owner"],
+@pytest.mark.parametrize("argv", [["roles", "set", "dave@example.com", "owner"],
                                   ["roles", "default", "admin"]])
 def test_a_role_that_cannot_be_given_is_refused_before_anything_is_typed(terminal, argv):
     terminal("anything")
@@ -304,12 +304,12 @@ def test_a_role_that_cannot_be_given_is_refused_before_anything_is_typed(termina
 
 
 def test_a_refusal_prints_the_servers_code_and_message(terminal):
-    terminal("dave@saga.xyz admin")
+    terminal("dave@example.com admin")
     refusal = SwarmError(
         "PUT /v1/workspace/roles/person -> 403: changing roles in eng needs admin",
         status=403, code="role_admin_required")
     api = RecordingApi(refuse=refusal)
-    _, _, error = _change(["roles", "set", "dave@saga.xyz", "admin"], api)
+    _, _, error = _change(["roles", "set", "dave@example.com", "admin"], api)
     assert error is not None
     assert "role_admin_required" in str(error) and "needs admin" in str(error), error
     assert error.code == "role_admin_required" and error.status == 403

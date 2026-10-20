@@ -43,7 +43,7 @@ from swarm_common.identity import tenant_id_for_user
 from .conftest import auth_header, seed_tenant
 from .test_repository_hard_stops import commits  # noqa: F401  (fixture)
 
-CAROL = "carol@saga.xyz"
+CAROL = "carol@example.com"
 CAROL_TENANT = tenant_id_for_user(CAROL)
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
 
@@ -55,9 +55,9 @@ def seeded(db):
     seed_tenant(db, CAROL_TENANT)
     db.docs[f"tenants/{CAROL_TENANT}"].update({"kind": "user", "principal": CAROL})
     for tenant_id, repo in (("eng", "widgets"), ("eng", "gadgets"), ("research", "widgets")):
-        repo_id = repo_id_for(tenant_id, "saga-xyz", repo)
+        repo_id = repo_id_for(tenant_id, "example-org", repo)
         db.docs[f"repositories/{repo_id}"] = {
-            "repo_id": repo_id, "tenant_id": tenant_id, "owner": "saga-xyz", "repo": repo,
+            "repo_id": repo_id, "tenant_id": tenant_id, "owner": "example-org", "repo": repo,
             "default_branch": "main", "created_at": NOW,
         }
     return db
@@ -113,7 +113,7 @@ def test_it_is_off_by_default(client, db, seeded):
     assert body["can_edit"] is False
     assert body["updated_at"] is None and body["updated_by"] is None
     repos = {r["repository"]: r for r in body["repositories"]}
-    assert set(repos) == {"saga-xyz/widgets", "saga-xyz/gadgets"}
+    assert set(repos) == {"example-org/widgets", "example-org/gadgets"}
     assert all(r["context"] == "inherit" for r in repos.values())
     # Reading writes nothing.
     assert _document(db, "eng") is None and _audit(db) == []
@@ -151,7 +151,7 @@ def test_a_platform_admin_changes_any_workspace(client, db, seeded):
         response = _put(client, tenant_id, "root", {"jev": True})
         assert response.status_code == 200, response.text
     assert [e["detail"]["tenant_id"] for e in _audit(db)] == ["eng", "research", CAROL_TENANT]
-    assert all(e["by"] == "root@saga.xyz" for e in _audit(db))
+    assert all(e["by"] == "root@example.com" for e in _audit(db))
     assert all(_block(db, t)["jev"] is True for t in ("eng", "research", CAROL_TENANT))
 
 
@@ -181,7 +181,7 @@ def test_the_owner_refusal_ships_on_by_owner_decision(client, db, seeded, monkey
     monkeypatch.setenv(switch.env, "off")
     assert _put(client, "eng", "alice", {"jev": True}).status_code == 200
     (entry,) = _audit(db)
-    assert entry["by"] == "alice@saga.xyz"
+    assert entry["by"] == "alice@example.com"
 
 
 def test_another_workspace_is_not_found_and_nothing_is_written(client, db, seeded):
@@ -208,7 +208,7 @@ def test_writing_it_leaves_judgment_backend_and_merge_unchanged(client, db, seed
     db.docs["workspace_settings/eng"] = {
         "tenant_id": "eng",
         judgment.SETTING_FIELD: judgment.INTERNAL_LAYA,
-        "judgment_backend_set_by": "root@saga.xyz",
+        "judgment_backend_set_by": "root@example.com",
         mergesettings.FIELD: {"tenant_id": "eng", "mode": "train", "train_size": 6,
                               "max_train_age_minutes": 90},
     }
@@ -270,7 +270,7 @@ def test_a_failed_write_writes_neither_the_setting_nor_its_audit(db, seeded, mon
     monkeypatch.setattr(db, "transaction", transaction)
     store = codeintel.CodeIntelligenceStore(db, now=lambda: NOW, mac=judgment.SettingsMac())
     with pytest.raises(RuntimeError):
-        store.put("eng", codeintel.CodeIntelligencePut(jev=True), by="root@saga.xyz")
+        store.put("eng", codeintel.CodeIntelligencePut(jev=True), by="root@example.com")
     assert _document(db, "eng") is None
     assert _audit(db) == []
 
@@ -326,12 +326,12 @@ def test_the_names_and_defaults_match_the_workers_reader():
 
 
 def test_the_view_says_what_each_repository_effectively_gets(client, db, seeded):
-    widgets = repo_id_for("eng", "saga-xyz", "widgets")
+    widgets = repo_id_for("eng", "example-org", "widgets")
     db.docs[f"repositories/{widgets}"]["context"] = "off"
     body = _put(client, "eng", "root", {"context": "on"}).json()
     repos = {r["repo_id"]: r for r in body["repositories"]}
     assert repos[widgets]["context"] == "off" and repos[widgets]["effective_context"] == "off"
-    gadgets = repo_id_for("eng", "saga-xyz", "gadgets")
+    gadgets = repo_id_for("eng", "example-org", "gadgets")
     assert repos[gadgets]["context"] == "inherit" and repos[gadgets]["effective_context"] == "on"
 
 

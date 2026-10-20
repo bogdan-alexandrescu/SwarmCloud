@@ -44,7 +44,7 @@ from swarm_api.waker import NullWaker
 from .conftest import NoForgeTokens, api_settings, auth_header
 from .test_people_admin import FakePublisher, _audit
 
-ROOT = "root@saga.xyz"
+ROOT = "root@example.com"
 ROOT_TENANT = ws.personal_tenant_id(ROOT)
 
 
@@ -176,7 +176,7 @@ def test_an_admins_standing_request_is_approved_when_they_ask_again(client, db, 
 
 def test_an_admins_request_after_a_denial_is_reopened_and_approved_keeping_the_denial(
         client, db, publisher) -> None:
-    denial = {"by": "other@saga.xyz", "at": _now() - timedelta(hours=25),
+    denial = {"by": "other@example.com", "at": _now() - timedelta(hours=25),
               "verdict": "denied", "reason": "Use the eng space."}
     old_request_id = _record(db, state="denied", decision=denial)["request_id"]
     response = _request(client)
@@ -347,7 +347,7 @@ def test_an_admin_whose_derived_id_belongs_to_another_principal_is_refused(
 
 def test_an_admin_inside_24_hours_of_a_denial_is_refused(client, db, publisher) -> None:
     _record(db, state="denied", decision={
-        "by": "other@saga.xyz", "at": _now() - timedelta(hours=2), "verdict": "denied",
+        "by": "other@example.com", "at": _now() - timedelta(hours=2), "verdict": "denied",
         "reason": "No."})
     response = _request(client)
     assert response.status_code == 403, response.text

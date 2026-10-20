@@ -491,6 +491,6 @@ def test_a_line_from_the_graph_cannot_end_the_section():
 
 
 def test_planner_prompt_without_context_is_unchanged():
-    ref = IssueRef(owner="saga-xyz", repo="widgets", number=42)
+    ref = IssueRef(owner="example-org", repo="widgets", number=42)
     assert (issueruns.planner_prompt(ref, run_id="run_x", open_work=None, context=None)
             == issueruns.planner_prompt(ref, run_id="run_x", open_work=None))

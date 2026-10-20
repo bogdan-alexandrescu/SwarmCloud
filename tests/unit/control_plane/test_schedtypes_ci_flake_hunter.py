@@ -71,7 +71,7 @@ class FlakeGitHub:
     def run(self, at: str, name: str, conclusion: str, run_id: int) -> None:
         self.runs.setdefault(at, []).append({
             "id": run_id, "name": name, "conclusion": conclusion, "status": "completed",
-            "html_url": f"https://github.com/saga-xyz/widgets/runs/{run_id}",
+            "html_url": f"https://github.com/example-org/widgets/runs/{run_id}",
         })
 
     def flake(self, at: str, name: str = "unit", base: int = 1) -> None:
@@ -120,7 +120,7 @@ class FlakeGitHub:
                 return self._ok(self.comments.get(number, []) if page == 1 else [])
             self._next_id += 1
             comment = {"id": self._next_id, "body": payload["body"], "user": {"login": "swarm-bot"},
-                       "html_url": f"https://github.com/saga-xyz/widgets/issues/{number}#c{self._next_id}"}
+                       "html_url": f"https://github.com/example-org/widgets/issues/{number}#c{self._next_id}"}
             self.comments.setdefault(number, []).append(comment)
             self.writes.append((method, path, payload))
             return self._ok(comment, 201)

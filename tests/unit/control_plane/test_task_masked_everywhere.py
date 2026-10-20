@@ -262,7 +262,7 @@ def test_a_workflow_whose_step_tasks_were_not_read_serves_no_step_input(client, 
     moment = datetime.now(timezone.utc)
     db.docs["workflows/wf_orphan"] = {
         "workflow_id": "wf_orphan", "tenant_id": "eng", "created_at": moment,
-        "updated_at": moment, "state": "QUEUED", "submitted_by": "alice@saga.xyz",
+        "updated_at": moment, "state": "QUEUED", "submitted_by": "alice@example.com",
         "steps": [{"step_id": "s1", "runner_profile": "mock",
                    "input": {"prompt": f"use {LITERAL}"}, "depends_on": [],
                    "resource_class": "standard", "input_from": {}, "timeout_seconds": 600,
@@ -401,7 +401,7 @@ def test_no_get_route_serves_a_planted_secret_inside_an_input_or_metadata(client
     db.docs["workflows/wf_mine"] = {
         "workflow_id": "wf_mine", "tenant_id": "eng", "created_at": db.docs["tasks/task_mine"]["created_at"],
         "updated_at": db.docs["tasks/task_mine"]["created_at"], "state": "RUNNING",
-        "submitted_by": "alice@saga.xyz",
+        "submitted_by": "alice@example.com",
         "steps": [{"step_id": "s1", "runner_profile": "mock",
                    "input": {"prompt": f"use {OPENAI} with DB_PASSWORD={BARE}"}, "depends_on": [],
                    "resource_class": "standard", "input_from": {}, "timeout_seconds": 600,

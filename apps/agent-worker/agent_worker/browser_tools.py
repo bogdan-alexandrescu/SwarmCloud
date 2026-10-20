@@ -12,7 +12,7 @@ the one place in the worker that says what each name means:
 
 Jev is only ever registered with its wrapper in the image and what its
 judgment backend needs: a TypeSafe key, or for an internal backend the route
-to Saga's decision API (`JEV_API_URL`, which the dispatcher sends only while
+to the internal decision API (`JEV_API_URL`, which the dispatcher sends only while
 the tailnet egress is on). Otherwise the attempt runs without it and says
 why (`no_key`, `not_installed`, `no_route`; JEV-OFF, #1345: a server the
 wrapper refuses to start was registered, failed, and nothing said so). swarm-api refuses a `jev` submission that has

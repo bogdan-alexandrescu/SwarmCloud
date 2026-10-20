@@ -82,12 +82,12 @@ variables {
   tenants = {
     eng = {
       kind      = "group"
-      principal = "eng@saga.xyz"
+      principal = "eng@example.com"
       providers = ["anthropic", "openai"]
     }
     smoke = {
       kind      = "group"
-      principal = "swarm-smoke@saga.xyz"
+      principal = "swarm-smoke@example.com"
       providers = []
     }
   }

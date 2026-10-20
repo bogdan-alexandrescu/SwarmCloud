@@ -280,7 +280,7 @@ def test_the_audit_is_written_before_anything_is_deleted(client, db, purger, jou
     assert [(e["action"], e["target_kind"], e["target_id"]) for e in entries] == [
         ("history_purged", "task", "t_alone"), ("history_purged", "workflow", "wf_dead")]
     wf = entries[1]
-    assert wf["by"] == "root@saga.xyz" and isinstance(wf["at"], datetime)
+    assert wf["by"] == "root@example.com" and isinstance(wf["at"], datetime)
     assert wf["detail"]["tenant_id"] == "eng" and wf["detail"]["state"] == "FAILED"
     assert wf["detail"]["task_ids"] == ["t_a", "t_b"]
     assert wf["detail"]["artifact_objects"] == 2

@@ -49,7 +49,7 @@ def test_context_serves_the_grant_of_the_signed_submitter_and_repository(client,
 
     worker = Worker()
     opened(client, db, worker)
-    grant = grant_id_for("eng", "alice@saga.xyz", repo_id_for("eng", "acme", "widgets"))
+    grant = grant_id_for("eng", "alice@example.com", repo_id_for("eng", "acme", "widgets"))
     db.docs[f"forge_grants/{grant}"] = {"tenant_id": "eng", "mode": "write"}
     body = worker.get(client, "context").json()
     assert body["forge_grant"]["id"] == grant and body["forge_grant"]["mode"] == "write"
@@ -174,11 +174,11 @@ def test_heartbeat_extends_this_leases_expiry(client, db):
 def test_a_human_park_a_person_returned_requeues(client, db):
     worker = Worker()
     opened(client, db, worker, metadata={"human_returned": {
-        "attempt_id": ATTEMPT, "generation": 1, "by": "alice@saga.xyz"}})
+        "attempt_id": ATTEMPT, "generation": 1, "by": "alice@example.com"}})
     response = worker.post(client, "park", {"request_id": "hp", "reason": "HUMAN_REQUIRED"})
     assert response.status_code == 200, response.text
     task = db.docs[f"tasks/{TASK}"]
-    assert task["state"] == "READY" and task["metadata"]["human_ready"]["by"] == "alice@saga.xyz"
+    assert task["state"] == "READY" and task["metadata"]["human_ready"]["by"] == "alice@example.com"
     assert db.docs[f"leases/{LEASE}"]["release_reason"] == "requeued:human_returned"
 
 

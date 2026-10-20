@@ -309,7 +309,7 @@ def repository_url(owner: str, repo: str) -> str:
 
 def repo_id_for(tenant_id: str, owner: str, repo: str) -> str:
     # The documented recipe: tenant + `github.com/` + lower-cased owner/repo,
-    # so `Saga/Widgets` and `saga/widgets` are one registration.
+    # so `Example-Org/Widgets` and `example-org/widgets` are one registration.
     key = f"{tenant_id}{FORGE_HOST}/{f'{owner}/{repo}'.lower()}"
     return REPO_ID_PREFIX + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 

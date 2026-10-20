@@ -64,7 +64,7 @@ variables {
   tenants = {
     eng = {
       kind      = "group"
-      principal = "eng@saga.xyz"
+      principal = "eng@example.com"
       providers = ["anthropic", "openai"]
     }
   }

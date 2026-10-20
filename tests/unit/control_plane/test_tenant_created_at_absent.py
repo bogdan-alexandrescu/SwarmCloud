@@ -21,7 +21,7 @@ from .conftest import auth_header, seed_tenant
 
 
 def _bare(tenant_id: str = "eng") -> dict:
-    return {"tenant_id": tenant_id, "kind": "group", "principal": f"{tenant_id}@saga.xyz"}
+    return {"tenant_id": tenant_id, "kind": "group", "principal": f"{tenant_id}@example.com"}
 
 
 def test_the_api_decoder_leaves_a_missing_created_at_null():

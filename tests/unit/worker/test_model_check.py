@@ -115,7 +115,7 @@ def _signed_doc(model_class: str | None) -> dict[str, Any]:
         "id": TASK, "tenant_id": TENANT, "runner_profile": "claude-code",
         "resource_class": profile.resource_class, "timeout_seconds": profile.timeout_seconds,
         "max_attempts": 3, "provider": profile.provider, "input": {"prompt": "p"},
-        "submitted_by": "alice@saga.xyz", "depends_on": [], "metadata": {},
+        "submitted_by": "alice@example.com", "depends_on": [], "metadata": {},
     }
     if model_class is not None:
         doc["model_class"] = model_class

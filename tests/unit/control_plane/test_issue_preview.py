@@ -47,7 +47,7 @@ ISSUE = {
     "state": "open",
     "comments": 3,
     "labels": [{"name": "bug"}, {"name": "ui"}],
-    "html_url": "https://github.com/saga-xyz/widgets/issues/42",
+    "html_url": "https://github.com/example-org/widgets/issues/42",
 }
 
 
@@ -114,7 +114,7 @@ def make(db, tokens, group_map, objects):
     return build
 
 
-def _preview(client, ref="saga-xyz/widgets#42", user="alice"):
+def _preview(client, ref="example-org/widgets#42", user="alice"):
     return client.get("/v1/issues/preview", params={"issue": ref}, headers=auth_header(user))
 
 
@@ -145,13 +145,13 @@ def test_the_preview_serves_the_issue_read_with_the_tenants_token(make, caplog):
     assert issue["labels"] == ["bug", "ui"]
     assert issue["state"] == "open"
     assert issue["comments"] == 3
-    assert issue["url"] == "https://github.com/saga-xyz/widgets/issues/42"
-    assert issue["ref"] == "saga-xyz/widgets#42"
+    assert issue["url"] == "https://github.com/example-org/widgets/issues/42"
+    assert issue["ref"] == "example-org/widgets#42"
     # The caller's tenant's secret, and only that one.
     assert reader.asked == ["swarm-tenant-eng-git"]
     # One request, to the pinned host, with the token in its header.
     [(url, headers)] = transport.calls
-    assert url == "https://api.github.com/repos/saga-xyz/widgets/issues/42"
+    assert url == "https://api.github.com/repos/example-org/widgets/issues/42"
     assert headers["Authorization"] == f"Bearer {TOKEN}"
     _assert_no_token(response, caplog)
 
@@ -177,10 +177,10 @@ def test_the_previews_default_is_the_repositorys_merge_policy_first(make, db):
     from swarm_api import repositories
 
     client, _, _ = make()
-    repo_id = repositories.repo_id_for("eng", "saga-xyz", "widgets")
+    repo_id = repositories.repo_id_for("eng", "example-org", "widgets")
     db.docs["control/settings"] = {"merge_by_default": True}
     db.docs[f"repositories/{repo_id}"] = {
-        "repo_id": repo_id, "tenant_id": "eng", "owner": "saga-xyz", "repo": "widgets",
+        "repo_id": repo_id, "tenant_id": "eng", "owner": "example-org", "repo": "widgets",
         "merge_policy": "off",
     }
     assert _preview(client).json()["auto_merge"]["default"] is False
@@ -191,9 +191,9 @@ def test_the_previews_default_is_the_repositorys_merge_policy_first(make, db):
 
 def test_an_issue_url_previews_the_same_issue(make):
     client, _, transport = make()
-    response = _preview(client, "https://github.com/saga-xyz/widgets/issues/42")
+    response = _preview(client, "https://github.com/example-org/widgets/issues/42")
     assert response.status_code == 200
-    assert transport.calls[0][0].endswith("/repos/saga-xyz/widgets/issues/42")
+    assert transport.calls[0][0].endswith("/repos/example-org/widgets/issues/42")
 
 
 def test_the_body_is_masked_by_the_apis_redaction(make, caplog):
@@ -267,7 +267,7 @@ def test_not_found_is_worded_not_found_or_not_visible(make):
 
 
 def test_a_pull_request_from_the_forge_is_is_pull_request(make, caplog):
-    body = {**ISSUE, "pull_request": {"url": "https://api.github.com/repos/saga-xyz/widgets/pulls/42"}}
+    body = {**ISSUE, "pull_request": {"url": "https://api.github.com/repos/example-org/widgets/pulls/42"}}
     client, _, _ = make(FakeForge(body=body))
     response = _preview(client)
     assert response.status_code == 422
@@ -277,7 +277,7 @@ def test_a_pull_request_from_the_forge_is_is_pull_request(make, caplog):
 
 def test_a_pull_request_url_is_is_pull_request_without_reading_anything(make):
     client, reader, transport = make()
-    response = _preview(client, "https://github.com/saga-xyz/widgets/pull/42")
+    response = _preview(client, "https://github.com/example-org/widgets/pull/42")
     assert response.status_code == 422
     assert response.json()["code"] == "is_pull_request"
     assert reader.asked == [] and transport.calls == []
@@ -326,7 +326,7 @@ def test_a_malformed_reference_is_a_422(make):
 
 def test_no_exception_the_client_raises_carries_the_token():
     """The client's own errors, outside any route: the text of every one."""
-    ref = parse_issue_ref("saga-xyz/widgets#42")
+    ref = parse_issue_ref("example-org/widgets#42")
     cases = [
         FakeForge(status=404, body={"message": TOKEN}),
         FakeForge(status=403, body={"message": TOKEN}),
@@ -388,7 +388,7 @@ def _tenant(tenant_id="eng"):
 
     from swarm_common.models import Tenant
 
-    return Tenant(tenant_id=tenant_id, kind="group", principal=f"{tenant_id}@saga.xyz",
+    return Tenant(tenant_id=tenant_id, kind="group", principal=f"{tenant_id}@example.com",
                   created_at=datetime.now(timezone.utc))
 
 

@@ -44,11 +44,11 @@ def _finished_history(db, count: int, newest: datetime, state: str = "SUCCEEDED"
             "id": task_id, "tenant_id": "eng", "state": state,
             "created_at": at, "updated_at": at, "runner_profile": "mock",
             "resource_class": "standard", "input": {}, "metadata": {},
-            "submitted_by": "alice@saga.xyz", "workflow_id": f"wf_{prefix}_{i:03d}",
+            "submitted_by": "alice@example.com", "workflow_id": f"wf_{prefix}_{i:03d}",
         }
         workflow = Workflow(
             workflow_id=f"wf_{prefix}_{i:03d}", tenant_id="eng", created_at=at, updated_at=at,
-            state=TaskState(state), submitted_by="alice@saga.xyz",
+            state=TaskState(state), submitted_by="alice@example.com",
             steps=[WorkflowStep(step_id="only", runner_profile="mock", input={},
                                 depends_on=[], task_id=task_id)],
         )

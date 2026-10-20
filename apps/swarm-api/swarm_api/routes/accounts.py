@@ -16,7 +16,7 @@ tenant-scoped route in this service makes, and never the raw `auth.tenant_id`.
 The difference is two guards that only exist on that path:
 
   * THE COLLISION CHECK. The frozen `tenant_id_for_group` slugs the LOCAL PART
-    only, so `eng@saga.xyz` and `eng@partner.com` are two different Google
+    only, so `eng@example.com` and `eng@partner.com` are two different Google
     groups that both derive tenant `eng`. `Store.ensure_tenant` compares the
     calling group against the one the tenant document was created for and
     answers 409 when they differ, because serving it would hand one group

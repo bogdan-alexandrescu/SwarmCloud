@@ -13,12 +13,12 @@ variables {
   tenants = {
     eng = {
       kind      = "group"
-      principal = "eng@saga.xyz"
+      principal = "eng@example.com"
       providers = ["anthropic", "openai"]
     }
     "u-alice" = {
       kind      = "user"
-      principal = "alice@saga.xyz"
+      principal = "alice@example.com"
       providers = []
     }
   }
@@ -224,7 +224,7 @@ run "a_tenant_id_too_long_for_a_service_account_is_refused" {
   variables {
     tenants = {
       # swarm-agent-worker-<tenant> must fit in 30 characters.
-      "engineering-platform" = { kind = "group", principal = "engineering-platform@saga.xyz" }
+      "engineering-platform" = { kind = "group", principal = "engineering-platform@example.com" }
     }
   }
 
@@ -241,7 +241,7 @@ run "a_personal_tenant_must_be_namespaced" {
   variables {
     tenants = {
       # Without the u- prefix a personal tenant could collide with a group.
-      alice = { kind = "user", principal = "alice@saga.xyz" }
+      alice = { kind = "user", principal = "alice@example.com" }
     }
   }
 

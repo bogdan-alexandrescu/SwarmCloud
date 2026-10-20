@@ -51,7 +51,7 @@ from .conftest import api_settings, auth_header, seed_task, seed_tenant
 
 SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
-OWNER, NAME = "saga-xyz", "widgets"
+OWNER, NAME = "example-org", "widgets"
 REPO = f"{OWNER}/{NAME}"
 OTHER = "gadgets"
 NOW = datetime.now(timezone.utc)
@@ -193,11 +193,11 @@ def _register(db, tenant_id: str, owner: str, repo: str) -> None:
         "owner": owner, "repo": repo, "repository": f"{owner}/{repo}", "archived": False,
         "repository_url": repositories.repository_url(owner, repo),
         "default_branch": "main", "default_branch_source": "forge",
-        "created_by": "alice@saga.xyz",
+        "created_by": "alice@example.com",
     })
 
 
-def _opener(db, n: int, *, tenant_id: str = "eng", submitted_by: str = "alice@saga.xyz") -> str:
+def _opener(db, n: int, *, tenant_id: str = "eng", submitted_by: str = "alice@example.com") -> str:
     """The task whose `swarm/<id>` branch opened pull request `n`, in `tenant_id`."""
     doc = seed_task(db, task_id=_task_id(n), tenant_id=tenant_id, state="SUCCEEDED",
                     runner_profile="claude-code")
@@ -502,7 +502,7 @@ def test_redrive_merges_only_green_no_merge_step_and_behind_never_held_or_red(cl
          m["metadata"]["dispatch"]["merge_target"]["head_sha"]) for m in merges
     )
     assert targets == [(1, _sha(1)), (4, _sha(4))]
-    assert all(m["submitted_by"] == "alice@saga.xyz" and m["tenant_id"] == "eng" for m in merges)
+    assert all(m["submitted_by"] == "alice@example.com" and m["tenant_id"] == "eng" for m in merges)
 
     # The redriven ones now have a live merge step: in flight, not stranded.
     again = _sweep(client).json()
@@ -547,7 +547,7 @@ def test_the_scheduler_identity_may_not_redrive(client, db, github):
 
 
 def test_redrive_refuses_a_submitter_who_left_the_tenant(client, db, github):
-    _opener(db, 1, submitted_by="carol@saga.xyz")
+    _opener(db, 1, submitted_by="carol@example.com")
     github.green(github.add(1))
     body = _sweep(client, headers=auth_header("root"), body={"redrive": True}).json()
     assert body["redriven"] == []
@@ -566,7 +566,7 @@ def test_tenant_b_never_sees_tenant_as_pull_requests(client, db, github, forge_t
     _opener(db, 1, tenant_id="eng")
     github.green(github.add(1))
     # And research's own pull request, in the same repository, is not eng's.
-    _opener(db, 2, tenant_id="research", submitted_by="bob@saga.xyz")
+    _opener(db, 2, tenant_id="research", submitted_by="bob@example.com")
     github.green(github.add(2))
 
     research = _sweep(client, tenant_id="research").json()
@@ -602,7 +602,7 @@ def test_an_admin_reads_every_tenant_they_belong_to_and_any_one_by_name(client, 
     _register(db, "research", OWNER, NAME)
     _opener(db, 1)
     github.green(github.add(1))
-    _opener(db, 2, tenant_id="research", submitted_by="bob@saga.xyz")
+    _opener(db, 2, tenant_id="research", submitted_by="bob@example.com")
     github.green(github.add(2))
     _sweep(client, tenant_id="eng")
     _sweep(client, tenant_id="research")

@@ -175,7 +175,7 @@ def test_one_claude_code_task_with_no_repository_and_the_digest_as_data(db, ctx)
     (task,) = report
     assert work == [{"kind": "task", "id": task["id"], "repo_id": None}]
     assert task["runner_profile"] == "claude-code" and task["repository_url"] is None
-    assert task["metadata"]["schedule"] == firing.mark and task["submitted_by"] == "alice@saga.xyz"
+    assert task["metadata"]["schedule"] == firing.mark and task["submitted_by"] == "alice@example.com"
     assert task["state"] in ("QUEUED", "READY")
     prompt = task["input"]["prompt"]
     fid = firing.firing["firing_id"]

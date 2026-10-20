@@ -47,7 +47,7 @@ def _register(db, tenant_id: str, name: str) -> None:
     McpServers(db, now=lambda: T0).register(
         tenant_id=tenant_id, name=name, url=f"https://{name}.example.com/mcp",
         description="", auth={"mode": "none"}, allowed_profiles=[], allowed_tools=[],
-        limits=None, enabled=True, by="root@saga.xyz")
+        limits=None, enabled=True, by="root@example.com")
 
 
 def _attached(db, tenant_id: str, name: str, at: datetime, *, attempt: str,
@@ -57,7 +57,7 @@ def _attached(db, tenant_id: str, name: str, at: datetime, *, attempt: str,
         "at": at, "expire_at": at + timedelta(days=90), "task_id": f"task_{attempt}",
         "attempt_id": attempt, "generation": 1, "tenant_id": tenant_id,
         "server_id": sid, "name": name, "revision": 1, "auth_mode": "none",
-        "secret_id": None, "version": None, "submitted_by": "alice@saga.xyz",
+        "secret_id": None, "version": None, "submitted_by": "alice@example.com",
     }
 
 

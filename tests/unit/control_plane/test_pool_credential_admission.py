@@ -296,7 +296,7 @@ def test_the_api_leaves_the_credential_question_to_admission(
     pool, admission parks it before any lease, which is what the API's park was
     for. READY costs nothing (invariant 1)."""
     seed_pool(db, "global", hard_limit=10)
-    carol = tenant_id_for_user("carol@saga.xyz")
+    carol = tenant_id_for_user("carol@example.com")
     response = client.post(
         "/v1/tasks",
         headers=auth_header("carol"),

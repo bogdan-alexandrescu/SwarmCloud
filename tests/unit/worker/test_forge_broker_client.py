@@ -536,7 +536,7 @@ def test_the_401_reread_goes_through_the_broker_again(db, worker_factory, monkey
         if len(seen) == 1:
             routes.values[slot_secret()] = user_token("b")
             raise issue_mod.IssueUnavailable(
-                "could not fetch issue #1 of saga/widgets: the forge refused the credential "
+                "could not fetch issue #1 of example-org/widgets: the forge refused the credential "
                 "(401: Bad credentials)")
         return tmp_path / "issue.md"
 

@@ -133,7 +133,7 @@ def test_a_lapsed_renewal_is_revoked_at_the_relay(client, ldb, live, relay, cloc
     clock.advance(61)
     assert _view(client)["session"]["controller"] is None
     assert [r["detail"]["cause"] for r in audit(ldb, "control_ended")] == ["renew_lapsed"]
-    assert relay.asked()[-1] == ("revoke", "alice@saga.xyz", "renew_lapsed")
+    assert relay.asked()[-1] == ("revoke", "alice@example.com", "renew_lapsed")
 
 
 def test_idle_is_revoked_at_the_relay(client, ldb, live, relay, clock):
@@ -143,7 +143,7 @@ def test_idle_is_revoked_at_the_relay(client, ldb, live, relay, clock):
         assert _renew(client, "alice").status_code == 200
     clock.advance(50)
     _view(client)
-    assert relay.asked()[-1] == ("revoke", "alice@saga.xyz", "idle")
+    assert relay.asked()[-1] == ("revoke", "alice@example.com", "idle")
 
 
 def test_a_preemption_revokes_the_person_preempted(client, ldb, live, relay):
@@ -153,7 +153,7 @@ def test_a_preemption_revokes_the_person_preempted(client, ldb, live, relay):
     assert take(client, "root").status_code == 200
     relay.controls.clear()
     assert take(client, "alice", preempt=True).status_code == 200
-    assert relay.asked() == [("revoke", "root@saga.xyz", "preempted")]
+    assert relay.asked() == [("revoke", "root@example.com", "preempted")]
 
 
 def test_a_return_is_revoked_at_the_relay(client, ldb, live, relay):
@@ -161,10 +161,10 @@ def test_a_return_is_revoked_at_the_relay(client, ldb, live, relay):
     relay.controls.clear()
     returned = client.delete(f"/v1/tasks/{TASK}/live/control", headers=bearer("alice"))
     assert returned.status_code == 200, returned.text
-    assert relay.asked() == [("revoke", "alice@saga.xyz", "returned")]
+    assert relay.asked() == [("revoke", "alice@example.com", "returned")]
     # Idempotent at swarm-api: a second Return ends nothing and asks nothing.
     assert client.delete(f"/v1/tasks/{TASK}/live/control", headers=bearer("alice")).status_code == 409
-    assert relay.asked() == [("revoke", "alice@saga.xyz", "returned")]
+    assert relay.asked() == [("revoke", "alice@example.com", "returned")]
 
 
 def test_a_lapsed_membership_is_revoked_at_the_relay(client, ldb, live, relay):
@@ -173,10 +173,10 @@ def test_a_lapsed_membership_is_revoked_at_the_relay(client, ldb, live, relay):
     ctx = client.app.state.ctx
     service = api.LiveService(settings=ctx.settings, db=ctx.db, store=ctx.store,
                               authenticator=ctx.authenticator, relay=relay, now=ctx.now)
-    admission = api.Admission(email="alice@saga.xyz", tenant_id="eng", task_id=TASK,
+    admission = api.Admission(email="alice@example.com", tenant_id="eng", task_id=TASK,
                               session_id=SESSION, attempt_id=ATTEMPT, generation=1, ticket="")
     assert service.end_control(admission, "membership_lost") is True
-    assert relay.asked() == [("revoke", "alice@saga.xyz", "membership_lost")]
+    assert relay.asked() == [("revoke", "alice@example.com", "membership_lost")]
 
 
 def test_a_renewal_is_renewed_at_the_relay_and_never_asked_when_nothing_changed(
@@ -186,7 +186,7 @@ def test_a_renewal_is_renewed_at_the_relay_and_never_asked_when_nothing_changed(
     assert take(client, "alice").status_code == 200
     assert relay.controls == [], "a take is granted on the person's own link"
     assert _renew(client, "alice").status_code == 200
-    assert relay.asked() == [("renew", "alice@saga.xyz", "")]
+    assert relay.asked() == [("renew", "alice@example.com", "")]
 
 
 # --------------------------------------------------------------------------
@@ -250,7 +250,7 @@ def test_a_lapse_reaches_the_gate_through_the_real_relay_within_two_seconds(
 def test_the_relay_closer_posts_a_control_request_to_the_internal_route(monkeypatch):
     request = api.mint_control(LIVE_KEY, {
         "session_id": SESSION, "tenant_id": "eng", "task_id": TASK, "attempt_id": ATTEMPT,
-        "generation": 1, "email": "alice@saga.xyz", "action": "revoke", "cause": "idle",
+        "generation": 1, "email": "alice@example.com", "action": "revoke", "cause": "idle",
     }, now=time.time())
     # Unreachable: logged, never raised (the gate's lease is the backstop).
     assert api.HttpRelayCloser("ws://127.0.0.1:9", LIVE_KEY, timeout=0.2).send_control(request) is False
@@ -277,7 +277,7 @@ def test_the_relay_closer_posts_a_control_request_to_the_internal_route(monkeypa
     ((url, body),) = posted
     assert url == "http://10.10.0.42:8080/internal/control"
     verified = rz.verify_control(LIVE_KEY.encode(), body.decode(), now=time.time())
-    assert (verified.action, verified.cause, verified.email) == ("revoke", "idle", "alice@saga.xyz")
+    assert (verified.action, verified.cause, verified.email) == ("revoke", "idle", "alice@example.com")
 
 
 # --------------------------------------------------------------------------

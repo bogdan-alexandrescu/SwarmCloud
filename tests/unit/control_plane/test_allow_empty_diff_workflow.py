@@ -31,7 +31,7 @@ from swarm_api.rollup import derive_for
 from .conftest import auth_header, seed_task, seed_tenant
 from .test_workflow_state_rollup import make_workflow, seed_workflow, states_of
 
-REPO = "https://github.com/saga-xyz/example.git"
+REPO = "https://github.com/example-org/example.git"
 SKIPPED = {"reason": "nothing to change", "upstream": ["t1"]}
 
 

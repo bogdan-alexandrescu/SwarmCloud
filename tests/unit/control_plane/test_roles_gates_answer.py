@@ -47,8 +47,8 @@ from .test_await_input_api import (  # noqa: F401 -- HW-API-ANSWER's fixtures, u
 from .test_roles_store import grant
 
 MEMBER_SWITCH = refusals.env_name("role_member_required")
-VIC = "vic@saga.xyz"
-OPS = "ops@saga.xyz"
+VIC = "vic@example.com"
+OPS = "ops@example.com"
 
 
 @pytest.fixture
@@ -153,11 +153,11 @@ def test_a_non_member_platform_admin_answers_a_group_workspaces_step(
 
 def test_a_platform_admin_still_answers_no_one_elses_personal_workspace(db, api_context):
     _personal_tenant(db)
-    for other in ("root@saga.xyz", OPS):
+    for other in ("root@example.com", OPS):
         with pytest.raises(awaitinput.Forbidden) as refused:
             awaitinput.member_refusal(api_context, _person(other, "u-carol"), "u-carol")
         assert refused.value.detail["reason"] == "not_a_member"
-    awaitinput.member_refusal(api_context, _person("carol@saga.xyz", "u-carol"), "u-carol")
+    awaitinput.member_refusal(api_context, _person("carol@example.com", "u-carol"), "u-carol")
 
 
 def test_the_form_is_offered_to_the_reach_and_not_to_an_enforced_viewer(

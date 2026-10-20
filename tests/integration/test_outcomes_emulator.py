@@ -75,17 +75,17 @@ NOW = datetime(2026, 9, 25, 11, 10, 2, tzinfo=UTC)
 WEEK = {"tz": "UTC", "span": "7d"}
 
 PROJECT = "saga-agents-staging"
-ENG_GROUP = "eng@saga.xyz"
-RESEARCH_GROUP = "research@saga.xyz"
-ADMIN_GROUP = "swarm-admins@saga.xyz"
+ENG_GROUP = "eng@example.com"
+RESEARCH_GROUP = "research@example.com"
+ADMIN_GROUP = "swarm-admins@example.com"
 GROUP_MAP = {
-    "alice@saga.xyz": (ENG_GROUP,),
-    "bob@saga.xyz": (RESEARCH_GROUP,),
-    "root@saga.xyz": (ADMIN_GROUP, ENG_GROUP),
+    "alice@example.com": (ENG_GROUP,),
+    "bob@example.com": (RESEARCH_GROUP,),
+    "root@example.com": (ADMIN_GROUP, ENG_GROUP),
 }
 TOKENS = {
     f"token-{email.split('@')[0]}": {
-        "email": email, "email_verified": True, "sub": f"sub-{email}", "hd": "saga.xyz",
+        "email": email, "email_verified": True, "sub": f"sub-{email}", "hd": "example.com",
     }
     for email in GROUP_MAP
 }
@@ -117,7 +117,7 @@ def api_settings() -> ApiSettings:
         environment="test",
         firestore_database="swarm",
         artifact_bucket=f"{PROJECT}-swarm-artifacts",
-        allowed_domains=("saga.xyz",),
+        allowed_domains=("example.com",),
         max_batch_size=100,
         max_input_bytes=256 * 1024,
         max_workflow_steps=50,
@@ -153,7 +153,7 @@ class Seed:
         tenant = Tenant(
             tenant_id=tenant_id,
             kind="group",
-            principal=f"{tenant_id}@saga.xyz",
+            principal=f"{tenant_id}@example.com",
             created_at=at(1, 0),
             display_name=tenant_id,
             max_active=20,
@@ -179,7 +179,7 @@ class Seed:
         completed: datetime | None = None,
         tenant: str = "eng",
         profile: str = "mock",
-        submitted_by: str = "alice@saga.xyz",
+        submitted_by: str = "alice@example.com",
         workflow_id: str | None = None,
         step_id: str | None = None,
         depends_on: tuple[str, ...] = (),
@@ -258,7 +258,7 @@ def seed_week(seed: Seed) -> None:
 
     # 23 Sep (bucket 4)
     seed.task("d1", state="DEAD_LETTERED", created=at(23, 1), completed=at(23, 2),
-              profile="generic", attempt_count=3, submitted_by="bob@saga.xyz")
+              profile="generic", attempt_count=3, submitted_by="bob@example.com")
     seed.attempt("a_d1a", task_id="d1", generation=1, created=at(23, 1, 5), started=at(23, 1, 10),
                  exit_code=1)
     seed.attempt("a_d1b", task_id="d1", generation=2, created=at(23, 1, 35), started=at(23, 1, 40),
@@ -287,7 +287,7 @@ def seed_week(seed: Seed) -> None:
 
     seed.docs["workflows/wf1"] = {
         "workflow_id": "wf1", "tenant_id": "eng", "created_at": at(21, 10),
-        "updated_at": at(21, 10), "state": "RUNNING", "submitted_by": "alice@saga.xyz",
+        "updated_at": at(21, 10), "state": "RUNNING", "submitted_by": "alice@example.com",
         "steps": [
             {"step_id": "a", "runner_profile": "claude-code", "input": {}, "depends_on": [],
              "task_id": "s1"},
@@ -301,9 +301,9 @@ def seed_week(seed: Seed) -> None:
 
     # research, on the same days
     seed.task("r1", tenant="research", state="SUCCEEDED", created=at(22, 8), completed=at(22, 10),
-              submitted_by="bob@saga.xyz")
+              submitted_by="bob@example.com")
     seed.task("r2", tenant="research", state="FAILED", created=at(22, 8, 30), completed=at(22, 11),
-              submitted_by="bob@saga.xyz", last_error="boom")
+              submitted_by="bob@example.com", last_error="boom")
     seed.attempt("a_r2", task_id="r2", tenant="research", created=at(22, 10, 30),
                  started=at(22, 10, 31), exit_code=1)
 

@@ -46,8 +46,8 @@ from swarm_api.waker import NullWaker
 
 from .conftest import NoForgeTokens, api_settings, auth_header, seed_tenant
 
-CAROL = "carol@saga.xyz"
-ROOT = "root@saga.xyz"
+CAROL = "carol@example.com"
+ROOT = "root@example.com"
 CAROL_WS = "w-c0ffee"
 SWEEPER = "swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
@@ -967,17 +967,17 @@ def test_declining_leaves_a_pending_loan_where_it_is(client, db, pool) -> None:
 
 def test_the_sweep_publishes_approved_records_not_attempted_in_ten_minutes(
         client, db, publisher) -> None:
-    fresh = _record(db, tenant_id="u-a", workspace_id="w-00000a", principal="a@saga.xyz",
+    fresh = _record(db, tenant_id="u-a", workspace_id="w-00000a", principal="a@example.com",
                     state="approved")
-    stale = _record(db, tenant_id="u-b", workspace_id="w-00000b", principal="b@saga.xyz",
+    stale = _record(db, tenant_id="u-b", workspace_id="w-00000b", principal="b@example.com",
                     state="approved",
                     dispatch={"attempts": 1, "last_attempt_at": _now() - timedelta(minutes=11),
                               "last_ok": True})
-    _record(db, tenant_id="u-c", workspace_id="w-00000c", principal="c@saga.xyz",
+    _record(db, tenant_id="u-c", workspace_id="w-00000c", principal="c@example.com",
             state="approved",
             dispatch={"attempts": 1, "last_attempt_at": _now() - timedelta(minutes=2),
                       "last_ok": True})
-    _record(db, tenant_id="u-d", workspace_id="w-00000d", principal="d@saga.xyz",
+    _record(db, tenant_id="u-d", workspace_id="w-00000d", principal="d@example.com",
             state="applying")
     response = _post(client, "/v1/admin/workspaces/sweep")
     assert response.status_code == 200, response.text
@@ -1020,7 +1020,7 @@ def test_the_sweep_publishes_at_most_its_limit_per_call(db, monkeypatch) -> None
     monkeypatch.setattr(people_mod, "SWEEP_LIMIT", 2)
     for i in range(4):
         _record(db, tenant_id=f"u-p{i}", workspace_id=f"w-00010{i}",
-                principal=f"p{i}@saga.xyz", state="approved")
+                principal=f"p{i}@example.com", state="approved")
     publisher = FakePublisher()
     report = people_mod.People(db, publisher=publisher, now=_now).sweep()
     assert report["published"] == 2 and len(publisher.messages) == 2
@@ -1039,29 +1039,29 @@ def test_the_list_shows_everyone_with_teams_github_workspace_account_and_activit
         client, db, pool) -> None:
     seed_tenant(db, "eng")
     long_ago = _now() - timedelta(days=2)
-    _person(db, "u-alice", "alice@saga.xyz", teams=("eng",), seen=long_ago)
+    _person(db, "u-alice", "alice@example.com", teams=("eng",), seen=long_ago)
     _person(db, "u-carol", CAROL, seen=_now() - timedelta(minutes=3))
-    _person(db, "u-bob", "bob@saga.xyz", teams=("research",), seen=_now())
+    _person(db, "u-bob", "bob@example.com", teams=("research",), seen=_now())
     _record(db, state="requested")
-    _record(db, tenant_id="u-alice", workspace_id="w-a11ce0", principal="alice@saga.xyz",
+    _record(db, tenant_id="u-alice", workspace_id="w-a11ce0", principal="alice@example.com",
             state="ready", decision={"by": ROOT, "at": _now(), "verdict": "approved",
                                      "reason": None})
     db.docs["accounts/acct-alice"] = _pool_account("acct-alice", "u-alice")
     db.docs["accounts/acct-eng"] = _pool_account("acct-eng", "eng", lend_to=("u-bob",))
     db.docs["git_tokens/t1"] = {"tenant_id": "u-alice", "scope": "user",
-                                "user": "alice@saga.xyz", "state": "active"}
+                                "user": "alice@example.com", "state": "active"}
     pool.accounts["acct-eng"] = _pool_account("acct-eng", "eng", lend_to=("u-bob",))
 
     response = client.get("/v1/admin/people", headers=auth_header("root"))
     assert response.status_code == 200, response.text
     body = response.json()
     rows = {r["email"]: r for r in body["people"]}
-    assert set(rows) == {"alice@saga.xyz", CAROL, "bob@saga.xyz"}
+    assert set(rows) == {"alice@example.com", CAROL, "bob@example.com"}
     assert body["count"] == 3 and body["pending"] == 1
     assert body["people"][0]["email"] == CAROL, "pending requests sort first"
-    assert body["people"][1]["email"] == "bob@saga.xyz", "then the most recently active"
+    assert body["people"][1]["email"] == "bob@example.com", "then the most recently active"
 
-    alice = rows["alice@saga.xyz"]
+    alice = rows["alice@example.com"]
     assert alice["teams"] == ["eng"]
     assert alice["github"] == "connected"
     assert alice["workspace"]["state"] == "ready"
@@ -1069,7 +1069,7 @@ def test_the_list_shows_everyone_with_teams_github_workspace_account_and_activit
     assert alice["claude_account"]["source"] == "own"
     assert alice["last_active"] == long_ago.isoformat()
 
-    bob = rows["bob@saga.xyz"]
+    bob = rows["bob@example.com"]
     assert bob["workspace"]["state"] == "none"
     assert bob["claude_account"]["source"] == "lent"
     assert bob["claude_account"]["lent_by"] == ["eng"]
@@ -1092,8 +1092,8 @@ def test_the_list_names_each_account_lent_to_a_person_and_nothing_secret(client,
     seed_tenant(db, "eng")
     db.docs["tenants/eng"]["display_name"] = "Engineering"
     seed_tenant(db, "ops")
-    _person(db, "u-hal", "hal@saga.xyz")
-    _person(db, "u-ivy", "ivy@saga.xyz")
+    _person(db, "u-hal", "hal@example.com")
+    _person(db, "u-ivy", "ivy@example.com")
     secret_ref = "swarm-tenant-eng-" + "claude"
     lent = _pool_account("eng:devops-main", "eng", lend_to=("u-hal",))
     lent.update(label="devops main", secret_name=secret_ref, secret_version="7")
@@ -1106,7 +1106,7 @@ def test_the_list_names_each_account_lent_to_a_person_and_nothing_secret(client,
 
     body = client.get("/v1/admin/people", headers=auth_header("root")).json()
     rows = {r["email"]: r for r in body["people"]}
-    hal = rows["hal@saga.xyz"]["claude_account"]
+    hal = rows["hal@example.com"]["claude_account"]
     # MUTATION: drop `lent_accounts`, or key it by owner tenant alone.
     assert hal["lent_accounts"] == [
         {"account_id": "eng:devops-main", "label": "devops main", "owner_tenant": "eng",
@@ -1115,7 +1115,7 @@ def test_the_list_names_each_account_lent_to_a_person_and_nothing_secret(client,
          "owner_name": "ops", "state": "AVAILABLE"},
     ]
     assert hal["lent_by"] == ["eng", "ops"]
-    assert rows["ivy@saga.xyz"]["claude_account"]["lent_accounts"] == []
+    assert rows["ivy@example.com"]["claude_account"]["lent_accounts"] == []
     # MUTATION: return the account document as it is.
     text = json.dumps(body["people"])
     assert secret_ref not in text and "secret" not in text
@@ -1124,7 +1124,7 @@ def test_the_list_names_each_account_lent_to_a_person_and_nothing_secret(client,
 def test_the_list_carries_the_last_audit_entries_newest_first(client, db) -> None:
     _record(db)
     _post(client, f"/v1/admin/workspaces/{CAROL_WS}/deny", json={"reason": "no"})
-    _record(db, tenant_id="u-z", workspace_id="w-00000f", principal="z@saga.xyz")
+    _record(db, tenant_id="u-z", workspace_id="w-00000f", principal="z@example.com")
     _post(client, "/v1/admin/workspaces/w-00000f/approve")
     audit = client.get("/v1/admin/people", headers=auth_header("root")).json()["audit"]
     assert [e["action"] for e in audit[:2]] == ["approve", "deny"]
@@ -1243,7 +1243,7 @@ def test_a_stuck_record_is_reported_at_most_once_an_hour(client, db, publisher, 
 def test_with_publishing_on_a_record_never_dispatched_for_15_minutes_is_stuck(
         client, db, publisher, caplog) -> None:
     _approved(db, minutes_ago=20)
-    _approved(db, tenant_id="u-a", workspace_id="w-00000a", principal="a@saga.xyz",
+    _approved(db, tenant_id="u-a", workspace_id="w-00000a", principal="a@example.com",
               minutes_ago=5)
     caplog.set_level(logging.INFO, logger="swarm_api")
     body = _post(client, "/v1/admin/workspaces/sweep").json()
@@ -1259,7 +1259,7 @@ def test_with_publishing_on_a_dispatch_unclaimed_for_30_minutes_is_stuck(
     rec["dispatch"] = {"attempts": 5, "request_id": rec["request_id"],
                        "first_attempt_at": _now() - timedelta(minutes=40),
                        "last_attempt_at": _now() - timedelta(minutes=2), "last_ok": True}
-    young = _approved(db, tenant_id="u-a", workspace_id="w-00000a", principal="a@saga.xyz",
+    young = _approved(db, tenant_id="u-a", workspace_id="w-00000a", principal="a@example.com",
                       minutes_ago=90)
     young["dispatch"] = {"attempts": 1, "request_id": young["request_id"],
                          "first_attempt_at": _now() - timedelta(minutes=20),

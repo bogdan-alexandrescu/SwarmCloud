@@ -96,7 +96,7 @@ def _logger():
     return StructuredLogger(stream=stream, component="test"), stream
 
 
-def _world(*, user_key: str | None, tenant_key: str | None, principal: str = "bogdan@saga.xyz"):
+def _world(*, user_key: str | None, tenant_key: str | None, principal: str = "bogdan@example.com"):
     docs: dict[str, dict] = {
         "tenants/u-bogdan": {"tenant_id": "u-bogdan", "kind": "user", "principal": principal},
     }
@@ -110,7 +110,7 @@ def _world(*, user_key: str | None, tenant_key: str | None, principal: str = "bo
     return _Db(docs), values
 
 
-def _prepare(tmp_path, db, client, *, endpoint=ENDPOINT, submitted_by="bogdan@saga.xyz"):
+def _prepare(tmp_path, db, client, *, endpoint=ENDPOINT, submitted_by="bogdan@example.com"):
     from agent_worker import jevkey
 
     log, stream = _logger()
@@ -397,7 +397,7 @@ def test_an_internal_backend_never_reads_or_writes_a_key(tmp_path):
         private = tmp_path / backend
         private.mkdir()
         env = jevkey.prepare(endpoint=ENDPOINT, db=db, client=client, tenant_id="eng",
-                             submitted_by="bogdan@saga.xyz", private_dir=private,
+                             submitted_by="bogdan@example.com", private_dir=private,
                              logger=log, backend=backend)
         assert env == {} and client.reads == [] and not list(private.iterdir())
 

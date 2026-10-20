@@ -177,7 +177,7 @@ class CloudIdentityGroups:
     # -- public API -------------------------------------------------------
 
     def group_resource_name(self, group_email: str) -> str:
-        """`eng@saga.xyz` -> `groups/01abc...`.
+        """`eng@example.com` -> `groups/01abc...`.
 
         Uses groups:lookup, which is the call verified to work in this project.
         """

@@ -53,7 +53,7 @@ class FakeSession:
             return FakeResponse({"name": f"groups/id-of-{group.split('@')[0]}"})
         if url.endswith(":checkTransitiveMembership"):
             group_id = url.split("/groups/")[1].split("/")[0]
-            group = group_id.replace("id-of-", "") + "@saga.xyz"
+            group = group_id.replace("id-of-", "") + "@example.com"
             query = params["query"]
             member = query.split("'")[1]
             return FakeResponse({"hasMembership": member in self.memberships.get(group, set())})
@@ -64,8 +64,8 @@ class FakeSession:
 def session() -> FakeSession:
     return FakeSession(
         {
-            "eng@saga.xyz": {"alice@saga.xyz", "root@saga.xyz"},
-            "research@saga.xyz": {"bob@saga.xyz"},
+            "eng@example.com": {"alice@example.com", "root@example.com"},
+            "research@example.com": {"bob@example.com"},
         }
     )
 
@@ -77,7 +77,7 @@ def resolver(session: FakeSession, **kwargs) -> CloudIdentityGroups:
 # -- the verified operational constraint ----------------------------------
 
 def test_every_call_carries_the_billing_project_header(session):
-    resolver(session).is_member("alice@saga.xyz", "eng@saga.xyz")
+    resolver(session).is_member("alice@example.com", "eng@example.com")
     assert session.calls, "no call was made"
     for call in session.calls:
         assert call["headers"]["x-goog-user-project"] == PROJECT, (
@@ -86,7 +86,7 @@ def test_every_call_carries_the_billing_project_header(session):
 
 
 def test_membership_is_checked_per_group_never_enumerated(session):
-    resolver(session).groups_for("alice@saga.xyz", ("eng@saga.xyz", "research@saga.xyz"))
+    resolver(session).groups_for("alice@example.com", ("eng@example.com", "research@example.com"))
     urls = [call["url"] for call in session.calls]
     assert all("searchTransitiveGroups" not in url for url in urls), (
         "searchTransitiveGroups 403s in this project and is more privilege than needed"
@@ -96,15 +96,15 @@ def test_membership_is_checked_per_group_never_enumerated(session):
 
 
 def test_the_query_is_an_expression_not_a_bare_value(session):
-    resolver(session).is_member("alice@saga.xyz", "eng@saga.xyz")
+    resolver(session).is_member("alice@example.com", "eng@example.com")
     check = next(c for c in session.calls if c["url"].endswith(":checkTransitiveMembership"))
-    assert check["params"]["query"] == "member_key_id == 'alice@saga.xyz'"
+    assert check["params"]["query"] == "member_key_id == 'alice@example.com'"
 
 
 def test_lookup_uses_the_group_email_as_group_key(session):
-    name = resolver(session).group_resource_name("eng@saga.xyz")
+    name = resolver(session).group_resource_name("eng@example.com")
     lookup = next(c for c in session.calls if c["url"].endswith("/groups:lookup"))
-    assert lookup["params"] == {"groupKey.id": "eng@saga.xyz"}
+    assert lookup["params"] == {"groupKey.id": "eng@example.com"}
     assert lookup["url"] == f"{CLOUD_IDENTITY_ROOT}/groups:lookup"
     assert name == "groups/id-of-eng"
 
@@ -113,22 +113,22 @@ def test_lookup_uses_the_group_email_as_group_key(session):
 
 def test_only_groups_the_caller_belongs_to_come_back(session):
     found = resolver(session).groups_for(
-        "bob@saga.xyz", ("eng@saga.xyz", "research@saga.xyz")
+        "bob@example.com", ("eng@example.com", "research@example.com")
     )
-    assert found == ("research@saga.xyz",)
+    assert found == ("research@example.com",)
 
 
 def test_results_are_cached_per_caller_and_group(session):
     clock = {"now": T0}
     resolved = resolver(session, ttl_seconds=60, now=lambda: clock["now"])
 
-    resolved.is_member("alice@saga.xyz", "eng@saga.xyz")
+    resolved.is_member("alice@example.com", "eng@example.com")
     first = len(session.calls)
-    resolved.is_member("alice@saga.xyz", "eng@saga.xyz")
+    resolved.is_member("alice@example.com", "eng@example.com")
     assert len(session.calls) == first, "a cached answer must not hit the network"
 
     clock["now"] = T0 + timedelta(seconds=61)
-    resolved.is_member("alice@saga.xyz", "eng@saga.xyz")
+    resolved.is_member("alice@example.com", "eng@example.com")
     assert len(session.calls) > first, "the cache must expire"
 
 
@@ -141,14 +141,14 @@ def test_a_lookup_failure_that_could_change_the_tenant_is_not_swallowed(session)
     park as CREDENTIAL_MISSING or run against a different key. A 503 they retry is
     the cheaper failure.
     """
-    session.fail_lookup = {"eng@saga.xyz"}
+    session.fail_lookup = {"eng@example.com"}
     resolved = resolver(session)
 
     with pytest.raises(GroupLookupError):
-        resolved.group_resource_name("eng@saga.xyz")
+        resolved.group_resource_name("eng@example.com")
 
     with pytest.raises(GroupLookupError):
-        resolved.groups_for("alice@saga.xyz", ("eng@saga.xyz",))
+        resolved.groups_for("alice@example.com", ("eng@example.com",))
 
 
 def test_a_failure_below_a_confirmed_match_cannot_change_the_tenant_and_is_swallowed(
@@ -160,13 +160,13 @@ def test_a_failure_below_a_confirmed_match_cannot_change_the_tenant_and_is_swall
     the FIRST match, so a group that could only ever lose to `eng` is irrelevant
     to alice's tenant however it answers.
     """
-    session.fail_lookup = {"research@saga.xyz"}
+    session.fail_lookup = {"research@example.com"}
     resolved = resolver(session)
 
-    found = resolved.groups_for("alice@saga.xyz", ("eng@saga.xyz", "research@saga.xyz"))
-    assert found == ("eng@saga.xyz",)
-    principal = Principal(email="alice@saga.xyz", subject="s", domain="saga.xyz", groups=found)
-    assert resolve_tenant(principal, ("eng@saga.xyz", "research@saga.xyz")) == "eng"
+    found = resolved.groups_for("alice@example.com", ("eng@example.com", "research@example.com"))
+    assert found == ("eng@example.com",)
+    principal = Principal(email="alice@example.com", subject="s", domain="example.com", groups=found)
+    assert resolve_tenant(principal, ("eng@example.com", "research@example.com")) == "eng"
 
 
 def test_a_failure_above_a_confirmed_match_is_raised(session):
@@ -175,11 +175,11 @@ def test_a_failure_above_a_confirmed_match_is_raised(session):
     Returning `research` here would file bob's work under the wrong tenant if he
     was in fact also a member of `eng`.
     """
-    session.fail_lookup = {"eng@saga.xyz"}
+    session.fail_lookup = {"eng@example.com"}
     resolved = resolver(session)
 
     with pytest.raises(GroupLookupError):
-        resolved.groups_for("bob@saga.xyz", ("eng@saga.xyz", "research@saga.xyz"))
+        resolved.groups_for("bob@example.com", ("eng@example.com", "research@example.com"))
 
 
 def test_an_unresolvable_tenant_is_a_503_not_a_silent_tenant_switch(db, tokens, group_map):
@@ -221,15 +221,15 @@ def test_an_unresolvable_tenant_is_a_503_not_a_silent_tenant_switch(db, tokens, 
 
 
 def test_group_priority_is_deterministic_for_multi_group_members(session):
-    session.memberships["research@saga.xyz"].add("root@saga.xyz")
+    session.memberships["research@example.com"].add("root@example.com")
     resolved = resolver(session)
-    groups = resolved.groups_for("root@saga.xyz", ("research@saga.xyz", "eng@saga.xyz"))
-    principal = Principal(email="root@saga.xyz", subject="s", domain="saga.xyz", groups=groups)
+    groups = resolved.groups_for("root@example.com", ("research@example.com", "eng@example.com"))
+    principal = Principal(email="root@example.com", subject="s", domain="example.com", groups=groups)
 
     # First match in the ADMIN-ORDERED list wins, not first match in `groups`.
-    assert resolve_tenant(principal, ("eng@saga.xyz", "research@saga.xyz")) == "eng"
-    assert resolve_tenant(principal, ("research@saga.xyz", "eng@saga.xyz")) == "research"
-    assert tenant_id_for_group("eng@saga.xyz") == "eng"
+    assert resolve_tenant(principal, ("eng@example.com", "research@example.com")) == "eng"
+    assert resolve_tenant(principal, ("research@example.com", "eng@example.com")) == "research"
+    assert tenant_id_for_group("eng@example.com") == "eng"
 
 
 def test_a_project_id_is_required():
@@ -266,8 +266,8 @@ def test_impersonation_is_applied_when_the_credentials_support_it(monkeypatch):
         groups_mod, "CloudIdentityGroups", groups_mod.CloudIdentityGroups, raising=False
     )
 
-    g = groups_mod.CloudIdentityGroups("proj", impersonate_user="bogdan@saga.xyz")
-    assert g._impersonate_user == "bogdan@saga.xyz"
+    g = groups_mod.CloudIdentityGroups("proj", impersonate_user="bogdan@example.com")
+    assert g._impersonate_user == "bogdan@example.com"
 
 
 def test_blank_impersonation_is_normalised_to_none():
@@ -295,8 +295,8 @@ def test_impersonation_does_not_crash_when_credentials_cannot_delegate():
         def get(self, *a, **k):
             raise AssertionError("not called")
 
-    g = CloudIdentityGroups("proj", session=_Session(), impersonate_user="someone@saga.xyz")
-    assert g._impersonate_user == "someone@saga.xyz"
+    g = CloudIdentityGroups("proj", session=_Session(), impersonate_user="someone@example.com")
+    assert g._impersonate_user == "someone@example.com"
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +313,7 @@ FIXER = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
 FIXER_UID = "104857600000000000001"
 
 
-def _member(email: str = FIXER, *, kind: str = "group", principal: str = "eng@saga.xyz",
+def _member(email: str = FIXER, *, kind: str = "group", principal: str = "eng@example.com",
             uid: str = FIXER_UID):
     return identity.TenantMember(email=email, kind=kind, principal=principal, uid=uid)
 
@@ -323,7 +323,7 @@ def _caller(email: str = FIXER, subject: str = FIXER_UID, groups: tuple[str, ...
                      groups=groups)
 
 
-PRIORITY = ("other@saga.xyz", "eng@saga.xyz")
+PRIORITY = ("other@example.com", "eng@example.com")
 
 
 def test_a_listed_account_resolves_to_the_group_tenant_that_lists_it():
@@ -331,9 +331,9 @@ def test_a_listed_account_resolves_to_the_group_tenant_that_lists_it():
 
 
 def test_a_listed_account_resolves_to_a_user_tenant_that_lists_it():
-    member = _member(kind="user", principal="bogdan@saga.xyz")
+    member = _member(kind="user", principal="bogdan@example.com")
     assert identity.resolve_tenant(_caller(), PRIORITY, service_accounts=(member,)) == (
-        identity.tenant_id_for_user("bogdan@saga.xyz")
+        identity.tenant_id_for_user("bogdan@example.com")
     )
 
 
@@ -380,7 +380,7 @@ def test_an_email_match_with_another_uid_does_not_resolve():
 
 
 def test_the_listing_wins_over_group_membership():
-    caller = _caller(groups=("other@saga.xyz",))
+    caller = _caller(groups=("other@example.com",))
     assert identity.resolve_tenant(caller, PRIORITY, service_accounts=(_member(),)) == "eng"
 
 
@@ -402,7 +402,7 @@ def test_no_pattern_prefix_suffix_or_domain_match(email):
 
 
 def test_a_human_address_listed_as_a_member_never_matches():
-    human = "bogdan@saga.xyz"
+    human = "bogdan@example.com"
     listed = _member(email=human)
     assert identity.tenant_member_for(human, FIXER_UID, (listed,)) is None
     assert identity.resolve_tenant(
@@ -422,7 +422,7 @@ def test_a_google_managed_account_never_matches_even_when_listed(email):
 
 
 def test_an_account_listed_under_two_tenants_raises():
-    members = (_member(), _member(principal="research@saga.xyz"))
+    members = (_member(), _member(principal="research@example.com"))
     with pytest.raises(identity.AuthError):
         identity.tenant_member_for(FIXER, FIXER_UID, members)
     with pytest.raises(identity.AuthError):
@@ -430,7 +430,7 @@ def test_an_account_listed_under_two_tenants_raises():
 
 
 def test_an_account_listed_twice_under_the_same_tenant_resolves():
-    members = (_member(), _member(email=FIXER.upper(), principal="ENG@saga.xyz"))
+    members = (_member(), _member(email=FIXER.upper(), principal="ENG@example.com"))
     assert identity.resolve_tenant(_caller(), PRIORITY, service_accounts=members) == "eng"
 
 
@@ -444,7 +444,7 @@ def test_tenant_member_fields_are_normalised_once_at_construction():
     a = identity.TenantMember(
         email=" SWARM-CI-FIX@Saga-Agents-Staging.iam.gserviceaccount.com ",
         kind=" GROUP ",
-        principal=" Eng@Saga.xyz ",
+        principal=" Eng@Example.com ",
         uid=f" {FIXER_UID} ",
     )
     b = _member()
@@ -461,7 +461,7 @@ def test_tenant_member_for_does_not_strip_an_iap_prefix_itself():
 
 
 def test_without_a_listing_resolution_is_unchanged():
-    caller = _caller(groups=("eng@saga.xyz",))
+    caller = _caller(groups=("eng@example.com",))
     assert identity.resolve_tenant(caller, PRIORITY) == "eng"
     assert identity.resolve_tenant(caller, PRIORITY, service_accounts=()) == "eng"
     assert identity.resolve_tenant(_caller(), PRIORITY, service_accounts=()) == (

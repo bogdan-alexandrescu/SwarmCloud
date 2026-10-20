@@ -35,11 +35,11 @@ from swarm_common.identity import tenant_id_for_user
 from .conftest import auth_header, seed_tenant
 from .test_repository_hard_stops import commits  # noqa: F401  (fixture)
 
-CAROL = "carol@saga.xyz"
+CAROL = "carol@example.com"
 CAROL_TENANT = tenant_id_for_user(CAROL)
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
-ENG_WIDGETS = repo_id_for("eng", "saga-xyz", "widgets")
-CAROL_NOTES = repo_id_for(CAROL_TENANT, "saga-xyz", "notes")
+ENG_WIDGETS = repo_id_for("eng", "example-org", "widgets")
+CAROL_NOTES = repo_id_for(CAROL_TENANT, "example-org", "notes")
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ def seeded(db):
     for tenant_id, repo_id, repo in (("eng", ENG_WIDGETS, "widgets"),
                                      (CAROL_TENANT, CAROL_NOTES, "notes")):
         db.docs[f"repositories/{repo_id}"] = {
-            "repo_id": repo_id, "tenant_id": tenant_id, "owner": "saga-xyz", "repo": repo,
+            "repo_id": repo_id, "tenant_id": tenant_id, "owner": "example-org", "repo": repo,
             "default_branch": "main", "created_at": NOW, "index": {},
         }
     return db
@@ -94,7 +94,7 @@ def test_a_platform_admin_sets_it(client, db, seeded):
     assert response.status_code == 200, response.text
     assert db.docs[f"repositories/{ENG_WIDGETS}"]["context"] == "on"
     (entry,) = _audit(db)
-    assert entry["by"] == "root@saga.xyz"
+    assert entry["by"] == "root@example.com"
 
 
 def test_a_member_cannot_set_it_and_nothing_is_written(client, db, seeded, monkeypatch):
@@ -116,7 +116,7 @@ def test_a_member_sets_it_only_while_the_switch_is_explicitly_off(client, db, se
     assert response.status_code == 200, response.text
     assert db.docs[f"repositories/{ENG_WIDGETS}"]["context"] == "off"
     (entry,) = _audit(db)
-    assert entry["by"] == "alice@saga.xyz"
+    assert entry["by"] == "alice@example.com"
 
 
 def test_another_workspaces_repository_is_not_found(client, db, seeded):

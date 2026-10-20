@@ -1,6 +1,6 @@
 # oracle-api submits work as a tenant of its own, u-or-9a0792 (#1568; owner
 # decision 2026-10-18), modelled on swarm-verify's u-sw-c90291 and never a
-# member of eng@saga.xyz.
+# member of eng@example.com.
 #
 # The id is what swarm_common.identity.tenant_id_for_user gives
 # oracle-api@saga-agents-staging.iam.gserviceaccount.com. Terraform cannot run
@@ -126,7 +126,7 @@ run "infra_gives_u_or_9a0792_its_own_boundaries_and_admits_the_account" {
     tenants = {
       eng = {
         kind             = "group"
-        principal        = "eng@saga.xyz"
+        principal        = "eng@example.com"
         directory_group  = true
         display_name     = "Engineering"
         providers        = ["anthropic", "openai"]
@@ -136,7 +136,7 @@ run "infra_gives_u_or_9a0792_its_own_boundaries_and_admits_the_account" {
       }
       smoke = {
         kind            = "group"
-        principal       = "smoke@saga.xyz"
+        principal       = "smoke@example.com"
         directory_group = true
         display_name    = "Smoke tests"
         providers       = ["anthropic"]

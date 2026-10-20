@@ -25,7 +25,7 @@ from swarm_api.validation import (
 
 from .conftest import auth_header
 
-REPO = "https://github.com/saga-xyz/example"
+REPO = "https://github.com/example-org/example"
 ROUND = {"merge_task": "task_" + "a" * 20, "round": 1, "head_sha": "0" * 40, "pull_request": 7}
 
 

@@ -1,7 +1,7 @@
 """Every `/sc:swarmcloud` run's expanded description says who started it, where it runs and on which LLM (SC-DESC-DETAILS).
 
 Owner, 2026-10-14 ~22:00 PDT, verbatim: "we also said that workflows in here
-should not have the [Engineering] or [eng@saga.xyz] prefix in front of the
+should not have the [Engineering] or [eng@example.com] prefix in front of the
 names. We do want to have a section in the workflow or task description when
 you expand it in claude, that will provide more details like user that
 created the job, tenant or workspace that is using and maybe even what LLM
@@ -92,7 +92,7 @@ def _token() -> str:
 class _Api:
     """A client serving `/v1/tenants/me`, `/v1/accounts` and tasks."""
 
-    def __init__(self, *, email="dev@example.com", tenant="eng", shown="eng@saga.xyz", accounts=None, tasks=None):
+    def __init__(self, *, email="dev@example.com", tenant="eng", shown="eng@example.com", accounts=None, tasks=None):
         self.email, self.tenant, self.shown = email, tenant, shown
         self.accounts = accounts if accounts is not None else [{"account_id": "acct_max1", "label": "Team Max"}]
         self.tasks = tasks or {}
@@ -150,7 +150,7 @@ ASSIGNED = {"status": "assigned", "account_id": "acct_max1", "provider": "anthro
 def test_a_submitted_specs_description_holds_every_field_in_order():
     out = launch.for_spec(_spec(), _Api())
     _, description = _meta(out["script_path"])
-    assert description.startswith("Workspace: eng@saga.xyz (eng) · Started by: dev@example.com · ")
+    assert description.startswith("Workspace: eng@example.com (eng) · Started by: dev@example.com · ")
     positions = [description.index(f"{name}: ") for name in FIELDS]
     assert positions == sorted(positions), description
     got = _fields(description)
@@ -173,7 +173,7 @@ def test_an_attached_workflows_description_names_the_account_label_and_model(mon
     out = launch.for_attach(_Api(), "wf_a")
     _, description = _meta(out["script_path"])
     got = _fields(description)
-    assert got["Workspace"] == "eng@saga.xyz (eng)"
+    assert got["Workspace"] == "eng@example.com (eng)"
     assert got["Started by"] == "dev@example.com"
     assert got["LLM"] == "Team Max (anthropic), model claude-opus-5-5"
     assert got["Browser tool"] == "auto", "browser_tool absent on claude-code-browser is auto"
@@ -246,7 +246,7 @@ def test_a_clipped_description_keeps_the_workspace_and_clips_the_end(monkeypatch
     out = launch.for_attach(_Api(), "wf_a")
     _, description = _meta(out["script_path"])
     assert len(description) == launch.DESCRIPTION_CHARS and description.endswith("…"), "it was clipped"
-    assert description.startswith("Workspace: eng@saga.xyz (eng) · Started by: dev@example.com · Profiles: ")
+    assert description.startswith("Workspace: eng@example.com (eng) · Started by: dev@example.com · Profiles: ")
 
 
 # --------------------------------------------------------------------------
@@ -327,7 +327,7 @@ def test_no_launch_title_carries_the_workspace(monkeypatch):
     titles = [
         launch.for_spec(_spec(), _Api())["title"],
         launch.for_attach(_Api(), "wf_a")["title"],
-        launch.for_tasks([{"task_id": "t", "label": "lane", "workspace": "eng@saga.xyz"}])["title"],
+        launch.for_tasks([{"task_id": "t", "label": "lane", "workspace": "eng@example.com"}])["title"],
     ]
     for title in titles:
         assert "[" not in title and "eng" not in title, title
@@ -338,11 +338,11 @@ def test_no_launch_title_carries_the_workspace(monkeypatch):
 def test_the_session_start_notice_puts_no_workspace_in_front_of_a_name():
     text = sc.session_start_context(
         {"workflows": [{"workflow_id": "wf_1", "workspace": "Engineering", "state": "RUNNING", "current_steps": []}]},
-        {"tasks": [{"task_id": "task_a", "workspace": "eng@saga.xyz", "state": "RUNNING"}]},
+        {"tasks": [{"task_id": "task_a", "workspace": "eng@example.com", "state": "RUNNING"}]},
     )
-    assert "[Engineering]" not in text and "[eng@saga.xyz]" not in text, text
+    assert "[Engineering]" not in text and "[eng@example.com]" not in text, text
     assert "wf_1 (RUNNING;" in text and "workspace Engineering)" in text
-    assert "workspace eng@saga.xyz)" in text
+    assert "workspace eng@example.com)" in text
 
 
 # --------------------------------------------------------------------------

@@ -56,7 +56,7 @@ from .test_issue_run_keyword import _review_writes, _verdict
 from .test_issue_runs import FULL_PLAN, PLAN, _approve, _create, _docs, _finish_planner, _run
 from .test_schedule_tick import seed_schedule
 
-OWNER = "root@saga.xyz"
+OWNER = "root@example.com"
 SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
 SWITCH = refusals.env_name("hold_approver_required")
 REPO = "repo_00000000000000a1"
@@ -83,11 +83,11 @@ def built_types(monkeypatch):
 @pytest.fixture
 def group_map():
     return {
-        "alice@saga.xyz": (ENG_GROUP,),
-        "dave@saga.xyz": (ENG_GROUP,),
-        "bob@saga.xyz": (RESEARCH_GROUP,),
-        "carol@saga.xyz": (),
-        OWNER: ("swarm-admins@saga.xyz", ENG_GROUP),
+        "alice@example.com": (ENG_GROUP,),
+        "dave@example.com": (ENG_GROUP,),
+        "bob@example.com": (RESEARCH_GROUP,),
+        "carol@example.com": (),
+        OWNER: ("swarm-admins@example.com", ENG_GROUP),
     }
 
 
@@ -139,8 +139,8 @@ def _grants(db):
     from .conftest import TEST_REPOSITORIES, grant_members
 
     grant_members(db, *TEST_REPOSITORIES)
-    for email in ("dave@saga.xyz", OWNER):
-        seed_grant(db, "eng", email, "saga-xyz/widgets")
+    for email in ("dave@example.com", OWNER):
+        seed_grant(db, "eng", email, "example-org/widgets")
 
 
 @pytest.fixture
@@ -206,7 +206,7 @@ def test_a_planned_run_is_projected_and_approved_from_the_inbox_once(client, db,
     (item,) = _inbox(client)
     assert item["approval_id"] == f"run:{run['id']}"
     assert item["kind"] == "plan" and item["digest"] == run["plan_digest"] and item["projected"] is True
-    assert "saga-xyz/widgets#42" in item["summary"]
+    assert "example-org/widgets#42" in item["summary"]
 
     stale = _decide(client, item["approval_id"], "approve", digest="0" * 64)
     assert stale.status_code == 409 and stale.json()["code"] == "plan_changed"
@@ -276,7 +276,7 @@ def test_a_firing_awaiting_approval_gets_one_record_and_one_decision(client, db)
     approved = _decide(client, item["approval_id"], "approve", digest="digest-1")
     assert approved.status_code == 200, approved.text
     assert approved.json()["approval"]["state"] == "approved"
-    assert firing["run_approval"]["by"] == "alice@saga.xyz"
+    assert firing["run_approval"]["by"] == "alice@example.com"
 
     again = _decide(client, item["approval_id"], "approve", digest="digest-1", user="dave")
     assert again.status_code == 409 and again.json()["code"] == "already_decided"
@@ -298,7 +298,7 @@ def test_a_rejected_firing_ends_rejected(client, db):
 
 def test_a_named_approvers_list_admits_only_its_members(client, db):
     seed_tenant(db, "eng")  # membership is asked of the directory, through the tenant's group
-    seed_schedule(db, gate={"run": "approve", "approvers": ["dave@saga.xyz"]})
+    seed_schedule(db, gate={"run": "approve", "approvers": ["dave@example.com"]})
     _firing(db, "sch_000000000001:3")
     (item,) = _inbox(client)
     refused = _decide(client, item["approval_id"], "approve", digest="digest-1")
@@ -323,7 +323,7 @@ def test_the_plan_approve_route_enforces_a_schedules_owner_only_approvers(client
 
 
 def test_the_plan_approve_route_enforces_a_schedules_named_approvers(client, db, objects):
-    run = _scheduled_plan(client, db, objects, {"run": "approve", "approvers": ["dave@saga.xyz"]})
+    run = _scheduled_plan(client, db, objects, {"run": "approve", "approvers": ["dave@example.com"]})
     refused = _approve(client, run["id"], run["plan_digest"])
     assert refused.status_code == 403 and refused.json()["code"] == "approver_not_allowed"
     assert _approve(client, run["id"], run["plan_digest"], user="dave").status_code == 200
@@ -332,7 +332,7 @@ def test_the_plan_approve_route_enforces_a_schedules_named_approvers(client, db,
 def test_a_report_only_hold_does_not_waive_the_schedules_named_approvers_in_the_inbox(client, db, objects):
     """The switch is off, so the bootstrap hold is report-only: it must not make approval easier."""
     seed_tenant(db, "eng")
-    seed_schedule(db, gate={"run": "approve", "approvers": ["dave@saga.xyz"]})
+    seed_schedule(db, gate={"run": "approve", "approvers": ["dave@example.com"]})
     run = _planned(client, db, objects, _bootstrap_plan())
     stored = db.docs[f"issue_runs/{run['id']}"]
     stored.setdefault("metadata", {})["schedule"] = {"schedule_id": "sch_000000000001"}
@@ -607,7 +607,7 @@ def test_the_last_gate_editor_cannot_switch_to_auto_and_another_member_can(clien
     assert doc["gate"]["merge"] == "auto" and doc["params"]["merge"] == "auto"
     assert doc["revision"] == sweep["revision"] + 1
     entry = _audit(db, sweep["schedule_id"])[-1]
-    assert entry["action"] == "gate_merge_auto" and entry["by"] == "dave@saga.xyz"
+    assert entry["action"] == "gate_merge_auto" and entry["by"] == "dave@example.com"
     assert entry["detail"]["gate"]["from"]["merge"] == "approve"
     assert entry["detail"]["gate"]["to"]["merge"] == "auto"
 
@@ -640,7 +640,7 @@ def test_patch_cannot_reach_auto_merge(client, db):
 
 
 def test_a_one_person_tenant_switches_after_typing_the_schedules_name(client, db):
-    personal = tenant_id_for_user("carol@saga.xyz")
+    personal = tenant_id_for_user("carol@example.com")
     sweep = _sweep(client, db, user="carol", tenant_id=personal, repo_id="repo_00000000000000c3")
     bare = _switch(client, sweep, "auto", user="carol")
     assert bare.status_code == 422 and bare.json()["code"] == "confirmation_required"
@@ -679,8 +679,8 @@ def test_a_run_is_found_by_the_firing_that_made_it_in_its_own_tenant_only(db, cl
     mark = {"schedule_id": "sch_000000000001", "firing_id": "sch_000000000001:9", "type": "issue-sweep"}
     for run_id, tenant_id in (("run_a", "eng"), ("run_b", "research")):
         runs.create(IssueRun(
-            id=run_id, tenant_id=tenant_id, created_by="alice@saga.xyz", created_at=clock(),
-            updated_at=clock(), state=RunState.PLANNING, issue=IssueRef("saga-xyz", "widgets", 42),
+            id=run_id, tenant_id=tenant_id, created_by="alice@example.com", created_at=clock(),
+            updated_at=clock(), state=RunState.PLANNING, issue=IssueRef("example-org", "widgets", 42),
             plan_approval="required", auto_merge=False, fix_rounds=3, planner_task_id="t1",
             schedule=dict(mark),
         ))
@@ -694,4 +694,4 @@ def test_a_one_person_hold_is_not_a_group_hold():
     assert approvals.PROJECTED_PREFIX == "run:"
     hold = issueruns.plan_hold(_bootstrap_plan(), platform=False, hard_stop_paths=[])
     assert issueruns.hold_confirmation(hold) == "terraform/bootstrap/main.tf"
-    assert repo_id_for("eng", "saga-xyz", "widgets").startswith("repo_")
+    assert repo_id_for("eng", "example-org", "widgets").startswith("repo_")

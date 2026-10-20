@@ -25,17 +25,17 @@ from .repo_fakes import GitHubRepos, TenantTokens, make_client, repo_entry
 A = "a" * 40
 B = "b" * 40
 C = "c" * 40
-WIDGETS = repo_entry("saga-xyz/widgets", default_branch="develop", private=True)
+WIDGETS = repo_entry("example-org/widgets", default_branch="develop", private=True)
 
 
 @pytest.fixture
 def client(db, tokens, group_map, objects):
     return make_client(db, tokens, group_map, objects, forge_tokens=TenantTokens(),
-                       transport=GitHubRepos(repos={"saga-xyz/widgets": WIDGETS}))
+                       transport=GitHubRepos(repos={"example-org/widgets": WIDGETS}))
 
 
 def _registered(client, db) -> str:
-    answer = client.post("/v1/repositories", json={"repository": "saga-xyz/widgets"},
+    answer = client.post("/v1/repositories", json={"repository": "example-org/widgets"},
                          headers=auth_header("alice"))
     assert answer.status_code in (200, 201), answer.text
     return answer.json()["repository"]["repo_id"]

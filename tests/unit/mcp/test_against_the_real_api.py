@@ -85,14 +85,14 @@ def api(db) -> TestClient:
         verifier=StaticTokenVerifier(
             {
                 "token-alice": {
-                    "email": "alice@saga.xyz",
+                    "email": "alice@example.com",
                     "email_verified": True,
                     "sub": "sub-alice",
-                    "hd": "saga.xyz",
+                    "hd": "example.com",
                 }
             }
         ),
-        groups=StaticGroups({"alice@saga.xyz": ("eng@saga.xyz",)}),
+        groups=StaticGroups({"alice@example.com": ("eng@example.com",)}),
         credentials=InMemoryCredentials(),
         waker=NullWaker(),
         metrics=ApiMetrics(),

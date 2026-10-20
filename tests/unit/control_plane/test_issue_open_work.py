@@ -28,7 +28,7 @@ from swarm_common.models import Tenant, utcnow
 from . import forge_fakes
 from .forge_fakes import GitHub, issue, pull
 
-REF = parse_issue_ref("saga-xyz/widgets#42")
+REF = parse_issue_ref("example-org/widgets#42")
 TOKEN = forge_fakes.make_token()
 
 
@@ -37,7 +37,7 @@ def _read(github: GitHub, **client) -> forge.OpenWork:
 
 
 def _tenant(tenant_id: str = "eng") -> Tenant:
-    return Tenant(tenant_id=tenant_id, kind="group", principal="eng@saga.xyz", created_at=utcnow())
+    return Tenant(tenant_id=tenant_id, kind="group", principal="eng@example.com", created_at=utcnow())
 
 
 # --------------------------------------------------------------------------
@@ -59,9 +59,9 @@ def test_every_read_is_a_get_to_api_github_com_with_the_tenants_token():
     github = GitHub(issues=[issue(7)], pulls=[pull(9)], files={9: ["a.py"]})
     _read(github)
     assert github.paths() == [
-        "/repos/saga-xyz/widgets/issues",
-        "/repos/saga-xyz/widgets/pulls",
-        "/repos/saga-xyz/widgets/pulls/9/files",
+        "/repos/example-org/widgets/issues",
+        "/repos/example-org/widgets/pulls",
+        "/repos/example-org/widgets/pulls/9/files",
     ]
     for url, headers in github.calls:
         assert url.startswith("https://api.github.com/")
@@ -82,7 +82,7 @@ def test_issues_hidden_behind_pages_of_pull_requests_are_cut_and_say_so():
     work = _read(github)
     assert work.issues == ()
     assert work.issues_truncated is True
-    assert github.paths().count("/repos/saga-xyz/widgets/issues") == forge.MAX_ISSUE_PAGES
+    assert github.paths().count("/repos/example-org/widgets/issues") == forge.MAX_ISSUE_PAGES
 
 
 def test_a_short_last_page_is_not_a_cut():
@@ -105,7 +105,7 @@ def test_a_pull_requests_files_are_paged_and_capped():
     files = work.pull_requests[0].files
     assert files is not None and len(files) == forge.MAX_PR_FILES
     assert work.pull_requests[0].files_truncated is True
-    assert github.paths().count("/repos/saga-xyz/widgets/pulls/9/files") == 2
+    assert github.paths().count("/repos/example-org/widgets/pulls/9/files") == 2
 
 
 def test_files_are_read_for_the_first_pull_requests_only():
@@ -207,7 +207,7 @@ def test_the_stored_snapshot_is_masked_folded_and_mentions_are_broken():
     assert "\n" not in work["issues"][1]["title"]
     assert len(work["pull_requests"][0]["title"]) == forge.MAX_ITEM_TITLE_CHARS
     assert work["pull_requests"][0]["title"].endswith("…")
-    assert work["repository"] == "saga-xyz/widgets"
+    assert work["repository"] == "example-org/widgets"
 
 
 def test_the_snapshot_is_read_for_the_named_tenant_only():
@@ -226,7 +226,7 @@ def _huge_snapshot() -> dict:
     wide = "漢" * forge.MAX_ITEM_TITLE_CHARS  # 3 UTF-8 bytes a character
     path = "src/" + "é" * (forge.MAX_FILE_PATH_CHARS - 4)
     return {
-        "repository": "saga-xyz/widgets",
+        "repository": "example-org/widgets",
         "read_at": None,
         "issues": [{"number": n, "title": wide} for n in range(forge.MAX_OPEN_ISSUES)],
         "issues_truncated": True,
@@ -252,20 +252,20 @@ def test_the_prompt_stays_under_its_limit_with_a_huge_snapshot_and_says_it_cut()
 
 
 def test_a_small_snapshot_is_shown_whole():
-    work = {"repository": "saga-xyz/widgets", "issues": [{"number": 7, "title": "t"}],
+    work = {"repository": "example-org/widgets", "issues": [{"number": 7, "title": "t"}],
             "issues_truncated": False,
             "pull_requests": [{"number": 9, "title": "p", "files": None,
                                "files_truncated": False}],
             "pull_requests_truncated": False}
     prompt = issueruns.planner_prompt(REF, run_id="run_abc", open_work=work)
     assert "not shown" not in prompt
-    assert "- pull request saga-xyz/widgets#9: p\n    changed files: not read" in prompt
-    assert "- issue saga-xyz/widgets#7: t" in prompt
+    assert "- pull request example-org/widgets#9: p\n    changed files: not read" in prompt
+    assert "- issue example-org/widgets#7: t" in prompt
     assert "Name each one in \"overlaps\"" in prompt
 
 
 def test_an_empty_repository_says_there_is_no_other_open_work():
-    work = {"repository": "saga-xyz/widgets", "issues": [], "issues_truncated": False,
+    work = {"repository": "example-org/widgets", "issues": [], "issues_truncated": False,
             "pull_requests": [], "pull_requests_truncated": False}
     prompt = issueruns.planner_prompt(REF, run_id="run_abc", open_work=work)
     assert "(no other open issues or pull requests)" in prompt
