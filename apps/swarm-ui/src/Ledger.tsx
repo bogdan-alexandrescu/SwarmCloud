@@ -342,13 +342,13 @@ export function FailureClassesCard({ data, picked }: { data: Outcomes; picked: s
   const cov = spanCoverage(data)
   return (
     <Card
-      title="Why tasks failed"
-      note={cov.none ? undefined : coverNote(cov, 'Why tasks failed', `${total} · by class`)}
+      title="Why agents failed"
+      note={cov.none ? undefined : coverNote(cov, 'Why agents failed', `${total} · by class`)}
       explain="failure-classes"
       className="ol-failures"
       foot={<span>exit code, then last_error</span>}
     >
-      {cov.none && <NotRead cov={cov} what="Why tasks failed" />}
+      {cov.none && <NotRead cov={cov} what="Why agents failed" />}
       {/* THE ORDER IS THE SERVER'S AND IT IS FIXED: runner error, timeout,
           lost worker, could not start, outputs missing, dispatch failed,
           other, no reason recorded. A filter never re-ranks it, and `other`
@@ -403,8 +403,8 @@ export function WorkflowsFailedCard({
       <Card title="Workflows that failed, and where" className="is-wide ol-workflows">
         <Absent
           kind="zero"
-          heading="standalone tasks only"
-          say="The kind filter is set to standalone tasks, so no workflow step is in this view."
+          heading="standalone agents only"
+          say="The kind filter is set to standalone agents, so no workflow step is in this view."
         />
       </Card>
     )
@@ -552,7 +552,7 @@ export function RetriesCard({ data }: { data: Outcomes }) {
           <Outcome4
             parts={[t.succeeded, t.failed + t.dead_lettered, t.cancelled]}
             width={max === 0 ? 0 : (t.tasks / max) * 100}
-            say={`${t.tasks} tasks: ${t.succeeded} succeeded, ${t.failed + t.dead_lettered} failed, ${t.cancelled} cancelled`}
+            say={`${t.tasks} agent${t.tasks === 1 ? '' : 's'}: ${t.succeeded} succeeded, ${t.failed + t.dead_lettered} failed, ${t.cancelled} cancelled`}
           />
           <span className="ol-row-n">{t.tasks}</span>
         </div>
@@ -685,7 +685,7 @@ export function LatencyCard({ data }: { data: Outcomes }) {
       className="ol-latency"
     >
       {rows.length === 0 ? (
-        <Nothing cov={cov} heading="Nothing finished" what="no task that was not cancelled ended" />
+        <Nothing cov={cov} heading="Nothing finished" what="no agent that was not cancelled ended" />
       ) : (
         <>
           <div className="ol-lat-scale" aria-hidden>
@@ -907,7 +907,7 @@ export function ReliabilityCard({
       {cov.none ? (
         <NotRead cov={cov} what="Reliability" />
       ) : g.rows.length === 0 ? (
-        <Nothing cov={cov} heading="Nothing ended" what="no task ended under these filters" />
+        <Nothing cov={cov} heading="Nothing ended" what="no agent ended under these filters" />
       ) : (
         <MoreRight className="ctl-table is-scroll">
           <table>
@@ -1057,7 +1057,7 @@ export function CostCard({ data, picked }: { data: Outcomes; picked: string | nu
   return (
     <Card
       title="Reported cost"
-      note={coverNote(cov, 'Reported cost', `by task end · ${c.reporting} of ${c.attempts} attempts`)}
+      note={coverNote(cov, 'Reported cost', `by agent end · ${c.reporting} of ${c.attempts} attempts`)}
       explain="tokens-reported"
       className="ol-cost-card"
       foot={<span>Reported cost · not a bill</span>}
@@ -1093,7 +1093,7 @@ export function CostCard({ data, picked }: { data: Outcomes; picked: string | nu
           <Outcome4
             parts={[b.succeeded.sum_usd ?? 0, (b.failed.sum_usd ?? 0) + (b.dead_lettered.sum_usd ?? 0), b.cancelled.sum_usd ?? 0]}
             width={100}
-            say="reported cost split by the outcome of the task that spent it"
+            say="reported cost split by the outcome of the agent that spent it"
           />
         </p>
       )}
@@ -1114,7 +1114,7 @@ export function CostCard({ data, picked }: { data: Outcomes; picked: string | nu
       <p className="ol-line">
         per succeeded task{' '}
         {per.n === 0 ? (
-          <>— <span className="ol-q">no succeeded task fully reported</span></>
+          <>— <span className="ol-q">no succeeded agent fully reported</span></>
         ) : per.values_usd !== null && per.n < LOW_N ? (
           <>{per.values_usd.map(money).join(', ')}</>
         ) : (
@@ -1280,7 +1280,7 @@ export function OpenWorkCard({
           )}
           {more && (
             <p className="ol-line">
-              <Mark kind="partial" say={`Reasons are counted over the first ${parkedTasks.length} parked tasks; more exist.`} /> reasons for {parkedTasks.length} of {ownParked === undefined ? 'more' : ownParked}
+              <Mark kind="partial" say={`Reasons are counted over the first ${parkedTasks.length} parked agents; more exist.`} /> reasons for {parkedTasks.length} of {ownParked === undefined ? 'more' : ownParked}
             </p>
           )}
           {reasonScope !== null && <p className="ol-line ol-q ol-reason-scope">{reasonScope}</p>}
@@ -1313,12 +1313,12 @@ export function CancelCausesCard({ data, picked }: { data: Outcomes; picked: str
   const cov = spanCoverage(data)
   return (
     <Card
-      title="Why tasks were cancelled"
-      note={cov.none ? undefined : coverNote(cov, 'Why tasks were cancelled', `${t.total} · by cause`)}
+      title="Why agents were cancelled"
+      note={cov.none ? undefined : coverNote(cov, 'Why agents were cancelled', `${t.total} · by cause`)}
       className="ol-cancels"
       foot={<span>a cancel is not a verdict: no hue</span>}
     >
-      {cov.none && <NotRead cov={cov} what="Why tasks were cancelled" />}
+      {cov.none && <NotRead cov={cov} what="Why agents were cancelled" />}
       {!cov.none && data.vocab.cancel_causes.map((c) => (
         <Row
           key={c.key}

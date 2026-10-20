@@ -165,9 +165,9 @@ export function EndedRowsCard({
   const result = got !== null && got.key === key ? got.result : null
   if (result === null || result.status === 'loading') {
     return (
-      <Frame title="The tasks behind this figure" onClose={onClose}>
+      <Frame title="The agents behind this figure" onClose={onClose}>
         <p className="ol-rows-note" aria-busy="true">
-          <Mark kind="pending" say="The tasks behind this figure are still being read." /> reading…
+          <Mark kind="pending" say="The agents behind this figure are still being read." /> reading…
         </p>
       </Frame>
     )
@@ -175,9 +175,9 @@ export function EndedRowsCard({
   if (result.status === 'error' || result.status === 'empty' || result.data.ended_rows === undefined) {
     const words = result.status === 'error' ? failedWords(result.error) : 'the route served no rows block'
     return (
-      <Frame title="The tasks behind this figure" onClose={onClose}>
+      <Frame title="The agents behind this figure" onClose={onClose}>
         <p className="ol-rows-note" role="status">
-          <Mark kind="unread" say={`The tasks could not be read: ${words}.`} /> {words}
+          <Mark kind="unread" say={`The agents could not be read: ${words}.`} /> {words}
         </p>
       </Frame>
     )
@@ -192,7 +192,7 @@ export function EndedRowsCard({
           that ended so, placed by completed_at, under the page's filters --
           and not a page of the Agents list. */}
       <p className="ol-rows-note">
-        every task that ended {OUTCOME_WORD[rows.outcome]} {rows.at === null ? 'in this span' : `in ${where}`}, by{' '}
+        every agent that ended {OUTCOME_WORD[rows.outcome]} {rows.at === null ? 'in this span' : `in ${where}`}, by{' '}
         <code>completed_at</code>, under these filters
         {rows.key !== null && ` · ${GROUP_WORD[rows.group]} ${rows.key === '' ? 'not recorded' : rows.key}`}
         {rows.rows.length < rows.total && ` · newest ${rows.rows.length} of ${rows.total} listed`}
@@ -200,7 +200,7 @@ export function EndedRowsCard({
       {rows.unread_reason !== null ? (
         <p className="ol-rows-note" role="status">
           <Mark kind="unread" say={`This bucket was not read: ${unreadWords(rows.unread_reason)}.`} />{' '}
-          this bucket was not read ({unreadWords(rows.unread_reason)}), so no task in it can be listed
+          this bucket was not read ({unreadWords(rows.unread_reason)}), so no agent in it can be listed
         </p>
       ) : rows.total === 0 ? (
         <p className="ol-rows-note">none</p>

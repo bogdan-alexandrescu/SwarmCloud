@@ -3542,7 +3542,7 @@ export function workflowHeaderState(workflow: Workflow): WorkflowHeaderState {
     glyph: stateGlyph(state),
     derived: true,
     title:
-      `Derived from ${rollup.steps_read} step task${rollup.steps_read === 1 ? '' : 's'} ` +
+      `Derived from ${rollup.steps_read} step agent${rollup.steps_read === 1 ? '' : 's'} ` +
       `on this read (${rollup.reason}). The step chips below are the same records ` +
       `this was computed from, so they agree with it by construction.`,
   }

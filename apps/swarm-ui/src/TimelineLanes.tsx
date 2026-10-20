@@ -1594,7 +1594,7 @@ function GroupHead({
       )
   } else if (block.kind === 'standalone') {
     title = 'Standalone'
-    note = `${block.lanes.length} ${block.lanes.length === 1 ? 'task' : 'tasks'} in this span`
+    note = `${block.lanes.length} ${block.lanes.length === 1 ? 'agent' : 'agents'} in this span`
   } else if (block.kind === 'unread') {
     title = 'Task not read'
     note = `${block.lanes.length} ${block.lanes.length === 1 ? 'lane' : 'lanes'}: workflow and profile unknown`
@@ -1935,7 +1935,7 @@ function OutcomeStrip({
         <p className="tl-strip1">
           {strip.data.totals.rate === null ? (
             <span className="tl-x">
-              <b className="tl-dash">—</b> success: no task was decided in this span
+              <b className="tl-dash">—</b> success: no agent was decided in this span
             </span>
           ) : (
             <span className="tl-x">

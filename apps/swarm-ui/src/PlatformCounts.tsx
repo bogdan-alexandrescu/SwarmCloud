@@ -484,11 +484,11 @@ function Scope({
             aria-label={
               total === null
                 ? `No total is shown. ${missing.length} of the ${REAL_STATES.length} state counts did not come back (${missing.join(', ')}), and a sum over a partial response is a wrong number wearing the clothes of a right one.`
-                : `${total} task documents across the ${REAL_STATES.length} states that are written.`
+                : `${total} agents across the ${REAL_STATES.length} states that are written.`
             }
           >
             {total === null ? <i className="ctl-em">—</i> : total}
-            {total !== null && <span className="ctl-figure-unit">tasks</span>}
+            {total !== null && <span className="ctl-figure-unit">agents</span>}
           </b>
           {total === null && <span className="ctl-mark is-partial">partial</span>}
           {/* NO `?` (B7.4). The figure's accessible name above is longer and

@@ -261,7 +261,7 @@ export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; wai
             <span className="ov-reading">tenant reading…</span>
           ) : tenant === null ? (
             <>
-              tenant <i className="ctl-em" title="No read carried a tenant id: not the task list, the account pool or the capacity read.">&mdash;</i>
+              tenant <i className="ctl-em" title="No read carried a tenant id: not the agent list, the account pool or the capacity read.">&mdash;</i>
             </>
           ) : (
             `tenant ${tenant}`
@@ -1653,10 +1653,10 @@ const COST_NOT_SERVED =
 
 /** Why the column is a dash when the API read the attempts and none reported. */
 const COST_NOT_YET =
-  'not reported yet: no attempt of this task has recorded a cost. An attempt records its cost when it ends.'
+  'not reported yet: no attempt of this agent has recorded a cost. An attempt records its cost when it ends.'
 
 /** Why the column is a dash when the API could not read the attempts. */
-const COST_UNREAD = 'The attempts behind this task’s cost could not be read. Not $0: unknown.'
+const COST_UNREAD = 'The attempts behind this agent’s cost could not be read. Not $0: unknown.'
 
 /**
  * COST SO FAR IS THE WHOLE TASK'S (owner decision 2026-10-05, P1 follow-up).
@@ -1751,7 +1751,7 @@ function RunningCard({
         {head}
         <CardAbsent
           kind={b.admin ? 'admin' : 'failed'}
-          heading="Task list unread"
+          heading="Agent list unread"
           say={`${b.why} This card is blind; it is not reporting that nothing is running.`}
           explain={b.admin ? 'admin-gate-not-failure' : 'read-failed'}
         >
@@ -1766,8 +1766,8 @@ function RunningCard({
         {head}
         <CardAbsent
           kind="zero"
-          heading="No task exists"
-          say="The read succeeded: this tenant has no tasks."
+          heading="No agent exists"
+          say="The read succeeded: this tenant has no agents."
           explain="absent-vs-zero"
         />
       </>
@@ -1805,8 +1805,8 @@ function RunningCard({
           heading="Nothing running"
           say={
             (whole && (page.next_page_token ?? null) !== null
-              ? 'No task is in LEASED, DISPATCHED, STARTING or RUNNING: each of those states was read on its own. '
-              : `No task on the ${page.tasks.length} most recently created is in LEASED, DISPATCHED, STARTING or RUNNING. `) +
+              ? 'No agent is in LEASED, DISPATCHED, STARTING or RUNNING: each of those states was read on its own. '
+              : `No agent on the ${page.tasks.length} most recently created is in LEASED, DISPATCHED, STARTING or RUNNING. `) +
             (counted === null
               ? 'The exact count could not be read, so this is the page’s answer rather than the platform’s.'
               : counted === 0
@@ -2089,7 +2089,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
         <CardAbsent
           kind={b.admin ? 'admin' : 'failed'}
           heading="Spend unassembled"
-          say={`Spend is summed from the attempts of the most recent tasks, and the task list itself could not be read. ${b.why} No attempt read was made, so nothing here is a statement about spend.`}
+          say={`Spend is summed from the attempts of the most recent agents, and the agent list itself could not be read. ${b.why} No attempt read was made, so nothing here is a statement about spend.`}
         >
           {readWhy(b)}
         </CardAbsent>
@@ -2114,8 +2114,8 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
       return (
         <CardAbsent
           kind="zero"
-          heading="No task exists"
-          say="The task read succeeded and found no tasks, so there are no attempts to sum."
+          heading="No agent exists"
+          say="The agent read succeeded and found no agents, so there are no attempts to sum."
           explain="absent-vs-zero"
         />
       )
@@ -2123,8 +2123,8 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
     return (
       <CardAbsent
         kind="zero"
-        heading="No task has run"
-        say="Every task on the page has an attempt count of 0: none of them has started."
+        heading="No agent has run"
+        say="Every agent on the page has an attempt count of 0: none of them has started."
         explain="attempt-documents"
       />
     )
@@ -2160,7 +2160,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
           ) : (
             <Mark
               kind="partial"
-              say={`Summed from the ${countOf(s.attempts, 'attempt')} of the ${s.tasksSampled} newest of ${countOf(s.tasksWithAttempts, 'task')} that have run on the ${s.tasksOnPage} most recently created. A sample of token cost, not a bill: older tasks are outside it, and no billing integration records Cloud Run, Firestore or GCS spend.`}
+              say={`Summed from the ${countOf(s.attempts, 'attempt')} of the ${s.tasksSampled} newest of ${countOf(s.tasksWithAttempts, 'agent')} that have run on the ${s.tasksOnPage} most recently created. A sample of token cost, not a bill: older agents are outside it, and no billing integration records Cloud Run, Firestore or GCS spend.`}
             />
           )}
         </span>
@@ -2182,7 +2182,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
               never shown, so the coverage the figure is partial against was
               nowhere on the screen. */}
           <span>
-            {countOf(s.attempts, 'attempt')}, {s.tasksSampled} newest of {countOf(s.tasksWithAttempts, 'task')}
+            {countOf(s.attempts, 'attempt')}, {s.tasksSampled} newest of {countOf(s.tasksWithAttempts, 'agent')}
           </span>
           {/* 2. THE HOLES: attempts that carried no cost figure... */}
           {unmeasured > 0 && <span className="ov-warn">{unmeasured} unmeasured</span>}
