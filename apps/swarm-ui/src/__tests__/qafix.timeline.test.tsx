@@ -14,6 +14,11 @@
 //          lanes are read, then the count of the profiles the lanes carry
 //          (QAFIX2-WORKFLOWS).
 //
+//   work-a-012 (run 2, QAFIX2-WORK-MINOR)  at 390 the Kind control (all /
+//          standalone / workflow steps) stopped short of the content edge
+//          while the selects around it ran the column wide. It runs the
+//          column wide, as the span control above it does.
+//
 // Every assertion names the mutation that turns it red.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -178,5 +183,27 @@ describe('QA-095: the Profile filter counts no profiles before the lanes are rea
     await waitFor(() => expect(strip().textContent).toMatch(/0 generations fenced/))
     // MUTATION: keep the reading word after the lanes land and this is red.
     await waitFor(() => expect(profileSummary()).toBe('Profile all 1'))
+  })
+})
+
+describe('work-a-012: at 390 the Kind control runs the column wide', () => {
+  it('takes the whole row and shares it among its three segments', async () => {
+    api.loadAttemptsPage.mockResolvedValue(ok(page([ATTEMPT])))
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    const seg = await waitFor(() => within(document.body).getByRole('group', { name: 'Kind' }))
+    const cells = [...seg.querySelectorAll<HTMLElement>(':scope > button')]
+    expect(cells.map((b) => b.textContent)).toEqual(['all', 'standalone', 'workflow steps'])
+    // MUTATION: drop the `.tl-kind` phone rule (or the class on the control)
+    // and the shared `flex: none` sizes it to its segments, short of the edge.
+    expect(painted(seg, ['flex', 'flex-basis'], PHONE)).toBe('1 1 100%')
+    // The span control it lines up with is the column wide already (QA-094).
+    const span = within(document.body).getByRole('group', { name: 'Span' })
+    expect(painted(span, ['flex', 'flex-basis'], PHONE)).toBe('1 1 100%')
+    // MUTATION: leave the label at the cell's left and the spare width pools
+    // after it, so the cells read as content-sized.
+    for (const b of cells) expect(painted(b, 'justify-content', PHONE), b.textContent ?? '').toBe('center')
+    // MUTATION: move the rule out of the phone query and the desktop control
+    // fills its row too.
+    expect(painted(seg, ['flex', 'flex-basis'], WIDE)).toBe('none')
   })
 })
