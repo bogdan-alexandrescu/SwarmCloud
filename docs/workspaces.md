@@ -20,6 +20,11 @@ member or not, never in anyone else's personal one. The design is
 was built; Admin › People's part is §6.4 (5) and §6.5 below. In dev,
 `role_member_required` and `PLATFORM_ADMIN_REACH` are on (ROLES-ON-DEV,
 2026-10-19) and `role_admin_required` is off; in prod all three are off.
+**Amended 2026-10-20 (#1649): the QA identity has a service workspace of
+its own**, made by this job, so a browser agent can sign in to the console
+as a member of it and of nothing else. The design is
+[design/qa-identity.md](design/qa-identity.md), and its §8 records what was
+built; the workspace's part is §6.6 below.
 
 The owner asked on 2026-10-08 for each person's personal space to be
 "onboarded at the time of onboarding a new user in swarmcloud", with "a way to create this via the UI and potentially via the
@@ -2029,6 +2034,61 @@ person's own secrets and GitHub token. `PLATFORM_ADMIN_REACH` is on in dev
 prod a platform admin enters only the group workspaces they are a member of.
 
 ---
+
+### 6.6 The QA identity's service workspace (qa-identity, #1649)
+
+Recorded 2026-10-20 by lane QI-DOCS. A `claude-code-browser` task that names
+`input.qa_identity: "console"` has its live browser signed in to the console
+as a QA service account, so that a visual QA run sees the real console
+without a person signing in. What that account can see is exactly one
+workspace, made through this document's flow like any other service
+workspace. That is why it is recorded here.
+
+* **The account** is `qa-console@<project>.iam.gserviceaccount.com`, and
+  swarm-api is told it in dev only (`terraform/infra/locals.tf`,
+  `local.qa_identity_console_account`; the owner's Q8 (a) in qa-identity.md
+  §7). It is not named `swarm-*`: this flow refuses every account with the
+  platform's prefix (`WORKSPACE_SERVICE_PLATFORM`), and the owner chose to
+  rename the account rather than exempt it.
+* **How it was made** (the owner's step O3): Admin › Tenants › New workspace
+  › Service, on 2026-10-20, approved by the platform owner. The job held at
+  S2 with `FRONT_DOOR_OWNER` until the owner's bootstrap apply gave the
+  deployer read access to the API backend's IAP policy. On Retry, S2 found
+  the account already on the owner's `frontend_iap_members` list, and the
+  workspace (`w-267d01`) reached `ready`.
+* **Its tenant** is the frozen slug of the account's address, as for every
+  service workspace
+  (`apps/swarm-api/swarm_api/qa_identity.py::own_tenant`). With no
+  `X-Swarm-Tenant` header the account acts in it, and
+  `GET /v1/tenants/mine` lists it as the default (qa-identity.md §8,
+  QI-API).
+* **Member rights, and no account is lent** (Q3 (a)). The QA account can
+  exercise submit and cancel flows in its own workspace. The WD6 submission
+  gate does not judge it: it exempts every service account
+  (`apps/swarm-api/swarm_api/workspaces.py::Workspaces.applies_to`). So
+  its task is accepted, and a task whose profile needs a provider then parks
+  `CREDENTIAL_MISSING` at scheduler admission, before any lease
+  (`apps/scheduler/scheduler/loop.py::Scheduler._admit_one`), because the
+  tenant has no key and no pool account. It does not stay `QUEUED`, as Q3 (a)
+  in qa-identity.md §7 put it; the code is the fact. A `PARKED` task costs
+  nothing (invariant 1). Do not lend it one without the owner's decision:
+  that is Q3 (b), which was not chosen.
+* **Who may use it** is a separate grant, not membership. A platform admin
+  grants a consuming tenant (`eng` first, Q2 (a)), with a reason, in
+  Admin › Tenants › QA identity. The grant is a `qa_identity_grants`
+  document with an `admin_audit` row, made with `PUT` on
+  `/v1/admin/qa-identities/{identity}/grants/{tenant_id}` and revoked with
+  `DELETE` on it. A member reads its own tenant's answer with `GET` on
+  `/v1/qa-identities/mine`. The QA workspace's own tenant cannot be
+  granted (`qa_identity_self`): its own tasks would sign in as itself.
+* **What every granted tenant shares.** Each granted tenant's QA tasks see the
+  same QA workspace, and anything one of them leaves there, another can
+  see (qa-identity.md §3.7). Keep secrets, real repositories and real
+  people out of it.
+* **Removing it** is the service-workspace path of
+  [runbooks/tenant-offboarding.md](runbooks/tenant-offboarding.md). Revoke
+  every grant first, so that no task signs in to a workspace being taken
+  apart.
 
 ## 7. Deprovisioning (a follow-up, not built now)
 
