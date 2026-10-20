@@ -6189,6 +6189,19 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    fill is the only thing left to move. */
 .ctl-q-glyph:hover { color: var(--text); background: var(--line-soft); }
 .ctl-q-glyph:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* EVERY `?` CLEARS THE TRAIL BAR WHEN FOCUS SCROLLS TO IT (QA-022, visual QA
+   2026-10-20). On a task page the scroller had already moved (the list keeps
+   the open agent's row in view), so the list head's `Help: Work answers` --
+   the page's first Tab stop -- sat under the sticky `.ctl-bar`, and the
+   browser did not scroll on focus: the glyph was inside the scrollport, just
+   painted over. `elementFromPoint` at its centre returned the breadcrumb's
+   link, and its card opened below a glyph nobody could see. A scroll margin
+   of the bar's height is what makes "in view" mean "below the bar" to the
+   focus scroll. `--ctl-bar-h` is 0 where no bar is drawn (notifications.css),
+   so on every other page this is the same small air it always had.
+   `.help-glyph` is HelpCard's `?`, whose box is otherwise inline styles. */
+.ctl-q-glyph,
+.help-glyph { scroll-margin-top: calc(var(--ctl-bar-h, 0px) + var(--ctl-s2)); }
 .ctl-q-card {
   position: absolute;
   z-index: 40;

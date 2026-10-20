@@ -396,9 +396,10 @@ interface BridgeKey {
  * Nothing in CSS can fix that; tab order is the document's, not the box's. So
  * the trigger bridges it: while the card is open, Tab moves focus to the
  * card's first stop and PINS the card on the way, so the blur that follows
- * cannot close it. Leaving the card in either direction returns focus to the
- * `?` and dismisses -- one keystroke more than an inline card would cost going
- * forwards, and the price of the portal.
+ * cannot close it. Leaving the card dismisses it: Shift+Tab returns focus to
+ * the `?`, and Tab goes on to the stop after the `?` -- which is exactly what
+ * an inline card would cost, so the portal is no longer paid for in Tab
+ * presses (QA-022).
  *
  * A HOOK, SO BOTH CARDS HAVE IT. It lived inside `HelpCardView`, so it bridged
  * the topic cards and nothing else. The head's section card had no stop to
@@ -446,6 +447,32 @@ export function useCardBridge(
     // path rather than two that can disagree about `pinned`.
     trigger.onKeyDown({ key: 'Escape' })
     focusTriggerSilently()
+  }
+
+  /*
+   * TAB OFF THE CARD GOES ON, NOT BACK (QA-022, visual QA 2026-10-20). Leaving
+   * forwards used to come back through `dismissToTrigger`, so every `?` cost
+   * THREE Tab stops -- the `?`, the card's link, then the `?` again -- and a
+   * page with six of them made its reader press Tab eighteen times to cross
+   * them. The stop after the card, in reading order, is the one after its
+   * `?`: the card was portalled out of DOM order, not moved in the reader's
+   * mind. So the forward exit dismisses the same way and lands there.
+   * Shift+Tab still returns to the `?`, which is where backwards leads.
+   * With nothing after the `?` (the last control on the page) it falls back
+   * to the `?`, as before, rather than dropping focus on `<body>`.
+   */
+  const dismissForward = () => {
+    const el = triggerRef.current
+    const card = cardRef.current
+    const stops = el === null ? [] : tabStops(el.ownerDocument.body).filter((s) => card === null || !card.contains(s))
+    const next = el === null ? undefined : stops[stops.indexOf(el) + 1]
+    if (next === undefined) {
+      dismissToTrigger()
+      return
+    }
+    inside.current = false
+    trigger.onKeyDown({ key: 'Escape' })
+    next.focus()
   }
 
   /*
@@ -498,9 +525,10 @@ export function useCardBridge(
     const stops = tabStops(cardRef.current)
     const atFirst = stops[0] === e.currentTarget
     const atLast = stops[stops.length - 1] === e.currentTarget
-    // With one stop in the card both are true, so both directions come back to
-    // the `?`. A card that grows a second control keeps natural Tab between
-    // them and only bridges at the edges.
+    // With one stop in the card both are true, so Shift+Tab comes back to the
+    // `?` and Tab goes on past it (`dismissForward`). A card that grows a
+    // second control keeps natural Tab between them and only bridges at the
+    // edges.
     if ((e.shiftKey && atFirst) || (!e.shiftKey && atLast)) {
       e.preventDefault()
       // The widget handled this key, so nothing above it should also act on
@@ -508,7 +536,8 @@ export function useCardBridge(
       // wraps focus at the drawer's edges -- and the `?` the card is about to
       // hand focus back to may well BE one of those edges.
       e.stopPropagation()
-      dismissToTrigger()
+      if (e.shiftKey) dismissToTrigger()
+      else dismissForward()
     }
   }
 
@@ -955,7 +984,16 @@ const HIDDEN: CSSProperties = {
  */
 export function HelpNote({ topic, id }: { topic: TopicId; id: string }) {
   return (
-    <span id={id} data-help-description="" style={HIDDEN}>
+    // `hidden`, NOT ONLY CLIPPED (QA-070, visual QA 2026-10-20). Clipped to a
+    // pixel it was still RENDERED, and a rendered node is name-from-content:
+    // a `?` inside an `<h2>` -- Submit's "Choose a runner" -- named the
+    // heading with ~330 characters of help, so a screen reader's heading list
+    // read the whole explanation as the heading. `hidden` takes it out of the
+    // name computation and out of the accessibility tree, and accname reads a
+    // hidden node all the same when it is reached through `aria-describedby`
+    // -- which is the only way this text is meant to be heard. `HIDDEN` stays
+    // as well, for an author sheet that overrides `[hidden]`.
+    <span id={id} data-help-description="" hidden style={HIDDEN}>
       {HELP[topic].short}
     </span>
   )
@@ -1045,6 +1083,11 @@ export function HelpCardView({
         type="button"
         id={triggerId}
         ref={triggerRef}
+        // `help-glyph` carries the one thing an inline style cannot say to
+        // the browser's focus scroll in the sheet beside `.ctl-q-glyph`'s:
+        // the scroll margin that keeps the `?` out from under the sticky
+        // trail bar (QA-022, styles.css).
+        className="help-glyph"
         style={GLYPH}
         // `Help: <title>` (AH-4). This was built as "What <title> means",
         // which only reads as English for a title that is a noun phrase:
