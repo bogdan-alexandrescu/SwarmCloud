@@ -292,10 +292,11 @@ def front_door_reader_grant() -> dict:
     role = _block(text, r'resource\s+"google_project_iam_custom_role"\s+"front_door_reader"\s*\{')
     assert 'module.custom_role_ids.ids["front_door_reader"]' in role, "the reader's id is not custom_role_ids'"
     member = _block(text, r'resource\s+"google_iap_web_backend_service_iam_member"\s+"front_door_reader"\s*\{')
-    on_api = re.search(r"\n\s*web_backend_service\s*=\s*"
-                       r"data\.google_compute_backend_service\.frontend_iap\[local\.front_door_api_backend\]\.name\s*\n",
-                       member)
-    exact = (on_api is not None
+    name = re.search(r"\n\s*front_door_api_backend_name\s*=\s*([^\n]*)", text)
+    on_api = (re.search(r"\n\s*web_backend_service\s*=\s*local\.front_door_api_backend_name\s*\n", member)
+              and name and name.group(1).strip().endswith(
+                  "? data.google_compute_backend_service.frontend_iap[local.front_door_api_backend].name : \"\""))
+    exact = (bool(on_api)
              and re.search(r"\n\s*member\s*=\s*local\.workspace_deployer_member\s*\n", member) is not None
              and re.search(r"\n\s*condition\s*\{", member) is None)
     return {"name": "swarmFrontDoorReader", "permissions": _permissions(role),
