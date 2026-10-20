@@ -6,6 +6,9 @@
     swarm-handoff status
     swarm-handoff device PRESET
     swarm-handoff theme dark|light|system
+    swarm-handoff record start NAME [--interval-ms N]
+    swarm-handoff record stop
+    swarm-handoff serve DIR [--port N]
 
 It WRITES FILES and opens no socket: a request goes into the spool at
 $SWARM_HANDOFF (`requests/<id>.json`, written to a temporary name and renamed),
@@ -30,16 +33,68 @@ Exits:
      4  the task is being cancelled
      5  refused (rate limit, no live path, reason invalid)
 
+FLOW GIFS (QA-FLOWS, owner decision 2026-10-19, part of #1649). `record start`
+launches a recorder in the background, detached from the agent's shell, and
+returns; `record stop` asks it to stop and prints what it wrote. The recorder
+connects to the live browser over CDP ($SWARM_CDP_ENDPOINT, under the image's
+venv Python, which carries Playwright) and screenshots the page on screen
+after every main-frame navigation and every --interval-ms (default 1000,
+bounded to 250..10000). An input that changes the page is in the next tick's
+frame: another client's CDP input is not visible to this one, and the gate,
+which sees it, is not this command's to change. A frame like the last is not
+a frame -- the last is shown longer -- and only the rows that changed are
+encoded again. The frames become $SWARM_ARTIFACTS_DIR/flows/<name>.gif, which
+is a whole GIF after every frame (the trailer is rewritten), so a recorder
+killed between frames still leaves one.
+
+What a flow costs, and its caps. The image carries NO image library (its
+Dockerfile installs Playwright and Chromium, nothing that writes a GIF), so
+the encoder below is the standard library's: zlib to read Chromium's PNG,
+LZW written here. Frames are taken at CSS size, at most MAX_FRAME_WIDTH x
+MAX_FRAME_HEIGHT (a 1440x900 desktop is captured at 720x450, a 390x844 phone
+as it is), and coloured from a fixed 216-colour cube with no dithering: a
+flow is evidence of what happened, the PNG screenshots are the fidelity.
+MEASURED 2026-10-20 (this lane, Python 3.11, one core): a 720x450 frame costs
+0.07 s of CPU when Chromium filtered it None/Sub/Up and 0.29 s all-Paeth, and
+0.42 s and 434 KB for random noise, the worst case -- a UI page is tens of
+KB, and a frame that changed a few rows is that band only. That CPU is the
+agent container's (requests == limits), which is why the interval has a
+floor; a frame waits for the one before it, never piles up. A flow stops itself at MAX_FLOW_FRAMES frames,
+MAX_FLOW_BYTES bytes (before the frame that would pass it; under the 20 MiB
+the console draws inline) or MAX_FLOW_SECONDS, and says which. A frame is
+never shown for more than MAX_FRAME_DELAY_CS, so an idle minute plays as two
+seconds. While a person is in control the gate holds the recorder's CDP like
+the agent's, and a screenshot that completes in that window is withheld
+(cdppolicy.CONTENT_METHODS), so no frame shows what a person typed.
+
+A MOCKUP BESIDE THE APP. `serve DIR` serves a directory over http on
+127.0.0.1 and nowhere else -- there is no option for another address -- in
+the background, and prints its URL; the live Chromium opens it in a tab of
+its own (file:// is blocked by chromium-policy.json). The display sidecar
+shares the pod's network namespace, as the gate's CDP proxy on 127.0.0.1:9222
+does with the agent, and Chromium sends loopback direct even when its egress
+is proxied (the bypass list never says `<-loopback>`). Only GET and HEAD, only
+inside DIR (a link out of it is not followed), and only for a Host of
+127.0.0.1 or localhost -- a site in the same browser that rebinds its own name
+to 127.0.0.1 is refused, as the CDP proxy refuses it.
+
 Standard library only: this runs in the agent's environment, under any Python
-the image carries.
+the image carries. The recorder alone needs Playwright, and runs under the
+venv's Python, which has it.
 """
 
 import argparse
+import http.server
 import json
 import os
+import re
 import secrets
+import signal
+import struct
+import subprocess
 import sys
 import time
+import zlib
 from pathlib import Path
 
 EXIT_RETURNED = 0
@@ -61,6 +116,48 @@ POLL_SECONDS = 0.5
 MIN_POLL_SECONDS = 0.1
 MAX_REASON_CHARS = 200
 FINAL = {"returned", "expired", "cancelled", "refused", "unavailable", "applied"}
+
+#: QA-FLOWS (module docstring): where a flow lands under the task's artifacts,
+#: and what a flow may be called -- a file name, never a path.
+FLOWS_DIR_NAME = "flows"
+FLOW_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
+#: The caps (module docstring says what each costs). 200 frames at the default
+#: interval is over three minutes of activity; 8 MiB is a GIF a report can
+#: carry and the console draws inline (Artifacts.tsx: up to 20 MiB).
+MAX_FLOW_FRAMES = 200
+MAX_FLOW_BYTES = 8 * 1024 * 1024
+MAX_FLOW_SECONDS = 15 * 60
+FLOW_INTERVAL_MS = 1000
+MIN_INTERVAL_MS = 250
+MAX_INTERVAL_MS = 10000
+#: A frame's size: half of a 1440 desktop, a phone at its own width.
+MAX_FRAME_WIDTH = 720
+MAX_FRAME_HEIGHT = 900
+#: The longest a frame is shown for, in GIF's hundredths of a second.
+MAX_FRAME_DELAY_CS = 200
+#: The spool's record of the one running recorder, the stop it is asked by,
+#: what it wrote, and its stderr.
+RECORDING_NAME = "recording.json"
+RECORDING_STOP = "recording.stop"
+RECORDING_RESULT = "recording-result.json"
+RECORDING_LOG = "recording.log"
+#: How long `record stop` waits for the recorder to finish its frame.
+STOP_WAIT_SECONDS = 30
+#: The Python that carries Playwright on the browser image (claude_code.VENV_BIN).
+VENV_PYTHON = "/opt/venv/bin/python"
+#: A screenshot that takes longer than this is skipped, not waited on: the
+#: gate holds every CDP command while a person is in control.
+CAPTURE_TIMEOUT_MS = 10000
+
+FRAME_ADDED = "added"
+FRAME_SAME = "same"
+STOP_ASKED = "stopped"
+STOP_FRAME_CAP = "frame_cap"
+STOP_SIZE_CAP = "size_cap"
+STOP_TIME_CAP = "time_cap"
+
+#: `serve`'s one address. A mockup is for the browser in this pod, nobody else.
+SERVE_HOST = "127.0.0.1"
 
 
 #: What the agent should do on each exit of `wait`, printed as `next`.
@@ -226,7 +323,563 @@ def cmd_theme(args, root):
     return EXIT_RETURNED if answer.get("outcome") == "applied" else EXIT_REFUSED
 
 
-def main(argv=None):
+# -- flow GIFs (QA-FLOWS) -------------------------------------------------------
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _unfilter(kind, line, prev, bpp):
+    """One PNG scanline with its filter undone (PNG spec §9)."""
+    if kind == 0:
+        return bytes(line)
+    if kind == 2:
+        # Bytewise (a + b) mod 256 over the whole row at once, as one integer
+        # with the carries kept inside each byte.
+        n = len(line)
+        a = int.from_bytes(line, "big")
+        b = int.from_bytes(prev, "big")
+        low = int.from_bytes(b"\x7f" * n, "big")
+        high = int.from_bytes(b"\x80" * n, "big")
+        return (((a & low) + (b & low)) ^ ((a ^ b) & high)).to_bytes(n, "big")
+    row = bytearray(line)
+    n = len(row)
+    if kind == 1:
+        for i in range(bpp, n):
+            row[i] = (row[i] + row[i - bpp]) & 0xFF
+    elif kind == 3:
+        for i in range(n):
+            left = row[i - bpp] if i >= bpp else 0
+            row[i] = (row[i] + ((left + prev[i]) >> 1)) & 0xFF
+    elif kind == 4:
+        for i in range(n):
+            a = row[i - bpp] if i >= bpp else 0
+            b = prev[i]
+            c = prev[i - bpp] if i >= bpp else 0
+            p = a + b - c
+            pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+            row[i] = (row[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 0xFF
+    else:
+        raise ValueError("not a PNG filter: %d" % kind)
+    return bytes(row)
+
+
+def decode_png(data):
+    """`(width, height, channels, pixels)` of an 8-bit RGB or RGBA PNG, what
+    Chromium's `Page.captureScreenshot` writes. Anything else is a ValueError."""
+    if not data.startswith(_PNG_SIGNATURE):
+        raise ValueError("not a PNG")
+    pos = len(_PNG_SIGNATURE)
+    header = None
+    idat = []
+    while pos + 8 <= len(data):
+        length, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if kind == b"IHDR":
+            header = struct.unpack(">IIBBBBB", body)
+        elif kind == b"IDAT":
+            idat.append(body)
+        elif kind == b"IEND":
+            break
+    if header is None:
+        raise ValueError("a PNG with no header")
+    width, height, depth, colour, _compression, _filter, interlace = header
+    if depth != 8 or colour not in (2, 6) or interlace:
+        raise ValueError("only 8-bit, non-interlaced RGB or RGBA")
+    if not 0 < width <= 16384 or not 0 < height <= 16384:
+        raise ValueError("a PNG of an impossible size")
+    channels = 3 if colour == 2 else 4
+    stride = width * channels
+    raw = zlib.decompress(b"".join(idat))
+    if len(raw) != height * (stride + 1):
+        raise ValueError("a PNG whose data is not its size")
+    prev = bytes(stride)
+    rows = []
+    for y in range(height):
+        at = y * (stride + 1)
+        prev = _unfilter(raw[at], raw[at + 1:at + 1 + stride], prev, channels)
+        rows.append(prev)
+    return width, height, channels, b"".join(rows)
+
+
+#: The palette: a 6x6x6 colour cube, padded to 256 (unused) entries. Index
+#: 36r + 6g + b is the colour (51r, 51g, 51b), so a pixel is quantised by
+#: three byte translations and one sum, all in C.
+_LEVEL = bytes(min(5, (v + 25) // 51) for v in range(256))
+_TO_R = bytes(36 * _LEVEL[v] for v in range(256))
+_TO_G = bytes(6 * _LEVEL[v] for v in range(256))
+PALETTE = b"".join(bytes((51 * (i // 36), 51 * (i // 6 % 6), 51 * (i % 6))) for i in range(216)) + bytes(3 * 40)
+WHITE = 215
+
+
+def quantise(pixels, channels):
+    """One palette index per pixel."""
+    r = pixels[0::channels].translate(_TO_R)
+    g = pixels[1::channels].translate(_TO_G)
+    b = pixels[2::channels].translate(_LEVEL)
+    n = len(r)
+    # Never above 180 + 30 + 5 = 215, so no byte carries into the next.
+    return (int.from_bytes(r, "big") + int.from_bytes(g, "big") + int.from_bytes(b, "big")).to_bytes(n, "big")
+
+
+def _fit(indices, width, height, canvas_width, canvas_height):
+    """`indices` shrunk by a whole step until it fits the canvas, then padded
+    with white to the canvas's size: a device switch mid-flow."""
+    step = max(1, -(-width // canvas_width), -(-height // canvas_height))
+    rows = [indices[y * width:(y + 1) * width:step] for y in range(0, height, step)][:canvas_height]
+    pad = bytes([WHITE])
+    out = [row[:canvas_width] + pad * (canvas_width - len(row[:canvas_width])) for row in rows]
+    out += [pad * canvas_width] * (canvas_height - len(out))
+    return b"".join(out)
+
+
+def lzw(indices):
+    """GIF's variable-length LZW (GIF89a appendix F) over 8-bit indices."""
+    clear, end = 256, 257
+    out = bytearray()
+    acc = bits = 0
+    size, nxt = 9, 258
+    table = {}
+
+    def emit(code):
+        nonlocal acc, bits
+        acc |= code << bits
+        bits += size
+        while bits >= 8:
+            out.append(acc & 0xFF)
+            acc >>= 8
+            bits -= 8
+
+    emit(clear)
+    prefix = indices[0]
+    for byte in indices[1:]:
+        key = (prefix << 8) | byte
+        code = table.get(key)
+        if code is not None:
+            prefix = code
+            continue
+        emit(prefix)
+        if nxt < 4095:
+            table[key] = nxt
+            nxt += 1
+            if nxt > (1 << size) and size < 12:
+                size += 1
+        else:
+            emit(clear)
+            table.clear()
+            size, nxt = 9, 258
+        prefix = byte
+    emit(prefix)
+    emit(end)
+    if bits:
+        out.append(acc & 0xFF)
+    return bytes(out)
+
+
+def _sub_blocks(data):
+    return b"".join(bytes([len(data[i:i + 255])]) + data[i:i + 255] for i in range(0, len(data), 255)) + b"\x00"
+
+
+class FlowGif:
+    """A GIF written frame by frame, whole on disk after every frame."""
+
+    def __init__(self, path, *, max_frames=MAX_FLOW_FRAMES, max_bytes=MAX_FLOW_BYTES,
+                 max_width=MAX_FRAME_WIDTH, max_height=MAX_FRAME_HEIGHT):
+        self.path = Path(path)
+        self.max_frames = max_frames
+        self.max_bytes = max_bytes
+        self.max_width = max_width
+        self.max_height = max_height
+        self.frames = 0
+        self.size = 0
+        self.stopped = None
+        self._file = None
+        self._canvas = None
+        self._width = self._height = 0
+        self._shown_at = None
+        self._delay_at = None
+
+    def add_png(self, png, *, at):
+        """Add one screenshot, taken at `at` (seconds). FRAME_ADDED, FRAME_SAME,
+        or the cap that stops the flow -- then nothing more is added."""
+        if self.stopped:
+            return self.stopped
+        if self.frames >= self.max_frames:
+            self.stopped = STOP_FRAME_CAP
+            return self.stopped
+        width, height, channels, pixels = decode_png(png)
+        indices = quantise(pixels, channels)
+        if self._canvas is None:
+            step = max(1, -(-width // self.max_width), -(-height // self.max_height))
+            self._width, self._height = -(-width // step), -(-height // step)
+        frame = _fit(indices, width, height, self._width, self._height)
+        if frame == self._canvas:
+            return FRAME_SAME
+        top, bottom = 0, self._height
+        if self._canvas is not None:
+            w = self._width
+            while frame[top * w:(top + 1) * w] == self._canvas[top * w:(top + 1) * w]:
+                top += 1
+            while frame[(bottom - 1) * w:bottom * w] == self._canvas[(bottom - 1) * w:bottom * w]:
+                bottom -= 1
+        band = frame[top * self._width:bottom * self._width]
+        block = (b"\x21\xF9\x04\x04" + struct.pack("<H", MAX_FRAME_DELAY_CS) + b"\x00\x00"
+                 + b"\x2C" + struct.pack("<HHHHB", 0, top, self._width, bottom - top, 0)
+                 + b"\x08" + _sub_blocks(lzw(band)))
+        if self._file is None:
+            head = (b"GIF89a" + struct.pack("<HHBBB", self._width, self._height, 0xF7, WHITE, 0) + PALETTE
+                    + b"\x21\xFF\x0BNETSCAPE2.0\x03\x01\x00\x00\x00")
+            if len(head) + len(block) + 1 > self.max_bytes:
+                self.stopped = STOP_SIZE_CAP
+                return self.stopped
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._file = open(self.path, "w+b")
+            self._file.write(head + b";")
+            self.size = len(head) + 1
+        elif self.size + len(block) > self.max_bytes:
+            self.stopped = STOP_SIZE_CAP
+            return self.stopped
+        self._hold(at)
+        self._file.seek(self.size - 1)
+        self._delay_at = self.size - 1 + 4
+        self._file.write(block + b";")
+        self._file.flush()
+        self.size += len(block)
+        self.frames += 1
+        self._canvas = frame
+        self._shown_at = at
+        return FRAME_ADDED
+
+    def _hold(self, at):
+        """Set the last frame's delay to the time until `at`, under the cap."""
+        if self._delay_at is None or self._shown_at is None:
+            return
+        delay = max(1, min(MAX_FRAME_DELAY_CS, int(round((at - self._shown_at) * 100))))
+        self._file.seek(self._delay_at)
+        self._file.write(struct.pack("<H", delay))
+
+    def close(self, *, at):
+        if self._file is not None:
+            self._hold(at)
+            self._file.close()
+            self._file = None
+        return {"path": str(self.path), "frames": self.frames, "bytes": self.size,
+                "stopped": self.stopped or STOP_ASKED}
+
+
+class LiveFrames:
+    """Screenshots of the page on screen in the live browser, over CDP.
+
+    One connection for the whole flow, through the gate's CDP proxy like the
+    agent's own; a lost one is opened again on the next tick. The page on
+    screen is the one whose document is visible; with none, the page that
+    navigated last.
+    """
+
+    _VIEW = ("() => { const v = window.visualViewport; return [v ? v.width : innerWidth, "
+             "v ? v.height : innerHeight, devicePixelRatio, v ? v.pageLeft : scrollX, "
+             "v ? v.pageTop : scrollY]; }")
+
+    def __init__(self, endpoint):
+        self.endpoint = endpoint
+        self._playwright = None
+        self._context = None
+        self._sessions = {}
+        self._last = None
+        self._navigated = False
+
+    def _connect(self):
+        if self._context is not None:
+            return self._context
+        from playwright.sync_api import sync_playwright
+
+        playwright = sync_playwright().start()
+        try:
+            browser = playwright.chromium.connect_over_cdp(self.endpoint, timeout=CAPTURE_TIMEOUT_MS)
+            context = browser.contexts[0] if browser.contexts else None
+        except Exception:
+            playwright.stop()
+            raise
+        if context is None:
+            playwright.stop()
+            raise RuntimeError("the live browser has no context")
+        self._playwright, self._context = playwright, context
+        context.on("page", self._watch)
+        for page in context.pages:
+            self._watch(page)
+        return context
+
+    def _watch(self, page):
+        def navigated(frame):
+            if frame == page.main_frame:
+                self._last = page
+                self._navigated = True
+
+        page.on("framenavigated", navigated)
+        page.on("close", lambda _p: self._sessions.pop(page, None))
+
+    def _on_screen(self, pages):
+        for page in reversed(pages):
+            try:
+                if page.evaluate("() => document.visibilityState") == "visible":
+                    return page
+            except Exception:
+                continue
+        if self._last in pages:
+            return self._last
+        return pages[-1] if pages else None
+
+    def capture(self):
+        try:
+            context = self._connect()
+            page = self._on_screen(list(context.pages))
+            if page is None:
+                return None
+            width, height, ratio, left, top = page.evaluate(self._VIEW)
+            scale = min(1.0, MAX_FRAME_WIDTH / max(1.0, width), MAX_FRAME_HEIGHT / max(1.0, height))
+            session = self._sessions.get(page)
+            if session is None:
+                session = self._sessions[page] = context.new_cdp_session(page)
+            shot = session.send("Page.captureScreenshot", {
+                "format": "png",
+                "clip": {"x": left, "y": top, "width": width, "height": height,
+                         "scale": scale / max(0.01, ratio)},
+            })
+            import base64
+
+            return base64.b64decode(shot["data"])
+        except Exception as exc:
+            sys.stderr.write("frame skipped: %s\n" % type(exc).__name__)
+            self.close()
+            return None
+
+    def wait(self, seconds):
+        """Wait `seconds`, or less when a page navigates -- its frame is next."""
+        deadline = time.monotonic() + seconds
+        self._navigated = False
+        while time.monotonic() < deadline and not self._navigated:
+            pages = list(self._context.pages) if self._context is not None else []
+            try:
+                if pages:
+                    pages[-1].wait_for_timeout(min(100, max(1, (deadline - time.monotonic()) * 1000)))
+                else:
+                    time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+            except Exception:
+                time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+        if self._navigated and self._last is not None:
+            try:
+                self._last.wait_for_load_state("load", timeout=3000)
+            except Exception:
+                pass
+
+    def close(self):
+        playwright, self._playwright, self._context = self._playwright, None, None
+        self._sessions = {}
+        if playwright is not None:
+            try:
+                playwright.stop()
+            except Exception:
+                pass
+
+
+def record_loop(frames, flow, *, stop_file, interval, max_seconds=MAX_FLOW_SECONDS, clock=time.monotonic):
+    """Frames into `flow` until the stop file, a cap, or `max_seconds`."""
+    started = clock()
+    stopped = None
+    try:
+        while True:
+            if Path(stop_file).exists():
+                break
+            if clock() - started >= max_seconds:
+                stopped = STOP_TIME_CAP
+                break
+            png = frames.capture()
+            if png is not None:
+                try:
+                    outcome = flow.add_png(png, at=clock())
+                except ValueError as exc:
+                    sys.stderr.write("frame skipped: %s\n" % exc)
+                    outcome = None
+                if outcome in (STOP_FRAME_CAP, STOP_SIZE_CAP):
+                    break
+            frames.wait(interval)
+    finally:
+        frames.close()
+        result = flow.close(at=clock())
+    if stopped:
+        result["stopped"] = stopped
+    return result
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _recording(root):
+    state = _read(root / RECORDING_NAME)
+    if state is None or not isinstance(state.get("pid"), int):
+        return None
+    return state
+
+
+def cmd_record(args, root):
+    if args.action == "_run":
+        return _record_run(args, root)
+    if args.action == "stop":
+        return _record_stop(root)
+    name = args.name or ""
+    if not FLOW_NAME.fullmatch(name):
+        return _refuse("name_invalid", "a flow is named in lower-case letters, digits and dashes, "
+                                       "at most 48 (it becomes flows/<name>.gif)")
+    endpoint = os.environ.get("SWARM_CDP_ENDPOINT", "").strip()
+    artifacts = os.environ.get("SWARM_ARTIFACTS_DIR", "").strip()
+    why = _unavailable(root)
+    if why or not endpoint or not artifacts:
+        return _refuse(why or "no_live_path", "this attempt has no live browser to record")
+    state = _recording(root)
+    if state is not None and _alive(state["pid"]):
+        return _refuse("already_recording", "%s is being recorded: run `swarm-handoff record stop` first"
+                       % state.get("name"))
+    interval = max(MIN_INTERVAL_MS, min(MAX_INTERVAL_MS, int(args.interval_ms)))
+    path = Path(artifacts) / FLOWS_DIR_NAME / (name + ".gif")
+    for stale in (RECORDING_STOP, RECORDING_RESULT):
+        (root / stale).unlink(missing_ok=True)
+    python = VENV_PYTHON if os.path.exists(VENV_PYTHON) else sys.executable
+    with open(root / RECORDING_LOG, "ab") as log:
+        proc = subprocess.Popen(
+            [python, os.path.abspath(__file__), "record", "_run", name, "--interval-ms", str(interval)],
+            stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, close_fds=True)
+    _write_atomic(root / RECORDING_NAME, {"name": name, "pid": proc.pid, "path": str(path),
+                                          "interval_ms": interval})
+    _out({"outcome": "recording", "name": name, "path": str(path), "interval_ms": interval,
+          "max_frames": MAX_FLOW_FRAMES, "max_bytes": MAX_FLOW_BYTES, "max_seconds": MAX_FLOW_SECONDS,
+          "next": "Do the flow, then run `swarm-handoff record stop`."})
+    return EXIT_RETURNED
+
+
+def _record_run(args, root):
+    """The recorder itself, in the background (`record start` launched it)."""
+    state = _recording(root) or {}
+    artifacts = os.environ.get("SWARM_ARTIFACTS_DIR", "").strip()
+    path = Path(state.get("path") or Path(artifacts) / FLOWS_DIR_NAME / (args.name + ".gif"))
+    stop_file = root / RECORDING_STOP
+
+    def on_term(_signum, _frame):
+        stop_file.write_text("", encoding="utf-8")
+
+    signal.signal(signal.SIGTERM, on_term)
+    frames = LiveFrames(os.environ.get("SWARM_CDP_ENDPOINT", "").strip())
+    result = record_loop(frames, FlowGif(path), stop_file=stop_file, interval=args.interval_ms / 1000.0)
+    _write_atomic(root / RECORDING_RESULT, result)
+    return EXIT_RETURNED
+
+
+def _record_stop(root):
+    state = _recording(root)
+    if state is None:
+        return _refuse("not_recording", "nothing is being recorded: run `swarm-handoff record start <name>`")
+    (root / RECORDING_STOP).write_text("", encoding="utf-8")
+    deadline = time.monotonic() + STOP_WAIT_SECONDS
+    result = None
+    while True:
+        result = _read(root / RECORDING_RESULT)
+        if result is not None or not _alive(state["pid"]) or time.monotonic() >= deadline:
+            break
+        time.sleep(POLL_SECONDS)
+    if result is None and _alive(state["pid"]):
+        try:
+            os.kill(state["pid"], signal.SIGTERM)
+        except OSError:
+            pass
+    (root / RECORDING_NAME).unlink(missing_ok=True)
+    if result is None:
+        path = Path(state.get("path") or "")
+        written = path.is_file()
+        _out({"outcome": "recorded" if written else "failed", "name": state.get("name"),
+              "path": str(path), "bytes": path.stat().st_size if written else 0,
+              "log": str(root / RECORDING_LOG)})
+        return EXIT_RETURNED if written else EXIT_REFUSED
+    _out({"outcome": "recorded", "name": state.get("name"), **result})
+    return EXIT_RETURNED
+
+
+# -- a mockup beside the app (QA-FLOWS) -------------------------------------------
+
+
+class _MockupHandler(http.server.SimpleHTTPRequestHandler):
+    """GET and HEAD inside one directory, for a loopback Host only."""
+
+    def _refused(self):
+        host = (self.headers.get("Host") or "").strip().lower()
+        port = self.server.server_address[1]
+        return host not in {"127.0.0.1", "localhost", "127.0.0.1:%d" % port, "localhost:%d" % port}
+
+    def send_head(self):
+        if self._refused():
+            self.send_error(403, "only http://127.0.0.1:<port>/ is served")
+            return None
+        path = Path(self.translate_path(self.path))
+        root = Path(self.directory).resolve()
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = None
+        if resolved is None or (resolved != root and root not in resolved.parents):
+            self.send_error(404, "not inside the served directory")
+            return None
+        return super().send_head()
+
+    def log_message(self, format, *args):
+        pass
+
+
+def mockup_server(directory, port, host=SERVE_HOST):
+    """The server `serve` runs, bound to 127.0.0.1 and nothing else."""
+    if host != SERVE_HOST:
+        raise ValueError("a mockup is served on %s only" % SERVE_HOST)
+    directory = str(Path(directory).resolve())
+
+    def handler(*a, **k):
+        return _MockupHandler(*a, directory=directory, **k)
+
+    return http.server.ThreadingHTTPServer((SERVE_HOST, port), handler)
+
+
+def cmd_serve(args):
+    directory = Path(args.directory)
+    if not directory.is_dir():
+        return _refuse("not_a_directory", "%s is not a directory" % args.directory)
+    try:
+        server = mockup_server(directory, args.port)
+    except OSError as exc:
+        return _refuse("port_unavailable", "cannot listen on %s:%d (%s)" % (SERVE_HOST, args.port, exc.strerror))
+    port = server.server_address[1]
+    pid = os.fork()
+    if pid:
+        server.socket.close()
+        _out({"outcome": "serving", "url": "http://%s:%d/" % (SERVE_HOST, port), "pid": pid,
+              "directory": str(directory.resolve()),
+              "next": "Open the url in a new tab of the live browser (browser_tabs new, then browser_navigate); "
+                      "`kill %d` stops it." % pid})
+        return EXIT_RETURNED
+    # The child: no terminal, no pipe of the agent's shell held open.
+    os.setsid()
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
+    try:
+        server.serve_forever()
+    finally:
+        os._exit(0)
+
+
+def build_parser():
     parser = argparse.ArgumentParser(prog="swarm-handoff", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     request = sub.add_parser("request", help="ask a person to take over the browser")
@@ -246,14 +899,28 @@ def main(argv=None):
     theme.add_argument("theme", choices=THEMES)
     theme.add_argument("--max-seconds", type=float, default=DEVICE_WAIT_SECONDS, help=argparse.SUPPRESS)
     theme.add_argument("--poll", type=float, default=POLL_SECONDS, help=argparse.SUPPRESS)
-    args = parser.parse_args(argv)
+    record = sub.add_parser("record", help="record a flow as $SWARM_ARTIFACTS_DIR/flows/<name>.gif")
+    record.add_argument("action", choices=("start", "stop", "_run"))
+    record.add_argument("name", nargs="?")
+    record.add_argument("--interval-ms", type=int, default=FLOW_INTERVAL_MS,
+                        help="a frame at least this often (%d..%d)" % (MIN_INTERVAL_MS, MAX_INTERVAL_MS))
+    serve = sub.add_parser("serve", help="serve a directory on http://127.0.0.1:<port>/ for the live browser")
+    serve.add_argument("directory")
+    serve.add_argument("--port", type=int, default=0, help="a port (default: any free one)")
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
     if args.command == "wait":
         args.max_seconds = max(0.0, min(args.max_seconds, WAIT_SECONDS))
+    if args.command == "serve":
+        return cmd_serve(args)
     root = _spool()
     if root is None:
         return _refuse("no_live_path", "this task has no live browser ($SWARM_HANDOFF is not set)")
     handler = {"request": cmd_request, "wait": cmd_wait, "status": cmd_status, "device": cmd_device,
-               "theme": cmd_theme}
+               "theme": cmd_theme, "record": cmd_record}
     return handler[args.command](args, root)
 
 

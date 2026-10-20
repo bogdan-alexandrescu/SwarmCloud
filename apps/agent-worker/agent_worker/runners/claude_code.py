@@ -382,7 +382,15 @@ LIVE_BROWSER_NOTE = (
     "the page is laid out for; pick a preset instead. Take screenshots with "
     "browser_take_screenshot without a filename: each is saved under "
     "$SWARM_ARTIFACTS_DIR/screenshots and comes back to you as an image; with a "
-    "filename it lands in the checkout and you do not see it."
+    "filename it lands in the checkout and you do not see it. "
+    # QA-FLOWS (owner decision 2026-10-19, part of #1649): one line each.
+    "Flow GIFs: `swarm-handoff record start <name>`, do the flow, then "
+    "`swarm-handoff record stop` saves $SWARM_ARTIFACTS_DIR/flows/<name>.gif (a "
+    "frame at each navigation and every second; it stops itself at 200 frames, "
+    "8 MiB or 15 minutes). "
+    "Mockups: `swarm-handoff serve <dir>` serves that directory at the "
+    "http://127.0.0.1:<port>/ it prints, for the live browser to open in a tab "
+    "of its own beside the app (file:// is blocked)."
 )
 
 #: dev-browser (DEVB-INSTALL, owner decision 2026-10-14, part of #1030): the

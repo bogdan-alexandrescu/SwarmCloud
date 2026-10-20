@@ -371,6 +371,11 @@ preset by name (desktop, iphone-15, phone-390, pixel-8, iphone-se, ipad-7).
 told to prefer (prefers-color-scheme); it holds across navigation and new
 tabs, and `system` lifts it. browser_resize is refused: the size is a preset's.
 
+A flow as a GIF, and a mockup beside the app (one line each):
+
+    swarm-handoff record start <name>   then the flow, then   swarm-handoff record stop   -> $SWARM_ARTIFACTS_DIR/flows/<name>.gif
+    swarm-handoff serve <dir>   -> prints http://127.0.0.1:<port>/ for a new tab of the live browser (file:// is blocked)
+
 Never copy cookies or a storage state into your files: they are refused.
 """
 
