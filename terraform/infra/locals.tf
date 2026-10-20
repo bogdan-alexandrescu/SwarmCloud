@@ -1158,6 +1158,14 @@ locals {
       # is what it was before the broker.
       FORGE_BROKER = var.forge_broker ? "true" : "false"
 
+      # The per-tenant state switch (child_tasks.tf `state_via_api_tenants`,
+      # #1457, ISO-SCHED phase 2): every attempt of a listed tenant reaches
+      # its state only through swarm-api's state routes
+      # (scheduler.dispatch.worker_env). Comma-separated, the form
+      # scheduler.settings.parse_state_via_api_tenants reads. Empty, the
+      # default, switches nobody.
+      SWARM_STATE_VIA_API_TENANTS = join(",", var.state_via_api_tenants)
+
       # The live browser's display sidecar (scheduler.settings
       # `live_browser_sidecar`; docs/design/live-browser.md, LB-Lon). On, a
       # claude-code-browser GKE pod carries the `display` native sidecar and

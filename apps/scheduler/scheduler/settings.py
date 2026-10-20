@@ -14,6 +14,7 @@ safety tick) picks up where it left off.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -23,6 +24,8 @@ from swarm_common.config import Settings
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES
 
 from .judgment import check_internal_decision_api_url
+
+log = logging.getLogger(__name__)
 
 #: `<registry path>@sha256:<64 hex>`, and nothing before the `@` that could be a
 #: tag. The same shape terraform/infra/variables.tf validates `image_refs`
@@ -224,6 +227,39 @@ def parse_enforced_since(raw: str | None) -> datetime | None:
             "2026-09-25T14:00:00Z or with an explicit +HH:MM"
         )
     return parsed
+
+
+#: A tenant id as register-tenant.sh and the tenancy module accept one
+#: (`WS_GROUP_TENANT_RE`; a personal `u-` id matches it too): lowercase
+#: letters, digits and inner hyphens, at most a Kubernetes label's 63.
+_TENANT_ID = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def parse_state_via_api_tenants(raw: str | None) -> frozenset[str]:
+    """SWARM_STATE_VIA_API_TENANTS -> the tenant ids switched to the state routes.
+
+    docs/design/tenant-settings-integrity.md §4.6 (ISO-SCHED phase 2, #1457).
+    Comma-separated; empty, the default, switches nobody.
+
+    AN ENTRY THAT CANNOT BE A TENANT ID IS DROPPED AND LOGGED, IN ONE WARNING,
+    AND NEVER STOPS THE SCHEDULER (owner decision, 2026-10-20). A typo in this
+    list must not stop dispatch for every tenant, and dropping it is the safe
+    direction: an unswitched tenant runs exactly as it did before the switch
+    existed. `*` is such an entry. The design names it as "every tenant", and
+    it is not built: switching every tenant at once is the owner's step 5, and
+    a list says which tenants it was. A well-formed id no tenant has matches
+    no attempt, so it is inert without being dropped.
+    """
+    items = [item.strip() for item in (raw or "").split(",") if item.strip()]
+    kept = frozenset(item for item in items if _TENANT_ID.match(item))
+    dropped = sorted({item for item in items if item not in kept})
+    if dropped:
+        log.warning(
+            "SWARM_STATE_VIA_API_TENANTS: ignoring %s, which cannot be a tenant id; "
+            "no attempt of theirs is switched to the state routes",
+            ", ".join(repr(item) for item in dropped),
+        )
+    return kept
 
 
 def _int(name: str, default: int) -> int:
@@ -518,6 +554,18 @@ class SchedulerSettings:
     #: swarm-api, which signs with it, and this service, which verifies. Not in
     #: the repr, so a logged settings object cannot carry it.
     settings_mac_key: str = field(default="", repr=False)
+    #: THE PER-TENANT STATE SWITCH (docs/design/tenant-settings-integrity.md
+    #: §4.6; ISO-SCHED phase 2, part of #1457). Every attempt of a tenant in
+    #: this set -- on both backends, a child included -- is dispatched with
+    #: SWARM_STATE_VIA_API=true and SWARM_API_URL, and is keyed, so its worker
+    #: reaches its state only through swarm-api's state routes
+    #: (`dispatch.worker_env`). From SWARM_STATE_VIA_API_TENANTS (terraform
+    #: `state_via_api_tenants`; `parse_state_via_api_tenants`). EMPTY BY
+    #: DEFAULT: an unlisted tenant's worker uses direct Firestore and is
+    #: dispatched byte-for-byte as before the switch existed. Dev first, then
+    #: every tenant, and only then is the worker's Firestore role removed
+    #: (owner decision Q7). Never from a task (invariant 10).
+    state_via_api_tenants: frozenset[str] = frozenset()
     dispatch_topic: str = ""
     #: The step-spec verification settings a worker needs (contract request
     #: 34), passed through VERBATIM onto every Cloud Run Job this scheduler
@@ -590,6 +638,9 @@ class SchedulerSettings:
             typesafe_forwarder_tenants=_csv("TYPESAFE_FORWARDER_TENANTS"),
             settings_mac_required=_bool("SETTINGS_MAC_REQUIRED", False),
             settings_mac_key=os.environ.get("SWARM_SETTINGS_KEY", "").strip(),
+            state_via_api_tenants=parse_state_via_api_tenants(
+                os.environ.get("SWARM_STATE_VIA_API_TENANTS")
+            ),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", ""),
             spec_verify_keys=os.environ.get("SPEC_VERIFY_KEYS", "").strip(),
             spec_signing_key=os.environ.get("SPEC_SIGNING_KEY", "").strip(),
@@ -625,6 +676,17 @@ class SchedulerSettings:
         check_worker_class_models(self.worker_class_models)
         check_spec_settings(self)
         check_internal_decision_api_url(self.internal_decision_api_url)
+        # Logged, not refused: a switched tenant's worker refuses to start
+        # without a nonce (fail closed, `dispatch.worker_env`), which harms only
+        # the switched tenants; refusing here would stop every tenant's dispatch.
+        # terraform refuses the combination at plan (`state_via_api_tenants`).
+        if self.state_via_api_tenants and not (self.child_key and self.swarm_api_url):
+            log.error(
+                "SWARM_STATE_VIA_API_TENANTS switches %s, but SWARM_CHILD_KEY or "
+                "SWARM_API_URL is empty: their workers get no nonce to open their "
+                "attempts with and refuse to start",
+                ", ".join(sorted(self.state_via_api_tenants)),
+            )
         # At START, like the image map: on with no key would read every
         # workspace's choice as the default without saying why.
         if self.settings_mac_required and not self.settings_mac_key:

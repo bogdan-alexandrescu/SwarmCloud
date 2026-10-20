@@ -5,7 +5,9 @@ answered by the owner the same day (§7, "The owner's answers").** Nine of the
 ten build lanes of §6 have merged (PRs 1473-1487). ISO-IAM, the per-tenant switch
 that drops the worker's Firestore role, is PR 1484, still open on 2026-10-20.
 Follow-up lanes ISO-MAC-TF, ISO-API-SETTINGS, ISO-UPSTREAM, ISO-SEARCH and
-ISO-WIRE merged as PRs 1490-1502. No tenant has been cut over yet.
+ISO-WIRE merged as PRs 1490-1502. ISO-SCHED's phase 2, the scheduler's half
+of the per-tenant switch, is built by lane ISO-SCHED-2 (2026-10-20): terraform
+`state_via_api_tenants`, empty by default. No tenant has been cut over yet.
 
 Every file and symbol cited below was read on 2026-10-17 at `35f2a61`. Lines
 move, so each citation names the symbol; search for it.
@@ -668,7 +670,12 @@ There are two additions:
   * interim A: `read_judge_backend` verifies the MAC.
 * `scheduler/judgment.py`: `read_backend` verifies the MAC (interim A).
 * `scheduler/settings.py`: the per-tenant switch list
-  (`STATE_VIA_API_TENANTS`, or `*`).
+  (`STATE_VIA_API_TENANTS`, or `*`). **Built** (ISO-SCHED-2) as
+  `state_via_api_tenants`, read from `SWARM_STATE_VIA_API_TENANTS` by
+  `parse_state_via_api_tenants`. `*` is not built: an entry that cannot be a
+  tenant id, `*` included, is dropped with one warning and never stops the
+  scheduler, and terraform refuses it at plan. Switching every tenant (step 5
+  of §6's order) lists them.
 
 **Reconciler:** `reconciler/store.py` `tenant_namespaces` derives the
 namespace (phase 0). Nothing else changes, because it reads the same documents
@@ -856,7 +863,7 @@ touches tenant isolation or IAM.
 | phase | lane | files | red-first tests (each fails before the change) |
 |---|---|---|---|
 | 0 | **ISO-CONTRACT** (owner applies) | `apps/common/swarm_common/states.py`, `models.py`, `specsign.py` (if Q2 picks the interim), `docs/contract-change-requests.md` | `worker_may_transition(RUNNING, LEASED)` is false; every edge in `WORKER_TRANSITIONS` is in `_ALLOWED`; `canonical_settings_block` differs for two tenants with the same fields, and ignores a key outside `SETTINGS_MAC_FIELDS` |
-| 0 | **ISO-SCHED** | `apps/scheduler/scheduler/dispatch.py`, `judgment.py`, `settings.py`, `tests/unit/scheduler/` files for each | a `Tenant` with `service_account` set to another tenant's account dispatches as the derived one; `namespace="swarm-tenant-other"` renders the derived namespace; `GCS_PREFIX` is derived; (interim) a `workspace_settings` with `judgment_backend: typesafe` and no or a bad MAC yields `internal-jev` in both `read_backend` and `read_judge_backend`, and a nested `code_intelligence.judgment_backend` without a MAC is ignored; (phase 2, same lane, later PR) with the tenant switched, every attempt's env carries `SWARM_CHILD_NONCE` |
+| 0 | **ISO-SCHED** | `apps/scheduler/scheduler/dispatch.py`, `judgment.py`, `settings.py`, `tests/unit/scheduler/` files for each | a `Tenant` with `service_account` set to another tenant's account dispatches as the derived one; `namespace="swarm-tenant-other"` renders the derived namespace; `GCS_PREFIX` is derived; (interim) a `workspace_settings` with `judgment_backend: typesafe` and no or a bad MAC yields `internal-jev` in both `read_backend` and `read_judge_backend`, and a nested `code_intelligence.judgment_backend` without a MAC is ignored; (phase 2, same lane, later PR) with the tenant switched, every attempt's env carries `SWARM_CHILD_NONCE`. **Phase 2 built** by lane ISO-SCHED-2's PR (2026-10-20): `tests/unit/scheduler/test_dispatch_state_via_api.py` (a switched tenant's every attempt, children included, carries `SWARM_STATE_VIA_API=true`, `SWARM_API_URL` and a nonce for its own tuple on both backends; an unswitched tenant's GKE manifest and Cloud Run requests are byte-for-byte unchanged) and `tests/terraform/state_via_api_env.tftest.hcl` |
 | 0 | **ISO-RECON** | `apps/reconciler/reconciler/store.py`, its test | `tenant_namespaces` returns the derived namespace when the stored one names another tenant |
 | 0 | **ISO-SETTINGS-MAC** (if Q2 picks the interim) | `apps/swarm-api/swarm_api/judgment.py`, `mergesettings.py`, `codeintel.py`, `typesafe_ticket.py`, a re-sign job under `scripts/`, `scripts/create-secrets.sh` (the key), their tests | a forged `judgment_backend` (no MAC) makes `mint` answer 403 `TypesafeBackendOff`; a write through each route stores a MAC that the scheduler's verifier accepts; the re-sign job is idempotent and signs only fields in `SETTINGS_MAC_FIELDS` |
 | 1 | **ISO-STATE-API** | `apps/swarm-api/swarm_api/attemptstate.py` (new), `routes/attemptstate.py` (new), `children.py`, `childkey.py`, `main.py`, `tests/unit/control_plane/test_attemptstate*.py` | another tenant's token gets 401 on every route; a token without a proof gets 403; a stale generation gets 409 and writes nothing (compare the documents before and after); a `runner_profile` in any body gets 422; RUNNING→LEASED gets 422; `park` releases the lease and writes PARKED in one transaction (an injected failure leaves neither); `release` releases only the tuple's lease, whatever pool names the body carries; a repeated `finish` with one `request_id` writes once; `state/upstream` refuses an id not in the signed `depends_on`; `merge-slot wake` refuses a waiter of another tenant; a v1 child attestation still verifies for child routes and is refused for state routes |
