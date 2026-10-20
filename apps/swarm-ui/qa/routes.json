@@ -1,0 +1,285 @@
+{
+  "format": 1,
+  "about": "The pages `python -m swarm_qa capture` sweeps, one group per capture step (docs/design/visual-qa.md 4.3). tests/unit/scripts/test_qa_routes.py holds it to SECTIONS in App.tsx, FIXED and TASK_PANES in paths.ts: a tab added without a route here fails there.",
+  "clock": "2026-10-19T12:00:00Z",
+  "fixture_task": "task_a073aff5",
+  "groups": {
+    "overview-automate": [
+      {
+        "id": "now",
+        "address": "overview/now",
+        "path": "/overview",
+        "ready": "main h1",
+        "segments": 3
+      },
+      {
+        "id": "schedules",
+        "address": "automate/schedules",
+        "path": "/automate/schedules",
+        "ready": "main h1"
+      },
+      {
+        "id": "approvals",
+        "address": "automate/approvals",
+        "path": "/approvals",
+        "ready": "main h1"
+      },
+      {
+        "id": "settings-keys",
+        "address": "settings/keys",
+        "path": "/settings/keys",
+        "ready": "main h1"
+      },
+      {
+        "id": "settings-workspace",
+        "address": "settings/workspace",
+        "path": "/settings/workspace",
+        "ready": "main h1"
+      },
+      {
+        "id": "settings-mcp-servers",
+        "address": "settings/mcp-servers",
+        "path": "/settings/mcp-servers",
+        "ready": "main h1"
+      },
+      {
+        "id": "settings-profile",
+        "address": "settings/profile",
+        "path": "/settings/profile",
+        "ready": "main h1"
+      },
+      {
+        "id": "settings-people",
+        "address": "settings/people",
+        "path": "/settings/people",
+        "ready": "main h1"
+      }
+    ],
+    "work-a": [
+      {
+        "id": "running",
+        "address": "work/running",
+        "path": "/agents",
+        "ready": "main h1"
+      },
+      {
+        "id": "workflows",
+        "address": "work/workflows",
+        "path": "/workflows",
+        "ready": "main h1"
+      },
+      {
+        "id": "runs",
+        "address": "work/runs",
+        "path": "/runs",
+        "ready": "main h1"
+      },
+      {
+        "id": "timeline",
+        "address": "work/timeline",
+        "path": "/timeline",
+        "ready": "main h1"
+      },
+      {
+        "id": "repositories",
+        "address": "work/repositories",
+        "path": "/repositories",
+        "ready": "main h1"
+      }
+    ],
+    "work-b": [
+      {
+        "id": "setup",
+        "address": "work/setup",
+        "path": "/setup",
+        "ready": "main h1"
+      },
+      {
+        "id": "access",
+        "address": "work/access",
+        "path": "/access",
+        "ready": "main h1"
+      },
+      {
+        "id": "new",
+        "address": "work/new",
+        "path": "/submit/task",
+        "ready": "main h1"
+      },
+      {
+        "id": "new-workflow",
+        "address": "work/new-workflow",
+        "path": "/submit/workflow",
+        "ready": "main h1"
+      },
+      {
+        "id": "new-issue",
+        "address": "work/new-issue",
+        "path": "/submit/issue",
+        "ready": "main h1"
+      }
+    ],
+    "capacity": [
+      {
+        "id": "pools",
+        "address": "capacity/pools",
+        "path": "/capacity/pools",
+        "ready": "main h1"
+      },
+      {
+        "id": "catalogue",
+        "address": "capacity/catalogue",
+        "path": "/capacity/runtimes",
+        "ready": "main h1"
+      },
+      {
+        "id": "profiles",
+        "address": "capacity/profiles",
+        "path": "/capacity/pools/profiles",
+        "ready": "main h1"
+      },
+      {
+        "id": "holders",
+        "address": "capacity/holders",
+        "path": "/capacity/holders",
+        "ready": "main h1"
+      },
+      {
+        "id": "accounts",
+        "address": "capacity/accounts",
+        "path": "/capacity/accounts",
+        "ready": "main h1"
+      },
+      {
+        "id": "quota",
+        "address": "capacity/quota",
+        "path": "/capacity/accounts/quota",
+        "ready": "main h1"
+      }
+    ],
+    "admin": [
+      {
+        "id": "limits",
+        "address": "admin/limits",
+        "path": "/admin/limits",
+        "ready": "main h1"
+      },
+      {
+        "id": "tenants",
+        "address": "admin/tenants",
+        "path": "/admin/tenants",
+        "ready": "main h1"
+      },
+      {
+        "id": "counts",
+        "address": "admin/counts",
+        "path": "/admin/counts",
+        "ready": "main h1"
+      },
+      {
+        "id": "people",
+        "address": "admin/people",
+        "path": "/admin/people",
+        "ready": "main h1"
+      },
+      {
+        "id": "workspaces",
+        "address": "admin/workspaces",
+        "path": "/admin/workspaces",
+        "ready": "main h1"
+      }
+    ],
+    "task": [
+      {
+        "id": "task-detail",
+        "address": "work/task/task_a073aff5",
+        "path": "/agents/live/task_a073aff5",
+        "ready": ".ag-split"
+      },
+      {
+        "id": "task-logs",
+        "address": "work/task/task_a073aff5/logs",
+        "path": "/agents/live/task_a073aff5/logs",
+        "ready": ".ag-split"
+      },
+      {
+        "id": "task-children",
+        "address": "work/task/task_a073aff5/children",
+        "path": "/agents/live/task_a073aff5/children",
+        "ready": ".ag-split"
+      },
+      {
+        "id": "task-attempts",
+        "address": "work/task/task_a073aff5/attempts",
+        "path": "/agents/live/task_a073aff5/attempts",
+        "ready": ".ag-split"
+      },
+      {
+        "id": "task-artifacts",
+        "address": "work/task/task_a073aff5/artifacts",
+        "path": "/agents/live/task_a073aff5/artifacts",
+        "ready": ".ag-split"
+      },
+      {
+        "id": "task-checkpoints",
+        "address": "work/task/task_a073aff5/checkpoints",
+        "path": "/agents/live/task_a073aff5/checkpoints",
+        "ready": ".ag-split"
+      },
+      {
+        "id": "task-changes",
+        "address": "work/task/task_a073aff5/changes",
+        "path": "/agents/live/task_a073aff5/changes",
+        "ready": ".ag-split"
+      },
+      {
+        "id": "task-browser",
+        "address": "work/task/task_a073aff5/browser",
+        "path": "/agents/live/task_a073aff5/browser",
+        "ready": ".ag-split"
+      }
+    ]
+  },
+  "mockups": [
+    {
+      "id": "overview-mockup",
+      "path": "docs/web-ui/mockups/overview.html",
+      "compare_with": "now"
+    },
+    {
+      "id": "agents-mockup",
+      "path": "docs/web-ui/mockups/agents.html",
+      "compare_with": "running"
+    },
+    {
+      "id": "workflows-mockup",
+      "path": "docs/web-ui/mockups/workflows.html",
+      "compare_with": "workflows"
+    },
+    {
+      "id": "timeline-mockup",
+      "path": "docs/web-ui/mockups/timeline.html",
+      "compare_with": "timeline"
+    },
+    {
+      "id": "repositories-mockup",
+      "path": "docs/web-ui/mockups/repositories.html",
+      "compare_with": "repositories"
+    },
+    {
+      "id": "submit-mockup",
+      "path": "docs/web-ui/mockups/submit.html",
+      "compare_with": "new"
+    },
+    {
+      "id": "schedules-mockup",
+      "path": "docs/web-ui/mockups/schedules.html",
+      "compare_with": "schedules"
+    },
+    {
+      "id": "capacity-mockup",
+      "path": "docs/web-ui/mockups/capacity.html",
+      "compare_with": "pools"
+    }
+  ]
+}
