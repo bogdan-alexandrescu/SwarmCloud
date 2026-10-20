@@ -304,6 +304,9 @@
    workflow and the × share the line and nothing else fits beside them. */
 .wf-inspect-head > .wf-inspect-wf { flex: 1 1 calc(100% - 28px - var(--ctl-s2)); }
 .wf-inspect-head > .wf-inspect-close { flex: none; align-self: flex-start; }
+/* The step's Logs link (QA-121) is drawn as its neighbours, Open agent and
+   Changes, are: the head's meta size in the body face. */
+.wf-inspect-head > .wf-inspect-logs { font: var(--t-meta)/var(--lh-meta) var(--font); }
 
 /* THE INTEGRATOR'S WHOLE ID, CUT ONLY WHERE THE ROW IS NARROWER THAN IT
    (V102). The text is the whole id now; this is what keeps a phone's row from

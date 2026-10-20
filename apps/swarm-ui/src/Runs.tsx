@@ -435,8 +435,24 @@ export const RUNS_LIST_POLL_MS = 60_000
  * RT-10): 11 of 50 runs were reachable only under `all`, and a not-ready run
  * is the one that waits on an owner's decision.
  */
-export const RUN_FILTERS = ['all', 'active', 'done', 'failed', 'not ready', 'rejected'] as const
+/**
+ * THE STATES IN THE WORKFLOWS FILTER'S ORDER AND CASE (visual QA QA-084,
+ * 2026-10-20): Runs read 'all 2 · active 2 · done 0 …' beside Workflows'
+ * 'Running 2 · Finished 0 · Failed 1 · All 3' on the next Work page. The
+ * chips are capitalised (`RUN_FILTER_LABEL`) with All last; the keys stay
+ * lowercase, so `?state=failed` addresses are unchanged.
+ */
+export const RUN_FILTERS = ['active', 'done', 'failed', 'not ready', 'rejected', 'all'] as const
 export type RunFilter = (typeof RUN_FILTERS)[number]
+
+const RUN_FILTER_LABEL: Readonly<Record<RunFilter, string>> = {
+  active: 'Active',
+  done: 'Done',
+  failed: 'Failed',
+  'not ready': 'Not ready',
+  rejected: 'Rejected',
+  all: 'All',
+}
 
 const RUN_FILTER_TEST: Readonly<Record<RunFilter, (r: IssueRunSummary) => boolean>> = {
   all: () => true,
@@ -451,7 +467,7 @@ const RUN_FILTER_TITLE: Readonly<Record<RunFilter, string>> = {
   all: 'Every run read, rejected and cancelled ones included',
   active: 'Not finished: planning, waiting for approval, running, or in CI',
   done: 'Ended DONE',
-  failed: 'Ended FAILED. A rejected or cancelled run is under all.',
+  failed: 'Ended FAILED. A rejected or cancelled run is under All.',
   'not ready': 'The planner found the issue not ready, and said what it needs decided',
   rejected: 'Its plan was rejected',
 }
@@ -556,7 +572,7 @@ function RunList({ first, go, view = null }: { first: IssueRunSummaryPage; go: (
             <Segmented
               label="Which runs"
               value={which}
-              options={RUN_FILTERS.map((f) => ({ key: f, label: f, title: RUN_FILTER_TITLE[f], count: counts[f] }))}
+              options={RUN_FILTERS.map((f) => ({ key: f, label: RUN_FILTER_LABEL[f], title: RUN_FILTER_TITLE[f], count: counts[f] }))}
               onChange={setWhich}
             />
             <input
@@ -575,7 +591,7 @@ function RunList({ first, go, view = null }: { first: IssueRunSummaryPage; go: (
             {filtering ? `${shown.length} of ` : ''}{pluralise(rows.length, 'run')} read · {older.next === null ? 'no older runs' : 'older runs exist'}
           </p>
           {shown.length === 0 && (
-            <p className="sb-note rn-none">No run of the {rows.length} read matches{text.trim() === '' ? '' : ` “${text.trim()}”`}{which === 'all' ? '' : ` in ${which}`}.</p>
+            <p className="sb-note rn-none">No run of the {rows.length} read matches{text.trim() === '' ? '' : ` “${text.trim()}”`}{which === 'all' ? '' : ` in ${RUN_FILTER_LABEL[which]}`}.</p>
           )}
           {/* NO BARE HEADER (visual QA V040): with no row to show, the table's
               header row over nothing is not drawn. */}

@@ -203,7 +203,16 @@
    ('59m ago') are their words' width. */
 .rn-table th[data-col='workflow'] { width: 182px; }
 .rn-table th[data-col='created'] { width: 68px; }
-.rn-table th[data-col='by'] { width: 150px; }
+.rn-table th[data-col='by'] { width: 152px; }
+/* BY IS AN ADDRESS, DRAWN AS THE ROW'S OTHER IDS ARE (visual QA QA-081,
+   2026-10-20): at --t-meta 'operator@example.com' filled its 134px to the
+   pixel and read 'operator@example.co…' at 1440. The card has no pixel to
+   give it -- Issue needs every one it has for a 34-character reference
+   (D11), Run its 24-character id (`new_id`, whatever the preview's shorter
+   ids suggest) -- so the address is drawn at the micro size, as the workflow
+   id and the issue reference are, and the column is 2px wider: a
+   20-character address fits by the conservative table-fit model. */
+.rn-row > td[data-label='By'] { font-size: var(--t-micro); line-height: var(--lh-micro); }
 /* PLAN APPROVAL ON ONE LINE (visual QA V215, 2026-10-16): at 76px its
    header wrapped and made the head row taller than the rows. The header is
    72px drawn; its 14px more came from Created (whose '59m ago' is 51px) and
@@ -466,9 +475,9 @@
      grid quarters cut By to "operator@ex…" (80 of 125px) beside room under
      Plan approval and Workflow, and columns sized to their values still cut
      it by 3px at 400 (13px at 390) once Workflow held an id -- a grid cannot
-     wrap. Each fact now starts at its value's width and grows into what the
-     line leaves, and one that does not fit goes to the next line whole; only
-     a value wider than the card is cut. The run id and its state share the
+     wrap. The facts are flex items that wrap (sized as two fixed pairs since
+     QA-082, below); only a value wider than its column is cut, whole in its
+     title. The run id and its state share the
      first line and the issue takes the second whole: the state follows the
      issue in the table's order, so `order` draws it beside the id. */
   .rn-row {
@@ -481,7 +490,18 @@
   .rn-row > td[data-label='State'] { order: 2; flex: none; align-self: center; text-align: right; }
   .rn-row > td[data-label='Issue'] { order: 3; flex: 0 0 100%; }
   .rn-row > td[data-label='Plan approval'], .rn-row > td[data-label='Workflow'],
-  .rn-row > td[data-label='Created'], .rn-row > td[data-label='By'] { flex: 1 1 auto; font-size: var(--t-micro); line-height: var(--lh-micro); }
+  .rn-row > td[data-label='Created'], .rn-row > td[data-label='By'] { font-size: var(--t-micro); line-height: var(--lh-micro); }
+  /* EVERY CARD ON ONE GRID (visual QA QA-082, 2026-10-20): sized to their
+     values (V206), one card put all four facts on a line and the next
+     wrapped By under them, so Workflow and Created sat at different x from
+     card to card. The facts are two pairs on two lines now, the same on
+     every card: Plan approval and Created in a 96px column ('Plan approval'
+     is ~88px drawn), Workflow and By in the rest of the line after the
+     row's 8px column gap -- 230px at 390, which holds a 23-character
+     workflow id and an operator's address whole (V206's reason for not
+     using quarters still holds: By is never squeezed beside its pair). */
+  .rn-row > td[data-label='Plan approval'], .rn-row > td[data-label='Created'] { flex: 0 0 96px; }
+  .rn-row > td[data-label='Workflow'], .rn-row > td[data-label='By'] { flex: 1 1 calc(100% - 104px); }
   /* THE LABEL ON ITS OWN LINE, NO SEPARATOR (QA G2-19, 2026-10-07): a cell
      whose value is a block (Issue, Workflow, By) put the label alone on a
      line ending in a dangling " · ". Every label is a micro line above its

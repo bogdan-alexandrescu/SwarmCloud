@@ -175,13 +175,13 @@ describe('V205: a long issue ref keeps its number', () => {
   })
 })
 
-describe('V206: the phone card sizes its facts to what they hold', () => {
+describe('V206: the phone card never cuts a fact to share a row', () => {
   // A grid of four columns cannot wrap: sized to their values it still cut
   // By by 3px at 400 (by 13px at 390) on a card whose Workflow holds an id,
   // in Chromium on 2026-10-16. The facts are a wrapping row: each starts at
   // its value's width and grows into what is left, and one that does not fit
   // goes to the next line whole.
-  it('wraps the facts as items that start at their values, never a column cut to share a row', async () => {
+  it('wraps the facts as flex items, By and Workflow each the line after their pair', async () => {
     const { container } = await mountList({ runs: [run()], next_page_token: null })
     await waitFor(() => expect(container.querySelector('.rn-row')).not.toBeNull(), WAIT)
     const row = container.querySelector('.rn-row')!
@@ -195,10 +195,18 @@ describe('V206: the phone card sizes its facts to what they hold', () => {
     expect(order('Run')).toBeLessThan(order('State'))
     expect(order('State')).toBeLessThan(order('Issue'))
     for (const label of ['Plan approval', 'Workflow', 'Created', 'By']) expect(order('Issue'), label).toBeLessThan(order(label))
+    // TWO FIXED PAIRS SINCE QA-082 (qafix.runs.test.tsx): content-sized
+    // facts laid each card out on its own grid. Plan approval and Created
+    // take a fixed column; Workflow and By the rest of the line, so By has
+    // that whole width and is never squeezed beside a neighbour.
+    for (const label of ['Plan approval', 'Created']) {
+      expect(painted(row.querySelector(`td[data-label="${label}"]`)!, 'flex', PHONE), label).toBe('0 0 96px')
+    }
+    for (const label of ['Workflow', 'By']) {
+      expect(painted(row.querySelector(`td[data-label="${label}"]`)!, 'flex', PHONE), label).toBe('1 1 calc(100% - 104px)')
+    }
     for (const label of ['Plan approval', 'Workflow', 'Created', 'By']) {
-      const td = row.querySelector(`td[data-label="${label}"]`)!
-      expect(painted(td, 'flex', PHONE), label).toBe('1 1 auto')
-      expect(painted(td, 'width', PHONE), label).toBe('auto')
+      expect(painted(row.querySelector(`td[data-label="${label}"]`)!, 'width', PHONE), label).toBe('auto')
     }
   })
 })

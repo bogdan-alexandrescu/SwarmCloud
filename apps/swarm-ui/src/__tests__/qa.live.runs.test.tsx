@@ -256,7 +256,7 @@ describe('RT-6: the list\'s chip and search are its address', () => {
     const before = window.history.length
     const { container } = await mountList(runs)
     const chips = within(container).getByRole('group', { name: 'Which runs' })
-    fireEvent.click(within(chips).getByRole('button', { name: /^failed/ }))
+    fireEvent.click(within(chips).getByRole('button', { name: /^Failed/ }))
     fireEvent.change(within(container).getByRole('searchbox'), { target: { value: 'merge' } })
     await waitFor(() => expect(window.location.pathname + window.location.search).toBe('/runs?state=failed&q=merge'))
     expect(window.history.length, 'replaced, never pushed').toBe(before)
@@ -265,9 +265,9 @@ describe('RT-6: the list\'s chip and search are its address', () => {
   it('offers not ready and rejected, finds a run by its workflow id, and links the issue (RT-10, RT-12)', async () => {
     const { container } = await mountList(runs)
     const chips = within(container).getByRole('group', { name: 'Which runs' })
-    fireEvent.click(within(chips).getByRole('button', { name: /^not ready/ }))
+    fireEvent.click(within(chips).getByRole('button', { name: /^Not ready/ }))
     expect(rowIds(container)).toEqual(['run_c'])
-    fireEvent.click(within(chips).getByRole('button', { name: /^all/ }))
+    fireEvent.click(within(chips).getByRole('button', { name: /^All/ }))
     fireEvent.change(within(container).getByRole('searchbox'), { target: { value: WF } })
     expect(rowIds(container)).toEqual(['run_a', 'run_b'])
     fireEvent.change(within(container).getByRole('searchbox'), { target: { value: '' } })

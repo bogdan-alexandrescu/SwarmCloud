@@ -596,3 +596,15 @@
     background: var(--line);
   }
 }
+
+/* THE SPAN CONTROL IS ONE EVEN ROW ON A PHONE (visual QA QA-094, 2026-10-20).
+   The shared control lays five segments three to a row (components.css V207),
+   which drew 24h/7d/14d over two wider cells, 30d and 90d, with their borders
+   out of line, ~220px of the 358px column. Five spans of three characters fit
+   one line at 390 (~48px each), so here they are one row the column wide, in
+   five equal cells. At the control's own phone breakpoint, so the desktop
+   control keeps its packing. */
+@media (max-width: 560px) {
+  .tl-ctl > .c-seg.tl-span { flex: 1 1 100%; flex-wrap: nowrap; }
+  .tl-ctl > .c-seg.tl-span > button { flex: 1 1 0; justify-content: center; }
+}
