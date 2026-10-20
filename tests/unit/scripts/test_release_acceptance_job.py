@@ -86,10 +86,12 @@ STREAK_SH = ROOT / "scripts" / "accept-live-browser-streak.sh"
 #: lane, which cannot push .github/workflows/: the operator adds it to wave 2's
 #: matrix (its PR body carries the change). A group added here may be missing
 #: from accept.yml; any other missing group is red.
-#: tenant-isolation (ISO-ACCEPT-WIRE, part of #1457) runs in its own report-only
-#: job, `tenant-isolation`, once the operator pushes that lane's
-#: workflow-lines.patch, which also takes it off this list.
-PENDING_IN_ACCEPT_YML: frozenset[str] = frozenset({"tenant-isolation"})
+PENDING_IN_ACCEPT_YML: frozenset[str] = frozenset()  # tenant-isolation got its own job on 2026-10-20
+
+#: The cross-tenant Firestore probe's own job (ISO-ACCEPT-WIRE, part of #1457):
+#: an accepting job beside wave 2, report-only until vars.ISO_PROBE_REQUIRED
+#: is "true" (test_accept_tenant_isolation_job.py).
+ISOLATION_JOB = "tenant-isolation"
 
 
 def _accept() -> dict:
@@ -380,6 +382,9 @@ def test_every_group_runs_exactly_once_through_verify_remote_with_fail_fast_off(
     jobs = _accept()["jobs"]
     seen: list[str] = list(_scheduled_groups(jobs[SCHEDULED_JOB]))
     assert tuple(seen) == SCHEDULED_GROUPS, f"the scheduled job runs {seen}"
+    isolation = _scheduled_groups(jobs[ISOLATION_JOB])
+    assert isolation == ["tenant-isolation"], f"the {ISOLATION_JOB} job runs {isolation}"
+    seen += isolation
     for job_id in ACCEPT_JOBS:
         job = jobs[job_id]
         assert job["strategy"]["fail-fast"] is False, f"{job_id}: one red group must not cancel the others"
