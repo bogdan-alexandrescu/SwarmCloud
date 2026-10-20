@@ -154,24 +154,30 @@ def test_the_route_version_bound_is_swarm_apis_kept_count_plus_one():
     assert graphstage.MAX_VERSIONS_READ <= indexrun.ROUTE_VERSIONS_SERVED
 
 
-def test_kept_commits_through_the_routes(api_db, opener):
+def test_the_promoted_base_is_served_past_the_routes_bound(api_db, opener):
+    """A repository may keep up to 100 versions (`index.keep_versions`, lane
+    INDEX-RETENTION); the route serves ROUTE_VERSIONS_SERVED of them, and the
+    promoted one -- the base an incremental run builds on -- is always among
+    them, wherever its id sorts."""
     state = _opened(api_db, opener)
-    shas = _register_repository(api_db, versions=3, current=2)
+    count = indexrun.ROUTE_VERSIONS_SERVED + 9
+    shas = _register_repository(api_db, versions=count, current=None)
+    promoted = max(shas)
+    api_db.docs[f"repositories/{REPO_ID}"]["index"] = {"current_sha": promoted}
     where = indexrun.target(TENANT, URL)
     assert not isinstance(where, str)
+    # MUTATION: `AttemptState.repository` serving only the first versions by id.
+    base = indexrun.resolve_base(state, tenant_id=TENANT, where=where, base_sha=promoted)
+    assert isinstance(base, indexrun.BaseVersion) and base.sha == promoted
+
+
+def test_the_worker_reads_no_version_for_retention():
+    """Lane INDEX-RETENTION (#1693): the kept commits come from the SIGNED
+    prompt, so retention reads nothing, through the routes or Firestore."""
     own = _sha(99)
-    assert indexrun.kept_commits(state, tenant_id=TENANT, where=where, own=own) == \
-        sorted({*shas, own})
-    assert ("GET", "repository") in opener.calls
-
-
-def test_kept_commits_retires_nothing_when_the_route_may_have_cut_the_list_short(api_db, opener):
-    state = _opened(api_db, opener)
-    _register_repository(api_db, versions=indexrun.ROUTE_VERSIONS_SERVED + 3)
-    where = indexrun.target(TENANT, URL)
-    assert not isinstance(where, str)
-    kept = indexrun.kept_commits(state, tenant_id=TENANT, where=where, own=None)
-    assert isinstance(kept, str) and "none is retired" in kept
+    task_input = {"prompt": f"x\n{indexrun.KEEP_LINE}{_sha(1)} {_sha(2)}\n"}
+    # MUTATION: a `kept_commits` that takes a database again.
+    assert indexrun.kept_commits(task_input, own=own) == sorted({_sha(1), _sha(2), own})
 
 
 def test_another_tenants_registration_is_not_read_through_the_routes(api_db, opener):
@@ -179,7 +185,6 @@ def test_another_tenants_registration_is_not_read_through_the_routes(api_db, ope
     _register_repository(api_db, tenant="research")
     where = indexrun.target(TENANT, URL)
     assert not isinstance(where, str)
-    assert isinstance(indexrun.kept_commits(state, tenant_id=TENANT, where=where, own=None), str)
     assert isinstance(indexrun.resolve_base(state, tenant_id=TENANT, where=where,
                                             base_sha=_sha(1)), str)
 
@@ -203,7 +208,7 @@ def test_a_registration_other_than_the_signed_one_is_refused(api_db, opener):
     _register_repository(api_db)
     elsewhere = indexrun.target(TENANT, "https://github.com/saga/gadgets")
     assert not isinstance(elsewhere, str)
-    reason = indexrun.kept_commits(state, tenant_id=TENANT, where=elsewhere, own=None)
+    reason = indexrun.resolve_base(state, tenant_id=TENANT, where=elsewhere, base_sha=_sha(1))
     assert isinstance(reason, str) and elsewhere.repo_id in reason
 
 
@@ -211,10 +216,12 @@ def test_switch_off_indexrun_still_reads_firestore():
     where = indexrun.target(TENANT, URL)
     assert not isinstance(where, str)
     with pytest.raises(AssertionError, match="Firestore call"):
-        indexrun.kept_commits(RaisingFirestore(), tenant_id=TENANT, where=where, own=None)
+        indexrun.resolve_base(RaisingFirestore(), tenant_id=TENANT, where=where,
+                              base_sha=_sha(1))
     db = FakeFirestore()
-    shas = _register_repository(db, versions=2)
-    assert indexrun.kept_commits(db, tenant_id=TENANT, where=where, own=None) == sorted(shas)
+    _register_repository(db, versions=2)
+    base = indexrun.resolve_base(db, tenant_id=TENANT, where=where, base_sha=_sha(2))
+    assert isinstance(base, indexrun.BaseVersion) and base.task_id == "task_index_2"
 
 
 # ---------------------------------------------------------------------------
@@ -737,7 +744,7 @@ def test_the_route_paths_never_touch_the_firestore_they_were_not_handed(api_db, 
     assert not isinstance(where, str)
     worker_secrets.load_tenant(state, TENANT)
     inputs.fetch_upstream_task(state, upstream_task_id="task_up", tenant_id=TENANT)
-    indexrun.kept_commits(state, tenant_id=TENANT, where=where, own=None)
+    indexrun.resolve_base(state, tenant_id=TENANT, where=where, base_sha=_sha(1))
     graphstage.stage(db=state, store=None, tenant_id=TENANT, repository_url=URL, task_id=TASK,
                      checkout=None, base_sha=_sha(1), context_dir=Path(tmp_path))
     routes = [r for _m, r in opener.calls]
