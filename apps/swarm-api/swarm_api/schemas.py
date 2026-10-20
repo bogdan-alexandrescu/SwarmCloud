@@ -461,6 +461,31 @@ class CredentialCreate(StrictModel):
     api_key: str = Field(min_length=8, max_length=8192)
 
 
+#: What a feature whose state could not be read is served as. Never `false`:
+#: a caller that reads `false` stops offering the feature, which is the wrong
+#: answer Product Oracle's New run form gave its users on 2026-10-20 (#1748).
+FEATURE_UNKNOWN = "unknown"
+
+#: One feature's state on `GET /v1/tenants/me`.
+FeatureState = bool | Literal["unknown"]
+
+
+class TenantFeatures(StrictModel):
+    """`features` on `GET /v1/tenants/me` (FEATURES-READ, part of #1748).
+
+    Each is the state the serving process ACTS on, read where it acts on it
+    (`routes/tenants.py` `_features`), never a value kept for display.
+    """
+
+    #: Registered (caller) MCP servers: `mcp_servers.mcp_servers_enabled()`.
+    caller_mcp: FeatureState
+    #: The `await-input` runner profile's `available`, from the frozen catalogue.
+    await_input: FeatureState
+    #: This workspace is a service workspace whose own principal may answer
+    #: its waits: `awaitinput.service_principal`.
+    service_answer: FeatureState
+
+
 # --------------------------------------------------------------------------
 # Admin
 # --------------------------------------------------------------------------

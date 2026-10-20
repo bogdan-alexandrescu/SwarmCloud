@@ -353,6 +353,40 @@ answered by saying where it goes, on the button that sends it, rather than by
 throwing the draft away. The API still validates the runner profile against
 the new tenant's catalogue on submit.
 
+### `GET /v1/tenants/me` says which features are on for the workspace
+
+`GET /v1/tenants/me` answers the tenant, the principal, the environment, the
+role and (FEATURES-READ, part of #1748; owner decision 2026-10-20)
+`features`:
+
+```json
+"features": {"caller_mcp": true, "await_input": true, "service_answer": false}
+```
+
+| field | read from | true means |
+|---|---|---|
+| `caller_mcp` | `mcp_servers.mcp_servers_enabled()` (`SWARM_MCP_SERVERS`), as this process reads it | a submission may name the workspace's registered MCP servers ([registered-mcp-servers.md](design/registered-mcp-servers.md)) |
+| `await_input` | the frozen catalogue's `RUNNER_PROFILES["await-input"].available` | a workflow may carry an await-input step ([human-steps.md](design/human-steps.md)) |
+| `service_answer` | `awaitinput.service_principal`, for the workspace this request acts in | this is a service workspace and the caller is its own principal, so it may answer its waits (human-steps §4.2.1); a group or personal workspace is `false` |
+
+**Why it exists.** Product Oracle (`u-or-9a0792`) learned each of the three
+only at submit or answer time, and after a deploy its New run form told its
+users agents could not read Oracle when caller MCP was on (2026-10-20). Each
+value is the one the serving process ACTS on, read through the same call the
+feature makes -- the catalogue and the predicate are called, never restated
+-- so the answer cannot drift from the behaviour.
+
+**`"unknown"` is not `false`.** Each field is `true`, `false` or `"unknown"`
+(`schemas.TenantFeatures`). A read that raised, or a catalogue without the
+`await-input` profile, is `"unknown"`, and one field's failure leaves the
+other two and the rest of `/me` served. A caller that reads `false` withdraws
+the feature from its users; it must do that only on a `false`. `sc whoami`
+prints the three as `on`, `off` or `not reported`.
+
+`caller_mcp` and `await_input` are deployment-wide today; they sit on the
+per-workspace read because that is the one a caller already makes, and so a
+per-workspace switch can later land without a new route.
+
 ---
 
 ## 3. Isolation, layer by layer
