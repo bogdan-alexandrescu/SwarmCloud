@@ -271,3 +271,23 @@ Tests: `activity.timeline.test.tsx` (the marks, the names, the readout and the
 keyboard, on a payload in the contract's exact shape), `timeline.ledger.rules.test.ts`
 (which drawing the cascade shows at a container width, and TS-4's forms), and
 `outcomes.view.test.ts` (the axis labels in the server's zone).
+
+## CPU and memory over time (`Utilisation.tsx`, #1689)
+
+Details' Resources card, behind its own disclosure whose summary is the
+one-line CPU figure (`CPU: mean 1.7 of 4 cores · at the limit 22% of the time ·
+throttled 9%`), so the line is read without opening it and the first 900px
+rule above (`details.v3.test.tsx`) still holds. It draws the newest attempt
+from `GET /v1/tasks/{id}/utilisation` (LIVE-UTIL-API, #1696), read by
+`UtilisationPanel.tsx` every 10 s while the task runs, once more at the
+finish, then never.
+
+| Rule | How |
+|---|---|
+| A reading is a window's mean, not a running max | `SampleLine`, a fifth primitive in `TimeSeries.tsx`: straight between samples, `defined` hard-coded as on `StepLine` |
+| An unread window drawn as 0 | it is a hatched sliver on its own plot, and the line breaks there |
+| Cores and bytes on one scale | two plots on one time axis, each 0 to the larger of its limit and its readings; the limit is a dashed line |
+| Throttling inferred from a reading at the limit | the shaded windows are the kernel's `nr_throttled` over `nr_periods` per window; a window whose throttling was not read is not shaded |
+| Nothing measured drawn as an empty axis | "no samples yet" while it runs, "not measured" once it ended, in words |
+
+Tests: `src/__tests__/details.utilisation.test.tsx`.

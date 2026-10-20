@@ -9405,6 +9405,31 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   white-space: nowrap;
 }
 
+/* --- CPU and memory over time (charts/Utilisation.tsx, #1689) ------------- */
+/* Two series hues, each with its own plot and a legend swatch naming it (the
+   palette's rule for a multi-series chart). The limit is a dashed hairline in
+   the text tone, never a series hue: it is a ceiling, not a measurement. The
+   throttled wash is the warn tone at low opacity behind the lines, so it
+   reads in both themes without hiding them. Every colour here is a token
+   both themes define. */
+.ctl-util-line.is-cpu { stroke: var(--series-1); }
+.ctl-util-line.is-mem { stroke: var(--series-2); }
+.ctl-util-dot.is-cpu { fill: var(--series-1); }
+.ctl-util-dot.is-mem { fill: var(--series-2); }
+.ctl-util-limit {
+  stroke: var(--text-dim);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+.ctl-util-throttled { fill: var(--warn); opacity: .22; }
+.ctl-swatch.is-cpu { background: var(--series-1); }
+.ctl-swatch.is-mem { background: var(--series-2); }
+.ctl-swatch.is-limit {
+  height: 0;
+  border-top: 1px dashed var(--text-dim);
+}
+.ctl-swatch.is-throttled { background: var(--warn); opacity: .35; }
+
 /* --- Checkpoint strip ------------------------------------------------------- */
 .ctl-ckpt-track,
 .ctl-ckpt-divider {

@@ -211,15 +211,16 @@ describe('the sentences on the marks are reachable', () => {
     // (AG-20). A chart added next month is counted by the same selector.
     const svgs = [...el.querySelectorAll('figure.ctl-chart svg.ctl-chart-svg')]
     // phases + lollipop, one peak, one strip, one diffstat, the token-spend
-    // line -- each drawn at two widths (AG-20), and both drawings are the
-    // accessible chart.
+    // line, and Details' CPU and memory over time (LIVE-UTIL-UI, #1689) --
+    // each drawn at two widths (AG-20), and both drawings are the accessible
+    // chart.
     expect(
       el.querySelector('figure.ctl-chart[aria-label="Token spend, attempt by attempt"] svg.ctl-chart-svg'),
       'the token-spend line is not mounted with a plot, so this count cannot see it',
     ).not.toBeNull()
-    expect(svgs.length, 'the charts this checks were not all mounted').toBe(12)
-    expect(svgs.filter((s) => s.classList.contains('is-narrow')), 'a chart has no narrow drawing').toHaveLength(6)
-    expect(svgs.filter((s) => s.classList.contains('is-wide')), 'a chart root is neither drawing').toHaveLength(6)
+    expect(svgs.length, 'the charts this checks were not all mounted').toBe(14)
+    expect(svgs.filter((s) => s.classList.contains('is-narrow')), 'a chart has no narrow drawing').toHaveLength(7)
+    expect(svgs.filter((s) => s.classList.contains('is-wide')), 'a chart root is neither drawing').toHaveLength(7)
     for (const svg of svgs) {
       expect(svg.getAttribute('role'), svg.getAttribute('aria-label') ?? '').toBe('group')
     }
