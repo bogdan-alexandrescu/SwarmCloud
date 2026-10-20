@@ -211,7 +211,8 @@ def impact_index(commit: str = BASE, **overrides: Any) -> dict:
 CURRENT = {"state": "current", "stale": False, "index_sha": BASE, "head_sha": BASE,
            "behind_by": 0, "reason": None}
 STALE = {"state": "stale", "stale": True, "index_sha": BASE, "head_sha": OTHER,
-         "behind_by": 240, "reason": "more than 200 commits behind the head"}
+         "behind_by": 240, "reason": "behind the head since 2026-10-01T09:00:00+00:00, longer "
+         "than 36 hours (the 24-hour interval and a 12-hour grace)"}
 
 
 def hunk(old_start: int, new_start: int, lines: list[str]) -> str:
@@ -506,7 +507,7 @@ def test_an_added_symbol_the_head_index_has_seen_is_not_unindexed(writer, object
 def test_a_stale_index_falls_back(shop):
     trigger = assert_full_suite(plan([changed_line(FORMAT, 3)], shop, fresh=STALE),
                                 "stale_index")
-    assert "200 commits" in trigger["reason"]
+    assert "longer than 36 hours" in trigger["reason"]
 
 
 def test_no_index_at_all_falls_back_as_stale(shop):

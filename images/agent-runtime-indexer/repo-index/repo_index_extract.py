@@ -3099,7 +3099,7 @@ def extract(root: Path, budget: Budget | None = None,
         "test_map": sorted(test_edges, key=lambda t: (t["source"], t["test"])),
         "test_coverage": test_coverage(modules, files, test_edges, test_side),
         "hot_spots": hot_spots,
-        "languages": _languages(files, lsp_result, carried_languages),
+        "languages": _languages(files, lsp_result, carried_languages, affected),
         "files": files,
         "communities": community_rows,
         "terms": term_rows,
@@ -3404,8 +3404,25 @@ def _lsp_coverage(files: list[dict], lsp_result: Any, affected: set[str] | None,
     return covered
 
 
+#: How much less a language's status says of its edges, best first: `ok`
+#: every file answered, `partial` some, then a pass that kept nothing because
+#: its server ran out of time, failed, or never ran. An incremental run takes
+#: the worse of its own and its base's (`_languages`).
+STATUS_ORDER = ("ok", "partial", "timed_out", "failing", "unsupported")
+
+
+def _worse(own: str, base: str | None) -> str:
+    """The worse of two statuses; the run's own when the base had no row."""
+    if base is None:
+        return own
+    def rank(status: str) -> int:
+        return STATUS_ORDER.index(status) if status in STATUS_ORDER else len(STATUS_ORDER)
+    return own if rank(own) >= rank(base) else base
+
+
 def _languages(files: list[dict], lsp_result: Any = None,
-               carried: dict[str, dict] | None = None) -> list[dict]:
+               carried: dict[str, dict] | None = None,
+               affected: set[str] | None = None) -> list[dict]:
     """The `languages` table: what each language got, and why.
 
     Without the LSP pass every language with a grammar is `unsupported`
@@ -3420,6 +3437,13 @@ def _languages(files: list[dict], lsp_result: Any = None,
     every affected file is still `partial` while a file it carried from the
     base was never covered: an `ok` there would tell impact to trust a file
     no server has finished.
+
+    More generally an incremental run that did not re-ask every parsed file
+    of a language (`affected`) takes the WORSE of its own status and its
+    base's, and says what it covered in the reason. Its carried files are
+    the base's, edges and all, so the base's status still describes them;
+    taking the run's own `ok` flipped the console's banner from "timed out"
+    to "partial" and back with every run between two full ones (#1693).
     """
     table: dict[str, dict] = {}
     for f in files:
@@ -3463,14 +3487,38 @@ def _languages(files: list[dict], lsp_result: Any = None,
     excluded = () if lsp_result is None else lsp_result.excluded_paths
     for language, entry in table.items():
         ran = None if lsp_result is None else lsp_result.languages.get(language)
-        uncovered = any(f["language"] == language and f["status"] == "parsed" and f.get("lsp") is not True
-                        and not lsp_pass.lsp_excluded(f["path"], excluded)
-                        for f in files)
-        if carried is not None and ran is not None and entry["status"] == "ok" and uncovered:
-            entry.update(status="partial", fallback="ast", reason=(
-                f"{entry['server']} answered every file this run asked about; "
-                f"{entry['files_covered']} of {entry['files']} files are covered, "
-                "the rest carried uncovered from the base index"))
+        if carried is None or ran is None or not GRAMMAR_PACKAGES.get(language):
+            continue
+        # An excluded file is never asked and never covered, by design, so it
+        # neither keeps a run from having re-asked every file nor makes it partial.
+        parsed = {f["path"] for f in files if f["language"] == language and f["status"] == "parsed"
+                  and not lsp_pass.lsp_excluded(f["path"], excluded)}
+        asked = len(parsed & (affected or set()))
+        if parsed and asked == len(parsed):
+            # Re-asked every file: nothing is carried, the run's status stands.
+            continue
+        before = carried.get(language) or {}
+        base_status = before.get("status") if isinstance(before.get("status"), str) else None
+        own = entry["status"]
+        merged = _worse(own, base_status)
+        covered, total = entry["files_covered"], entry["files"]
+        if merged == own == "ok" and any(
+                f["path"] in parsed and f.get("lsp") is not True for f in files):
+            merged = "partial"
+        if merged == own == "ok":
+            continue
+        if merged == "partial" and own == "ok":
+            reason = (f"{entry['server']} answered every file this run asked about; "
+                      f"{covered} of {total} files are covered, "
+                      "the rest carried uncovered from the base index")
+        elif merged != own:
+            reason = (f"{before.get('reason') or 'no reason recorded'} (the base index's pass; "
+                      f"this run asked {entry['server']} about {asked} of {total} files and "
+                      f"{covered} of {total} are covered)")
+        else:
+            reason = (f"{entry['reason']} (this run asked {entry['server']} about {asked} of "
+                      f"{total} files; {covered} of {total} are covered, carried from the base index)")
+        entry.update(status=merged, fallback="ast", reason=reason)
     return [table[name] for name in sorted(table)]
 
 

@@ -676,6 +676,8 @@ def _index_defaults() -> dict[str, Any]:
         "head_sha": None,
         "head_read_at": None,
         "behind_by": None,
+        # When the index first fell behind the head (repoindex.settle_behind).
+        "behind_since": None,
         "etag": None,
         "pending_sha": None,
         "in_flight_task_id": None,
@@ -730,7 +732,7 @@ def to_api(data: Mapping[str, Any]) -> dict[str, Any]:
     relation = index.get("head_relation")
     if isinstance(relation, Mapping) and "read_at" in relation:
         index["head_relation"] = {**relation, "read_at": _iso(relation["read_at"])}
-    for key in ("last_indexed_at", "head_read_at"):
+    for key in ("last_indexed_at", "head_read_at", "behind_since"):
         if key in index:
             index[key] = _iso(index[key])
     # Served as what retention uses, so a registration from before the

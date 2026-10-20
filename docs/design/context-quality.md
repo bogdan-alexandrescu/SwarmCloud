@@ -105,8 +105,10 @@ the Python LSP pass `timed_out` inside its 540 s budget (knowledge-graph.md
   files, and falls back to a full run past 300 changed files or a non-ancestor
   base.
 * Every read carries `index_sha`, `head_sha`, `behind_by` and `stale`. An
-  index is stale past 200 commits, past 7 days, or when it is not an ancestor
-  (`swarm_api.repoindex.freshness`).
+  index is stale when it has been behind the head for longer than its
+  interval and a 12-hour grace (`behind_since`), when it was built over 7 days
+  ago, or when it is not an ancestor (`swarm_api.repoindex.freshness`); never
+  by a commit count, which a merged branch inflates (#1693).
 * The push webhook (RI8) is not built.
 
 **Where people see it.** Work › Repositories (`Repositories.tsx`) and a

@@ -932,6 +932,18 @@ server that was failing may have answered from a half-built program, and
 nothing says from which answer on. A timeout is never a failed index: it is
 a less certain one, and says so.
 
+An incremental run asks the server only about the affected files and carries
+every other file's edges, and its `lsp` flag, from the base. So unless it
+re-asked every parsed file of a language, the language's status is the WORSE
+of its own and the base's (`ok` < `partial` < `timed_out` < `failing` <
+`unsupported`), and the reason says how many files this run asked about and
+how many are covered (revised 2026-10-20, #1693). Taking the run's own status
+made the console's banner flip with every run on ai-studio: each full run
+timed out, each incremental run between them asked pyright about a handful of
+files, got `ok`, and read `partial` -- about an index whose other 1,400 Python
+files were exactly as unanswered as before. The files it did answer still
+count in `files_covered`, and impact trusts them under any coverable status.
+
 **What happens for an unsupported language.** A language with a tree-sitter
 grammar and no server listed (Ruby, Java, Rust in phase 1) gets symbols and
 `ast` edges only and is marked `unsupported` with "no language server; edges
@@ -1294,10 +1306,20 @@ changed.
   line "This index describes `<index_sha>`, N commits behind `<head_sha>`
   (read <time>); files changed since: …" first in every rendering, and up to
   50 of the changed paths, so a consumer knows which parts to distrust.
-* **stale** — behind by more than 200 commits, older than 7 days, or the
-  index's sha is not an ancestor of the head (a force-push): served with
-  `stale: true`, the console draws it in the warning colour, and an index run
-  is queued if none is in flight.
+* **stale** — behind the head for longer than the registration's
+  `interval_hours` and a 12-hour grace (36 hours at the default), built more
+  than 7 days ago and behind, or the index's sha is not an ancestor of the
+  head (a force-push): served with `stale: true`, the console draws it in the
+  warning colour, and an index run is queued if none is in flight. How long
+  is `behind_since`, stored where the head and the index move
+  (`repoindex.settle_behind`): the head read that first finds the head past
+  the index sets it, later reads keep it, a promotion short of the head sets
+  it to that run's queued time (the head moved on no earlier), and a
+  promotion at the head clears it. The console's meta line says "behind
+  since <time>". This replaced "behind by more than 200 commits" (revised
+  2026-10-20, #1693): GitHub's compare counts a merged branch commit by
+  commit, so ai-studio's "77 commits behind" was one merge (its PR #713) --
+  a count says how much merged, not how long the index has been out of date.
 * **unknown** — the head has never been read (polling off, or the token lost
   access): the freshness is a dash with that reason, never "current".
 

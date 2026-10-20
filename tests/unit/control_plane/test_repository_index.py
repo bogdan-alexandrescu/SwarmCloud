@@ -597,9 +597,6 @@ def test_freshness_states():
         "files": ["src/a.py"]}), now=NOW)
     assert behind["state"] == "behind" and behind["behind_by"] == 3
     assert behind["stale"] is False and behind["changed_since"] == ["src/a.py"]
-    far = repoindex.freshness(_state(head_relation={
-        "base": ONE, "head": TWO, "status": "ahead", "ahead_by": 201, "files": []}), now=NOW)
-    assert far["state"] == "stale" and far["stale"] is True
     forced = repoindex.freshness(_state(head_relation={
         "base": ONE, "head": TWO, "status": "diverged", "ahead_by": 1, "files": []}), now=NOW)
     assert forced["state"] == "stale"
@@ -612,6 +609,118 @@ def test_freshness_states():
     other = repoindex.freshness(_state(head_relation={
         "base": THREE, "head": TWO, "status": "ahead", "ahead_by": 1, "files": []}), now=NOW)
     assert other["state"] == "behind" and other["behind_by"] is None
+
+
+def test_a_merged_branch_counted_as_many_commits_is_behind_not_stale():
+    """#1693: ai-studio read "77 commits behind" for one merged branch (its
+    PR #713), which GitHub's compare counts commit by commit. A count says
+    how much merged, not how long the index has been out of date, so a head
+    that moved past the index ten minutes ago is behind, however many
+    commits the move carried."""
+    since = NOW - timedelta(minutes=10)
+    merged = repoindex.freshness(_state(behind_since=since, head_relation={
+        "base": ONE, "head": TWO, "status": "ahead", "ahead_by": 240, "files": []}), now=NOW)
+    # MUTATION: restore the `ahead_by > STALE_BEHIND_COMMITS` rule in
+    # `freshness()` and a 240-commit merge reads stale.
+    assert merged["state"] == "behind" and merged["stale"] is False, merged["reason"]
+    assert merged["behind_by"] == 240
+    # MUTATION: leave `behind_since` out of `freshness()`'s answer and this
+    # is a KeyError.
+    assert merged["behind_since"] == since.isoformat()
+
+
+def test_an_index_behind_the_head_for_longer_than_its_schedule_allows_is_stale():
+    """The age rule that replaces the commit count: behind for longer than
+    the registration's own interval and a grace is stale -- every run due in
+    that time was missed or failed -- and one commit behind is enough."""
+    # MUTATION: drop the grace from `stale_behind_after()` and these read 24 h and 72 h.
+    assert repoindex.stale_behind_after({}) == timedelta(hours=36)
+    assert repoindex.stale_behind_after({"interval_hours": 72}) == timedelta(hours=84)
+    # An interval switched off is measured as the default's.
+    assert repoindex.stale_behind_after({"interval_hours": "off"}) == timedelta(hours=36)
+    one = {"base": ONE, "head": TWO, "status": "ahead", "ahead_by": 1, "files": []}
+    late = repoindex.freshness(_state(behind_since=NOW - timedelta(hours=37), head_relation=one),
+                               now=NOW)
+    # MUTATION: drop the `behind_since` age test from `freshness()` and this
+    # reads behind for an index that has missed every run for a day and a half.
+    assert late["state"] == "stale" and late["stale"] is True
+    assert late["reason"] == "behind the head since " + (NOW - timedelta(hours=37)).isoformat() \
+        + ", longer than 36 hours (the 24-hour interval and a 12-hour grace)"
+    # The control: the same index inside the limit is behind.
+    early = repoindex.freshness(_state(behind_since=NOW - timedelta(hours=35), head_relation=one),
+                                now=NOW)
+    assert early["state"] == "behind" and early["stale"] is False
+    # A registration's own longer interval moves the limit with it.
+    slow = repoindex.freshness(_state(behind_since=NOW - timedelta(hours=37), interval_hours=72,
+                                      head_relation=one), now=NOW)
+    assert slow["state"] == "behind"
+    # A document written before `behind_since` existed has no age to judge:
+    # behind, and the 7-day build age still applies.
+    unknown = repoindex.freshness(_state(head_relation=one), now=NOW)
+    assert unknown["state"] == "behind" and unknown["behind_since"] is None
+    # A `behind_since` left on an index that IS the head says nothing.
+    current = repoindex.freshness(_state(head_sha=ONE, behind_since=NOW - timedelta(days=3)),
+                                  now=NOW)
+    assert current["state"] == "current" and current["behind_since"] is None
+
+
+def test_behind_since_keeps_the_first_moment_and_ends_at_the_head():
+    first = NOW - timedelta(hours=2)
+    # MUTATION: overwrite `behind_since` on every head read in
+    # `settle_behind()` and a head that keeps moving is never older than
+    # its last read, so it is never stale.
+    assert repoindex.settle_behind(_state(head_sha=THREE, behind_since=first),
+                                   now=NOW)["behind_since"] == first
+    # MUTATION: drop the `now` branch from `settle_behind()` and an index
+    # that just fell behind has no moment, so it is never judged stale.
+    assert repoindex.settle_behind(_state(), now=NOW)["behind_since"] == NOW
+    # MUTATION: keep it once the index reaches the head and the next move
+    # is judged by the previous one's age.
+    assert repoindex.settle_behind(_state(head_sha=ONE, behind_since=first),
+                                   now=NOW)["behind_since"] is None
+    assert repoindex.settle_behind(_state(current_sha=None, behind_since=first),
+                                   now=NOW)["behind_since"] is None
+
+
+def test_the_head_read_records_when_the_index_fell_behind_and_promotion_settles_it(
+    client, db, objects, repo_id, github
+):
+    """`behind_since` is written where the head is: the read that first
+    finds the head past the index sets it, a later read keeps it, a run
+    promoted short of the head sets it to when that run was queued (the
+    head moved after that, and no later than now), and a run promoted AT the
+    head clears it. The registration serves it, with `stale`."""
+    _promoted(client, db, objects, repo_id)
+    assert _registration(db, repo_id)["index"].get("behind_since") is None
+    github.heads["main"] = TWO
+    started = _index_now(client, repo_id)
+    assert started.status_code == 202, started.text
+    stored = _registration(db, repo_id)["index"]
+    assert stored["head_sha"] == TWO
+    # MUTATION: drop `settle_behind` from `_claim()` and this is None.
+    assert stored["behind_since"] == stored["head_read_at"]
+    first = stored["behind_since"]
+    github.heads["main"] = THREE
+    _index_now(client, repo_id)
+    stored = _registration(db, repo_id)["index"]
+    assert stored["head_sha"] == THREE and stored["behind_since"] == first
+    served = client.get(f"/v1/repositories/{repo_id}", headers=auth_header("alice")).json()
+    # MUTATION: leave `behind_since` out of `to_api()`'s timestamps and this
+    # is a datetime the API cannot serve; leave `stale` out of `_served()`
+    # and the console's stale pill never shows.
+    assert served["repository"]["index"]["behind_since"] == first.isoformat()
+    assert served["repository"]["index"]["stale"] is False
+    # The run of TWO lands short of the head THREE.
+    github.compares[(ONE, TWO)] = {"status": "ahead", "ahead_by": 1, "files": []}
+    run = db.docs[f"repo_index_runs/{started.json()['run']['task_id']}"]
+    finish_index_task(db, objects, started.json()["run"]["task_id"], fixture_index(TWO))
+    _get_index(client, repo_id)
+    stored = _registration(db, repo_id)["index"]
+    assert stored["current_sha"] == TWO and stored["head_sha"] == THREE
+    # MUTATION: keep the old `behind_since` at a promotion short of the
+    # head and an index that keeps landing one commit behind a busy branch
+    # is judged by the first fall, and turns stale while its runs succeed.
+    assert stored["behind_since"] == run["queued_at"]
 
 
 def test_get_index_compares_a_moved_head_once(client, db, objects, repo_id, github):

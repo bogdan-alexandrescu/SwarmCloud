@@ -621,6 +621,96 @@ def test_a_base_written_before_file_coverage_takes_its_languages_status(tool: An
     assert all(row["lsp"] for row in index["files"] if row["language"] == "python")
 
 
+A_CHANGED = ("from .b import helper\n\n\ndef first():\n    return helper()\n\n\n"
+             "def second():\n    return 2\n")
+
+
+def _bad_base(tool: Any, lsp: Any, tmp_path: Path, repo: Path, scenario: dict,
+              **options: Any) -> tuple[Any, dict]:
+    spec = _fake(lsp, tmp_path, dict(scenario, definitions=CUT_DEFINITIONS), name="badfake")
+    facts = tool.extract(repo, tool.Budget(), lsp=_options(lsp, spec, **options))
+    return (tool.Base(sha=facts["commit_sha"], graph=tool.graph_document(facts),
+                      index=tool.index_document(facts)), _language(facts, "python"))
+
+
+@pytest.mark.parametrize("scenario,options,status", [
+    ({"slow_paths": {"src/a.py": 30.0}},
+     {"server_budget_seconds": 1.5, "request_timeout_seconds": 30.0,
+      "warmup_timeout_seconds": 30.0}, "timed_out"),
+    ({"mode": "crash"}, {}, "failing"),
+], ids=["timed_out", "failing"])
+def test_an_incremental_run_keeps_its_bases_worse_status(tool: Any, lsp: Any, tmp_path: Path,
+                                                         scenario: dict, options: dict,
+                                                         status: str) -> None:
+    # #1693: every full run of ai-studio timed out, every incremental run
+    # between them asked its server about a handful of files, got `ok`, and
+    # the banner flipped to "partial" and back with each run. An
+    # incremental run that did not re-ask every file of a language carries
+    # the rest from the base, so it is no better than the base said.
+    repo = fx.build_repo(tmp_path / "repo", CUT_APP)
+    base, before = _bad_base(tool, lsp, tmp_path, repo, scenario, **options)
+    assert before["status"] == status, before["reason"]
+    _commit(repo, {"src/a.py": A_CHANGED})
+    facts = tool.extract(repo, tool.Budget(), base=base, lsp=_options(
+        lsp, _fake(lsp, tmp_path, {"definitions": CUT_DEFINITIONS})))
+    assert facts["kind"] == "incremental" and facts["changes"]["affected"] == ["src/a.py"]
+    python = _language(facts, "python")
+    # MUTATION: take the run's own `ok` in `_languages()` (or downgrade it
+    # only to `partial`) and this reads `partial`, the flip.
+    assert python["status"] == status, python["reason"]
+    assert python["fallback"] == "ast"
+    # Merged with coverage: what this run answered still counts, and
+    # impact trusts it under any coverable status.
+    # MUTATION: count only the base's covered rows and this reads 0.
+    assert python["files_covered"] == 1
+    assert _file_rows(facts)["src/a.py"]["lsp"] is True
+    # MUTATION: keep the base's reason unchanged and the coverage the run
+    # added is not said.
+    assert python["reason"] == (f"{before['reason']} (the base index's pass; this run asked "
+                                "fake about 1 of 4 files and 1 of 4 are covered)")
+
+
+def test_an_incremental_run_that_re_asked_every_file_takes_its_own_status(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    # The control: a change that reaches every file of the language asks
+    # the server about all of them, so nothing is carried and the base's
+    # status has nothing left to describe.
+    repo = fx.build_repo(tmp_path / "repo", CUT_APP)
+    base, before = _bad_base(tool, lsp, tmp_path, repo, {"mode": "crash"})
+    assert before["status"] == "failing"
+    _commit(repo, {"src/__init__.py": "# package\n", "src/a.py": A_CHANGED,
+                   "src/b.py": "def helper():\n    return 3\n",
+                   "src/z.py": CUT_APP["src/z.py"] + "\n\ndef later():\n    return 1\n"})
+    facts = tool.extract(repo, tool.Budget(), base=base, lsp=_options(
+        lsp, _fake(lsp, tmp_path, {"definitions": CUT_DEFINITIONS})))
+    assert facts["kind"] == "incremental"
+    assert facts["changes"]["affected"] == ["src/__init__.py", "src/a.py", "src/b.py", "src/z.py"]
+    python = _language(facts, "python")
+    # MUTATION: take the worse status even when every file was re-asked
+    # and this reads `failing` for an index no failing server touched.
+    assert (python["status"], python["files_covered"], python["fallback"]) == ("ok", 4, None)
+
+
+def test_an_incremental_run_whose_server_did_worse_than_the_base_says_so(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    # The other half of "the worse of the two": a base whose server finished
+    # and an incremental run whose server crashed reads `failing`, with the
+    # carried files still covered.
+    repo = fx.build_repo(tmp_path / "repo", CUT_APP)
+    good = tool.extract(repo, tool.Budget(), lsp=_options(
+        lsp, _fake(lsp, tmp_path, {"definitions": CUT_DEFINITIONS}, name="okfake")))
+    base = tool.Base(sha=good["commit_sha"], graph=tool.graph_document(good),
+                     index=tool.index_document(good))
+    _commit(repo, {"src/a.py": A_CHANGED})
+    facts = tool.extract(repo, tool.Budget(), base=base, lsp=_options(
+        lsp, _fake(lsp, tmp_path, {"mode": "crash"})))
+    python = _language(facts, "python")
+    assert python["status"] == "failing" and python["files_covered"] == 3
+    assert python["reason"].startswith("fake exited with status 3")
+    assert python["reason"].endswith("(this run asked fake about 1 of 4 files; 3 of 4 are "
+                                     "covered, carried from the base index)")
+
+
 def test_slow_workspace_queries_are_not_a_hung_server(tool: Any, lsp: Any, tmp_path: Path) -> None:
     # pyright's incomingCalls searches the whole workspace and took up to 60 s
     # a symbol on this repository while its definitions took milliseconds. A

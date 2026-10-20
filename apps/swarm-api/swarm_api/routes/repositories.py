@@ -221,8 +221,11 @@ def _index_credential(ctx: AppContext, tenant_id: str, auth: AuthContext) -> dic
 def _served(ctx: AppContext, record: dict, credential: dict | None = None) -> dict:
     """A registration as served: `to_api`, with a coverage block that says
     which of its counts are capped (RSA-4, `RepoIndex.served_coverage`), and
-    the credential its index runs use (`index_credential`, INDEX-CRED)."""
+    the credential its index runs use (`index_credential`, INDEX-CRED), and
+    whether the index is stale by §5.1's rule (`freshness`), which needs the
+    clock `to_api` does not have."""
     body = to_api(record)
+    body["index"]["stale"] = freshness(record.get("index") or {}, now=ctx.now())["stale"]
     if isinstance((record.get("index") or {}).get("coverage"), dict):
         body["index"]["coverage"] = _index(ctx).served_coverage(record)
     if credential is not None:
