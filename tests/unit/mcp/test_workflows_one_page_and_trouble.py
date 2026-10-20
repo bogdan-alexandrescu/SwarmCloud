@@ -9,6 +9,8 @@ Owner decision 2026-10-06 (observer proposals P4 + P5), from two measurements:
   running set is one page however long the SUCCEEDED/CANCELLED history is.
   Newer FAILED or DEAD_LETTERED history, which the query must keep because a
   retry can revive it, is walked past rather than called the running set.
+  Since #1749 (owner decision 2026-10-20) the walk has no page cap: a full
+  page is followed too, to the last page.
 * `swarm_trouble` listed steps PARKED on DEPENDENCY_INCOMPLETE as trouble. They
   hold no capacity (invariant 1) and are the ordinary shape of a workflow whose
   earlier steps are still running: nothing is wrong with them. Every other park
@@ -104,7 +106,7 @@ def test_newer_failed_and_dead_lettered_history_is_walked_past(swarm, db, monkey
     monkeypatch.setattr(SwarmClient, "workflows", counting)
     listing = sc.running_workflows(swarm)
 
-    assert 1 < len(asked) <= sc.WORKFLOW_LIST_PAGES, asked
+    assert len(asked) > 1, asked
     assert listing["complete"] is True and "incomplete_because" not in listing
     assert listing["count"] == 3
     assert {w["workflow_id"] for w in listing["workflows"]} == {
@@ -130,14 +132,15 @@ def test_the_bridge_asks_for_active_workflows():
     assert "active=true" in path.split("?", 1)[1].split("&")
 
 
-def _indexed_client(rows_per_page: int, seen: list[str]):
-    cursor = "more"  # a position, as the route's keyset token is
+def _indexed_client(rows_per_page: int, seen: list[str], *, pages: int):
     class _Client(_Fake):
         def request(self, method, path, **_):
             if path.startswith("/v1/workflows?"):
                 seen.append(path)
                 rows = [{"workflow_id": f"wf_{len(seen)}_{i}", "state": "RUNNING", "steps": []}
                         for i in range(rows_per_page)]
+                # A position, as the route's keyset token is; none after the last page.
+                cursor = None if len(seen) == pages else f"page-{len(seen)}"
                 return {"workflows": rows, "next_page_token": cursor, "tenant_id": "eng",
                         "filter": {"active": True, "states": None, "stored_states": ["RUNNING"]}}
             return {"workflow": {"workflow_id": path.rsplit("/", 1)[-1], "state": "RUNNING",
@@ -146,43 +149,47 @@ def _indexed_client(rows_per_page: int, seen: list[str]):
     return _Client()
 
 
-def test_an_indexed_page_full_of_unfinished_workflows_reads_no_second_page():
-    """The route said it filtered in the query and its page is FULL of
-    unfinished workflows: more than a page of them is running, which is said,
-    not walked."""
+def test_an_indexed_page_full_of_unfinished_workflows_is_paged_on():
+    """A page FULL of unfinished workflows means more are behind it: they are
+    read, not reported as unlisted (#1749 reversed "said, not walked": in
+    tenant eng that left every session's older work unchecked). The walk
+    ends on the last page."""
     seen: list[str] = []
-    listing = sc.running_workflows(_indexed_client(sc.WORKFLOW_PAGE_SIZE, seen))
-    assert len(seen) == 1
-    assert listing["complete"] is False
-    assert "was full" in listing["incomplete_because"]
+    listing = sc.running_workflows(_indexed_client(sc.WORKFLOW_PAGE_SIZE, seen, pages=3), detail_reads=0)
+    # MUTATION: stop at a full page and this is 1 page, 50 rows, incomplete.
+    assert len(seen) == 3
+    assert listing["count"] == 3 * sc.WORKFLOW_PAGE_SIZE
+    assert listing["complete"] is True and "incomplete_because" not in listing
 
 
-def test_a_short_indexed_page_with_a_token_is_paged_on():
+def test_a_short_indexed_page_with_a_token_is_paged_to_the_end():
     """A short page with a token means rows the stored state kept (FAILED,
-    DEAD_LETTERED) derived terminal and were dropped: older running workflows
-    may still be behind them, so the walk goes on, and the reason says it was
-    the page budget that stopped it, not a full page."""
+    DEAD_LETTERED) derived terminal and were dropped: older running
+    workflows may still be behind them, so the walk goes on -- to the last
+    page, however many there are."""
     seen: list[str] = []
-    listing = sc.running_workflows(_indexed_client(1, seen))
-    assert len(seen) == sc.WORKFLOW_LIST_PAGES
-    assert listing["count"] == sc.WORKFLOW_LIST_PAGES
-    assert listing["complete"] is False
-    assert f"stopped after {sc.WORKFLOW_LIST_PAGES} pages" in listing["incomplete_because"]
+    listing = sc.running_workflows(_indexed_client(1, seen, pages=7), detail_reads=0)
+    # MUTATION: bring the 4-page cap back and this stops at 4, incomplete.
+    assert len(seen) == 7
+    assert listing["count"] == 7
+    assert listing["complete"] is True
 
 
 def test_a_deployment_without_the_filter_is_still_paged():
     """An older API serves no `filter` and ignores `active`: the bridge keeps
-    walking pages, as before, rather than call one page of history complete."""
+    walking pages to the last one rather than call one page of history
+    complete."""
     seen: list[str] = []
 
     class _Client(_Fake):
         def request(self, method, path, **_):
             seen.append(path)
-            return {"workflows": [], "next_page_token": "more", "tenant_id": "eng"}
+            last = len(seen) == 6
+            return {"workflows": [], "next_page_token": None if last else f"p{len(seen)}", "tenant_id": "eng"}
 
     listing = sc.running_workflows(_Client())
-    assert len(seen) == sc.WORKFLOW_LIST_PAGES
-    assert listing["complete"] is False
+    assert len(seen) == 6
+    assert listing["complete"] is True
 
 
 # --------------------------------------------------------------------------

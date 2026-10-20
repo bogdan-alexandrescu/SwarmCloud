@@ -221,7 +221,7 @@ def test_a_dispatched_tasks_row_and_run_carry_its_details():
 
 
 def test_attach_all_gives_every_run_and_task_row_its_details(monkeypatch):
-    monkeypatch.setattr(sc, "running_workflows", lambda client: {"count": 1, "complete": True, "workflows": [
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: {"count": 1, "complete": True, "workflows": [
         {"workflow_id": "wf_a", "workspace": "eng", "title": "flow", "label": None, "steps_total": 1,
          "claude_session": SESSION}]})
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 1, "tasks": [

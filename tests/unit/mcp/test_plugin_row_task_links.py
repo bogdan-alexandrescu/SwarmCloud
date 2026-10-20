@@ -285,7 +285,7 @@ def test_sc_workflows_prints_each_current_steps_link(monkeypatch):
             ],
         }],
     }
-    monkeypatch.setattr(sc, "running_workflows", lambda client: listing)
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: listing)
     # The view lists the caller's single tasks too (#830); none here.
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"tenant_id": "eng", "count": 0, "complete": True, "tasks": []})
     out = io.StringIO()

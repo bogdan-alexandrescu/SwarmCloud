@@ -489,7 +489,7 @@ def test_attach_all_through_the_bridge_writes_one_run_per_workflow(_plugin_root,
         {"workflow_id": "wf_b", "label": "beta", "title": "Beta!", "steps_total": 2, "console": None,
          "claude_session": SESSION},
     ]}
-    monkeypatch.setattr(sc, "running_workflows", lambda client: listing)
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: listing)
     reply = json.loads(server._call(_Recorder(), "swarm_workflow_launch", {"attach": "all"}))
     launches = reply["launches"]
     assert [l["args"] for l in launches] == [

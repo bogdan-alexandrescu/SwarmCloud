@@ -1814,6 +1814,8 @@ class SwarmClient:
         active: bool = False,
         limit: int | None = None,
         page_token: str | None = None,
+        claude_session: str | None = None,
+        repository: str | None = None,
     ) -> dict[str, Any]:
         """`GET /v1/workflows`: one page of the caller's tenant's workflows, newest first.
 
@@ -1823,10 +1825,19 @@ class SwarmClient:
         indexed stored-state query says so in `filter.stored_states`; an older
         route ignores it. The tenant is the route's (`tenant_scope`), never a
         parameter here.
+
+        `claude_session` and `repository` (CHECK-FILTER, #1749) keep only the
+        workflows of that Claude Code session / cloning that repository, on
+        the server; a route that applied them echoes them in `filter`, and an
+        older one ignores them -- so a caller still checks each row itself.
         """
         params: list[tuple[str, str]] = [("state", s) for s in states]
         if active:
             params.append(("active", "true"))
+        if claude_session:
+            params.append(("claude_session", claude_session))
+        if repository:
+            params.append(("repository", repository))
         if limit is not None:
             params.append(("limit", str(limit)))
         if page_token:

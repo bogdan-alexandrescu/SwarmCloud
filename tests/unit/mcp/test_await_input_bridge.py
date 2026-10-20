@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from swarm_mcp import awaitinput, check, server, workflows
-from swarm_mcp.client import SwarmError
+from swarm_mcp.client import SwarmClient, SwarmError
 
 WID = "wf_review"
 SID = "review"
@@ -472,6 +472,9 @@ class _CheckApi:
     """The reads `/sc check` makes of one running workflow with a waiting step."""
 
     tenant = None
+    # The check lists through the client's own `workflows` (CHECK-FILTER),
+    # which builds the query and calls `request` below.
+    workflows = SwarmClient.workflows
 
     def __init__(self, expires_at: datetime):
         self.task = {**_wait(expires_at), "tenant_id": "eng", "repository_url": REPO,
