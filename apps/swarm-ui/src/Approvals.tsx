@@ -76,6 +76,17 @@ export const APPROVAL_KIND: Readonly<Record<string, string>> = {
   input: 'Answer',
 }
 
+/**
+ * EVERY KIND, IN THE CHIPS' OWN WORDS (visual QA QA-048, 2026-10-20). The
+ * empty inbox said "No firing, plan, merge, proposal or spec": a word no
+ * chip carries, and three chips it left out. It is read off the same table
+ * as the filter, so a kind added there is named here.
+ */
+const EVERY_KIND = (() => {
+  const words = Object.values(APPROVAL_KIND).map((w) => w.toLowerCase())
+  return words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} or ${words[words.length - 1]}`
+})()
+
 /** What approving each kind does (§4.5 step 3). */
 const APPROVE_DOES: Readonly<Record<string, string>> = {
   run: 'Approving creates the work this firing is waiting to make.',
@@ -665,7 +676,7 @@ function ApprovalsBody({
           say={kind === null ? 'The inbox was read and nothing is waiting' : `The inbox was read and no ${APPROVAL_KIND[kind] ?? kind} item is waiting`}
         >
           {kind === null
-            ? 'No firing, plan, merge, proposal or spec in this tenant is waiting for a person: the inbox was read and is empty.'
+            ? `No ${EVERY_KIND} in this tenant is waiting for a person: the inbox was read and is empty.`
             : `Nothing of this kind is waiting for a person. Choose Every kind to read the whole inbox.`}
         </Absent>
       ) : (

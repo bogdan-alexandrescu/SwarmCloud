@@ -199,25 +199,38 @@ describe('D39: the phone frame', () => {
     expect(painted(acts, ['flex', 'flex-basis'], PHONE)).toMatch(/^1 1 0\b|^0$/)
   })
 
-  it('draws the API-reads line as one line: the caveats stay, routes and p95 step aside', async () => {
+  it('QA-039: on a phone the API-reads strip keeps every fact, and no `·` is left hanging at a line end', async () => {
+    // D39 hid the route count and the p95 on a phone to hold one line; the
+    // visual QA run (wf_9e9bf74834634db7bcc3, 2026-10-20) found the strip
+    // still wrapping at 390 px, with a `·` hanging at the end of line 1 and
+    // the two facts gone. The facts are spaced, not dotted, on a phone.
     const { Dock } = await import('../Dock')
     const { noteFixtureProbe, route } = await import('../fetch')
     noteFixtureProbe(route('/v1/capacity'), 120, true)
     const { container } = render(<Dock />)
-    const wide = [...container.querySelectorAll('.ctl-dock-facts .ctl-dock-fact.is-wide')]
-    expect(wide.map((w) => (w.textContent ?? '').trim())).toEqual([expect.stringMatching(/routes? ·$/), expect.stringMatching(/^p95 .* ·$/)])
-    for (const w of wide) expect(painted(w, 'display', PHONE)).toBe('none')
-    expect(painted(wide[0]!, 'display', WIDE)).not.toBe('none')
-    // What a phone draws: `failed`, any `admin-only`, and the age, which is
-    // the fact the old ellipsis ate (F10) -- and it fits 390px at the strip's
-    // 12px mono (7.2px a character) beside the mark, `Reads` and the caret.
-    const kept = [...container.querySelectorAll('.ctl-dock-facts > *')]
-      .filter((f) => !f.classList.contains('is-wide'))
-      .map((f) => f.textContent ?? '')
-      .join('')
-    expect(kept).toMatch(/failed/)
-    expect(kept).toMatch(/newest|nothing has loaded/)
-    expect(kept.length * 7.2 + 120, `"${kept}" does not fit 390px`).toBeLessThanOrEqual(390 - 2 * 16)
+    const strip = container.querySelector<HTMLElement>('.ctl-dock-facts')!
+    const facts = [...strip.querySelectorAll<HTMLElement>(':scope > .ctl-dock-fact')]
+    const words = facts.map((f) => (f.textContent ?? '').trim())
+    expect(words.some((w) => /^\d+ routes? ·$/.test(w)), `no route count in ${JSON.stringify(words)}`).toBe(true)
+    expect(words.some((w) => /^p95 .* ·$/.test(w)), `no p95 in ${JSON.stringify(words)}`).toBe(true)
+    // MUTATION: mark the route count or the p95 `is-wide` (display: none on a phone) again.
+    for (const f of facts) expect(painted(f, 'display', PHONE), `${f.textContent} is not drawn on a phone`).not.toBe('none')
+    // MUTATION: put a ` · ` back as a bare text node between two facts -- a
+    // separator outside a fact cannot be taken away, and dangles where the line breaks.
+    for (const n of strip.childNodes) {
+      if (n.nodeType === Node.TEXT_NODE) expect(n.textContent ?? '', 'a bare separator between facts').not.toMatch(/·/)
+    }
+    const seps = [...strip.querySelectorAll<HTMLElement>('.ctl-dock-sep')]
+    expect(seps.length).toBe(facts.length - 1)
+    // MUTATION: drop the phone rule that takes the separators away.
+    for (const s of seps) expect(painted(s, 'display', PHONE)).toBe('none')
+    // MUTATION: drop the phone flex-wrap -- the facts would run together with no separator.
+    expect(painted(strip, 'display', PHONE)).toBe('flex')
+    expect(painted(strip, 'flex-wrap', PHONE)).toBe('wrap')
+    expect(painted(strip, 'column-gap', PHONE)).toBe('10px')
+    // Wider, the line is as it was: dotted, on one line.
+    expect(painted(seps[0]!, 'display', WIDE)).not.toBe('none')
+    expect(painted(strip, 'display', WIDE)).not.toBe('flex')
   })
 })
 
