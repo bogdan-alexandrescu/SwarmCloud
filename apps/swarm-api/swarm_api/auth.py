@@ -630,6 +630,12 @@ class Authenticator:
         self._schedule_tick_users = frozenset(schedule_tick_users(settings))
 
     @property
+    def iap(self) -> Any:
+        """The IAP assertion verifier, or None. `main.FrontDoor` asks it, before
+        any route runs, whether a write comes from the QA account."""
+        return self._iap
+
+    @property
     def schedule_tick_configured(self) -> bool:
         """Whether any address is admitted as the schedule tick. False until
         lane S13 renders SCHEDULE_TICK_USERS: the tick then admits nobody."""
@@ -795,13 +801,31 @@ class Authenticator:
         a request that names no tenant, or another one, reads nothing here.
         A failed read is a 503, never a fall-through to another tenant, as
         `_with_own_workspace` answers it.
+
+        LISTED AS THE DEFAULT WHEN IT IS THE DEFAULT (docs/design/qa-identity.md
+        §4.9 M4, lane QI-API). A service account in no registered group already
+        acts, with no header, in `tenant_id_for_user` of its own address -- the
+        frozen personal fallback -- yet `tenant_choices` stayed empty, so
+        `GET /v1/tenants/mine` listed nothing and the console's switcher showed
+        the QA account no workspace (measured 2026-10-20). When the request
+        names no tenant and the resolved default IS that own tenant, with the
+        caller as its principal, the same read confirms it and it becomes the
+        one entry, first, as the default. This changes no tenant a request
+        acts in -- it was already the default -- and lists only the caller's
+        OWN tenant, derived from its verified address and confirmed against
+        `tenants/<id>`'s principal (invariant 9). A failed read lists nothing
+        and refuses nothing, because nothing here selects.
         """
-        if self._personal is None or not requested:
+        if self._personal is None:
             return ctx
         own = own_service_tenant(
             ctx, getattr(self._settings, "tenant_service_account_prefix", "")
         )
-        if not own or requested != own:
+        if not own:
+            return ctx
+        if not requested:
+            return self._list_own_service_default(ctx, own)
+        if requested != own:
             return ctx
         try:
             owned = self._personal.owns_service_tenant(ctx.email)
@@ -815,6 +839,23 @@ class Authenticator:
         return replace(ctx, tenant_choices=(
             *(c for c in ctx.tenant_choices if c[0] != own), (own, ctx.email),
         ))
+
+    def _list_own_service_default(self, ctx: AuthContext, own: str) -> AuthContext:
+        """`_with_own_service_tenant`'s headerless half: list the own tenant
+        first when it is already the default. Selects nothing."""
+        email = (ctx.email or "").strip().lower()
+        if ctx.tenant_id != own or (ctx.tenant_principal or "").strip().lower() != email:
+            return ctx
+        if any(tenant_id == own for tenant_id, _ in ctx.tenant_choices):
+            return ctx
+        try:
+            owned = self._personal.owns_service_tenant(ctx.email)  # type: ignore[union-attr]
+        except Exception as exc:  # noqa: BLE001 - any Firestore failure
+            log.warning("service tenant unresolved for the list (%s)", type(exc).__name__)
+            return ctx
+        if not owned:
+            return ctx
+        return replace(ctx, tenant_choices=((own, ctx.email), *ctx.tenant_choices))
 
     @staticmethod
     def _names_a_choice(ctx: AuthContext, requested: str) -> bool:
@@ -850,7 +891,20 @@ class Authenticator:
         # Google ID token to mint -- so this is the only credential a web caller
         # ever has. A direct caller from inside the VPC still presents a bearer
         # and takes the path below.
-        if iap_assertion and self._iap is not None and self._iap.configured:
+        #
+        # AN ASSERTION MEANS THE BEARER IS NEVER READ (docs/design/qa-identity.md
+        # §4.9, M3 measured NO). The QA browser's gate sends the QA account's
+        # IAP JWT in `Authorization`, and IAP may pass it through. Behind IAP
+        # that header is a credential meant for IAP, never this service's, so a
+        # request carrying an assertion is judged on the assertion alone --
+        # and when no IAP audience is pinned, it is refused rather than
+        # judged on whatever else it carries. `main.FrontDoor` also removes the
+        # header before any route reads it.
+        if iap_assertion:
+            if self._iap is None or not self._iap.configured:
+                log.info("IAP assertion presented and no IAP audience is pinned; refused")
+                raise Unauthenticated(
+                    "this request carries an IAP assertion and this deployment verifies none")
             try:
                 return self._from_claims(self._iap.verify(iap_assertion))
             except Forbidden:
@@ -1553,6 +1607,70 @@ class Authenticator:
             if group.lower() in member_of:
                 return group.lower()
         return email
+
+
+#: Methods the QA account may send from any origin: they change nothing.
+QA_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _claimed_email(assertion: str) -> str | None:
+    """The `email` claim of a JWT-shaped assertion, UNVERIFIED, or None when it
+    is not one. A pre-filter only: nothing is admitted on it."""
+    import base64
+    import binascii
+    import json
+
+    parts = assertion.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+    except (binascii.Error, ValueError, RecursionError):
+        return None
+    email = payload.get("email") if isinstance(payload, dict) else None
+    return str(email).strip().lower() if isinstance(email, str) else ""
+
+
+def qa_origin_refused(settings: Any, iap: Any, *, method: str, origin: str | None,
+                      assertion: str | None) -> bool:
+    """THE FRONT-DOOR GUARD (docs/design/qa-identity.md §4.3, §3.2): whether a
+    request must be refused 403 `qa_identity_origin` before any route runs.
+
+    True only for a request IAP authenticated as the configured QA account,
+    with a method other than GET, HEAD or OPTIONS, whose `Origin` is absent or
+    is not exactly `https://<console host>`. The second guard against cross-site
+    request forgery: the gate adds the QA credential to every console-host
+    request a page makes, so a page elsewhere that posts to the console would
+    otherwise post as the QA account. The console's own fetches carry its
+    origin, so this costs it nothing.
+
+    The identity is the VERIFIED assertion's. A JWT-shaped assertion whose
+    unverified `email` is not the QA account is passed over without a second
+    verification (it cannot be the QA account: verification would only
+    confirm the claim or refuse it later); any other is verified here. Every
+    failure to verify is "not the QA account": authentication refuses it
+    after this, with its own 401.
+    """
+    if (method or "").upper() in QA_SAFE_METHODS or not assertion:
+        return False
+    from .qa_identity import account, console_origin
+
+    qa = account(settings)
+    if not qa:
+        return False
+    expected = console_origin(settings)
+    if expected and origin == expected:
+        return False
+    claimed = _claimed_email(assertion)
+    if claimed is not None and claimed != qa:
+        return False
+    if iap is None or not getattr(iap, "configured", False):
+        return False
+    try:
+        claims = iap.verify(assertion)
+    except Exception:  # noqa: BLE001 - AuthError or any verifier failure
+        return False
+    return str(claims.get("email", "")).strip().lower() == qa
 
 
 def person_refusal(auth: AuthContext) -> str | None:

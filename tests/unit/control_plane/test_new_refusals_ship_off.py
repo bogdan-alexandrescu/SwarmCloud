@@ -397,6 +397,34 @@ NOT_SWITCHABLE_CODES = frozenset({
     # existing caller acts on can meet it. Report-only would let an admin who
     # is not the owner admit a new principal at the front door (Q2 (a)).
     "WORKSPACE_APPROVAL_OWNER_ONLY",
+    # The QA identity (QI-API, docs/design/qa-identity.md §4.3, part of
+    # #1649). The signing route's codes are raised only by the route that
+    # change introduces (POST /v1/attempts/{id}/qa-identity), and the admin
+    # route's by its own routes, so no existing caller can be refused by them.
+    # Continuing past any of them is the breach itself: an unproven caller, a
+    # stale generation (invariant 5) or a released lease handed a credential
+    # that signs in to the console, one signed for a task whose signed input
+    # never asked for it or whose tenant holds no grant, or the QA workspace
+    # granted its own identity. `qa_identity_not_granted` and
+    # `qa_identity_unconfigured` are also raised on POST /v1/tasks,
+    # /v1/tasks/batch and /v1/workflows, which exist, and on the child route,
+    # but only for an input naming `qa_identity`, which contract request 106
+    # declared the day before and nothing submits yet (the console offers it
+    # with QI-UI, after this). Report-only there would not let the request
+    # through: the signing route refuses the same tenant, so the task would
+    # fail at its first renewal instead of at submission. `qa_identity_origin`
+    # gates every route, but only for a request IAP authenticated as the
+    # QA account, which no deployment configures until this change renders
+    # QA_IDENTITY_CONSOLE_ACCOUNT; continuing past it is a cross-site write
+    # made as the QA account (§3.2). `spec_unverified` is listed above.
+    "bad_signature",
+    "stale_generation",
+    "lease_not_live",
+    "qa_identity_not_granted",
+    "qa_identity_not_requested",
+    "qa_identity_unconfigured",
+    "qa_identity_origin",
+    "qa_identity_self",
 })
 
 #: What the guard lets through without a switch.

@@ -497,6 +497,20 @@ class ApiSettings:
     #: a link that does not open.
     console_url: str = ""
 
+    #: THE QA IDENTITY (docs/design/qa-identity.md §4.1, lane QI-API, part of
+    #: #1649): the address of the QA service account whose IAP JWT swarm-api
+    #: signs for a live attempt of a granted tenant (`swarm_api.qa_identity`).
+    #: From QA_IDENTITY_CONSOLE_ACCOUNT (terraform/infra/locals.tf). EMPTY BY
+    #: DEFAULT, and empty means this deployment has no QA identity: every
+    #: submission naming one is 422 and every signing request 503
+    #: `qa_identity_unconfigured`. The console host it is signed for is
+    #: `console_url`'s, never a second value that could drift from it.
+    qa_identity_console_account: str = ""
+    #: A QA credential's life. 900 (owner Q5 (a): 15 minutes, renewed at 10),
+    #: clamped to 300-3600 by `qa_identity.lifetime_seconds`: under 300 a
+    #: renewal becomes a hot loop, and IAP refuses a JWT claiming over an hour.
+    qa_identity_lifetime_seconds: int = 900
+
     #: The internal decision API through the cluster's Tailscale egress Service
     #: (INTERNAL_DECISION_API_URL; JUDGE-NET's switch, terraform
     #: `internal_decision_api_enabled`). Non-empty means the tailnet egress is
@@ -960,6 +974,9 @@ class ApiSettings:
             # variable that exists and says nothing has declared nothing.
             environment_declared=bool(os.environ.get("ENVIRONMENT", "").strip()),
             console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip(),
+            qa_identity_console_account=os.environ.get(
+                "QA_IDENTITY_CONSOLE_ACCOUNT", "").strip().lower(),
+            qa_identity_lifetime_seconds=_int("QA_IDENTITY_LIFETIME_SECONDS", 900),
             internal_decision_api_url=os.environ.get("INTERNAL_DECISION_API_URL", "").strip(),
             child_key=os.environ.get("SWARM_CHILD_KEY", "").strip(),
             child_key_previous=os.environ.get("SWARM_CHILD_KEY_PREVIOUS", "").strip(),
