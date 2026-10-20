@@ -209,7 +209,11 @@ describe('G2-01: on a phone the inspector scrolls, and the strip sticks only whe
     expect(painted(pane, ['overflow-y', 'overflow'], PHONE) ?? 'visible', 'the pane is a second scroller').not.toMatch(/auto|scroll/)
     expect(painted(head, 'position', PHONE) ?? 'static', 'the header is held in view').toBe('static')
     expect(painted(tabs, 'position', PHONE)).toBe('sticky')
-    expect(painted(tabs, 'top', PHONE)).toBe('0')
+    // At the column's edge: the inset cancels the drawer's top padding (QA-019, qa.tasktabs.test.tsx).
+    const padTop = painted(el, ['padding-top', 'padding'], PHONE)?.trim().split(/\s+/)[0]
+    expect(padTop, 'the column declares a top padding').toMatch(/^[1-9]\d*px$/)
+    // MUTATION: put `top: 0` back on `.ag-split:not(.on-logs) > .ag-tabs-edge` and the strip sticks a padding's height down.
+    expect(painted(tabs, 'top', PHONE)).toBe(`-${padTop}`)
     // At 1440 the pane is still the one scroller (details.v3.test.tsx).
     const wide: CascadeEnv = { width: 1440, container: 700 }
     expect(painted(el, ['overflow-y', 'overflow'], wide)).toBe('hidden')

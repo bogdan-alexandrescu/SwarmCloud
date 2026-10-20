@@ -37,10 +37,10 @@ import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from 
 import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, read, route, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
 import { HELP_GROUPS, HELP, TOPIC_IDS, helpAnchor } from './help'
-import { STATE_MARK } from './marks'
+import { STATE_MARK, type MarkHue, type MarkName } from './marks'
 import { addressToPath } from './paths'
 import { shortcut, typedIntoField } from './shortcuts'
-import type { Capacity, Me, Stats, TaskState } from './types'
+import { poolLabelAmong, type Capacity, type Me, type Stats, type TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
 import { SignOutButton, SignedBackIn } from './SignOut'
 import { iapFronted, signingOut } from './signoutState'
@@ -766,19 +766,33 @@ function dataOf<T>(r: Result<T>): T | null {
   return r.status === 'ok' || r.status === 'stale' ? r.data : null
 }
 
-/** The global pool for the meter, and the first pool that is full or paused. */
+/**
+ * The global pool for the meter, and the first pool that is full or paused.
+ *
+ * ANOTHER POOL IS SAID TO BE ANOTHER POOL (QA-040, part of #1680). The line
+ * sits under the global meter, so `provider:anthropic:tenant:u-bogdan full`
+ * under a quarter-full `5 / 20` read as the global pool being full, in a raw
+ * key. It now says whether it is this pool or another, names another by its
+ * label (`poolLabelAmong`, so `resource:browser` and `runner:browser` stay
+ * two), and hands the raw key over as `warnPool` for the line's title.
+ */
 export function meterOf(c: Capacity | null): {
   active: number
   /** null: the global pool has no limit set (#374), which is not 0. */
   limit: number | null
   warn: string | null
+  /** The full or paused pool's exact name, null when none is. */
+  warnPool: string | null
 } | null {
   if (c === null) return null
   const g = c.pools.find((p) => p.name === 'global')
   if (g === undefined) return null
   const hot = c.pools.find((p) => p.enabled === false || (p.effective_limit !== null && p.effective_limit > 0 && p.available !== null && p.available <= 0))
-  const warn = hot === undefined ? null : `${hot.name} ${hot.enabled === false ? 'paused' : 'full'}`
-  return { active: g.active, limit: g.effective_limit, warn }
+  if (hot === undefined) return { active: g.active, limit: g.effective_limit, warn: null, warnPool: null }
+  const state = hot.enabled === false ? 'paused' : 'full'
+  const names = c.pools.map((p) => p.name)
+  const warn = hot.name === 'global' ? `this pool is ${state}` : `another pool is ${state}: ${poolLabelAmong(hot.name, names)}`
+  return { active: g.active, limit: g.effective_limit, warn, warnPool: hot.name }
 }
 
 /** One count beside a panel row: a measurement, or a dash with its reason. */
@@ -1120,6 +1134,12 @@ const PROFILE_ITEM: { key: 'profile'; label: string; to: string } = { key: 'prof
 
 const SPINE: readonly { key: Exclude<SpineSection, null>; label: string; to: string }[] = [
   { key: 'overview', label: 'Overview', to: 'overview/now' },
+  // WORK STILL OPENS AGENTS (QA-112, part of #1680, left as it is): the same
+  // click opens the Work panel, where Workflows is the row after Agents, so
+  // a workflow is one more click away and never hidden. Opening Workflows
+  // instead would change where every Work link in the console lands. That
+  // is an IA decision for the owner, asked in the PR rather than made here.
+  // spine.qafix.test.tsx holds the panel row.
   { key: 'work', label: 'Work', to: 'work/running' },
   { key: 'automate', label: 'Automate', to: 'automate/schedules' },
   { key: 'capacity', label: 'Capacity', to: 'capacity/pools' },
@@ -2133,9 +2153,13 @@ function TenantBlock({
         Back to default
       </button>
     )
+  // THE NAME STARTS WITH THE WORDS ON THE BUTTON (QA-028, part of #1680):
+  // `Copy tenant id u-bogdan` did not contain the visible `copy id`, so a
+  // speech user saying "click copy id" matched nothing (axe
+  // label-content-name-mismatch). The tenant still follows, for a reader.
   const copyId = (
     <>
-      <button type="button" className="sk-cp" aria-label={`Copy tenant id ${id}`} title={id} onClick={copy}>
+      <button type="button" className="sk-cp" aria-label={`copy id: tenant ${id}`} title={id} onClick={copy}>
         copy id
       </button>
       <span className="sk-said" role="status">
@@ -2414,7 +2438,11 @@ function Meter({ meter, read }: { meter: ReturnType<typeof meterOf>; read: 'load
       <div className="sk-bar" role="meter" aria-valuenow={meter.active} aria-valuemin={0} aria-valuemax={limit ?? 0} aria-label="Global pool leased">
         <i style={{ width: `${pct}%` }} />
       </div>
-      {meter.warn !== null && <div className="sk-mw">{meter.warn}</div>}
+      {meter.warn !== null && (
+        <div className="sk-mw" title={meter.warnPool ?? undefined}>
+          {meter.warn}
+        </div>
+      )}
     </div>
   )
 }
@@ -2552,7 +2580,7 @@ function PanelPages({
                       className={`sk-kid${kidOn ? ' is-on' : ''}`}
                       aria-current={kidOn ? 'page' : undefined}
                       // Why Recent has no number beside Live and Waiting (V150).
-                      title={p.key === 'agents' && k.key === 'recent' ? 'Finished agents, newest first: a window, so it is not counted' : undefined}
+                      title={p.key === 'agents' && k.key === 'recent' ? 'Finished agents, newest first. The list’s tab counts the rows it read; nothing totals every finished agent, so no number is drawn here' : undefined}
                       {...routed(k.to, () => nav(k.to))}
                     >
                       <span>{k.label}</span>
@@ -2560,10 +2588,13 @@ function PanelPages({
                           that says "Recent 17", a bare row read as a count
                           missing. The tab counts the rows read; nothing
                           totals the finished. Hidden from a screen reader,
-                          which has the title. */}
+                          which has the title. SAYS WHAT RECENT IS, NOT WHAT
+                          IT LACKS (QA-078, part of #1680): "not totalled"
+                          beside a tab saying "Recent 17" read as one of the
+                          two being wrong. */}
                       {p.key === 'agents' && k.key === 'recent' && (
                         <small className="sk-knote" aria-hidden="true">
-                          not totalled
+                          newest first
                         </small>
                       )}
                       {k.admin === true && <span className="sk-adm">admin</span>}
@@ -2621,10 +2652,23 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
         // A STATE NO READ OF THIS PAGE LOAD GAVE is not drawn as a state
         // (QA G3-04): it is the one the workflow was last opened in, which
         // may be long over. The word says so; the mark is withheld.
+        // A NULL STATE IS ONE THE READ DID NOT DERIVE (QA-096, part of
+        // #1680): said in the Workflows table's words, `state not derived`,
+        // with its amber ring -- `state not recorded` and no mark disagreed
+        // with the table about the same row. A withheld mark still keeps its
+        // slot (`.sk-recent .sk-st`, styles.css), so every name starts in line.
         const current = workflowReadThisLoad(w.id)
-        const look = w.state === null || !current ? null : STATE_MARK[w.state]
+        const look: { mark: MarkName | null; hue: MarkHue | 'warn' } | null =
+          w.state === null ? (current ? { mark: 'queued', hue: 'warn' } : null) : current ? STATE_MARK[w.state] : null
         const said = w.state === null ? null : w.state.toLowerCase().replace('_', '-')
-        const word = said === null ? 'state not recorded' : current ? said : `last seen ${said}; not re-read since this page loaded`
+        const word =
+          said === null
+            ? current
+              ? 'state not derived'
+              : 'state not derived when last read; not re-read since this page loaded'
+            : current
+              ? said
+              : `last seen ${said}; not re-read since this page loaded`
         // A LINK, LIKE EVERY OTHER PANEL ROW (#503): a recent workflow opens
         // in a new tab and copies as its own address.
         const to = `work/workflows?wf=${encodeURIComponent(w.id)}`
@@ -2641,7 +2685,7 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
                 mark={look === null ? null : look.mark}
                 hue={look === null ? 'neu' : look.hue}
                 word={word}
-                dataMark={said !== null && !current ? 'stale' : undefined}
+                dataMark={!current ? (said !== null ? 'stale' : undefined) : said === null ? 'unknown' : undefined}
                 bare
               />
               {/* THE WHOLE NAME AND ID ON THE SPAN THAT ELLIPSES (U11a D14):
