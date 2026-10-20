@@ -121,6 +121,29 @@ export interface RepoIndexState {
   last_failure: IndexFailure | null
   /** Set when the poll stopped re-running this repository after repeated access failures. */
   backoff: IndexBackoff | null
+  /** How many past index versions it keeps, 1-100 (INDEX-RETENTION); null when not served. */
+  keep_versions: number | null
+  /** What the last index run's sweep did and holds (INDEX-RETENTION); null when none reported. */
+  retention: IndexRetention | null
+}
+
+/** The range `index.keep_versions` takes (swarm_api/repositories.py KEEP_VERSIONS_RANGE). */
+export const KEEP_VERSIONS_RANGE = [1, 100] as const
+
+/**
+ * The last index run's sweep, as swarm-api recorded it from the run's phases
+ * (`repoindex.retention_of`): its status, the reason in words when it did not
+ * run or deleted nothing, and the counts. A count the API did not serve is null.
+ */
+export interface IndexRetention {
+  status: string
+  reason: string | null
+  held_copies: number | null
+  held_bytes: number | null
+  deleted_copies: number | null
+  deleted_bytes: number | null
+  kept_commits: number | null
+  truncated: boolean | null
 }
 
 /** `access` (the forge refused or could not find it), `transient` (nobody answered), `other`. */
@@ -192,6 +215,27 @@ const CREDENTIAL_SHAPES: readonly RegExp[] = [
 
 export function maskCredential(text: string): string {
   return CREDENTIAL_SHAPES.reduce((t, re, i) => t.replace(re, i === 0 ? '$1' : '[redacted]'), text)
+}
+
+function normRetention(v: unknown): IndexRetention | null {
+  if (!isRec(v)) return null
+  const status = str(v.status)
+  if (status === null) return null
+  return {
+    status,
+    reason: str(v.reason),
+    held_copies: count(v.held_copies),
+    held_bytes: count(v.held_bytes),
+    deleted_copies: count(v.deleted_copies),
+    deleted_bytes: count(v.deleted_bytes),
+    kept_commits: count(v.kept_commits),
+    truncated: bool(v.truncated),
+  }
+}
+
+function keepVersions(v: unknown): number | null {
+  const n = num(v)
+  return n !== null && Number.isInteger(n) && n >= KEEP_VERSIONS_RANGE[0] && n <= KEEP_VERSIONS_RANGE[1] ? n : null
 }
 
 function normFailure(v: unknown): IndexFailure | null {
@@ -384,6 +428,8 @@ export function normRepo(v: unknown): RepoRecord | null {
       next_run_at: str(ix.next_run_at),
       last_failure: normFailure(ix.last_failure),
       backoff: normBackoff(ix.backoff),
+      keep_versions: keepVersions(ix.keep_versions),
+      retention: normRetention(ix.retention),
     },
     last_run: normIndexRun(v.last_run),
     graph: { depth: num(graph.depth), min_confidence: num(graph.min_confidence) },

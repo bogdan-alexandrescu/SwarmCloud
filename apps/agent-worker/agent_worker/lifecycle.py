@@ -939,12 +939,14 @@ class Worker:
         self._last_beat_started: float | None = None
         self._deadline = time.monotonic() + config.timeout_seconds
         # THE RUNNER'S OWN DEADLINE. The task's, except on an index run, whose
-        # graph write runs AFTER the agent (lane IX1, `indexrun`): its budget
-        # is taken off the agent's time before the agent starts, so an agent
-        # that uses all of its time still leaves the write its own.
+        # graph write runs AFTER the agent (lane IX1, `indexrun`), and the
+        # sweep after it (lane INDEX-RETENTION): both budgets are taken off
+        # the agent's time before the agent starts, so an agent that uses all
+        # of its time still leaves each its own.
         self._runner_deadline = self._deadline
         if indexrun_mod.is_index_run(config.runner_profile):
-            self._runner_deadline -= indexrun_mod.budgets(config.timeout_seconds).graph_write
+            reserve = indexrun_mod.budgets(config.timeout_seconds)
+            self._runner_deadline -= reserve.graph_write + reserve.sweep
         # An index run's phases, in order, as they end (lane IX1); None on
         # every other task. `_finalise` puts them in the result summary.
         self._index_phases: list[indexrun_mod.PhaseRecord] | None = None
@@ -1807,27 +1809,17 @@ class Worker:
             self._note_index_phase(
                 indexrun_mod.PhaseRecord("graph_write", "skipped", 0.0, reason=reason)
             )
+            self._note_index_phase(indexrun_mod.PhaseRecord(
+                indexrun_mod.SWEEP_PHASE, "skipped", 0.0,
+                reason=f"the graph write did not run ({reason}); nothing is retired"))
             return None
         assert not isinstance(where, str) and program is not None
         self.phases.enter("index_graph_write")
-        # RETENTION OF repos/ (§2.3, lane IX3): the commits whose versions
-        # swarm-api still holds, so the writer's sweep retires every other
-        # commit's manifest and index copy. Unread, nothing is retired.
-        try:
-            keep = indexrun_mod.kept_commits(
-                self.db, tenant_id=cfg.tenant_id, where=where, own=self._index_commit(),
-                call_options=self.control.call_options("tenant"),
-            )
-        except Exception as exc:
-            keep = f"the kept versions could not be read ({type(exc).__name__})"
-        if isinstance(keep, str):
-            self.log.info("index retention skipped; the sweep retires nothing", reason=keep)
         ran = self._run_index_phase(
             "graph_write",
             indexrun_mod.graph_write_argv(
                 program, work=ws.work, artifacts=ws.artifacts, where=where,
                 bucket=cfg.artifact_bucket, base_sha=self._index_base,
-                keep=None if isinstance(keep, str) else keep,
             ),
             cwd=ws.work,
             env=env,
@@ -1835,6 +1827,54 @@ class Worker:
         )
         if isinstance(ran, Outcome):
             return ran
+        self._note_index_phase(ran)
+        return self._index_sweep(program, where, env, left=max(0.0, budget - ran.seconds))
+
+    def _index_sweep(
+        self, program: str, where: indexrun_mod.Target, env: dict[str, str], *, left: float
+    ) -> Outcome | None:
+        """RETENTION OF repos/ (§2.3; lane INDEX-RETENTION, part of #1693), after the write.
+
+        Best effort: the run's outcome never depends on it. It keeps the
+        commits swarm-api named in the signed prompt (`indexrun.kept_commits`),
+        and reads no database for them. Its budget is its own reserve plus
+        whatever the write left of its own. Only a stop the supervision would
+        honour mid-agent -- a fence, a cancel, a SIGTERM, an outage past the
+        lease -- ends the attempt here, exactly as during the write.
+        """
+        cfg, ws = self.cfg, self.ws
+        assert ws is not None
+        keep = indexrun_mod.kept_commits((self._task or {}).get("input"),
+                                         own=self._index_commit())
+        budget = min(float(indexrun_mod.budgets(cfg.timeout_seconds).sweep) + left,
+                     self._remaining_seconds())
+        reason = keep if isinstance(keep, str) else (
+            "the task's time is spent" if budget < 1 else None)
+        if reason is not None:
+            self.log.info("index retention skipped; nothing is retired", reason=reason)
+            self._note_index_phase(indexrun_mod.PhaseRecord(
+                indexrun_mod.SWEEP_PHASE, "skipped", 0.0, reason=reason))
+            return None
+        assert not isinstance(keep, str)
+        self.phases.enter("index_sweep")
+        ran = self._run_index_phase(
+            indexrun_mod.SWEEP_PHASE,
+            indexrun_mod.sweep_argv(program, where=where, bucket=cfg.artifact_bucket, keep=keep),
+            cwd=ws.work,
+            env=env,
+            timeout=budget,
+        )
+        if isinstance(ran, Outcome):
+            return ran
+        try:
+            stdout = (ws.logs / f"repo-index.{indexrun_mod.SWEEP_PHASE}.stdout.log").read_text(
+                "utf-8", "replace")
+        except OSError:
+            stdout = ""
+        ran.retention = indexrun_mod.sweep_retention(stdout)
+        refused = indexrun_mod.sweep_refusal(stdout)
+        if ran.status == "ok" and refused is not None:
+            ran.reason = self._scrub(refused)
         self._note_index_phase(ran)
         return None
 
