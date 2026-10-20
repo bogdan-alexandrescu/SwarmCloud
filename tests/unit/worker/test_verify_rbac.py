@@ -11,11 +11,13 @@ kubernetes/rbac/verify-rbac.yaml as render.py renders it:
   * one RoleBinding, to swarm-verify by email and by numeric uniqueId -- the
     subject GKE presents for an OAuth access token, which is how the gate
     authenticates -- and to nobody else;
-  * rendered where the operator applies the tenant render, and NOT where the
-    workspace deployer does (a `swarm-tenant-u-*` namespace, or a render with
-    `--workspace-id`): kubernetes/policies/workspace-provisioner-scope.yaml
-    admits only the Roles and subjects the deployer's render had before, so
-    the read there would be refused and fail the deployer's apply.
+  * rendered only when the operator's apply passes `--verify-uid` -- so not in
+    the workspace deployer's renders, nor in register-tenant.sh's A9 re-render,
+    which expects every object it renders to exist -- and never in a
+    `swarm-tenant-u-*` namespace or a `--workspace-id` render, even when asked:
+    kubernetes/policies/workspace-provisioner-scope.yaml admits only the Roles
+    and subjects the deployer's render had before, so the read there would be
+    refused and fail the deployer's next apply.
 
 Offline: the renderer is imported by path and run through `main()`, the path
 kubernetes/apply.sh takes.
@@ -105,10 +107,16 @@ def test_the_binding_names_swarm_verify_by_email_and_by_unique_id(eng_docs):
     ]
 
 
-def test_an_unsupplied_unique_id_renders_the_email_twice_and_never_a_placeholder():
-    binding = _one(_render("eng"), "RoleBinding")
-    # MUTATION: default VERIFY_UID to a made-up number and this fails.
-    assert [s["name"] for s in binding["subjects"]] == [VERIFY_GSA, VERIFY_GSA]
+def test_without_a_unique_id_nothing_is_rendered():
+    """An email-only binding applies cleanly and authorises nobody on the gate's
+    OAuth path; and the renders that pass no uniqueId -- the deployer's,
+    register-tenant.sh's A9 check -- must render exactly what they did before."""
+    docs = _render("eng")
+    # MUTATION: render the read unconditionally and A9 looks for a Role the
+    # deployer never applied, and fails the workspace (VERIFY_FAILED).
+    assert _verify_docs(docs) == []
+    before = [d for d in yaml.safe_load_all(render.render_files(render.tenant_files(), _values("eng", ""))) if d]
+    assert docs == before
 
 
 @pytest.mark.parametrize(
@@ -116,13 +124,14 @@ def test_an_unsupplied_unique_id_renders_the_email_twice_and_never_a_placeholder
     [
         "12345",  # too short to be a uniqueId
         f"swarm-scheduler@{PROJECT}.iam.gserviceaccount.com",  # another identity
+        VERIFY_GSA,  # the email is already the first subject; this slot is the number
         f"{VERIFY_UID}\n  - kind: Group",  # YAML injection
         "agents-staging",
     ],
 )
 def test_a_verify_uid_that_is_not_swarm_verifys_is_refused(uid):
-    # MUTATION: drop VERIFY_UID from _VALUE_PATTERNS and render refuses every
-    # value (no pattern); loosen it to any email and the scheduler is bound.
+    # MUTATION: loosen VERIFY_UID's pattern to any address and the scheduler,
+    # or a second document injected by newline, is bound.
     with pytest.raises(SystemExit):
         _render("eng", "--verify-uid", uid)
 
@@ -140,19 +149,19 @@ def test_the_read_is_rendered_last_so_every_earlier_document_is_unchanged(eng_do
     """test_live_netpol.py and its siblings hold the earlier documents by
     digest; appending keeps them exactly as they rendered before."""
     before = [d for d in yaml.safe_load_all(render.render_files(
-        render.tenant_files(), _values("eng"))) if d]
+        render.tenant_files(), _values("eng", VERIFY_UID))) if d]
     assert eng_docs[: len(before)] == before
     # MUTATION: insert verify-rbac.yaml into TENANT_FILES' middle and this fails.
     assert [d["kind"] for d in eng_docs[len(before):]] == ["Role", "RoleBinding"]
 
 
-def _values(tenant: str) -> dict[str, str]:
+def _values(tenant: str, uid: str) -> dict[str, str]:
     import argparse
 
     parser = argparse.ArgumentParser()
     render.add_tenant_arguments(parser)
-    args = parser.parse_args(["--tenant", tenant, "--project", PROJECT, "--verify-uid", VERIFY_UID])
-    return render.tenant_values(args)
+    argv = ["--tenant", tenant, "--project", PROJECT] + (["--verify-uid", uid] if uid else [])
+    return render.tenant_values(parser.parse_args(argv))
 
 
 @pytest.mark.parametrize(
@@ -162,14 +171,14 @@ def _values(tenant: str) -> dict[str, str]:
         ("research", (), True),
         # The workspace deployer's two shapes: a person's namespace, and a group
         # workspace's (labelled by --workspace-id). Its scope policy admits
-        # neither the Role name nor the subject.
+        # neither the Role name nor the subject, so not even when asked.
         ("u-alice", (), False),
         ("research", ("--workspace-id", "w-000000"), False),
     ],
     ids=["terraform-tenant", "registered-tenant", "personal", "group-workspace"],
 )
 def test_the_read_is_rendered_only_where_the_operator_applies(tenant, argv, rendered):
-    docs = _render(tenant, *argv)
+    docs = _render(tenant, "--verify-uid", VERIFY_UID, *argv)
     # MUTATION: render it everywhere and the personal and workspace renders
     # carry objects the deployer's scope policy refuses, failing its apply.
     assert bool(_verify_docs(docs)) is rendered, [d["kind"] for d in _verify_docs(docs)]

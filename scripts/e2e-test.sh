@@ -208,7 +208,8 @@ foreign_tenant_refused() {
 #   * roles/container.clusterViewer, conditioned to this cluster's resource
 #     name (terraform/infra/verify.tf verify_views_swarm_cluster);
 #   * `get` and `list` on jobs.batch in each tenant namespace the operator
-#     applies (kubernetes/rbac/verify-rbac.yaml, by kubernetes/apply.sh).
+#     applies (kubernetes/rbac/verify-rbac.yaml, by kubernetes/apply.sh
+#     --verify-uid).
 # So a REFUSED cluster read is the grant missing -- not applied, or removed --
 # and fails this check: a gate that skipped it would pass [10] with the grant
 # gone, which is the silence this check exists to end. An UNREACHABLE cluster,
@@ -267,7 +268,7 @@ gke_job_status() {
         jq -r 'if ([ .status.conditions[]? | select((.type == "Complete" or .type == "Failed") and .status == "True") ]
                    | length) > 0 then "finished" else "running" end' <"${out}" | tr -d '\n' ;;
       404)     printf 'gone' ;;
-      401|403) printf 'unreadable no RBAC read (jobs.get in %s answered HTTP %s; kubernetes/rbac/verify-rbac.yaml is applied there by kubernetes/apply.sh --tenant %s)' \
+      401|403) printf 'unreadable no RBAC read (jobs.get in %s answered HTTP %s; kubernetes/rbac/verify-rbac.yaml is applied there by kubernetes/apply.sh --tenant %s --verify-uid <swarm-verify uniqueId>)' \
                  "${ns}" "${status}" "${ns#"${TENANT_NAMESPACE_PREFIX}"}" ;;
       *)       printf 'unreadable the cluster answered HTTP %s' "${status}" ;;
     esac

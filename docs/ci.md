@@ -1762,7 +1762,7 @@ through `swarm-api`:
 | `roles/run.viewer` | project | invariant 1 is asserted by counting Cloud Run executions |
 | `roles/storage.objectViewer` | the artifact bucket | smoke proves artifacts land under the tenant's own prefix (invariant 9) |
 | `roles/container.clusterViewer`, **conditioned** | project, to `projects/<p>/locations/<region>/clusters/swarm-autopilot` exactly | e2e [10] reads the cluster's endpoint and CA |
-| Role `swarm-verify-reader`: `get`, `list` on `jobs.batch` | each tenant namespace the operator applies ([`kubernetes/rbac/verify-rbac.yaml`](../kubernetes/rbac/verify-rbac.yaml)) | e2e [10] reads a GKE-backed holder's Job |
+| Role `swarm-verify-reader`: `get`, `list` on `jobs.batch` | each tenant namespace the operator applies with `--verify-uid` ([`kubernetes/rbac/verify-rbac.yaml`](../kubernetes/rbac/verify-rbac.yaml)) | e2e [10] reads a GKE-backed holder's Job |
 
 **The last two are owner decision 2026-10-20 (#1754, VERIFY-GKE-READ).** e2e
 [10], "no task is holding capacity against an execution that is gone", compares
@@ -1794,11 +1794,24 @@ team's `agents-staging` cluster:
   authenticates with an OAuth access token and GKE presents a service account
   on that path by uniqueId (`dispatcher-rbac.yaml` has the 2026-09-24
   measurement).
-* **Not in the workspace deployer's namespaces.** `render.py` leaves the read
-  out of a `swarm-tenant-u-*` render and of a `--workspace-id` render, because
-  `policies/workspace-provisioner-scope.yaml` admits from the deployer only the
-  Roles and subjects its render already held. A GKE holder there is reported
-  "not checked", never failed.
+* **Rendered only on the operator's apply.** `render.py` renders the read only
+  when it is given `--verify-uid`, swarm-verify's uniqueId. An email-only
+  binding would authorise nobody on the gate's path. `kubernetes/apply.sh`
+  forwards the flag:
+
+  ```bash
+  kubernetes/apply.sh --tenant eng --confirm --verify-uid "$(gcloud iam service-accounts describe \
+    swarm-verify@saga-agents-staging.iam.gserviceaccount.com --format='value(uniqueId)')"
+  ```
+
+  This also keeps the read out of every render that does not ask for it:
+  the workspace deployer's, and `register-tenant.sh`'s A9 check, which
+  re-renders a namespace and expects every object to exist.
+* **Never in the workspace deployer's namespaces.** Even when asked,
+  `render.py` leaves the read out of a `swarm-tenant-u-*` render and of a
+  `--workspace-id` render, because `policies/workspace-provisioner-scope.yaml`
+  admits from the deployer only the Roles and subjects its render already held.
+  A GKE holder there is reported "not checked", never failed.
 
 **A refused cluster read now FAILS [10]**, where before it was a skip. The read
 is granted, so a 403 on it means the grant is not applied or has been removed.

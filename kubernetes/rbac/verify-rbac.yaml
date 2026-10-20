@@ -21,14 +21,15 @@
 # either. Between them the gate can find the cluster and read a Job; it cannot
 # read anything a Job's pod holds.
 #
-# WHERE IT IS RENDERED. render.py appends this file to the tenant render where
-# the OPERATOR applies it (kubernetes/apply.sh --tenant <id>), and leaves it out
-# of the workspace deployer's renders -- a `swarm-tenant-u-*` namespace, or one
-# rendered with --workspace-id -- because
-# kubernetes/policies/workspace-provisioner-scope.yaml admits only the Roles
-# and subjects that render had before this file, and would refuse these two
-# objects and fail the deployer's apply (render.verify_read_files). A GKE
-# holder in such a namespace is reported "not checked" by the gate.
+# WHERE IT IS RENDERED. render.py appends this file to the tenant render only
+# when it is given --verify-uid, swarm-verify's numeric uniqueId -- the
+# operator's apply (kubernetes/apply.sh --tenant <id> --verify-uid <n>, which
+# forwards the flag) -- and never to a `swarm-tenant-u-*` namespace or a render
+# with --workspace-id, which the workspace deployer applies:
+# kubernetes/policies/workspace-provisioner-scope.yaml admits from it only the
+# Roles and subjects that render had before this file, and would refuse these
+# two objects and fail its apply (render.verify_read_files). A GKE holder in
+# such a namespace is reported "not checked" by the gate.
 #
 # Last in the render, so every document before it renders exactly as it did
 # before it existed (test_live_netpol.py and its siblings hold them by digest).
@@ -72,8 +73,9 @@ subjects:
   # By email and by numeric uniqueId, for the reason dispatcher-rbac.yaml gives:
   # the gate reaches the Kubernetes API with a Google OAuth ACCESS token from
   # the Cloud Run metadata server, and on that path GKE presents a service
-  # account as its uniqueId. Without --verify-uid the second subject falls back
-  # to the email -- an inert duplicate, never a fabricated identity.
+  # account as its uniqueId. The email is kept for the paths that present it
+  # (kubectl with an impersonated GSA). Without --verify-uid nothing here is
+  # rendered at all, so there is no fallback subject.
   - kind: User
     name: __VERIFY_GSA__
     apiGroup: rbac.authorization.k8s.io
