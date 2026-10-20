@@ -37,14 +37,17 @@ afterEach(() => {
 
 describe('QA-022: a `?` is never left under the trail bar', () => {
   it('both kinds of glyph clear the sticky bar when focus scrolls to them', () => {
+    // Built inside a frame that draws the bar, so `--ctl-bar-h` resolves to
+    // the bar's own height (notifications.css: 48px, 44px at phone width)
+    // rather than to its fallback -- the margin follows the bar, not a copy.
     for (const sel of ['.ctl-q-glyph', '.help-glyph']) {
-      const glyph = build(sel, hosts)
-      for (const env of [WIDE, PHONE]) {
+      const glyph = build(`div.ctl-frame.has-ctl-bar ${sel}`, hosts)
+      for (const [env, bar] of [[WIDE, 48], [PHONE, 44]] as const) {
         // MUTATION: drop the `scroll-margin-top` rule on `.ctl-q-glyph,
         // .help-glyph` in styles.css (or the `help-glyph` class on HelpCard's
         // button) and Tab parks the glyph under `.ctl-bar` again -- this reads
-        // null.
-        expect(painted(glyph, 'scroll-margin-top', env) ?? 'no rule', `${sel} at ${env.width}px`).toMatch(/var\(--ctl-bar-h/)
+        // 'no rule'.
+        expect(painted(glyph, 'scroll-margin-top', env) ?? 'no rule', `${sel} at ${env.width}px`).toMatch(new RegExp(`^calc\\(${bar}px \\+ `))
       }
     }
   })
