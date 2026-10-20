@@ -482,8 +482,8 @@ function useRecentName(id: string | null): string | null {
 }
 
 /**
- * `4 steps · 1 → 2 → 1 · 1 of 4 done · by Priya Rao · priya@example.com ·
- * started 8m ago`: one workflow's count note (#138).
+ * `4 steps in 3 stages (1 → 2 → 1) · 1 of 4 steps done · by Priya Rao ·
+ * priya@example.com · started 8m ago`: one workflow's count note (#138).
  *
  * THE OWNER IS A PERSON, SO IT PRINTS THROUGH `PersonName` (user-profile.md
  * §4.4): their name when they set one, always beside the whole email. The
@@ -500,7 +500,11 @@ function pageSummary(d: WorkflowBoard, id: string): ReactNode {
   const owner = w.submitted_by === null || w.submitted_by === '' ? ownerShort(w.submitted_by) : PersonName({ email: w.submitted_by, name: w.submitted_by_name })
   return (
     <>
-      {`${shape.steps} step${shape.steps === 1 ? '' : 's'} · ${shape.text} · ${rollupLine(w, d.taskById).text} · by `}
+      {/* EACH FIGURE SAYS WHAT IT COUNTS (visual QA QA-119, 2026-10-20): the
+          head read '6 steps · 5 → 1 · 4/6 done', and neither '5 → 1' nor
+          '4/6' said what it was. The shape names its stages and the census
+          its steps; the list's narrow cells keep the short forms. */}
+      {`${shape.steps} step${shape.steps === 1 ? '' : 's'}${shape.levels > 1 ? ` in ${shape.levels} stages (${shape.text})` : ''} · ${rollupLine(w, d.taskById).text.replace(/^(\d+)\/(\d+) done/, '$1 of $2 steps done')} · by `}
       {owner}
       {` · ${startedPhrase(started)}`}
     </>
@@ -1333,11 +1337,36 @@ export function WorkflowCard({
   // WHETHER A READER HAS PICKED A STEP ON THIS CARD (QA G3-28): the page's
   // own pick on arrival is not one, so its card is not scrolled to.
   const readerPicked = useRef(false)
-  const pickStep = (stepId: string) => {
+  const togglePick = (stepId: string) => {
     readerPicked.current = true
     return onPick !== undefined
       ? onPick(workflow.workflow_id, stepId)
       : setLocalPick((p) => (p === stepId ? null : stepId))
+  }
+  // THE FIRST CLICK ON THE PAGE'S OWN PICK OPENS ITS CARD (visual QA QA-120,
+  // 2026-10-20). A failed workflow's page arrives with the failure selected
+  // and its card drawn below the fold, unscrolled (G3-28), so the node looks
+  // unpicked to a reader -- and clicking it toggled the card CLOSED, the
+  // opposite of what they asked. That first click now brings the card to
+  // them and moves focus into it; it is the reader's pick from then on, so a
+  // second click closes it as any other does. The card's own `×` and Escape
+  // go through `togglePick` and close at once.
+  const pickStep = (stepId: string) => {
+    if (page && !readerPicked.current && stepId === picked) {
+      readerPicked.current = true
+      const card =
+        sectionRef.current?.querySelector<HTMLElement>('.wf-panel') ?? sectionRef.current?.querySelector<HTMLElement>('.wf-inspect') ?? null
+      if (card !== null) {
+        if (typeof card.scrollIntoView === 'function') card.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+        // The docked panel takes focus itself; the card drawn under a row
+        // (Table or Timeline below the dock width) is not focusable, so its
+        // close control is where a keyboard reader lands.
+        const target = card.classList.contains('wf-panel') ? card : card.querySelector<HTMLElement>('.wf-inspect-close')
+        target?.focus({ preventScroll: true })
+      }
+      return
+    }
+    return togglePick(stepId)
   }
 
   // CLOSING THE GRAPH'S PANEL PUTS FOCUS BACK ON THE NODE THAT OPENED IT, so a
@@ -1345,7 +1374,7 @@ export function WorkflowCard({
   // node survives the close -- only the panel unmounts -- so it can take focus
   // at once.
   const closePanel = (stepId: string) => {
-    pickStep(stepId)
+    togglePick(stepId)
     const node = [
       ...(sectionRef.current?.querySelectorAll<HTMLButtonElement>('button.node, button.wf-pick') ?? []),
     ].find((b) => b.dataset.step === stepId)
@@ -2330,6 +2359,19 @@ function InspectorSlot({
       now={now}
       load={loadAttempts}
     >
+      {/* WHY IT FAILED, WHOLE, ON THE CARD (visual QA QA-120, 2026-10-20).
+          The node's note is one ellipsed line ('exit status 1: pytest
+          coll…') because `layoutOf` measures it as one (`NOTE_H`), and the
+          card said nothing of the failure until the attempts landed -- and
+          then only their first line. The task's own `last_error` is printed
+          here in full, wrapped, every line of it; it is the card the first
+          click on the failed node now opens. */}
+      {row.why !== null && row.why.kind === 'cause' && (
+        <div className="wf-inspect-cause">
+          <b>why it failed</b>
+          <span className="wf-inspect-cause-text">{row.why.full}</span>
+        </div>
+      )}
       {page ? <StepCardExtras workflow={workflow} step={row.step} state={state} taskById={taskById} reload={reload} now={now} /> : null}
     </StepInspector>
   )
