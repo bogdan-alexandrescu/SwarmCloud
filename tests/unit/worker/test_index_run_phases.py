@@ -69,12 +69,14 @@ def test_a_repository_that_is_not_on_github_has_no_target():
 
 def test_the_budgets_fit_the_thirty_minute_run():
     full = indexrun.budgets(repoindex.FULL_TIMEOUT_SECONDS)
-    assert full.extract == 720 and full.graph_write == 270
+    # MUTATION: the sweep's reserve taken on top of the old 270 s write reserve
+    # shortens the agent; it is carved out of it (lane INDEX-RETENTION, #1693).
+    assert full.extract == 720 and full.graph_write == 180 and full.sweep == 90
     assert full.lsp_total < full.extract
-    # The agent keeps the larger part of the run.
-    assert repoindex.FULL_TIMEOUT_SECONDS - full.extract - full.graph_write >= 800
+    # The agent keeps the larger part of the run, as much as before the sweep had its own.
+    assert repoindex.FULL_TIMEOUT_SECONDS - full.extract - full.graph_write - full.sweep >= 810
     short = indexrun.budgets(repoindex.INCREMENTAL_TIMEOUT_SECONDS)
-    assert short.extract + short.graph_write < repoindex.INCREMENTAL_TIMEOUT_SECONDS
+    assert short.extract + short.graph_write + short.sweep < repoindex.INCREMENTAL_TIMEOUT_SECONDS
 
 
 def test_the_worker_reads_and_writes_the_paths_the_prompt_names():
@@ -219,7 +221,10 @@ def test_the_worker_runs_extract_then_agent_then_graph_write(
     assert write["tenant_env"] == TENANT
 
     phases = db.doc("tasks/task_1")["result_summary"]["repo_index_phases"]
-    assert [p["phase"] for p in phases] == ["extract", "agent", "graph_write"]
+    # The prompt names no kept commits, so the sweep is skipped and says why.
+    assert [p["phase"] for p in phases] == ["extract", "agent", "graph_write", "index_sweep"]
+    assert phases[3]["status"] == "skipped" and phases[3]["reason"], phases
+    phases = phases[:3]
     assert all(p["status"] == "ok" for p in phases), phases
     assert all(isinstance(p["seconds"], float) and p["seconds"] > 0 for p in phases), phases
     assert phases[0]["seconds"] >= 0.2
@@ -269,14 +274,14 @@ def test_unsigned_metadata_cannot_point_the_write_at_another_registration(
     assert "repo_0000000000000000" not in " ".join(argv)
 
 
-def test_the_agent_is_given_the_task_time_less_the_writes_reserve(
+def test_the_agent_is_given_the_task_time_less_the_write_and_sweep_reserves(
     db, worker_factory, index_tools, checkout, recheck_bypassed
 ):
     _seed_index_run(db)
     worker, _, _ = worker_factory(runner_profile="indexer", timeout_seconds=600,
                                   repository_url=URL)
     worker.run()
-    reserve = indexrun.budgets(600).graph_write
+    reserve = indexrun.budgets(600).graph_write + indexrun.budgets(600).sweep
     assert worker._deadline - worker._runner_deadline == pytest.approx(reserve, abs=0.01)
 
 
