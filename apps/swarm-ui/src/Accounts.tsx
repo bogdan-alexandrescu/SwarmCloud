@@ -644,10 +644,10 @@ function Pool({
   // shorter detail -- State, Replace, Remove's typed confirmation -- not its
   // name; focus fell to <body> with the row it was on. The page is scrolled
   // to the pane and focus goes to `‹ Accounts`, its first control. On a
-  // desktop the pane sticks in view and scrolls itself (styles/capacity.css
-  // `.acct-split > .acct-pane`), so it is put back at its top -- the next
-  // account starts at its head, not at the previous one's scroll position --
-  // and the page moves the least that shows all of it: near the list's end
+  // desktop the pane sticks in view (styles/capacity.css `.acct-split >
+  // .acct-pane`); it no longer scrolls itself (capacity-010), so resetting its
+  // `scrollTop` only matters if a narrower rule ever makes it a scroller
+  // again. The page moves the least that shows the pane: near the list's end
   // the card's foot holds a sticky pane partly above the window.
   const paneRef = useRef<HTMLDivElement | null>(null)
   const opened = shown !== null && shown.explicit ? shown.account.account_id : null

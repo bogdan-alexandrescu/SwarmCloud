@@ -424,13 +424,17 @@
    just chosen, so the click looked like it did nothing. Now neither half
    stretches; the divider is both halves' edge (the pane overlaps the list's
    by 1px), so it runs as far as the longer one. On a desktop the pane sticks
-   under the page head while the list scrolls past, and a detail taller than
-   the window scrolls inside it -- the chosen account is always in view. */
+   under the page head while the list scrolls past -- the chosen account is
+   always in view.
+   ONE SCROLLER (capacity-010, visual QA run 2, 2026-10-20). The pane was also
+   capped at the window and scrolled itself, so at 1440 two scrollbars stood
+   side by side and `save classes` sat below an inner fold. It is no longer a
+   scroll container: a detail taller than the window is scrolled by the page,
+   like the rest of the screen. */
 @media (min-width: 901px) {
   .acct-split > .acct-list { border-right: 1px solid var(--line); }
   .acct-split > .acct-pane {
-    position: sticky; top: 0; max-height: calc(100vh - 48px); overflow-y: auto;
-    overscroll-behavior: contain;
+    position: sticky; top: 0;
     margin-left: -1px; border-left: 1px solid var(--line);
   }
 }
@@ -727,6 +731,12 @@
    puts after each underscore: never inside a word, and whole on screen. */
 .rt-cred code { display: inline; vertical-align: baseline; white-space: normal; overflow-wrap: normal; word-break: normal; }
 .cap-setby-cfg { color: var(--text-faint); }
+/* capacity-008 (visual QA run 2): `AIMD back-off` WAS THE ROW'S BIGGEST WORDS.
+   The cell took the table's body size, ~15px, beside a 12px `paused` mark and
+   `0 holders · limit`. Set by is a qualifier of the ceiling, like the marks and
+   links of its row, so it takes their size; it keeps its ink, which is what
+   makes a non-configured source stand out (G5-19). */
+.cap-pools td[data-label="Set by"] { font-size: var(--t-micro); line-height: var(--lh-micro); }
 
 /* ---------------------------------------------------------------------------
    QA G5 (2026-10-07), lane C6U.
@@ -879,4 +889,12 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
    and the annotation wraps under it instead when the track is tight. (0,5,0)
    because the primitive's rule is (0,3,1) and loads after this sheet. */
 .ctl-facts.is-rows > .ctl-fact.rt-runs-on { flex-wrap: wrap; row-gap: 0; }
-.ctl-facts.is-rows > .ctl-fact.rt-runs-on > .rt-backend { flex: none; overflow-wrap: normal; }
+.ctl-facts.is-rows > .ctl-fact.rt-runs-on .rt-backend { flex: none; overflow-wrap: normal; }
+/* capacity-007 (visual QA run 2, 2026-10-20): `← AUTO` WRAPPED UNDER THE KEY.
+   The annotation was the fact's own flex item, so its wrap went to the row's
+   start -- under `runs on` -- and read as a second label. The backend and its
+   annotation are one value item now: the wrap stays in the value column,
+   under CLOUD_RUN_JOB, and at 1440 the two sit side by side. */
+.ctl-facts.is-rows > .ctl-fact.rt-runs-on > .rt-runs-on-value {
+  display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--ctl-s2);
+}
