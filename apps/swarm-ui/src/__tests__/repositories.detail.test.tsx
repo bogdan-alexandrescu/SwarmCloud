@@ -141,6 +141,32 @@ describe('the repository page leads with what the index says about the head (Det
     expect(visible(document.querySelector('.ur-crumb'))).toBe('Work › Repositories › example-org/example-web')
   })
 
+  it('says since when the index has been behind the head, and that a stale one is judged by that age (#1693)', async () => {
+    const index = { current_sha: sha('9f8e7d6'), head_sha: sha('5c4b3a2'), behind_by: 77, interval_hours: 12 }
+    const detail = (extra: Record<string, unknown>) => ({
+      ...DETAIL,
+      repository: { ...DETAIL.repository, ...repo({ repo_id: ID, repo: 'example-web' }, { ...index, ...extra }) },
+    })
+    routes({ detail: { status: 200, body: detail({ behind_since: ago(3 * HOUR), stale: true }) } })
+    const first = await mount()
+    await loaded()
+    // MUTATION: drop the `behind since` clause from `MetaLine` in RepositoriesDetail.tsx
+    // and the line ends at the head's read.
+    expect(visible(document.querySelector('.ur-meta'))).toContain('head 5c4b3a2, read 2m ago, behind since 3h ago')
+    const pill = document.querySelector('.c-phead .c-pill')!
+    expect(pill.getAttribute('data-fresh')).toBe('stale')
+    // MUTATION: restore the "more than 200 commits" sentence in `freshness()` (RepositoriesData.ts):
+    // a merge counts many commits at once, and the count no longer makes an index stale.
+    expect(pill.getAttribute('title')).not.toContain('200 commits')
+    expect(pill.getAttribute('title')).toContain('Behind the head since 3h ago')
+    first.unmount()
+    // The control: an index at its head says nothing about since when, even if a reading is left over.
+    routes({ detail: { status: 200, body: detail({ head_sha: sha('9f8e7d6'), behind_by: 0, behind_since: ago(3 * HOUR) }) } })
+    await mount()
+    await loaded()
+    expect(visible(document.querySelector('.ur-meta'))).not.toContain('behind since')
+  })
+
   it('leads with a banner when the index is behind, saying a run is in flight', async () => {
     routes()
     await mount()
