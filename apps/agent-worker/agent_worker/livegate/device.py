@@ -87,8 +87,29 @@ feature with an empty value, which lifts the override. While the theme is
 `system` no media call is made at all, so a browser nobody asked to theme
 gets exactly the calls it got before. The agent may call
 `Emulation.setEmulatedMedia` on its own sessions too (cdppolicy.py allows
-it); which of two sessions' overrides Chromium shows was not measured, which
-is one more reason the instructions name the command rather than the method.
+it), which is one more reason the instructions name the command rather than
+the method.
+
+THE THEME IS PUT BACK, because a media override is the page's, not the
+session's (QAFIX2-QATOOL, WG-ENV2; part of #1680). Visual QA run 2
+(wf_b6e2441b419f423a84eb, 2026-10-20) ran `theme dark` and read
+`matchMedia('(prefers-color-scheme: dark)')` false in a fresh tab. Whichever
+session writes last is what the page shows, and the gate wrote once. The
+agent's Playwright sends `prefers-color-scheme: light` (its default
+`colorScheme`) on every page it attaches to, and Blink lifts a feature a
+session set when that session detaches, the gate's value with it. So while a
+theme other than `system` is set, the gate re-sends it on a page
+
+* `THEME_SETTLE_SECONDS` after another session attaches to it: Playwright's
+  own write comes after the attach, and Chromium reports nothing at its end;
+* when another session detaches from it, which may have lifted the value;
+* when its top frame navigates (`Page.frameNavigated`, which is why the
+  gate's page session enables `Page` once a theme is set). A new renderer
+  restores every session's value in an order nobody chose.
+
+The value is the one the agent asked the gate for by name. An agent that
+also calls `page.emulate_media` with the same scheme, as swarm_qa.py does, is
+not contradicted. At `system` none of this sends anything.
 
 NOTHING HERE IS LOGGED BUT NAMES. A device change records the preset name and
 orientation; a page's URL, a session id or a coordinate is never a log
@@ -118,6 +139,14 @@ DEFAULT_DISPLAY_SOCKET = "/tmp/.X11-unix/X0"
 _CTL_ARGS = frozenset({"preset", "orientation"})
 #: The arguments a `theme` request may carry: a name, never a media feature.
 _THEME_ARGS = frozenset({"theme"})
+
+#: How long after another session (the agent's Playwright) attaches to a page
+#: the gate sends its theme again. Playwright writes its own
+#: `prefers-color-scheme` during the attach's set-up, and Chromium reports
+#: nothing when that ends. One second is longer than that set-up on a page
+#: already loaded, and short enough that a QA step's first read after the
+#: attach is dark. A navigation re-sends it anyway (module docstring).
+THEME_SETTLE_SECONDS = 1.0
 
 # X11 core and RandR requests used here.
 _X_QUERY_EXTENSION = 98
@@ -401,6 +430,7 @@ class DeviceController:
         self._device = resolve(DEFAULT_PRESET)
         self._theme = DEFAULT_THEME
         self._pages: dict[str, str] = {}  # targetId -> the gate's session on it
+        self._page_events: set[str] = set()  # the gate's sessions with `Page` enabled, for the theme
         self._windows: set[Any] = set()  # windowIds fitted to the current display
         self._browser: tuple[str, str] | None = None  # (user agent, version)
         self._lock = asyncio.Lock()
@@ -512,16 +542,48 @@ class DeviceController:
         elif method == "Target.targetDestroyed":
             target = params.get("targetId")
             if isinstance(target, str):
-                self._pages.pop(target, None)
-        elif method == "Target.detachedFromTarget" and message.get("sessionId") is None:
+                self._page_events.discard(self._pages.pop(target, None) or "")
+        elif method == "Target.detachedFromTarget":
             session = params.get("sessionId")
-            for target, held in list(self._pages.items()):
-                if held == session:
-                    del self._pages[target]
-                    # The overrides went with the session; the page may not
-                    # have (a renderer swap). A closed page fails the attach
-                    # quietly, its `targetDestroyed` right behind.
-                    self._spawn(self._attach_quietly(target))
+            if message.get("sessionId") is None and session in self._pages.values():
+                for target, held in list(self._pages.items()):
+                    if held == session:
+                        del self._pages[target]
+                        self._page_events.discard(session)
+                        # The overrides went with the session; the page may not
+                        # have (a renderer swap). A closed page fails the attach
+                        # quietly, its `targetDestroyed` right behind.
+                        self._spawn(self._attach_quietly(target))
+            else:
+                # Another session left the page, and Blink lifted what it set.
+                self._theme_again(params.get("targetId"), 0.0)
+        elif method == "Target.attachedToTarget":
+            info = params.get("targetInfo")
+            if params.get("sessionId") not in self._pages.values() and isinstance(info, Mapping):
+                self._theme_again(info.get("targetId"), THEME_SETTLE_SECONDS)
+        elif method == "Page.frameNavigated":
+            frame = params.get("frame")
+            if isinstance(frame, Mapping) and frame.get("parentId") is None:
+                session = message.get("sessionId")
+                for target, held in list(self._pages.items()):
+                    if held == session:
+                        self._theme_again(target, 0.0)
+
+    def _theme_again(self, target: Any, delay: float) -> None:
+        """Send the theme to `target` again, after `delay`, if one is set and the
+        gate holds the page (module docstring, THE THEME IS PUT BACK)."""
+        if self._theme != DEFAULT_THEME and isinstance(target, str) and target in self._pages:
+            self._spawn(self._theme_again_later(target, delay))
+
+    async def _theme_again_later(self, target: str, delay: float) -> None:
+        await asyncio.sleep(delay)
+        try:
+            async with self._lock:
+                session = self._pages.get(target)
+                if session is not None and self._theme != DEFAULT_THEME:
+                    await self._apply_theme(session)
+        except Exception as exc:  # noqa: BLE001 -- a page that went; its own events follow
+            log.info("live theme: not sent again (%s)", type(exc).__name__)
 
     def _spawn(self, work: Any) -> None:
         task = asyncio.get_running_loop().create_task(work)
@@ -646,3 +708,7 @@ class DeviceController:
         await self._cdp.call("Emulation.setEmulatedMedia", {
             "features": [{"name": "prefers-color-scheme", "value": value}],
         }, session)
+        if self._theme != DEFAULT_THEME and session not in self._page_events:
+            # The page's navigations, so the theme is sent again after each.
+            await self._cdp.call("Page.enable", {}, session)
+            self._page_events.add(session)
