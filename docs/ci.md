@@ -4105,7 +4105,8 @@ and the contract-parity script (#591, #611, #614; issue #642). Those tests read
 source and docs **as text**, so an import graph does not find them; their text
 naming the changed file does.
 
-**What it selects.** For a non-empty diff: the fixed guard set (always), every
+**What it selects.** For a non-empty diff: the fixed guard set (always, but only
+its two doc guards for a docs-only diff, below), every
 changed `tests/unit/**/test_*.py`, and every `tests/unit/**/test_*.py` whose
 text names a changed path by repo-relative path or basename. A generic basename
 (`__init__.py`, `package.json`, …) selects by full path only, or it would pick

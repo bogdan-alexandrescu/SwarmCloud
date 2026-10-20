@@ -16,7 +16,8 @@
 # lane does not run it: CI is the gate there.
 #
 # What it selects, for a non-empty diff:
-#   * the fixed guard set (GUARD_TESTS below), always -- about a minute;
+#   * the fixed guard set (GUARD_TESTS below), always -- about a minute (a
+#     docs-only diff: DOC_GUARD_TESTS, see below);
 #   * every changed tests/unit/**/test_*.py that still exists;
 #   * every tests/unit/**/test_*.py whose text names a changed path, by its
 #     repo-relative path or its basename. A basename in GENERIC_BASENAMES
