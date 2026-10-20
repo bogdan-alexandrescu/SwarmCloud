@@ -203,13 +203,19 @@ describe('QA-057: the Feeds pool column takes the quota table\'s slack', () => {
     }
   }
 
+  /** One `Npx`, `N%` or `min(...)` of them, in px, inside a `table` px table. */
+  function px(w: string, table: number): number {
+    const m = /^min\((.*)\)$/.exec(w.trim())
+    if (m) return Math.min(...m[1]!.split(',').map((a) => px(a, table)))
+    return w.trim().endsWith('%') ? (parseFloat(w) / 100) * table : parseFloat(w)
+  }
+
   /** The px a fixed-layout table of `table` px gives the one auto column. */
   function feedsAt(cols: HTMLElement[], table: number): number {
     let used = 0
     for (const c of cols) {
       if (c.classList.contains('quota-c-feeds')) continue
-      const w = painted(c, 'width', WIDE)!
-      used += w.endsWith('%') ? (parseFloat(w) / 100) * table : parseFloat(w)
+      used += px(painted(c, 'width', WIDE)!, table)
     }
     return table - used
   }
@@ -232,5 +238,22 @@ describe('QA-057: the Feeds pool column takes the quota table\'s slack', () => {
     // shared out and the name does not fit.
     const name = 'provider:anthropic:tenant:u-bogdan'
     expect(feedsAt(cols, 1300) - 2 * 10).toBeGreaterThanOrEqual(name.length * 14 * 0.6)
+  })
+
+  it('keeps the pool name its old 15% in a table narrower than the px columns fit', async () => {
+    api.loadAdminQuota.mockResolvedValue(ok({ quota: [quota()] }))
+    render(<QuotaDetailScreen />)
+    await screen.findAllByRole('rowheader', { name: 'u-bogdan' }, WAIT)
+    const cols = [...document.querySelectorAll<HTMLElement>('.quota-table col')]
+    // A 1280px viewport with the nav open is a ~894px table; 900px, the
+    // narrowest viewport the fixed layout holds at (the auto layout stops at
+    // 899px), is a ~514px table. Bounded columns in bare px (724px) left
+    // Feeds pool ~27px at 894 and less than nothing at 514, where the fixed
+    // table outgrew its card and pushed Reported past its edge.
+    // MUTATION: drop the `min(..., N%)` from any bounded column -- Feeds pool
+    // falls below 15% at 894, and the columns overflow the table at 514.
+    for (const table of [514, 894]) {
+      expect(feedsAt(cols, table), `${table}px table`).toBeGreaterThanOrEqual(0.15 * table - 0.5)
+    }
   })
 })
