@@ -116,9 +116,9 @@ never sent, because no answer to them could be kept or used:
   repository nor bound by an import in its own file (`Site.imported`):
   `rows.append()`, `os.getcwd()`, `len()`. A definition becomes an edge
   only at a location that is a known symbol's name (`_symbol_named_at`),
-  and the only way a call's name reaches a symbol of another name is an
-  import that renames it (`from .store import fetch as get_row`), so such
-  a site's answer is discarded every time. It stays `ast` and is counted
+  and a call's name reaches a symbol of another name only through a
+  renaming import (`fetch as get_row`), so such a site's answer is
+  discarded every time. It stays `ast` and is counted
   as `sites_skipped_external`, never as `unresolved`
   a file under the platform's exclusions (servers.py LSP_EXCLUDED_PATHS:
   migrations, alembic revisions, docs/): tree-sitter parsed it and its
