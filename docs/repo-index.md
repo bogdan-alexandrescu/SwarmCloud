@@ -342,23 +342,52 @@ copy that was rewritten while the artifact is gone is refused
 the same way: the copy first, then the artifact, each checked against the
 promoted digest (§3.4).
 
-**Retention.** The last 20 versions are kept (`KEPT_VERSIONS`); swarm-api
-deletes older `index_versions` entries at promotion. Their objects under
+**Retention.** Each repository keeps its own number of past versions,
+`index.keep_versions` (1-100, default 20, the old constant `KEPT_VERSIONS`),
+set on its Settings tab through `PATCH /v1/repositories/{repo_id}` by the
+members who may change its trigger (lane INDEX-RETENTION, owner 2026-10-20:
+"Retention should be set from repository settings section for each
+repository"). The promoted version and the run's own are kept on top.
+swarm-api deletes older `index_versions` entries at promotion
+(`_prune_versions`, with the repository's value). Their objects under
 `repos/` are deleted by the **next index run's sweep**, run as the tenant's
 worker account -- the only identity that may delete there -- because
-promotion runs in swarm-api, which may not. Before its graph write the worker
-reads the registration's remaining `index_versions` (plus the promoted
-`current_sha` and its own commit; `agent_worker.indexrun.kept_commits`) and
-passes them as `--keep-commit`; the writer's sweep then deletes every other
-commit's manifest and index copy older than a day, and then every blob no
-remaining manifest names (`repo_graph_shards.sweep`). One sweep deletes at
-most 2,000 objects, in batched `gcloud storage rm` calls; a backlog is worked
-off over the following runs, and a retired manifest past the bound still
-protects its blobs until it goes. When the versions cannot be read, the
-registration is not this tenant's, or more than 200 are listed, no
-`--keep-commit` is passed and the sweep retires nothing (it still removes
-orphan blobs, as it always has). Deleted objects become noncurrent versions,
-which the bucket's noncurrent rules remove (3 newer versions, or 30 days).
+promotion runs in swarm-api, which may not.
+
+**Who names what is kept.** swarm-api does, when it submits the run: the
+repository's newest `keep_versions` versions, the promoted `current_sha` and
+the run's own commit (`repoindex.kept_commits`), on one line of the SIGNED
+prompt (`KEEP_LINE`, beside `BASE_LINE`). The worker reads no database for
+it. Until 2026-10-20 the worker read `index_versions` from Firestore itself;
+for a tenant not switched to the state routes that read was PermissionDenied
+on every run (logged since at least 2026-10-15), so no keep set was ever
+passed and nothing was ever retired: measured on ai-studio
+(repo_d754779d0cf31b44), 163 manifests and about 880 MB were held where 20
+versions were kept. Without the line -- a run submitted before this, or one
+whose versions swarm-api could not read -- the sweep does not run, and the
+run's `index_sweep` phase says why.
+
+**The sweep is its own phase.** The graph write runs `write --no-sweep`; the
+worker then runs `swarm-repo-graph sweep --keep-commit ...` as the
+`index_sweep` phase, with its own reserve (5% of the run's timeout, at least
+60 s, plus what the write left of its 10%). On ai-studio the write's own
+sweep timed out in 19 of 19 runs, reading 163 manifests one at a time after
+a write of 86-97 s. The sweep is best effort: a sweep that fails or runs out
+of time is recorded with its reason and never fails the run. It deletes
+every other commit's manifest and index copy older than a day, then every
+blob no remaining manifest names (`repo_graph_shards.sweep`), reading the
+kept manifests four at a time (`SWEEP_READ_PROCESSES`). One sweep deletes at
+most 2,000 objects (`MAX_SWEEP_DELETES`), in batched `gcloud storage rm`
+calls; a backlog is worked off over the following runs, and a retired
+manifest past the bound still protects its blobs until it goes. Every key it
+deletes is checked to be under `tenants/<tenant>/repos/<repo_id>/`. Its
+report -- copies (manifests) and bytes deleted, copies and bytes still held
+-- is kept on the phase record, and swarm-api copies it to the run
+(`retention`, on `GET .../index/runs`) and to the registration
+(`index.retention`), which the Settings tab reads as "held now". Lowering
+`keep_versions` frees objects at the next run; raising it never brings back
+what was deleted. Deleted objects become noncurrent versions, which the
+bucket's noncurrent rules remove (3 newer versions, or 30 days).
 
 **The lifecycle, per prefix** (`terraform/modules/storage/main.tf`). The two
 rules on live objects keep `repos/` off the clock in two different ways,

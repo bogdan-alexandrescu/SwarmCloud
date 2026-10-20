@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
-  loadRepository, loadRepositoryIndex, loadRepositoryLanguages, loadResolvedToken, patchRepositoryContext, patchRepositoryTrigger, runRepositoryIndex,
+  loadRepository, loadRepositoryIndex, loadRepositoryLanguages, loadResolvedToken, patchRepositoryContext, patchRepositoryKeepVersions, patchRepositoryTrigger, runRepositoryIndex,
   type RepoContext, type RepoDetailRead, type RepoHardStops,
 } from './api'
 import { Banner, Button, Card, Chip, Dash, EmptyState, NamedMark, StatePill, ToneMark, routedClick } from './components'
 import { addressToPath } from './paths'
 import {
   coverageWords, freshness, HEAD_UNREAD, intervalWords, kindWords, pct, repoName, shortSha, notServed, expiryWords,
-  thousands, TRIGGER_OPTIONS, WEBHOOK_NOTE,
-  type ChangeTrigger, type IndexDoc, type IndexRun, type LanguageRow, type RepoDetail, type RepoRecord, type ResolvedToken, type UsedBy,
+  thousands, TRIGGER_OPTIONS, WEBHOOK_NOTE, KEEP_VERSIONS_RANGE,
+  type ChangeTrigger, type IndexDoc, type IndexRetention, type IndexRun, type LanguageRow, type RepoDetail, type RepoRecord, type ResolvedToken, type UsedBy,
 } from './RepositoriesData'
 import type { Result } from './fetch'
 import {
@@ -43,9 +43,10 @@ import { formatDuration, pluralise, timeAgo, TERMINAL_STATES } from './types'
  * "not served yet" in place, naming their route, while the rest draws.
  *
  * SETTINGS SHOW THE SERVED VALUES AND DO NOT CHANGE THEM, except Code
- * intelligence and the change trigger (HOOKS-UI), which write through
- * `PATCH /v1/repositories/{repo_id}` (repo-index.md §6.1). The other controls
- * are drawn as the frame draws them, disabled, with that reason beside them.
+ * intelligence, the change trigger (HOOKS-UI) and the index history kept
+ * (INDEX-RETENTION), which write through `PATCH /v1/repositories/{repo_id}`
+ * (repo-index.md §6.1). The other controls are drawn as the frame draws them,
+ * disabled, with that reason beside them.
  */
 
 const TABS = [
@@ -67,7 +68,7 @@ function tabOf(t: string | null): TabKey {
 
 /** The route these settings change through; named on the element, not in the words (walkthrough E). */
 const PATCH_ROUTE = 'PATCH /v1/repositories/{repo_id}'
-const PATCH_WHY = 'Except Code intelligence and the change trigger, these settings cannot be changed from this console yet: the controls show the served values.'
+const PATCH_WHY = 'Except Code intelligence, the change trigger and the index history kept, these settings cannot be changed from this console yet: the controls show the served values.'
 
 /** Where an absent `index_runs` / `used_by` would have been served (repo-index.md §6.1). */
 const DETAIL_ROUTE = 'GET /v1/repositories/{repo_id}'
@@ -812,6 +813,7 @@ function SettingsTab({
           <Card title="Schedule and change trigger">
             <ScheduleLines r={r} />
             <ChangeTriggerControl repoId={r.repo_id} served={r.index.on_change} onWrite={onWrite} />
+            <KeepVersionsControl repoId={r.repo_id} served={r.index.keep_versions} held={r.index.retention} onWrite={onWrite} />
           </Card>
           {/* Drawn only where the registration serves the fields: an API older than lane S11 has no card to show. */}
           {stops !== null && <HardStopsCard stops={stops} />}
@@ -1020,6 +1022,93 @@ function ChangeTriggerControl({ repoId, served, onWrite }: { repoId: string; ser
     <div className="ur-trigger">
       <UrRadio<ChangeTrigger> label="Change trigger" value={picked} options={TRIGGER_OPTIONS} disabled={busy} onChange={(k) => void choose(k)} />
       <p className="ur-hint">{WEBHOOK_NOTE}</p>
+      {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
+    </div>
+  )
+}
+
+/**
+ * THE INDEX HISTORY KEPT, CHANGED IN PLACE (INDEX-RETENTION, part of #1693;
+ * owner 2026-10-20: "Retention should be set from repository settings section
+ * for each repository"). One PATCH carrying `index.keep_versions` alone,
+ * built like ChangeTriggerControl and open to the same members. Beside it,
+ * what the last index run's sweep reported holding -- "not read" until a run
+ * has reported -- and about how many copies the next run deletes: each kept
+ * version is one copy, and the promoted one and the run's own are kept on top.
+ * Lowering it prunes at the next promotion and frees the objects at the next
+ * index run; raising it never brings back what was deleted.
+ */
+function megabytes(bytes: number): string {
+  return `${thousands(Math.round(bytes / (1024 * 1024)))} MB`
+}
+
+function copies(n: number): string {
+  return `${thousands(n)} ${n === 1 ? 'copy' : 'copies'}`
+}
+
+function heldWords(held: IndexRetention | null): string {
+  if (held === null || held.held_copies === null) return 'not read'
+  const many = copies(held.held_copies)
+  return held.held_bytes === null ? many : `${many}, ${megabytes(held.held_bytes)}`
+}
+
+function KeepVersionsControl({ repoId, served, held, onWrite }: { repoId: string; served: number | null; held: IndexRetention | null; onWrite: () => void }) {
+  const [low, high] = KEEP_VERSIONS_RANGE
+  const [text, setText] = useState<string>(served === null ? '' : String(served))
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState<string | null>(null)
+  useEffect(() => {
+    if (!busy) setText(served === null ? '' : String(served))
+  }, [served, busy])
+  const value = /^\d+$/.test(text.trim()) ? Number(text.trim()) : null
+  const valid = value !== null && value >= low && value <= high
+  // The range is said once the field was changed: a value the API did not serve is no mistake of the reader's.
+  const edited = text !== (served === null ? '' : String(served))
+  const next = valid && held !== null && held.held_copies !== null ? Math.max(0, held.held_copies - value) : null
+
+  async function save() {
+    if (busy || !valid || value === served) return
+    setBusy(true)
+    setFailed(null)
+    const res = await patchRepositoryKeepVersions(repoId, value)
+    setBusy(false)
+    if (res.status === 'error') {
+      setText(served === null ? '' : String(served))
+      setFailed(`The index history kept was not changed: ${writeFailure(res.error)}`)
+      return
+    }
+    onWrite()
+  }
+
+  return (
+    <div className="ur-keep" data-route={PATCH_ROUTE}>
+      <span className="ur-fl">
+        Index history kept<small>past index versions, {low}-{high}</small>
+      </span>
+      <span>
+        <input
+          type="number"
+          min={low}
+          max={high}
+          step={1}
+          value={text}
+          disabled={busy}
+          aria-label="Index history kept"
+          onChange={(e) => setText(e.target.value)}
+        />{' '}
+        <Button size="sm" disabled={busy || !valid || value === served} aria-label="Save index history" onClick={() => void save()}>
+          Save
+        </Button>
+      </span>
+      {!valid && edited && <p className="ur-hint ur-keep-range">Index history kept must be a whole number between {low} and {high}.</p>}
+      <p className="ur-hint">
+        Held now: <b>{heldWords(held)}</b>.{' '}
+        {next === null
+          ? 'What the next run deletes is known once an index run has reported what it holds.'
+          : `The next run deletes about ${copies(next)}.`}{' '}
+        The promoted version and the run&rsquo;s own are always kept on top; raising this never brings back a deleted copy.
+        {held !== null && held.status !== 'ok' && held.reason !== null && <> Last sweep: {held.reason}</>}
+      </p>
       {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
     </div>
   )
