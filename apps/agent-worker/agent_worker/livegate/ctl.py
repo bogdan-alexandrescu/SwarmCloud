@@ -69,6 +69,8 @@ KEY_BYTES = 32
 #:   and released on return (§4.2 step 3).
 #: * `end_control` -- the task was cancelled or the hold expired (§4.3, §4.4).
 #: * `device` -- a preset by name, from `swarm-handoff device` (§6.1, Q13).
+#: * `theme` -- a colour scheme by name, from `swarm-handoff theme` (QA-KIT,
+#:   device.py `DeviceController.handle_theme`).
 #: * `status` -- what the gate is doing, for `swarm-handoff status`.
 #: * `session_export` / `session_import` -- a signed-in session carried gate
 #:   to gate (session.py, §5.5.1). Named there, once; the worker sends them
@@ -82,7 +84,7 @@ KEY_BYTES = 32
 #:   (agent_worker/browser_tools.py; BSTATUS-API).
 #: * `tabs_export` / `tabs_restore` -- the open tabs a park keeps, reopened
 #:   before a resumed attempt's agent connects (tabs.py, §5.5.2; issue #1362).
-OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status",
+OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "theme", "status",
                  "egress_ticket", "browser_tools"}) | SESSION_OPS | TABS_OPS
 
 #: The first start's marker, in the sidecar's own /tmp (§3.1; the dispatcher

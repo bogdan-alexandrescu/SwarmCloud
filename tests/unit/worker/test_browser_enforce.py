@@ -221,7 +221,9 @@ def test_the_runner_registers_playwright_mcp_on_the_live_browser(monkeypatch, tm
                 "type": "stdio",
                 "command": claude_code.PLAYWRIGHT_MCP_BIN,
                 # The client tag (BSTATUS-API): the gate attributes and strips it.
-                "args": ["--cdp-endpoint", ENDPOINT + "/client/playwright"],
+                # QA-KIT: auto-named screenshots land in the task's artifacts.
+                "args": ["--cdp-endpoint", ENDPOINT + "/client/playwright",
+                         "--output-dir", str(tmp_path / "artifacts" / "screenshots")],
             }
         }
     }

@@ -516,7 +516,13 @@ describe('keyboard traversal', () => {
     expect([...unsupported]).toEqual([])
     expect(swallowers).toEqual([])
     expect(findings.map((f) => `${f.kind} ${f.where} — ${f.detail}`)).toEqual([])
-  }, 240000)
+    // 480s, NOT 240s. MEASURED: 183.7s for this test alone on an idle
+    // 6-core agent container (2026-10-20), and 241.8s -- a timeout -- in shard
+    // 4/4 of CI run 39342685547, whose sweep renders the same fifteen routes.
+    // 240s was 76% of the idle cost, so any busy runner crossed it, and the
+    // abandoned sweep kept rendering into the next test, which then found no
+    // agent rows. A genuine hang still fails, at eight minutes.
+  }, 480_000)
 
   /**
    * THE DRAWER, WHICH IS THE ONE THAT MATTERS MOST.

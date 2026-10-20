@@ -1795,6 +1795,8 @@ class LiveGate:
             return await self.end_control(args)
         if op == "device":
             return await self._need(self.devices).handle_ctl(args)
+        if op == "theme":
+            return await self._need(self.devices).handle_theme(args)
         if op == "egress_ticket":
             return await self.egress_ticket(args)
         if op == browser_tools.CTL_OP:

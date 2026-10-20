@@ -8,6 +8,7 @@ end of ctl.sock is `agent_worker.livegate.ctl` (lane L3).
     $SWARM_HANDOFF = work/.swarm-handoff/
       requests/<id>.json   the agent's, through `swarm-handoff request` (.tmp, rename)
       devices/<id>.json    the agent's, through `swarm-handoff device <preset>`
+      themes/<id>.json     the agent's, through `swarm-handoff theme dark|light|system`
       responses/<id>.json  this worker's: {"outcome": ..., "exit": N, ...}
       status.json          this worker's: the last control episode, for `status`
       history.json         this worker's: every hand-off of the task and its outcome
@@ -152,6 +153,10 @@ _HOST = re.compile(r"^[a-z0-9.-]{1,253}$")
 #: A device preset's NAME (§6.1). The list itself is the gate's: a name
 #: outside it is refused there. A caller never sends dimensions.
 _PRESET = re.compile(r"^[a-z0-9-]{1,32}$")
+#: `livegate.presets.THEMES`, restated (QA-KIT): the colour schemes the agent
+#: may name. Checked here, again by the gate, and by `swarm-handoff` itself;
+#: tests/unit/worker/test_handoff.py holds the three equal.
+THEMES = ("dark", "light", "system")
 
 #: §4.1 step 1.
 MAX_REASON_CHARS = 200
@@ -293,7 +298,7 @@ CDP_PROBE_SECONDS = 2.0
 #: `tabs_export` / `session_export` (scope park) are sent at park, before the
 #: wipe; `session_import` / `tabs_restore` on the resumed attempt, before the
 #: agent exists (browser_resume.py, §5.5.2).
-GATE_OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status",
+GATE_OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "theme", "status",
                       "egress_ticket", "browser_tools", "tabs_export", "tabs_restore",
                       "session_export", "session_import"})
 
@@ -361,7 +366,10 @@ it is what you continue from if this attempt is parked.
 
 `swarm-handoff status` prints the last control episode in the same shape as
 `wait`. `swarm-handoff device <preset>` switches the browser to a device
-preset by name (desktop, iphone-15, pixel-8, iphone-se, ipad-7).
+preset by name (desktop, iphone-15, phone-390, pixel-8, iphone-se, ipad-7).
+`swarm-handoff theme dark|light|system` sets the colour scheme every page is
+told to prefer (prefers-color-scheme); it holds across navigation and new
+tabs, and `system` lifts it. browser_resize is refused: the size is a preset's.
 
 Never copy cookies or a storage state into your files: they are refused.
 """
@@ -1316,7 +1324,7 @@ class HandoffPath:
         if not self.spooled:
             return {}
         root = self.spool(work)
-        for name in ("requests", "devices", "responses"):
+        for name in ("requests", "devices", "themes", "responses"):
             (root / name).mkdir(parents=True, exist_ok=True)
         marker = root / "unavailable"
         if self.offered:
@@ -1425,6 +1433,7 @@ class HandoffPath:
             self.log.warning("browser egress upkeep failed", error=type(exc).__name__)
         try:
             self._answer_devices(root)
+            self._answer_themes(root)
             self._forward_browser_tools(root)
             if self.active is None:
                 self._answer_requests(root)
@@ -1726,6 +1735,38 @@ class HandoffPath:
                 self._refusal(root, request_id, GATE_UNAVAILABLE, "the live browser is unavailable")
                 continue
             self._respond(root, request_id, {"outcome": "applied", "exit": 0, "preset": preset})
+
+    def _answer_themes(self, root: Path) -> None:
+        """`swarm-handoff theme <name>` (QA-KIT): the gate's `theme` operation, as
+        a device switch is answered -- by name, on a live attempt only, and
+        logged by name, never more."""
+        themes = root / "themes"
+        if not themes.is_dir():
+            return
+        for path in sorted(themes.glob("*.json")):
+            request_id = path.stem
+            data = _read_request(path)
+            path.unlink(missing_ok=True)
+            if not REQUEST_ID.fullmatch(request_id):
+                continue
+            if not self.offered or self.gate is None:
+                self._refusal(root, request_id, self.unavailable or NO_LIVE_SESSION,
+                              "this attempt has no live browser path")
+                continue
+            theme = data.get("theme") if isinstance(data, dict) else None
+            if not isinstance(data, dict) or set(data) != {"theme"} or theme not in THEMES:
+                self._refusal(root, request_id, "theme_invalid", "a theme is dark, light or system")
+                continue
+            try:
+                self.gate.call("theme", {"theme": theme})
+            except GateRefused:
+                self._refusal(root, request_id, "theme_refused", f"the gate refused {theme!r}")
+                continue
+            except GateLost:
+                self._refusal(root, request_id, GATE_UNAVAILABLE, "the live browser is unavailable")
+                continue
+            self.log.info("browser theme set", theme=theme)
+            self._respond(root, request_id, {"outcome": "applied", "exit": 0, "theme": theme})
 
     # -- the ends ----------------------------------------------------------------
 
