@@ -121,6 +121,21 @@ describe('V114: "not served" agrees with a plural subject on the list and Regist
   })
 })
 
+describe('QA-062: a "not served" notice opens its sentence with a capital', () => {
+  it('capitalises a subject its caller wrote in lower case, and leaves the rest as written', async () => {
+    const { UrNotServed } = await import('../RepositoriesParts')
+    // The two callers the visual QA run read: Settings › Workspace's
+    // Code intelligence card and its Jev backend line.
+    render(<UrNotServed route="GET /v1/settings/judgment" what="the Jev backend" />)
+    render(<UrNotServed route="GET /v1/settings/code-intelligence" what="the Code intelligence setting" />)
+    const said = [...document.querySelectorAll('[data-notserved]')].map((n) => visible(n))
+    // MUTATION: render `{what}` as it came -- "the Jev backend is not served by this API yet."
+    expect(said[0]).toContain('The Jev backend is not served by this API yet.')
+    expect(said[1]).toContain('The Code intelligence setting is not served by this API yet.')
+    for (const s of said) expect(s).not.toMatch(/(^|\. )the /)
+  })
+})
+
 describe('V115: the Tests mapped tile counts its unmapped paths in agreement', () => {
   it('one is "1 source path"', async () => {
     routes(['src/legacy/old.ts'])

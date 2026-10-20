@@ -149,6 +149,23 @@ describe('the Approvals page', () => {
     expect(document.querySelector('.ap-list')).toBeNull()
   })
 
+  it('QA-048: names, in its empty sentence, exactly the kinds its filter chips name', async () => {
+    await mount('', routes(() => null, []))
+    await screen.findByText('Nothing waiting', undefined, WAIT)
+    const chips = within(screen.getByRole('group', { name: 'Kind' }))
+      .getAllByRole('button')
+      .map((b) => (b.textContent ?? '').trim())
+      .filter((w) => w !== 'Every kind')
+    expect(chips.length).toBeGreaterThan(3)
+    const said = visible(document.body)
+    // MUTATION: put back "No firing, plan, merge, proposal or spec ..." -- a
+    // word no chip carries, and three chips the sentence leaves out.
+    expect(said).not.toMatch(/firing/i)
+    for (const c of chips) expect(said, `the empty sentence leaves out "${c}"`).toContain(c.toLowerCase())
+    // MUTATION: join the list with commas only ("spec, answer is waiting").
+    expect(said).toMatch(/, spec or answer in this tenant is waiting for a person/)
+  })
+
   it('lists every kind oldest first, and asks for a choice before deciding', async () => {
     await mount('', routes(() => null))
     await waitFor(() => expect(document.querySelectorAll('li[data-approval]')).toHaveLength(2), WAIT)
