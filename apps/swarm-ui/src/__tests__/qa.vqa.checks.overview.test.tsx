@@ -154,9 +154,35 @@ describe('QA-109: the failures card’s link names the page it opens', () => {
     await mount({
       tasks: ok({ tasks: [task({ id: 'tsk_f1', state: 'FAILED', completed_at: ago(5) })], tenant_id: 'eng', next_page_token: null } as TaskPage),
     })
-    const card = screen.getByRole('link', { name: /^1 failed task/ })
+    const card = screen.getByRole('link', { name: /^1 failed agent\b/ })
     // MUTATION: put back `linkLabel: 'failed agents'`, a name the page it opens does not carry.
     expect(text(card.querySelector('.ov-att-go'))).toBe('Agents · FAILED →')
     expect(card.getAttribute('href')).toBe('/agents/recent?state=failed')
+  })
+})
+
+describe('VOCAB-AGENTS (QA-109; owner decision 2026-10-20): the cards count agents, never tasks', () => {
+  it('says "2 failed agents" and "2 parked agents" over the Agents links, and no card says "task"', async () => {
+    const el = await mount({
+      tasks: ok({
+        tasks: [
+          task({ id: 'tsk_f1', state: 'FAILED', completed_at: ago(5) }),
+          task({ id: 'tsk_f2', state: 'FAILED', completed_at: ago(7) }),
+          task({ id: 'tsk_p1', state: 'PARKED', park_reason: 'MANUAL_PAUSE', workflow_id: null }),
+          task({ id: 'tsk_p2', state: 'PARKED', park_reason: 'MANUAL_PAUSE', workflow_id: null }),
+        ],
+        tenant_id: 'eng',
+        next_page_token: null,
+      } as TaskPage),
+    })
+    // MUTATION: put back `failed task${...}` in checks.ts's failedProblem headline.
+    const failed = screen.getByRole('link', { name: /^2 failed agents among the 4 most recent/ })
+    expect(text(failed.querySelector('.ov-att-go'))).toBe('Agents · FAILED →')
+    // MUTATION: put back `'task' : 'tasks'` in checks.ts's unitFor.
+    const parked = screen.getByRole('link', { name: /^2 parked agents will not resume without a person/ })
+    expect(text(parked.querySelector('.ov-att-go'))).toBe('waiting agents →')
+    const titles = [...el.querySelectorAll('#ov-needs .ov-att-t b')].map(text)
+    expect(titles.length, 'no check card was drawn, so this measured nothing').toBeGreaterThanOrEqual(2)
+    for (const t of titles) expect(t).not.toMatch(/\btasks?\b/)
   })
 })

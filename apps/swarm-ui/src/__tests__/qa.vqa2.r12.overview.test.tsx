@@ -130,7 +130,8 @@ describe('V142: a successful empty read counts 0 under Finished today', () => {
     expect(cells.map((c) => text(c.querySelector('.ov-lc-n')))).toEqual(['0', '0', '0'])
     const done = cells[2]!
     expect(done.querySelector('.ov-lc-n')!.getAttribute('title')).not.toMatch(/^Not measured/)
-    expect(text(done.querySelector('.ov-lc-foot.is-page'))).toBe('no task exists')
+    // MUTATION (VOCAB-AGENTS): put back `'no task exists'` in LifecycleBand's page foot.
+    expect(text(done.querySelector('.ov-lc-foot.is-page'))).toBe('no agent exists')
   })
 })
 

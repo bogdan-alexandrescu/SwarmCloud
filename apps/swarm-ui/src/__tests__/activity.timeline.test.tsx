@@ -423,13 +423,13 @@ describe('the headline', () => {
 
 /** The cards that draw the outcomes payload -- every card but the live one. */
 const LEDGER_CARDS = [
-  /^Why tasks failed/,
+  /^Why agents failed/,
   /^Retries and attempts/,
   /^Time to result/,
   /^Reliability/,
   /^Workflows that failed/,
   /^Reported cost/,
-  /^Why tasks were cancelled/,
+  /^Why agents were cancelled/,
 ]
 
 describe('partial and not read', () => {
@@ -1021,22 +1021,24 @@ describe('the eight cards', () => {
   it('draws the eight cards the owner decided, and no Token spend', async () => {
     const root = await timeline()
     const titles = [...root.querySelectorAll('.ol-card .ctl-card-title')].map((t) => t.firstChild?.textContent)
+    // VOCAB-AGENTS (QA-109, part of #1680): the cards count agents, the
+    // Agents page's word. MUTATION: put back `title="Why tasks failed"` in Ledger.tsx.
     expect(titles).toEqual([
-      'Why tasks failed',
+      'Why agents failed',
       'Retries and attempts',
       'Time to result, by profile',
       'Reliability by runner profile',
       'Workflows that failed, and where',
       'Reported cost',
       'Not finished yet',
-      'Why tasks were cancelled',
+      'Why agents were cancelled',
     ])
     expect(root.textContent, '"Token spend" survived the rename').not.toMatch(/Token spend/)
   })
 
-  it('Why tasks failed: every class in the server’s fixed order, zeroes drawn as real zeroes', async () => {
+  it('Why agents failed: every class in the server’s fixed order, zeroes drawn as real zeroes', async () => {
     const root = await timeline()
-    const c = card(root, /^Why tasks failed/)
+    const c = card(root, /^Why agents failed/)
     const rows = [...c.querySelectorAll('.ol-row')]
     expect(rows.map((r) => r.getAttribute('data-row'))).toEqual([
       'runner error', 'timeout', 'lost worker', 'could not start', 'inputs unavailable', 'outputs missing',
@@ -1063,11 +1065,11 @@ describe('the eight cards', () => {
     expect(c.querySelector('.ctl-card-foot')!.textContent).toContain('most-failing steps: synthesis 4 · review 2 · build 1')
   })
 
-  it('Workflows that failed: says "standalone tasks only" when the kind filter leaves no step', async () => {
+  it('Workflows that failed: says "standalone agents only" when the kind filter leaves no step', async () => {
     const d = ledgerFixture()
     d.workflows_failed = { ...d.workflows_failed, applicable: false, rows: [], rows_total: 0 }
     const root = await timeline(d)
-    expect(card(root, /^Workflows that failed/).textContent).toContain('standalone tasks only')
+    expect(card(root, /^Workflows that failed/).textContent).toContain('standalone agents only')
   })
 
   it('Retries and attempts: admissions, not runs, and a null exit is its own row', async () => {
@@ -1076,6 +1078,10 @@ describe('the eight cards', () => {
     expect(c.querySelector('.ctl-card-note')!.textContent).toBe('admissions, not runs')
     expect(c.textContent).toContain('needed a retry · 18 of 318 that ran (6 %)')
     expect(c.textContent).toContain('no exit recorded 9')
+    // VOCAB-AGENTS: each try's meter counts agents. MUTATION: put back `${t.tasks} tasks:` in Ledger.tsx.
+    const meters = [...c.querySelectorAll('.ol-meter[role="img"]')].map((m) => m.getAttribute('aria-label') ?? '')
+    expect(meters.length, 'no try meter was drawn, so this measured nothing').toBeGreaterThan(0)
+    for (const m of meters) expect(m).toMatch(/^\d+ agents?: \d+ succeeded/)
   })
 
   it('Time to result: no all-profiles row, a dash for nothing decided, max under 20 and the values under 5', async () => {
@@ -1116,12 +1122,12 @@ describe('the eight cards', () => {
     expect(onView).toHaveBeenLastCalledWith('group=submitted_by')
   })
 
-  it('Reported cost: the partial figure, by task end, k of n attempts, and "Reported cost · not a bill"', async () => {
+  it('Reported cost: the partial figure, by agent end, k of n attempts, and "Reported cost · not a bill"', async () => {
     const root = await timeline()
     const c = card(root, /^Reported cost/)
     expect(c.querySelector('.ctl-figure')!.textContent).toBe('$383.84')
     expect(c.querySelector('.ol-figure-line .ctl-mark.is-partial')).not.toBeNull()
-    expect(c.querySelector('.ctl-card-note')!.textContent).toBe('by task end · 209 of 612 attempts')
+    expect(c.querySelector('.ctl-card-note')!.textContent).toBe('by agent end · 209 of 612 attempts')
     expect(c.querySelector('.ctl-card-foot')!.textContent).toBe('Reported cost · not a bill')
     expect(c.textContent).toContain('p50 $1.62 · p95 $5.80')
   })
@@ -1201,7 +1207,7 @@ describe('the eight cards', () => {
 
   it('draws a card’s mini strips in the band its bucket count needs, so the sheet can drop them where they do not fit', async () => {
     const root = await timeline(thirtyDays())
-    const strips = [...card(root, /^Why tasks failed/).querySelectorAll('.ol-strip')]
+    const strips = [...card(root, /^Why agents failed/).querySelectorAll('.ol-strip')]
     // One per class in the route's vocabulary: sixteen since "failed on
     // purpose" (#631, the caller asked for the failure), fifteen since "publish
     // refused" (contract request 29), fourteen since the worker actions'
@@ -1216,14 +1222,14 @@ describe('the eight cards', () => {
     }
     cleanup()
     const fourteen = await timeline()
-    for (const s of card(fourteen, /^Why tasks were cancelled/).querySelectorAll('.ol-strip')) {
+    for (const s of card(fourteen, /^Why agents were cancelled/).querySelectorAll('.ol-strip')) {
       expect(s.classList.contains('is-n14')).toBe(true)
     }
   })
 
-  it('Why tasks were cancelled: every cause in the server’s order', async () => {
+  it('Why agents were cancelled: every cause in the server’s order', async () => {
     const root = await timeline()
-    const c = card(root, /^Why tasks were cancelled/)
+    const c = card(root, /^Why agents were cancelled/)
     const rows = [...c.querySelectorAll('.ol-row')]
     expect(rows.map((r) => r.getAttribute('data-row'))).toEqual([
       'requested', 'after a failure', 'after a cancel', 'workflow sweep', 'other',
@@ -1472,7 +1478,8 @@ describe('a figure lists the tasks behind it (#116)', () => {
     const { container } = render(<ActivityScreen view="rows=failed&at=2026-09-22T00%3A00%3A00%2B03%3A00" onView={() => {}} />)
     const c = await rowsCard(container as HTMLElement)
     const note = c.querySelector('.ol-rows-note')!.textContent ?? ''
-    expect(note).toMatch(/every task that ended failed in /)
+    // MUTATION (VOCAB-AGENTS): put back `every task that ended` in TimelineRows.tsx.
+    expect(note).toMatch(/every agent that ended failed in /)
     expect(note).toMatch(/completed_at/)
     expect(note).toMatch(/newest 2 of 740 listed/)
     expect(c.querySelector('.ctl-card-title')!.textContent).toMatch(/^740 failed/)

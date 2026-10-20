@@ -134,6 +134,9 @@ describe('Lanes: the drawing', () => {
     expect(Date.parse(args.until) - Date.parse(args.since)).toBe(24 * 3_600_000)
     const groups = [...document.querySelectorAll('[data-group]')].map((g) => g.getAttribute('data-group'))
     expect(groups).toEqual(['wf_7c1e', 'standalone'])
+    // VOCAB-AGENTS (QA-109, part of #1680): the standalone block counts agents.
+    // MUTATION: put back `'task' : 'tasks'` in the standalone block's note.
+    expect(document.querySelector('[data-group="standalone"] .tl-lab small')?.textContent).toBe('1 agent in this span')
     expect([...lanes()].map((l) => l.getAttribute('data-lane'))).toEqual(['task_plan', 'task_test', 'task_publish', 'task_solo'])
   })
 

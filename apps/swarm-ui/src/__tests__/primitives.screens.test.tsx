@@ -371,7 +371,7 @@ describe('Overview draws its empty states through the shared empty state', () =>
       loadTasks: { status: 'empty', fetchedAt: Date.now() },
     })
     await screen.findAllByText(/Pool state unread/, undefined, WAIT)
-    await screen.findAllByText(/No task exists/, undefined, WAIT)
+    await screen.findAllByText(/No agent exists/, undefined, WAIT)
 
     const failed = [...document.querySelectorAll('.ctl-empty.ov-empty.is-failed')].find((e) =>
       (e.querySelector('h3')?.textContent ?? '').includes('Pool state unread'),
@@ -381,9 +381,10 @@ describe('Overview draws its empty states through the shared empty state', () =>
     expect(failed!.textContent).not.toMatch(/\d/)
 
     const zero = [...document.querySelectorAll('.ctl-empty.ov-empty')].find((e) =>
-      (e.querySelector('h3')?.textContent ?? '').includes('No task exists'),
+      (e.querySelector('h3')?.textContent ?? '').includes('No agent exists'),
     )
-    expect(zero, 'an empty task list is not a real-zero empty state').toBeTruthy()
+    // MUTATION (VOCAB-AGENTS): put back `heading="No task exists"` in TaskListAbsent.
+    expect(zero, 'an empty agent list is not a real-zero empty state').toBeTruthy()
     expect(zero!.classList.contains('is-failed')).toBe(false)
     expect(zero!.querySelector('.ctl-mark.is-zero')?.textContent).toBe('none')
     // The sentence is the mark's accessible name, not a paragraph.

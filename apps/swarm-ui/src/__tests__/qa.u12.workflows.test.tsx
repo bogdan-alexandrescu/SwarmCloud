@@ -213,3 +213,21 @@ describe('R16: the head\'s start reads as words', () => {
     expect(startedPhrase(known)).not.toMatch(/not read/)
   })
 })
+
+describe('VOCAB-AGENTS (QA-109, part of #1680; owner decision 2026-10-20): Workflows counts agents', () => {
+  it('says the derived state came from N step agents, singular and plural', async () => {
+    const { workflowHeaderState } = await import('../types')
+    // MUTATION: put back `step task${...}` in workflowHeaderState's derived title.
+    expect(workflowHeaderState(workflow(STEPS)).title).toMatch(/^Derived from 3 step agents /)
+    expect(workflowHeaderState(workflow(STEPS.slice(0, 1))).title).toMatch(/^Derived from 1 step agent /)
+  })
+
+  it('sends a reader with no workflow to Agents in the Agents page’s own word', async () => {
+    api.loadWorkflow.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    api.loadWorkflowBoard.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    const { container } = render(<WorkflowsScreen view={`wf=${WF}`} />)
+    await waitFor(() => expect(container.textContent).toContain('No workflows'))
+    // MUTATION: put back 'Individually submitted tasks appear under Agents.'
+    expect(container.textContent).toContain('Individually submitted agents appear under Agents.')
+  })
+})
