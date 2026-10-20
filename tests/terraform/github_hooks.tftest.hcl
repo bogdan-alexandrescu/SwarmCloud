@@ -125,13 +125,14 @@ run "off_by_default_nothing_exists" {
     error_message = "with the receiver off there is no URL to give GitHub and no secret to store into"
   }
 
-  # No tfvars file in the repository turns it on: merging creates nothing.
+  # Only dev turns it on, because the owner turned it on there (2026-10-16, PR 1432):
+  # any other environment's tfvars naming it is a public receiver nobody decided on.
   assert {
     condition = alltrue([
       for f in fileset("${var.tf_root}/../environments", "**/*.tfvars") :
-      !strcontains(file("${var.tf_root}/../environments/${f}"), "enable_github_hooks")
+      f == "dev/dev.tfvars" || !strcontains(file("${var.tf_root}/../environments/${f}"), "enable_github_hooks")
     ])
-    error_message = "no environment's tfvars sets enable_github_hooks; the owner flips it"
+    error_message = "only dev/dev.tfvars sets enable_github_hooks (the owner turned it on there, 2026-10-16); no other environment may"
   }
 }
 

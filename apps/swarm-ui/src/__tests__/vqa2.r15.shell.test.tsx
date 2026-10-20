@@ -193,7 +193,9 @@ describe('V237: the phone header says approvals are waiting', () => {
 })
 
 describe('V150: Recent says in words why it has no count', () => {
-  it('draws "not totalled" beside Recent, muted, and still no count mark', async () => {
+  // The words became "newest first" (QA-078, part of #1680): "not totalled"
+  // beside a tab saying "Recent 17" read as one of the two being wrong.
+  it('draws "newest first" beside Recent, muted, and still no count mark', async () => {
     const { container } = await app('/agents/live')
     const recent = await waitFor(() => {
       const k = [...container.querySelectorAll('.sk-panel .sk-kid')].find((x) => x.querySelector('span')?.textContent === 'Recent')
@@ -202,9 +204,9 @@ describe('V150: Recent says in words why it has no count', () => {
     }, WAIT)
     // MUTATION: leave the reason in the tooltip alone.
     const note = recent.querySelector('.sk-knote')
-    expect(note?.textContent).toBe('not totalled')
+    expect(note?.textContent).toBe('newest first')
     expect(recent.querySelector('.sk-cnt'), 'a count mark beside Recent').toBeNull()
-    expect(recent.getAttribute('title')).toMatch(/not counted/)
+    expect(recent.getAttribute('title')).toMatch(/nothing totals every finished agent/)
     expect(value(note!, 'color', WIDE)).toBe('var(--text-faint)')
   })
 })

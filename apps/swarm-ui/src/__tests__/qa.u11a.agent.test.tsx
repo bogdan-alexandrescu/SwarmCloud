@@ -334,7 +334,7 @@ describe('N10: the list head fits its control beside an open agent', () => {
     const said = button.getAttribute('title')!
     expect(said).toMatch(/^read \d+ s ago$/)
     expect(button.textContent).toBe(`⟳ ${said}`)
-    expect(button.getAttribute('aria-label')).toBe(`Refresh · ${said}`)
+    expect(button.getAttribute('aria-label')).toBe(`${said} · refresh`)
     // It is what gives way, with an ellipsis; the title keeps its width.
     expect(painted(button, 'text-overflow', WIDE)).toBe('ellipsis')
     expect(painted(button, 'min-width', WIDE)).toBe('0')

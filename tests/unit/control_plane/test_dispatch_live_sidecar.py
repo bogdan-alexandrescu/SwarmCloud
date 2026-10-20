@@ -44,6 +44,7 @@ import pytest
 from swarm_common.models import Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend, resolve_backend
 
+from scheduler import dispatch
 from scheduler.dispatch import WORKER_UID, GkeJobDispatcher, GkeTarget
 from scheduler.settings import SchedulerSettings
 
@@ -195,18 +196,48 @@ def test_the_containers_sum_to_the_resource_class(tenant, resource_class):
 
 
 def test_the_browser_split_follows_the_measurement(tenant):
-    """Contract request 79: worker 1 vCPU / 3 GiB, display 3 vCPU / 5 GiB.
+    """Owner decision 2026-10-20 (BROWSER-SPLIT, part of #1689): worker
+    2 vCPU / 3 GiB, display 2 vCPU / 5 GiB, of the class's 4 / 8.
 
-    The class is 4 / 8 since request 79, so the design's starting split
-    (display 5 / 10, worker 3 / 6) no longer fits inside it. Each side is
-    sized from docs/browser-startup-speed.md §11: the display peaked at 1.90
-    cores and 1.48 GiB, the worker at 0.55 cores and 0.37 GiB."""
+    It was display 3 / worker 1 since contract request 79, which ran the
+    agent's `npm ci` and dev server on one core. The display's measured peak
+    (docs/browser-startup-speed.md §11) is 1.90 cores, so 2 still covers it,
+    about 1.05x. The memory split did not move."""
     spec = _spec(_job(tenant))
     worker, display = _worker(spec), _display(spec)
     assert (_cpu(worker["resources"]["limits"]["cpu"]),
-            _gib(worker["resources"]["limits"]["memory"])) == (1, 3)
+            _gib(worker["resources"]["limits"]["memory"])) == (2, 3)
     assert (_cpu(display["resources"]["limits"]["cpu"]),
-            _gib(display["resources"]["limits"]["memory"])) == (3, 5)
+            _gib(display["resources"]["limits"]["memory"])) == (2, 5)
+
+
+def test_a_live_browser_pod_renders_two_cores_each_with_requests_equal_to_limits(tenant):
+    """The rendered quantities themselves, as the API server receives them:
+    cpu "2" on the worker and "2" on the display, both directions equal."""
+    spec = _spec(_job(tenant))
+    for container in (_worker(spec), _display(spec)):
+        r = container["resources"]
+        assert r["limits"]["cpu"] == "2", container["name"]
+        assert r["requests"]["cpu"] == "2", container["name"]
+        assert r["requests"] == r["limits"], f"{container['name']}: invariant 7"
+    assert _worker(spec)["resources"]["limits"]["memory"] == "3Gi"
+    assert _display(spec)["resources"]["limits"]["memory"] == "5Gi"
+
+
+def test_the_non_live_browser_pod_is_byte_for_byte_what_the_old_split_rendered(
+        tenant, monkeypatch):
+    """The re-split reaches only the live pod: with the switch off,
+    `claude-code-browser` renders the same bytes under the old 3 / 1 split as
+    under the new one, and its single worker keeps the whole class."""
+    new = json.dumps(_job(tenant, live=False), sort_keys=True)
+    monkeypatch.setitem(dispatch.LIVE_DISPLAY_SHARE, "browser",
+                        dispatch.LiveDisplayShare(cpu=3, memory_gib=5))
+    old = json.dumps(_job(tenant, live=False), sort_keys=True)
+    assert new == old
+    worker = _worker(_spec(json.loads(new)))
+    assert worker["resources"]["requests"] == worker["resources"]["limits"]
+    assert worker["resources"]["limits"]["cpu"] == "4"
+    assert worker["resources"]["limits"]["memory"] == "8Gi"
 
 
 def test_dev_shm_is_on_the_sidecar_only(tenant):
