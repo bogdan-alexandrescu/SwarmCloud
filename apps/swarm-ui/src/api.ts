@@ -20,7 +20,7 @@ import {
   type CallGraph, type ImpactPlan, type ModuleGraph, type SymbolSearch, type SymbolTests,
 } from './RepoGraphData'
 import type {
-  ArtifactContent, ArtifactListing, LogStream, LogStreamName, OwnerAnswer, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
+  AnswerVia, ArtifactContent, ArtifactListing, LogStream, LogStreamName, OwnerAnswer, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AdminPool, AttemptRow, AttemptsPage, TaskEventsPage, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
@@ -50,7 +50,7 @@ import type {
 // task page with no tasks are both non-empty objects.
 
 export type { Result, ApiError } from './fetch'
-export type { OwnerAnswer, OwnerAnswerVersion } from './types'
+export type { AnswerVia, OwnerAnswer, OwnerAnswerVersion } from './types'
 
 /** Fixtures, so the UI can be worked on before DNS resolves. Exported so a
  *  component that keeps its own loaders (CheckpointBrowser.tsx) reads this one
@@ -1089,6 +1089,13 @@ export interface AnswerChoice {
   question_index: number
   choice: string | null
   text: string | null
+  /**
+   * Where it was answered (ANSWER-SYNC). The console leaves it out, which the
+   * API stores as null; the plugin sends `claude-code` with its session.
+   * Neither changes who may answer.
+   */
+  via?: AnswerVia | null
+  session?: string | null
 }
 
 /**

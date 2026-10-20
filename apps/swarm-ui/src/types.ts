@@ -558,7 +558,19 @@ export interface OwnerAnswerVersion {
   text: string | null
   by: string | null
   at: string | null
+  /**
+   * Where it was answered (ANSWER-SYNC, part of #1644): `console`, or
+   * `claude-code` for a pick the plugin's swarm_task_answer posted from a
+   * Claude Code session. Null on an answer stored before it was recorded, and
+   * OPTIONAL: an API older than ANSWER-SYNC does not send it.
+   */
+  via?: AnswerVia | null
+  /** The Claude Code session it was answered in, or null. Optional as `via` is. */
+  session?: string | null
 }
+
+/** `AnswerBody.via` in agent_questions.py: where an answer was given. */
+export type AnswerVia = 'console' | 'claude-code'
 
 /**
  * The owner's answer to one question (`codec.owner_answer_to_api`), with the

@@ -12,9 +12,12 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import STYLES from '../styles.css?raw'
+import DETAILS_CSS from '../styles/details.css?raw'
 import type { TaskQuestions } from '../api'
 import type { Result } from '../fetch'
 import type { NotificationFeed } from '../api'
+import { cascade } from './cssgate'
 import { task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -265,6 +268,83 @@ describe('answering a question on the card', () => {
 
     await waitFor(() => expect(card.textContent).toContain('The answer was not saved'))
     expect(within(group).getByRole('radio', { name: /per task/ }).getAttribute('aria-checked')).toBe('true')
+  })
+})
+
+// ANSWER-SYNC-UI (part of #1644, owner decision 2026-10-19, "Plugin records
+// it, marked as from Claude Code"): an answer the plugin's swarm_task_answer
+// posted carries `via: 'claude-code'` and the session, and the card says so
+// under the answer. A console answer, or one stored before `via` existed,
+// looks as it always did.
+// MUTATIONS: draw the line for every answer; print the whole session id; drop
+// the line out of the question's column, where nothing wraps it at 390 px.
+describe('an answer recorded from Claude Code', () => {
+  // A Claude Code session id is a UUID; the card shows its first 8 characters.
+  const SESSION = 'ce05454f-6d0b-4a8e-9a63-2f1c0d7e5b21'
+
+  function answeredVia(via: string | null, session: string | null): TaskQuestions {
+    const answer = {
+      question_index: 0,
+      question: 'Per task or per workflow?',
+      choice: 'per workflow',
+      text: null,
+      by: 'owner@example.com',
+      at: new Date(Date.now() - 3 * 3600_000).toISOString(),
+      via,
+      session,
+      history: [],
+    }
+    return { ...QUESTIONS, may_answer: true, questions: [{ ...QUESTIONS.questions[0]!, answer }] } as TaskQuestions
+  }
+
+  async function savedCard(data: TaskQuestions): Promise<HTMLElement> {
+    api.loadQuestions.mockResolvedValue(ok(data))
+    render(<QuestionsCard task={asked()} />)
+    const card = await screen.findByRole('region', { name: 'Questions for you' })
+    await within(card).findByLabelText('Your answer to question 1')
+    return card
+  }
+
+  it('shows "answered in Claude Code" with the session’s first 8 characters and the time', async () => {
+    const card = await savedCard(answeredVia('claude-code', SESSION))
+    const line = card.querySelector('.qc-via')
+    expect(line, 'no Claude Code line under the answer').not.toBeNull()
+    expect(line!.textContent).toContain('answered in Claude Code')
+    expect(line!.textContent).toContain('(session ce05454f)')
+    expect(line!.textContent).not.toContain(SESSION.slice(0, 9))
+    expect(line!.textContent).toContain('3h ago')
+    expect(line!.className).toContain('dt-note')
+  })
+
+  it('shows no line for a console answer', async () => {
+    const card = await savedCard(answeredVia('console', null))
+    expect(card.querySelector('.qc-via')).toBeNull()
+    expect(card.textContent).not.toContain('Claude Code')
+  })
+
+  it('shows no line for an answer stored before `via` existed', async () => {
+    const card = await savedCard(answeredVia(null, null))
+    expect(card.querySelector('.qc-via')).toBeNull()
+    expect(card.textContent).not.toContain('Claude Code')
+  })
+
+  it('keeps the line inside the card at 390 px', async () => {
+    const card = await savedCard(answeredVia('claude-code', SESSION))
+    const line = card.querySelector('.qc-via')!
+    expect(line).not.toBeNull()
+    expect(card.contains(line)).toBe(true)
+    // Under the answer, in the question's own column, which may shrink.
+    const column = line.closest('.qc-q')!
+    expect(column, 'the line is not in the question’s column').not.toBeNull()
+    const sheet = `${STYLES}\n${DETAILS_CSS}`
+    const env = { width: 390 }
+    const shrink = cascade(sheet, column, 'min-width', env)
+    expect(shrink.unsupported).toEqual([])
+    expect(shrink.winner?.value).toBe('0')
+    // A long word in it still breaks rather than running past the card's edge.
+    const wrap = cascade(sheet, line, ['overflow-wrap', 'word-wrap'], env)
+    expect(wrap.unsupported).toEqual([])
+    expect(wrap.winner?.value).toBe('anywhere')
   })
 })
 
