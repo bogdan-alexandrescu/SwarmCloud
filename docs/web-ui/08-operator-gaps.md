@@ -222,13 +222,13 @@ was opened and read.
 7. **`operator-gaps.md` understates what is already indexed.** It says a usage-over-a-month
    chart "needs a composite index on `(tenant_id, created_at)`". That index exists:
    `attempts-tenant-created` at `terraform/modules/firestore/indexes.tf:171-178`. So do
-   `attempts-agent-created` (`:162-169`), `leases-released-expires` (`:143-150`),
+   `attempts-task-created` (`:162-169`), `leases-released-expires` (`:143-150`),
    `leases-state-dispatch-deadline` (`:133-140`), `leases-tenant-created` (`:152-159`) and
    the `COLLECTION_GROUP` `events-tenant-at` (`:181-188`). **Several screens the brief
    calls blocked on indexing are blocked only on a route.** No new composite index is
    required by anything in this section; in particular the admin `/stats` tenant-scoped
    count (`state == X AND tenant_id == Y`) is served by the `(tenant_id, state, …)` prefix
-   of `agents-tenant-state-created` (`indexes.tf:85-93`).
+   of `tasks-tenant-state-created` (`indexes.tf:85-93`).
 8. **An admin's `GET /v1/stats` is twenty-four aggregation queries.**
    `count_tasks_by_state` (`store.py:524-533`) issues one COUNT per `TaskState` — twelve
    (`states.py:18-31`) — and `service.stats()` calls it twice when `ctx.is_admin`: once

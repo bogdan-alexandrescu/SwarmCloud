@@ -258,7 +258,7 @@ cost_usd: float | None = None
 
 Optional, defaulting to `None`, so every existing document remains valid and no
 migration is required. `None` means "not reported", which is genuinely different
-from zero -- a mock agent reports nothing and did not cost nothing by accident.
+from zero -- a mock task reports nothing and did not cost nothing by accident.
 
 ### What it costs, and what it buys
 
@@ -2566,8 +2566,8 @@ The request as it was filed follows, unchanged.
 ### What is true today
 
 The Timeline's "Why tasks failed" and "Why tasks were cancelled" cards need one
-fixed class per ended agent. `Task` carries `state` and a free-text
-`last_error`, and nothing else about why the agent ended. So
+fixed class per ended task. `Task` carries `state` and a free-text
+`last_error`, and nothing else about why the task ended. So
 `swarm_api.outcomes.classify_failure` and `cancel_cause` infer the class from
 text written by four writers the API image does not carry:
 
@@ -2608,7 +2608,7 @@ class EndCause(str, Enum):
 
 Add `end_cause: EndCause | None = None` to `Task`, set by the four terminal
 writers beside `completed_at`. `classify_failure` would then read the field
-first and fall back to the text only for agents that ended before it existed.
+first and fall back to the text only for tasks that ended before it existed.
 
 ### What it would break if accepted
 
@@ -9188,7 +9188,7 @@ The request as it was filed follows, unchanged.
 
 ### What is true today
 
-`_ALLOWED` lets an agent reach SUCCEEDED only from RUNNING. Every success
+`_ALLOWED` lets a task reach SUCCEEDED only from RUNNING. Every success
 therefore passes through a lease, a dispatch and a worker, including the one
 success that needs none of them: the gated integrator of an implement ->
 review -> fix workflow whose review said MERGE. That step runs no agent
@@ -9222,13 +9222,13 @@ In `apps/common/swarm_common/states.py`, the PARKED row of `_ALLOWED`:
 
 Nothing that exists writes the transition until this is applied. Once it is:
 
-* a SUCCEEDED agent with no attempt and no lease exists. The readers that
+* a SUCCEEDED task with no attempt and no lease exists. The readers that
   count attempts (the UI's attempt list, the outcome ledger, the MCP
   observer) show none, which is true; `result_summary.published_by:
   "control_plane"` says why;
 * `scripts/lib/check-contract-parity.sh` has no restatement of `_ALLOWED`
   to update (it holds the state names, not the edges);
-* the reconciler repairs leases and live states; a terminal agent with no
+* the reconciler repairs leases and live states; a terminal task with no
   lease is outside every repair it makes.
 
 ### If it is declined
@@ -9248,12 +9248,12 @@ writer beside the scheduler, which invariant 2 exists to prevent.
 - **Invariants 2 and 3.** No pool is reserved or released: nothing was
   reserved.
 - **Invariant 5.** No attempt exists, so there is no generation to fence.
-  swarm-api's write is guarded on its own claim on the agent, taken in a
+  swarm-api's write is guarded on its own claim on the task, taken in a
   transaction on the same PARKED state, and the scheduler does not promote a
   claimed step until the claim is older than its timeout.
 - **Invariant 9.** The pull request is opened with the step's own tenant's
   `-git` token, on the step's own repository, from the branch of the
-  step's own upstream agent in the same tenant and workflow.
+  step's own upstream task in the same tenant and workflow.
 
 ---
 
