@@ -91,6 +91,35 @@ variable "forge_broker" {
   }
 }
 
+variable "state_via_api_tenants" {
+  description = <<-EOT
+    Tenant ids whose workers reach their attempt's state ONLY through
+    swarm-api's state routes, never direct Firestore (#1457,
+    docs/design/tenant-settings-integrity.md §4.6, ISO-SCHED phase 2).
+    Rendered into swarm-scheduler as SWARM_STATE_VIA_API_TENANTS; the
+    scheduler dispatches every attempt of a listed tenant, children included,
+    with SWARM_STATE_VIA_API=true, SWARM_API_URL and the attempt's
+    registration nonce. Default [] = nobody switched, and an unlisted tenant
+    is dispatched exactly as before. Dev's tenants first, then every tenant;
+    only then is the worker's Firestore role removed (phase 3). Needs
+    enable_child_tasks: a switched worker opens its attempt by spending the
+    child path's nonce at state/open, and without SWARM_CHILD_KEY it cannot
+    start.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = length(var.state_via_api_tenants) == 0 || var.enable_child_tasks
+    error_message = "state_via_api_tenants needs enable_child_tasks: a switched worker spends the child path's registration nonce at state/open, so without SWARM_CHILD_KEY every attempt of a listed tenant would refuse to start."
+  }
+
+  validation {
+    condition     = alltrue([for t in var.state_via_api_tenants : can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", t))])
+    error_message = "every state_via_api_tenants entry must be a tenant id (lowercase letters, digits and inner hyphens). \"*\" is not supported: list the tenants."
+  }
+}
+
 variable "swarm_api_url" {
   description = <<-EOT
     Base URL of the swarm-api Cloud Run service, for the SCHEDULER's

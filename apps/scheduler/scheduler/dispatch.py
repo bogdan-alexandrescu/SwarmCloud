@@ -1440,7 +1440,21 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         or consumes_workspace_secrets(task.runner_profile, task.input)
         or names_mcp_servers(task.runner_profile, task.input)
     )
-    keyed = not is_child or (forge_broker and needs_user_slot(task)) or other_key_use
+    # THE STATE SWITCH (docs/design/tenant-settings-integrity.md §4.6; ISO-SCHED
+    # phase 2, part of #1457). A switched worker opens its attempt at
+    # swarm-api's `state/open` by spending this nonce, before any other state
+    # call, so EVERY attempt of a switched tenant is keyed -- a child included,
+    # which on its own would get none. The nonce is still this attempt's own
+    # tuple and generation, so it opens nothing else; and a child keyed only
+    # for this still gets SWARM_CHILD_PATH=false below, because the state
+    # routes are not `other_key_use`. Membership is the tenant id exactly.
+    state_via_api = state_via_api_on(settings, tenant_id=task.tenant_id)
+    keyed = (
+        state_via_api
+        or not is_child
+        or (forge_broker and needs_user_slot(task))
+        or other_key_use
+    )
     if child_key and api_url and keyed:
         from .children import registration_nonce
 
@@ -1458,7 +1472,33 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
             env["SWARM_API_AUDIENCE"] = api_audience
         if is_child and not other_key_use:
             env["SWARM_CHILD_PATH"] = "false"
+    # The switch itself, OUTSIDE the key's condition: a deployment missing the
+    # key or the address still tells a switched worker it is switched, and the
+    # worker refuses to start without a nonce (agent_worker.config, exit 78)
+    # rather than quietly taking the direct Firestore path. An unswitched
+    # tenant is written nothing -- not even "false" -- because a Cloud Run
+    # execution override merges with the Job's own environment, and so that
+    # its attempts render exactly what they rendered before the switch.
+    if state_via_api:
+        env["SWARM_STATE_VIA_API"] = "true"
+        if api_url:
+            env["SWARM_API_URL"] = api_url
+            api_audience = str(getattr(settings, "swarm_api_audience", "") or "").strip()
+            if api_audience:
+                env["SWARM_API_AUDIENCE"] = api_audience
     return env
+
+
+def state_via_api_on(settings: Any, *, tenant_id: str) -> bool:
+    """Whether `tenant_id`'s attempts reach their state through swarm-api's routes.
+
+    The scheduler's `state_via_api_tenants` (SWARM_STATE_VIA_API_TENANTS), by
+    exact tenant id: never a prefix, a pattern or anything a task carries
+    (invariant 10). The tenant id is the task's, the one its lease, its nonce
+    and its worker's identity are bound to.
+    """
+    switched = getattr(settings, "state_via_api_tenants", None) or ()
+    return isinstance(tenant_id, str) and tenant_id in frozenset(switched)
 
 
 #: The GKE metadata server's link-local address. On a Workload Identity node
