@@ -4,7 +4,9 @@
 
 Cloud Run Jobs was chosen as the primary backend because it has no nodes, no
 autoscaler and no node upgrades — fewer mechanisms that can end a running agent
-for reasons unrelated to the agent.
+for reasons unrelated to the agent. Since 2026-10-10 every agent profile but
+`mock` runs on GKE Autopilot instead ([architecture.md](architecture.md) §3,
+Dispatch), where those mechanisms exist and checkpointing is what bounds them.
 
 **What this section used to say, and why it is wrong.** It said the resource
 classes request Cloud Run **ephemeral (second-generation) disk**; that the

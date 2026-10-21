@@ -24,7 +24,7 @@ those two sentences, at which point they are the only options left.
           | writes tasks                      |        | dispatch
           v                                   v        v
    +---------------------------+     Cloud Run Jobs   GKE Autopilot
-   |  Firestore database swarm |      (primary)       (browser/GPU/>32GiB)
+   |  Firestore database swarm |   (mock, fallback)  (every other agent)
    |  tasks leases pools quota |          |                 |
    |  tenants attempts workflows|         v                 v
    +---------------------------+     agent-worker      agent-worker
@@ -47,7 +47,7 @@ agent, as a Cloud Run Job execution or a GKE Job pod.
 | `swarm-scheduler` | Cloud Run service | Pub/Sub push + 1-minute Cloud Scheduler tick | `apps/scheduler/` |
 | `swarm-quota-broker` | Cloud Run service | workers, scheduler, quota-refresh tick | `apps/quota-broker/` |
 | `swarm-reconciler` | Cloud Run service | Cloud Scheduler tick | `apps/reconciler/` |
-| `agent-worker` | Cloud Run Job execution / GKE Job pod | the scheduler's dispatcher | `apps/agent-worker/` |
+| `agent-worker` | GKE Job pod (every agent profile but `mock`) / Cloud Run Job execution (`mock`, and the fallback Jobs) | the scheduler's dispatcher | `apps/agent-worker/` |
 | shared contract | imported by all of the above | — | `apps/common/swarm_common/` (FROZEN) |
 
 ---
@@ -122,11 +122,31 @@ or the 1-minute safety tick.
 
 ### Dispatch
 
-Strictly downstream of the lease. Cloud Run Jobs is the default;
-`browser` goes to GKE Autopilot because Chromium needs a `/dev/shm` Cloud Run
-will not size, and `claude-code` since 2026-10-08 (contract request 53) because
-it starts there in about 23 s against Cloud Run's 128 s median. Every dispatch
-failure hands the capacity straight back.
+Strictly downstream of the lease. Every dispatch failure hands the capacity
+straight back. Where each profile runs, as the catalogue
+(`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`) declares it and as
+the 2026-10-21 system analysis found it running (read-only `gcloud` and
+`kubectl`, epic #1822):
+
+* **GKE Autopilot runs nearly every agent:** `browser` (Chromium needs a
+  `/dev/shm` Cloud Run will not size), `claude-code` since 2026-10-08
+  (contract request 53, a start of about 23 s against Cloud Run's 128 s
+  median), `indexer`, `generic`, `codex` and `merge` since 2026-10-10
+  (contract requests 63-66, for their internet path), and
+  `claude-code-browser`.
+* **Cloud Run Jobs runs `mock`**, which reaches no internet, the disabled
+  `post-verdict` and `claude-code-review`, and the fallback Jobs Terraform
+  still keeps for `claude-code`, `indexer`, `generic`, `codex` and `merge`
+  (`cloud_run_fallback_profiles` in `terraform/infra/locals.tf`), which
+  nothing dispatches to while those profiles name GKE.
+
+The workspace differs by backend. On GKE the workspace, `/tmp` and HOME are
+each a disk `emptyDir` counted against the pod's ephemeral-storage limit
+(`apps/scheduler/scheduler/dispatch.py::GkeDisk`), plus a 20 GiB cache PVC
+(`apps/scheduler/scheduler/dispatch.py::CACHE_VOLUME_GIB`) for tool caches,
+which is a network disk and never an eviction. **tmpfs workspaces apply to
+Cloud Run only**: there the workspace is a memory-backed slice of the
+container's memory (§5, "A known risk, accepted deliberately").
 
 Cloud Run sets the service account **on the Job resource**, and it cannot be
 overridden per execution. One shared Job would therefore run every tenant's
@@ -253,7 +273,14 @@ cap it" must never look the same.
 These are changes from the brief this platform was built against. Each is here
 because the alternative could not satisfy "no preemption, no OOM, no restarts".
 
-### Cloud Run Jobs is the primary backend, not GKE Autopilot
+### Cloud Run Jobs was chosen as the primary backend; GKE now runs nearly every agent
+
+This was the platform's first decision, and the reasoning below still says
+what each backend risks. It no longer describes where the work runs: since
+2026-10-10 every agent profile but `mock` runs on GKE Autopilot (§3,
+Dispatch), and `CONTRACT.md`'s "Primary backend Cloud Run Jobs" line is
+drift, filed as a request in
+[contract-change-requests.md](contract-change-requests.md) rather than edited.
 
 GKE Autopilot has nodes; nodes have autoscalers, upgrades, repairs and pressure
 eviction. Every one of those is a mechanism that can end a running agent for
@@ -289,7 +316,8 @@ anything but `ON_DEMAND_ONLY`. See [cost-control.md](cost-control.md).
 Memory and ephemeral storage are one number on every container: request ==
 limit. Memory is not compressible, so a container that uses more than it
 requested is the one Autopilot kills when the node comes under pressure, and
-the workspace is a tmpfs inside that memory, so the kill takes the work with
+the kill takes the work with it: on Cloud Run because the workspace is a tmpfs
+inside that memory, on GKE because the pod and its disk `emptyDir`s go with
 it. A memory burst that usually works is one that fails on the busiest day.
 
 CPU is the exception (contract request 108, the runner-sizes design's RS-1,
@@ -335,7 +363,7 @@ The classes are about 2x that, because an agent's peak is not its average and
 the cost of being wrong is an OOM kill. Their code defaults
 (`RESOURCE_CLASSES`), which run whenever no admin has saved a size:
 
-| class | CPU request | CPU limit | memory (request = limit) | workspace tmpfs (of the memory) | units |
+| class | CPU request | CPU limit | memory (request = limit) | Cloud Run workspace tmpfs (of the memory) | units |
 |---|---|---|---|---|---|
 | `standard` | 4 | 8 | 8 GiB | 4 GiB | 1 |
 | `browser` | 4 | 8 | 8 GiB | 4 GiB | 1 |
@@ -407,6 +435,11 @@ provider cannot express it — `empty_dir.medium` accepts only `"MEMORY"` — so
 workspace is a tmpfs slice of the container's memory (`standard` ~4 GiB of its
 8, `browser` ~4 GiB of its 8, `large` ~16 GiB of its 32) and the deployment runs on the fully-GA
 path, **with** live migration.
+
+That tmpfs is Cloud Run only. On GKE, where every agent profile but `mock`
+now runs, the workspace, `/tmp` and HOME are disk `emptyDir`s and the tool
+caches a 20 GiB PVC (§3, Dispatch); live migration does not apply there, and
+the node-side ways to lose an attempt do.
 
 Checkpointing is not relaxed on that news. Live migration covers infrastructure
 moves. It does nothing about a quota park-and-exit, a cancellation, a reconciler

@@ -22,10 +22,42 @@ document is really about:
 |---|---|---|---|
 | A single worker/execution | ≤ 120 s of agent work | minutes | checkpoint restore on a new attempt |
 | A control-plane service | 0 | minutes | redeploy the previous digest |
-| Firestore data | last export | ~1 h | `purge-data.sh` pre-delete export, or scheduled export |
+| Firestore data | any minute in the last 7 days (point-in-time recovery); nothing once the database itself is deleted | ~1 h | point-in-time restore into a NEW database id (§4) |
 | Terraform state file | last write | minutes | bucket object versioning |
 | Whole environment | as above | ~1–2 h | `make bootstrap` -> `up` |
 | Provider keys | n/a | manual | re-registered by an admin |
+
+### Firestore's recovery point, as read on 2026-10-21
+
+This row said "last export" until 2026-10-21. The system analysis of that day
+(epic #1822) read the live project with read-only `gcloud` and found that there
+is no export to fall back to:
+
+* **Point-in-time recovery is on, for 7 days.** The database `swarm` keeps a
+  version of every document for the last 7 days, readable at any whole
+  minute (`point_in_time_recovery`, default `true`, in
+  `terraform/modules/firestore/variables.tf`). That is the recovery point
+  today: any minute of the last week.
+* **No backup schedule exists.**
+  `gcloud firestore backups schedules list --database=swarm` returned `[]`.
+* **No export has ever been taken.** `gs://swarm-artifacts-saga-agents-staging/backups/`
+  does not exist, and that prefix is where `purge-data.sh` writes its
+  pre-delete export, so no purge with a backup has ever completed either.
+* **Point-in-time versions are deleted with the database**, and delete
+  protection is off: dev sets `deletion_protection = false`
+  (`terraform/environments/dev/dev.tfvars`), which `terraform/infra/main.tf`
+  passes to the database as its delete protection. One `gcloud firestore
+  databases delete` (or a console click) removes the data and its 7 days of
+  history together, and nothing else holds a copy.
+* **`deletion_policy = "ABANDON"` protects only against `terraform destroy`**
+  (`terraform/infra/main.tf`, `module "firestore"`): Terraform forgets the
+  database instead of deleting it. It does nothing about a delete made
+  anywhere else.
+
+Whether to turn on delete protection and a backup schedule (Firestore's
+managed daily or weekly backups, which outlive a deleted database) is the
+owner's decision, on #1818. Until it is made, the honest RPO for "the database
+was deleted" is total loss.
 
 ---
 
@@ -108,8 +140,12 @@ While it is broken:
 
 ### Prevention
 
+What protects the data today is point-in-time recovery and nothing else (§1,
+read 2026-10-21): no backup schedule, no export ever taken, delete protection
+off. Backups and delete protection are the owner's decision on #1818.
+
 `purge-data.sh` exports the database to GCS before deleting anything, unless
-`--no-backup`. For scheduled protection, run managed exports:
+`--no-backup`. A one-off export, which outlives the database:
 
 ```bash
 gcloud firestore export "gs://${ARTIFACT_BUCKET}/backups/$(date -u +%Y%m%d)" \
@@ -118,18 +154,53 @@ gcloud firestore export "gs://${ARTIFACT_BUCKET}/backups/$(date -u +%Y%m%d)" \
 
 ### Restore
 
+**Always into a NEW database id, never `swarm`.** A restore lands beside the
+live database, is checked there, and only then becomes live by pointing the
+services at it.
+
+From point-in-time recovery (any whole minute in the last 7 days, while the
+database still exists): export the database as it was at that minute, then
+import the export into a new database.
+
 ```bash
-gcloud firestore import "gs://${ARTIFACT_BUCKET}/backups/20260915" \
-  --database=swarm --project "$PROJECT_ID"
+at="2026-10-21T08:00:00Z"              # a whole minute, inside the last 7 days
+dest="swarm-restore-$(date -u +%Y%m%d%H%M)"
+
+gcloud firestore export "gs://${ARTIFACT_BUCKET}/backups/pitr-${at}" \
+  --database=swarm --snapshot-time="$at" --project "$PROJECT_ID"
+
+gcloud firestore databases create --database="$dest" \
+  --location="$REGION" --type=firestore-native --project "$PROJECT_ID"
+
+gcloud firestore import "gs://${ARTIFACT_BUCKET}/backups/pitr-${at}" \
+  --database="$dest" --project "$PROJECT_ID"
 ```
 
-**Import is additive and does not remove documents written since the export.**
+From an export already in the bucket, the same import into a new id:
+
+```bash
+gcloud firestore import "gs://${ARTIFACT_BUCKET}/backups/20260915" \
+  --database=swarm-restore-20260915 --project "$PROJECT_ID"
+```
+
+Then read the new database before anything uses it. Making it live is the
+step nobody has drilled (2026-10-21), and it is not a one-line tfvars edit:
+`firestore_database` (`terraform/infra/variables.tf`) is both the
+`FIRESTORE_DATABASE` every service reads (`terraform/infra/locals.tf`) and the
+id of the database `module "firestore"` manages (`terraform/infra/main.tf`).
+Changing it makes Terraform abandon `swarm` (`deletion_policy = "ABANDON"`)
+and try to create the restored id, which already exists, so the restored
+database has to be imported into the module's state first and the plan read
+before any apply.
+
+**Never import into `swarm` itself. Import is additive and does not remove
+documents written since the export.**
 That matters for the pool documents: importing an old `pools/*` over a live
 platform restores stale `active` counts and desynchronises capacity accounting
 from the live leases. If you must restore while work is in flight:
 
 1. `./scripts/pause-swarm.sh --all --drain` and wait for `RUNNING` to reach zero;
-2. import;
+2. import into the new database id and point the services at it;
 3. reconcile pools against live leases — with nothing running, every `active`
    should be 0;
 4. `./scripts/resume-swarm.sh`.
@@ -271,7 +342,7 @@ every provider the command did not name. See
 [operations.md §1](operations.md#1-first-deployment).
 
 Roughly an hour, most of it Cloud Build and GKE provisioning. Then, if you have a
-Firestore export, import it (paused, per §4).
+Firestore export, import it into a new database id (paused, per §4).
 
 ---
 
