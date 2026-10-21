@@ -4,7 +4,7 @@ into, per workflow, and the old job ids kept as name-keepers.
 A module of its own, not test_ci_fold.py's, because tests that import
 test_ci_gate.py read it too (test_ci_fold.py imports that chain), and
 because every test that reads a folded check's steps -- the actionlint file
-list, the lock check, the trivy gate -- reads them through `check_steps`, so
+list, the lock check -- reads them through `check_steps`, so
 the layout is stated once. test_ci_fold.py holds the workflows to it.
 """
 
@@ -28,9 +28,11 @@ FOLDED: dict[str, tuple[str, dict[str, str]]] = {
         "manifests": "kubernetes manifests",
         "python-checks": "lock / contract / format / bridge install",
     }),
+    # `trivy (repo)` (`filesystem`) is not folded: it uploads SARIF, so it is
+    # the one job that holds security-events: write, and the folded job runs
+    # repository scripts (owner decision 2026-10-21 on PR 1813).
     "security.yml": ("checks", {
         "secrets": "secret scan",
-        "filesystem": "trivy (repo)",
         "policy": "platform policy assertions",
     }),
     "terraform.yml": ("offline", {
@@ -57,7 +59,7 @@ def check_steps(name: str, job_id: str) -> list[dict]:
     """The steps that run old job `job_id`'s check, in its folded job.
 
     Other tests that read a folded check's steps (the actionlint file list,
-    the lock check, the trivy gate) read them through this, so the layout is
+    the lock check) read them through this, so the layout is
     stated once."""
     steps = [s for s in host_job(name).get("steps") or [] if str(s.get("id", "")).startswith(f"{job_id}-")]
     assert steps, f"{name}: no `{job_id}-*` step in `{FOLDED_HOSTS[name]}` {PATCH_NOTE}"

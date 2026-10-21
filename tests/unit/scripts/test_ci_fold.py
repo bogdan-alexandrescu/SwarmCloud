@@ -10,8 +10,9 @@ best) and a slot under the pool's cap. The owner approved folding them
   * application.yml: `release workflow wiring (actionlint)`, `ruff check`,
     `kubernetes manifests` and `lock / contract / format / bridge install`
     run as steps of `quick-checks`;
-  * security.yml: `secret scan`, `trivy (repo)` and `platform policy
-    assertions` run as steps of `checks`;
+  * security.yml: `secret scan` and `platform policy assertions` run as
+    steps of `checks`; `trivy (repo)` stays its own job, the one that holds
+    security-events: write (owner decision 2026-10-21 on PR 1813);
   * terraform.yml: `fmt / validate / tflint` and `terraform test` run as
     steps of `offline`.
 
@@ -85,9 +86,9 @@ NAMES_BEFORE = {
 #: job runs, per workflow (a matrix counts once: the unit and vitest shards
 #: are untouched, so they add the same number before and after).
 VMS_BEFORE = {"application.yml": 15, "security.yml": 4, "terraform.yml": 4}
-VMS_AFTER = {"application.yml": 10, "security.yml": 2, "terraform.yml": 2}
+VMS_AFTER = {"application.yml": 10, "security.yml": 3, "terraform.yml": 2}
 #: The claim in docs/ci.md and the pull request: this many fewer VMs a run.
-FEWER_VMS = 9
+FEWER_VMS = 8
 
 needs_jq = pytest.mark.skipif(
     shutil.which("jq") is None or shutil.which("bash") is None, reason="the verdict step needs bash and jq"

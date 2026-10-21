@@ -185,7 +185,7 @@ workflow:
 | workflow | folded job | the checks it runs as steps |
 |---|---|---|
 | `application.yml` | `quick-checks` | `release workflow wiring (actionlint)` · `ruff check` · `kubernetes manifests` · `lock / contract / format / bridge install` |
-| `security.yml` | `checks` | `secret scan` · `trivy (repo)` · `platform policy assertions` |
+| `security.yml` | `checks` | `secret scan` · `platform policy assertions` |
 | `terraform.yml` | `offline` | `fmt / validate / tflint` · `terraform test` |
 
 Three jobs that run no check of their own move to `ubuntu-24.04` without
@@ -200,11 +200,11 @@ same before and after):
 | workflow | before | after |
 |---|---:|---:|
 | `application.yml` | 15 | 10 |
-| `security.yml` | 4 | 2 |
+| `security.yml` | 4 | 3 |
 | `terraform.yml` | 4 | 2 |
-| **all three** | **23** | **14** |
+| **all three** | **23** | **15** |
 
-That is 9 fewer VMs a run when the change reaches terraform.yml, and 7 fewer
+That is 8 fewer VMs a run when the change reaches terraform.yml, and 6 fewer
 when it does not (terraform.yml is path-filtered).
 
 **Every check still fails the run on its own.** Each folded step is named
@@ -225,8 +225,9 @@ and a skip would read as a pass, which is why it is `always()` and never
 inherits the default `success()`. The ids and names stay because something
 reads each one:
 
-* `secret scan`, `trivy (repo)` and `platform policy assertions` are required
-  by ruleset `main-protection` (24160219). Its five contexts were read from
+* `secret scan` and `platform policy assertions` are required by ruleset
+  `main-protection` (24160219), as is `trivy (repo)`, which stays a job of its
+  own (below). Its five contexts were read from
   this repository (`REQUIRED_CONTEXTS` in
   [`test_merge_queue_workflows.py`](../tests/unit/scripts/test_merge_queue_workflows.py),
   the ruleset read of 2026-10-01), not live;
@@ -239,7 +240,13 @@ reads each one:
 * `validate` is what main's `plan` needs, and ci-gate fails on any failed job
   of a terraform.yml run.
 
-**What did not fold, and why.** `what this change reaches` decides what every
+**What did not fold, and why.** `trivy (repo)` is sub-minute too, but it
+uploads SARIF, so it is the one security.yml job that holds
+`security-events: write`. Folded into `checks`, that permission would reach the
+`secret scan` and `platform policy assertions` steps, which run repository
+scripts a lane's pull request can edit (`scripts/destroy.sh --self-test`).
+Owner decision 2026-10-21 on PR 1813: one VM a run buys least privilege, and
+`checks` holds `contents: read` only. `what this change reaches` decides what every
 other job runs, so nothing can start until it ends; checks folded into it
 would hold the shards back. `ci-gate` and `record the tested tree` check the
 repository out and run scripts (ci-gate also waits for terraform.yml), which

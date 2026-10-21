@@ -57,25 +57,81 @@ env:
 # with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
 jobs:
   filesystem:
-    # NAME-KEEPER (CI-FOLD, #1799): the `trivy (repo) · ...` steps of
-    # `checks` run the check; this passes only on its verdict `success`.
+    # NOT FOLDED, on purpose (owner decision 2026-10-21 on PR 1813): this is
+    # the one check that uploads SARIF, so it is the one job that holds
+    # security-events: write. Folded into `checks`, that permission would
+    # reach `secret scan` and `platform policy assertions`, which run
+    # repository scripts (scripts/destroy.sh --self-test) a lane's pull
+    # request can edit. One VM a run buys least privilege.
     name: trivy (repo)
-    runs-on: ubuntu-24.04
-    needs: checks
-    if: always()
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # Uploads SARIF to code scanning: the only reason this job holds
+    # security-events: write.
+    permissions:
+      contents: read
+      security-events: write
     steps:
-      - name: the folded check passed in `checks`
-        env:
-          CHECK: trivy (repo)
-          VERDICT: ${{ needs.checks.outputs.filesystem }}
+      - uses: actions/checkout@v5
+
+      - name: install trivy
+        # Explicit and pinned, not aquasecurity/trivy-action: that action's
+        # setup restores its binary from actions/cache at /home/runner/.local/bin,
+        # which exists on GitHub's image but not on the self-hosted VM, so the
+        # cache "hit" extracted nowhere and `trivy` was missing (exit 127, then
+        # no trivy-fs.sarif). The install goes into the job's temp dir (the
+        # self-hosted runner user cannot write /usr/local/bin) and works the same
+        # on both runner kinds.
         run: |
           set -euo pipefail
-          if [ "${VERDICT}" = "success" ]; then
-            echo "'${CHECK}' passed in its folded job"
-            exit 0
+          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
+            | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      - name: trivy filesystem scan
+        # Report everything (exit 0); the gate is the step after the upload.
+        run: |
+          set -euo pipefail
+          trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL \
+            --ignore-unfixed --format sarif --output trivy-fs.sarif \
+            --exit-code 0 --no-progress .
+
+      - name: upload SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      - name: fail on fixable HIGH/CRITICAL new against the base branch
+        # Only findings the base branch's scan of the same target does not
+        # have, compared by rule id + package + target, never by line (PR 1186
+        # had main's alerts re-attributed to its edited FROM lines; #1194).
+        # No base (main's push, schedule): every finding fails. Every finding
+        # is still in the Security tab above. scripts/trivy-new-findings.sh
+        # says why.
+        #
+        # A LANE PUSH (`swarm/**`) compares with main's tip, the base its pull
+        # request will have: with no base, every finding main already carries
+        # would fail it, and the merge step holds a red push run at the head
+        # as red. A tip that cannot be read fails here, never "no base".
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          base="${BASE_SHA}"
+          if [ -z "${base}" ] && [ "${EVENT}" = "push" ] && [ "${REF}" != "refs/heads/main" ]; then
+            tip="$(git ls-remote origin refs/heads/main)" \
+              || { echo "::error::could not read main's tip to compare this lane push with"; exit 1; }
+            base="$(printf '%s\n' "${tip}" | awk '$2 == "refs/heads/main" { print $1 }')"
+            if ! printf '%s' "${base}" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "::error::main's tip read as '${base}', not a commit; nothing to compare this lane push with"
+              exit 1
+            fi
+            echo "lane push: comparing with main's tip ${base}"
           fi
-          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
-          exit 1
+          scripts/trivy-new-findings.sh gate --base "${base}"
 
   secrets:
     # NAME-KEEPER (CI-FOLD, #1799): the `secret scan · ...` steps of
@@ -214,29 +270,28 @@ jobs:
 
   checks:
     # SUB-MINUTE CHECKS SHARE A JOB (CI-FOLD, #1799; owner approval
-    # 2026-10-21; docs/ci.md "Sub-minute checks share a job"). `secret scan`,
-    # `trivy (repo)` and `platform policy assertions` -- three of the
-    # ruleset's required checks -- each paid a VM create and boot (~52 s) for
-    # under a minute of work. They run here as steps named `<the old job's
+    # 2026-10-21; docs/ci.md "Sub-minute checks share a job"). `secret scan`
+    # and `platform policy assertions` -- two of the ruleset's required
+    # checks -- each paid a VM create and boot (~52 s) for under a minute of
+    # work. `trivy (repo)` stays its own job (`filesystem`, above), so this one
+    # holds no write permission. They run here as steps named `<the old job's
     # name> · <what it does>`, every one `!cancelled()` so one check failing
     # never hides another's answer, and any failed step fails this job. The
     # `verdict` step gives each check one result, and its old job id --
-    # `secrets`, `filesystem`, `policy` -- stays as a name-keeper on
+    # `secrets`, `policy` -- stays as a name-keeper on
     # ubuntu-24.04 that reports it under the required name.
     #
     # Step ids are the contract: `setup-*` is the shared setup, every step of
     # a check is `<old job id>-*`, and the last is `verdict`
     # (tests/unit/scripts/test_ci_fold.py).
-    name: sub-minute checks (secret scan, trivy, policy)
+    name: sub-minute checks (secret scan, policy)
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
-    # Uploads SARIF to code scanning (`trivy (repo)`): the only reason this
-    # job holds security-events: write.
+    # Read-only (owner decision 2026-10-21 on PR 1813): these steps run
+    # repository scripts, so they get no write permission of any kind.
     permissions:
       contents: read
-      security-events: write
     outputs:
       secrets: ${{ steps.verdict.outputs.secrets }}
-      filesystem: ${{ steps.verdict.outputs.filesystem }}
       policy: ${{ steps.verdict.outputs.policy }}
     steps:
       - name: setup · checkout
@@ -293,58 +348,6 @@ jobs:
           fi
           if [ "${fail}" -eq 0 ]; then echo "no keys found"; fi
           exit "${fail}"
-
-      # --- trivy (repo) --------------------------------------------------------
-      - name: trivy (repo) · trivy filesystem scan
-        id: filesystem-scan
-        if: ${{ !cancelled() }}
-        # Report everything (exit 0); the gate is the step after the upload.
-        run: |
-          set -euo pipefail
-          trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL \
-            --ignore-unfixed --format sarif --output trivy-fs.sarif \
-            --exit-code 0 --no-progress .
-
-      - name: trivy (repo) · upload SARIF
-        id: filesystem-sarif
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: trivy-fs.sarif
-          category: trivy-fs
-
-      - name: trivy (repo) · fail on fixable HIGH/CRITICAL new against the base branch
-        id: filesystem-gate
-        if: ${{ !cancelled() }}
-        # Only findings the base branch's scan of the same target does not
-        # have, compared by rule id + package + target, never by line (PR 1186
-        # had main's alerts re-attributed to its edited FROM lines; #1194).
-        # No base (main's push, schedule): every finding fails. Every finding
-        # is still in the Security tab above. scripts/trivy-new-findings.sh
-        # says why.
-        #
-        # A LANE PUSH (`swarm/**`) compares with main's tip, the base its pull
-        # request will have: with no base, every finding main already carries
-        # would fail it, and the merge step holds a red push run at the head
-        # as red. A tip that cannot be read fails here, never "no base".
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-          EVENT: ${{ github.event_name }}
-          REF: ${{ github.ref }}
-        run: |
-          set -euo pipefail
-          base="${BASE_SHA}"
-          if [ -z "${base}" ] && [ "${EVENT}" = "push" ] && [ "${REF}" != "refs/heads/main" ]; then
-            tip="$(git ls-remote origin refs/heads/main)" \
-              || { echo "::error::could not read main's tip to compare this lane push with"; exit 1; }
-            base="$(printf '%s\n' "${tip}" | awk '$2 == "refs/heads/main" { print $1 }')"
-            if ! printf '%s' "${base}" | grep -Eq '^[0-9a-f]{40}$'; then
-              echo "::error::main's tip read as '${base}', not a commit; nothing to compare this lane push with"
-              exit 1
-            fi
-            echo "lane push: comparing with main's tip ${base}"
-          fi
-          scripts/trivy-new-findings.sh gate --base "${base}"
 
       # --- platform policy assertions ----------------------------------------
       - name: platform policy assertions · no Spot anywhere
@@ -467,7 +470,7 @@ jobs:
         if: always()
         env:
           STEPS: ${{ toJSON(steps) }}
-          CHECKS: secrets filesystem policy
+          CHECKS: secrets policy
         run: |
           set -euo pipefail
           read -r -a checks <<< "${CHECKS}"
