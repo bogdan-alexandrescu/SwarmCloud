@@ -3772,10 +3772,13 @@ reader of `HUMAN_REQUIRED` (6 commits, 2026-10-19 06:47-07:30Z). A diff that
 adds a module or a reader breaks them without naming them, so selection by
 path never ran them.
 
-So every selected pull request runs `GUARD_TESTS` from
-[`scripts/changed-guards.sh`](../scripts/changed-guards.sh) whatever it
-changed, a docs-only one included (a lane's docs-only run still narrows to
-`DOC_GUARD_TESTS`). The list is kept **once**, in that script:
+So every pull request whose unit shards are narrowed (`python=selected`)
+runs `GUARD_TESTS` from
+[`scripts/changed-guards.sh`](../scripts/changed-guards.sh) whatever paths it
+changed. A change confined to `docs/` and `apps/swarm-ui/` (`python=subset`)
+is never narrowed by the selector, so it still runs only its area readers,
+and a lane's docs-only `changed-guards.sh` run still narrows to
+`DOC_GUARD_TESTS`. The list is kept **once**, in that script:
 `select_unit_tests.py`'s `guard_tests()` reads the array from it, a list it
 cannot read or a guard that no longer exists runs the whole suite, and
 `tests/unit/scripts/test_select_unit_tests.py` holds the two equal. It holds,
