@@ -633,7 +633,8 @@ if "firestore.googleapis.com" in url and "/documents/" in url:
     respond(200, firestore_document(collection, doc_id, data))
 
 if "container.googleapis.com" in url:
-    # The gate's identity holds no GKE read (terraform/infra/verify.tf).
+    # The gate's cluster read (terraform/bootstrap/verify_cluster_read.tf) not in
+    # effect: the suite must fail on it, not skip it.
     respond(403, {"error": {"code": 403, "message": "Required \"container.clusters.get\" permission"}})
 
 if "run.googleapis.com" in url and "/executions" in url:
