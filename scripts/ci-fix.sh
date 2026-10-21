@@ -37,6 +37,18 @@
 #      no comment, while that merge step is live. A single task, a finished
 #      merge step, and a read that cannot answer keep the fix: the API's own
 #      `ci_fix_in_flight` refusal is still behind it.
+#      LIMITATION, AN OPEN QUESTION FOR THE OWNER: SWARM_CI_FIX_SA is a
+#      continuation-scoped identity, and the API serves it only tasks and
+#      workflows it submitted itself (deps.submission_scope; Store.get_task
+#      and get_workflow; docs/ci.md, "cannot ... read what it did not
+#      submit"). A lane's integrator is submitted by the operator or the
+#      orchestrator, so today `GET /v1/tasks/<task>` answers 404 for every
+#      real lane pull request, and this falls back to the fix exactly as
+#      before. The skip takes effect only once the owner picks how the fixer
+#      learns of a live merge step -- a wider continuation read, a narrow
+#      yes/no API read, a marker the merge step leaves on the pull request,
+#      or the same gate inside the API's ci-fix submit path -- all outside
+#      this script.
 #   2. The failed jobs' log goes through `redact` BEFORE anything else reads
 #      it, then is cut to each job's tail and capped. A CI log is exactly where
 #      a token turns up, and the excerpt is about to be stored in a task's
@@ -188,10 +200,12 @@ decide() {
 # merge_step_live TASK: true when TASK's workflow has a merge step that is
 # live (`decide`). Every read is redirected to a file, never captured, so
 # API_STATUS survives (CLAUDE.md). A read that fails is false: today's fix.
+# Under the continuation-scoped SWARM_CI_FIX_SA that is every lane task's
+# read today, a 404 for a task it did not submit (see 1a, LIMITATION).
 merge_step_live() {
   local task="$1" workflow
   if ! api_get "/tasks/${task}" >"${WORK}/task.json"; then
-    info "could not read task ${task} (HTTP ${API_STATUS}); fixing as for a single task"
+    info "could not read task ${task} (HTTP ${API_STATUS}; the fixer reads only tasks it submitted); fixing as for a single task"
     return 1
   fi
   workflow="$(jq -r '.task.workflow_id // empty | strings' "${WORK}/task.json" 2>/dev/null || true)"

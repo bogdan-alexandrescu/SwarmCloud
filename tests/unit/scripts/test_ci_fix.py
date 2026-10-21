@@ -592,6 +592,15 @@ def test_an_unconfigured_fixer_says_so_on_the_pr_once_and_submits_nothing(fake):
 # reads the task's workflow through the swarm API and stands down while its
 # merge step is live; a single task, and a merge step that has finished, keep
 # the standalone fixer.
+#
+# The fixer's identity (SWARM_CI_FIX_SA) is continuation-scoped: the real API
+# serves it only what it submitted (deps.submission_scope), and a lane's
+# integrator is never its own. The tests that serve the lane task a 200
+# model a read the API does NOT give the fixer today; they pin the decision
+# for the day the owner settles the read path (questions.json). What the
+# fixer gets today -- a 404 on the lane task, so the standalone fix goes
+# ahead as before -- is pinned by
+# test_the_fixer_cannot_read_a_lane_task_it_did_not_submit_so_it_still_fixes.
 # --------------------------------------------------------------------------
 
 WORKFLOW_ID = "wf_0123456789abcdef0123"
@@ -649,6 +658,8 @@ def test_decide_fixes_a_workflow_with_no_merge_step(fake):
 
 
 def test_a_lane_pr_whose_merge_step_is_live_gets_no_standalone_fix(fake):
+    """Under a read the real API refuses the fixer today (the lane task is
+    not its own submission): this pins the decision, not production."""
     _, state = fake
     _serve_lane(state, "PARKED")
     out = _run(fake, "run")
@@ -701,6 +712,29 @@ def test_a_lane_pr_whose_merge_step_has_finished_keeps_the_standalone_fix(fake, 
     # MUTATION: skip whenever the workflow has a merge step, finished or not.
     assert _calls(state, "curl") == ["https://swarm.example.test/v1/workflows"]
     assert len(_calls(state, "curl-get")) == 2
+
+
+def test_the_fixer_cannot_read_a_lane_task_it_did_not_submit_so_it_still_fixes(fake):
+    """The read the fixer actually gets today. The lane's workflow has a live
+    merge step, but the task was submitted by the operator or orchestrator,
+    so the continuation-scoped API answers 404 (Store.get_task with
+    submitted_by) and the standalone fix is submitted exactly as before the
+    merge-step read existed. Until the owner settles the read path, this is
+    the production behaviour; change this test with it."""
+    _, state = fake
+    _serve_lane(state, "PARKED")
+    (state / f"get-{TASK}.json").write_text(json.dumps({"code": "not_found"}))
+    (state / f"get-{TASK}.status").write_text("404")
+    out = _run(fake, "run")
+    assert out.returncode == 0, out.stderr
+    # MUTATION: treat a 404 on the lane task as "skip" -- every single task's
+    # PR whose read fails for any reason loses its only fixer.
+    assert _calls(state, "curl") == ["https://swarm.example.test/v1/workflows"]
+    # MUTATION: read the workflow without the task -- the id is unknown here.
+    assert _calls(state, "curl-get") == [f"https://swarm.example.test/v1/tasks/{TASK}"]
+    # MUTATION: drop the reason from the log -- an operator reading the run
+    # sees a fix beside a live lane and no hint why the skip did not apply.
+    assert "reads only tasks it submitted" in out.stderr + out.stdout
 
 
 @pytest.mark.parametrize("status", ["404", "403", "500"])
