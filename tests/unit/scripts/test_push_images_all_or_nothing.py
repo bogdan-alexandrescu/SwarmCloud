@@ -436,13 +436,20 @@ def test_every_promoted_digest_is_marked_promoted_and_a_refused_release_marks_no
     """`:dev` forgets a digest the moment the next release moves it, and
     deploy.sh must still tell an owner-pinned job on an EARLIER release's
     digest from one on an image no release promoted (owner decision
-    2026-10-11). The mark `<channel>-promoted-<tag>` is that memory: on every
-    digest a promotion moved the channel to, and on nothing else."""
-    mark = f"{CHANNEL}-promoted-{TAG}"
+    2026-10-11). The mark `promoted-<channel>-<tag>` is that memory: on every
+    digest a promotion moved the channel to, and on nothing else. It starts
+    with `promoted-`, never with a channel's name, so a registry cleanup can
+    keep `:dev` forever without keeping every mark forever (#1886)."""
+    mark = f"promoted-{CHANNEL}-{TAG}"
     root, proc, registry, _ = _run(tmp_path / "clean", _registry())
     assert proc.returncode == 0, proc.stderr[-3000:]
     marked = {i: [d for d, tags in registry[i].items() if mark in tags] for i in IMAGES}
+    # MUTATION: promotion_mark_prefix printing the old `<channel>-promoted-` fails here.
     assert marked == {i: [_new(i)] for i in IMAGES}, marked
+    # The old form is read during the transition, never written again.
+    # MUTATION: push-images.sh adding the old mark beside the new one fails here.
+    old_form = sorted(i for i in IMAGES for tags in registry[i].values() if f"{CHANNEL}-promoted-{TAG}" in tags)
+    assert not old_form, f"the old mark was written on {old_form}"
 
     _, proc, registry, _ = _run(tmp_path / "refused", _registry(), FAKE_TRIVY_FAIL="swarm-ui")
     assert proc.returncode != 0

@@ -611,8 +611,10 @@ def test_a_revision_that_never_became_ready_is_caught(tmp_path):
 # after a release that rebuilds workspace-apply the job LAGS, by design, and
 # releases 38108979337, 38109627282 and 38110028000 (2026-10-11) all failed on
 # exactly that. Lag on a digest an earlier release promoted -- one carrying a
-# `dev-promoted-<tag>` mark, which push-images.sh adds and never moves -- is a
-# warning and an owner action. Every other mismatch still fails.
+# `promoted-dev-<tag>` mark, which push-images.sh adds and never moves, or the
+# old `dev-promoted-<tag>` form deploy.sh still reads until
+# scripts/registry-remark.sh has run (#1886) -- is a warning and an owner
+# action. Every other mismatch still fails.
 
 EARLIER = "c"  # the digest an earlier release promoted and the owner pinned
 
@@ -673,8 +675,9 @@ def test_the_no_release_promoted_failure_names_the_one_time_backfill(tmp_path):
     sha = digest(EARLIER).removeprefix("sha256:")
     backfill = (
         f"gcloud artifacts docker tags add {ref('workspace-apply', EARLIER)} "
-        f"{REPO_PATH}/workspace-apply:dev-promoted-pre-mark-{sha}"
+        f"{REPO_PATH}/workspace-apply:promoted-dev-pre-mark-{sha}"
     )
+    # MUTATION: a backfill command that writes the old `dev-promoted-` form fails here.
     assert backfill in text, text
     assert f'workspace_apply_image = "{ref("workspace-apply")}"' in text, text
     assert "awaiting owner re-pin" not in text, text
