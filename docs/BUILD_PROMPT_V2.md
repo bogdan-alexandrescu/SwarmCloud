@@ -3,9 +3,12 @@
 **Status:** built in part, and amended to what is built (owner decisions,
 2026-10-01). The control plane, the account pool (`apps/quota-broker`), the
 `/swarm` bridge (`apps/swarm-mcp`) and the dashboard (`apps/swarm-ui`) exist in
-this repository. The substrate did NOT move: Cloud Run Jobs stay the primary
-execution backend and GKE Autopilot runs the browser runner and, since
-contract request 53 (applied 2026-10-08), `claude-code` — §2.1 says why. What is deployed is a different, dated question: read
+this repository. The substrate did NOT move on 2026-10-01: Cloud Run Jobs was
+kept as the chosen primary execution backend, with GKE Autopilot for the browser
+runner. The profiles then moved one at a time — `claude-code` on 2026-10-08
+(contract request 53), `indexer`, `generic`, `codex` and `merge` on 2026-10-10
+(contract requests 63-66) — so today GKE Autopilot runs every agent profile but
+`mock` — §2.1 says why. What is deployed is a different, dated question: read
 [`DEPLOY_STATE.md`](DEPLOY_STATE.md), not this line.
 **Supersedes:** `gcp_zero_idle_agent_swarm_build_prompt.md` (v1). v2 keeps v1's
 control plane and its execution substrate, and adds to them.
@@ -37,7 +40,7 @@ Every one of these was made deliberately. Where a decision costs something, the
 cost is written down next to it, because the reason a decision looks wrong in
 six months is usually that its cost was never recorded.
 
-### 2.1 Substrate: Cloud Run Jobs primary, GKE Autopilot for the browser runner
+### 2.1 Substrate: Cloud Run Jobs chosen as primary; GKE Autopilot now runs every agent but `mock`
 
 **Amended 2026-10-01 by owner decision; the spec moved to match the code, not
 the other way round.** This section originally made GKE Autopilot the sole
@@ -723,8 +726,10 @@ installs into its own user paths -- `uv tool`, `npm` prefix, `pip --user`.)
 ## 3. Architecture
 
 > **Amended 2026-10-01.** The diagram is the v2 design and draws one execution
-> box. What is built has two (§2.1): Cloud Run Jobs for `mock`, `generic`,
-> `claude-code` and `codex`, and GKE Autopilot for `browser`, routed by
+> box. What is built has two (§2.1). On 2026-10-01 Cloud Run Jobs ran `mock`,
+> `generic`, `claude-code` and `codex` and GKE Autopilot ran `browser`; since
+> 2026-10-10 GKE Autopilot runs every agent profile but `mock` (contract
+> requests 53 and 63-67). Both are routed by
 > `BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py::BackendRouter.for_backend`).
 > Neither box is "root, sandboxed": the worker runs as uid 10001
 > (`images/agent-runtime-base/Dockerfile` (`USER swarm:swarm`)) and gVisor is opt-in
@@ -834,13 +839,16 @@ for deletion: its Terraform module, its scheduler dispatch path, the
 `swarmJobDispatcher` and `swarmJobReaper` custom roles, and the `Backend`
 enum's Cloud Run member with every branch on it. The owner kept Cloud Run Jobs
 as the primary backend instead (§2.1), so all of those stay, and are NOT
-deleted. They carry four of the five profiles.
+deleted. On 2026-10-01 they carried four of the five profiles; since
+2026-10-10 they carry `mock`, the disabled `post-verdict` and
+`claude-code-review`, and the idle fallback Jobs of the profiles that moved.
 
 The original argument — a backend nobody exercises is a backend that rots —
 still holds, and is why the GKE path is not dormant either: the `browser`
 profile exercises it on every browser agent.
 
-The control-plane services stay on Cloud Run, and so does most execution.
+The control-plane services stay on Cloud Run. Execution, as of 2026-10-10, is
+mostly on GKE (§2.1).
 
 ---
 
@@ -931,9 +939,11 @@ v2 contradicts the frozen contract in specific places. These are **requests**, p
   backend.~~ **Declined 2026-10-01 (owner):** Cloud Run Jobs stay primary and
   the contract's "Primary backend" line stands, now naming each profile (§2.1).
 * ~~**"No nodes, no autoscaler, no node upgrades to evict"** → false under v2.~~
-  Still true for the four Cloud Run profiles; it was only ever false for the
-  browser runner on GKE, where the guarantee is extended run time, a weaker and
-  more operationally demanding promise.
+  Still true for the profiles left on Cloud Run (`mock`, and the disabled
+  `post-verdict` and `claude-code-review`); false on GKE, which since
+  2026-10-10 runs every other agent profile, where the guarantee is extended
+  run time, a weaker and more operationally demanding promise that mandatory
+  periodic checkpointing bounds.
 * **Zero idle cost** → zero idle *workload*. A cluster fee exists for the GKE
   side (§2.1).
 * ~~**Non-root, read-only rootfs, dropped capabilities** → root, writable rootfs,

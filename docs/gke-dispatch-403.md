@@ -82,7 +82,8 @@ profiles and split exactly along one line:
 | `mock` | `CLOUD_RUN_JOB` | SUCCEEDED 8 |
 | `browser` | `GKE_AUTOPILOT` | FAILED 6, CANCELLED 2 |
 
-`browser` is the only profile whose resolved backend is `GKE_AUTOPILOT`. Every
+`browser` was then the only profile whose resolved backend is `GKE_AUTOPILOT`
+(since 2026-10-10 every agent profile but `mock` is). Every
 one of its attempts failed with the message above. All **seven** browser agents
 this deployment had ever accepted, over two days, had failed the same way. The
 capability shipped broken; it was never a regression.
