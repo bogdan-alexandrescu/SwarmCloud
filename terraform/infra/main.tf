@@ -128,7 +128,10 @@ module "firestore" {
   location    = var.region
   database_id = var.firestore_database
 
-  delete_protection = var.deletion_protection
+  # Its own switch, not var.deletion_protection: dev turns that one off for
+  # the GKE cluster and the Cloud Run services, and a deleted `swarm` takes its
+  # point-in-time history with it -- total loss of the control plane (#1818).
+  delete_protection = var.firestore_delete_protection
   deletion_policy   = "ABANDON"
 
   bootstrap_documents = var.bootstrap_firestore_documents

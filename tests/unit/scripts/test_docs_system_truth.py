@@ -168,7 +168,7 @@ def test_dr_prevention_no_longer_says_point_in_time_is_all_there_is():
 
 def test_dr_restores_a_scheduled_backup_into_a_new_database_never_swarm():
     restore = _section(_text(DR), "### Restore from a scheduled backup")
-    commands = [c for c in restore.replace("\\\n", " ").splitlines() if "gcloud firestore databases restore" in c]
+    commands = [c for c in restore.replace("\\\n", " ").splitlines() if c.lstrip().startswith("gcloud firestore databases restore")]
     # MUTATION: drop the restore command -> red.
     assert commands, restore
     for command in commands:

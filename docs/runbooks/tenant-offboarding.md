@@ -180,6 +180,19 @@ What stays whatever you do, and is worth saying so nobody reports it deleted:
   and `accounts/<id>:<label>` have predictable ids; task ids do not. Whether a
   read at a past time needs more than `datastore.entities.get` was **not**
   verified.
+* Firestore's daily backups of the `swarm` database (#1818,
+  `terraform/modules/firestore/backups.tf`). Each daily backup holds the whole
+  database as it was that day, every tenant included, and is kept 7 days
+  (`backup_retention`, `604800s`). So backups keep an offboarded tenant's
+  documents for up to 7 days after step 6, the same window as point-in-time
+  recovery above, and they survive the database being deleted. A backup is
+  read only by restoring it into a new database
+  ([disaster recovery §4](../disaster-recovery.md#restore-from-a-scheduled-backup)),
+  which takes `datastore.databases.create` and a `datastore.backups.*`
+  permission. A tenant's worker holds neither: its `swarmTenantWorkerFirestore`
+  role (`terraform/bootstrap/platform_roles.tf`) is `databases.get` plus
+  document get, create and update. Nothing in this runbook deletes a backup
+  early: shortening the window is the owner's call, on #1818.
 * Firestore exports that `scripts/purge-data.sh` wrote earlier, for some other
   purge, to `gs://<bucket>/backups/purge-<timestamp>`. Each holds the whole
   database, every tenant included, until the bucket's age rule expires it after
@@ -247,10 +260,11 @@ Letting data expire did not close that: live objects expired after
 `artifact_retention_days` (14 in dev, 180 in prod), noncurrent versions 30 days
 after that, and Firestore records never.
 
-What deleting does **not** close are two 7-day windows described under
+What deleting does **not** close are three 7-day windows described under
 [the inventory](#the-inventory-everything-a-tenant-has): soft-deleted objects
-can still be restored, and deleted Firestore documents can still be read as of
-an earlier time. Nothing in this runbook shortens either.
+can still be restored, deleted Firestore documents can still be read as of
+an earlier time, and the daily backups still hold them. Nothing in this
+runbook shortens any of them.
 
 **Offboarding a tenant is not revoking people.** Who may pass IAP is
 `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`, and today it

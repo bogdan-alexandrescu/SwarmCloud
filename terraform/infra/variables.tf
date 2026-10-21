@@ -48,7 +48,7 @@ variable "extra_labels" {
 # ---------------------------------------------------------------------------
 
 variable "deletion_protection" {
-  description = "Protects the Autopilot cluster, the Firestore database and the Cloud Run services from deletion."
+  description = "Protects the Autopilot cluster and the Cloud Run services from deletion. The Firestore database has its own switch, firestore_delete_protection."
   type        = bool
   default     = true
 
@@ -56,6 +56,20 @@ variable "deletion_protection" {
     condition     = var.environment != "prod" || var.deletion_protection || var.allow_unprotected_prod
     error_message = "prod requires deletion_protection = true. Set allow_unprotected_prod = true to override deliberately."
   }
+}
+
+variable "firestore_delete_protection" {
+  description = <<-EOT
+    Delete protection on the platform Firestore database. Separate from
+    deletion_protection, which dev sets false so the cluster and the Cloud Run
+    services can be torn down: the database must not follow it.
+  EOT
+  type        = bool
+  # true (#1818): point-in-time versions are deleted with the database, so an
+  # unprotected `swarm` is one `gcloud firestore databases delete` or console
+  # click from total loss of the control plane. Turning it off is a deliberate
+  # tfvars edit, never a side effect of the shared switch.
+  default = true
 }
 
 variable "allow_unprotected_prod" {

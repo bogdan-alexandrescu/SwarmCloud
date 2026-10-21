@@ -72,7 +72,13 @@
     "attributes are etag, id, project and service, and its one block is",
     "audit_log_config -- no labels. destroy-guard.jq's by-shape exemption matches",
     "_iam_member, _iam_binding and _iam_policy, not _iam_audit_config, so it is",
-    "listed here."
+    "listed here.",
+    "",
+    "google_firestore_backup_schedule was added on 2026-10-21 for",
+    "terraform/modules/firestore/backups.tf (the daily backup of `swarm`, #1818),",
+    "checked the same way against the pinned provider 6.50.0: its attributes are",
+    "database, id, name, project and retention, and its blocks daily_recurrence,",
+    "timeouts and weekly_recurrence -- no labels."
   ],
   "types": [
     "google_cloud_scheduler_job",
@@ -90,6 +96,7 @@
     "google_compute_target_https_proxy",
     "google_compute_url_map",
     "google_container_node_pool",
+    "google_firestore_backup_schedule",
     "google_firestore_database",
     "google_firestore_document",
     "google_firestore_field",
