@@ -693,6 +693,12 @@ enable_child_tasks = true
 # Read from Cloud Run (gcloud run services describe swarm-api), the value
 # `terraform output swarm_api_url` gives; swarm_api_url_is_wired checks it.
 swarm_api_url = "https://swarm-api-tonstldhta-uc.a.run.app"
+# ISOLATION CUTOVER STEP a1 (#1457, docs/runbooks/isolation-cutover.md; owner
+# go-ahead 2026-10-21). u-bogdan's attempts reach their state only through
+# swarm-api's /v1/attempts/{id}/state/* routes; its worker builds no Firestore
+# client. Its Firestore role is untouched here (that is step a2, by hand, after
+# u-bogdan's three evidence agents pass). Rollback: remove the entry; release.
+state_via_api_tenants = ["u-bogdan"]
 # THE FORGE BROKER STAYS OFF HERE (#1041, terraform/infra/child_tasks.tf
 # `forge_broker`), although child tasks are on: workers keep reading a
 # person's git-u- slot with their own account through forge_slot_reader.
