@@ -284,3 +284,97 @@ run "internet_ingress_is_refused" {
 
   expect_failures = [var.ingress]
 }
+
+# A slow but healthy start is not killed (#1816, options (d) and (e) chosen by
+# the owner on 2026-10-21). The startup probe polls every 5 s; at 12 failures a
+# start is killed at about 96 s, and five healthy swarm-api starts measured at
+# 61-77 s on 2026-10-21 left too little room. swarm-api asks for 36 (three
+# times the window); every service that does not ask keeps 12.
+run "a_service_that_sets_a_startup_failure_threshold_gets_it_and_no_other_does" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  variables {
+    services = {
+      "swarm-api" = {
+        service_account_email     = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+        image                     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api:test"
+        max_instances             = 20
+        startup_failure_threshold = 36
+      }
+      "swarm-scheduler" = {
+        service_account_email = "swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler:test"
+        max_instances         = 3
+        concurrency           = 1
+      }
+    }
+  }
+
+  # MUTATION: ignore each.value.startup_failure_threshold in the module (keep
+  # the fixed 12) and this fails.
+  assert {
+    condition     = google_cloud_run_v2_service.this["swarm-api"].template[0].containers[0].startup_probe[0].failure_threshold == 36
+    error_message = "swarm-api's startup_failure_threshold must reach the revision's startup probe: a healthy 61-77 s start is otherwise killed near 96 s"
+  }
+
+  # MUTATION: change the attribute's default from 12 to 36 and this fails.
+  assert {
+    condition     = google_cloud_run_v2_service.this["swarm-scheduler"].template[0].containers[0].startup_probe[0].failure_threshold == 12
+    error_message = "a service that sets no startup_failure_threshold must keep the module's 12"
+  }
+}
+
+# The default, over the four services of the file-level variables, none of
+# which sets a threshold: every one keeps 12, polled every 5 s.
+run "every_service_that_sets_no_threshold_keeps_twelve" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  # MUTATION: change the attribute's default from 12 to anything else, or the
+  # probe's period from 5 s, and this fails.
+  assert {
+    condition = alltrue([
+      for name, svc in google_cloud_run_v2_service.this :
+      svc.template[0].containers[0].startup_probe[0].failure_threshold == 12
+      && svc.template[0].containers[0].startup_probe[0].period_seconds == 5
+    ])
+    error_message = "every service that sets no startup_failure_threshold must keep 12 failures at a 5 s period"
+  }
+}
+
+# The root sets 36 for swarm-api and for no other service. A test cannot
+# address a child module's resources from terraform/infra, so this reads the
+# root's text, the way u_bogdan_removed.tftest.hcl reads removed.tf.
+run "the_infra_root_sets_36_for_swarm_api_and_nothing_else" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  # MUTATION: drop `startup_failure_threshold = 36` from swarm-api's block in
+  # terraform/infra/main.tf, or set any other number, and this fails.
+  assert {
+    # The module plans swarm-api from the file-level variables: the reference
+    # terraform test requires, and a control that this run planned at all.
+    condition = contains(keys(google_cloud_run_v2_service.this), "swarm-api") && length(regexall(
+      "(?s)\n    \"swarm-api\" = \\{\n.*?\n      startup_failure_threshold = 36\n.*?\n    \"swarm-scheduler\" = \\{",
+      file("../../terraform/infra/main.tf"),
+    )) == 1
+    error_message = "terraform/infra/main.tf must set startup_failure_threshold = 36 in swarm-api's block of module \"cloud_run\""
+  }
+
+  # MUTATION: add startup_failure_threshold to any other service's block and
+  # this fails.
+  assert {
+    condition     = contains(keys(google_cloud_run_v2_service.this), "swarm-api") && length(regexall("(?m)^\\s*startup_failure_threshold\\s*=", file("../../terraform/infra/main.tf"))) == 1
+    error_message = "only swarm-api sets startup_failure_threshold in terraform/infra/main.tf; every other service keeps the module's 12"
+  }
+}
