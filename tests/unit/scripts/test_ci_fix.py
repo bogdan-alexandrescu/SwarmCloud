@@ -144,13 +144,29 @@ FAKE_CURL = r"""#!/usr/bin/env bash
 set -euo pipefail
 cat >/dev/null  # the Authorization header arrives on stdin
 url=""
+method=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --data-binary) printf '%s' "$2" >"${FAKE_DIR}/request.json"; shift 2 ;;
+    -X) method="$2"; shift 2 ;;
     https://*) url="$1"; shift ;;
     *) shift ;;
   esac
 done
+# A read (the lane's merge step, CI-FIXER-ONE) is recorded apart from the
+# submission, and served from get-<last path segment>.json with its status
+# beside it; a read with no fixture is a 404.
+if [ "${method}" = "GET" ]; then
+  printf '%s\n' "${url}" >>"${FAKE_DIR}/curl-get.calls"
+  name="${url##*/}"
+  if [ -f "${FAKE_DIR}/get-${name}.json" ]; then
+    cat "${FAKE_DIR}/get-${name}.json"
+    printf '\n%s' "$(cat "${FAKE_DIR}/get-${name}.status" 2>/dev/null || printf 200)"
+  else
+    printf '{"code":"not_found"}\n404'
+  fi
+  exit 0
+fi
 printf '%s\n' "${url}" >>"${FAKE_DIR}/curl.calls"
 cat "${FAKE_DIR}/api_response"
 printf '\n%s' "$(cat "${FAKE_DIR}/api_status")"
@@ -566,6 +582,154 @@ def test_an_unconfigured_fixer_says_so_on_the_pr_once_and_submits_nothing(fake):
     (state / "comments.json").write_text(_comments_json(["<!-- swarm-ci-fix:unconfigured -->"]))
     _run(fake, "run", SWARM_IMPERSONATE_SA="")
     assert len(_comments(state)) == 1
+
+
+# --------------------------------------------------------------------------
+# One fixer per red pull request (CI-FIXER-ONE, part of #1822). A lane whose
+# workflow has a merge step runs its own CI-fix rounds on that pull request;
+# a standalone fix submitted beside them fought the round for the branch, and
+# 22 of 91 standalone runs in 72 h ended in a rejected push. So the script
+# reads the task's workflow through the swarm API and stands down while its
+# merge step is live; a single task, and a merge step that has finished, keep
+# the standalone fixer.
+# --------------------------------------------------------------------------
+
+WORKFLOW_ID = "wf_0123456789abcdef0123"
+MERGE_TASK = "task_cccccccccccccccccccc"
+LIVE_STATES = ["SUBMITTED", "QUEUED", "PARKED", "READY", "LEASED", "DISPATCHED", "STARTING", "RUNNING"]
+FINISHED_STATES = ["SUCCEEDED", "FAILED", "CANCELLED", "DEAD_LETTERED"]
+
+
+def _workflow_read(merge_state: str | None) -> dict:
+    """`GET /v1/workflows/<id>`: the lane's agent step, and its merge step
+    in `merge_state` (none when None)."""
+    tasks = [{"id": TASK, "step_id": "lane", "runner_profile": "claude-code", "state": "SUCCEEDED"}]
+    if merge_state is not None:
+        tasks.append({"id": MERGE_TASK, "step_id": "merge", "runner_profile": "merge", "state": merge_state})
+    return {"workflow": {"workflow_id": WORKFLOW_ID}, "tasks": tasks}
+
+
+def _serve_lane(state: Path, merge_state: str | None, workflow_id: str | None = WORKFLOW_ID) -> None:
+    (state / f"get-{TASK}.json").write_text(json.dumps({"task": {"id": TASK, "workflow_id": workflow_id}}))
+    (state / f"get-{WORKFLOW_ID}.json").write_text(json.dumps(_workflow_read(merge_state)))
+
+
+def _decide(fake, document: dict) -> subprocess.CompletedProcess:
+    return _run(fake, "decide", stdin=json.dumps(document))
+
+
+@pytest.mark.parametrize("merge_state", LIVE_STATES)
+def test_decide_skips_a_workflow_whose_merge_step_is_live(fake, merge_state):
+    out = _decide(fake, _workflow_read(merge_state))
+    assert out.returncode == 0, out.stderr
+    # MUTATION: answer "fix" whatever the merge step's state -- the two fixers race again.
+    # MUTATION: count only RUNNING as live -- a merge step PARKED on its CI wait is
+    # exactly the one whose fix round the standalone fixer collided with.
+    assert out.stdout.strip() == "skip"
+
+
+@pytest.mark.parametrize("merge_state", FINISHED_STATES)
+def test_decide_fixes_a_workflow_whose_merge_step_has_finished(fake, merge_state):
+    out = _decide(fake, _workflow_read(merge_state))
+    assert out.returncode == 0, out.stderr
+    # MUTATION: answer "skip" for any workflow with a merge step -- a merge step
+    # that failed on checks_failed leaves a red PR no fixer touches.
+    assert out.stdout.strip() == "fix"
+
+
+def test_decide_fixes_a_workflow_with_no_merge_step(fake):
+    out = _decide(fake, _workflow_read(None))
+    assert out.returncode == 0, out.stderr
+    # MUTATION: treat any live step as a merge step -- this lane step is not one.
+    assert out.stdout.strip() == "fix"
+    live_agent = _workflow_read(None)
+    live_agent["tasks"][0]["state"] = "RUNNING"
+    # MUTATION: match on state alone, not runner_profile == "merge".
+    assert _decide(fake, live_agent).stdout.strip() == "fix"
+
+
+def test_a_lane_pr_whose_merge_step_is_live_gets_no_standalone_fix(fake):
+    _, state = fake
+    _serve_lane(state, "PARKED")
+    out = _run(fake, "run")
+    assert out.returncode == 0, out.stderr
+    # MUTATION: drop the merge-step read from run_fix -- the standalone fix is
+    # submitted beside the lane's own round, as it was 91 times in 72 h.
+    assert _calls(state, "curl") == [], "a standalone fix was submitted beside the lane's own merge step"
+    # MUTATION: post a comment when standing down -- the brief allows no new GitHub write.
+    assert _comments(state) == []
+    # MUTATION: read some other task's workflow, or no workflow at all.
+    assert _calls(state, "curl-get") == [
+        f"https://swarm.example.test/v1/tasks/{TASK}",
+        f"https://swarm.example.test/v1/workflows/{WORKFLOW_ID}",
+    ]
+    assert MERGE_TASK in out.stderr + out.stdout, "the log does not name the merge step it deferred to"
+
+
+def test_a_lane_pr_at_the_cap_whose_merge_step_is_live_gets_no_stop_comment(fake):
+    """The cap's stop comment says "this needs a person"; while the lane's
+    merge step still has its own rounds, it does not."""
+    _, state = fake
+    _serve_lane(state, "RUNNING")
+    (state / "comments.json").write_text(
+        _comments_json(["<!-- swarm-ci-fix:attempt -->\nattempt"] * _constant("MAX_FIX_ATTEMPTS"))
+    )
+    out = _run(fake, "run")
+    assert out.returncode == 0, out.stderr
+    # MUTATION: read the merge step after the cap check -- the stop comment is posted.
+    assert _comments(state) == []
+    assert _calls(state, "curl") == []
+
+
+def test_a_single_task_pr_keeps_the_standalone_fix(fake):
+    _, state = fake
+    _serve_lane(state, None, workflow_id=None)
+    out = _run(fake, "run")
+    assert out.returncode == 0, out.stderr
+    # MUTATION: skip every swarm/task_* PR -- a single task has no other fixer.
+    assert _calls(state, "curl") == ["https://swarm.example.test/v1/workflows"]
+    # MUTATION: read a workflow even when the task names none.
+    assert _calls(state, "curl-get") == [f"https://swarm.example.test/v1/tasks/{TASK}"]
+
+
+@pytest.mark.parametrize("merge_state", FINISHED_STATES)
+def test_a_lane_pr_whose_merge_step_has_finished_keeps_the_standalone_fix(fake, merge_state):
+    _, state = fake
+    _serve_lane(state, merge_state)
+    out = _run(fake, "run")
+    assert out.returncode == 0, out.stderr
+    # MUTATION: skip whenever the workflow has a merge step, finished or not.
+    assert _calls(state, "curl") == ["https://swarm.example.test/v1/workflows"]
+    assert len(_calls(state, "curl-get")) == 2
+
+
+@pytest.mark.parametrize("status", ["404", "403", "500"])
+def test_an_unreadable_task_or_workflow_keeps_the_standalone_fix(fake, status):
+    """Today's behaviour when the read cannot answer: the API's own
+    `ci_fix_in_flight` refusal is still there behind it."""
+    _, state = fake
+    _serve_lane(state, "RUNNING")
+    (state / f"get-{WORKFLOW_ID}.status").write_text(status)
+    out = _run(fake, "run")
+    assert out.returncode == 0, out.stderr
+    # MUTATION: treat a failed read as "skip" -- an API outage silences the fixer.
+    assert _calls(state, "curl") == ["https://swarm.example.test/v1/workflows"]
+    # MUTATION: return early on a failed task read instead of falling through.
+    (state / "curl.calls").unlink()
+    (state / f"get-{TASK}.status").write_text(status)
+    out = _run(fake, "run")
+    assert out.returncode == 0, out.stderr
+    assert _calls(state, "curl") == ["https://swarm.example.test/v1/workflows"]
+
+
+def test_a_workflow_id_that_is_not_one_is_never_put_in_a_url(fake):
+    _, state = fake
+    _serve_lane(state, "RUNNING", workflow_id="../tasks/x")
+    out = _run(fake, "run")
+    assert out.returncode == 0, out.stderr
+    # MUTATION: drop the `wf_<20 hex>` shape check on the task's workflow_id.
+    assert _calls(state, "curl-get") == [f"https://swarm.example.test/v1/tasks/{TASK}"]
+    assert _calls(state, "curl") == ["https://swarm.example.test/v1/workflows"]
 
 
 # --------------------------------------------------------------------------
