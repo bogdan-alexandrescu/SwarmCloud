@@ -4,6 +4,7 @@
 # image across regions is paid for on every single cold start.
 
 resource "google_artifact_registry_repository" "this" {
+  # checkov:skip=CKV_GCP_84:Encryption is a CMEK when var.kms_key_name is set and Google-managed otherwise (kms_key_name below; terraform/infra/build_mirror.tf wires its mirrors the same way). Artifact Registry accepts no customer-SUPPLIED key at all, and a CMEK is the environment's choice, not this module's.
   project       = var.project_id
   location      = var.region
   repository_id = var.repository_id
