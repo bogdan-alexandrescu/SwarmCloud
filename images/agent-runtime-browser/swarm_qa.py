@@ -54,8 +54,10 @@ What `capture` does, and why each:
    still run) so "3 minutes ago" reads the same every run. Viewport-sized
    SEGMENTS, scrolling the page's own scroller (MEASURE_JS: the nearest one
    holding the route's ready element, the document, or the largest on the
-   page; its name is the entry's `scroller`) one of its heights at a time up to the
-   route's `segments` (default DEFAULT_SEGMENTS): a model is handed a tall
+   page; its name is the entry's `scroller`) one of its heights at a time, less
+   what is stuck over its top once scrolled (STUCK_JS: a sticky header's rows
+   are otherwise in no image; each overlap is in the entry's `overlaps`), up to
+   the route's `segments` (default DEFAULT_SEGMENTS): a model is handed a tall
    image downscaled until its text is unreadable, and whether a full-page
    capture through the gate needs a metrics override is unverified.
    `animations="disabled"`, `caret="hide"`.
@@ -89,7 +91,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import math
 import os
 import re
 import shutil
@@ -215,11 +216,55 @@ PENDING_JS = """() => {
   }
   return found;
 }"""
+#: How far down from the scroller's top edge what is stuck there covers it
+#: (QAFIX3-QATOOL, run 3's task-021): at 390 the task list's tab bar
+#: (`.ag-list-tabs`, sticky at top 0) is 55 px, and a segment scrolled by the
+#: scroller's whole height showed its first 55 px of new rows under the bar,
+#: in no image. Counted: an element with a box whose `position` is `fixed`
+#: and which spans the scroller's top edge, or is `sticky` with a `top`
+#: inset, sits at that inset (it is stuck, not merely further down) and
+#: sticks to THIS scroller (no scrolling element between them: a table's own
+#: sticky head covers the table, not the page); either under half the height
+#: the scroller shows (a sticky side rail is as tall as the page and covers
+#: no row across it). Measured after each scroll, because a header sticks
+#: only once scrolled and only inside its own section. Returns whole px.
+STUCK_JS = """() => {
+  const doc = document.scrollingElement || document.documentElement;
+  const el = window.__swarmQaScroller || doc;
+  const top = el === doc ? 0 : el.getBoundingClientRect().top;
+  const view = el === doc ? innerHeight : el.clientHeight;
+  const sticksHere = (n) => {
+    for (let up = n.parentElement; up; up = up.parentElement) {
+      if (up === el) return true;
+      if (up !== doc && /^(auto|scroll|overlay)$/.test(getComputedStyle(up).overflowY)) return false;
+    }
+    return el === doc;
+  };
+  let cover = 0;
+  for (const n of document.querySelectorAll('*')) {
+    if (n === el || n === doc) continue;
+    const style = getComputedStyle(n);
+    if (style.position !== 'sticky' && style.position !== 'fixed') continue;
+    if (n.getClientRects().length === 0 || style.visibility === 'hidden') continue;
+    const r = n.getBoundingClientRect();
+    if (r.height <= 0 || r.height >= view / 2 || r.bottom <= top) continue;
+    if (style.position === 'sticky') {
+      const inset = parseFloat(style.top);
+      if (Number.isNaN(inset) || Math.abs(r.top - (top + inset)) > 1 || !sticksHere(n)) continue;
+    } else if (r.top > top + 1) {
+      continue;
+    }
+    cover = Math.max(cover, r.bottom - top);
+  }
+  return Math.round(cover);
+}"""
+#: Scrolls the scroller MEASURE_JS chose to `y` and, two frames later,
+#: answers with STUCK_JS: what is stuck over its top there.
 SCROLL_JS = """(y) => {
   const el = window.__swarmQaScroller || document.scrollingElement || document.documentElement;
   el.scrollTop = y;
-  return new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(null))));
-}"""
+  return new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done((%s)()))));
+}""" % STUCK_JS
 #: QA-TOOLS-FIX (QA-077). The capture's tab is in the live browser's one
 #: profile, so what a route left in storage drew the next route: the sidebar's
 #: Recent workflows (Spine.tsx RecentWorkflows, filled from localStorage once
@@ -421,6 +466,15 @@ def _settle(page) -> list[str]:
         waited += SETTLE_POLL_MS
 
 
+def _stuck(answer: Any, view: int) -> int:
+    """SCROLL_JS's answer as the px a segment overlaps the last: 0 for
+    anything but a number, and under half the view (STUCK_JS counts nothing
+    taller), so every segment still moves on."""
+    if isinstance(answer, bool) or not isinstance(answer, (int, float)):
+        return 0
+    return max(0, min(int(answer), (view - 1) // 2))
+
+
 def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict, preset: str, theme: str,
                    out: Path, axe_source: str | None) -> dict:
     """One route at one preset and theme. Raises with the step that failed."""
@@ -443,16 +497,30 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
         pending = _settle(page)
         step = "measure"
         measured = page.evaluate(MEASURE_JS, ready)
-        total, view = measured[0], measured[1]
-        count = max(1, min(int(route.get("segments", DEFAULT_SEGMENTS)), math.ceil(total / max(1, view))))
-        images = []
-        for segment in range(1, count + 1):
+        total, view = measured[0], max(1, measured[1])
+        budget = max(1, int(route.get("segments", DEFAULT_SEGMENTS)))
+        images, overlaps = [], []
+        step = "segment 1"
+        page.evaluate(SCROLL_JS, 0)
+        y = 0
+        for segment in range(1, budget + 1):
             step = f"segment {segment}"
-            page.evaluate(SCROLL_JS, (segment - 1) * view)
             png = page.screenshot(type="png", animations="disabled", caret="hide", timeout=SHOT_TIMEOUT_MS)
             name = image_name(group, rid, preset, theme, segment)
             _write(out / name, png)
             images.append(name)
+            if segment == budget or y + view >= total:
+                break
+            # One scroller-height on, less what is stuck over its top there
+            # (STUCK_JS), so the rows under a sticky header are in this
+            # segment or the next. The budget is the route's either way.
+            nxt = y + view
+            stuck = _stuck(page.evaluate(SCROLL_JS, nxt), view)
+            if stuck:
+                nxt -= stuck
+                page.evaluate(SCROLL_JS, nxt)
+            overlaps.append(stuck)
+            y = nxt
         step = "text"
         _write(out / f"{stem}.txt", page.inner_text("body"))
         step = "a11y"
@@ -462,6 +530,7 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
             "id": rid, "preset": preset, "theme": theme, "status": "unsettled" if pending else "captured",
             "path": route["path"], "images": images, "network_idle": idle,
             "settled": not pending, "pending": pending, "scroller": measured[2] if len(measured) > 2 else None,
+            "overlaps": overlaps,
             "text": f"{stem}.txt", "a11y": f"{stem}.a11y.json", "errors": f"{stem}.errors.json",
         }
         if axe_source is not None:

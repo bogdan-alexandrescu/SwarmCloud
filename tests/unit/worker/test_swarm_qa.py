@@ -104,8 +104,9 @@ def _white(_x, _y):
 #: The page's scripts run against a DOM of boxes this program builds from a
 #: list of nodes: what each scrolls (`sh` / `ch` / `cw`, scrollHeight,
 #: clientHeight, clientWidth), its overflow-y, its tag, classes and
-#: attributes, its own text, whether it has no box (`hidden`), and its
-#: parent. Selectors are the shapes the scripts and the
+#: attributes, its own text, whether it has no box (`hidden`), its parent,
+#: its CSS `position` and `top` (`pos`, `top` in px) and where its box is on
+#: the screen (`rt` its top, `rh` its height; `ch` when not given). Selectors are the shapes the scripts and the
 #: route list use: `tag`, `.class`, `[attr="v"]`, `[attr*="v"]`, `*`,
 #: descendant and comma.
 _DOM_PROGRAM = r"""
@@ -114,7 +115,8 @@ const els = spec.nodes.map((n) => ({
   localName: n.tag, tagName: n.tag.toUpperCase(), id: n.id || '', className: n.cls || '',
   classList: (n.cls || '').split(' ').filter(Boolean), _attrs: n.attrs || {}, _oy: n.oy || 'visible',
   scrollHeight: n.sh || 0, clientHeight: n.ch || 0, clientWidth: n.cw || 0, scrollTop: 0, parentElement: null,
-  _text: n.text || '', _hidden: n.hidden || false,
+  _text: n.text || '', _hidden: n.hidden || false, _pos: n.pos || 'static',
+  _top: n.top === undefined ? 'auto' : n.top + 'px', _rt: n.rt || 0, _rh: n.rh === undefined ? (n.ch || 0) : n.rh,
 }));
 spec.nodes.forEach((n, i) => { els[i].parentElement = n.parent === undefined ? null : els[n.parent]; });
 const simple = (el, s) => {
@@ -139,6 +141,7 @@ els.forEach((el) => {
   el.matches = (s) => all(s).includes(el);
   el.contains = (o) => { for (let x = o; x; x = x.parentElement) if (x === el) return true; return false; };
   el.getClientRects = () => (el._hidden ? [] : [{}]);
+  el.getBoundingClientRect = () => ({ top: el._rt, bottom: el._rt + el._rh, height: el._rh });
 });
 globalThis.window = globalThis;
 globalThis.innerHeight = spec.inner_height;
@@ -146,7 +149,7 @@ globalThis.document = {
   documentElement: els[0], scrollingElement: els[0], body: els[1],
   querySelectorAll: all, querySelector: (s) => all(s)[0] || null,
 };
-globalThis.getComputedStyle = (el) => ({ overflowY: el._oy, visibility: 'visible' });
+globalThis.getComputedStyle = (el) => ({ overflowY: el._oy, visibility: 'visible', position: el._pos, top: el._top });
 globalThis.NodeFilter = { SHOW_TEXT: 4 };
 document.createTreeWalker = (root) => {
   const texts = els.filter((el) => el._text && root.contains(el)).map((el) => ({ data: el._text, parentElement: el }));
@@ -221,6 +224,12 @@ class FakePage:
 
     def __init__(self, module, *, slow=(), scroll_height=2000, viewport_height=900):
         self.qa = module
+        # A sticky header's height: once the scroller has scrolled, the top
+        # `sticky` px of what it shows are under the header (SCROLL_JS
+        # answers with it). `at` is where the scroller is, clamped as a
+        # browser clamps scrollTop.
+        self.sticky = 0
+        self.at = 0
         self.slow = set(slow)
         self.scroll_height = scroll_height
         self.viewport_height = viewport_height
@@ -293,7 +302,8 @@ class FakePage:
             return ['"reading…" in button.c-refresh'] if clears is None or self.elapsed < clears else []
         if expression == self.qa.SCROLL_JS:
             self.log.append(("scroll", arg))
-            return None
+            self.at = max(0, min(arg, self.scroll_height - self.viewport_height))
+            return self.sticky if self.at > 0 else 0
         if expression == self.qa.AXE_RUN_JS:
             return {"violations": []}
         self.log.append(("evaluate", expression[:40]))
@@ -306,7 +316,7 @@ class FakePage:
     def screenshot(self, **kw):
         assert "path" not in kw, "swarm_qa names its files itself"
         assert not kw.get("full_page"), "a full-page capture is a downscaled image to the model"
-        self.log.append(("shot", self.url, (self.media or {}).get("color_scheme"), dict(kw), self.elapsed))
+        self.log.append(("shot", self.url, (self.media or {}).get("color_scheme"), dict(kw), self.elapsed, self.at))
         return _png(3, 2, _white)
 
     def inner_text(self, selector, **_kw):
@@ -616,6 +626,80 @@ def test_a_page_whose_document_scrolls_is_still_measured_by_the_document(qa):
         {"tag": "h1", "parent": 2, "sh": 40, "ch": 40, "cw": 600},
     ]}
     assert _run_js(qa.MEASURE_JS, dom, "main h1") == [2000, 900, "document"]
+
+
+def test_a_sticky_header_hides_no_row_between_two_segments(qa, world):
+    """task-021 (visual QA run 3, wf_d598fa7bffdb41fc9d76): at 390 the list's
+    55 px tab bar is sticky at the scroller's top, so a segment scrolled by
+    the scroller's whole height shows its first 55 px of new rows under the
+    bar, and no segment showed them. Each segment now overlaps the last by
+    the height of what is stuck over the scroller's top, measured on the
+    page (SCROLL_JS answers with it), never a number in the tool."""
+    routes = json.loads(world.routes.read_text(encoding="utf-8"))
+    routes["groups"]["work-a"] = [{"id": "runs", "address": "work/runs", "path": "/runs", "ready": "main h1"}]
+    world.routes.write_text(json.dumps(routes), encoding="utf-8")
+    page = world.page
+    page.scroll_height, page.viewport_height, page.sticky = 2000, 844, 55
+    code, _out, bundle = _capture(qa, world, presets="phone-390", themes="light")
+    assert code == 0
+    (entry,) = _manifest(bundle)["routes"]
+    at = [e[5] for e in page.log if e[0] == "shot"]
+    assert len(at) == len(entry["images"]) and at[0] == 0, at
+    # What each image shows clear of the header: all of it at the top, below
+    # the header once scrolled.
+    shown = [(y + (page.sticky if y > 0 else 0), y + page.viewport_height) for y in at]
+    # MUTATION: scroll each segment by the scroller's whole height again
+    # (`(segment - 1) * view`) and this fails: rows 844..899 are under the
+    # bar in segment 2 and below the fold of segment 1.
+    for (_, end), (start, _) in zip(shown, shown[1:]):
+        assert start <= end, f"rows {end}..{start} are in no segment: {shown}"
+    assert shown[-1][1] >= page.scroll_height, f"the page's last rows are in no segment: {shown}"
+    # MUTATION: hard-code the overlap (55) and a page whose header is 80 px
+    # skips 25 px a segment; with no header the segments do not overlap.
+    page.log.clear()
+    page.sticky = 0
+    code, _out, bundle = _capture(qa, world, presets="phone-390", themes="light")
+    assert [e[5] for e in page.log if e[0] == "shot"] == [0, 844, 1156], "no header, no overlap"
+
+
+def _sticky_dom(*nodes) -> dict:
+    """`_console_dom` at 390 with boxes on the screen: `div.ctl-scroll` starts
+    60 px down, under the page head, and shows 784 px."""
+    dom = _console_dom()
+    for node in dom["nodes"]:
+        if node.get("cls") == "ctl-scroll":
+            node.update({"ch": 784, "rt": 60, "cw": 390})
+    dom["nodes"].extend(nodes)
+    return dom
+
+
+def test_what_is_stuck_over_the_scroller_is_measured_on_the_page(qa):
+    """STUCK_JS, which SCROLL_JS answers with: how far down from the
+    scroller's top edge an element stuck there (`position: sticky` in this
+    scroller, or `fixed`) covers it. A sticky head of a table that scrolls on
+    its own, a sticky side rail as tall as the page and an element with no
+    box cover no row of the page."""
+    # Node 5 is `main` inside `div.ctl-scroll` (node 4); the table, when
+    # given, is first, node 7, so its head's parent is 7.
+    tabs = {"tag": "div", "cls": "ag-list-tabs", "parent": 5, "pos": "sticky", "top": 0, "rt": 60, "rh": 55}
+    table = {"tag": "div", "cls": "c-tbl", "parent": 5, "oy": "auto", "sh": 900, "ch": 300, "rt": 60, "rh": 300}
+    thead = {"tag": "thead", "parent": 7, "pos": "sticky", "top": 0, "rt": 60, "rh": 32}
+    rail = {"tag": "aside", "cls": "rn-side", "parent": 5, "pos": "sticky", "top": 0, "rt": 60, "rh": 700}
+    gone = {"tag": "div", "cls": "toast", "parent": 5, "pos": "sticky", "top": 0, "rt": 60, "rh": 90, "hidden": True}
+    probe = "(ready) => { (" + qa.MEASURE_JS + ")(ready); return (" + qa.STUCK_JS + ")(); }"
+    # MUTATION: return 0 from STUCK_JS and this fails: the tab bar is 55 px.
+    assert _run_js(probe, _sticky_dom(table, thead, tabs, rail, gone), "main h1") == 55
+    # A sticky element with a negative inset (`.ag-tabs-edge`, top: -18px)
+    # covers what shows of it.
+    edge = dict(tabs, cls="ag-tabs-edge", top=-18, rt=42, rh=73)
+    assert _run_js(probe, _sticky_dom(edge), "main h1") == 55
+    # MUTATION: count a sticky element that is not at its inset (not stuck,
+    # further down the page) and this fails.
+    assert _run_js(probe, _sticky_dom(dict(tabs, rt=400)), "main h1") == 0
+    assert _run_js(probe, _sticky_dom(table, thead, rail, gone), "main h1") == 0
+    # MUTATION: let SCROLL_JS resolve to null again and the capture never
+    # learns the header's height.
+    assert qa.STUCK_JS in qa.SCROLL_JS
 
 
 def test_a_route_is_shot_only_after_its_reading_marker_clears(qa, world):

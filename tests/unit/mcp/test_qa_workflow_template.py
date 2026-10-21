@@ -373,3 +373,54 @@ def test_flow_briefs_name_only_pages_in_the_route_list():
     # The scripted flow opens one page by name; the goal-driven ones are told
     # not to type addresses, so they name none.
     assert named_by_flow["flow-submit-form"] == {"/submit/task"}, named_by_flow
+
+
+#: Where the console says what the submit chooser's task card is called
+#: (SubmitChooser.tsx, since PR 1740: 'Start an agent').
+SUBMIT_CHOOSER = REPO / "apps" / "swarm-ui" / "src" / "SubmitChooser.tsx"
+
+
+def test_flow_briefs_use_the_consoles_own_words():
+    """QA-038, still seen in visual QA run 3 (wf_d598fa7bffdb41fc9d76): the
+    brief said "Submit, then Start a task"; the console has said 'Start an
+    agent' since PR 1740, so the flow looked for a button that is not there."""
+    steps = _steps()
+    chooser = SUBMIT_CHOOSER.read_text(encoding="utf-8")
+    assert "Start an agent" in chooser, "the chooser no longer says 'Start an agent': follow its words here"
+    for step_id in _flows(steps):
+        # MUTATION: put "then Start a task" back in flow-submit-form's prompt
+        # and this fails.
+        assert "Start a task" not in steps[step_id]["prompt"], f"{step_id} names a label the console does not show"
+    assert "the rail's Submit item, then Start an agent" in steps["flow-submit-form"]["prompt"]
+
+
+def test_every_flow_lists_every_screenshot_it_takes_in_its_json():
+    """flow-find-failure-run-001 (visual QA run 3): a flow screenshot was in
+    the tar and in no flow json, so the report could not say whether the
+    model had looked at it. Every flow brief tells its agent to list every
+    screenshot it takes, by file name, with what it shows."""
+    steps = _steps()
+    for step_id in _flows(steps):
+        prompt = steps[step_id]["prompt"]
+        # MUTATION: drop the sentence from flow-find-failure (its brief asked
+        # only for a screenshot per label finding) and this fails.
+        assert (f"List in {step_id}.json every screenshot you take, by its file name, with what it shows"
+                in prompt), f"{step_id} does not say every screenshot is described in its json"
+
+
+def test_a_malformed_call_of_the_agents_own_is_retried_once_and_a_browser_failure_still_ends_the_run():
+    """Visual QA run 3: flow-submit-form's phone run called browser_find with
+    neither text nor regex; the tool refused the call, the brief's rule that
+    any browser error ends the run ended it, and the phone's empty-submit,
+    validation and per-runner steps never ran (QA-102, QA-104, QA-107). A
+    refusal of the agent's own malformed call is corrected and retried once;
+    a page or browser failure still ends the run and is recorded."""
+    prompt = _steps()["flow-submit-form"]["prompt"]
+    # MUTATION: delete the malformed-call sentence and this fails.
+    assert "refuses your own call as malformed" in prompt
+    assert "correct the call and retry it once" in prompt
+    assert "a second refusal ends the run" in prompt, "the retry is once, not a loop"
+    # MUTATION: widen the retry to any error ("retry any failed call once")
+    # and the timeout rule below goes, which this catches.
+    assert "If the page or the browser fails (a timeout, a navigation error, a closed page)" in prompt
+    assert "do not call it or any other browser tool again" in prompt
