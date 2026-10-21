@@ -171,6 +171,12 @@
         "ready": "main h1"
       },
       {
+        "id": "runner-sizes",
+        "address": "admin/runner-sizes",
+        "path": "/admin/runner-sizes",
+        "ready": "main h1"
+      },
+      {
         "id": "tenants",
         "address": "admin/tenants",
         "path": "/admin/tenants",
