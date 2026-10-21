@@ -497,6 +497,100 @@ def test_the_vendor_refusing_is_a_502_and_recorded(tmp_path, caplog):
     assert events[-1]["cause"] == "vendor_refused" and events[-1]["status"] == 502
 
 
+# -- the head: a probe is not a request -----------------------------------------------
+#
+# Lane EGRESS-PROBE-QUIET (part of #1822): the manifest's tcpSocket readiness
+# (every 5 s) and liveness (every 10 s) probes, and the live gate's forwarder
+# probe, open a connection and close it without a byte. The 2026-10-21 capture
+# logged 18 a minute as `egress_refused` cause `head`, drowning the real ones.
+
+
+async def _raw(h: Harness, data: bytes, *, eof: bool = True) -> bytes:
+    """Send `data` (then half-close when `eof`) and return everything
+    swarm-egress answers before it closes the connection."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", h.port)
+    if data:
+        writer.write(data)
+        await writer.drain()
+    if eof:
+        writer.write_eof()
+    answer = await asyncio.wait_for(reader.read(), 5)
+    writer.close()
+    return answer
+
+
+def _refusals(caplog) -> list[dict[str, Any]]:
+    return [e for e in _events(caplog) if e["event"] == "egress_refused"]
+
+
+def test_a_connection_that_closes_without_a_byte_is_not_a_refusal(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    answers: list[bytes] = []
+
+    async def scenario(h: Harness) -> None:
+        for _ in range(3):
+            answers.append(await _raw(h, b""))
+        # A real refusal after the probes, so an empty log cannot pass this test.
+        status, _, writer = await h.connect(ticket=None)
+        assert status == 407
+        writer.close()
+
+    harness = run(tmp_path, scenario)
+    # MUTATION: raising Refusal(400, "head") for an empty IncompleteReadError
+    # again answers each probe with a 400 and these fail.
+    assert answers == [b"", b"", b""]
+    # MUTATION: recording a zero-byte connection as `egress_refused` makes this
+    # list four long, three of them cause `head`.
+    assert [(e["cause"], e["status"]) for e in _refusals(caplog)] == [("no_ticket", 407)]
+    assert harness.dialled == []
+
+
+@pytest.mark.parametrize("data", [
+    pytest.param(b"CONNECT " + TARGET.encode() + b" HTTP/1.1\r\nHost: x\r\n", id="partial"),
+    pytest.param(b"C", id="one-byte"),
+    pytest.param(b"GARBAGE\r\n\r\n", id="malformed-request-line"),
+    pytest.param(b"CONNECT " + TARGET.encode() + b" HTTP/1.1\r\nX-Pad: "
+                 + b"a" * 9000 + b"\r\n\r\n", id="oversized"),
+])
+def test_a_partial_malformed_or_oversized_head_is_still_refused(tmp_path, caplog, data):
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    answers: list[bytes] = []
+
+    async def scenario(h: Harness) -> None:
+        answers.append(await _raw(h, data))
+
+    harness = run(tmp_path, scenario)
+    # MUTATION: treating any IncompleteReadError (not only one with no bytes)
+    # as a probe answers the partial and one-byte heads with nothing.
+    assert answers[0].startswith(b"HTTP/1.1 400 ")
+    assert b"X-Swarm-Egress-Refused: head\r\n" in answers[0]
+    # MUTATION: skipping the record for a short head drops this event.
+    assert [(e["cause"], e["status"]) for e in _refusals(caplog)] == [("head", 400)]
+    assert harness.dialled == []
+
+
+@pytest.mark.parametrize("data", [
+    pytest.param(b"CONNECT " + TARGET.encode() + b" HTTP/1.1\r\n", id="mid-head"),
+    pytest.param(b"", id="silent"),
+])
+def test_a_head_that_times_out_is_still_refused(tmp_path, caplog, monkeypatch, data):
+    import swarm_egress.server as server
+
+    monkeypatch.setattr(server, "HEAD_TIMEOUT_SECONDS", 0.2)
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    answers: list[bytes] = []
+
+    async def scenario(h: Harness) -> None:
+        answers.append(await _raw(h, data, eof=False))
+
+    run(tmp_path, scenario)
+    # MUTATION: treating a timeout as a probe answers nothing here: a client
+    # that holds the connection open is not a probe that closed it.
+    assert answers[0].startswith(b"HTTP/1.1 400 ")
+    # MUTATION: skipping the record for a timed-out head drops this event.
+    assert [(e["cause"], e["status"]) for e in _refusals(caplog)] == [("head", 400)]
+
+
 # -- no credential in any log ------------------------------------------------------
 
 
