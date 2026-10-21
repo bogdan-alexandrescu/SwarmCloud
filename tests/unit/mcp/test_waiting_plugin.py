@@ -303,6 +303,7 @@ def test_the_plugin_version_moved_one_patch_with_its_pin():
         (Path(__file__).resolve().parents[3] / "plugin" / ".claude-plugin" / "plugin.json").read_text()
     )
     version = tuple(int(part) for part in manifest["version"].split("."))
-    assert version == (_VERSION_BEFORE[0], _VERSION_BEFORE[1], _VERSION_BEFORE[2] + 1)  # MUTATION: no bump -- 0.5.48.
+    # Past it, not equal to it: a later lane (PLUGIN-ROW-SPLIT, 0.5.50) moves it again.
+    assert version > _VERSION_BEFORE  # MUTATION: no bump -- 0.5.48.
     pinned = manifest["mcpServers"]["swarmcloud"]["args"]
     assert any(f"@sc-v{manifest['version']}#" in arg for arg in pinned)  # MUTATION: bump the version, not the pin -- absent.

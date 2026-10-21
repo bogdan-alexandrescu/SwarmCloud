@@ -107,6 +107,21 @@ whose args are `{attach_tasks: [...]}`: run.js starts one `sc:task` row per
 task in it, titled from the task's label. `for_all` adds that copy for the
 caller's running single tasks, and `swarm_dispatch` hands one back for the
 task ids it just sent, so a dispatched task gets a row without anyone asking.
+
+ONE SUMMARY ROW, OR PER-STEP ROWS SPLIT OVER RUNS (PLUGIN-ROW-SPLIT, #1809,
+owner decision 2026-10-21). Each live row is one Claude Code agent, and Claude
+Code runs at most min(16, CPU cores - 2) agents per workflow run: an 18-step
+attach on a 10-core machine showed 8 rows and queued 10. The plugin's `rows`
+setting (`config.rows_mode`) picks the copy's shape. `summary`, the default:
+ONE copy per workflow whose args say `rows: "summary"`, and run.js follows
+the whole workflow with one `sc:summary` row -- one agent, never queued, a
+line only when the step counts change. `per-step`: one row per unfinished
+step, as before, but when there are more than `rows_per_run()` the bridge --
+which runs on Claude Code's host, so it can read the core count -- writes one
+copy per share, titled `SC · <name> · N steps · rows 1-8`, `rows 9-16`...,
+each told its steps in `row_share`; the first reports the finished steps.
+`max_live_rows` still caps the total of step rows. `/sc attach <wf_id>
+--per-step` picks per-step for one attach (`attach_target`).
 """
 
 from __future__ import annotations
@@ -154,6 +169,43 @@ MAX_ATTACHED_WORKFLOWS = config.DEFAULT_MAX_LIVE_ROWS
 #: run.js holds the same number (MAX_ATTACHED_TASKS). The same option moves
 #: it. The rest are listed with the command that shows them.
 MAX_ATTACHED_TASKS = config.DEFAULT_MAX_LIVE_ROWS
+
+
+#: Claude Code's own ceiling on the agents one workflow run runs at once, and
+#: the cores it leaves the host: it runs min(16, cores - 2) (#1809, measured
+#: 2026-10-21: 8 of 18 rows live on a 10-core machine, the rest queued).
+AGENTS_PER_RUN_MAX = 16
+HOST_RESERVED_CORES = 2
+
+
+def rows_per_run(cpu_count: int | None = None) -> int:
+    """How many rows one Claude Code run shows live: min(16, cores - 2), at
+    least 1 -- an unknown core count is 1, never 0, which would split a batch
+    into runs of nothing. The bridge runs on Claude Code's host, so its
+    `os.cpu_count()` is the count Claude Code reads."""
+    cores = os.cpu_count() if cpu_count is None else cpu_count
+    return max(1, min(AGENTS_PER_RUN_MAX, (cores or 0) - HOST_RESERVED_CORES))
+
+
+#: What `/sc attach <wf_id> <flag>` may add, and the mode each picks.
+ATTACH_FLAGS = {"--per-step": config.ROWS_PER_STEP, "--summary": config.ROWS_SUMMARY}
+
+
+def attach_target(given: str) -> tuple[str, str | None]:
+    """`(workflow_id, rows)` from an attach value: a workflow id, optionally
+    with `--per-step` or `--summary` after it -- how `/sc attach <wf_id>
+    --per-step` overrides the `rows` setting for one attach. `rows` is None
+    when no flag was given. Anything else beside the one id is refused."""
+    words = str(given).split()
+    flags = [w for w in words if w.startswith("--")]
+    ids = [w for w in words if not w.startswith("--")]
+    unknown = [f for f in flags if f not in ATTACH_FLAGS]
+    if unknown or len(ids) != 1:
+        raise SwarmError(
+            f"attach takes one workflow id and at most one of {sorted(ATTACH_FLAGS)}; it was given "
+            f"{given!r}. Nothing was written"
+        )
+    return ids[0], ATTACH_FLAGS[flags[-1]] if flags else None
 
 
 def max_live_rows() -> int:
@@ -605,9 +657,13 @@ def for_spec(document: dict[str, Any], client: SwarmClient | None = None) -> dic
     steps = len(spec["steps"])
     name = workflows.title_name(title=spec["title"], label=spec["label"])
     title = workflows.workflow_title(name, steps)
+    mode = config.rows_mode()
     description = (
         f"{title}: each step runs in SwarmCloud and is shown here as one [SwarmCloud] row, "
         "by the console's stage, with its console link"
+    ) if mode == config.ROWS_PER_STEP else (
+        f"{title}: each step runs in SwarmCloud, and the whole workflow is shown here as ONE "
+        "[SwarmCloud] summary row, a line each time its step counts change, with its console link"
     )
     workspace, submitter = _submitting(client)
     # NOT RECORDED HERE (SC-TITLES-B): no workflow exists yet. `swarm_workflow`
@@ -621,68 +677,207 @@ def for_spec(document: dict[str, Any], client: SwarmClient | None = None) -> dic
         str(step["step_id"]): details.line(workspace, details.for_spec({"steps": [step]}, submitter))
         for step in spec["steps"]
     }}
+    # The row mode reaches run.js in the args the session builds: `rows`.
+    out["rows"] = mode
     out["launch_with"] = (
         "the Workflow tool with {scriptPath: <script_path>, args: <the same args /sc:swarmcloud "
         "takes -- {spec, spec_path} or {spec}> plus `details`: this reply's `row_details`, so "
-        "each step's row shows its own details when expanded>}"
+        "each step's row shows its own details when expanded, and `rows`: this reply's `rows`>}"
     )
     return out
 
 
-def _attach_launch(
+#: The states a step does not leave (swarm_common.states.TERMINAL_STATES, as
+#: the API serves them): a step in one has no row to split.
+_FINISHED = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "DEAD_LETTERED"})
+
+
+def _console_order(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`steps` in the console's order: by DAG level, the workflow's own order
+    within a level -- run.js's `consoleStages`, so `rows 1-8` are the first
+    eight rows the console lists. A parent not in the list, and a cycle,
+    count as level 0, as there."""
+    by_id = {s.get("step_id"): s for s in steps}
+    depth: dict[Any, int] = {}
+    visiting: set[Any] = set()
+
+    def walk(step_id: Any) -> int:
+        if step_id in depth:
+            return depth[step_id]
+        if step_id in visiting or step_id not in by_id:
+            return 0
+        visiting.add(step_id)
+        deepest = 0
+        for parent in by_id[step_id].get("depends_on") or []:
+            deepest = max(deepest, walk(parent) + 1)
+        visiting.discard(step_id)
+        depth[step_id] = deepest
+        return deepest
+
+    for step in steps:
+        walk(step.get("step_id"))
+    ordered = sorted(enumerate(steps), key=lambda pair: (depth.get(pair[1].get("step_id"), 0), pair[0]))
+    return [step for _, step in ordered]
+
+
+def _open_steps(envelope: dict[str, Any]) -> list[str]:
+    """The ids of the workflow's unfinished steps, in the console's order: a
+    step whose task the read did not name a finished state for is unfinished,
+    as run.js counts it."""
+    rows = workflows.step_rows(envelope)
+    return [str(r["step_id"]) for r in _console_order(rows)
+            if r.get("step_id") and r.get("state") not in _FINISHED]
+
+
+def share_title(name: str, steps: int, first: int, last: int) -> str:
+    """`SC · <name> · N steps · rows <first>-<last>`, at most
+    workflows.TITLE_CHARS: the name is cut further, never the count or the
+    share."""
+    suffix = f" · rows {first}-{last}"
+    title = workflows.workflow_title(name, steps)
+    over = len(title) + len(suffix) - workflows.TITLE_CHARS
+    if over > 0:
+        flat = workflows._flat(name) or "workflow"
+        title = workflows.workflow_title(_clip(flat, max(1, len(flat) - over)), steps)
+    return title + suffix
+
+
+def _attach_launches(
     workflow_id: str, name: str, steps: int, workspace: str | None = None, tenant: str | None = None,
     envelope: dict[str, Any] | None = None, labels: dict[str, str] | None = None,
-    repository: Any = None,
-) -> dict[str, Any]:
-    """`workspace` is the one the API's document names (a display name or the
+    repository: Any = None, *, rows: str | None = None, budget: int | None = None,
+) -> tuple[list[dict[str, Any]], list[str], int]:
+    """`(copies, steps_left_out, rows_used)` for attaching one workflow.
+
+    `workspace` is the one the API's document names (a display name or the
     tenant id); `tenant` the tenant id behind it, for the description.
     `envelope`, the workflow as `GET /v1/workflows/{id}` served it, gives the
     DETAILS -- the run's, and each step row's in `args.details.steps` -- and
-    `labels` the accounts' labels (`details.account_labels`). `repository`,
-    the URL it clones (else read off `envelope`'s tasks), goes to the record
-    as `host/owner/repo`."""
+    the unfinished steps a per-step attach splits; `labels` the accounts'
+    labels (`details.account_labels`). `repository`, the URL it clones (else
+    read off `envelope`'s tasks), goes to the record as `host/owner/repo`.
+
+    `rows`, the mode (`config.rows_mode()` when None): `summary` is ONE copy
+    whose run follows the whole workflow with one row; `per-step` is one row
+    per unfinished step, at most `budget` of them (`max_live_rows()` when
+    None), in copies of at most `rows_per_run()` rows each when there are more
+    -- each copy's `row_share` names its steps and the other copies' (so the
+    first, and only the first, reports the steps finished at launch). A
+    per-step attach with no envelope cannot split, and is one copy."""
+    mode = rows or config.rows_mode()
     if repository is None and envelope is not None:
         repository = next((t.get("repository_url") for t in envelope.get("tasks") or []
                            if isinstance(t, dict) and t.get("repository_url")), None)
     title = workflows.workflow_title(name, steps)
+    base: dict[str, Any] = {"attach": workflow_id, "title": name, "rows": mode}
+    if workspace:
+        # The workspace the API's document names: the attach run's results
+        # and its details carry it before the workflow is read again.
+        base["workspace"] = workspace
+    shown = workspace_shown(workspace, tenant)
+    step_details = {
+        step_id: details.line(shown, facts, labels)
+        for step_id, facts in details.per_step(envelope).items()
+    } if envelope is not None else {}
+    if step_details:
+        base["details"] = {"steps": step_details}
+    record("attach", title=title, workflow_id=workflow_id, repository=repository)
+    facts = details.for_workflow(envelope) if envelope is not None else None
+
+    def copy(copy_title: str, description: str, share: dict[str, Any] | None = None) -> dict[str, Any]:
+        args = dict(base)
+        if share is not None:
+            args["row_share"] = share
+        out = _launch(copy_title, description, args, shown, facts, labels)
+        out["workflow_id"] = workflow_id
+        out["workspace"] = workspace
+        out["rows"] = mode
+        return out
+
+    copies, left, used = _shaped(mode, copy, title, workflow_id, name, steps, envelope, budget)
+    # Remembered once its copies are written: a copy that could not be
+    # written is no row, and `/sc check` must still offer it.
+    remember_attached([workflow_id])
+    return copies, left, used
+
+
+def _shaped(
+    mode: str, copy: Any, title: str, workflow_id: str, name: str, steps: int,
+    envelope: dict[str, Any] | None, budget: int | None,
+) -> tuple[list[dict[str, Any]], list[str], int]:
+    """`_attach_launches`' copies, written by `copy(title, description,
+    share)`, in `mode`'s shape."""
+    if mode == config.ROWS_SUMMARY:
+        description = (
+            f"{title}: attached to SwarmCloud workflow {workflow_id}; the whole workflow is shown "
+            "here as ONE [SwarmCloud] summary row, a line each time its step counts change. "
+            "Nothing is submitted"
+        )
+        return [copy(title, description)], [], 1
+
     description = (
         f"{title}: attached to SwarmCloud workflow {workflow_id}; each unfinished step is shown "
         "here as one [SwarmCloud] row, by the console's stage. Nothing is submitted"
     )
-    args: dict[str, Any] = {"attach": workflow_id, "title": name}
-    if workspace:
-        # The workspace the API's document names: the attach run's results
-        # and its details carry it before the workflow is read again.
-        args["workspace"] = workspace
-    shown = workspace_shown(workspace, tenant)
-    rows = {
-        step_id: details.line(shown, facts, labels)
-        for step_id, facts in details.per_step(envelope).items()
-    } if envelope is not None else {}
-    if rows:
-        args["details"] = {"steps": rows}
-    record("attach", title=title, workflow_id=workflow_id, repository=repository)
-    out = _launch(title, description, args, shown,
-                  details.for_workflow(envelope) if envelope is not None else None, labels)
-    out["workflow_id"] = workflow_id
-    out["workspace"] = workspace
-    remember_attached([workflow_id])
-    return out
+    if envelope is None:
+        return [copy(title, description)], [], steps
+    open_ids = _open_steps(envelope)
+    cap = max_live_rows() if budget is None else max(0, budget)
+    followed, left = open_ids[:cap], open_ids[cap:]
+    limit = rows_per_run()
+    if not left and len(followed) <= limit:
+        return [copy(title, description)], [], len(followed)
+    copies = []
+    for start in range(0, len(followed), limit):
+        share = followed[start:start + limit]
+        first, last = start + 1, start + len(share)
+        copies.append(copy(
+            share_title(name, steps, first, last),
+            f"{title}: attached to SwarmCloud workflow {workflow_id}; unfinished steps {first}-{last} "
+            f"of {len(open_ids)} are shown here as one [SwarmCloud] row each -- a run of its own, "
+            f"within the {limit} agents Claude Code runs per run. Nothing is submitted",
+            {"from": first, "to": last, "steps": share,
+             "others": [i for i in followed if i not in share]},
+        ))
+    return copies, left, len(followed)
+
+
+def _launch_with(copies: list[dict[str, Any]]) -> str:
+    if len(copies) > 1:
+        return (
+            "one Workflow call per entry of `launches`, each {scriptPath: <script_path>, args: "
+            "<args>}: each copy is a run of its own with its share of the rows (`rows 1-8`, "
+            "`rows 9-16`...), so every row is live at once"
+        )
+    return "the Workflow tool with {scriptPath: <script_path>, args: <args>}"
 
 
 def for_attach(client: SwarmClient, workflow_id: str) -> dict[str, Any]:
-    """The titled copy for attaching one workflow: one read, for the name
-    SwarmCloud stored and the step count."""
+    """The titled copy -- or, per-step past the host's limit, copies -- for
+    attaching one workflow: one read, for the name SwarmCloud stored, the step
+    count and the unfinished steps. `workflow_id` may carry `--per-step` or
+    `--summary` after the id (`attach_target`), which outranks the `rows`
+    setting for this attach. The reply's own fields are the first copy's;
+    `launches` holds every copy."""
     from . import session
 
+    workflow_id, rows = attach_target(workflow_id)
     envelope = workflows.fetch(client, workflow_id)
     stored = workflows.stored_names(envelope)
     name = workflows.title_name(stored=stored["title"] or stored["label"], workflow_id=workflow_id)
     tenant = workflows._flat(envelope["workflow"].get("tenant_id")) or workflows._flat(envelope.get("tenant_id"))
     workspace = workflows.workspace_of({"tenant_id": tenant}, workflows.workspace_names(client))
-    out = _attach_launch(workflow_id, name, len(envelope["workflow"].get("steps") or []), workspace, tenant,
-                         envelope, details.account_labels(client))
-    out["launch_with"] = "the Workflow tool with {scriptPath: <script_path>, args: <args>}"
+    copies, left, _ = _attach_launches(
+        workflow_id, name, len(envelope["workflow"].get("steps") or []), workspace, tenant,
+        envelope, details.account_labels(client), rows=rows)
+    out = dict(copies[0])
+    out["launches"] = copies
+    out["not_followed"] = [
+        {"workflow_id": workflow_id, "step_id": step_id,
+         "why": f"past max_live_rows ({max_live_rows()})", "attach_with": f"/sc attach {workflow_id}"}
+        for step_id in left
+    ]
+    out["launch_with"] = _launch_with(copies)
     # BY HAND, ANY WORKFLOW THE TENANT MAY READ (SC-SESSION-SCOPE): the
     # session scope decides what is attached automatically, never what a
     # developer may ask for by id. The reply says whose it is.
@@ -794,8 +989,17 @@ def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, 
     # `max_rows`: the cap this bridge used, so run.js -- which caps the rows
     # it starts too, at 100 when told nothing -- follows every task handed it.
     facts = details.merge(details.for_task(e.get("task")) for e in follow)
-    out = _launch(title, description, {"attach_tasks": rows, "max_rows": cap}, _tasks_workspace(follow),
-                  facts, labels)
+    # `rows`: the sc plugin's setting (PLUGIN-ROW-SPLIT). `summary` follows the
+    # whole batch with ONE row; `per-step` starts a row per task, as before.
+    mode = config.rows_mode()
+    if mode == config.ROWS_SUMMARY:
+        description = (
+            f"{title}: the SwarmCloud single tasks are shown here as ONE [SwarmCloud] summary row, "
+            "a line each time their counts change. Nothing is submitted"
+        )
+    out = _launch(title, description, {"attach_tasks": rows, "max_rows": cap, "rows": mode},
+                  _tasks_workspace(follow), facts, labels)
+    out["rows"] = mode
     out["task_ids"] = [row["task_id"] for row in rows]
     remember_attached(out["task_ids"])
     out["not_followed"] = [
@@ -988,20 +1192,38 @@ def for_all(
     # that fails costs that run its details -- `not reported` -- never its row.
     envelopes = _read_workflows(client, [str(e["workflow_id"]) for e in followed])
     labels = details.account_labels(client) if followed else {}
+    # THE ROWS (PLUGIN-ROW-SPLIT): a summary row is one row per workflow, so
+    # the cap counts workflows; per-step rows count steps, so the cap is a
+    # budget the workflows spend in board order, and a workflow it does not
+    # reach is not followed.
+    mode = config.rows_mode()
+    budget = cap
+    unreached: list[dict[str, Any]] = []
+    steps_left: list[dict[str, Any]] = []
     for entry in followed:
         workflow_id = str(entry["workflow_id"])
+        if mode == config.ROWS_PER_STEP and budget <= 0:
+            unreached.append(entry)
+            continue
         name = workflows.title_name(stored=entry.get("title") or entry.get("label"), workflow_id=workflow_id)
-        launches.append(_attach_launch(
+        copies, left, used = _attach_launches(
             workflow_id, name, int(entry.get("steps_total") or 0), entry.get("workspace"), entry.get("tenant_id"),
             envelopes.get(workflow_id), labels, entry.get("repository_url"),
-        ))
+            rows=mode, budget=budget if mode == config.ROWS_PER_STEP else None,
+        )
+        launches.extend(copies)
+        budget -= used
+        steps_left.extend({"workflow_id": workflow_id, "step_id": step_id,
+                           "why": f"past max_live_rows ({cap})", "attach_with": f"/sc attach {workflow_id}"}
+                          for step_id in left)
     not_followed = [
         {"workflow_id": e["workflow_id"], "workspace": e.get("workspace"), "title": e.get("title") or e.get("label"),
          "attach_with": f"/sc attach {e['workflow_id']}"}
-        for e in entries[cap:]
-    ]
+        for e in unreached + entries[cap:]
+    ] + steps_left
     out: dict[str, Any] = {
         "max_live_rows": cap,
+        "rows": mode,
         "count": len(entries),
         "launches": launches,
         "not_followed": not_followed,
@@ -1027,8 +1249,9 @@ def for_all(
         out["single_tasks"] = 0
     out["launch_with"] = (
         "one Workflow call per entry of `launches`, each {scriptPath: <script_path>, args: "
-        "<args>}: one Claude Code run per SwarmCloud workflow, and one for your running "
-        "single tasks (args `attach_tasks`), with a row per task"
+        "<args>}: one Claude Code run per SwarmCloud workflow (per share of its rows, "
+        "`rows 1-8`, `rows 9-16`..., when per-step rows are more than one run shows), and one "
+        "for your running single tasks (args `attach_tasks`)"
     )
     out["session"] = {**session.describe(sid), "left_out": left_out}
     if filtering:

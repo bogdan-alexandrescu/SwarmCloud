@@ -441,7 +441,7 @@ def test_an_attach_launch_takes_the_stored_title_else_the_unit_else_the_id(_plug
                          (_stored(), "wf_9")):
         reply = json.loads(server._call(_Recorder(stored), "swarm_workflow_launch", {"attach": "wf_9"}))
         assert reply["title"] == f"SC · {name} · 2 steps"
-        assert reply["args"] == {"attach": "wf_9", "title": name, "titled_copy": reply["script_path"]}
+        assert reply["args"] == {"attach": "wf_9", "title": name, "rows": "summary", "titled_copy": reply["script_path"]}
         assert _meta_of(Path(reply["script_path"]))["name"] == reply["title"]
 
 
@@ -493,8 +493,8 @@ def test_attach_all_through_the_bridge_writes_one_run_per_workflow(_plugin_root,
     reply = json.loads(server._call(_Recorder(), "swarm_workflow_launch", {"attach": "all"}))
     launches = reply["launches"]
     assert [l["args"] for l in launches] == [
-        {"attach": "wf_a", "title": "alpha", "titled_copy": launches[0]["script_path"]},
-        {"attach": "wf_b", "title": "Beta!", "titled_copy": launches[1]["script_path"]},
+        {"attach": "wf_a", "title": "alpha", "rows": "summary", "titled_copy": launches[0]["script_path"]},
+        {"attach": "wf_b", "title": "Beta!", "rows": "summary", "titled_copy": launches[1]["script_path"]},
     ]
     assert [l["title"] for l in launches] == ["SC · alpha · 3 steps", "SC · Beta! · 2 steps"]
     paths = {l["script_path"] for l in launches}

@@ -72,6 +72,10 @@ EXPECTED_TOOLS = {
     # `sc:task` is `sc:step` for a task in NO workflow (#830): it follows
     # without `step_id`, so it watches and nothing else, like a step row.
     "task": {"swarm_follow"},
+    # `sc:summary` is ONE row for a whole workflow or task batch (the plugin's
+    # `rows: summary`, PLUGIN-ROW-SPLIT): it follows several tasks and only
+    # watches, like a step row.
+    "summary": {"swarm_follow"},
     # `swarm_workflow_spec` reads a spec FILE for /sc:run (epic #227): a workflow
     # script has no filesystem, so the bridge reads it and digests it.
     # `swarm_follow` is the probe (owner decision, 2026-10-01): after a submit
@@ -235,7 +239,7 @@ def test_an_agent_is_pinned_to_haiku_at_low_effort(path):
     )
 
 
-@pytest.mark.parametrize("name", ["remote", "step", "task"])
+@pytest.mark.parametrize("name", ["remote", "step", "task", "summary"])
 def test_a_proxy_row_is_capped_well_under_claude_codes_own_turn_limit(name):
     """Owner decision, 2026-09-26 (proxy cost bound): a haiku row that only
     relays a remote task must not be able to poll `swarm_follow` for hours
@@ -246,7 +250,7 @@ def test_a_proxy_row_is_capped_well_under_claude_codes_own_turn_limit(name):
     assert fields.get("maxTurns") == 60, f"{name}.md must cap at 60 turns, found {fields.get('maxTurns')!r}"
 
 
-@pytest.mark.parametrize("name", ["remote", "step", "task"])
+@pytest.mark.parametrize("name", ["remote", "step", "task", "summary"])
 def test_a_proxy_rows_own_follow_call_cap_is_sixty_not_twenty(name):
     """Owner decision (#230 comment, 2026-09-26): a proxy row's OWN count of
     its `swarm_follow` calls -- distinct from Claude Code's `maxTurns: 60` --
@@ -266,7 +270,7 @@ def test_a_proxy_rows_own_follow_call_cap_is_sixty_not_twenty(name):
     )
 
 
-@pytest.mark.parametrize("name", ["remote", "step", "task"])
+@pytest.mark.parametrize("name", ["remote", "step", "task", "summary"])
 def test_a_proxy_row_at_its_turn_cap_reports_running_not_silence(name):
     """Claude Code's own `maxTurns` is a hard kill with no chance to answer.
     A row must stop ASKING before that -- well inside its 60-turn budget --
@@ -343,7 +347,7 @@ def test_the_step_agent_states_the_bridges_read_failure_limit():
     )
 
 
-@pytest.mark.parametrize("name", ["remote", "step", "task"])
+@pytest.mark.parametrize("name", ["remote", "step", "task", "summary"])
 def test_a_following_agent_stops_on_the_bridges_stop(name):
     """`all_finished` never becomes true for a task that cannot be read or is
     the wrong step; an agent that waited for it would poll to its turn limit."""
@@ -545,7 +549,7 @@ def test_run_js_meta_is_a_pure_literal_naming_the_command():
     assert isinstance(meta["description"], str) and meta["description"].strip()
     titles = [phase["title"] for phase in meta.get("phases", [])]
     # `Tasks` is the {attach_tasks} run (#830): one sc:task row per single task.
-    assert titles == ["Submit", "Attach", "Tasks", "Result"], titles
+    assert titles == ["Submit", "Attach", "Tasks", "Summary", "Result"], titles
 
 
 def test_run_js_uses_only_the_workflow_globals():

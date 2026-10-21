@@ -106,7 +106,23 @@ PLUGIN_TARGET = "default_target"
 #: {attach: "all"}` with it and hands it to run.js in each copy's args as
 #: `max_rows`; anything past it is listed in `not_followed`.
 PLUGIN_MAX_LIVE_ROWS = "max_live_rows"
-PLUGIN_KEYS = (PLUGIN_URL, PLUGIN_CLIENT_ID, PLUGIN_CLIENT_SECRET, PLUGIN_TARGET, PLUGIN_MAX_LIVE_ROWS)
+#: How a SwarmCloud batch is shown (PLUGIN-ROW-SPLIT, owner decision
+#: 2026-10-21, #1809): `summary`, ONE follower row per workflow or single-task
+#: batch, or `per-step`, a row per unfinished step split over runs within
+#: Claude Code's per-run agent limit. Read by the bridge, which picks the
+#: shape of each copy `swarm_workflow_launch` writes and hands the mode to
+#: run.js in the copy's args as `rows`.
+PLUGIN_ROWS = "rows"
+PLUGIN_KEYS = (PLUGIN_URL, PLUGIN_CLIENT_ID, PLUGIN_CLIENT_SECRET, PLUGIN_TARGET, PLUGIN_MAX_LIVE_ROWS, PLUGIN_ROWS)
+
+#: The two row modes, and the default. SUMMARY by default (owner, 2026-10-21):
+#: one agent per workflow instead of one per step, so a batch of any size is
+#: one live row -- never queued behind Claude Code's per-run limit of
+#: min(16, cores - 2) agents -- and costs one agent's tokens, not N.
+ROWS_SUMMARY = "summary"
+ROWS_PER_STEP = "per-step"
+ROWS_MODES = (ROWS_SUMMARY, ROWS_PER_STEP)
+DEFAULT_ROWS = ROWS_SUMMARY
 
 #: The live-row cap when nothing sets one: 100, and the most it can be set to:
 #: 200 (owner, 2026-10-16, #1437: "rows for every launch"; 30 and 50 before,
@@ -197,6 +213,15 @@ def max_live_rows(environ: Mapping[str, str] | None = None) -> int:
         if given:
             return clamp_live_rows(given)
     return DEFAULT_MAX_LIVE_ROWS
+
+
+def rows_mode(environ: Mapping[str, str] | None = None) -> str:
+    """The sc plugin's `rows` (SWARM_PLUGIN_ROWS): `summary` or `per-step`,
+    DEFAULT_ROWS when it is unset, unexpanded or any other value -- a typo
+    shows the batch as one row, never as no row at all."""
+    environ = os.environ if environ is None else environ
+    given = _env(environ, plugin_env(PLUGIN_ROWS)).lower()
+    return given if given in ROWS_MODES else DEFAULT_ROWS
 
 
 def repo_mode(environ: Mapping[str, str] | None = None) -> bool:

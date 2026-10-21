@@ -175,7 +175,7 @@ def test_an_attach_with_a_hostile_stored_title_parses_and_hands_the_name_back_as
     for title, reply, meta in zip(HOSTILE_TITLES, replies, got):
         name = workflows.title_name(stored=title)
         assert meta["parses"] is True, (title, meta["parses"])
-        assert reply["args"] == {"attach": "wf_9", "title": name, "titled_copy": reply["script_path"]}
+        assert reply["args"] == {"attach": "wf_9", "title": name, "rows": "summary", "titled_copy": reply["script_path"]}
         assert meta["name"] == reply["title"] == workflows.workflow_title(name, 2)
 
 
@@ -206,7 +206,8 @@ def test_attach_all_with_hostile_titles_writes_a_parsing_copy_per_workflow(_plug
     for entry, one, meta in zip(entries, launches, got):
         name = workflows.title_name(stored=entry["title"])
         assert meta["parses"] is True, (entry["title"], meta["parses"])
-        assert one["args"] == {"attach": entry["workflow_id"], "title": name, "titled_copy": one["script_path"]}
+        assert one["args"] == {"attach": entry["workflow_id"], "title": name, "rows": "summary",
+                               "titled_copy": one["script_path"]}
         assert meta["name"] == one["title"]
 
 
