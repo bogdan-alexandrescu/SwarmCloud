@@ -42,6 +42,7 @@ from swarm_common.profiles import (
     RUNNER_PROFILES,
     InputRefused,
     RunnerInput,
+    effective_size,
     resolve_backend,
     step_model_class,
 )
@@ -247,21 +248,34 @@ def public_profile(name: str) -> dict[str, Any]:
     adds later could be the image.
     """
     profile = RUNNER_PROFILES[name]
-    resource = RESOURCE_CLASSES[profile.resource_class]
+    backend = resolve_backend(profile)
+    # THE CODE DEFAULTS, version 0. Runner sizes are an admin setting
+    # (docs/design/runner-sizes.md §4), which this copy cannot read: it is what
+    # a Cloud Run profile always runs at and what a GKE one runs at until an
+    # admin resizes its class. `served_catalogue` labels it so.
+    size = effective_size(profile.resource_class, None, backend)
     out: dict[str, Any] = {
         "name": profile.name,
         "available": profile.available,
         # Resolved, not raw. A profile may be declared AUTO and the caller
         # cares which backend it will actually land on -- that is the answer to
         # "why did this one queue behind GKE capacity when the others did not".
-        "backend": resolve_backend(profile).value,
+        "backend": backend.value,
         "resource_class": profile.resource_class,
-        "cpu": resource.cpu,
-        "memory_gib": resource.memory_gib,
+        # The REQUEST under its old name, beside both CPU numbers: the request
+        # is guaranteed and billed, the limit is what a GKE pod may burst to.
+        "cpu": size.cpu_request,
+        "cpu_request": size.cpu_request,
+        "cpu_limit": size.cpu_limit,
+        # Request AND limit: memory never bursts (invariant 7).
+        "memory_gib": size.memory_gib,
         # A slice OF memory, not extra capacity: the workspace is a tmpfs. Named
         # `workspace_gib` rather than `disk_gib` because "disk" is what made
         # people read it as additional storage in the first place.
-        "workspace_gib": resource.disk_gib,
+        "workspace_gib": size.disk_gib,
+        # What admission charges against every pool, in capacity units.
+        "units": size.units,
+        "size_version": 0,
         "timeout_seconds": profile.timeout_seconds,
         # WHETHER a credential is needed, never WHICH VALUE. `secrets` holds
         # variable NAMES and no material, but serving the names invites a
@@ -457,14 +471,30 @@ def _served_entry(name: str, served: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(resources, dict) or not isinstance(served.get("available"), bool):
         return None
     backend = served.get("resolved_backend") or served.get("backend")
+    # The request by its own name first: `cpu` is its alias, served "for one
+    # release" (docs/design/runner-sizes.md §4.5), and a deployment from before
+    # size versions serves the alias alone.
+    cpu_request = resources.get("cpu_request", resources.get("cpu"))
     out: dict[str, Any] = {
         "name": served.get("name") or name,
         "available": served["available"],
         "backend": backend if isinstance(backend, str) and backend else None,
         "resource_class": served.get("resource_class"),
-        "cpu": resources.get("cpu"),
+        # THE PLATFORM'S SIZE, NEVER THE COPY'S. The route serves the current
+        # runner size version for a GKE profile and the code defaults for a
+        # Cloud Run one (design §4.7), and an admin can resize a class with no
+        # deploy, so the bridge's RESOURCE_CLASSES is wrong after the first
+        # resize. A field the platform did not serve is None, never filled in
+        # from the copy: that would be a different deployment's answer.
+        "cpu": cpu_request,
+        "cpu_request": cpu_request,
+        "cpu_limit": resources.get("cpu_limit"),
         "memory_gib": resources.get("memory_gib"),
         "workspace_gib": resources.get("disk_gib"),
+        "units": resources.get("units"),
+        # The entry's own, not the platform's current version: a Cloud Run
+        # profile reads 0 whatever an admin set.
+        "size_version": resources.get("size_version"),
         "timeout_seconds": served.get("timeout_seconds"),
         "needs_provider_credential": served.get("provider") is not None,
         "provider": served.get("provider"),
@@ -564,7 +594,9 @@ def served_catalogue(client: Any) -> dict[str, Any]:
         "catalogue_note": (
             f"{why}. These are this bridge's own copy of the catalogue, as old "
             "as the installed plugin; the platform may differ -- a backend or an "
-            "availability here may not be what the platform uses now"
+            "availability here may not be what the platform uses now. Their sizes "
+            "are the code defaults (size version 0); an admin may have resized a "
+            "GKE profile's class since"
         ),
         "profiles": catalogue(),
     }
