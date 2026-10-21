@@ -58,6 +58,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 import time
 from collections import deque
@@ -115,6 +116,18 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 BUNDLE_OBJECT = "tenants/{tenant}/attempts/{attempt}/git/{call}.bundle"
 #: The publish repository's local branch, and so the bundle's one head.
 _PUBLISH_BRANCH = "swarm-publish"
+#: The artifact every refusal this relay answers is appended to (#1805), one
+#: `{"step", "tool", "request_id", "answer"}` line each. The same file the
+#: git-tools acceptance prompts have the agent append its answers to
+#: (`tests/acceptance/test_runner_git_tools.py` ANSWERS), so a refusal the
+#: worker answered before any request left -- one swarm-api never audits --
+#: is on record even when the agent wrote nothing.
+ANSWERS_ARTIFACT = "git-answers.jsonl"
+#: The `step` of the worker's lines: no prompt names a step this, so a judge
+#: reading the agent's last answer for a step never reads one of these.
+ANSWERS_STEP = "worker"
+#: The largest line the relay appends; a longer answer is not recorded.
+_MAX_ANSWER_LINE = 64 * 1024
 
 
 # --------------------------------------------------------------------------
@@ -316,8 +329,12 @@ class GitTools:
         clock: Callable[[], float] = time.monotonic,
         wall: Callable[[], float] = time.time,
         git_binary: str = "git",
+        answers_path: Path | None = None,
     ) -> None:
         self.cfg = cfg
+        #: Where refusals are appended (`ANSWERS_ARTIFACT` in the attempt's
+        #: artifacts dir), or None to record nothing.
+        self.answers_path = Path(answers_path) if answers_path is not None else None
         self.log = logger
         self._key = key
         self._api = api
@@ -380,8 +397,10 @@ class GitTools:
             try:
                 answer = self.answer_file(path, request_id)
             except GitToolFenced:
-                _write_atomic(response, GitToolRefused(
-                    "fenced", "this attempt no longer holds the task; it is ending").as_dict())
+                fenced = GitToolRefused(
+                    "fenced", "this attempt no longer holds the task; it is ending").as_dict()
+                _write_atomic(response, fenced)
+                self._record(None, request_id, fenced)
                 path.unlink(missing_ok=True)
                 raise
             _write_atomic(response, answer)
@@ -417,13 +436,49 @@ class GitTools:
         except GitError as exc:
             refusal = GitToolRefused("git_failed", str(exc)[:300])
             self.log.warning("git tool failed", tool=str(tool)[:40], request_id=request_id)
-            return refusal.as_dict()
+            return self._record(tool, request_id, refusal.as_dict())
         except GitToolRefused as refusal:
             self.log.warning("git tool refused", tool=str(tool)[:40], code=refusal.code,
                              request_id=request_id)
-            return refusal.as_dict()
+            return self._record(tool, request_id, refusal.as_dict())
         self.log.info("git tool answered", tool=name, request_id=request_id)
         return {"tool": name, "result": result}
+
+    def _record(self, tool: Any, request_id: str, answer: dict[str, Any]) -> dict[str, Any]:
+        """Append a refusal to `answers_path`; return it unchanged.
+
+        The directory is the agent's to write, so the file is opened with
+        O_NOFOLLOW (a link the agent planted is not followed) and O_NONBLOCK
+        (a fifo it planted does not hang the relay), and written only when it
+        is a regular file. A refusal carries no secret: the worker holds no
+        forge token, and `_foreign_author` scrubs the registered values. Never
+        raises: recording is a courtesy, the answer is what the agent needs."""
+        if self.answers_path is None:
+            return answer
+        line = json.dumps({
+            "step": ANSWERS_STEP,
+            "tool": tool if isinstance(tool, str) and tool in TOOL_NAMES else None,
+            "request_id": request_id,
+            "answer": answer,
+        }, sort_keys=True, default=str) + "\n"
+        raw = line.encode("utf-8")
+        if len(raw) > _MAX_ANSWER_LINE or not self.answers_path.parent.is_dir():
+            return answer
+        try:
+            fd = os.open(self.answers_path,
+                         os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
+                         | os.O_NONBLOCK, 0o644)
+        except OSError:
+            self.log.warning("git tool answer not recorded", request_id=request_id)
+            return answer
+        try:
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                os.write(fd, raw)
+        except OSError:
+            self.log.warning("git tool answer not recorded", request_id=request_id)
+        finally:
+            os.close(fd)
+        return answer
 
     def _spend(self, tool: str) -> None:
         now = self._clock()
@@ -717,12 +772,63 @@ class GitTools:
                                         *gitops._worker_identity(n, e)])
             for n, e in self.cfg.also_own if (n, e) != (name, email)
         ]
+        # WHAT A REBASE WRITES (#1805). git keeps a replayed commit's author
+        # and makes the rebaser its committer, and this task rebases as
+        # `cfg.author` -- `rebase_onto` passes it, and the agent's own
+        # `git rebase --continue` runs under the same GIT_COMMITTER_*. So a
+        # commit of this task's branch written as one of its OTHER identities
+        # (the worker's `git_author_*`, which the lane's publish folds as when
+        # the task names nobody) comes back authored as that identity and
+        # committed as `cfg.author`. Accepted only in that shape: the author
+        # is still one of this task's own, so nobody else's commit is pushed,
+        # and the committer is the one identity this attempt rebases as.
+        rebased = [(mine, committer) for mine, _ in also]
+        authors = [author, *(mine for mine, _ in also)]
         for sha in commits:
-            problems = gitops._foreign(gitops._read_commit(run, g, sha), author, committer,
-                                       also=also)
+            commit = gitops._read_commit(run, g, sha)
+            problems = gitops._foreign(commit, author, committer, also=[*also, *rebased])
             if problems:
-                raise GitToolRefused("foreign_author",
-                                     f"commit {sha[:12]}: {'; '.join(problems)}")
+                raise self._foreign_author(commit, problems, authors,
+                                           [committer, *(c for _, c in also)])
+
+    def _foreign_author(self, commit: Any, problems: list[str],
+                        authors: list[tuple[str, str]],
+                        committers: list[tuple[str, str]]) -> GitToolRefused:
+        """The refusal, naming the commit, the field(s) and both identities.
+
+        A field is `author` or `committer` when that identity is none of this
+        task's own, both when each is but the pair is not one it writes, and
+        `signature` or `message` for a signed commit or attribution. Emails
+        and names only, scrubbed of every registered secret: an agent can put
+        any text in an identity, and this message reaches the artifacts."""
+        fields: list[str] = []
+        if commit.author not in authors:
+            fields.append("author")
+        if commit.committer not in committers:
+            fields.append("committer")
+        mixed = not fields and any(p.endswith("a pair the worker never writes") for p in problems)
+        if mixed:
+            fields = ["author", "committer"]
+        if commit.signed:
+            fields.append("signature")
+        if any(p.startswith("its message carries attribution") for p in problems):
+            fields.append("message")
+        expected = list(dict.fromkeys(e for _, e in authors))
+        found = {"author": commit.author[1], "committer": commit.committer[1]}
+        message = (
+            f"commit {commit.sha[:12]} ({', '.join(fields)}): its author is "
+            f"{commit.author[0]} <{commit.author[1]}> and its committer "
+            f"{commit.committer[0]} <{commit.committer[1]}>; this task pushes only commits "
+            f"authored as {' or '.join(f'{n} <{e}>' for n, e in authors)}"
+            f" ({'; '.join(problems)}). Nothing was uploaded"
+        )
+        scrub = (lambda text: str(scrub_text(text, self._secrets))) if self._secrets else str
+        return GitToolRefused("foreign_author", scrub(message), detail={
+            "commit": commit.sha[:12],
+            "fields": fields,
+            "found": {k: scrub(v) for k, v in found.items()},
+            "expected": [scrub(e) for e in expected],
+        })
 
     def leaks(self, repo: Path, commits: list[str]) -> list[str]:
         """`path:line rule` for every credential a commit ADDS, never the match.

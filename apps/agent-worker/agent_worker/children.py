@@ -874,6 +874,11 @@ class ChildPath:
             store=store,
             clock=self._clock,
             wall=self._wall,
+            # The attempt's artifacts dir ($SWARM_ARTIFACTS_DIR): `logs_dir` is
+            # `ws.logs`, and `workspace.create` puts `artifacts` beside it. Every refusal the relay answers is
+            # recorded there, so a refused push is on record (#1805).
+            answers_path=Path(logs_dir).with_name("artifacts")  # type: ignore[arg-type]
+            / gittools.ANSWERS_ARTIFACT,
         )
         self.git_unavailable = None
         self.log.info("git tools offered for this attempt", pushes=pushes,

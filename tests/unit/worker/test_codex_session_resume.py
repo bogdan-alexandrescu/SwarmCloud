@@ -115,7 +115,7 @@ def _install(tmp_path: Path, monkeypatch, ctx: RunnerContext, bin_env: str, sess
     (ctx.work_dir / "mode").write_text(mode)
     for name in (
         "CLAUDE_CODE_ARGS", "CODEX_ARGS", "CLAUDE_CODE_OAUTH_TOKEN", "MODEL",
-        "SWARM_CHILDREN", cliagent.ACCOUNT_STREAM_ENV, cliagent.ACCOUNT_MOVE_ENV,
+        "SWARM_CHILDREN", "SWARM_GIT", cliagent.ACCOUNT_STREAM_ENV, cliagent.ACCOUNT_MOVE_ENV,
         cliagent.RESUME_SESSION_ENV, cliagent.RESUME_REASON_ENV, cliagent.SESSION_FILE_ENV,
     ):
         monkeypatch.delenv(name, raising=False)
