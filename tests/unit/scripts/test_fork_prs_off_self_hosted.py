@@ -604,7 +604,6 @@ HOSTED_JOBS: dict[str, str] = {
     "application.yml:python-checks": KEEPER,
     "application.yml:python": KEEPER,
     "application.yml:ui": KEEPER,
-    "security.yml:filesystem": KEEPER,
     "security.yml:secrets": KEEPER,
     "security.yml:policy": KEEPER,
     "terraform.yml:validate": KEEPER,

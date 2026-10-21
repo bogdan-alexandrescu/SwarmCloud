@@ -20,7 +20,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from .ci_fold_layout import check_steps
+import yaml
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "trivy-new-findings.sh"
@@ -145,8 +145,10 @@ def test_an_unreadable_report_is_not_a_pass(tmp_path):
 
 
 def _filesystem_steps() -> list[dict[str, Any]]:
-    # The `trivy (repo) · ...` steps of `checks` since CI-FOLD (#1799).
-    return check_steps("security.yml", "filesystem")
+    # Its own job, not folded into `checks` by CI-FOLD (#1799): it uploads
+    # SARIF, so it alone holds security-events: write (owner, 2026-10-21).
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    return workflow["jobs"]["filesystem"]["steps"]
 
 
 def test_the_filesystem_job_gates_on_new_findings_and_still_uploads_sarif():
