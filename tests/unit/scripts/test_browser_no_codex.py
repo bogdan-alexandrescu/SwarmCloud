@@ -215,7 +215,7 @@ def test_build_only_chain_builds_the_nocodex_base_then_the_browser_from_it(tmp_p
         "agent-runtime-base", NOCODEX, "agent-runtime-browser", "agent-runtime-indexer",
     )
     assert proc.returncode == 0, proc.stderr[-3000:]
-    submits = {e["target"]: e for e in events}
+    submits = {e["target"]: e for e in events if e["args"][:2] == ["builds", "submit"]}
     # Each base is built inside the chain built FROM it, never on its own.
     assert set(submits) == {"agent-runtime-browser", "agent-runtime-indexer"}, sorted(submits)
 
@@ -243,7 +243,7 @@ def test_build_only_base_alone_is_built_alone_when_only_the_browser_is_beside_it
         tmp_path, "--build-only", "--tag", BUILD_ONLY_TAG, "agent-runtime-base", "agent-runtime-browser",
     )
     assert proc.returncode == 0, proc.stderr[-3000:]
-    submits = {e["target"]: e for e in events}
+    submits = {e["target"]: e for e in events if e["args"][:2] == ["builds", "submit"]}
     assert set(submits) == {"agent-runtime-base", "agent-runtime-browser"}, sorted(submits)
     base = _build_steps(submits["agent-runtime-base"]["text"])
     assert len(base) == 1 and not [a for a in _flag(base[0], "--build-arg") if "INSTALL_CODEX" in a]
