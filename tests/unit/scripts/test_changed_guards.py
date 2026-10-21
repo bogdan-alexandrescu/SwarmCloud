@@ -12,6 +12,7 @@ prints the selection and runs nothing.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -23,12 +24,35 @@ REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "changed-guards.sh"
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "changed_guards"
 
-GUARDS = (
-    "tests/unit/scripts/test_docs_describe_what_was_built.py",
-    "tests/unit/scripts/test_docs_spec_amendments.py",
-    "tests/unit/control_plane/test_runtimes_screen.py",
-    "tests/unit/common/test_specsign_covers.py",
-)
+_spec = importlib.util.spec_from_file_location("select_unit_tests", REPO / "scripts" / "lib" / "select_unit_tests.py")
+_sel = importlib.util.module_from_spec(_spec)
+assert _spec.loader is not None
+_spec.loader.exec_module(_sel)
+
+# The guard set, read from the script's own GUARD_TESTS array the way
+# pull-request CI reads it (CI-GUARDS-ALWAYS, part of #1822): no copy here to
+# drift. The ones every set must keep are held by name below.
+GUARDS = tuple(_sel.guard_tests(REPO) or ())
+DOC_GUARDS = tuple(_sel.guard_tests(REPO, "DOC_GUARD_TESTS") or ())
+UNIT_GUARDS = tuple(g for g in GUARDS if g not in DOC_GUARDS)
+
+
+def test_the_guard_set_keeps_the_repo_wide_guards_and_the_whole_tree_tests():
+    # MUTATION: drop any of these from GUARD_TESTS and this is red. The last
+    # two turned main red for 19 and 6 commits that no pull request ran them on.
+    for guard in (
+        "tests/unit/scripts/test_docs_describe_what_was_built.py",
+        "tests/unit/scripts/test_docs_spec_amendments.py",
+        "tests/unit/control_plane/test_runtimes_screen.py",
+        "tests/unit/common/test_specsign_covers.py",
+        "tests/unit/scripts/test_collection_stays_cheap.py",
+        "tests/unit/common/test_awaiting_input_readers.py",
+    ):
+        assert guard in GUARDS, guard
+    # MUTATION: a doc guard that is not in GUARD_TESTS is a second list -- red.
+    assert DOC_GUARDS and set(DOC_GUARDS) <= set(GUARDS), DOC_GUARDS
+    for guard in GUARDS:
+        assert (REPO / guard).is_file(), guard
 
 
 def _first_effective_line(text: str) -> str:
@@ -95,16 +119,16 @@ def test_a_path_no_test_reads_selects_only_the_guard_set():
 # DOCS-ONLY (GUARDS-DEDUP, part of #1694). Docs-only lanes spent 44-50 min in
 # guards on 2026-10-19/20, running the UI route seam, test_specsign_covers and
 # the contract-parity check, none of which reads a doc (the parity check skips
-# `.md` outright). A change made only of docs/** and *.md files selects the two
-# doc guards and the tests that read the changed docs, and nothing else.
-DOC_GUARDS = GUARDS[:2]
+# `.md` outright). A change made only of docs/** and *.md files selects the
+# doc guards (DOC_GUARDS, above) and the tests that read the changed docs, and
+# nothing else.
 
 
 def test_a_docs_only_change_selects_only_the_doc_guards():
     result = _run("--list", "--files", str(FIXTURES / "unread.txt"))
     assert result.returncode == 0, result.stderr
     # MUTATION: dropping the docs-only branch in changed-guards.sh (selecting
-    # GUARD_TESTS for every diff) turns this red with all four guards.
+    # GUARD_TESTS for every diff) turns this red with every guard.
     assert sorted(_selected(result.stdout)) == sorted(DOC_GUARDS)
     # MUTATION: printing/running the parity check for a docs-only diff turns this red.
     assert "check-contract-parity.sh" not in result.stdout
@@ -121,7 +145,7 @@ def test_a_docs_only_change_still_selects_the_tests_that_read_the_changed_doc():
     # MUTATION: skipping the reader grep for a docs-only diff turns this red.
     assert "tests/unit/scripts/test_merge_step_docs.py" in selected
     # MUTATION: keeping the non-doc guards for a docs-only diff turns this red.
-    for unit_guard in GUARDS[2:]:
+    for unit_guard in UNIT_GUARDS:
         assert unit_guard not in selected, unit_guard
     assert "check-contract-parity.sh" not in result.stdout
 

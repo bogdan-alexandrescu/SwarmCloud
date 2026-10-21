@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import re
+import secrets
 import subprocess
 from pathlib import Path
 
@@ -151,6 +152,76 @@ def test_changed_guards_selection_is_included_and_an_unknown_one_runs_everything
     assert out["python"] == "selected" and "tests/unit/g/test_guard.py" in out["tests"], out
     out = sel.select(root, ["apps/svc/x.py"], guards=["tests/unit/g/test_gone.py"])
     assert out["python"] == "all", out
+
+
+# --------------------------------------------------------------------------
+# The repository-wide guard set, always (CI-GUARDS-ALWAYS, part of #1822).
+# Main went red for 19 commits on test_collection_stays_cheap and for 6 on
+# test_awaiting_input_readers: whole-tree tests no changed path names, so no
+# pull request ran them. The set is changed-guards.sh's GUARD_TESTS, read from
+# there: a second copy of the list is the drift this lane removes.
+# --------------------------------------------------------------------------
+WHOLE_TREE = (
+    "tests/unit/scripts/test_collection_stays_cheap.py",
+    "tests/unit/common/test_awaiting_input_readers.py",
+)
+
+
+def _guards_script(names: list[str], array: str = "GUARD_TESTS") -> str:
+    lines = "".join(f"  {n}\n" for n in names)
+    return f"#!/usr/bin/env bash\nset -euo pipefail\n{array}=(\n{lines})\n"
+
+
+def test_a_diff_that_only_adds_an_unrelated_file_still_runs_the_whole_tree_guards():
+    unrelated = f"notes/unrelated-{secrets.token_hex(4)}.txt"
+    out = sel.select(REPO, [unrelated])
+    assert out["python"] == "selected", out
+    # MUTATION: drop the GUARD_TESTS read from select() (or either file from
+    # GUARD_TESTS) and the unrelated file selects nothing -- red here.
+    for guard in WHOLE_TREE:
+        assert guard in out["tests"], (guard, out)
+    # MUTATION: leave out any GUARD_TESTS entry (select from a shorter
+    # mirrored list in select_unit_tests.py) and this subset turns red.
+    assert set(sel.guard_tests(REPO)) <= set(out["tests"]), out
+
+
+def test_changed_guards_and_the_ci_selection_list_one_guard_set():
+    unrelated = f"notes/unrelated-{secrets.token_hex(4)}.txt"
+    listed = subprocess.run(
+        ["bash", str(REPO / "scripts" / "changed-guards.sh"), "--list", "--files", "-"],
+        cwd=REPO, input=unrelated + "\n", capture_output=True, text=True, timeout=120,
+        env={**os.environ, "NO_COLOR": "1"})
+    assert listed.returncode == 0, listed.stderr
+    from_script = sorted(line for line in listed.stdout.splitlines() if line.startswith("tests/"))
+    # MUTATION: give select_unit_tests.py its own copy of the list, or have
+    # guard_tests() read anything but changed-guards.sh's GUARD_TESTS, and the
+    # two stop being one set the day either is edited -- red here.
+    assert sorted(sel.guard_tests(REPO)) == from_script
+    for guard in WHOLE_TREE:
+        assert guard in from_script, guard
+    # MUTATION: paste a guard path into select_unit_tests.py and this is red:
+    # the selector reads the list, it never restates it.
+    text = SELECT.read_text()
+    for guard in from_script:
+        assert guard not in text, f"select_unit_tests.py restates the guard {guard}"
+
+
+def test_the_guard_set_is_read_from_changed_guards_sh_and_always_selected(tmp_path):
+    root = _tree(tmp_path, {**FILLER, "tests/unit/g/test_tree.py": "def test_g(): pass\n",
+                            "apps/svc/x.py": "",
+                            "scripts/changed-guards.sh": _guards_script(["tests/unit/g/test_tree.py"])})
+    # MUTATION: include the guard set only when --guards is passed and this is red.
+    out = sel.select(root, ["apps/svc/x.py"])
+    assert out["python"] == "selected" and "tests/unit/g/test_tree.py" in out["tests"], out
+    # MUTATION: skip a GUARD_TESTS entry that is not a test here and a stale
+    # list narrows silently -- red here; it runs everything instead.
+    (root / "scripts" / "changed-guards.sh").write_text(_guards_script(["tests/unit/g/test_gone.py"]))
+    out = sel.select(root, ["apps/svc/x.py"])
+    assert out["python"] == "all" and "test_gone.py" in out["why"], out
+    # MUTATION: read an unparseable script as an empty guard set and this is red.
+    (root / "scripts" / "changed-guards.sh").write_text(_guards_script(["tests/unit/g/test_tree.py"], "OTHER"))
+    out = sel.select(root, ["apps/svc/x.py"])
+    assert out["python"] == "all" and "GUARD_TESTS" in out["why"], out
 
 
 def test_a_selection_of_half_the_suite_runs_all_of_it(tmp_path):
