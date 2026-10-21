@@ -313,6 +313,22 @@ function Body({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
 // Inputs
 // ---------------------------------------------------------------------------
 
+/**
+ * A VALUE DUE AT FINISH, NOT A READ IN FLIGHT (task-019, visual QA run 3,
+ * #1680). The answer, the file list and the commit cloned are written when the
+ * attempt ends; `<Mark kind="pending">` drew the word `reading` before them,
+ * and no read was in flight. The mark keeps the pending kind's dotted
+ * silhouette -- it is the temporary one of the six -- and its word is the
+ * not-yet itself; `say` is its accessible name, as a Mark's is.
+ */
+function NotYet({ say, children }: { say: string; children: string }) {
+  return (
+    <i className="ctl-mark is-pending" role="img" aria-label={say}>
+      {children}
+    </i>
+  )
+}
+
 function Inputs({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
   return (
     <section className="section arts-inputs">
@@ -454,8 +470,7 @@ function Repository({ task }: { task: Task }) {
             <code title={base}>{base.slice(0, 12)}</code>
           ) : !terminal ? (
             <>
-              <Mark kind="pending" say="The commit actually cloned is reported when the attempt finishes." /> reported at
-              finish
+              <NotYet say="The commit actually cloned is reported when the attempt finishes.">reported at finish</NotYet>
             </>
           ) : (
             <>
@@ -821,11 +836,9 @@ function Answer({ v }: { v: ArtifactsView }) {
         <ReadFailed error={null} what="the answer" />
       ) : r.data.status === 'not_yet' ? (
         <p className="att-none">
-          <Mark
-            kind="pending"
-            say="The attempt is still running and the agent has not written its result yet. It appears here when it does."
-          />{' '}
-          not yet
+          <NotYet say="The attempt is still running and the agent has not written its result yet. It appears here when it does.">
+            not yet
+          </NotYet>
         </p>
       ) : r.data.status === 'absent' ? (
         <p className="att-none">
@@ -1002,11 +1015,9 @@ function Files({ v }: { v: ArtifactsView }) {
   if (listing === null || (ok(listing) && !listing.data.complete)) {
     body = !terminal ? (
       <p className="att-none">
-        <Mark
-          kind="pending"
-          say="Artifacts are uploaded when the attempt ends, never while it runs, so this list is empty because it is not written yet -- not because the agent produced nothing."
-        />{' '}
-        uploaded when the attempt ends
+        <NotYet say="Artifacts are uploaded when the attempt ends, never while it runs, so this list is empty because it is not written yet -- not because the agent produced nothing.">
+          uploaded when the attempt ends
+        </NotYet>
       </p>
     ) : task.started_at === null ? (
       <p className="att-none">

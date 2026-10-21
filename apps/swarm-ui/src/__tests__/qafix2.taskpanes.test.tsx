@@ -308,6 +308,28 @@ describe('QA-115: a failed task’s success line is not offered as its cause', (
     expect(dock.textContent).not.toMatch(/Errors 0/)
     const button = within(dock).getByRole('button', { name: /^No error matched/ })
     // MUTATION: put `Errors 0` back as the narrow label -- the phone's bar says "no errors" on a failed task.
-    expect(button.querySelector('.ag-logs-short')?.textContent).toBe('No match')
+    expect(button.querySelector('.ag-logs-short')?.textContent).not.toMatch(/^Errors 0$/)
+  })
+
+  // ff-010 and task-022, QAFIX3-AGENT (visual QA run 3, wf_d598fa7bffdb41fc9d76,
+  // 2026-10-21): QA-115's narrow `No match` sits beside the search box, so
+  // before anything was searched the bar read as a search that found nothing.
+  it('gives the error button a narrow label that names error lines, never a search outcome', async () => {
+    api.loadAttempts.mockResolvedValue(ok({ attempts: [attempt(1, { attempt_id: 'att_1', exit_code: 1, error: 'exit status 1' })] }))
+    api.loadTranscript.mockResolvedValue(ok(transcript([step(1), successResult(2)])))
+    api.loadTaskLogs.mockResolvedValue(ok(noLogs()))
+    render(<AgentLogs task={failedTask()} />)
+    const dock = screen.getByRole('region', { name: 'Logs' })
+    await waitFor(() => expect(dock.textContent).toContain('Summary'))
+    const search = within(dock).getByRole('searchbox', { name: 'Search this window' })
+    expect((search as HTMLInputElement).value).toBe('')
+    const button = within(dock).getByRole('button', { name: /^No error matched/ })
+    const short = button.querySelector('.ag-logs-short')?.textContent ?? ''
+    // MUTATION: put `No match` back -- nothing was searched, and the bar says a search found nothing.
+    expect(short).not.toMatch(/match|found/i)
+    // MUTATION: say `Errors 0` or `0 errors` -- QA-115's "no errors" on a failed task.
+    expect(short).toBe('0 err ln')
+    // MUTATION: draw a search count with an empty box -- the only search outcome is the one asked for.
+    expect(dock.querySelector('.ag-logs-count')).toBeNull()
   })
 })

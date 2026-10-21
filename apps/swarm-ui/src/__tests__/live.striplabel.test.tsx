@@ -301,3 +301,31 @@ describe('3. the control label follows who holds control', () => {
     expect(screen.getByText('Click the browser to type into it.')).toBeTruthy()
   })
 })
+
+// task-001, QAFIX3-AGENT (visual QA run 3, wf_d598fa7bffdb41fc9d76, 2026-10-21;
+// part of #1680): axe's serious `aria-prohibited-attr` on every size. The
+// screen carried an aria-label on a plain `div`, which has no role a name is
+// allowed on, so a screen reader announced nothing. The remote browser takes
+// the keys while the viewer is in control -- an application -- and is a named
+// group while they watch (not `img`, whose children are presentational: the
+// noVNC canvas inside is focusable).
+describe('4. the screen’s name sits on a role that allows one', () => {
+  it('is an application, named, while the viewer holds control', async () => {
+    render(<Held first={session()} />)
+    await connected()
+    // MUTATION: drop the screen's role -- the aria-label is prohibited again and axe reports it.
+    const app = screen.getByRole('application', { name: 'The agent’s browser. Click it to type into it.' })
+    // MUTATION: put the role on the stage or the frame -- the keys and the name part company.
+    expect(app.classList.contains('live-screen')).toBe(true)
+  })
+
+  it('is a named group while the viewer only watches', async () => {
+    render(<Held first={session({ controller: null })} />)
+    await connected()
+    expect(screen.getByText('View only.')).toBeTruthy()
+    // MUTATION: keep `application` while watching -- a reader is told keys go somewhere they do not.
+    const group = screen.getByRole('group', { name: 'The agent’s browser, view only.' })
+    expect(group.classList.contains('live-screen')).toBe(true)
+    expect(screen.queryByRole('application')).toBeNull()
+  })
+})

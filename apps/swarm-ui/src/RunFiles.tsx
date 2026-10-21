@@ -511,7 +511,11 @@ function Lost({ lost }: { lost: Recorded[] }) {
       {lost.map((r, i) => (
         <Fragment key={`${r.attemptId ?? ''}/${r.checkpointId}/${r.byPointer ? 'p' : 'a'}`}>
           {i > 0 && ', '}
-          <code className="mono">{r.attemptId === null ? r.checkpointId : `${r.attemptId}/${r.checkpointId}`}</code>
+          {/* AT ITS SLASH, AS THE PREFIX (QA-088, regressed in visual QA run
+              3): one run of text broke `att_aff5_3/ckpt-` / `00002` at 1440. */}
+          <code className="mono">
+            <PathText path={r.attemptId === null ? r.checkpointId : `${r.attemptId}/${r.checkpointId}`} />
+          </code>
           <span className="muted small">
             {' '}
             ({[r.byAttempt && 'attempt record', r.byPointer && 'restore pointer'].filter(Boolean).join(' and ')})

@@ -195,6 +195,29 @@ describe('the Checkpoints section tells a reclaimed checkpoint from a real zero'
     }
   })
 
+  /**
+   * QA-088 AGAIN (visual QA run 3, wf_d598fa7bffdb41fc9d76, 2026-10-21; lane
+   * QAFIX3-AGENT): the prefix and the gs:// uris broke at their slashes, and
+   * the `Written, then reclaimed` paragraph still broke `att_aff5_3/ckpt-` /
+   * `00002` at 1440 -- its `attempt/checkpoint` ids were one run of text.
+   */
+  it('breaks a reclaimed checkpoint’s id at its slash, not at the hyphen inside it', async () => {
+    const section = await checkpointsSection(
+      agentRun({ attempts: [attempt(1, { attempt_id: 'att_aff5_3', checkpoints: ['ckpt-00002'] })] }),
+      emptyPage(),
+    )
+    const code = section.querySelector<HTMLElement>('.ckpt-lost code')!
+    // MUTATION: insert anything between the segments -- a copy of the id is no longer the id.
+    expect(code.textContent).toBe('att_aff5_3/ckpt-00002')
+    const segs = Array.from(code.querySelectorAll<HTMLElement>('.path-seg'))
+    // MUTATION: draw the id as one text node again -- `ckpt-` / `00002` at the line's end (QA-088).
+    expect(segs.map((s) => s.textContent)).toEqual(['att_aff5_3/', 'ckpt-00002'])
+    for (const env of [{ width: 1440 }, { width: 390 }]) {
+      // MUTATION: drop `.path-seg`'s inline-block -- the hyphen is a break opportunity again.
+      expect(painted(segs[1]!, 'display', env)).toBe('inline-block')
+    }
+  })
+
   /** An empty but CUT listing measured nothing past the cut. */
   it('never calls an empty page of a cut listing a zero', async () => {
     const section = await checkpointsSection(
