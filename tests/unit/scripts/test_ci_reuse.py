@@ -330,7 +330,7 @@ def _zip_of(rec: dict) -> bytes:
 def _fake_api(monkeypatch, records: list[tuple[dict, dict, list[dict]]], *, tree: str = TREE,
               trees: dict | None = None, pulls: list | None = None):
     """records: (artifact's workflow_run, the run, its jobs), newest first."""
-    arts, zips, runs, jobs = [], {}, {}, {}
+    arts, zips, runs = [], {}, {}
     for n, (wr, rec, run_jobs) in enumerate(records):
         art_id = 100 + n
         arts.append({"id": art_id, "expired": False, "created_at": f"2026-10-21T0{9 - n}:00:00Z",
@@ -528,8 +528,8 @@ def test_ci_gate_runs_the_reuse_verdict_after_its_own():
     (idx,) = [i for i, r in enumerate(runs) if "ci_reuse.py gate" in r]
     assert idx > 0 and "every job passed or was skipped" in runs[0], runs
     step = steps[idx]
-    assert '--needs "${NEEDS}"' in step["run"] and '--event "${EVENT}"' in step["run"], step["run"]
-    assert step["env"]["NEEDS"] == "${{ toJSON(needs) }}", step["env"]
+    assert '--needs "${GATE_NEEDS}"' in step["run"] and '--event "${EVENT}"' in step["run"], step["run"]
+    assert step["env"]["GATE_NEEDS"] == "${{ toJSON(needs) }}", step["env"]
     # The checkout it runs from must precede it on every event it runs on.
     checkout = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("actions/checkout@")]
     assert checkout and checkout[0] < idx and steps[checkout[0]].get("if") == step.get("if"), steps
@@ -555,3 +555,17 @@ def test_the_merge_step_reads_a_reused_green_as_green():
         assert merge.required_check_state([push_job, pr_job]) == "green", name
     # Control: a pull request's ci-gate that refused the reuse holds the merge.
     assert merge.required_check_state([push_gate, dict(pr_gate, conclusion="failure")]) == "failed"
+
+
+def test_main_passes_over_a_pull_request_that_reused_everything(monkeypatch):
+    """A pull request that reused every job recorded none as passed (skipped
+    is not success), so main reuses the lane push's record of the same tree.
+    MUTATION: let find() stop at the first record instead of the first that
+    reuses anything."""
+    pr_wr, pr_rec, pr_jobs = _pr_record()
+    pr_rec = dict(pr_rec, passed=[])
+    pr_jobs = [dict(j, conclusion="skipped") for j in pr_jobs]
+    _fake_api(monkeypatch, [(pr_wr, pr_rec, pr_jobs), _lane_push()],
+              pulls=[{"merge_commit_sha": "merge", "merged_at": "x", "head": {"sha": HEAD}}])
+    reused, why, source = reuse.find(REPO_NAME, "merge")
+    assert set(reused) == set(reuse.REUSABLE) and source.endswith("/actions/runs/9"), (why, source)
