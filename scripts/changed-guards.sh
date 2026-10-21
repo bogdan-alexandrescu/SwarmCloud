@@ -96,7 +96,12 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # together (CI-GUARDS-MORE, part of #1822). After test_swarm_verify_image_
 # helpers: the walkers of .github/ and images/ -- every workflow, every
 # Dockerfile, or every file of one image directory -- each under 5
-# CI-seconds, about 12 s together (CI-GUARDS-DOCS, part of #1822).
+# CI-seconds, about 12 s together (CI-GUARDS-DOCS, part of #1822). After
+# test_repo_index_extract: three more of those walkers, test_auto_merge_base_
+# merge (2.6 s), test_issue_forms (0.6 s) and test_verify_deployer_trust
+# (4.0 s), +7.2 CI-seconds a pull request; they also read CLAUDE.md or
+# docs/runbooks/merge-app.md by name, so a docs-only diff of those selects
+# them as readers (CI-GUARDS-THREE, part of #1822).
 GUARD_TESTS=(
   tests/unit/scripts/test_docs_describe_what_was_built.py
   tests/unit/scripts/test_docs_spec_amendments.py
@@ -137,6 +142,9 @@ GUARD_TESTS=(
   tests/unit/scripts/test_ui_node_line.py
   tests/unit/worker/test_jev_browser_image.py
   tests/unit/worker/test_repo_index_extract.py
+  tests/unit/scripts/test_auto_merge_base_merge.py
+  tests/unit/scripts/test_issue_forms.py
+  tests/unit/scripts/test_verify_deployer_trust.py
 )
 # The guards that read docs: all a docs-only diff selects of GUARD_TESTS.
 # Pull-request CI runs the whole GUARD_TESTS even for a docs-only change.

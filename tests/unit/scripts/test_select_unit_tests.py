@@ -243,10 +243,11 @@ def test_the_walkers_outside_apps_tests_and_docs_stay_cheap():
 # one image directory, so a new workflow or image breaks it without naming it.
 # All weigh under 5 CI-seconds, about 12 s together; the heavier ones
 # (test_ci_gate, test_merge_queue_workflows, test_build_images_*, ...) stay
-# with main's push run. test_auto_merge_base_merge, test_issue_forms and
-# test_verify_deployer_trust are cheap walkers too, but they read CLAUDE.md
-# or docs/runbooks/merge-app.md by name, which test_changed_guards.py's
-# docs-only case reads as a non-doc guard leaking in: they wait on that.
+# with main's push run. The last three -- test_auto_merge_base_merge (2.6 s),
+# test_issue_forms (0.6 s) and test_verify_deployer_trust (4.0 s), +7.2
+# CI-seconds a pull request -- read CLAUDE.md or docs/runbooks/merge-app.md by
+# name, so test_changed_guards.py's docs-only case allows a non-doc guard that
+# names a changed doc (CI-GUARDS-THREE, part of #1822).
 GITHUB_AND_IMAGES_WALKERS = (
     "tests/unit/scripts/test_fork_prs_off_self_hosted.py",
     "tests/unit/scripts/test_workflow_step_reachability.py",
@@ -255,6 +256,9 @@ GITHUB_AND_IMAGES_WALKERS = (
     "tests/unit/scripts/test_ui_node_line.py",
     "tests/unit/worker/test_jev_browser_image.py",
     "tests/unit/worker/test_repo_index_extract.py",
+    "tests/unit/scripts/test_auto_merge_base_merge.py",
+    "tests/unit/scripts/test_issue_forms.py",
+    "tests/unit/scripts/test_verify_deployer_trust.py",
 )
 
 
