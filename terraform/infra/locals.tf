@@ -25,9 +25,19 @@ locals {
   # google provider cannot express: empty_dir.medium accepts only "MEMORY". The
   # workspace is therefore a tmpfs and comes out of the container's memory.
   #
-  # Keep this table byte-identical to swarm_common.profiles.RESOURCE_CLASSES;
-  # tests/terraform/catalogue.tftest.hcl reads the Python at test time and fails
-  # on drift, which is how this mismatch was caught.
+  # These are the code defaults, and the size every Cloud Run Job here runs at
+  # (docs/design/runner-sizes.md §4.7). An admin's runner-size version
+  # (control/runner_sizes) never reaches Terraform: Cloud Run fixes resources
+  # on the Job, so the Cloud Run profiles and the GKE profiles' fallback Jobs
+  # stay at these numbers whatever the console says. There is no cpu_limit
+  # column on purpose: a Cloud Run container is billed its limit, so Cloud
+  # Run renders the request alone, and the GKE burst limit
+  # (CPU_BURST_MAX_RATIO x the request) is the scheduler's to render.
+  #
+  # Keep cpu, memory_gib, disk_gib and units equal to
+  # swarm_common.profiles.RESOURCE_CLASSES; tests/terraform/catalogue.tftest.hcl
+  # reads the Python at test time and fails on drift, which is how this
+  # mismatch was caught.
   resource_classes = {
     standard = { cpu = 4, memory_gib = 8, disk_gib = 4, units = 1 }
     browser  = { cpu = 4, memory_gib = 8, disk_gib = 4, units = 1 }

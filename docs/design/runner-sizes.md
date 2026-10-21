@@ -1,13 +1,21 @@
 # Runner sizes: CPU that bursts, memory that does not, and sizes an admin sets
 
-**Status: designed 2026-10-20 (lane RUNNER-SIZES-DESIGN, part of #1689), and
-answered by the owner the same day: every §7 question took its
-recommendation, and contract requests RS-1 to RS-4 were accepted (§5, §7
-"The owner's answers").** Build lanes follow §6: phase 1 first, phase 2 after
-phase 1's canary. The two halves of the issue that are not this document are
-being built beside it: close-to-real-time CPU and memory use with
-throttling (lanes LIVE-UTIL-API and LIVE-UTIL-UI), and the live browser's
-new 2-core agent share (lane BROWSER-SPLIT).
+**Status: built. Every lane of §6 is on main: phase 1 `SIZES-CONTRACT-1`,
+`SIZES-SCHED-1` and `SIZES-WORKER-1` (canary passed 2026-10-20 ~20:25Z,
+recorded on #1689: four claude-code attempts read `cpu_limit_cores: 8` from
+the cgroup, and `efficiency-daemon` ran 16 of 16), then phase 2
+`SIZES-CONTRACT-2`, `SIZES-API`, `SIZES-SCHED-2`, `SIZES-UI`, `SIZES-DETAIL`,
+`SIZES-MCP` and `SIZES-DOCS`. RS-1 to RS-4 were filed as contract requests
+108 to 111. This document was designed 2026-10-20 (lane RUNNER-SIZES-DESIGN,
+part of #1689) and answered by the owner the same day: every §7 question took
+its recommendation, and contract requests RS-1 to RS-4 were accepted (§5, §7
+"The owner's answers").** What runs is described in
+[architecture.md](../architecture.md#runner-sizes-are-a-versioned-setting-pinned-at-admission)
+and [kubernetes/README.md](../../kubernetes/README.md); the sections below
+are the design as written, read at `ed7abe6`. The two halves of the issue
+that are not this document were built beside it: close-to-real-time CPU and
+memory use with throttling (lanes LIVE-UTIL-API and LIVE-UTIL-UI), and the
+live browser's 2-core agent share (lane BROWSER-SPLIT).
 
 Owner decisions of 2026-10-20 this design takes as settled, not as
 questions:
