@@ -238,6 +238,48 @@ def test_the_walkers_outside_apps_tests_and_docs_stay_cheap():
         assert weights.get(walker, median) < 5, (walker, weights.get(walker))
 
 
+# The walkers of .github/ and images/ (CI-GUARDS-DOCS, part of #1822): each
+# reads every workflow file, every issue form, every Dockerfile or every file of
+# one image directory, so a new workflow or image breaks it without naming it.
+# All weigh under 5 CI-seconds, about 12 s together; the heavier ones
+# (test_ci_gate, test_merge_queue_workflows, test_build_images_*, ...) stay
+# with main's push run. test_auto_merge_base_merge, test_issue_forms and
+# test_verify_deployer_trust are cheap walkers too, but they read CLAUDE.md
+# or docs/runbooks/merge-app.md by name, which test_changed_guards.py's
+# docs-only case reads as a non-doc guard leaking in: they wait on that.
+GITHUB_AND_IMAGES_WALKERS = (
+    "tests/unit/scripts/test_fork_prs_off_self_hosted.py",
+    "tests/unit/scripts/test_workflow_step_reachability.py",
+    "tests/unit/scripts/test_image_streaming.py",
+    "tests/unit/scripts/test_pr_image_scan.py",
+    "tests/unit/scripts/test_ui_node_line.py",
+    "tests/unit/worker/test_jev_browser_image.py",
+    "tests/unit/worker/test_repo_index_extract.py",
+)
+
+
+def test_an_unrelated_one_file_diff_runs_the_walkers_of_github_and_images():
+    unrelated = f"notes/unrelated-{secrets.token_hex(4)}.txt"
+    out = sel.select(REPO, [unrelated])
+    assert out["python"] == "selected", out
+    for walker in GITHUB_AND_IMAGES_WALKERS:
+        # MUTATION: drop any of these from GUARD_TESTS in changed-guards.sh and
+        # the unrelated file no longer selects it -- red here, naming it.
+        assert walker in out["tests"], (walker, out)
+
+
+def test_the_walkers_of_github_and_images_stay_cheap():
+    import json
+    import statistics
+    weights = json.loads((REPO / "tests" / "unit" / "scripts" / "unit_test_durations.json").read_text())
+    median = statistics.median(weights.values())
+    for walker in GITHUB_AND_IMAGES_WALKERS:
+        assert (REPO / walker).is_file(), walker
+        # MUTATION: list a walker of 5 CI-seconds or more here (test_ci_gate,
+        # 28.2 s) and this is red, naming it.
+        assert weights.get(walker, median) < 5, (walker, weights.get(walker))
+
+
 def test_changed_guards_and_the_ci_selection_list_one_guard_set():
     unrelated = f"notes/unrelated-{secrets.token_hex(4)}.txt"
     listed = subprocess.run(
