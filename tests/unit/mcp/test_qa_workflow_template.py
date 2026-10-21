@@ -19,14 +19,14 @@ hold it to what reads it:
   command parsing with `swarm_qa`'s own argument parser and naming presets the
   gate has. A group added to the route list without a step here is a group no
   run looks at.
-* `test_template_report_reads_every_capture_review_and_the_a11y_pass` and
+* `test_template_report_reads_every_capture_and_review` and
   `test_flow_report_reads_every_flow_and_nothing_else`: the screen findings
   and the flows are two reports (QA-TEMPLATE-SPLIT, part of #1680). Visual QA
   run 2 (`wf_b6e2441b419f423a84eb`, 2026-10-20) lost its whole report to one
   flow: `flow-submit-form` was killed at its timeout, the platform cancels
   every dependant of a failed step, and `report` depended on all ten review,
   flow and a11y steps -- so every finished screen review went unreported.
-  `report` now waits only for the captures, the reviews and the a11y pass
+  `report` now waits only for the captures and the reviews
   (run 3, `wf_d598fa7bffdb41fc9d76`, 2026-10-21, had no capture tar to check a
   review's reviewed count against, QA-REPORT-TARS), `flow-report`
   only for the flows; each stages each tarball under the name its producer
@@ -89,7 +89,8 @@ REPORTS = (REPORT, FLOW_REPORT)
 CAPTURE = "capture-"
 REVIEW = "review-"
 FLOW = "flow-"
-#: The step whose tarball only the screen report reads besides the reviews.
+#: The keyboard and screen-reader pass a run used to carry, dropped by the
+#: owner on 2026-10-21 (see test_the_run_carries_no_a11y_keyboard_pass).
 A11Y = "a11y-"
 #: Where the capture steps serve the console: `npm run dev` in apps/swarm-ui,
 #: the fixture build (`USE_FIXTURES`, apps/swarm-ui/src/api.ts).
@@ -208,24 +209,24 @@ def _flows(steps: dict[str, dict]) -> list[str]:
     return sorted(s for s in steps if s.startswith(FLOW) and s not in REPORTS)
 
 
-def test_template_report_reads_every_capture_review_and_the_a11y_pass():
+def test_template_report_reads_every_capture_and_review():
     steps = _steps()
     report = steps[REPORT]
     # MUTATION: drop the capture steps from report's depends_on and input_from
     # (run 3's shape, wf_d598fa7bffdb41fc9d76) and this fails: with no
     # manifest the report cannot check a review's reviewed count, and with no
     # full-size screenshot it cannot copy the image a finding cites.
-    fed = sorted(s for s in steps if s.startswith((CAPTURE, REVIEW, A11Y)))
+    fed = sorted(s for s in steps if s.startswith((CAPTURE, REVIEW)))
     assert len([s for s in fed if s.startswith(CAPTURE)]) == len(_groups()), fed
     # MUTATION: add "flow-submit-form" back to report's depends_on and
     # input_from (run 2's shape, wf_b6e2441b419f423a84eb) and this fails:
     # one killed flow cancelled the report over six finished reviews.
-    assert sorted(report["depends_on"]) == fed, "the screen report waits for the reviews and the a11y pass only"
+    assert sorted(report["depends_on"]) == fed, "the screen report waits for the captures and the reviews only"
     assert report["input_from"] == {s: f"{s}.tar" for s in fed}, "and stages each one's tarball"
     assert not set(report["depends_on"]) & set(_flows(steps)), "a failed flow must not cancel the screen findings"
     for step_id in fed:
         # The name staged is the name the producer is told to write: a capture
-        # through swarm_qa's --bundle, a review or the a11y pass by its brief.
+        # through swarm_qa's --bundle, a review by its brief.
         written = (f"--bundle $SWARM_ARTIFACTS_DIR/{step_id}.tar" if step_id.startswith(CAPTURE)
                    else f"{step_id}.tar under $SWARM_ARTIFACTS_DIR")
         assert written in steps[step_id]["prompt"], step_id
@@ -321,6 +322,28 @@ def test_flow_submit_form_ends_inside_its_timeout():
     # MUTATION: raise the cap to 40 and this fails.
     cap = SCREENSHOT_CAP.search(prompt)
     assert cap and int(cap.group(1)) <= 15, "the screenshots are capped per preset"
+
+
+def test_the_run_carries_no_a11y_keyboard_pass():
+    """Owner decision 2026-10-21 (~23:40Z): drop the keyboard pass. In visual
+    QA run 4 (wf_ecd935541ced4a539540) a11y-keyboard went quiet for about 33
+    minutes, was killed at 2700 s with nothing bundled, and `report`, which
+    waited for it, was cancelled over six finished reviews (65 findings). It
+    had cost about $2-3 and 45 minutes a run. The axe scan stays, in
+    capture-task (`--axe`), and review-task still reads it."""
+    steps = _steps()
+    # MUTATION: put the a11y-keyboard step back and this fails.
+    assert not [s for s in steps if s.startswith(A11Y)], "the run carries no keyboard pass"
+    for step_id, step in steps.items():
+        # MUTATION: leave "a11y-keyboard" in report's depends_on and this fails.
+        assert not [d for d in step.get("depends_on", []) if d.startswith(A11Y)], step_id
+        assert not [d for d in step.get("input_from", {}) if d.startswith(A11Y)], step_id
+    # MUTATION: leave "and the a11y pass's" in report's prompt and this fails:
+    # it would look for a tar no step writes and report it missing.
+    assert "a11y pass" not in steps[REPORT]["prompt"]
+    # MUTATION: drop --axe from capture-task and this fails: the automated
+    # accessibility scan is what the run keeps.
+    assert "--axe" in _capture_argv(steps[CAPTURE + "task"]["prompt"])
 
 
 def test_template_names_only_profiles_inputs_and_classes():
