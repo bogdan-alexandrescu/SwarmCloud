@@ -857,10 +857,35 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
    z-index 1 is under the inspector's band (shell.test.tsx). */
 @media (min-width: 900px) {
   .cap-families .ctl-table.is-scroll { overflow: clip; }
-  .cap-mx > .ctl-table.is-scroll { max-height: calc(100vh - 180px); overflow: auto; }
+  .cap-mx > .ctl-table.is-scroll {
+    max-height: calc(100vh - 180px); overflow: auto;
+    /* Its own scroller, so its rows clear its head here (capacity-007, below). */
+    scroll-padding-top: var(--row-h);
+  }
   .cap-families .ctl-table.is-scroll > table > thead,
   .cap-mx > .ctl-table.is-scroll > table > thead {
     position: sticky; top: 0; z-index: 1;
+  }
+  /* A SCROLL STOPS A ROW BELOW THE HEAD, NOT UNDER IT (visual QA run 3,
+     capacity-007, part of #1680). At 1440 the first Pools row sat under the
+     stuck head -- of `runner:browser` only the descenders showed, its figures
+     level with the head's bottom edge -- because a scroll that brings a row
+     into view (Tab to its link, Page Down, `scrollIntoView`, an anchor) stops
+     it at the scroller's top padding, and that padding was the bell bar's
+     alone (styles.css `.ctl-scroll`). So the head is one data row tall,
+     `--row-h` -- its one nowrap line of `--t-meta` and 4px of padding each
+     side is ~28px, inside it -- and the padding is the bar plus that same
+     token: the height and the offset read one value, so they cannot drift
+     apart. The families scroll in the page's scroller; the matrix in its
+     own, padded above. Pool limits reuses `.cap-families` under a sticky
+     filter whose height this sheet cannot see (admin.css), so the page
+     padding leaves its scroller alone. Holders,
+     Provider quota and Accounts draw no sticky head: nothing to clear. A
+     wheel or a drag can still stop anywhere, as on any sticky table. */
+  .cap-families .ctl-table.is-scroll > table > thead > tr,
+  .cap-mx > .ctl-table.is-scroll > table > thead > tr { height: var(--row-h); }
+  .ctl-scroll:has(.cap-families .ctl-table.is-scroll > table > thead):not(:has(.adm-ceilings)) {
+    scroll-padding-top: calc(var(--ctl-bar-h, 0px) + var(--row-h));
   }
 }
 
