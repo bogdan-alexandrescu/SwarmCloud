@@ -43,10 +43,15 @@
 }
 .sk-recent > a.sk-kid > span { align-items: center; }
 
-/* OVERVIEW'S AGENT NAMES, in the Running and Recent failures cards and the
-   phone's list. */
-.ov-page a.ov-name,
-.ov-page a.ov-prun-n {
+/* OVERVIEW'S AGENT NAMES, in the Running and Recent failures cards. NOT THE
+   PHONE'S RUNNING LIST (visual QA run 3, ffp-002, 2026-10-21): clamped to two
+   lines, the steps of one long-titled workflow were cut at the same point and
+   read alike. Its `.ov-prun-n` wraps whole (overview.css). It is left out of
+   this rule rather than overridden there: this sheet loads after overview.css
+   (Overview.tsx imports them in that order), so an equal selector there lost
+   here, in the built console, while a test that read the sheets in another
+   order passed. */
+.ov-page a.ov-name {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;

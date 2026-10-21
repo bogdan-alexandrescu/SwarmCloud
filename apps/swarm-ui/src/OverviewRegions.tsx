@@ -546,14 +546,14 @@ export function RecentFailures({ tasks }: { tasks: Result<OverviewTaskPage> }) {
   const shown = failed.slice(0, FAILURE_ROWS)
   return (
     <>
-    {failureTable(shown, titleOf, now)}
+    {failureTable(shown, titleOf, now, 'Recent failures')}
     {/* THE REST, COUNTED AND IN PLACE (visual QA V144, 2026-10-11): the card
         stopped at six rows and said nothing about a seventh, while Running
         now beside it says "N more". The same disclosure, the same words. */}
     {failed.length > shown.length && (
       <details className="ov-more ov-failures-more">
         <summary>{failed.length - shown.length} more</summary>
-        {failureTable(failed.slice(FAILURE_ROWS), titleOf, now)}
+        {failureTable(failed.slice(FAILURE_ROWS), titleOf, now, 'Recent failures, the rest')}
       </details>
     )}
     </>
@@ -580,13 +580,19 @@ function WfId({ id }: { id: string }) {
 /** Rows the Recent failures card draws before its "N more". */
 const FAILURE_ROWS = 6
 
-function failureTable(failed: Task[], titleOf: (t: Task) => string | null, now: number) {
+/**
+ * NAMED (visual QA run 3, a11y-keyboard-003, 2026-10-21): a screen reader's
+ * table list read "table, 4 columns" for each, with nothing to tell the six
+ * rows from the "N more" under them. `name` is the card's title, and the
+ * disclosure's table says it is the rest.
+ */
+function failureTable(failed: Task[], titleOf: (t: Task) => string | null, now: number, name: string) {
   return (
     // FIXED COLUMNS (browser QA D2, 2026-10-04): the row head inherited the
     // head row's `nowrap`, so one long error drew a 1532px table in a 1056px
     // card and pushed the age and Open off it. The name takes what the three
     // narrow columns leave; the error clamps to two lines, whole in its title.
-    <table className="ov-tbl ov-fails">
+    <table className="ov-tbl ov-fails" aria-label={name}>
       <colgroup>
         <col className="ov-fc-mark" />
         <col className="ov-fc-name" />

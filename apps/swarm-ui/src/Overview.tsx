@@ -1826,7 +1826,9 @@ function RunningCard({
     <>
       {head}
       <div className="ov-rows">
-        <table className="ov-tbl">
+        {/* NAMED (visual QA run 3, a11y-keyboard-003, 2026-10-21): the
+            card's title, and the disclosure's table says it is the rest. */}
+        <table className="ov-tbl" aria-label="Running now">
           <thead>
             <tr>
               <th scope="col">State</th>
@@ -1852,7 +1854,7 @@ function RunningCard({
         {running.length > shown.length && (
           <details className="ov-more ov-running-more">
             <summary>{running.length - shown.length} more</summary>
-            <table className="ov-tbl">
+            <table className="ov-tbl" aria-label="Running now, the rest">
               <tbody>
                 {running.slice(RUNNING_ROWS).map((t) => (
                   <RunningRow key={t.id} task={t} title={titleOf(t)} silentFor={silent.get(t.id)} leasedAt={leased.get(t.id)} />
