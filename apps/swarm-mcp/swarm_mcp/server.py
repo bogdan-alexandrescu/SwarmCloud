@@ -1568,8 +1568,8 @@ TOOLS: list[dict[str, Any]] = [
             "`/sc answer WF STEP`), refused merges and CI parks over 90 min. Answers "
             "`{path, written_at, counts, waiting}` (`waiting` the number of items), or "
             "`{error, path}` when it could not -- the previous page then stays, and the "
-            "next page written says why in its banner. `sc build-board` refreshes and "
-            "opens it."
+            "next page written says why in its banner. The sc CLI's build-board command "
+            "refreshes and opens it."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },

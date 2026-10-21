@@ -68,6 +68,7 @@ from . import awaitinput, checkout, progress, workflows
 from .check import EVENT_PAGE, MERGE_CODES, MERGE_PROFILE, _entered, _refusal_code, pull_request_link, repo_key
 from .client import SwarmClient, SwarmError, task_id_of
 from .follow import console_link
+from .invocation import terminal_command
 from .render import parse_time
 
 #: Where the board lives, under the project directory.
@@ -367,7 +368,7 @@ def task_lane(reader: _Reader, task: dict[str, Any]) -> dict[str, Any]:
         waiting.append({"kind": "human_required", "who": "A person",
                         "item": f"{label} is parked until a person promotes it",
                         "since": reader.parked_since(task), "unlocks": f"the end of {label}",
-                        "detail": "HUMAN_REQUIRED", "next": f"sc task {tid}"})
+                        "detail": "HUMAN_REQUIRED", "next": terminal_command(f"sc task {tid}")})
     for item in waiting:
         item["lane"] = tid
     lane["waiting"] = waiting
