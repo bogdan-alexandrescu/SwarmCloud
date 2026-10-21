@@ -29,7 +29,14 @@ module "project_services" {
     "cloudtrace.googleapis.com",
     "compute.googleapis.com",
     "container.googleapis.com",
-    "containerscanning.googleapis.com",
+    # containerscanning.googleapis.com is NOT held here (owner decision
+    # 2026-10-21): Google's per-image scanning cost ~$0.26 an image for
+    # results nothing read, and trivy is every gate (see
+    # terraform/modules/artifact_registry/main.tf). Removing it from this list
+    # does not disable it -- disable_on_destroy is false in this shared
+    # project -- it stops releases from re-enabling it. The API itself is
+    # turned off once, by hand: `gcloud services disable
+    # containerscanning.googleapis.com --project saga-agents-staging`.
     # The personal-workspace job's dispatch, option (ii) of
     # docs/workspaces.md §2.1 (#847, W4b): an Eventarc trigger on the
     # swarm-workspace-apply topic starts a workflow that runs the job. Enabled

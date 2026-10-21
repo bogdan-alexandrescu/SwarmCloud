@@ -16,8 +16,18 @@ resource "google_artifact_registry_repository" "this" {
     immutable_tags = var.immutable_tags
   }
 
+  # DISABLED, not INHERITED (owner decision 2026-10-21: Google's container
+  # scanning off, project-wide). It charges per image pushed: 10,833 scans in
+  # October to the 21st, one per digest this repository received (11,172
+  # created in that window, ~1,200 a day that week). Nothing reads its
+  # results. Every gate is trivy's: `trivy (repo)` on each pull request, the
+  # release scanning every digest it promotes (.github/actions/release-images,
+  # --scan-only), and the weekly `trivy (published images)` scan of what is
+  # deployed. The project's containerscanning API is turned off by hand
+  # (terraform/infra/main.tf says why); this keeps the repository off even if
+  # someone turns the API back on.
   vulnerability_scanning_config {
-    enablement_config = "INHERITED"
+    enablement_config = "DISABLED"
   }
 
   kms_key_name = var.kms_key_name == "" ? null : var.kms_key_name
