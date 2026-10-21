@@ -255,7 +255,8 @@ describe('V076: Last changed and the pool id wrap only where they should', () =>
     expect(won(time, 'white-space', WIDE)).toBe('nowrap')
     const sub = row.querySelector('th .ctl-sub')!
     const segs = [...sub.querySelectorAll('.adm-key-seg')]
-    expect(segs.map((s) => s.textContent)).toEqual(['provider:', 'anthropic:', 'tenant:', 'u-bogdan'])
+    // One segment per `kind:name` pair (visual QA run 3, admin-003).
+    expect(segs.map((s) => s.textContent)).toEqual(['provider:anthropic:', 'tenant:u-bogdan'])
     expect(sub.textContent).toBe('provider:anthropic:tenant:u-bogdan')
     // MUTATION: make the segment inline again: `u- / bogdan` is a break
     // again. An inline block as wide as its text never breaks inside; only

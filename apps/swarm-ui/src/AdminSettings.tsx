@@ -762,18 +762,29 @@ export function AdmSetBy({ pool }: { pool: Pool }) {
  * Latin text, so a hyphen inside a segment was still one: `runner:claude- /
  * code` split the id mid-name. `.adm-key-seg` (styles/admin.css) holds each
  * segment on its line, and the `<wbr>` after its colon is the only break.
+ *
+ * A SEGMENT IS A `kind:name` PAIR, NOT A WORD (visual QA run 3, admin-003,
+ * 2026-10-21). With a break after every colon, the greedy line at 1440 took
+ * `provider:anthropic:tenant:` and left `u-bogdan` alone under it: the
+ * tenant's kind on one line and its name on the next. A pool key is a path of
+ * pairs, so it breaks only between them -- `provider:anthropic:` over
+ * `tenant:u-bogdan` -- and a one-pair key (`tenant:eng`, `runner:claude-code`)
+ * offers no break at all. A pair wider than the cell still wraps inside its
+ * segment, at its hyphens first (VQA V160, styles/admin.css).
  */
 export function keyBreaks(name: string): ReactNode {
   const parts = name.split(':')
-  return parts.map((part, i) =>
-    i < parts.length - 1 ? (
+  const pairs: string[] = []
+  for (let i = 0; i < parts.length; i += 2) pairs.push(parts.slice(i, i + 2).join(':'))
+  return pairs.map((pair, i) =>
+    i < pairs.length - 1 ? (
       <Fragment key={i}>
-        <span className="adm-key-seg">{`${part}:`}</span>
+        <span className="adm-key-seg">{`${pair}:`}</span>
         <wbr />
       </Fragment>
     ) : (
       <span className="adm-key-seg" key={i}>
-        {part}
+        {pair}
       </span>
     ),
   )
@@ -1067,8 +1078,12 @@ function Family({
   // editor is beside what it edits at every width it is drawn in the flow.
   const at = inline === null ? -1 : pools.findIndex((p) => p.name === editing)
   const parts = at === -1 ? [pools] : [pools.slice(0, at + 1), pools.slice(at + 1)]
-  const rows = (some: Pool[]) => (
+  // NAMED BY ITS FAMILY (visual QA run 3, a11y-keyboard-003, 2026-10-21):
+  // six tables on one page each announced as "table". The rows after an open
+  // editor are a second table of the same family, and say so.
+  const rows = (some: Pool[], part: number) => (
     <LimitTable
+      label={`${FAMILY_TITLE[kind]} ceilings${part === 0 ? '' : ', continued'}`}
       pools={some}
       saved={saved}
       outcomes={outcomes}
@@ -1085,11 +1100,11 @@ function Family({
         <h2 className="ctl-card-title">{FAMILY_TITLE[kind]}</h2>
       </div>
       <div className="ctl-card-body is-flush">
-        {rows(parts[0]!)}
+        {rows(parts[0]!, 0)}
         {at !== -1 && (
           <>
             <div className="adm-inline">{inline}</div>
-            {parts[1]!.length > 0 && rows(parts[1]!)}
+            {parts[1]!.length > 0 && rows(parts[1]!, 1)}
           </>
         )}
       </div>
@@ -1098,6 +1113,7 @@ function Family({
 }
 
 function LimitTable({
+  label,
   pools,
   saved,
   outcomes,
@@ -1107,6 +1123,8 @@ function LimitTable({
   admin,
   onOpen,
 }: {
+  /** The table's accessible name: its family's, `Tenants ceilings`. */
+  label: string
   pools: Pool[]
   saved: Readonly<Record<string, SaveMark>>
   outcomes: Readonly<Record<string, SaveOutcome>>
@@ -1131,7 +1149,7 @@ function LimitTable({
           their widths through this colgroup, so `edit` -- first in the
           Ceiling cell, after a figure of fixed width -- is at one x in
           every family. */}
-      <table role="table" className="adm-limits">
+      <table role="table" className="adm-limits" aria-label={label}>
         <colgroup>
           {LIMIT_COLUMNS.map((c) => (
             <col key={c.key} className={`adm-col-${c.key}`} />
@@ -2034,7 +2052,7 @@ export function ModelPricesCard({ admin }: { admin: boolean | null }) {
       ) : (
         <form onSubmit={(e) => void save(e)}>
           <div className={`ctl-table ${tableMode(phone)}`}>
-            <table role="table" className="adm-price-table">
+            <table role="table" className="adm-price-table" aria-label="Model prices">
               <thead role="rowgroup">
                 <tr role="row">
                   <th role="columnheader" scope="col">Model</th>
