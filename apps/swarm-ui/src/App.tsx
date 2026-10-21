@@ -1473,11 +1473,16 @@ export function App() {
           {/* THE HEADER BAR (#1206, proposal A), over both the page and an
               open agent beside it: the trail and the frame's age (`Head`).
               Only inside an open object, where `Head` draws (V178): the bell
-              it also held is in the spine's foot or the phone header now. */}
+              it also held is in the spine's foot or the phone header now.
+              A `div`, NOT A `header` (QAFIX3-BANNER, #1680): a top-level
+              `header` is a `banner` landmark, and a page has one. The
+              spine's phone header (`header.sk-pbar`) is it; a second here
+              fired axe's landmark-no-duplicate-banner at 390px. The trail
+              is its own landmark already, the breadcrumb's `nav`. */}
           {trail && (
-            <header className="ctl-bar">
+            <div className="ctl-bar">
               <Head at={at} section={section} title={title} closeTo={listAddress} go={go} />
-            </header>
+            </div>
           )}
           <div className={`app${inspector ? ' has-inspector' : ''}`}>
             <main className="work">
