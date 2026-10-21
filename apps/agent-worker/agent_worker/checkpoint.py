@@ -167,6 +167,22 @@ MANIFEST_NAME = "manifest.json"
 #: which are not caches -- and which carry the task's prompt, word for word,
 #: as their first user message. They stay by the owner's decision on #244
 #: (2026-09-27); see `create()`.
+#:
+#: THE TEST AND LINT CACHES, ANYWHERE (#1808, owner decision 2026-10-21): an
+#: agent running `pytest -n 3` on a growing tree made checkpoints of 238,819
+#: files that outlasted the heartbeat's bound. Each is safe to leave out
+#: because its tool rebuilds it unasked and none holds the agent's work:
+#:
+#:   **/.pytest_cache  pytest's last-failed and step-wise state; the next
+#:                     run writes it again, and a resumed `--lf` reruns all
+#:   **/.mypy_cache    mypy's incremental cache; the next run is a full check
+#:   **/.ruff_cache    ruff's lint cache; the next run lints every file
+#:
+#: `__pycache__` is not here: it is in `BUILD_DIRS` (#637), which keeps the
+#: rare one a checkout tracks. Build output (`build/`), a database's data
+#: directory and a `.venv` are NOT added on a guess (the owner's rule): build
+#: output may be committed or slow to remake, a data directory IS the agent's
+#: state, and `.venv` is in `BUILD_DIRS` already.
 TOOL_CACHES: tuple[str, ...] = (
     ".cache",
     ".npm",
@@ -174,6 +190,9 @@ TOOL_CACHES: tuple[str, ...] = (
     ".local/share/pnpm",
     ".yarn/cache",
     "**/node_modules",
+    "**/.pytest_cache",
+    "**/.mypy_cache",
+    "**/.ruff_cache",
 )
 
 
@@ -683,6 +702,31 @@ def _tarinfo(arcname: str, st: os.stat_result, kind: bytes) -> tarfile.TarInfo:
     return info
 
 
+class CheckpointProgress:
+    """How far this manager's checkpoints have got: entries walked, bytes written.
+
+    Read by `lifecycle._heartbeat_meanwhile` from its own thread, before each
+    beat past its bound (#1808): a checkpoint whose counter still moves is
+    archiving, not wedged, and keeps its lease up to the hard ceiling. Both
+    numbers only grow, over every checkpoint the manager writes, so an
+    advance is any change in the reading. Entries count both walks of an
+    incremental checkpoint (the stat-only scan reads no bytes), and bytes are
+    the compressed archive's as it is written. The upload after it advances
+    neither: a single upload is bounded by the store's own timeout.
+
+    Plain integers, written by the checkpoint's thread only; a reader on
+    another thread sees each one whole (the interpreter's lock), and a reading
+    a moment old is still a reading of progress.
+    """
+
+    def __init__(self) -> None:
+        self.files = 0
+        self.bytes = 0
+
+    def reading(self) -> tuple[int, int]:
+        return (self.files, self.bytes)
+
+
 class _CappedFile(io.FileIO):
     """The archive file, refusing to grow past `cap` bytes WHILE it is written.
 
@@ -694,11 +738,14 @@ class _CappedFile(io.FileIO):
     not raise over the refusal.
     """
 
-    def __init__(self, path: Path, cap: int) -> None:
+    def __init__(
+        self, path: Path, cap: int, progress: CheckpointProgress | None = None
+    ) -> None:
         super().__init__(path, "wb")
         self._cap = cap
         self._size = 0
         self._tripped = False
+        self._progress = progress
 
     def write(self, data: Any) -> int:
         length = memoryview(data).nbytes
@@ -712,6 +759,8 @@ class _CappedFile(io.FileIO):
             )
         written = super().write(data)
         self._size += written or 0
+        if self._progress is not None:
+            self._progress.bytes += written or 0
         return written or 0
 
 
@@ -897,6 +946,9 @@ class CheckpointManager:
         self._full_bytes = 0
         #: True when the last `create_if_changed` found nothing to write.
         self.last_unchanged = False
+        #: Entries walked and bytes written so far (#1808): the heartbeat's
+        #: evidence that a long checkpoint is still advancing.
+        self.progress = CheckpointProgress()
 
     @property
     def seq(self) -> int:
@@ -1198,7 +1250,7 @@ class CheckpointManager:
             build_dirs = _BuildDirFilter(source)
         if index is None:
             index = {}
-        with _CappedFile(archive_path, self._max_bytes) as raw, _GzipWriter(
+        with _CappedFile(archive_path, self._max_bytes, self.progress) as raw, _GzipWriter(
             raw, comment=comment
         ) as gz, tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar:
             return self._walk(
@@ -1261,6 +1313,7 @@ class CheckpointManager:
                     continue
                 name = names.pop()  # reverse-sorted, so this is the smallest
                 rel = prefix + name
+                self.progress.files += 1
                 if rel in skip or _is_tool_cache(rel):
                     continue
                 try:

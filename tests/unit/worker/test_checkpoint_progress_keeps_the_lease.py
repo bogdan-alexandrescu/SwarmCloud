@@ -28,6 +28,7 @@ the bound's third (`config.HEARTBEAT_MEANWHILE_BOUND_LEASE_TIMEOUTS`) -- is
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import tarfile
@@ -170,7 +171,7 @@ def test_the_hard_ceiling_stops_the_beating_even_while_the_checkpoint_advances(
 def test_a_fenced_attempt_stops_beating_at_once_even_while_the_checkpoint_advances(
     db, worker_factory
 ):
-    """Past the bound and advancing, the task's generation moves on at 4 s:
+    """Past the bound and advancing, the task's generation moves on at 5.5 s:
     the thread asks the control plane before every beat and stops on the
     first ask after the fence. A stale generation never keeps a lease
     (invariant 5)."""
@@ -178,19 +179,19 @@ def test_a_fenced_attempt_stops_beating_at_once_even_while_the_checkpoint_advanc
     beats = _count_beats(worker)
     progress = _Progress()
     start = time.monotonic()
-    progress.advance_for(9)
+    progress.advance_for(10)
     with worker._heartbeat_meanwhile("checkpoint (test)", progress=progress.reading):
-        time.sleep(4)
+        time.sleep(5.5)
         db.doc("tasks/task_1").update({"current_generation": 2})
         fenced_at = time.monotonic()
-        time.sleep(5)
+        time.sleep(4.5)
     progress.stop()
     before_fence = [b for b in beats if start + 3.5 < b < fenced_at]
     after_fence = [round(b - start, 2) for b in beats if b > fenced_at]
     # MUTATION: ignore `progress` and `before_fence` is empty (the control).
     assert before_fence, "no beat past the bound before the fence"
     # MUTATION: skip the poll on an extended beat (the progress vouches for
-    # it) and beats land at 5, 6, 7 and 8 s.
+    # it) and beats land at 6, 7, 8 and 9 s.
     assert not after_fence, f"beats after the attempt was fenced: {after_fence}"
 
 
@@ -301,11 +302,7 @@ def test_the_ceiling_is_four_bounds_and_never_under_the_bound(monkeypatch):
     assert config_mod.HEARTBEAT_MEANWHILE_BOUND_LEASE_TIMEOUTS == 3
     # MUTATION: drop the validation and a ceiling under the bound is accepted.
     with pytest.raises(ConfigError, match="ceiling"):
-        WorkerConfig(
-            task_id="t", attempt_id="a", lease_id="l", tenant_id="eng", generation=1,
-            runner_profile="mock", project_id="p",
-            heartbeat_meanwhile_max_seconds=360, heartbeat_meanwhile_ceiling_seconds=300,
-        )
+        dataclasses.replace(cfg, heartbeat_meanwhile_ceiling_seconds=300)
 
 
 # ---------------------------------------------------------------------------

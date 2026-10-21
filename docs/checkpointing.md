@@ -95,6 +95,7 @@ they are not archived (owner decision 2026-10-05):
 |---|---|---|
 | `.cache`, `.npm`, `.local/share/uv`, `.local/share/pnpm`, `.yarn/cache` | HOME (`work/`) only | the next `uv run` / `uv sync`, `npm ci`, `pnpm install`, `yarn install` fetches them again |
 | `node_modules/` | anywhere in `work/` | `npm ci` (or `pnpm install`, `yarn install`) |
+| `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/` | anywhere in `work/` (#1808) | the next `pytest`, `mypy` or `ruff` run; a resumed `pytest --lf` runs everything once |
 | `.venv/` | anywhere, unless git tracks a file in it | `uv sync` (`uv run` syncs first) |
 | `__pycache__/` | anywhere, unless tracked | the interpreter, on the next import |
 | `dist/` | anywhere, unless tracked | the project's build: `npm run build`, `uv build` |
@@ -294,6 +295,48 @@ taken. Every other checkpoint in the table is written whether or not anything
 changed — an empty incremental archive is a few hundred bytes — because each is
 the one the next attempt restores (invariant 8).
 
+### The lease while a checkpoint is written
+
+A checkpoint runs on the loop that heartbeats the lease, so the lease is beaten
+from a thread for as long as it lasts (`Worker._heartbeat_meanwhile`, #286),
+counted from the loop's last beat rather than the checkpoint's start (#426). That
+thread is **bounded**: `heartbeat_meanwhile_max_seconds`, three lease timeouts
+(360 s at the default 120 s). An unbounded thread would keep a wedged
+checkpoint's lease — and the capacity reserved behind it — alive for ever while
+the supervision loop is not running to notice. Past the bound the lease lapses one
+lease timeout later and the reconciler reclaims the attempt as it would a silent
+worker.
+
+**Past the bound it keeps beating only while the checkpoint provably advances**
+(#1808, owner decision 2026-10-21). On 2026-10-21 a checkpoint of a growing tree
+(238,819 files, 291 MB, about 7.5 min, an agent running Postgres, `pytest -n 3`
+and a web build) was still archiving at 360 s; the thread stopped, and a live
+agent was reclaimed three attempts in a row. The checkpoint writer now keeps a
+counter that only grows — entries walked and archive bytes written
+(`CheckpointManager.progress`) — and the thread reads it at every wake:
+
+* within the bound, it beats as before, progress or not;
+* past the bound, it beats while the counter has moved within the last **one
+  lease timeout**; no advance for that long is a wedge, and it stops exactly as it
+  did at the bound;
+* it stops at the **hard ceiling**, `heartbeat_meanwhile_ceiling_seconds`, four
+  bounds (1,440 s at the default), whatever the progress: an agent that fills the
+  tree faster than the archiver reads it is "progress" for ever, and the ceiling
+  is what keeps that from holding capacity indefinitely. A checkpoint that needs
+  longer is ended by the reclaim and retried from the last committed one;
+* the fence is asked before every beat, extended or not, and a fenced attempt
+  stops at once (invariant 5); a cancel does not stop it, so the cancellation's own
+  checkpoint keeps its lease.
+
+Only the checkpoint passes a counter. A clone or a carrier push, under the same
+thread, stops at the bound as before. When the extension is used the worker logs
+one `heartbeat_extended` event when the checkpoint ends, with `bound_seconds`,
+`ceiling_seconds`, the `seconds` used, the `files` and `bytes` it advanced by, and
+how it `ended` (`finished`, `no progress`, `ceiling`, `fenced`, `heartbeat failed`),
+so a reclaim after a long checkpoint — or the absence of one — is explainable from
+the log. The upload after the archive advances no counter; a single upload is held
+by the object store's own timeout.
+
 ---
 
 ## 5. Choosing the interval
@@ -386,6 +429,8 @@ and in the agent's event stream, `checkpoint_started` / `checkpoint_completed` /
 | Resume restores an old checkpoint | newer ones never committed | check worker logs for upload errors and GCS permissions on the tenant prefix |
 | Resume starts from scratch | no committed checkpoint exists yet | the attempt died inside its first interval |
 | Resume starts from scratch with "no checkpoint is restored; starting from an empty workspace" | a check in section 3 refused the recorded checkpoint; the log line's `reason` names which | expected on a first attempt; on a retry, an error line just before it says what did not match. A checkpoint under the prefix that no attempt recorded is never restored, by design (#347) |
+| "stopped heartbeating the lease during a long operation: it outlasted its bound", then a reclaim, during `checkpoint (...)` | the checkpoint made no progress for a lease timeout past the bound (a wedge), or no counter was passed | a wedge is reclaimed by design; the `heartbeat_extended` event, if any, shows the progress seen (section 4) |
+| "...reached its hard ceiling while still making progress", then a reclaim | a checkpoint longer than `heartbeat_meanwhile_ceiling_seconds`: a tree too big to archive in that time | shrink the tree: data and build output out of `work/`, caches left out (section 1); do not raise the ceiling on a guess |
 | Checkpoints growing every cycle | build output inside `work/` that is not in `TOOL_CACHES` or `BUILD_DIRS`, or a build directory the checkout tracks (section 1) | fix the runner; do not raise `max_bytes` |
 | Restore fails with "failed integrity check" on a `ckpt-` other than the recorded one | a base of an incremental chain was rewritten or deleted in the bucket | expected refusal; the chain is bound by digest (section 2) |
 | A periodic checkpoint missing for several minutes, "checkpoint unchanged; nothing written" in the log | the tree did not change; the interval backed off | none needed; the next change resets it |
