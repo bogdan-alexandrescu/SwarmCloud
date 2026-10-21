@@ -1862,6 +1862,13 @@ export function silentWorkersByTask(page: LeaseHeartbeatPage): Map<string, Lease
   return out
 }
 
+/** One container of `AttemptRow.sized_live_split` (`check_sized_live_split`). */
+export interface SizedContainer {
+  cpu_request: number
+  cpu_limit: number
+  memory_gib: number
+}
+
 /** `attempt_to_api`. The per-attempt record result_summary cannot give you. */
 export interface AttemptRow {
   attempt_id: string
@@ -1933,6 +1940,20 @@ export interface AttemptRow {
    * started with. Null: no model, or not recorded. Absent: an older API.
    */
   model?: string | null
+  /**
+   * Contract request 111 (RS-4, part of #1689): the size the scheduler
+   * RENDERED this attempt at, read by Details as "4 cores guaranteed, bursts
+   * to 8" (AgentDetail.tsx `sizedCpuWords`). `size_version` 0 is the code
+   * defaults; `sized_live_split` is a live pod's two containers, null on every
+   * other attempt. Null: not recorded (admitted before RS-4). Absent: an older
+   * API.
+   */
+  size_version?: number | null
+  sized_cpu_request?: number | null
+  sized_cpu_limit?: number | null
+  sized_memory_gib?: number | null
+  sized_disk_gib?: number | null
+  sized_live_split?: Record<string, SizedContainer> | null
   /**
    * #379. THIS attempt's account and the accounts it gave back. Served beside
    * the rows as `accounts_by_attempt` (so a row stays `GET /v1/attempts`'s

@@ -1316,10 +1316,13 @@ function cpuCell(latest: AttemptRow | null, open: boolean, events: TaskEvent[] |
   }
   const f = from.figures
   const limit = f.cpu_limit_cores ?? cls?.cpu ?? null
+  // The size was pinned at admission, so it is known before the first reading.
+  const sized = sizedCpuWords(latest)
+  const withSize = (sub: string) => (sized === null ? sub : `${sub} · ${sized}`)
   if (f.peak_cpu_cores === null) {
     return open
-      ? { label: 'CPU', value: 'at exit', tone: 'reading', bar: null, sub: 'no reading yet', help: 'cpu-figures' }
-      : { label: 'CPU', value: '— not measured', tone: 'absent', bar: null, sub: 'no figure was written', help: 'cpu-figures' }
+      ? { label: 'CPU', value: 'at exit', tone: 'reading', bar: null, sub: withSize('no reading yet'), help: 'cpu-figures' }
+      : { label: 'CPU', value: '— not measured', tone: 'absent', bar: null, sub: withSize('no figure was written'), help: 'cpu-figures' }
   }
   const pct = limit === null ? null : pctOf(f.peak_cpu_cores, limit)
   const whose = cpuLimitWords(f.cpu_limit_cores, cls, from.kind === 'attempt' ? (latest.cpu_limit_source ?? null) : null)
@@ -1329,7 +1332,9 @@ function cpuCell(latest: AttemptRow | null, open: boolean, events: TaskEvent[] |
     unit: limit === null ? 'cores · limit unknown' : `/ ${cores(limit)} cores`,
     bar: pct,
     tone: pct !== null && pct >= 100 ? 'alert' : undefined,
-    sub: `${from.kind === 'heartbeat' && !from.final ? 'last reading' : 'peak'}${f.mean_cpu_cores === null ? '' : ` · mean ${cores(f.mean_cpu_cores)}`}${whose === null ? '' : ` · ${whose}`}`,
+    sub: withSize(
+      `${from.kind === 'heartbeat' && !from.final ? 'last reading' : 'peak'}${f.mean_cpu_cores === null ? '' : ` · mean ${cores(f.mean_cpu_cores)}`}${whose === null ? '' : ` · ${whose}`}`,
+    ),
     help: 'cpu-figures',
   }
 }
@@ -1616,6 +1621,8 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
       f === null || latest === null
         ? null
         : cpuLimitWords(f.cpu_limit_cores, cls, from?.kind === 'attempt' ? (latest.cpu_limit_source ?? null) : null)
+    // What the attempt was guaranteed and could burst to, said once, on the peak row too.
+    const sized = latest === null ? null : sizedCpuWords(latest)
     for (const [name, v] of [
       ['CPU peak', f?.peak_cpu_cores ?? null],
       ['CPU mean', f?.mean_cpu_cores ?? null],
@@ -1632,7 +1639,9 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
           : {
               name,
               value: cores(v),
-              note: limit === null ? unknownLimit : `of ${cores(limit)} cores${name === 'CPU peak' && whose !== null ? ` · ${whose}` : ''}`,
+              note:
+                (limit === null ? unknownLimit : `of ${cores(limit)} cores${name === 'CPU peak' && whose !== null ? ` · ${whose}` : ''}`) +
+                (name === 'CPU peak' && sized !== null ? ` · ${sized}` : ''),
               pct: limit === null ? null : pctOf(v, limit),
             },
       )
@@ -3127,12 +3136,13 @@ function CpuRows({
   const ceiling = reported ?? (cls === null ? null : cls.cpu)
   const fmt = (v: number) => `${Number(v.toFixed(2))} vCPU`
   const reading = cpuReading(from, a, end)
+  const sized = sizedCpuWords(a)
 
   if (figures === null || !reading.measured) {
     return (
       <>
         <CeilingRow label={<b>cpu</b>} used={null} ceiling={ceiling} fmt={fmt} by={reading.by} />
-        <CpuNote reading={reading} seconds={null} from={null} />
+        <CpuNote reading={reading} seconds={null} from={null} sized={sized} />
       </>
     )
   }
@@ -3165,7 +3175,7 @@ function CpuRows({
         fmt={fmt}
         by={seconds === null ? reading.by : `${reading.by} · ${seconds}`}
       />
-      <CpuNote reading={reading} seconds={seconds} from={source} />
+      <CpuNote reading={reading} seconds={seconds} from={source} sized={sized} />
     </>
   )
 }
@@ -3333,6 +3343,69 @@ function cpuLimitWords(reported: number | null, cls: ResourceClassSpec | null, r
   return reported !== null && cls !== null && cls.cpu !== reported ? `${source} (class ${cls.cpu} vCPU)` : source
 }
 
+interface SizedShare {
+  cpu_request: number
+  cpu_limit: number
+}
+
+function finite(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v)
+}
+
+function sizedShare(v: unknown): SizedShare | null {
+  if (typeof v !== 'object' || v === null) return null
+  const r = v as Record<string, unknown>
+  return finite(r.cpu_request) && finite(r.cpu_limit) ? { cpu_request: r.cpu_request, cpu_limit: r.cpu_limit } : null
+}
+
+function burstWords(request: number, limit: number): string {
+  return limit > request ? `bursts to ${Number(limit.toFixed(2))}` : 'no burst'
+}
+
+/**
+ * WHAT THE ATTEMPT WAS GUARANTEED AND WHAT IT COULD BURST TO (SIZES-DETAIL,
+ * docs/design/runner-sizes.md §6; part of #1689). Since RS-1 a GKE pod's CPU
+ * limit may be twice its request, so the one number the tile draws against --
+ * the limit -- no longer says what the attempt could count on. RS-4 has the
+ * scheduler record the size it RENDERED on the attempt; this reads that
+ * record, never the class read here, because after a resize the class no
+ * longer says what an older attempt ran at.
+ *
+ *   GKE, limit above request   `4 cores guaranteed, bursts to 8`
+ *   GKE, limit == request      `4 cores guaranteed, no burst`
+ *   Cloud Run                  `... no burst on Cloud Run`: Cloud Run renders
+ *                              the request as its only number (§2.5), so the
+ *                              record's limit was never applied there
+ *   live browser pod           the agent's own container, then the display's:
+ *                              the pod's request and limit are a sum the agent
+ *                              never had to itself
+ *
+ * Null when the attempt carries no usable record -- every attempt admitted
+ * before RS-4, and an API older than the fields (`attempt_to_api` serves them
+ * since the SIZES-DETAIL review) -- so those read exactly as they did. The
+ * values are still checked, not trusted: a malformed stored number reads as
+ * no record rather than as a size.
+ */
+function sizedCpuWords(a: AttemptRow): string | null {
+  const request: unknown = a.sized_cpu_request
+  const limit: unknown = a.sized_cpu_limit
+  if (!finite(request) || !finite(limit)) return null
+  const n = (v: number) => Number(v.toFixed(2))
+  if (a.backend === 'CLOUD_RUN_JOB') return `${n(request)} cores guaranteed, no burst on Cloud Run`
+  const split: unknown = a.sized_live_split
+  if (typeof split === 'object' && split !== null) {
+    const worker = sizedShare((split as Record<string, unknown>).worker)
+    const display = sizedShare((split as Record<string, unknown>).display)
+    if (worker !== null && display !== null) {
+      return (
+        `agent ${n(worker.cpu_request)} cores guaranteed, ${burstWords(worker.cpu_request, worker.cpu_limit)}` +
+        ` · display ${n(display.cpu_request)}, ${burstWords(display.cpu_request, display.cpu_limit)}`
+      )
+    }
+  }
+  return `${n(request)} cores guaranteed, ${burstWords(request, limit)}`
+}
+
 /** One attempt's CPU reading, in words, for the rows' `by` column and for the strip under them. */
 interface CpuReading {
   /** False when nothing was measured, or nothing was served. */
@@ -3482,8 +3555,19 @@ function cpuReading(from: CpuFrom, a: AttemptRow, end: AttemptEnd): CpuReading {
  * asks the shipped sheet's cascade what a 390px viewport shows, because jsdom
  * applies no stylesheet and would pass either way.
  */
-function CpuNote({ reading, seconds, from }: { reading: CpuReading; seconds: string | null; from: string | null }) {
-  const extra = [seconds, from].filter((x): x is string => x !== null)
+function CpuNote({
+  reading,
+  seconds,
+  from,
+  sized,
+}: {
+  reading: CpuReading
+  seconds: string | null
+  from: string | null
+  /** `sizedCpuWords`: what the attempt was guaranteed and could burst to; null when not recorded. */
+  sized: string | null
+}) {
+  const extra = [seconds, from, sized].filter((x): x is string => x !== null)
   return (
     <p className={`att-rss-note att-cpu-note${reading.mark === null ? ' is-final' : ''}`}>
       <b>cpu</b>

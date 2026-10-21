@@ -1201,6 +1201,18 @@ def attempt_to_api(
         # Contract request 103: the model ID the agent was started with.
         # Null is not recorded.
         "model": attempt.model,
+        # Contract request 111 (RS-4, part of #1689): the size the scheduler
+        # RENDERED the attempt at. Details reads "4 cores guaranteed, bursts
+        # to 8" off these (AgentDetail.tsx `sizedCpuWords`), never off the
+        # class, which after a resize no longer says what an older attempt
+        # ran at. Null is not recorded -- every attempt from before RS-4 --
+        # and is served as null, never filled from the class catalogue.
+        "size_version": attempt.size_version,
+        "sized_cpu_request": attempt.sized_cpu_request,
+        "sized_cpu_limit": attempt.sized_cpu_limit,
+        "sized_memory_gib": attempt.sized_memory_gib,
+        "sized_disk_gib": attempt.sized_disk_gib,
+        "sized_live_split": attempt.sized_live_split,
     }
 
 
