@@ -59,6 +59,12 @@ WF_OWN_PROBLEM=""
 # drain. A revise leased later than this after the answer waited for
 # something other than the drain.
 WF_DRAIN_SECONDS=60
+# THE START BUDGET, as seconds: from revise's lease to its `running` event, the
+# dispatched job's start. Owner decision 2026-10-21 (#1876): the scheduler's
+# part is held to one drain (the lease, above); the job's start is held to
+# this budget, not to the drain. Measured on every release that night: lease
+# 0-2 s after the answer, RUNNING 73-95 s after it, so 71-93 s of start.
+WF_START_BUDGET_SECONDS=120
 
 workflow_checks() {
   cat <<'EOF'
@@ -697,19 +703,22 @@ _wf_check_await() {
       acc_fail "revise was leased ${delay} s after the answer, more than one drain (${WF_DRAIN_SECONDS} s)" "${revise}"
     fi
   fi
-  # RUNNING is held to the same drain, as the brief states it: the lease
-  # bound says the scheduler admitted revise on the answer's own wake, and
-  # this one that the job it dispatched started inside that drain too.
+  # RUNNING is held to the start budget after the lease (owner decision
+  # 2026-10-21, #1876). It was held to the drain itself, as the HW-ACCEPT
+  # brief stated it, which no job start fits: the lease bound above already
+  # says the scheduler admitted revise on the answer's own wake, and this
+  # says the job it dispatched started within its budget after that.
   if [[ -z "${running_at}" ]]; then
     acc_fail "revise has no running event: it never reached RUNNING" "${revise}"
-  elif [[ -z "${answered_at}" ]]; then
-    acc_fail "cannot time revise's RUNNING: the answer recorded no answered_at" "${revise}"
+  elif [[ -z "${answered_at}" || -z "${lease_at}" ]]; then
+    acc_fail "cannot time revise's RUNNING: answered_at '${answered_at:-none}', first lease_acquired '${lease_at:-none}'" "${revise}"
   else
     delay=$(( ${running_at%.*} - ${answered_at%.*} ))
-    if [[ "${delay}" -le "${WF_DRAIN_SECONDS}" ]]; then
-      acc_pass "revise was RUNNING ${delay} s after the answer, within one drain (${WF_DRAIN_SECONDS} s)" "${revise}"
+    start=$(( ${running_at%.*} - ${lease_at%.*} ))
+    if [[ "${start}" -le "${WF_START_BUDGET_SECONDS}" ]]; then
+      acc_pass "revise was RUNNING ${delay} s after the answer, ${start} s after its lease, within the start budget (${WF_START_BUDGET_SECONDS} s)" "${revise}"
     else
-      acc_fail "revise was RUNNING ${delay} s after the answer, more than one drain (${WF_DRAIN_SECONDS} s)" "${revise}"
+      acc_fail "revise was RUNNING ${start} s after its lease (${delay} s after the answer), more than the start budget (${WF_START_BUDGET_SECONDS} s)" "${revise}"
     fi
   fi
 
