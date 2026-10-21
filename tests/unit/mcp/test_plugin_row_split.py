@@ -179,12 +179,12 @@ def test_per_step_18_rows_at_a_limit_of_8_writes_3_copies_titled_with_their_shar
     assert out["not_followed"] == []
 
 
-def test_attach_per_step_flag_overrides_the_summary_setting_for_one_attach():
+def test_attach_rows_per_step_overrides_the_summary_setting_for_one_attach():
     client = _Client(_envelope(18))
-    out = launch.for_attach(client, "wf_big --per-step")
+    out = launch.for_attach(client, "wf_big", rows="per-step")
 
-    assert client.read == ["wf_big"]  # MUTATION: read the flag as part of the id -- "wf_big --per-step".
-    assert [l["args"]["rows"] for l in out["launches"]] == ["per-step"] * 3  # MUTATION: ignore the flag -- one summary copy.
+    assert client.read == ["wf_big"]  # MUTATION: read something other than the id -- another read.
+    assert [l["args"]["rows"] for l in out["launches"]] == ["per-step"] * 3  # MUTATION: ignore `rows` -- one summary copy.
     assert out["workflow_id"] == "wf_big"
 
 

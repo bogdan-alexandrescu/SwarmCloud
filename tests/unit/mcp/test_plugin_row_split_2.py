@@ -5,8 +5,8 @@ the owner's answers, 2026-10-21 under the overnight pre-authorisation:
 
 1. `swarm_workflow_launch` takes `rows: "summary" | "per-step"`, passed to
    `launch.for_attach` and `launch.for_all`, so `attach --all --per-step`
-   works too. The `--per-step` suffix in the `attach` value is still read for
-   one release. The tool's description says what is true now: split copies,
+   works too. The `--per-step` suffix in the `attach` value was read for
+   one release and is refused since SC-ATTACH-SUFFIX-DROP (0.5.53). The tool's description says what is true now: split copies,
    a summary row, a cap of 100 within 1-200.
 2. The bridge computes the summary row's count line: `swarm_follow` `format:
    "summary"` returns it, sorted into the buckets run.js uses, and the
@@ -107,16 +107,43 @@ def test_rows_per_step_on_one_attach_splits_it():
     assert [l["args"]["rows"] for l in out["launches"]] == ["per-step"] * 3  # MUTATION: drop `rows` for one id -- one summary copy.
 
 
-def test_the_per_step_suffix_still_works_for_one_release():
-    out = _launch(_Client(_envelope(18)), attach="wf_big --per-step")
-    assert [l["args"]["rows"] for l in out["launches"]] == ["per-step"] * 3  # MUTATION: stop reading the suffix -- refused.
-    # The comment beside the flags says when they go.
+@pytest.mark.parametrize("suffix", ["--per-step", "--summary"])
+def test_the_attach_suffix_is_refused_and_the_refusal_names_rows(suffix):
+    """SC-ATTACH-SUFFIX-DROP: the suffix 0.5.50 read was kept one release and
+    is gone; `rows` is the one way to pick a mode for one attach."""
+    client = _Client(_envelope(18))
+    with pytest.raises(SwarmError) as refused:  # MUTATION: keep reading the suffix -- a per-step attach, no error.
+        _launch(client, attach=f"wf_big {suffix}")
+    message = str(refused.value)
+    assert "`rows`" in message  # MUTATION: refuse without naming the argument that replaced it -- absent.
+    assert '"per-step"' in message and '"summary"' in message  # MUTATION: name `rows` but not its values -- absent.
+    assert "Nothing was written" in message  # MUTATION: refuse after a read -- the house refusal's tail missing.
+    assert client.read == []  # MUTATION: fetch "wf_big" before refusing -- ["wf_big"].
+
+
+def test_two_ids_are_still_refused_and_all_with_a_suffix_too():
+    client = _Client(_envelope(18))
+    with pytest.raises(SwarmError, match="one workflow id"):  # MUTATION: take the first word -- no error.
+        _launch(client, attach="wf_a wf_b")
+    # `all --per-step` is not `all`: it reaches the one-id path and is refused there.
+    with pytest.raises(SwarmError, match="`rows`"):  # MUTATION: strip the suffix from "all" -- an attach-all.
+        _launch(client, attach="all --per-step")
+    assert client.read == []  # MUTATION: read before refusing -- an id fetched.
+
+
+def test_the_suffix_reader_and_its_release_promise_are_gone():
     source = Path(launch.__file__).read_text(encoding="utf-8")
-    assert "0.5.52" in source  # MUTATION: no release named for dropping the suffix -- absent.
+    assert not hasattr(launch, "ATTACH_FLAGS")  # MUTATION: keep the flag table -- present.
+    assert not hasattr(launch, "attach_target")  # MUTATION: keep the suffix reader -- present.
+    # MUTATION: keep "drop it in plugin 0.5.52" beside the code -- a release named for a drop that happened.
+    assert not re.search(r"0\.5\.5[0-9]", source)
+    flat = " ".join(_SKILL.read_text().split())
+    assert "is still read until" not in flat  # MUTATION: keep the skill's deprecation line -- present.
+    assert '{attach: "<wf_id> --per-step"}' not in flat  # MUTATION: keep the old attach value in the skill -- present.
 
 
-def test_a_suffix_and_rows_that_disagree_are_refused_and_an_unknown_rows_too(monkeypatch):
-    with pytest.raises(SwarmError, match="rows"):  # MUTATION: let one silently win -- no error.
+def test_a_suffix_beside_rows_is_refused_and_an_unknown_rows_too(monkeypatch):
+    with pytest.raises(SwarmError, match="rows"):  # MUTATION: read the suffix and let one silently win -- no error.
         server._call(_Client(_envelope(18)), "swarm_workflow_launch", {"attach": "wf_big --per-step", "rows": "summary"})
     with pytest.raises(SwarmError, match="rows"):  # MUTATION: pass any value through -- the setting's shape.
         server._call(_Client(_envelope(18)), "swarm_workflow_launch", {"attach": "wf_big", "rows": "split"})
@@ -283,10 +310,11 @@ def test_the_skill_names_the_rows_argument_for_both_attaches():
     assert '{attach: "all", rows: "per-step"}' in flat  # MUTATION: no per-step attach-all -- absent.
 
 
-def test_the_plugin_version_moved_one_patch_past_0_5_50_with_its_pin():
+def test_the_plugin_version_moved_one_patch_past_0_5_52_with_its_pin():
     manifest = json.loads(_MANIFEST.read_text())
     version = tuple(int(part) for part in manifest["version"].split("."))
-    # Past it, not equal to it: a later lane moves it again.
-    assert version > (0, 5, 50)  # MUTATION: no bump -- 0.5.50.
+    # Past it, not equal to it: a later lane moves it again. 0.5.52 still read
+    # the attach suffix; SC-ATTACH-SUFFIX-DROP's release refuses it.
+    assert version > (0, 5, 52)  # MUTATION: no bump -- 0.5.52.
     pinned = manifest["mcpServers"]["swarmcloud"]["args"]
     assert any(f"@sc-v{manifest['version']}#" in arg for arg in pinned)  # MUTATION: bump the version, not the pin.
