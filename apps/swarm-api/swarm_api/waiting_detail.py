@@ -665,7 +665,8 @@ def read_inputs(store: Any, task: Task) -> WaitingReads:
             ids = _names(facts.get("waiting_on")) or list(task.depends_on or [])
             related = store.tasks_by_id(task.tenant_id, ids)
         elif reason is ParkReason.CHILDREN_INCOMPLETE:
-            page = store.list_tasks(task.tenant_id, parent_task_id=task.id, limit=CHILDREN_READ)
+            page = store.list_tasks(task.tenant_id, parent_task_id=task.id, limit=CHILDREN_READ,
+                                    submitted_by=None)
             related = {t.id: t for t in page.items if t.tenant_id == task.tenant_id}
     except Exception as exc:
         log.warning("waiting: related task read failed: %s", type(exc).__name__)
