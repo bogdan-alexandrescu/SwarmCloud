@@ -66,7 +66,7 @@ disabled for every tenant; no Job exists for them yet):
 `CLOUD_RUN_JOB` to `CloudRunJobDispatcher`
 (`apps/scheduler/scheduler/dispatch.py::CloudRunJobDispatcher`) and `GKE_AUTOPILOT` to
 `GkeJobDispatcher` (`apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher`); the module
-header (`apps/scheduler/scheduler/dispatch.py` (`Cloud Run Jobs is the primary backend. GKE Autopilot takes browser work, because`)) states the same split. No
+header (`apps/scheduler/scheduler/dispatch.py` (`Cloud Run Jobs was chosen as the primary backend; since 2026-10-10 GKE`)) states the same split. No
 profile is `AUTO`, so `resolve_backend`
 (`apps/common/swarm_common/profiles.py::resolve_backend`) only passes the declared backend
 through. `tests/unit/scripts/test_docs_spec_amendments.py` reads the catalogue

@@ -21,6 +21,34 @@ from fakes import FakeFirestore
 from worker_seeds import _SIMULATED, BUCKET, build_worker
 
 
+# The four variables git reads for a commit's identity. Git puts each above
+# `-c user.name=... -c user.email=...`, so where the shell exports them -- every
+# SwarmCloud container does -- a test's own identity never reached its commits.
+GIT_IDENTITY_VARIABLES = (
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+)
+
+
+@pytest.fixture(autouse=True)
+def _commits_carry_the_tests_identity(monkeypatch):
+    """No worker test inherits a git identity from its environment (HERMETIC-GIT-ENV, part of #1822).
+
+    The push check refuses any commit the worker did not write, and the tests
+    of it commit as a named identity with `git -c user.name=... -c
+    user.email=...`. Inside a SwarmCloud container the exported GIT_AUTHOR_*
+    and GIT_COMMITTER_* outranked that, so six tests in test_harvest.py and
+    test_publish_as_the_person.py saw the container's author and failed there
+    while passing in CI, which exports none. A test that needs an identity in
+    the environment sets its own (`env=` or `monkeypatch.setenv`), after this
+    has run. test_git_identity_is_hermetic.py holds it.
+    """
+    for name in GIT_IDENTITY_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def db() -> FakeFirestore:
     return FakeFirestore()
