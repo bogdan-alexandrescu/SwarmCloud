@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from swarm_mcp import launch, server
+from swarm_mcp import launch, progress, server
 from swarm_mcp.client import SwarmError
 
 from test_follow_cursor import World, swarm, world  # noqa: F401 - fixtures
@@ -44,6 +44,8 @@ def _bridge(monkeypatch, tmp_path):
     # A 10-core host: Claude Code runs 8 agents per workflow run there.
     monkeypatch.setattr(launch.os, "cpu_count", lambda: 10)
     launch.forget_attached()
+    # Handles are per process: a follower another test answered would resume.
+    progress.HANDLES.clear()
 
 
 def _listed(monkeypatch, *workflow_ids: str) -> None:

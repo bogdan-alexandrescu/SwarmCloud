@@ -120,8 +120,10 @@ step, as before, but when there are more than `rows_per_run()` the bridge --
 which runs on Claude Code's host, so it can read the core count -- writes one
 copy per share, titled `SC · <name> · N steps · rows 1-8`, `rows 9-16`...,
 each told its steps in `row_share`; the first reports the finished steps.
-`max_live_rows` still caps the total of step rows. `/sc attach <wf_id>
---per-step` picks per-step for one attach (`attach_target`).
+`max_live_rows` still caps the total of step rows. `swarm_workflow_launch`'s
+`rows` argument picks the mode for one launch, an attach or an attach-all
+(PLUGIN-ROW-SPLIT-2); `/sc attach <wf_id> --per-step`, the suffix 0.5.50
+read, is still read for one release (`attach_target`).
 """
 
 from __future__ import annotations
@@ -187,7 +189,11 @@ def rows_per_run(cpu_count: int | None = None) -> int:
     return max(1, min(AGENTS_PER_RUN_MAX, (cores or 0) - HOST_RESERVED_CORES))
 
 
-#: What `/sc attach <wf_id> <flag>` may add, and the mode each picks.
+#: What `/sc attach <wf_id> <flag>` may add, and the mode each picks. The
+#: suffix was 0.5.50's way to pick a mode for one attach; since 0.5.51 the
+#: `rows` argument is (PLUGIN-ROW-SPLIT-2, owner 2026-10-21). Still read for
+#: ONE release, so a session on the older skill keeps working: drop it, and
+#: `attach_target` with it, in plugin 0.5.52.
 ATTACH_FLAGS = {"--per-step": config.ROWS_PER_STEP, "--summary": config.ROWS_SUMMARY}
 
 
@@ -852,16 +858,22 @@ def _launch_with(copies: list[dict[str, Any]]) -> str:
     return "the Workflow tool with {scriptPath: <script_path>, args: <args>}"
 
 
-def for_attach(client: SwarmClient, workflow_id: str) -> dict[str, Any]:
+def for_attach(client: SwarmClient, workflow_id: str, rows: str | None = None) -> dict[str, Any]:
     """The titled copy -- or, per-step past the host's limit, copies -- for
     attaching one workflow: one read, for the name SwarmCloud stored, the step
-    count and the unfinished steps. `workflow_id` may carry `--per-step` or
-    `--summary` after the id (`attach_target`), which outranks the `rows`
-    setting for this attach. The reply's own fields are the first copy's;
-    `launches` holds every copy."""
+    count and the unfinished steps. `rows` (`swarm_workflow_launch`'s
+    argument) outranks the `rows` setting for this attach; so does a
+    `--per-step` or `--summary` after the id (`attach_target`, read until
+    0.5.52), and the two may not disagree. The reply's own fields are the
+    first copy's; `launches` holds every copy."""
     from . import session
 
-    workflow_id, rows = attach_target(workflow_id)
+    workflow_id, flagged = attach_target(workflow_id)
+    if rows is not None and flagged is not None and rows != flagged:
+        raise SwarmError(
+            f"attach was given rows {rows!r} and the suffix for {flagged!r}; pass one. Nothing was written"
+        )
+    rows = rows or flagged
     envelope = workflows.fetch(client, workflow_id)
     stored = workflows.stored_names(envelope)
     name = workflows.title_name(stored=stored["title"] or stored["label"], workflow_id=workflow_id)
@@ -943,7 +955,7 @@ def _read_tasks(client: SwarmClient, entries: list[dict[str, Any]]) -> None:
 
 
 def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, *,
-              dispatched: bool = True) -> dict[str, Any]:
+              dispatched: bool = True, rows: str | None = None) -> dict[str, Any]:
     """ONE titled copy that starts an `sc:task` row per task in `entries` --
     each `{task_id, label?, console?, workspace?, tenant_id?, task?}` -- up to
     the live-row cap (`max_live_rows()`, 100 unless the plugin's option says
@@ -958,8 +970,13 @@ def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, 
     caller that does not say), so each gets its line in the project record
     -- every one, followed or not, and before the copy is written, so a copy
     that cannot be written still leaves the record. `for_all` attaches tasks
-    already running and says False."""
+    already running and says False.
+
+    `rows`, the mode (`config.rows_mode()` when None): `for_all` hands on
+    the one its caller asked for."""
     cap = max_live_rows()
+    # `rows`: the mode, read before the name is reused for the task rows.
+    mode = rows or config.rows_mode()
     wanted = [e for e in entries if isinstance(e, dict) and e.get("task_id")]
     if dispatched:
         for entry in wanted:
@@ -991,7 +1008,6 @@ def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, 
     facts = details.merge(details.for_task(e.get("task")) for e in follow)
     # `rows`: the sc plugin's setting (PLUGIN-ROW-SPLIT). `summary` follows the
     # whole batch with ONE row; `per-step` starts a row per task, as before.
-    mode = config.rows_mode()
     if mode == config.ROWS_SUMMARY:
         description = (
             f"{title}: the SwarmCloud single tasks are shown here as ONE [SwarmCloud] summary row, "
@@ -1109,6 +1125,7 @@ def for_all(
     repository: str | None = None,
     new_only: bool = False,
     exclude: list[str] | None = None,
+    rows: str | None = None,
 ) -> dict[str, Any]:
     """One titled copy per running workflow, closest to finish first in
     workspace blocks (`sc.group_by_workspace`, `board.order`), up to the
@@ -1121,7 +1138,10 @@ def for_all(
     (`check.resolve_scope`: a URL, `owner/repo`, "origin" for this checkout's
     remote, "all" for every one); `new_only` leaves out every id this
     session was already handed a row for (`attached()`), and `exclude` the
-    ids the caller names -- rows it can see live. Without them, unchanged."""
+    ids the caller names -- rows it can see live. Without them, unchanged.
+
+    `rows` (`swarm_workflow_launch`'s argument, PLUGIN-ROW-SPLIT-2) is the
+    mode for every copy, the single tasks' too; None reads the setting."""
     from . import sc, session
 
     filtering = repository is not None or new_only or bool(exclude)
@@ -1196,7 +1216,7 @@ def for_all(
     # the cap counts workflows; per-step rows count steps, so the cap is a
     # budget the workflows spend in board order, and a workflow it does not
     # reach is not followed.
-    mode = config.rows_mode()
+    mode = rows or config.rows_mode()
     budget = cap
     unreached: list[dict[str, Any]] = []
     steps_left: list[dict[str, Any]] = []
@@ -1239,7 +1259,7 @@ def for_all(
         out["single_tasks_error"] = singles_error
     elif singles and singles["tasks"]:
         task_launch = for_tasks(sc.group_by_workspace(named_workspaces(singles["tasks"], names, keep_tenant=True)),
-                                client, dispatched=False)
+                                client, dispatched=False, rows=mode)
         launches.append(task_launch)
         out["single_tasks"] = len(singles["tasks"])
         not_followed.extend(task_launch.pop("not_followed"))

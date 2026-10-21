@@ -609,6 +609,15 @@ TOOLS: list[dict[str, Any]] = [
             "leaves its dependency wait. Measured 2026-10-01: rows following "
             "`lines` cost 5-16 KB a reply and 4.0M tokens for one row.\n"
             "\n"
+            "FOR A WHOLE WORKFLOW'S ONE ROW (`sc:summary`), pass `format: "
+            "\"summary\"` and `summary_of` from the row's prompt, unchanged, with "
+            "EVERY task id it was handed on every call: the reply's `line` is "
+            "the workflow's count line (`18 steps: 6 running · 9 queued · 3 done "
+            "· 0 failed · PR #N`), counted by the bridge in the buckets "
+            "/sc:swarmcloud uses -- write it verbatim when `line_changed` is "
+            "true. A task already seen finished is not read again; the rest "
+            "hold as `progress` does.\n"
+            "\n"
             "FOR AN AGENT THAT RELAYS A REMOTE AGENT'S WORK (`sc:remote`), "
             "pass `format: \"lines\"`: the answer is then short narrated lines -- "
             "what the remote agent said, which tools it called, where a waiting "
@@ -685,7 +694,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "format": {
                     "type": "string",
-                    "enum": ["json", "lines", "progress"],
+                    "enum": ["json", "lines", "progress", "summary"],
                     "default": "json",
                     "description": (
                         "`json` (default): the full report. `lines`: short "
@@ -693,7 +702,21 @@ TOOLS: list[dict[str, Any]] = [
                         "for a finished task, its `outcome`. `progress`: no log "
                         "at all -- one progress line per task when it changed, "
                         "the state transitions, `since` and `outcome`; the "
-                        "shape a workflow step's row reads."
+                        "shape a workflow step's row reads. `summary`: the "
+                        "sc:summary row's -- `progress`'s hold and rows, no "
+                        "per-task line, and `line`, the whole workflow's count "
+                        "line, with `line_changed`; needs `summary_of`."
+                    ),
+                },
+                "summary_of": {
+                    "type": "object",
+                    "description": (
+                        "With `format: \"summary\"` only, and required there: the "
+                        "object the sc:summary row's prompt gives on its "
+                        "`summary_of:` line, passed UNCHANGED on every call -- "
+                        "`noun`, `total`, the `counted` running/queued/done/failed "
+                        "of the items not followed, their `prs`, `console` and "
+                        "the `line` last written."
                     ),
                 },
                 "wait_seconds": {
@@ -1321,11 +1344,22 @@ TOOLS: list[dict[str, Any]] = [
             "it is not this Claude Code session's; or \"all\": every running workflow "
             "THIS Claude Code session started (SC-SESSION-SCOPE: every submission is "
             "tagged `metadata.claude_session`; other sessions' and untagged work is "
-            "counted in `session.left_out`, never attached), one copy "
-            "each, newest first and grouped by workspace, at most the sc plugin's "
-            "`max_live_rows` (30 unless set; 1-50) -- one Claude Code run per "
+            "counted in `session.left_out`, never attached), closest to finish "
+            "first and grouped by workspace, at most the sc plugin's "
+            "`max_live_rows` (100 unless set; 1-200) -- one Claude Code run per "
             "SwarmCloud workflow, each launched with the `args` its entry carries; "
             "the rest in `not_followed`).\n"
+            "\n"
+            "ROWS (PLUGIN-ROW-SPLIT): `rows` picks each attached workflow's shape, "
+            "else the sc plugin's `rows` setting does. `summary` (the default): ONE "
+            "copy per workflow, whose run follows the whole workflow with one "
+            "summary row -- `18 steps: 6 running · 9 queued · 3 done · 0 failed` -- "
+            "and the cap counts workflows. `per-step`: a row per unfinished step, "
+            "and the cap counts step rows; a workflow with more than Claude Code "
+            "runs per run (min(16, CPU cores - 2)) comes back as SPLIT copies, "
+            "`SC · <name> · N steps · rows 1-8`, `rows 9-16`..., each a run of its "
+            "own: launch EVERY entry of `launches`. A batch of single tasks follows "
+            "`rows` too.\n"
             "\n"
             "`arm_watch` (SC-AUTO-WATCH): when this launches a spec, an attach, or at "
             "least one attach-all run, the CronCreate call that arms the sc plugin's "
@@ -1339,6 +1373,15 @@ TOOLS: list[dict[str, Any]] = [
                 "spec": {"type": "object", "description": "The workflow spec about to be run."},
                 "spec_path": {"type": "string", "description": "Its file, under this checkout: relative to it, or absolute."},
                 "attach": {"type": "string", "description": "A workflow id, or \"all\"."},
+                "rows": {
+                    "type": "string",
+                    "enum": ["summary", "per-step"],
+                    "description": (
+                        "With `attach` only: `summary`, one row per workflow (and per batch of "
+                        "single tasks), or `per-step`, a row per step split over runs. Unset, "
+                        "the sc plugin's `rows` setting decides."
+                    ),
+                },
                 "repository": {
                     "type": "string",
                     "description": (
@@ -4171,8 +4214,21 @@ def _follow_rows(
     *,
     keepalive: bool,
 ) -> dict[str, Any]:
-    """A `lines` or `progress` follow's reply, read from `args["since"]` -- a
-    full token by now: `_call` has already resolved any handle."""
+    """A `lines`, `progress` or `summary` follow's reply, read from
+    `args["since"]` -- a full token by now: `_call` has already resolved any
+    handle."""
+    if args.get("format") == "summary":
+        # The sc:summary row's view (PLUGIN-ROW-SPLIT-2, owner 2026-10-21):
+        # `progress`'s hold over the unfinished tasks, and the count line
+        # the bridge builds in run.js's buckets, which the row copies.
+        return compact.watch_summary(
+            client,
+            list(args["task_ids"]),
+            args.get("summary_of"),
+            since=args.get("since"),
+            wait_seconds=_int_arg(args, "wait_seconds", 0),
+            max_wait=compact.MAX_WAIT_SECONDS if keepalive else compact.SILENT_MAX_WAIT_SECONDS,
+        )
     if args.get("format") == "progress":
         # The slim row view (`compact.watch_progress`, owner decision
         # 2026-10-01): no log, one line per task when it changed, compact
@@ -4493,9 +4549,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             _remember_territory(client, check, [(lane["lane"], task_id)])
         return json.dumps(reply, indent=2)
 
-    if name == "swarm_follow" and (args.get("format") or "json") not in ("json", "lines", "progress"):
+    if name == "swarm_follow" and (args.get("format") or "json") not in ("json", "lines", "progress", "summary"):
         raise SwarmError(
-            f"unknown format {args.get('format')!r}; swarm_follow takes json, lines or progress"
+            f"unknown format {args.get('format')!r}; swarm_follow takes json, lines, progress or summary"
         )
 
     if name == "swarm_follow" and args.get("since") not in (None, "") and args.get("cursor"):
@@ -4526,7 +4582,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         if len(args.get("task_ids") or []) != 1:
             raise SwarmError("`parents` names the parents of ONE task; follow one task with it")
 
-    if name == "swarm_follow" and args.get("format") in ("lines", "progress"):
+    if name == "swarm_follow" and args.get("format") in ("lines", "progress", "summary"):
         # THE HANDLE (owner decision, 2026-10-05, `progress.Handles`): the row
         # passes back a short handle, an old full token, or -- having dropped
         # it -- nothing, which for tasks this process already answered resumes
@@ -4539,7 +4595,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         reply["since"] = progress.HANDLES.issue(follower, reply["since"])
         if since_note:
             reply["since_note"] = since_note
-        if args["format"] == "progress":
+        if args["format"] in ("progress", "summary"):
             return json.dumps(reply, separators=(",", ":"), ensure_ascii=False, default=str)
         return json.dumps(reply, indent=1, default=str)
 
@@ -4724,6 +4780,21 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             raise SwarmError(
                 f"swarm_workflow_launch takes {filters} only with attach \"all\". Nothing was written"
             )
+        # THE ROW SHAPE, ASKED FOR (PLUGIN-ROW-SPLIT-2, owner 2026-10-21):
+        # `rows` outranks the plugin's setting for this launch, an attach
+        # or an attach-all alike. A spec's run reads the setting.
+        rows = args.get("rows")
+        if rows is not None:
+            if rows not in config.ROWS_MODES:
+                raise SwarmError(
+                    f"swarm_workflow_launch: `rows` is one of {list(config.ROWS_MODES)}; it was "
+                    f"{rows!r}. Nothing was written"
+                )
+            if target is None:
+                raise SwarmError(
+                    "swarm_workflow_launch takes `rows` only with `attach`: a spec's run follows "
+                    "the plugin's `rows` setting. Nothing was written"
+                )
         # EVERY LAUNCH ARMS THE WATCH (SC-AUTO-WATCH, owner 2026-10-14): a spec
         # about to run, a workflow attached, or an attach-all that launched at
         # least one run puts work in front of this session, so the reply
@@ -4732,7 +4803,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         if target is not None:
             if target in ("all", "--all"):
                 if not filters:
-                    attached = launch.for_all(client)
+                    attached = launch.for_all(client, rows=rows)
                 else:
                     exclude = args.get("exclude")
                     if exclude is not None and not (
@@ -4744,10 +4815,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                         repository=args.get("repository"),
                         new_only=_flag(args, "new_only"),
                         exclude=exclude,
+                        rows=rows,
                     )
                 attached.update(watch.arm_fields(bool(attached.get("launches"))))
                 return json.dumps(attached, indent=2, default=str)
-            return json.dumps({**launch.for_attach(client, target), **watch.arm_fields(True)}, indent=2)
+            return json.dumps({**launch.for_attach(client, target, rows=rows), **watch.arm_fields(True)}, indent=2)
         document = (
             _read_spec_file(str(args["spec_path"]), base=checkout.directory())["spec"]
             if args.get("spec_path") is not None
