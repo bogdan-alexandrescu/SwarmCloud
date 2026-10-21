@@ -163,6 +163,7 @@ class FakeQuery:
         orders: tuple[tuple[str, str], ...] = (),
         limit_n: int | None = None,
         after: tuple[Any, ...] | None = None,
+        before: tuple[Any, ...] | None = None,
     ) -> None:
         self._db = db
         self._path = collection_path
@@ -170,6 +171,7 @@ class FakeQuery:
         self._orders = orders
         self._limit = limit_n
         self._after = after
+        self._before = before
 
     # -- builders ---------------------------------------------------------
 
@@ -181,6 +183,7 @@ class FakeQuery:
             orders=kwargs.get("orders", self._orders),
             limit_n=kwargs.get("limit_n", self._limit),
             after=kwargs.get("after", self._after),
+            before=kwargs.get("before", self._before),
         )
 
     def where(self, *args: Any, filter: Any = None, **kwargs: Any) -> "FakeQuery":
@@ -211,6 +214,13 @@ class FakeQuery:
                 value = value.id
             values.append(value)
         return self._with(after=tuple(values))
+
+    def end_before(self, document_fields: Any) -> "FakeQuery":
+        # The dict cursor form, in either direction: every row strictly before
+        # the cursor in the query's order (the place-in-line count, #1782).
+        if not isinstance(document_fields, dict) or not self._orders:
+            raise NotImplementedError("fake end_before takes a dict cursor after order_by")
+        return self._with(before=tuple(document_fields[f] for f, _ in self._orders[: len(document_fields)]))
 
     def count(self, alias: str | None = None) -> FakeAggregationQuery:
         return FakeAggregationQuery(list(self._rows()))
@@ -263,6 +273,20 @@ class FakeQuery:
                 return here > self._after
 
             matches = [item for item in matches if past(item)]
+
+        if self._before is not None:
+            bounded = self._orders[: len(self._before)]
+            cursor = self._before
+
+            def ahead(item: tuple[str, dict[str, Any]]) -> bool:
+                for (f, d), at in zip(bounded, cursor):
+                    here, there = key(item, f), _sortable(at)
+                    if here == there:
+                        continue
+                    return here > there if d == DESCENDING else here < there
+                return False
+
+            matches = [item for item in matches if ahead(item)]
 
         rows = (
             FakeSnapshot(

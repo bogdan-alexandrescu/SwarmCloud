@@ -29,7 +29,30 @@ recorded mapping whole, so no value, or any part of one, is served.
 
 PURE. `build_waiting` reads nothing and writes nothing; `read_inputs` is the
 route's one place that reads for it, inside the task's own tenant
-(invariant 9), and the listing reads nothing for it at all. The masking
+(invariant 9), and the listing reads nothing for it at all.
+
+PLACE IN LINE (WAIT-LINE, owner decision 2026-10-21)
+----------------------------------------------------
+For a READY task behind a pool, `place_in_line` is 1 + the READY tasks that
+need the same pool and come before it in the scheduler's READY query
+(`SchedulerStore.ready_tasks`: priority DESC, then created_at ASC). ONE count
+aggregation, on `GET /v1/tasks/{id}` only: the query ends before the task's
+own position in that order, so the count is exactly what the scheduler's
+slice reads ahead of it. Served by the drain-loop indexes for `global` and
+`tenant:` pools and by the `tasks-*-state-priority-created` indexes for the
+rest (terraform/modules/firestore/indexes.tf).
+
+What it does not model, and says so in `place_in_line_basis.excludes`: the
+aging bonus and the cross-tenant round-robin `scheduler/fairness.py` applies
+to the slice, and the tie order of two tasks created at the same instant. The
+number is the database's line, not a promise of the pass's order.
+
+A tenant pool counts the task's own tenant only. A shared pool (`global`,
+`resource:`, `runner:`, `backend:`, `provider:`) counts across tenants, and
+then ONLY the number is served: never which tasks or tenants are ahead
+(invariant 9). A failed count -- an index still building, anything else --
+serves null with `place_in_line_unavailable` naming why; it never fails the
+GET. The masking
 (`mask_waiting`) is the task's own masker, applied by the serialiser.
 """
 
@@ -42,7 +65,11 @@ from datetime import datetime
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 
+from google.api_core import exceptions as gexc
+from google.cloud.firestore_v1.base_query import FieldFilter
+
 from swarm_common.models import Task, TaskEvent
+from swarm_common.profiles import RUNNER_PROFILES, resolve_backend
 from swarm_common.states import EventType, ParkReason, TaskState, TERMINAL_STATES
 
 log = logging.getLogger(__name__)
@@ -85,9 +112,20 @@ _HISTORY_KINDS = {
     EventType.QUOTA_EXHAUSTED: "quota_exhausted",
 }
 
-_PLACE_IN_LINE_WHY = (
-    "not computed: it would read every READY task behind the binding pool on each request"
-)
+#: Why a place in line is null where nothing counted it: the builder was
+#: not handed a count (a listing, a workflow step row).
+_PLACE_IN_LINE_WHY = "not counted on this route: only GET /v1/tasks/{id} counts the line"
+
+TASKS = "tasks"
+#: The scheduler's READY query order (`SchedulerStore.ready_tasks`), restated
+#: as the count's cursor order because swarm-api does not import the
+#: scheduler. `test_the_count_follows_the_schedulers_own_ready_query_order`
+#: holds the two together.
+LINE_ORDER = (("priority", "DESCENDING"), ("created_at", "ASCENDING"))
+_LINE_ORDER_WORDS = ("priority descending, then created_at ascending: the scheduler's READY "
+                     "query (SchedulerStore.ready_tasks)")
+_LINE_EXCLUDES = ("the aging bonus and cross-tenant round-robin scheduler/fairness.py applies "
+                  "within a pass, and tasks created at the same instant")
 
 
 # --------------------------------------------------------------------------
@@ -252,8 +290,12 @@ def _ci(task: Task, facts: dict[str, Any], park: TaskEvent | None, as_of: dateti
     return {"detail": detail, "summary": head, "resumes_when": resumes, "since": since}
 
 
-def _ready(task: Task, waiting_for: Mapping[str, Any] | None, as_of: datetime) -> dict[str, Any]:
+def _ready(task: Task, waiting_for: Mapping[str, Any] | None, line: Mapping[str, Any] | None,
+           as_of: datetime) -> dict[str, Any]:
     lead = _mapping((waiting_for or {}).get("lead")) or None
+    if line is None:
+        line = {"place_in_line": None, "place_in_line_unavailable": _PLACE_IN_LINE_WHY,
+                "place_in_line_basis": None}
     detail = {
         "waiting_for": dict(waiting_for) if waiting_for is not None else None,
         "pool": lead.get("pool") if lead else None,
@@ -261,8 +303,10 @@ def _ready(task: Task, waiting_for: Mapping[str, Any] | None, as_of: datetime) -
         "active": lead.get("active") if lead else None,
         "limit": lead.get("limit") if lead else None,
         "units": lead.get("units") if lead else None,
-        "place_in_line": None,
-        "place_in_line_unavailable": _PLACE_IN_LINE_WHY,
+        "place_in_line": _int(line.get("place_in_line")),
+        "place_in_line_unavailable": _str(line.get("place_in_line_unavailable")),
+        "place_in_line_basis": (dict(line["place_in_line_basis"])
+                                if isinstance(line.get("place_in_line_basis"), Mapping) else None),
         "last_pass": [dict(b) for b in task.blocked_by or [] if isinstance(b, Mapping)],
     }
     if lead:
@@ -546,6 +590,7 @@ def build_waiting(
     waiting_for: Mapping[str, Any] | None = None,
     related: Mapping[str, Task] | None = None,
     account: Mapping[str, Any] | None = None,
+    line: Mapping[str, Any] | None = None,
     as_of: datetime,
 ) -> dict[str, Any] | None:
     """The `waiting` object for a PARKED, READY or QUEUED task; None otherwise.
@@ -553,8 +598,9 @@ def build_waiting(
     `events` are the task's newest events (None: not read -- the listing);
     `waiting_for` is #362's reading (READY only); `related` maps a task id to
     the tenant's task for a dependency or a child (None: not read); `account`
-    is `task_accounts`' reading of the latest attempt. Unread inputs serve
-    their facts as null.
+    is `task_accounts`' reading of the latest attempt; `line` is
+    `place_in_line`'s count (READY only; None: not counted). Unread inputs
+    serve their facts as null.
     """
     if task.state is TaskState.QUEUED:
         queued = _newest(events, EventType.QUEUED)
@@ -565,7 +611,7 @@ def build_waiting(
              "since": queued.at if queued is not None else task.created_at},
         )
     if task.state is TaskState.READY:
-        part = _ready(task, waiting_for, as_of)
+        part = _ready(task, waiting_for, line, as_of)
         ready = _newest(events, EventType.READY)
         part["since"] = ready.at if ready is not None else None
         return _finish(task, READY_CAPACITY, events, as_of, part)
@@ -638,15 +684,95 @@ def waiting_row(waiting: Mapping[str, Any] | None) -> dict[str, Any] | None:
 class WaitingReads:
     events: list[TaskEvent] | None
     related: dict[str, Task] | None
+    line: dict[str, Any] | None = None
 
 
-def read_inputs(store: Any, task: Task) -> WaitingReads:
+def _line_scope(task: Task, pool: str) -> tuple[list[tuple[str, str, Any]], str] | None:
+    """The equality filters naming the READY tasks that need `pool`, and its scope.
+
+    From the TASK's own fields, the way `pool_names_for` names its pools, so a
+    tenant pool's filter is always the task's own tenant (invariant 9). None
+    for a name that is not one of this task's pools.
+    """
+    tenant = [("tenant_id", "==", task.tenant_id)]
+    scopes: dict[str, tuple[list[tuple[str, str, Any]], str]] = {
+        "global": ([], "shared"),
+        f"tenant:{task.tenant_id}": (tenant, "tenant"),
+        f"resource:{task.resource_class}": ([("resource_class", "==", task.resource_class)], "shared"),
+        f"runner:{task.runner_profile}": ([("runner_profile", "==", task.runner_profile)], "shared"),
+    }
+    profile = RUNNER_PROFILES.get(task.runner_profile)
+    if profile is not None:
+        backend = resolve_backend(profile).value
+        # Every profile that runs on the backend: the pool admits all of them.
+        same = sorted(n for n, p in RUNNER_PROFILES.items() if resolve_backend(p).value == backend)
+        scopes[f"backend:{backend}"] = ([("runner_profile", "in", same)], "shared")
+    if task.provider:
+        scopes[f"provider:{task.provider}"] = ([("provider", "==", task.provider)], "shared")
+        scopes[f"provider:{task.provider}:tenant:{task.tenant_id}"] = (
+            tenant + [("provider", "==", task.provider)], "tenant")
+    return scopes.get(pool)
+
+
+def _no_line(why: str, basis: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {"place_in_line": None, "place_in_line_unavailable": why, "place_in_line_basis": basis}
+
+
+def place_in_line(db: Any, task: Task, waiting_for: Mapping[str, Any] | None) -> dict[str, Any]:
+    """1 + the READY tasks ahead of `task` behind its binding pool: ONE count.
+
+    The binding pool is `waiting_for`'s lead. The count is the scheduler's
+    READY query, narrowed to the tasks that need that pool and ended before
+    the task's own (priority, created_at) position. Never raises: a failed
+    count serves null with why, and the basis says what was counted.
+    """
+    if task.state is not TaskState.READY:
+        return _no_line("not READY")
+    if waiting_for is None:
+        return _no_line("no live pool reading to find the binding pool in")
+    lead = _mapping(waiting_for.get("lead"))
+    pool = _str(lead.get("pool"))
+    if pool is None:
+        return _no_line("no pool binds: the scheduler's next pass may admit it")
+    if lead.get("state") in ("zero", "below_units"):
+        return _no_line(f"{pool}'s limit is below this task's units: no place in line admits it")
+    scope = _line_scope(task, pool)
+    if scope is None:
+        return _no_line(f"{pool} is not one of this task's pools")
+    filters, kind = scope
+    basis = {"pool": pool, "scope": kind, "order": _LINE_ORDER_WORDS, "excludes": _LINE_EXCLUDES}
+    try:
+        query = db.collection(TASKS)
+        for field, op, value in filters:
+            query = query.where(filter=FieldFilter(field, op, value))
+        query = query.where(filter=FieldFilter("state", "==", TaskState.READY.value))
+        for field, direction in LINE_ORDER:
+            query = query.order_by(field, direction=direction)
+        query = query.end_before({"priority": task.priority, "created_at": task.created_at})
+        ahead = 0
+        for row in query.count().get():
+            for item in row:
+                ahead = int(item.value)
+                break
+            break
+    except gexc.FailedPrecondition as exc:
+        # Firestore's answer for an index that is missing or still building.
+        log.warning("waiting: place-in-line count refused: %s", type(exc).__name__)
+        return _no_line("the count's Firestore index is missing or still building", basis)
+    except Exception as exc:  # the task itself was read; only this count failed
+        log.warning("waiting: place-in-line count failed: %s", type(exc).__name__)
+        return _no_line(f"the count query failed ({type(exc).__name__})", basis)
+    return {"place_in_line": ahead + 1, "place_in_line_unavailable": None, "place_in_line_basis": basis}
+
+
+def read_inputs(store: Any, task: Task, *, waiting_for: Mapping[str, Any] | None = None) -> WaitingReads:
     """What `GET /v1/tasks/{id}` reads for one waiting task, inside its tenant.
 
-    The newest `EVENTS_READ` events, and for a dependency or children park ONE
+    The newest `EVENTS_READ` events, for a dependency or children park ONE
     batched read of the tenant's related tasks (`tasks_by_id` and
-    `list_tasks` both drop another tenant's document). A failed read serves
-    that input as not read rather than failing the GET it rides on.
+    `list_tasks` both drop another tenant's document), and for a READY task
+    ONE count of its place in line behind `waiting_for`'s lead pool. A failed
+    read serves that input as not read rather than failing the GET it rides on.
     """
     if task.state not in (TaskState.PARKED, TaskState.READY, TaskState.QUEUED):
         return WaitingReads(None, None)
@@ -671,7 +797,9 @@ def read_inputs(store: Any, task: Task) -> WaitingReads:
     except Exception as exc:
         log.warning("waiting: related task read failed: %s", type(exc).__name__)
         related = None
-    return WaitingReads(events, related)
+    ready = task.state is TaskState.READY
+    line = place_in_line(getattr(store, "db", None), task, waiting_for) if ready else None
+    return WaitingReads(events, related, line)
 
 
 def mask_waiting(waiting: Any, text: Any) -> Any:
