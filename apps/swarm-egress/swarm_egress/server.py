@@ -133,6 +133,18 @@ class Refusal(Exception):
         self.cause = cause
 
 
+class _NoRequest(Exception):
+    """The connection closed before sending a byte: a TCP health check, not a
+    request. Kubernetes' tcpSocket readiness (every 5 s) and liveness (every
+    10 s) probes in kubernetes/swarm-system/swarm-egress.yaml, and the live
+    gate's forwarder probe, connect and close without writing; recorded as
+    `egress_refused` cause `head` they were 18 lines a minute (1,417 in 80
+    minutes of the 2026-10-21 capture) that drowned every real refusal and
+    inflated any count built on the log (#1822). Nothing was asked, so nothing
+    is refused: no answer, no record. One byte, a timeout or an oversized head
+    is still a refused request."""
+
+
 async def _default_dial(host: str, port: int, tls: bool):
     if tls:
         import ssl
@@ -178,6 +190,8 @@ class EgressServer:
             await self._handle(reader, writer)
         except Refusal as refusal:
             await self._refuse(writer, refusal)
+        except _NoRequest:
+            log.debug(json.dumps({"event": "egress_no_request"}))
         except Exception as exc:  # noqa: BLE001 - one connection's failure is logged, never fatal
             event("egress_error", cause=type(exc).__name__)
         finally:
@@ -202,7 +216,11 @@ class EgressServer:
     async def _read_head(self, reader: asyncio.StreamReader) -> tuple[str, str, dict[str, str]]:
         try:
             raw = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), HEAD_TIMEOUT_SECONDS)
-        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, asyncio.TimeoutError):
+        except asyncio.IncompleteReadError as short:
+            if not short.partial:
+                raise _NoRequest from None
+            raise Refusal(400, "head") from None
+        except (asyncio.LimitOverrunError, asyncio.TimeoutError):
             raise Refusal(400, "head") from None
         if len(raw) > MAX_HEAD_BYTES:
             raise Refusal(400, "head")
