@@ -108,6 +108,15 @@ CONTROL = "control"
 EVENTS = "events"
 WORKFLOWS = "workflows"
 CONTROL_DOC = "dispatch"
+#: The runner-size setting (docs/design/runner-sizes.md §4.3): the pointer
+#: beside `control/settings`, and one immutable document per version, its id
+#: the version zero-padded to 6. Written only by swarm-api's admin route.
+RUNNER_SIZES_DOC = "runner_sizes"
+RUNNER_SIZE_VERSIONS = "runner_size_versions"
+
+
+def runner_size_version_id(version: int) -> str:
+    return f"{version:06d}"
 
 #: What a workflow document with no `on_step_failure` field means: the frozen
 #: dataclass default, read from the dataclass rather than restated. The API
@@ -268,6 +277,25 @@ class SchedulerStore:
         if not snap.exists:
             return False
         return bool(snap.to_dict().get("dispatch_paused", False))
+
+    def runner_size_documents(self) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """The runner-size pointer and the version document it names, raw.
+
+        (None, None) with no pointer: the code defaults. The version document
+        is None when the pointer's `current_version` is not a positive whole
+        number or names a document that does not exist; `sizes.parse_version`
+        judges both, and logs why. Two point reads, once per admission pass.
+        """
+        pointer = self._db.collection(CONTROL).document(RUNNER_SIZES_DOC).get()
+        if not pointer.exists:
+            return None, None
+        data = pointer.to_dict() or {}
+        version = data.get("current_version")
+        if isinstance(version, bool) or not isinstance(version, int) or version <= 0:
+            return data, None
+        snap = (self._db.collection(RUNNER_SIZE_VERSIONS)
+                .document(runner_size_version_id(version)).get())
+        return data, (snap.to_dict() if snap.exists else None)
 
     # -- queries ----------------------------------------------------------
 
@@ -1611,6 +1639,15 @@ class SchedulerStore:
             }
         )
         return attempt
+
+    def pin_attempt_size(self, attempt_id: str, fields: dict[str, Any]) -> None:
+        """Record on the attempt the size admission charged and the pod is
+        rendered at (`sizes.Sized.attempt_fields`, contract request 111).
+
+        Merged onto the document `create_attempt` has just written, before
+        the dispatch, so the record exists before any worker can read it.
+        """
+        self._db.collection(ATTEMPTS).document(attempt_id).set(dict(fields), merge=True)
 
     # -- admission --------------------------------------------------------
 
