@@ -411,11 +411,23 @@ owner_pinned_job_variable() {
 # THE PROMOTION MARK. Moving `:<channel>` leaves no trace of the digest it
 # moved away from, so nothing could answer "did some earlier release promote
 # this digest?". push-images.sh therefore also tags every digest it promotes
-# `<channel>-promoted-<release tag>`, a tag that never moves; deploy.sh asks
+# `promoted-<channel>-<release tag>`, a tag that never moves; deploy.sh asks
 # for it before it calls a lagging owner-pinned job "awaiting re-pin" rather
 # than "an image nobody released". Compared exactly, never through gcloud's
 # word-matching `tags:` filter (see push-images.sh, digest_for).
-promotion_mark_prefix() { printf '%s-promoted-' "$1"; }
+#
+# `promoted-` FIRST, never the channel (#1886). Artifact Registry's cleanup
+# policies match tags by PREFIX, and the registry must keep `:dev` and `:prod`
+# with no age limit but promoted images for 30 days. The mark used to be
+# `<channel>-promoted-<tag>`, which a keep rule on the prefix `dev` would also
+# keep forever.
+promotion_mark_prefix() { printf 'promoted-%s-' "$1"; }
+
+# The mark's OLD form, `<channel>-promoted-`. Read, never written: deploy.sh
+# accepts it until scripts/registry-remark.sh has given every digest that
+# carries it the new form, and the re-mark script finds those digests by it.
+# A later change removes it, with deploy.sh's read of it.
+legacy_promotion_mark_prefix() { printf '%s-promoted-' "$1"; }
 
 # ---------------------------------------------------------------------------
 # Is a shared resource still there?

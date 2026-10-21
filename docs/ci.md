@@ -472,6 +472,15 @@ matching in `build-images.sh` and `push-images.sh` is the scar).
    and only then moves the channel tags — all or nothing, with the put-back
    and the `MIXED` report exactly as before. The tag `:<sha>` is not read at
    all, so a later build of the same commit cannot change what is promoted.
+   Once every channel tag has moved it marks each promoted digest
+   `promoted-<channel>-<sha>`, a tag that never moves and that `deploy.sh`
+   reads to tell an earlier release's digest from one nobody released. It
+   starts with `promoted-`, not with the channel, because Artifact Registry's
+   cleanup policies match tags by prefix: a rule keeping `:dev` forever must
+   not also keep every mark forever (#1886). Digests promoted before that
+   carry the old `<channel>-promoted-<sha>`; `deploy.sh` reads both until the
+   operator has run `scripts/registry-remark.sh --apply` once, which adds the
+   new form beside each old one and removes nothing.
 5. The apply pins those digests and the deploy verifies them, unchanged.
 
 **Every promote records its runner images' sizes** (#625). Right after the
