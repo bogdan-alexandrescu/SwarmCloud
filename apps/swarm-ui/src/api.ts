@@ -542,7 +542,7 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
         // size and no uri, which must render as "the event is off this page",
         // not as a blank cell.
         ...(task.state === 'SUCCEEDED' ? [ev('succeeded', 1, { exit_code: 0 })] : []),
-        ...(task.state === 'FAILED' ? [ev('failed', 1, { exit_code: 1, error: task.last_error })] : []),
+        ...(task.state === 'FAILED' ? [ev('failed', 1, { exit_code: fixtureFailedExitCode(task.last_error), error: task.last_error })] : []),
       ],
       eventsDetail: null,
     },
@@ -2938,6 +2938,22 @@ async function fixtureLeaseHeartbeats(): Promise<Result<LeaseHeartbeatPage>> {
   }
 }
 
+/**
+ * The exit code a FAILED fixture task's newest attempt ended with: the
+ * non-zero code its own `last_error` names ("exit status 2: ..."), else 1.
+ *
+ * The worker writes the failing exit code on the attempt and the same failure
+ * into the task's `last_error`, so the real API never serves a failed task
+ * whose newest attempt exited 0. The fixture did, on every failed task, and
+ * visual QA run 2 reported the contradiction (WG-4, #1680). Fixture-only:
+ * nothing on the live path calls this.
+ */
+function fixtureFailedExitCode(lastError: string | null): number {
+  const m = lastError?.match(/\bexit (?:status|code) (\d+)\b/i)
+  const named = m ? Number(m[1]) : 0
+  return named !== 0 ? named : 1
+}
+
 async function fixtureAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
   await new Promise((r) => setTimeout(r, 160))
   noteFixtureProbe(route('/v1/tasks/{id}/attempts', { id: taskId }), 160, true)
@@ -2950,6 +2966,13 @@ async function fixtureAttempts(taskId: string): Promise<Result<{ attempts: Attem
   const page = await fixtureTasks()
   const task = page.status === 'ok' ? page.data.tasks.find((t) => t.id === taskId) : undefined
   const live = task !== undefined && !TERMINAL_STATES.has(task.state)
+  // A live attempt has no exit code yet; a failed task's newest attempt exits
+  // the way its `last_error` says; every other finished one exited 0.
+  const newestExit = live
+    ? null
+    : task?.state === 'FAILED'
+      ? fixtureFailedExitCode(task.last_error)
+      : 0
   const mk = (n: number, exit: number | null, extra: Partial<AttemptRow> = {}): AttemptRow => ({
     attempt_id: `att_${taskId.slice(-4)}_${n}`,
     task_id: taskId,
@@ -2967,7 +2990,7 @@ async function fixtureAttempts(taskId: string): Promise<Result<{ attempts: Attem
     started_at: iso(39 - n * 10),
     completed_at: exit === null ? null : iso(35 - n * 10),
     exit_code: exit,
-    error: exit ? 'exit status 1' : null,
+    error: exit ? `exit status ${exit}` : null,
     peak_rss_bytes: 1_842_000_000,
     peak_disk_bytes: null,
     oom_near_miss: n === 2,
@@ -2989,7 +3012,7 @@ async function fixtureAttempts(taskId: string): Promise<Result<{ attempts: Attem
         // exercised in development. `ckpt-00002` deliberately has no
         // `checkpoint_completed` event in fixtureAgentDetail: an id with no
         // size and no uri is the ordinary paging case, not a defect.
-        mk(3, live ? null : 0, {
+        mk(3, newestExit, {
           checkpoints: ['ckpt-00001', 'ckpt-00002'],
           // THE NEWEST ATTEMPT HOLDS THE TASK'S LEASE when the task holds one.
           // `attemptEnd` reads an attempt as over once the task stops holding
@@ -4149,6 +4172,10 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
           (stepId, i) =>
             mk(`task_fan_${i}`, i === 3 ? 'FAILED' : 'SUCCEEDED', 'claude-code', 40 - i, {
               workflow_id: 'wf_5e5ad3b6f7da4299a839', step_id: stepId, depends_on: [],
+              // A failure that names a code other than 1, so the fixture's
+              // attempts are seen following `last_error` rather than a
+              // constant (pytest exits 2 when collection is interrupted).
+              ...(i === 3 ? { last_error: 'exit status 2: pytest was interrupted: 1 error during collection' } : {}),
               dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
             }),
         )),
