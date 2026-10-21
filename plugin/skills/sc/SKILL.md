@@ -161,6 +161,18 @@ its finished steps once, starts a live row for every unfinished step, and ends
 with the workflow's state. This is how a session that restarted gets its rows
 back for a workflow that kept running in SwarmCloud. An unknown or
 other-tenant id ends with the API's error; report it verbatim.
+ONE ROW OR ONE PER STEP (the plugin's `rows` setting, owner 2026-10-21):
+at its default, `summary`, the run follows the whole workflow with ONE
+`[SwarmCloud] <name> · N steps` row whose line -- `18 steps: 6 running · 9
+queued · 3 done · 0 failed · PR #N` and the console link -- changes only when
+the counts do, and a step that fails, waits for a person or asks the owner
+questions is named on its own line. It is the default because it is one agent
+instead of N, so it never meets Claude Code's limit of min(16, CPU cores - 2)
+agents per run. `per-step` is a row per unfinished step; past that limit the
+reply's `launches` holds several copies, `SC · <name> · N steps · rows 1-8`,
+`rows 9-16`..., each a run of its own: launch EVERY entry of `launches`, each
+with its own args. `/sc attach <wf_id> --per-step` (pass `{attach: "<wf_id>
+--per-step"}`) uses per-step for this one attach.
 By hand it attaches ANY workflow your tenant may read, this session's or
 not: when the reply carries `not_this_session` (`this_session: false`), say
 in one line that the workflow is not this session's -- another Claude Code
@@ -217,7 +229,11 @@ console link as served, from the moment the row starts, whatever the step's
 state. More than that come back in `not_followed`, each with its
 `workspace` and the `/sc attach <wf_id>` that follows it, and are not
 launched — every row is an agent of its own in this session, so the cap
-stays a cap.
+stays a cap. With `rows` at `summary` (the default) each workflow is ONE
+summary row, and the cap counts workflows; with `per-step` it counts step
+rows across every workflow, and a workflow with more rows than one Claude
+Code run shows comes back as several entries, `rows 1-8`, `rows 9-16`... —
+launch every entry of `launches`.
 
 **SCROLLING IS CLAUDE CODE'S, NOT THE PLUGIN'S.** The /workflows panel is
 Claude Code's own UI: this plugin cannot add scrolling to it, and cannot make
@@ -231,7 +247,7 @@ SINGLE TASKS (#830): your running tasks in no workflow get ONE more entry in
 `launches`, whose args are `{attach_tasks: [...]}` — launch it like the
 others; it starts one `[SwarmCloud]` row per task, titled from the task's
 label, with its workspace and the rest of its details shown when the row is expanded, each following its task until it
-finishes (at most 100, `max_live_rows`; the rest come back in `not_followed`). `single_tasks` says how many there were;
+finishes -- or, with `rows` at `summary`, ONE row for the whole batch, `N tasks: ... running · ... done` (at most 100, `max_live_rows`; the rest come back in `not_followed`). `single_tasks` says how many there were;
 `single_tasks_error` means they could not be read — say so verbatim.
 `count: 0` and no task launch is an answer: nothing is running. Report each run's `state`
 (`NOT_ATTACHED` with the API's error verbatim) and the `not_followed` list.
@@ -291,7 +307,9 @@ re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
    `{attach: "all", repository: <the check's repository, or "all" when it
    was null>, new_only: true, exclude: [<the workflow and task ids of every
    [SwarmCloud] row you can see live in this session>]}`, and one Workflow
-   call per entry of its `launches`, exactly as `attach --all` launches them.
+   call per entry of its `launches`, exactly as `attach --all` launches them
+   -- one summary row per workflow at the default `rows: summary`, or, with
+   `per-step`, every `rows 1-8`, `rows 9-16`... copy it lists.
    `new_only` leaves out every workflow and task this session was already
    handed a row for, and `exclude` what you can see, so nothing is attached
    twice; `already_attached` names them, `repository_unread` names any whose
@@ -526,7 +544,11 @@ The one verb that writes: it spends the shared pool, a step at a time.
    object>, spec_path: "<its absolute path>"}`; given JSON text, or a file
    outside the checkout, `{spec: <the spec object>}`. Either way add
    `details: <the reply's row_details>` beside them, so each step's row
-   shows its own details when expanded.
+   shows its own details when expanded, and `rows: <the reply's rows>`:
+   `summary` (the default) follows the submitted workflow with ONE summary
+   row, `per-step` with a row per step in this one run (Claude Code queues
+   the rows past its per-run limit; `/sc attach <wf_id> --per-step` after the
+   run would duplicate them, so prefer `summary` for a large spec).
    `spec_path` beside the object is a reference, not the spec: the bridge
    reads those exact bytes for the submission and checks them against the
    digest of the object, so nothing is retyped and a spec that changed on the

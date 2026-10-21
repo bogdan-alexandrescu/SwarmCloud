@@ -132,7 +132,7 @@ def test_attach_is_described_in_the_workflows_meta():
     meta = _meta()
     assert "attach" in meta["whenToUse"].lower()
     # `Tasks`: the {attach_tasks} run's single-task rows (#830).
-    assert [p["title"] for p in meta["phases"]] == ["Submit", "Attach", "Tasks", "Result"]
+    assert [p["title"] for p in meta["phases"]] == ["Submit", "Attach", "Tasks", "Summary", "Result"]
 
 
 def _run_attach(tmp_path, answers=None):

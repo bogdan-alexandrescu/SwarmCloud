@@ -401,6 +401,8 @@ def test_the_skill_describes_both_modes_and_the_per_step_flag():
 
 def test_the_plugin_version_moved_one_patch_past_0_5_49_with_its_pin():
     manifest = json.loads(_MANIFEST.read_text())
-    assert manifest["version"] == "0.5.50"  # MUTATION: no bump -- 0.5.49.
+    version = tuple(int(part) for part in manifest["version"].split("."))
+    # Past it, not equal to it: a later lane moves it again.
+    assert version > (0, 5, 49)  # MUTATION: no bump -- 0.5.49.
     pinned = manifest["mcpServers"]["swarmcloud"]["args"]
-    assert any("@sc-v0.5.50#" in arg for arg in pinned)  # MUTATION: bump the version, not the pin.
+    assert any(f"@sc-v{manifest['version']}#" in arg for arg in pinned)  # MUTATION: bump the version, not the pin.
