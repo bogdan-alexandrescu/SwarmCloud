@@ -282,21 +282,8 @@ step "2. Every deny-list entry is caught, substituted into a real resource"
 CASES_JSON="${SWARM_LIB_DIR}/destroy-guard-proof-cases.json"
 [[ -f "${CASES_JSON}" ]] || die "missing ${CASES_JSON}"
 
-# kind_of_entry ENTRY -> the first `classify` rule whose glob matches, or fail.
-# The RHS of `==` is deliberately unquoted: that is what makes bash treat the
-# pattern as a glob, which is the whole point of the table.
-kind_of_entry() {
-  local entry="$1" glob kind
-  while IFS=$'\t' read -r glob kind; do
-    [[ -n "${glob}" ]] || continue
-    # shellcheck disable=SC2053  # glob matching is intended, not accidental
-    if [[ "${entry}" == ${glob} ]]; then
-      printf '%s' "${kind}"
-      return 0
-    fi
-  done < <(jq -r '.classify[] | "\(.glob)\t\(.kind)"' "${CASES_JSON}")
-  return 1
-}
+# The entry's kind comes from shared_resource_kind in lib/common.sh, which
+# reads the same table; destroy.sh --verify-shared classifies by it too.
 
 kind_field() {
   jq -er --arg k "$1" --arg f "$2" '.kinds[$k][$f]' "${CASES_JSON}"
@@ -311,7 +298,7 @@ ENTRIES+=("(default)")
 COVERED=0
 : >"${WORK}/kinds.txt"
 for entry in ${ENTRIES[@]+"${ENTRIES[@]}"}; do
-  kind="$(kind_of_entry "${entry}")" \
+  kind="$(shared_resource_kind "${entry}")" \
     || die "deny-list entry '${entry}' matches no rule in ${CASES_JSON}; classify it there rather than leaving it unproven"
   printf '%s\n' "${kind}" >>"${WORK}/kinds.txt"
   carrier="$(kind_field "${kind}" carrier_type)" || die "no carrier_type for kind '${kind}' in ${CASES_JSON}"

@@ -248,17 +248,10 @@ verify_shared_resources() {
     gcloud container clusters list --project "${PROJECT_ID}" \
       --filter="name=agents-staging" --format='value(name)'
 
-  local net bucket
+  local net
   for net in agents-staging-vpc default; do
     _verify describe "network/${net}" \
       gcloud compute networks describe "${net}" --project "${PROJECT_ID}" \
-        --format='value(name)'
-  done
-
-  for bucket in saga-agents-crawled-media-staging saga-agents-files-staging \
-                saga-agents-terraform-state-staging; do
-    _verify describe "bucket/${bucket}" \
-      gcloud storage buckets describe "gs://${bucket}" --project "${PROJECT_ID}" \
         --format='value(name)'
   done
 
@@ -275,13 +268,29 @@ verify_shared_resources() {
   # to when a Job names none (scheduler.dispatch.assert_tenant_identity refuses
   # to dispatch rather than use it), so it is the shared account whose loss
   # would be felt furthest and the one nobody was looking at.
-  local entry
+  #
+  # Buckets and Cloud Run services are read out of it the same way, by the kind
+  # shared_resource_kind gives them. The buckets were a hand-written list of
+  # three until 2026-10-21, and the three buckets added to the deny-list that
+  # day were exactly the three it never looked at.
+  local entry kind
   for entry in "${SHARED_DENY_LIST[@]}"; do
-    case "${entry}" in
-      *@*gserviceaccount.com)
+    kind="$(shared_resource_kind "${entry}")" || kind=""
+    case "${kind}" in
+      sa)
         _verify describe "serviceAccount/${entry%%@*}" \
           gcloud iam service-accounts describe "${entry}" \
             --project "${PROJECT_ID}" --format='value(email)'
+        ;;
+      bucket)
+        _verify describe "bucket/${entry}" \
+          gcloud storage buckets describe "gs://${entry}" --project "${PROJECT_ID}" \
+            --format='value(name)'
+        ;;
+      run-service)
+        _verify describe "run-service/${entry}" \
+          gcloud run services describe "${entry}" --region "${REGION}" \
+            --project "${PROJECT_ID}" --format='value(metadata.name)'
         ;;
     esac
   done

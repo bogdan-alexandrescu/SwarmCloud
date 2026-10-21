@@ -292,6 +292,27 @@ is_shared_resource() {
   return 1
 }
 
+# shared_resource_kind ENTRY -> sa, bucket, run-service, cluster, ... : the first
+# `classify` rule in lib/destroy-guard-proof-cases.json whose glob matches, or
+# exit 1. The one place a SHARED_DENY_LIST entry is told apart by kind:
+# scripts/verify-destroy-guard.sh proves the plan guard per kind and
+# `destroy.sh --verify-shared` describes each neighbour per kind, and the
+# post-destroy check named its buckets by hand until 2026-10-21, when the three
+# buckets added to the list that day were the three it never looked at. The RHS
+# of `==` is deliberately unquoted: that is what makes bash treat it as a glob.
+shared_resource_kind() {
+  local entry="$1" glob kind
+  while IFS=$'\t' read -r glob kind; do
+    [[ -n "${glob}" ]] || continue
+    # shellcheck disable=SC2053  # glob matching is intended, not accidental
+    if [[ "${entry}" == ${glob} ]]; then
+      printf '%s' "${kind}"
+      return 0
+    fi
+  done < <(jq -r '.classify[] | "\(.glob)\t\(.kind)"' "${SWARM_LIB_DIR}/destroy-guard-proof-cases.json")
+  return 1
+}
+
 # The deny-list in the exact form `destroy-guard.jq` takes as `--argjson deny`.
 #
 # WHY THIS IS A FUNCTION HERE RATHER THAN FIVE LINES AT EACH CALL SITE. It WAS
