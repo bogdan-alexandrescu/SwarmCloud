@@ -273,6 +273,8 @@ class FakeClient:
     def artifact_content(self, task_id: str, name: str, *, offset: int = 0,
                          limit_bytes: int | None = None) -> dict[str, Any]:
         self.reads.append(f"artifact {task_id} {name}")
+        if self.fail == "artifacts":
+            raise SwarmError(f"GET /v1/tasks/{task_id}/artifacts answered HTTP 503")
         asked = self.data["questions"].get(task_id)
         if asked is None:
             return {"status": "absent"}

@@ -171,6 +171,19 @@ def test_a_finished_tasks_questions_and_pr_are_cached_and_not_read_again():
     assert sorted(w["kind"] for w in second["waiting"]) == sorted(w["kind"] for w in first["waiting"])  # MUTATION: drop a cached lane's questions from the waiting list -- fewer items.
 
 
+def test_a_lane_whose_questions_could_not_be_read_is_read_again_on_the_next_refresh():
+    cache: dict = {}
+    first, _ = _model(fx.FakeClient(fail="artifacts"), cache=cache)
+    unread = [w for w in first["waiting"] if w["lane"] == "wf_a1" and w["kind"] == "question"]
+    assert [w["item"] for w in unread] == ["Questions that could not be read"]  # MUTATION: hide the failed read -- no item.
+    assert "wf_a1" not in cache["lanes"]  # MUTATION: cache the lane anyway -- it is kept with only the 'could not be read' item.
+    again = fx.FakeClient()
+    second, _ = _model(again, cache=json.loads(json.dumps(cache)))
+    assert any(r.startswith("artifact t_a1_impl") for r in again.reads)  # MUTATION: take the lane from the cache -- no artifact read.
+    asked = [w["item"] for w in second["waiting"] if w["lane"] == "wf_a1" and w["kind"] == "question"]
+    assert len(asked) == 2 and "Questions that could not be read" not in asked  # MUTATION: cache the lane anyway -- only the 'could not be read' item.
+
+
 # --------------------------------------------------------------------------
 # Render
 # --------------------------------------------------------------------------
@@ -278,6 +291,29 @@ def test_a_failed_read_keeps_the_previous_page_and_the_next_write_says_why(proje
     assert 'class="banner"' in page and "HTTP 503" in page  # MUTATION: forget the failure -- no banner.
     buildboard.refresh(fx.FakeClient())
     assert 'class="banner"' not in path.read_text()  # MUTATION: never clear the banner -- still there.
+
+
+def test_a_malformed_listing_or_a_failed_write_answers_an_error_and_keeps_the_previous_page(project, monkeypatch):
+    buildboard.refresh(fx.FakeClient())
+    path = project / ".claude" / "build-board" / "index.html"
+    before = path.read_text()
+    broken = fx.FakeClient()
+    monkeypatch.setattr(broken, "workflows", lambda **_: {"next_page_token": None})
+    got = buildboard.refresh(broken)
+    assert "not refreshed" in got["error"] and got["path"] == str(path)  # MUTATION: catch only SwarmError -- KeyError propagates.
+    assert path.read_text() == before  # MUTATION: write a page from the malformed listing -- the page changed.
+
+    def full_disk(*_a, **_k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(buildboard, "write", full_disk)
+    got = buildboard.refresh(fx.FakeClient())
+    assert "No space left" in got["error"]  # MUTATION: let the OSError propagate -- the call raises.
+    monkeypatch.undo()
+    monkeypatch.setattr(buildboard, "_now", lambda: fx.NOW)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
+    buildboard.refresh(fx.FakeClient())
+    assert "No space left" in path.read_text()  # MUTATION: forget a failed write -- no banner on the next page.
 
 
 def test_a_refresh_outside_a_project_says_why(tmp_path, monkeypatch):
