@@ -1159,6 +1159,13 @@ class Scheduler:
         *,
         detail: dict[str, Any],
     ) -> None:
+        # A BUDGET_EXHAUSTED park names its budget (WAIT-RECORD, part of
+        # #1782), which the "Why it's waiting" panel serves. Nothing parks on
+        # it today -- there are no budgets (owner decision, 2026-10-01) -- so
+        # this is where a future writer is held to it, before anything lands.
+        budget = detail.get("budget")
+        if reason is ParkReason.BUDGET_EXHAUSTED and not (isinstance(budget, str) and budget):
+            raise ValueError("a BUDGET_EXHAUSTED park names its budget in detail['budget']")
         outcome = self._store.park(task, reason, detail=detail)
         if outcome.applied:
             self._metrics.parked.labels(reason=reason.value).inc()

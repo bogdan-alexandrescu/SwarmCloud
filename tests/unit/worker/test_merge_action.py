@@ -437,8 +437,10 @@ def test_each_wait_parks_ci_pending_at_the_pinned_head_and_makes_no_merge_call(
     assert outcome.retryable is False, f"{case}: a wait failed its attempt instead of parking"
     assert outcome.end_cause is None, case
     assert outcome.exit_code == ExitCode.PARKED
+    # Every wait here read the checks at PINNED, so it records `failed` too:
+    # none failed (WAIT-RECORD, part of #1782; tests/unit/worker/test_wait_record.py).
     assert outcome.ci_wait == {"code": code, "head": PINNED, "pull_request": NUMBER,
-                               "pending": pending}, case
+                               "pending": pending, "failed": []}, case
     assert outcome.summary["wait"]["code"] == code
     assert says in outcome.summary["wait"]["message"], (case, outcome.summary)
     assert "refusal" not in outcome.summary, "a wait is not a refusal"
@@ -1023,8 +1025,9 @@ def test_a_merge_queue_answer_enqueues_with_the_tenant_token_and_parks_ci_pendin
     assert outcome.exit_code == ExitCode.PARKED
     assert outcome.end_cause is None and outcome.retryable is False
     assert "refusal" not in outcome.summary
+    # Enqueued after a green reading at PINNED: none failed (WAIT-RECORD).
     assert outcome.ci_wait == {"code": merge.MERGE_QUEUED, "head": PINNED,
-                               "pull_request": NUMBER, "pending": []}
+                               "pull_request": NUMBER, "pending": [], "failed": []}
     assert outcome.summary["merge_queued"] == {
         "entry": ENTRY["id"], "position": ENTRY["position"], "state": ENTRY["state"],
         "enqueued_at": ENTRY["enqueuedAt"], "head": PINNED}

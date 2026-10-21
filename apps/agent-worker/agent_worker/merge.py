@@ -396,6 +396,38 @@ def required_check_state(runs: list[Mapping[str, Any]]) -> str:
     return "failed"
 
 
+def latest_reading(runs_by_check: Mapping[str, list[CheckFacts]],
+                   green: frozenset[str] | set[str]) -> tuple[list[str], list[str]]:
+    """What a CI park RECORDS (WAIT-RECORD, part of #1782): the checks pending
+    and the checks failed, by name, each judged by its LATEST run.
+
+    A check's runs are ordered by GitHub's run id, which a re-run increases,
+    so a run cancelled and then superseded by a success is green here. No
+    run is pending. A run not completed is pending; a completed one whose
+    conclusion is not in `green` is failed. Runs with no id (commit
+    statuses) come before those with one, in GitHub's order.
+
+    A RECORD, NOT THE DECISION: the merge decides on `required_check_state`
+    and `other_check_blocks`, which still read every run (#1778 is the same
+    latest-run rule for the decision). The record is what the "Why it's
+    waiting" panel names; it never decides anything.
+    """
+    pending: list[str] = []
+    failed: list[str] = []
+    for name, runs in runs_by_check.items():
+        ordered = sorted(enumerate(runs), key=lambda item: (
+            item[1].run_id is not None, item[1].run_id or 0, item[0]))
+        if not ordered:
+            pending.append(name)
+            continue
+        latest = ordered[-1][1]
+        if latest.status != "completed":
+            pending.append(name)
+        elif (latest.conclusion or "") not in green:
+            failed.append(name)
+    return sorted(pending), sorted(failed)
+
+
 # ---------------------------------------------------------------------------
 # The forge, behind one small interface
 # ---------------------------------------------------------------------------
@@ -431,6 +463,10 @@ class CheckFacts:
     status: str
     conclusion: str | None
     app_id: int | None = None
+    #: GitHub's id for a check run, which grows with every run, a re-run
+    #: included: what orders a check's runs (`latest_reading`). None for a
+    #: commit status, of which GitHub serves only the newest per context.
+    run_id: int | None = None
 
     def as_run(self) -> dict[str, Any]:
         return {"name": self.name, "status": self.status, "conclusion": self.conclusion}
@@ -707,6 +743,7 @@ class GitHubMerger:
                 status=str(run.get("status") or ""),
                 conclusion=_str(run.get("conclusion")),
                 app_id=_int(_mapping(run.get("app")).get("id")),
+                run_id=_int(run.get("id")),
             ))
         combined = _mapping(self._client.get_ok(f"{self._base}/commits/{sha}/status"))
         for status in combined.get("statuses") or []:
@@ -1018,6 +1055,9 @@ def _branch_task(doc: Mapping[str, Any], task_id: str) -> str:
 class _Run:
     ctx: ActionContext
     summary: dict[str, Any] = field(default_factory=dict)
+    #: The checks read at a head, as a CI park records them (`latest_reading`):
+    #: (head, pending names, failed names). None until this attempt reads them.
+    reading: tuple[str, list[str], list[str]] | None = None
 
     def refuse(self, code: str, message: str) -> ActionOutcome:
         return refusal(self.summary, EndCause.MERGE_REFUSED, code, message)
@@ -1031,13 +1071,26 @@ class _Run:
         (`control.ControlPlane.park_ci_pending`), releases the lease and exits
         75. `head` is the head the checks were read at, which swarm-api's wake
         tick reads them at again.
+
+        WHAT IS RECORDED (WAIT-RECORD, part of #1782). When this attempt read
+        the checks at `head`, the park also records `failed`, the checks whose
+        latest run failed, and -- where the caller names no pending check, as
+        a red reading's waits do -- the reading's pending ones, so a park on a
+        red check still says what else is running. A wait made before any
+        check was read at `head` records no `failed` at all: not read is not
+        none failed.
         """
         self.summary["wait"] = {"code": code, "message": message}
+        ci_wait: dict[str, Any] = {"code": code, "head": head, "pull_request": pull_request,
+                                   "pending": sorted(pending)}
+        if self.reading is not None and self.reading[0] == head:
+            _, read_pending, read_failed = self.reading
+            ci_wait["pending"] = sorted(pending) or list(read_pending)
+            ci_wait["failed"] = list(read_failed)
         return _outcome(
             TaskState.PARKED, None, self.summary, f"{code}: {message}",
             exit_code=ExitCode.PARKED,
-            ci_wait={"code": code, "head": head, "pull_request": pull_request,
-                     "pending": sorted(pending)},
+            ci_wait=ci_wait,
         )
 
 
@@ -1380,6 +1433,12 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     pending: list[str] = []
     failed: list[str] = []
     if required.checks:
+        run.reading = (head, *latest_reading(
+            {check.context: [c for c in checks if c.name == check.context
+                             and (check.app_id is None or c.app_id == check.app_id)]
+             for check in required.checks},
+            REQUIRED_GREEN,
+        ))
         for check in required.checks:
             mine = [c.as_run() for c in checks if c.name == check.context
                     and (check.app_id is None or c.app_id == check.app_id)]
@@ -1394,6 +1453,10 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         # has neither rulesets nor protection to read (`required.source`
         # `none_plan_limited_all_checks`): every check reported at the head
         # must be green, and there must be one.
+        by_name: dict[str, list[CheckFacts]] = {}
+        for check in checks:
+            by_name.setdefault(check.name, []).append(check)
+        run.reading = (head, *latest_reading(by_name, OTHER_TOLERATED))
         if not checks:
             return wait("no_checks",
                         f"{pr.base_ref} requires no check and none has reported at "

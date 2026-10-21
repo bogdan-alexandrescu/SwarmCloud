@@ -88,7 +88,7 @@ import re
 import socket
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, NamedTuple
 from urllib.parse import quote, urlsplit
@@ -170,6 +170,16 @@ MAX_REASON_CHARS = 200
 MAX_HANDOFFS_PER_ATTEMPT = 3
 #: §4.3: parks on HUMAN_REQUIRED that do not spend an attempt.
 MAX_HUMAN_RESUMES = 2
+#: How long a HUMAN_REQUIRED park waits for a person before the scheduler's
+#: `_expire_human_waits` dead-letters it: the scheduler's
+#: `human_park_max_seconds`, measured from the park instant. Restated from
+#: `scheduler.loop.HUMAN_PARK_MAX_SECONDS`, which this image does not carry;
+#: the scheduler reads the setting through `getattr` with that default and its
+#: settings have no such field, so the default IS the setting.
+#: tests/unit/worker/test_wait_record.py holds both, and fails the day the
+#: setting becomes configurable without the worker being handed its value.
+#: The park records `expires_at` from it (WAIT-RECORD, part of #1782).
+HUMAN_PARK_MAX_SECONDS = 86_400
 #: One request file, as read. swarm-api refuses a body over 4096 bytes.
 MAX_REQUEST_BYTES = 4096
 
@@ -2029,7 +2039,13 @@ def park_human_required(
     nobody.
     """
     if getattr(control, "state_via_api", False):
-        refunded, requeued = control.park_human_required(detail=detail, uploads=uploads)
+        # swarm-api writes the park at its own instant, read after this one;
+        # `expires_at` is earlier than its park instant plus the bound by the
+        # request's latency, never later. It is merged into the event swarm-api
+        # writes, the READY one of a person's return included.
+        expires = utcnow() + timedelta(seconds=HUMAN_PARK_MAX_SECONDS)
+        refunded, requeued = control.park_human_required(
+            detail={**(detail or {}), "expires_at": expires.isoformat()}, uploads=uploads)
         return HumanPark(bool(refunded), "" if requeued else None)
     reason = ParkReason.HUMAN_REQUIRED
     now = utcnow()
@@ -2112,6 +2128,10 @@ def park_human_required(
             "attempt_refunded": refunded,
             HUMAN_WAIT_RESUMES_METADATA_KEY: resumes,
             **(detail or {}),
+            # When the scheduler dead-letters it, from the park's own instant
+            # (WAIT-RECORD, part of #1782). An event detail only: the task
+            # document is not given a field for it.
+            "expires_at": now + timedelta(seconds=HUMAN_PARK_MAX_SECONDS),
         },
     )
     control.release_lease(f"parked:{reason.value}")
