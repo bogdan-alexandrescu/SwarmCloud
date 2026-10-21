@@ -11,6 +11,9 @@
 #   scripts/ci-fix.sh run        the whole attempt, from the environment below
 #   scripts/ci-fix.sh excerpt    stdin: `gh run view --log-failed`;
 #                                stdout: the redacted, capped excerpt
+#   scripts/ci-fix.sh decide     stdin: `GET /v1/workflows/<id>`;
+#                                stdout: `skip` while its merge step is live,
+#                                else `fix`
 #
 # `run` reads GITHUB_REPOSITORY, CI_FIX_RUN_ID, CI_FIX_HEAD_BRANCH and
 # CI_FIX_HEAD_SHA (the workflow passes the event's fields through env, never
@@ -23,6 +26,17 @@
 #   1. The branch must be `swarm/<task id>` and the run's commit must still be
 #      the pull request's head. A run for an older commit is a failure
 #      something has already moved past; fixing it would fight that.
+#   1a. ONE FIXER PER PULL REQUEST (CI-FIXER-ONE, part of #1822). A task whose
+#      workflow has a merge step that has not finished is a lane whose merge
+#      step runs its own CI-fix rounds on this pull request
+#      (apps/swarm-api/swarm_api/mergewake.py). A fix submitted here beside
+#      them raced the round for the branch: in 72 h to 2026-10-21 this fixer
+#      ran 91 times, failed 34, 22 of them on a push rejected because the
+#      lane's round had moved the branch first, for $55. So it reads the
+#      task, then its workflow, through the swarm API and stands down, with
+#      no comment, while that merge step is live. A single task, a finished
+#      merge step, and a read that cannot answer keep the fix: the API's own
+#      `ci_fix_in_flight` refusal is still behind it.
 #   2. The failed jobs' log goes through `redact` BEFORE anything else reads
 #      it, then is cut to each job's tail and capped. A CI log is exactly where
 #      a token turns up, and the excerpt is about to be stored in a task's
@@ -90,6 +104,12 @@ MARK_REFUSED='<!-- swarm-ci-fix:refused -->'
 # after it. The branch is the worker's (`GIT_BRANCH_PREFIX`, default swarm/).
 TASK_BRANCH_RE='^swarm/(task_[0-9a-f]{20})$'
 
+# The runner profile of a merge step, the one profile whose worker_action is
+# MERGE (swarm_common.profiles; swarm_api.validation.is_merge_step), and the
+# shape new_id("wf") mints -- a workflow id goes into a URL only in that shape.
+MERGE_PROFILE="merge"
+WORKFLOW_ID_RE='^wf_[0-9a-f]{20}$'
+
 # ---------------------------------------------------------------------------
 # The excerpt
 # ---------------------------------------------------------------------------
@@ -145,6 +165,61 @@ excerpt() {
             for (n = first; n <= count[job]; n++) print lines[job, n]
           }
         }'
+}
+
+# ---------------------------------------------------------------------------
+# The lane's own fixer
+# ---------------------------------------------------------------------------
+
+# stdin: `GET /v1/workflows/<id>`. stdout: `skip` when one of its tasks is a
+# merge step in any state but a terminal one (common.sh TERMINAL_STATES, the
+# frozen set), else `fix`. A merge step still QUEUED or PARKED is live: it
+# parks on its CI wait, and that park is where its fix rounds start.
+decide() {
+  local terminal
+  terminal="$(printf '%s\n' ${TERMINAL_STATES[@]+"${TERMINAL_STATES[@]}"} | jq -R . | jq -sc .)"
+  jq -r --arg merge "${MERGE_PROFILE}" --argjson terminal "${terminal}" '
+    [(.tasks // [])[]
+      | select(type == "object" and .runner_profile == $merge)
+      | select((.state | type) == "string" and ((.state | IN($terminal[])) | not))]
+    | if length > 0 then "skip" else "fix" end'
+}
+
+# merge_step_live TASK: true when TASK's workflow has a merge step that is
+# live (`decide`). Every read is redirected to a file, never captured, so
+# API_STATUS survives (CLAUDE.md). A read that fails is false: today's fix.
+merge_step_live() {
+  local task="$1" workflow
+  if ! api_get "/tasks/${task}" >"${WORK}/task.json"; then
+    info "could not read task ${task} (HTTP ${API_STATUS}); fixing as for a single task"
+    return 1
+  fi
+  workflow="$(jq -r '.task.workflow_id // empty | strings' "${WORK}/task.json" 2>/dev/null || true)"
+  if [[ -z "${workflow}" ]]; then
+    info "task ${task} is a single task; no merge step of its own"
+    return 1
+  fi
+  if [[ ! "${workflow}" =~ ${WORKFLOW_ID_RE} ]]; then
+    info "task ${task} names a workflow id that is not one; fixing as for a single task"
+    return 1
+  fi
+  if ! api_get "/workflows/${workflow}" >"${WORK}/workflow.json"; then
+    info "could not read workflow ${workflow} (HTTP ${API_STATUS}); fixing as for a single task"
+    return 1
+  fi
+  if ! decide <"${WORK}/workflow.json" >"${WORK}/decision" 2>/dev/null; then
+    info "workflow ${workflow} did not read as a workflow; fixing as for a single task"
+    return 1
+  fi
+  if [[ "$(cat "${WORK}/decision")" != "skip" ]]; then
+    return 1
+  fi
+  local merge_task
+  merge_task="$(jq -r --arg merge "${MERGE_PROFILE}" \
+    '[(.tasks // [])[] | select(.runner_profile == $merge) | .id | strings
+      | select(test("^task_[0-9a-f]{20}$"))][0] // "unknown"' "${WORK}/workflow.json")"
+  info "workflow ${workflow} has a live merge step (task ${merge_task}); it runs this pull request's CI-fix rounds"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -257,6 +332,13 @@ run_fix() {
       } >"${WORK}/body.md"
       comment "${pr}" "${WORK}/body.md"
     fi
+    return 0
+  fi
+
+  # Before the cap: a lane at the cap with its merge step still live is not
+  # one that "needs a person", and the stop comment would say it is.
+  if merge_step_live "${task}"; then
+    ok "#${pr}: the lane's own merge step fixes CI here; no standalone fix, no comment"
     return 0
   fi
 
@@ -376,5 +458,6 @@ run_fix() {
 case "${1:-}" in
   run) run_fix ;;
   excerpt) excerpt ;;
-  *) die "usage: scripts/ci-fix.sh run|excerpt" ;;
+  decide) decide ;;
+  *) die "usage: scripts/ci-fix.sh run|excerpt|decide" ;;
 esac
