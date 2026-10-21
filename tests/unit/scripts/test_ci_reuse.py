@@ -517,7 +517,7 @@ def test_every_reach_condition_is_the_job_s_own_if():
     (test_ci_fold.py, ci_fold_layout.py) carries the same condition after `always() && `, so a
     failed folded job never reads as its skip. MUTATION: change a job's `if:`
     without REACH."""
-    from .ci_fold_layout import FOLDED
+    from .ci_fold_layout import FOLDED, PATCH_NOTE
 
     keepers = set(FOLDED["application.yml"][1])
     jobs = _jobs()
@@ -525,7 +525,7 @@ def test_every_reach_condition_is_the_job_s_own_if():
     for key in reuse.REUSABLE:
         clause = "!contains(fromJSON(needs.changes.outputs.reused || '[]'), '%s')" % key
         always = "always() && " if key in keepers else ""
-        assert jobs[key]["if"] == f"{always}{reuse.reach_if(key)} && {clause}", (key, jobs[key]["if"])
+        assert jobs[key]["if"] == f"{always}{reuse.reach_if(key)} && {clause}", f"{key}: {jobs[key]['if']} {PATCH_NOTE}"
 
 
 def test_ci_gate_runs_the_reuse_verdict_after_its_own():

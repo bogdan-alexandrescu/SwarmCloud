@@ -74,6 +74,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .ci_fold_layout import PATCH_NOTE
+
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO / ".github" / "workflows"
 
@@ -677,7 +679,8 @@ def test_every_job_is_on_the_pool_or_hosted_for_a_checked_reason() -> None:
         if name in HOSTED_JOBS:
             reason = HOSTED_JOBS[name]
             if gated:
-                problems.append(f"{name}: listed as hosted ({reason}) but on the guarded expression")
+                waiting = f" {PATCH_NOTE}" if reason in (KEEPER, SUMMARY) else ""
+                problems.append(f"{name}: listed as hosted ({reason}) but on the guarded expression{waiting}")
             elif _verdict_of(name, job)[0] != "hosted":
                 problems.append(f"{name}: listed as hosted but runs-on {runs_on!r} is not a hosted image")
             elif not _reason_holds(reason, job, wf_perms):

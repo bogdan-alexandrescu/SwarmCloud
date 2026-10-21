@@ -113,7 +113,7 @@ def _needs(job: dict) -> list[str]:
 def _keeper_condition(name: str, job_id: str) -> str:
     """The old job's own condition: the keeper's `if` after `always() && `."""
     condition = str(_jobs(name)[job_id].get("if") or "")
-    assert condition == "always()" or condition.startswith("always() && "), (job_id, condition)
+    assert condition == "always()" or condition.startswith("always() && "), f"{job_id}: {condition} {PATCH_NOTE}"
     return condition.removeprefix("always()").removeprefix(" && ")
 
 
@@ -164,6 +164,7 @@ def test_a_name_keeper_runs_hosted_and_reads_only_its_own_verdict(file, job_id, 
     another check's verdict, or give it a checkout."""
     job = _jobs(file)[job_id]
     host = FOLDED_HOSTS[file]
+    host_job(file)
     assert job.get("name") == check, (job_id, job.get("name"))
     assert job.get("runs-on") == HOSTED, f"{file}:{job_id} runs on {job.get('runs-on')!r} {PATCH_NOTE}"
     assert host in _needs(job), (job_id, _needs(job))
@@ -180,6 +181,7 @@ def test_a_name_keeper_runs_hosted_and_reads_only_its_own_verdict(file, job_id, 
 
 
 def _run_keeper(file: str, job_id: str, verdict: str, folded: str) -> subprocess.CompletedProcess:
+    host_job(file)  # names the unapplied patch, rather than failing on the old job's many steps
     (step,) = _jobs(file)[job_id]["steps"]
     env = {**os.environ, "CHECK": step["env"]["CHECK"], "VERDICT": verdict, "FOLDED": folded}
     for leak in ("GITHUB_ACTIONS", "GITHUB_STEP_SUMMARY", "GITHUB_OUTPUT"):

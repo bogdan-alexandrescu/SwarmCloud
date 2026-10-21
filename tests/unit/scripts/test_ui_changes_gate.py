@@ -51,6 +51,7 @@ import pytest
 import yaml
 
 from .application_paths import app_paths, diff_step, reaches
+from .ci_fold_layout import PATCH_NOTE
 
 REPO = Path(__file__).resolve().parents[3]
 APPLICATION = REPO / ".github" / "workflows" / "application.yml"
@@ -115,7 +116,8 @@ def test_each_job_runs_only_on_the_gates_output():
         assert "changes" in _needs(jobs[job_id]), f"{job_id} does not need changes"
         if job_id in folded:
             condition = "always() && " + condition
-        assert jobs[job_id].get("if") == condition, (job_id, jobs[job_id].get("if"))
+        assert jobs[job_id].get("if") == condition, f"{job_id}: {jobs[job_id].get('if')} {PATCH_NOTE}"
+    assert "quick-checks" in jobs, f"no quick-checks job {PATCH_NOTE}"
     assert "changes" in _needs(jobs["quick-checks"]), "quick-checks does not need changes"
     # Every job but the gate's own reads, the aggregators, ci-gate and main's
     # build is listed above: a new job must decide what reaches it.
