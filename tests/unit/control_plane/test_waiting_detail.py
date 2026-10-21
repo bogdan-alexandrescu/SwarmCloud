@@ -626,6 +626,29 @@ def test_the_get_reads_no_other_tenants_task(client, db):
     assert on == [{"task_id": "task_theirs", "step_id": None, "state": None}]
 
 
+def test_the_get_serves_a_parents_children_from_its_own_tenant(client, db):
+    """CHILDREN_INCOMPLETE through the route: one tenant-scoped read of the children."""
+    seed_tenant(db, "eng", max_active=20)
+    seed_tenant(db, "research", max_active=5)
+    seed_task(db, task_id="task_parent", tenant_id="eng", state="PARKED",
+              park_reason="CHILDREN_INCOMPLETE")
+    seed_task(db, task_id="task_k1", tenant_id="eng", state="RUNNING")
+    seed_task(db, task_id="task_k2", tenant_id="eng", state="SUCCEEDED")
+    seed_task(db, task_id="task_kx", tenant_id="research", state="QUEUED")
+    for kid in ("task_k1", "task_k2", "task_kx"):
+        db.docs[f"tasks/{kid}"]["parent_task_id"] = "task_parent"
+    res = client.get("/v1/tasks/task_parent", headers=auth_header("alice"))
+    assert res.status_code == 200, res.text
+    d = res.json()["task"]["waiting"]["detail"]
+    # MUTATION: a children read that raises (list_tasks without submitted_by) serves
+    # states_read False and children None, and turns this red.
+    assert d["states_read"] is True
+    # MUTATION: reading the children without the tenant filter serves task_kx here.
+    assert d["children"] == [{"task_id": "task_k1", "state": "RUNNING"},
+                             {"task_id": "task_k2", "state": "SUCCEEDED"}]
+    assert d["unfinished"] == 1 and d["total"] == 2
+
+
 def test_a_get_with_waiting_writes_nothing(client, db):
     _seed_ci(db)
     before = db.dump()
