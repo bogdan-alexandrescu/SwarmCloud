@@ -1139,7 +1139,9 @@
 .ag-device.is-phone.is-landscape { width: 13px; height: 8px; border-radius: 2px; }
 .ag-device.is-tablet.is-portrait { width: 10px; height: 13px; }
 .ag-device.is-tablet.is-landscape { width: 13px; height: 10px; }
-.ag-device.is-desktop { width: 15px; height: 10px; border-bottom-width: 3px; border-radius: 1px; }
+/* 2px, not 1px: the spacing sweep holds every corner to the radius scale
+   (spacing.work.test.tsx), and the fixture's live-browser agent renders this. */
+.ag-device.is-desktop { width: 15px; height: 10px; border-bottom-width: 3px; border-radius: 2px; }
 .ag-device.is-desktop.is-portrait { width: 10px; height: 14px; }
 .ag-device.is-unknown { width: 12px; height: 10px; border-style: dashed; }
 
