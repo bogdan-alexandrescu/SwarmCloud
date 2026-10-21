@@ -7,6 +7,11 @@
 .chg-patch { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 .chg-diff { flex: 1 1 auto; min-height: 0; }
 
+/* THE STATE'S MARK STANDS OFF ITS HEADING (visual QA run 3, task-023): a
+   bordered pill and one space read as flush against the word after it, as
+   Overview's (V141) and Runs' (V210) empty states found. */
+.chg-state > h3 > .ctl-mark { margin-right: var(--ctl-s1); }
+
 /* THE SUMMARY LINE: the base, the patch and its size, the masked count. */
 .chg-sum { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin: 0 0 8px; color: var(--text-dim); font: var(--t-meta)/var(--lh-meta) var(--font); }
 .chg-window { display: inline-flex; gap: 6px; align-items: baseline; }
@@ -41,7 +46,14 @@
 .chg-mx-step > .mono { overflow-wrap: anywhere; }
 .chg-mx-say { font-weight: 400; color: var(--text-dim); }
 .chg-mx-agent { font-weight: 400; }
-.chg-mx-table .is-dim { opacity: .45; }
+/* A COLUMN THE FILTER LEAVES OUT RECEDES BY ITS NAME AND ITS CELLS, NOT ITS
+   BADGES (visual QA run 3, dark-004, 2026-10-21). `.is-dim` faded the whole
+   head to 45%, and a `.ctl-mark` is 12px type and a 1px border in the dim or
+   faint ink: `--text-faint` at 45% over dark `--surface-2` is about 2:1. The
+   badge line says what is known about the step, which a filter does not
+   change, so it keeps its ink. */
+.chg-mx-table td.is-dim,
+.chg-mx-table th.is-dim > .mono { opacity: .45; }
 .chg-mx-table tbody th { font-weight: 400; }
 .chg-mx-table tr.is-on > * { background: var(--surface-2); }
 .chg-mx-file {

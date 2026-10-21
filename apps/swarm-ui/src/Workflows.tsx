@@ -2670,16 +2670,31 @@ function ZoomControl({
     ],
     ...ZOOM_TIERS.map((t) => [t, TIER_LABEL[t], TIER_TITLE[t]] as const),
   ]
+  // THE SWITCH SAYS WHAT IT SWITCHES (visual QA run 3, light-002/dark-002,
+  // 2026-10-21): its name was only an aria-label, so the screen showed
+  // `Auto Figures Details Names` answering no question anyone could see. The
+  // label is the eyebrow every toolbar label here uses, a sibling of the group
+  // (inside, it would be read twice), and the group's name is the same words.
+  // Its margin is zeroed in place: the eyebrow's bottom margin would lift it
+  // off the strip's centre line, and the strip's rules are not this lane's.
   return (
-    <Segmented
-      className="wf-zoom-seg"
-      label="How much each step says"
-      value={choice}
-      options={options.map(([value, label, title]) => ({ key: value, label, title }))}
-      onChange={(value) => onChoose(workflowId, value)}
-    />
+    <>
+      <span className="ctl-eyebrow" style={{ margin: 0 }}>
+        {ZOOM_LABEL}
+      </span>
+      <Segmented
+        className="wf-zoom-seg"
+        label={ZOOM_LABEL}
+        value={choice}
+        options={options.map(([value, label, title]) => ({ key: value, label, title }))}
+        onChange={(value) => onChoose(workflowId, value)}
+      />
+    </>
   )
 }
+
+/** The zoom switch's label, on the screen and as the group's name. */
+const ZOOM_LABEL = 'Each step shows'
 
 /** The tier names as the control spells them -- on its own buttons, in the
  *  `auto` option's sentence and in the notice below. One place, so the three
@@ -3849,7 +3864,9 @@ function StageBand({
         {/* The same glyph and the same column as the workflow row's own caret,
             because it is the same gesture one level down. */}
         <span className="wf-caret">
-          {band.expanded ? 'close' : `show all ${census.steps}`} <span aria-hidden>{band.expanded ? '▾' : '▸'}</span>
+          {/* `collapse stage`, NOT `close` (visual QA run 3, light-003): a
+              bare `close ▾` read as closing the panel or the workflow. */}
+          {band.expanded ? 'collapse stage' : `show all ${census.steps}`} <span aria-hidden>{band.expanded ? '▾' : '▸'}</span>
         </span>
       </button>
       <span className="wf-band-counts">
