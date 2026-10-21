@@ -34,6 +34,8 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
+from google.cloud.firestore_v1.base_query import FieldFilter
+
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
 from swarm_common.models import EndCause, Lease, Task, Tenant, pool_names_for, utcnow
 from swarm_common.profiles import RUNNER_PROFILES, Backend, resolve_backend
@@ -66,6 +68,67 @@ from .settings import SchedulerSettings
 from .store import GuardedWrite, ParentEnd, SchedulerStore
 
 log = logging.getLogger(__name__)
+
+#: Who switched a tenant off (WAIT-PAUSER, part of #1782): swarm-api's
+#: `PUT /v1/admin/tenants/{id}/limits` appends one `admin_audit` row per change
+#: of `enabled` (`swarm_api.store.Store._switch_tenant`). Restated because the
+#: scheduler image does not carry swarm-api; held equal by
+#: tests/unit/control_plane/test_wait_pauser.py.
+ADMIN_AUDIT = "admin_audit"
+AUDIT_TENANT_DISABLED = "tenant_disabled"
+AUDIT_TENANT_ENABLED = "tenant_enabled"
+#: Rows read per action. A tenant is switched a handful of times in its life;
+#: past this many the newest cannot be told from an arbitrary page (the query
+#: has no order: two equalities need no composite index, an order would), so
+#: the park names nobody rather than the wrong person.
+TENANT_SWITCH_READ_CAP = 200
+
+
+def tenant_disabled_by(db: Any, tenant: Tenant) -> dict[str, str]:
+    """`{paused_by, paused_at}` for a tenant a person disabled, or `{}`.
+
+    A person is named only when the tenant's NEWEST switch row is a
+    `tenant_disabled` written since this tenant document was created. No row
+    (disabled by a direct Firestore write, by the runbook's fallback, or
+    before the record existed), a newer `tenant_enabled` (so a later
+    unrecorded disable is not credited to the earlier admin), a row older
+    than a re-registered tenant, too many rows to order, or a read that
+    fails: `{}`, and `waiting_detail` serves `paused_by` null with the park's
+    error. A principal is never invented.
+    """
+    try:
+        return _newest_disable(db, tenant)
+    except Exception as exc:  # noqa: BLE001 -- the park is written either way
+        log.warning("tenant switch record unreadable tenant=%s error=%s",
+                    tenant.tenant_id, type(exc).__name__)
+        return {}
+
+
+def _newest_disable(db: Any, tenant: Tenant) -> dict[str, str]:
+    rows: list[dict[str, Any]] = []
+    for action in (AUDIT_TENANT_DISABLED, AUDIT_TENANT_ENABLED):
+        query = (
+            db.collection(ADMIN_AUDIT)
+            .where(filter=FieldFilter("target_tenant_id", "==", tenant.tenant_id))
+            .where(filter=FieldFilter("action", "==", action))
+            .limit(TENANT_SWITCH_READ_CAP)
+        )
+        page = [snap.to_dict() or {} for snap in query.stream()]
+        if len(page) >= TENANT_SWITCH_READ_CAP:
+            return {}
+        rows.extend(page)
+    dated = [(at, row) for row in rows if (at := as_datetime(row.get("at"))) is not None]
+    if not dated:
+        return {}
+    at, newest = max(dated, key=lambda pair: pair[0])
+    by = newest.get("by")
+    if newest.get("action") != AUDIT_TENANT_DISABLED or not isinstance(by, str) or not by:
+        return {}
+    created = as_datetime(tenant.created_at)
+    if created is not None and at < created:
+        return {}
+    return {"paused_by": by, "paused_at": at.isoformat()}
+
 
 #: A merge step's CI wait (lane MS2, docs/merge-step.md "Revised 2026-10-06"
 #: §1): `metadata.merge_wait`, written by the worker's
@@ -402,6 +465,7 @@ class Scheduler:
         # Populated per drain; initialised here so `_admit_one` is callable in
         # isolation (the unit tests exercise it directly).
         self._tenant_cache: dict[str, Tenant | None] = {}
+        self._paused_by_cache: dict[str, dict[str, str]] = {}
         # Per drain as well, keyed by (tenant_id, workflow_id). A verdict is at
         # most one drain old, except that a failure the drain itself writes
         # evicts it at once (see the DispatchError branch of `_admit_one`). A
@@ -452,6 +516,7 @@ class Scheduler:
     def _begin_run(self) -> None:
         """Forget what the previous run cached. Every entry point starts here."""
         self._tenant_cache: dict[str, Tenant | None] = {}
+        self._paused_by_cache: dict[str, dict[str, str]] = {}
         self._topup_tenant_ids: list[str] | None = None
         self._workflow_verdicts = {}
         self._swept_workflows = set()
@@ -809,6 +874,13 @@ class Scheduler:
             self._tenant_cache[tenant_id] = self._store.get_tenant(tenant_id)
         return self._tenant_cache[tenant_id]
 
+    def _tenant_paused_by(self, tenant: Tenant) -> dict[str, str]:
+        """`tenant_disabled_by`, read once per tenant per drain like the tenant."""
+        cache = self._paused_by_cache
+        if tenant.tenant_id not in cache:
+            cache[tenant.tenant_id] = tenant_disabled_by(self._store.db, tenant)
+        return cache[tenant.tenant_id]
+
     def _admit_one(self, task: Task, report: DrainReport) -> bool:
         """Try to admit and dispatch one task. Returns True only if leased."""
         now = self._now()
@@ -889,11 +961,15 @@ class Scheduler:
 
         tenant = self._tenant(task.tenant_id)
         if tenant is None or not tenant.enabled:
+            # Who disabled it, when a person did through the API (WAIT-PAUSER,
+            # part of #1782): `paused_by` is what waiting_detail reads. A
+            # missing tenant was paused by nobody.
+            paused = self._tenant_paused_by(tenant) if tenant is not None else {}
             self._park(
                 task,
                 ParkReason.MANUAL_PAUSE,
                 report,
-                detail={"error": "tenant is missing or disabled"},
+                detail={"error": "tenant is missing or disabled", **paused},
             )
             return False
 
