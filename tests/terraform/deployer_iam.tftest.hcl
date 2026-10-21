@@ -184,7 +184,7 @@ run "every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one" {
   # allow policy that may share a role and a principal with different
   # condition expressions -- one per projectIamAdmin chunk here, since they
   # are per-chunk bindings rather than one ORed expression (deployer_conditions.tf
-  # explains why). 15 roles / 10 per chunk is 2 today (14 with enable_github_hooks_dedup_role
+  # explains why). 16 roles / 10 per chunk is 2 today (14 with enable_github_hooks_dedup_role
   # off, which this file runs, and 15 until #150 took swarmSecretLister off;
   # still 2 each time); this guards the day
   # deployer_grantable_project_roles grows past 100 roles (10 chunks), which
@@ -993,10 +993,10 @@ run "every_project_role_the_verify_identity_holds_is_grantable" {
     condition = alltrue([
       contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, google_project_iam_member.verify_reads_firestore.role),
       contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, google_project_iam_member.verify_reads_run.role),
-      # VERIFY-GKE-READ (part of #1754): the conditioned clusterViewer. Red
-      # until terraform/bootstrap lists roles/container.clusterViewer, which is
-      # the owner's change: without it the release's apply 403s at the grant.
-      # MUTATION: drop this line and the release finds the gap mid-apply.
+      # VERIFY-GKE-READ (part of #1754): the conditioned clusterViewer, on
+      # terraform/bootstrap's list, which the owner applies before the release.
+      # MUTATION: drop it from deployer_grantable_project_roles and this is
+      # red; drop this line and the release finds the gap mid-apply, a 403.
       alltrue([for k, m in google_project_iam_member.verify_views_swarm_cluster : contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, m.role)]),
       length(google_project_iam_member.verify_views_swarm_cluster) == 1,
     ])

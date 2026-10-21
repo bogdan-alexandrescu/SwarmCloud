@@ -56,8 +56,9 @@ ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.c
 # (rules 1 and 2 in deployer_conditions.tf, the ones the IAP condition broke),
 # only which roles a policy change modifies -- modifiedGrantsByRole with
 # hasOnly, zero logical operators. A read modifies nothing and passes. What CI
-# may still modify is the 15 roles terraform/infra grants
-# (deployer_grantable_project_roles in deployer_conditions.tf; 14 until #1430
+# may still modify is the 16 roles terraform/infra grants
+# (deployer_grantable_project_roles in deployer_conditions.tf; 15 until
+# VERIFY-GKE-READ added roles/container.clusterViewer, 14 until #1430
 # turned enable_github_hooks_dedup_role on, below), held by
 # tests/terraform/deployer_iam.tftest.hcl for every project grant CI applies.
 # The list was measured 2026-09-24 at 15 from the code (8 grant resources) and
@@ -85,7 +86,7 @@ ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.c
 #     direct grant, not one made through a custom-role update, which is why
 #     roleAdmin had to go rather than be scoped.
 #   * hasOnly limits which roles, never whose or with what condition, so CI
-#     can still grant ITSELF any of the 15 (#69); nothing above closes that.
+#     can still grant ITSELF any of the 16 (#69); nothing above closes that.
 #
 # APPLY, in this exact order (owner decision 2026-09-28, after #275): create
 # the chunks FIRST, prove they are live, and ONLY THEN remove the live
