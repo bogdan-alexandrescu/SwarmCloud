@@ -398,3 +398,50 @@
 .qc-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
 .qc-saved { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; min-width: 0; padding: 4px 8px; border-left: 2px solid var(--ok); }
 .qc-saved-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* --- "Why it's waiting" (WaitPanel.tsx, #1782) ----------------------------
+   The card's own tokens and a 3px leading rule like the Now card's: warn
+   when only a person ends the wait, neutral otherwise. Facts stack on a
+   phone and sit label | value from a 480px pane. Everything wraps -- a long
+   check name, a 40-character sha's title, an answer command -- and nothing
+   here scrolls or overflows sideways (the split's pane is the one scroller). */
+.wp { border-left: 3px solid var(--s-neu); }
+.wp.is-warn { border-left-color: var(--s-warn); }
+.wp-summary { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); overflow-wrap: anywhere; }
+.wp-facts { display: flex; flex-direction: column; gap: 6px; margin: 0; min-width: 0; }
+.wp-fact { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.wp-fact > dt { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.wp-fact > dd { margin: 0; min-width: 0; font-size: var(--t-micro); line-height: var(--lh-micro); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.wp-fact code { font-family: var(--mono); overflow-wrap: anywhere; }
+.wp-nr { color: var(--text-faint); font-style: italic; }
+.wp-asof { margin-inline-start: 6px; color: var(--text-faint); }
+.wp-err { display: block; white-space: pre-wrap; font-family: var(--mono); }
+.wp-cmd { display: inline-block; padding: 1px 6px; border-radius: 6px; background: var(--surface-2); white-space: normal; }
+.wp-checks, .wp-on { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 2px 0 0; padding: 0; list-style: none; min-width: 0; }
+.wp-check {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+.wp-check-n { font-family: var(--mono); color: var(--text); }
+.wp-check-s { color: var(--text-dim); }
+.wp-check.is-failed { background: var(--s-badb); }
+.wp-check.is-failed > .wp-check-s { color: var(--s-bad); font-weight: 600; }
+.wp-on > li { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; max-width: 100%; overflow-wrap: anywhere; }
+.wp-history { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding-top: 8px; border-top: 1px solid var(--line); }
+.wp-history-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.wp-history-head > b { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 650; }
+.wp-history-head > .dt-more { margin-inline-start: auto; }
+.wp-hist { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.wp-hist > li { display: flex; gap: 10px; min-width: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.wp-hist time { flex: none; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.wp-hist-t { min-width: 0; overflow-wrap: anywhere; }
+@container ag-pane (min-width: 480px) {
+  .wp-fact { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 12px; align-items: baseline; }
+}

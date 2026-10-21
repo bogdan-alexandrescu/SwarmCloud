@@ -41,6 +41,7 @@ import { useCheckpointListing, useRead, type CheckpointListing } from './RunFile
 import { Screen, timeAgo, type ScreenReading } from './Shell'
 import { StagedInputs } from './StagedInputs'
 import { StopRun } from './StopRun'
+import { WaitPanel, fullWaiting } from './WaitPanel'
 import { rowClock, useNow } from './useNow'
 import {
   CONCURRENCY_STATES,
@@ -434,6 +435,7 @@ export function Run({
     <div className="run-stack dt">
       <div className="dt-top">
         <Alerts task={task} />
+        <WaitPanel task={task} now={now} />
         <Why task={task} events={events} now={now} classes={run.classes} />
       </div>
       {/* WHY THE AGENT RAN OR DID NOT (owner request 2026-10-07): a step with
@@ -2170,6 +2172,13 @@ function Alerts({ task }: { task: Task }) {
   // park instant now (`HandoffParkedSince`), so both bars step aside -- for
   // this reason only: for every other park they are the only explanation.
   const handedOff = handoffOf(task)?.phase === 'parked'
+  // THE WAIT PANEL IS THE ONE STATEMENT WHEN THE API SERVES `waiting` (#1782).
+  // The park bar, the "waiting for" bar and the scheduler-pass bar each said
+  // a part of what `WaitPanel` now says in full -- the reason, the next check,
+  // the binding pool, the last pass -- so all three step aside for it. An API
+  // older than WAIT-API serves no `waiting`, and the bars stay the only
+  // explanation there.
+  const paneled = fullWaiting(task) !== null
 
   return (
     <>
@@ -2185,7 +2194,7 @@ function Alerts({ task }: { task: Task }) {
           on a step`. `reasonText` remains the fallback for a reason this screen does not
           recognise, because "we have no copy for that" is a fact about THIS
           SCREEN and cannot live in a help topic keyed on the reason. */}
-      {task.park_reason && !handedOff && (
+      {task.park_reason && !handedOff && !paneled && (
         <div className="bar amber">
           <strong title={task.park_reason}>{parkWord(task.park_reason)}</strong>
           <ParkEligible iso={task.next_eligible_at} />
@@ -2202,7 +2211,7 @@ function Alerts({ task }: { task: Task }) {
           nothing while it waits. An unknown pool prints no number, never a 0
           or a full fraction. Amber only when a person must act (AG-14), by
           the same rule as the why line. */}
-      {waitingLine(task) !== null && (
+      {waitingLine(task) !== null && !paneled && (
         <div className={`bar${whyNeedsAction(task) ? ' amber' : ''}`} data-waiting-for="">
           <span data-waiting-lead="">{waitingLine(task)}</span>
           {task.waiting_for?.holds_capacity === false && (
@@ -2217,7 +2226,7 @@ function Alerts({ task }: { task: Task }) {
           being busy is not a durable condition -- so READY with blockers and
           no park reason is the commonest "why is nothing happening", and it
           would otherwise show as a bare READY chip with no explanation. */}
-      {task.blocked_by && task.blocked_by.length > 0 && !handedOff && (
+      {task.blocked_by && task.blocked_by.length > 0 && !handedOff && !paneled && (
         <div className="bar amber" data-blocked-by="">
           <span className="blocker-copy">last scheduler pass</span>
           {task.blocked_by.map((b, i) => (
@@ -2360,6 +2369,9 @@ function Why({
   // banner's, so it is not repeated here. See `Alerts`. This also skips
   // `SilentWorker`, which is right: a PARKED task has no live worker.
   if (handoffOf(task)?.phase === 'parked') return null
+  // The wait panel's summary is this sentence, made from what was recorded
+  // rather than a table of reasons (#1782); once is enough.
+  if (fullWaiting(task) !== null) return null
   const units = classUnits(classes, task.resource_class)
   const why = whyAgent(task, units)
   if (!why) return <SilentWorker task={task} events={events} now={now} />
