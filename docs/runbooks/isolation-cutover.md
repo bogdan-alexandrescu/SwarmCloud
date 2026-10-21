@@ -76,10 +76,10 @@ none of the numbers below is a baseline anyone has measured yet.
    |---|---|---|---|
    | 401 | `attempt_unauthenticated` | the caller's token is not `swarm-agent-worker-<tenant>` for the tenant the attempt belongs to: another tenant's worker naming this attempt, or an identity misconfigured | **any** is a stop: name the caller from the log before going on |
    | 403 | `attempt_unproven` | a token without the attempt key's proof: the agent calling with a token it minted (§4.7) | **any** is a stop: an agent is trying the routes |
-   | 409 | `attempt_fenced` | a stale generation: the attempt was reclaimed and a newer one owns the task | expected now and then after a reclaim; the worker exits without running the agent (invariant 5) |
+   | 409 | `attempt_fenced` | a stale generation: the attempt was reclaimed and a newer one owns the agent | expected now and then after a reclaim; the worker exits without running the agent (invariant 5) |
    | 409 | `state_conflict` | a write raced another | occasional is expected; a steady rate is a bug to file |
    | 422 | `transition_refused` | a transition the route refuses (RUNNING→LEASED among them) | **any** from a worker is a bug to file before the next step |
-   | 403 | `upstream_not_declared` | a read of a task the attempt's signed spec does not declare | **any** is either a missed reader (file it) or a probe for another task |
+   | 403 | `upstream_not_declared` | a read of an agent the attempt's signed spec does not declare | **any** is either a missed reader (file it) or a probe for another agent |
    | 403 | `merge_wake_refused` | a merge-slot wake of another tenant's waiter | **any** is a stop |
    | 503 | `state_unavailable` | swarm-api cannot reach its state | a rate above zero for more than a few minutes is the rollback trigger: switched workers cannot start |
 
@@ -161,10 +161,10 @@ switched u-bogdan, **not** a run of u-bogdan's switched path. That is a question
 in lane ISO-IAM-WIRE's pull request. What exercises u-bogdan's path, until it
 is answered:
 
-* a task of u-bogdan's own, submitted as the owner, that runs to SUCCEEDED,
+* an agent of u-bogdan's own, submitted as the owner, that runs to SUCCEEDED,
   with its worker's log showing no Firestore client was built and its
   `state/open` answered 200 in swarm-api's request log (watch item 1);
-* a task that parks and resumes (a long provider wait), and a cancellation:
+* an agent that parks and resumes (a long provider wait), and a cancellation:
   both go through the routes (`park`, `release`) and must release the lease.
 
 **Rollback.** Remove `u-bogdan` from `state_via_api_tenants`; release. Its role
@@ -174,7 +174,7 @@ routes.
 
 ### a2. Withhold and remove its Firestore role
 
-Only after a1's tasks are green and watch items 1-2 are quiet.
+Only after a1's agents are green and watch items 1-2 are quiet.
 
 **Before you start, drain the attempts dispatched before a1's release.** An
 attempt that was dispatched unswitched keeps the direct path for its whole
