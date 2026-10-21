@@ -132,7 +132,10 @@ function Grouped({ rows }: { rows: QuotaState[] }) {
                 to its content and the pool name is long. Fixed widths, and
                 the pool name ellipsizes with its whole name in its title. */}
             <div className={`ctl-table ${tableMode(phone)} quota-table`}>
-              <table role="table">
+              {/* NAMED (visual QA run 3, a11y-keyboard-003): one table per
+                  provider, and a screen reader's table list read them all
+                  as unnamed tables. */}
+              <table role="table" aria-label={`${provider} quota, by tenant`}>
                 <colgroup>
                   <col className="quota-c-tenant" />
                   <col className="quota-c-state" />
@@ -226,8 +229,15 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
   const age = quotaReadingAge(q, now)
   const pool = providerTenantPool(q.provider, q.tenant_id)
 
+  // AN UNKNOWN STATE IS NOT EXHAUSTION (visual QA run 3, capacity-004). A
+  // cap of 0 alone washed the row red, so the fixture's `UNKNOWN` u-bogdan
+  // row carried the same shading as `EXHAUSTED` eng above it -- a verdict
+  // the document does not give. Unknown is not healthy either, so it takes
+  // the amber a reader is asked to look at; its cap of 0 is still the figure.
+  const rowTone = tone === 'unknown' ? 'is-warn' : admitsNothing ? 'is-bad' : tone === 'wait' ? 'is-warn' : undefined
+
   return (
-    <tr role="row" className={admitsNothing ? 'is-bad' : tone === 'wait' ? 'is-warn' : undefined}>
+    <tr role="row" className={rowTone}>
       {/* No text-transform here. Tenant ids are opaque and a displayed id that
           differs from the real one is unusable. */}
       <th role="rowheader" scope="row" className="mono quota-tenant" title={q.tenant_id} aria-label={q.tenant_id}>

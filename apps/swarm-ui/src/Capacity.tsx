@@ -1,4 +1,4 @@
-import { Fragment, useEffect } from 'react'
+import { Fragment, useEffect, useId } from 'react'
 import { loadCapacity, loadLeases, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import { isPaused, type Result } from './fetch'
@@ -376,13 +376,16 @@ function Family({
   // the family's first row, and a family is not one scope: Tenants holds
   // every tenant's pool for an admin, and Providers holds the shared pool
   // beside per-tenant slices. The note is removed, as the owner decided.
+  // THE TABLE IS NAMED BY ITS HEADING (visual QA run 3, a11y-keyboard-003):
+  // a screen reader's table list read six unnamed tables, all one schema.
+  const titleId = useId()
   return (
     <section className={className === undefined ? 'ctl-card' : `ctl-card ${className}`}>
       <div className="ctl-card-head">
-        <h2 className="ctl-card-title">{title}</h2>
+        <h2 className="ctl-card-title" id={titleId}>{title}</h2>
       </div>
       <div className="ctl-card-body is-flush">
-        <PoolTable pools={pools} viewer={viewer} target={target} holders={holders} classes={classes} />
+        <PoolTable pools={pools} viewer={viewer} target={target} holders={holders} classes={classes} labelledBy={titleId} />
       </div>
     </section>
   )
@@ -428,17 +431,20 @@ function PoolTable({
   target,
   holders,
   classes,
+  labelledBy,
 }: {
   pools: Pool[]
   viewer: string | undefined
   target: string | null
   holders: HolderCounts
   classes: ResourceClasses | null
+  /** The id of the family's heading, which names the table. */
+  labelledBy: string
 }) {
   const phone = usePhoneTables()
   return (
     <div className={`ctl-table ${tableMode(phone)} cap-pools`}>
-      <table role="table">
+      <table role="table" aria-labelledby={labelledBy}>
         <PoolCols />
         <thead role="rowgroup">
           <tr role="row">
@@ -597,15 +603,17 @@ function PoolRow({
           <PoolMarks marks={marks} />
         </span>
       </td>
-      {/* NEVER A BLANK CELL (browser QA D32, 2026-10-04), AND NEVER THE WORD ON
-          EVERY ROW (QA G5-19; capacity.html §G, "Set by only when it is not
-          'configured'"). 28 of 29 rows said `configured` and drowned the one
-          that said `provider quota`. The configured case is a faint dot --
-          a filled cell, not a blank one -- named `configured` for a screen
-          reader and in the cell's title; AIMD and quota stand out in ink. */}
+      {/* NEVER A BLANK CELL (browser QA D32, 2026-10-04), AND NEVER THE WORD
+          IN INK ON EVERY ROW (QA G5-19; capacity.html §G). 28 of 29 rows said
+          `configured` and drowned the one that said `provider quota`, so the
+          configured case became a faint `·`. A sighted reader took that for
+          an empty cell (QA-099), and Pool limits prints the word in the dim
+          ink since run 2 (AdmSetBy); run 3 found Pools still drawing the dot.
+          The same word here, in `--text-dim` (`.cap-setby-cfg`), so AIMD and
+          quota in ink still stand out from it, which is G5-19's point. */}
       <td role="cell" data-label="Set by" title={by.detail}>
         {by.term === 'configured' ? (
-          <span className="cap-setby-cfg" role="img" aria-label="configured">·</span>
+          <span className="cap-setby-cfg" title={`configured. ${by.detail}`}>configured</span>
         ) : (
           by.term
         )}

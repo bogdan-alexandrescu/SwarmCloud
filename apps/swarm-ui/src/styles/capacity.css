@@ -731,7 +731,12 @@
    card with room. The name now wraps, but only at the `<wbr>` Runtimes.tsx
    puts after each underscore: never inside a word, and whole on screen. */
 .rt-cred code { display: inline; vertical-align: baseline; white-space: normal; overflow-wrap: normal; word-break: normal; }
-.cap-setby-cfg { color: var(--text-faint); }
+/* `configured` IS THE WORD, IN THE DIM INK, AS ON POOL LIMITS (QA-099 there,
+   run 2; here, run 3). It was a `·` in `--text-faint`, which a sighted reader
+   took for an empty cell. `--text-dim` is quieter than the overrides in ink
+   (G5-19's reason for not printing the word in ink on every row) and still
+   reads; `.adm-setby-cfg` (styles/admin.css) is the same treatment. */
+.cap-setby-cfg { color: var(--text-dim); cursor: help; }
 /* capacity-008 (visual QA run 2): `AIMD back-off` WAS THE ROW'S BIGGEST WORDS.
    The cell took the table's body size, ~15px, beside a 12px `paused` mark and
    `0 holders · limit`. Set by is a qualifier of the ceiling, like the marks and
@@ -861,10 +866,18 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
 
 /* V086, V093: THE PHONE RECORDS. */
 @media (max-width: 560px) {
-  /* The Use track is hidden at this width (styles.css, the phone block) and
-     its grid kept the empty track's 8px gap, so the percentage ended 8px short
-     of every other value. A block, so the figure starts where they do. */
-  .cap-pools.is-stacked .cap-use { display: block; }
+  /* THE USE METER STAYS (visual QA run 3, capacity-012). styles.css's phone
+     block hides every `.ctl-util-track`, because inside a `.ctl-util` row the
+     bar is a ~100px picture of the number beside it. A Pools record is not
+     that shape: Use is a row of its own, the value column ~220px wide at 390,
+     and the track is the only place `.is-unknown` (no ceiling read) and
+     `.is-zero` (a measured nought) are drawn -- B4.6 kept it on the cards for
+     the same reason. Hidden, it also left the accessibility tree, so the
+     record lost the named meter every width above it has. It is drawn here
+     as at 1440, beside its figure, in `.cap-use`'s grid; that grid is why
+     V086's `display: block` is gone -- the 8px gap it removed sits between
+     the bar and the figure again, not before an empty track. */
+  .cap-pools.is-stacked .cap-use > .ctl-util-track { display: flex; }
   /* The open record and its detail are one block: the detail takes no top
      padding of its own, and its cell no gap above the Fits table. */
   .cap-mx .is-stacked > table > tbody > tr.cap-mx-exp { padding-top: 0; }
@@ -899,3 +912,13 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
 .ctl-facts.is-rows > .ctl-fact.rt-runs-on > .rt-runs-on-value {
   display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--ctl-s2);
 }
+
+/* capacity-002 (visual QA run 3, 2026-10-21): REMOVE IS DRAWN OFF UNTIL IT IS
+   ARMED. The unarmed button was `danger-filled` and disabled, which the system
+   draws as a pale red ground under a red edge (V138, components.css) -- on
+   Accounts, in light and dark, it read as ready to fire. Accounts.tsx now draws
+   it as the plain button until the label is typed, so the disabled look is the
+   one every other control takes. `.limit-edit button:disabled` (styles.css,
+   (0,2,1)) would fade that to .4, the faded disabled look V256 retired; this
+   (0,4,0) keeps it drawn rather than faded. */
+.acct-action > .limit-edit > .c-btn:disabled { opacity: 1; }

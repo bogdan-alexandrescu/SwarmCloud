@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   beginAccountSignIn,
   finishAccountSignIn,
@@ -1870,13 +1870,15 @@ function useLoad<T>(load: () => Promise<Result<T>>, key: string): [Result<T>, ()
 function HoldingNow({ account, now, fixture }: { account: Account; now: number; fixture: FixtureViewer }) {
   const accountId = account.account_id
   const [res, retry] = useLoad(() => loadAccountHolders(accountId, holdFixture(account, fixture)), accountId)
+  // The table is named by its heading (visual QA run 3, a11y-keyboard-003).
+  const headId = useId()
   if (res.status === 'loading') return <p className="muted small">Loading holders…</p>
   if (res.status === 'error') return <FailedPanel error={res.error} onRetry={retry} />
   if (res.status === 'empty') return <p className="muted small">Nobody holds it.</p>
   const b = res.data
   return (
     <div className="acct-holders">
-      <h4>Holding now · {b.total}</h4>
+      <h4 id={headId}>Holding now · {b.total}</h4>
       {b.holders.length > 0 && (
         // THE MOCK-UP'S TABLE (G5-16, QA 2026-10-07; capacity.html §D): Agent ·
         // Attempt · Since. It was a bulleted list of `task_…` ids, the one
@@ -1884,7 +1886,7 @@ function HoldingNow({ account, now, fixture }: { account: Account; now: number; 
         // The agent is named the way every other screen names it (`agentName`),
         // from the task read; until that read lands, or if it fails, the id is
         // the name, and the whole id is always the link's title.
-        <table className="acct-hist acct-holding-now">
+        <table className="acct-hist acct-holding-now" aria-labelledby={headId}>
           <thead>
             <tr>
               <th scope="col" data-col="holder">Agent</th>
@@ -1977,6 +1979,8 @@ function HoldingHistory({ account, now, fixture }: { account: Account; now: numb
     () => loadAccountHistory(account.account_id, cursor, holdFixture(account, fixture)),
     `${account.account_id}|${cursor ?? ''}`,
   )
+  // The table is named by its heading (visual QA run 3, a11y-keyboard-003).
+  const headId = useId()
   if (res.status === 'loading') return <p className="muted small">Loading history…</p>
   if (res.status === 'error') return <FailedPanel error={res.error} onRetry={retry} />
   const h = res.status === 'empty' ? null : res.data
@@ -1991,7 +1995,7 @@ function HoldingHistory({ account, now, fixture }: { account: Account; now: numb
   const five = readingOf(account, FIVE_HOUR)
   return (
     <div className="acct-holders">
-      <h4>History</h4>
+      <h4 id={headId}>History</h4>
       {/* THE UTILISATION IS TODAY'S READING, NOT A SERIES. The broker keeps
           one reading per window, so there is no past utilisation to draw the
           spans over; the current one is printed beside them and labelled as
@@ -2009,7 +2013,7 @@ function HoldingHistory({ account, now, fixture }: { account: Account; now: numb
         // was a bulleted list whose 8rem bars drew a seven-day window, so a
         // 30-minute hold was a 1px sliver. The bar is scaled to the holds shown
         // -- the first one's start to now -- and its head says so.
-        <table className="acct-hist">
+        <table className="acct-hist" aria-labelledby={headId}>
           <thead>
             <tr>
               <th scope="col" data-col="holder">Holder</th>
@@ -4698,8 +4702,12 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
           aria-label={`Type ${account.label} to confirm removal`}
           onChange={(e) => setTyped(e.target.value)}
         />
+        {/* OFF UNTIL ARMED (visual QA run 3, capacity-002): unarmed, it was
+            the filled red pale-tinted for disabled, which read as ready to
+            fire. It is the plain button, drawn off, until the label is typed,
+            and the filled red only once a click would remove the account. */}
         <Button
-          kind="danger-filled"
+          kind={armed ? 'danger-filled' : 'secondary'}
           disabled={!armed || busy}
           onClick={() => void run()}
         >
