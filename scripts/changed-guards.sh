@@ -90,6 +90,10 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # from this file and always runs it, so keep it one path a line, no quoting.
 # Only whole-tree tests of at most 10 CI-seconds a file are here: every pull
 # request and every lane pays for this set (CI-GUARDS-ALWAYS, part of #1822).
+# After test_docs_agent_vocabulary: the walkers of scripts/, terraform/ and
+# kubernetes/, the same defect class one directory over (a new .tf, .yaml or
+# .sh breaks them and names none), each under 5 CI-seconds, about 11 s
+# together (CI-GUARDS-MORE, part of #1822).
 GUARD_TESTS=(
   tests/unit/scripts/test_docs_describe_what_was_built.py
   tests/unit/scripts/test_docs_spec_amendments.py
@@ -103,6 +107,26 @@ GUARD_TESTS=(
   tests/unit/scheduler/test_mcp_admission.py
   tests/unit/worker/test_helpers_import_by_unique_name.py
   tests/unit/scripts/test_docs_agent_vocabulary.py
+  tests/unit/common/test_startup_progress_contract.py
+  tests/unit/control_plane/test_reconciler_cloud_run_stall_guard.py
+  tests/unit/scripts/test_cloudbuild_connection_retired.py
+  tests/unit/worker/test_spec_verify_keys_configmap.py
+  tests/unit/scripts/test_workspace_apply_approval.py
+  tests/unit/worker/test_kubernetes_manifests.py
+  tests/unit/control_plane/test_dispatch_judgment.py
+  tests/unit/control_plane/test_gke_cache_volume.py
+  tests/unit/control_plane/test_gke_worker_metadata_env.py
+  tests/unit/control_plane/test_schedules_migration_seed.py
+  tests/unit/control_plane/test_tfvars_refusal_switches.py
+  tests/unit/control_plane/test_workspace_gate_dev.py
+  tests/unit/scripts/test_create_secrets_workspace_grant_key.py
+  tests/unit/scripts/test_deployer_role_count_prose.py
+  tests/unit/scripts/test_github_app_runbook.py
+  tests/unit/scripts/test_owner_pinned_jobs.py
+  tests/unit/scripts/test_tenancy_retired_295_identities.py
+  tests/unit/worker/test_checkpoint_retention.py
+  tests/unit/worker/test_workspace_provisioner_scope.py
+  tests/unit/scripts/test_swarm_verify_image_helpers.py
 )
 # The guards that read docs: all a docs-only diff selects of GUARD_TESTS.
 # Pull-request CI runs the whole GUARD_TESTS even for a docs-only change.
