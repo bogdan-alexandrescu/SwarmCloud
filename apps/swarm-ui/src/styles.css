@@ -10612,6 +10612,20 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-bar { height: 5px; border-radius: 2px; background: var(--line-soft); overflow: hidden; display: flex; }
 .sk-bar > i { display: block; height: 100%; background: var(--sk-ac); }
 .sk-mw { font-size: var(--t-micro); color: var(--s-warn); }
+/* ANOTHER POOL'S LABEL IS NEVER BROKEN INSIDE A NAME (visual QA run 2,
+   admin-007, part of #1680): `u-bogdan` broke at its hyphen, `u-` ending one
+   line and `bogdan` alone on the next. Each part between the `·` is one
+   unbreakable span; a part wider than the card (the raw-key fallback) is cut
+   with an ellipsis, whole in the note's title. */
+.sk-mws { white-space: nowrap; display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+/* OVERVIEW'S SECTIONS ON A PHONE (FF-P1, part of #1680): the panel's list is
+   behind the menu there, so the page carries the jumps itself, as one row
+   that scrolls sideways rather than eight stacked links above the first card.
+   44px tall: a fingertip's target. Spine.tsx `PhoneJumps` draws it below
+   760px only. They are page links, so they keep the page's own focus ring
+   (`:where(a:focus-visible)`), not the chrome's sky one. */
+.sk-otp { display: flex; flex-wrap: nowrap; gap: 6px; overflow-x: auto; margin: 0 0 12px; padding: 0 2px 4px; scrollbar-width: none; }
+.sk-oj { display: inline-flex; align-items: center; flex: none; min-height: 44px; padding: 0 12px; border: 1px solid var(--line-soft); border-radius: 999px; background: var(--sk-hv); color: var(--text); white-space: nowrap; text-decoration: none; font: var(--t-meta)/var(--lh-meta) var(--font); }
 .sk-pfoot { margin-top: 4px; border-top: 1px solid var(--sk-ln); padding: 10px 16px 0; display: flex; flex-direction: column; }
 /* THE PRINCIPAL STAYS INSIDE THE PANEL (visual QA V054, 2026-10-11). The
    name had no floor to shrink to, so a long local part ran past the panel's
