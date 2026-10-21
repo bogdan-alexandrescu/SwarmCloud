@@ -44,6 +44,7 @@ from typing import Any, Callable
 from google.api_core.exceptions import Aborted
 from google.cloud.firestore_v1.base_query import FieldFilter
 
+from quota_broker.accounts import HOLD_LOG_COLLECTION, accounts_serving, choose
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
 from swarm_common.models import EndCause, Lease, Task, Tenant, pool_names_for, utcnow
 from swarm_common.profiles import RUNNER_PROFILES, Backend, resolve_backend
@@ -66,6 +67,7 @@ from .credentials import (
     CredentialSource,
     ForgeConnections,
     credential_for,
+    task_model_class,
 )
 from .mcp_admission import McpCode
 from .secret_slots import WorkspaceGrants
@@ -214,6 +216,42 @@ def held_for_control_publish(metadata: Any) -> bool:
         and block.get("role") == "integrator"
         and isinstance(block.get("verdict_gate"), dict)
     )
+
+def accounts_held_by(db: Any, task_id: str) -> set[str]:
+    """The accounts any attempt of `task_id` held, from the broker's hold records.
+
+    `account_holds/{assignment_id}` (`quota_broker.accounts.hold_log_entry`)
+    carries the task id the worker sent on assign, open or closed, so this
+    answers after the release as well as before it. A worker image older than
+    that field sent none, and its task names no account: its finish wakes no
+    park, which is what it did before.
+    """
+    query = db.collection(HOLD_LOG_COLLECTION).where(
+        filter=FieldFilter("task_id", "==", task_id)
+    )
+    held: set[str] = set()
+    for snap in query.stream():
+        data = snap.to_dict() or {}
+        account_id = data.get("account_id")
+        if isinstance(account_id, str) and account_id:
+            held.add(account_id)
+    return held
+
+
+def account_park_provider(task: Task) -> str | None:
+    """The provider a worker's no-account park waits on, or None for any other park.
+
+    `lifecycle._park_no_account` writes `park_phase: account_assign` and the
+    provider into the park's `blocked_by`. A PROVIDER_QUOTA_EXHAUSTED park
+    without it is a 429 or a quota probe, which an account coming free says
+    nothing about.
+    """
+    for block in task.blocked_by or ():
+        if isinstance(block, dict) and block.get("park_phase") == "account_assign":
+            provider = block.get("provider") or task.provider
+            return provider if isinstance(provider, str) and provider else None
+    return None
+
 
 #: Park reasons that a provider pool's `quota_derived_limit` already guards, so
 #: promoting them early is safe: admission still refuses until quota returns.
@@ -432,6 +470,10 @@ class DrainReport:
     #: CI_PENDING parks returned to READY: swarm-api's wake tick marked their
     #: checks settled, or their fallback instant passed (lane MS2).
     promoted_ci_waits: int = 0
+    #: PROVIDER_QUOTA_EXHAUSTED parks at `account_assign` returned to READY by
+    #: a finish event, because an account the finished task held serves their
+    #: tenant and `choose()` now has one for them (#1885).
+    promoted_account_waits: int = 0
     #: Children this drain cancelled or flagged because of their parent: its
     #: cancel, its end, or its await deadline (child tasks, §3.4). The ones
     #: that became CANCELLED here are also in `cancelled`.
@@ -723,6 +765,10 @@ class Scheduler:
         too, so its own dependants are resolved in the same event
         (`_release_chain`), rather than one tick per link.
 
+        AND THE PARKS ITS ACCOUNT CAN TAKE (#1885): a no-account park of a
+        tenant an account the parent held serves, which `choose()` would now
+        hand an account, is promoted too (`_wake_account_parks`).
+
         THEN ONE ADMISSION PASS, `_admission_pass`, with the released tasks
         added to the slice: the same `_admit_one`, the same all-or-nothing
         lease transaction (invariant 2) and the same fencing generation on the
@@ -756,6 +802,10 @@ class Scheduler:
 
         released = self._release_chain([parent], report)
         report.promoted_dependencies = len(released)
+        # The account the parent held is free now, too (#1885).
+        woken = self._wake_account_parks(parent, report)
+        report.promoted_account_waits = len(woken)
+        released = released + woken
 
         # Re-read: each `_admit_one` write is guarded on the state it was
         # handed, and what was handed here was the PARKED snapshot.
@@ -769,6 +819,78 @@ class Scheduler:
         self._release_ended(report)
         report.stop_reason = "task_finished"
         return self._end_finish_event(report, started)
+
+    def _wake_account_parks(self, ended: Task, report: DrainReport) -> list[str]:
+        """Re-ask the pool for the no-account parks the ended task's account serves (#1885).
+
+        Before this, a park at `account_assign` resumed ONLY at its own
+        `next_eligible_at`, the broker's instant -- the prewarm sweep is the
+        one place such a park returns to READY -- and nothing happened when an
+        account came free. So this runs on the finish event: the accounts the
+        ended task held (`accounts_held_by`), the tenants each serves (its
+        owner and the tenants it is lent to, `Account.may_serve`), and every
+        PROVIDER_QUOTA_EXHAUSTED park at `account_assign` of one of those
+        tenants, for that account's provider.
+
+        GATED ON THE BROKER'S OWN `choose()`, over the pool admission reads
+        this run and the parked step's model class (`task_model_class`, the
+        rule the broker's `step_class_for` applies). A finish does not by
+        itself make an account eligible -- `choose()` caps no account by its
+        agents -- so promoting unconditionally would start a container per
+        parked task per finish, each to park again. Promoting only when an
+        account would be handed over costs a container only when one runs.
+
+        Invariant 1 holds: a park this leaves alone holds nothing, a park it
+        promotes becomes READY, which holds nothing either, and only the
+        admission pass that follows takes a lease, through the ordinary
+        all-or-nothing transaction. A tenant no freed account serves is never
+        looked at.
+        """
+        if not self._pool.configured:
+            return []
+        held = accounts_held_by(self._store.db, ended.id)
+        if not held:
+            return []
+        pool = self._pool.accounts()
+        served: set[tuple[str, str]] = set()
+        for account in pool:
+            if account.account_id in held:
+                for tenant_id in (account.owner_tenant, *account.lend_to):
+                    served.add((tenant_id, account.provider))
+        if not served:
+            return []
+        now = self._now()
+        woken: list[str] = []
+        for task in self._store.parked_tasks(
+            ParkReason.PROVIDER_QUOTA_EXHAUSTED, self._settings.dependency_sweep_size
+        ):
+            provider = account_park_provider(task)
+            if provider is None or (task.tenant_id, provider) not in served:
+                continue
+            if self._stop_for_failed_workflow(task, report):
+                continue
+            profile = RUNNER_PROFILES.get(task.runner_profile)
+            if profile is None:
+                continue
+            model_class = task_model_class(profile, task)
+            candidates = accounts_serving(pool, task.tenant_id, provider, model_class=model_class)
+            if choose(candidates, task.tenant_id, now, model_class=model_class) is None:
+                continue
+            if self._promote(
+                task,
+                kind="account_freed",
+                detail={
+                    "reason": "account_freed",
+                    "park_reason": ParkReason.PROVIDER_QUOTA_EXHAUSTED.value,
+                    "finished_task_id": ended.id,
+                    "was_eligible_at": (
+                        task.next_eligible_at.isoformat() if task.next_eligible_at else None
+                    ),
+                },
+                report=report,
+            ):
+                woken.append(task.id)
+        return woken
 
     def _release_chain(self, ended: list[Task], report: DrainReport) -> list[str]:
         """Resolve the dependants of the `ended` tasks, and of every task that ends meanwhile.

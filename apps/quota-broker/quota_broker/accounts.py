@@ -203,9 +203,11 @@ class Unavailable(str, Enum):
     NO_ACCOUNT_AVAILABLE = "no_account_available"
     #: Every account is paused, draining or needs re-authentication. A person.
     POOL_PAUSED = "pool_paused"
-    #: Accounts have room by their last reading, but every reading is too old
-    #: to act on. The broker's usage poll, minutes away -- NOT a clock, and
-    #: emphatically not "they are spent".
+    #: At least one account has room by its last reading, but that reading is
+    #: too old to act on. The broker's usage poll, minutes away -- NOT a clock,
+    #: and emphatically not "they are spent". It wins over any window instant
+    #: another account carries, because the poll is the sooner of the two
+    #: (#1885); an instant still travels with it when a window clears sooner.
     NO_RECENT_READING = "no_recent_reading"
 
 
@@ -483,10 +485,26 @@ class Account:
         lent secret is something an operator adds. A permanent mark would turn
         a five-minute onboarding window into an account that never came back.
         """
+        until = self.unreadable_until(tenant_id, unreadable_after=unreadable_after)
+        return until is not None and now <= until
+
+    def unreadable_until(
+        self,
+        tenant_id: str,
+        *,
+        unreadable_after: timedelta = DEFAULT_STALE_AFTER,
+    ) -> datetime | None:
+        """When this tenant's unreadable mark lapses, or None if it has none.
+
+        The mark is time-limited (`is_unreadable_for`), so the instant it lapses
+        is an instant the account can be handed to this tenant again -- one
+        `eligibility()` must count, or a pool whose only other account is spent
+        for the week parks for the week over a mark that ends in half an hour.
+        """
         reported = self.unreadable_by.get(tenant_id)
         if reported is None:
-            return False
-        return now - _aware(reported) <= unreadable_after
+            return None
+        return _aware(reported) + unreadable_after
 
     def may_serve(self, tenant_id: str) -> bool:
         """Whether this account is allowed to run `tenant_id`'s work at all.
@@ -1058,10 +1076,43 @@ def eligibility(
     rule `choose()` had just answered "no" with, and the two disagreed in
     exactly the band where it mattered.
 
-    The second element is a reset INSTANT and only ever that. A pool waiting on
-    a person, or on the next usage poll, has no instant, and inventing one
+    The second element is an INSTANT and only ever that: the EARLIEST moment
+    any candidate could take the agent (#1885). A pool waiting only on a
+    person, or only on the next usage poll, has no instant, and inventing one
     would wake a task up to the same answer. The reason is what the caller
     picks its wait from.
+
+    EVERY CANDIDATE COUNTS, WHATEVER BLOCKS IT. This used to take the minimum
+    over accounts blocked by a WINDOW and nothing else, so an account blocked
+    by something with no window -- a reading too old to trust, a tenant's
+    unreadable mark -- dropped out of the minimum, and the answer became
+    another account's seven-day clear. Measured 2026-10-21: a step parked
+    with `next_check_at` 46 h out, an account was assigned to another step 53
+    minutes later, and the park was still waiting 2 h 48 min after that. Each
+    kind of block now says when it can end:
+
+      * a window under the floor: `Account.next_reset`, the provider's
+        `resetsAt`;
+      * a tenant's unreadable mark: when it lapses (`unreadable_until`), or
+        the account's own window clear if that is later;
+      * a reading too old to trust, with no window under the floor: the
+        broker's next usage poll. Undated, so the reason becomes
+        `NO_RECENT_READING` -- whose wait is minutes -- even when another
+        account carries a far window instant; the earliest dated instant still
+        travels with it, for a window that clears sooner than the poll;
+      * paused, draining or needing re-authentication: a person. The one block
+        with no instant at all -- when somebody acts is not a time the broker
+        can know -- so it shortens nothing here.
+
+    Holds do not appear: `choose()` caps no account by how many agents are on
+    it, so an assignment released changes nothing here. The scheduler re-asks
+    at that moment anyway (`scheduler.loop.Scheduler.release_dependants`),
+    because the finishing agent's readings are the freshest the pool has.
+
+    `exclude` is this ATTEMPT's list and dies with it, so an account it names
+    is no candidate for this answer: the worker parks such an attempt as
+    unreadable (`lifecycle._pool_credential_env`), and the tenant's unreadable mark,
+    which outlives the attempt, is what dates it.
     """
     skip = {str(a) for a in exclude}
     serves = [
@@ -1076,47 +1127,65 @@ def eligibility(
         # unaffected by any of this.
         return Unavailable.NO_ACCOUNTS_REGISTERED, None
 
+    untried = [a for a in serves if a.account_id not in skip]
+
+    def window_clear(a: Account) -> datetime | None:
+        return a.next_reset(now, floor=assign_floor, stale_after=stale_after)
+
+    # Accounts this tenant recently could not read, which can take the agent
+    # once the mark lapses -- and once their own window clears, if one blocks.
+    marks: list[datetime] = []
+    for a in untried:
+        if a.state not in ASSIGNABLE_STATES or not a.is_unreadable_for(
+            tenant_id, now, unreadable_after=stale_after
+        ):
+            continue
+        lapse = a.unreadable_until(tenant_id, unreadable_after=stale_after)
+        if lapse is None:
+            continue
+        clear = window_clear(a)
+        marks.append(max(lapse, clear) if clear is not None else lapse)
+
     mine = [
         a
-        for a in serves
-        if a.account_id not in skip
-        and not a.is_unreadable_for(tenant_id, now, unreadable_after=stale_after)
+        for a in untried
+        if not a.is_unreadable_for(tenant_id, now, unreadable_after=stale_after)
     ]
     if not mine:
         # Accounts exist and this attempt has ruled every one of them out --
         # it tried them and could not read them. A wait, not a fallback: a
         # tenant whose pool is broken must not quietly go back to sharing one
         # subscription, which is the contention the pool exists to remove.
-        return Unavailable.NO_ACCOUNT_AVAILABLE, None
+        return Unavailable.NO_ACCOUNT_AVAILABLE, min(marks) if marks else None
 
     assignable = [a for a in mine if a.state in ASSIGNABLE_STATES]
-    if not assignable:
+    if not assignable and not marks:
         # Paused, draining or needing re-authentication. Every one of those is
         # a person's decision or a person's job, so there is nothing to wait
         # for and no point waking up sooner.
         return Unavailable.POOL_PAUSED, None
 
-    resets = [
-        r
-        for r in (
-            a.next_reset(now, floor=assign_floor, stale_after=stale_after)
-            for a in assignable
-        )
-        if r is not None
-    ]
-    if resets:
-        return Unavailable.NO_ACCOUNT_AVAILABLE, min(resets)
+    instants = list(marks)
+    waiting_on_poll = False
+    for a in assignable:
+        clear = window_clear(a)
+        if clear is not None:
+            instants.append(clear)
+        elif a.is_stale(now, stale_after=stale_after):
+            # Blocked by the staleness halving alone. Not evidence of
+            # exhaustion: the broker's own usage poll refreshes this reading
+            # on its next sweep, which is sooner than any window but undated.
+            waiting_on_poll = True
+    earliest = min(instants) if instants else None
 
-    if any(a.is_stale(now, stale_after=stale_after) for a in assignable):
-        # Nothing is waiting on a window: every account that is blocked is
-        # blocked by the staleness halving alone. That is not evidence of
-        # exhaustion and must not be reported as it -- the broker's own usage
-        # poll refreshes these readings on its next sweep.
-        return Unavailable.NO_RECENT_READING, None
+    if waiting_on_poll:
+        return Unavailable.NO_RECENT_READING, earliest
 
-    # Assignable, fresh, and still under the floor with no unreset window:
-    # genuinely spent, with nothing that can say when it clears.
-    return Unavailable.NO_ACCOUNT_AVAILABLE, None
+    # Every candidate is spent by a window or held off by a mark, and
+    # `earliest` is the first of them to clear. None only for an account
+    # assignable, fresh and under the floor with no unreset window: genuinely
+    # spent, with nothing that can say when it clears.
+    return Unavailable.NO_ACCOUNT_AVAILABLE, earliest
 
 
 def due_for_refresh(

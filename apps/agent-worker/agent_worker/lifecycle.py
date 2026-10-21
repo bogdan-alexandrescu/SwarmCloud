@@ -9003,7 +9003,8 @@ class Worker:
             exactly then, rather than polling;
           * `no_recent_reading` -- nothing says the accounts are spent, only
             that nobody has looked lately, and the broker's usage poll looks
-            every sweep. Minutes, not a quarter of an hour;
+            every sweep. Minutes, not a quarter of an hour -- or the broker's
+            instant, when a window clears sooner than that;
           * `pool_paused` -- waiting on a PERSON. There is no instant to wake
             at, so the long fallback;
           * `broker_refused` / `account_unreadable` -- a configuration error.
@@ -9018,9 +9019,18 @@ class Worker:
             if reason == NO_RECENT_READING
             else NO_ACCOUNT_RETRY_SECONDS
         )
-        next_eligible = _parse_iso(exc.decision.next_reset_at) or (
-            utcnow() + timedelta(seconds=fallback_seconds)
-        )
+        fallback = utcnow() + timedelta(seconds=fallback_seconds)
+        reset = _parse_iso(exc.decision.next_reset_at)
+        if reason == NO_RECENT_READING:
+            # THE SOONER OF THE TWO (#1885). The broker answers
+            # `no_recent_reading` when ANY candidate waits on its next usage
+            # poll, and still sends the earliest window instant it knows.
+            # That instant may be another account's seven-day clear: parking
+            # on it would sleep for days past a poll minutes away, and parking
+            # on the poll alone would sleep past a window that clears sooner.
+            next_eligible = min(reset, fallback) if reset is not None else fallback
+        else:
+            next_eligible = reset or fallback
         self.log.warning(
             "the account pool cannot serve this attempt; parking",
             provider=exc.provider,

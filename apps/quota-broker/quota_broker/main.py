@@ -3341,8 +3341,12 @@ def create_app(
             agent right now. The pool IS how this tenant runs, so the caller
             parks and comes back.
 
-        `next_reset_at` is the instant the earliest blocking window clears, and
-        `reason` says which kind of wait this is. The two are computed by
+        `next_reset_at` is the earliest instant ANY candidate could take the
+        agent -- a window clearing, or a tenant's unreadable mark lapsing --
+        never only the earliest of the accounts a window blocks (#1885: a park
+        sat on another account's seven-day clear, 46 h out, while the account
+        that freed up 53 minutes later had no window to report). `reason`
+        says which kind of wait this is. The two are computed by
         `accounts.eligibility`, with the SAME arguments `choose()` was just
         called with, so they cannot disagree about what "unavailable" meant --
         which they did: `choose()` rejects on `headroom()`, which halves an
@@ -3356,7 +3360,9 @@ def create_app(
         reason is what separates them: `pool_paused` is waiting on a person,
         `no_recent_reading` is waiting on the broker's own next usage poll --
         minutes, not hours -- and neither is a claim that the accounts are
-        spent.
+        spent. `no_recent_reading` is answered whenever ANY candidate waits on
+        that poll, and may then carry an instant too: a window that clears
+        sooner than the poll. The worker parks until the sooner of the two.
         """
         tenant_id = _assignment_tenant(request, authorization)
         # Built per call rather than as a default argument: a model instance in
