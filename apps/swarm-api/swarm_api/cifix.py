@@ -73,6 +73,14 @@ naming the live task and its workflow, and no task is made. The claim
 document is the serialisation point: two requests racing through `stamp`
 both read it in a transaction, and only one writes it.
 
+ONE FIXER PER PULL REQUEST (CI-FIXER-GATE, part of #1822). Before the cap
+and the claim, `stamp` reads the workflow of the task whose branch the pull
+request is on; while that workflow's merge step is not terminal, the request
+is answered 409 `ci_fix_lane_owns_pr` naming the merge step: the lane runs
+its own CI-fix rounds, and a standalone fix beside them lost the race for the
+branch (`_refuse_if_lane_owns` has the measurement). The read is the API's;
+the fixer's continuation-scoped identity never gets it.
+
 EVERY FIX ROUND'S HEAD, AGAINST ITS PULL REQUEST (epic #1334). Measured
 2026-10-15 02:16Z: HANG-LEASE's merge step refused PR 1338 `head_moved` at
 the head a fix task of ANOTHER workflow pushed; a merge step knew only its
@@ -102,6 +110,7 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot
+from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.states import TERMINAL_STATES
 
 from .codec import agent_console_url
@@ -119,6 +128,7 @@ from .validation import (
     DISPATCH_METADATA_KEY,
     DispatchOptionError,
     IssueRef,
+    is_merge_step,
 )
 
 log = logging.getLogger(__name__)
@@ -245,6 +255,13 @@ class CiFixInFlight(Conflict):
     """409: this failure already has a live CI-fix task; `detail` names it."""
 
     code = "ci_fix_in_flight"
+
+
+class CiFixLaneOwnsPr(Conflict):
+    """409: the continued task's workflow has a live merge step, which runs
+    this pull request's CI-fix rounds itself; `detail` names it."""
+
+    code = "ci_fix_lane_owns_pr"
 
 
 # --------------------------------------------------------------------------
@@ -477,14 +494,86 @@ def _claim(store: Any, tenant_id: str, continuation: Continuation,
     return claim_id
 
 
+#: The runner profiles of a merge step (`validation.is_merge_step`): today
+#: `merge` alone. Each is one equality read, never a scan of the workflow.
+MERGE_PROFILES = tuple(sorted(name for name in RUNNER_PROFILES if is_merge_step(name)))
+#: A workflow has one merge step; a few more covers a resubmitted one.
+MERGE_STEPS_READ = 5
+
+
+def _lane_workflow(db: Any, tenant_id: str, continuation: Continuation) -> str:
+    """The workflow of the task whose `swarm/<id>` branch the pull request is
+    on -- the continuation's root -- or "" for a task in no workflow."""
+    if continuation.task_id == continuation.root_task_id or not continuation.task_id:
+        return continuation.workflow_id
+    snap = db.collection(TASKS).document(continuation.root_task_id).get()
+    doc = (snap.to_dict() or {}) if snap.exists else {}
+    if doc.get("tenant_id") != tenant_id:
+        return ""
+    workflow = doc.get("workflow_id")
+    return workflow if isinstance(workflow, str) else ""
+
+
+def _live_merge_step(db: Any, tenant_id: str, workflow_id: str) -> str | None:
+    """The id of `workflow_id`'s merge step while it is not terminal; else None."""
+    terminal = {s.value for s in TERMINAL_STATES}
+    for profile in MERGE_PROFILES:
+        query = (
+            db.collection(TASKS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("workflow_id", "==", workflow_id))
+            .where(filter=FieldFilter("runner_profile", "==", profile))
+            .limit(MERGE_STEPS_READ)
+        )
+        for snap in query.stream():
+            doc = snap.to_dict() or {}
+            if (doc.get("tenant_id") == tenant_id and doc.get("workflow_id") == workflow_id
+                    and is_merge_step(doc.get("runner_profile"))
+                    and doc.get("state") not in terminal):
+                return str(doc.get("id") or snap.id)
+    return None
+
+
+def _refuse_if_lane_owns(store: Any, tenant_id: str, continuation: Continuation,
+                         record: Mapping[str, Any]) -> None:
+    """Refuse `CiFixLaneOwnsPr` while the lane's merge step is live (through
+    `refusals.refuse`: switched off, the request goes on as before).
+
+    ONE FIXER PER PULL REQUEST (CI-FIXER-GATE, part of #1822). A lane whose
+    workflow has a merge step runs its own CI-fix rounds on its pull request
+    (`mergewake._on_red`). In 72 h to 2026-10-21 the standalone fixer
+    (scripts/ci-fix.sh) ran 91 times beside them and failed 34, 22 on a push
+    rejected because the lane's round had moved the branch first. The script
+    cannot see the merge step -- its continuation-scoped identity reads only
+    what it submitted (`deps.submission_scope`) -- so the API decides here,
+    with its own reads, and the fixer gains none. Every non-terminal state
+    is live: a merge step QUEUED or PARKED on its CI wait is the one whose
+    round starts next. A task in no workflow, a workflow with no merge step
+    and a merge step that has finished are fixed as before.
+    """
+    workflow = _lane_workflow(store.db, tenant_id, continuation)
+    if not workflow:
+        return
+    merge_task = _live_merge_step(store.db, tenant_id, workflow)
+    if merge_task is None:
+        return
+    refuse(CiFixLaneOwnsPr(
+        f"pull request #{record['pull_request']} belongs to a lane whose merge step "
+        f"({merge_task}) is live and runs its CI-fix rounds itself; no standalone fix is made.",
+        detail={"metadata": CI_FIX_METADATA_FIELD, "task_id": merge_task,
+                "workflow_id": workflow, "pull_request": record["pull_request"]},
+    ))
+
+
 def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
           continuation: Continuation | None) -> WorkflowCreate:
     """`spec` with `metadata.ci_fix` checked, counted, claimed and stamped `pending`,
     and any fix round marked for the head record (`FIX_HEAD_FIELD`).
 
     Unchanged when there is neither. Raises `DispatchOptionError` (422
-    `invalid_dispatch`) for every refusal, before anything is written, and
-    `CiFixInFlight` (409) when the failure already has a live fix.
+    `invalid_dispatch`) for every refusal, before anything is written,
+    `CiFixLaneOwnsPr` (409) while the continued task's workflow has a live
+    merge step, and `CiFixInFlight` (409) when the failure already has a live fix.
     """
     for step in spec.steps:
         if CI_FIX_METADATA_FIELD in (step.metadata or {}):
@@ -506,6 +595,9 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
             "only a workflow with continues_task pushes to.",
         )
     record = _checked_record(spec.metadata[CI_FIX_METADATA_FIELD])
+    # Before the cap and the claim: a lane's live merge step is the reason,
+    # whatever the count, and a refused request holds no claim.
+    _refuse_if_lane_owns(store, tenant_id, continuation, record)
     made = _attempts_made(
         store.db, tenant_id, continuation.root_task_id, record["pull_request"], MAX_ATTEMPTS_CEILING,
     )

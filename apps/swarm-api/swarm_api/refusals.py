@@ -344,6 +344,26 @@ SWITCHES: dict[str, Switch] = {
         "refused only second deliveries of one failure, and the CI-fix callers read the 409 "
         "as that failure being handled",
     ),
+    # CI-FIXER-GATE (cifix.py `_refuse_if_lane_owns`, part of #1822): a
+    # CI-fix submission for a pull request whose lane's merge step is live.
+    # SHIPS ON (default=True) by owner decision 2026-10-21 (~15:15Z, asked
+    # after this lane was held), unlike a new refusal's usual report-only
+    # start (the 2026-10-08 rule): about 20% of standalone ci-fix pushes were
+    # rejected racing a lane's own round (#1821), and this PR's own fixer lost
+    # its push the same way. Off, it refuses nothing in production, which is
+    # the 404 CI-FIXER-ONE's script-side read already got. Its one caller, scripts/ci-fix.sh, reads
+    # this 409 as "skip, the lane owns this PR" in the same change, and the
+    # refused fix is one the lane's own round makes. Set
+    # REFUSAL_CI_FIX_LANE_OWNS_PR=off to let the standalone fix through again.
+    "ci_fix_lane_owns_pr": Switch(
+        code="ci_fix_lane_owns_pr",
+        why="a CI-fix submission whose continued task's workflow has a merge step that is "
+        "not terminal is refused 409 naming that merge step, which runs the pull request's "
+        "CI-fix rounds itself. Ships on by owner decision 2026-10-21: scripts/ci-fix.sh reads "
+        "the 409 as a skip, and off "
+        "the standalone fixer races the lane's round for the branch again",
+        default=True,
+    ),
     # #1435 (docs/design/model-per-step.md §4.4, owner's Q4): a `model` that
     # is not the pin of the step's model class. It can refuse a caller that
     # exists today -- `swarm dispatch --model` sends attribution, and any
