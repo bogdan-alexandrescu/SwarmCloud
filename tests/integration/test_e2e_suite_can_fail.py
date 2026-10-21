@@ -213,20 +213,57 @@ def test_a_platform_that_succeeds_on_an_impossible_input_is_caught(tmp_path):
 
 
 def test_a_refusal_that_does_not_name_the_file_is_caught(tmp_path):
-    """"The attempt could not start" is not a diagnosis.
+    """"Expected outputs missing" without the name is not a diagnosis.
 
-    The two strings a person needs in order to fix a broken workflow are the
-    upstream task and the filename, which is why `inputs.py` puts both in every
-    refusal.
+    The string a person needs in order to fix a broken workflow is the filename,
+    which is why the worker's `missing_error` names every missing file.
     """
     run = run_suite(tmp_path, negative_error_names_file=False, executions="live")
     assert not run.passed, run.transcript
     assert run.mentions("does not name"), run.transcript
 
 
+def test_a_producer_that_succeeds_without_its_promised_file_is_caught(tmp_path):
+    """The platform before #1754's baseline: the missing file reached the dependant.
+
+    A producer whose declared expected output was never written now FAILS for
+    it (`expected outputs missing`). One that still succeeds is that refusal
+    gone.
+    """
+    run = run_suite(tmp_path, negative_produce_state="SUCCEEDED", executions="live")
+    assert not run.passed, run.transcript
+    assert run.mentions("which never wrote the file its dependant declared"), run.transcript
+
+
+def test_a_dependant_that_started_on_a_missing_input_is_caught(tmp_path):
+    """CANCELLED is not enough if it was leased first: it started."""
+    run = run_suite(tmp_path, negative_consume_leased=True, executions="live")
+    assert not run.passed, run.transcript
+    assert run.mentions("the consumer was leased"), run.transcript
+
+
 # ---------------------------------------------------------------------------
 # check 4: spend
 # ---------------------------------------------------------------------------
+
+
+def test_another_tenants_attempts_are_not_compared_and_are_refused(tmp_path):
+    """#1754: the scan read the smoke tenant's attempts and failed on the 404.
+
+    The healthy deployment carries a smoke attempt with spend. The suite must
+    neither ask about it in the comparison nor fail on its 404 -- and must
+    assert that 404 on purpose.
+    """
+    run = run_suite(tmp_path, executions="live")
+    assert run.passed, run.transcript
+    assert not run.mentions("the API would not serve that task's attempts"), run.transcript
+    assert run.mentions("is refused to eng: HTTP 404"), run.transcript
+
+
+def test_another_tenants_task_served_to_this_caller_is_caught(tmp_path):
+    run = run_suite(tmp_path, isolation="broken", executions="live")
+    assert not run.passed, run.transcript
+    assert run.mentions("tenant isolation is broken"), run.transcript
 
 
 def test_spend_the_api_drops_is_caught(tmp_path):
@@ -343,6 +380,14 @@ def test_a_task_holding_capacity_against_a_dead_execution_is_caught(tmp_path):
     run = run_suite(tmp_path, executions="dead")
     assert not run.passed, run.transcript
     assert run.mentions("with no live execution behind them"), run.transcript
+
+
+def test_gke_work_this_identity_cannot_read_is_not_checked_rather_than_failed(tmp_path):
+    """#1754: ten eng agents on GKE were flagged as holding dead Cloud Run executions."""
+    run = run_suite(tmp_path, executions="gke")
+    assert run.passed, run.transcript
+    assert run.mentions("not checked: no GKE read"), run.transcript
+    assert not run.mentions("with no live execution behind them: 1"), run.transcript
 
 
 def test_no_in_flight_work_reports_not_measured(tmp_path):

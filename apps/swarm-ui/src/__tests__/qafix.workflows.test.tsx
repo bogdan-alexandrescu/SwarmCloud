@@ -13,6 +13,13 @@
  *   QA-097  at 390 the owner, profile and sort selects started at 57, 56 and
  *           44 px, each after its own label's width. The labels now sit in one
  *           fixed column, so the selects share one left edge.
+ *
+ * QAFIX2-WORK-MINOR (visual QA run 2, wf_b6e2441b419f423a84eb, 2026-10-20):
+ *
+ *   work-a-012  at 390 the state filter stopped 20-60 px short of the
+ *           content edge while the search box and the selects under it ran
+ *           the column wide. It runs the column wide too, its segments
+ *           sharing the width.
  */
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -160,5 +167,32 @@ describe('QA-097: at 390 the stacked filter selects share one left edge', () => 
     }
     // MUTATION: move the grid out of the phone query and the desktop toolbar's picks stack their selects too.
     expect(painted(picks[0]!, 'display', WIDE)).toBe('inline-flex')
+  })
+})
+
+describe('work-a-012: at 390 the Workflows state filter runs the column wide', () => {
+  const PHONE: CascadeEnv = { width: 390 }
+  const WIDE: CascadeEnv = { width: 1440 }
+
+  it('takes the whole row, as the search box and the selects under it do, and shares it among its segments', async () => {
+    render(<WorkflowsScreen />)
+    await waitFor(() => expect(rowIds()).toHaveLength(3))
+    const seg = screen.getByRole('group', { name: 'Which workflows' })
+    // MUTATION: drop the `.wfl-seg` phone rule and the shared `.c-seg`'s
+    // `flex: none` sizes the control to its segments, short of the edge.
+    expect(painted(seg, ['flex', 'flex-basis'], PHONE)).toBe('1 1 100%')
+    // The search box it lines up with is the column wide at 390.
+    // MUTATION: (control) give the search box a fixed width and it is no
+    // longer the edge the filter is held to.
+    expect(painted(document.querySelector('.wfl-search')!, ['flex', 'flex-basis'], PHONE)).toBe('1 1 200px')
+    for (const b of within(seg).getAllByRole('button')) {
+      // MUTATION: leave the segments content-packed at the left (no grow, or
+      // `justify-content` unset) and the spare width pools at the right end.
+      expect(painted(b, ['flex', 'flex-grow'], PHONE), b.textContent ?? '').toBe('1 0 auto')
+      expect(painted(b, 'justify-content', PHONE), b.textContent ?? '').toBe('center')
+    }
+    // MUTATION: move the rule out of the phone query and the desktop toolbar's
+    // filter fills its row too.
+    expect(painted(seg, ['flex', 'flex-basis'], WIDE)).toBe('none')
   })
 })

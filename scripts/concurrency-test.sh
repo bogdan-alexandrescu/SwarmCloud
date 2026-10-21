@@ -120,39 +120,64 @@ fs_query_at() {
 
 # fs_tasks_at IDS_JSON READ_TIME -> the tasks named, decoded, as of READ_TIME.
 # batchGet, 100 names a request; a missing task is simply absent from the list.
+#
+# NOTHING SAMPLE-SIZED GOES ON A COMMAND LINE. The batches used to be joined by
+# handing the whole accumulated array back to jq as an `--argjson` value on
+# every batch, and Linux caps ONE argument at 128 KiB (MAX_ARG_STRLEN): a 3x-oversubscribed
+# backlog of decoded tasks passes that, and the 2026-10-20 baseline (#1754,
+# execution swarm-verify-gztsl) died on its first sample with "jq: Argument list
+# too long". Each batch is appended to a file and the file is joined by jq
+# reading it, so the size of a sample is bounded by the disk, not by execve.
+# A batchGet body is 100 names, a few KiB, and stays an argument.
 fs_tasks_at() {
-  local ids="$1" at="$2" total i names reply part all='[]'
+  local ids="$1" at="$2" total i body reply parts rc=0
   total="$(jq -r 'length' <<<"${ids}")"
+  parts="$(mktemp "${TMPDIR:-/tmp}/swarm-sample-tasks.XXXXXX")" || return 1
   i=0
   while [[ "${i}" -lt "${total}" ]]; do
-    names="$(jq -c --arg base "projects/${PROJECT_ID}/databases/${FIRESTORE_DATABASE}/documents/tasks/" \
-               --argjson i "${i}" '.[$i:$i+100] | map($base + .)' <<<"${ids}")"
-    reply="$(fs_request POST "$(fs_base):batchGet" \
-               "$(jq -nc --argjson d "${names}" --arg t "${at}" '{documents: $d, readTime: $t}')")" || return 1
-    part="$(printf '%s' "${reply}" | jq -c "${FS_JQ} [ .[]? | select(.found != null) | .found | doc ]")" || return 1
-    all="$(jq -nc --argjson a "${all}" --argjson b "${part}" '$a + $b')"
+    body="$(jq -c --arg base "projects/${PROJECT_ID}/databases/${FIRESTORE_DATABASE}/documents/tasks/" \
+               --argjson i "${i}" --arg t "${at}" \
+               '{documents: (.[$i:$i+100] | map($base + .)), readTime: $t}' <<<"${ids}")" || { rc=1; break; }
+    reply="$(fs_request POST "$(fs_base):batchGet" "${body}")" || { rc=1; break; }
+    printf '%s' "${reply}" | jq -c "${FS_JQ} [ .[]? | select(.found != null) | .found | doc ]" >>"${parts}" \
+      || { rc=1; break; }
     i=$(( i + 100 ))
   done
-  printf '%s' "${all}"
+  if [[ "${rc}" -eq 0 ]]; then
+    jq -cs 'add // []' "${parts}" || rc=1
+  fi
+  rm -f "${parts}"
+  return "${rc}"
 }
 
 # consistent_sample -> {at, pools, leases, tasks}, every part read at one instant.
+#
+# Each part is written to a file and joined with --slurpfile, for the reason
+# fs_tasks_at gives: as `--argjson` arguments the leases and tasks of a 300-task
+# backlog are over the per-argument limit and the sample is never taken.
 consistent_sample() {
-  local at pools leases holders lease_tasks in_concurrency
+  local at dir in_concurrency rc=0
   at="$(jq -rn 'now - 1 | floor | todate')"
   in_concurrency="$(jq -nc --argjson s "${CONCURRENCY_JSON}" '
     { fieldFilter: { field: { fieldPath: "state" }, op: "IN",
                      value: { arrayValue: { values: [ $s[] | { stringValue: . } ] } } } }')"
-  pools="$(fs_query_at pools null "${at}")" || return 1
-  leases="$(fs_query_at leases "$(fs_null_filter released_at IS_NULL)" "${at}")" || return 1
-  holders="$(fs_query_at tasks "${in_concurrency}" "${at}")" || return 1
-  lease_tasks="$(fs_tasks_at "$(jq -c '[ .[].task_id | select(. != null) ] | unique' <<<"${leases}")" "${at}")" || return 1
-  jq -nc --arg at "${at}" --argjson pools "${pools}" --argjson leases "${leases}" \
-         --argjson holders "${holders}" --argjson lease_tasks "${lease_tasks}" \
-    "${FS_JQ}"' { at: $at,
-       pools: [ $pools[] | . + { effective: effective_limit } ],
-       leases: $leases,
-       tasks: ($holders + $lease_tasks | unique_by(.id)) }'
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/swarm-sample.XXXXXX")" || return 1
+  if fs_query_at pools null "${at}" >"${dir}/pools" \
+     && fs_query_at leases "$(fs_null_filter released_at IS_NULL)" "${at}" >"${dir}/leases" \
+     && fs_query_at tasks "${in_concurrency}" "${at}" >"${dir}/holders" \
+     && fs_tasks_at "$(jq -c '[ .[].task_id | select(. != null) ] | unique' "${dir}/leases")" "${at}" \
+          >"${dir}/lease_tasks"; then
+    jq -nc --arg at "${at}" --slurpfile pools "${dir}/pools" --slurpfile leases "${dir}/leases" \
+           --slurpfile holders "${dir}/holders" --slurpfile lease_tasks "${dir}/lease_tasks" \
+      "${FS_JQ}"' { at: $at,
+         pools: [ $pools[0][] | . + { effective: effective_limit } ],
+         leases: $leases[0],
+         tasks: ($holders[0] + $lease_tasks[0] | unique_by(.id)) }' || rc=1
+  else
+    rc=1
+  fi
+  rm -rf "${dir}"
+  return "${rc}"
 }
 
 GLOBAL_LIMIT="$(pool_doc global | jq -r "${FS_JQ} effective_limit")" \
@@ -171,10 +196,22 @@ SAMPLES="${BUILD_DIR}/concurrency-samples-${ENVIRONMENT}.jsonl"
 : >"${SAMPLES}"
 TASK_IDS=()
 
+# EVERY TASK THIS RUN SUBMITTED IS CANCELLED, on every way out, ONCE, and the
+# run says how many. A backlog left behind is three times the global limit of
+# mock work that the next target in `make verify-remote` reads as its own pool's
+# load (#1754: race-test saw active=40 after this suite died). Only EXIT runs
+# it: INT and TERM exit, and the exit runs it, so an interrupted run neither
+# cancels twice nor resumes the suite after cancelling (the old
+# `trap cleanup EXIT INT TERM` did both). CLEANED keeps a second call silent.
+CLEANED=0
 cleanup() {
-  [[ "${#TASK_IDS[@]}" -eq 0 ]] || cancel_all ${TASK_IDS[@]+"${TASK_IDS[@]}"}
+  [[ "${CLEANED}" -eq 0 ]] || return 0
+  CLEANED=1
+  [[ "${#TASK_IDS[@]}" -eq 0 ]] || cancel_submitted ${TASK_IDS[@]+"${TASK_IDS[@]}"}
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ---------------------------------------------------------------------------
 t_case "Submit ${COUNT} tasks (no infrastructure should appear yet)"
@@ -219,8 +256,9 @@ while [[ "$(date -u +%s)" -lt "${DEADLINE}" ]]; do
 
   # The judged fields, plus the pools the peak check below reads. `at` is the
   # sample's readTime, which is what the grace in concurrency-judge.jq measures.
-  jq -nc --argjson pools "${SNAPSHOT}" --argjson judged "${JUDGED}" \
-    '$judged + {holding: $judged.holding_tasks, pools: $pools}' >>"${SAMPLES}"
+  # On stdin, not as arguments: the judged lists grow with the backlog.
+  printf '%s\n%s\n' "${JUDGED}" "${SNAPSHOT}" \
+    | jq -cs '.[0] + {holding: .[0].holding_tasks, pools: .[1]}' >>"${SAMPLES}"
   SAMPLE_COUNT=$(( SAMPLE_COUNT + 1 ))
 
   REMAINING="$(fs_count tasks state EQUAL QUEUED)"

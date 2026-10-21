@@ -72,9 +72,15 @@
    break in it ran past the card's edge and was sliced there instead, which
    also left a line holding only "—…". `anywhere` lets the id break, so the
    clamp always ends on its ellipsis. */
-.ov-att-t small { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
-.ov-att-t small.ov-att-ids,
-.ov-att-t small.is-one { -webkit-line-clamp: 1; }
+/* THE DETAIL GETS FOUR LINES AT EVERY WIDTH (visual QA run 2,
+   overview-automate-010, 2026-10-20). The desktop held it to two lines, or
+   one under an ids line, so a failure card at 1440 read "... Newest: exit..."
+   while the same card at 390 -- given four lines by QA-100 -- showed
+   "exit status 1: pytest collected 2 failures". The card is wider at 1440,
+   so four lines there are never more than the phone draws. The ids stay one
+   cut line. */
+.ov-att-t small { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.ov-att-t small.ov-att-ids { -webkit-line-clamp: 1; }
 .ov-att-t small.ov-att-ids { display: block; white-space: nowrap; text-overflow: ellipsis; }
 .ov-att-go { font-size: var(--t-micro); color: var(--sk-ac); white-space: nowrap; }
 /* The skeleton of a check card, while the checks read: the card's own box
@@ -343,15 +349,9 @@
      wraps and the link drops under them, at the right edge. */
   .ov-att { flex-wrap: wrap; }
   .ov-att-go { flex-basis: 100%; text-align: right; }
-  /* THE DETAIL IS READABLE BEFORE IT IS CUT (visual QA QA-100, 2026-10-20).
-     With the link on a line of its own the text has the card's width, and a
-     failure card's detail -- "Terminal: nothing will retry them. 1 used
-     every attempt; ..." -- was still cut to the one line its ids line left
-     it on a desktop, a reason with no reason in it. On a phone it runs to
-     four lines, beside an ids line or not; the ids stay one cut line. */
-  .ov-att-t small,
-  .ov-att-t small.is-one { -webkit-line-clamp: 4; }
-  .ov-att-t small.ov-att-ids { -webkit-line-clamp: 1; }
+  /* THE DETAIL IS READABLE BEFORE IT IS CUT (visual QA QA-100, 2026-10-20):
+     four lines, beside an ids line or not -- now the rule at every width
+     (`.ov-att-t small` above), so the phone has no clamp of its own. */
   /* Three across, the figure only: the per-state breakdown is the desktop's. */
   .ov-life { gap: 6px; border: 0; background: none; overflow: visible; }
   .ov-lc { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 7px 8px; gap: 0; }

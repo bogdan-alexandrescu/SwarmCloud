@@ -116,6 +116,9 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 106 | `profiles.py`: `claude-code-browser` declares `qa_identity`, one choice `console`, the live browser signed in to the console as the QA identity (QI-CONTRACT, QA identity request QI-1, part of #1649) | ACCEPTED by the owner 2026-10-19 (option B, design `docs/design/qa-identity.md` §7) and APPLIED by the pull request that adds this line |
 | 107 | `models.py`: `Attempt.throttled_seconds`, `peak_throttled_share`, `mean_throttled_share` and `memory_limit_bytes`, the attempt's measured CPU throttling and memory limit beside its CPU figures (LIVE-UTIL-API, part of #1689) | open, REQUESTED 2026-10-20 by lane LIVE-UTIL-API. Not applied: the four ride on each HEARTBEAT event until this is decided |
 | 108 | `profiles.py`, `CONTRACT.md`: invariant 7 amended for CPU, `CPU_BURST_MAX_RATIO` and `ResourceClass.cpu_limit`, every class's CPU limit twice its request while memory and disk stay request == limit (SIZES-CONTRACT-1, runner sizes request RS-1, part of #1689) | ACCEPTED by the owner 2026-10-20 (design `docs/design/runner-sizes.md` §5, §7 Q1 A) and APPLIED by the pull request that adds this line. No pod bursts yet: the scheduler renders `cpu_limit_cores` in lane SIZES-SCHED-1 |
+| 109 | `profiles.py`: the frozen runner-size bounds, `units_for` and `check_size`, the one validator every admin-set size passes (SIZES-CONTRACT-2, runner sizes request RS-2, part of #1689) | ACCEPTED by the owner 2026-10-20 (design `docs/design/runner-sizes.md` §5, §7) and APPLIED by the pull request that adds this line. Nothing calls `check_size` yet: the admin route is lane SIZES-API, the scheduler's read SIZES-SCHED-2 |
+| 110 | `profiles.py`: `ResourceSize`, `LiveShare`, `default_sizes` and `effective_size`, the one shape a runner-size version is read in, and the rule that only a GKE profile follows it (SIZES-CONTRACT-2, runner sizes request RS-3, part of #1689) | ACCEPTED by the owner 2026-10-20 (design `docs/design/runner-sizes.md` §5, §7 Q3 A) and APPLIED by the pull request that adds this line. No pod changes size until SIZES-SCHED-2 renders from it |
+| 111 | `models.py`: `Attempt.size_version` and the `sized_*` fields, the size the scheduler rendered an attempt at (SIZES-CONTRACT-2, runner sizes request RS-4, part of #1689) | ACCEPTED by the owner 2026-10-20 (design `docs/design/runner-sizes.md` §5, §7) and APPLIED by the pull request that adds this line. No writer yet: the scheduler's `create_attempt` writes them in SIZES-SCHED-2 |
 
 ---
 
@@ -13924,3 +13927,225 @@ the ratio.
 
 **7** amended as above. **8**: unchanged, and named in 7's text. **1-6, 9,
 10** are untouched: admission still charges the request's units.
+
+## 109. `profiles.py`: the frozen runner-size bounds, `units_for` and `check_size` (SIZES-CONTRACT-2, runner sizes request RS-2, part of #1689)
+
+**Status:** ACCEPTED by the owner 2026-10-20 (`docs/design/runner-sizes.md`
+§7: every question took its recommendation, and RS-1 to RS-4 were accepted)
+and APPLIED by the pull request that adds this line. Design §5 request RS-2,
+filed here at the next free number by lane SIZES-CONTRACT-2.
+
+### What is true today
+
+A class's size is a code constant (`RESOURCE_CLASSES`), its `units` a
+hand-written weight beside it, and the only bounds are `ResourceClass`'s
+Cloud Run ceiling and, since request 108, its CPU burst ratio. Phase 2 of the
+design makes sizes a versioned platform setting an admin edits in the
+console (§4); nothing frozen says what an admin may set.
+
+### The change
+
+```python
+CPU_REQUEST_MIN, CPU_REQUEST_MAX, CPU_REQUEST_STEP = 0.5, 8, 0.25
+MEMORY_GIB_MIN, MEMORY_GIB_MAX = 2, 32
+MEMORY_PER_CPU_MIN, MEMORY_PER_CPU_MAX = 1.0, 6.5
+LIVE_WORKER_MIN = (1, 2)      # cpu request, memory GiB
+LIVE_DISPLAY_MIN = (1, 5)
+CLASS_ORDER = ("standard", "browser", "large")
+
+def units_for(cpu_request: float, memory_gib: int) -> int:
+    return max(math.ceil(cpu_request / 4), math.ceil(memory_gib / 8))
+
+@dataclass(frozen=True)
+class SizeRefusal:
+    resource_class: str
+    field: str
+    value: float | None
+    bound: str
+
+def check_size(sizes: Mapping[str, ResourceSize]) -> list[SizeRefusal]: ...
+```
+
+`CPU_BURST_MAX_RATIO` is request 108's and is reused, not restated.
+`check_size` is pure, takes the whole table so it can check `CLASS_ORDER`
+(every request dimension -- `cpu_request`, `memory_gib`, `disk_gib` -- is
+`standard <= browser <= large`, refused on both classes of the pair), and
+returns every refusal rather than the first. It checks §4.2's table: the CPU
+request's range and step; the limit between the request and the ratio;
+memory an integer in range; memory per core inside Autopilot's 1 ... 6.5;
+`disk_gib` an integer, 1 ... `memory_gib` - 2; a live split's worker and
+display minimums, each container's own CPU ratio, and the two requests and
+memories summing to the class's. Three choices the design left open are
+settled here, each the conservative one: a name that is not a class is
+refused (an admin resizes, never creates); a class the table omits is judged
+as its default, which is what request 110's `effective_size` falls back to;
+and a value that is not a finite number (a string, a bool, NaN) is a refusal,
+never an exception, because a stored version is judged after it is parsed.
+`RESOURCE_CLASSES`' units are checked against `units_for` at import, so a
+hand-written weight cannot drift from the formula.
+
+**What follows outside the contract, in later lanes.** Nothing calls
+`check_size` yet. SIZES-API calls it on every PUT, preview and restore;
+SIZES-SCHED-2 calls it again on read, so a malformed stored version sizes
+no pod (it reads as the code defaults).
+
+**Tests:** `tests/unit/common/test_runner_size_bounds.py`: every bound at,
+just inside and just outside its edge, looking only at the refusals for the
+field under test; the ordering both ways; the live split's minimums at their
+edges and each of its refusals; every refusal returned; an unknown class
+refused and an omitted one judged as its default; a non-number refused, not
+raised; `units_for` at 1 / 1 / 4 for today's classes; a seeded sweep over
+5,000 random tables that whatever `check_size` accepts sits inside
+Autopilot's 1:1 ... 1:6.5, with the counts visited and accepted asserted;
+`test_request_rs_2_is_filed_as_entry_109`.
+
+### What it would break
+
+Nothing that exists: new names only, and the import-time units check holds
+for today's three classes.
+
+### Invariants
+
+**7**: the validator is its enforcement for admin-set sizes (memory and disk
+carry one number each, so they cannot differ from their request). **10**: the
+bounds are frozen code, so neither a caller nor an admin can size a pod
+outside them. **1-6, 8, 9** untouched.
+
+## 110. `profiles.py`: `ResourceSize`, `LiveShare`, `default_sizes` and `effective_size` (SIZES-CONTRACT-2, runner sizes request RS-3, part of #1689)
+
+**Status:** ACCEPTED by the owner 2026-10-20 (`docs/design/runner-sizes.md`
+§7, Q3 A: Cloud Run profiles stay at the code defaults) and APPLIED by the
+pull request that adds this line. Design §5 request RS-3, filed here at the
+next free number by lane SIZES-CONTRACT-2.
+
+### What is true today
+
+There is no shape for a size other than `ResourceClass`, which carries a
+name, a hand-written weight and the preview-disk flag, and is validated at
+construction -- so a stored version that broke a bound could not even be
+parsed to say which.
+
+### The change
+
+```python
+@dataclass(frozen=True)
+class LiveShare:
+    cpu_request: float
+    cpu_limit: float
+    memory_gib: int
+
+@dataclass(frozen=True)
+class ResourceSize:
+    cpu_request: float
+    cpu_limit: float
+    memory_gib: int
+    disk_gib: int
+    live_split: tuple[LiveShare, LiveShare] | None = None   # (worker, display)
+
+    @property
+    def units(self) -> int:
+        return units_for(self.cpu_request, self.memory_gib)
+
+def default_sizes() -> Mapping[str, ResourceSize]: ...
+def effective_size(name: str, version: Mapping[str, ResourceSize] | None,
+                   backend: Backend) -> ResourceSize: ...
+```
+
+`default_sizes()` is `RESOURCE_CLASSES` number for number, read-only, with
+the browser class's live split (worker 2 / 4 / 3 GiB, display 2 / 3 / 5 GiB,
+design §4.1) -- the pod the scheduler's `LIVE_DISPLAY_SHARE` renders today;
+`standard` and `large` carry none (§4.4). `effective_size` returns the
+version's size for `GKE_AUTOPILOT`, the default for `CLOUD_RUN_JOB` whatever
+the version says, the default for a class the version omits, and refuses an
+unresolved `AUTO` (`resolve_backend` first). `ResourceSize` validates
+nothing at construction; request 109's `check_size` judges it.
+
+`scripts/lib/check-contract-parity.sh` section 5's unit-weights check now
+compares the UI's bundled `RESOURCE_UNITS` to `default_sizes()` and reports
+itself as `RESOURCE_UNITS (code defaults)`: once a class can be resized the
+bundled copy can only be the defaults, and the live weights are served by
+`GET /v1/resource-classes` (SIZES-API).
+
+**Tests:** `tests/unit/common/test_runner_size_shape.py`: the shape's fields;
+both classes frozen; `units` derived, not stored; `default_sizes()` equals
+`RESOURCE_CLASSES`, names every class and nothing else, and cannot be edited
+by a reader; only `browser` has a default split, and it is the pod
+`scheduler.dispatch` renders from `LIVE_DISPLAY_SHARE`; `effective_size`'s
+four cases and its refusal of `AUTO` and of an unknown class; the parity
+script reads the defaults; `test_request_rs_3_is_filed_as_entry_110`.
+
+### What it would break
+
+Nothing that exists: new names only. The parity check's report line is
+renamed; no script parses that name.
+
+### Invariants
+
+**10**: the backend, not a caller, decides whether a size follows. **2**:
+the shape SIZES-SCHED-2 charges units from is the one it renders the pod
+from, so the lease and the pod agree by construction. **1, 3-9** untouched.
+
+## 111. `models.py`: `Attempt.size_version` and the `sized_*` fields (SIZES-CONTRACT-2, runner sizes request RS-4, part of #1689)
+
+**Status:** ACCEPTED by the owner 2026-10-20 (`docs/design/runner-sizes.md`
+§7) and APPLIED by the pull request that adds this line. Design §5 request
+RS-4, filed here at the next free number by lane SIZES-CONTRACT-2.
+
+### What is true today
+
+`Attempt.cpu_limit_cores` is what the worker MEASURED (`cpu.max`, else the
+catalogue). Nothing records what the scheduler RENDERED, and after a resize
+the catalogue no longer says what an older attempt ran at.
+
+### The change
+
+```python
+    size_version: int | None = None
+    sized_cpu_request: float | None = None
+    sized_cpu_limit: float | None = None
+    sized_memory_gib: int | None = None
+    sized_disk_gib: int | None = None
+    sized_live_split: dict[str, dict[str, float]] | None = None
+    # {"worker":  {"cpu_request": 2, "cpu_limit": 4, "memory_gib": 3},
+    #  "display": {"cpu_request": 2, "cpu_limit": 3, "memory_gib": 5}}
+```
+
+At the end of the class, so no positional construction changes meaning.
+`Attempt.__post_init__` (new) calls `check_sized_live_split`, which refuses
+anything but None or a map of exactly `worker` and `display`, each of exactly
+`cpu_request`, `cpu_limit` and `memory_gib`, each a number (a bool is not).
+A mapping, not request 110's `LiveShare` pair, because the attempt is
+Firestore JSON and a named key survives a reader that does not know the
+pair's order.
+
+**What follows outside the contract, in later lanes.** No writer yet:
+SIZES-SCHED-2's `create_attempt` writes them, from the size the lease
+charged. **No reader yet either, and no lane in the design's §6 lists the
+one that has to change:** `swarm_api/codec.py::attempt_from_dict` reads
+every field explicitly (its own comments record dropping the spend fields
+that way once), so it will drop these until it names them, and because
+`Attempt` now refuses a malformed `sized_live_split` at construction, that
+decoder must pass the stored value through `check_sized_live_split` (or
+drop a malformed one to None) rather than hand it to `Attempt` raw. Raised
+as a question on the pull request that adds this line.
+
+**Tests:** `tests/unit/common/test_attempt_sized_fields.py`: the fields
+default to None and are the last of the class; a plain and a live attempt
+round-trip through `asdict` and back, the live one with both keys; nine
+malformed live splits are refused; no sized field is a `Task` field, and a
+task document carrying them signs the same step-spec bytes
+(`canonical_step_spec`), so they are outside the signature by construction
+-- the worker acts on its cgroup, not on them;
+`test_request_rs_4_is_filed_as_entry_111`.
+
+### What it would break
+
+Nothing: optional fields, and the new check refuses only a value no writer
+produces.
+
+### Invariants
+
+**5**: the record is per attempt, so a retried agent's new size never
+rewrites an old attempt's. **7**: the record is what makes "a running agent
+keeps its admitted size" checkable after the fact. **1-4, 6, 8-10**
+untouched.

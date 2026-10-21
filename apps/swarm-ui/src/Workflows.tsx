@@ -171,6 +171,7 @@ import {
   type StepRowModel,
   type StepLook as RowLook,
   WfStepMark,
+  shapeWords,
 } from './WorkflowViews'
 import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, type MergeRead, type VerdictRead } from './wfreview'
 import { WorkflowChangesTab, changesAtOf, changesCount, withChangesAt, type ChangesAt } from './WorkflowChanges'
@@ -504,7 +505,7 @@ function pageSummary(d: WorkflowBoard, id: string): ReactNode {
           head read '6 steps · 5 → 1 · 4/6 done', and neither '5 → 1' nor
           '4/6' said what it was. The shape names its stages and the census
           its steps; the list's narrow cells keep the short forms. */}
-      {`${shape.steps} step${shape.steps === 1 ? '' : 's'}${shape.levels > 1 ? ` in ${shape.levels} stages (${shape.text})` : ''} · ${rollupLine(w, d.taskById).text.replace(/^(\d+)\/(\d+) done/, '$1 of $2 steps done')} · by `}
+      {`${shapeWords(shape)} · ${rollupLine(w, d.taskById).text.replace(/^(\d+)\/(\d+) done/, '$1 of $2 steps done')} · by `}
       {owner}
       {` · ${startedPhrase(started)}`}
     </>

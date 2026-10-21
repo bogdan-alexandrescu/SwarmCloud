@@ -42,6 +42,9 @@ REGION = "us-central1"
 DATABASE = "swarm"
 BUCKET = f"swarm-artifacts-{PROJECT}"
 TENANT = "eng"
+#: Another tenant, whose attempt the caller must be refused (404).
+FOREIGN_TENANT = "smoke"
+FOREIGN_TASK = "task_foreign_smoke"
 
 #: Written by the runner for every attempt, whatever the workload did. The
 #: reason the artifact outage was invisible, so the fake reproduces it.
@@ -103,22 +106,36 @@ HEALTHY: dict[str, Any] = {
     "produce_manifest": "ok",
     # "ok" | "missing" | "wrong_bytes" | "foreign_source"
     "staged": "ok",
-    # What the negative control's consumer ends up in. A healthy platform fails
-    # it; "SUCCEEDED" is the platform that stages nothing and says nothing.
-    "negative_consume_state": "FAILED",
+    # What the negative control's PRODUCER ends up in. A healthy platform fails
+    # a producer whose declared expected output was never written
+    # (`expected outputs missing`, #1754); "SUCCEEDED" is the platform before
+    # that, which let the missing file reach the dependant.
+    "negative_produce_state": "FAILED",
+    # What the negative control's consumer ends up in. A healthy platform
+    # cancels it as a dependant of a failed step; "SUCCEEDED" is the platform
+    # that stages nothing and says nothing.
+    "negative_consume_state": "CANCELLED",
+    # Whether the consumer was leased anyway: a dependant that started on an
+    # input that was never written.
+    "negative_consume_leased": False,
     "negative_error_names_file": True,
     # "ok" | "null" | "omit_keys"  -- "null" is attempt_from_dict dropping the
     # five spend fields while Firestore holds them.
     "api_spend": "ok",
     # Whether any attempt in the deployment has recorded usage at all.
     "spend_recorded": True,
+    # "ok" | "broken" -- broken serves another tenant's task to this caller.
+    # The deployment always holds one attempt of tenant `smoke`, with spend,
+    # which a scan that is not scoped to the caller's tenant trips over.
+    "isolation": "ok",
     # "ok" | "leak_verifier" | "http_url" | "short_state" | "no_challenge" | "error"
     "authorize": "ok",
     # Task ids whose API state should disagree with Firestore, mapped to what
     # the API should claim instead.
     "api_state_override": {},
-    # "idle" | "live" | "dead" -- dead is a task holding capacity against an
-    # execution that has completed.
+    # "idle" | "live" | "dead" | "gke" -- dead is a task holding capacity
+    # against an execution that has completed; gke is one running on GKE
+    # Autopilot, whose cluster this caller may not read (403).
     "executions": "idle",
     # What GET /v1/workflows/<id> reports once every step has succeeded.
     "workflow_state": "SUCCEEDED",
@@ -158,7 +175,7 @@ import json, os, re, sys
 
 sys.path.insert(0, os.environ["FAKE_SWARM_HELPERS"])
 from fake_platform import (  # noqa: E402
-    artifact_uri, firestore_document, RUNNER_LOGS, TENANT,
+    artifact_uri, firestore_document, RUNNER_LOGS, TENANT, FOREIGN_TENANT, FOREIGN_TASK,
 )
 
 SCENARIO = json.loads(open(os.environ["FAKE_SWARM_SCENARIO"]).read())
@@ -347,6 +364,25 @@ def task_document(task_id):
     rec, role = find_task(task_id)
     if rec is None:
         return None
+    if role == "produce" and rec["negative"]:
+        state = SCENARIO["negative_produce_state"]
+        error = None
+        if state != "SUCCEEDED":
+            error = (
+                "expected outputs missing (not written: %s). A later step of this "
+                "workflow stages them from this task, so the attempt failed; it is "
+                "retried while the task has attempts left." % rec["declared"]
+                if SCENARIO["negative_error_names_file"]
+                else "expected outputs missing. Retried."
+            )
+        return {
+            "id": task_id, "tenant_id": TENANT, "state": state,
+            "runner_profile": "mock", "resource_class": "standard",
+            "current_generation": 3, "attempt_count": 3,
+            "result_summary": produce_summary(rec), "last_error": error,
+            "end_cause": "outputs_missing" if state == "FAILED" else None,
+            "blocked_by": [], "workflow_id": rec["workflow_id"],
+        }
     if role == "produce":
         return {
             "id": task_id, "tenant_id": TENANT, "state": "SUCCEEDED",
@@ -358,13 +394,9 @@ def task_document(task_id):
     if rec["negative"]:
         state = SCENARIO["negative_consume_state"]
         error = None
-        if state != "SUCCEEDED":
-            error = (
-                "declared input %r is not in the manifest of upstream task %s"
-                % (rec["declared"], rec["produce"])
-                if SCENARIO["negative_error_names_file"]
-                else "the attempt could not start"
-            )
+        if state == "FAILED":
+            error = "declared input %r is not in the manifest of upstream task %s" % (
+                rec["declared"], rec["produce"])
         return {
             "id": task_id, "tenant_id": TENANT, "state": state,
             "runner_profile": "mock", "resource_class": "standard",
@@ -400,6 +432,20 @@ def attempt_documents():
             "tenant_id": TENANT, "generation": 1, "lease_id": "lease_2",
             "backend": "CLOUD_RUN_JOB", "exit_code": 0,
         }
+    out["att_foreign"] = {
+        "attempt_id": "att_foreign", "task_id": FOREIGN_TASK,
+        "tenant_id": FOREIGN_TENANT, "generation": 1, "lease_id": "lease_f",
+        "backend": "CLOUD_RUN_JOB", "exit_code": 0,
+    }
+    if SCENARIO["spend_recorded"]:
+        out["att_foreign"].update(SPEND)
+    if SCENARIO["executions"] == "gke":
+        out["att_inflight"] = {
+            "attempt_id": "att_inflight", "task_id": "task_inflight",
+            "tenant_id": TENANT, "generation": 2, "lease_id": "lease_z",
+            "backend": "GKE_AUTOPILOT",
+            "execution_name": "swarm-tenant-%s/swarm-inflight-2" % TENANT,
+        }
     if SCENARIO["executions"] in ("live", "dead"):
         out["att_inflight"] = {
             "attempt_id": "att_inflight", "task_id": "task_inflight",
@@ -418,7 +464,7 @@ EXECUTION = "exec-inflight"
 
 
 def tasks_by_state(state):
-    if SCENARIO["executions"] in ("live", "dead") and state == "RUNNING":
+    if SCENARIO["executions"] in ("live", "dead", "gke") and state == "RUNNING":
         return {"task_inflight": {
             "id": "task_inflight", "tenant_id": TENANT, "state": "RUNNING",
             "runner_profile": "mock", "current_generation": 2,
@@ -448,6 +494,9 @@ def api_task(task_id):
 
 def api_attempts(task_id):
     rows = [d for d in attempt_documents().values() if d["task_id"] == task_id]
+    # The API serves a task's attempts to its own tenant only.
+    if SCENARIO["isolation"] != "broken":
+        rows = [d for d in rows if d["tenant_id"] == TENANT]
     if not rows:
         return None
     served = []
@@ -546,7 +595,8 @@ if "firestore.googleapis.com" in url and ":runQuery" in url:
     for doc_id, data in source.items():
         if "fieldFilter" in where:
             f = where["fieldFilter"]
-            if data.get(f["field"]["fieldPath"]) != f["value"].get("stringValue"):
+            same = data.get(f["field"]["fieldPath"]) == f["value"].get("stringValue")
+            if same != (f.get("op", "EQUAL") != "NOT_EQUAL"):
                 continue
         if "unaryFilter" in where:
             f = where["unaryFilter"]
@@ -560,6 +610,17 @@ if "firestore.googleapis.com" in url and ":runQuery" in url:
 
 if "firestore.googleapis.com" in url and "/documents/" in url:
     path = url.split("/documents/", 1)[1].split("?", 1)[0]
+    m = re.match(r"^tasks/([^/]+)/events$", path)
+    if m:
+        # A task's events: the negative consumer leased only when the scenario
+        # says it started anyway.
+        events = []
+        rec, role = find_task(m.group(1))
+        if rec and rec["negative"] and role == "consume" and SCENARIO["negative_consume_leased"]:
+            events.append(firestore_document(
+                "tasks/%s/events" % m.group(1), "ev1",
+                {"type": "lease_acquired", "lease_id": "lease_neg_consume"}))
+        respond(200, {"documents": events})
     collection, _, doc_id = path.partition("/")
     if collection == "tasks":
         data = task_document(doc_id)
@@ -570,6 +631,10 @@ if "firestore.googleapis.com" in url and "/documents/" in url:
     if data is None:
         respond(404, {"error": {"code": 404, "message": "not found"}})
     respond(200, firestore_document(collection, doc_id, data))
+
+if "container.googleapis.com" in url:
+    # The gate's identity holds no GKE read (terraform/infra/verify.tf).
+    respond(403, {"error": {"code": 403, "message": "Required \"container.clusters.get\" permission"}})
 
 if "run.googleapis.com" in url and "/executions" in url:
     respond(200, {"executions": executions()})

@@ -783,16 +783,21 @@ export function meterOf(c: Capacity | null): {
   warn: string | null
   /** The full or paused pool's exact name, null when none is. */
   warnPool: string | null
+  /** Another pool's label, the tail of `warn`, drawn whole (admin-007); null for none or for this pool. */
+  warnLabel: string | null
 } | null {
   if (c === null) return null
   const g = c.pools.find((p) => p.name === 'global')
   if (g === undefined) return null
   const hot = c.pools.find((p) => p.enabled === false || (p.effective_limit !== null && p.effective_limit > 0 && p.available !== null && p.available <= 0))
-  if (hot === undefined) return { active: g.active, limit: g.effective_limit, warn: null, warnPool: null }
+  if (hot === undefined) return { active: g.active, limit: g.effective_limit, warn: null, warnPool: null, warnLabel: null }
   const state = hot.enabled === false ? 'paused' : 'full'
-  const names = c.pools.map((p) => p.name)
-  const warn = hot.name === 'global' ? `this pool is ${state}` : `another pool is ${state}: ${poolLabelAmong(hot.name, names)}`
-  return { active: g.active, limit: g.effective_limit, warn, warnPool: hot.name }
+  if (hot.name === 'global') return { active: g.active, limit: g.effective_limit, warn: `this pool is ${state}`, warnPool: hot.name, warnLabel: null }
+  const label = poolLabelAmong(
+    hot.name,
+    c.pools.map((p) => p.name),
+  )
+  return { active: g.active, limit: g.effective_limit, warn: `another pool is ${state}: ${label}`, warnPool: hot.name, warnLabel: label }
 }
 
 /** One count beside a panel row: a measurement, or a dash with its reason. */
@@ -2023,6 +2028,7 @@ export function SkyShell({
               {reachBanner}
               {keptBanner}
               {who !== null && <SignedBackIn key={who.principal.email} email={who.principal.email} />}
+              {phone && section === 'overview' && !missing && <PhoneJumps onJump={onJump} />}
               {/* Keyed on the chosen tenant: a switch is a fresh screen, every
                   read of it made again with the new X-Swarm-Tenant -- except
                   a kept form, which re-reads in place. */}
@@ -2402,6 +2408,37 @@ function TenantPicker({
 }
 
 /**
+ * OVERVIEW'S "ON THIS PAGE", ON THE PAGE, ON A PHONE (visual QA run 2,
+ * FF-P1, part of #1680). Below 760px the panel that lists Overview's sections
+ * is behind the menu, so nothing on the page said they were there and Recent
+ * failures was reached by scrolling past every card. The same jumps, as one
+ * scrollable row of chips at the top of the page (styles.css `.sk-otp`).
+ * Phone only: the desktop's open panel already lists them, and a second list
+ * there would be the same eight links twice. A tap is the panel's jump
+ * (`onJump`): the hash goes on the address and focus moves to the section.
+ */
+function PhoneJumps({ onJump }: { onJump: (id: string) => void }) {
+  return (
+    <nav className="sk-otp" aria-label="On this page">
+      {OVERVIEW_JUMPS.map((j) => (
+        <a
+          key={j.id}
+          className="sk-oj"
+          href={`/overview#${j.id}`}
+          onClick={(e) => {
+            if (!routedClick(e)) return
+            e.preventDefault()
+            onJump(j.id)
+          }}
+        >
+          {j.label}
+        </a>
+      ))}
+    </nav>
+  )
+}
+
+/**
  * THE RAIL'S GLOBAL POOL. Three ways to have no figure, and each says which
  * (QA G1-01): `reading…` while the first read is out, `not read` when it
  * failed, and the dash only for a read that landed without a `global` pool --
@@ -2438,9 +2475,29 @@ function Meter({ meter, read }: { meter: ReturnType<typeof meterOf>; read: 'load
       <div className="sk-bar" role="meter" aria-valuenow={meter.active} aria-valuemin={0} aria-valuemax={limit ?? 0} aria-label="Global pool leased">
         <i style={{ width: `${pct}%` }} />
       </div>
+      {/* THE POOL'S LABEL IS NEVER BROKEN INSIDE A NAME (visual QA run 2,
+          admin-007, part of #1680): `anthropic · u-bogdan` wrapped at the
+          tenant id's hyphen, `u-` ending one line and `bogdan` alone on the
+          next. Each part between the `·` is one unbreakable span
+          (styles.css `.sk-mws`), so the line breaks after `full:` or at the
+          dot, never in a provider or tenant id. */}
       {meter.warn !== null && (
         <div className="sk-mw" title={meter.warnPool ?? undefined}>
-          {meter.warn}
+          {meter.warnLabel === null ? (
+            meter.warn
+          ) : (
+            <>
+              {meter.warn.slice(0, meter.warn.length - meter.warnLabel.length)}
+              <span className="sk-mwn">
+                {meter.warnLabel.split(' · ').map((part, i) => (
+                  <Fragment key={i}>
+                    {i > 0 && ' · '}
+                    <span className="sk-mws">{part}</span>
+                  </Fragment>
+                ))}
+              </span>
+            </>
+          )}
         </div>
       )}
     </div>

@@ -216,7 +216,7 @@ export function AgentSplit({
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  useSplitFocus(panel, close)
+  useSplitFocus(panel, close, taskId)
 
   // "Running" is an attempt in flight -- LEASED/DISPATCHED/STARTING/RUNNING
   // (CONTRACT.md invariant 1). A QUEUED, READY or PARKED agent has no
@@ -257,7 +257,7 @@ export function AgentSplit({
     base,
   })
 
-  const tabs = paneTabs({ task, base, hasBrowser, sessionOpen, childCount, runs, ckpt, ckptCount })
+  const tabs = paneTabs({ task, base, hasBrowser, sessionOpen, childCount, runs, ckpt, ckptCount, pane })
   const selected: TaskPane = pane
   // The banner's Open in theater, from a tab that is not Browser: to the Browser tab, in the theater.
   const openTheater = useCallback(() => go(`${base}/browser?theater=1`), [base, go])

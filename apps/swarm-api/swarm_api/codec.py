@@ -31,6 +31,7 @@ from swarm_common.models import (
     Workflow,
     WorkflowStep,
     check_additional_repositories,
+    check_sized_live_split,
 )
 from swarm_common.profiles import RUNNER_PROFILES, step_model_class
 from swarm_common.states import BlockedReason, EventType, ParkReason, TaskState
@@ -804,6 +805,21 @@ def _checkpoint_digests(value: Any) -> dict[str, str]:
     return {k: v for k, v in value.items() if isinstance(k, str) and isinstance(v, str)}
 
 
+def _sized_live_split(value: Any) -> dict[str, dict[str, float]] | None:
+    """`Attempt.sized_live_split` from a stored value, or None when malformed.
+
+    `Attempt` refuses a malformed split at construction (contract request
+    111), so handing it the stored value raw would make one bad document
+    unreadable, attempt list and all. A split that fails the check is read as
+    "not recorded" instead.
+    """
+    try:
+        check_sized_live_split(value)
+    except (ValueError, TypeError, KeyError):
+        return None
+    return value
+
+
 def attempt_from_dict(data: dict[str, Any]) -> Attempt:
     return Attempt(
         attempt_id=data["attempt_id"],
@@ -867,6 +883,16 @@ def attempt_from_dict(data: dict[str, Any]) -> Attempt:
         # attempt's agent with. Read explicitly, as the spend fields above
         # were not. None: no model, or an attempt from before the field.
         model=data.get("model") or None,
+        # Contract request 111 (RS-4): the size the scheduler rendered the
+        # attempt at, which SIZES-SCHED-2's `create_attempt` writes. Read
+        # explicitly, as the spend fields above once were not. None on every
+        # attempt from before it: not recorded.
+        size_version=data.get("size_version"),
+        sized_cpu_request=data.get("sized_cpu_request"),
+        sized_cpu_limit=data.get("sized_cpu_limit"),
+        sized_memory_gib=data.get("sized_memory_gib"),
+        sized_disk_gib=data.get("sized_disk_gib"),
+        sized_live_split=_sized_live_split(data.get("sized_live_split")),
     )
 
 

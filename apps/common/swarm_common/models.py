@@ -750,6 +750,61 @@ class Attempt:
     #: for the reason given above.
     model: str | None = None
 
+    # The size the scheduler RENDERED this attempt at. Contract request 111
+    # (RS-4, accepted by the owner 2026-10-20 for #1689;
+    # docs/design/runner-sizes.md §4.4). `cpu_limit_cores` above is what the
+    # worker MEASURED; once an admin can resize a class the catalogue no
+    # longer says what an older attempt ran at, so the scheduler's
+    # `create_attempt` pins it here, from the same size the lease's units
+    # were charged from. Never written by the worker or a caller.
+    #
+    #   size_version      the runner-size version admitted at; 0 is the code
+    #                     defaults (no version written, or a Cloud Run profile);
+    #   sized_*           that version's numbers for the attempt's class;
+    #   sized_live_split  a live-browser attempt's two containers,
+    #                     {"worker": {...}, "display": {...}}, each with
+    #                     cpu_request, cpu_limit and memory_gib. A mapping, not
+    #                     RS-3's LiveShare pair, because a named key survives a
+    #                     reader that does not know the pair's order. None on
+    #                     every attempt that is not a live pod.
+    #
+    # None means NOT RECORDED: every attempt from before the change, which
+    # readers keep sizing from the class's code default. At the end of the
+    # class for the reason given above.
+    size_version: int | None = None
+    sized_cpu_request: float | None = None
+    sized_cpu_limit: float | None = None
+    sized_memory_gib: int | None = None
+    sized_disk_gib: int | None = None
+    sized_live_split: dict[str, dict[str, float]] | None = None
+
+    def __post_init__(self) -> None:
+        check_sized_live_split(self.sized_live_split)
+
+
+#: The containers and numbers of `Attempt.sized_live_split` (request 111).
+SIZED_LIVE_SPLIT_ROLES = ("worker", "display")
+SIZED_LIVE_SPLIT_FIELDS = ("cpu_request", "cpu_limit", "memory_gib")
+
+
+def check_sized_live_split(value: Any) -> None:
+    """Refuse a `sized_live_split` that is not None or exactly
+    {"worker": {...}, "display": {...}}, each holding exactly the three
+    numbers. A reader of the record (the console, the preview's per-version
+    split) relies on both keys being there."""
+    if value is None:
+        return
+    if not isinstance(value, dict) or set(value) != set(SIZED_LIVE_SPLIT_ROLES):
+        raise ValueError(f"sized_live_split is None or a map of exactly {SIZED_LIVE_SPLIT_ROLES}")
+    for role in SIZED_LIVE_SPLIT_ROLES:
+        share = value[role]
+        if not isinstance(share, dict) or set(share) != set(SIZED_LIVE_SPLIT_FIELDS):
+            raise ValueError(f"sized_live_split[{role!r}] holds exactly {SIZED_LIVE_SPLIT_FIELDS}")
+        for name in SIZED_LIVE_SPLIT_FIELDS:
+            number = share[name]
+            if isinstance(number, bool) or not isinstance(number, (int, float)):
+                raise ValueError(f"sized_live_split[{role!r}][{name!r}] is a number")
+
 
 @dataclass
 class TaskEvent:
