@@ -37,7 +37,8 @@ drift or the wrong project. The first version asked the registry, and so it
 refused to plan the bootstrap described here.
 
 **Read the plan.** `saga-agents-staging` holds another team's live GKE cluster,
-their VPC and 12 of their service accounts. A plan that proposes to change
+their VPC, buckets, service accounts and Cloud Run services, every one listed
+in `SHARED_DENY_LIST` in `scripts/lib/common.sh`. A plan that proposes to change
 anything you do not recognise is a stop-and-ask, not a scroll-past.
 
 Then register a tenant and give it a key:

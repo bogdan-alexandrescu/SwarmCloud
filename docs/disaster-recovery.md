@@ -225,7 +225,8 @@ why an export before any destructive operation is the habit.
 ## 5. Terraform state loss
 
 The worst case, because in a **shared** project state is what distinguishes our
-resources from twelve other service accounts' resources.
+resources from the other team's service accounts and resources, every one
+listed in `SHARED_DENY_LIST` in `scripts/lib/common.sh`.
 
 ### Prevention
 
