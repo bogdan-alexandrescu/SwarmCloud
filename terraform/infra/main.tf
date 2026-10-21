@@ -86,6 +86,12 @@ module "artifact_registry" {
   repository_id  = var.artifact_registry_repository
   immutable_tags = var.immutable_image_tags
 
+  # The cleanup (#1886): dry run until the owner has read the would-delete
+  # list (docs/runbooks/registry-cleanup.md).
+  cleanup_dry_run      = var.cleanup_dry_run
+  untagged_ttl         = var.untagged_ttl
+  keep_recent_versions = var.keep_recent_versions
+
   # Two grants, not one, because the two sides need different things.
   #
   # The control plane may enumerate the repository: the reconciler compares what

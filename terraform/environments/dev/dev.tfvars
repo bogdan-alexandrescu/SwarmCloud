@@ -75,6 +75,12 @@ firestore_bench_database = "swarm-bench"
 # updates.
 immutable_image_tags = false
 
+# swarm-images cleanup in DRY RUN (owner 2026-10-21, #1886): the policies are
+# evaluated and logged, nothing is deleted. The would-delete list goes to the
+# owner first (docs/runbooks/registry-cleanup.md); turning deletion on is the
+# owner's call and is this one line set to false.
+cleanup_dry_run = true
+
 # --- capacity --------------------------------------------------------------
 # DOUBLED by owner decision 2026-10-02 ("double the capacity settings across all
 # tenants and across all runtimes"), to raise parallel throughput. The live
