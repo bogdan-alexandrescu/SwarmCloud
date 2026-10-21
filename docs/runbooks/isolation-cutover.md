@@ -134,6 +134,34 @@ unmanaged, and its switch is swarm-api's list, not the tenancy module's.
 
 ### a1. Switch its state path
 
+**Before a1: `tenant_job_vpc_egress = true` is released, and the
+scheduler-made Jobs are refreshed.** The first a1, on 2026-10-21, was rolled
+back (PR 1892, #1893). u-bogdan is not a Terraform tenant, so its Cloud Run
+Jobs (`swarm-job-u-bogdan-*`) are the ones swarm-scheduler creates, and those
+had no `vpc_access`. Its switched workers called swarm-api from the public
+internet, and swarm-api's `internal-and-cloud-load-balancing` ingress answered
+`state/open` with a 404 before the app saw the request. Its GKE attempts passed
+on the same release. So, in this order:
+
+1. Set `tenant_job_vpc_egress = true` in `dev.tfvars` and merge it. The plan
+   must show an in-place update of
+   `module.cloud_run.google_cloud_run_v2_service.this["swarm-scheduler"]`
+   (`TENANT_JOB_VPC_EGRESS` goes from `"false"` to `"true"`) and one created
+   `google_compute_subnetwork_iam_member.scheduler_tenant_job_subnet[0]`:
+   `roles/compute.networkUser` for swarm-scheduler on the swarm subnetwork,
+   and nowhere else. It is IAM, so the release holds at `dev-iam`. A grant on
+   any other subnet, or at project level, is a stop.
+2. A new scheduler revision checks each Job it made once, at that Job's next
+   dispatch, and rebuilds one that lacks the block (`_refresh_image`). Dispatch
+   one `mock` task in u-bogdan for each `swarm-job-u-bogdan-*`. The log reads
+   `workspace, identity or network changed: vpc_access`.
+3. For each Job, `gcloud run jobs describe swarm-job-u-bogdan-<profile>`
+   must show `run.googleapis.com/vpc-access-egress: all-traffic` and the
+   `swarm-worker` tag, the same as `swarm-job-eng-mock`. A Job without them is
+   a stop: its switched worker is refused exactly as on 2026-10-21.
+
+Then:
+
 In `terraform/environments/dev/dev.tfvars` (`enable_child_tasks = true` is
 already set there):
 

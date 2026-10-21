@@ -566,6 +566,24 @@ class SchedulerSettings:
     #: every tenant, and only then is the worker's Firestore role removed
     #: (owner decision Q7). Never from a task (invariant 10).
     state_via_api_tenants: frozenset[str] = frozenset()
+    #: THE TENANT-JOB VPC SWITCH (#1893; terraform `tenant_job_vpc_egress`,
+    #: terraform/infra/tenant_job_vpc.tf). On, every Cloud Run Job this
+    #: scheduler CREATES -- every self-service `u-<email>` tenant's, every
+    #: non-default class's -- carries terraform's Direct VPC egress
+    #: (modules/cloud_run_jobs `vpc_access`): ALL_TRAFFIC, one interface on
+    #: `tenant_job_network` / `tenant_job_subnetwork`, tagged
+    #: `tenant_job_network_tags`; and `_refresh_image` moves the Jobs it made
+    #: before onto it. Without it a worker switched to state-through-swarm-api
+    #: reaches swarm-api from the internet and its ingress answers 404 (the
+    #: 2026-10-21 a1 rollback). OFF BY DEFAULT: Cloud Run needs the
+    #: scheduler's subnet grant first, and off a Job is built as before.
+    tenant_job_vpc_egress: bool = False
+    #: From module.network, the same outputs terraform hands its own Jobs
+    #: (TENANT_JOB_NETWORK, TENANT_JOB_SUBNETWORK, TENANT_JOB_NETWORK_TAGS).
+    #: Read only when the switch is on.
+    tenant_job_network: str = ""
+    tenant_job_subnetwork: str = ""
+    tenant_job_network_tags: tuple[str, ...] = ()
     dispatch_topic: str = ""
     #: The step-spec verification settings a worker needs (contract request
     #: 34), passed through VERBATIM onto every Cloud Run Job this scheduler
@@ -641,6 +659,10 @@ class SchedulerSettings:
             state_via_api_tenants=parse_state_via_api_tenants(
                 os.environ.get("SWARM_STATE_VIA_API_TENANTS")
             ),
+            tenant_job_vpc_egress=_bool("TENANT_JOB_VPC_EGRESS", False),
+            tenant_job_network=os.environ.get("TENANT_JOB_NETWORK", "").strip(),
+            tenant_job_subnetwork=os.environ.get("TENANT_JOB_SUBNETWORK", "").strip(),
+            tenant_job_network_tags=_csv("TENANT_JOB_NETWORK_TAGS"),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", ""),
             spec_verify_keys=os.environ.get("SPEC_VERIFY_KEYS", "").strip(),
             spec_signing_key=os.environ.get("SPEC_SIGNING_KEY", "").strip(),
@@ -686,6 +708,17 @@ class SchedulerSettings:
                 "SWARM_API_URL is empty: their workers get no nonce to open their "
                 "attempts with and refuse to start",
                 ", ".join(sorted(self.state_via_api_tenants)),
+            )
+        # At START, like the image map: on with a name missing, every tenant
+        # Job create would be refused by Cloud Run, one dispatch at a time.
+        if self.tenant_job_vpc_egress and not (
+            self.tenant_job_network and self.tenant_job_subnetwork
+            and self.tenant_job_network_tags
+        ):
+            raise ValueError(
+                "TENANT_JOB_VPC_EGRESS is on and TENANT_JOB_NETWORK, "
+                "TENANT_JOB_SUBNETWORK or TENANT_JOB_NETWORK_TAGS is empty: the "
+                "scheduler cannot build terraform's vpc_access without all three"
             )
         # At START, like the image map: on with no key would read every
         # workspace's choice as the default without saying why.

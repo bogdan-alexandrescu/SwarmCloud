@@ -1817,6 +1817,65 @@ def _workspace_drift(existing: Any, rc: Any) -> list[str]:
     return drift
 
 
+def _tenant_job_vpc_access(settings: Any) -> Any:
+    """Terraform's worker-Job `vpc_access` (modules/cloud_run_jobs/main.tf),
+    from the scheduler's settings, or None while `tenant_job_vpc_egress` is off.
+
+    ALL_TRAFFIC for terraform's reason: a provider call must leave through the
+    swarm Cloud NAT to carry the addresses a provider allow-lists, and a call to
+    swarm-api must arrive from inside the VPC or its internal ingress answers
+    404 (#1893). The tag is what the worker-ingress deny rule names.
+    """
+    from google.cloud import run_v2
+
+    # getattr: a test's stand-in settings object predates the switch.
+    if not getattr(settings, "tenant_job_vpc_egress", False):
+        return None
+    return run_v2.VpcAccess(
+        egress=run_v2.VpcAccess.VpcEgress.ALL_TRAFFIC,
+        network_interfaces=[
+            run_v2.VpcAccess.NetworkInterface(
+                network=settings.tenant_job_network,
+                subnetwork=settings.tenant_job_subnetwork,
+                tags=list(settings.tenant_job_network_tags),
+            )
+        ],
+    )
+
+
+def _vpc_drift(existing: Any, settings: Any) -> list[str]:
+    """Whether `existing` lacks the `vpc_access` `_build_job` writes (#1893).
+
+    Nothing while the switch is off: off, a Job is left as it is. Network and
+    subnetwork compare by their last path segment, because Cloud Run may read
+    either back by name rather than by full resource name, and treating that
+    as drift would rewrite every Job once per scheduler process; the rewrite
+    itself always writes the full names from settings.
+    """
+    from google.cloud import run_v2
+
+    wanted = _tenant_job_vpc_access(settings)
+    if wanted is None:
+        return []
+    try:
+        have = existing.template.template.vpc_access
+        nics = list(have.network_interfaces)
+    except AttributeError:
+        return ["vpc_access"]
+    if have.egress != run_v2.VpcAccess.VpcEgress.ALL_TRAFFIC or len(nics) != 1:
+        return ["vpc_access"]
+    want = wanted.network_interfaces[0]
+
+    def tail(value: str) -> str:
+        return str(value or "").rstrip("/").rsplit("/", 1)[-1]
+
+    if (tail(nics[0].network) != tail(want.network)
+            or tail(nics[0].subnetwork) != tail(want.subnetwork)
+            or sorted(nics[0].tags) != sorted(want.tags)):
+        return ["vpc_access"]
+    return []
+
+
 class CloudRunJobDispatcher:
     def __init__(
         self, settings: Any, *, client: Any | None = None, pool: AccountPool | None = None
@@ -1956,6 +2015,9 @@ class CloudRunJobDispatcher:
             ),
         )
 
+        vpc_access = _tenant_job_vpc_access(self._settings)
+        vpc = {} if vpc_access is None else {"vpc_access": vpc_access}
+
         return run_v2.Job(
             # GA, as terraform's Jobs are: nothing on this Job is a pre-GA
             # feature now that the workspace is a tmpfs.
@@ -1988,6 +2050,10 @@ class CloudRunJobDispatcher:
                     ),
                     service_account=service_account,
                     execution_environment=run_v2.ExecutionEnvironment.EXECUTION_ENVIRONMENT_GEN2,
+                    # TERRAFORM'S DIRECT VPC EGRESS (#1893), only while
+                    # `tenant_job_vpc_egress` is on; off, the field is not set
+                    # and the Job is the one this built before the switch.
+                    **vpc,
                 ),
             ),
         )
@@ -2002,7 +2068,8 @@ class CloudRunJobDispatcher:
         resource_class: str | None,
     ) -> bool:
         """Bring a job THIS dispatcher created up to the image, and the MODEL,
-        it would create today.
+        it would create today -- and, while `tenant_job_vpc_egress` is on, its
+        Direct VPC egress (#1893).
 
         The MODEL half is #226: a job created before WORKER_MODELS existed has
         none, and its agents would run the CLI's default model until the next
@@ -2079,6 +2146,11 @@ class CloudRunJobDispatcher:
             current_account = ""
         if current_account.lower() != wanted_account.lower():
             storage_drift = [*storage_drift, "service_account"]
+        # AND ITS NETWORK (#1893). A Job made before `tenant_job_vpc_egress`
+        # was on has no `vpc_access`, and its switched worker's state calls are
+        # refused at swarm-api's ingress; rebuilt, not deleted, so
+        # `swarm-job-u-bogdan-*` keep their names. Nothing while the switch is off.
+        storage_drift = [*storage_drift, *_vpc_drift(existing, self._settings)]
         if (current == wanted and current_model == wanted_model and not spec_drift
                 and not storage_drift):
             return False
@@ -2097,7 +2169,7 @@ class CloudRunJobDispatcher:
         # needs no more than which settings moved.
         log.info(
             "cloud run job %s moved from %s (MODEL %s) to %s (MODEL %s); SPEC_* changed: %s; "
-            "workspace or identity changed: %s",
+            "workspace, identity or network changed: %s",
             name, current or "?", current_model or "unset", wanted, wanted_model or "unset",
             ", ".join(spec_drift) or "none", ", ".join(storage_drift) or "none",
         )

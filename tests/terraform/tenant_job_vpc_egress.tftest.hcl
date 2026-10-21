@@ -78,6 +78,15 @@ run "the_switch_on_renders_module_network_and_grants_the_swarm_subnet_only" {
     }
   }
 
+  override_resource {
+    target          = module.iam.google_service_account.platform["swarm-scheduler"]
+    override_during = plan
+    values = {
+      email = "swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
+      name  = "projects/saga-agents-staging/serviceAccounts/swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
   assert {
     # MUTATION: render the switch from anything but the variable and this fails.
     condition     = local.service_env["swarm-scheduler"].TENANT_JOB_VPC_EGRESS == "true"
@@ -119,7 +128,7 @@ run "the_switch_on_renders_module_network_and_grants_the_swarm_subnet_only" {
   assert {
     # MUTATION: grant it to any account but swarm-scheduler's and the
     # scheduler still cannot attach the subnet while another account can.
-    condition     = google_compute_subnetwork_iam_member.scheduler_tenant_job_subnet[0].member == "serviceAccount:${module.iam.scheduler_service_account}"
+    condition     = google_compute_subnetwork_iam_member.scheduler_tenant_job_subnet[0].member == "serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
     error_message = "the subnet grant is swarm-scheduler's service account's"
   }
 
