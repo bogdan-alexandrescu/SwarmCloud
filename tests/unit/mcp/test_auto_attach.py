@@ -528,10 +528,11 @@ def _alive(pid: int) -> bool:
         return True
 
 
-def test_the_hook_kills_what_the_bridge_spawned_when_it_hangs(tmp_path):
+@pytest.mark.parametrize("startup", ["", "sleep 1.5"], ids=["prompt", "slow-start"])
+def test_the_hook_kills_what_the_bridge_spawned_when_it_hangs(tmp_path, startup):
     """uv runs the bridge as a child; a timeout must not leave that child running."""
     child = tmp_path / "child-pid"
-    done = _hook(tmp_path, f'sleep 30 &\necho $! > "{child}"\nwait',
+    done = _hook(tmp_path, f'{startup}\nsleep 30 &\necho $! > "{child}"\nwait',
                  SWARM_SESSION_START_TIMEOUT="1")
     assert (done.returncode, done.stdout, done.stderr) == (0, "", "")
     pid = int(child.read_text())
