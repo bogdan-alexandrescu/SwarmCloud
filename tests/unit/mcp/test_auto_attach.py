@@ -528,15 +528,32 @@ def _alive(pid: int) -> bool:
         return True
 
 
+#: The hook's timeouts the hang-kill test tries in turn, in seconds.
+_KILL_LIMITS = ("1", "2", "4", "8")
+
+
+# "slow-start" is a bridge that spawns its child after the hook's first limit
+# has passed, as a loaded runner did on 2026-10-19 (#1822): the hook killed the
+# bridge before it had a child, and the test read a pid file never written.
 @pytest.mark.parametrize("startup", ["", "sleep 1.5"], ids=["prompt", "slow-start"])
 def test_the_hook_kills_what_the_bridge_spawned_when_it_hangs(tmp_path, startup):
     """uv runs the bridge as a child; a timeout must not leave that child running."""
     child = tmp_path / "child-pid"
-    done = _hook(tmp_path, f'{startup}\nsleep 30 &\necho $! > "{child}"\nwait',
-                 SWARM_SESSION_START_TIMEOUT="1")
-    assert (done.returncode, done.stdout, done.stderr) == (0, "", "")
+    # The pid is published by rename, so it is read whole or not at all. A run
+    # whose limit passed before the bridge spawned its child has nothing to
+    # leak and proves nothing: the next, longer limit is tried. The first run
+    # that published a pid is the one the assertions read.
+    body = f'{startup}\nsleep 30 &\necho $! > "{child}.part" && mv "{child}.part" "{child}"\nwait'
+    for limit in _KILL_LIMITS:
+        done = _hook(tmp_path, body, SWARM_SESSION_START_TIMEOUT=limit)
+        assert (done.returncode, done.stdout, done.stderr) == (0, "", "")
+        if child.exists():
+            break
+    assert child.exists(), f"the bridge spawned no child within {_KILL_LIMITS[-1]} s"
     pid = int(child.read_text())
-    deadline = time.monotonic() + 5
+    # A condition wait: the loop ends the moment the child is gone, so the
+    # bound only matters to a failing run, and a slow runner gets all of it.
+    deadline = time.monotonic() + 20
     while _alive(pid) and time.monotonic() < deadline:
         time.sleep(0.1)
     alive = _alive(pid)
