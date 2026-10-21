@@ -41,7 +41,8 @@ from ..children import (
     cascade_children,
 )
 from ..auth import AuthContext
-from ..codec import attempt_to_api, task_to_api
+from .. import sessiontag
+from ..codec import attempt_to_api, claude_session_of, task_to_api
 from ..deps import (
     AppContext,
     current_auth,
@@ -56,6 +57,7 @@ from .children import child_service
 from ..heartbeats import heartbeats_for_page
 from ..people import add_names, name_lookup
 from ..schemas import TaskBatchCreate, TaskCreate
+from ..store import Page, task_listing_token
 from ..startup import startup_of
 from ..task_accounts import accounts_for, accounts_for_attempts
 from ..task_input import TaskMasking, input_copy, masking_for
@@ -159,6 +161,24 @@ TASK_VIEWS: tuple[str, ...] = ("full", "summary")
 #: `submitted_by=me` is the caller's own verified email (U5).
 OWNER_ME = "me"
 
+#: `GET /v1/tasks?claude_session=` (CHECK-FILTER-TASKS, #1749): the store page
+#: the session filter reads, and how many of them one request reads before it
+#: answers with what matched and a token. The session is the frozen
+#: `Task.metadata`'s `claude_session`, and no index pairs it with the state
+#: and submitter filters the bridge sends beside it (adding one per
+#: combination is the index sprawl `Store.list_tasks` already declines), so
+#: the route filters after reading. A task row costs one document read -- no
+#: rollup, unlike a workflow -- and the enrichment below runs only on the rows
+#: served, so 10 pages of 200 is 2,000 rows a request: eight times the 250
+#: live tasks tenant eng held on 2026-10-20, and still a bound.
+FILTER_PAGE_SIZE = 200
+MAX_FILTER_PAGES = 10
+
+#: Why a row the session filter read was not served, counted in
+#: `filter.left_out` -- the two kinds the bridge's SC-SESSION-SCOPE report
+#: counts (`swarm_mcp.session.ownership`).
+LEFT_OUT_REASONS: tuple[str, ...] = ("other_session", "untagged")
+
 
 def _owner_filter(requested: str | None, auth: AuthContext, forced: str | None) -> str | None:
     """The submitter `GET /v1/tasks` narrows to, or None for every submitter (U5).
@@ -202,6 +222,7 @@ def list_tasks(
         description="`me`, or a submitter's email (another member's needs an admin)",
     ),
     view: str | None = Query(default=None, description="`full` (default) or `summary`"),
+    claude_session: str | None = Query(default=None),
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
@@ -228,6 +249,20 @@ def list_tasks(
 
     Every row, in both views, carries its task's attempt totals
     (`swarm_api.attempt_totals`), from one batched attempts read per 30 rows.
+
+    `claude_session` (CHECK-FILTER-TASKS, #1749, as CHECK-FILTER did for
+    `GET /v1/workflows`) keeps only the tasks tagged with that Claude Code
+    session (`metadata.claude_session`, read through the task's masker, so
+    exactly the rows a client comparing the served `claude_session` would
+    keep), combined with every other filter. The sc plugin's check reads its
+    own session's single tasks this way instead of every page of the
+    caller's. No index serves it, so the route reads store pages and pages on
+    INSIDE the request until `limit` rows matched or `MAX_FILTER_PAGES` store
+    pages were read, and hands back a token that continues past its last
+    row. `filter` echoes the session, so a client tells this route from one
+    that ignored it; `filter.left_out` counts the rows read and not served by
+    why, and `filter.left_out_single` the part of them in no workflow and
+    with no parent -- the rows a single-task reader would have counted.
     """
     parsed_state: TaskState | None = None
     if state is not None:
@@ -244,17 +279,37 @@ def list_tasks(
             detail={"known_views": list(TASK_VIEWS)},
         )
     summary = view == "summary"
+    session = None
+    if claude_session is not None:
+        session = sessiontag.valid(claude_session)
+        if session is None:
+            raise ValidationFailed(
+                f"claude_session {claude_session!r} is not a Claude Code session id",
+                detail={"pattern": sessiontag.PATTERN},
+            )
     owner = _owner_filter(submitted_by, auth, scope_submitter)
-    page = ctx.store.list_tasks(
-        tenant_id,
-        state=parsed_state,
-        workflow_id=workflow_id,
-        runner_profile=runner_profile,
-        limit=paged_limit(ctx, limit),
-        page_token=page_token,
-        submitted_by=owner,
-        parent_task_id=parent_task_id,
-    )
+    query = {
+        "state": parsed_state,
+        "workflow_id": workflow_id,
+        "runner_profile": runner_profile,
+        "submitted_by": owner,
+        "parent_task_id": parent_task_id,
+    }
+    scope: dict | None = None
+    if session is None:
+        page = ctx.store.list_tasks(
+            tenant_id, limit=paged_limit(ctx, limit), page_token=page_token, **query
+        )
+    else:
+        page, left_out, left_out_single = _session_page(
+            ctx, tenant_id, session, limit=paged_limit(ctx, limit), page_token=page_token,
+            query=query,
+        )
+        scope = {
+            "claude_session": session,
+            "left_out": left_out,
+            "left_out_single": left_out_single,
+        }
     # One read of the page's READY tasks' pools, de-duplicated (#362).
     waiting = waiting_for_page(ctx.db, page.items, as_of=ctx.now())
     # #379: each row's account, from ONE bounded collection-group query per 30
@@ -294,10 +349,59 @@ def list_tasks(
         "next_page_token": page.next_page_token,
         "tenant_id": tenant_id,
     }
+    if scope is not None:
+        payload["filter"] = scope
     add_names(name_lookup(ctx), payload["tasks"], ("submitted_by",))
     if summary:
         payload["view"] = "summary"
     return payload
+
+
+def _session_page(
+    ctx: AppContext,
+    tenant_id: str,
+    session: str,
+    *,
+    limit: int,
+    page_token: str | None,
+    query: dict,
+) -> tuple[Page, dict[str, int], dict[str, int]]:
+    """`(page, left_out, left_out_single)`: one page of the tasks tagged with
+    `session`, read store page by store page under the route's other filters.
+
+    THE TOKEN IS THE LAST ROW SERVED'S, as in the workflow route's
+    `_scoped_page`. When `limit` matches are reached before the end of a
+    store page, the page's own token would skip the rows after the last one
+    served, so the token is minted on that row (`task_listing_token`) and
+    the rest of the page is read again by the next request -- and counted in
+    `left_out` only then, so a walk counts each row once. When the store page
+    ends exactly there, or the scan stops at `MAX_FILTER_PAGES`, the store
+    page's token is the position."""
+    matched: list = []
+    left_out = {reason: 0 for reason in LEFT_OUT_REASONS}
+    left_out_single = {reason: 0 for reason in LEFT_OUT_REASONS}
+    token = page_token
+    for _ in range(MAX_FILTER_PAGES):
+        page = ctx.store.list_tasks(
+            tenant_id, limit=FILTER_PAGE_SIZE, page_token=token, **query
+        )
+        token = page.next_page_token
+        for index, task in enumerate(page.items):
+            tagged = claude_session_of(task, masking_for(task, warm=False))
+            if tagged != session:
+                why = "other_session" if tagged else "untagged"
+                left_out[why] += 1
+                if task.workflow_id is None and task.parent_task_id is None:
+                    left_out_single[why] += 1
+                continue
+            matched.append(task)
+            if len(matched) == limit:
+                if index < len(page.items) - 1:
+                    token = task_listing_token(task)
+                return Page(items=matched, next_page_token=token), left_out, left_out_single
+        if token is None:
+            break
+    return Page(items=matched, next_page_token=token), left_out, left_out_single
 
 
 @router.get("/{task_id}")

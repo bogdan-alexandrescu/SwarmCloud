@@ -547,6 +547,14 @@ def workflow_listing_token(workflow: Workflow) -> str:
     return _listing_mint("workflows")(workflow.created_at, workflow.workflow_id)
 
 
+def task_listing_token(task: Task) -> str:
+    """The `GET /v1/tasks` token that continues strictly past `task`: what
+    `workflow_listing_token` is to the workflow listing, for the task
+    route's session filter (CHECK-FILTER-TASKS), which stops at `limit`
+    matches inside a store page."""
+    return _listing_mint("tasks")(task.created_at, task.id)
+
+
 @dataclass(frozen=True)
 class Page:
     items: list[Any]
