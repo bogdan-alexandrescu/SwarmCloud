@@ -185,6 +185,58 @@ def test_a_diff_that_only_adds_an_unrelated_file_still_runs_the_whole_tree_guard
     assert set(sel.guard_tests(REPO)) <= set(out["tests"]), out
 
 
+# The walkers outside apps/, tests/ and docs/ (CI-GUARDS-MORE, part of #1822):
+# each reads every file of a scripts/, terraform/ or kubernetes/ directory, so
+# a new file there breaks it without any test naming the file. All weigh
+# under 5 CI-seconds; the heavier ones stay with main's push run.
+OUTSIDE_WALKERS = (
+    "tests/unit/common/test_startup_progress_contract.py",
+    "tests/unit/control_plane/test_reconciler_cloud_run_stall_guard.py",
+    "tests/unit/scripts/test_cloudbuild_connection_retired.py",
+    "tests/unit/worker/test_spec_verify_keys_configmap.py",
+    "tests/unit/scripts/test_workspace_apply_approval.py",
+    "tests/unit/worker/test_kubernetes_manifests.py",
+    "tests/unit/control_plane/test_dispatch_judgment.py",
+    "tests/unit/control_plane/test_gke_cache_volume.py",
+    "tests/unit/control_plane/test_gke_worker_metadata_env.py",
+    "tests/unit/control_plane/test_schedules_migration_seed.py",
+    "tests/unit/control_plane/test_tfvars_refusal_switches.py",
+    "tests/unit/control_plane/test_workspace_gate_dev.py",
+    "tests/unit/scripts/test_create_secrets_workspace_grant_key.py",
+    "tests/unit/scripts/test_deployer_role_count_prose.py",
+    "tests/unit/scripts/test_github_app_runbook.py",
+    "tests/unit/scripts/test_owner_pinned_jobs.py",
+    "tests/unit/scripts/test_tenancy_retired_295_identities.py",
+    "tests/unit/worker/test_checkpoint_retention.py",
+    "tests/unit/worker/test_workspace_provisioner_scope.py",
+    "tests/unit/scripts/test_swarm_verify_image_helpers.py",
+    "tests/unit/scripts/test_shellcheck_ci.py",
+)
+
+
+def test_an_unrelated_one_file_diff_runs_the_walkers_outside_apps_tests_and_docs():
+    unrelated = f"notes/unrelated-{secrets.token_hex(4)}.txt"
+    out = sel.select(REPO, [unrelated])
+    assert out["python"] == "selected", out
+    for walker in OUTSIDE_WALKERS:
+        # MUTATION: drop any of these from GUARD_TESTS in changed-guards.sh and
+        # the unrelated file no longer selects it -- red here, naming it.
+        assert walker in out["tests"], (walker, out)
+
+
+def test_the_walkers_outside_apps_tests_and_docs_stay_cheap():
+    import json
+    import statistics
+    weights = json.loads((REPO / "tests" / "unit" / "scripts" / "unit_test_durations.json").read_text())
+    # A file with no weight yet counts at the median, the way the shards cut it.
+    median = statistics.median(weights.values())
+    for walker in OUTSIDE_WALKERS:
+        assert (REPO / walker).is_file(), walker
+        # MUTATION: list a walker of 5 CI-seconds or more here (every pull
+        # request pays for it) and this is red, naming it.
+        assert weights.get(walker, median) < 5, (walker, weights.get(walker))
+
+
 def test_changed_guards_and_the_ci_selection_list_one_guard_set():
     unrelated = f"notes/unrelated-{secrets.token_hex(4)}.txt"
     listed = subprocess.run(
