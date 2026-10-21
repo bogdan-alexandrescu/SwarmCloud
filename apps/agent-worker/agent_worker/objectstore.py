@@ -127,6 +127,7 @@ class ObjectStore(Protocol):
     def uri(self, key: str) -> str: ...
     def upload_file(self, key: str, source: Path, content_type: str | None = None) -> int: ...
     def upload_bytes(self, key: str, data: bytes, content_type: str | None = None) -> int: ...
+    def copy(self, src_key: str, dst_key: str) -> int: ...
     def download_file(self, key: str, destination: Path) -> int: ...
     def download_bytes(self, key: str) -> bytes: ...
     def list_keys(self, prefix: str) -> list[str]: ...
@@ -159,6 +160,16 @@ class LocalObjectStore:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         return len(data)
+
+    def copy(self, src_key: str, dst_key: str) -> int:
+        """Copy one object to another key in this store; the bytes written."""
+        source = self._path(src_key)
+        target = self._path(dst_key)
+        if not source.is_file():
+            raise ObjectStoreError(f"object not found: {self.uri(src_key)}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        return target.stat().st_size
 
     def download_file(self, key: str, destination: Path) -> int:
         source = self._path(key)
@@ -251,6 +262,24 @@ class GcsObjectStore:
         blob = self._upload_blob(key)
         blob.upload_from_string(data, content_type=content_type or "application/octet-stream")
         return len(data)
+
+    def copy(self, src_key: str, dst_key: str) -> int:
+        """Copy one object to another key in this bucket, server-side; the bytes written.
+
+        A rewrite, not `copy_blob`: a large object's rewrite returns a token
+        until it is done, where a single copy request can time out. No byte
+        passes through the worker. It needs read on the source and create on
+        the destination, which the worker's tenant-prefix grants already are
+        (terraform/modules/tenancy, `worker_objects_read`/`_write`). The
+        destination is built by `_upload_blob`, so it carries customTime on
+        exactly the keys an upload would stamp, whatever the source has.
+        """
+        source = self._get_bucket().blob(validate_key(src_key))
+        target = self._upload_blob(dst_key)
+        token, _written, total = target.rewrite(source)
+        while token is not None:
+            token, _written, total = target.rewrite(source, token=token)
+        return total
 
     def download_file(self, key: str, destination: Path) -> int:
         blob = self._get_bucket().blob(validate_key(key))
