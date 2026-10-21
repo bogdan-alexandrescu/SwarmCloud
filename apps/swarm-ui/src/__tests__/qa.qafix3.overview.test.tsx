@@ -13,8 +13,9 @@
  *          the short form dropped two characters of "wf_audit_01" and left
  *          every step of that workflow reading alike. The id is whole at every
  *          width and breaks where it must.
- *   ffp-002  The phone's Running rows cut their titles on one line, so rows
- *          of one workflow were cut at the same point. They wrap.
+ *   ffp-002  The phone's Running rows cut their titles, so rows of one
+ *          workflow were cut at the same point. They wrap, whole: no
+ *          ellipsis and no two-line clamp on a phone.
  *   ff-001  A Recent failures row said its state only by a glyph. The word
  *          is drawn under the name.
  *   a11y-keyboard-003  The Overview's tables had no accessible name.
@@ -190,12 +191,27 @@ describe('ffp-002: phone Running row titles wrap rather than cut at the same poi
     )
     const names = [...el.querySelectorAll('#ov-running .ov-prun li .ov-prun-n')]
     expect(names.length).toBe(2)
+    // `.ov-page a.ov-prun-n` in names.css (0,2,1) clamps every Overview name
+    // to two lines and outranks overview.css's bare `.ov-prun-n`, so each
+    // assertion reads the property that rule sets, as the phone paints it.
     for (const n of names) {
-      // MUTATION: put `white-space: nowrap` back on `.ov-prun-n`.
+      // MUTATION: drop `-webkit-line-clamp: none` from the phone's
+      // `.ov-page a.ov-prun-n` in overview.css, so names.css cuts it at two lines.
+      expect(painted(n, '-webkit-line-clamp', PHONE)).toBe('none')
+      // MUTATION: drop `line-clamp: none` from the phone's `.ov-page a.ov-prun-n`.
+      expect(painted(n, 'line-clamp', PHONE)).toBe('none')
+      // MUTATION: drop `display: block` from the phone's `.ov-page a.ov-prun-n`,
+      // so it stays names.css's `-webkit-box` clamping box.
+      expect(painted(n, 'display', PHONE)).toBe('block')
+      // MUTATION: drop `overflow: visible` from the phone's `.ov-page a.ov-prun-n`,
+      // so names.css's `overflow: hidden` hides what runs past the box.
+      expect(painted(n, ['overflow', 'overflow-y'], PHONE)).toBe('visible')
+      // MUTATION: put `white-space: nowrap` on the phone's `.ov-page a.ov-prun-n`.
       expect(painted(n, 'white-space', PHONE)).toBe('normal')
-      // MUTATION: put the ellipsis back on `.ov-prun-n`.
+      // MUTATION: put an ellipsis on the phone's `.ov-page a.ov-prun-n`.
       expect(painted(n, 'text-overflow', PHONE)).toBeNull()
-      // MUTATION: drop `overflow-wrap: anywhere` from `.ov-prun-n`.
+      // MUTATION: drop `overflow-wrap: anywhere` from both `.ov-prun-n` and
+      // names.css's `.ov-page a.ov-prun-n`.
       expect(painted(n, 'overflow-wrap', PHONE)).toBe('anywhere')
     }
   })

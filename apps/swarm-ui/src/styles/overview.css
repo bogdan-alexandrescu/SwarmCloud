@@ -390,6 +390,12 @@
   .ov-fails td.is-num { grid-row: 2; grid-column: 2; text-align: left; }
   .ov-fails td.is-num:last-child { grid-column: 3; text-align: right; }
   .ov-prun, .ov-prun-more { display: block; }
+  /* AND NO TWO-LINE CLAMP EITHER (ffp-002 review, 2026-10-21): names.css's
+     `.ov-page a.ov-prun-n` (0,2,1) outranks the bare `.ov-prun-n` above and
+     cut every Running title at two lines, so the steps of one long-titled
+     workflow still read alike. Same selector, later in the bundle: on a
+     phone the row's title is whole. The desktop cards keep the clamp. */
+  .ov-page a.ov-prun-n { display: block; -webkit-line-clamp: none; line-clamp: none; overflow: visible; }
   .ov-link, .ov-open { position: relative; }
   .ov-link::after, .ov-open::after {
     content: '';
