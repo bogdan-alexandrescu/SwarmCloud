@@ -392,8 +392,8 @@ that attempt's Job or pod (by task id and generation), and anything else stays
 unreadable or unchecked -- never "gone", which would release a slot a live
 agent holds. The gate's [10] (`scripts/e2e-test.sh` `capacity_holder_verdict`)
 always maps it; the reconciler's `GkeBackend.probe` and `namespace_of` map it
-when their caller passes the attempt's task, tenant and generation, and a mapped
-Job must still be a platform-managed Job of that task and generation.
+when their caller passes the attempt's `task_id`, `tenant_id` and generation, and a
+mapped Job must still be a platform-managed Job of that agent and generation.
 
 Any failure in that sequence releases the lease and returns the agent to `READY`.
 A slot held by a container that will never exist is a permanent capacity leak
