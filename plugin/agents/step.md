@@ -251,6 +251,8 @@ these two keys at the top, these keys inside `result`, nothing else:
 {"state": "<state>", "result": {"state": "<state>", "answer_excerpt": "<text>", "cost_usd": <number>, "duration_s": <number>, "pr_url": "<text>", "artifacts": ["<name>"], "last_error": "<text>", "console": "<link>", "questions": []}}
 ```
 
+The object passed to `StructuredOutput` IS `{state, result}`, never wrapped in another `result`.
+
 `<state>` is the state word as the reply gives it (`SUCCEEDED`, `FAILED`,
 `PARKED`, `UNKNOWN`, `running`...). `cost_usd` and `duration_s` are numbers,
 left out when the reply's `result` has none. null is accepted for any field
