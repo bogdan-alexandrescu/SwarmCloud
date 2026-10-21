@@ -73,7 +73,7 @@ from typing import Any, Iterable, Protocol
 #: naming rule cannot disagree about which characters survive.
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 
-from .detect import sanitised
+from .detect import WORKER_EXIT_CANNOT_START, sanitised
 from .model import ExecutionPhase, ExecutionView, JobResourceView, Termination, as_datetime
 from .startproblem import StartProblem, pods_start_problem
 from .startsteps import StartRead, pods_start_steps
@@ -441,6 +441,65 @@ def pod_eviction(pod: Any) -> str | None:
     return _short(message) or "Evicted"
 
 
+#: A Kubernetes memory quantity's binary or decimal suffix, read as a unit a
+#: person reads: "8Gi" is "8 GiB". Anything else is shown as written.
+_QUANTITY = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(Ki|Mi|Gi|Ti|K|M|G|T)?\s*$")
+
+#: Cloud Run's words for a container past its memory limit, e.g. "Memory limit
+#: of 8192 MiB exceeded with 8243 MiB used." It keeps no `OOMKilled` reason, so
+#: this sentence is the only sign; matched loosely, and only ever used to put
+#: "OOMKilled: " in front of Cloud Run's own sentence.
+_CLOUD_RUN_MEMORY = re.compile(r"memory limit\b.*\bexceeded", re.IGNORECASE)
+
+
+def memory_quantity_words(quantity: Any) -> str | None:
+    """A memory limit as a person reads it ("8Gi" -> "8 GiB"), or None when there is none."""
+    text = _short(quantity, 40)
+    if not text:
+        return None
+    matched = _QUANTITY.match(text)
+    if matched is None:
+        return text
+    number, unit = matched.groups()
+    return f"{number} {unit}B" if unit else f"{number} bytes"
+
+
+def _container_memory_limit(pod: Any, container: str | None) -> str | None:
+    """The memory limit the pod spec gave `container`, in words, or None."""
+    spec = getattr(pod, "spec", None)
+    for candidate in getattr(spec, "containers", None) or []:
+        if getattr(candidate, "name", None) != container:
+            continue
+        limits = getattr(getattr(candidate, "resources", None), "limits", None)
+        if isinstance(limits, dict):
+            return memory_quantity_words(limits.get("memory"))
+        return memory_quantity_words(getattr(limits, "memory", None))
+    return None
+
+
+def termination_reason(termination: Any) -> str | None:
+    """Why a finished execution ended, in words for its attempt and its task, or None.
+
+    From the termination the reconciler already read (`Reconciler.
+    _read_terminations`), never a second call: kubelet's eviction message,
+    or the backend's own words for a non-zero exit -- an OOM kill reads
+    "container worker: OOMKilled: the container passed its 8 GiB memory
+    limit (exit code 137)". None when the read found no exit code, exit 0,
+    or the worker's own 78, whose cause the cannot-start rule already puts
+    on the task: those keep today's words (#1822).
+    """
+    if termination is None:
+        return None
+    eviction = getattr(termination, "eviction", None)
+    if eviction:
+        return f"Evicted: {_short(eviction)}"
+    code = getattr(termination, "exit_code", None)
+    if not isinstance(code, int) or isinstance(code, bool) or code in (0, WORKER_EXIT_CANNOT_START):
+        return None
+    detail = _short(getattr(termination, "detail", "") or "")
+    return f"{detail} (exit code {code})" if detail else None
+
+
 def _int_or_none(value: Any) -> int | None:
     try:
         return int(value)
@@ -631,11 +690,13 @@ class CloudRunBackend:
             if not code:
                 continue
             status = getattr(result, "status", None)
-            return Termination(
-                exit_code=code,
-                message=None,
-                detail=_short(getattr(status, "message", "") or f"task exited {code}"),
-            )
+            said = _short(getattr(status, "message", "") or f"task exited {code}")
+            # Cloud Run keeps no `OOMKilled` reason, only its sentence about
+            # the memory limit; name it as GKE does, so a memory kill reads
+            # the same on the task whichever backend ran it (#1822).
+            if _CLOUD_RUN_MEMORY.search(said):
+                said = f"OOMKilled: {said}"
+            return Termination(exit_code=code, message=None, detail=said)
         return None
 
     # -- reads ----------------------------------------------------------
@@ -1782,19 +1843,23 @@ class GkeBackend:
             if eviction is None:
                 return None
             return Termination(exit_code=None, detail="pod evicted", eviction=eviction)
-        _, status, terminated = max(
+        pod, status, terminated = max(
             found,
             key=lambda item: _ensure_utc(getattr(item[2], "finished_at", None))
             or datetime.min.replace(tzinfo=timezone.utc),
         )
         message = getattr(terminated, "message", None)
+        reason = getattr(terminated, "reason", None) or "terminated"
+        if str(reason) == "OOMKilled":
+            # The kernel killed the worker for passing its memory limit. The
+            # limit is on the same pod's spec, from the same `pods list`, so
+            # the task can say which limit without another grant (#1822).
+            limit = _container_memory_limit(pod, getattr(status, "name", None))
+            reason = f"OOMKilled: the container passed its {limit + ' ' if limit else ''}memory limit"
         return Termination(
             exit_code=_int_or_none(getattr(terminated, "exit_code", None)),
             message=str(message) if message else None,
-            detail=_short(
-                f"container {getattr(status, 'name', '?')}: "
-                f"{getattr(terminated, 'reason', None) or 'terminated'}"
-            ),
+            detail=_short(f"container {getattr(status, 'name', '?')}: {reason}"),
             eviction=eviction,
         )
 

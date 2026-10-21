@@ -56,6 +56,7 @@ from .backends import (
     ProbeOutcome,
     cancel_refused_as_not_running,
     is_placeholder_execution_name,
+    termination_reason,
 )
 from .checkpoints import CheckpointCollector, CheckpointStore
 from .config import ReconcilerConfig
@@ -1954,6 +1955,15 @@ class Reconciler:
         # (#332). The fence and the release re-read the task inside their own
         # transactions and refuse while it still holds this lease.
         orphan_lease = finding.kind is FindingKind.ORPHAN_LEASE
+        # Why the execution ended -- an OOM kill and its limit, kubelet's
+        # eviction message -- when this pass read it, in the words the attempt
+        # and the task keep (#1822). Words only: nothing below decides a
+        # state, a release or a fence on it (invariants 3 and 5): the finding
+        # keeps its kind, lease and generation, and only its reason grows.
+        ended_why = self._how_it_ended(finding, snapshot)
+        if ended_why:
+            finding = replace(finding, reason=f"{finding.reason}; {ended_why}")
+            outcome.reason = finding.reason
         if self._config.dry_run:
             outcome.skipped = "dry_run"
             outcome.actions.append(
@@ -2037,7 +2047,7 @@ class Reconciler:
             refund_limit: int | None = None
             if ended_at_startup and to_state is TaskState.READY:
                 what = finding.detail.get("what_ended") or finding.reason
-                error = f"reconciled: {what}"
+                error = f"reconciled: {what}" + (f"; {ended_why}" if ended_why else "")
                 refund_limit = self._config.startup_refund_limit
             # Likewise the disk-eviction count: the store appends whether this
             # eviction is retried or ends the task.
@@ -2161,6 +2171,36 @@ class Reconciler:
             if repaired in TERMINAL_STATES:
                 self._announce_finished(finding.task_id, task.tenant_id, repaired, outcome)
         return outcome
+
+    @staticmethod
+    def _how_it_ended(finding: Finding, snapshot: ControlSnapshot) -> str | None:
+        """Why this finding's execution ended, when the finding does not already say it.
+
+        From `snapshot.terminations`, the read `_read_terminations` already
+        made for this attempt's FAILED execution (`backends.termination_reason`):
+        an OOM kill reads "container worker: OOMKilled: the container passed
+        its 8 GiB memory limit (exit code 137)", an eviction "Evicted:
+        <kubelet's message>". Before #1822 that reached one log line, and the
+        task read "lost_worker" or "lease silent", which cannot tell a memory
+        problem from a dead node.
+
+        None when nothing was read, the read names no reason, or the finding's
+        own words already carry it: the cannot-start rule's worker cause, the
+        eviction rule's cause, a crash already named by its detail.
+        """
+        if finding.kind in (FindingKind.WORKER_CANNOT_START, FindingKind.WORKER_EVICTED):
+            return None
+        if not finding.attempt_id:
+            return None
+        ended = (getattr(snapshot, "terminations", None) or {}).get(finding.attempt_id)
+        words = termination_reason(ended)
+        if not words:
+            return None
+        said = str(getattr(ended, "eviction", None) or getattr(ended, "detail", "") or "")
+        said = " ".join(said.split())
+        if said and said in finding.reason:
+            return None
+        return words
 
     def _announce_finished(
         self, task_id: str, tenant_id: str, state: TaskState, outcome: RepairOutcome
