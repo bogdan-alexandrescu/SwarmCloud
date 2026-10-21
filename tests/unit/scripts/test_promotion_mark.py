@@ -391,7 +391,7 @@ def test_apply_without_conflicts_exits_zero(tmp_path):
 
 
 def test_the_dry_run_prints_the_count_and_only_the_first_twenty_pairs(tmp_path):
-    many = {_pkg("swarm-api"): {digest(f"{i:x}") if i < 16 else "sha256:" + f"{i:02x}" * 32: [f"dev-promoted-{i:08d}"] for i in range(25)}}
+    many = {_pkg("swarm-api"): {f"sha256:{i:064x}": [f"dev-promoted-{i:08d}"] for i in range(25)}}
     proc, _, _ = _remark(tmp_path, many)
     assert proc.returncode == 0, proc.stderr[-3000:]
     # MUTATION: printing every pair, or none, fails here.

@@ -8,7 +8,7 @@
 #   * resolve every image to an immutable sha256 digest;
 #   * optionally scan it before it is allowed near a channel tag;
 #   * attach the channel tag (dev/prod) to that exact digest, and the
-#     promotion mark <channel>-promoted-<tag>, which never moves;
+#     promotion mark promoted-<channel>-<tag>, which never moves;
 #   * write build/deployed-images-<env>.json, which deploy.sh consumes.
 #
 # ALL OR NOTHING, and exactly where that stops being true.
