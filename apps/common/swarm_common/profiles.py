@@ -140,6 +140,299 @@ RESOURCE_CLASSES: dict[str, ResourceClass] = {
 }
 
 
+# RUNNER SIZES AN ADMIN SETS (contract requests 109-110, RS-2 and RS-3,
+# accepted by the owner 2026-10-20 for #1689; docs/design/runner-sizes.md §4.2).
+#
+# The class NAMES and the BOUNDS stay frozen here; the live sizes become a
+# versioned platform setting written by swarm-api's admin route and pinned on
+# each attempt at admission. RESOURCE_CLASSES above are the DEFAULTS: what runs
+# with no version written, and what a Cloud Run profile always runs at,
+# because Cloud Run fixes resources on the Job and not on the execution.
+#
+# Every bound below is checked by `check_size`, the one validator the admin
+# route and the scheduler's read both call, so neither an admin nor a caller
+# can size a pod outside them (invariants 7 and 10).
+
+#: 0.5: Autopilot extended run time's minimum. 8: Cloud Run's ceiling, which
+#: binds every class's REQUEST because every class can be reached by a Cloud
+#: Run profile's step or fallback Job. 0.25: Autopilot's own granularity on a
+#: non-bursting cluster, so a size is valid on both.
+CPU_REQUEST_MIN, CPU_REQUEST_MAX, CPU_REQUEST_STEP = 0.5, 8, 0.25
+#: 32: Cloud Run's ceiling. 2: below it the worker and an agent CLI do not
+#: start (the module docstring's measured 2.5 GiB reference workload).
+MEMORY_GIB_MIN, MEMORY_GIB_MAX = 2, 32
+#: GiB per requested core. Autopilot's general-purpose ratio: outside it
+#: Autopilot silently raises the smaller resource, and bills it.
+MEMORY_PER_CPU_MIN, MEMORY_PER_CPU_MAX = 1.0, 6.5
+#: A live-browser pod's two containers, (cpu request, memory GiB) each at
+#: least. 5 GiB for the display: its resident tmpfs plus its measured peak is
+#: 4.73 GiB (scheduler dispatch.py, the LIVE_DISPLAY_SHARE comment).
+LIVE_WORKER_MIN = (1, 2)
+LIVE_DISPLAY_MIN = (1, 5)
+#: Smallest first. A workflow step may name a SMALLER class than its
+#: profile's (`validate_resource_class_override`), so a resize that made
+#: `standard` larger than `browser` would let a step grow by "shrinking".
+CLASS_ORDER = ("standard", "browser", "large")
+
+
+def units_for(cpu_request: float, memory_gib: int) -> int:
+    """The capacity units a size charges: one per 4 requested cores or 8 GiB,
+    whichever is more. Derived, so a resize cannot leave the budget charging
+    the wrong weight; it reproduces today's 1 / 1 / 4."""
+    return max(math.ceil(cpu_request / 4), math.ceil(memory_gib / 8))
+
+
+for _rc in RESOURCE_CLASSES.values():
+    if _rc.units != units_for(_rc.cpu, _rc.memory_gib):
+        raise ValueError(
+            f"resource class {_rc.name}: units {_rc.units} is not "
+            f"units_for({_rc.cpu}, {_rc.memory_gib}) = {units_for(_rc.cpu, _rc.memory_gib)}"
+        )
+del _rc
+
+
+@dataclass(frozen=True)
+class LiveShare:
+    """One container's part of a live-browser pod: the worker or the display.
+
+    Memory is request AND limit, as everywhere (invariant 7)."""
+
+    cpu_request: float
+    cpu_limit: float
+    memory_gib: int
+
+
+@dataclass(frozen=True)
+class ResourceSize:
+    """A resource class's size in one version of the setting.
+
+    `memory_gib` and `disk_gib` are request AND limit; only CPU has two
+    numbers. `live_split` is (worker, display) for a live-browser pod, whose
+    requests and memories sum to the class's. Nothing is checked at
+    construction: a stored version is parsed into this shape and THEN judged
+    by `check_size`, which reports every refusal instead of the first.
+    """
+
+    cpu_request: float
+    cpu_limit: float
+    memory_gib: int
+    disk_gib: int
+    live_split: tuple[LiveShare, LiveShare] | None = None
+
+    @property
+    def units(self) -> int:
+        return units_for(self.cpu_request, self.memory_gib)
+
+
+@dataclass(frozen=True)
+class SizeRefusal:
+    """One bound a size breaks. `field` is the size's field, or for a live
+    split `live_split.<worker|display>.<field>` (`live_split.<field>` for a
+    sum); `bound` is the rule, worded with the number it works out to."""
+
+    resource_class: str
+    field: str
+    value: float | None
+    bound: str
+
+
+#: The browser class's default live split, worker then display: the 2 / 2
+#: requests of BROWSER-SPLIT with memory unchanged (3 / 5 GiB), the worker at
+#: the class's burst ratio and the display's limit at 3, its size before the
+#: split (design §4.1). The scheduler's LIVE_DISPLAY_SHARE renders the same
+#: pod; tests/unit/common/test_runner_size_shape.py holds the two together.
+_DEFAULT_LIVE_SPLIT: dict[str, tuple[LiveShare, LiveShare]] = {
+    "browser": (
+        LiveShare(cpu_request=2, cpu_limit=4, memory_gib=3),
+        LiveShare(cpu_request=2, cpu_limit=3, memory_gib=5),
+    ),
+}
+
+_DEFAULT_SIZES: Mapping[str, ResourceSize] = MappingProxyType(
+    {
+        name: ResourceSize(
+            cpu_request=rc.cpu,
+            cpu_limit=rc.cpu_limit_cores,
+            memory_gib=rc.memory_gib,
+            disk_gib=rc.disk_gib,
+            live_split=_DEFAULT_LIVE_SPLIT.get(name),
+        )
+        for name, rc in RESOURCE_CLASSES.items()
+    }
+)
+
+
+def default_sizes() -> Mapping[str, ResourceSize]:
+    """The code defaults, read-only: version 0, what runs with no version
+    written, and what a Cloud Run profile always runs at."""
+    return _DEFAULT_SIZES
+
+
+def effective_size(
+    name: str, version: Mapping[str, ResourceSize] | None, backend: Backend
+) -> ResourceSize:
+    """`version`'s size for a GKE profile; the code default for Cloud Run.
+
+    Cloud Run fixes resources on the Job, not the execution, so a Cloud Run
+    profile cannot follow a version (design §4.7, owner Q3 A). `version` None,
+    or a version that omits `name`, is the default. `backend` must be resolved
+    (`resolve_backend`): AUTO says nothing about where a pod runs. An unknown
+    class is a KeyError: an admin resizes classes, never creates one.
+    """
+    default = _DEFAULT_SIZES[name]
+    if backend is Backend.AUTO:
+        raise ValueError(f"effective_size({name!r}) needs a resolved backend; call resolve_backend first")
+    if backend is not Backend.GKE_AUTOPILOT or version is None:
+        return default
+    return version.get(name, default)
+
+
+def _number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+def _integer(value: Any) -> bool:
+    return _number(value) and float(value).is_integer()
+
+
+def _on_step(value: float) -> bool:
+    return float(value / CPU_REQUEST_STEP).is_integer()
+
+
+def _shown(value: Any) -> float | None:
+    return value if _number(value) else None
+
+
+def _check_cpu(
+    name: str, prefix: str, request: Any, limit: Any, minimum: float, out: list[SizeRefusal]
+) -> bool:
+    """The request's bounds and step, then the limit's ratio to it. True when
+    the request is a usable number (so the callers may compare with it)."""
+    def refuse(field_name: str, value: Any, bound: str) -> None:
+        out.append(SizeRefusal(name, prefix + field_name, _shown(value), bound))
+
+    if not _number(request):
+        refuse("cpu_request", request, "cpu_request is a number")
+        if not _number(limit):
+            refuse("cpu_limit", limit, "cpu_limit is a number")
+        return False
+    if not minimum <= request <= CPU_REQUEST_MAX:
+        refuse("cpu_request", request, f"{minimum} <= cpu_request <= {CPU_REQUEST_MAX}")
+    if not _on_step(request):
+        refuse("cpu_request", request, f"cpu_request is a multiple of {CPU_REQUEST_STEP}")
+    if not _number(limit):
+        refuse("cpu_limit", limit, "cpu_limit is a number")
+    elif limit < request:
+        refuse("cpu_limit", limit, f"cpu_limit >= cpu_request ({request:g})")
+    elif limit > CPU_BURST_MAX_RATIO * request:
+        refuse(
+            "cpu_limit",
+            limit,
+            f"cpu_limit <= {CPU_BURST_MAX_RATIO} x cpu_request ({CPU_BURST_MAX_RATIO * request:g})",
+        )
+    return True
+
+
+def _check_live_split(name: str, size: ResourceSize, out: list[SizeRefusal]) -> None:
+    split = size.live_split
+    if split is None:
+        return
+    if (
+        not isinstance(split, tuple)
+        or len(split) != 2
+        or not all(isinstance(share, LiveShare) for share in split)
+    ):
+        out.append(SizeRefusal(name, "live_split", None, "live_split is (worker, display)"))
+        return
+    sums_known = True
+    for role, share, (min_cpu, min_memory) in (
+        ("worker", split[0], LIVE_WORKER_MIN),
+        ("display", split[1], LIVE_DISPLAY_MIN),
+    ):
+        prefix = f"live_split.{role}."
+        cpu_ok = _check_cpu(name, prefix, share.cpu_request, share.cpu_limit, min_cpu, out)
+        memory = share.memory_gib
+        if not _integer(memory):
+            out.append(SizeRefusal(name, prefix + "memory_gib", _shown(memory), "memory_gib is an integer"))
+            sums_known = False
+        elif memory < min_memory:
+            out.append(SizeRefusal(name, prefix + "memory_gib", memory, f"memory_gib >= {min_memory}"))
+        sums_known = sums_known and cpu_ok
+    if not sums_known:
+        return
+    worker, display = split
+    if _number(size.cpu_request) and worker.cpu_request + display.cpu_request != size.cpu_request:
+        out.append(SizeRefusal(
+            name, "live_split.cpu_request", worker.cpu_request + display.cpu_request,
+            f"worker + display cpu_request == the class's ({size.cpu_request:g})",
+        ))
+    if _integer(size.memory_gib) and worker.memory_gib + display.memory_gib != size.memory_gib:
+        out.append(SizeRefusal(
+            name, "live_split.memory_gib", worker.memory_gib + display.memory_gib,
+            f"worker + display memory_gib == the class's ({size.memory_gib:g})",
+        ))
+
+
+def _check_one(name: str, size: ResourceSize, out: list[SizeRefusal]) -> None:
+    cpu_ok = _check_cpu(name, "", size.cpu_request, size.cpu_limit, CPU_REQUEST_MIN, out)
+    memory = size.memory_gib
+    memory_ok = _integer(memory)
+    if not memory_ok:
+        out.append(SizeRefusal(name, "memory_gib", _shown(memory), "memory_gib is an integer"))
+    elif not MEMORY_GIB_MIN <= memory <= MEMORY_GIB_MAX:
+        out.append(SizeRefusal(name, "memory_gib", memory, f"{MEMORY_GIB_MIN} <= memory_gib <= {MEMORY_GIB_MAX}"))
+    if cpu_ok and memory_ok and size.cpu_request > 0:
+        ratio = memory / size.cpu_request
+        if not MEMORY_PER_CPU_MIN <= ratio <= MEMORY_PER_CPU_MAX:
+            out.append(SizeRefusal(
+                name, "memory_per_cpu", ratio,
+                f"{MEMORY_PER_CPU_MIN:g} <= memory_gib / cpu_request <= {MEMORY_PER_CPU_MAX:g}",
+            ))
+    disk = size.disk_gib
+    if not _integer(disk):
+        out.append(SizeRefusal(name, "disk_gib", _shown(disk), "disk_gib is an integer"))
+    elif disk < 1 or (memory_ok and disk > memory - 2):
+        ceiling = f"{memory - 2:g}" if memory_ok else "memory_gib - 2"
+        out.append(SizeRefusal(name, "disk_gib", disk, f"1 <= disk_gib <= memory_gib - 2 ({ceiling})"))
+    _check_live_split(name, size, out)
+
+
+def check_size(sizes: Mapping[str, ResourceSize]) -> list[SizeRefusal]:
+    """Every bound the table `sizes` breaks; empty when it may be used.
+
+    Pure: no I/O, no clock, nothing cached. It takes the whole table so it can
+    check `CLASS_ORDER`; a class the table omits is judged as its default
+    (what `effective_size` falls back to), and a name that is not a class is
+    refused. Every refusal is returned, not the first, so an admin sees all
+    of them at once.
+    """
+    out: list[SizeRefusal] = []
+    for name in sorted(set(sizes) - set(CLASS_ORDER)):
+        out.append(SizeRefusal(name, "resource_class", None, f"resource_class is one of {CLASS_ORDER}"))
+    table = {name: sizes.get(name, _DEFAULT_SIZES[name]) for name in CLASS_ORDER}
+    for name in CLASS_ORDER:
+        size = table[name]
+        if not isinstance(size, ResourceSize):
+            out.append(SizeRefusal(name, "resource_class", None, "a size is a ResourceSize"))
+            continue
+        _check_one(name, size, out)
+    for smaller, larger in zip(CLASS_ORDER, CLASS_ORDER[1:]):
+        low, high = table[smaller], table[larger]
+        if not (isinstance(low, ResourceSize) and isinstance(high, ResourceSize)):
+            continue
+        for field_name in ("cpu_request", "memory_gib", "disk_gib"):
+            a, b = getattr(low, field_name), getattr(high, field_name)
+            if _number(a) and _number(b) and a > b:
+                bound = f"{smaller} <= {larger} in {field_name} ({smaller} {a:g}, {larger} {b:g})"
+                out.append(SizeRefusal(smaller, field_name, a, bound))
+                out.append(SizeRefusal(larger, field_name, b, bound))
+    return out
+
+
 @dataclass(frozen=True)
 class ModelClass:
     """A model family a step may name (contract request 100, #1435).

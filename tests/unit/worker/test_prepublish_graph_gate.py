@@ -77,6 +77,9 @@ def _fixture_repo(tmp_path: Path, *, snapshot: bool = True) -> tuple[Path, str]:
         "apps/ui/tsconfig.json": "{}\n",
         "apps/ui/src/Widget.tsx": WIDGET,
         "apps/ui/src/Widget.test.tsx": WIDGET_TEST,
+        # A root Python project: graph-pytest runs each selected file from
+        # the nearest project above it (#1756), and a file under none is skipped.
+        "pyproject.toml": '[project]\nname = "fixture"\nversion = "0"\n',
         "pkg/__init__.py": "",
         "pkg/mod.py": MOD,
         "tests/test_mod.py": MOD_TEST,
