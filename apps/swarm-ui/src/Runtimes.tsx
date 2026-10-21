@@ -506,6 +506,11 @@ interface Distinction {
  * that it is about. A runtime that shares everything gets the real-zero mark,
  * which is what that finding already looked like.
  */
+/** A credential satisfied by any one of two or more secrets. */
+function eitherSecret(r: Runtime): boolean {
+  return r.provider !== null && r.secrets_any_of && r.secrets.length > 1
+}
+
 function distinguishing(r: Runtime, all: Runtime[]): Distinction[] {
   const facts: Distinction[] = []
   // A catalogue of one has nothing to be told apart from.
@@ -533,7 +538,21 @@ function distinguishing(r: Runtime, all: Runtime[]): Distinction[] {
       key: 'cred',
       value: r.provider === null ? 'the only runtime that needs no credential' : 'the only runtime that needs this credential',
     })
+  } else if (eitherSecret(r) && all.filter(eitherSecret).length === 1) {
+    // HOW IT TAKES ITS SECRETS, WHEN NOTHING ELSE TAKES THEM THAT WAY (visual
+    // QA run 2, capacity-006). Its cred row reads `any one of A, B` where every
+    // other runtime's names one secret or needs all of them; that is the fact
+    // a tenant with only a subscription is looking for. Under the provider's
+    // line when both hold, so one key never says two things.
+    facts.push({ key: 'cred', value: 'the only runtime that takes any one of its secrets' })
   }
+
+  // THE CLASSES NOTHING ELSE OFFERS (capacity-006). A step names a class, so a
+  // class only this runtime serves is a reason to pick it; a class another
+  // runtime also offers tells nothing apart. Listed in the card's own order.
+  const elsewhere = new Set(all.filter((x) => x !== r).flatMap((x) => x.model_classes ?? []))
+  const own = (r.model_classes ?? []).filter((c) => !elsewhere.has(c))
+  if (own.length > 0) facts.push({ key: 'model classes', value: `the only runtime offering ${own.join(', ')}` })
 
   const timeouts = all.map((x) => x.timeout_seconds)
   if (soleExtreme(r.timeout_seconds, timeouts, 'max')) {
@@ -644,18 +663,24 @@ function RuntimeCard({
             finding `mem` is a glance down an edge rather than reading a line. */}
         <ul className="ctl-facts is-rows">
           {/* `rt-runs-on` / `rt-backend` (QA-010): the backend is one token
-              and the declared backend beside it wraps under it, never the other way round. */}
+              and the declared backend beside it wraps under it, never the other way round.
+              ONE VALUE ITEM (capacity-007, run 2): as two items of the fact, a
+              wrapped declared backend (`← ` and its name) went to the row's start, under `runs on`, and read
+              as a second key. Inside `rt-runs-on-value` it wraps to the value
+              column's x, under the backend it was resolved to. */}
           <li className="ctl-fact rt-runs-on">
             <b>runs on</b>
-            <span className="mono rt-backend">{runtime.resolved_backend}</span>
-            {platformChose && (
-              <span
-                className="rt-declared"
-                title={`The profile declares ${runtime.backend}; resolve_backend turned it into ${runtime.resolved_backend}.`}
-              >
-                ← {runtime.backend}
-              </span>
-            )}
+            <span className="rt-runs-on-value">
+              <span className="mono rt-backend">{runtime.resolved_backend}</span>
+              {platformChose && (
+                <span
+                  className="rt-declared"
+                  title={`The profile declares ${runtime.backend}; resolve_backend turned it into ${runtime.resolved_backend}.`}
+                >
+                  ← {runtime.backend}
+                </span>
+              )}
+            </span>
           </li>
           <li className="ctl-fact">
             {/* §8.4(1): THE LABEL IS THE EXPLANATION. "before the platform
