@@ -282,9 +282,11 @@ describe('#139 at 390: a long page has a way back to the top', () => {
     // figures and text that scrolled under it; it rides in the header now).
     const c = await at('/help')
     const scroller = c.querySelector<HTMLElement>('.ctl-scroll')!
-    expect(c.querySelector('.sk-top')).toBeNull()
+    // Its slot is held from the first frame, idle and hidden (visual QA run 3,
+    // work-b-007; shell.qafix3.test.tsx): offered means not idle.
+    expect(c.querySelector('.sk-top:not(.is-idle)')).toBeNull()
     await scrollTo(scroller, 6000)
-    const top = c.querySelector<HTMLElement>('.sk-top')
+    const top = c.querySelector<HTMLElement>('.sk-top:not(.is-idle)')
     expect(top, 'a long page has no `Top`').not.toBeNull()
     expect(top!.parentElement?.classList.contains('sk-pbar'), '`Top` is not in the phone header').toBe(true)
     expect(scroller.contains(top!), '`Top` floats over the page').toBe(false)

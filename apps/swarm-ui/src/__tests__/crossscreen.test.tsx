@@ -465,14 +465,16 @@ describe('#139: the phone header compacts on scroll, and a long page has a way b
     const scroller = document.querySelector<HTMLElement>('.ctl-scroll')!
     const app = document.querySelector('.sk-app')!
     expect(app.classList.contains('is-scrolled')).toBe(false)
-    expect(document.querySelector('.sk-top')).toBeNull()
+    // Its slot is held from the first frame, idle and hidden (visual QA run 3,
+    // work-b-007; shell.qafix3.test.tsx): offered means not idle.
+    expect(document.querySelector('.sk-top:not(.is-idle)')).toBeNull()
 
     await act(async () => {
       scroller.scrollTop = 120
       scroller.dispatchEvent(new Event('scroll'))
     })
     expect(app.classList.contains('is-scrolled'), 'the header did not compact').toBe(true)
-    expect(document.querySelector('.sk-top'), '`Top` after one swipe').toBeNull()
+    expect(document.querySelector('.sk-top:not(.is-idle)'), '`Top` after one swipe').toBeNull()
 
     await act(async () => {
       scroller.scrollTop = 4000
@@ -490,7 +492,7 @@ describe('#139: the phone header compacts on scroll, and a long page has a way b
       fireEvent.click(top)
     })
     expect(scroller.scrollTop).toBe(0)
-    expect(document.querySelector('.sk-top')).toBeNull()
+    expect(document.querySelector('.sk-top:not(.is-idle)')).toBeNull()
     expect(app.classList.contains('is-scrolled')).toBe(false)
   })
 

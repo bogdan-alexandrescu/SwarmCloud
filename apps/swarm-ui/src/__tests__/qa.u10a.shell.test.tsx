@@ -227,7 +227,10 @@ describe('D39: the phone frame', () => {
     // MUTATION: drop the phone flex-wrap -- the facts would run together with no separator.
     expect(painted(strip, 'display', PHONE)).toBe('flex')
     expect(painted(strip, 'flex-wrap', PHONE)).toBe('wrap')
-    expect(painted(strip, 'column-gap', PHONE)).toBe('10px')
+    // The 10px between facts is each fact's 5px either side of its hairline
+    // now (visual QA run 3, work-a-008; shell.qafix3.test.tsx holds the rule).
+    expect(painted(strip, 'column-gap', PHONE)).toBe('0')
+    expect(painted(facts[1]!, 'padding', PHONE)).toBe('0 5px')
     // Wider, the line is as it was: dotted, on one line.
     expect(painted(seps[0]!, 'display', WIDE)).not.toBe('none')
     expect(painted(strip, 'display', WIDE)).not.toBe('flex')

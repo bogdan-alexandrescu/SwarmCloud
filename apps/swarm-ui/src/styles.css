@@ -685,6 +685,12 @@ body {
      covered the first Tab stop. `--ctl-bar-h` is the bar's height, 0 where
      none is drawn (notifications.css), so a page without one keeps its top. */
   scroll-padding-top: var(--ctl-bar-h, 0px);
+  /* THE GUTTER IS HELD ON EVERY TAB (visual QA run 3, capacity-009 and
+     work-b-005, part of #1680). A tab whose content overflows this scroller
+     drew a 15px scrollbar and a tab that scrolls an inner pane (Accounts'
+     split, an open agent) drew none, so the page's right edge jumped 15px
+     between tabs. Overlay scrollbars (a phone) take no gutter either way. */
+  scrollbar-gutter: stable;
 }
 /* THE GRID MOVED INTO THE CONTENT COLUMN (#503). The frame was the two-row
    grid, so the dock ran the full width of the window -- under the spine and
@@ -6181,9 +6187,14 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    It carries NO size: it is the most specific part of the breadcrumb and used
    to be drawn a pixel SMALLER than the trail leading to it. §B4.1 channel 1 —
    the value is full size and the tone does the separating. */
+/* NO CAP OF ITS OWN (visual QA run 3, task-013, part of #1680). It had
+   `max-width: 34ch`, and once the split names the agent the segment is that
+   name, `claude-code-browser agent · b40e5a1c`, 36 characters: it was cut
+   to `… · b40e…` with half the row empty. As the trail's last child it already
+   gives way to the row and ellipses (`.ctl-crumb > :last-child`, above), so
+   the age keeps its place without a second limit that fires early. */
 .ctl-crumb-obj {
   color: var(--text);
-  max-width: 34ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6460,8 +6471,16 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    is as it was. */
 .ctl-dock-sep { white-space: normal; }
 @media (max-width: 560px) {
-  .ctl-dock-facts { display: flex; flex-wrap: wrap; column-gap: 10px; row-gap: 0; }
+  /* AND A HAIRLINE PARTS THEM (visual QA run 3, work-a-008 and work-b-003,
+     part of #1680): spaced only, `3 routes p95 382ms 0 failed` ran together.
+     Every fact carries a rule on its left, pulled 1px outside its box, and
+     the facts are clipped: a fact that starts a line has its rule at -1px,
+     outside the clip, so no rule ever starts a line -- the dangling ` · `
+     QA-039 removed, turned round. The 10px gap QA-039 left is the fact's own
+     5px either side of the rule now, so the column gap is 0. */
+  .ctl-dock-facts { display: flex; flex-wrap: wrap; column-gap: 0; row-gap: 0; overflow: hidden; }
   .ctl-dock-sep { display: none; }
+  .ctl-dock-facts > .ctl-dock-fact { margin-left: -1px; padding: 0 5px; border-left-width: 1px; border-left-style: solid; border-left-color: var(--text-faint); }
 }
 .ctl-dock-bad { color: var(--bad-ink); }
 .ctl-dock-caret { margin-left: auto; flex: none; color: var(--text-faint); }
@@ -10682,6 +10701,14 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
    760px only. They are page links, so they keep the page's own focus ring
    (`:where(a:focus-visible)`), not the chrome's sky one. */
 .sk-otp { display: flex; flex-wrap: nowrap; gap: 6px; overflow-x: auto; margin: 0 0 12px; padding: 0 2px 4px; scrollbar-width: none; }
+/* THE ROW SAYS IT SCROLLS (visual QA run 3, ffp-001, part of #1680). Its
+   scrollbar is hidden, so a row cut at the glass edge read as complete, and
+   Recent failures -- fifth of eight -- was never found. The side with more
+   chips past it fades over its last 40px (`PhoneJumps` marks it on scroll),
+   so the cut chip reads as continuing; a row that fits is not masked. */
+.sk-otp.is-more-end { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); }
+.sk-otp.is-more-start { -webkit-mask-image: linear-gradient(to right, transparent, #000 40px); mask-image: linear-gradient(to right, transparent, #000 40px); }
+.sk-otp.is-more-start.is-more-end { -webkit-mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent); mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent); }
 .sk-oj { display: inline-flex; align-items: center; flex: none; min-height: 44px; padding: 0 12px; border: 1px solid var(--line-soft); border-radius: 999px; background: var(--sk-hv); color: var(--text); white-space: nowrap; text-decoration: none; font: var(--t-meta)/var(--lh-meta) var(--font); }
 .sk-pfoot { margin-top: 4px; border-top: 1px solid var(--sk-ln); padding: 10px 16px 0; display: flex; flex-direction: column; }
 /* THE PRINCIPAL STAYS INSIDE THE PANEL (visual QA V054, 2026-10-11). The
@@ -10793,6 +10820,13 @@ span.sk-ttile { cursor: default; }
 .c-phead > .head { margin: 0; flex: none; align-items: center; gap: var(--ctl-s2); flex-wrap: nowrap; }
 .c-phead > .c-acts { margin-left: auto; flex: 0 1 auto; min-width: 0; display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: var(--ctl-s2) var(--ctl-s3); font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .c-phead > .c-acts:empty { display: none; }
+/* THE TITLE SITS AT ONE HEIGHT, WHATEVER THE ACTIONS (visual QA run 3,
+   work-b-008, part of #1680). The row is centred, so a head whose actions
+   stand taller than the 32px floor -- Access's segmented control beside its
+   refresh and Setup button -- carried its title 2-4px lower than Setup's.
+   The title block keeps to the row's top, centred in a control's height:
+   on every page the title is where a 32px row would centre it. */
+.c-phead > div.head { align-self: flex-start; min-height: var(--h-ctl); }
 .c-acts > .ctl-head-age { margin: 0; min-width: 0; font: inherit; color: inherit; white-space: nowrap; }
 /* QUIET: no box, no underline, no accent at rest -- the age is a reading,
    and the glyph says it is also the way to renew it. Ink on hover, the accent
@@ -10977,6 +11011,12 @@ span.sk-ttile { cursor: default; }
   }
   .sk-pbar .sk-top:hover { background: #194b89; color: #fff; }
   .sk-pbar .sk-top:focus-visible { outline: 2px solid #7cc8f8; outline-offset: 2px; }
+  /* HELD, NOT ABSENT, UNTIL THE PAGE IS FAR DOWN (visual QA run 3,
+     work-b-007, part of #1680). Mounted on arrival, `Top` pushed the tags
+     beside it about 60px left. Spine.tsx keeps the button in the row from
+     the first frame; `visibility` keeps its width and hides it, and takes it
+     out of the tab order and the accessibility tree with it. */
+  .sk-pbar .sk-top.is-idle { visibility: hidden; }
 }
 
 /* --- the state marks: one mark and one hue per state (marks.tsx) -------- */
