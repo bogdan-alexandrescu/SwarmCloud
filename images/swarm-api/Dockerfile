@@ -232,4 +232,7 @@ EXPOSE 8080
 # uvicorn is given --factory. sh -c is needed because Cloud Run supplies the
 # port through $PORT and the exec form performs no variable expansion; `exec`
 # keeps uvicorn as the signal-receiving child of tini rather than a grandchild.
-ENTRYPOINT ["/usr/bin/tini", "--", "sh", "-c", "exec uvicorn --factory swarm_api.main:create_app --host 0.0.0.0 --port ${PORT:-8080}"]
+# The echo comes first so a start that is killed before uvicorn binds still
+# shows the container ran (#1816: five killed starts logged nothing). It prints
+# a fixed text and the date only -- never an environment value.
+ENTRYPOINT ["/usr/bin/tini", "--", "sh", "-c", "echo \"swarm-api container started $(date -u +%FT%TZ)\"; exec uvicorn --factory swarm_api.main:create_app --host 0.0.0.0 --port ${PORT:-8080}"]

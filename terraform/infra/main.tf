@@ -317,6 +317,14 @@ module "cloud_run" {
       min_instances = 2
       cpu           = "1"
       memory        = "1Gi"
+      # 36 STARTUP-PROBE FAILURES, NOT THE MODULE'S 12 (owner decision (d),
+      # 2026-10-21, #1816). The probe polls every 5 s, and with 12 failures a
+      # start is killed at about 96 s; healthy but slow swarm-api starts were
+      # measured at 61-77 s on 2026-10-21 and five starts were killed. 36 gives
+      # three times the window. It costs nothing: a start that binds earlier is
+      # ready the moment it binds, and min_instances stays 2. Every other
+      # service keeps 12.
+      startup_failure_threshold = 36
       # The ONLY control-plane service that calls another one. It proxies every
       # account-pool request to the quota broker, whose ingress is
       # internal-and-cloud-load-balancing; under PRIVATE_RANGES_ONLY the

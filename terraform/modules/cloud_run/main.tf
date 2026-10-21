@@ -141,7 +141,8 @@ resource "google_cloud_run_v2_service" "this" {
         initial_delay_seconds = 5
         period_seconds        = 5
         timeout_seconds       = 3
-        failure_threshold     = 12
+        # Per service, default 12 (variables.tf says why).
+        failure_threshold = each.value.startup_failure_threshold
       }
 
       dynamic "liveness_probe" {
