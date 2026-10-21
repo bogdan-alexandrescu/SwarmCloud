@@ -591,6 +591,30 @@ resource "google_firestore_field" "reconciler_passes_ttl" {
   index_config {}
 }
 
+# Executions Cloud Run refuses to cancel while no lease names them (#1822). The
+# reconciler keeps one record each, with its backoff, and stamps `expires_at`
+# (next try plus WEDGED_RECORD_RETENTION, 7 days) on every write. A confirmed
+# stop deletes the record, so a TTL deletion only ever removes one whose
+# execution was never confirmed stopped and has not been retried for a week;
+# the next pass that sees it starts a fresh backoff. Not gated on
+# var.event_ttl_field: the reconciler writes the literal `expires_at`, and
+# switching the audit-trail TTLs off must not make these permanent.
+#
+# google_firestore_field takes no labels, so managed-by=swarm-terraform cannot
+# be carried here; it is owned by the database it sits on.
+resource "google_firestore_field" "reconciler_wedged_executions_ttl" {
+  project    = var.project_id
+  database   = google_firestore_database.this.name
+  collection = "reconciler_wedged_executions"
+  field      = "expires_at"
+
+  ttl_config {}
+
+  # Never queried on: records are read by their execution-digest document id.
+  # The default single-field index would be write amplification on every retry.
+  index_config {}
+}
+
 # The outcome rollup (swarm_api.outcomes) keeps each tenant-day's tuples as ONE
 # JSON string field per kind, up to ~700 KB. Firestore indexes every field by
 # default, and a single-field index entry on a string that long is both

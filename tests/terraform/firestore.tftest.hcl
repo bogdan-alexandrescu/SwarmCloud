@@ -243,7 +243,7 @@ run "account_hold_ttl_survives_turning_the_audit_ttls_off" {
 }
 
 # The reconciler's record of a Cloud Run execution that refuses cancellation
-# while no lease names it (#1822). repair.Reconciler._terminate stamps
+# while no lease names it (#1822). repair.Reconciler._back_off_wedged stamps
 # `expires_at` (next try plus 7 days) on every write and deletes the record
 # once a stop is confirmed, so the only records a TTL ever removes are ones
 # whose execution was never confirmed stopped and has not been retried for a
@@ -261,7 +261,7 @@ run "wedged_execution_records_expire_on_expires_at" {
       google_firestore_field.reconciler_wedged_executions_ttl.field == "expires_at" &&
       length(google_firestore_field.reconciler_wedged_executions_ttl.ttl_config) == 1
     )
-    error_message = "reconciler_wedged_executions must expire on expires_at, the field repair.Reconciler._terminate writes"
+    error_message = "reconciler_wedged_executions must expire on expires_at, the field repair.Reconciler._back_off_wedged writes"
   }
 }
 

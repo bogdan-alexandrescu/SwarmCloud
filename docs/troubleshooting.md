@@ -171,9 +171,22 @@ exits without running anything. Until then, the hold's `why` gives the time
 left. A fenced generation whose lease is still held is named as such (#560).
 
 Executions under a `swarm-` job that carry no task id and no attempt id (CI's
-`gcloud run jobs execute` runs) are not the platform's. They are logged once
-each (`carries no attempt id`), they are excluded, and they never make Cloud Run
-count as unreadable.
+`gcloud run jobs execute` runs) are not the platform's. They are excluded, and
+they never make Cloud Run count as unreadable. Only an unfinished one is logged
+(`carries no attempt id`), once per reconciler instance, and only inside its first 15 minutes
+(`UNATTRIBUTED_REPORT_HORIZON_SECONDS`); a finished one is not logged at all and
+is counted as `unattributed_finished` in the pass summary instead.
+
+**A Cloud Run execution that refuses cancellation while no lease names it is
+backed off, not retried every pass** (#1822). The reconciler records it in the
+`reconciler_wedged_executions` collection (one document per execution, keyed by
+a digest of its name) and logs `cloud run will not cancel this execution and no
+lease holds it; backing off`. It retries the cancel on a backoff that starts at
+5 minutes and doubles, capped at 6 hours. A confirmed stop deletes the record.
+Each record carries `expires_at`, its next try plus 7 days, and a Firestore TTL
+policy on that field removes it; a record the TTL removes is one whose execution
+was never confirmed stopped, so if it is still there the next pass records it
+again and starts a fresh backoff.
 
 **A hold is never silent.** A lease left past its TTL for longer than
 `HELD_LEASE_ALERT_MINUTES` (15) is logged at ERROR as `lease held past its TTL;
