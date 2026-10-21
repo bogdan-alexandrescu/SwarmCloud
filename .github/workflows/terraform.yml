@@ -300,7 +300,15 @@ jobs:
           set -euo pipefail
           # -out is relative to -chdir, but a shell redirection is not, so both
           # derived files are written explicitly under the root.
-          terraform -chdir=${{ env.TF_ROOT }} plan -input=false -lock-timeout=120s \
+          #
+          # -lock-timeout=900s, not 120s (#1874). This job's concurrency group
+          # serialises terraform.yml's own runs, not a release's apply, so the
+          # two meet only at the state lock: a main plan that starts during a
+          # release's "pin, plan, guard, classify and apply" waits for it. That
+          # step held the lock 108-518 s in the six successful releases read on
+          # 2026-10-21, and a 120 s wait turned main red for 7b0f769a, a commit
+          # that broke nothing. 900 s is what hotfix.yml's apply already waits.
+          terraform -chdir=${{ env.TF_ROOT }} plan -input=false -lock-timeout=900s \
             -var-file="../environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars" \
             -var-file="${GITHUB_WORKSPACE}/build/image-refs.tfvars.json" \
             -out=plan.tfplan -no-color | tee "${TF_ROOT}/plan.txt"
