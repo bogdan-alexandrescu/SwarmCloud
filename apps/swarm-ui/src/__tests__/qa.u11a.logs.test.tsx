@@ -13,7 +13,7 @@
  * stream from the segmented control or let it spill into More; drop the
  * default-tab effect or send a running, finished or waiting agent to Logs; drop `onMoreKey`'s
  * `stopPropagation`; restore `flex-wrap: wrap` on the bar or drop the spill
- * effect; drop `top: 16px` or the `- 16px`. Each turns a case red.
+ * effect; drop the `+ 16px` from `top` or the `- 16px`. Each turns a case red.
  */
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
@@ -555,9 +555,11 @@ describe('D7: the column ends at the scrollport, above the API-reads line', () =
       const col = host.querySelector('.ag-split')!
       const pad = painted(app, ['padding-top'], WIDE)
       expect(pad).toBe('16px')
-      expect(painted(col, 'top', WIDE)).toBe(pad)
+      // No trail bar here, so `--ctl-bar-h` is 0 and the column sits the page padding down
+      // (under a bar it sits the bar's height lower too: qafix3.agenthead.test.tsx, task-010).
+      expect(painted(col, 'top', WIDE)).toBe(`calc(0px + ${pad})`)
       const h = painted(col, 'height', WIDE) ?? ''
-      expect(h.replace(/\s+/g, ' ')).toMatch(/^calc\(100vh - (var\(--dock-h, 28px\)|28px) - 16px\)$/)
+      expect(h.replace(/\s+/g, ' ')).toMatch(/^calc\(100vh - (var\(--dock-h, 28px\)|28px) - 0px - 16px\)$/)
       expect(painted(col, 'max-height', WIDE)).toBe(h)
       // Covering the list (a phone's full screen), it ends above that line too.
       expect(painted(col, 'bottom', { width: 390 })).toMatch(/^(var\(--dock-h, 28px\)|28px)$/)

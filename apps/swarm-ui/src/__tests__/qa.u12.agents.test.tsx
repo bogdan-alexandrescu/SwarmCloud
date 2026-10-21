@@ -227,7 +227,8 @@ describe('R4: the detail header stays in view at the foot of a long list', () =>
     expect(painted(app, ['padding-bottom'], WIDE), 'the column rises by the padding under it').toBe('0')
     expect(painted(host.querySelector('.work')!, 'padding-bottom', WIDE)).toBe('48px')
     expect(painted(col, 'position', WIDE)).toBe('sticky')
-    expect(painted(col, 'top', WIDE)).toBe('16px')
+    // 16px under the trail bar, whose height is 0 here (no bar drawn; qafix3.agenthead.test.tsx, task-010).
+    expect(painted(col, 'top', WIDE)).toBe('calc(0px + 16px)')
   })
 })
 

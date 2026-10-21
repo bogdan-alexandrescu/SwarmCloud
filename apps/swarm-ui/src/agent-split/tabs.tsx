@@ -4,7 +4,7 @@ import { offersChildren } from '../AgentChildren'
 import type { TaskPane } from '../App'
 import { checkpointsSay, type CheckpointCount } from '../CheckpointsPane'
 import { questionCount } from '../QuestionsCard'
-import type { Task } from '../types'
+import { TERMINAL_STATES, type Task } from '../types'
 import { changesCount } from '../WorkflowChanges'
 import { Tabs, type TabDef } from '../components'
 
@@ -77,9 +77,12 @@ export function paneTabs({
         ]
       : []),
     { id: 'logs', label: PANE_LABELS.logs, count: null, say: null, to: `${base}/logs` },
-    // THE COUNT IS THE FILE COUNT (`git.files`, DIFF4), and a dash with its
+    // THE COUNT IS THE FILE COUNT (`git.files`, DIFF4), and words with their
     // reason where the summary does not say it -- never a 0 nobody measured.
-    { id: 'changes', label: PANE_LABELS.changes, ...changesCount(task), to: `${base}/changes` },
+    (() => {
+      const c = changesCount(task)
+      return { id: 'changes' as const, label: PANE_LABELS.changes, count: c.count ?? unknownCount(task), say: c.say, to: `${base}/changes` }
+    })(),
     // CHILDREN HAS AN ADDRESS (U10a D36): `<agent>/children`, as every
     // other pane has one, so the tab moves the URL and a link can open it.
     // THE ADDRESS NAMES IT, SO THE STRIP HAS IT (visual QA run 2, task-009):
@@ -108,7 +111,7 @@ export function paneTabs({
     {
       id: 'artifacts',
       label: PANE_LABELS.artifacts,
-      count: artifactCount(task),
+      count: artifactCount(task) ?? unknownCount(task),
       say:
         artifactCount(task) === null
           ? 'Files are listed when an attempt ends: this agent has no result summary yet, so the count is not known.'
@@ -406,6 +409,19 @@ function MoreTabs({ tabs, onSelect }: { tabs: readonly TabDef[]; onSelect: (key:
       )}
     </span>
   )
+}
+
+/**
+ * WHAT AN UNKNOWN COUNT MEANS, IN WORDS (visual QA run 3, ff-009, #1680):
+ * `Changes —` and `Artifacts —` drew a bare dash, which read as zero, as a
+ * failure or as nothing at all. Both counts come from what an attempt writes
+ * when it ends, so the words say where the agent is: `not yet` while it runs
+ * (a count is coming), `not counted` once it has ended without one (none is
+ * coming), `not read` before the task is. The reason stays the title.
+ */
+export function unknownCount(task: Task | null): string {
+  if (task === null) return 'not read'
+  return TERMINAL_STATES.has(task.state) ? 'not counted' : 'not yet'
 }
 
 /** The Artifacts tab's count: the manifest's files once a summary is written, else unknown. */
