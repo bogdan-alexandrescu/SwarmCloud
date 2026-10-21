@@ -24,19 +24,22 @@
 # through roles/datastore.viewer, so this read adds no class of data the gate
 # could not already see.
 # The IAM half -- roles/container.clusterViewer, conditioned to this cluster's
-# resource name -- is terraform/infra/verify.tf, and reads no Kubernetes object
-# either. Between them the gate can find the cluster and read a Job; it cannot
-# read anything a Job's pod holds.
+# resource name -- is terraform/bootstrap/verify_cluster_read.tf, which the
+# owner applies (never CI), and reads no Kubernetes object either. Between
+# them the gate can find the cluster and read a Job; it cannot read anything a
+# Job's pod holds.
 #
-# WHERE IT IS RENDERED. render.py appends this file to the tenant render only
-# when it is given --verify-uid, swarm-verify's numeric uniqueId -- the
-# operator's apply (kubernetes/apply.sh --tenant <id> --verify-uid <n>, which
-# forwards the flag) -- and never to a `swarm-tenant-u-*` namespace or a render
-# with --workspace-id, which the workspace deployer applies:
+# WHERE IT IS RENDERED. In the eng and smoke tenants' own namespaces and
+# nowhere else (owner decision 2026-10-21, VERIFY-GKE-READ-2;
+# render.verify_read_wanted), and only when render.py is given --verify-uid,
+# swarm-verify's numeric uniqueId. kubernetes/apply.sh --tenant eng (or smoke)
+# resolves that itself, as it does the scheduler's, and refuses the flag on its
+# own command line. Never in a `swarm-tenant-u-*` namespace or a render with
+# --workspace-id, which the workspace deployer applies:
 # kubernetes/policies/workspace-provisioner-scope.yaml admits from it only the
 # Roles and subjects that render had before this file, and would refuse these
-# two objects and fail its apply (render.verify_read_files). A GKE holder in
-# such a namespace is reported "not checked" by the gate.
+# two objects and fail its apply. A GKE holder in any namespace without the
+# read is reported "not checked" by the gate.
 #
 # Last in the render, so every document before it renders exactly as it did
 # before it existed (test_live_netpol.py and its siblings hold them by digest).

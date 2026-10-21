@@ -343,6 +343,14 @@ locals {
   # deployer (#79), and the five custom roles below are defined in
   # platform_roles.tf, by the owner.
   #
+  # roles/container.clusterViewer IS NOT ON IT either (VERIFY-GKE-READ-2, part
+  # of #1754; owner decision 2026-10-21), for the same reason: on the list, CI
+  # could grant clusterViewer to itself or anyone, unconditioned, and reach the
+  # other team's agents-staging cluster's endpoint and CA. swarm-verify's grant
+  # of it, conditioned to swarm-autopilot, is made by THIS root
+  # (verify_cluster_read.tf), as the workspace deployer's is
+  # (workspace_deployer.tf).
+  #
   # tests/terraform/deployer_iam.tftest.hcl plans those modules and fails if
   # any of them grants a role missing from this list -- the failure that would
   # otherwise arrive as a 403 in the middle of a release.
@@ -354,9 +362,8 @@ locals {
   # deployer's own roles are among the refused: they are granted by this root,
   # which the owner applies, never by CI. Re-read 2026-09-25 08:52 UTC: 67
   # distinct roles in the policy, and with swarmSecretLister off the list, 14
-  # grantable until #1430 and 53 refused. The list was 15 grantable after #1430
-  # turned swarmGithubHooksDedup on and the owner applied it. VERIFY-GKE-READ's
-  # clusterViewer (#1754) makes it 16.
+  # grantable until #1430 and 53 refused. #1430 turned swarmGithubHooksDedup
+  # on, so the list makes 15 grantable once the owner applies it.
   #
   # NOT SCOPED BY THIS: two of the listed roles also have a member that is not
   # ours -- roles/logging.logWriter and roles/monitoring.metricWriter are held
@@ -368,17 +375,6 @@ locals {
   deployer_grantable_project_roles = concat(
     [
       "roles/cloudtrace.agent",
-      # terraform/infra/verify.tf grants it to swarm-verify, CONDITIONED to
-      # the swarm-autopilot cluster (VERIFY-GKE-READ, part of #1754). hasOnly
-      # limits which roles CI may grant, never to whom or under what
-      # condition: with this on the list CI could grant clusterViewer
-      # unconditioned, which reaches agents-staging's endpoint and CA -- a
-      # clusters.get, no Kubernetes object. The condition is held by
-      # tests/terraform/verify_gke_read.tftest.hcl, not by this list. One
-      # more role (16) stays inside 2 chunks, but it shifts the sorted chunk
-      # boundary, so both chunks are replaced (create_before_destroy) at the
-      # owner's bootstrap apply, which must come before the release's.
-      "roles/container.clusterViewer",
       "roles/datastore.user",
       "roles/datastore.viewer",
       "roles/logging.logWriter",
@@ -424,8 +420,7 @@ locals {
   }
 
   # roles/resourcemanager.projectIamAdmin's hasOnly() would need every one of
-  # the 16 deployer_grantable_project_roles in one list (15 before
-  # VERIFY-GKE-READ's clusterViewer, 14 with
+  # the 15 deployer_grantable_project_roles in one list (14 with
   # enable_github_hooks_dedup_role off, and 15 until #69's owner
   # decision of 2026-09-25, which #150 delivered, took swarmSecretLister off --
   # still over the limit either way), and GCP's linter

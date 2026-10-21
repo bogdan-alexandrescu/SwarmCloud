@@ -206,16 +206,19 @@ foreign_tenant_refused() {
 # the Job in its namespace -- and since VERIFY-GKE-READ (owner decision
 # 2026-10-20) swarm-verify holds both, narrowly:
 #   * roles/container.clusterViewer, conditioned to this cluster's resource
-#     name (terraform/infra/verify.tf verify_views_swarm_cluster);
-#   * `get` and `list` on jobs.batch in each tenant namespace the operator
-#     applies (kubernetes/rbac/verify-rbac.yaml, by kubernetes/apply.sh
-#     --verify-uid).
+#     name (terraform/bootstrap/verify_cluster_read.tf
+#     verify_views_swarm_cluster, which the owner applies -- never CI, since
+#     VERIFY-GKE-READ-2);
+#   * `get` and `list` on jobs.batch in the eng and smoke namespaces
+#     (kubernetes/rbac/verify-rbac.yaml, by kubernetes/apply.sh --tenant eng
+#     and --tenant smoke, which resolve swarm-verify's uniqueId themselves).
 # So a REFUSED cluster read is the grant missing -- not applied, or removed --
 # and fails this check: a gate that skipped it would pass [10] with the grant
 # gone, which is the silence this check exists to end. An UNREACHABLE cluster,
-# and a refused Job read, stay "not checked": the workspace deployer's
-# namespaces (swarm-tenant-u-*, group workspaces) are deliberately not given
-# the Job read (render.py verify_read_files), so a 403 there is expected.
+# and a refused Job read, stay "not checked": every namespace but eng's and
+# smoke's -- other tenants, the workspace deployer's swarm-tenant-u-* and group
+# workspaces -- is deliberately not given the Job read (owner decision
+# 2026-10-21; render.py verify_read_wanted), so a 403 there is expected.
 
 # gke_cluster_access -> sets GKE_ACCESS to "ok" (with GKE_ENDPOINT and
 # GKE_CA_FILE), "refused:<why>" (the grant is missing) or "no:<why>" (not
@@ -246,7 +249,7 @@ gke_cluster_access() {
           GKE_ACCESS="no:cluster ${GKE_CLUSTER} answered with no endpoint or CA"
         fi
         ;;
-      401|403) GKE_ACCESS="refused:container.clusters.get on ${GKE_CLUSTER} answered HTTP ${status}; swarm-verify's conditioned clusterViewer (terraform/infra/verify.tf) is not in effect" ;;
+      401|403) GKE_ACCESS="refused:container.clusters.get on ${GKE_CLUSTER} answered HTTP ${status}; swarm-verify's conditioned clusterViewer (terraform/bootstrap/verify_cluster_read.tf, applied by the owner's make bootstrap) is not in effect" ;;
       *)       GKE_ACCESS="no:cluster ${GKE_CLUSTER} could not be read (HTTP ${status})" ;;
     esac
   fi
@@ -268,7 +271,7 @@ gke_job_status() {
         jq -r 'if ([ .status.conditions[]? | select((.type == "Complete" or .type == "Failed") and .status == "True") ]
                    | length) > 0 then "finished" else "running" end' <"${out}" | tr -d '\n' ;;
       404)     printf 'gone' ;;
-      401|403) printf 'unreadable no RBAC read (jobs.get in %s answered HTTP %s; kubernetes/rbac/verify-rbac.yaml is applied there by kubernetes/apply.sh --tenant %s --verify-uid <swarm-verify uniqueId>)' \
+      401|403) printf 'unreadable no RBAC read (jobs.get in %s answered HTTP %s; kubernetes/rbac/verify-rbac.yaml is applied by kubernetes/apply.sh --tenant %s, in the eng and smoke namespaces only)' \
                  "${ns}" "${status}" "${ns#"${TENANT_NAMESPACE_PREFIX}"}" ;;
       *)       printf 'unreadable the cluster answered HTTP %s' "${status}" ;;
     esac

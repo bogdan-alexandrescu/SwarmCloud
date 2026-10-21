@@ -6,6 +6,7 @@
     kubernetes/render.py job --tenant eng --profile browser \
         --task task_9f3a --attempt att_7b21 --lease lease_c4 --generation 3
     kubernetes/render.py identity --tenant eng   # namespace, GSA, KSA
+    kubernetes/render.py verify-read --tenant eng  # swarm-verify, if it reads Jobs here
     kubernetes/render.py swarm-system            # the live relay's ingress
 
 Every manifest here is a template with `__TOKEN__` placeholders rather than a
@@ -463,10 +464,40 @@ def tenant_files(bound: Iterable[str] = ()) -> tuple[str, ...]:
 #: document before it renders as it did before it existed.
 VERIFY_FILES = ("rbac/verify-rbac.yaml",)
 
+#: The tenants whose own namespaces carry it: eng, which the gate runs as, and
+#: smoke, the release acceptance tenant. Owner decision 2026-10-21
+#: (VERIFY-GKE-READ-2): no other tenant, no personal (`u-*`) namespace and no
+#: group workspace, and the workspace deployer's scope is not widened for it.
+VERIFY_READ_TENANTS = ("eng", "smoke")
 
-def verify_read_files(namespace: str, verify_uid: str = "", workspace_id: str = "") -> tuple[str, ...]:
-    """VERIFY_FILES when the operator's apply names swarm-verify's uniqueId;
-    nothing otherwise, and never in the workspace deployer's namespaces.
+
+def verify_read_wanted(tenant: str, namespace: str, workspace_id: str = "") -> bool:
+    """Whether a tenant render carries the verify read: in eng's and smoke's
+    own namespaces, and nowhere else -- not under `--namespace` naming another
+    one, and never with `--workspace-id`.
+
+    kubernetes/apply.sh asks this (`render.py verify-read`) before it looks up
+    swarm-verify's uniqueId, so the rule is stated once, here.
+
+    NEVER in a person's namespace (`swarm-tenant-u-*`) or a group workspace's
+    (--workspace-id), even when asked: the deployer applies those, and
+    policies/workspace-provisioner-scope.yaml admits from it only the Roles,
+    RoleBindings and subjects the tenant render held before this file, so a
+    verify Role there would fail its next apply. A GKE holder in any namespace
+    without the read is "not checked" by the gate.
+    """
+    return (
+        not workspace_id
+        and tenant in VERIFY_READ_TENANTS
+        and namespace == f"{NAMESPACE_PREFIX}{tenant}"
+    )
+
+
+def verify_read_files(
+    tenant: str, namespace: str, verify_uid: str = "", workspace_id: str = ""
+) -> tuple[str, ...]:
+    """VERIFY_FILES when the render is one verify_read_wanted() admits and the
+    operator's apply names swarm-verify's uniqueId; nothing otherwise.
 
     ON --verify-uid, because the binding is only useful with it: the gate
     reaches the API with an OAuth access token, and GKE presents it by uniqueId,
@@ -475,16 +506,8 @@ def verify_read_files(namespace: str, verify_uid: str = "", workspace_id: str = 
     that does not ask for it: the workspace deployer's, and register-tenant.sh's
     A9 check, which re-renders the namespace and expects every object it
     renders to exist.
-
-    NEVER in a person's namespace (`swarm-tenant-u-*`) or a group workspace's
-    (--workspace-id), even when asked: the deployer applies those, and
-    policies/workspace-provisioner-scope.yaml admits from it only the Roles,
-    RoleBindings and subjects the tenant render held before this file, so a
-    verify Role there would fail its next apply. Extending the read there is a
-    change to that policy and to provisioner-rbac.yaml, not to this render.
-    Until then a GKE holder in such a namespace is "not checked" by the gate.
     """
-    if not verify_uid or workspace_id or namespace.startswith(f"{NAMESPACE_PREFIX}u-"):
+    if not verify_uid or not verify_read_wanted(tenant, namespace, workspace_id):
         return ()
     return VERIFY_FILES
 
@@ -1326,8 +1349,9 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
             "for the OAuth access token the gate uses, as for the scheduler. Resolve it "
             "with `gcloud iam service-accounts describe "
             "swarm-verify@<project>.iam.gserviceaccount.com --format='value(uniqueId)'`. "
-            "The read is rendered only when this is given, and never in a swarm-tenant-u-* "
-            "namespace or with --workspace-id (verify_read_files)."
+            "The read is rendered only when this is given, and only in the eng and smoke "
+            "tenants' own namespaces, never with --workspace-id (verify_read_wanted). "
+            "kubernetes/apply.sh resolves and passes it itself."
         ),
     )
     parser.add_argument(
@@ -1502,6 +1526,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     add_tenant_arguments(identity)
 
+    # WHETHER THE RENDER BINDS swarm-verify (VERIFY-GKE-READ-2): the account's
+    # email on one line where a tenant render carries the Job read
+    # (verify_read_wanted), an empty line elsewhere. kubernetes/apply.sh asks
+    # here, with the same forwarded arguments, before it resolves the
+    # account's uniqueId -- so the namespaces that carry the read are named in
+    # one place, and a workspace deployer's apply never looks the account up.
+    verify_read = sub.add_parser(
+        "verify-read",
+        help="swarm-verify's email if a tenant render carries its Job read, else an empty line",
+        allow_abbrev=False,
+    )
+    add_tenant_arguments(verify_read)
+
     # swarm-system's ingress (docs/design/live-browser.md §8.3). Its one input
     # is READ by kubernetes/apply.sh --swarm-system from swarm-api's service
     # and subnet, and refused on that script's command line, like the tenant
@@ -1608,7 +1645,7 @@ def main(argv: list[str] | None = None) -> int:
             else None
         )
         files = tenant_files(bound_ksas(args)) + verify_read_files(
-            values["NAMESPACE"], args.verify_uid, args.workspace_id
+            values["TENANT_ID"], values["NAMESPACE"], args.verify_uid, args.workspace_id
         )
         manifest = render_files(files, values)
         if args.workspace_id:
@@ -1619,6 +1656,10 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "identity":
         values = check_values(tenant_values(args))
         sys.stdout.write(f"{values['NAMESPACE']} {values['GSA_EMAIL']} {values['KSA_NAME']}\n")
+    elif args.command == "verify-read":
+        values = check_values(tenant_values(args))
+        wanted = verify_read_wanted(values["TENANT_ID"], values["NAMESPACE"], args.workspace_id)
+        sys.stdout.write(f"{values['VERIFY_GSA'] if wanted else ''}\n")
     elif args.command == "policies":
         sys.stdout.write(render_files(POLICY_FILES, policy_values(args)))
     elif args.command == "swarm-system":
