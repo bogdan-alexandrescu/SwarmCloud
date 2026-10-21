@@ -100,9 +100,9 @@ describe('D32: Set by is never blank, and a unit is a unit', () => {
     expect(cells.length).toBeGreaterThanOrEqual(2)
     for (const c of cells) expect((c.textContent ?? '').trim(), 'a blank Set by').not.toBe('')
     const texts = cells.map((c) => c.textContent)
-    // The configured case is a faint dot named `configured` (QA G5-19).
-    expect(texts).toContain('·')
-    expect(document.querySelector('.cap-families td[data-label="Set by"] [aria-label="configured"]')).not.toBeNull()
+    // The configured case is the word in the dim ink (QA G5-19, QA-099, run 3).
+    expect(texts).toContain('configured')
+    expect(document.querySelector('.cap-families td[data-label="Set by"] .cap-setby-cfg')).not.toBeNull()
     expect(texts).toContain('AIMD back-off')
     const heads = [...document.querySelectorAll('.cap-families thead th')].map((th) => (th.textContent ?? '').trim())
     for (const h of heads) expect(h, 'a column with no visible head').not.toBe('')

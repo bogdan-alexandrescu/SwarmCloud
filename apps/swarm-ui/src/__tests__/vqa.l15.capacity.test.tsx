@@ -10,7 +10,7 @@
 //   V032  Runtimes' Backends and Sizing are a record per row on a phone.
 //   V033  The phone matrix's note names what it draws; no Runs out first is blank.
 //   V085  The key column holds `Ceiling (units)` (and every capacity key).
-//   V086  One key width in a mono cell and a sans cell; Use % is a block.
+//   V086  One key width in a mono cell and a sans cell; Use is the track and its % (run 3).
 //   V087  The disabled runtime's reason is spaced from its facts.
 //   V088  The image fact spans the facts grid, after the short facts; cards don't stretch.
 //   V089  Set by is wide enough for `AIMD back-off`.
@@ -224,9 +224,12 @@ describe('V011, V085, V086: a stacked record has one key width and one value edg
     for (const k of keys) expect(keyNeeds(k), `"${k}" wraps in its key column`).toBeLessThanOrEqual(px)
   })
 
-  it('draws Use as a block on a phone, so its figure is not 8px short of the edge', () => {
+  it('draws Use as the track and its figure on a phone, as at 1440 (capacity-012, run 3)', () => {
+    // V086 made it a block because the track was hidden and its empty grid
+    // track left the figure 8px short. The track is drawn on a phone now, so
+    // the grid's gap is the space between the bar and its figure again.
     const use = build('div.ctl-table.cap-pools.is-stacked > table > tbody > tr > td > span.cap-use', hosts)
-    expect(painted(use, 'display', PHONE)).toBe('block')
+    expect(painted(use, 'display', PHONE)).toBe('grid')
     expect(painted(use, 'display', WIDE)).toBe('grid')
   })
 })

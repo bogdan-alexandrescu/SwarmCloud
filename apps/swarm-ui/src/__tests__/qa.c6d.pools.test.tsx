@@ -7,8 +7,9 @@
 //          limits breaks a key only after a colon. The scope stays on every
 //          Pools row (CP-2, an owner decision) but is the part that is cut.
 //   G5-19  Set by said "configured" on 28 of 29 rows (capacity.html §G: Set by
-//          only when it is not "configured"). The configured case is a faint
-//          dot, named "configured" for a screen reader and in its title.
+//          only when it is not "configured"). The configured case was a faint
+//          dot; since QA-099 (run 2, Pool limits) and run 3 (Pools) it is the
+//          word in the dim ink, quieter than the overrides in ink.
 //
 // BREAK IT: make the scope shrink like the key -- the first case fails; drop
 // the `<wbr>` or the keep-all rule -- the second fails; draw the word again --
@@ -127,17 +128,17 @@ describe('G5-11: a pool key is never cut by a clause that repeats it', () => {
 })
 
 describe('G5-19: Set by draws nothing loud for "configured"', () => {
-  it('is a faint dot named configured on Pools, and the term in ink otherwise', async () => {
+  it('is the word, quieter, on Pools (QA-099 there too, run 3), and the term in ink otherwise', async () => {
     api.loadCapacity.mockResolvedValue(ok(capacity()))
     render(<CapacityScreen />)
     await waitFor(() => expect(document.querySelector('.cap-families tbody tr')).not.toBeNull(), WAIT)
     const cells = [...document.querySelectorAll('.cap-families td[data-label="Set by"]')]
     const texts = cells.map((c) => (c.textContent ?? '').trim())
-    expect(texts).not.toContain('configured')
-    expect(texts).toContain('·')
+    expect(texts).not.toContain('·')
+    expect(texts).toContain('configured')
     expect(texts).toContain('provider quota')
-    const dot = cells.find((c) => c.textContent === '·')!.querySelector('.cap-setby-cfg')!
-    expect(dot.getAttribute('aria-label')).toBe('configured')
+    const word = cells.find((c) => c.textContent === 'configured')!.querySelector('.cap-setby-cfg')!
+    expect(word.getAttribute('title')).toMatch(/^configured\. /)
   })
 
   it('is the word, quieter, on a Pool limits row (QA-099, run 2)', () => {
