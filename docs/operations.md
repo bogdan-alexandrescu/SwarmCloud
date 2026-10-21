@@ -188,7 +188,7 @@ nothing. The second line is the bill.
 | Concurrency pools | `active/effective_limit`; a pool at its limit is the one to raise |
 | Provider quota | `EXHAUSTED`/`COOLDOWN` per (provider, tenant) |
 | Cloud Run | service readiness, job resources, recent executions |
-| GKE | browser pods, and **any restart count above zero** |
+| GKE | worker pods (every agent profile but `mock`), and **any restart count above zero** |
 | Attention | the same findings, summarised |
 
 A pod restart is always worth investigating: the platform promises no restarts,

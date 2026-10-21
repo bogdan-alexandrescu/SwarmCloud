@@ -13,8 +13,8 @@ commit says *"Made by the worker for task …"* was written by a SwarmCloud agen
 reviewed by another, and merged through the pipeline described below.
 
 > **Status, read from `main` on 2026-10-07.** Agents run end to end: an agent is
-> authenticated, attributed to a tenant, admitted, dispatched to a Cloud Run Job,
-> runs Claude Code or Codex against a cloned repository, checkpoints, and
+> authenticated, attributed to a tenant, admitted, dispatched (to GKE Autopilot
+> for every agent profile but `mock` since 2026-10-10), runs Claude Code or Codex against a cloned repository, checkpoints, and
 > publishes a pull request as the person who dispatched it. Issue runs, the CI
 > fixer and the workflow merge step are built. Onboarding is designed and only
 > partly built. See [Current state](#current-state) for what is built, what is
@@ -45,11 +45,11 @@ same way a quota wait does. Every layer waits as a Firestore row.
 
 ```
  console (swarm.saga.xyz) ─┐
- sc plugin / swarm CLI ────┼─▶ swarm-api ──▶ Firestore ──▶ scheduler ──▶ Cloud Run Jobs
- swarm-mcp bridge ─────────┘   (Cloud Run)   tasks          (admission)   (agents, 0→N→0)
-                                  │          leases               │
-                                  │          pools                └────▶ GKE Autopilot
-                                  │          workflows, runs              (browser)
+ sc plugin / swarm CLI ────┼─▶ swarm-api ──▶ Firestore ──▶ scheduler ──▶ GKE Autopilot
+ swarm-mcp bridge ─────────┘   (Cloud Run)   tasks          (admission)   (every agent but mock,
+                                  │          leases               │        0→N→0)
+                                  │          pools                └────▶ Cloud Run Jobs
+                                  │          workflows, runs              (mock)
                                   │          repositories
                                   ▼                │
                                GitHub        quota-broker    reconciler
@@ -62,10 +62,10 @@ same way a quota wait does. Every layer waits as a Firestore row.
 `swarm-ui` console. Per-tenant Cloud Scheduler ticks advance issue runs, wake
 merge steps, poll registered repositories for index runs and sweep workflow
 rollups. **Execution plane** — Cloud Run Jobs for `mock` (and the disabled
-`post-verdict` and `claude-code-review`); GKE Autopilot for `browser`,
-`claude-code` (contract request 53), the repository `indexer` (contract
-request 63, the canary for #939), and `generic`, `codex` and `merge`
-(contract requests 64-66, #939 option A). The full picture is in
+`post-verdict` and `claude-code-review`); GKE Autopilot for `browser` and
+`claude-code-browser`, `claude-code` (contract request 53), the repository
+`indexer` (contract request 63, the canary for #939), and `generic`, `codex`
+and `merge` (contract requests 64-66, #939 option A). The full picture is in
 [`docs/architecture.md`](docs/architecture.md).
 
 **Clients.** One Python package, `apps/swarm-mcp`, ships three commands: `swarm`
@@ -76,12 +76,25 @@ in [`docs/plugin-setup.md`](docs/plugin-setup.md).
 
 ### Decisions worth knowing
 
-**Cloud Run Jobs is the primary backend, not Kubernetes.** The requirement was no
-preemption, no OOM kills, no restarts. Cloud Run has no nodes, no autoscaler and
-no node upgrades, so there is far less that can kill a job mid-run. The owner
-reaffirmed this on 2026-10-01 over a plan to make GKE the only backend, which
-was never built. `browser` runs on GKE because Chromium needs a large
-`/dev/shm`. No GPU or >32 GiB profile exists.
+**Cloud Run Jobs was chosen as the primary backend; GKE Autopilot now runs
+nearly every agent.** The requirement was no preemption, no OOM kills, no
+restarts. Cloud Run has no nodes, no autoscaler and no node upgrades, so there
+is far less that can kill a job mid-run; the owner reaffirmed the choice on
+2026-10-01 over a plan to make GKE the only backend. Then the profiles moved one
+at a time, for speed rather than capability: `claude-code` on 2026-10-08
+because Autopilot starts it in about 23 s against Cloud Run's 128 s median, and
+`indexer`, `generic`, `codex` and `merge` on 2026-10-10 because a new Cloud Run
+instance's internet path opens about 20 s after start. As the catalogue
+(`apps/common/swarm_common/profiles.py`) declares it on 2026-10-21, GKE
+Autopilot runs `browser` and `claude-code-browser` (Chromium needs a large
+`/dev/shm`), `claude-code`, `indexer`, `generic`, `codex` and `merge`; Cloud
+Run Jobs runs `mock`, which reaches no internet, and the disabled
+`post-verdict` and `claude-code-review`, each designed to run as an account of
+its own that a GKE pod cannot be. GKE brings back the node-side failure modes;
+mandatory periodic checkpointing makes them cost minutes, not the run. No GPU or
+>32 GiB profile exists. Why, and what each backend risks, is in
+[`docs/architecture.md`](docs/architecture.md#cloud-run-jobs-was-chosen-as-the-primary-backend-gke-now-runs-nearly-every-agent)
+§5.
 
 **Spot is disabled everywhere, and "Spot preferred" is impossible here, not just
 undesirable.** Spot Pods cannot use GKE Autopilot's extended run time, so Spot
@@ -95,17 +108,23 @@ the reference machine was `claude` 1.5 GB + `pytest` 0.8 GB + node/tsx 0.2 GB �
 2.5 GiB, so the classes are roughly double that. The worker exports peak RSS and
 peak disk per runner profile so the numbers get corrected from production.
 
-| class | vCPU | memory | workspace (inside memory) |
+| class | vCPU | memory | Cloud Run workspace (inside memory) |
 |---|---|---|---|
 | `standard` | 4 | 8 GiB | ~4 GiB |
 | `browser` | 4 | 8 GiB | ~4 GiB |
 | `large` | 8 | 32 GiB | ~16 GiB |
 
-**Workspaces are memory-backed tmpfs, carved out of the class's memory — not
-extra disk.** Cloud Run's disk-backed ephemeral storage is Preview and the
-Terraform provider cannot express it (`empty_dir.medium` accepts only `MEMORY`).
-So the deployment runs on the fully-GA path, which **does** support live
-migration; the Preview disk would have disabled it.
+**On Cloud Run, workspaces are memory-backed tmpfs, carved out of the class's
+memory — not extra disk.** Cloud Run's disk-backed ephemeral storage is Preview
+and the Terraform provider cannot express it (`empty_dir.medium` accepts only
+`MEMORY`). So Cloud Run runs on the fully-GA path, which **does** support
+live migration; the Preview disk would have disabled it.
+
+**On GKE, where every agent profile but `mock` runs, the workspace is disk.**
+The workspace, `/tmp` and HOME are each a disk `emptyDir` counted against the
+pod's ephemeral-storage limit, and the tool caches live on a 20 GiB cache
+volume ([`docs/architecture.md`](docs/architecture.md#dispatch) §3). Live
+migration does not apply there.
 
 **Checkpointing is still mandatory and periodic.** Live migration covers
 infrastructure moves, not the interruptions that actually end attempts here: a
@@ -141,9 +160,9 @@ and pushes nothing (#650); every image installs third-party packages from
 A tenant is a **Google group**, resolved through Cloud Identity, with a personal
 fallback tenant (`u-<user>`) for anyone in no registered group. Each tenant gets
 its own service account, its own provider keys and git token in Secret Manager,
-its own GCS prefix, its own Cloud Run Job resources, its own slot pools and its
-own registered repositories. Admission round-robins across tenants so one tenant
-cannot starve another.
+its own GCS prefix, its own GKE namespace and Cloud Run Job resources, its own
+slot pools and its own registered repositories. Admission round-robins across
+tenants so one tenant cannot starve another.
 
 Tenant resolution checks membership **per registered group**:
 `searchTransitiveGroups` returns 403 in this project, so the API never
