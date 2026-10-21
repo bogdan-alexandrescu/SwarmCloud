@@ -4154,6 +4154,10 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
           workflow_id: 'wf_audit_01', step_id: 'report',
           depends_on: ['scan-scripts', 'scan-terraform'],
           park_reason: 'DEPENDENCY_INCOMPLETE',
+          // The listing row's `waiting` (#1782, WAIT-API), in the sentence
+          // `swarm_api/waiting_detail.py` writes, so the Waiting tab's short
+          // reason ("upstream: 1 step") is reachable in development.
+          waiting: { reason: 'DEPENDENCY_INCOMPLETE', summary: 'Waiting on 1 upstream steps: scan-terraform (RUNNING)' },
           dispatch: {
             strategy: 'integrate', carrier: 'checkpoints', role: 'integrator',
             integrates: ['task_wf_plan', 'task_wf_scan_a', 'task_wf_scan_b'],

@@ -25,6 +25,7 @@ import { PARK_WORD, Segmented, StateMark, ToneMark } from './components'
 import { Id, Screen } from './Shell'
 import { publishListCounts } from './Spine'
 import { rowClock, useNow } from './useNow'
+import { waitingShort } from './waitingShort'
 import {
   CONCURRENCY_STATES,
   TERMINAL_STATES,
@@ -1341,8 +1342,17 @@ function matchesQuery(t: Task, needle: string): boolean {
   return [t.id, t.step_id, t.workflow_id].some((v) => v != null && v.toLowerCase().includes(needle))
 }
 
-/** A row's why line and whether it asks a person to act -- `TaskRow`'s own reading. */
-type RowReason = { text: string; warn: boolean }
+/**
+ * A row's why line and whether it asks a person to act -- `TaskRow`'s own
+ * reading. `full` is the whole sentence when `text` is a short form of it
+ * (`waitingShort`): the line's title and the row's accessible name say it.
+ */
+type RowReason = { text: string; warn: boolean; full?: string }
+
+/** The sentence a row's title and accessible name carry: the whole one, where the line is cut. */
+function whySaid(r: RowReason): string {
+  return r.full ?? r.text
+}
 
 /**
  * A ROW WHOSE MARK IS DRAWN IN --bad (marks.tsx `STATE_MARK` hue `bad`):
@@ -1365,7 +1375,17 @@ function rowReason(task: Task, classes: ResourceClasses | null, now: number): Ro
   // row's display units also are: the catalogue read is the same one and the
   // display badge keeps its own bundled fallback.
   const units = classUnits(classes, task.resource_class)
-  return { text: whyAgent(task, units), warn: whyNeedsAction(task, units) }
+  const warn = whyNeedsAction(task, units)
+  // THE TASK'S OWN REASON ON A WAITING ROW (WAIT-UI-LISTS, #1782): every
+  // merge step read "Waiting for the pull request checks to finish" during
+  // the 2026-10-20/21 CI stall, queued, failing or done alike. WAIT-API's
+  // `waiting.summary` says which; the line is its short form and the whole
+  // sentence is `full`. The ink is still `whyNeedsAction`'s: the reason got
+  // specific, not more urgent. An API that sends no `waiting` keeps today's
+  // line.
+  const short = tabOf(task) === 'waiting' && task.waiting ? waitingShort(task.waiting) : null
+  if (short !== null) return { text: short, warn, full: task.waiting!.summary.trim() }
+  return { text: whyAgent(task, units), warn }
 }
 
 /**
@@ -1423,7 +1443,7 @@ function shareable(r: RowReason): boolean {
  */
 function flatShared(rows: readonly Task[], reasons: RowReason[]): boolean[] {
   return reasons.map((r, i) => {
-    if (i === 0 || !shareable(r) || reasons[i - 1]!.text !== r.text) return false
+    if (i === 0 || !shareable(r) || whySaid(reasons[i - 1]!) !== whySaid(r)) return false
     const wf = rows[i]!.workflow_id ?? null
     return wf !== null && rows[i - 1]!.workflow_id === wf
   })
@@ -1436,19 +1456,21 @@ function flatShared(rows: readonly Task[], reasons: RowReason[]): boolean[] {
  */
 function groupReasons(reasons: RowReason[]): {
   shared: boolean[]
-  reasons: { text: string; count: number }[]
+  reasons: { text: string; full: string; count: number }[]
 } {
   const shared = reasons.map(() => false)
-  const said: { text: string; count: number }[] = []
+  const said: { text: string; full: string; count: number }[] = []
   let i = 0
   while (i < reasons.length) {
     let j = i + 1
-    while (j < reasons.length && reasons[j]!.text === reasons[i]!.text && shareable(reasons[j]!)) j++
+    // THE WHOLE SENTENCE DECIDES (WAIT-UI-LISTS): two CI parks both cut to
+    // "CI #1779: 5 pending" may still name different checks.
+    while (j < reasons.length && whySaid(reasons[j]!) === whySaid(reasons[i]!) && shareable(reasons[j]!)) j++
     if (shareable(reasons[i]!) && j - i >= 2) {
       for (let k = i; k < j; k++) shared[k] = true
-      const known = said.find((s) => s.text === reasons[i]!.text)
+      const known = said.find((s) => s.full === whySaid(reasons[i]!))
       if (known) known.count += j - i
-      else said.push({ text: reasons[i]!.text, count: j - i })
+      else said.push({ text: reasons[i]!.text, full: whySaid(reasons[i]!), count: j - i })
     }
     i = j
   }
@@ -1539,7 +1561,7 @@ function GroupedRows({
                 with its count, and the rows it covers keep it in their
                 accessible name only. */}
             {said.reasons.map((r) => (
-              <p className="group-why" key={r.text}>
+              <p className="group-why" key={r.full} title={r.full === r.text ? undefined : r.full}>
                 <b>{r.count}</b> {r.text}
               </p>
             ))}
@@ -1841,7 +1863,7 @@ function CompactRow({
     cancelling ? 'cancelling' : null,
     waitsForYou ? 'needs you' : null,
     cancelSpan ? CANCEL_SPAN : null,
-    why.text === '' ? null : why.text,
+    why.text === '' ? null : whySaid(why),
   ]
     .filter((p): p is string => p !== null && p !== undefined)
     .join(' · ')
@@ -1911,7 +1933,7 @@ function CompactRow({
         {/* THE WHOLE ID, PRINTED, under the name (#94): it was a hover
             title, and an id read off the screen had to be hovered for. */}
         <TaskIdLine id={task.id} />
-        {whyHidden && <span className="why is-shared">{why.text}</span>}
+        {whyHidden && <span className="why is-shared">{whySaid(why)}</span>}
       </span>
       <span className={`when${el.ticking && endedAt === null ? ' ticking' : ''}`} title={whenTitle}>
         {whenText}
@@ -2007,7 +2029,7 @@ function CompactRow({
           mark and the rule beside it are (V146): it was --warn amber, a third
           colour for one fact. */}
       {why.text && !whyHidden && (
-        <span className={`why${why.warn ? ' is-warn' : ''}${failedRow(task) ? ' is-bad' : ''}`} title={why.text}>
+        <span className={`why${why.warn ? ' is-warn' : ''}${failedRow(task) ? ' is-bad' : ''}`} title={whySaid(why)}>
           {why.text}
         </span>
       )}
@@ -2016,7 +2038,7 @@ function CompactRow({
           sentence is its title for a pointer, and a screen reader already
           hears it from the visually-hidden copy in the name cell. */}
       {whyHidden && (
-        <span className="why is-same" aria-hidden="true" title={why.text}>
+        <span className="why is-same" aria-hidden="true" title={whySaid(why)}>
           same reason
         </span>
       )}
