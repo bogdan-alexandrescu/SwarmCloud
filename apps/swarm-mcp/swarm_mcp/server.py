@@ -1556,6 +1556,24 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "swarm_build_board",
+        "description": (
+            "Refresh THIS PROJECT's build board (#1773): one self-contained HTML page at "
+            "`<project>/.claude/build-board/index.html`, git-ignored by a `.gitignore` of "
+            "`*` beside it. Read-only towards SwarmCloud -- GETs only, and nothing from "
+            "GitHub. It shows every workflow and single task YOU submitted against this "
+            "checkout's `origin` repository, from any session: in flight always, finished "
+            "for 30 days; grouped by the issue each names; and \"Waiting on someone\": owner "
+            "questions, steps awaiting input or parked HUMAN_REQUIRED (with their "
+            "`/sc answer WF STEP`), refused merges and CI parks over 90 min. Answers "
+            "`{path, written_at, counts, waiting}` (`waiting` the number of items), or "
+            "`{error, path}` when it could not -- the previous page then stays, and the "
+            "next page written says why in its banner. `sc build-board` refreshes and "
+            "opens it."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "swarm_workflow_result",
         "description": (
             "What each step of a workflow PRODUCED: commits, insertions and "
@@ -4939,6 +4957,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             indent=2,
             default=str,
         )
+
+    if name == "swarm_build_board":
+        from . import buildboard
+
+        return json.dumps(buildboard.refresh(client), indent=2, default=str)
 
     if name == "swarm_check_schedule":
         from . import watch

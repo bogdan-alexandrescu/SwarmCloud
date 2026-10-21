@@ -250,7 +250,8 @@ def test_a_write_renames_a_complete_temp_file_into_place(project, monkeypatch):
     real = os.replace
     monkeypatch.setattr(buildboard.os, "replace", lambda a, b: (seen.append((Path(a), Path(b))), real(a, b)))
     path = buildboard.write(project, "<!doctype html>")
-    assert seen and seen[0][1] == path and seen[0][0].parent == path.parent  # MUTATION: write index.html in place -- no rename.
+    into_page = [source for source, target in seen if target == path]
+    assert len(into_page) == 1 and into_page[0].parent == path.parent and into_page[0] != path  # MUTATION: write index.html in place -- no rename into it.
 
 
 def test_a_refresh_writes_the_page_and_reports_it(project):
