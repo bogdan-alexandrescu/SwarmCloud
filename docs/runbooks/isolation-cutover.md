@@ -11,12 +11,14 @@ eng, then every tenant**, and only then is the role removed.
 **Who runs it.** The owner. Every step below either changes IAM or is a
 release, and none of it is the release's to decide.
 
-**What exists, as of 2026-10-20 (lane ISO-IAM-WIRE).** Three switches, all off:
+**What exists, as of 2026-10-21 (lanes ISO-IAM-WIRE and ISO-TENANT-OFF).**
+Four switches, all off:
 
 | switch | where | default | what it switches |
 |---|---|---|---|
 | `state_via_api_tenants` | `terraform/infra/child_tasks.tf`, rendered onto swarm-scheduler as `SWARM_STATE_VIA_API_TENANTS` | `[]` | the scheduler dispatches every attempt of a listed tenant, children included, with `SWARM_STATE_VIA_API=true`, `SWARM_API_URL` and a registration nonce; the worker builds no Firestore client and reaches its state only through `/v1/attempts/{attempt_id}/state/*` |
 | `worker_firestore_off_tenants` | `terraform/infra/variables.tf`, rendered onto swarm-api as `WORKER_FIRESTORE_OFF_TENANTS` | `[]` | swarm-api writes `worker_firestore_access: false` on a listed tenant's **job-made** workspace record at its next approval, retry or ceiling change; the workspace job then grants that worker no Firestore role, and its A9 check requires it to hold none ([`docs/workspaces.md` §2.7](../workspaces.md)) |
+| `worker_firestore_off_tenants_iam` | `terraform/infra/variables.tf`, passed to `module "tenancy"` | `[]` | removes `module.tenancy.google_project_iam_member.worker_firestore[<tenant>]` for **each listed Terraform tenant alone**, while `worker_firestore_access` is still true; every other tenant's binding keeps its key, so it is not touched. Distinct from `worker_firestore_off_tenants`, which is swarm-api's and creates or destroys no binding |
 | `worker_firestore_access` | `terraform/infra/variables.tf`, passed to `module "tenancy"` | `true` | false removes `module.tenancy.google_project_iam_member.worker_firestore[<tenant>]` for **every Terraform tenant at once** |
 
 The plan refuses each switch out of order, so a mistyped tfvars stops at plan
@@ -26,10 +28,15 @@ rather than failing workers:
   the child path's nonce at `state/open`) and takes tenant ids only, never `*`;
 * every `worker_firestore_off_tenants` entry must already be in
   `state_via_api_tenants`, and `*` is refused;
+* every `worker_firestore_off_tenants_iam` entry must already be in
+  `state_via_api_tenants`, must be a tenant id (`*` is refused), and must be a
+  key of `var.tenants` (the tenancy module refuses a name that matches no
+  Terraform tenant, which would otherwise plan nothing);
 * `worker_firestore_access = false` needs every key of `var.tenants` in
   `state_via_api_tenants`.
 
-`tests/terraform/worker_firestore_switches.tftest.hcl` and
+`tests/terraform/worker_firestore_switches.tftest.hcl`,
+`worker_firestore_off_tenants_iam.tftest.hcl` and
 `state_via_api_env.tftest.hcl` hold all of that.
 
 **What it does not do.** Nothing here touches the other team's resources in
@@ -142,10 +149,10 @@ environment gains `SWARM_STATE_VIA_API_TENANTS = "u-bogdan"`. Nothing
 created or destroyed, and no IAM change (so the release does not stop at
 `dev-iam`). Anything else in the plan is someone else's change: hold.
 
-**Then run the gate:**
+**Then run the regression check:**
 
 ```bash
-SWARM_API_TENANT=u-bogdan make verify-remote
+make verify-remote
 ```
 
 **What that run does and does not exercise, said plainly.** Read on
@@ -157,15 +164,27 @@ comment; read it from the job's transcript before relying on it), and that
 identity could not select a personal tenant even if the header were sent: the
 tenant switcher selects only among the caller's memberships. So this run is the
 regression check on admission, concurrency and fencing for the release that
-switched u-bogdan, **not** a run of u-bogdan's switched path. That is a question
-in lane ISO-IAM-WIRE's pull request. What exercises u-bogdan's path, until it
-is answered:
+switched u-bogdan, **not** a run of u-bogdan's switched path.
 
-* an agent of u-bogdan's own, submitted as the owner, that runs to SUCCEEDED,
-  with its worker's log showing no Firestore client was built and its
-  `state/open` answered 200 in swarm-api's request log (watch item 1);
-* an agent that parks and resumes (a long provider wait), and a cancellation:
-  both go through the routes (`park`, `release`) and must release the lease.
+**u-bogdan's gate (owner decision, 2026-10-20).** verify-remote cannot run as
+a personal tenant, so it is not u-bogdan's evidence. u-bogdan's evidence is
+these four, every one required:
+
+1. **one agent to SUCCEEDED**: an agent of u-bogdan's own, submitted as the
+   owner, whose worker's log shows no Firestore client was built and whose
+   `state/open` answered 200 in swarm-api's request log (watch item 1);
+2. **one park and resume**: an agent that parks on a long provider wait and
+   resumes, its `park` going through the routes and releasing the lease
+   (invariant 4);
+3. **one cancel**: a cancellation of a running u-bogdan agent, its `release`
+   going through the routes and releasing the lease;
+4. **the tenant-isolation probe run from a u-bogdan pod** (watch item 4),
+   with that pod's own credential. It can pass only once the role is gone, so
+   it is taken at a2 step 5, and all three checks must PASS there.
+
+Items 1-3 come before a2 starts; item 4 closes a2. The regression check is the
+verify-remote run above, as eng, after each of a1 and a2: it must be green, and
+a red one is a stop whatever u-bogdan's four say.
 
 **Rollback.** Remove `u-bogdan` from `state_via_api_tenants`; release. Its role
 is still bound, so its next attempt takes the direct path as before. An
@@ -233,8 +252,9 @@ still LEASED, DISPATCHED, STARTING or RUNNING. PARKED attempts hold nothing
 
 5. **Verify again, expecting green**, with the same `--mode verify` command:
    `verified: …` and the workspace `ready`. Then run the ISO-ACCEPT probe from a
-   u-bogdan worker (watch item 4): all three checks PASS. Then
-   `SWARM_API_TENANT=u-bogdan make verify-remote` again, read as in a1.
+   u-bogdan pod (watch item 4): all three checks PASS. Then `make
+   verify-remote` again, the regression check run as eng (a1 says why it is
+   not u-bogdan's evidence): green.
 
 **Rollback.** Re-grant first, then unswitch, never the other way round: a
 switched list with no role is safe, an unswitched worker with no role is not.
@@ -276,19 +296,68 @@ then submit, admit, fence and release eng attempts through the routes, which
 is the `make smoke concurrency-test race-test` §6's order asks for after a
 dispatch change. A failure of any suite is a stop: roll b1 back and file it.
 
-### b2. Its Firestore role
+### b2. Its Firestore role, by plan
 
-**eng's binding cannot be removed on its own today, and a hand removal would
-come back.** It is `module.tenancy.google_project_iam_member.worker_firestore["eng"]`,
-in Terraform state, and `worker_firestore_access` is one switch for every
-Terraform tenant. Removed by hand, the next release's plan shows it as `1 to
-add` and re-creates it. That is a question in lane ISO-IAM-WIRE's pull request
-(a per-tenant switch in `terraform/modules/tenancy`). Until it is answered:
+eng **is** a Terraform tenant: its binding is
+`module.tenancy.google_project_iam_member.worker_firestore["eng"]`, in
+Terraform state, so it goes by plan through `worker_firestore_off_tenants_iam`
+and never by hand. (Removed by hand, the next release would re-create it as
+`1 to add`.) Only after b1's verify-remote is green and watch items 1-2 are
+quiet.
 
-* `worker_firestore_off_tenants = ["u-bogdan", "eng"]` is harmless and does
-  what it says for a job-made `eng` workspace record, if one exists; eng has
-  none today (it is provisioned by Terraform), so it changes nothing;
-* eng's role goes in step c, with every other Terraform tenant's.
+**Drain first**, as a2 says: no eng attempt LEASED before b1's release may
+still be LEASED, DISPATCHED, STARTING or RUNNING.
+
+In `terraform/environments/dev/dev.tfvars`:
+
+```hcl
+worker_firestore_off_tenants_iam = ["eng"]
+```
+
+The plan refuses it unless `eng` is already in `state_via_api_tenants`; `*` and
+any name that is not a key of `tenants` are refused too.
+
+**The plan must show exactly one row**, a destroy:
+
+* `module.tenancy.google_project_iam_member.worker_firestore["eng"]` — role
+  `projects/saga-agents-staging/roles/swarmTenantWorkerFirestore`, member
+  `serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com`.
+
+Nothing else: `worker_firestore["smoke"]` (and in prod `["research"]`) is not
+in the plan at all, neither destroyed nor replaced, because its key does not
+change. A plan that touches another tenant's binding, any account, object grant
+or telemetry grant, or swarm-api's environment, is wrong: hold. It is an IAM
+change, so the dev release stops at `dev-iam` for the owner's approval
+([`docs/ci.md`](../ci.md#a-dev-release-that-changes-iam-waits-for-the-owner)).
+
+**What to watch** after the apply:
+
+* watch item 3: any `PermissionDenied` naming Firestore in eng's worker logs
+  means an eng attempt was dispatched unswitched. Check the scheduler's live
+  `SWARM_STATE_VIA_API_TENANTS` includes `eng` first;
+* watch items 1-2, as after b1;
+* the live policy no longer names eng's worker for the role, and still names
+  every other Terraform tenant's (count the lines; an empty answer from a
+  command that did not run is not an empty policy):
+
+  ```bash
+  gcloud projects get-iam-policy saga-agents-staging --format=json \
+    | jq -r '.bindings[] | select(.role | endswith("/roles/swarmTenantWorkerFirestore")) | .members[]'
+  ```
+
+* the ISO-ACCEPT probe from an eng pod (watch item 4): all three checks PASS;
+* `SWARM_API_TENANT=eng make verify-remote`, read as in b1: green.
+
+**Rollback.** Remove `eng` from `worker_firestore_off_tenants_iam` (back to
+`[]`); release. The plan re-creates
+`module.tenancy.google_project_iam_member.worker_firestore["eng"]`, one `1 to
+add`, through `dev-iam`. Faster in an outage: re-grant by hand with c2's
+`add-iam-policy-binding` command for eng's member, then the release, whose
+create of an existing member is a no-op. Only after that, b1's rollback if it
+is wanted: a switched worker with no role is safe, an unswitched one is not.
+
+`worker_firestore_off_tenants` (swarm-api's list) is not this step: it writes
+job-made workspace records, and eng, provisioned by Terraform, has none.
 
 ---
 
@@ -320,12 +389,15 @@ The plan refuses this until every key of `tenants` is in
 as a2 says.
 
 **The plan must show** a destroy of exactly one binding per Terraform tenant
-and nothing else. In dev:
+that still has one, and nothing else. In dev, after b2 has removed eng's:
 
-* `module.tenancy.google_project_iam_member.worker_firestore["eng"]`
 * `module.tenancy.google_project_iam_member.worker_firestore["smoke"]`
 
-In prod, also `module.tenancy.google_project_iam_member.worker_firestore["research"]`.
+In prod, also `module.tenancy.google_project_iam_member.worker_firestore["research"]`,
+and `["eng"]` if prod's eng was not taken through b2. Leave
+`worker_firestore_off_tenants_iam` as it is in this change: emptying it at the
+same time is harmless while `worker_firestore_access` is false, but it makes
+c2's rollback re-grant eng too.
 Each is role `projects/saga-agents-staging/roles/swarmTenantWorkerFirestore`
 on `serviceAccount:swarm-agent-worker-<tenant>@…`. Every other
 `module.tenancy` resource — the accounts, the object grants, the telemetry
@@ -348,7 +420,8 @@ count when reporting: an empty answer from a command that did not run is not
 an empty policy.
 
 **Rollback.** `worker_firestore_access = true`; release (it re-creates the
-bindings, through `dev-iam`). Faster in an outage: re-grant by hand with the
+bindings of every tenant not in `worker_firestore_off_tenants_iam`, through
+`dev-iam`). Faster in an outage: re-grant by hand with the
 `add-iam-policy-binding` command above, per tenant, then the release, whose
 create of an existing member is a no-op.
 
@@ -376,7 +449,7 @@ Remove the deployer-condition and workspace-deployer entries **first**, in one
 bootstrap apply, so nothing can grant the role; then the definition in a
 second. The workspace job's guard and A9 still name the role
 (`scripts/register-tenant.sh`, `scripts/lib/workspace-calls.json`) and
-`terraform/modules/tenancy` still has the switch: their cleanup is its own
+`terraform/modules/tenancy` still has the switches: their cleanup is its own
 lane after the definition is gone, and its tests change with it
 (`tests/terraform/platform_roles.tftest.hcl`, `deployer_iam.tftest.hcl`,
 `custom_roles_out_of_ci.tftest.hcl`).

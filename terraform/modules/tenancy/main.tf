@@ -162,7 +162,9 @@ resource "google_service_account" "worker" {
 # for_each keys, same addresses, so every environment's plan shows no change
 # until the owner flips it. Flip it only after every tenant's worker is on the
 # routes (STATE_VIA_API_TENANTS): a worker still on the direct path gets
-# PermissionDenied on its first read and its attempt fails.
+# PermissionDenied on its first read and its attempt fails. Before that, one
+# tenant at a time: var.worker_firestore_off_tenants_iam removes the listed
+# tenants' bindings alone (docs/runbooks/isolation-cutover.md step b2).
 #
 # The role names below are plain strings from ../custom_role_ids, the one
 # spelling this module and terraform/bootstrap share. A string, not a resource
@@ -175,7 +177,12 @@ module "custom_role_ids" {
 }
 
 resource "google_project_iam_member" "worker_firestore" {
-  for_each = var.worker_firestore_access ? var.tenants : {}
+  # Filtered, never re-keyed: a tenant in worker_firestore_off_tenants_iam drops
+  # out and every other tenant keeps its own id as key, so the plan destroys the
+  # listed binding alone (variables.tf says why the list exists).
+  for_each = var.worker_firestore_access ? {
+    for k, v in var.tenants : k => v if !contains(var.worker_firestore_off_tenants_iam, k)
+  } : {}
 
   project = var.project_id
   role    = module.custom_role_ids.names.worker_firestore

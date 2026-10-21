@@ -1094,6 +1094,42 @@ variable "worker_firestore_access" {
   }
 }
 
+# DEFAULTS EMPTY: every Terraform tenant keeps its worker_firestore binding,
+# today's grant exactly, so no environment plans a change by this variable
+# existing; listing a tenant is the owner's cutover step, never a default.
+# Passed to module "tenancy" (main.tf), which filters the listed tenants out
+# of the binding's for_each without re-keying the others: the plan destroys
+# module.tenancy.google_project_iam_member.worker_firestore["<tenant>"] and
+# nothing else. It exists because the cutover goes one tenant at a time (owner
+# decision Q7, confirmed 2026-10-20: u-bogdan, then eng, then all), and
+# worker_firestore_access is one switch for every Terraform tenant. Distinct
+# from worker_firestore_off_tenants below, which is swarm-api's list for
+# job-made workspace records and creates or destroys no binding. Refused at
+# plan, as the global switch is, for a tenant not yet in
+# state_via_api_tenants, and for `*` or anything else that is not a tenant id.
+variable "worker_firestore_off_tenants_iam" {
+  description = <<-EOT
+    Terraform tenant ids (keys of var.tenants) whose worker loses its
+    swarmTenantWorkerFirestore binding (module.tenancy worker_firestore) while
+    worker_firestore_access is still true: #1457 design B, one tenant at a
+    time (docs/runbooks/isolation-cutover.md step b2). Each entry must already
+    be in state_via_api_tenants. Default [] = every tenant keeps today's grant.
+  EOT
+  type        = list(string)
+  default     = []
+  nullable    = false
+
+  validation {
+    condition     = alltrue([for t in var.worker_firestore_off_tenants_iam : can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", t))])
+    error_message = "every worker_firestore_off_tenants_iam entry must be a tenant id (lowercase letters, digits and inner hyphens). \"*\" is not supported: list the tenants."
+  }
+
+  validation {
+    condition     = alltrue([for t in var.worker_firestore_off_tenants_iam : contains(var.state_via_api_tenants, t)])
+    error_message = "every worker_firestore_off_tenants_iam entry must already be in state_via_api_tenants: that tenant's worker is otherwise still dispatched onto direct Firestore and fails its first read once its binding is destroyed (docs/runbooks/isolation-cutover.md)."
+  }
+}
+
 # DEFAULTS EMPTY: swarm-api writes worker_firestore_access true on every
 # job-made workspace record, so each keeps its grant exactly as before this
 # variable existed. Rendered onto swarm-api alone as WORKER_FIRESTORE_OFF_TENANTS
