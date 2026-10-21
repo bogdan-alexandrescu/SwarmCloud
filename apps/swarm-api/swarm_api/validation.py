@@ -34,9 +34,13 @@ from swarm_common.profiles import (
     RESOURCE_CLASSES,
     RUNNER_PROFILES,
     InputRefused,
+    ResourceSize,
     RunnerProfile,
     WorkerAction,
     check_inputs,
+    default_sizes,
+    effective_size,
+    resolve_backend,
     step_model_class,
 )
 
@@ -191,32 +195,59 @@ def available_runner_profiles() -> dict[str, RunnerProfile]:
     return {n: p for n, p in RUNNER_PROFILES.items() if p.available}
 
 
-def validate_resource_class_override(profile: RunnerProfile, requested: str | None) -> str:
+def _class_size(name: str, sizes: Mapping[str, ResourceSize] | None, backend: Any) -> ResourceSize:
+    """The size `name` runs at: `effective_size` for the frozen classes, and
+    the catalogue entry itself for one `RESOURCE_CLASSES` holds and the size
+    defaults do not (the guard tests add one to prove every dimension is
+    compared)."""
+    if name in default_sizes():
+        return effective_size(name, sizes, backend)
+    rc = RESOURCE_CLASSES[name]
+    return ResourceSize(cpu_request=rc.cpu, cpu_limit=rc.cpu_limit_cores,
+                        memory_gib=rc.memory_gib, disk_gib=rc.disk_gib)
+
+
+def validate_resource_class_override(
+    profile: RunnerProfile,
+    requested: str | None,
+    *,
+    sizes: Mapping[str, ResourceSize] | None = None,
+) -> str:
     """A step may not pick a bigger box than its profile was built for.
 
     The only override permitted is to a resource class that exists AND whose
     sizing is no larger than the profile's own class in every dimension. This is
     still not a resource spec from the caller -- it is a choice among named,
     admin-defined classes -- but it cannot be used to grow a task.
+
+    `sizes` is the current runner size version (`runnersizes.current_sizes`,
+    design §4.8): once an admin resizes a class, "larger" is judged at the
+    sizes the step would RUN at, which is what admission charges and the pod
+    is rendered from. Each side is the size its backend runs (`effective_size`:
+    the code default on Cloud Run). None compares the code defaults.
     """
     if requested is None:
         return profile.resource_class
-    target = RESOURCE_CLASSES.get(requested)
-    if target is None:
+    if requested not in RESOURCE_CLASSES:
         raise ValidationFailed(
             f"unknown resource_class {requested!r}",
             detail={"known_resource_classes": sorted(RESOURCE_CLASSES)},
         )
-    base = RESOURCE_CLASSES[profile.resource_class]
+    backend = resolve_backend(profile)
+    target = _class_size(requested, sizes, backend)
+    base = _class_size(profile.resource_class, sizes, backend)
     # Every dimension, which is what the guarantee above says. `disk_gib` was
     # missing: it is not exploitable with the current three-class catalogue,
     # where disk rises with cpu and memory, but the check is the stated promise
     # and a fourth class with a big disk and a small CPU would walk straight
-    # through the gap.
+    # through the gap. `cpu` is the REQUEST, what admission charges; the limit
+    # rises with it (at most `CPU_BURST_MAX_RATIO` x), and is compared too so
+    # a step can never burst further than its profile could.
     larger = [
         dimension
         for dimension, requested_value, base_value in (
-            ("cpu", target.cpu, base.cpu),
+            ("cpu", target.cpu_request, base.cpu_request),
+            ("cpu_limit", target.cpu_limit, base.cpu_limit),
             ("memory_gib", target.memory_gib, base.memory_gib),
             ("disk_gib", target.disk_gib, base.disk_gib),
             ("units", target.units, base.units),
