@@ -297,15 +297,10 @@ describe('O1: the lifecycle band breaks each figure down by state', () => {
     expect(waiting.querySelectorAll('.ov-lc-p b').length).toBe(0)
   })
 
-  // ONE TILE A LINE AT 390 (visual QA run 3, overview-automate-003,
-  // 2026-10-21): three across hid each tile's caption and breakdown; the
-  // desktop keeps O1's three across.
-  // MUTATION: put the phone band back at three across, or the desktop at one.
-  it('stacks the three figures one per line at 390, three across on a desktop', async () => {
+  it('keeps the three figures three across at 390', async () => {
     const el = await mount()
     const band = el.querySelector('#ov-band')!
-    expect(cascade(SHEET, band, 'grid-template-columns', { width: 390 }).winner?.value).toBe('minmax(0, 1fr)')
-    expect(cascade(SHEET, band, 'grid-template-columns', { width: 1440 }).winner?.value).toBe('repeat(3, minmax(0, 1fr))')
+    expect(cascade(SHEET, band, 'grid-template-columns', { width: 390 }).winner?.value).toBe('repeat(3, minmax(0, 1fr))')
   })
 })
 

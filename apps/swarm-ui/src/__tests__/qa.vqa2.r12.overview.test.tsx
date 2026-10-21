@@ -218,23 +218,23 @@ describe('V259: an in-card absence says why in sight', () => {
   })
 })
 
-describe('V263: Recent failures names the whole workflow id (owner Q5; at every width since run 3)', () => {
-  // MUTATION: draw `shortWf` again, or cut the id with a phone rule
-  // (visual QA run 3, overview-automate-006: "wf_audit_01" read "wf_audit_…").
-  it('draws the whole id at every width, and the whole id in the title', async () => {
+describe('V263: Recent failures names the whole workflow id at desktop width (owner Q5)', () => {
+  // MUTATION: draw `shortWf` again, or drop the phone's `.ov-wf-id` rule.
+  it('draws the whole id wide, the short one on a phone, and the whole id in the title', async () => {
     const el = await mount({
       tasks: ok({ tasks: [task({ id: 'tsk_f1', state: 'FAILED', completed_at: ago(3), step_id: 'synthesis', workflow_id: LONG_WF })], tenant_id: 'eng', next_page_token: null } as TaskPage),
     })
     const link = el.querySelector('#ov-failures .ov-fails .ov-name')!
     expect(link, 'no failure row').not.toBeNull()
     expect(link.getAttribute('title')).toBe(`synthesis · ${LONG_WF} · tsk_f1`)
-    expect(text(link)).toBe(`synthesis · ${LONG_WF}`)
-    // Nothing in the link cuts it, wide or on a phone; the row head breaks it.
-    for (const node of [link, ...link.querySelectorAll('*')]) {
-      for (const env of [WIDE, PHONE]) {
-        expect(painted(node, 'max-width', env)).toBeNull()
-        expect(painted(node, 'text-overflow', env)).toBeNull()
-      }
-    }
+    const id = link.querySelector('.ov-wf-id')!
+    expect(text(id)).toBe(LONG_WF)
+    // Whole at desktop width: nothing cuts it.
+    expect(painted(id, 'max-width', WIDE)).toBeNull()
+    expect(painted(id, 'text-overflow', WIDE)).toBeNull()
+    // The phone's short form: cut to about nine characters and an ellipsis.
+    expect(painted(id, 'max-width', PHONE)).toBe('10ch')
+    expect(painted(id, 'text-overflow', PHONE)).toBe('ellipsis')
+    expect(painted(id, 'overflow', PHONE)).toBe('hidden')
   })
 })

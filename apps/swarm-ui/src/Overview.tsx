@@ -1826,9 +1826,7 @@ function RunningCard({
     <>
       {head}
       <div className="ov-rows">
-        {/* NAMED (visual QA run 3, a11y-keyboard-003, 2026-10-21): the
-            card's title, and the disclosure's table says it is the rest. */}
-        <table className="ov-tbl" aria-label="Running now">
+        <table className="ov-tbl">
           <thead>
             <tr>
               <th scope="col">State</th>
@@ -1854,7 +1852,7 @@ function RunningCard({
         {running.length > shown.length && (
           <details className="ov-more ov-running-more">
             <summary>{running.length - shown.length} more</summary>
-            <table className="ov-tbl" aria-label="Running now, the rest">
+            <table className="ov-tbl">
               <tbody>
                 {running.slice(RUNNING_ROWS).map((t) => (
                   <RunningRow key={t.id} task={t} title={titleOf(t)} silentFor={silent.get(t.id)} leasedAt={leased.get(t.id)} />
@@ -1902,15 +1900,14 @@ function PhoneRunRow({ task: t, title, leasedAt }: { task: Task; title: string |
         {/* THE SECOND LINE IS THE DESKTOP'S STATE AND PROFILE COLUMNS
             (QA G1-08, 2026-10-07): a dot and "implement" twice could
             not be told apart. State, profile, and the workflow by its
-            id, whole (overview-automate-006: a short form read
-            "wf_audit_01" as "wf_audit_…"); the line wraps. */}
+            short id, whole in the link's title. */}
         <span className="ov-prun-sub">
           {t.state.toLowerCase().replace('_', '-')} · {t.runner_profile}
           {t.workflow_id && (
             <>
               {' · '}
               <a className="ctl-link ov-wf" href={`/workflows/${encodeURIComponent(t.workflow_id)}`} title={t.step_id ? `step ${t.step_id} of ${t.workflow_id}` : t.workflow_id}>
-                {t.workflow_id}
+                {shortWorkflowId(t.workflow_id)}
               </a>
             </>
           )}
@@ -2018,6 +2015,11 @@ function leasedAtByTask(leases: Result<LeasePage>): Map<string, string> {
     if (had === undefined || l.generation > had.generation) out.set(l.task_id, { at: l.created_at, generation: l.generation })
   }
   return new Map([...out].map(([id, v]) => [id, v.at]))
+}
+
+/** `wf_ccdd1422ab` -> `wf_ccdd14…`: what a phone row has room for. A short id stays whole. */
+function shortWorkflowId(id: string): string {
+  return id.length <= 10 ? id : `${id.slice(0, 9)}…`
 }
 
 function startKey(t: Task): number {

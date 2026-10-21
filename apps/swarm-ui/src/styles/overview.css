@@ -171,11 +171,10 @@
 .ov-fc-mark { width: 28px; }
 .ov-fc-age { width: 76px; }
 .ov-fc-open { width: 48px; }
-/* THE WHOLE WORKFLOW ID (visual QA V263, owner Q5, 2026-10-16; at every
-   width since run 3's overview-automate-006). The row head breaks anywhere
-   (above), so the whole id wraps in its cell rather than pushing the age and
-   Open out of the card. The line under the name is the state word, then the
-   error (ff-001), two lines at most, whole in its title. */
+/* THE WHOLE WORKFLOW ID ON A WIDE SCREEN (visual QA V263, owner Q5,
+   2026-10-16): the short form is the phone's alone, below. The row head
+   breaks anywhere (above), so the whole id wraps in its cell rather than
+   pushing the age and Open out of the card. */
 .ov-fails .ov-why { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .ov-tbl td:last-child, .ov-tbl th:last-child { padding-right: 0; }
 .ov-sub { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
@@ -199,16 +198,10 @@
 .ov-prun li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; min-height: 32px; }
 .ov-prun .sk-st-w { display: none; }
 .ov-prun-m { display: flex; flex-direction: column; min-width: 0; }
-/* THE NAME WRAPS, WHOLE (visual QA run 3, ffp-002, 2026-10-21): cut to one
-   line, every step of one workflow read "<its title> · sc…", cut at the same
-   point, so the step -- the only part that told the rows apart -- was the
-   part lost. It wraps, and an unbroken id breaks where it must. */
-.ov-prun-n { white-space: normal; overflow-wrap: anywhere; color: var(--text); text-decoration: none; }
-/* STATE · PROFILE · WORKFLOW ID UNDER THE NAME (QA G1-08, 2026-10-07): the
-   phone dropped all three, and two "implement" rows read alike. The id is
-   whole and the line wraps (overview-automate-006, 2026-10-21): a short form
-   left "wf_audit_01" and "wf_audit_02" reading the same. */
-.ov-prun-sub { white-space: normal; overflow-wrap: anywhere; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.ov-prun-n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); text-decoration: none; }
+/* STATE · PROFILE · SHORT WORKFLOW ID UNDER THE NAME (QA G1-08, 2026-10-07):
+   the phone dropped all three, and two "implement" rows read alike. */
+.ov-prun-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 /* THE DESKTOP'S NUMERALS, NOT THE MONOSPACE FACE (QA G1-08): the Runtime
    column is the sans face with tabular figures, and so is this. */
 .ov-prun em { font-style: normal; font-size: var(--t-micro); line-height: var(--lh-micro); font-variant-numeric: tabular-nums; color: var(--text-dim); }
@@ -251,13 +244,10 @@
 .ov-hp b { font: 650 var(--t-lead)/var(--lh-lead) var(--font); font-variant-numeric: tabular-nums; }
 .ov-hp b.is-zero { color: var(--s-warn); }
 .ov-hp small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* A DISABLED TILE'S REASON IS WHOLE AT EVERY WIDTH (QA G1-13, 2026-10-07;
-   visual QA run 3, overview-automate-005, 2026-10-21). One line cut "the
-   merge chain (#295) is disab…"; G1-13's two lines then cut codex's reason
-   before "Use claude-code." at 1440 -- the sentence's remedy. The phone
-   already drew it whole (OV-13); every width does now, and the tile is a
-   line or two taller for it. */
-.ov-hp.is-off small { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+/* A DISABLED TILE'S REASON WRAPS TO TWO LINES (QA G1-13, 2026-10-07): cut to
+   one, "the merge chain (#295) is disab…" could not be read without opening
+   Pools. Past two lines it is cut, whole in the line's title. */
+.ov-hp.is-off small { white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .ov-idc { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .ov-pls { display: flex; flex-direction: column; gap: 5px; }
 /* THE POOLS CARD SPANS THE PAGE (browser QA N17): its rows are laid across
@@ -362,17 +352,16 @@
   /* THE DETAIL IS READABLE BEFORE IT IS CUT (visual QA QA-100, 2026-10-20):
      four lines, beside an ids line or not -- now the rule at every width
      (`.ov-att-t small` above), so the phone has no clamp of its own. */
-  /* ONE TILE A LINE, EACH WHOLE (visual QA run 3, overview-automate-003,
-     2026-10-21). Three across at 390 left ~115px a tile, so the phone drew
-     the figure alone and hid the caption, the per-state breakdown and the
-     foot -- "costs nothing", the one line that says Waiting holds no
-     capacity (invariant 1), among them. A tile is the column's width now and
-     keeps everything the desktop draws; the band is three short rows. */
-  .ov-life { grid-template-columns: minmax(0, 1fr); gap: 6px; border: 0; background: none; overflow: visible; }
-  .ov-lc { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 8px 12px; }
+  /* Three across, the figure only: the per-state breakdown is the desktop's. */
+  .ov-life { gap: 6px; border: 0; background: none; overflow: visible; }
+  .ov-lc { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 7px 8px; gap: 0; }
   .ov-lc + .ov-lc::before { display: none; }
-  /* G1-02's page foot (a phone reads the newest 50, a desktop 200) shows
-     with the rest: nothing in the tile is the desktop's alone. */
+  .ov-lc-h small, .ov-lc-ps, .ov-lc-foot { display: none; }
+  /* THE PAGE'S FOOT STAYS (QA G1-02, 2026-10-07): a phone reads the newest
+     50 and a desktop the newest 200, so "Finished today" differs by width;
+     hidden here, a phone's 41 sat under the same words as a desktop's 62. */
+  .ov-lc-foot.is-page { display: block; }
+  .ov-lc-h { font-weight: 400; font-size: var(--t-micro); color: var(--text-dim); }
   .ov-rows { display: none; }
   /* Recent failures stacks (D2): the name and why over the age and Open. */
   .ov-fails, .ov-fails tbody { display: block; }
@@ -381,21 +370,18 @@
   .ov-fails tr:last-child { border-bottom: 0; }
   .ov-fails td, .ov-fails tbody th { height: auto; padding: 0; border-bottom: 0; }
   .ov-fails tbody th { grid-column: 2 / 4; grid-row: 1; }
-  /* NO SHORT FORM ON A PHONE EITHER (visual QA run 3, overview-automate-006
-     and ffp-002, 2026-10-21): V263's ten-character cut drew "wf_audit_01" as
-     "wf_audit_…" -- two characters saved -- and every step of that workflow
-     read alike. The row head breaks anywhere (above), so the whole id wraps
-     in its cell at 390 as it does at 1440. */
+  /* The phone's short form, `wf_5e5ad3…`, cut by the sheet from the whole id
+     the row carries (V263): about nine characters, then the ellipsis. */
+  .ov-fails .ov-wf-id { display: inline-block; max-width: 10ch; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; vertical-align: bottom; }
   .ov-fails td:first-child { grid-row: 1; }
   .ov-fails td.is-num { grid-row: 2; grid-column: 2; text-align: left; }
   .ov-fails td.is-num:last-child { grid-column: 3; text-align: right; }
   .ov-prun, .ov-prun-more { display: block; }
-  /* AND NO TWO-LINE CLAMP EITHER (ffp-002 review, 2026-10-21): names.css's
-     `.ov-page a.ov-prun-n` (0,2,1) outranks the bare `.ov-prun-n` above and
-     cut every Running title at two lines, so the steps of one long-titled
-     workflow still read alike. Same selector, later in the bundle: on a
-     phone the row's title is whole. The desktop cards keep the clamp. */
-  .ov-page a.ov-prun-n { display: block; -webkit-line-clamp: none; line-clamp: none; overflow: visible; }
+  /* A DISABLED REASON WHOLE ON A PHONE (live QA OV-13, 2026-10-11): past two
+     lines the reason was only in the tile's `title`, which a touch screen
+     cannot open. Whole, the sentence costs the tile a line or two of
+     height and hides nothing. */
+  .ov-hp.is-off small { display: block; -webkit-line-clamp: unset; overflow: visible; }
   .ov-link, .ov-open { position: relative; }
   .ov-link::after, .ov-open::after {
     content: '';

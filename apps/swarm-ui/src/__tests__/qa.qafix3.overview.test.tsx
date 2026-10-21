@@ -1,23 +1,25 @@
 /**
  * VISUAL QA RUN 3 (wf_d598fa7bffdb41fc9d76, 2026-10-21, the fixture build of
- * main at 51d99c53): the Overview findings, lane QAFIX3-OVERVIEW (#1680).
+ * main at 51d99c53): the Overview findings, lanes QAFIX3-OVERVIEW and
+ * QAFIX3-OVERVIEW-B (#1680).
  *
- *   overview-automate-003  At 390 the lifecycle tiles were bare figures: the
- *          captions ("costs nothing"), the per-state breakdown and the stale
- *          foot were hidden. The band is one tile per line on a phone now,
- *          each with all of it.
- *   overview-automate-005  A disabled Headroom tile clamped its reason to two
- *          lines at 1440, cutting "Use claude-code.". It is whole at every
- *          width, as the phone already drew it (OV-13).
- *   overview-automate-006  A workflow id was cut to "wf_audit_…" on a phone:
- *          the short form dropped two characters of "wf_audit_01" and left
- *          every step of that workflow reading alike. The id is whole at every
- *          width and breaks where it must.
+ * BY DESIGN, OWNER 2026-10-21 (~15:20Z): four findings answer an earlier owner
+ * decision and are kept as main drew them. Their tests hold that decision:
+ *   overview-automate-003  the O1 390 frame (owner pick 2026-10-01): three
+ *          tiles across at 390, figures only; "costs nothing" and the
+ *          per-state breakdown are the desktop's.
+ *   overview-automate-005  G1-13: a disabled Headroom tile's reason keeps
+ *          its two-line clamp on a desktop and is whole on a phone (OV-13).
+ *   overview-automate-006  owner Q5 (V263, 2026-10-16): a phone keeps the
+ *          10-character head cut of a workflow id.
+ *   ff-001  a Recent failures row's state is the glyph in the 28px mark
+ *          column, its word the mark's accessible name.
+ *
+ * FIXED:
  *   ffp-002  The phone's Running rows cut their titles, so rows of one
- *          workflow were cut at the same point. They wrap, whole: no
- *          ellipsis and no two-line clamp on a phone.
- *   ff-001  A Recent failures row said its state only by a glyph. The word
- *          is drawn under the name.
+ *          workflow were cut at the same point. They wrap, whole. The test
+ *          reads the CASCADE in the bundle's order (overview.css, then
+ *          names.css): PR 1848's override lost to names.css's clamp there.
  *   a11y-keyboard-003  The Overview's tables had no accessible name.
  *
  * Each assertion carries the mutation that turns it red.
@@ -28,8 +30,14 @@ import { cleanup, render, screen, within } from '@testing-library/react'
 import type { Result } from '../fetch'
 import type { Capacity, Stats, TaskPage } from '../types'
 import type { CascadeEnv } from './cssgate'
+import { cascade } from './cssgate'
 import { painted } from './marks'
 import { task } from './runfixture'
+import OVERVIEW_CSS from '../styles/overview.css?raw'
+import NAMES_CSS from '../styles/names.css?raw'
+import STYLES_CSS from '../styles.css?raw'
+import OVERVIEW_TSX from '../Overview.tsx?raw'
+import APP_TSX from '../App.tsx?raw'
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
@@ -84,37 +92,37 @@ async function mount(tasks: Result<TaskPage>): Promise<HTMLElement> {
 
 afterEach(cleanup)
 
-/** Every element from `el` down, `el` included. */
-const selfAndBelow = (el: Element): Element[] => [el, ...el.querySelectorAll('*')]
-
-describe('overview-automate-003: the lifecycle tiles keep their captions and breakdowns at 390', () => {
-  it('draws the caption, the per-state breakdown and the foot on a phone', () => {
+describe('overview-automate-003: the lifecycle band is three figures across at 390 (by design, owner 2026-10-21)', () => {
+  it('draws three tiles across, figures only, and keeps the breakdown for the desktop', () => {
     const { container } = render(<LifecycleBand stats={ok(STATS)} tasks={page([])} />)
+    const band = container.querySelector('#ov-band')!
     const tiles = [...container.querySelectorAll('#ov-band .ov-lc')]
     expect(tiles.length).toBe(3)
-    const waiting = tiles[0]!
-    expect(text(waiting.querySelector('.ov-lc-h small'))).toBe('costs nothing')
+    // By design, owner 2026-10-21 (the O1 390 frame, owner pick 2026-10-01).
+    // MUTATION: give the phone band one tile per line (`grid-template-columns: minmax(0, 1fr)`).
+    expect(painted(band, 'grid-template-columns', PHONE)).toBe('repeat(3, minmax(0, 1fr))')
     for (const t of tiles) {
-      // MUTATION: hide `.ov-lc-h small` again in overview.css's 560px block.
-      expect(painted(t.querySelector('.ov-lc-h small')!, 'display', PHONE)).not.toBe('none')
-      // MUTATION: hide `.ov-lc-ps` again in overview.css's 560px block.
-      expect(painted(t.querySelector('.ov-lc-ps')!, 'display', PHONE)).not.toBe('none')
+      // MUTATION: show `.ov-lc-h small` ("costs nothing") in overview.css's 560px block.
+      expect(painted(t.querySelector('.ov-lc-h small')!, 'display', PHONE)).toBe('none')
+      // MUTATION: show `.ov-lc-ps` (the per-state breakdown) in the 560px block.
+      expect(painted(t.querySelector('.ov-lc-ps')!, 'display', PHONE)).toBe('none')
+      // The desktop draws both.
+      // MUTATION: hide the caption at desktop width.
+      expect(painted(t.querySelector('.ov-lc-h small')!, 'display', WIDE)).not.toBe('none')
     }
-    // The page foot was already kept (G1-02); the stats foot is now too.
     const foot = document.createElement('span')
     foot.className = 'ov-lc-foot'
-    waiting.appendChild(foot)
-    // MUTATION: hide `.ov-lc-foot` again in overview.css's 560px block.
-    expect(painted(foot, 'display', PHONE)).not.toBe('none')
-    // MUTATION: keep the phone band at three tiles across.
-    expect(painted(container.querySelector('#ov-band')!, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
-    // The desktop band is unchanged: three across.
-    // MUTATION: give the desktop band the phone's one column.
-    expect(painted(container.querySelector('#ov-band')!, 'grid-template-columns', WIDE)).toBe('repeat(3, minmax(0, 1fr))')
+    tiles[0]!.appendChild(foot)
+    // MUTATION: show the stats foot in the 560px block.
+    expect(painted(foot, 'display', PHONE)).toBe('none')
+    // The page foot stays (G1-02): a phone's 50 is not a desktop's 200.
+    foot.classList.add('is-page')
+    // MUTATION: drop `.ov-lc-foot.is-page { display: block }` from the 560px block.
+    expect(painted(foot, 'display', PHONE)).toBe('block')
   })
 })
 
-describe('overview-automate-005: a disabled Headroom tile draws its whole reason at 1440', () => {
+describe('overview-automate-005: a disabled Headroom tile clamps its reason at 1440, whole on a phone (by design, owner 2026-10-21)', () => {
   const REASON = 'codex is disabled on this platform. The provider refused the registered credential and the platform is focused on Claude. Use claude-code.'
   const profile = {
     resource_class: 'standard',
@@ -126,7 +134,7 @@ describe('overview-automate-005: a disabled Headroom tile draws its whole reason
     disabled_reason: REASON,
   } as unknown as Capacity['runner_profiles'][string]
 
-  it('does not clamp the reason at any width', () => {
+  it("keeps G1-13's two lines on a desktop and OV-13's whole reason on a phone", () => {
     const { container } = render(
       <div className="ov-headroom">
         <div className="ov-hps">
@@ -135,54 +143,82 @@ describe('overview-automate-005: a disabled Headroom tile draws its whole reason
       </div>,
     )
     const small = container.querySelector('.ov-hp.is-off small')!
-    // MUTATION: drop the reason from the tile.
+    // MUTATION: drop the reason from the tile, or from its title.
     expect(text(small)).toContain('Use claude-code.')
-    for (const env of [WIDE, PHONE]) {
-      // MUTATION: put the two-line clamp back on `.ov-hp.is-off small` at desktop width.
-      expect(painted(small, '-webkit-line-clamp', env) ?? 'none').toBe('none')
-      // MUTATION: put `overflow: hidden` back on the disabled reason.
-      expect(painted(small, 'overflow', env) ?? 'visible').toBe('visible')
-      // MUTATION: put `white-space: nowrap` back on the disabled reason.
-      expect(painted(small, 'white-space', env)).toBe('normal')
-    }
+    expect(small.getAttribute('title')).toContain(REASON)
+    // By design, owner 2026-10-21 (G1-13): two lines on a desktop.
+    // MUTATION: unclamp `.ov-hp.is-off small` at desktop width.
+    expect(painted(small, '-webkit-line-clamp', WIDE)).toBe('2')
+    // MUTATION: drop `overflow: hidden` from the desktop's disabled reason.
+    expect(painted(small, 'overflow', WIDE)).toBe('hidden')
+    // MUTATION: drop `display: -webkit-box` from the desktop's disabled reason.
+    expect(painted(small, 'display', WIDE)).toBe('-webkit-box')
+    // Whole on a phone (OV-13).
+    // MUTATION: drop the phone block's `-webkit-line-clamp: unset`.
+    expect(painted(small, '-webkit-line-clamp', PHONE)).toBe('unset')
+    // MUTATION: drop the phone block's `overflow: visible`.
+    expect(painted(small, 'overflow', PHONE)).toBe('visible')
   })
 })
 
-describe('overview-automate-006: a workflow id is never cut on a phone', () => {
+describe('overview-automate-006: a phone keeps the 10-character head of a workflow id (by design, owner 2026-10-21)', () => {
   const failed = (id: string, wf: string) =>
     task({ id, state: 'FAILED', completed_at: ago(3), updated_at: ago(3), step_id: 'scan-scripts', workflow_id: wf, metadata: null })
 
-  it('draws "wf_audit_01" whole in a Recent failures row at 390, uncut by the sheet', () => {
+  it('cuts "wf_audit_01" to its head in a Recent failures row at 390, whole at 1440 and in the title', () => {
     const { container } = render(<RecentFailures tasks={page([failed('tsk_a', 'wf_audit_01')])} />)
     const name = container.querySelector('.ov-fails .ov-name')!
-    // MUTATION: draw `shortWf` in the row again.
-    expect(text(name)).toBe('scan-scripts · wf_audit_01')
-    for (const el of selfAndBelow(name)) {
-      // MUTATION: put the phone's `.ov-wf-id { max-width: 10ch }` back.
-      expect(painted(el, 'max-width', PHONE), el.className).toBeNull()
-      // MUTATION: put the phone's ellipsis back on the id.
-      expect(painted(el, 'text-overflow', PHONE), el.className).toBeNull()
-    }
+    // MUTATION: drop the id from the row's title.
+    expect(name.getAttribute('title')).toBe('scan-scripts · wf_audit_01 · tsk_a')
+    const id = name.querySelector('.ov-wf-id')!
+    // MUTATION: draw the id bare, without the `.ov-wf-id` span the phone cuts.
+    expect(text(id)).toBe('wf_audit_01')
+    // By design, owner 2026-10-21 (Q5, V263).
+    // MUTATION: drop the phone's `.ov-wf-id { max-width: 10ch }`.
+    expect(painted(id, 'max-width', PHONE)).toBe('10ch')
+    // MUTATION: drop the phone's ellipsis on the id.
+    expect(painted(id, 'text-overflow', PHONE)).toBe('ellipsis')
+    // MUTATION: cut the id at desktop width too.
+    expect(painted(id, 'max-width', WIDE)).toBeNull()
   })
 
-  it('draws the whole id in a phone Running row, on a line that wraps', async () => {
+  it('draws the short id in a phone Running row, whole in its title', async () => {
     const el = await mount(
       page([task({ id: 'tsk_r', state: 'RUNNING', step_id: 'scan-scripts', runner_profile: 'claude-code', workflow_id: 'wf_audit_01', started_at: ago(5), metadata: null })]),
     )
     const sub = el.querySelector('#ov-running .ov-prun li .ov-prun-sub')!
-    // MUTATION: draw `shortWorkflowId` in the phone row again.
-    expect(text(sub)).toBe('running · claude-code · wf_audit_01')
-    // MUTATION: put `white-space: nowrap` back on `.ov-prun-sub`.
-    expect(painted(sub, 'white-space', PHONE)).toBe('normal')
-    // MUTATION: put the ellipsis back on `.ov-prun-sub`.
-    expect(painted(sub, 'text-overflow', PHONE)).toBeNull()
-    // MUTATION: drop `overflow-wrap: anywhere`, so a long id runs out of the card.
-    expect(painted(sub, 'overflow-wrap', PHONE)).toBe('anywhere')
+    // By design, owner 2026-10-21 (Q5): nine characters and an ellipsis.
+    // MUTATION: draw the whole `t.workflow_id` in the phone row.
+    expect(text(sub)).toBe('running · claude-code · wf_audit_…')
+    // MUTATION: drop the whole id from the link's title.
+    expect(sub.querySelector('a')!.getAttribute('title')).toBe('step scan-scripts of wf_audit_01')
   })
 })
 
+/**
+ * THE BUNDLE'S ORDER FOR THE TWO SHEETS THAT STYLE AN OVERVIEW NAME. Vite
+ * emits CSS in first-import order: App.tsx imports Overview before Workflows
+ * (names.css's other importer), and Overview.tsx imports overview.css, then
+ * names.css. So names.css comes AFTER overview.css, and a tie in specificity
+ * goes to names.css -- the opposite of `marks.ts`'s alphabetical glob, which
+ * is how PR 1848's override passed its test and lost in the built console.
+ */
+const BUNDLE = [OVERVIEW_CSS, NAMES_CSS, STYLES_CSS].join('\n')
+
 describe('ffp-002: phone Running row titles wrap rather than cut at the same point', () => {
-  it('lets the row name wrap, whole', async () => {
+  it('loads overview.css before names.css, as the app imports them', () => {
+    const imports = (src: string) => [...src.matchAll(/^import\s+(?:[^'\n]*from\s+)?'([^']+)'/gm)].map((m) => m[1]!)
+    const ov = imports(OVERVIEW_TSX)
+    // MUTATION: import names.css before overview.css in Overview.tsx (the test's order would then be wrong).
+    expect(ov.indexOf('./styles/overview.css')).toBeGreaterThanOrEqual(0)
+    expect(ov.indexOf('./styles/overview.css')).toBeLessThan(ov.indexOf('./styles/names.css'))
+    const app = imports(APP_TSX)
+    // MUTATION: import Workflows (names.css's other importer) before Overview in App.tsx.
+    expect(app.indexOf('./Overview')).toBeGreaterThanOrEqual(0)
+    expect(app.indexOf('./Overview')).toBeLessThan(app.indexOf('./Workflows'))
+  })
+
+  it('lets the row name wrap, whole, in the cascade the built console paints', async () => {
     const el = await mount(
       page([
         task({ id: 'tsk_r1', state: 'RUNNING', step_id: 'scan-scripts', workflow_id: 'wf_audit_01', started_at: ago(5), metadata: null }),
@@ -191,34 +227,43 @@ describe('ffp-002: phone Running row titles wrap rather than cut at the same poi
     )
     const names = [...el.querySelectorAll('#ov-running .ov-prun li .ov-prun-n')]
     expect(names.length).toBe(2)
-    // `.ov-page a.ov-prun-n` in names.css (0,2,1) clamps every Overview name
-    // to two lines and outranks overview.css's bare `.ov-prun-n`, so each
-    // assertion reads the property that rule sets, as the phone paints it.
-    for (const n of names) {
-      // MUTATION: drop `-webkit-line-clamp: none` from the phone's
-      // `.ov-page a.ov-prun-n` in overview.css, so names.css cuts it at two lines.
-      expect(painted(n, '-webkit-line-clamp', PHONE)).toBe('none')
-      // MUTATION: drop `line-clamp: none` from the phone's `.ov-page a.ov-prun-n`.
-      expect(painted(n, 'line-clamp', PHONE)).toBe('none')
-      // MUTATION: drop `display: block` from the phone's `.ov-page a.ov-prun-n`,
-      // so it stays names.css's `-webkit-box` clamping box.
-      expect(painted(n, 'display', PHONE)).toBe('block')
-      // MUTATION: drop `overflow: visible` from the phone's `.ov-page a.ov-prun-n`,
-      // so names.css's `overflow: hidden` hides what runs past the box.
-      expect(painted(n, ['overflow', 'overflow-y'], PHONE)).toBe('visible')
-      // MUTATION: put `white-space: nowrap` on the phone's `.ov-page a.ov-prun-n`.
-      expect(painted(n, 'white-space', PHONE)).toBe('normal')
-      // MUTATION: put an ellipsis on the phone's `.ov-page a.ov-prun-n`.
-      expect(painted(n, 'text-overflow', PHONE)).toBeNull()
-      // MUTATION: drop `overflow-wrap: anywhere` from both `.ov-prun-n` and
-      // names.css's `.ov-page a.ov-prun-n`.
-      expect(painted(n, 'overflow-wrap', PHONE)).toBe('anywhere')
+    const at = (n: Element, prop: string | readonly string[]) => {
+      const r = cascade(BUNDLE, n, prop, PHONE)
+      expect(r.unsupported).toEqual([])
+      return r.winner?.value ?? null
     }
+    for (const n of names) {
+      // MUTATION: put `.ov-page a.ov-prun-n` back in names.css's two-line clamp.
+      expect(at(n, '-webkit-line-clamp') ?? 'none').toBe('none')
+      // MUTATION: put `.ov-page a.ov-prun-n` back in names.css's two-line clamp.
+      expect(at(n, 'line-clamp') ?? 'none').toBe('none')
+      // MUTATION: put `.ov-page a.ov-prun-n` back in names.css's clamp (its `display: -webkit-box`).
+      expect(at(n, 'display')).not.toBe('-webkit-box')
+      // MUTATION: put `overflow: hidden` on `.ov-prun-n`, or the names.css clamp back.
+      expect(at(n, ['overflow', 'overflow-y']) ?? 'visible').toBe('visible')
+      // MUTATION: put `white-space: nowrap` back on `.ov-prun-n`.
+      expect(at(n, 'white-space')).toBe('normal')
+      // MUTATION: put the ellipsis back on `.ov-prun-n`.
+      expect(at(n, 'text-overflow')).toBeNull()
+      // MUTATION: drop `overflow-wrap: anywhere` from `.ov-prun-n`.
+      expect(at(n, 'overflow-wrap')).toBe('anywhere')
+    }
+  })
+
+  it("keeps the two-line clamp on the desktop cards' names", () => {
+    const { container } = render(
+      <div className="ov-page">
+        <RecentFailures tasks={page([task({ id: 'tsk_f', state: 'FAILED', completed_at: ago(2), updated_at: ago(2) })])} />
+      </div>,
+    )
+    const name = container.querySelector('.ov-fails a.ov-name')!
+    // MUTATION: drop `.ov-page a.ov-name` from names.css's clamp along with the phone rows.
+    expect(cascade(BUNDLE, name, '-webkit-line-clamp', WIDE).winner?.value).toBe('2')
   })
 })
 
-describe('ff-001: a Recent failures row says its state in a word', () => {
-  it('draws the state word, in sight, under each row name', () => {
+describe('ff-001: a Recent failures row says its state by the mark, its word the accessible name (by design, owner 2026-10-21)', () => {
+  it('draws the glyph in the mark column and no state line under the name', () => {
     const { container } = render(
       <RecentFailures
         tasks={page([
@@ -230,20 +275,16 @@ describe('ff-001: a Recent failures row says its state in a word', () => {
     )
     const rows = [...container.querySelectorAll('.ov-fails tbody tr')]
     expect(rows.length).toBe(3)
-    const words = rows.map((r) => r.querySelector('th .ov-fstate'))
-    // MUTATION: drop the `.ov-fstate` word from the row head.
-    expect(words.map(text)).toEqual(['failed', 'dead-lettered', 'cancelled'])
-    for (const w of words) {
-      // MUTATION: draw the word visually hidden (`.sk-vh`), as the bare mark does.
-      expect(w!.closest('.sk-vh')).toBeNull()
-      expect(painted(w!, 'display', WIDE)).not.toBe('none')
-    }
-    // The row's accessible text says the state once: the bare mark beside it is decoration.
-    // MUTATION: leave the mark's own hidden word exposed beside the new one.
-    expect(rows[0]!.querySelector('td:first-child [aria-hidden="true"]')).not.toBeNull()
-    // The error still reads after the word.
-    // MUTATION: drop the error line when a state word is drawn.
-    expect(text(rows[0]!.querySelector('th .ov-why'))).toBe('failed · exit status 1')
+    const marks = rows.map((r) => r.querySelector('td:first-child')!)
+    // By design, owner 2026-10-21: the word is the mark's accessible name.
+    // MUTATION: wrap the mark in `aria-hidden`, hiding its word from a screen reader.
+    for (const m of marks) expect(m.querySelector('[aria-hidden="true"] .sk-st, .sk-st[aria-hidden="true"]')).toBeNull()
+    // MUTATION: drop the mark's word (or the mark) from the 28px column.
+    expect(marks.map(text)).toEqual([expect.stringContaining('failed'), expect.stringContaining('dead-lettered'), expect.stringContaining('cancelled')])
+    // MUTATION: draw a `.ov-fstate` word under the name again.
+    for (const r of rows) expect(r.querySelector('th .ov-fstate')).toBeNull()
+    // MUTATION: lead the error line with the state word ("failed · exit status 1").
+    expect(text(rows[0]!.querySelector('th .ov-why'))).toBe('exit status 1')
   })
 })
 

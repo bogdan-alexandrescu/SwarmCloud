@@ -101,13 +101,24 @@ describe('C: a long name is two lines and a tooltip, never off the edge', () => 
   it('clamps an agent’s name on the Overview cards', async () => {
     await page('/', '.ov-page')
     const names = await waitFor(() => {
-      const n = [...document.querySelectorAll('a.ov-name, a.ov-prun-n')]
+      const n = [...document.querySelectorAll('a.ov-name')]
       expect(n.length).toBeGreaterThan(0)
       return n
     })
     for (const n of names) {
       expectClamped(n, 'an Overview agent name')
       expectTitled(n, 'an Overview agent name')
+    }
+    // NOT THE PHONE'S RUNNING LIST (visual QA run 3, ffp-002, 2026-10-21):
+    // two lines cut the steps of one long-titled workflow at the same point.
+    // Its name wraps whole and keeps its tooltip. qa.qafix3.overview.test.tsx
+    // reads the same rule in the bundle's sheet order.
+    const phone = [...document.querySelectorAll('a.ov-prun-n')]
+    expect(phone.length).toBeGreaterThan(0)
+    for (const n of phone) {
+      // MUTATION: put `.ov-page a.ov-prun-n` back in names.css's two-line clamp.
+      expect(painted(n, '-webkit-line-clamp', WIDE), 'a phone Running name is clamped').toBeNull()
+      expectTitled(n, 'a phone Running name')
     }
   })
 

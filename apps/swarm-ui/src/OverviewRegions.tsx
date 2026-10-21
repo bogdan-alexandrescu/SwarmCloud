@@ -546,36 +546,47 @@ export function RecentFailures({ tasks }: { tasks: Result<OverviewTaskPage> }) {
   const shown = failed.slice(0, FAILURE_ROWS)
   return (
     <>
-    {failureTable(shown, titleOf, now, 'Recent failures')}
+    {failureTable(shown, titleOf, now)}
     {/* THE REST, COUNTED AND IN PLACE (visual QA V144, 2026-10-11): the card
         stopped at six rows and said nothing about a seventh, while Running
         now beside it says "N more". The same disclosure, the same words. */}
     {failed.length > shown.length && (
       <details className="ov-more ov-failures-more">
         <summary>{failed.length - shown.length} more</summary>
-        {failureTable(failed.slice(FAILURE_ROWS), titleOf, now, 'Recent failures, the rest')}
+        {failureTable(failed.slice(FAILURE_ROWS), titleOf, now)}
       </details>
     )}
     </>
   )
 }
 
+/** `wf_ccdd1422ab` -> `wf_ccdd14…`, as Running now's phone rows shorten it. */
+function shortWf(id: string): string {
+  return id.length <= 10 ? id : `${id.slice(0, 9)}…`
+}
+
+/**
+ * THE WHOLE WORKFLOW ID AT DESKTOP WIDTH (visual QA V263, owner decision Q5,
+ * 2026-10-16). A row read "synthesis · wf_5e5ad3…" at 1440 with ~300px free,
+ * and its `title` repeated the cut text, so the id could not be reached from
+ * the row. The id is drawn whole; the sheet cuts it to the short form only at
+ * the phone breakpoint (`.ov-wf-id`, overview.css), so the text, the title
+ * and a screen reader all carry the whole id at every width.
+ */
+function WfId({ id }: { id: string }) {
+  return shortWf(id) === id ? <>{id}</> : <span className="ov-wf-id">{id}</span>
+}
+
 /** Rows the Recent failures card draws before its "N more". */
 const FAILURE_ROWS = 6
 
-/**
- * NAMED (visual QA run 3, a11y-keyboard-003, 2026-10-21): a screen reader's
- * table list read "table, 4 columns" for each, with nothing to tell the six
- * rows from the "N more" under them. `name` is the card's title, and the
- * disclosure's table says it is the rest.
- */
-function failureTable(failed: Task[], titleOf: (t: Task) => string | null, now: number, name: string) {
+function failureTable(failed: Task[], titleOf: (t: Task) => string | null, now: number) {
   return (
     // FIXED COLUMNS (browser QA D2, 2026-10-04): the row head inherited the
     // head row's `nowrap`, so one long error drew a 1532px table in a 1056px
     // card and pushed the age and Open off it. The name takes what the three
     // narrow columns leave; the error clamps to two lines, whole in its title.
-    <table className="ov-tbl ov-fails" aria-label={name}>
+    <table className="ov-tbl ov-fails">
       <colgroup>
         <col className="ov-fc-mark" />
         <col className="ov-fc-name" />
@@ -586,11 +597,6 @@ function failureTable(failed: Task[], titleOf: (t: Task) => string | null, now: 
         {failed.map((t) => {
           const href = agentPath(t)
           const why = whyAgent(t) || (t.state === 'DEAD_LETTERED' ? 'Retry budget spent.' : '')
-          // THE STATE IN A WORD, IN SIGHT (visual QA run 3, ff-001,
-          // 2026-10-21): the row said failed, dead-lettered or cancelled only
-          // by the mark's glyph and colour, its word visually hidden. The word
-          // leads the line under the name, so the error reads after it.
-          const word = t.state.toLowerCase().replace('_', '-')
           // AN UNTITLED STEP SAYS WHOSE IT IS (live QA OV-16, 2026-10-11):
           // five of eleven rows read "merge" and nothing else. With no title
           // read, the row names its workflow by its short id.
@@ -600,13 +606,10 @@ function failureTable(failed: Task[], titleOf: (t: Task) => string | null, now: 
           return (
             <tr key={t.id}>
               {/* THE MARK ALONE (browser QA N3, 2026-10-04): the 68px badge
-                  overprinted the name in this 28px column. Its word is
-                  drawn under the name (ff-001), so the mark is decoration
-                  here, hidden from a screen reader rather than said twice. */}
+                  overprinted the name in this 28px column. The word is the
+                  mark's title and its accessible name. */}
               <td>
-                <span aria-hidden="true">
-                  <StateMark state={t.state} bare />
-                </span>
+                <StateMark state={t.state} bare />
               </td>
               <th scope="row">
                 <a className="ov-name" href={href} title={`${wf === null ? label : `${label} · ${wf}`} · ${t.id}`}>
@@ -614,14 +617,15 @@ function failureTable(failed: Task[], titleOf: (t: Task) => string | null, now: 
                   {wf !== null && (
                     <>
                       {' · '}
-                      {wf}
+                      <WfId id={wf} />
                     </>
                   )}
                 </a>
-                <span className="ov-sub ov-why" title={why === '' ? word : `${word} · ${why}`}>
-                  <span className="ov-fstate">{word}</span>
-                  {why !== '' && ` · ${why}`}
-                </span>
+                {why !== '' && (
+                  <span className="ov-sub ov-why" title={why}>
+                    {why}
+                  </span>
+                )}
               </th>
               <td className="is-num">
                 <EndedAgo task={t} now={now} />
