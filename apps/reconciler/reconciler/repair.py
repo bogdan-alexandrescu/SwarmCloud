@@ -143,6 +143,40 @@ WEDGED_BACKOFF_CAP_SECONDS = 6 * 3600
 #: policy on that field can retire the record of an execution nobody lists.
 WEDGED_RECORD_RETENTION = timedelta(days=7)
 
+#: The wait before a task this pass reclaimed and requeued may run again, on
+#: its FIRST attempt (#1822). Not zero: on 2026-10-21 three tasks ended FAILED
+#: lost_worker after "lease silent for 104-117 s (grace 90 s)", each losing all
+#: three attempts back to back, because a lapse with a deterministic cause --
+#: the same step, the same memory, the same image -- recurred the moment the
+#: requeue made the task eligible. Thirty seconds is one heartbeat interval:
+#: short enough that a genuinely lost worker (a node gone, a pod evicted) costs
+#: almost nothing, long enough that the retry is not the same instant.
+REQUEUE_BACKOFF_BASE_SECONDS = 30
+#: Each further attempt waits this many times longer: 30 s, 2 min, 8 min. Four,
+#: not two, so the third attempt waits long enough for a transient cause (a
+#: provider hiccup, a node pool scaling) to have passed.
+REQUEUE_BACKOFF_FACTOR = 4
+#: The longest a reclaimed task waits: a task with a large `max_attempts` still
+#: retries within a quarter of an hour, and an operator watching it is not left
+#: wondering whether it will ever run again.
+REQUEUE_BACKOFF_CAP_SECONDS = 15 * 60
+
+
+def requeue_backoff_seconds(attempt_number: int) -> int:
+    """How long a task reclaimed on its `attempt_number`-th attempt waits (#1822).
+
+    `attempt_number` is the task's `attempt_count` as the pass read it: 1 on a
+    first attempt. Anything below 1 counts as 1."""
+    n = max(1, int(attempt_number))
+    if n > 16:
+        # Past any real attempt count, and past the cap long before: keeps the
+        # power from growing without bound on a corrupt counter.
+        return REQUEUE_BACKOFF_CAP_SECONDS
+    return min(
+        REQUEUE_BACKOFF_BASE_SECONDS * REQUEUE_BACKOFF_FACTOR ** (n - 1),
+        REQUEUE_BACKOFF_CAP_SECONDS,
+    )
+
 #: The line written once per eviction -- a stuck attempt fenced, or a Job left
 #: running terminated -- so an operator can find every one with a single
 #: filter (docs/runbooks/browser-eviction.md). The persisted pass carries the
@@ -1977,6 +2011,21 @@ class Reconciler:
             )
             return outcome
 
+        # ---- STEP 0: is the worker still silent? -----------------------
+        # A silence finding rests on a snapshot that may be minutes old by now
+        # (#1822): read the lease again, BEFORE the kill, which no aborted
+        # transaction can take back. A worker that beat since, within the
+        # grace, is alive: nothing is killed, fenced, released or requeued.
+        silence = self._silence_seen(finding, snapshot)
+        if silence is not None and finding.lease_id:
+            if self._store.lease_heartbeat_resumed(
+                finding.lease_id,
+                seen=silence[0],
+                generation=finding.generation,
+                grace_seconds=self._config.heartbeat_grace_seconds,
+            ):
+                return self._heartbeat_resumed(finding, outcome, "before the kill")
+
         # ---- STEP 1: terminate the execution ----------------------------
         # BEFORE anything is written. The fence used to be committed first, in
         # a transaction of its own, and when this kill was then refused the
@@ -2009,6 +2058,12 @@ class Reconciler:
         proof_by_absence_of_a_start = (
             proof_by_absence_of_a_start or bool(finding.detail.get(_NEVER_STARTED_DETAIL))
         )
+        # The same check inside the reclaim's transaction, on the lease read
+        # there -- but only when nothing was killed: once this pass has stopped
+        # the execution its worker is gone whatever it last wrote, and the
+        # reclaim must go ahead or the slot waits a further pass for nothing.
+        killed = finding.execution is not None and finding.execution.is_active
+        recheck = silence is not None and not killed
 
         # ---- STEPS 2-4: fence, release, repair -- one transaction -------
         plan: RepairPlan | None = None
@@ -2063,7 +2118,13 @@ class Reconciler:
                 expected_lease_id=finding.lease_id,
                 error=error,
                 # A retry time means nothing on a task that will not retry.
-                next_eligible_at=None if cannot_start else utcnow(),
+                # Otherwise after a backoff by attempt number, never `now`: a
+                # lapse with a deterministic cause would recur at once and spend
+                # every attempt back to back (#1822). The wait creates no
+                # demand: a READY task holds nothing (invariant 1).
+                next_eligible_at=None
+                if cannot_start
+                else utcnow() + timedelta(seconds=requeue_backoff_seconds(task.attempt_count)),
                 # Why it ends if it ends FAILED: the worker could not start,
                 # or (spent attempts on a requeue) its worker was lost.
                 failed_cause=EndCause.CANNOT_START if cannot_start else EndCause.LOST_WORKER,
@@ -2095,8 +2156,14 @@ class Reconciler:
             # The store writes it only at the finding's own generation.
             attempt_id=finding.attempt_id,
             attempt_reason=finding.reason,
+            heartbeat_seen=silence[0] if recheck and silence is not None else None,
+            heartbeat_grace_seconds=(
+                float(self._config.heartbeat_grace_seconds) if recheck else None
+            ),
             **fence_guard,
         )
+        if done.heartbeat_resumed:
+            return self._heartbeat_resumed(finding, outcome, "inside the reclaim's transaction")
 
         if done.new_generation is not None and finding.task_id:
             outcome.invalidated_to = done.new_generation
@@ -2276,6 +2343,44 @@ class Reconciler:
                 "execution holding this lease"
             ],
         )
+
+    @staticmethod
+    def _silence_seen(
+        finding: Finding, snapshot: ControlSnapshot
+    ) -> tuple[datetime | None] | None:
+        """The beat a silence finding was made on, or None for any other finding.
+
+        A silence finding is `detect_stale_leases`'s: a stale lease or a dead
+        worker that carries `silent_seconds`. One whose execution has ENDED is
+        not: the backend's record already proves the worker gone, and no later
+        beat can outweigh it. The beat is wrapped so that "it had never beaten"
+        (None) is told apart from "this is not a silence finding"."""
+        if finding.kind not in (FindingKind.STALE_LEASE, FindingKind.DEAD_WORKER):
+            return None
+        if "silent_seconds" not in finding.detail or finding.detail.get("execution_ended"):
+            return None
+        if not finding.lease_id or not finding.task_id:
+            return None
+        lease = snapshot.leases.get(finding.lease_id)
+        return (lease.heartbeat_at if lease is not None else None,)
+
+    def _heartbeat_resumed(
+        self, finding: Finding, outcome: RepairOutcome, where: str
+    ) -> RepairOutcome:
+        outcome.skipped = "heartbeat_resumed"
+        outcome.actions.append(
+            f"did NOT reclaim: the lease heartbeat advanced since the snapshot ({where}); "
+            "its worker is alive"
+        )
+        self._log.info(
+            "reclaim aborted: the worker heartbeat after the snapshot",
+            task_id=finding.task_id,
+            lease_id=finding.lease_id,
+            kind=finding.kind.value,
+            generation=finding.generation,
+            checked=where,
+        )
+        return outcome
 
     def _terminate(
         self,

@@ -181,6 +181,43 @@ class OneRepair:
     #: The cause written onto the superseded attempt in the same transaction
     #: (`ATTEMPT_FENCED` or `ATTEMPT_RECLAIMED`); None if none was written.
     attempt_ended: str | None = None
+    #: Nothing was written: the lease, read in the transaction, carries a beat
+    #: newer than the one the finding was made on and within the grace
+    #: (`heartbeat_resumed`). The worker is alive (#1822).
+    heartbeat_resumed: bool = False
+
+
+def heartbeat_resumed(
+    lease: dict[str, Any] | None,
+    *,
+    seen: datetime | None,
+    generation: int | None,
+    grace_seconds: float,
+    now: datetime,
+) -> bool:
+    """Whether `lease`, as read now, proves its worker beat since `seen` (#1822).
+
+    True only when all of these hold: the lease is unreleased; it is at
+    `generation`, the generation the finding is about (a beat at another
+    generation is not this attempt's); its `heartbeat_at` is strictly newer
+    than `seen`, the beat the finding was made on (None: it had never beaten);
+    and that beat is within `grace_seconds` of `now`. A beat newer than the
+    snapshot but itself past the grace is a worker that went silent again, and
+    is reclaimed as before.
+    """
+    if lease is None or lease.get("released_at") is not None:
+        return False
+    try:
+        if generation is None or int(lease.get("generation", 0)) != int(generation):
+            return False
+    except (ValueError, TypeError, OverflowError):
+        return False
+    beat = _as_datetime(lease.get("heartbeat_at"))
+    if beat is None:
+        return False
+    if seen is not None and beat <= seen:
+        return False
+    return (now - beat).total_seconds() <= grace_seconds
 
 
 class ControlStore:
@@ -1393,6 +1430,28 @@ class ControlStore:
             ).value
         return target, payload
 
+    def lease_heartbeat_resumed(
+        self,
+        lease_id: str,
+        *,
+        seen: datetime | None,
+        generation: int | None,
+        grace_seconds: float,
+    ) -> bool:
+        """`heartbeat_resumed` on the lease as it reads now, outside a
+        transaction: the check a reclaim makes BEFORE it kills the execution
+        (#1822), since a kill cannot be taken back by aborting the transaction
+        after it. A READ THAT FAILS raises: "the worker is alive" and "I could
+        not look" must not lead to the same kill-or-keep decision."""
+        snap = self._db.collection("leases").document(lease_id).get()
+        return heartbeat_resumed(
+            (snap.to_dict() or {}) if snap.exists else None,
+            seen=seen,
+            generation=generation,
+            grace_seconds=grace_seconds,
+            now=utcnow(),
+        )
+
     def fence_release_repair(
         self,
         task_id: str | None,
@@ -1406,6 +1465,8 @@ class ControlStore:
         refuse_while_task_holds_it: bool = False,
         attempt_id: str | None = None,
         attempt_reason: str | None = None,
+        heartbeat_seen: datetime | None = None,
+        heartbeat_grace_seconds: float | None = None,
     ) -> OneRepair:
         """Fence, release and repair in ONE transaction (#560).
 
@@ -1447,6 +1508,14 @@ class ControlStore:
         has already stopped the execution (or proved it never started), so
         nothing of the attempt runs. `_superseded_attempt_end` decides which
         attempt document may be written; a newer generation's never is.
+
+        `heartbeat_grace_seconds`, when given, makes the lease read here the
+        judge of whether the worker is still silent (#1822): if it carries a
+        beat newer than `heartbeat_seen` -- the beat the finding was made on,
+        from a snapshot that may be minutes old -- and within the grace, at the
+        finding's generation, NOTHING is written and `heartbeat_resumed` is
+        set. When the reclaim does go ahead it is exactly the reclaim above:
+        the fence, the release and the repair, in this one commit.
         """
         task_ref = self._db.collection("tasks").document(task_id) if task_id else None
         lease_ref = self._db.collection("leases").document(lease_id) if lease_id else None
@@ -1480,6 +1549,23 @@ class ControlStore:
             attempt = self._read_attempt(txn, attempt_ref)
 
             # ---- decisions ---------------------------------------------
+            # The worker beat after the snapshot this reclaim was decided on:
+            # it is alive, and nothing here is written (#1822). Before any
+            # write, so an abort leaves the generation, the lease, its slots
+            # and the task exactly as they were (invariants 2, 3 and 5).
+            if heartbeat_grace_seconds is not None and heartbeat_resumed(
+                lease,
+                seen=heartbeat_seen,
+                generation=expected_generation,
+                grace_seconds=heartbeat_grace_seconds,
+                now=utcnow(),
+            ):
+                return OneRepair(
+                    new_generation=None,
+                    released=False,
+                    repaired_to=None,
+                    heartbeat_resumed=True,
+                )
             new_generation: int | None = None
             if task is not None and task_id and expected_generation is not None:
                 new_generation = self._fence_decision(
