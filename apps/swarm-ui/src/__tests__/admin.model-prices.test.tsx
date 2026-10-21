@@ -125,6 +125,15 @@ describe('Admin › Pool limits shows and edits the model price table', () => {
     expect(save().disabled, 'nothing changed yet').toBe(true)
   })
 
+  it('names the price table (QAFIX3 a11y-keyboard-003)', async () => {
+    mocks.loadModelClasses.mockResolvedValue(pins())
+    serve(() => ({ status: 500, body: {} }))
+    render(<ModelPricesCard admin={false} />)
+    await waitFor(() => expect(row('claude-opus-5-5')).not.toBeNull(), WAIT)
+    // MUTATION: drop the table's `aria-label`: it is announced as "table", one of three on the page.
+    expect(screen.getByRole('table', { name: 'Model prices' })).toBe(document.querySelector('table.adm-price-table'))
+  })
+
   it('reads "cost not reported" for a pinned model with no figure, and draws no figure for it', async () => {
     mocks.loadModelClasses.mockResolvedValue(pins())
     serve(() => ({ status: 500, body: {} }))
