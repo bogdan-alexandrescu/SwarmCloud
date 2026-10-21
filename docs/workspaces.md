@@ -1289,6 +1289,10 @@ has it; once every tenant is cut over no worker can write the record. Writing
 work, not hidden. The value is not in the signed approval (`APPROVAL_FIELDS`);
 making it so is a question in the lane's pull request, not a change made here.
 
+**The cutover itself**, step by step with each plan, what to watch and the
+rollback, is [`docs/runbooks/isolation-cutover.md`](runbooks/isolation-cutover.md);
+terraform/infra's `worker_firestore_off_tenants` renders this list.
+
 ---
 
 ## 3. Terraform owns group and service tenants only

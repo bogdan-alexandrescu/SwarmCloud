@@ -1,13 +1,23 @@
 # Tenant settings integrity: a tenant's worker cannot change what the control plane does for another tenant
 
 **Status: designed 2026-10-17 (lane ISO-SETTINGS-DESIGN, part of #1457), and
-answered by the owner the same day (§7, "The owner's answers").** Nine of the
-ten build lanes of §6 have merged (PRs 1473-1487). ISO-IAM, the per-tenant switch
-that drops the worker's Firestore role, is PR 1484, still open on 2026-10-20.
-Follow-up lanes ISO-MAC-TF, ISO-API-SETTINGS, ISO-UPSTREAM, ISO-SEARCH and
-ISO-WIRE merged as PRs 1490-1502. ISO-SCHED's phase 2, the scheduler's half
-of the per-tenant switch, is built by lane ISO-SCHED-2 (2026-10-20): terraform
-`state_via_api_tenants`, empty by default. No tenant has been cut over yet.
+answered by the owner the same day (§7, "The owner's answers").** The ten build
+lanes of §6 have merged (PRs 1473-1487); ISO-IAM, PR 1484, merged as
+`1d7780d4`, giving `terraform/modules/tenancy` its `worker_firestore_access`
+switch and `register-tenant.sh` its `--worker-firestore-access`. Follow-up
+lanes ISO-MAC-TF, ISO-API-SETTINGS, ISO-UPSTREAM, ISO-SEARCH and ISO-WIRE
+merged as PRs 1490-1502. ISO-SCHED-2 (PR 1752) built the scheduler's half of
+the per-tenant switch: terraform `state_via_api_tenants`, empty by default.
+ISO-IAM-WIRE (2026-10-20) made the two role switches settable from an
+environment's tfvars: terraform/infra's `worker_firestore_access` (true by
+default, passed to the tenancy module) and `worker_firestore_off_tenants`
+(empty by default, rendered onto swarm-api as `WORKER_FIRESTORE_OFF_TENANTS`
+for job-made workspaces), each refused at plan ahead of the state switch.
+[`docs/runbooks/isolation-cutover.md`](../runbooks/isolation-cutover.md) is
+the cutover in Q7's order: u-bogdan, eng, every tenant, then the role's
+removal from every Terraform tenant and, last, the owner's removal of its
+definition from bootstrap, each step with its plan, what to watch and its
+rollback. No tenant has been cut over yet.
 
 Every file and symbol cited below was read on 2026-10-17 at `35f2a61`. Lines
 move, so each citation names the symbol; search for it.

@@ -209,6 +209,11 @@ module "tenancy" {
 
   tenants = var.tenants
 
+  # #1457 design B's last step (variables.tf says why it defaults true, and
+  # when false plans): true is today's swarmTenantWorkerFirestore binding per
+  # tenant; false removes every one of them.
+  worker_firestore_access = var.worker_firestore_access
+
   # Only the dispatcher and the reconciler may name a tenant SA on a Job.
   # The deployer is here because it DEPLOYS the tenant jobs that run as these
   # accounts, which needs actAs on each (see deployer.tf). Static key, so a new
