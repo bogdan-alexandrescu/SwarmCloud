@@ -338,17 +338,12 @@ CODECS: tuple[Codec, ...] = (
             # and the request keeps the response shape unchanged; showing them
             # to an operator is a separate decision.
             "checkpoint_sha256": "a worker-to-worker restore binding; contract request 51 does not serve it",
-            # Contract request 111 (RS-4, part of #1689). The size the
-            # scheduler rendered the attempt at. Decoded, so nothing drops
-            # them; serving them is the public shape the console lane decides
-            # (docs/design/runner-sizes.md §6, AgentDetail.tsx), and these
-            # entries are the thing that lane deletes.
-            "size_version": "served by the runner-sizes console lane; not yet",
-            "sized_cpu_request": "served by the runner-sizes console lane; not yet",
-            "sized_cpu_limit": "served by the runner-sizes console lane; not yet",
-            "sized_memory_gib": "served by the runner-sizes console lane; not yet",
-            "sized_disk_gib": "served by the runner-sizes console lane; not yet",
-            "sized_live_split": "served by the runner-sizes console lane; not yet",
+            # Contract request 111 (RS-4, part of #1689) is SERVED, not listed
+            # here: SIZES-DETAIL reads the size an attempt was rendered at off
+            # the attempt row (AgentDetail.tsx `sizedCpuWords`).
+            # MUTATION: drop any of `size_version` / `sized_*` from
+            # `attempt_to_api` -> test_every_modelled_field_reaches_the_public_shape
+            # goes red for Attempt.
         },
         # Contract request #26: the CPU reading's age, against the route's
         # own clock, computed from `cpu_measured_at`. And how many masks the
