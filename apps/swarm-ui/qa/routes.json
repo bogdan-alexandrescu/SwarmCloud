@@ -246,8 +246,8 @@
       },
       {
         "id": "task-browser",
-        "address": "work/task/task_a073aff5/browser",
-        "path": "/agents/live/task_a073aff5/browser",
+        "address": "work/task/task_b40e5a1c/browser",
+        "path": "/agents/live/task_b40e5a1c/browser",
         "ready": ".ag-split"
       }
     ]

@@ -4304,6 +4304,16 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
       tasks: [
         mk('task_a073aff5', 'RUNNING', 'claude-code', 4),
         mk('task_8ea5c26d', 'RUNNING', 'claude-code', 5),
+        // THE BROWSER QA AGENT: the one fixture task with a live browser, so
+        // the Browser pane has a live session to draw in this build, and the
+        // QA route `task-browser` (qa/routes.json) captures it rather than an
+        // ordinary agent's empty pane (QAFIX2-QABROWSER, owner decision
+        // 2026-10-21). `loadLiveSession` answers `live_browser: true` for this
+        // id alone. task_a073aff5 stays the ordinary running agent the tests
+        // name. The prompt is the label a QA reader recognises it by.
+        mk('task_b40e5a1c', 'RUNNING', 'claude-code-browser', 6, {
+          input: { prompt: 'Browser QA agent: open https://example.com and report what the page says.' },
+        }),
         // THE FENCED SHAPE, which is the twenty-minute DISPATCHED stall that
         // exposed the missing fields: generation 2 against attempt_count 1,
         // still naming the generation-1 lease that was never released. This is
@@ -8066,10 +8076,53 @@ export interface LiveRead {
 export async function loadLiveSession(taskId: string): Promise<Result<LiveRead>> {
   const target = route('/v1/tasks/{id}/live/session', { id: taskId })
   if (USE_FIXTURES) {
-    // The fixture build has no browser to show. Answered as the API answers
-    // a task with none, so opening a fixture agent records no failed route.
+    // ONE FIXTURE AGENT HAS A LIVE BROWSER: task_b40e5a1c, the Browser QA
+    // agent on `claude-code-browser` (QAFIX2-QABROWSER, owner decision
+    // 2026-10-21). Its session is shaped as swarm-api's `_view` serves an
+    // open one: id `live_<attempt id>`, the gate's preset list, the agent
+    // driving with nobody in control, and the agent connected, so the strip
+    // reads live rather than "isn't using this browser". Every other task is
+    // answered as the API answers a task with none, so opening a fixture
+    // agent records no failed route. The viewer ticket is still not served
+    // (`mintLiveTicket`): the fixture build has no gate to draw frames from.
     noteFixtureProbe(target, 0, true)
-    return { status: 'ok', fetchedAt: Date.now(), data: { live_browser: false, session: null } }
+    if (taskId !== 'task_b40e5a1c') {
+      return { status: 'ok', fetchedAt: Date.now(), data: { live_browser: false, session: null } }
+    }
+    const at = (minsAgo: number) => new Date(Date.now() - minsAgo * 60_000).toISOString()
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: {
+        live_browser: true,
+        session: {
+          session_id: 'live_att_1',
+          state: 'open',
+          closed_reason: null,
+          origin: { origin: 'https://example.com', host: 'example.com', registrable_domain: 'example.com', scheme: 'https:' },
+          human_wait: null,
+          controller: null,
+          open_to_members: false,
+          device: { preset: 'desktop', orientation: 'landscape', touch: false },
+          // swarm-api `LIVE_PRESETS`, the gate's fixed list (§6.1).
+          presets: [
+            { name: 'desktop', width: 1440, height: 900, scale: 1, mobile: false },
+            { name: 'iphone-15', width: 393, height: 852, scale: 3, mobile: true },
+            { name: 'phone-390', width: 390, height: 844, scale: 3, mobile: true },
+            { name: 'pixel-8', width: 412, height: 915, scale: 2.625, mobile: true },
+            { name: 'iphone-se', width: 375, height: 667, scale: 2, mobile: true },
+            { name: 'ipad-7', width: 810, height: 1080, scale: 2, mobile: true },
+          ],
+          // The fixture identity (`fixtureMe`) submitted it, so may take
+          // control and open it to members; nobody holds control to switch
+          // the device or to be preempted.
+          you: { email: 'alice@example.com', can_control: true, can_preempt: false, can_open: true, can_switch_device: false },
+          agent_connected_at: at(5),
+          agent_connections: 1,
+          first_frame_at: at(5),
+        },
+      },
+    }
   }
   return read<LiveRead>(target, () => false)
 }
