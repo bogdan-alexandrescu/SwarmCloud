@@ -60,7 +60,8 @@ vitest, no `tsc` and no `terraform fmt`. So the check set also holds:
   package's OWN `node_modules/.bin/vitest`, from the package, so its config
   applies. Blocking, with the same one fix turn as every other check.
 * `tsc`, when a TypeScript file of a package with a `tsconfig.json` changed
-  (the package's `typecheck` script's arguments, with its own tsc), and
+  (the package's `typecheck` script's arguments, with its own tsc; a Next.js
+  package's own `next typegen` first, #1856), and
   `terraform fmt -check` over changed `.tf` files (#1217).
 
 AND AN ADVISORY SECTION NO MERGE PATH READS (`ADVISORY_SECTION_NAME`, appended
@@ -704,17 +705,72 @@ def _in_package(repo: Path, package: str, binary: Path, args: Sequence[str]
     return run
 
 
-def _typecheck_args(repo: Path, package: str) -> list[str]:
-    """The arguments of the package's own `typecheck` script when it is a plain
-    `tsc ...`, else `--noEmit -p tsconfig.json`."""
+#: A `typecheck` script that generates Next.js's route types, then type-checks.
+_NEXT_TYPEGEN = ["next", "typegen", "&&"]
+_TSC_FALLBACK = ["--noEmit", "-p", "tsconfig.json"]
+
+
+def _typecheck_plan(repo: Path, package: str) -> tuple[bool, list[str]]:
+    """Whether the package needs `next typegen` before tsc, and tsc's arguments.
+
+    Next.js writes the `PageProps`/`LayoutProps` route types only during `next
+    build` or `next typegen`, so tsc alone on a clean checkout of a Next
+    package fails on route files no lane touched: 17 errors on Product
+    Oracle's repository, every lane, 2026-10-21 (#1856). So a package that
+    depends on `next`, or whose script runs `next typegen`, generates them
+    first. tsc's arguments are the package's own `typecheck` script's when it
+    is a plain `tsc ...`, or exactly `next typegen && tsc ...`; any other
+    compound script falls back to `--noEmit -p tsconfig.json`.
+    """
     try:
-        scripts = json.loads((repo / package / "package.json").read_text()).get("scripts") or {}
-    except (OSError, ValueError, AttributeError):
-        scripts = {}
-    words = str(scripts.get("typecheck") or "").split()
+        manifest = json.loads((repo / package / "package.json").read_text())
+    except (OSError, ValueError):
+        manifest = {}
+    manifest = manifest if isinstance(manifest, dict) else {}
+    scripts = manifest.get("scripts")
+    words = str((scripts if isinstance(scripts, dict) else {}).get("typecheck") or "").split()
+    typegen = "next typegen" in " ".join(words) or any(
+        isinstance(deps, dict) and "next" in deps
+        for deps in (manifest.get("dependencies"), manifest.get("devDependencies")))
+    if words[:3] == _NEXT_TYPEGEN:
+        words = words[3:]
     if words and words[0] == "tsc" and not any(w in ("&&", "||", ";", "|") for w in words):
-        return words[1:]
-    return ["--noEmit", "-p", "tsconfig.json"]
+        return typegen, words[1:]
+    return typegen, list(_TSC_FALLBACK)
+
+
+def _typegen_then_tsc(package: str, next_bin: Path | None, tsc: Path, args: Sequence[str]
+                      ) -> Callable[[Runner, Path, Mapping[str, str], float], tuple[str, str]]:
+    """The package's own `next typegen`, then its tsc, in one check's budget.
+
+    When typegen cannot run (no `next` binary, a Next.js too old to have the
+    command, a failure) tsc still runs: a pass is a pass, but a failure may be
+    nothing but the missing route types, so it is skipped with the reason --
+    an advisory, never sent to the agent as its fault.
+    """
+    where = package or "."
+
+    def run(runner: Runner, root: Path, env: Mapping[str, str], timeout: float) -> tuple[str, str]:
+        cwd = Path(root) / package if package else Path(root)
+        deadline = time.monotonic() + timeout
+        unrun = None
+        if next_bin is None:
+            unrun = f"next is not installed in {where} (no node_modules/.bin/next)"
+        else:
+            ran = runner([str(next_bin), "typegen"], cwd, env, timeout)
+            if ran.timed_out:
+                return SKIPPED, (f"`next typegen` timed out in {where}, so tsc was not run; "
+                                 "CI runs it")
+            if ran.code != 0:
+                unrun = (f"`next typegen` exited {ran.code} in {where} (a Next.js without "
+                         "the command, or a failure)")
+        status, output = _verdict(runner([str(tsc), *args], cwd, env,
+                                         max(1.0, deadline - time.monotonic())))
+        if unrun and status == FAILED:
+            return SKIPPED, (f"{unrun}, so tsc's errors may be Next's missing route types "
+                             "(PageProps/LayoutProps), not this change; CI runs it")
+        return status, output
+    return run
 
 
 def _guards_selection(runner: Runner, repo: Path, env: Mapping[str, str], base: str,
@@ -953,9 +1009,14 @@ def graph_checks(repo: Path, files: Sequence[str], *, base: str, env: Mapping[st
                 skipped=f"tsc is not installed in {where} (no node_modules/.bin/tsc; the "
                         "gate does not run npm install); CI runs it"))
             continue
-        args = _typecheck_args(repo, package)
-        checks.append(Check("tsc", tuple(members), f"tsc {' '.join(args)} (in {where})",
-                            run=_in_package(repo, package, binary, args)))
+        typegen, args = _typecheck_plan(repo, package)
+        if typegen:
+            checks.append(Check(
+                "tsc", tuple(members), f"next typegen, then tsc {' '.join(args)} (in {where})",
+                run=_typegen_then_tsc(package, _node_bin(repo, package, "next"), binary, args)))
+        else:
+            checks.append(Check("tsc", tuple(members), f"tsc {' '.join(args)} (in {where})",
+                                run=_in_package(repo, package, binary, args)))
 
     tf = [f for f in present if f.endswith(_TF_SUFFIX)]
     if tf:
