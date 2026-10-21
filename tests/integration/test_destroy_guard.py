@@ -212,10 +212,15 @@ def test_the_derived_deny_list_is_the_one_production_passes_the_guard():
     this fails on the count. Drop the `grep -vx default` from `guard_deny_json`
     and the third assertion fails.
     """
-    assert len(SHARED) >= 20, (
+    # 32 = the 2026-10-21 read of saga-agents-staging (#1822): 19 service
+    # accounts, 6 buckets, 2 Cloud Run services, the cluster, the VPC, two
+    # subnets and `default`. Raise it when the list grows; never lower it to
+    # make a shortened list pass.
+    assert len(SHARED) >= 32, (
         f"parsed only {len(SHARED)} deny-list entries out of scripts/lib/common.sh; "
-        f"the shared project holds a cluster, a VPC, two subnets, three buckets and "
-        f"twelve service accounts, so a short list means the parse broke"
+        f"the shared project holds a cluster, a VPC, two subnets, the default "
+        f"network, six buckets, two Cloud Run services and nineteen service "
+        f"accounts (32), so a short list means the parse broke or an entry was lost"
     )
     assert len(UNLABELABLE) >= 35, (
         f"parsed only {len(UNLABELABLE)} unlabelable types out of {TYPES_JSON.name}"

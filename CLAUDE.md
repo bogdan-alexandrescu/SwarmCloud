@@ -62,9 +62,9 @@ PR description instead of changing it**.
 
 **2. `saga-agents-staging` is a SHARED project.**
 It holds another team's live GKE cluster (`agents-staging`), their VPC
-(`agents-staging-vpc`), their buckets and 12 of their service accounts. Nothing
-you write may delete, modify or even point `kubectl` at any of them. The
-deny-list lives once, in `scripts/lib/common.sh`.
+(`agents-staging-vpc`), their buckets and their service accounts, every one
+listed in `SHARED_DENY_LIST`. Nothing you write may delete, modify or even point
+`kubectl` at any of them. The deny-list lives once, in `scripts/lib/common.sh`.
 
 **3. Nothing ships as a TODO, a stub or pseudocode.**
 Everything in this repository must run. A function that raises

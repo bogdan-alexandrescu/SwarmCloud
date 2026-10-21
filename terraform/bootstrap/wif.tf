@@ -441,7 +441,7 @@ resource "google_iap_web_backend_service_iam_member" "frontend_accessors" {
 # `roles/iam.serviceAccountUser` at the PROJECT, and that is the wrong line to
 # write here: saga-agents-staging is SHARED, and project-level actAs would let
 # any CI run on an allowed ref impersonate every service account in it --
-# including the twelve on this repository's deny-list (promptlab-runner,
+# including every one on this repository's deny-list (promptlab-runner,
 # api-service, publisher and the rest). CI would be able to become another
 # team's production identity, which is a strictly larger authority than
 # anything else on the deployer and is not needed to build an image.
