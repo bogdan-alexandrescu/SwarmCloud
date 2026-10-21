@@ -147,7 +147,7 @@ describe("CH-2: the head's read age is the screen's own", () => {
     const { release } = await liveApp('#admin/tenants')
     await waitFor(() => expect(pageRefresh(), 'the screen has no refresh control').not.toBeNull())
     expect(refreshSays(), 'the head claims an age for a screen that has read nothing').toBe('⟳ reading…')
-    expect(pageRefresh()!.disabled).toBe(true)
+    expect(pageRefresh()!.getAttribute('aria-disabled')).toBe('true')
     expect(document.querySelector('.ctl-head-age'), 'the frame prints a second age on a Screen route').toBeNull()
     // The dock keeps the tab-wide view, and there IS a tab-wide read.
     expect(dockLine()).toMatch(/newest/)

@@ -450,7 +450,12 @@ describe('the page head (AH-25, #503)', () => {
     // it says so instead.
     await waitFor(() => expect(line().textContent).toBe('counting…'))
     const busy = screen.getByRole('button', { name: /^Run the count · / })
-    expect((busy as HTMLButtonElement).disabled).toBe(true)
+    // `aria-disabled`, not `disabled` (a11y-keyboard-001): a disabled button
+    // drops the keyboard focus the press put on it. A second press bills nothing.
+    expect(busy.getAttribute('aria-disabled')).toBe('true')
+    const billed = loadStats.mock.calls.length
+    busy.click()
+    expect(loadStats.mock.calls.length).toBe(billed)
     expect(document.querySelector('.counts-scopes')?.getAttribute('aria-busy')).toBe('true')
     expect(busy.closest('.c-phead > .c-acts')).not.toBeNull()
   })
