@@ -141,7 +141,7 @@ describe('task-015: the Progress card’s legend names the red run', () => {
     // MUTATION: drop the `is-b` entry from `.dt-lg` -- the red bar is unexplained again (task-015).
     expect(key, 'the legend has no swatch for the red run').not.toBeNull()
     // MUTATION: leave the swatch unlabelled -- a red square with no words explains nothing.
-    expect(key!.parentElement!.textContent?.trim()).toBe('run, failed')
+    expect(key!.parentElement!.textContent?.trim()).toBe('failed')
     for (const theme of THEMES) {
       const env: CascadeEnv = { width: 1440, container: 700, theme }
       const swatch = painted(key!, ['background', 'background-color'], env)
@@ -154,7 +154,7 @@ describe('task-015: the Progress card’s legend names the red run', () => {
 
   it('names no failed run when none is drawn', () => {
     const root = host(runOf({ state: 'SUCCEEDED' }, [attempt(1)]))
-    // MUTATION: draw the `run, failed` entry unconditionally -- the legend names a mark the reader cannot find.
+    // MUTATION: draw the `failed` entry unconditionally -- the legend names a mark the reader cannot find.
     expect(root.querySelector('.dt-progress .dt-lg i.is-b')).toBeNull()
   })
 })

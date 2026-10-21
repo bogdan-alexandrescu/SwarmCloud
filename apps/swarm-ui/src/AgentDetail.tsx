@@ -1486,8 +1486,10 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
                 row is red: the legend names only marks the reader can find. */}
             {rows.some((r) => failedRun(r.attempt)) && (
               <span>
+                {/* One word: the swatch beside `run` says which run, and the
+                    run group's prose budget (prose.runs) has no room for two. */}
                 <i className="is-b" />
-                {PHASE_LABEL.run}, failed
+                failed
               </span>
             )}
             {rows.some((r) => r.run?.kind === 'open' && r.run.live) && <span>· open: still running</span>}

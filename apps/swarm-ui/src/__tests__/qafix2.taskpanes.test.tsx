@@ -328,7 +328,7 @@ describe('QA-115: a failed task’s success line is not offered as its cause', (
     // MUTATION: put `No match` back -- nothing was searched, and the bar says a search found nothing.
     expect(short).not.toMatch(/match|found/i)
     // MUTATION: say `Errors 0` or `0 errors` -- QA-115's "no errors" on a failed task.
-    expect(short).toBe('0 err lines')
+    expect(short).toBe('0 err ln')
     // MUTATION: draw a search count with an empty box -- the only search outcome is the one asked for.
     expect(dock.querySelector('.ag-logs-count')).toBeNull()
   })

@@ -571,9 +571,10 @@ export function AgentLogs({ task }: { task: Task }) {
         // NOT `No match` EITHER (ff-010, task-022, visual QA run 3): beside
         // the search box it read as a search that found nothing, before
         // anything was searched. The narrow label says what it counts --
-        // error lines -- and that the count is zero.
+        // error lines -- and that the count is zero, in the eight characters
+        // `No match` had: a ninth spills Error under More at the 380px split.
         long={targets.errors.length === 0 ? 'No error matched' : `Error ${errAt < 0 ? '–' : errAt + 1} of ${targets.errors.length}`}
-        short={targets.errors.length === 0 ? '0 err lines' : `Error ${errAt < 0 ? '–' : errAt + 1}/${targets.errors.length}`}
+        short={targets.errors.length === 0 ? '0 err ln' : `Error ${errAt < 0 ? '–' : errAt + 1}/${targets.errors.length}`}
       />{' '}
       <kbd>E</kbd>
     </Button>
