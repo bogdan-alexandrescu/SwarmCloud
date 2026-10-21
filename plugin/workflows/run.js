@@ -1743,6 +1743,22 @@ function summaryNotices(name, item) {
   return lines
 }
 
+// What the row hands swarm_follow's summary format back unchanged
+// (PLUGIN-ROW-SPLIT-2): the items it does not follow, counted in the same
+// buckets, with their pull requests, so the bridge builds the whole line.
+function summaryOf(view, items, open, line) {
+  const counted = { running: 0, queued: 0, done: 0, failed: 0 }
+  const prs = []
+  for (const item of items) {
+    if (open.indexOf(item) >= 0) continue
+    counted[summaryBucket(item.state)] += 1
+    const pr = TERMINAL.indexOf(item.state) >= 0 ? pullRequest(item.pr_url) : null
+    if (pr && prs.indexOf(pr) < 0) prs.push(pr)
+  }
+  return { noun: view.noun, total: items.length, counted: counted, prs: prs,
+    console: consoleLink(view.console), line: line }
+}
+
 function summaryPrompt(view, items, open, line) {
   const finished = items.filter((item) => open.indexOf(item) < 0)
   const done = finished.filter((item) => summaryBucket(item.state) === 'done').length
@@ -1754,6 +1770,7 @@ function summaryPrompt(view, items, open, line) {
     'console: ' + (consoleLink(view.console) || 'none'),
     'finished: ' + done + ' done · ' + failed + ' failed',
     'line: ' + line,
+    'summary_of: ' + JSON.stringify(summaryOf(view, items, open, line)),
   ].concat(open.map((item) => 'task: ' + item.task_id + ' ' + item.name))
     .concat(['details: ' + (view.details || fallbackDetails(view.workspace, null))])
     .join('\n')

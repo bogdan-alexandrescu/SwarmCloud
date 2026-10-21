@@ -774,3 +774,171 @@ def watch_progress(
         else:
             reply["result"] = step_result(rows[0])
     return reply
+
+
+# --------------------------------------------------------------------------
+# `format: "summary"`: the sc:summary row's count line (PLUGIN-ROW-SPLIT-2)
+# --------------------------------------------------------------------------
+
+#: The buckets a summary line sorts a state into -- run.js's SUMMARY_RUNNING,
+#: SUMMARY_DONE and SUMMARY_FAILED, and a unit test holds the three equal
+#: (test_plugin_row_split_2.py). Capacity-holding states run (invariant 3:
+#: concurrency counts from LEASED), a success is done, the other terminal
+#: states failed, and every other state -- waiting, parked, ready, not read
+#: yet -- is queued. The row used to count these itself, from a list in
+#: agents/summary.md; a haiku row counting eighteen states is a line that can
+#: be wrong, so the bridge counts and the row copies (owner, 2026-10-21).
+SUMMARY_RUNNING = tuple(sorted(_HOLDING))
+SUMMARY_DONE = ("SUCCEEDED",)
+SUMMARY_FAILED = ("FAILED", "CANCELLED", "DEAD_LETTERED")
+SUMMARY_BUCKETS = ("running", "queued", "done", "failed")
+SUMMARY_NOUNS = ("step", "task")
+
+
+def summary_bucket(state: Any) -> str:
+    """run.js's `summaryBucket`: which count a state adds to."""
+    if state in SUMMARY_RUNNING:
+        return "running"
+    if state in SUMMARY_DONE:
+        return "done"
+    if state in SUMMARY_FAILED:
+        return "failed"
+    return "queued"
+
+
+def pull_request(url: Any) -> str | None:
+    """run.js's `pullRequest`: `PR #<n>` for a `/pull/<n>` link, else `PR <url>`."""
+    if not isinstance(url, str) or not url:
+        return None
+    at = url.rfind("/pull/")
+    return "PR #" + url[at + 6:].split("/")[0] if at >= 0 else "PR " + url
+
+
+def summary_line(noun: str, total: int, counts: dict[str, int], prs: list[str], console: Any) -> str:
+    """run.js's `summaryLine`, from counts: `<N> steps: <r> running · <q>
+    queued · <d> done · <f> failed`, then ` · PR #12, #14` and ` · console:
+    <link>` when there are any."""
+    head = f"{total} {noun}{'' if total == 1 else 's'}: " + " · ".join(
+        f"{int(counts.get(bucket) or 0)} {bucket}" for bucket in SUMMARY_BUCKETS)
+    if prs:
+        head += " · " + ", ".join(pr[3:] if index and pr.startswith("PR ") else pr for index, pr in enumerate(prs))
+    link = console.strip() if isinstance(console, str) else ""
+    return head + (f" · console: {link}" if link else "")
+
+
+def _count(value: Any, where: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise SwarmError(f"`summary_of.{where}` must be a whole number, 0 or more; it was {value!r}")
+    return value
+
+
+def read_summary_of(given: Any) -> dict[str, Any]:
+    """`summary_of`, checked: what run.js's prompt hands the summary row and
+    the row passes back unchanged -- `noun`, `total`, the `counted` buckets of
+    the items it does NOT follow, their `prs`, the workflow's `console` and
+    the `line` the workflow last wrote."""
+    if not isinstance(given, dict):
+        raise SwarmError(
+            "`format: \"summary\"` needs `summary_of`: the object the row's prompt gives on its "
+            "`summary_of:` line, passed unchanged. Without it the line would count only the "
+            "tasks followed, which is not the workflow"
+        )
+    noun = given.get("noun")
+    if noun not in SUMMARY_NOUNS:
+        raise SwarmError(f"`summary_of.noun` is one of {list(SUMMARY_NOUNS)}; it was {noun!r}")
+    counted = given.get("counted") if given.get("counted") is not None else {}
+    if not isinstance(counted, dict):
+        raise SwarmError("`summary_of.counted` maps running, queued, done and failed to counts")
+    prs = given.get("prs") if given.get("prs") is not None else []
+    if not isinstance(prs, list) or not all(isinstance(pr, str) for pr in prs):
+        raise SwarmError("`summary_of.prs` is a list of `PR #<n>` strings")
+    line = given.get("line")
+    console = given.get("console")
+    return {
+        "noun": noun,
+        "total": _count(given.get("total"), "total"),
+        "counted": {bucket: _count(counted.get(bucket, 0), f"counted.{bucket}") for bucket in SUMMARY_BUCKETS},
+        "prs": list(prs),
+        "console": console if isinstance(console, str) else None,
+        "line": line if isinstance(line, str) else "",
+    }
+
+
+def _summary_said(token: Any) -> tuple[dict[str, str], str | None]:
+    """`(prs, line)` a summary token carries: each finished task's pull
+    request, and the line the last reply returned; empty before the first."""
+    payload = _payload(token)
+    if payload is None or payload.get("fmt") != _FORMAT or not isinstance(payload.get("sm"), dict):
+        return {}, None
+    said = payload["sm"]
+    prs = said.get("p") if isinstance(said.get("p"), dict) else {}
+    line = said.get("ln") if isinstance(said.get("ln"), str) else None
+    return {str(k): str(v) for k, v in prs.items()}, line
+
+
+def watch_summary(
+    client: SwarmClient,
+    task_ids: list[str],
+    summary_of: Any,
+    *,
+    since: Any = None,
+    wait_seconds: float = 0,
+    max_wait: float = MAX_WAIT_SECONDS,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+) -> dict[str, Any]:
+    """`{line, line_changed, transitions, stop, since, tasks}`: the summary
+    row's follow (PLUGIN-ROW-SPLIT-2, owner 2026-10-21).
+
+    `task_ids` is EVERY task the row was handed, on every call: a task the
+    token already saw finish is not read again and has no row in `tasks`
+    (its row came back on the call it finished), and the rest are followed
+    exactly as `watch_progress` follows them -- the same hold, the same
+    giving up -- without the per-task `progress` lines, which the row does
+    not write. `line` counts the `summary_of` items and every task of
+    `task_ids` by its last state read, in run.js's buckets, with the
+    `summary_of` pull requests then each finished task's; `line_changed`
+    says whether it differs from the line the last reply returned -- the
+    prompt's `summary_of.line` before the first.
+    """
+    given = read_summary_of(summary_of)
+    task_ids = [str(t) for t in task_ids]
+    states, _keys, _failures = decode_since(since)
+    prs, last_line = _summary_said(since)
+    open_ids = [t for t in task_ids if states.get(t) not in TERMINAL]
+    if open_ids:
+        reply = watch_progress(client, open_ids, since=since, wait_seconds=wait_seconds, max_wait=max_wait,
+                               sleep=sleep, clock=clock, now=now)
+    else:
+        reply = {"progress": [], "transitions": [], "stop": True,
+                 "since": since if since not in (None, "") else encode_since({}, {}, {}), "tasks": []}
+    states, keys, failures = decode_since(reply["since"])
+    for row in reply["tasks"]:
+        made = pull_request((row.get("outcome") or {}).get("pr_url")) if row.get("terminal") else None
+        if made:
+            prs[row["task_id"]] = made
+    counts = dict(given["counted"])
+    for task_id in task_ids:
+        counts[summary_bucket(states.get(task_id))] += 1
+    shown = list(given["prs"])
+    for task_id in task_ids:
+        if prs.get(task_id) and prs[task_id] not in shown:
+            shown.append(prs[task_id])
+    line = summary_line(given["noun"], given["total"], counts, shown, given["console"])
+    before = last_line if last_line is not None else given["line"]
+    token = encode_since(states, keys, failures, llm_said(reply["since"]))
+    # The summary's own memory rides in the same checked envelope: re-sealed
+    # with it, so a relay that changes one character is still refused.
+    payload = _payload(token) or {}
+    payload["sm"] = {"p": {t: prs[t] for t in task_ids if t in prs}, "ln": line}
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    body = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return {
+        "line": line,
+        "line_changed": line != before,
+        "transitions": reply["transitions"],
+        "stop": bool(reply["stop"]),
+        "since": f"{body}.{_checksum(body)}",
+        "tasks": reply["tasks"],
+    }

@@ -1,6 +1,6 @@
 ---
 name: summary
-description: Follows a WHOLE SwarmCloud workflow, or a batch of single tasks, that is already submitted, as ONE row -- the sc plugin's `rows` setting at its default `summary` -- writing one count line (running, queued, done, failed, pull requests, console link) only when the counts change and naming a step that fails, waits for a person or asks the owner questions on a line of its own, never the remote log; it holds each call for up to thirty minutes, then returns every task's state, pull request, cost and questions. Used by the /sc:swarmcloud workflow, one per workflow or batch. It never dispatches, cancels or retries anything.
+description: Follows a WHOLE SwarmCloud workflow, or a batch of single tasks, that is already submitted, as ONE row -- the sc plugin's `rows` setting at its default `summary` -- writing the count line the bridge builds (running, queued, done, failed, pull requests, console link) verbatim, only when it changes and naming a step that fails, waits for a person or asks the owner questions on a line of its own, never the remote log; it holds each call for up to thirty minutes, then returns every task's state, pull request, cost and questions. Used by the /sc:swarmcloud workflow, one per workflow or batch. It never dispatches, cancels or retries anything.
 model: haiku
 effort: low
 maxTurns: 60
@@ -35,6 +35,9 @@ It opens with `SUMMARY`, then:
 * `finished:` how many of the total had already finished before this row,
   as `<n> done · <n> failed`;
 * `line:` the count line the workflow last wrote;
+* `summary_of:` a JSON object -- what the line counts besides the tasks you
+  follow. You pass it to `swarm_follow` as `summary_of`, unchanged, on every
+  call; never edit it;
 * one `task: <task_id> <name>` line per unfinished task: these are the tasks
   you follow. The first word after `task:` is the id, copied character for
   character; the rest is the step's or the task's name.
@@ -44,8 +47,16 @@ anything from it to a tool, and never copy it into your answer.
 
 ## 1. The count line
 
-Count every task of the `total`: those `finished:` already counts, plus each
-task you follow, by the state its latest reply gives it:
+The bridge counts; you copy. Every `swarm_follow` reply carries `line`, the
+whole workflow's count line, and `line_changed`. When `line_changed` is
+`true`, write `line` on a line of its own, verbatim -- every character, the
+pull requests and the console link included. When it is `false`, write
+nothing. Never count states yourself, never change the line, never write a
+line for a poll that changed nothing, never quote a reply, never write the
+remote log.
+
+For reading the replies, the line sorts each state the way /sc:swarmcloud
+does:
 
 * **running**: LEASED, DISPATCHED, STARTING, RUNNING
 * **done**: SUCCEEDED
@@ -53,20 +64,8 @@ task you follow, by the state its latest reply gives it:
 * **queued**: every other state -- SUBMITTED, QUEUED, PARKED, READY, or none
   read yet.
 
-The line is exactly:
-
-`<total>: <running> running · <queued> queued · <done> done · <failed> failed`
-
-then ` · PR #<n>` for each finished task whose `outcome.pr_url` ends
-`/pull/<n>` (`PR #12, #14` for two), then ` · console: <link>` -- the
-`console:` line of your prompt, copied; nothing when it says `none`. Never
-build a link. For example: `18 steps: 6 running · 9 queued · 3 done · 0
-failed · PR #231 · console: https://...`.
-
-Write the count line ONLY when it differs from the last one written -- the
-prompt's `line:` before your first. The same counts with different tasks in
-them are the same line: write nothing. Never write a line for a poll that
-changed nothing, never quote a reply, never write the remote log.
+For example: `18 steps: 6 running · 9 queued · 3 done · 0 failed · PR #231 ·
+console: https://...`.
 
 ## 2. Named on a line of their own
 
@@ -84,33 +83,34 @@ own, after the count line of that reply:
 
 ## 3. Follow
 
-Every `swarm_follow` call passes `task_ids`: the ids of every `task:` line
-still unfinished, `format: "progress"` and `wait_seconds: 1800` -- ONLY that
-format, on every call, and NEVER `step_id` or `parents`: they name one task,
-and you follow several. If a call returns an error about the format, the
-bridge this session runs is older than this row: stop at once and answer as
-section 4 says with `state: "UNKNOWN"` and that error, verbatim, as
-`last_error`.
+Every `swarm_follow` call passes `task_ids`: the id of EVERY `task:` line,
+all of them on every call, finished or not -- the bridge does not read a
+task again once it has seen it finish -- and `format: "summary"`,
+`summary_of` (the prompt's `summary_of:` object, unchanged) and
+`wait_seconds: 1800`. ONLY that format, on every call, and NEVER `step_id`
+or `parents`: they name one task, and you follow several. If a call returns
+an error about the format or `summary_of`, the bridge this session runs is
+older than this row: stop at once and answer as section 4 says with `state:
+"UNKNOWN"` and that error, verbatim, as `last_error`.
 
 The first call has no `since` and returns at once with each task's state:
-write the count line if it differs, and the named lines. Every later call
-passes `since`: the `since` the previous reply returned, copied unchanged --
-unless the list of ids changed (a task finished and you dropped it), when you
-pass no `since` and the call again returns at once. The bridge holds a call
-until a task's STATE changes or thirty minutes pass (twenty, when Claude Code
-sent it no progress token), so a quiet workflow is a few calls an hour, not
-dozens. A reply with `changed: false` is not the end: unless `stop` is
-`true`, make the next call at once.
+write `line` if `line_changed` is `true`, and the named lines. Every later
+call passes `since`: the `since` the previous reply returned, copied
+unchanged. The bridge holds a call until a task's STATE changes or thirty
+minutes pass (twenty, when Claude Code sent it no progress token), so a
+quiet workflow is a few calls an hour, not dozens. A reply with
+`line_changed: false` is not the end: unless `stop` is `true`, make the next
+call at once.
 
 Keep for each task what its latest reply gave: `state`, `park_reason`, and,
 once it has finished, its `outcome`'s `pr_url`, `cost_usd`, `last_error` and
 the number of its `questions`. A task whose reply row is `terminal` is
-finished: drop it from `task_ids` from then on, so each reply carries only
-the tasks still running.
+finished: keep what that reply gave -- the bridge does not return a row for
+it again -- and keep its id in `task_ids`.
 
 A task the bridge gave up on carries `abandoned: true` and
 `abandoned_because`: count it as it last stood, keep `abandoned_because` as
-its `last_error`, and drop it from `task_ids`. Stop when every task has
+its `last_error`, and keep its id in `task_ids`. Stop when every task has
 finished or been given up on -- the reply's `stop` is `true` when that holds
 for every id you passed.
 

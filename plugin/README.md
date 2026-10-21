@@ -830,9 +830,9 @@ becomes a row with that state, `state_from: "workflow status"` and the row's
 failure in `row_note`. A step still running, or not named, stays a
 `row_error`, which the Result step re-attaches while the workflow runs on.
 
-All five agents run on **haiku at low effort** (`model` and `effort` in their
+All six agents run on **haiku at low effort** (`model` and `effort` in their
 frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
-need — `sc:remote` dispatch and follow, `sc:step` and `sc:task` follow,
+need — `sc:remote` dispatch and follow, `sc:step`, `sc:task` and `sc:summary` follow,
 `sc:workflow` read a spec file, submit and read — and only through the sc plugin's own server (above).
 `sc:wait` holds no SwarmCloud tool: it is the pause between two tries of a step
 row whose bridge was not connected or not responding, one `sleep 30` through

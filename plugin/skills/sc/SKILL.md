@@ -171,8 +171,10 @@ instead of N, so it never meets Claude Code's limit of min(16, CPU cores - 2)
 agents per run. `per-step` is a row per unfinished step; past that limit the
 reply's `launches` holds several copies, `SC · <name> · N steps · rows 1-8`,
 `rows 9-16`..., each a run of its own: launch EVERY entry of `launches`, each
-with its own args. `/sc attach <wf_id> --per-step` (pass `{attach: "<wf_id>
---per-step"}`) uses per-step for this one attach.
+with its own args. `/sc attach <wf_id> --per-step` (pass `{attach: "<wf_id>",
+rows: "per-step"}`) uses per-step for this one attach, and `--summary` (`rows:
+"summary"`) the summary row; `rows` outranks the setting. The older
+`{attach: "<wf_id> --per-step"}` is still read until plugin 0.5.52.
 By hand it attaches ANY workflow your tenant may read, this session's or
 not: when the reply carries `not_this_session` (`this_session: false`), say
 in one line that the workflow is not this session's -- another Claude Code
@@ -233,7 +235,9 @@ stays a cap. With `rows` at `summary` (the default) each workflow is ONE
 summary row, and the cap counts workflows; with `per-step` it counts step
 rows across every workflow, and a workflow with more rows than one Claude
 Code run shows comes back as several entries, `rows 1-8`, `rows 9-16`... —
-launch every entry of `launches`.
+launch every entry of `launches`. `/sc attach --all --per-step` passes
+`{attach: "all", rows: "per-step"}` (and `--summary`, `rows: "summary"`) for
+this one attach-all, its single tasks' row included, whatever the setting.
 
 **SCROLLING IS CLAUDE CODE'S, NOT THE PLUGIN'S.** The /workflows panel is
 Claude Code's own UI: this plugin cannot add scrolling to it, and cannot make
