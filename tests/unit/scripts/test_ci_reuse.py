@@ -205,7 +205,8 @@ def test_main_and_a_same_repository_pull_request_look_up_and_everyone_records():
     assert step["if"] == (
         "github.event_name == 'push' && github.ref == 'refs/heads/main' || "
         "github.event_name == 'pull_request' && "
-        "github.event.pull_request.head.repo.full_name == github.repository"), step["if"]
+        "github.event.pull_request.head.repo.full_name == github.repository"), (
+        f"{step['if']} -- application.yml lacks CI-TREE-REUSE's workflow-lines.patch (#1798)")
     assert "ci_reuse.py find" in step["run"] and '--event "${EVENT}"' in step["run"], step["run"]
     assert step["env"]["EVENT"] == "${{ github.event_name }}", step["env"]
     assert jobs["changes"]["outputs"]["reused"].replace(" ", "") == "${{steps.reuse.outputs.reused}}"
@@ -525,7 +526,10 @@ def test_ci_gate_runs_the_reuse_verdict_after_its_own():
     """MUTATION: drop the step, or run it before the first verdict."""
     steps = _jobs()["ci-gate"]["steps"]
     runs = [str(s.get("run", "")) for s in steps]
-    (idx,) = [i for i, r in enumerate(runs) if "ci_reuse.py gate" in r]
+    found = [i for i, r in enumerate(runs) if "ci_reuse.py gate" in r]
+    assert len(found) == 1, f"ci-gate runs `ci_reuse.py gate` {len(found)} times, not once -- " \
+        "application.yml lacks CI-TREE-REUSE's workflow-lines.patch (#1798)"
+    (idx,) = found
     assert idx > 0 and "every job passed or was skipped" in runs[0], runs
     step = steps[idx]
     assert '--needs "${GATE_NEEDS}"' in step["run"] and '--event "${EVENT}"' in step["run"], step["run"]
