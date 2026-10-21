@@ -306,8 +306,9 @@ describe('3. the control label follows who holds control', () => {
 // part of #1680): axe's serious `aria-prohibited-attr` on every size. The
 // screen carried an aria-label on a plain `div`, which has no role a name is
 // allowed on, so a screen reader announced nothing. The remote browser takes
-// the keys while the viewer is in control -- an application -- and is a
-// picture of a page while they watch.
+// the keys while the viewer is in control -- an application -- and is a named
+// group while they watch (not `img`, whose children are presentational: the
+// noVNC canvas inside is focusable).
 describe('4. the screen’s name sits on a role that allows one', () => {
   it('is an application, named, while the viewer holds control', async () => {
     render(<Held first={session()} />)
@@ -318,13 +319,13 @@ describe('4. the screen’s name sits on a role that allows one', () => {
     expect(app.classList.contains('live-screen')).toBe(true)
   })
 
-  it('is an image, named, while the viewer only watches', async () => {
+  it('is a named group while the viewer only watches', async () => {
     render(<Held first={session({ controller: null })} />)
     await connected()
     expect(screen.getByText('View only.')).toBeTruthy()
     // MUTATION: keep `application` while watching -- a reader is told keys go somewhere they do not.
-    const img = screen.getByRole('img', { name: 'The agent’s browser, view only.' })
-    expect(img.classList.contains('live-screen')).toBe(true)
+    const group = screen.getByRole('group', { name: 'The agent’s browser, view only.' })
+    expect(group.classList.contains('live-screen')).toBe(true)
     expect(screen.queryByRole('application')).toBeNull()
   })
 })

@@ -1907,6 +1907,14 @@ function LiveScreen({
             data-conn={conn}
             // Keys here are the remote browser's: the theater's `T` and Esc leave them alone.
             data-live-screen=""
+            // A NAME NEEDS A ROLE (task-001, visual QA run 3, #1680): on a
+            // plain div the label is prohibited (axe aria-prohibited-attr,
+            // serious) and announced by nothing. In control the screen takes
+            // the keys -- an application; watching, it is a named group. Not
+            // `img`: its children are presentational, and noVNC's canvas
+            // inside is focusable (tabIndex -1), which axe's
+            // nested-interactive check flags.
+            role={control ? 'application' : 'group'}
             aria-label={control ? 'The agent’s browser. Click it to type into it.' : 'The agent’s browser, view only.'}
             onFocus={onFocus}
             onBlur={onBlur}

@@ -756,16 +756,20 @@ function DtPhases({ run, now }: { run: AgentRun; now: number }) {
   if (chips.length === 0) return <span className="dt-phase is-todo">phases not datable</span>
   return (
     <span className="dt-phases">
+      {/* THE ARROW ENDS ITS STEP, NEVER STARTS ONE (task-018, visual QA run
+          3, #1680). A step wraps as one piece, and with the arrow in front of
+          the chip after it a wrapped line at 390 began `› run 14m`. Behind
+          the chip it leads to, a wrapped line ends on it instead. */}
       {chips.map((c, i) => (
         <span key={c.key} className="dt-phase-step">
-          {i > 0 && (
+          <span className={`dt-phase ${c.cls}`} title={c.title}>
+            {c.text}
+          </span>
+          {i < chips.length - 1 && (
             <span className="dt-phase-arr" aria-hidden>
               ›
             </span>
           )}
-          <span className={`dt-phase ${c.cls}`} title={c.title}>
-            {c.text}
-          </span>
         </span>
       ))}
     </span>
@@ -956,6 +960,8 @@ interface DtCell {
   /** Percent of the limit, or null for a hatched track (no ceiling, or no figure). Undefined: no bar. */
   bar?: number | null
   help?: TopicId
+  /** The sub-line is drawn whole where the others clamp to two lines (`.dt-sc.is-whole`, details.css). */
+  whole?: boolean
 }
 
 /**
@@ -975,7 +981,7 @@ function DtStatCell({ c }: { c: DtCell }) {
     if (el !== null) el.title = el.textContent ?? ''
   })
   return (
-    <div className={`dt-sc${c.tone ? ` is-${c.tone}` : ''}`}>
+    <div className={`dt-sc${c.tone ? ` is-${c.tone}` : ''}${c.whole ? ' is-whole' : ''}`}>
       <span className="dt-sc-l" aria-describedby={c.help === undefined ? undefined : id}>
         {c.label}
         {c.help !== undefined && <HelpNote topic={c.help} id={id} />}
@@ -1201,7 +1207,12 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   }
 
   // CPU: the newest attempt's peak against its limit, the mean under it.
-  cells.push(cpuCell(latest, open !== null, events, cls))
+  // THE CPU CAPTION IS NEVER CUT (task-012, visual QA run 3, #1680): it says
+  // the reading, whose limit the `/ 2 cores` is and the size the attempt was
+  // guaranteed (FF-D5a, SIZES-DETAIL), and the two-line clamp cut it to
+  // `cgroup limit (clas…` in the 1440 split's pane. Every other sub-line
+  // still clamps.
+  cells.push({ ...cpuCell(latest, open !== null, events, cls), whole: true })
 
   // COST, with tokens as its sub-line (#322: every kind summed on its own).
   const spent = attempts.filter((a) => a.cost_usd !== null)
@@ -1469,6 +1480,16 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
               <i className="is-r" />
               {PHASE_LABEL.run}
             </span>
+            {/* THE RED RUN IS NAMED WHEN ONE IS DRAWN (task-015, visual QA
+                run 3, #1680): `DtPhaseRow` paints a failed attempt's run
+                `is-b`, and the legend said only `run`. Never named when no
+                row is red: the legend names only marks the reader can find. */}
+            {rows.some((r) => failedRun(r.attempt)) && (
+              <span>
+                <i className="is-b" />
+                {PHASE_LABEL.run}, failed
+              </span>
+            )}
             {rows.some((r) => r.run?.kind === 'open' && r.run.live) && <span>· open: still running</span>}
           </p>
         </>
@@ -1541,6 +1562,11 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
   )
 }
 
+/** An attempt whose run the Progress card draws red: a non-zero exit that is not a park. */
+function failedRun(a: AttemptRow): boolean {
+  return a.exit_code !== null && a.exit_code !== 0 && !isParked(a)
+}
+
 /** One attempt's phases as a compact bar: queue, cold start, run -- open runs drawn open, never closed at now. */
 function DtPhaseRow({ r, live }: { r: AttemptPhases; live: { ms: number } | null }) {
   const part = (s: Segment | null): number => (s === null ? 0 : s.kind === 'closed' ? s.ms : s.kind === 'open' ? s.atLeastMs : 0)
@@ -1553,7 +1579,7 @@ function DtPhaseRow({ r, live }: { r: AttemptPhases; live: { ms: number } | null
   const run = ticking ? live.ms : part(r.run)
   const total = q + c + run
   const open = r.run?.kind === 'open' && !ticking
-  const failed = r.attempt.exit_code !== null && r.attempt.exit_code !== 0 && !isParked(r.attempt)
+  const failed = failedRun(r.attempt)
   return (
     <div className="dt-phrow">
       <span>Attempt {r.ordinal}</span>

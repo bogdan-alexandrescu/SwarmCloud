@@ -177,10 +177,15 @@ describe('task-016: the phase track and the queue segment hold 3:1', () => {
       // MUTATION: drop the track's border -- `--surface-2` on `--surface` is 1.1:1, the track invisible (task-016).
       expect(contrast(over(edgeTokens[0]!.rgba, cardBg), cardBg)).toBeGreaterThanOrEqual(3)
 
-      const fill = resolveColour(painted(queue, ['background', 'background-color'], env)!, theme)
-      const opacity = Number(painted(queue, 'opacity', env) ?? '1')
+      const seen = (seg: HTMLElement) => {
+        const fill = resolveColour(painted(seg, ['background', 'background-color'], env)!, theme)
+        const opacity = Number(painted(seg, 'opacity', env) ?? '1')
+        return contrast(over({ ...fill, a: fill.a * opacity }, trackBg), trackBg)
+      }
       // MUTATION: put `opacity: .45` back on the queue segment -- about 2:1 on the track in light.
-      expect(contrast(over({ ...fill, a: fill.a * opacity }, trackBg), trackBg)).toBeGreaterThanOrEqual(3)
+      expect(seen(queue)).toBeGreaterThanOrEqual(3)
+      // MUTATION: put `opacity: .55` back on the cold start -- 2.3:1 on the track in light, the same defect.
+      expect(seen(track.querySelector<HTMLElement>('.is-c')!)).toBeGreaterThanOrEqual(3)
     })
   }
 })
