@@ -17,7 +17,8 @@
 #
 # What it selects, for a non-empty diff:
 #   * the fixed guard set (GUARD_TESTS below), always -- about a minute (a
-#     docs-only diff: DOC_GUARD_TESTS, see below);
+#     docs-only diff: DOC_GUARD_TESTS, see below). Pull-request CI reads the
+#     same array and runs it on every pull request;
 #   * every changed tests/unit/**/test_*.py that still exists;
 #   * every tests/unit/**/test_*.py whose text names a changed path, by its
 #     repo-relative path or its basename. A basename in GENERIC_BASENAMES
@@ -27,7 +28,7 @@
 # scripts/lib/check-contract-parity.sh. An empty diff runs nothing.
 #
 # A DOCS-ONLY diff -- every changed path under docs/ or ending in .md --
-# selects only the two doc guards (DOC_GUARD_TESTS) and the tests whose text
+# selects only the doc guards (DOC_GUARD_TESTS) and the tests whose text
 # names a changed doc, and runs no parity check (GUARDS-DEDUP, part of #1694:
 # docs-only lanes spent 44-50 min in guards on 2026-10-19/20). The UI route
 # seam and test_specsign_covers read source, not docs, and the parity check
@@ -79,18 +80,36 @@ caller_env="$(compgen -e)"
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
-# The guards #642 measured lanes going red on. Each reads files across the
-# repository, so no area-narrowed run reaches it.
+# The guards #642 measured lanes going red on, and the whole-tree tests (they
+# walk apps/, tests/ or docs/ and assert over every file, so no changed path
+# names them) that turned main red because no pull request ran them:
+# test_collection_stays_cheap for 19 commits on 2026-10-20, test_awaiting_
+# input_readers for 6 on 2026-10-19. Each reads files across the repository,
+# so no area-narrowed run reaches it. THE ONE LIST: pull-request CI's
+# selection (scripts/lib/select_unit_tests.py guard_tests) reads this array
+# from this file and always runs it, so keep it one path a line, no quoting.
+# Only whole-tree tests of at most 10 CI-seconds a file are here: every pull
+# request and every lane pays for this set (CI-GUARDS-ALWAYS, part of #1822).
 GUARD_TESTS=(
   tests/unit/scripts/test_docs_describe_what_was_built.py
   tests/unit/scripts/test_docs_spec_amendments.py
   tests/unit/control_plane/test_runtimes_screen.py
   tests/unit/common/test_specsign_covers.py
+  tests/unit/scripts/test_collection_stays_cheap.py
+  tests/unit/common/test_awaiting_input_readers.py
+  tests/unit/control_plane/test_artifacts_read_path.py
+  tests/unit/control_plane/test_declared_dependencies.py
+  tests/unit/control_plane/test_spec_signing_every_submitter.py
+  tests/unit/scheduler/test_mcp_admission.py
+  tests/unit/worker/test_helpers_import_by_unique_name.py
+  tests/unit/scripts/test_docs_agent_vocabulary.py
 )
 # The guards that read docs: all a docs-only diff selects of GUARD_TESTS.
+# Pull-request CI runs the whole GUARD_TESTS even for a docs-only change.
 DOC_GUARD_TESTS=(
   tests/unit/scripts/test_docs_describe_what_was_built.py
   tests/unit/scripts/test_docs_spec_amendments.py
+  tests/unit/scripts/test_docs_agent_vocabulary.py
 )
 PARITY_CHECK="scripts/lib/check-contract-parity.sh"
 # Where a run's result is recorded, under the git directory (THE RECORD
