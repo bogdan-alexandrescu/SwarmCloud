@@ -243,8 +243,12 @@ load_env() {
 }
 
 # Resources owned by other teams in this shared project. Verified against the
-# live project on 2026-09-15. Nothing this repo runs may delete, modify or even
-# point kubectl at anything in this list.
+# live project on 2026-09-15, and the service accounts, buckets and Cloud Run
+# services read again on 2026-10-21 at 09:45Z (read-only; epic #1822), which
+# added the twelve that had appeared since: seven service accounts, three
+# buckets and two Cloud Run services. qa-console@ is NOT one of them -- it is
+# this platform's own (terraform/bootstrap/qa_identity.tf). Nothing this repo
+# runs may delete, modify or even point kubectl at anything in this list.
 SHARED_DENY_LIST=(
   "agents-staging"
   "agents-staging-vpc"
@@ -254,6 +258,9 @@ SHARED_DENY_LIST=(
   "saga-agents-crawled-media-staging"
   "saga-agents-files-staging"
   "saga-agents-terraform-state-staging"
+  "ai-studio-avatars-staging"
+  "promptlab-avatars-staging"
+  "saga-agents-staging_cloudbuild"
   "api-service@saga-agents-staging.iam.gserviceaccount.com"
   "publisher@saga-agents-staging.iam.gserviceaccount.com"
   "209012342332-compute@developer.gserviceaccount.com"
@@ -266,6 +273,15 @@ SHARED_DENY_LIST=(
   "staging-gke-nodes@saga-agents-staging.iam.gserviceaccount.com"
   "crawler@saga-agents-staging.iam.gserviceaccount.com"
   "tournament-digest@saga-agents-staging.iam.gserviceaccount.com"
+  "ai-studio-api@saga-agents-staging.iam.gserviceaccount.com"
+  "ai-studio-deployer@saga-agents-staging.iam.gserviceaccount.com"
+  "ai-studio-runner@saga-agents-staging.iam.gserviceaccount.com"
+  "oracle-api@saga-agents-staging.iam.gserviceaccount.com"
+  "oracle-ticker@saga-agents-staging.iam.gserviceaccount.com"
+  "oracle-web@saga-agents-staging.iam.gserviceaccount.com"
+  "promptlab-api@saga-agents-staging.iam.gserviceaccount.com"
+  "oracle-api"
+  "oracle-web"
 )
 
 is_shared_resource() {
