@@ -1858,10 +1858,17 @@ function CompactRow({
   // `tabIndex={-1}` keeps the row a target for code that focuses it by its
   // `data-task-id` (agent-split/focus.ts returns focus there), and its focus
   // passes straight to the opener.
+  //
+  // THE ROW IS MARKED TOO (visual QA run 2, task-012). QA-032 moved
+  // `aria-current` onto the opener, and styles.css draws the selection --
+  // the `--surface-2` wash and the leading rule -- on `.row[aria-current]`,
+  // so the open agent's row looked like every other. The opener keeps it
+  // for a screen reader (focus lands there); the row carries it for the eye.
   return (
     <div
       className={`row clickable is-compact${waitsForYou ? ' is-needs-you' : ''}`}
       tabIndex={-1}
+      aria-current={open ? 'true' : undefined}
       data-task-id={task.id}
       onClick={(e) => {
         // OPENED BY A KEY, FOCUS GOES INTO THE AGENT (a11y-keyboard-002):
@@ -1911,6 +1918,26 @@ function CompactRow({
       </span>
       <span className="cr-sub">
         {task.state === 'RUNNING' && isLiveBrowser(task) && <DeviceThumb taskId={task.id} />}
+        {/* A LIVE ROW LEADS WITH WHERE IT IS (visual QA run 2, work-a-007):
+            the line is one line cut at its end (agents.css `.cr-sub`), and
+            at 390 a dispatched row read `claude-code · alex · dispatched ·
+            attempt …` with `of 3` cut. The state word and the try are what
+            a Live row is watched for; the profile and owner are the agent's
+            constant facts, so they are what gives way. */}
+        {live && wordOnly && (
+          <>
+            <span className="cr-state">{el.text}</span>
+            {' · '}
+          </>
+        )}
+        {live && (
+          <>
+            <span className={`cr-try${tries.over ? ' is-over' : ''}`} aria-label={tries.say}>
+              {tries.text}
+            </span>
+            {' · '}
+          </>
+        )}
         <span className="cr-profile">{profile}</span>
         {' · '}
         <span className="cr-owner" title={task.submitted_by ?? undefined}>
@@ -1924,16 +1951,17 @@ function CompactRow({
             </span>
           </>
         )}
-        {wordOnly && (
+        {!live && wordOnly && (
           <>
             {' · '}
             <span className="cr-state">{el.text}</span>
           </>
         )}
-        {/* THE TRY ON A LIVE ROW, as V1 draws it -- and on any row whose
-            count is over its cap (AG-15), which a finished row must still
-            show: that is the platform running past its own ceiling. */}
-        {(live || tries.over) && (
+        {/* THE TRY ON A LIVE ROW, as V1 draws it (leading the line, above)
+            -- and on any row whose count is over its cap (AG-15), which a
+            finished row must still show: that is the platform running past
+            its own ceiling. */}
+        {!live && tries.over && (
           <>
             {' · '}
             <span className={`cr-try${tries.over ? ' is-over' : ''}`} aria-label={tries.say}>
