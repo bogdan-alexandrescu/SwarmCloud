@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from 'react'
+import { useContext, useEffect, useRef, useState } from 'react'
 import { loadMe, loadStats } from './api'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
@@ -153,9 +153,15 @@ export function PlatformCountsScreen() {
     }
   }, [])
 
+  // A REF, NOT `busy`: two presses inside one render both read `busy` as it
+  // was before the first, and each press bills a count.
+  const counting = useRef(false)
   const go = () => {
+    if (counting.current) return
+    counting.current = true
     setBusy(true)
     loadStats().then((r) => {
+      counting.current = false
       setRun(r)
       setBusy(false)
       // Counted only on a read that actually produced counts. Incrementing on
@@ -233,7 +239,13 @@ export function PlatformCountsScreen() {
           onClick={go}
           // Disabled, not `busy`: `busy` swaps in a spinner and widens the
           // control; the cards below carry `aria-busy` for the run.
-          disabled={busy}
+          //
+          // `aria-disabled`, NOT `disabled` (a11y-keyboard-001, visual QA run
+          // 3): a focused button that turns `disabled` is blurred to <body>,
+          // so the press threw a keyboard user back to the top of the page.
+          // It draws the same (`.c-btn[aria-disabled='true']`, components.css)
+          // and `go` refuses a press while a count is in flight.
+          aria-disabled={busy || undefined}
         >
           {run === null ? 'Run the count' : 'Run it again'}
           {' · '}

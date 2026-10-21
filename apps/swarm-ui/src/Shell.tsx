@@ -9,6 +9,7 @@ import {
   useState,
   useSyncExternalStore,
   type ReactNode,
+  type Ref,
 } from 'react'
 import { HIDDEN_LINE_AFTER_MS, HiddenTabLine } from './AppStates'
 import { Banner, Button } from './components'
@@ -405,6 +406,7 @@ export function RefreshControl({
   idle = false,
   onRefresh,
   onResume,
+  buttonRef,
 }: {
   /** When the data on screen was read (or, for a cached payload, written); null before any. */
   readAt: number | null
@@ -422,10 +424,19 @@ export function RefreshControl({
   idle?: boolean
   onRefresh: () => void
   onResume?: () => void
+  /** The button, whichever state it draws, so a screen can hand focus to it. */
+  buttonRef?: Ref<HTMLButtonElement>
 }) {
+  // ONE BUTTON, NEVER `disabled` (a11y-keyboard-001, visual QA run 3): every
+  // branch below is the same <button> in the same place, so React keeps the
+  // node a keyboard user pressed, and a press that cannot be taken yet is
+  // `aria-disabled` with no handler. A focused button that turns `disabled`
+  // is blurred to <body> by the browser, so `⟳ reading…` and `paused 30 s`,
+  // the two states a press itself causes, took focus away from the press.
   if (idle) {
     return (
       <button
+        ref={buttonRef}
         type="button"
         className="c-refresh is-paused"
         onClick={onResume ?? onRefresh}
@@ -438,14 +449,21 @@ export function RefreshControl({
   const wait = pausedUntil === null ? 0 : pausedUntil - Date.now()
   if (wait > 0) {
     return (
-      <button type="button" className="c-refresh" disabled>
+      <button ref={buttonRef} type="button" className="c-refresh" aria-disabled="true">
         paused {spacedAge(wait + 999)}
       </button>
     )
   }
   if (readAt === null) {
     return (
-      <button type="button" className="c-refresh" onClick={onRefresh} disabled={reading} aria-label={reading ? 'Reading' : 'Refresh · not read'}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="c-refresh"
+        onClick={reading ? undefined : onRefresh}
+        aria-disabled={reading || undefined}
+        aria-label={reading ? 'Reading' : 'Refresh · not read'}
+      >
         <span aria-hidden="true">⟳</span> {reading ? 'reading…' : 'refresh'}
       </button>
     )
@@ -463,6 +481,7 @@ export function RefreshControl({
   const said = lead.length === 0 ? `read ${age} ago` : `${lead.join(' · ')} · read ${age} ago`
   return (
     <button
+      ref={buttonRef}
       type="button"
       className={stale ? 'c-refresh is-stale' : 'c-refresh'}
       onClick={onRefresh}
@@ -789,6 +808,17 @@ export function Screen<T>({
     resume()
     retry()
   }, [resume, retry])
+  // THE FAILURE PANEL'S `Try again` UNMOUNTS WITH ITS PANEL (a11y-keyboard-001):
+  // the read it starts puts the screen back to `loading`, and focus went to
+  // <body> with the button. It is handed to the head's refresh first, which
+  // stays mounted through the read (`⟳ reading…`) and is the same press. The
+  // one failure that draws no head refresh, an admin gate, draws no Try again
+  // either (`FailedPanel`), so there is always a refresh to hand it to.
+  const headRefresh = useRef<HTMLButtonElement>(null)
+  const retryFromPanel = useCallback(() => {
+    headRefresh.current?.focus()
+    retry()
+  }, [retry])
 
   const data =
     state.status === 'ok' ? state.data : state.status === 'stale' ? state.data : null
@@ -832,6 +862,7 @@ export function Screen<T>({
             idle={idle}
             onRefresh={retry}
             onResume={resumePoll}
+            buttonRef={headRefresh}
           />
         )}
       </PageHead>
@@ -843,7 +874,7 @@ export function Screen<T>({
       )}
 
       {state.status === 'loading' && (skeleton ?? <SkeletonRows />)}
-      {state.status === 'error' && <FailedPanel error={state.error} onRetry={retry} page />}
+      {state.status === 'error' && <FailedPanel error={state.error} onRetry={retryFromPanel} page />}
 
       {/* THE SHARED EMPTY STATE (CH-10), where this was a hand-built `.state`
           box: no mark, so a real zero told itself from a failed read by

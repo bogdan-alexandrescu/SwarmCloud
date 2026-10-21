@@ -244,7 +244,7 @@ describe('a failed read', () => {
     await screen.findByText('Slow down.')
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
     expect(body().textContent).toContain('11')
-    expect(screen.getByRole('button', { name: /paused/ }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: /paused/ }).getAttribute('aria-disabled')).toBe('true')
   })
 
   it('an expired session offers a reload rather than a retry', async () => {
@@ -381,7 +381,7 @@ describe('loading', () => {
       </Screen>,
     )
     await waitFor(() => expect(document.querySelector('.c-refresh')?.textContent).toBe('⟳ reading…'))
-    expect(screen.getByRole('button', { name: 'Reading' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: 'Reading' }).getAttribute('aria-disabled')).toBe('true')
     expectNoFigures(body())
     expect(document.querySelectorAll('.skeleton').length).toBeGreaterThan(0)
   })

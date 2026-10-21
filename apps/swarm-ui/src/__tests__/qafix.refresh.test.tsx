@@ -44,14 +44,17 @@ describe('QA-004: a refresh that cannot be pressed yet is still legible', () => 
     )
     const marks = screen.getAllByRole('button')
     expect(marks.map(seen)).toEqual(['reading…', 'paused 30 s'])
-    for (const el of marks) expect((el as HTMLButtonElement).disabled).toBe(true)
+    // `aria-disabled`, not `disabled` (a11y-keyboard-001, qafix3.focus.test.tsx):
+    // a disabled button is blurred to <body> under the press that caused it.
+    for (const el of marks) expect(el.getAttribute('aria-disabled')).toBe('true')
     for (const el of marks) {
       for (const theme of THEMES) {
         for (const width of [WIDE, PHONE]) {
           const env = { ...width, theme }
-          // MUTATION: `.c-refresh[disabled] { opacity: .5 }` back in styles.css (the
-          // dim ink halved to 2.2:1 in light, 3.0:1 in dark), or its `opacity: 1`
-          // dropped, so the `.app button:disabled` fade paints it at .45.
+          // MUTATION: `.c-refresh[aria-disabled='true'] { opacity: .5 }` in
+          // styles.css (the dim ink halved to 2.2:1 in light, 3.0:1 in dark), or
+          // the control `disabled` again, so the `.app button:disabled` fade
+          // paints it at .45.
           const opacity = painted(el, 'opacity', env)
           expect(opacity === null || Number(opacity) === 1, `${theme} ${width.width}: ${seen(el)} is faded to ${opacity}`).toBe(true)
           // MUTATION: a disabled `.c-refresh` given `--text-faint` (or any ink under

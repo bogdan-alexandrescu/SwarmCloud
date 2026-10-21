@@ -146,11 +146,18 @@ interface Persisted {
    * somebody opened.
    */
   adding: boolean
+  /**
+   * The account whose `Refresh this account` held keyboard focus when its
+   * answer reloaded the screen (a11y-keyboard-001). The reload remounts the
+   * button, so focus went to <body>; the new button takes it back on mount.
+   * Held here for the same reason as the rest: it has to outlive the remount.
+   */
+  focusRefresh: string | null
 }
 
 type Patch = (fn: (p: Persisted) => Persisted) => void
 
-const EMPTY_UI: Persisted = { chosen: null, refresh: {}, reauth: {}, signin: { kind: 'idle' }, adding: false }
+const EMPTY_UI: Persisted = { chosen: null, refresh: {}, reauth: {}, signin: { kind: 'idle' }, adding: false, focusRefresh: null }
 
 /**
  * Capacity -> Accounts. The Claude subscriptions this platform runs agents on.
@@ -2431,11 +2438,35 @@ function RefreshControl({
   const setState = (next: RefreshState) =>
     patch((p) => ({ ...p, refresh: { ...p.refresh, [account.account_id]: next } }))
 
+  // FOCUS STAYS ON THIS BUTTON (a11y-keyboard-001, visual QA run 3). It is
+  // `aria-disabled` while it exchanges, not `disabled`, which a browser
+  // blurs to <body>; a press from the failure panel's `Try again`, which
+  // unmounts with the panel, hands focus here first; and the reload an answer
+  // causes remounts the screen, so the new button takes focus back on mount.
+  const button = useRef<HTMLButtonElement>(null)
+  const sending = state.kind === 'sending'
+  const refocus = ui.focusRefresh === account.account_id
+  useEffect(() => {
+    if (!refocus) return
+    button.current?.focus()
+    patch((p) => ({ ...p, focusRefresh: null }))
+    // `patch` is recreated per render; the hand-over is keyed on the flag.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refocus])
+
   const run = async () => {
+    if (sending) return
+    const action = button.current?.closest('.acct-action')
+    if (action?.contains(document.activeElement)) button.current?.focus()
     setState({ kind: 'sending' })
     const res = await refreshAccount(account.account_id)
     if (res.status === 'ok') {
-      setState({ kind: 'answered', result: res.data.refresh })
+      const held = button.current !== null && document.activeElement === button.current
+      patch((p) => ({
+        ...p,
+        refresh: { ...p.refresh, [account.account_id]: { kind: 'answered', result: res.data.refresh } },
+        focusRefresh: held ? account.account_id : p.focusRefresh,
+      }))
       reload()
       return
     }
@@ -2451,8 +2482,13 @@ function RefreshControl({
       <h4>
         Refresh now
       </h4>
-      <button type="button" disabled={state.kind === 'sending'} onClick={() => void run()}>
-        {state.kind === 'sending' ? 'exchanging…' : 'Refresh this account'}
+      <button
+        ref={button}
+        type="button"
+        aria-disabled={sending || undefined}
+        onClick={sending ? undefined : () => void run()}
+      >
+        {sending ? 'exchanging…' : 'Refresh this account'}
       </button>
 
       {state.kind === 'answered' && <RefreshAnswer result={state.result} />}
