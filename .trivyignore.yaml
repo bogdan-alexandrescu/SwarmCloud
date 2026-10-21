@@ -93,3 +93,23 @@ vulnerabilities:
   - id: CVE-2026-56851
     statement: "golang.org/x/text precis Nickname panic inside vendor-built kubectl; no kubectl release ships x/text 0.41.0 yet."
     expired_at: 2026-12-17
+  # Same class again (owner, 2026-10-21 ~08:50Z UTC): a Go standard library
+  # crypto/x509 fix (CVE-2026-111943, fixed in Go 1.26.10 / 1.27.3) found in
+  # every THIRD-PARTY Go binary our images ship: docker, gcloud-crc32c,
+  # gke-gcloud-auth-plugin, gh, kubectl, terraform and trivy (agent-runtime-base,
+  # -nocodex, -browser, -indexer). We do not build these; each vendor has to
+  # rebuild with the fixed Go, and until they ship there is no version we can
+  # pin. Every image build from 2026-10-21 ~08:20Z was refused on this id alone
+  # (PRs 1806 and 1807 at their heads), so nothing that rebuilds an image could
+  # merge or release.
+  #
+  # What bounds it: these binaries are clients run inside a non-root, read-only,
+  # capability-dropped container for one attempt, under the egress
+  # NetworkPolicy that denies every other tenant and the control plane; they
+  # hold no credential beyond the attempt's own. Unlike the DoS entries above,
+  # the scanner's title for this one is about certificate verification, so the
+  # expiry is shorter: replace each tool with a vendor release built on the
+  # fixed Go as soon as one ships (docs/versions.md), re-scanning first.
+  - id: CVE-2026-111943
+    statement: "Go stdlib crypto/x509 inside vendor-built Go binaries (docker, gcloud helpers, gh, kubectl, terraform, trivy); needs vendor rebuilds."
+    expired_at: 2026-10-28
