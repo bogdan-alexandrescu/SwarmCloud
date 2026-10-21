@@ -3650,6 +3650,65 @@ reuses nothing:
   run, a queue entry, or a pull request whose selection fell back to the
   whole suite; it reuses the other jobs from any up-to-date pull request.
 
+### A pull request reuses its lane push of the same tree
+
+**Owner approval 2026-10-21 (CI-TREE-REUSE, #1798).** Since LANE CI-EARLY a
+lane's `swarm/**` push runs this workflow and `terraform.yml`, and its pull
+request then ran them again on the same tree. In the 24 h from 2026-10-20
+06:00 UTC, 166 (workflow, head) pairs ran both ways: 51.5 VM-hours, 18% of all
+VM hours on the self-hosted runners.
+
+So the `reuse` step also runs on a `pull_request` from this repository
+(`ci_reuse.py find --event pull_request`; never a fork's). It looks up the
+tree of the commit the run checked out, `refs/pull/N/merge`, and reuses a
+record only from `decide_pull_request`:
+
+* a **`push` run of a `swarm/**` branch** of `application.yml` in this
+  repository, `completed` with conclusion `success`. A cancelled, failed or
+  unfinished run is never reused -- including the lane's push run that is
+  still running when the pull request opens, which then simply runs again;
+* whose **own commit has this tree**, as git computes it in the job;
+* the same per-job rules as main's: `success` in the record and in the API,
+  every shard, and the unit shards only from a run of the whole suite (a lane
+  push always runs it).
+
+**Why trees and not shas.** A pull request tests its merge commit, not its
+head. While the lane is up to date with main, that merge commit's tree is the
+lane head's tree, so the push run tested exactly what the pull request would
+merge. Once main moves, the merge tree differs, nothing is reused, and the pull
+request tests what it would actually merge -- which a sha comparison (the
+head is unchanged) would have skipped.
+
+**Never reused:** another pull request's run (only a lane push), a run of
+another branch, workflow or repository, a job the push run skipped, and the
+`build changed images without pushing` check, which a push run never runs.
+
+**ci-gate passes on its own verdict.** After its first judgement (every job
+passed or was skipped by its own `if:`), the step `a job skipped by reuse
+passes only when the reuse step listed it` runs `ci_reuse.py gate`: a reusable
+job this change reaches (its `if:` before the reuse clause, `REACH`) that was
+skipped passes only when `reuse` listed it and named the run it passed in
+(`reused_from`). The job summary then reads `ci-gate passes on N job(s) reused
+from <run URL>`, so a reader sees where the green came from.
+
+**The merge step reads it as green.** `agent_worker/merge.py`
+`required_check_state` holds every run of a required check at the head:
+the lane push's `ci-gate` and the pull request's are both `success`, and a
+skipped heavy job is in `REQUIRED_GREEN`. `test_the_merge_step_reads_a_reused_green_as_green`
+holds it; `merge.py` is unchanged.
+
+**Main keeps its rules.** Main's lookup still runs `decide()` and takes the
+newest record that reuses anything. A pull request that reused everything
+recorded no job as passed (a skipped job is not `success`), so main passes
+over that record to the lane push's, whose commit has main's tree.
+
+**Not done for `terraform.yml`, and why.** Its run takes ~80 s (ci-gate's own
+measure): fmt/validate/tflint, `terraform test` and checkov in parallel. Carrying the
+record there would add a lookup job before them and a record job after them,
+each a runner start of its own, for about the time they would save -- and
+`terraform.yml` has no `changes` job or gate of its own to hang them on;
+ci-gate.sh reads its run's jobs directly.
+
 **Not done, and why: pull-request images tagged by tree.** The plan's better
 form had a pull request's final-head run push its images tagged by tree hash,
 and the release scan and promote those. A pull request has no Google identity

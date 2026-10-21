@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Main's push run reuses the test jobs a run of the SAME TREE already passed
-(B1, owner decision 2026-10-14; docs/ci.md "Main reuses the tested tree").
+"""Main's push run, and a pull request's run, reuse the test jobs a run of the
+SAME TREE already passed (B1, owner decision 2026-10-14; CI-TREE-REUSE, #1798,
+owner approval 2026-10-21; docs/ci.md "Main reuses the tested tree").
 
-    ci_reuse.py record --needs JSON --python MODE --event EVENT --sha SHA --out FILE
-    ci_reuse.py find   --repo OWNER/NAME --sha SHA [--github-output F] [--summary F]
+    ci_reuse.py record --needs JSON --python MODE --event EVENT --sha SHA --out-dir DIR
+    ci_reuse.py find   --repo OWNER/NAME --sha SHA [--event push|pull_request]
+                       [--github-output F] [--summary F]
+    ci_reuse.py gate   --needs JSON --event EVENT [--summary F]
 
 WHY. Main's push run re-tested the exact tree its pull request had just
 tested: a squash merge of an up-to-date pull request (strict merging) commits
@@ -37,6 +40,28 @@ EXACT OR NOTHING. A job is reused only when every one of these holds:
 
 Anything else -- no record, an API that cannot be read, a second record that
 disagrees -- reuses nothing, and main runs every job, as it did before.
+
+`find --event pull_request` (a pull request from this repository, in the
+`changes` job): since LANE CI-EARLY a lane's `swarm/**` push runs this
+workflow, and its pull request then ran it again on the same tree -- 166
+duplicate pairs and 51.5 VM-hours in the 24 h measured for #1798, 18% of all
+VM hours. The pull request looks up the tree of the commit it checked out
+(refs/pull/N/merge) and reuses a record only from `decide_pull_request`:
+
+  * a `push` run of a `swarm/**` branch of .github/workflows/application.yml
+    in this repository, `completed` with conclusion `success` -- a cancelled,
+    failed or unfinished run is never reused;
+  * whose own commit has this tree, as git computes it here. TREES, NEVER
+    SHAS: once main moves, the merge commit's tree is not the lane head's, and
+    nothing is reused -- the pull request then tests what it would merge;
+  * the same per-job rules as main's: `success` in the record and in the API,
+    every shard, and the unit shards only from the whole suite.
+
+`gate` (ci-gate, after its own verdict): a job skipped by reuse counts as
+passed only when the `reuse` step listed it, and a run cited it. A reusable
+job this change reaches (REACH, the job's own `if:` before its reuse clause)
+that was skipped without being listed fails the gate, and the summary names
+the run whose green was reused.
 tests/unit/scripts/test_ci_reuse.py holds each rule.
 """
 
@@ -68,6 +93,44 @@ REUSABLE = {
     "manifests": "kubernetes manifests",
 }
 MATRIX = {"python-unit", "ui-tests"}
+
+# What each reusable job's own `if:` says before its reuse clause: the
+# `changes` output it reads, how, and the value. gate() fails a job this
+# condition reaches that was skipped and not listed as reused.
+# test_every_reach_condition_is_the_job_s_own_if holds it to the workflow.
+REACH = {
+    "shell": ("app", "==", "true"),
+    "workflows": ("app", "==", "true"),
+    "ruff": ("app", "==", "true"),
+    "python-checks": ("python", "in", ("all", "selected")),
+    "python-unit": ("python", "!=", "none"),
+    "ui-build": ("ui", "==", "true"),
+    "ui-tests": ("ui", "==", "true"),
+    "integration": ("app", "==", "true"),
+    "manifests": ("app", "==", "true"),
+}
+# The branches whose push runs a pull request may reuse: the lanes' (CI-EARLY).
+LANE_PREFIX = "swarm/"
+# The events whose run looks a record up (the `changes` job's `reuse` step).
+LOOKUP_EVENTS = ("push", "pull_request")
+
+
+def reach_if(key: str) -> str:
+    output, op, value = REACH[key]
+    ref = f"needs.changes.outputs.{output}"
+    if op == "in":
+        return "(" + " || ".join(f"{ref} == '{v}'" for v in value) + ")"
+    return f"{ref} {op} '{value}'"
+
+
+def reached(key: str, outputs: dict) -> bool:
+    output, op, value = REACH[key]
+    got = str(outputs.get(output) or "")
+    if op == "in":
+        return got in value
+    if op == "==":
+        return got == value
+    return got != value
 
 
 def record(needs: dict, python: str, event: str, sha: str, tree: str) -> dict:
@@ -127,6 +190,15 @@ def decide(*, tree: str, repo: str, rec: dict, run: dict, jobs: list[dict],
             return [], f"run {run.get('id')}'s commit has tree {str(head_tree)[:12]}, not {tree[:12]}"
     else:
         return [], f"run {run.get('id')} is a {event}, which is never reused"
+    reused = _proven(rec, jobs)
+    if not reused:
+        return [], f"run {run.get('id')} passed no job this run can skip"
+    return reused, f"reused from run {run.get('id')} ({event}, {str(run.get('head_sha'))[:12]})"
+
+
+def _proven(rec: dict, jobs: list[dict]) -> list[str]:
+    """The jobs the record AND the API show passed; the unit shards only from
+    the whole suite."""
     reused = []
     for key in REUSABLE:
         if key not in rec.get("passed", []):
@@ -135,9 +207,71 @@ def decide(*, tree: str, repo: str, rec: dict, run: dict, jobs: list[dict],
             continue
         if job_passed(jobs, key):
             reused.append(key)
+    return reused
+
+
+def decide_pull_request(*, tree: str, repo: str, rec: dict, run: dict, jobs: list[dict],
+                        head_tree: str | None) -> tuple[list[str], str]:
+    """(job ids a pull request's run may skip, why). Pure, like decide():
+    only a completed, green push run of a lane branch whose own commit has
+    the tree this pull request checked out."""
+    if rec.get("tree") != tree:
+        return [], f"the record is of tree {str(rec.get('tree'))[:12]}, not {tree[:12]}"
+    if run.get("path") != WORKFLOW:
+        return [], f"run {run.get('id')} is of {run.get('path')}, not {WORKFLOW}"
+    if (run.get("head_repository") or {}).get("full_name") != repo:
+        return [], f"run {run.get('id')} is from another repository"
+    event = run.get("event")
+    if event != "push":
+        return [], f"run {run.get('id')} is a {event}: a pull request reuses only a lane push"
+    if rec.get("event") != event:
+        return [], f"the record says {rec.get('event')}, run {run.get('id')} is a {event}"
+    branch = str(run.get("head_branch") or "")
+    if not branch.startswith(LANE_PREFIX):
+        return [], f"run {run.get('id')} pushed {branch or 'no branch'}, not a {LANE_PREFIX}** lane"
+    if run.get("status") != "completed":
+        return [], f"run {run.get('id')} is {run.get('status')}, not completed"
+    if run.get("conclusion") != "success":
+        return [], f"run {run.get('id')} concluded {run.get('conclusion')}"
+    if head_tree != tree:
+        return [], f"run {run.get('id')}'s commit has tree {str(head_tree)[:12]}, not {tree[:12]}"
+    reused = _proven(rec, jobs)
     if not reused:
         return [], f"run {run.get('id')} passed no job this run can skip"
-    return reused, f"reused from run {run.get('id')} ({event}, {str(run.get('head_sha'))[:12]})"
+    return reused, f"reused from run {run.get('id')} (push of {branch}, {str(run.get('head_sha'))[:12]})"
+
+
+def gate(needs: dict, event: str) -> tuple[list[str], str]:
+    """(problems, the summary line) for ci-gate. Pure. A skipped reusable job
+    is a pass only when its own `if:` did not reach it, or the `reuse` step
+    listed it and named the run it came from."""
+    outputs = (needs.get("changes") or {}).get("outputs") or {}
+    problems: list[str] = []
+    try:
+        reused = json.loads(outputs.get("reused") or "[]")
+    except json.JSONDecodeError:
+        reused = None
+    if not isinstance(reused, list) or not all(isinstance(k, str) for k in reused):
+        return [f"the reuse step's list is not a JSON list of job ids: {outputs.get('reused')!r}"], ""
+    source = str(outputs.get("reused_from") or "")
+    for key in reused:
+        if key not in REUSABLE:
+            problems.append(f"the reuse step listed {key}, which is not a reusable job")
+    if reused and event not in LOOKUP_EVENTS:
+        problems.append(f"a {event} run never reuses, but the reuse step listed {', '.join(reused)}")
+    if reused and not source:
+        problems.append(f"the reuse step listed {', '.join(reused)} but names no run they passed in")
+    for key in REUSABLE:
+        result = (needs.get(key) or {}).get("result")
+        if result == "skipped" and key not in reused and reached(key, outputs):
+            problems.append(f"{key} was skipped, this change reaches it, and the reuse step did not list it:"
+                            " its green has no source")
+    if reused:
+        summary = (f"ci-gate passes on {len(reused)} job(s) reused from {source}, which passed them on this "
+                   "exact tree: " + ", ".join(f"`{k}`" for k in reused) + ".")
+    else:
+        summary = "ci-gate reused nothing: every job this change reaches ran in this run."
+    return problems, summary
 
 
 # --------------------------------------------------------------------------
@@ -174,19 +308,27 @@ def merged_head_of(repo: str, sha: str) -> str | None:
     return None
 
 
-def find(repo: str, sha: str) -> tuple[list[str], str]:
+def find(repo: str, sha: str, event: str = "push") -> tuple[list[str], str, str]:
+    """(job ids to reuse, why, the URL of the run they passed in). `push` is
+    main's lookup, unchanged; `pull_request` reads only lane push runs."""
     tree = tree_of(sha)
     if not tree:
-        return [], f"could not read the tree of {sha[:12]}"
+        return [], f"could not read the tree of {sha[:12]}", ""
     listing = _gh_json(f"repos/{repo}/actions/artifacts?name=tested-tree-{tree}&per_page=20")
     artifacts = [a for a in listing.get("artifacts", []) if not a.get("expired")]
+    if event == "pull_request":
+        # A cheap first cut before any download; decide_pull_request still
+        # checks the branch, the event and the tree against the run itself.
+        artifacts = [a for a in artifacts
+                     if str((a.get("workflow_run") or {}).get("head_branch") or "").startswith(LANE_PREFIX)]
     if not artifacts:
-        return [], f"no run recorded tree {tree[:12]}"
+        return [], f"no run recorded tree {tree[:12]}", ""
     merged_head = None
-    try:
-        merged_head = merged_head_of(repo, sha)
-    except (subprocess.CalledProcessError, json.JSONDecodeError):
-        merged_head = None
+    if event != "pull_request":
+        try:
+            merged_head = merged_head_of(repo, sha)
+        except (subprocess.CalledProcessError, json.JSONDecodeError):
+            merged_head = None
     why = ""
     for art in sorted(artifacts, key=lambda a: a.get("created_at") or "", reverse=True):
         run_id = (art.get("workflow_run") or {}).get("id")
@@ -197,12 +339,17 @@ def find(repo: str, sha: str) -> tuple[list[str], str]:
             rec = json.loads(z.read(f"tested-tree-{tree}.json"))
         run = _gh_json(f"repos/{repo}/actions/runs/{run_id}")
         jobs = _gh_json(f"repos/{repo}/actions/runs/{run_id}/jobs?filter=latest&per_page=100").get("jobs", [])
-        head_tree = tree_of(run["head_sha"]) if run.get("event") in ("push", "merge_group") else None
-        reused, why = decide(tree=tree, repo=repo, rec=rec, run=run, jobs=jobs,
-                             merged_head=merged_head, head_tree=head_tree)
+        if event == "pull_request":
+            head_tree = tree_of(run["head_sha"]) if run.get("event") == "push" else None
+            reused, why = decide_pull_request(tree=tree, repo=repo, rec=rec, run=run, jobs=jobs,
+                                              head_tree=head_tree)
+        else:
+            head_tree = tree_of(run["head_sha"]) if run.get("event") in ("push", "merge_group") else None
+            reused, why = decide(tree=tree, repo=repo, rec=rec, run=run, jobs=jobs,
+                                 merged_head=merged_head, head_tree=head_tree)
         if reused:
-            return reused, why
-    return [], why or f"no usable record of tree {tree[:12]}"
+            return reused, why, str(run.get("html_url") or f"https://github.com/{repo}/actions/runs/{run_id}")
+    return [], why or f"no usable record of tree {tree[:12]}", ""
 
 
 def main(argv: list[str]) -> int:
@@ -218,8 +365,13 @@ def main(argv: list[str]) -> int:
     f = sub.add_parser("find")
     f.add_argument("--repo", required=True)
     f.add_argument("--sha", required=True)
+    f.add_argument("--event", choices=LOOKUP_EVENTS, default="push")
     f.add_argument("--github-output")
     f.add_argument("--summary")
+    g = sub.add_parser("gate")
+    g.add_argument("--needs", required=True)
+    g.add_argument("--event", required=True)
+    g.add_argument("--summary")
     args = ap.parse_args(argv)
 
     if args.cmd == "record":
@@ -234,20 +386,32 @@ def main(argv: list[str]) -> int:
                 fh.write(f"tree={tree}\n")
         return 0
 
+    if args.cmd == "gate":
+        problems, summary = gate(json.loads(args.needs), args.event)
+        for problem in problems:
+            print(f"::error::{problem}")
+        if not problems:
+            print(summary)
+            if args.summary:
+                with open(args.summary, "a") as fh:
+                    fh.write(f"### Tested tree reuse\n\n{summary}\n\n")
+        return 1 if problems else 0
+
     # find: ANY failure is "reuse nothing", never a failed job.
     try:
-        reused, why = find(args.repo, args.sha)
+        reused, why, source = find(args.repo, args.sha, args.event)
     except Exception as exc:  # doubt runs everything, never fails the job
-        reused, why = [], f"the lookup failed ({type(exc).__name__}); running every job"
+        reused, why, source = [], f"the lookup failed ({type(exc).__name__}); running every job", ""
     print(f"reused={json.dumps(reused)}: {why}")
     if args.github_output:
         with open(args.github_output, "a") as fh:
             fh.write(f"reused={json.dumps(reused)}\n")
+            fh.write(f"reused_from={source}\n")
     if args.summary:
         with open(args.summary, "a") as fh:
             fh.write("### Tested tree reuse\n\n")
             if reused:
-                fh.write(f"**{why}.** Skipped here, having passed there on the identical tree: "
+                fh.write(f"**{why}** ({source}). Skipped here, having passed there on the identical tree: "
                          + ", ".join(f"`{k}`" for k in reused) + ".\n\n")
             else:
                 fh.write(f"Nothing reused: {why}. Every job runs.\n\n")
