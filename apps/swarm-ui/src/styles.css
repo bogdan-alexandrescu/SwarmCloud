@@ -2279,8 +2279,13 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
    in dark; the words are a reading the person needs, so they stay at full
    strength and only the cursor says the press is not available. The `1` is
    stated, not merely left out: every head sits inside `.app`, whose
-   `:where(.app button:disabled)` fades any disabled button to .45. */
-.c-refresh[disabled] {
+   `:where(.app button:disabled)` fades any disabled button to .45.
+   `[aria-disabled='true']` is the same state (a11y-keyboard-001, visual QA run
+   3): Shell's RefreshControl marks `⟳ reading…` and `paused 30 s` that way
+   rather than `disabled`, because a browser blurs a focused button that turns
+   `disabled` to <body>. `[disabled]` no longer matches them, so this keeps the
+   look the disabled state had; `[disabled]` stays for any caller still using it. */
+.c-refresh[disabled], .c-refresh[aria-disabled='true'] {
   opacity: 1;
   cursor: not-allowed;
 }
@@ -3791,11 +3796,19 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
   background: var(--surface); color: var(--text-dim);
   font: 500 var(--t-body)/var(--lh-body) var(--font); cursor: pointer;
 }
-.acct-action > button:not(:disabled):hover,
+/* `[aria-disabled='true']` IS THE DISABLED STATE TOO (a11y-keyboard-001, visual
+   QA run 3). `Refresh this account` is `aria-disabled` while it exchanges, not
+   `disabled`, because a browser blurs a focused button that turns `disabled`
+   to <body>; `:disabled` no longer matches it, so the panel's direct-child
+   button is named beside it here to keep the look the disabled state had: no
+   hover change, .4, `not-allowed`. The `:disabled` selectors stay for every
+   other caller. */
+.acct-action > button:not(:disabled):not([aria-disabled='true']):hover,
 .acct-action > .limit-edit > button:not(.c-btn):not(:disabled):hover,
 .acct-holders > button:not(:disabled):hover,
 .acct-buttons button:not(:disabled):hover { color: var(--text); border-color: var(--info); }
-.acct-action > button:disabled, .acct-action > .limit-edit > button:not(.c-btn):disabled,
+.acct-action > button:disabled, .acct-action > button[aria-disabled='true'],
+.acct-action > .limit-edit > button:not(.c-btn):disabled,
 .acct-holders > button:disabled, .acct-buttons button:disabled { opacity: .4; cursor: not-allowed; }
 
 /* Inputs and textareas are scoped to this screen rather than styled globally:
@@ -10833,7 +10846,9 @@ span.sk-ttile { cursor: default; }
    only as the focus ring (sec 1.3). Sans: a relative age is words, not a
    timestamp (Q1); tabular, so a ticking age does not jitter the row. */
 .c-refresh { background: none; border: 0; padding: 0; margin: 0; border-radius: var(--ctl-radius-sm); font: var(--t-micro)/var(--lh-micro) var(--font); font-variant-numeric: tabular-nums; color: var(--text-dim); white-space: nowrap; cursor: pointer; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.c-refresh:not(:disabled):hover { color: var(--text); }
+/* No hover ink on an `aria-disabled` refresh either: it takes no press, exactly
+   as a `:disabled` one did (a11y-keyboard-001; see `.c-refresh[disabled]`). */
+.c-refresh:not(:disabled):not([aria-disabled='true']):hover { color: var(--text); }
 .c-refresh.is-stale { color: var(--warn); }
 .c-refresh.is-paused { color: var(--text); font-weight: 500; }
 /* THE COUNT, OVER THE FIRST CARD (#138): what was read, at the micro step,
