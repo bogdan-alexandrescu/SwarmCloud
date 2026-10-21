@@ -5,10 +5,12 @@ are used, and the flag itself is read-only.
 
 THE PROPERTY, and why it is worth a file of its own:
 
-    saga-agents-staging holds a live GKE cluster, a VPC, three buckets and twelve
-    service accounts that belong to promptlab, crawler, aipipeline,
-    external-secrets and tournament-digest. The last thing `make destroy` does is
-    assert they all survived. Every one of those lookups was
+    saga-agents-staging holds a live GKE cluster, a VPC and its subnets, buckets,
+    Cloud Run services and service accounts that belong to promptlab, crawler,
+    aipipeline, external-secrets, tournament-digest, ai-studio and oracle --
+    every one listed in `SHARED_DENY_LIST` in scripts/lib/common.sh. The last
+    thing `make destroy` does is assert they all survived. Every one of those
+    lookups was
 
         gcloud ... >/dev/null 2>&1
 
