@@ -210,7 +210,8 @@ describe('V140: a check card’s sub-lines end in an ellipsis, never a hard cut'
     const { container } = render(<Overview.CheckCard problem={p} />)
     const small = container.querySelector('.ov-att-t small')!
     expect(painted(small, 'overflow-wrap', PHONE)).toBe('anywhere')
-    expect(painted(small, '-webkit-line-clamp', WIDE)).toBe('2')
+    // Four lines at every width since overview-automate-010 (qa.qafix2.overview).
+    expect(painted(small, '-webkit-line-clamp', WIDE)).toBe('4')
   })
   // MUTATION: render `p.detail` as it came.
   it('binds the dash to the word before it, so no line opens on "—"', () => {
@@ -237,15 +238,16 @@ describe('QA-100: at phone width a check card\u2019s detail is not cut before it
     expect(ids, 'the headline carries ids, so the card draws its ids line').not.toBeNull()
     expect(detail.textContent).toMatch(/^Terminal: nothing will retry them\./)
     // At 390 px one line held "Terminal: nothing will retry them. 1 us…".
-    // MUTATION: drop the phone `.ov-att-t small.is-one` clamp -- it is one line again.
+    // MUTATION: put a one-line `.ov-att-t small.is-one` clamp back -- it is one line again.
     expect(painted(detail, '-webkit-line-clamp', PHONE)).toBe('4')
-    // MUTATION: drop the phone `.ov-att-t small` clamp -- a card with no ids line keeps two.
+    // MUTATION: put `.ov-att-t small` back to a two-line clamp.
     const plain = render(<Overview.CheckCard problem={{ ...p, headline: '2 failed agents' }} />).container.querySelector('.ov-att-t small')!
     expect(plain.classList.contains('is-one')).toBe(false)
     expect(painted(plain, '-webkit-line-clamp', PHONE)).toBe('4')
-    // The ids stay one cut line, and the desktop keeps its clamp.
+    // The ids stay one cut line; the desktop's detail has the same four
+    // lines since overview-automate-010 (qa.qafix2.overview).
     expect(painted(ids, '-webkit-line-clamp', PHONE)).toBe('1')
-    expect(painted(detail, '-webkit-line-clamp', WIDE)).toBe('1')
+    expect(painted(detail, '-webkit-line-clamp', WIDE)).toBe('4')
   })
 })
 
