@@ -122,7 +122,16 @@ class ExecutionStopper:
         if backend is None:
             return "backend_unavailable", name
 
-        probe = backend.probe(name)
+        if getattr(backend, "name", "") == "GKE_AUTOPILOT":
+            # A legacy pod-name record (#1804) is read as its Job only with
+            # the attempt's own ids; the Job checks below still apply.
+            generation = attempt.get("generation")
+            probe = backend.probe(
+                name, task_id=task_id, tenant_id=tenant_id,
+                generation=generation if isinstance(generation, int) else None,
+            )
+        else:
+            probe = backend.probe(name)
         if probe.outcome is ProbeOutcome.ABSENT:
             return "gone", name
         if probe.outcome is ProbeOutcome.FINISHED:

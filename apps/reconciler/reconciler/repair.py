@@ -1395,7 +1395,10 @@ class Reconciler:
         created it. An attempt not dispatched yet has none, and falls back to the
         tenant's namespace by the dispatcher's own rule.
         """
-        recorded = backend.namespace_of(attempt.execution_name)
+        recorded = backend.namespace_of(
+            attempt.execution_name, task_id=attempt.task_id,
+            tenant_id=attempt.tenant_id, generation=attempt.generation,
+        )
         if recorded:
             return recorded
         if attempt.tenant_id:
@@ -1691,7 +1694,15 @@ class Reconciler:
         result = sight.probes.get(key)
         if result is None:
             try:
-                result = probe(attempt.execution_name)
+                if attempt.backend == "GKE_AUTOPILOT":
+                    # A legacy pod-name record (#1804) maps to its Job only
+                    # with the attempt's own ids.
+                    result = probe(
+                        attempt.execution_name, task_id=attempt.task_id,
+                        tenant_id=attempt.tenant_id, generation=attempt.generation,
+                    )
+                else:
+                    result = probe(attempt.execution_name)
             except Exception as exc:
                 result = Probe(ProbeOutcome.UNREADABLE, detail=f"{type(exc).__name__}: {exc}")
             sight.probes[key] = result
