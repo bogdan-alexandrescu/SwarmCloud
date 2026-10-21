@@ -10968,6 +10968,12 @@ span.sk-ttile { cursor: default; }
 @media (max-width: 560px) {
   .wfl-pick { flex: 1 1 100%; min-width: 0; max-width: 100%; display: grid; grid-template-columns: 4.5em minmax(0, 1fr); }
   .wfl-pick select { flex: 1 1 auto; min-width: 0; max-width: 100%; width: 100%; }
+  /* AND THE STATE FILTER RUNS THE COLUMN WIDE (visual QA run 2, work-a-012,
+     2026-10-20): the shared `.c-seg` is `flex: none`, so it stopped 20-60px
+     short of the edge the search box and these selects reach. Its segments
+     already grow (components.css); their labels sit in the middle. */
+  .wfl-filters > .c-seg.wfl-seg { flex: 1 1 100%; }
+  .wfl-filters > .c-seg.wfl-seg > button { justify-content: center; }
 }
 .wfl-scroll { overflow-x: auto; }
 .wfl-table { width: 100%; border-collapse: collapse; font-size: var(--t-meta); }

@@ -32,6 +32,13 @@
 .chg-mx-table th, .chg-mx-table td { padding: 4px 10px; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; }
 .chg-mx-table thead th { position: sticky; top: 0; z-index: 1; background: var(--surface-2); font-weight: 600; white-space: nowrap; }
 .chg-mx-step > span { display: block; }
+/* A STEP HEADER WRAPS (visual QA run 2, WG-9, 2026-10-20). Held to one line
+   by the `thead th` rule above, each step column was as wide as its longest
+   line, and six of them ran past the 1440 frame: the last, `synthesis`, was
+   cut and the card scrolled sideways. The File header keeps its one line; a
+   long mono step id may break inside itself rather than hold its column. */
+.chg-mx-table thead th.chg-mx-step { white-space: normal; }
+.chg-mx-step > .mono { overflow-wrap: anywhere; }
 .chg-mx-say { font-weight: 400; color: var(--text-dim); }
 .chg-mx-agent { font-weight: 400; }
 .chg-mx-table .is-dim { opacity: .45; }

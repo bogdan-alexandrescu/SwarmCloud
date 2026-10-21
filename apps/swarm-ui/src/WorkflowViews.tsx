@@ -1136,20 +1136,42 @@ type AttemptsRead =
  *  the selection moved INTO it from another workflow's card. */
 export type ScrubFocus = 'newer' | 'older' | null
 
+/**
+ * THE CARD'S FACT LABELS ARE WORDS (visual QA run 2, WG-6, 2026-10-20): the
+ * keys `attemptFacts` returns are short ids, and printed as labels they read
+ * `gen 3`, `exit 0` and `ckpts 2`, none of which said what it counted. `exit`
+ * is `exit code`, so the agent process's code is not read as the step's
+ * verdict beside `why it failed` (WG-4). A key with no entry is its own word.
+ */
+const FACT_LABEL: Readonly<Record<string, string>> = {
+  gen: 'generation',
+  exit: 'exit code',
+  ckpts: 'checkpoints',
+}
+
+/**
+ * `6 steps in 2 stages (5 → 1)`: a workflow's shape as the page head says it
+ * (QA-119) and the same-step row repeats it (WG-6) -- the step count, then the
+ * stages, then the widths, which alone read as an unexplained `5 → 1`.
+ */
+export function shapeWords(shape: Pick<DagShape, 'steps' | 'levels' | 'text'>): string {
+  return `${shape.steps} step${shape.steps === 1 ? '' : 's'}${shape.levels > 1 ? ` in ${shape.levels} stages (${shape.text})` : ''}`
+}
+
 function FactList({ facts }: { facts: readonly Fact[] }) {
   return (
     <ul className="ctl-facts wf-inspect-facts">
       {facts.map((f) =>
         f.cell.kind === 'absent' ? (
           <li key={f.key} className="ctl-fact is-absent">
-            <b>{f.key}</b>
+            <b>{FACT_LABEL[f.key] ?? f.key}</b>
             <span className="ctl-mark is-absent" aria-label={f.cell.note}>
               {f.cell.text}
             </span>
           </li>
         ) : (
           <li key={f.key} className="ctl-fact" title={f.cell.note || undefined}>
-            <b>{f.key}</b>
+            <b>{FACT_LABEL[f.key] ?? f.key}</b>
             {f.cell.text}
             {/* THE SAME NOTE THE TABLE PRINTS for the same figure (WF-5), so
                 the inspector and the table word one source one way. */}
@@ -1403,10 +1425,12 @@ export function StepInspector({
           ×
         </button>
         {/* THE WORKFLOW'S START AND SUBMIT (#376), on their own line under
-            its name: derived from the earliest step, as the row prints it. */}
+            its name: derived from the earliest step, as the row prints it.
+            `submitted`, not `sub` (visual QA run 2, WG-6): the short form
+            said nothing a reader could expand. */}
         {workflowStarted !== null && (
           <span className="wf-inspect-times" title={workflowStarted.title}>
-            started {workflowStarted.text} · sub {workflowStarted.submitted}
+            started {workflowStarted.text} · submitted {workflowStarted.submitted}
           </span>
         )}
         <WfStepMark look={row.look} />
@@ -1463,7 +1487,10 @@ export function StepInspector({
                 printed `Changes · — ›`, a dash where a figure goes, which read
                 as a broken number; and a 0 would claim a count nobody took.
                 The reason nothing was counted is the link's title. */}
-            {changes.count === null ? 'Changes ›' : `Changes · ${changes.count} ${changes.count === 1 ? 'file' : 'files'} ›`}
+            {/* THE LINK NAMES ITS SCOPE (visual QA run 2, WG-7, 2026-10-20): it
+                read `Changes ›`, the page's own tab's name, for that tab
+                filtered to this one step. */}
+            {changes.count === null ? 'This step’s changes ›' : `This step’s changes · ${changes.count} ${changes.count === 1 ? 'file' : 'files'} ›`}
           </a>
         )}
       </div>
@@ -1579,8 +1606,11 @@ export function StepInspector({
             onPress={hasOlder ? () => onSibling(1) : null}
           />
         </span>
+        {/* THE SHAPE IN THE HEAD'S WORDS (visual QA run 2, WG-6): it printed
+            `5 → 1 · 6 steps`, the bare widths PR 1719 had explained in the
+            page head (QA-119) and left unexplained here. */}
         <span className="wf-scrub-shape" title={`Only workflows of this shape are compared. ${shape.label}`}>
-          {shape.text} · {shape.steps} step{shape.steps === 1 ? '' : 's'}
+          shape: {shapeWords(shape)}
         </span>
         {/* THE STRIP: every occurrence, in scrub order, in its own state's
             silhouette, with this one ringed. Decoration for a sighted reader

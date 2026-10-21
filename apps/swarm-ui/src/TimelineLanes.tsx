@@ -1154,6 +1154,7 @@ export function TimelineLanesScreen({
         </label>
         <Segmented
           label="Kind"
+          className="tl-kind"
           value={view.kind}
           options={LANE_KINDS.map((k) => ({ key: k, label: k === 'steps' ? 'workflow steps' : k }))}
           onChange={(k) => setView({ ...view, kind: k })}
