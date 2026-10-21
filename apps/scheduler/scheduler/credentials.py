@@ -391,6 +391,17 @@ class AccountPool:
         """Drop what was read. Called at the top of every drain."""
         self._accounts = None
 
+    def accounts(self) -> list[Account]:
+        """Every account document, read at most once per drain like `serves`.
+
+        For the finish event's account wake (`loop.Scheduler.
+        _wake_account_parks`), which asks the broker's own `choose()` over the
+        same list admission reads, so the two cannot disagree within a run.
+        """
+        if self._accounts is None:
+            self._accounts = list(self._read())
+        return list(self._accounts)
+
     def serves(self, tenant_id: str, provider: str, *, model_class: str | None = "") -> bool:
         """Whether an account the tenant may use serves `provider` -- and, when
         `model_class` is given, a step of that class (`Account.serves_class`;

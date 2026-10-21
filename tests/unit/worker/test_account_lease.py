@@ -739,6 +739,35 @@ def test_a_stale_pool_waits_minutes_rather_than_a_quarter_of_an_hour(
     assert delay > timedelta(seconds=STALE_READING_RETRY_SECONDS - 60)
 
 
+@pytest.mark.parametrize("window_in", [timedelta(hours=46), timedelta(minutes=2)])
+def test_a_stale_pool_parks_until_the_sooner_of_the_poll_and_the_window(
+    db, worker_factory, secrets, window_in
+):
+    """#1885. The broker answers `no_recent_reading` whenever ANY candidate
+    waits on its next usage poll, and still sends the earliest window instant
+    it knows -- which may be another account's seven-day clear, 46 h out.
+    Parking on that instant slept two days past a poll minutes away; parking on
+    the poll alone would sleep past a window that clears sooner."""
+    from agent_worker.lifecycle import STALE_READING_RETRY_SECONDS
+
+    clears = datetime.now(timezone.utc) + window_in
+    seed_attempt(db, runner_profile="claude-code", task_input={"prompt": "x"})
+    seed_tenant(db, credentials=["anthropic"])
+    worker, _, _ = worker_factory(runner_profile="claude-code", secret_client=secrets)
+    worker._account_broker = FakeBroker(
+        NoAccount(reason="no_recent_reading", next_reset_at=clears.isoformat())
+    )
+    worker.run()
+
+    eligible = db.doc("tasks/task_1")["next_eligible_at"]
+    poll = datetime.now(timezone.utc) + timedelta(seconds=STALE_READING_RETRY_SECONDS)
+    # MUTATION: taking the broker's instant verbatim (the pre-#1885 rule) parks
+    # the 46 h row for 46 h; taking the poll alone parks the 2 min row for 5.
+    assert eligible <= min(clears, poll) + timedelta(seconds=5)
+    # MUTATION: a zero or past instant would wake the task into the same answer.
+    assert eligible > datetime.now(timezone.utc)
+
+
 # -- shaping the secret payload -------------------------------------------
 
 
