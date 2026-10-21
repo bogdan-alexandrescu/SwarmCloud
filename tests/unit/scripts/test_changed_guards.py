@@ -135,8 +135,17 @@ def test_a_docs_only_change_selects_only_the_doc_guards():
     assert "docs-only" in result.stderr
 
 
+def _names_a_changed_doc(test: str, changed: tuple[str, ...]) -> bool:
+    """The selector's reader rule: the test's text names a changed path, by
+    its repo-relative path or its basename (none of these docs has a basename
+    in GENERIC_BASENAMES)."""
+    text = (REPO / test).read_text(encoding="utf-8")
+    return any(name in text for path in changed for name in (path, path.rsplit("/", 1)[-1]))
+
+
 def test_a_docs_only_change_still_selects_the_tests_that_read_the_changed_doc():
-    result = _run("--list", "--files", "-", stdin="docs/runbooks/merge-app.md\nCLAUDE.md\n")
+    changed = ("docs/runbooks/merge-app.md", "CLAUDE.md")
+    result = _run("--list", "--files", "-", stdin="".join(p + "\n" for p in changed))
     assert result.returncode == 0, result.stderr
     selected = _selected(result.stdout)
     for guard in DOC_GUARDS:
@@ -144,10 +153,40 @@ def test_a_docs_only_change_still_selects_the_tests_that_read_the_changed_doc():
     # test_merge_step_docs.py reads docs/runbooks/merge-app.md by name.
     # MUTATION: skipping the reader grep for a docs-only diff turns this red.
     assert "tests/unit/scripts/test_merge_step_docs.py" in selected
-    # MUTATION: keeping the non-doc guards for a docs-only diff turns this red.
-    for unit_guard in UNIT_GUARDS:
+    # A non-doc guard may also be a READER of a changed doc: test_auto_merge_
+    # base_merge reads docs/runbooks/merge-app.md and test_issue_forms reads
+    # CLAUDE.md (CI-GUARDS-THREE, part of #1822). Such a guard is selected as a
+    # reader, by the same rule that picks test_merge_step_docs, not because the
+    # guard set leaked in -- so it is allowed here only when its own text names
+    # a changed doc, and every other non-doc guard is still refused.
+    refused = [g for g in UNIT_GUARDS if not _names_a_changed_doc(g, changed)]
+    # MUTATION: keeping the non-doc guards for a docs-only diff turns this red,
+    # naming the first guard that reads neither doc.
+    for unit_guard in refused:
         assert unit_guard not in selected, unit_guard
+    # MUTATION: widen the allowance (say, let every guard through) and the
+    # refused list empties; the route seam reads neither doc, so it must be in
+    # it and must stay out of the selection -- red here.
+    seam = "tests/unit/control_plane/test_runtimes_screen.py"
+    assert seam in refused, refused
+    assert seam not in selected
     assert "check-contract-parity.sh" not in result.stdout
+
+
+def test_the_cheap_walkers_that_read_a_doc_are_in_the_guard_set():
+    # The three CI-GUARDS-DOCS left out only because the docs-only assertion
+    # above read them as leaks (CI-GUARDS-THREE, part of #1822): each walks
+    # .github/ or scripts/ and weighs under 5 CI-seconds.
+    for guard in (
+        "tests/unit/scripts/test_auto_merge_base_merge.py",
+        "tests/unit/scripts/test_issue_forms.py",
+        "tests/unit/scripts/test_verify_deployer_trust.py",
+    ):
+        # MUTATION: drop any of the three from GUARD_TESTS and this is red, naming it.
+        assert guard in GUARDS, guard
+        # MUTATION: list one of them in DOC_GUARD_TESTS and every docs-only
+        # diff runs it -- red here.
+        assert guard not in DOC_GUARDS, guard
 
 
 def test_a_doc_beside_a_code_change_keeps_the_whole_guard_set():
