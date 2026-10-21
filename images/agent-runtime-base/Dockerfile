@@ -819,8 +819,13 @@ RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
 # resolved aiohttp 3.14.3, and release 39309249439 refused both base images on
 # CVE-2026-111064 and GHSA-2g87-pp6c-29x5 (fixed in 3.14.4, published
 # 2026-10-05; 3.14.5 on 2026-10-11). The image scan in CI is the re-scan.
+# MOVED 2026-10-21 to 2026-10-21T00:00:00Z, checkov unchanged: the 10-19 cutoff
+# resolved certifi 2026.10.18, and PR 1762's build-check refused both base
+# images on GHSA-6q48-6c7w-9gw2 (emSign roots; fixed in 2026.10.19, uploaded
+# 2026-10-20T02:24Z). The move also takes markdown 3.11.2, platformdirs 4.13.5
+# and wcwidth 0.9.3; still 96 packages.
 ARG CHECKOV_VERSION=3.3.17
-ARG CHECKOV_EXCLUDE_NEWER=2026-10-19T00:00:00Z
+ARG CHECKOV_EXCLUDE_NEWER=2026-10-21T00:00:00Z
 RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_DOWNLOADS=never \
     UV_CACHE_DIR=/tmp/uv-cache \
       uv tool install --python /usr/local/bin/python3.11 \
