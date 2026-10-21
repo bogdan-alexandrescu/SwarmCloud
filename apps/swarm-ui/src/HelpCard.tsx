@@ -610,7 +610,17 @@ const GLYPH: CSSProperties = {
   // the affordance instead, and the ink comes up from --text-faint to
   // --text-dim because the glyph lost the edge that was half its presence.
   // `prose.hygiene.test.tsx` holds both halves: no border, and still a fill.
-  background: 'var(--surface-2)',
+  //
+  // THE FILL IS THE PAGE HEAD'S `?` FILL (admin-008, visual QA run 2). It was
+  // --surface-2, which in light is #eef4fa on a #f3f6f9 page, 1.02:1 -- the
+  // disc this comment says carries the affordance was not there. The
+  // --ctl-q-fill pair is styles.css's answer for `.ctl-q-glyph`; this takes it
+  // rather than a second copy. `--help-glyph-fill` is the one seam an inline
+  // style leaves for `:hover`: the `.help-glyph:hover` rule in styles.css sets
+  // it to --ctl-q-fill-hover, and at rest it is unset, so the fallback paints.
+  // `background-color`, not the `background` shorthand: jsdom drops a
+  // shorthand carrying var(), so the tests would read no fill back.
+  backgroundColor: 'var(--help-glyph-fill, var(--ctl-q-fill))',
   border: 0,
   borderRadius: '999px',
   color: 'var(--text-dim)',
@@ -1046,11 +1056,17 @@ export function HelpCardView({
   const bridge = useCardBridge(state, trigger, cardRef, triggerRef)
   const phone = usePhoneWidth()
   const triggerId = `${cardId}-t`
+  // THE PINNED CARD IS A DIALOG, AND A DIALOG HAS A NAME (a11y-keyboard-003,
+  // visual QA run 2): its own title, as App.tsx's section card is named.
+  // Derived from `cardId`, which is already unique per card (HelpCard builds
+  // it from `useId`) because the trigger's `aria-controls` needs it to be.
+  const titleId = `${cardId}-title`
 
   const cardNode = (
     <span
       id={cardId}
       role={helpRole(state)}
+      aria-labelledby={titleId}
       data-focus-return={triggerId}
       style={{ ...CARD, ...placement }}
       ref={cardRef}
@@ -1060,7 +1076,9 @@ export function HelpCardView({
           <span aria-hidden="true">&times;</span>
         </button>
       )}
-      <strong style={CARD_TITLE}>{t.title}</strong>
+      <strong id={titleId} style={CARD_TITLE}>
+        {t.title}
+      </strong>
       <span style={CARD_BODY}>{t.short}</span>
       {values.length > 0 && (
         <ul style={CARD_VALUES}>
