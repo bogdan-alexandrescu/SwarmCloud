@@ -5,6 +5,17 @@
 //           pytest collected 2 failures', with no way to its logs: the head
 //           linked 'Open agent →' and 'Changes ›' and nothing else.
 //
+// QAFIX2-WORK-MINOR (visual QA run 2, wf_b6e2441b419f423a84eb, 2026-10-20):
+//
+//   WG-4, WG-6  the card's attempt facts were keyed 'gen', 'exit' and
+//           'ckpts', its head said 'sub 8m ago', and its 'same step' row
+//           printed the shape bare ('5 → 1 · 6 steps') though PR 1719 had
+//           worded the page head's. Each is said in words now, the shape as
+//           the head says it. ('exit 0' beside 'why it failed: exit status 1'
+//           is the fixture build's data: its newest attempt is always exit 0.)
+//   WG-7    the card's 'Changes ›' link and the page's 'Changes' tab used one
+//           word for two scopes. The card's link names its scope: the step.
+//
 // Every assertion names the mutation that turns it red.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -15,6 +26,7 @@ import type { Result } from '../fetch'
 import type { WorkflowBoard, WorkflowUsage } from '../api'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
 import { ownFromBoard } from './workflowsById'
+import { attempt } from './runfixture'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -100,5 +112,71 @@ describe('QA-121: a step card links to the step agent\'s logs', () => {
     // list a finished task is not in, and this is red.
     expect(open.getAttribute('href')).toBe('/agents/recent/t_test')
     expect(logs.getAttribute('href')).toBe('/agents/recent/t_test/logs')
+  })
+})
+
+const openCard = async () => {
+  render(<Routed initial="wf=wf_tests" />)
+  return waitFor(() => {
+    const el = document.querySelector<HTMLElement>('section.wf-inspect')
+    expect(el?.getAttribute('aria-label')).toBe('Step test of wf_tests')
+    return el!
+  })
+}
+
+describe('WG-4, WG-6: the step card says each figure in words', () => {
+  it('keys the attempt facts generation, exit code and checkpoints, never gen, exit or ckpts', async () => {
+    api.loadAttempts.mockResolvedValue({
+      status: 'ok',
+      fetchedAt: T0,
+      data: { attempts: [attempt(1, { task_id: 't_test', exit_code: 1, error: 'exit status 1', checkpoints: ['ckpt-00001'] })] },
+    })
+    const card = await openCard()
+    const scrub = card.querySelector<HTMLElement>('[data-scrub="attempt"]')!
+    await waitFor(() => expect(scrub.querySelector('.ctl-facts')).not.toBeNull())
+    const keys = [...scrub.querySelectorAll('.ctl-fact > b')].map((b) => b.textContent)
+    // MUTATION: print `f.key` as the label again (FactList) and this reads
+    // ['gen', 'took', 'exit', 'cost', 'tokens', 'ckpts', 'error'].
+    expect(keys).toEqual(['generation', 'took', 'exit code', 'cost', 'tokens', 'checkpoints', 'error'])
+    const fact = (k: string) => [...scrub.querySelectorAll<HTMLElement>('.ctl-fact')].find((li) => li.querySelector('b')?.textContent === k)
+    // The figures are the attempt's own; only their labels changed.
+    // MUTATION: map a label onto the wrong fact and one of these is red.
+    expect(fact('generation')?.textContent).toBe('generation1')
+    expect(fact('exit code')?.textContent).toBe('exit code1')
+    expect(fact('checkpoints')?.textContent).toBe('checkpoints1')
+  })
+
+  it('says submitted, not sub, in the head', async () => {
+    const card = await openCard()
+    const times = card.querySelector<HTMLElement>('.wf-inspect-times')!
+    // MUTATION: print `· sub ${submitted}` again and this is red.
+    expect(times.textContent).toMatch(/ · submitted /)
+    expect(times.textContent).not.toMatch(/\bsub\b/)
+  })
+
+  it("words the same-step row's shape as the page head does: its steps, its stages, then the widths", async () => {
+    const card = await openCard()
+    const shape = card.querySelector<HTMLElement>('[data-scrub="workflow"] .wf-scrub-shape')!
+    // MUTATION: print `${shape.text} · ${shape.steps} steps` again and the
+    // row reads '1 → 1 · 2 steps', the bare widths QA-119 named in the head.
+    expect(shape.textContent).toBe('shape: 2 steps in 2 stages (1 → 1)')
+    // The page head says the same shape in the same words (QA-119).
+    // MUTATION: word the two differently and this is red.
+    const head = document.querySelector<HTMLElement>('.wfp')!.textContent ?? ''
+    expect(head).toContain('2 steps in 2 stages (1 → 1)')
+  })
+})
+
+describe("WG-7: the step card's changes link names the step, not the workflow's Changes tab", () => {
+  it("reads This step's changes, and opens the Changes tab filtered to the step", async () => {
+    const card = await openCard()
+    // MUTATION: label the link 'Changes ›' again and there is no link of this name.
+    const link = within(card).getByRole('link', { name: /^This step’s changes/ })
+    expect(link.getAttribute('href')).toBe('/workflows/wf_tests/changes?step=test')
+    // MUTATION: keep a second link on the card called just 'Changes' and this is red.
+    expect(within(card).queryByRole('link', { name: /^Changes\b/ })).toBeNull()
+    // The tab it filters keeps its own name.
+    const tabs = within(document.body).getByRole('navigation', { name: 'Views of this workflow' })
+    expect(within(tabs).getByRole('link', { name: 'Changes' })).toBeTruthy()
   })
 })

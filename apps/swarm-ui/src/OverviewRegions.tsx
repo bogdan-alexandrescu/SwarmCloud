@@ -451,6 +451,12 @@ export { ENDED_BADLY, WHOLE, hhmmUtc, stateView, type Coverage, type OverviewTas
  * is not whole is a lower bound: its figure is `≥N`, `partial` is true, and
  * the note says from when the read reaches -- never a measured count over a
  * window nobody read.
+ *
+ * A FAILURE BEFORE A CANCELLATION (visual QA run 2, FF-D3, 2026-10-20). The
+ * newest row was a cancelled agent, so someone opening Overview to find the
+ * newest failure read the wrong row first. Failed and dead-lettered rows lead,
+ * newest-ended first; the cancelled follow them, newest-ended first, still
+ * listed and still counted in the note.
  */
 export function failuresOf(
   all: readonly Task[],
@@ -468,7 +474,7 @@ export function failuresOf(
       const ms = ended(t)
       return ms !== null && now - ms <= DAY_MS
     })
-    .sort((a, b) => (ended(b) ?? 0) - (ended(a) ?? 0))
+    .sort((a, b) => cancelledLast(a) - cancelledLast(b) || (ended(b) ?? 0) - (ended(a) ?? 0))
   const undated = terminal.filter((t) => ended(t) === null)
   const partial = ENDED_BADLY.some((s) => !cover.whole(s))
   const n = (s: TaskState) => `${cover.whole(s) ? '' : '≥'}${dated.filter((t) => t.state === s).length}`
@@ -481,6 +487,11 @@ export function failuresOf(
     ...(partial ? [cover.since === null ? 'partial: not every agent was read' : `partial: agents created since ${hhmmUtc(cover.since)} read`] : []),
   ].join(' · ')
   return { rows: [...dated, ...undated], note, partial }
+}
+
+/** 1 for a cancelled agent, 0 for a failure: the sort key that lists failures first. */
+function cancelledLast(t: Task): number {
+  return t.state === 'CANCELLED' ? 1 : 0
 }
 
 /**

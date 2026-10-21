@@ -1174,14 +1174,16 @@ function HandoffTakeControl({ taskId }: { taskId: string }) {
  * One problem as O1's check card. The mark repeats the severity as a shape --
  * the amber triangle for a warning, the red diamond for a failure -- because
  * roughly 8% of male viewers cannot separate the two inks. The detail is the
- * card's second line, clamped to two, and its whole text is the title.
+ * card's last line, clamped to four at every width (overview-automate-010),
+ * and its whole text is the title.
  */
 export function CheckCard({ problem: p }: { problem: Problem }) {
   // A SHORT TITLE, THEN TWO LINES OF REGULAR TEXT (visual QA Q5, 2026-10-02;
   // O1's check card). The headline's first clause is the title; the clauses
   // after it -- the age, the workflow and worker ids -- are the second line,
   // one line, cut with an ellipsis and whole in its title; the detail is the
-  // third. The whole headline stays the card's accessible name.
+  // third, up to four lines (`is-one` only marks it as sitting under an ids
+  // line). The whole headline stays the card's accessible name.
   const { title, ids } = splitHeadline(p.headline)
   // A DASH NEVER STARTS A LINE (visual QA V140, 2026-10-11): the space before
   // ` — ` is a no-break space, so the dash ends the clause it follows and a

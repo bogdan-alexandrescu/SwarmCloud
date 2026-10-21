@@ -75,33 +75,40 @@ async function loadTimeline(taskId: string): Promise<Result<AttemptTimeline>> {
 
 export function AttemptTimelineScreen({ taskId }: { taskId: string }) {
   const load = useCallback(() => loadTimeline(taskId), [taskId])
+  // A GUTTER OFF THE PANE'S SCROLLBAR (task-015, visual QA run 2, #1680). The
+  // split's pane is the one scroller from 561px up (agents.css), and the
+  // toolbar's right-aligned event count and the head's read age sat flush
+  // against its scrollbar. `.att-pane` (styles.css) is the inset; the whole
+  // Screen is inside it, so the head and the body share one right edge.
   return (
-    <Screen
-      // Verbatim: an id a reader cannot paste back into swarmctl is unusable.
-      title={taskId}
-      load={load}
-      summary={(t) =>
-        `${pluralise(t.attempts.length, 'attempt')} · ` +
-        (t.events === null ? 'events unread' : pluralise(t.events.length, 'event'))
-      }
-      empty={{
-        // ONE `real zero`, THE PRIMITIVE'S. `No attempt · real zero` said it a
-        // second time beside the mark `Absent` draws in the heading (#145).
-        heading: 'No attempt',
-        // ONE SENTENCE. Which states have no attempt document, and why, is
-        // `#help/attempt-documents` -- a topic that already exists and says it
-        // better than a two-clause sentence with a parenthetical in it.
-        // NO `?` (B7.4). "succeeded and returned nothing" is already the
-        // distinction `attempt-documents` exists to protect -- a measured zero
-        // rather than a read that did not land. Which states never write an
-        // attempt document is in the rail's Help section; this screen keeps its
-        // one glyph for the PARTIAL case below, which is the one a reader
-        // cannot resolve from the surface.
-        body: <>The attempts query succeeded and returned nothing.</>,
-      }}
-    >
-      {(t) => <Body t={t} />}
-    </Screen>
+    <div className="att-pane">
+      <Screen
+        // Verbatim: an id a reader cannot paste back into swarmctl is unusable.
+        title={taskId}
+        load={load}
+        summary={(t) =>
+          `${pluralise(t.attempts.length, 'attempt')} · ` +
+          (t.events === null ? 'events unread' : pluralise(t.events.length, 'event'))
+        }
+        empty={{
+          // ONE `real zero`, THE PRIMITIVE'S. `No attempt · real zero` said it a
+          // second time beside the mark `Absent` draws in the heading (#145).
+          heading: 'No attempt',
+          // ONE SENTENCE. Which states have no attempt document, and why, is
+          // `#help/attempt-documents` -- a topic that already exists and says it
+          // better than a two-clause sentence with a parenthetical in it.
+          // NO `?` (B7.4). "succeeded and returned nothing" is already the
+          // distinction `attempt-documents` exists to protect -- a measured zero
+          // rather than a read that did not land. Which states never write an
+          // attempt document is in the rail's Help section; this screen keeps its
+          // one glyph for the PARTIAL case below, which is the one a reader
+          // cannot resolve from the surface.
+          body: <>The attempts query succeeded and returned nothing.</>,
+        }}
+      >
+        {(t) => <Body t={t} />}
+      </Screen>
+    </div>
   )
 }
 

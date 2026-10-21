@@ -1322,13 +1322,14 @@ function cpuCell(latest: AttemptRow | null, open: boolean, events: TaskEvent[] |
       : { label: 'CPU', value: '— not measured', tone: 'absent', bar: null, sub: 'no figure was written', help: 'cpu-figures' }
   }
   const pct = limit === null ? null : pctOf(f.peak_cpu_cores, limit)
+  const whose = cpuLimitWords(f.cpu_limit_cores, cls, from.kind === 'attempt' ? (latest.cpu_limit_source ?? null) : null)
   return {
     label: 'CPU',
     value: cores(f.peak_cpu_cores),
     unit: limit === null ? 'cores · limit unknown' : `/ ${cores(limit)} cores`,
     bar: pct,
     tone: pct !== null && pct >= 100 ? 'alert' : undefined,
-    sub: `${from.kind === 'heartbeat' && !from.final ? 'last reading' : 'peak'}${f.mean_cpu_cores === null ? '' : ` · mean ${cores(f.mean_cpu_cores)}`}`,
+    sub: `${from.kind === 'heartbeat' && !from.final ? 'last reading' : 'peak'}${f.mean_cpu_cores === null ? '' : ` · mean ${cores(f.mean_cpu_cores)}`}${whose === null ? '' : ` · ${whose}`}`,
     help: 'cpu-figures',
   }
 }
@@ -1610,6 +1611,11 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
     const from = latest === null ? null : cpuOf(latest, events)
     const f = from !== null && (from.kind === 'attempt' || from.kind === 'heartbeat') ? from.figures : null
     const limit = f?.cpu_limit_cores ?? cls?.cpu ?? null
+    // Whose limit `of 2 cores` is, said once, on the peak row (FF-D5a).
+    const whose =
+      f === null || latest === null
+        ? null
+        : cpuLimitWords(f.cpu_limit_cores, cls, from?.kind === 'attempt' ? (latest.cpu_limit_source ?? null) : null)
     for (const [name, v] of [
       ['CPU peak', f?.peak_cpu_cores ?? null],
       ['CPU mean', f?.mean_cpu_cores ?? null],
@@ -1623,7 +1629,12 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
                 from === null ? 'no attempt' : from.kind === 'not_served' ? 'not served' : from.kind === 'unread' ? 'events unread' : open ? 'written at exit' : 'not measured',
               pct: null,
             }
-          : { name, value: cores(v), note: limit === null ? unknownLimit : `of ${cores(limit)} cores`, pct: limit === null ? null : pctOf(v, limit) },
+          : {
+              name,
+              value: cores(v),
+              note: limit === null ? unknownLimit : `of ${cores(limit)} cores${name === 'CPU peak' && whose !== null ? ` · ${whose}` : ''}`,
+              pct: limit === null ? null : pctOf(v, limit),
+            },
       )
     }
   }
@@ -3304,6 +3315,22 @@ function limitSource(cores: number | null, cls: ResourceClassSpec | null, record
   if (recorded === 'resource_class') return cls !== null && cls.cpu === cores ? `${cls.name} limit` : 'class limit'
   if (cls !== null && cls.cpu === cores) return `${cls.name} limit`
   return 'reported limit'
+}
+
+/**
+ * WHOSE LIMIT A CPU DENOMINATOR IS (FF-D5a, visual QA run 2, #1680). The head
+ * prints the class's size (`4 vCPU`), the tile and the Resources rows the
+ * limit the attempt recorded (`/ 2 cores`), and the chart's summary the
+ * series' limit: three numbers, and nothing said which was which. The tile and
+ * the peak row now name their limit's source in `limitSource`'s words, and
+ * when that limit is not the class's size the class's size follows it, in
+ * the head's own unit, so the `4 vCPU` above reads as the class and not as a
+ * contradiction. Null when there is neither a limit nor a class.
+ */
+function cpuLimitWords(reported: number | null, cls: ResourceClassSpec | null, recorded: string | null): string | null {
+  const source = limitSource(reported, cls, recorded)
+  if (source === null) return null
+  return reported !== null && cls !== null && cls.cpu !== reported ? `${source} (class ${cls.cpu} vCPU)` : source
 }
 
 /** One attempt's CPU reading, in words, for the rows' `by` column and for the strip under them. */

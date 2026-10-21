@@ -674,14 +674,16 @@ def select_tests(repo: Path, files: Sequence[str],
     return chosen
 
 
-def _package_root(repo: Path, path: str) -> str | None:
-    """The nearest directory above `path` holding a package.json, relative to `repo`."""
+def _package_root(repo: Path, path: str, marker: str = "package.json") -> str | None:
+    """The nearest directory above `path` holding `marker` (a package.json, or
+    a pyproject.toml for a Python project), relative to `repo`: "" for the
+    repository root, None when no directory up to the root holds one."""
     parts = path.split("/")[:-1]
     while parts:
-        if (repo / "/".join(parts) / "package.json").is_file():
+        if (repo / "/".join(parts) / marker).is_file():
             return "/".join(parts)
         parts.pop()
-    return "" if (repo / "package.json").is_file() else None
+    return "" if (repo / marker).is_file() else None
 
 
 def _node_bin(repo: Path, package: str, tool: str) -> Path | None:
@@ -794,32 +796,92 @@ def unreachable_services(report: str) -> list[str] | None:
     return sorted(addresses) if errors else None
 
 
+#: uv's own first line when it could not start pytest at all: no pytest in
+#: the environment it resolved ("Failed to spawn"), or no project there (#1756).
+_UV_CANNOT_RUN = re.compile(r"^error: (?:Failed to spawn: `?pytest`?|No `?project`? .*found|"
+                            r"No `pyproject\.toml` found)")
+
+
+def _uv_cannot_run(ran: Ran) -> str | None:
+    """uv's first line when it says it could not start pytest, else None. Only
+    the first line counts: a failing test that prints the same words is a
+    failing test."""
+    if ran.code == 0 or ran.timed_out:
+        return None
+    first = next((line.strip() for line in ran.output.splitlines() if line.strip()), "")
+    return first if _UV_CANNOT_RUN.match(first) else None
+
+
+def _pytest_project(runner: Runner, repo: Path, project: str, members: Sequence[str],
+                    env: Mapping[str, str], timeout: float) -> tuple[str, str]:
+    """One `uv run pytest` from `project`'s directory, with paths relative to it."""
+    # pytest's own report, outside the checkout: the console text is a
+    # summary the repository's config can reshape (#1605).
+    with tempfile.TemporaryDirectory(prefix="prepublish-pytest-") as tmp:
+        report = Path(tmp) / "junit.xml"
+        argv = ["uv", "run", "--quiet", "pytest", "-q", "-n", "auto", "-p",
+                "no:cacheprovider", f"--junitxml={report}",
+                *(_relative(project, t) for t in members)]
+        ran = runner(argv, Path(repo) / project if project else Path(repo), env, timeout)
+        status, output = _verdict(ran)
+        if status != FAILED or ran.timed_out:
+            return status, output
+        cannot = _uv_cannot_run(ran)
+        if cannot:
+            return SKIPPED, cannot
+        try:
+            services = unreachable_services(report.read_text(errors="replace"))
+        except OSError:
+            services = None
+    if services:
+        shown = ", ".join(services[:3]) + (" and more" if len(services) > 3 else "")
+        return SKIPPED, (f"a service the tests need is unreachable ({shown}); every "
+                         "selected test errored at setup connecting to it; CI runs it")
+    return status, output
+
+
 def _graph_pytest(tests: Sequence[str], base: str
                   ) -> Callable[[Runner, Path, Mapping[str, str], float], tuple[str, str]]:
+    """One `uv run pytest` per Python project: the nearest directory above
+    each selected file holding a pyproject.toml, run from there (#1756: a
+    repository whose projects live in subfolders has no project at the root
+    for uv to find). Passes only when every project's run passes."""
     def run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float) -> tuple[str, str]:
         already = _guards_selection(runner, repo, env, base, timeout)
         rest = [t for t in tests if t not in already]
         if not rest:
             return PASSED, "every selected test file is already run by changed-guards"
-        # pytest's own report, outside the checkout: the console text is a
-        # summary the repository's config can reshape (#1605).
-        with tempfile.TemporaryDirectory(prefix="prepublish-pytest-") as tmp:
-            report = Path(tmp) / "junit.xml"
-            argv = ["uv", "run", "--quiet", "pytest", "-q", "-n", "auto", "-p",
-                    "no:cacheprovider", f"--junitxml={report}", *rest]
-            ran = runner(argv, repo, env, timeout)
-            status, output = _verdict(ran)
-            if status != FAILED or ran.timed_out:
-                return status, output
-            try:
-                services = unreachable_services(report.read_text(errors="replace"))
-            except OSError:
-                services = None
-        if services:
-            shown = ", ".join(services[:3]) + (" and more" if len(services) > 3 else "")
-            return SKIPPED, (f"a service the tests need is unreachable ({shown}); every "
-                             "selected test errored at setup connecting to it; CI runs it")
-        return status, output
+        projects: dict[str, list[str]] = {}
+        orphans: list[str] = []
+        for test in rest:
+            project = _package_root(repo, test, "pyproject.toml")
+            if project is None:
+                orphans.append(test)
+            else:
+                projects.setdefault(project, []).append(test)
+        notes = [f"no Python project above {t}; CI runs it" for t in orphans]
+        # The repository's one root project: the run it always was, unwrapped.
+        if not orphans and list(projects) == [""]:
+            return _pytest_project(runner, repo, "", rest, env, timeout)
+        if not projects:
+            return SKIPPED, "\n".join(notes)
+        deadline = time.monotonic() + timeout
+        results: list[tuple[str, str, str]] = []
+        for project, members in sorted(projects.items()):
+            left = max(1.0, deadline - time.monotonic())
+            status, output = _pytest_project(runner, repo, project, members, env, left)
+            results.append((project or ".", status, output))
+        statuses = {status for _where, status, _output in results}
+        overall = (FAILED if FAILED in statuses else PASSED if PASSED in statuses
+                   else SKIPPED)
+        lines = [f"{where}: {status}" + (f" ({output.strip()})" if status == SKIPPED else "")
+                 for where, status, output in results]
+        if overall == SKIPPED:
+            # Every project could not run: the reason is the per-project lines.
+            return SKIPPED, "\n".join(lines + notes)
+        details = [f"--- {where} ({status}) ---\n{output.strip()}"
+                   for where, status, output in results if status != SKIPPED]
+        return overall, "\n".join(lines + notes + [""] + details)
     return run
 
 
@@ -851,7 +913,8 @@ def graph_checks(repo: Path, files: Sequence[str], *, base: str, env: Mapping[st
                                 skipped="uv is not on PATH in this image"))
         else:
             checks.append(Check("graph-pytest", tuple(py_tests),
-                                "uv run pytest -q -n auto <graph-selected files>",
+                                "uv run pytest -q -n auto <graph-selected files> "
+                                "(in each Python project)",
                                 run=_graph_pytest(py_tests, base)))
 
     by_package: dict[str, list[str]] = {}

@@ -1066,9 +1066,14 @@ export function ChangesMatrix({
                     <span className="chg-mx-say">
                       <ColumnSay facts={facts[i]!} onRetry={retryOf(i)} />
                     </span>
-                    {c.taskId !== null && (
-                      <a className="ctl-link chg-mx-agent" href={agentChangesHref(c.taskId, c.task ?? undefined)} title={`${c.label}'s own Changes tab`}>
-                        Changes ›
+                    {/* THE LINK NAMES WHERE IT GOES, AND ONLY A SHOWN STEP CARRIES IT
+                        (visual QA run 2, WG-7, 2026-10-20). It read `Changes ›`,
+                        this tab's own name, for the step agent's Changes tab, and
+                        a page filtered to one step repeated it once per column,
+                        dimmed ones included. */}
+                    {c.taskId !== null && shown[i] && (
+                      <a className="ctl-link chg-mx-agent" href={agentChangesHref(c.taskId, c.task ?? undefined)} title={`${c.label}'s own Changes tab, on its agent`}>
+                        Agent’s changes ›
                       </a>
                     )}
                   </th>
