@@ -11,6 +11,18 @@ locals {
     var.extra_notification_channels,
   )
 
+  # Every policy takes its channels from its own severity (#1817, the owner's
+  # option (b) of 2026-10-21): CRITICAL and ERROR page the urgent channels as
+  # well as the ordinary ones, WARNING only records to the ordinary ones. A
+  # severity missing from this map is a plan error, not a policy that quietly
+  # reaches nobody. tests/terraform/observability.tftest.hcl reads each
+  # policy's `severity` and holds its channels to this map.
+  channels_by_severity = {
+    CRITICAL = concat(local.notification_channels, var.urgent_notification_channels)
+    ERROR    = concat(local.notification_channels, var.urgent_notification_channels)
+    WARNING  = local.notification_channels
+  }
+
   alert_docs_suffix = "\n\nEnvironment: ${var.environment}. Managed by swarm-terraform; edit terraform/modules/monitoring rather than the console."
 
   # The project is shared. Naming the four swarm services explicitly, and pinning
@@ -74,7 +86,7 @@ resource "google_monitoring_alert_policy" "safety_tick_absent" {
     }
   }
 
-  notification_channels = local.notification_channels
+  notification_channels = local.channels_by_severity["CRITICAL"]
 
   documentation {
     mime_type = "text/markdown"
@@ -128,7 +140,7 @@ resource "google_monitoring_alert_policy" "service_errors" {
     }
   }
 
-  notification_channels = local.notification_channels
+  notification_channels = local.channels_by_severity["ERROR"]
 
   documentation {
     mime_type = "text/markdown"
@@ -140,6 +152,27 @@ resource "google_monitoring_alert_policy" "service_errors" {
   }
 
   user_labels = var.labels
+
+  # THE GUARD (#1817). Until 2026-10-21 every one of the 21 policies had an
+  # empty channel list, because alert_emails was [] and nothing said so: the
+  # 10-20 GKE dispatch outage fired and reached nobody. With
+  # require_alert_channels true, alerts on and no channel anywhere is a failed
+  # plan. It lives on this policy because it exists whenever any policy does
+  # (create_alerts), so create_alerts = false is never refused. Only one of
+  # the lists needs to be set: urgent alone still reaches a person for
+  # CRITICAL and ERROR. require_alert_channels is false until the operator's
+  # change that commits the console-made channel ids sets it, so this cannot
+  # turn the release plan red before then.
+  lifecycle {
+    precondition {
+      condition = !(
+        var.require_alert_channels &&
+        length(local.notification_channels) == 0 &&
+        length(var.urgent_notification_channels) == 0
+      )
+      error_message = "require_alert_channels is true but no alert policy has a notification channel: set extra_notification_channels and/or urgent_notification_channels to the ids of channels made in the console (docs/operations.md, \"Alert notification channels\"). #1817: 21 policies reached nobody."
+    }
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -178,7 +211,7 @@ resource "google_monitoring_alert_policy" "job_failures" {
     }
   }
 
-  notification_channels = local.notification_channels
+  notification_channels = local.channels_by_severity["WARNING"]
 
   documentation {
     mime_type = "text/markdown"
@@ -207,10 +240,20 @@ resource "google_monitoring_alert_policy" "generation_fenced" {
     display_name = "Workers exiting on a stale fencing generation"
 
     condition_threshold {
-      filter = join(" AND ", [
-        "resource.type = \"cloud_run_job\"",
-        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.events["generation_fenced"].name}\"",
-      ])
+      # The verification and acceptance tenants fence at startup by design:
+      # 215 of the 270 fences in the 7 days #1817 measured were
+      # verify-remote's own. Filtered on the metric's tenant_id label
+      # (metrics.tf, EXTRACT(jsonPayload.labels.tenant_id)) so a real race in
+      # any other tenant still fires.
+      filter = join(" AND ", concat(
+        [
+          "resource.type = \"cloud_run_job\"",
+          "metric.type = \"logging.googleapis.com/user/${google_logging_metric.events["generation_fenced"].name}\"",
+        ],
+        length(var.fencing_alert_excluded_tenants) == 0 ? [] : [
+          "NOT metric.label.tenant_id = one_of(${join(", ", [for t in var.fencing_alert_excluded_tenants : "\"${t}\""])})",
+        ],
+      ))
 
       comparison      = "COMPARISON_GT"
       threshold_value = 0
@@ -224,7 +267,7 @@ resource "google_monitoring_alert_policy" "generation_fenced" {
     }
   }
 
-  notification_channels = local.notification_channels
+  notification_channels = local.channels_by_severity["WARNING"]
 
   documentation {
     mime_type = "text/markdown"
@@ -270,7 +313,7 @@ resource "google_monitoring_alert_policy" "dead_letter_backlog" {
     }
   }
 
-  notification_channels = local.notification_channels
+  notification_channels = local.channels_by_severity["ERROR"]
 
   documentation {
     mime_type = "text/markdown"
@@ -313,7 +356,7 @@ resource "google_monitoring_alert_policy" "wake_backlog" {
     }
   }
 
-  notification_channels = local.notification_channels
+  notification_channels = local.channels_by_severity["ERROR"]
 
   documentation {
     mime_type = "text/markdown"
@@ -364,7 +407,7 @@ resource "google_monitoring_alert_policy" "tasks_dead_lettered" {
     }
   }
 
-  notification_channels = local.notification_channels
+  notification_channels = local.channels_by_severity["WARNING"]
 
   documentation {
     mime_type = "text/markdown"
@@ -435,7 +478,7 @@ resource "google_monitoring_alert_policy" "dispatch_failing_by_backend" {
     }
   }
 
-  notification_channels = local.notification_channels
+  notification_channels = local.channels_by_severity["ERROR"]
 
   documentation {
     mime_type = "text/markdown"
@@ -642,7 +685,7 @@ resource "google_monitoring_alert_policy" "reconciler_blind" {
     }
   }
 
-  notification_channels = local.notification_channels
+  notification_channels = local.channels_by_severity["ERROR"]
 
   documentation {
     mime_type = "text/markdown"
@@ -754,7 +797,7 @@ resource "google_monitoring_alert_policy" "spec_signature_invalid" {
     }
   }
 
-  notification_channels = local.notification_channels
+  notification_channels = local.channels_by_severity["CRITICAL"]
 
   documentation {
     mime_type = "text/markdown"
@@ -841,7 +884,7 @@ resource "google_monitoring_alert_policy" "worker_action_ended" {
     }
   }
 
-  notification_channels = local.notification_channels
+  notification_channels = local.channels_by_severity["WARNING"]
 
   documentation {
     mime_type = "text/markdown"
@@ -922,7 +965,7 @@ resource "google_monitoring_alert_policy" "schedule_needs_attention" {
     }
   }
 
-  notification_channels = local.notification_channels
+  notification_channels = local.channels_by_severity["WARNING"]
 
   documentation {
     mime_type = "text/markdown"
@@ -980,7 +1023,7 @@ resource "google_monitoring_alert_policy" "workspace_stuck" {
     }
   }
 
-  notification_channels = local.notification_channels
+  notification_channels = local.channels_by_severity["WARNING"]
 
   documentation {
     mime_type = "text/markdown"

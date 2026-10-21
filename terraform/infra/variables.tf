@@ -858,8 +858,21 @@ variable "alert_emails" {
 }
 
 variable "extra_notification_channels" {
-  type    = list(string)
-  default = []
+  description = "Ids of console-made channels (Email) every alert policy notifies. Ids only: the repository is public (docs/operations.md, \"Alert notification channels\")."
+  type        = list(string)
+  default     = []
+}
+
+variable "urgent_notification_channels" {
+  description = "Ids of console-made channels (Slack) the CRITICAL and ERROR policies notify on top of extra_notification_channels; WARNING never does (#1817, option (b)). Ids only, never an address or token."
+  type        = list(string)
+  default     = []
+}
+
+variable "require_alert_channels" {
+  description = "Fail the plan when alerts are created with no channel at all (#1817: 21 policies reached nobody). False until the change that commits the channel ids sets it true alongside them."
+  type        = bool
+  default     = false
 }
 
 variable "create_alerts" {

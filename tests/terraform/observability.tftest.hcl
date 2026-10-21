@@ -246,6 +246,277 @@ run "alerts_can_be_deferred_until_the_apps_emit_anything" {
   }
 }
 
+# ---------------------------------------------------------------------------
+# Alert routing by severity (#1817, owner's option (b) of 2026-10-21).
+#
+# All 21 policies in saga-agents-staging had an empty channel list and nobody
+# was told about the 10-20 GKE dispatch outage. CRITICAL and ERROR now go to
+# the urgent channels (Slack) as well as the ordinary ones (email); WARNING
+# goes to the ordinary ones only, so seven noisy WARNINGs cannot bury an ERROR
+# in one inbox. The channel ids are fakes: real ones are made in the console
+# and only their ids are committed (docs/operations.md).
+# ---------------------------------------------------------------------------
+run "critical_and_error_reach_the_urgent_channels_and_warning_does_not" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/monitoring"
+  }
+
+  variables {
+    service_names                = ["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"]
+    wake_subscription            = "swarm-scheduler-wake-sub"
+    dead_letter_subscription     = "swarm-scheduler-wake-dlq-sub"
+    safety_tick_job              = "swarm-scheduler-tick"
+    tenant_ids                   = ["eng"]
+    extra_notification_channels  = ["projects/saga-agents-staging/notificationChannels/1111111111"]
+    urgent_notification_channels = ["projects/saga-agents-staging/notificationChannels/2222222222"]
+    require_alert_channels       = true
+  }
+
+  # Every policy the module creates, by severity. The routing assertions below
+  # read each policy's own `severity` field rather than a list of names; this
+  # split is what holds the list they iterate to the module (a policy missing
+  # from it changes the split, and the next assertion counts the resource
+  # blocks in the module's files).
+  # MUTATION: change one policy's severity from ERROR to WARNING (e.g.
+  # dead_letter_backlog in alerts.tf) and this fails.
+  assert {
+    condition = sort([
+      for p in concat(
+        [
+          google_monitoring_alert_policy.safety_tick_absent[0],
+          google_monitoring_alert_policy.service_errors[0],
+          google_monitoring_alert_policy.job_failures[0],
+          google_monitoring_alert_policy.generation_fenced[0],
+          google_monitoring_alert_policy.dead_letter_backlog[0],
+          google_monitoring_alert_policy.wake_backlog[0],
+          google_monitoring_alert_policy.tasks_dead_lettered[0],
+          google_monitoring_alert_policy.dispatch_failing_by_backend[0],
+          google_monitoring_alert_policy.reconciler_blind[0],
+          google_monitoring_alert_policy.spec_signature_invalid[0],
+          google_monitoring_alert_policy.worker_action_ended[0],
+          google_monitoring_alert_policy.schedule_needs_attention[0],
+          google_monitoring_alert_policy.workspace_stuck[0],
+          google_monitoring_alert_policy.pr_stranded[0],
+          google_monitoring_alert_policy.tenant_namespace_mismatch[0],
+        ],
+        values(google_monitoring_alert_policy.workspace),
+      ) : p.severity
+      ]) == tolist(concat(
+      [for i in range(6) : "CRITICAL"],
+      [for i in range(8) : "ERROR"],
+      [for i in range(7) : "WARNING"],
+    ))
+    error_message = "the module creates 6 CRITICAL, 8 ERROR and 7 WARNING policies (#1817's proposal); a change to that split is a routing change and must be made on purpose"
+  }
+
+  # MUTATION: add a `resource "google_monitoring_alert_policy"` block to any
+  # module file without listing it in the concat()s here and this fails.
+  assert {
+    condition = length(google_monitoring_alert_policy.workspace) == 6 && sum([
+      for f in fileset("../../terraform/modules/monitoring", "*.tf") :
+      length(regexall("(?m)^resource \"google_monitoring_alert_policy\" ", file("../../terraform/modules/monitoring/${f}")))
+    ]) == 16
+    error_message = "the module declares 16 alert policy resources (15 single policies plus the workspace map of 6); a new one must join the routing assertions here"
+  }
+
+  # MUTATION: give CRITICAL or ERROR only local.notification_channels in the
+  # module's channels_by_severity (or point any CRITICAL/ERROR policy at the
+  # WARNING entry) and this fails.
+  assert {
+    condition = alltrue([
+      for p in concat(
+        [
+          google_monitoring_alert_policy.safety_tick_absent[0],
+          google_monitoring_alert_policy.service_errors[0],
+          google_monitoring_alert_policy.job_failures[0],
+          google_monitoring_alert_policy.generation_fenced[0],
+          google_monitoring_alert_policy.dead_letter_backlog[0],
+          google_monitoring_alert_policy.wake_backlog[0],
+          google_monitoring_alert_policy.tasks_dead_lettered[0],
+          google_monitoring_alert_policy.dispatch_failing_by_backend[0],
+          google_monitoring_alert_policy.reconciler_blind[0],
+          google_monitoring_alert_policy.spec_signature_invalid[0],
+          google_monitoring_alert_policy.worker_action_ended[0],
+          google_monitoring_alert_policy.schedule_needs_attention[0],
+          google_monitoring_alert_policy.workspace_stuck[0],
+          google_monitoring_alert_policy.pr_stranded[0],
+          google_monitoring_alert_policy.tenant_namespace_mismatch[0],
+        ],
+        values(google_monitoring_alert_policy.workspace),
+      ) :
+      toset(p.notification_channels) == toset([
+        "projects/saga-agents-staging/notificationChannels/1111111111",
+        "projects/saga-agents-staging/notificationChannels/2222222222",
+      ]) if contains(["CRITICAL", "ERROR"], p.severity)
+    ])
+    error_message = "every CRITICAL and ERROR policy must notify the ordinary channels AND the urgent ones"
+  }
+
+  # MUTATION: give WARNING the urgent channels too in channels_by_severity (or
+  # point any WARNING policy at the ERROR entry) and this fails.
+  assert {
+    condition = alltrue([
+      for p in concat(
+        [
+          google_monitoring_alert_policy.safety_tick_absent[0],
+          google_monitoring_alert_policy.service_errors[0],
+          google_monitoring_alert_policy.job_failures[0],
+          google_monitoring_alert_policy.generation_fenced[0],
+          google_monitoring_alert_policy.dead_letter_backlog[0],
+          google_monitoring_alert_policy.wake_backlog[0],
+          google_monitoring_alert_policy.tasks_dead_lettered[0],
+          google_monitoring_alert_policy.dispatch_failing_by_backend[0],
+          google_monitoring_alert_policy.reconciler_blind[0],
+          google_monitoring_alert_policy.spec_signature_invalid[0],
+          google_monitoring_alert_policy.worker_action_ended[0],
+          google_monitoring_alert_policy.schedule_needs_attention[0],
+          google_monitoring_alert_policy.workspace_stuck[0],
+          google_monitoring_alert_policy.pr_stranded[0],
+          google_monitoring_alert_policy.tenant_namespace_mismatch[0],
+        ],
+        values(google_monitoring_alert_policy.workspace),
+      ) :
+      toset(p.notification_channels) == toset(["projects/saga-agents-staging/notificationChannels/1111111111"])
+      if p.severity == "WARNING"
+    ])
+    error_message = "a WARNING policy notifies the ordinary channels only, never the urgent ones"
+  }
+
+  # pr-stranded logged 520 entries in 7 days and fired on every one. An hour
+  # sustained, over a window wider than the sweep's six-hour re-log, makes it
+  # one incident per (tenant, reason) that stays open while pull requests stay
+  # stranded instead of a fresh incident per log entry.
+  # MUTATION: set pr_stranded's duration back to "0s" and this fails.
+  assert {
+    condition     = google_monitoring_alert_policy.pr_stranded[0].conditions[0].condition_threshold[0].duration == "3600s"
+    error_message = "pr-stranded must hold for an hour (duration 3600s) before it notifies"
+  }
+
+  # A 300s window cannot stay above zero for 3600s on an entry logged once per
+  # six hours: with the old window the duration would silence it for good.
+  # MUTATION: set pr_stranded's alignment_period back to "300s" and this fails.
+  assert {
+    condition     = google_monitoring_alert_policy.pr_stranded[0].conditions[0].condition_threshold[0].aggregations[0].alignment_period == "25200s"
+    error_message = "pr-stranded's window must span the six-hour re-log plus the 30-minute sweep (25200s), or an hour's duration never holds"
+  }
+
+  # 215 of 270 fences in 7 days were verify-remote's own startup fences.
+  # MUTATION: drop the tenant exclusion from generation_fenced's filter and
+  # this fails.
+  assert {
+    condition     = strcontains(google_monitoring_alert_policy.generation_fenced[0].conditions[0].condition_threshold[0].filter, "NOT metric.label.tenant_id = one_of(\"smoke\", \"u-sw-c90291\")")
+    error_message = "generation-fencing must not count the smoke and swarm-verify tenants' own fences"
+  }
+
+  # The guard passes here: required, and both lists are set.
+  # MUTATION: make the precondition fail whenever require_alert_channels is
+  # true and this run errors.
+  assert {
+    condition     = length(google_monitoring_alert_policy.service_errors) == 1
+    error_message = "required channels that are present must not fail the plan"
+  }
+}
+
+# The guard. 21 policies reached nobody for as long as alert_emails was empty
+# (#1817); require_alert_channels makes that a failed plan.
+# MUTATION: delete the precondition on service_errors and this run fails
+# (the expected failure does not happen).
+run "required_alert_channels_that_are_empty_fail_the_plan" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/monitoring"
+  }
+
+  variables {
+    service_names            = ["swarm-api"]
+    wake_subscription        = "swarm-scheduler-wake-sub"
+    dead_letter_subscription = "swarm-scheduler-wake-dlq-sub"
+    safety_tick_job          = "swarm-scheduler-tick"
+    require_alert_channels   = true
+  }
+
+  expect_failures = [google_monitoring_alert_policy.service_errors]
+}
+
+# Not required (today's default, until the operator commits the ids): empty
+# lists still plan, so the guard cannot turn the release red before then.
+# MUTATION: drop `var.require_alert_channels &&` from the precondition and
+# this run fails.
+run "empty_alert_channels_plan_while_they_are_not_required" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/monitoring"
+  }
+
+  variables {
+    service_names            = ["swarm-api"]
+    wake_subscription        = "swarm-scheduler-wake-sub"
+    dead_letter_subscription = "swarm-scheduler-wake-dlq-sub"
+    safety_tick_job          = "swarm-scheduler-tick"
+  }
+
+  assert {
+    condition     = length(google_monitoring_alert_policy.service_errors) == 1 && length(google_monitoring_alert_policy.service_errors[0].notification_channels) == 0
+    error_message = "with require_alert_channels false, an empty channel list plans"
+  }
+}
+
+# Only one list empty is not "both empty": urgent alone still reaches a person
+# for CRITICAL and ERROR.
+# MUTATION: test the urgent list alone (or the ordinary list alone) in the
+# precondition and this run fails.
+run "urgent_channels_alone_satisfy_the_guard" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/monitoring"
+  }
+
+  variables {
+    service_names                = ["swarm-api"]
+    wake_subscription            = "swarm-scheduler-wake-sub"
+    dead_letter_subscription     = "swarm-scheduler-wake-dlq-sub"
+    safety_tick_job              = "swarm-scheduler-tick"
+    urgent_notification_channels = ["projects/saga-agents-staging/notificationChannels/2222222222"]
+    require_alert_channels       = true
+  }
+
+  assert {
+    condition     = length(google_monitoring_alert_policy.service_errors) == 1
+    error_message = "urgent channels alone satisfy require_alert_channels"
+  }
+}
+
+# create_alerts false creates no policy, so there is nothing to route and the
+# guard does not apply.
+# MUTATION: move the precondition to a resource that exists without
+# create_alerts (a log metric) and this run fails.
+run "the_guard_does_not_apply_when_no_policy_is_created" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/monitoring"
+  }
+
+  variables {
+    service_names            = ["swarm-api"]
+    wake_subscription        = "swarm-scheduler-wake-sub"
+    dead_letter_subscription = "swarm-scheduler-wake-dlq-sub"
+    safety_tick_job          = "swarm-scheduler-tick"
+    create_alerts            = false
+    require_alert_channels   = true
+  }
+
+  assert {
+    condition     = length(google_monitoring_alert_policy.service_errors) == 0
+    error_message = "create_alerts false creates no policy, required channels or not"
+  }
+}
+
 run "the_registry_is_regional_and_pullable_only_by_swarm_identities" {
   command = plan
 

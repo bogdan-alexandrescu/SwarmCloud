@@ -426,7 +426,56 @@ Terraform creates these when `create_alerts = true`:
 `generation-fencing` firing repeatedly deserves attention even though the system
 is behaving correctly — it means the reconciler keeps deciding live workers are
 dead, which usually means heartbeat or lease timeouts are too tight for real
-start-up latency.
+start-up latency. It does not count the `smoke` and `u-sw-c90291`
+(swarm-verify's) tenants (`fencing_alert_excluded_tenants`): their own runs
+fence at startup by design, and they were 215 of the 270 fences in the seven
+days #1817 measured. The `generation_fenced` metric still counts them.
+
+`pr-stranded` notifies once a pull request has been reported stranded for an
+hour, as one incident per tenant and reason that stays open while any stays
+stranded and closes about seven hours after the last is merged. Before #1817
+every sweep entry (520 in seven days) opened its own incident.
+
+### Alert notification channels
+
+Until 2026-10-21 all 21 policies had an empty channel list and reached nobody
+(#1817): `alert_emails` was `[]` and nothing said so. Routing is now by
+severity, the owner's choice of 2026-10-21:
+
+| Severity | Policies | Notifies |
+|---|---|---|
+| CRITICAL (6) and ERROR (8) | the tick, the isolation and IAM tripwires, 5xx, dispatch, the reconciler, the wake backlog and dead letters | `urgent_notification_channels` (Slack) **and** `extra_notification_channels` (email) |
+| WARNING (7) | `generation-fencing`, `job-executions-failing`, `pr-stranded`, `schedule-needs-attention`, `tasks-dead-lettered`, `worker-action-ended`, `workspace-stuck` | `extra_notification_channels` (email) only |
+
+Each policy takes its channels from its own `severity` field
+(`channels_by_severity` in `terraform/modules/monitoring/alerts.tf`), so a
+policy changes route by changing its severity, never by joining a list.
+
+**The channels are made in the console, not in Terraform**: Monitoring →
+Alerting → *Edit notification channels*. Add an **Email** channel and a
+**Slack** channel there (Slack needs a workspace admin to allow "Google Cloud
+Monitoring", and a private Slack channel also needs `/invite @Google Cloud
+Monitoring`), and press *Send test* on each. A Slack channel made in Terraform
+would put its auth token in state, which the repository forbids.
+
+**Only the channel IDs are committed**, in
+`terraform/environments/<env>/<env>.tfvars`:
+
+```hcl
+extra_notification_channels  = ["projects/<project>/notificationChannels/<email channel id>"]
+urgent_notification_channels = ["projects/<project>/notificationChannels/<slack channel id>"]
+require_alert_channels       = true
+```
+
+Never an email address, a phone number or a token: the repository is public,
+and `alert_emails` publishes the address it is given. `TF_VAR_alert_emails` is
+not a way round that: the `-var-file` overrides it, and a plan run without it
+deletes the channel.
+
+`require_alert_channels = true` belongs in the same change as the IDs. With it,
+alerts on and every channel list empty fails the plan (a precondition on
+`control-plane-5xx`) instead of quietly reaching nobody again. It is false by
+default only so that it cannot turn the release plan red before the IDs exist.
 
 ---
 

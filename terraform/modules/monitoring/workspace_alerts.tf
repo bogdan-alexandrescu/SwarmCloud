@@ -368,7 +368,7 @@ resource "google_monitoring_alert_policy" "workspace" {
     }
   }
 
-  notification_channels = local.notification_channels
+  notification_channels = local.channels_by_severity[each.value.severity]
 
   documentation {
     mime_type = "text/markdown"
