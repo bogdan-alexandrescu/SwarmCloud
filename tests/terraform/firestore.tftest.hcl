@@ -107,6 +107,36 @@ run "scheduler_drain_index_is_state_priority_desc_created_asc" {
   }
 }
 
+run "the_place_in_line_count_has_an_index_for_every_pool_kind" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # GET /v1/tasks/{id} counts a READY task's place in line (#1782) as
+  # `<pool filter> AND state == READY ORDER BY priority DESC, created_at ASC`.
+  # Without the index for a pool kind the count is refused, and every task
+  # behind that kind of pool serves place_in_line null.
+  assert {
+    condition = alltrue([
+      for name in ["tasks-resource-state-priority-created", "tasks-runner-state-priority-created", "tasks-provider-state-priority-created", "tasks-tenant-provider-state-priority-created"] :
+      google_firestore_index.this[name].collection == "tasks" &&
+      google_firestore_index.this[name].fields[length(google_firestore_index.this[name].fields) - 3].field_path == "state" &&
+      google_firestore_index.this[name].fields[length(google_firestore_index.this[name].fields) - 2].field_path == "priority" &&
+      google_firestore_index.this[name].fields[length(google_firestore_index.this[name].fields) - 2].order == "DESCENDING" &&
+      google_firestore_index.this[name].fields[length(google_firestore_index.this[name].fields) - 1].field_path == "created_at" &&
+      google_firestore_index.this[name].fields[length(google_firestore_index.this[name].fields) - 1].order == "ASCENDING"
+    ])
+    error_message = "each place-in-line index must end state, priority DESC, created_at ASC: the drain order"
+  }
+
+  assert {
+    condition     = google_firestore_index.this["tasks-tenant-provider-state-priority-created"].fields[0].field_path == "tenant_id"
+    error_message = "a per-tenant provider pool is counted inside the task's own tenant (invariant 9)"
+  }
+}
+
 run "every_tenant_scoped_collection_has_a_tenant_leading_index" {
   command = plan
 

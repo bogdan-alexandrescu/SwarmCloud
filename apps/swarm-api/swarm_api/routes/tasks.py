@@ -316,14 +316,16 @@ def get_task(
     # that ended last. One attempt query; see `swarm_api.attempt_totals`.
     totals = totals_for(ctx.db, tenant_id, [task.id])
     # #1782: why it waits, in full -- its newest events and, for a dependency
-    # or children park, ONE read of the tenant's related tasks. Read-only.
-    reads = read_inputs(ctx.store, task)
+    # or children park, ONE read of the tenant's related tasks; for a READY
+    # task ONE count of its place in line (WAIT-LINE, never on a listing).
+    reads = read_inputs(ctx.store, task, waiting_for=waiting.get(task.id))
     detail = build_waiting(
         task,
         events=reads.events,
         waiting_for=waiting.get(task.id),
         related=reads.related,
         account=accounts.get(task.id),
+        line=reads.line,
         as_of=ctx.now(),
     )
     served = with_totals(

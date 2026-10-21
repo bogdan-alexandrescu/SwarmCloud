@@ -39,6 +39,62 @@ locals {
       ]
     }
 
+    # ---- a READY task's place in line behind a shared pool (#1782) ----------
+    # GET /v1/tasks/{id} counts the READY tasks that need the task's binding
+    # pool and come before it in the drain order above: one count aggregation,
+    # `<pool's equality filters> AND state == READY ORDER BY priority DESC,
+    # created_at ASC END BEFORE (the task's own position)`. `global` and
+    # `tenant:` pools ride the two indexes above; each other pool kind filters
+    # on its own field, and a near-miss index fails the count (it is then
+    # served as null with why, never as a failed GET). `runner_profile` also
+    # serves `backend:` pools, as an `in` over the backend's profiles. A
+    # google_firestore_index takes no labels (see tasks-tenant-submitter-created).
+    "tasks-resource-state-priority-created" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "resource_class", order = "ASCENDING" },
+        { field_path = "state", order = "ASCENDING" },
+        { field_path = "priority", order = "DESCENDING" },
+        { field_path = "created_at", order = "ASCENDING" },
+      ]
+    }
+
+    "tasks-runner-state-priority-created" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "runner_profile", order = "ASCENDING" },
+        { field_path = "state", order = "ASCENDING" },
+        { field_path = "priority", order = "DESCENDING" },
+        { field_path = "created_at", order = "ASCENDING" },
+      ]
+    }
+
+    "tasks-provider-state-priority-created" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "provider", order = "ASCENDING" },
+        { field_path = "state", order = "ASCENDING" },
+        { field_path = "priority", order = "DESCENDING" },
+        { field_path = "created_at", order = "ASCENDING" },
+      ]
+    }
+
+    # A per-tenant provider pool: counted inside the task's own tenant only.
+    "tasks-tenant-provider-state-priority-created" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "provider", order = "ASCENDING" },
+        { field_path = "state", order = "ASCENDING" },
+        { field_path = "priority", order = "DESCENDING" },
+        { field_path = "created_at", order = "ASCENDING" },
+      ]
+    }
+
     # ---- waking PARKED work whose retry window has arrived ------------------
     "tasks-state-next-eligible" = {
       collection  = "tasks"
