@@ -104,6 +104,14 @@ WORKFLOWS = "workflows"
 TENANTS = "tenants"
 #: The tenant document's wave-epic field (#638); see `Store.get_findings_epic`.
 TENANT_FINDINGS_EPIC = "findings_epic"
+#: The record of who switched a tenant off or on (WAIT-PAUSER, part of #1782):
+#: one append-only `admin_audit` row per change of `enabled`, never a field on
+#: the tenant document, which the frozen `Tenant` would drop. The scheduler's
+#: tenant-disabled park reads the newest row (scheduler/loop.py
+#: `tenant_disabled_by`) and names its `by` as `paused_by`.
+ADMIN_AUDIT = "admin_audit"
+AUDIT_TENANT_DISABLED = "tenant_disabled"
+AUDIT_TENANT_ENABLED = "tenant_enabled"
 POOLS = "pools"
 QUOTA = "quota"
 LEASES = "leases"
@@ -1020,7 +1028,9 @@ class Store:
             patch["capacity_units"] = int(capacity_units)
         if enabled is not None:
             patch["enabled"] = bool(enabled)
-        if patch:
+        if enabled is not None and by:
+            self._switch_tenant(ref, tenant_id, patch, bool(enabled), by=by)
+        elif patch:
             ref.update(patch)
         if max_active is not None or capacity_units is not None:
             effective = min(
@@ -1033,6 +1043,40 @@ class Store:
             )
             self.upsert_pool(f"tenant:{tenant_id}", hard_limit=effective, by=by)
         return tenant_from_dict(ref.get().to_dict())
+
+    def _switch_tenant(
+        self, ref: Any, tenant_id: str, patch: dict[str, Any], enabled: bool, *, by: str
+    ) -> None:
+        """Write `patch` and, when it CHANGES `enabled`, its `admin_audit` row,
+        in one transaction (WAIT-PAUSER, part of #1782).
+
+        The row is who switched the tenant and when: `by` is the verified
+        caller of the admin route (an email, or a key's principal -- never key
+        material). A write that leaves the flag as it was records nothing, so
+        an admin re-affirming a switch someone else threw is not credited
+        with throwing it. The before-value is read inside the transaction, so
+        two admins flipping at once each record what they really changed.
+        """
+        transaction = self._db.transaction()
+        audit = self._db.collection(ADMIN_AUDIT).document()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(ref))
+            if not snap.exists:
+                raise NotFound(f"tenant {tenant_id!r} does not exist")
+            before = bool((snap.to_dict() or {}).get("enabled", True))
+            txn.update(ref, patch)
+            if before != enabled:
+                txn.set(audit, {
+                    "action": AUDIT_TENANT_ENABLED if enabled else AUDIT_TENANT_DISABLED,
+                    "target_tenant_id": tenant_id,
+                    "by": by,
+                    "at": self._now(),
+                    "detail": {"enabled": {"from": before, "to": enabled}},
+                })
+
+        _apply(transaction)
 
     def register_credential(self, tenant_id: str, provider: str) -> Tenant:
         """Record that the tenant has a key for `provider`. Never the key itself."""

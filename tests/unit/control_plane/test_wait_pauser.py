@@ -235,3 +235,14 @@ def test_the_catalogue_park_records_no_paused_by(client, db, make_scheduler):
         "reason": ParkReason.MANUAL_PAUSE.value,
         "error": "runner_profile 'not-a-profile' is not in the catalogue",
     }
+
+
+def test_the_scheduler_reads_the_names_swarm_api_writes():
+    """The scheduler image does not carry swarm-api, so it restates the names."""
+    from scheduler import loop
+    from swarm_api import store
+
+    # MUTATION: either side renames the collection or an action -> the park
+    # reads nothing and names nobody, silently -> fails.
+    assert (loop.ADMIN_AUDIT, loop.AUDIT_TENANT_DISABLED, loop.AUDIT_TENANT_ENABLED) == (
+        store.ADMIN_AUDIT, store.AUDIT_TENANT_DISABLED, store.AUDIT_TENANT_ENABLED)
