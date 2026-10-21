@@ -219,9 +219,11 @@ def _questions(lane: dict[str, Any], task: dict[str, Any], done: dict[str, Any],
     where = f"{lane['label']}" + (f" · step {step}" if step else "")
     items = []
     if done.get("unavailable"):
+        # `unread` keeps the lane out of the cache, so the read is tried again.
         items.append({"kind": "question", "who": "Owner", "item": "Questions that could not be read",
                       "since": done.get("ended"), "unlocks": "a decision this lane left to the owner",
-                      "detail": f"{where}: {done['unavailable']}", "options": [], "next": None})
+                      "detail": f"{where}: {done['unavailable']}", "options": [], "next": None,
+                      "unread": True})
     for asked in done.get("questions") or []:
         recommended = asked.get("recommended")
         items.append({
@@ -390,23 +392,20 @@ def _caller(client: SwarmClient) -> str:
     return email.strip().lower()
 
 
-def _workflow_rows(client: SwarmClient, key: str, horizon: datetime) -> tuple[list[dict[str, Any]], bool]:
-    """`(rows, filtered)`: every running workflow of the repository, every
-    page; and the history, newest first, until a page reaches past `horizon`.
-    `filtered` is whether the route applied the repository filter (it echoes
-    it), or ignored it, as a route older than CHECK-FILTER does."""
+def _workflow_rows(client: SwarmClient, key: str, horizon: datetime) -> list[dict[str, Any]]:
+    """Every running workflow of the repository, every page; and the history,
+    newest first, until a page reaches past `horizon`. A route older than
+    CHECK-FILTER ignores the repository filter, so `workflow_lane` checks each
+    workflow's steps' repository_url either way."""
     from .sc import ACTIVE_WORKFLOW_STATES
 
     rows: dict[str, dict[str, Any]] = {}
-    filtered = True
     for active in (True, False):
         token: str | None = None
         seen: set[str] = set()
         while True:
             page = client.workflows(states=ACTIVE_WORKFLOW_STATES if active else (), active=active,
                                     limit=PAGE_SIZE, page_token=token, repository=key)
-            echoed = _mapping(page.get("filter"))
-            filtered = filtered and "repository" in echoed
             listed = [w for w in page["workflows"] if isinstance(w, dict) and w.get("workflow_id")]
             for row in listed:
                 rows.setdefault(str(row["workflow_id"]), row)
@@ -417,7 +416,7 @@ def _workflow_rows(client: SwarmClient, key: str, horizon: datetime) -> tuple[li
             if token is None or token in seen:
                 break
             seen.add(token)
-    return list(rows.values()), filtered
+    return list(rows.values())
 
 
 def _task_pages(client: SwarmClient, params: list[tuple[str, str]], horizon: datetime | None) -> list[dict[str, Any]]:
@@ -528,7 +527,7 @@ def collect(client: SwarmClient, *, repository: str, now: datetime, cache: dict[
     horizon = cutoff - timedelta(days=LISTING_MARGIN_DAYS)
     reader = _Reader(client, cache, now)
     me = _caller(client)
-    rows, _filtered = _workflow_rows(client, key, horizon)
+    rows = _workflow_rows(client, key, horizon)
     mine = [r for r in rows if str(r.get("submitted_by") or "").strip().lower() == me]
 
     lanes: list[dict[str, Any]] = []
@@ -561,7 +560,11 @@ def collect(client: SwarmClient, *, repository: str, now: datetime, cache: dict[
 
     lanes = [lane for lane in lanes
              if not lane["finished"] or (parse_time(lane.get("ended") or lane.get("created")) or now) >= cutoff]
-    cache["lanes"] = {lane["id"]: lane for lane in lanes if lane["finished"]}
+    # A lane holding a questions read that failed is NOT cached: taken from the
+    # cache it would never call `_Reader.finished` again, and its questions
+    # would stay unread for the whole window.
+    cache["lanes"] = {lane["id"]: lane for lane in lanes
+                      if lane["finished"] and not any(item.get("unread") for item in lane["waiting"])}
     cache["tasks"] = {tid: entry for tid, entry in cache["tasks"].items()
                       if (parse_time(entry.get("ended")) or now) >= cutoff}
 
@@ -833,6 +836,13 @@ def _origin(project: Path) -> str | None:
     return url if repo_key(url) else None
 
 
+def _banner(failed: dict[str, Any]) -> str | None:
+    if not failed.get("why"):
+        return None
+    return (f"The refresh at {_clock(failed.get('at'))} failed: {failed.get('why')}. "
+            "This page is from the next refresh, which succeeded.")
+
+
 def refresh(client: SwarmClient, *, project: Path | None = None) -> dict[str, Any]:
     """Read, render and write the board: `{path, written_at, counts, waiting}`,
     or `{error, path}` -- `path` the page left in place, or None."""
@@ -851,19 +861,20 @@ def refresh(client: SwarmClient, *, project: Path | None = None) -> dict[str, An
     cache = _load(folder / CACHE_NAME)
     try:
         model = collect(client, repository=origin, now=now, cache=cache)
-    except SwarmError as exc:
-        why = str(exc)
+        page_text = render(model, project_name=project.name, origin=origin, written_at=now,
+                           banner=_banner(_load(folder / FAILURE_NAME)))
+        path = write(project, page_text)
+        _atomic(folder / CACHE_NAME, json.dumps(cache, sort_keys=True))
+    except (SwarmError, OSError, KeyError, TypeError, ValueError) as exc:
+        # A malformed listing (KeyError, TypeError) or a failed write (OSError)
+        # leaves the previous page in place exactly as a failed read does.
+        why = str(exc) if isinstance(exc, (SwarmError, OSError)) else f"a malformed answer ({type(exc).__name__}: {exc})"
         try:
             _prepared(folder)
             _atomic(folder / FAILURE_NAME, json.dumps({"at": _iso(now), "why": why}))
         except OSError:
             pass
         return {"error": f"the build board was not refreshed: {why}. The previous page stays", "path": kept}
-    failed = _load(folder / FAILURE_NAME)
-    banner = (f"The refresh at {_clock(failed.get('at'))} failed: {failed.get('why')}. "
-              "This page is from the next refresh, which succeeded.") if failed.get("why") else None
-    path = write(project, render(model, project_name=project.name, origin=origin, written_at=now, banner=banner))
-    _atomic(folder / CACHE_NAME, json.dumps(cache, sort_keys=True))
     (folder / FAILURE_NAME).unlink(missing_ok=True)
     return {"path": str(path), "written_at": _iso(now), "counts": model["counts"], "waiting": len(model["waiting"])}
 
