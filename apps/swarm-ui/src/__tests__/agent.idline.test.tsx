@@ -7,12 +7,14 @@
 // screen -- to paste into a log query, a ticket, `sc` -- meant hovering for
 // it. Now every agent row and the split header print the whole id, in mono,
 // under the name, with a copy button; a refused clipboard selects the text so
-// one keystroke still copies it; and a phone keeps it on one line, cut in the
-// MIDDLE so both ends of the id stay readable, while the copy is always whole.
+// one keystroke still copies it; and a phone keeps it on one line, cut at its
+// START so the end that tells two ids apart stays readable (it was cut in the
+// middle, as two text nodes, until visual QA run 2's task-017), while the copy
+// is always whole.
 //
 // MUTATIONS, one per block: drop `<TaskIdLine>` from the row (or the header);
 // copy `shown` instead of `id`; skip the fallback's `selectNodeContents`;
-// delete `white-space: nowrap` from `.tid-text`, or let `.tid-tail` shrink;
+// delete `white-space: nowrap` from `.tid-text`, or its `direction: rtl`;
 // drop `flex-direction: column` from `.row.is-compact > .cr-name`.
 
 import AGENTS_CSS from '../styles/agents.css?raw'
@@ -206,22 +208,17 @@ describe('#94: a refused clipboard selects the id instead', () => {
   })
 })
 
-describe('#94: at phone width the id stays on one line, cut in the middle', () => {
-  it('keeps it on one line at 390, with both ends of the id drawn', () => {
+describe('#94: at phone width the id stays on one line, cut at its start', () => {
+  it('keeps it on one line at 390, with its distinguishing end drawn', () => {
     const r = row(STEP)
     const { text } = idLine(r)
     expect(painted(text, 'white-space', PHONE)).toBe('nowrap')
-    expect(painted(text, 'display', PHONE)).toMatch(/flex/)
-    const head = text.querySelector('.tid-head')!
-    const tail = text.querySelector('.tid-tail')!
-    // The head gives way with an ellipsis; the tail never shrinks, so the id
-    // is cut in the MIDDLE and its distinguishing end stays on screen.
-    expect(painted(head, 'text-overflow', PHONE)).toBe('ellipsis')
-    expect(painted(head, 'overflow', PHONE)).toBe('hidden')
-    expect(painted(head, 'min-width', PHONE)).toBe('0')
-    expect(painted(tail, 'flex', PHONE)).toBe('none')
-    expect((head.textContent ?? '') + (tail.textContent ?? '')).toBe(ID)
-    expect(tail.textContent!.length).toBeGreaterThanOrEqual(4)
+    // One run of text (task-017): the ellipsis falls at the start, on the
+    // `task_` every id shares, and the end stays on screen.
+    expect(text.textContent).toBe(ID)
+    expect(painted(text, 'text-overflow', PHONE)).toBe('ellipsis')
+    expect(painted(text, 'overflow', PHONE)).toBe('hidden')
+    expect(painted(text, 'direction', PHONE)).toBe('rtl')
     // The line itself cannot push the row wider than the phone.
     expect(painted(text, 'min-width', PHONE)).toBe('0')
   })
