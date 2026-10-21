@@ -198,7 +198,13 @@
 .ov-prun li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; min-height: 32px; }
 .ov-prun .sk-st-w { display: none; }
 .ov-prun-m { display: flex; flex-direction: column; min-width: 0; }
-.ov-prun-n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); text-decoration: none; }
+/* THE NAME WRAPS, WHOLE (visual QA run 3, ffp-002, 2026-10-21): cut to one
+   line, every step of one workflow read "<its title> · sc…", cut at the same
+   point, so the step -- the only part that told the rows apart -- was the
+   part lost. It wraps, and an unbroken id breaks where it must. No two-line
+   clamp either: names.css's Overview clamp names `.ov-name` alone, because
+   names.css comes after this sheet in the bundle and a tie there is its. */
+.ov-prun-n { white-space: normal; overflow-wrap: anywhere; color: var(--text); text-decoration: none; }
 /* STATE · PROFILE · SHORT WORKFLOW ID UNDER THE NAME (QA G1-08, 2026-10-07):
    the phone dropped all three, and two "implement" rows read alike. */
 .ov-prun-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
