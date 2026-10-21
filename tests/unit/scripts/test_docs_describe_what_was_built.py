@@ -1446,3 +1446,221 @@ def test_workspaces_doc_describes_the_qa_identitys_service_workspace():
 @pytest.mark.parametrize("doc", (QI_DESIGN, LIVE_BROWSER, WORKSPACES_DOC), ids=lambda p: p.name)
 def test_qa_identity_docs_cite_only_what_resolves(doc: Path):
     _assert_cites_resolve(doc)
+
+
+# --------------------------------------------------------------------------
+# Runner sizes: docs/design/runner-sizes.md §6 lane SIZES-DOCS (part of #1689)
+# --------------------------------------------------------------------------
+#
+# The design's status line said "designed" while nine lanes of §6 shipped;
+# architecture.md still said "requests == limits, no bursting" and gave the
+# browser class as 8 / 16; kubernetes/README.md said only `browser` reaches
+# Autopilot; and locals.tf called its four-field table "byte-identical" to a
+# catalogue that now has a CPU limit. Each test reads the value from the code.
+
+SIZES_DESIGN = DOCS / "design" / "runner-sizes.md"
+ARCHITECTURE = DOCS / "architecture.md"
+K8S_README = REPO / "kubernetes" / "README.md"
+SIZES_INVARIANT = "### Memory never bursts; CPU may burst past its request"
+SIZES_SETTING = "### Runner sizes are a versioned setting, pinned at admission"
+SIZES_CLASSES = "### Resource classes were measured, not guessed"
+SIZES_K8S = "**Memory is one number; CPU bursts to its class's limit.**"
+SIZES_K8S_NOT = "## What this directory does NOT cover"
+SIZES_POLICY_TEXT = "a cpu limit must be between its request and twice it (invariant 7, RS-1)"
+
+
+def _sizes_lanes() -> list[str]:
+    text = _text(SIZES_DESIGN)
+    # Both phases: §6's `### Phase` headings would end `_section` at the first.
+    plan = text[text.index("## 6. Build plan"): text.index("## 7. Owner questions")]
+    lanes = re.findall(r"^\*\*(SIZES-[A-Z0-9-]+)\*\*", plan, flags=re.M)
+    assert len(lanes) >= 10 and "SIZES-DOCS" in lanes, lanes
+    return lanes
+
+
+def _sizes_built(lane: str) -> bool:
+    """Whether the lane's work is on this tree, read from the files its §6 entry names."""
+    detail = _text(REPO / "apps" / "swarm-ui" / "src" / "AgentDetail.tsx")
+    marks = {
+        "SIZES-CONTRACT-1": (REPO / "tests/unit/common/test_cpu_burst_contract.py").is_file(),
+        "SIZES-SCHED-1": (REPO / "tests/unit/scheduler/test_dispatch_cpu_burst.py").is_file(),
+        "SIZES-WORKER-1": (REPO / "tests/unit/worker/test_sized_limits.py").is_file(),
+        "SIZES-CONTRACT-2": (REPO / "tests/unit/common/test_runner_size_bounds.py").is_file(),
+        "SIZES-API": (REPO / "apps/swarm-api/swarm_api/runnersizes.py").is_file(),
+        "SIZES-SCHED-2": (REPO / "apps/scheduler/scheduler/sizes.py").is_file(),
+        "SIZES-UI": (REPO / "apps/swarm-ui/src/RunnerSizes.tsx").is_file(),
+        "SIZES-DETAIL": "bursts to" in detail,
+        "SIZES-MCP": (REPO / "tests/unit/mcp/test_profiles_sizes_served.py").is_file(),
+        "SIZES-DOCS": True,
+    }
+    assert lane in marks, f"§6 names a lane {lane} this test does not know how to read"
+    return marks[lane]
+
+
+def _sizes_status() -> str:
+    head = _text(SIZES_DESIGN).split("\n---\n", 1)[0]
+    status = next((p for p in head.split("\n\n") if p.startswith("**Status:")), None)
+    assert status is not None, "runner-sizes.md has no **Status: paragraph above its first rule"
+    return _flat(status)
+
+
+def _profiles_on(backend) -> list[str]:
+    from swarm_common.profiles import resolve_backend
+
+    return sorted(n for n, p in RUNNER_PROFILES.items()
+                  if not p.control_plane and resolve_backend(p) is backend)
+
+
+def test_runner_sizes_status_line_names_every_merged_lane():
+    status = _sizes_status()
+    # MUTATION: leave the status as "designed 2026-10-20" -> red.
+    assert status.startswith("**Status: built"), status[:120]
+    for lane in _sizes_lanes():
+        if _sizes_built(lane):
+            # MUTATION: drop any lane's name from the status line -> red.
+            assert f"`{lane}`" in status, f"{lane} is on this tree; the status line does not name it"
+            assert f"`{lane}` (not built" not in status, lane
+        else:
+            assert f"`{lane}` (not built" in status, f"{lane} is not on this tree; the status must say so"
+    # MUTATION: drop the canary's record (issue #1689's comment) -> red.
+    assert "canary passed 2026-10-20" in status
+    # MUTATION: drop the history the build lanes cite -> red.
+    assert "designed 2026-10-20" in status and "every §7 question took its recommendation" in status
+
+
+def test_architecture_states_invariant_7_as_amended_from_the_code():
+    from swarm_common.profiles import CPU_BURST_MAX_RATIO
+
+    text = _text(ARCHITECTURE)
+    # MUTATION: restore the "### requests == limits, no bursting" heading -> red.
+    assert "### requests == limits, no bursting" not in text
+    raw = _section(text, SIZES_INVARIANT)
+    body = _flat(raw)
+    # MUTATION: write a ratio other than the frozen constant's -> red.
+    assert f"`CPU_BURST_MAX_RATIO` ({CPU_BURST_MAX_RATIO:g})" in body
+    assert "`apps/common/swarm_common/profiles.py::CPU_BURST_MAX_RATIO`" in raw
+    # MUTATION: drop "contract request 108" (RS-1's filed number) -> red.
+    assert "contract request 108" in body and "RS-1" in body
+    for phrase in ("throttled, never killed", "Autopilot bills requests", "Burstable",
+                   "Cloud Run renders the request alone", "invariant 8"):
+        # MUTATION: delete any one of these reasons -> red.
+        assert phrase in body, phrase
+    # The renderer and the admission policy, cited where they hold it.
+    manifest = f"{DISPATCH_PY}::{MANIFEST}"
+    assert f"`{manifest}`" in raw and "cpu_quantity(" in _cited_symbol(DISPATCH_PY, MANIFEST)
+    assert f"`kubernetes/policies/pod-security.yaml` (`{SIZES_POLICY_TEXT}`)" in raw
+    # The invariant table's row 7 names where the amended rule is held.
+    row = next(line for line in _section(text, "## 6. Where the code enforces each invariant").splitlines()
+               if line.startswith("| 7."))
+    # MUTATION: leave row 7 as "| 7. requests == limits |" -> red.
+    assert "| 7. requests == limits |" not in row
+    for where in ("scheduler/dispatch.py", "scheduler/sizes.py", "kubernetes/policies/pod-security.yaml",
+                  "check_size"):
+        assert where in row, where
+
+
+def test_architecture_resource_classes_are_the_catalogues():
+    from swarm_common.profiles import RESOURCE_CLASSES
+
+    text = _text(ARCHITECTURE)
+    raw = _section(text, SIZES_CLASSES)
+    for name, rc in RESOURCE_CLASSES.items():
+        # MUTATION: write browser as 8 / 16 again, or any number off the catalogue -> red.
+        row = (f"| `{name}` | {rc.cpu:g} | {rc.cpu_limit_cores:g} | {rc.memory_gib} GiB "
+               f"| {rc.disk_gib} GiB | {rc.units} |")
+        assert row in raw, f"architecture.md's class table has no row {row}"
+    # The retracted-risk section gives the same tmpfs slices.
+    # MUTATION: restore "`browser` ~8 of 16" -> red.
+    assert "~8 of 16" not in text
+    for name, rc in RESOURCE_CLASSES.items():
+        assert f"`{name}` ~{rc.disk_gib} GiB of its {rc.memory_gib}" in _flat(text), name
+
+
+def test_architecture_says_where_runner_sizes_live():
+    from swarm_api import runnersizes
+    from swarm_common.profiles import Backend
+
+    text = _text(ARCHITECTURE)
+    raw = _section(text, SIZES_SETTING)
+    body = _flat(raw)
+    # MUTATION: rename either document in the doc (or in runnersizes.py) -> red.
+    assert f"`control/{runnersizes.POINTER_DOC}`" in body
+    assert f"`{runnersizes.VERSIONS}/{{version}}`" in body
+    admin = _text(REPO / "apps" / "swarm-api" / "swarm_api" / "routes" / "admin.py")
+    for route in ("/runner-sizes", "/runner-sizes:preview", "/runner-sizes/restore", "/runner-sizes/versions"):
+        assert f'"{route}"' in admin, route
+    assert "`PUT /v1/admin/runner-sizes`" in body and "Admin › Runner sizes" in body
+    # Pinned at admission, cited where the scheduler does it.
+    current = "apps/scheduler/scheduler/loop.py::Scheduler._size_version"
+    pinned = "apps/scheduler/scheduler/loop.py::Scheduler._admit_one"
+    # MUTATION: cite a method that no longer reads the version -> red.
+    assert f"`{current}`" in raw and "sizes_mod.current(" in _cited_symbol(*current.split("::"))
+    assert f"`{pinned}`" in raw and "sizes_mod.for_task(" in _cited_symbol(*pinned.split("::"))
+    assert "`size_version`" in body and "a running agent keeps the size it was admitted with" in body
+    # Which profiles follow and which cannot, from the catalogue.
+    for name in _profiles_on(Backend.GKE_AUTOPILOT) + _profiles_on(Backend.CLOUD_RUN_JOB):
+        # MUTATION: drop a profile from either list -> red.
+        assert f"`{name}`" in body, name
+    # The owner's answers that bind an admin (§7 Q4-Q6).
+    assert "`disk_gib` is shown, not edited" in body
+    assert f"`{runnersizes.BelowRecentPeak.code}`" in body and "typed confirmation" in body
+    assert "a reason" in body and "restore" in body
+    # The Firestore table lists the two documents.
+    model = _section(text, "## 4. Data model")
+    assert f"| `control/{runnersizes.POINTER_DOC}` |" in model
+    assert f"| `{runnersizes.VERSIONS}/{{version}}` |" in model
+
+
+def test_kubernetes_readme_describes_cpu_burst_and_where_sizes_live():
+    from swarm_common.profiles import CPU_BURST_MAX_RATIO, Backend
+
+    text = _text(K8S_README)
+    start = text.index(SIZES_K8S)
+    raw = text[start: text.index("\n\n", start)]
+    body = _flat(raw)
+    # MUTATION: drop the paragraph, or name a ratio other than the constant -> red.
+    assert f"`CPU_BURST_MAX_RATIO` ({CPU_BURST_MAX_RATIO:g})" in body
+    assert f"`kubernetes/policies/pod-security.yaml` (`{SIZES_POLICY_TEXT}`)" in raw
+    quota = "kubernetes/render.py::tenant_values"
+    assert f"`{quota}`" in raw and "QUOTA_CPU_LIMIT" in _cited_symbol(*quota.split("::"))
+    job = "kubernetes/render.py::render_job"
+    # MUTATION: say render.py renders the admin-set size -> red (it renders the code default).
+    assert f"`{job}`" in raw and "rc.cpu_limit_cores" in _cited_symbol(*job.split("::"))
+    assert "code defaults" in body and "runner-sizes.md" in body
+    assert "PR 1747" in body
+    # The layout row no longer says sizing comes from "the frozen catalogue" alone.
+    layout = next(line for line in text.splitlines() if line.startswith("| `render.py` |"))
+    assert "code defaults" in layout, layout
+    # Which profiles reach Autopilot, from the catalogue.
+    gke = _profiles_on(Backend.GKE_AUTOPILOT)
+    cloud_run = _profiles_on(Backend.CLOUD_RUN_JOB)
+    section = _flat(_section(text, SIZES_K8S_NOT))
+    # MUTATION: restore "only `browser` ... reaches Autopilot" -> red.
+    assert "are all pinned to `Backend.CLOUD_RUN_JOB`" not in section
+    assert "only `browser`" not in section
+    for name in gke + cloud_run:
+        assert f"`{name}`" in section, name
+    intro = _flat(text.split("## Layout", 1)[0])
+    assert "Cloud Run Jobs is the primary backend" not in intro
+
+
+def test_locals_tf_says_its_class_table_is_the_cloud_run_default():
+    text = _text(LOCALS_TF)
+    start = text.index("# --- swarm_common.profiles.RESOURCE_CLASSES")
+    comment = _flat(text[start: text.index("resource_classes = {", start)].replace("#", " "))
+    # MUTATION: leave "Keep this table byte-identical" (it has no cpu_limit) -> red.
+    assert "byte-identical" not in comment
+    for phrase in ("code defaults", "Cloud Run", "renders the request alone", "cpu_limit",
+                   "never reaches Terraform", "runner-sizes.md §4.7"):
+        assert phrase in comment, phrase
+    # Values unchanged: the four fields still equal the catalogue's (the tftest holds them too).
+    from swarm_common.profiles import RESOURCE_CLASSES
+
+    for name, rc in RESOURCE_CLASSES.items():
+        assert re.search(rf"\b{name}\s*=\s*\{{ cpu = {rc.cpu:g}, memory_gib = {rc.memory_gib}, "
+                         rf"disk_gib = {rc.disk_gib}, units = {rc.units} \}}", text), name
+
+
+@pytest.mark.parametrize("doc", (ARCHITECTURE, K8S_README), ids=lambda p: p.name)
+def test_runner_sizes_docs_cite_only_what_resolves(doc: Path):
+    _assert_cites_resolve(doc)
