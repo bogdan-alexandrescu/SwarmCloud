@@ -31,7 +31,6 @@ from swarm_common.profiles import (
     RESOURCE_CLASSES,
     RUNNER_PROFILES,
     Backend,
-    ResourceClass,
     RunnerProfile,
     resolve_backend,
 )
@@ -72,12 +71,17 @@ def test_each_runtime_matches_the_frozen_catalogue_field_for_field(client):
             "model_classes": list(profile.model_classes),
             "default_model_class": profile.default_model_class,
             "models": {},
+            # SIZES-API (#1689): the request under its old name `cpu` and its
+            # own, the burst limit, and the size version (0: the code defaults).
             "resources": {
                 "name": rc.name,
                 "cpu": rc.cpu,
+                "cpu_request": rc.cpu,
+                "cpu_limit": rc.cpu_limit_cores,
                 "memory_gib": rc.memory_gib,
                 "disk_gib": rc.disk_gib,
                 "units": rc.units,
+                "size_version": 0,
             },
             # Served for EVERY profile, including disabled ones. A caller
             # reading a task that names a disabled profile still needs its
@@ -87,15 +91,19 @@ def test_each_runtime_matches_the_frozen_catalogue_field_for_field(client):
         }, f"{name} drifted from the frozen catalogue"
 
 
-def test_sizing_is_read_from_the_catalogue_not_copied_into_the_route(client, monkeypatch):
-    """Resize a class in the frozen catalogue; the route must move with it.
+def test_sizing_is_read_from_the_size_setting_not_copied_into_the_route(client, db):
+    """Resize a class; the route must move with it.
 
     This is the test that a hand-written table of cpu/memory/disk in the route
     would fail. It is the only way to assert "no copy" from the outside, and
-    `check-contract-parity.sh` does not cover Python route modules.
+    `check-contract-parity.sh` does not cover Python route modules. Since
+    SIZES-API (#1689) a class is resized by an admin's size version, not in
+    the frozen catalogue, so the version is what moves here; a Cloud Run
+    profile stays at the code default (owner Q3, `effective_size`).
     """
-    shrunk = ResourceClass("standard", cpu=1, memory_gib=2, disk_gib=1, units=7)
-    monkeypatch.setitem(RESOURCE_CLASSES, "standard", shrunk)
+    db.docs["control/runner_sizes"] = {"current_version": 1}
+    db.docs["runner_size_versions/000001"] = {"version": 1, "classes": {"standard": {
+        "cpu_request": 2, "cpu_limit": 3, "memory_gib": 4, "disk_gib": 1}}}
 
     served = _runtimes(client)
     on_standard = [
@@ -104,14 +112,18 @@ def test_sizing_is_read_from_the_catalogue_not_copied_into_the_route(client, mon
         if profile.resource_class == "standard"
     ]
     assert on_standard, "the catalogue no longer has a profile on `standard`; retarget this test"
+    gke = [n for n in on_standard if resolve_backend(RUNNER_PROFILES[n]) is Backend.GKE_AUTOPILOT]
+    assert gke, "no GKE profile on `standard`; this test would compare nothing"
     for name in on_standard:
-        assert served[name]["resources"] == {
-            "name": "standard",
-            "cpu": 1,
-            "memory_gib": 2,
-            "disk_gib": 1,
-            "units": 7,
-        }, f"{name} served sizing that did not come from RESOURCE_CLASSES"
+        expected = {"name": "standard", "cpu": 2, "cpu_request": 2, "cpu_limit": 3,
+                    "memory_gib": 4, "disk_gib": 1, "units": 1, "size_version": 1}
+        if name not in gke:
+            rc = RESOURCE_CLASSES["standard"]
+            expected = {"name": "standard", "cpu": rc.cpu, "cpu_request": rc.cpu,
+                        "cpu_limit": rc.cpu_limit_cores, "memory_gib": rc.memory_gib,
+                        "disk_gib": rc.disk_gib, "units": rc.units, "size_version": 0}
+        assert served[name]["resources"] == expected, (
+            f"{name} served sizing that did not come from the size setting")
 
 
 def test_a_profile_added_to_the_catalogue_appears_without_touching_the_route(client, monkeypatch):

@@ -88,7 +88,7 @@ def test_two_same_named_workflows_only_the_one_submitted_here_is_kept(where, mon
 
     entries = [{"workflow_id": wid, "title": "nightly", "steps_total": 3, "claude_session": SESSION,
                 "repository_url": FAR, "workspace": "eng"} for wid in ("wf_mine", "wf_twin")]
-    monkeypatch.setattr(sc, "running_workflows", lambda client: {"count": 2, "complete": True, "workflows": entries})
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: {"count": 2, "complete": True, "workflows": entries})
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 0, "tasks": []})
     reply = launch.for_all(_Recorder(), repository="acme/app")
     assert [l["workflow_id"] for l in reply["launches"] if l.get("workflow_id")] == ["wf_mine"]

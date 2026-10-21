@@ -54,6 +54,15 @@ something other than what is running. The Cloud Run Job id carries the class for
 the same reason: Cloud Run fixes sizing on the Job resource, so one Job per
 (tenant, profile) could only ever express one size.
 
+AND A GKE POD IS SIZED FROM THE SIZE ADMISSION PINNED (SIZES-SCHED-2,
+docs/design/runner-sizes.md §4.4). An admin may resize a class; the scheduler
+reads the current version once per admission pass (`sizes.py`), charges the
+lease's units from it, records it on the attempt, and hands the same object
+here (`BackendRouter.dispatch(sized=...)`), so the pod is the one the lease
+paid for even when a newer version was saved in between. Cloud Run does not
+follow a resize: its resources live on the Job, so a Cloud Run profile is
+pinned at the code default it already runs at (§4.7).
+
 NEITHER DISPATCHER SETS A CONTAINER `command` OR `args`, and that is the rule
 the rest of the platform's safety hangs on. Both worker images declare
 `ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "agent_worker"]`: the
@@ -94,7 +103,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 from swarm_common.identity import worker_service_account_id
@@ -105,6 +114,8 @@ from swarm_common.profiles import (
     RUNNER_PROFILES,
     RUNTIME_TOOLS,
     Backend,
+    LiveShare,
+    ResourceSize,
     RunnerProfile,
     step_model_class,
     tools_launched,
@@ -121,6 +132,9 @@ from .judgment import (
     read_settings,
     settings_mac_key,
 )
+
+if TYPE_CHECKING:
+    from .sizes import Sized
 
 log = logging.getLogger(__name__)
 
@@ -762,15 +776,70 @@ def live_display_share(rc: Any) -> LiveDisplayShare:
     return share
 
 
-def with_live_display(job: dict[str, Any], *, rc: Any) -> dict[str, Any]:
+def size_of(rc: Any) -> ResourceSize:
+    """Resource class `rc` as a size with no stored live split: what a pod
+    is rendered at when no size was pinned for it (a caller of `_manifest`
+    other than admission)."""
+    return ResourceSize(cpu_request=rc.cpu, cpu_limit=rc.cpu_limit_cores,
+                        memory_gib=rc.memory_gib, disk_gib=rc.disk_gib)
+
+
+def live_display_on(profile: Any, settings: Any) -> bool:
+    """Whether a GKE pod of `profile` carries the display sidecar: a
+    live-browser profile while the rollout switch is on. One predicate, so
+    the size admission records (`sizes.for_task`) and the pod rendered here
+    cannot disagree about whether there is a split."""
+    return bool(getattr(profile, "live_browser", False)
+                and getattr(settings, "live_browser_sidecar", False))
+
+
+def live_split_for(rc: Any, size: ResourceSize | None = None) -> tuple[LiveShare, LiveShare]:
+    """The (worker, display) containers of a live pod of class `rc` at `size`.
+
+    `size` defaults to the class itself (`size_of`). A size carrying a stored
+    split (the browser class's, docs/design/runner-sizes.md §4.3) is rendered
+    as stored; `check_size` has already held its requests and memories to
+    the class's sum. Otherwise LIVE_DISPLAY_SHARE's row for the class, scaled
+    to the size as before sizes were a setting: the display takes its row,
+    bursting to `cpu_limit` capped at the size's own ratio, and the worker
+    the rest at that ratio, so a size that does not burst renders a live pod
+    that does not either. Refused, loudly, when that leaves the worker nothing.
+    """
+    size = size if size is not None else size_of(rc)
+    if size.live_split is not None:
+        return size.live_split
+    share = live_display_share(rc)
+    if share.cpu >= size.cpu_request or share.memory_gib >= size.memory_gib:
+        raise ValueError(f"LIVE_DISPLAY_SHARE[{rc.name!r}] leaves a {size.cpu_request:g}-core, "
+                         f"{size.memory_gib} GiB worker nothing")
+    ratio = size.cpu_limit / size.cpu_request
+    worker_cpu = size.cpu_request - share.cpu
+    display_cpu_limit = share.cpu * ratio
+    if share.cpu_limit is not None:
+        display_cpu_limit = min(share.cpu_limit, display_cpu_limit)
+    return (
+        LiveShare(cpu_request=worker_cpu, cpu_limit=worker_cpu * ratio,
+                  memory_gib=size.memory_gib - share.memory_gib),
+        LiveShare(cpu_request=share.cpu, cpu_limit=display_cpu_limit,
+                  memory_gib=share.memory_gib),
+    )
+
+
+def with_live_display(job: dict[str, Any], *, rc: Any,
+                      split: tuple[LiveShare, LiveShare] | None = None) -> dict[str, Any]:
     """`job`, a rendered GKE worker Job, with the display sidecar added.
 
     Applied to the finished manifest, so a pod that is not live is not merely
     "the same by construction" -- it is the same object this function never
     touched, which test_dispatch_live_sidecar.py holds byte for byte.
+
+    `split` is the (worker, display) pair admission pinned for this attempt
+    (`sizes.Sized.live_split`, SIZES-SCHED-2); None renders the class's own
+    split (`live_split_for(rc)`).
     """
     job = copy.deepcopy(job)
     share = live_display_share(rc)
+    worker_share, display_share = split if split is not None else live_split_for(rc)
     disk = gke_disk(rc)
     template = job["spec"]["template"]
     spec = template["spec"]
@@ -780,24 +849,20 @@ def with_live_display(job: dict[str, Any], *, rc: Any) -> dict[str, Any]:
     template["metadata"]["labels"][LIVE_POD_LABEL[0]] = LIVE_POD_LABEL[1]
 
     # The split. Memory and disk equal in both directions on both containers
-    # (invariant 7); the CPU requests sum to the class and each limit stays
-    # within the class's own burst ratio (RS-1, LiveDisplayShare).
-    ratio = cpu_burst_ratio(rc)
-    worker_cpu = rc.cpu - share.cpu
-    display_cpu_limit = share.cpu * ratio
-    if share.cpu_limit is not None:
-        display_cpu_limit = min(share.cpu_limit, display_cpu_limit)
+    # (invariant 7); the CPU requests sum to the size and each limit stays
+    # within its own burst ratio (RS-1, LiveDisplayShare, `live_split_for`).
+    # Disk is the class's layout (GKE_DISK): an admin does not edit it (§7 Q5).
     worker_fixed = {
-        "memory": f"{rc.memory_gib - share.memory_gib}Gi",
+        "memory": f"{worker_share.memory_gib}Gi",
         "ephemeral-storage": f"{disk.ephemeral_gib - share.ephemeral_gib}Gi",
     }
     display_fixed = {
-        "memory": f"{share.memory_gib}Gi",
+        "memory": f"{display_share.memory_gib}Gi",
         "ephemeral-storage": f"{share.ephemeral_gib}Gi",
     }
     worker["resources"] = {
-        "requests": {"cpu": cpu_quantity(worker_cpu), **worker_fixed},
-        "limits": {"cpu": cpu_quantity(worker_cpu * ratio), **worker_fixed},
+        "requests": {"cpu": cpu_quantity(worker_share.cpu_request), **worker_fixed},
+        "limits": {"cpu": cpu_quantity(worker_share.cpu_limit), **worker_fixed},
     }
 
     # /dev/shm moves to where Chromium runs. The agent's own headless
@@ -841,8 +906,8 @@ def with_live_display(job: dict[str, Any], *, rc: Any) -> dict[str, Any]:
             {"name": "SWARM_CDP_LISTEN", "value": LIVE_CDP_LISTEN},
         ],
         "resources": {
-            "requests": {"cpu": cpu_quantity(share.cpu), **display_fixed},
-            "limits": {"cpu": cpu_quantity(display_cpu_limit), **display_fixed},
+            "requests": {"cpu": cpu_quantity(display_share.cpu_request), **display_fixed},
+            "limits": {"cpu": cpu_quantity(display_share.cpu_limit), **display_fixed},
         },
         "securityContext": copy.deepcopy(DISPLAY_SECURITY_CONTEXT),
         # The worker starts only once this passes: the gate is listening, so
@@ -2530,6 +2595,9 @@ class GkeJobDispatcher:
     dispatch needs no extra API dependency and no extra IAM role on the hot path.
     """
 
+    #: Each pod is rendered from the size admission pinned (`BackendRouter.dispatch`).
+    renders_pinned_size = True
+
     def __init__(self, settings: Any, *, target: GkeTarget | None = None,
                  batch_api: Any | None = None, identity: str = "",
                  judgment: Callable[[str], str] | None = None) -> None:
@@ -2644,10 +2712,26 @@ class GkeJobDispatcher:
         return sanitize_name(configured or "swarm-agent-worker")
 
     def _manifest(self, *, task: Task, lease: Lease, profile: RunnerProfile,
-                  tenant: Tenant) -> dict[str, Any]:
+                  tenant: Tenant, sized: Sized | None = None) -> dict[str, Any]:
         assert_tenant_identity(tenant, self._settings)
         rc = RESOURCE_CLASSES[resource_class_for(task, profile)]
         disk = gke_disk(rc)
+        # THE SIZE ADMISSION PINNED (SIZES-SCHED-2, docs/design/runner-sizes.md
+        # §4.4): the one the lease's units were charged from and the attempt
+        # records, never a fresh read of the setting, so a version saved after
+        # the lease cannot render a pod other than the one admission paid for.
+        # Without one (a caller other than admission) the class as it stands.
+        size = sized.size if sized is not None else size_of(rc)
+        live = live_display_on(profile, self._settings)
+        split = None
+        if live:
+            split = (sized.live_split if sized is not None and sized.live_split is not None
+                     else live_split_for(rc, size))
+        # What THIS container was given, for the worker's own readings
+        # (SIZES-WORKER-1: `_cpu_limit`'s fallback, `memory_limit_bytes_of`):
+        # the worker's share on a live pod, the whole size otherwise.
+        own = split[0] if split is not None else LiveShare(
+            cpu_request=size.cpu_request, cpu_limit=size.cpu_limit, memory_gib=size.memory_gib)
         # Identifiers only. No provider key is injected: there is no Kubernetes
         # Secret to project from, and the worker fetches its tenant's key from
         # Secret Manager itself under the identity this pod's KSA assumes.
@@ -2686,6 +2770,14 @@ class GkeJobDispatcher:
         # signature; only a missing ConfigMap stops being fatal.
         for name, value in spec_job_env(self._settings).items():
             env.append({"name": name, "value": value})
+        # The size the scheduler rendered this container at (design §4.4).
+        # Platform-derived, from admission's own reading, never from a task
+        # document (invariant 10), as `spec_job_env` above.
+        env += [
+            {"name": "SWARM_SIZED_CPU_REQUEST", "value": f"{own.cpu_request:g}"},
+            {"name": "SWARM_SIZED_CPU_LIMIT", "value": f"{own.cpu_limit:g}"},
+            {"name": "SWARM_SIZED_MEMORY_GIB", "value": f"{own.memory_gib:g}"},
+        ]
         # Memory and ephemeral-storage are the same number in both directions
         # (invariant 7); CPU requests the class's `cpu` -- what admission
         # charged and Autopilot bills -- and is limited to `cpu_limit_cores`,
@@ -2694,14 +2786,14 @@ class GkeJobDispatcher:
         # limit to the request; the worker records the limit the kernel
         # enforces (`cpu.max`), which is how that would show.
         fixed = {
-            "memory": f"{rc.memory_gib}Gi",
+            "memory": f"{size.memory_gib}Gi",
             # The whole pod's local disk -- the sum of the scratch volumes'
             # sizeLimits below, not the workspace's alone, and not the
             # cache's network disk, which is no ephemeral-storage: see GkeDisk.
             "ephemeral-storage": f"{gke_ephemeral_storage_gib(rc)}Gi",
         }
-        requests = {"cpu": cpu_quantity(rc.cpu), **fixed}
-        limits = {"cpu": cpu_quantity(rc.cpu_limit_cores), **fixed}
+        requests = {"cpu": cpu_quantity(size.cpu_request), **fixed}
+        limits = {"cpu": cpu_quantity(size.cpu_limit), **fixed}
         labels = {
             "managed-by": "swarm-scheduler",
             "swarm-tenant": sanitize_name(tenant.tenant_id),
@@ -2867,10 +2959,9 @@ class GkeJobDispatcher:
         # The live browser's display sidecar (docs/design/live-browser.md):
         # only for a live-browser profile, and only while the rollout switch
         # is on. Every other pod is returned exactly as built above.
-        if getattr(profile, "live_browser", False) and getattr(
-                self._settings, "live_browser_sidecar", False):
+        if live:
             self._with_judgment(job, tenant, profile)
-            job = with_live_display(job, rc=rc)
+            job = with_live_display(job, rc=rc, split=split)
             # Residential egress (docs/browser-egress.md §10.3): only on a pod
             # that has the display sidecar, so only a browser that exists is
             # routed, and only when configuration switches its tenant and
@@ -2930,8 +3021,10 @@ class GkeJobDispatcher:
         """The identity for the failure message, never blank and never invented."""
         return self._identity or UNNAMED_IDENTITY
 
-    def dispatch(self, *, task: Task, lease: Lease, profile: RunnerProfile, tenant: Tenant) -> str:
-        manifest = self._manifest(task=task, lease=lease, profile=profile, tenant=tenant)
+    def dispatch(self, *, task: Task, lease: Lease, profile: RunnerProfile, tenant: Tenant,
+                 sized: Sized | None = None) -> str:
+        manifest = self._manifest(task=task, lease=lease, profile=profile, tenant=tenant,
+                                  sized=sized)
         namespace = manifest["metadata"]["namespace"]
         try:
             created = self._api().create_namespaced_job(namespace=namespace, body=manifest)
@@ -3050,7 +3143,8 @@ class BackendRouter:
         )
 
     def dispatch(
-        self, *, task: Task, lease: Lease, profile: RunnerProfile, tenant: Tenant, backend: Backend
+        self, *, task: Task, lease: Lease, profile: RunnerProfile, tenant: Tenant, backend: Backend,
+        sized: Sized | None = None,
     ) -> str:
         # A TYPESAFE JUDGE NEVER RUNS AS A CLOUD RUN JOB (lane JUDGE-GKE). The
         # scheduler routes by the catalogue's backend and has no runtime
@@ -3072,9 +3166,17 @@ class BackendRouter:
                 "Job: the forwarder is reachable only from GKE (lane JUDGE-GKE)",
                 code=TYPESAFE_JUDGE_NEEDS_GKE,
             )
-        return self.for_backend(backend).dispatch(
-            task=task, lease=lease, profile=profile, tenant=tenant
-        )
+        dispatcher = self.for_backend(backend)
+        # THE PINNED SIZE GOES ONLY TO A DISPATCHER THAT RENDERS IT (SIZES-SCHED-2):
+        # the GKE renderer sizes each pod from it. A Cloud Run Job's resources
+        # are fixed on the Job, which is why a Cloud Run profile is pinned at
+        # the code default it already runs at (design §4.7), so there is
+        # nothing to hand it.
+        if sized is not None and getattr(dispatcher, "renders_pinned_size", False):
+            return dispatcher.dispatch(
+                task=task, lease=lease, profile=profile, tenant=tenant, sized=sized
+            )
+        return dispatcher.dispatch(task=task, lease=lease, profile=profile, tenant=tenant)
 
 
 def _gke_ca_file() -> str:

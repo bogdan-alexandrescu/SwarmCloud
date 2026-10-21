@@ -935,7 +935,17 @@ def for_all(
         singles_error = None
     except SwarmError as exc:
         singles, singles_error = None, str(exc)
-    listing = sc.running_workflows(client)
+    # THIS SESSION'S WORK, ASKED OF THE API (CHECK-FILTER, #1749): the
+    # listing used to stop after 4 pages of the whole tenant's running set,
+    # so a session's older work got no row. `check.server_scope` says what the
+    # API may filter without losing a candidate; what it left out is counted
+    # below as if it had been left out here.
+    from .check import server_scope
+
+    sid = session.current()
+    record = session.project_record()
+    listing = sc.running_workflows(
+        client, **server_scope(scope and scope["key"], sid, record))
     names = workflows.workspace_names(client)
     cap = max_live_rows()
     entries = sc.group_by_workspace(named_workspaces(
@@ -946,8 +956,10 @@ def for_all(
     # 2026-10-14): another session's work in the same tenant, and untagged
     # work, is never a candidate -- before the cap, so the cap counts only
     # this session's. `/sc attach <wf_id>` still attaches any by hand.
-    sid = session.current()
     left_out = {"workflows": session.counts(), "single_tasks": session.counts()}
+    by_api = (listing.get("filtered_by_api") or {}).get("left_out") or {}
+    for kind in ("other_session", "untagged"):
+        left_out["workflows"][kind] += int(by_api.get(kind) or 0)
     entries = _own(entries, sid, left_out["workflows"])
     if singles:
         singles = {**singles, "tasks": _own(singles["tasks"], sid, left_out["single_tasks"])}
@@ -958,9 +970,9 @@ def for_all(
         # 2026-10-18): work in the project's record is kept whatever
         # repository it clones; the repository filter is the fallback for
         # work the record does not hold.
-        record = session.project_record()
         for group in left_out.values():
             group["not_this_project"] = 0
+        left_out["workflows"]["not_this_project"] += int(by_api.get("other_repository") or 0)
         entries, already, unread = _scoped(entries, "workflow", scope and scope["key"], skip,
                                            sid, record, left_out["workflows"])
         if singles:

@@ -1992,13 +1992,20 @@ export interface TaskEventsPage {
  */
 export interface ResourceClassSpec {
   name: string
-  /** BOTH the request and the limit. `requests == limits` platform-wide. */
+  /** The CPU REQUEST: guaranteed, charged and billed. The old name of `cpu_request`. */
   cpu: number
+  /** The same request under its own name (SIZES-API, runner-sizes design §4.5). */
+  cpu_request?: number
+  /** What a GKE pod may burst to; Cloud Run renders the request alone. */
+  cpu_limit?: number
+  /** Request AND limit: memory never bursts. */
   memory_gib: number
   /** A SLICE OF memory_gib, not capacity on top of it: the workspace is a tmpfs. */
   disk_gib: number
   /** Weighted capacity units admission counts. Never a number of agents. */
   units: number
+  /** The admin size version these numbers are from; 0 is the code defaults. */
+  size_version?: number
 }
 
 /**

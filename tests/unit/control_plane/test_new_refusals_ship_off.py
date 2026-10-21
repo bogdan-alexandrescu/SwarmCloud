@@ -425,6 +425,17 @@ NOT_SWITCHABLE_CODES = frozenset({
     "qa_identity_unconfigured",
     "qa_identity_origin",
     "qa_identity_self",
+    # Runner sizes (SIZES-API, docs/design/runner-sizes.md §4.5, part of
+    # #1689): raised only by PUT /v1/admin/runner-sizes and POST
+    # /v1/admin/runner-sizes/restore, which that change introduces, so no
+    # existing caller can be refused by them. Continuing past any of them is
+    # the breach itself: a size table outside the frozen bounds stored as the
+    # one every dispatch reads (invariant 7), a memory cut under a class's
+    # recent peak written unconfirmed, or a second admin's write silently
+    # replacing the first's.
+    "stale_base_version",
+    "size_out_of_bounds",
+    "below_recent_peak",
 })
 
 #: What the guard lets through without a switch.

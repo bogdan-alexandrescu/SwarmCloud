@@ -542,6 +542,45 @@ class PlatformSettingsRequest(StrictModel):
     ] | None = Field(default=None, min_length=1, max_length=modelprices.MAX_MODELS)
 
 
+#: A runner-size change, by class then field (docs/design/runner-sizes.md
+#: §4.5). Deliberately loose here: `runnersizes.apply_changes` judges every
+#: field against the frozen `check_size`, so a refused body is ONE 422 naming
+#: every refusal -- `units` (derived), `disk_gib` (shown, not edited), an
+#: unknown field or class and a bound alike -- not the first pydantic stops at.
+RunnerSizeClasses = dict[str, dict[str, Any]]
+
+
+class RunnerSizesPreviewRequest(StrictModel):
+    """`POST /v1/admin/runner-sizes:preview`: the PUT's classes; nothing written."""
+
+    classes: RunnerSizeClasses = Field(default_factory=dict)
+    base_version: StrictInt | None = Field(default=None, ge=0)
+
+
+class RunnerSizesRequest(StrictModel):
+    """`PUT /v1/admin/runner-sizes`. A class or field the body does not name
+    keeps its value. `base_version` is the version the admin edited: another
+    admin's save in between is a 409, never a silent overwrite."""
+
+    base_version: StrictInt = Field(ge=0)
+    #: Required (owner Q4): every version says why.
+    reason: str = Field(min_length=1, max_length=500)
+    classes: RunnerSizeClasses = Field(min_length=1)
+    #: A memory cut below the class's 7-day max peak is refused without it
+    #: (owner Q6); the console sends it after the class name is typed.
+    confirm_below_recent_peak: StrictBool = False
+
+
+class RunnerSizesRestoreRequest(StrictModel):
+    """`POST /v1/admin/runner-sizes/restore`: a NEW version with `version`'s
+    classes (0: the code defaults). The pointer is never rewound."""
+
+    base_version: StrictInt = Field(ge=0)
+    version: StrictInt = Field(ge=0)
+    reason: str = Field(min_length=1, max_length=500)
+    confirm_below_recent_peak: StrictBool = False
+
+
 class LimitRequest(StrictModel):
     #: `hard_limit` is accepted as well as `limit`, because that is the spelling
     #: the operator runbooks in docs/ tell you to send and every one of those

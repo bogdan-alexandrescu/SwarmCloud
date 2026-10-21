@@ -196,7 +196,7 @@ def test_attach_all_with_hostile_titles_writes_a_parsing_copy_per_workflow(_plug
     entries = [{"workflow_id": f"wf_{i:03d}", "title": title, "label": None, "steps_total": 2, "console": None,
                 "claude_session": SESSION}
                for i, title in enumerate(HOSTILE_TITLES[: launch.MAX_ATTACHED_WORKFLOWS])]
-    monkeypatch.setattr(sc, "running_workflows", lambda client: {"count": len(entries), "complete": True,
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: {"count": len(entries), "complete": True,
                                                                   "workflows": entries})
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 0, "tasks": []})
     reply = json.loads(server._call(_Recorder(), "swarm_workflow_launch", {"attach": "all"}))

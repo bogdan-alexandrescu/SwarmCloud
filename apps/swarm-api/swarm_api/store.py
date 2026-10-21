@@ -536,6 +536,17 @@ def _listing_mint(scope: str) -> Callable[[datetime, str], str]:
     return lambda at, doc_id: encode_keyset(scope=scope, order="desc", at=at, doc_id=doc_id)
 
 
+def workflow_listing_token(workflow: Workflow) -> str:
+    """The `GET /v1/workflows` token that continues strictly past `workflow`.
+
+    For a listing that serves fewer rows than its store page held -- the
+    route's session and repository filter, which stops at `limit` matches
+    inside a page -- the store page's own token would skip the rows after
+    the last one served. This is the token `list_workflows` would have
+    minted had its page ended on that row."""
+    return _listing_mint("workflows")(workflow.created_at, workflow.workflow_id)
+
+
 @dataclass(frozen=True)
 class Page:
     items: list[Any]
