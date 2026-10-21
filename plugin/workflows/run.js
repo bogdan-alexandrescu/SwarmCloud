@@ -466,16 +466,32 @@ const STEP_RESULT = {
 // when there is one. The bridge's own `result.state` wins over the row's copy
 // of it. An answer already flat (a row from before 0.5.17) is taken as it is;
 // one whose `result` is null is read from its root `state` alone.
+//
+// A row that wrapped the whole object in one more `result` --
+// `{result: {state, result: {...}}}` -- is read from the inner object, its
+// state from the inner `result.state`, then the middle, then the root
+// (PLUGIN-ROW-NEST, part of #1763). Measured 2026-10-20 on plugin 0.5.45 in
+// wf_4b9dc2654dce4a43a342: its review, fix and merge rows answered that way,
+// STEP_RESULT accepted it (nothing required, extra keys allowed), and the
+// run's summary kept their state and nulled every other field while the
+// re-review row, in the documented shape, kept them all. The unwrap is taken
+// only when the middle object carries no step field of its own, and once:
+// a third level is not read.
+const NESTED_STEP_FIELDS = ['answer_excerpt', 'cost_usd', 'duration_s', 'pr_url', 'artifacts', 'last_error', 'console', 'questions']
+
 function stepAnswer(answer) {
   if (!answer || typeof answer !== 'object') return answer
   if (!answer.result || typeof answer.result !== 'object') {
     if (!Object.prototype.hasOwnProperty.call(answer, 'result')) return answer
   }
-  const given = answer.result && typeof answer.result === 'object' ? answer.result : {}
+  const outer = answer.result && typeof answer.result === 'object' ? answer.result : {}
+  const nested = outer.result && typeof outer.result === 'object' && !Array.isArray(outer.result) &&
+    NESTED_STEP_FIELDS.every((name) => !Object.prototype.hasOwnProperty.call(outer, name))
+  const given = nested ? outer.result : outer
   const text = (value) => (typeof value === 'string' && value !== '' ? value : null)
   const figure = (value) => (typeof value === 'number' && isFinite(value) ? value : null)
   const flat = {
-    state: text(given.state) || text(answer.state),
+    state: text(given.state) || (nested ? text(outer.state) : null) || text(answer.state),
     answer_excerpt: text(given.answer_excerpt),
     cost_usd: figure(given.cost_usd),
     duration_s: figure(given.duration_s),

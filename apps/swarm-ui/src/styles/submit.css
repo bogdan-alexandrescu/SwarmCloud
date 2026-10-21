@@ -50,6 +50,17 @@
 .sb-step.is-dim input:where(:not([type='radio'])),
 .sb-step.is-dim textarea,
 .sb-step.is-dim select { opacity: .55; }
+/* THE REPOSITORY FIELD IS AN EMPTY FIELD UNTIL ONE IS TYPED (visual QA run 2,
+   work-b-007). `.dsp-repo` in styles.css fills it `--surface-2` and leaves the
+   placeholder to the browser, so on the workflow form -- whose step is never
+   dimmed -- the example URL sat on a tint in near-value ink and read as an
+   entered URL. On the task form the dim above hid the same drawing. The field
+   takes the `.c-inp` fill every other text field has, and the example a muted
+   token (`--text-faint`, 4.5:1 on that fill in both themes) that is not the
+   value's `--text`. `input.dsp-repo`, not `.dsp-repo`: this sheet loads before
+   styles.css, so an equal selector would lose to the one it corrects. */
+input.dsp-repo { background: var(--surface); }
+input.dsp-repo::placeholder { color: var(--text-faint); opacity: 1; }
 .sb-step .sbf-move-n {
   width: 20px; height: 20px;
   background: var(--sk-acs); color: var(--sk-ac);

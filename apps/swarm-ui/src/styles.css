@@ -236,6 +236,15 @@
   /* The tooltip and the toast: inverted surfaces, so they read over anything. */
   --ctl-tip: #eef4fa;
   --ctl-tip-ink: #0b1829;
+  /* THE `?` DISC'S FILL, AT REST AND UNDER THE POINTER (admin-008, visual QA
+     run 2). Dark keeps --surface-2 (1.21:1 on --bg, which the run read as a
+     clear chip) and --line-soft. Light needs its own pair: --surface-2 there
+     is #eef4fa on a #f3f6f9 page, 1.02:1 -- a glyph with no disc around it.
+     #d6e0ea (the light --line) is 1.23:1 on --bg, the dark chip's step, and
+     keeps the --text-dim glyph at 5.03:1; #cfdae6 is one step further for
+     hover (the light --line-soft is LIGHTER than #d6e0ea, so hover would fade). */
+  --ctl-q-fill: var(--surface-2);
+  --ctl-q-fill-hover: var(--line-soft);
   --r-xs: 4px;
   --r-ctl: 8px;
   --r-tile: 9px;
@@ -254,6 +263,8 @@
     --ctl-onac: #ffffff;
     --ctl-tip: #0d1724;
     --ctl-tip-ink: #eef4fa;
+    --ctl-q-fill: #d6e0ea;
+    --ctl-q-fill-hover: #cfdae6;
   }
 }
 :root[data-theme='light'] {
@@ -262,6 +273,8 @@
   --ctl-onac: #ffffff;
   --ctl-tip: #0d1724;
   --ctl-tip-ink: #eef4fa;
+  --ctl-q-fill: #d6e0ea;
+  --ctl-q-fill-hover: #cfdae6;
 }
 
 /* ==========================================================================
@@ -2829,6 +2842,18 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    a card per attempt, sub-blocks inside it. `--ctl-s3` between cards is the
    region step; nothing here changes the card's own chrome. */
 .att-card + .att-card { margin-top: var(--ctl-s3); }
+/* THE ATTEMPTS KEEP A GUTTER OFF THE PANE'S SCROLLBAR (task-015, visual QA
+   run 2, #1680). From 561px up the split's pane is the one vertical scroller
+   (agents.css; details.v3.test.tsx holds it to one), so its scrollbar is the
+   pane's right edge, and at 1440 the toolbar's right-aligned `3 events · first
+   page` and the head's read age ran into it. The pane keeps scrolling -- the
+   owner's walkthrough B decision -- and the attempts sit `--ctl-s3` off it.
+   Not on a phone: there the column scrolls with the page, the pane draws no
+   scrollbar, and the drawer's own padding is the edge. Held by
+   attempts.pane.gutter.test.tsx. */
+@media (min-width: 561px) {
+  .att-pane { padding-right: var(--ctl-s3); }
+}
 /* AN ATTEMPT CARD AT 390 (QA-113, visual QA 2026-10-20). The facts strip
    wrapped as one ragged line -- `attempt att_… lease lse_… execution …` with
    each key at the far end of the line its value started on -- and an event
@@ -6209,7 +6234,9 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
      the edge that was carrying half its presence. */
   border: 0;
   border-radius: 999px;
-  background: var(--surface-2);
+  /* `--ctl-q-fill`, not --surface-2 (admin-008): in light --surface-2 is
+     1.02:1 on the page, so the disc had vanished. See the token. */
+  background: var(--ctl-q-fill);
   color: var(--text-dim);
   /* --lh-flush: the box is the 18px circle above. --t-micro rather than
      --t-meta: at --t-meta the glyph's own ink came within 3.68px of the
@@ -6223,8 +6250,13 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 }
 /* Hover steps the fill and the ink together, because with the border gone the
    fill is the only thing left to move. */
-.ctl-q-glyph:hover { color: var(--text); background: var(--line-soft); }
+.ctl-q-glyph:hover { color: var(--text); background: var(--ctl-q-fill-hover); }
 .ctl-q-glyph:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* HELPCARD'S `?` TAKES THE SAME RING (a11y-keyboard-004, visual QA run 2).
+   Its box is inline styles, and an inline style cannot say `:focus-visible`,
+   so it drew the browser's own 1px `auto` ring -- the '?' beside Overview's
+   '8/8 reads' -- beside 2px solid rings on every other control. */
+.help-glyph:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 /* EVERY `?` CLEARS THE TRAIL BAR WHEN FOCUS SCROLLS TO IT (QA-022, visual QA
    2026-10-20). On a task page the scroller had already moved (the list keeps
    the open agent's row in view), so the list head's `Help: Work answers` --
@@ -8365,6 +8397,15 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   .is-stacked > table > tbody > tr:first-child {
     padding-top: var(--ctl-pad-chrome);
   }
+  /* API reads' URL line and route, as the page block cuts them (capacity-004);
+     held identical to it by AG-26 in shell.test.tsx. */
+  .is-stacked .ctl-ref-path > .ctl-sub {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .is-stacked .ctl-ref-path { overflow-wrap: anywhere; }
 }
 
 /* --------------------------------------------------------------------------
@@ -8529,6 +8570,17 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* STACKED (the phone, capacity-004) THE SAME LINE IS CUT THE SAME WAY: the
+     record's name line is full width, so a 110-character URL would run off a
+     356px record instead. A block, so it takes the record's width to cut at. */
+  .is-stacked .ctl-ref-path > .ctl-sub {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* The route template itself wraps at any character rather than widen it. */
+  .is-stacked .ctl-ref-path { overflow-wrap: anywhere; }
 
   /* POOLS SCROLL (CP-18 is a wide-screen rule). CP-18 gives the family
      tables `table-layout: fixed` at `width: 100%`, percentage widths on the
@@ -10612,6 +10664,20 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-bar { height: 5px; border-radius: 2px; background: var(--line-soft); overflow: hidden; display: flex; }
 .sk-bar > i { display: block; height: 100%; background: var(--sk-ac); }
 .sk-mw { font-size: var(--t-micro); color: var(--s-warn); }
+/* ANOTHER POOL'S LABEL IS NEVER BROKEN INSIDE A NAME (visual QA run 2,
+   admin-007, part of #1680): `u-bogdan` broke at its hyphen, `u-` ending one
+   line and `bogdan` alone on the next. Each part between the `·` is one
+   unbreakable span; a part wider than the card (the raw-key fallback) is cut
+   with an ellipsis, whole in the note's title. */
+.sk-mws { white-space: nowrap; display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+/* OVERVIEW'S SECTIONS ON A PHONE (FF-P1, part of #1680): the panel's list is
+   behind the menu there, so the page carries the jumps itself, as one row
+   that scrolls sideways rather than eight stacked links above the first card.
+   44px tall: a fingertip's target. Spine.tsx `PhoneJumps` draws it below
+   760px only. They are page links, so they keep the page's own focus ring
+   (`:where(a:focus-visible)`), not the chrome's sky one. */
+.sk-otp { display: flex; flex-wrap: nowrap; gap: 6px; overflow-x: auto; margin: 0 0 12px; padding: 0 2px 4px; scrollbar-width: none; }
+.sk-oj { display: inline-flex; align-items: center; flex: none; min-height: 44px; padding: 0 12px; border: 1px solid var(--line-soft); border-radius: 999px; background: var(--sk-hv); color: var(--text); white-space: nowrap; text-decoration: none; font: var(--t-meta)/var(--lh-meta) var(--font); }
 .sk-pfoot { margin-top: 4px; border-top: 1px solid var(--sk-ln); padding: 10px 16px 0; display: flex; flex-direction: column; }
 /* THE PRINCIPAL STAYS INSIDE THE PANEL (visual QA V054, 2026-10-11). The
    name had no floor to shrink to, so a long local part ran past the panel's
@@ -10968,6 +11034,12 @@ span.sk-ttile { cursor: default; }
 @media (max-width: 560px) {
   .wfl-pick { flex: 1 1 100%; min-width: 0; max-width: 100%; display: grid; grid-template-columns: 4.5em minmax(0, 1fr); }
   .wfl-pick select { flex: 1 1 auto; min-width: 0; max-width: 100%; width: 100%; }
+  /* AND THE STATE FILTER RUNS THE COLUMN WIDE (visual QA run 2, work-a-012,
+     2026-10-20): the shared `.c-seg` is `flex: none`, so it stopped 20-60px
+     short of the edge the search box and these selects reach. Its segments
+     already grow (components.css); their labels sit in the middle. */
+  .wfl-filters > .c-seg.wfl-seg { flex: 1 1 100%; }
+  .wfl-filters > .c-seg.wfl-seg > button { justify-content: center; }
 }
 .wfl-scroll { overflow-x: auto; }
 .wfl-table { width: 100%; border-collapse: collapse; font-size: var(--t-meta); }

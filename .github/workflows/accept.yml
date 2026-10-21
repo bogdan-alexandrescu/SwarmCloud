@@ -98,6 +98,11 @@
 # scripts/accept-live-browser-streak.sh says it passed five scheduled runs in
 # a row (docs/ci.md, "live-browser runs on a schedule"). Its peak of 1 fits
 # beside either wave if the two overlap.
+#
+# THE TENANT ISOLATION PROBE IS REPORT-ONLY UNTIL THE CUTOVER (owner decision
+# 2026-10-20, lane ISO-ACCEPT-WIRE). `acceptance (tenant-isolation)` runs on
+# every accepting run, beside wave 2, and stays green whatever the probe says
+# until the repository variable ISO_PROBE_REQUIRED is 'true' (the job, below).
 
 name: accept
 
@@ -517,6 +522,81 @@ jobs:
               done
 
   # -------------------------------------------------------------------------
+  # THE CROSS-TENANT FIRESTORE PROBE (owner decision 2026-10-20, lane
+  # ISO-ACCEPT-WIRE, part of #1457; docs/ci.md, "The cross-tenant Firestore
+  # probe is report-only until the cutover"). From a smoke worker, with that
+  # worker's own credential, Firestore must refuse another tenant's documents
+  # (tests/acceptance/fixtures/tenant-isolation/test_cross_tenant_firestore.py).
+  # It is RED until the last tenant is cut over, by design, so it is
+  # REPORT-ONLY while vars.ISO_PROBE_REQUIRED is not 'true': the probe's step
+  # may fail, the job still concludes green, and so `report` neither sees a
+  # failure in `needs` nor finds this job among the run's failing jobs -- it
+  # cannot open or update the acceptance issue. The owner sets the variable
+  # after the cutover (docs/runbooks/isolation-cutover.md); from then a red
+  # probe fails the job, and the run's report files it. One agent: it runs
+  # beside wave 2 (peak ~16 + 1 against smoke's 20), not wave 1 (~20).
+  # -------------------------------------------------------------------------
+  tenant-isolation:
+    name: acceptance (tenant-isolation)
+    runs-on: ubuntu-24.04
+    needs: [target, smoke, sandbox, acceptance]
+    if: ${{ !cancelled() && needs.target.outputs.accept == 'true' && needs.smoke.result == 'success' && needs.sandbox.result == 'success' }}
+    concurrency:
+      group: accept-dev-tenant-isolation
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_ACCEPT_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: note when this job starts
+        id: started
+        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: the cross-tenant Firestore probe, in a smoke worker (inside the VPC)
+        id: probe
+        # Report-only unless the owner has set ISO_PROBE_REQUIRED=true.
+        continue-on-error: ${{ vars.ISO_PROBE_REQUIRED != 'true' }}
+        run: ./scripts/verify-remote.sh "acceptance/tenant-isolation"
+
+      - name: report-only until ISO_PROBE_REQUIRED is true
+        if: ${{ !cancelled() && steps.probe.outcome == 'failure' && vars.ISO_PROBE_REQUIRED != 'true' }}
+        run: |
+          echo "::warning title=Tenant isolation probe red (report-only)::A tenant's worker can still reach another tenant's Firestore documents, or the probe could not measure; the step above says which. Not filed: ISO_PROBE_REQUIRED is not true (docs/ci.md)."
+          {
+            echo "### Tenant isolation probe: red, report-only"
+            echo
+            echo "The cross-tenant Firestore probe did not pass. This job stays green and files nothing until the repository variable \`ISO_PROBE_REQUIRED\` is \`true\`, which the owner sets after the last tenant is cut over (docs/runbooks/isolation-cutover.md)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: cancel the executions this job started
+        # A cancel stops the client, not the Cloud Run execution (header).
+        # Cancels the swarm-verify executions created since this job started.
+        if: ${{ cancelled() }}
+        continue-on-error: true
+        env:
+          STARTED: ${{ steps.started.outputs.at }}
+        run: |
+          [ -n "${STARTED}" ] || exit 0
+          gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
+            --filter 'status.runningCount>0' --format 'value(metadata.name,metadata.creationTimestamp)' \
+            | while read -r name created; do
+                if [ -n "${name}" ] && [[ "${created}" > "${STARTED}" ]]; then
+                  gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet || true
+                fi
+              done
+
+  # -------------------------------------------------------------------------
   # The suite cannot read the private sandbox back (swarm-verify holds no
   # GitHub token) and SKIPs those assertions; github-verify.sh makes them
   # here, with the sandbox token, before the sweep closes anything. A failure
@@ -563,7 +643,7 @@ jobs:
   report:
     name: report what was accepted
     runs-on: ubuntu-24.04
-    needs: [target, quiesce, smoke, sandbox, acceptance, acceptance-2, sandbox-results]
+    needs: [target, quiesce, smoke, sandbox, acceptance, acceptance-2, tenant-isolation, sandbox-results]
     # A job a newer acceptance cancelled (its group above) is not a red one:
     # no report from a run whose jobs were replaced.
     if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.target.result == 'failure' || needs.target.outputs.accept == 'true') }}

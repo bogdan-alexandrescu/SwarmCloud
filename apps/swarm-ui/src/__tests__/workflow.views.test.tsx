@@ -615,7 +615,7 @@ describe('U2: a step reads the same in every view', () => {
       attempt(1, { task_id: 't_park', created_at: iso(-7300), started_at: iso(-7200), completed_at: null, exit_code: null }),
     ])
     const took = fact(i, 'took')
-    const exit = fact(i, 'exit')
+    const exit = fact(i, 'exit code')
     expect(took, 'a parked attempt is timed as if it were still running').not.toMatch(/so far/)
     expect(exit, 'a parked attempt is called running').not.toBe('still running')
     expect(took).toMatch(/end not written/)
@@ -632,7 +632,7 @@ describe('U2: a step reads the same in every view', () => {
       attempt(1, { task_id: 't_disp', created_at: iso(-60), started_at: null, completed_at: null, exit_code: null }),
     ])
     expect(fact(i, 'took')).toBe('not started yet')
-    expect(fact(i, 'exit'), 'an attempt that has not started is called running').not.toBe('still running')
+    expect(fact(i, 'exit code'), 'an attempt that has not started is called running').not.toBe('still running')
     expect(i.textContent).not.toMatch(/never started/)
   })
 
@@ -643,12 +643,12 @@ describe('U2: a step reads the same in every view', () => {
       attempt(2, { task_id: 't_run', created_at: iso(-310), started_at: iso(-300), completed_at: null, exit_code: null }),
     ])
     expect(fact(i, 'took')).toBe('5m 0s so far')
-    expect(fact(i, 'exit')).toBe('still running')
+    expect(fact(i, 'exit code')).toBe('still running')
     // The EARLIER attempt of the same running task stopped without an end: it
     // is over, whatever the task is doing now.
     fireEvent.click(within(i).getByRole('button', { name: 'Previous attempt' }))
     expect(fact(i, 'took')).not.toMatch(/so far/)
-    expect(fact(i, 'exit')).not.toBe('still running')
+    expect(fact(i, 'exit code')).not.toBe('still running')
   })
 
   it('says a step cancelled before it started never started, in the graph, the timeline and the table alike', () => {
@@ -980,15 +980,15 @@ describe('U5: scrubbing', () => {
     expect(i.querySelector('a[href="/agents/recent/t_plan"]'), 'a finished step opens over Recent (WF-21)').toBeTruthy()
     // Newest attempt first, because that is the one a reader asked about.
     await within(i).findByText('attempt 3 of 3')
-    expect(fact(i, 'gen')).toBe('3')
+    expect(fact(i, 'generation')).toBe('3')
     // AT ITS END, NOT DISABLED: `aria-disabled`, so the control keeps focus and
     // the arrow keys keep working (see the next test).
     expect(within(i).getByRole('button', { name: 'Next attempt' }).getAttribute('aria-disabled')).toBe('true')
 
     fireEvent.click(within(i).getByRole('button', { name: 'Previous attempt' }))
     expect(within(i).getByText('attempt 2 of 3')).toBeTruthy()
-    expect(fact(i, 'gen')).toBe('2')
-    expect(fact(i, 'exit')).toBe('137')
+    expect(fact(i, 'generation')).toBe('2')
+    expect(fact(i, 'exit code')).toBe('137')
 
     const group = i.querySelector<HTMLElement>('[data-scrub="attempt"]')
     expect(group).toBeTruthy()
@@ -1018,7 +1018,7 @@ describe('U5: scrubbing', () => {
     pick(c, 'plan')
     const alone = inspector(cardOf('wf_new'))
     expect(within(alone).getByText('workflow 1 of 1')).toBeTruthy()
-    expect(alone.querySelector('.wf-scrub-shape')!.textContent).toBe('1 → 2 → 1 · 4 steps')
+    expect(alone.querySelector('.wf-scrub-shape')!.textContent).toBe('shape: 4 steps in 3 stages (1 → 2 → 1)')
     fireEvent.click(within(alone).getByRole('button', { name: 'Stop inspecting this step' }))
 
     // wf_mid's page lands with its failed `plan` already picked (the step
@@ -1027,7 +1027,7 @@ describe('U5: scrubbing', () => {
     const first = await waitFor(() => inspector(cardOf('wf_mid')))
     expect(cardOf('wf_mid').querySelector('.wf-pick[data-step="plan"]')!.getAttribute('aria-pressed')).toBe('true')
     expect(within(first).getByText('workflow 1 of 2')).toBeTruthy()
-    expect(first.querySelector('.wf-scrub-shape')!.textContent).toBe('1 → 1 · 2 steps')
+    expect(first.querySelector('.wf-scrub-shape')!.textContent).toBe('shape: 2 steps in 2 stages (1 → 1)')
     expect(
       within(first).getByRole('button', { name: 'Same step, newer workflow' }).getAttribute('aria-disabled'),
     ).toBe('true')
@@ -1202,7 +1202,7 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     const i = inspector(container as HTMLElement)
     const link = i.querySelector<HTMLAnchorElement>('a.wf-inspect-changes')!
     expect(link.getAttribute('href')).toBe('/workflows/wf_one/changes?step=work')
-    expect(link.textContent).toBe('Changes · 2 files ›')
+    expect(link.textContent).toBe('This step’s changes · 2 files ›')
     const scrub = i.querySelector<HTMLElement>('[data-scrub="attempt"]')!
     await waitFor(() => expect(scrub.textContent).not.toContain('reading'))
   })
@@ -1213,7 +1213,7 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     pick(container as HTMLElement, 'work')
     const i = inspector(container as HTMLElement)
     const link = i.querySelector<HTMLAnchorElement>('a.wf-inspect-changes')!
-    expect(link.textContent).toBe('Changes ›')
+    expect(link.textContent).toBe('This step’s changes ›')
     expect(link.textContent).not.toMatch(/[—\d]/)
     expect(link.getAttribute('title')).toMatch(/written nothing yet/)
     const scrub = i.querySelector<HTMLElement>('[data-scrub="attempt"]')!
