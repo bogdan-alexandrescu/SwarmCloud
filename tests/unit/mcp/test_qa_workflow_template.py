@@ -19,14 +19,16 @@ hold it to what reads it:
   command parsing with `swarm_qa`'s own argument parser and naming presets the
   gate has. A group added to the route list without a step here is a group no
   run looks at.
-* `test_template_report_reads_every_review_and_the_a11y_pass` and
+* `test_template_report_reads_every_capture_review_and_the_a11y_pass` and
   `test_flow_report_reads_every_flow_and_nothing_else`: the screen findings
   and the flows are two reports (QA-TEMPLATE-SPLIT, part of #1680). Visual QA
   run 2 (`wf_b6e2441b419f423a84eb`, 2026-10-20) lost its whole report to one
   flow: `flow-submit-form` was killed at its timeout, the platform cancels
   every dependant of a failed step, and `report` depended on all ten review,
   flow and a11y steps -- so every finished screen review went unreported.
-  `report` now waits only for the reviews and the a11y pass, `flow-report`
+  `report` now waits only for the captures, the reviews and the a11y pass
+  (run 3, `wf_d598fa7bffdb41fc9d76`, 2026-10-21, had no capture tar to check a
+  review's reviewed count against, QA-REPORT-TARS), `flow-report`
   only for the flows; each stages each tarball under the name its producer
   writes, every flow records its GIF with `swarm-handoff record`, the command
   QA-FLOWS shipped, and no step's output goes nowhere.
@@ -206,10 +208,15 @@ def _flows(steps: dict[str, dict]) -> list[str]:
     return sorted(s for s in steps if s.startswith(FLOW) and s not in REPORTS)
 
 
-def test_template_report_reads_every_review_and_the_a11y_pass():
+def test_template_report_reads_every_capture_review_and_the_a11y_pass():
     steps = _steps()
     report = steps[REPORT]
-    fed = sorted(s for s in steps if s.startswith(REVIEW) or s.startswith(A11Y))
+    # MUTATION: drop the capture steps from report's depends_on and input_from
+    # (run 3's shape, wf_d598fa7bffdb41fc9d76) and this fails: with no
+    # manifest the report cannot check a review's reviewed count, and with no
+    # full-size screenshot it cannot copy the image a finding cites.
+    fed = sorted(s for s in steps if s.startswith((CAPTURE, REVIEW, A11Y)))
+    assert len([s for s in fed if s.startswith(CAPTURE)]) == len(_groups()), fed
     # MUTATION: add "flow-submit-form" back to report's depends_on and
     # input_from (run 2's shape, wf_b6e2441b419f423a84eb) and this fails:
     # one killed flow cancelled the report over six finished reviews.
@@ -217,8 +224,11 @@ def test_template_report_reads_every_review_and_the_a11y_pass():
     assert report["input_from"] == {s: f"{s}.tar" for s in fed}, "and stages each one's tarball"
     assert not set(report["depends_on"]) & set(_flows(steps)), "a failed flow must not cancel the screen findings"
     for step_id in fed:
-        # The name staged is the name the producer is told to write.
-        assert f"{step_id}.tar under $SWARM_ARTIFACTS_DIR" in steps[step_id]["prompt"], step_id
+        # The name staged is the name the producer is told to write: a capture
+        # through swarm_qa's --bundle, a review or the a11y pass by its brief.
+        written = (f"--bundle $SWARM_ARTIFACTS_DIR/{step_id}.tar" if step_id.startswith(CAPTURE)
+                   else f"{step_id}.tar under $SWARM_ARTIFACTS_DIR")
+        assert written in steps[step_id]["prompt"], step_id
     prompt = report["prompt"]
     assert "report.md" in prompt and "findings.json" in prompt
     # MUTATION: put "then one section per flow with its GIFs embedded" back in
@@ -227,6 +237,24 @@ def test_template_report_reads_every_review_and_the_a11y_pass():
         "the screen report writes no flow section; flow-report does"
     )
     assert FLOW_REPORT in prompt, "report.md says where the flows went"
+    # MUTATION: drop the manifest check, the per-tar directories or the
+    # missing-tar finding from report's prompt and this fails. Every capture
+    # tar carries manifest.json at its root, so six unpacked into one place
+    # leave one manifest.
+    for part in ("manifest.json", "reviewed", "its own directory named after its step",
+                 "every screenshot a finding cites", "missing", "finding about the run itself"):
+        assert part in prompt, f"report's prompt does not ask for {part!r}"
+
+
+def test_no_step_stages_two_parents_under_one_filename():
+    # MUTATION: stage capture-task's tar as "review-task.tar" in report's
+    # input_from and this fails: one parent's tarball overwrites the other's.
+    for step_id, step in _steps().items():
+        staged = list(step.get("input_from", {}).values())
+        assert len(staged) == len(set(staged)), f"{step_id} stages two parents under one filename"
+        assert set(step.get("input_from", {})) <= set(step.get("depends_on", [])), (
+            f"{step_id} stages a tarball from a step it does not wait for"
+        )
 
 
 def test_flow_report_reads_every_flow_and_nothing_else():

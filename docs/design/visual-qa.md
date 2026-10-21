@@ -823,14 +823,18 @@ repeats that check (§6).
      "prompt": "Accessibility pass of the console's fixture build. In apps/swarm-ui run `npm ci` and start `npm run dev` in the background; open http://localhost:5173 in the live browser at the desktop preset. For each top-level section, using only the keyboard (Tab, Shift+Tab, Enter, Escape, arrows): reach every control, open and close every dialog and inspector, and note where focus is lost, invisible or trapped. Then take browser_snapshot of each page and note controls with no accessible name. Then, through swarm_browser.live(), repeat one page per section with emulate_media(reduced_motion='reduce') and with Emulation.setEmulatedVisionDeficiency set to deuteranopia, and screenshot each. Write a11y-keyboard.json in the findings shape of docs/design/visual-qa.md section 4.4, with a screenshot per finding under $SWARM_ARTIFACTS_DIR, and bundle it with the screenshots into a11y-keyboard.tar under $SWARM_ARTIFACTS_DIR. Change no file in the repository."},
 
     {"step_id": "report", "runner_profile": "claude-code", "model_class": "opus",
-     "depends_on": ["review-overview-automate", "review-work-a", "review-work-b", "review-capacity", "review-admin", "review-task",
+     "depends_on": ["capture-overview-automate", "capture-work-a", "capture-work-b", "capture-capacity", "capture-admin", "capture-task",
+                    "review-overview-automate", "review-work-a", "review-work-b", "review-capacity", "review-admin", "review-task",
                     "a11y-keyboard"],
-     "input_from": {"review-overview-automate": "review-overview-automate.tar", "review-work-a": "review-work-a.tar",
+     "input_from": {"capture-overview-automate": "capture-overview-automate.tar", "capture-work-a": "capture-work-a.tar",
+                    "capture-work-b": "capture-work-b.tar", "capture-capacity": "capture-capacity.tar",
+                    "capture-admin": "capture-admin.tar", "capture-task": "capture-task.tar",
+                    "review-overview-automate": "review-overview-automate.tar", "review-work-a": "review-work-a.tar",
                     "review-work-b": "review-work-b.tar", "review-capacity": "review-capacity.tar",
                     "review-admin": "review-admin.tar", "review-task": "review-task.tar",
                     "a11y-keyboard": "a11y-keyboard.tar"},
      "allow_empty_diff": true, "timeout_seconds": 3600,
-     "prompt": "Write the console visual QA report of the screens. Unpack every staged tar. Check each review's reviewed count against the images its group's routes should have produced (two presets, two themes, each route's segments) and report any shortfall as a finding about the run itself. Merge every finding into findings.json, de-duplicating the same defect seen at several sizes into one finding that lists each. Write report.md: a line saying the flows are in flow-report's flows.md, a summary table (findings by severity and by page), then each finding, severity first, with its crop PNG embedded by relative link. Copy every crop PNG to $SWARM_ARTIFACTS_DIR next to report.md and findings.json so the console shows them. Change no file in the repository."},
+     "prompt": "Write the console visual QA report of the screens. Unpack every staged tar, each into its own directory named after its step. Check each review's reviewed count against the image count of its capture's manifest.json and report any shortfall, and any missing tar, as a finding about the run itself. Merge every finding into findings.json, de-duplicating the same defect seen at several sizes into one finding that lists each. Write report.md: a line saying the flows are in flow-report's flows.md, a summary table (findings by severity and by page), then each finding, severity first, with its crop PNG embedded by relative link. Copy every crop PNG and every screenshot a finding cites to $SWARM_ARTIFACTS_DIR next to report.md and findings.json so the console shows them. Change no file in the repository."},
     {"step_id": "flow-report", "runner_profile": "claude-code", "model_class": "opus",
      "depends_on": ["flow-find-failure", "flow-workflow-graph", "flow-submit-form"],
      "input_from": {"flow-find-failure": "flow-find-failure.tar", "flow-workflow-graph": "flow-workflow-graph.tar",
@@ -853,8 +857,13 @@ Why the choices in it:
   for flows**, which are mostly tool calls whose judgment jev or the
   screenshot carries.
 * **Two reports, not one (QA-TEMPLATE-SPLIT, 2026-10-20, part of #1680).**
-  `report` waits for the six reviews and `a11y-keyboard` and writes the screen
-  findings, `report.md` and `findings.json`; `flow-report` waits for the
+  `report` waits for the six captures, the six reviews and `a11y-keyboard` and
+  writes the screen findings, `report.md` and `findings.json`; it stages the
+  capture tars because their manifests are what each review's `reviewed`
+  count is checked against and their full-size screenshots are what the
+  findings cite (QA-REPORT-TARS, run 3, §8). A failed capture already cancels
+  its review, so waiting for the captures cancels nothing more than the
+  reviews did. `flow-report` waits for the
   three flows and writes `flows.md` and `flows.json`: each flow's GIFs,
   whether its goal was reached, and what the model said it saw in each
   `flow-submit-form` screenshot. The platform cancels every dependant of a
@@ -1134,6 +1143,16 @@ every screen review had finished. `on_step_failure: "continue"` keeps the
 *other* steps running; it does not run a dependant of the failed one. The
 template therefore splits the report (§4.6): the screen findings depend only
 on what produces them.
+
+**Run 3's report could not check what it was asked to (2026-10-21).**
+Workflow `wf_d598fa7bffdb41fc9d76`: `report` was staged the six review tars
+and the a11y tar only. Every review opened fewer images than `routes.json`'s
+segment budget (276 of 620 in all), and without the capture manifests the
+report could not say which count was right; nor could it copy the full-size
+screenshots its findings cite (run findings run-001, run-002). The template
+now stages the six capture tars into `report` as well (QA-REPORT-TARS, part
+of #1680), each unpacked into its own directory because every capture tar
+carries `manifest.json` at its root.
 
 **Why `flow-submit-form` ran 45 minutes.** Read on 2026-10-20 from the
 attempt's own artifacts, `gs://swarm-artifacts-saga-agents-staging/tenants/eng/tasks/task_cfe142a3ee35418abcdb/attempts/att_d1b50da5a215417d93f7/`
