@@ -170,7 +170,7 @@ switched u-bogdan, **not** a run of u-bogdan's switched path.
 a personal tenant, so it is not u-bogdan's evidence. u-bogdan's evidence is
 these four, every one required:
 
-1. **one task to SUCCEEDED**: an agent of u-bogdan's own, submitted as the
+1. **one agent to SUCCEEDED**: an agent of u-bogdan's own, submitted as the
    owner, whose worker's log shows no Firestore client was built and whose
    `state/open` answered 200 in swarm-api's request log (watch item 1);
 2. **one park and resume**: an agent that parks on a long provider wait and
