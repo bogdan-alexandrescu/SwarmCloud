@@ -36,7 +36,7 @@ from typing import Any, Callable
 
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
 from swarm_common.models import EndCause, Lease, Task, Tenant, pool_names_for, utcnow
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
+from swarm_common.profiles import RUNNER_PROFILES, Backend, resolve_backend
 from swarm_common.states import (
     PENDING_STATES,
     TERMINAL_STATES,
@@ -47,6 +47,7 @@ from swarm_common.states import (
 )
 
 from . import children as children_mod
+from . import sizes as sizes_mod
 from .awaitinput import is_control_plane
 from .codec import as_datetime
 from .credentials import (
@@ -58,7 +59,7 @@ from .credentials import (
 )
 from .mcp_admission import McpCode
 from .secret_slots import WorkspaceGrants
-from .dispatch import BackendRouter, DispatchError
+from .dispatch import BackendRouter, DispatchError, live_display_on
 from .fairness import AgingConfig, round_robin_order
 from .metrics import SchedulerMetrics
 from .settings import SchedulerSettings
@@ -417,6 +418,9 @@ class Scheduler:
         self._ended: list[str] = []
         # Where the child-cascade sweep resumes: (parent_task_id, child id).
         self._child_cursor: tuple[str, str] | None = None
+        # The runner-size version this admission pass applies (`_size_version`),
+        # read at most once per pass and forgotten at the top of each.
+        self._sizes: sizes_mod.SizeVersion | None = None
         cutoff = settings.on_step_failure_enforced_since
         log.info(
             "on_step_failure: fail_workflow applies to %s",
@@ -540,6 +544,9 @@ class Scheduler:
         # A grant ticked since the previous pass is seen by this one, and
         # every task in this pass is judged on one read of the grants.
         self._secrets.forget()
+        # And a runner size an admin saved: read on this pass's first GKE
+        # admission, then the same version for every agent in the pass.
+        self._sizes = None
         candidates = self._store.ready_tasks(self._settings.candidate_batch_size)
         if include:
             seen = {task.id for task in candidates}
@@ -928,7 +935,18 @@ class Scheduler:
             return False
 
         backend = resolve_backend(profile)
-        units = RESOURCE_CLASSES[task.resource_class].units
+        # THE SIZE IS PINNED HERE, BEFORE THE LEASE (docs/design/runner-sizes.md
+        # §4.4, SIZES-SCHED-2). The units the transaction charges, the size the
+        # attempt records and the pod the GKE renderer builds are this one
+        # object, so a version saved between the lease and the dispatch cannot
+        # split them (invariant 2), and a running agent keeps the size it was
+        # admitted with. Units are charged on REQUESTS, as Autopilot bills them;
+        # a CPU burst above the request is charged nothing (§2.4).
+        sized = sizes_mod.for_task(
+            self._size_version(backend), task, backend=backend,
+            live=live_display_on(profile, self._settings),
+        )
+        units = sized.units
 
         try:
             lease = self._store.acquire_lease(
@@ -971,6 +989,7 @@ class Scheduler:
         # findings 1 and 2.
         try:
             self._store.create_attempt(task, lease, backend.value)
+            self._store.pin_attempt_size(lease.attempt_id, sized.attempt_fields())
             self._store.append_event(
                 task,
                 EventType.LEASE_ACQUIRED,
@@ -980,7 +999,8 @@ class Scheduler:
                 generation=lease.generation,
             )
             execution = self._router.dispatch(
-                task=task, lease=lease, profile=profile, tenant=tenant, backend=backend
+                task=task, lease=lease, profile=profile, tenant=tenant, backend=backend,
+                sized=sized,
             )
         except DispatchError as exc:
             # Give the capacity straight back. Leaving the lease would hold a
@@ -1061,6 +1081,15 @@ class Scheduler:
             execution,
         )
         return True
+
+    def _size_version(self, backend: Backend) -> sizes_mod.SizeVersion:
+        """The runner-size version this pass applies. A Cloud Run profile
+        never follows it (§4.7), so admitting one reads nothing."""
+        if backend is not Backend.GKE_AUTOPILOT:
+            return sizes_mod.DEFAULTS
+        if self._sizes is None:
+            self._sizes = sizes_mod.current(self._store)
+        return self._sizes
 
     def _rollback_admission(self, task: Task, lease: Lease, cause: BaseException) -> None:
         """Return a lease taken by an admission whose follow-through blew up.
