@@ -44,11 +44,11 @@ resource "google_service_account" "verify" {
   # under the name (#334 security review).
   # 256 characters at most -- the provider refuses a longer description at
   # plan time, which is how an earlier wording of this line failed CI. This one
-  # is 245. It names what the identity CAN do (any runner ceiling, through
+  # is 255. It names what the identity CAN do (any runner ceiling, through
   # admin_pool_users) rather than what race-test does with it (mock's), and it
   # says it is not an admin: the wording before 2026-09-24's correction said it
   # was one.
-  description = "Runs the verification suites inside the VPC. Reads Firestore, Cloud Run executions and artifact objects. Writes only through swarm-api: as its own tenant, and runner ceilings where admin_pool_users names it (for race-test). Not a platform admin."
+  description = "Runs the verification suites inside the VPC. Reads Firestore, Cloud Run executions, GKE Jobs and artifact objects. Writes only through swarm-api: as its own tenant, and runner ceilings where admin_pool_users names it (for race-test). Not a platform admin."
 }
 
 # WHY THIS IS NO LONGER THE ONLY GRANT.
@@ -63,9 +63,11 @@ resource "google_service_account" "verify" {
 # assertion ran -- twice in two days, for two different reasons.
 #
 # So the grants below are the ones the suites actually exercise, and no more.
-# All three are READ-ONLY at the project level; everything the gate writes, it
-# writes through swarm-api, which is the property the original comment was
-# protecting and which still holds.
+# All are READ-ONLY; the two project-level ones are datastore.viewer and
+# run.viewer, and the GKE read is conditioned to the swarm cluster
+# (verify_views_swarm_cluster). Everything the gate writes, it writes through
+# swarm-api, which is the property the original comment was protecting and
+# which still holds.
 #
 # NOT EVERY WRITE IS AS ITS OWN TENANT, by owner decision on 2026-09-24: in dev
 # this identity is also on `admin_pool_users`, because race-test narrows
@@ -120,6 +122,48 @@ resource "google_storage_bucket_iam_member" "verify_reads_artifacts" {
   bucket = module.storage.artifact_bucket_name
   role   = "roles/storage.objectViewer"
   member = "serviceAccount:${google_service_account.verify.email}"
+}
+
+# The swarm cluster, for e2e-test.sh [10] (owner decision 2026-10-20, #1754).
+# A task holding capacity on GKE is compared with its Job, which is two reads:
+# container.clusters.get for the endpoint and CA, then jobs.get in the
+# tenant's namespace. Without them the gate reported every GKE holder "not
+# checked: no GKE read" and could not see a dead GKE Job holding a slot.
+#
+# clusterViewer, NOT container.viewer: clusterViewer is container.clusters.get
+# and .list and no Kubernetes object at all, so it cannot read a Secret, a
+# Pod or a log. The Job read is Kubernetes RBAC --
+# kubernetes/rbac/verify-rbac.yaml, `get` and `list` on jobs.batch in each
+# tenant namespace and nothing else -- applied by kubernetes/apply.sh.
+#
+# A CONDITIONED PROJECT BINDING BECAUSE THERE IS NO OTHER KIND. GKE has no
+# per-cluster IAM resource, so the condition on the cluster's resource name is
+# the scope, as it is for the dispatchers' grants in modules/iam. Unconditioned,
+# a project-level grant here would reach agents-staging, the other team's
+# cluster in this shared project. The expression names the cluster exactly, or
+# a path under it: a bare startsWith would also admit any cluster whose name
+# began with ours.
+resource "google_project_iam_member" "verify_views_swarm_cluster" {
+  count = var.enable_gke_autopilot ? 1 : 0
+
+  project = var.project_id
+  role    = "roles/container.clusterViewer"
+  member  = "serviceAccount:${google_service_account.verify.email}"
+
+  condition {
+    title       = "swarm-cluster-only"
+    description = "managed-by=swarm-terraform; the gate reads the swarm Autopilot cluster's endpoint and CA (e2e-test.sh [10]); agents-staging belongs to another team."
+    expression = join(" || ", [
+      "resource.name == \"${local.verify_swarm_cluster}\"",
+      "resource.name.startsWith(\"${local.verify_swarm_cluster}/\")",
+    ])
+  }
+}
+
+locals {
+  # The name the cluster's IAM checks are made against, spelled as modules/iam
+  # spells it for the dispatchers, from the module's own output.
+  verify_swarm_cluster = var.enable_gke_autopilot ? "projects/${var.project_id}/locations/${var.region}/clusters/${module.gke_autopilot[0].cluster_name}" : ""
 }
 
 resource "google_cloud_run_v2_job" "verify" {

@@ -261,6 +261,14 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "RECONCILER_UID": re.compile(
         r"^([0-9]{15,25}|swarm-reconciler@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com)$"
     ),
+    # The verification gate (rbac/verify-rbac.yaml), by email and by uniqueId,
+    # pinned to swarm-verify's account id like the two above: this name decides
+    # who may read a tenant's Jobs, and the only identity that should is the
+    # gate's (scripts/e2e-test.sh [10], VERIFY-GKE-READ).
+    "VERIFY_GSA": re.compile(r"^swarm-verify@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$"),
+    # Numeric only, unlike the two above: the read is rendered only when this is
+    # given (verify_read_files), so there is no email fallback to admit.
+    "VERIFY_UID": re.compile(r"^[0-9]{15,25}$"),
     # The workspace deployer, as the subject of its ClusterRoleBinding and as
     # the caller its scope policy matches. Pinned to the account id like the
     # two above, by email or by uniqueId: the same two spellings, for the same
@@ -448,6 +456,37 @@ def tenant_files(bound: Iterable[str] = ()) -> tuple[str, ...]:
         return TENANT_FILES
     at = TENANT_FILES.index("rbac/worker-rbac.yaml") + 1
     return TENANT_FILES[:at] + LEGACY_KSA_FILES + TENANT_FILES[at:]
+
+
+#: The verification gate's Job read (VERIFY-GKE-READ): `get` and `list` on
+#: jobs.batch, bound to swarm-verify. Appended AFTER the tenant files, so every
+#: document before it renders as it did before it existed.
+VERIFY_FILES = ("rbac/verify-rbac.yaml",)
+
+
+def verify_read_files(namespace: str, verify_uid: str = "", workspace_id: str = "") -> tuple[str, ...]:
+    """VERIFY_FILES when the operator's apply names swarm-verify's uniqueId;
+    nothing otherwise, and never in the workspace deployer's namespaces.
+
+    ON --verify-uid, because the binding is only useful with it: the gate
+    reaches the API with an OAuth access token, and GKE presents it by uniqueId,
+    so an email-only binding applies cleanly and authorises nobody (the
+    2026-09-24 dispatch failure). It also keeps the read out of every render
+    that does not ask for it: the workspace deployer's, and register-tenant.sh's
+    A9 check, which re-renders the namespace and expects every object it
+    renders to exist.
+
+    NEVER in a person's namespace (`swarm-tenant-u-*`) or a group workspace's
+    (--workspace-id), even when asked: the deployer applies those, and
+    policies/workspace-provisioner-scope.yaml admits from it only the Roles,
+    RoleBindings and subjects the tenant render held before this file, so a
+    verify Role there would fail its next apply. Extending the read there is a
+    change to that policy and to provisioner-rbac.yaml, not to this render.
+    Until then a GKE holder in such a namespace is "not checked" by the gate.
+    """
+    if not verify_uid or workspace_id or namespace.startswith(f"{NAMESPACE_PREFIX}u-"):
+        return ()
+    return VERIFY_FILES
 
 
 #: The cluster-scoped objects `kubernetes/apply.sh --policies` applies, in
@@ -770,6 +809,11 @@ def tenant_values(args: argparse.Namespace) -> dict[str, str]:
         or f"swarm-scheduler@{args.project}.iam.gserviceaccount.com",
         "RECONCILER_UID": args.reconciler_uid
         or f"swarm-reconciler@{args.project}.iam.gserviceaccount.com",
+        # The verification gate, the subject of rbac/verify-rbac.yaml: derived
+        # like the two emails above, and its uniqueId passed in like theirs --
+        # but with no fallback, because without it the read is not rendered.
+        "VERIFY_GSA": f"swarm-verify@{args.project}.iam.gserviceaccount.com",
+        **({"VERIFY_UID": args.verify_uid} if args.verify_uid else {}),
         "PROJECT_ID": args.project,
         "REGION": args.region,
         "PSS_ENFORCE": args.pss_enforce,
@@ -1274,6 +1318,19 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
             ),
         )
     parser.add_argument(
+        "--verify-uid",
+        default="",
+        help=(
+            "the numeric uniqueId of swarm-verify@<project>, the verification gate, "
+            "bound by rbac/verify-rbac.yaml to read Jobs. GKE presents it by uniqueId "
+            "for the OAuth access token the gate uses, as for the scheduler. Resolve it "
+            "with `gcloud iam service-accounts describe "
+            "swarm-verify@<project>.iam.gserviceaccount.com --format='value(uniqueId)'`. "
+            "The read is rendered only when this is given, and never in a swarm-tenant-u-* "
+            "namespace or with --workspace-id (verify_read_files)."
+        ),
+    )
+    parser.add_argument(
         "--gsa",
         default="",
         help=(
@@ -1550,7 +1607,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.spec_verify_keys_file
             else None
         )
-        manifest = render_files(tenant_files(bound_ksas(args)), values)
+        files = tenant_files(bound_ksas(args)) + verify_read_files(
+            values["NAMESPACE"], args.verify_uid, args.workspace_id
+        )
+        manifest = render_files(files, values)
         if args.workspace_id:
             manifest = label_workspace(manifest, args.workspace_id)
         if spec_data is not None:

@@ -1748,6 +1748,95 @@ empty one.
 Which Node line is *current* is not something a test can know. That is a fact
 about a date, and it is decided in [`versions.md`](versions.md).
 
+## What the gate's own identity, swarm-verify, may read
+
+The in-VPC gate's suites run as `swarm-verify`
+([`terraform/infra/verify.tf`](../terraform/infra/verify.tf)). Every grant is
+one a suite actually exercises, all of them are reads, and every write goes
+through `swarm-api`:
+
+| grant | scope | why |
+|---|---|---|
+| `roles/run.invoker` | the `swarm-api` service | every suite submits and reads through the API |
+| `roles/datastore.viewer` | project | the suites read task, lease and pool documents directly (`fs_get`, `fs_count`) |
+| `roles/run.viewer` | project | invariant 1 is asserted by counting Cloud Run executions |
+| `roles/storage.objectViewer` | the artifact bucket | smoke proves artifacts land under the tenant's own prefix (invariant 9) |
+| `roles/container.clusterViewer`, **conditioned** | project, to `projects/<p>/locations/<region>/clusters/swarm-autopilot` exactly | e2e [10] reads the cluster's endpoint and CA |
+| Role `swarm-verify-reader`: `get`, `list` on `jobs.batch` | each tenant namespace the operator applies with `--verify-uid` ([`kubernetes/rbac/verify-rbac.yaml`](../kubernetes/rbac/verify-rbac.yaml)) | e2e [10] reads a GKE-backed holder's Job |
+
+**The last two are owner decision 2026-10-20 (#1754, VERIFY-GKE-READ).** e2e
+[10], "no task is holding capacity against an execution that is gone", compares
+every task holding capacity with the backend its attempt names. Before the two
+grants it could read Cloud Run only, and the 2026-10-20 baseline reported ten
+eng agents running on GKE as holders "not checked: no GKE read". The gate could
+not see a dead GKE Job holding a slot, which is the thing [10] exists to see.
+
+They are narrow on purpose, because this project is shared and holds the other
+team's `agents-staging` cluster:
+
+* **clusterViewer, not container.viewer.** clusterViewer is
+  `container.clusters.get` and `.list`, which read the cluster's endpoint and
+  CA and no Kubernetes object. container.viewer would read objects in every
+  cluster: Pods and their env, ConfigMaps, Secrets' metadata.
+* **Conditioned to our cluster.** GKE has no per-cluster IAM resource, so a
+  project binding with a condition on the cluster's resource name is the only
+  scope there is, as for the dispatchers' grants in `modules/iam`. The
+  expression names the cluster exactly, or a path under it. A bare
+  `startsWith` would also admit any cluster whose name began with ours.
+  `tests/terraform/verify_gke_read.tftest.hcl` holds the role, the member, the
+  expression, and that no other project-level container role reaches
+  swarm-verify.
+* **CI may grant clusterViewer, so bootstrap lists it.** The release's
+  deployer grants this row, and its scoped `projectIamAdmin` allows only the
+  roles on `deployer_grantable_project_roles`
+  ([`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf)),
+  so `roles/container.clusterViewer` is on that list. The owner applies
+  bootstrap first. Without it the release's apply 403s at this grant. Adding
+  the role shifts the sorted `hasOnly()` chunks, so both chunk bindings are
+  replaced (create before destroy). `hasOnly()` limits **which roles** CI may
+  grant. It does not limit the member or the condition, so CI could grant
+  clusterViewer unconditioned, or to another account. That would reach
+  `agents-staging`'s endpoint and CA (`container.clusters.get`) but no
+  Kubernetes object. The condition is held in review and by
+  `verify_gke_read.tftest.hcl`, not by IAM.
+* **The Job read is Kubernetes RBAC, in our cluster only.** `get` and `list`
+  on `jobs.batch`: no pods, no logs, no secrets, no ConfigMaps, no `watch`, no
+  write. RBAC cannot narrow a read to fields, so a Job read returns the Job's
+  pod template too, env included. That env holds task metadata, the public
+  step-spec keys and a KMS key name, and never a credential: the worker
+  templates carry no `secretKeyRef`, and provider keys and forge tokens are
+  read from Secret Manager at run time. swarm-verify can already read the task
+  documents behind that metadata through `datastore.viewer`. The Role and its binding exist only inside
+  swarm-autopilot, so they cannot reach `agents-staging`. The binding names
+  swarm-verify by email **and by numeric uniqueId**, because the gate
+  authenticates with an OAuth access token and GKE presents a service account
+  on that path by uniqueId (`dispatcher-rbac.yaml` has the 2026-09-24
+  measurement).
+* **Rendered only on the operator's apply.** `render.py` renders the read only
+  when it is given `--verify-uid`, swarm-verify's uniqueId. An email-only
+  binding would authorise nobody on the gate's path. `kubernetes/apply.sh`
+  forwards the flag:
+
+  ```bash
+  kubernetes/apply.sh --tenant eng --confirm --verify-uid "$(gcloud iam service-accounts describe \
+    swarm-verify@saga-agents-staging.iam.gserviceaccount.com --format='value(uniqueId)')"
+  ```
+
+  This also keeps the read out of every render that does not ask for it:
+  the workspace deployer's, and `register-tenant.sh`'s A9 check, which
+  re-renders a namespace and expects every object to exist.
+* **Never in the workspace deployer's namespaces.** Even when asked,
+  `render.py` leaves the read out of a `swarm-tenant-u-*` render and of a
+  `--workspace-id` render, because `policies/workspace-provisioner-scope.yaml`
+  admits from the deployer only the Roles and subjects its render already held.
+  A GKE holder there is reported "not checked", never failed.
+
+**A refused cluster read now FAILS [10]**, where before it was a skip. The read
+is granted, so a 403 on it means the grant is not applied or has been removed.
+A gate that skipped it would pass with the grant gone, and that silence is what
+[10] exists to end. An unreachable cluster, or a refused Job read (a namespace
+without the RBAC), is still "not checked".
+
 ## The release reads one job's log, and the owner applies the grant
 
 The in-VPC gate (`scripts/verify-remote.sh`, run by `release.yml` as
@@ -2056,7 +2145,8 @@ Once PR #73's targeted apply lands, the deployer's `projectIamAdmin` carries the
 `modifiedGrantsByRole` condition in
 [`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf) --
 as of #275, chunked into two bindings rather than one: `hasOnly()` refuses a
-list over 10 elements, and the 15 grantable roles (14 until #1430 turned
+list over 10 elements, and the 16 grantable roles (15 until VERIFY-GKE-READ
+added `roles/container.clusterViewer`, 14 until #1430 turned
 `swarmGithubHooksDedup` on, and 15 until #150 took `swarmSecretLister` off) do not fit in a single call. Every chunk still authorises only a `setIamPolicy` whose modified
 roles stay inside it, which is what each Terraform-issued call already does.
 
@@ -2142,7 +2232,7 @@ whole expression is matched, and the list is parsed, for that reason. Before
   show that the route is shut: what shuts it is the binding's absence, since
   the owner's bootstrap apply of 2026-09-28 destroyed it.
 * **Who a listed role goes to.** `hasOnly` limits which roles change, not whose
-  grant changes. CI can still grant any of the 15, unconditioned, to
+  grant changes. CI can still grant any of the 16, unconditioned, to
   anyone.
 * **Routes through other identities.** Routes 1 and 3 in
   [the table above](#what-the-view-does-not-bound-the-deployer-can-reach-every-log)
