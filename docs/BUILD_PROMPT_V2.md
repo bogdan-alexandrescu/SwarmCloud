@@ -70,8 +70,10 @@ through. `tests/unit/scripts/test_docs_spec_amendments.py` reads the catalogue
 and fails when this table stops matching it.
 
 **Why Cloud Run Jobs stay primary.** The v1 rationale in
-`docs/architecture.md` §5 ("Cloud Run Jobs is the primary backend, not GKE
-Autopilot") still holds: Autopilot has nodes, and nodes have autoscalers,
+`docs/architecture.md` §5 ("Cloud Run Jobs was chosen as the primary backend;
+GKE now runs nearly every agent") still holds as reasoning, though since
+2026-10-10 every agent profile but `mock` runs on GKE (contract requests 53 and
+63-66): Autopilot has nodes, and nodes have autoscalers,
 upgrades, repairs and pressure eviction — each a way to end a running agent for
 a reason unrelated to the agent. Cloud Run Jobs has no nodes to upgrade, no
 autoscaler to compact work onto fewer machines and no node pool to repair. The

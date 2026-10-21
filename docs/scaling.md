@@ -7,9 +7,13 @@ actually hitting.
 
 ## 1. Scale the pools, not the services
 
-The control plane is stateless and autoscales on its own. **Capacity is a number
-in Firestore, not a deployment.** Growing the fleet means raising slot pool
-limits; the control plane follows.
+The control plane is stateless, and it scales only up to fixed ceilings: each
+service has a Terraform instance cap, and below the pools sit a NAT, regional
+quotas the other team in this project shares, and a per-namespace Job quota
+(§2, measured 2026-10-21). **Capacity is a number in Firestore, not a
+deployment.** Growing the fleet means raising slot pool limits; the control
+plane follows until one of those ceilings binds, and raising a pool past one
+of them only moves the failure there.
 
 ```bash
 ./scripts/api.sh PUT /admin/limits/global '{"hard_limit": 250}'
@@ -37,6 +41,7 @@ In rough order of what you will hit:
 | `tenant:<id>` | 20 | one tenant's agents queue, platform is idle | raise the tenant's `max_active` |
 | `global` | 20 (dev) / 100 (prod) | everything queues evenly | raise the global pool |
 | Cloud Run Jobs quota | project quota | dispatch errors, agents return to READY | request a quota increase |
+| A ceiling below the pools | see the next table | depends on which | not a pool edit; see the next table |
 | Firestore write contention | ~1 write/s per document | admission transactions retry and slow | see §5 |
 | Scheduler drain budget | 45 s / 200 leases / 25 passes | admission latency rises under a large backlog | see §4 |
 
@@ -44,6 +49,28 @@ In rough order of what you will hit:
 every pool. `blocked_by` on a queued agent names the exact pool and reason —
 `TENANT_LIMIT` and `GLOBAL_CONCURRENCY_LIMIT` are different problems with
 different fixes.
+
+### Ceilings below the pools, measured 2026-10-21
+
+The pools are the limits the platform chooses. These are the ones underneath,
+which no pool limit raises. Each was read on 2026-10-21 by the system analysis
+(epic #1822: read-only `gcloud`, `kubectl` and logs over 2026-10-19 09:00Z to
+2026-10-21 09:00Z), or from the Terraform and code named in its row; a live
+number is stale the day after, so read it again before acting on it.
+
+| Ceiling | Value | Source | What you see when it binds |
+|---|---|---|---|
+| `swarm-api` | max 5 instances of 1 vCPU, one uvicorn process each, 80 requests in flight per instance; 20 req/s per principal per instance, so 100 req/s for one caller across all five | `service_max_instances` in `terraform/environments/dev/dev.tfvars`; `cpu` and `concurrency` in `terraform/infra/main.tf`; `requests_per_second` in `apps/common/swarm_common/config.py` | 429s from the per-principal bucket; latency once five instances are busy |
+| `swarm-scheduler` | concurrency 1, max 2 instances: at most two drains at once, platform-wide | `terraform/infra/main.tf`, `service_max_instances` in dev.tfvars | 3,044 "no available instance" 429s on wake pushes during two 300-agent bursts in the 48 h window; Pub/Sub retries them and the 1-minute tick is the floor |
+| Cloud NAT | 1 static IP for both GKE nodes and Cloud Run jobs: 64,512 ports, at most 8,192 to one VM | `nat_static_ip_count` in dev.tfvars, `max_ports_per_vm` in `terraform/modules/network/main.tf` | 655 packets dropped for lack of a NAT port in the 7 days to 2026-10-21 (#1471): a worker's outbound connection fails, not its admission |
+| Regional quotas, `us-central1` | 216/3,000 vCPU and 3,299/40,960 GB SSD in use on 2026-10-21, **shared with the other team in `saga-agents-staging`** | `gcloud compute regions describe us-central1` | not reached on 2026-10-21; expected: GKE cannot add a node, so pods wait Pending while their leases hold capacity, and the other team's workloads hit the same wall |
+| Cloud Run, VPC egress | 200 instances for a service or job that uses VPC egress | Cloud Run's documented limit | not reached on 2026-10-21 (only `mock` and the fallback Jobs run there); expected: executions past it fail to start |
+| Tenant namespace `ResourceQuota` | 200 Jobs and 200 PVCs (one cache PVC per Job); a finished Job is kept for an hour (`ttlSecondsAfterFinished`) and counts until then | `--quota-jobs` default in `kubernetes/render.py`, `kubernetes/namespaces/tenant-namespace.yaml` | the API server refuses the Job with a 403 and the agent fails today (#1820); `eng` peaked at 119 Jobs in a rolling hour |
+| the `global` pool document | about 1.6 admissions/s at the knee seen on 2026-10-21 | scheduler admission logs (§5) | admission transactions abort and retry; every admission writes it |
+
+The quotas and the NAT are why "add more" is not a pool edit: 100 `standard`
+agents are 400 vCPU against a regional budget the other team draws on too, and
+every one of them shares one NAT IP's ports.
 
 ---
 
@@ -113,6 +140,9 @@ one write per second per document before contention becomes visible as
 transaction retries.
 
 At 200 admissions/minute (~3.3/s) the `global` pool is the contended document.
+The production knee seen on 2026-10-21 was lower, about 1.6 admissions/s
+(§2): an observation from the scheduler's logs during two bursts, not the
+bench measurement below.
 Mitigations, in order of preference:
 
 1. **Fewer admissions, not faster ones.** Longer agents admit less often. This is

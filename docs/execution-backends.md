@@ -9,11 +9,16 @@
 > The upside is that this path is fully GA and supports live migration, which the
 > Preview disk explicitly does not, so the no-interruption requirement that drove
 > the Cloud Run choice is better served here than by the feature we set out to use.
+> **This tmpfs is Cloud Run only.** On GKE the workspace, `/tmp` and HOME are
+> disk `emptyDir`s and the tool caches a 20 GiB PVC (§4), and every agent
+> profile but `mock` runs there.
 
-Two backends. Cloud Run Jobs runs almost everything; GKE Autopilot exists for
-the three things Cloud Run cannot do, and, since contract request 53
-(2026-10-08), for `claude-code`, the one thing Cloud Run did too slowly: start
-it (§4). Since contract request 63 (2026-10-10) `indexer` runs there too, the
+Two backends. As read on 2026-10-21 (system analysis, epic #1822), GKE
+Autopilot runs nearly every agent and Cloud Run Jobs runs `mock` plus the
+fallback Jobs Terraform keeps for the profiles that moved. It got there one
+profile at a time: GKE Autopilot first existed for the three things Cloud Run
+cannot do, and, since contract request 53 (2026-10-08), for `claude-code`, the
+one thing Cloud Run did too slowly: start it (§4). Since contract request 63 (2026-10-10) `indexer` runs there too, the
 canary for #939: a new Cloud Run instance's internet path opens too slowly.
 Contract requests 64-66 (owner, 2026-10-10, #939 option A) move `generic`,
 `codex` and `merge` after it, for the same reason, so Cloud Run is left with
@@ -21,7 +26,11 @@ Contract requests 64-66 (owner, 2026-10-10, #939 option A) move `generic`,
 
 ---
 
-## 1. Why Cloud Run Jobs is primary
+## 1. Why Cloud Run Jobs was chosen as primary
+
+This is the reasoning behind the first design, and it still says what each
+backend risks. It no longer says where the work runs: see the intro, and
+§4 for each profile that moved.
 
 The original design called for GKE Autopilot as the main execution surface. It
 was changed, deliberately, because the operator's requirement is absolute: **no

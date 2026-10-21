@@ -333,7 +333,7 @@ line before running anything.
 | agent reaches RUNNING, no pod ever appears | the KSA the pod names does not exist | `kubectl describe job -n swarm-tenant-<id> <job>` and look for `serviceaccount ... not found`; step 3 |
 | pod appears and is `Pending` forever | Autopilot has not admitted it — resource class, or a quota on the namespace | `kubectl describe pod`, then `kubectl get resourcequota -n swarm-tenant-<id>` |
 | `CreateContainerConfigError` | the pod is asking for a Kubernetes Secret that does not exist | nothing in this repository creates one; the tenant key lives in Secret Manager and the worker fetches it itself. Read `kubernetes/render.py`'s header |
-| the container STARTS and dies at once on `[Errno 30] Read-only file system` | a path the runner writes to has no volume behind it. GKE sets `readOnlyRootFilesystem: true`; Cloud Run does not, so this class of defect is invisible on the primary backend | `kubectl logs -n swarm-tenant-<id> job/<job>` for the path in the traceback. Every writable path needs a volume in **both** Job specs — `dispatch.py`'s dict and the matching `kubernetes/worker-templates/` YAML |
+| the container STARTS and dies at once on `[Errno 30] Read-only file system` | a path the runner writes to has no volume behind it. GKE sets `readOnlyRootFilesystem: true`; Cloud Run does not, so this class of defect is invisible on Cloud Run | `kubectl logs -n swarm-tenant-<id> job/<job>` for the path in the traceback. Every writable path needs a volume in **both** Job specs — `dispatch.py`'s dict and the matching `kubernetes/worker-templates/` YAML |
 
 If it is none of these, stop and capture the Job's events before deleting
 anything — they are lost when the Job is collected:

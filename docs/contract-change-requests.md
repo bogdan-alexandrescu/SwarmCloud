@@ -119,6 +119,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 109 | `profiles.py`: the frozen runner-size bounds, `units_for` and `check_size`, the one validator every admin-set size passes (SIZES-CONTRACT-2, runner sizes request RS-2, part of #1689) | ACCEPTED by the owner 2026-10-20 (design `docs/design/runner-sizes.md` §5, §7) and APPLIED by the pull request that adds this line. Nothing calls `check_size` yet: the admin route is lane SIZES-API, the scheduler's read SIZES-SCHED-2 |
 | 110 | `profiles.py`: `ResourceSize`, `LiveShare`, `default_sizes` and `effective_size`, the one shape a runner-size version is read in, and the rule that only a GKE profile follows it (SIZES-CONTRACT-2, runner sizes request RS-3, part of #1689) | ACCEPTED by the owner 2026-10-20 (design `docs/design/runner-sizes.md` §5, §7 Q3 A) and APPLIED by the pull request that adds this line. No pod changes size until SIZES-SCHED-2 renders from it |
 | 111 | `models.py`: `Attempt.size_version` and the `sized_*` fields, the size the scheduler rendered an attempt at (SIZES-CONTRACT-2, runner sizes request RS-4, part of #1689) | ACCEPTED by the owner 2026-10-20 (design `docs/design/runner-sizes.md` §5, §7) and APPLIED by the pull request that adds this line. No writer yet: the scheduler's `create_attempt` writes them in SIZES-SCHED-2 |
+| 112 | `CONTRACT.md`: "Primary backend Cloud Run Jobs" no longer says where agents run; every agent profile but `mock` is on GKE Autopilot (DOCS-TRUTH, part of #1822) | open, REQUESTED 2026-10-21 by lane DOCS-TRUTH. Not applied: `CONTRACT.md` is not edited by a lane |
 
 ---
 
@@ -14149,3 +14150,65 @@ produces.
 rewrites an old attempt's. **7**: the record is what makes "a running agent
 keeps its admitted size" checkable after the fact. **1-4, 6, 8-10**
 untouched.
+
+## 112. `CONTRACT.md`: "Primary backend Cloud Run Jobs" no longer says where agents run (DOCS-TRUTH, part of #1822)
+
+**Status:** open, REQUESTED 2026-10-21 by lane DOCS-TRUTH, from the
+2026-10-21 system analysis (epic #1822). Not applied: `CONTRACT.md` is the
+document these requests are addressed to, so a lane files the drift here and
+does not edit it.
+
+### What is true today
+
+`CONTRACT.md`, "Platform decisions", reads "Primary backend Cloud Run Jobs.
+GKE Autopilot only for browser/GPU/>32GiB, and for claude-code since contract
+request 53", and names `mock`, `generic` and `codex` as Cloud Run profiles.
+Its "Pod" bullet speaks of "the four Cloud Run profiles" and of a Kubernetes
+pod "for `browser`".
+
+The catalogue (`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`) and
+the live system, read with read-only `gcloud` and `kubectl` on 2026-10-21,
+say otherwise:
+
+* GKE Autopilot runs `browser`, `claude-code`, `claude-code-browser`,
+  `codex`, `generic`, `indexer` and `merge`: contract request 53 moved
+  `claude-code` (2026-10-08), 63 `indexer` and 64-66 `generic`, `codex` and
+  `merge` (2026-10-10).
+* Cloud Run Jobs runs `mock`, the disabled `post-verdict` and
+  `claude-code-review`, and the fallback Jobs Terraform keeps for
+  `claude-code`, `indexer`, `generic`, `codex` and `merge`
+  (`cloud_run_fallback_profiles` in `terraform/infra/locals.tf`), which
+  nothing dispatches to while those profiles name GKE.
+* On GKE the workspace, `/tmp` and HOME are disk `emptyDir`s plus a 20 GiB
+  cache PVC (`apps/scheduler/scheduler/dispatch.py::CACHE_VOLUME_GIB`). The
+  "Correction (workspace storage)" at the foot of `CONTRACT.md`, that
+  workspaces are memory-backed tmpfs, is true of Cloud Run only.
+
+The code is right and the contract text is behind it, so nothing misbehaves;
+a reader who takes the contract at its word plans for the wrong backend.
+
+### The requested change
+
+Replace the "Primary backend Cloud Run Jobs" bullet with what the catalogue
+declares: GKE Autopilot runs every agent profile but `mock` (contract
+requests 53 and 63-66, with the dates), Cloud Run Jobs runs `mock`, the two
+disabled worker-action profiles and the fallback Jobs. Keep the "Why"
+clause as history of the first decision, as `docs/architecture.md` §5 now
+does. Amend the "Pod" bullet to say a Kubernetes pod for every GKE profile.
+Add one sentence to "Correction (workspace storage)" that the tmpfs
+workspace is Cloud Run's, and that GKE's is disk; leave the rest of the
+correction, the Preview disk and live migration, exactly as it stands.
+
+### What it would break if accepted
+
+Nothing in code: no reader parses `CONTRACT.md`'s backend bullet. Docs that
+quote it would follow it; `docs/architecture.md`, `docs/execution-backends.md`,
+`docs/checkpointing.md` and `docs/BUILD_PROMPT_V2.md` were brought up to date
+by the pull request that files this.
+
+### If it is declined
+
+The contract keeps a backend split that has not been true since 2026-10-10,
+next to the invariants, which is how the decisions it records get argued
+from a false premise. Every doc that restates the split would then be the
+better source than the contract it defers to.

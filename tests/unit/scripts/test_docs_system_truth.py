@@ -78,8 +78,8 @@ def test_dr_gives_firestores_recovery_point_as_point_in_time_not_an_export():
     assert "point-in-time" in row and "7 days" in row, row
     body = _flat(objectives)
     # What was read live, with its date and where.
-    for fact in (ANALYSIS, "`gcloud firestore backups schedules list`", "`[]`",
-                 "gs://swarm-artifacts-saga-agents-staging/backups/", "no export has ever been taken",
+    for fact in (ANALYSIS, "`gcloud firestore backups schedules list --database=swarm`", "`[]`",
+                 "gs://swarm-artifacts-saga-agents-staging/backups/", "No export has ever been taken",
                  "deleted with the database", "#1818"):
         # MUTATION: drop any one of these facts -> red.
         assert fact in body, fact
@@ -100,8 +100,10 @@ def test_dr_says_what_delete_protection_and_abandon_do_from_the_terraform():
 def test_dr_restores_point_in_time_into_a_new_database_never_swarm():
     restore = _section(_text(DR), "### Restore")
     # MUTATION: import straight into --database=swarm -> red.
-    for line in restore.splitlines():
-        assert not re.search(r"--database=swarm(?![-\w])", line) or "export" in line, line
+    # One command per line: a `\` continuation belongs to the command it continues.
+    for command in restore.replace("\\\n", " ").splitlines():
+        if "gcloud firestore import" in command:
+            assert not re.search(r"--database=swarm(?![-\w])", command), command
     assert "--snapshot-time" in restore
     body = _flat(restore)
     assert "a NEW database id, never `swarm`" in body
