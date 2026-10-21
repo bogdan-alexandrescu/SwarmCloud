@@ -122,8 +122,9 @@ copy per share, titled `SC · <name> · N steps · rows 1-8`, `rows 9-16`...,
 each told its steps in `row_share`; the first reports the finished steps.
 `max_live_rows` still caps the total of step rows. `swarm_workflow_launch`'s
 `rows` argument picks the mode for one launch, an attach or an attach-all
-(PLUGIN-ROW-SPLIT-2); `/sc attach <wf_id> --per-step`, the suffix 0.5.50
-read, is still read for one release (`attach_target`).
+(PLUGIN-ROW-SPLIT-2); an attach value is one workflow id, and a
+`--per-step` or `--summary` after it is refused with a pointer to `rows`
+(SC-ATTACH-SUFFIX-DROP).
 """
 
 from __future__ import annotations
@@ -189,29 +190,26 @@ def rows_per_run(cpu_count: int | None = None) -> int:
     return max(1, min(AGENTS_PER_RUN_MAX, (cores or 0) - HOST_RESERVED_CORES))
 
 
-#: What `/sc attach <wf_id> <flag>` may add, and the mode each picks. The
-#: suffix was 0.5.50's way to pick a mode for one attach; since 0.5.51 the
-#: `rows` argument is (PLUGIN-ROW-SPLIT-2, owner 2026-10-21). Still read for
-#: ONE release, so a session on the older skill keeps working: drop it, and
-#: `attach_target` with it, in plugin 0.5.52.
-ATTACH_FLAGS = {"--per-step": config.ROWS_PER_STEP, "--summary": config.ROWS_SUMMARY}
-
-
-def attach_target(given: str) -> tuple[str, str | None]:
-    """`(workflow_id, rows)` from an attach value: a workflow id, optionally
-    with `--per-step` or `--summary` after it -- how `/sc attach <wf_id>
-    --per-step` overrides the `rows` setting for one attach. `rows` is None
-    when no flag was given. Anything else beside the one id is refused."""
+def attach_id(given: str) -> str:
+    """The one workflow id an attach value names. A `--per-step` or
+    `--summary` after it was PLUGIN-ROW-SPLIT's way to pick a row mode for
+    one attach; the `rows` argument does that since PLUGIN-ROW-SPLIT-2
+    (owner 2026-10-21), the suffix was read one release more for sessions on
+    the older skill, and it is refused now (SC-ATTACH-SUFFIX-DROP) with a
+    message naming `rows`, so a caller learns the way that works instead of
+    seeing an id SwarmCloud never heard of. Refused before any read."""
     words = str(given).split()
     flags = [w for w in words if w.startswith("--")]
     ids = [w for w in words if not w.startswith("--")]
-    unknown = [f for f in flags if f not in ATTACH_FLAGS]
-    if unknown or len(ids) != 1:
+    if flags:
         raise SwarmError(
-            f"attach takes one workflow id and at most one of {sorted(ATTACH_FLAGS)}; it was given "
-            f"{given!r}. Nothing was written"
+            f"attach takes one workflow id and no flags; it was given {given!r}. Pick the row mode with "
+            f'the `rows` argument instead: {{attach: "<wf_id>", rows: "per-step"}} or rows: "summary". '
+            f"Nothing was written"
         )
-    return ids[0], ATTACH_FLAGS[flags[-1]] if flags else None
+    if len(ids) != 1:
+        raise SwarmError(f"attach takes one workflow id; it was given {given!r}. Nothing was written")
+    return ids[0]
 
 
 def max_live_rows() -> int:
@@ -862,18 +860,12 @@ def for_attach(client: SwarmClient, workflow_id: str, rows: str | None = None) -
     """The titled copy -- or, per-step past the host's limit, copies -- for
     attaching one workflow: one read, for the name SwarmCloud stored, the step
     count and the unfinished steps. `rows` (`swarm_workflow_launch`'s
-    argument) outranks the `rows` setting for this attach; so does a
-    `--per-step` or `--summary` after the id (`attach_target`, read until
-    0.5.52), and the two may not disagree. The reply's own fields are the
-    first copy's; `launches` holds every copy."""
+    argument) outranks the `rows` setting for this attach; a flag after the
+    id is refused (`attach_id`). The reply's own fields are the first copy's;
+    `launches` holds every copy."""
     from . import session
 
-    workflow_id, flagged = attach_target(workflow_id)
-    if rows is not None and flagged is not None and rows != flagged:
-        raise SwarmError(
-            f"attach was given rows {rows!r} and the suffix for {flagged!r}; pass one. Nothing was written"
-        )
-    rows = rows or flagged
+    workflow_id = attach_id(workflow_id)
     envelope = workflows.fetch(client, workflow_id)
     stored = workflows.stored_names(envelope)
     name = workflows.title_name(stored=stored["title"] or stored["label"], workflow_id=workflow_id)
