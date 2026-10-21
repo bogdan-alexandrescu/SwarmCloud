@@ -317,7 +317,9 @@ describe('one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost', () 
     expect(c[2]!.value).toBe('2.00 GiB 25%')
     expect(c[2]!.sub).toMatch(/^of 8 GiB · so far · 1m ago$/)
     expect(c[3]!.value).toBe('1.6 / 2 cores')
-    expect(c[3]!.sub).toBe('peak · mean 0.7')
+    // The limit is the class's own, so its name says so (FF-D5a, run 2).
+    // MUTATION: drop the limit's words from the CPU tile's sub-line.
+    expect(c[3]!.sub).toBe('peak · mean 0.7 · standard limit')
     // NOT DUE YET: small, muted, words -- never a figure.
     expect(c[4]!.value).toBe('at exit')
     expect(c[4]!.cls).toContain('is-reading')
@@ -335,6 +337,42 @@ describe('one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost', () 
     const mem = c.find((x) => x.label === 'Peak memory')!
     expect(mem.value).toBe('— not recorded')
     expect(mem.cls).toContain('is-absent')
+  })
+
+  // FF-D5a (visual QA run 2, #1680): the header said `4 vCPU`, the tile `1.6
+  // / 2 cores` and the summary `mean 2.1 of 4 cores` -- the class's size, the
+  // limit the worker read and the series' limit, with no word for which was
+  // which. The tile and the Resources rows now say whose limit their
+  // denominator is, and the class's size beside it when the two differ.
+  it('CPU names its denominator: the limit’s source, and the class’s size when it differs', () => {
+    const classes = { standard: { name: 'standard', cpu: 4, memory_gib: 8, disk_gib: 10, units: 2 } } as unknown as ResourceClasses
+    const a = attempt(1, {
+      created_at: ago(15),
+      started_at: ago(14),
+      completed_at: null,
+      exit_code: null,
+      peak_cpu_cores: 1.6,
+      mean_cpu_cores: 0.7,
+      cpu_limit_cores: 2,
+      cpu_limit_source: 'cgroup',
+      cpu_seconds: 600,
+    })
+    const el = host(runOf({ attempts: [a], classes }))
+    const cpu = cells(el).find((x) => x.label === 'CPU')!
+    // MUTATION: draw `/ ${cls.cpu} cores`; the denominator is the limit the worker read.
+    expect(cpu.value).toBe('1.6 / 2 cores')
+    // MUTATION: drop `(class 4 vCPU)` when the limit and the class differ.
+    expect(cpu.sub).toBe('peak · mean 0.7 · cgroup limit (class 4 vCPU)')
+    const note = (name: string) =>
+      seen(
+        [...el.querySelectorAll<HTMLElement>('.dt-resources > .dt-rr')]
+          .find((r) => seen(r.querySelector('.dt-rr-n')) === name)!
+          .querySelector('.dt-rr-v'),
+      )
+    // MUTATION: leave the Resources row's note at `of 2 cores`.
+    expect(note('CPU peak')).toBe('1.6 80% of 2 cores · cgroup limit (class 4 vCPU)')
+    // MUTATION: repeat the limit's words on the mean row too; once per card is enough.
+    expect(note('CPU mean')).toBe('0.7 35% of 2 cores')
   })
 
   it('a failed attempt read leaves the task’s own figures and dashes the rest', () => {
