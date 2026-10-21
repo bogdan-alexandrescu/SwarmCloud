@@ -751,6 +751,15 @@ it relays is the answer. That is the same trust the tenant already places in
 it to submit the workflow at all. Its agents still cannot answer, because
 they run as the worker, not the principal.
 
+**Served, so a service need not find out by answering (FEATURES-READ, part of
+#1748, 2026-10-20).** `GET /v1/tenants/me` carries `features.service_answer`,
+`service_principal` CALLED for the workspace the request acts in: `true` for
+a service tenant's own principal in its own tenant, `false` in a group or
+personal workspace, `"unknown"` -- never `false` -- when the tenant read
+fails. Beside it, `features.await_input` is the catalogue's
+`await-input` `available`, `"unknown"` if the catalogue has no such profile
+([multi-tenancy.md](../multi-tenancy.md#get-v1tenantsme-says-which-features-are-on-for-the-workspace)).
+
 #### 4.2.2 Amendment, 2026-10-19: release acceptance answers in swarm-verify's own service tenant (HW-ACCEPT-ID)
 
 **Owner decision, 2026-10-19 (part of #1436).** Release acceptance answers

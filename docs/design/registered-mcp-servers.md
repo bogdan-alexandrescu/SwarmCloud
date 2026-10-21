@@ -1121,6 +1121,13 @@ registration write, a submission naming a server or carrying a credential,
 and an attach are each refused `mcp_unavailable`. No agent can name a server,
 so the scheduler, worker and runner halves below never run.
 
+**Whether it is on is served (FEATURES-READ, part of #1748, 2026-10-20).**
+`GET /v1/tenants/me` carries `features.caller_mcp`: `true` or `false` from
+`mcp_servers_enabled()` as the serving process reads it, `"unknown"` -- never
+`false` -- when that read fails. A caller learns the switch from that read
+instead of from a refused submission; `sc whoami` shows it
+([multi-tenancy.md](../multi-tenancy.md#get-v1tenantsme-says-which-features-are-on-for-the-workspace)).
+
 **MCP-CONTRACT (part of #1433; the owner accepted it on 2026-10-17).** Contract requests 88-91 in
 [contract-change-requests.md](../contract-change-requests.md), the §5
 requests M1-M4 as written: `_MCP_SERVER_INPUTS` in

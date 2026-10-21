@@ -75,11 +75,16 @@ def accounts(broker) -> AccountStore:
 
 
 @pytest.fixture()
-def client(broker, accounts):
+def client(broker, accounts, monkeypatch):
     from fastapi.testclient import TestClient
 
     from quota_broker.main import create_app
 
+    # No PROJECT_ID, so `create_app` builds no Secret Manager store: with one,
+    # a lending change refuses (422) for want of WORKER_SERVICE_ACCOUNT_TEMPLATE,
+    # and these tests passed or failed by which test ran before them in the
+    # same process.
+    monkeypatch.delenv("PROJECT_ID", raising=False)
     identity = _Identity()
     app = create_app(broker, identity=identity, account_store=accounts)
     c = TestClient(app, raise_server_exceptions=False)

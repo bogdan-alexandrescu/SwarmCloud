@@ -3713,7 +3713,7 @@ def read_whoami(args) -> tuple[dict[str, Any], int]:
         "tier": None, "credential_store": None, "principal": None,
         "tenant": None, "tenant_chosen": chosen, "tenant_source": chosen_by,
         "default_source": None, "role": None, "role_source": None, "via": None,
-        "error": None,
+        "features": features_of(None), "error": None,
     }
     code = EXIT_OK
     try:
@@ -3748,14 +3748,40 @@ def read_whoami(args) -> tuple[dict[str, Any], int]:
         if isinstance(role, dict):
             shown["role"], shown["role_source"] = role.get("name"), role.get("source")
         shown["via"] = _via_of(mine, shown["tenant"])
+        shown["features"] = features_of(me)
     except SwarmError as exc:
         shown["error"] = str(exc)
         code = EXIT_FAIL
     return shown, code
 
 
+#: The features `/v1/tenants/me` reports for the workspace (FEATURES-READ,
+#: part of #1748), in the order `sc whoami` prints them.
+FEATURES = ("caller_mcp", "await_input", "service_answer")
+
+#: What a feature the API did not report as `true` or `false` reads as: its
+#: "unknown", or an API older than the field. Never "off" -- a caller that
+#: reads "off" withdraws the feature, the misreading #1748 was filed over.
+NOT_REPORTED = "not reported"
+
+
+def features_of(me: Any) -> dict[str, str]:
+    """`{feature: "on" | "off" | "not reported"}` from a `/v1/tenants/me` answer.
+
+    Only a boolean is a state; anything else, `"unknown"` included, is "not
+    reported" rather than a guess."""
+    served = me.get("features") if isinstance(me, dict) else None
+    served = served if isinstance(served, dict) else {}
+    shown = {}
+    for name in FEATURES:
+        value = served.get(name)
+        shown[name] = NOT_REPORTED if not isinstance(value, bool) else ("on" if value else "off")
+    return shown
+
+
 def cmd_whoami(_client, args, out) -> int:
-    """Context, URL, where that came from, the tier, the principal, the tenant.
+    """Context, URL, where that came from, the tier, the principal, the tenant,
+    and the workspace's three features (`features_of`).
 
     Every field is filled from a READ: the principal from the signed-in ID
     token (or from the API, on a tier without one), the tenant from
@@ -3783,6 +3809,9 @@ def cmd_whoami(_client, args, out) -> int:
             role = f"{shown['role']}  (source {shown.get('role_source') or '-'}"
             role += f", via {shown['via']})" if shown.get("via") else ")"
             out.write(f"{'role':<11} {role}\n")
+        if field == "tenant":
+            states = ", ".join(f"{name} {state}" for name, state in shown["features"].items())
+            out.write(f"{'features':<11} {states}\n")
     if shown["error"]:
         out.write(f"{'problem':<11} {shown['error']}\n")
     return code

@@ -288,6 +288,11 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
     "Me": {
         "role": "the caller's role in the selected workspace, {name, source}; declared by "
         "lane ROLES-UI-PEOPLE",
+        # FEATURES-READ (part of #1748): served for API callers (Product
+        # Oracle, sc whoami) ahead of the console. Remove when types.ts
+        # declares it.
+        "features": "caller_mcp/await_input/service_answer, each true, false or \"unknown\" "
+        "(FEATURES-READ, part of #1748); read by API callers and sc whoami, not yet by the console",
     },
     "Task": {
         "dispatch": "declared as the optional TaskDispatch, whose own fields are checked separately",

@@ -14,19 +14,32 @@ admin reaches without being in it (§4.2.2 step 5). A role that could not be
 read is left out rather than guessed; the console then shows the derived one.
 `POST /me/credentials` writes the workspace's provider key, which is its
 admin's (Q6): behind `role_admin_required`'s switch, off at ship.
+
+FEATURES (FEATURES-READ, part of #1748). `/me` carries `features:
+{caller_mcp, await_input, service_answer}`, each `true`, `false` or
+"unknown" (`schemas.TenantFeatures`), read through the same calls the
+features themselves make. A state that could not be read is "unknown", never
+`false`: a caller reading `false` withdraws the feature from its users.
 """
 
 from __future__ import annotations
 
+import logging
+from typing import Any, Callable
+
 from fastapi import APIRouter, Depends, status
 
-from .. import roles
+from swarm_common.profiles import RUNNER_PROFILES
+
+from .. import awaitinput, mcp_servers, roles
 from ..auth import AuthContext
 from ..codec import tenant_to_api
 from ..deps import AppContext, current_auth, get_context
 from ..errors import ValidationFailed
-from ..schemas import CredentialCreate
-from ..validation import known_providers
+from ..schemas import FEATURE_UNKNOWN, CredentialCreate, FeatureState, TenantFeatures
+from ..validation import AWAIT_INPUT_PROFILE, known_providers
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/tenants", tags=["tenants"])
 
@@ -58,8 +71,46 @@ def get_me(
         # in. A client must treat that as unknown, not as dev: see
         # `ApiSettings.environment_declared`.
         "environment_declared": ctx.settings.environment_declared,
+        "features": _features(ctx, auth),
         **_role_field(ctx, auth),
     }
+
+
+def _features(ctx: AppContext, auth: AuthContext) -> dict[str, FeatureState]:
+    """Whether three features are on for this workspace (FEATURES-READ, part
+    of #1748), so a caller such as Product Oracle need not learn it by
+    submitting. Each is read where the feature itself reads it -- CALLED, not
+    restated -- and each separately, so one failed read leaves the other two.
+    """
+    return TenantFeatures(
+        # The switch `require_enabled` and the attach route obey.
+        caller_mcp=_read("caller_mcp", mcp_servers.mcp_servers_enabled),
+        await_input=_read("await_input", _await_input_available),
+        # The answer route's own predicate (`member_refusal`, `may_answer`),
+        # asked of the workspace this request acts in.
+        service_answer=_read(
+            "service_answer",
+            lambda: awaitinput.service_principal(ctx, auth, auth.tenant_id)),
+    ).model_dump()
+
+
+def _await_input_available() -> FeatureState:
+    """The catalogue's `available` for `await-input`. A catalogue without the
+    profile is not "off" -- this build does not say -- so it is unknown, where
+    `awaitinput.dark()` folds it into dark for the expiry sweep's safety."""
+    profile = RUNNER_PROFILES.get(AWAIT_INPUT_PROFILE)
+    return FEATURE_UNKNOWN if profile is None else profile.available
+
+
+def _read(name: str, read: Callable[[], Any]) -> FeatureState:
+    """`read()` when it answers a boolean, else "unknown". A failure is
+    never served as `false`, and never fails the identity route."""
+    try:
+        value = read()
+    except Exception:  # noqa: BLE001 - an unread state is reported as unread
+        log.warning("tenants/me could not read feature %s", name, exc_info=True)
+        return FEATURE_UNKNOWN
+    return value if isinstance(value, bool) else FEATURE_UNKNOWN
 
 
 def _role_field(ctx: AppContext, auth: AuthContext) -> dict:
