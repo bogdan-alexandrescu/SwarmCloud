@@ -206,6 +206,12 @@
       "runner_profile": "claude-code",
       "model_class": "opus",
       "depends_on": [
+        "capture-overview-automate",
+        "capture-work-a",
+        "capture-work-b",
+        "capture-capacity",
+        "capture-admin",
+        "capture-task",
         "review-overview-automate",
         "review-work-a",
         "review-work-b",
@@ -215,6 +221,12 @@
         "a11y-keyboard"
       ],
       "input_from": {
+        "capture-overview-automate": "capture-overview-automate.tar",
+        "capture-work-a": "capture-work-a.tar",
+        "capture-work-b": "capture-work-b.tar",
+        "capture-capacity": "capture-capacity.tar",
+        "capture-admin": "capture-admin.tar",
+        "capture-task": "capture-task.tar",
         "review-overview-automate": "review-overview-automate.tar",
         "review-work-a": "review-work-a.tar",
         "review-work-b": "review-work-b.tar",
@@ -225,7 +237,7 @@
       },
       "allow_empty_diff": true,
       "timeout_seconds": 3600,
-      "prompt": "Write the console visual QA report of the screens. Unpack every staged tar: the six reviews' and the a11y pass's. Check each review's reviewed count against the images its group's routes should have produced (two presets, two themes, each route's segments) and report any shortfall, and any staged tar that is missing, as a finding about the run itself: a review that looked at nothing is not a clean review. Merge every finding into findings.json, de-duplicating the same defect seen at several sizes into one finding that lists each. Write report.md: one line first saying the flows are reported apart, in the flow-report step's flows.md, so that a flow that fails never costs these findings; then a summary table (findings by severity and by page), then each finding, severity first, with its crop PNG embedded by relative link. Write nothing about the flows here. Copy every crop PNG and every screenshot a finding cites to $SWARM_ARTIFACTS_DIR next to report.md and findings.json so the console shows them. Change no file in the repository."
+      "prompt": "Write the console visual QA report of the screens. Unpack every staged tar, each into its own directory named after its step (every capture tar carries a manifest.json at its root): the six captures', the six reviews' and the a11y pass's. For each group, count the images its capture's manifest.json lists and check the review's reviewed count against that number; report any shortfall as a finding about the run itself, naming both numbers: a review that looked at nothing is not a clean review. A staged tar that is missing is also a finding about the run itself, naming the tar; when a capture tar is missing, check that group's reviewed count against the images its routes in apps/swarm-ui/qa/routes.json should have produced (two presets, two themes, each route's segments) instead, and say which count you used. Merge every finding into findings.json, de-duplicating the same defect seen at several sizes into one finding that lists each. Write report.md: one line first saying the flows are reported apart, in the flow-report step's flows.md, so that a flow that fails never costs these findings; then a summary table (findings by severity and by page), then each finding, severity first, with its crop PNG embedded by relative link. Write nothing about the flows here. Copy every crop PNG, and every screenshot a finding cites (its source, a full-size capture from its group's capture tar), to $SWARM_ARTIFACTS_DIR next to report.md and findings.json so the console shows them; a cited screenshot that no staged tar holds is a finding about the run itself. Change no file in the repository."
     },
     {
       "step_id": "flow-report",

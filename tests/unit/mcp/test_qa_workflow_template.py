@@ -224,8 +224,11 @@ def test_template_report_reads_every_capture_review_and_the_a11y_pass():
     assert report["input_from"] == {s: f"{s}.tar" for s in fed}, "and stages each one's tarball"
     assert not set(report["depends_on"]) & set(_flows(steps)), "a failed flow must not cancel the screen findings"
     for step_id in fed:
-        # The name staged is the name the producer is told to write.
-        assert f"{step_id}.tar under $SWARM_ARTIFACTS_DIR" in steps[step_id]["prompt"], step_id
+        # The name staged is the name the producer is told to write: a capture
+        # through swarm_qa's --bundle, a review or the a11y pass by its brief.
+        written = (f"--bundle $SWARM_ARTIFACTS_DIR/{step_id}.tar" if step_id.startswith(CAPTURE)
+                   else f"{step_id}.tar under $SWARM_ARTIFACTS_DIR")
+        assert written in steps[step_id]["prompt"], step_id
     prompt = report["prompt"]
     assert "report.md" in prompt and "findings.json" in prompt
     # MUTATION: put "then one section per flow with its GIFs embedded" back in
