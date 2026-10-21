@@ -257,7 +257,7 @@ def test_the_refresh_never_delays_the_reply(tmp_path, monkeypatch):
     held: list = []
     rig = _Rig(tmp_path, start=held.append)
     monkeypatch.setattr(buildboard, "AUTO", rig.auto)
-    assert server._answered(object(), "swarm_dispatch", {}) == reply
+    assert server._answered(object(), "swarm_dispatch", {}) == reply  # MUTATION: answer with the refresh's result -- differs.
     assert rig.writes == [] and len(held) == 1  # MUTATION: refresh before answering -- written already.
 
 
@@ -345,7 +345,7 @@ def _project(tmp_path: Path, kind: str) -> Path:
 def test_the_hook_refreshes_the_board_in_a_project_with_a_board_or_a_record(tmp_path, kind):
     project = _project(tmp_path, kind)
     done = _hook(tmp_path, project, SWARM_LIST_BODY=f"cat <<'EOF'\n{_CONTEXT}\nEOF")
-    assert (done.returncode, done.stderr) == (0, "")
+    assert (done.returncode, done.stderr) == (0, "")  # MUTATION: let the board's stderr through -- shown to the session.
     boards = [c for c in _calls(tmp_path) if c.endswith("sc build-board --no-open")]
     assert len(boards) == 1  # MUTATION: no session-start refresh, or one that opens a browser -- 0.
     assert json.loads(done.stdout)["hookSpecificOutput"]["additionalContext"].startswith("1 SwarmCloud")  # MUTATION: the board's refresh replaces the context -- differs.
@@ -354,7 +354,7 @@ def test_the_hook_refreshes_the_board_in_a_project_with_a_board_or_a_record(tmp_
 def test_the_hook_refreshes_nothing_in_a_project_with_neither(tmp_path):
     project = _project(tmp_path, "none")
     done = _hook(tmp_path, project)
-    assert (done.returncode, done.stdout, done.stderr) == (0, "", "")
+    assert (done.returncode, done.stdout, done.stderr) == (0, "", "")  # MUTATION: print anything for a project with no work -- output.
     assert not any("build-board" in c for c in _calls(tmp_path))  # MUTATION: refresh in every project -- called.
     assert not (project / ".claude").exists()  # MUTATION: create a board where there was no work -- a folder.
 
@@ -364,7 +364,7 @@ def test_the_board_refresh_does_not_depend_on_auto_attach(tmp_path, off):
     project = _project(tmp_path, "board")
     done = _hook(tmp_path, project, CLAUDE_PLUGIN_OPTION_AUTO_ATTACH=off,
                  SWARM_LIST_BODY=f"cat <<'EOF'\n{_CONTEXT}\nEOF")
-    assert (done.returncode, done.stdout, done.stderr) == (0, "", "")
+    assert (done.returncode, done.stdout, done.stderr) == (0, "", "")  # MUTATION: print the context with auto_attach off -- output.
     calls = _calls(tmp_path)
     assert any(c.endswith("sc build-board --no-open") for c in calls)  # MUTATION: tie the board to auto_attach -- not called.
     assert not any("workflows" in c for c in calls)  # MUTATION: list workflows with auto_attach off -- called.
@@ -389,7 +389,7 @@ def test_a_hanging_board_refresh_is_cut_at_the_hooks_time_budget(tmp_path):
     done = _hook(tmp_path, project, SWARM_BOARD_BODY="sleep 30", SWARM_SESSION_START_TIMEOUT="1",
                  SWARM_LIST_BODY=f"cat <<'EOF'\n{_CONTEXT}\nEOF")
     assert time.monotonic() - started < 15  # MUTATION: wait for the board without the watchdog -- 30 s.
-    assert done.returncode == 0 and done.stderr == ""
+    assert done.returncode == 0 and done.stderr == ""  # MUTATION: report the killed job -- stderr.
     assert "wf_a" in done.stdout  # MUTATION: a slow board costs the session its context -- empty.
 
 
