@@ -72,6 +72,9 @@ case "${refs_rc}" in
     warn "apply this, then: make build push deploy -- which plans everything else, by digest."
     TARGET_ARGS=(-target=module.project_services -target=module.artifact_registry)
     ;;
+  4)
+    die "refusing to plan: a gated image has no digest to pin, and this plan would switch off what it deploys (see above)"
+    ;;
   *)
     die "could not work out which images are deployed (see above); refusing to plan without them"
     ;;

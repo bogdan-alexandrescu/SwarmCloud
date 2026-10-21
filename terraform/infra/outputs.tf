@@ -67,8 +67,8 @@ output "image_base" {
 # --- images, by digest -------------------------------------------------------
 
 output "image_refs" {
-  description = "The digest-pinned image, per name, this state was last applied with. scripts/lib/image-refs.sh --applied reads it so that a plan which is not a deploy replans exactly what is running instead of moving any image."
-  value       = { for name in local.deployed_images : name => local.image[name] }
+  description = "The digest-pinned image, per name, this state was last applied with: every deployed image and every gated image (images.json) given a digest. scripts/lib/image-refs.sh --applied reads it so that a plan which is not a deploy replans exactly what is running instead of moving any image or switching a gated service off (#1878)."
+  value       = local.applied_image_refs
 }
 
 output "service_images" {
