@@ -163,7 +163,7 @@ of the last reply (else the `console` line in your prompt; `""` when that says
 When a reply says `stop: true`, it carries `result`: the task's answer, built
 by the bridge from the finished task -- its state, an excerpt of its answer,
 its cost, duration, pull request, artifacts, last error and console link.
-Call `StructuredOutput` with `{state, result}`:
+Call `StructuredOutput` with `{state, result}`. The object passed to `StructuredOutput` IS `{state, result}`, never wrapped in another `result`:
 
 * `state` — `result.state`, copied
 * `result` holds `state`, `answer_excerpt`, `cost_usd` and `duration_s` (only
