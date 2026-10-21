@@ -24,16 +24,24 @@ AdmissionDenied is NOT an error and never stops the loop. It is written to
 task -- which will usually belong to a different tenant, and will usually be
 admissible. Breaking out on the first denial is how one full pool ends up
 stalling every other tenant's work.
+
+Neither is a contended admission transaction (#1822). An `Aborted` from the
+lease transaction, or the `ValueError` `firestore.transactional` raises once
+every attempt was aborted, skips that one task for this pass after a short
+jittered pause; it is counted as `contended`, and the drain goes on and answers
+200. Only those two: see `_is_contention`.
 """
 
 from __future__ import annotations
 
 import logging
+import random
 import time
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
+from google.api_core.exceptions import Aborted
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
@@ -355,6 +363,40 @@ def read_workflow_failure(
     )
 
 
+#: The pause after a contended admission transaction, before the next
+#: candidate (#1822): long enough that the competing transaction usually
+#: commits first, short enough that a pass of 200 candidates all contended
+#: still fits well inside `max_run_seconds`. Jittered, so two schedulers that
+#: collided do not collide again in step.
+CONTENTION_BACKOFF_MIN_SECONDS = 0.01
+CONTENTION_BACKOFF_MAX_SECONDS = 0.05
+
+#: The message `firestore.transactional` gives the ValueError it raises when
+#: every attempt was aborted (`_EXCEED_ATTEMPTS_TEMPLATE`).
+_RETRY_EXHAUSTED = "Failed to commit transaction in"
+
+#: Looked up at call time, so a test can record the pauses instead of taking them.
+_sleep = time.sleep
+
+
+def _is_contention(exc: BaseException) -> bool:
+    """An admission transaction that lost to another and committed NOTHING.
+
+    `Aborted` (409) from a transactional read, which `firestore.transactional`
+    does not retry, or the `ValueError` it raises once `max_attempts` commits
+    were all aborted -- read by its cause, or by its message when the last
+    attempt ended on another retryable code. Never `DeadlineExceeded`,
+    `ServiceUnavailable` or anything broader: a deadline can expire after the
+    commit landed, so the transaction may have written, and skipping it would
+    be guessing.
+    """
+    if isinstance(exc, Aborted):
+        return True
+    if isinstance(exc, ValueError):
+        return isinstance(exc.__cause__, Aborted) or str(exc).startswith(_RETRY_EXHAUSTED)
+    return False
+
+
 @dataclass
 class DrainReport:
     passes: int = 0
@@ -404,6 +446,10 @@ class DrainReport:
     #: (incident wf_ebb3ab2d65664707a559, F-9). The breakdown by write and
     #: reason is `swarm_scheduler_stale_writes_total{write, reason}`.
     stale_writes: int = 0
+    #: Admissions skipped for this pass because their lease transaction was
+    #: aborted by contention (`_is_contention`, #1822). Each wrote nothing, so
+    #: the task is still READY and a later pass, wake or tick retries it.
+    contended: int = 0
     tenants_seen: int = 0
     topped_up_tenants: int = 0
     stop_reason: str = "not_started"
@@ -574,9 +620,18 @@ class Scheduler:
                 report.stop_reason = "time_budget"
                 break
 
+            scanned_before, contended_before = report.scanned, report.contended
             leased_this_pass = self._admission_pass(report, started)
             if leased_this_pass is None:
                 report.stop_reason = "queue_empty"
+                break
+
+            contended_this_pass = report.contended - contended_before
+            if leased_this_pass == 0 and 0 < contended_this_pass == report.scanned - scanned_before:
+                # Every candidate lost its transaction to another writer. The
+                # drain still ends normally (200): nothing was written, and the
+                # next wake or the 1-minute tick retries (#1822).
+                report.stop_reason = "all_contended"
                 break
 
             if leased_this_pass == 0:
@@ -1028,6 +1083,27 @@ class Scheduler:
             lease = self._store.acquire_lease(
                 task, units=units, backend=backend.value, config=self._admission
             )
+        except (Aborted, ValueError) as exc:
+            if not _is_contention(exc):
+                raise
+            # SAFE TO SKIP because an aborted transaction WROTE NOTHING: the
+            # task is still READY, no pool count moved and no lease document
+            # exists, so the all-or-nothing reservation is untouched
+            # (invariant 2) and concurrency, counted from LEASED, is unchanged
+            # (invariant 3). A later pass, the next wake or the 1-minute tick
+            # retries it. Ending the drain here instead answered 503 and
+            # Pub/Sub redelivered the wake into the same contention: 199 such
+            # drains in 48 h (#1822). `_is_contention` admits exactly the two
+            # forms that cannot have committed; a deadline is not one of them.
+            report.contended += 1
+            log.warning(
+                "admission contended, skipped for this pass task_id=%s tenant_id=%s error=%s",
+                task.id,
+                task.tenant_id,
+                type(exc).__name__,
+            )
+            _sleep(random.uniform(CONTENTION_BACKOFF_MIN_SECONDS, CONTENTION_BACKOFF_MAX_SECONDS))
+            return False
         except AdmissionDenied as denied:
             reasons = denied.reasons
             recorded = self._store.record_blockers(task, reasons)
