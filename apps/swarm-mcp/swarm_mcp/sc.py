@@ -1054,18 +1054,32 @@ def _single_task_entry(task: dict[str, Any], now: datetime, tenant: Any = None) 
     return with_console(entry, task)
 
 
-def _callers_tasks_in(client: SwarmClient, state: str) -> tuple[list[dict[str, Any]], str | None, str | None]:
+def _callers_tasks_in(
+    client: SwarmClient, state: str, *, claude_session: str | None = None
+) -> tuple[list[dict[str, Any]], str | None, str | None, dict[str, Any] | None]:
     """The caller's own tasks in one state, every page: `(tasks, tenant_id,
-    gap)`. `gap` is None when the last page was read, and a sentence when a
-    later page's read failed or the route repeated a token; the first page's
-    failure raises."""
+    gap, filtered)`. `gap` is None when the last page was read, and a
+    sentence when a later page's read failed or the route repeated a token;
+    the first page's failure raises.
+
+    With `claude_session`, the route is asked for that session's tasks only
+    (CHECK-FILTER-TASKS, #1749), so other sessions' rows cost no pages.
+    `filtered` is present only when the route echoed the session in
+    `filter`, i.e. applied it: `{claude_session, left_out, left_out_single}`,
+    the counts summed over the pages, which a caller reports beside the rows
+    it left out itself. A deployment older than the filter ignores the
+    parameter and serves every row, so `filtered` is None and the caller's
+    own ownership test is what leaves the rest out."""
     found: list[dict[str, Any]] = []
     tenant: str | None = None
     token: str | None = None
     seen: set[str] = set()
+    echoed: dict[str, Any] | None = None
     pages = 0
     while True:
         params = [("state", state), ("submitted_by", "me"), ("limit", str(SINGLE_TASK_PAGE_SIZE))]
+        if claude_session:
+            params.append(("claude_session", claude_session))
         if token:
             params.append(("page_token", token))
         try:
@@ -1073,15 +1087,26 @@ def _callers_tasks_in(client: SwarmClient, state: str) -> tuple[list[dict[str, A
         except SwarmError as exc:
             if pages == 0:
                 raise
-            return found, tenant, f"reading page {pages + 1} of the {state} tasks failed ({exc})"
+            return found, tenant, f"reading page {pages + 1} of the {state} tasks failed ({exc})", echoed
         pages += 1
         found += [t for t in data["tasks"] if isinstance(t, dict)]
         tenant = tenant or data.get("tenant_id")
+        filtered = data.get("filter")
+        if claude_session and isinstance(filtered, dict) and "claude_session" in filtered:
+            if echoed is None:
+                echoed = {"claude_session": filtered.get("claude_session"),
+                          "left_out": {}, "left_out_single": {}}
+            for key in ("left_out", "left_out_single"):
+                counts = filtered.get(key)
+                for reason, count in (counts.items() if isinstance(counts, dict) else ()):
+                    if isinstance(count, int):
+                        echoed[key][reason] = echoed[key].get(reason, 0) + count
         following = data.get("next_page_token") or None
         if following is None:
-            return found, tenant, None
+            return found, tenant, None, echoed
         if following in seen or following == token:
-            return found, tenant, f"GET /v1/tasks handed back the same {state} page token after {pages} pages"
+            return (found, tenant,
+                    f"GET /v1/tasks handed back the same {state} page token after {pages} pages", echoed)
         seen.add(following)
         token = following
 
@@ -1116,7 +1141,7 @@ def running_tasks(
     seen: set[str] = set()
     found: list[dict[str, Any]] = []
     gaps: list[str] = []
-    for state, (tasks, page_tenant, gap) in zip(states, walks):
+    for state, (tasks, page_tenant, gap, _) in zip(states, walks):
         tenant = tenant or page_tenant
         if gap:
             gaps.append(gap)

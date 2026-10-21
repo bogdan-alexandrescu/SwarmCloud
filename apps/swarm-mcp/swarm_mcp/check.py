@@ -758,18 +758,31 @@ def _workflow_lists(
     return walk["workflows"], recent, notes
 
 
-def _single_tasks(client: SwarmClient) -> tuple[list[dict[str, Any]], str | None]:
-    """The caller's unfinished tasks in no workflow, as the task route serves
-    them (with `heartbeat_at` and a READY task's live `waiting_for`), every
-    page of each state."""
+def _single_tasks(
+    client: SwarmClient, sid: str | None = None
+) -> tuple[list[dict[str, Any]], str | None, dict[str, int]]:
+    """`(tasks, gap, left_out_by_api)`: the caller's unfinished tasks in no
+    workflow, as the task route serves them (with `heartbeat_at` and a READY
+    task's live `waiting_for`), every page of each state.
+
+    THIS SESSION'S ONLY, ON THE SERVER, whenever the session is known
+    (CHECK-FILTER-TASKS, #1749): only work tagged with it can be `own`, so
+    the API dropping the rest loses nothing (`server_scope` says the same
+    for workflows). `left_out_by_api` is what the route left out of single
+    tasks, by kind, summed over every state's walk; empty from a deployment
+    that ignored the parameter, whose rows the caller's ownership test then
+    counts itself."""
     from .sc import _callers_tasks_in, _live_states
 
     found: dict[str, dict[str, Any]] = {}
     gaps: list[str] = []
+    by_api: dict[str, int] = {}
     for state in _live_states():
-        tasks, _, gap = _callers_tasks_in(client, state)
+        tasks, _, gap, filtered = _callers_tasks_in(client, state, claude_session=sid)
         if gap:
             gaps.append(gap)
+        for kind, count in ((filtered or {}).get("left_out_single") or {}).items():
+            by_api[kind] = by_api.get(kind, 0) + count
         for task in tasks:
             task_id = task_id_of(task)
             if (not task_id or task.get("workflow_id") or task.get("parent_task_id")
@@ -777,7 +790,7 @@ def _single_tasks(client: SwarmClient) -> tuple[list[dict[str, Any]], str | None
                 continue
             found.setdefault(str(task_id), task)
     gap = f"{'; '.join(gaps)}; older ones are not checked" if gaps else None
-    return list(found.values()), gap
+    return list(found.values()), gap, by_api
 
 
 def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: datetime,
@@ -908,7 +921,11 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
                 entry["console"] = link
             in_scope_running.append(entry)
 
-    singles, singles_gap = _single_tasks(client)
+    singles, singles_gap, singles_by_api = _single_tasks(client, sid)
+    # What the API left out of this session's single tasks (CHECK-FILTER-
+    # TASKS): counted as if this check had left it out itself.
+    for kind in ("other_session", "untagged"):
+        left_out["single_tasks"][kind] += int(singles_by_api.get(kind) or 0)
     in_scope_singles: list[dict[str, Any]] = []
     for task in singles:
         kind = session.ownership(session.owner_of(task), sid, record=record, ident=task_id_of(task),

@@ -325,10 +325,10 @@ def _check(monkeypatch) -> dict:
     }
     running = [listed(wid, sid) for wid, (sid, _, _) in rows.items()]
     monkeypatch.setattr(check, "_workflow_lists", lambda client, scoped=None: (running, [], {"tenant_id": "eng"}))
-    monkeypatch.setattr(check, "_single_tasks", lambda client: ([
+    monkeypatch.setattr(check, "_single_tasks", lambda client, sid=None: ([
         {"id": "task_recorded_far", "state": "RUNNING", "claude_session": SESSION, "repository_url": FAR},
         {"id": "task_old_far", "state": "RUNNING", "claude_session": SESSION, "repository_url": FAR},
-    ], None))
+    ], None, {}))
     monkeypatch.setattr(check, "classify_task", lambda *a, **k: None)
 
     def fetch(client, wid):
