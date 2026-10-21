@@ -27,6 +27,7 @@ import {
   type WorkflowPage,
   pluralise,
 } from './types'
+import { waitingShort } from './waitingShort'
 
 /**
  * WHAT IS WRONG, derived from real state -- the whole of it, and none of the
@@ -1090,19 +1091,36 @@ function unitFor(rows: Task[]): string {
   return rows.length === 1 ? 'agent' : 'agents'
 }
 
-/** "PROVIDER_QUOTA_EXHAUSTED ×2 — The provider quota is spent...". */
+/**
+ * "PROVIDER_QUOTA_EXHAUSTED ×2 — The provider quota is spent...", and then
+ * EACH ITEM'S OWN REASON (WAIT-UI-LISTS, #1782): "CI_PENDING ×2 — ... —
+ * CI #1779: 5 pending (merge-a); CI #1780: 1 failed (merge-b)". During the
+ * 2026-10-20/21 CI stall the card counted every merge step under one
+ * sentence, whether its checks were queued, failing or done; WAIT-API's
+ * `waiting.summary` on each row says which, cut by `waitingShort` as the
+ * Agents list cuts it. A row whose API sends no `waiting` adds nothing, so
+ * an older API's card reads as it did.
+ */
 function whyEach(rows: Task[]): string {
-  const counts = new Map<string, number>()
+  const counts = new Map<string, { n: number; items: string[] }>()
   for (const t of rows) {
     const key = t.park_reason === null ? 'no reason recorded' : String(t.park_reason)
-    counts.set(key, (counts.get(key) ?? 0) + 1)
+    const g = counts.get(key) ?? { n: 0, items: [] }
+    g.n += 1
+    const short = t.waiting ? waitingShort(t.waiting) : null
+    if (short !== null) g.items.push(`${short} (${t.step_id ?? t.id})`)
+    counts.set(key, g)
   }
   return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
+    .sort((a, b) => b[1].n - a[1].n)
     // NO TRAILING STOP (live QA OV-8, 2026-10-11): `reasonCopy` is a
     // sentence and ends in one, and every caller follows this with ". ",
     // so the parked item read "Holds no capacity.. The first becomes...".
-    .map(([reason, n]) => `${reason}${n > 1 ? ` ×${n}` : ''} — ${reasonCopy(reason).replace(/\.+$/, '')}`)
+    .map(
+      ([reason, { n, items }]) =>
+        `${reason}${n > 1 ? ` ×${n}` : ''} — ${reasonCopy(reason).replace(/\.+$/, '')}` +
+        (items.length > 0 ? ` — ${items.join('; ')}` : ''),
+    )
     .join(' · ')
 }
 
