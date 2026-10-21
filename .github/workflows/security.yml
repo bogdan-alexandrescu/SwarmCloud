@@ -57,115 +57,46 @@ env:
 # with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
 jobs:
   filesystem:
+    # NAME-KEEPER (CI-FOLD, #1799): the `trivy (repo) · ...` steps of
+    # `checks` run the check; this passes only on its verdict `success`.
     name: trivy (repo)
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
-    # Uploads SARIF to code scanning: the only reason this job holds
-    # security-events: write.
-    permissions:
-      contents: read
-      security-events: write
+    runs-on: ubuntu-24.04
+    needs: checks
+    if: always()
     steps:
-      - uses: actions/checkout@v5
-
-      - name: install trivy
-        # Explicit and pinned, not aquasecurity/trivy-action: that action's
-        # setup restores its binary from actions/cache at /home/runner/.local/bin,
-        # which exists on GitHub's image but not on the self-hosted VM, so the
-        # cache "hit" extracted nowhere and `trivy` was missing (exit 127, then
-        # no trivy-fs.sarif). The install goes into the job's temp dir (the
-        # self-hosted runner user cannot write /usr/local/bin) and works the same
-        # on both runner kinds.
-        run: |
-          set -euo pipefail
-          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
-            | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
-          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
-
-      - name: trivy filesystem scan
-        # Report everything (exit 0); the gate is the step after the upload.
-        run: |
-          set -euo pipefail
-          trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL \
-            --ignore-unfixed --format sarif --output trivy-fs.sarif \
-            --exit-code 0 --no-progress .
-
-      - name: upload SARIF
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: trivy-fs.sarif
-          category: trivy-fs
-
-      - name: fail on fixable HIGH/CRITICAL new against the base branch
-        # Only findings the base branch's scan of the same target does not
-        # have, compared by rule id + package + target, never by line (PR 1186
-        # had main's alerts re-attributed to its edited FROM lines; #1194).
-        # No base (main's push, schedule): every finding fails. Every finding
-        # is still in the Security tab above. scripts/trivy-new-findings.sh
-        # says why.
-        #
-        # A LANE PUSH (`swarm/**`) compares with main's tip, the base its pull
-        # request will have: with no base, every finding main already carries
-        # would fail it, and the merge step holds a red push run at the head
-        # as red. A tip that cannot be read fails here, never "no base".
+      - name: the folded check passed in `checks`
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-          EVENT: ${{ github.event_name }}
-          REF: ${{ github.ref }}
+          CHECK: trivy (repo)
+          VERDICT: ${{ needs.checks.outputs.filesystem }}
         run: |
           set -euo pipefail
-          base="${BASE_SHA}"
-          if [ -z "${base}" ] && [ "${EVENT}" = "push" ] && [ "${REF}" != "refs/heads/main" ]; then
-            tip="$(git ls-remote origin refs/heads/main)" \
-              || { echo "::error::could not read main's tip to compare this lane push with"; exit 1; }
-            base="$(printf '%s\n' "${tip}" | awk '$2 == "refs/heads/main" { print $1 }')"
-            if ! printf '%s' "${base}" | grep -Eq '^[0-9a-f]{40}$'; then
-              echo "::error::main's tip read as '${base}', not a commit; nothing to compare this lane push with"
-              exit 1
-            fi
-            echo "lane push: comparing with main's tip ${base}"
+          if [ "${VERDICT}" = "success" ]; then
+            echo "'${CHECK}' passed in its folded job"
+            exit 0
           fi
-          scripts/trivy-new-findings.sh gate --base "${base}"
+          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
+          exit 1
 
   secrets:
+    # NAME-KEEPER (CI-FOLD, #1799): the `secret scan · ...` steps of
+    # `checks` run the check; this passes only on its verdict `success`.
     name: secret scan
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ubuntu-24.04
+    needs: checks
+    if: always()
     steps:
-      - uses: actions/checkout@v5
-        with:
-          # Full history: a key removed in the latest commit is still a leaked
-          # key if it is reachable anywhere in the branch.
-          fetch-depth: 0
-
-      - name: trivy secret scan (history)
+      - name: the folded check passed in `checks`
+        env:
+          CHECK: secret scan
+          VERDICT: ${{ needs.checks.outputs.secrets }}
         run: |
           set -euo pipefail
-          # Into the job's temp dir, not /usr/local/bin: the self-hosted VM's
-          # runner user cannot write there (GitHub's image lets it).
-          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
-            | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
-          export PATH="${RUNNER_TEMP}/bin:${PATH}"
-          trivy fs --scanners secret --severity HIGH,CRITICAL --exit-code 1 --no-progress .
-
-      - name: no service account keys in the repository
-        # WIF exists so that no downloadable key is ever needed. A committed key
-        # is a credential with no expiry and no record of where it was copied.
-        run: |
-          set -euo pipefail
-          # Scan TRACKED files only, via git ls-files. Scanning the working tree
-          # would match vendored library source (cryptography and google-auth
-          # both contain PEM header literals) and report a leak that is not one.
-          fail=0
-          if git ls-files -z | xargs -0 grep -lIE '"type"[[:space:]]*:[[:space:]]*"service_account"' 2>/dev/null; then
-            echo "::error::a Google service account key appears to be committed"
-            fail=1
+          if [ "${VERDICT}" = "success" ]; then
+            echo "'${CHECK}' passed in its folded job"
+            exit 0
           fi
-          if git ls-files -z | xargs -0 grep -nIE -- '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----' 2>/dev/null; then
-            echo "::error::a private key appears to be committed"
-            fail=1
-          fi
-          if [ "${fail}" -eq 0 ]; then echo "no keys found"; fi
-          exit "${fail}"
+          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
+          exit 1
 
   iac:
     name: checkov (terraform + kubernetes)
@@ -261,12 +192,164 @@ jobs:
           category: checkov-kubernetes
 
   policy:
+    # NAME-KEEPER (CI-FOLD, #1799): the `platform policy assertions · ...` steps of
+    # `checks` run the check; this passes only on its verdict `success`.
     name: platform policy assertions
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ubuntu-24.04
+    needs: checks
+    if: always()
     steps:
-      - uses: actions/checkout@v5
+      - name: the folded check passed in `checks`
+        env:
+          CHECK: platform policy assertions
+          VERDICT: ${{ needs.checks.outputs.policy }}
+        run: |
+          set -euo pipefail
+          if [ "${VERDICT}" = "success" ]; then
+            echo "'${CHECK}' passed in its folded job"
+            exit 0
+          fi
+          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
+          exit 1
 
-      - name: no Spot anywhere
+  checks:
+    # SUB-MINUTE CHECKS SHARE A JOB (CI-FOLD, #1799; owner approval
+    # 2026-10-21; docs/ci.md "Sub-minute checks share a job"). `secret scan`,
+    # `trivy (repo)` and `platform policy assertions` -- three of the
+    # ruleset's required checks -- each paid a VM create and boot (~52 s) for
+    # under a minute of work. They run here as steps named `<the old job's
+    # name> · <what it does>`, every one `!cancelled()` so one check failing
+    # never hides another's answer, and any failed step fails this job. The
+    # `verdict` step gives each check one result, and its old job id --
+    # `secrets`, `filesystem`, `policy` -- stays as a name-keeper on
+    # ubuntu-24.04 that reports it under the required name.
+    #
+    # Step ids are the contract: `setup-*` is the shared setup, every step of
+    # a check is `<old job id>-*`, and the last is `verdict`
+    # (tests/unit/scripts/test_ci_fold.py).
+    name: sub-minute checks (secret scan, trivy, policy)
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # Uploads SARIF to code scanning (`trivy (repo)`): the only reason this
+    # job holds security-events: write.
+    permissions:
+      contents: read
+      security-events: write
+    outputs:
+      secrets: ${{ steps.verdict.outputs.secrets }}
+      filesystem: ${{ steps.verdict.outputs.filesystem }}
+      policy: ${{ steps.verdict.outputs.policy }}
+    steps:
+      - name: setup · checkout
+        id: setup-checkout
+        uses: actions/checkout@v5
+        with:
+          # Full history, for `secret scan`: a key removed in the latest commit
+          # is still a leaked key if it is reachable anywhere in the branch.
+          fetch-depth: 0
+
+      - name: setup · install trivy
+        id: setup-trivy
+        # Explicit and pinned, not aquasecurity/trivy-action: that action's
+        # setup restores its binary from actions/cache at /home/runner/.local/bin,
+        # which exists on GitHub's image but not on the self-hosted VM, so the
+        # cache "hit" extracted nowhere and `trivy` was missing (exit 127, then
+        # no trivy-fs.sarif). The install goes into the job's temp dir (the
+        # self-hosted runner user cannot write /usr/local/bin) and works the same
+        # on both runner kinds.
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
+            | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      # --- secret scan ---------------------------------------------------------
+      # First, before any step below writes a report into the checkout.
+      - name: secret scan · trivy secret scan (history)
+        id: secrets-trivy
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          # trivy is the shared `setup · install trivy` step's.
+          trivy fs --scanners secret --severity HIGH,CRITICAL --exit-code 1 --no-progress .
+
+      - name: secret scan · no service account keys in the repository
+        id: secrets-keys
+        if: ${{ !cancelled() }}
+        # WIF exists so that no downloadable key is ever needed. A committed key
+        # is a credential with no expiry and no record of where it was copied.
+        run: |
+          set -euo pipefail
+          # Scan TRACKED files only, via git ls-files. Scanning the working tree
+          # would match vendored library source (cryptography and google-auth
+          # both contain PEM header literals) and report a leak that is not one.
+          fail=0
+          if git ls-files -z | xargs -0 grep -lIE '"type"[[:space:]]*:[[:space:]]*"service_account"' 2>/dev/null; then
+            echo "::error::a Google service account key appears to be committed"
+            fail=1
+          fi
+          if git ls-files -z | xargs -0 grep -nIE -- '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----' 2>/dev/null; then
+            echo "::error::a private key appears to be committed"
+            fail=1
+          fi
+          if [ "${fail}" -eq 0 ]; then echo "no keys found"; fi
+          exit "${fail}"
+
+      # --- trivy (repo) --------------------------------------------------------
+      - name: trivy (repo) · trivy filesystem scan
+        id: filesystem-scan
+        if: ${{ !cancelled() }}
+        # Report everything (exit 0); the gate is the step after the upload.
+        run: |
+          set -euo pipefail
+          trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL \
+            --ignore-unfixed --format sarif --output trivy-fs.sarif \
+            --exit-code 0 --no-progress .
+
+      - name: trivy (repo) · upload SARIF
+        id: filesystem-sarif
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      - name: trivy (repo) · fail on fixable HIGH/CRITICAL new against the base branch
+        id: filesystem-gate
+        if: ${{ !cancelled() }}
+        # Only findings the base branch's scan of the same target does not
+        # have, compared by rule id + package + target, never by line (PR 1186
+        # had main's alerts re-attributed to its edited FROM lines; #1194).
+        # No base (main's push, schedule): every finding fails. Every finding
+        # is still in the Security tab above. scripts/trivy-new-findings.sh
+        # says why.
+        #
+        # A LANE PUSH (`swarm/**`) compares with main's tip, the base its pull
+        # request will have: with no base, every finding main already carries
+        # would fail it, and the merge step holds a red push run at the head
+        # as red. A tip that cannot be read fails here, never "no base".
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          base="${BASE_SHA}"
+          if [ -z "${base}" ] && [ "${EVENT}" = "push" ] && [ "${REF}" != "refs/heads/main" ]; then
+            tip="$(git ls-remote origin refs/heads/main)" \
+              || { echo "::error::could not read main's tip to compare this lane push with"; exit 1; }
+            base="$(printf '%s\n' "${tip}" | awk '$2 == "refs/heads/main" { print $1 }')"
+            if ! printf '%s' "${base}" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "::error::main's tip read as '${base}', not a commit; nothing to compare this lane push with"
+              exit 1
+            fi
+            echo "lane push: comparing with main's tip ${base}"
+          fi
+          scripts/trivy-new-findings.sh gate --base "${base}"
+
+      # --- platform policy assertions ----------------------------------------
+      - name: platform policy assertions · no Spot anywhere
+        id: policy-spot
+        if: ${{ !cancelled() }}
         # Verified constraint: Spot Pods cannot use GKE Autopilot extended run
         # time, so Spot and the platform's no-preemption requirement are
         # mutually exclusive. The frozen catalogue raises at import if a profile
@@ -313,7 +396,9 @@ jobs:
           if [ "${fail}" -eq 0 ]; then echo "no spot configuration"; fi
           exit "${fail}"
 
-      - name: no public Cloud Run services
+      - name: platform policy assertions · no public Cloud Run services
+        id: policy-public
+        if: ${{ !cancelled() }}
         # allUsers on a control-plane service would put an agent-execution API on
         # the public internet with no identity behind it.
         run: |
@@ -349,13 +434,17 @@ jobs:
           fi
           echo "no public bindings beyond the GitHub push receiver's and the acceptance fixture's"
 
-      - name: destroy guard still catches offenders
+      - name: platform policy assertions · destroy guard still catches offenders
+        id: policy-destroy-guard
+        if: ${{ !cancelled() }}
         # This guard is the only thing between `make destroy` and another team's
         # live cluster in the shared project. It is verified here as well as in
         # `make test`, because it is security-critical rather than merely tested.
         run: ./scripts/destroy.sh --self-test
 
-      - name: the frozen contract is intact
+      - name: platform policy assertions · the frozen contract is intact
+        id: policy-contract
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           for f in states.py models.py profiles.py admission.py config.py identity.py; do
@@ -365,6 +454,34 @@ jobs:
           grep -q 'Spot is disabled platform-wide' apps/common/swarm_common/profiles.py \
             || { echo "::error::the Spot guard has been removed from profiles.py"; exit 1; }
           echo "contract present"
+
+      - name: verdict · each folded check's own result, for its name-keeper
+        # One result per check, by step id: `success` only when every shared
+        # `setup-*` step succeeded, none of the check's own `<old job id>-*`
+        # steps failed or was cancelled, and at least one of them ran;
+        # `skipped` when none ran; `failure` otherwise. Each name-keeper
+        # passes on `success` alone (docs/ci.md "Sub-minute checks share a
+        # job"). The same text in application.yml, security.yml and
+        # terraform.yml; tests/unit/scripts/test_ci_fold.py holds them equal.
+        id: verdict
+        if: always()
+        env:
+          STEPS: ${{ toJSON(steps) }}
+          CHECKS: secrets filesystem policy
+        run: |
+          set -euo pipefail
+          read -r -a checks <<< "${CHECKS}"
+          for check in "${checks[@]}"; do
+            result="$(printf '%s\n' "${STEPS}" | jq -r --arg check "${check}" '
+              [to_entries[] | select(.key | startswith("setup-")) | .value.outcome] as $setup
+              | [to_entries[] | select(.key | startswith($check + "-")) | .value.outcome] as $own
+              | if ($setup | length) == 0 or any($setup[]; . != "success") then "failure"
+                elif any($own[]; . == "failure" or . == "cancelled") then "failure"
+                elif any($own[]; . == "success") then "success"
+                else "skipped" end')"
+            echo "${check}: ${result}"
+            echo "${check}=${result}" >> "${GITHUB_OUTPUT}"
+          done
 
   images:
     name: trivy (published images)

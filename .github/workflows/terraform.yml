@@ -82,18 +82,41 @@ env:
 # GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
 # with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
 jobs:
-  validate:
-    name: fmt / validate / tflint
+  offline:
+    # SUB-MINUTE CHECKS SHARE A JOB (CI-FOLD, #1799; owner approval
+    # 2026-10-21; docs/ci.md "Sub-minute checks share a job"). `fmt /
+    # validate / tflint` and `terraform test` each paid a VM create and boot
+    # (~52 s) to install the same terraform. They run here as steps named
+    # `<the old job's name> · <what it does>`, every one `!cancelled()` so one
+    # check failing never hides the other's answer, and any failed step fails
+    # this job. The `verdict` step gives each check one result, and the old
+    # job ids -- `validate` (which main's `plan` needs) and `test` -- stay as
+    # name-keepers on ubuntu-24.04. Offline: no backend, no credentials.
+    #
+    # Step ids are the contract: `setup-*` is the shared setup, every step of
+    # a check is `<old job id>-*`, and the last is `verdict`
+    # (tests/unit/scripts/test_ci_fold.py).
+    name: offline checks (fmt / validate / tflint, terraform test)
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    outputs:
+      validate: ${{ steps.verdict.outputs.validate }}
+      test: ${{ steps.verdict.outputs.test }}
     steps:
-      - uses: actions/checkout@v5
+      - name: setup · checkout
+        id: setup-checkout
+        uses: actions/checkout@v5
 
-      - uses: hashicorp/setup-terraform@v4
+      - name: setup · terraform
+        id: setup-terraform
+        uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
 
-      - name: terraform fmt
+      # --- fmt / validate / tflint --------------------------------------------
+      - name: fmt / validate / tflint · terraform fmt
+        id: validate-fmt
+        if: ${{ !cancelled() }}
         # BOTH roots. `terraform fmt` takes one directory, and this step used to
         # name only `terraform`, so tests/terraform/ -- the 87 assertions the
         # `terraform test` job below depends on -- was the one Terraform in the
@@ -103,15 +126,21 @@ jobs:
           terraform fmt -check -recursive -diff terraform
           terraform fmt -check -recursive -diff tests/terraform
 
-      - name: terraform init (no backend)
+      - name: fmt / validate / tflint · terraform init (no backend)
+        id: validate-init
+        if: ${{ !cancelled() }}
         # -backend=false validates configuration without touching remote state,
         # so this job needs no cloud credentials at all.
         run: terraform -chdir=${{ env.TF_ROOT }} init -backend=false -input=false
 
-      - name: terraform validate
+      - name: fmt / validate / tflint · terraform validate
+        id: validate-validate
+        if: ${{ !cancelled() }}
         run: terraform -chdir=${{ env.TF_ROOT }} validate
 
-      - name: validate every module in isolation
+      - name: fmt / validate / tflint · validate every module in isolation
+        id: validate-modules
+        if: ${{ !cancelled() }}
         # A module that only validates through the root can hide a broken
         # variable default that a future caller would hit.
         run: |
@@ -122,27 +151,24 @@ jobs:
             terraform -chdir="${dir}" validate
           done
 
-      - uses: terraform-linters/setup-tflint@v6
+      - name: fmt / validate / tflint · setup tflint
+        id: validate-setup-tflint
+        if: ${{ !cancelled() }}
+        uses: terraform-linters/setup-tflint@v6
         with:
           tflint_version: ${{ env.TFLINT_VERSION }}
 
-      - name: tflint
+      - name: fmt / validate / tflint · tflint
+        id: validate-tflint
+        if: ${{ !cancelled() }}
         run: |
           tflint --init --chdir=terraform
           tflint --chdir=terraform --recursive --format=compact
 
-  test:
-    name: terraform test
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: hashicorp/setup-terraform@v4
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-          terraform_wrapper: false
-
-      - name: terraform test
+      # --- terraform test ------------------------------------------------------
+      - name: terraform test · terraform test
+        id: test-run
+        if: ${{ !cancelled() }}
         # 86 assertions over the promises the docs lean on -- no secret version
         # is ever written by terraform, a public accessor is refused, a plaintext
         # push endpoint is refused, a tenant can only reach its own objects, a
@@ -159,13 +185,85 @@ jobs:
           terraform -chdir=tests/terraform init -input=false
           terraform -chdir=tests/terraform test
 
+      - name: verdict · each folded check's own result, for its name-keeper
+        # One result per check, by step id: `success` only when every shared
+        # `setup-*` step succeeded, none of the check's own `<old job id>-*`
+        # steps failed or was cancelled, and at least one of them ran;
+        # `skipped` when none ran; `failure` otherwise. Each name-keeper
+        # passes on `success` alone (docs/ci.md "Sub-minute checks share a
+        # job"). The same text in application.yml, security.yml and
+        # terraform.yml; tests/unit/scripts/test_ci_fold.py holds them equal.
+        id: verdict
+        if: always()
+        env:
+          STEPS: ${{ toJSON(steps) }}
+          CHECKS: validate test
+        run: |
+          set -euo pipefail
+          read -r -a checks <<< "${CHECKS}"
+          for check in "${checks[@]}"; do
+            result="$(printf '%s\n' "${STEPS}" | jq -r --arg check "${check}" '
+              [to_entries[] | select(.key | startswith("setup-")) | .value.outcome] as $setup
+              | [to_entries[] | select(.key | startswith($check + "-")) | .value.outcome] as $own
+              | if ($setup | length) == 0 or any($setup[]; . != "success") then "failure"
+                elif any($own[]; . == "failure" or . == "cancelled") then "failure"
+                elif any($own[]; . == "success") then "success"
+                else "skipped" end')"
+            echo "${check}: ${result}"
+            echo "${check}=${result}" >> "${GITHUB_OUTPUT}"
+          done
+
+  validate:
+    # NAME-KEEPER (CI-FOLD, #1799): the `fmt / validate / tflint · ...` steps of
+    # `offline` run the check; this passes only on its verdict `success`.
+    name: fmt / validate / tflint
+    runs-on: ubuntu-24.04
+    needs: offline
+    if: always()
+    steps:
+      - name: the folded check passed in `offline`
+        env:
+          CHECK: fmt / validate / tflint
+          VERDICT: ${{ needs.offline.outputs.validate }}
+        run: |
+          set -euo pipefail
+          if [ "${VERDICT}" = "success" ]; then
+            echo "'${CHECK}' passed in its folded job"
+            exit 0
+          fi
+          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
+          exit 1
+
+  test:
+    # NAME-KEEPER (CI-FOLD, #1799): the `terraform test · ...` steps of
+    # `offline` run the check; this passes only on its verdict `success`.
+    name: terraform test
+    runs-on: ubuntu-24.04
+    needs: offline
+    if: always()
+    steps:
+      - name: the folded check passed in `offline`
+        env:
+          CHECK: terraform test
+          VERDICT: ${{ needs.offline.outputs.test }}
+        run: |
+          set -euo pipefail
+          if [ "${VERDICT}" = "success" ]; then
+            echo "'${CHECK}' passed in its folded job"
+            exit 0
+          fi
+          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
+          exit 1
+
   plan-not-run:
     # NOT a no-op. A skipped job is invisible in the checks list, and this
     # repository's rule is that a bound check says what it did not cover rather
     # than going quiet -- silence has meant "did not run" here far more often
     # than "nothing to report".
     name: plan (not run on a pull request)
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # ON ubuntu-24.04 SINCE CI-FOLD (#1799): it writes a fixed summary and
+    # runs nothing else, so a VM create and boot (~52 s) bought it nothing.
+    runs-on: ubuntu-24.04
     # A merge queue entry cannot plan either (its ref is not main), so it
     # says so there too.
     # A lane push cannot plan either (the plan's `if:`), and says so too.
