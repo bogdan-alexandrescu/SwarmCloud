@@ -134,3 +134,19 @@ def _no_github_reads(monkeypatch):
         raise SwarmError("unit tests read no network")
 
     monkeypatch.setattr(check, "github_pull_state", offline, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_automatic_build_board(monkeypatch):
+    """No test refreshes the build board behind its own back (BOARD-WIRE).
+
+    The stdio loop refreshes the board after a submission, a check or a
+    follow (`server._answered`), in a background thread, into the session's
+    project -- which, with CLAUDE_PROJECT_DIR unset above, is the checkout
+    the suite runs in. Every test that speaks the protocol would write a
+    board there and read the fake control plane once more behind its back.
+    This refresher starts nothing; the tests of the refresh build their own.
+    """
+    from swarm_mcp import buildboard
+
+    monkeypatch.setattr(buildboard, "AUTO", buildboard.AutoRefresh(start=lambda run: None))

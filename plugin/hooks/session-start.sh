@@ -28,7 +28,8 @@
 # lists the caller's running tasks that belong to no workflow (sent with
 # swarm_dispatch), and the context names them: `/sc attach --all` gives each a
 # row. Both reads run inside the bridge, at once, under this script's one
-# timeout -- the hook still launches exactly one process.
+# timeout -- one process for the listing (the build board, below, is the one
+# other).
 #
 # NOT ON A PLUGIN RELOAD. Claude Code has no hook event for /reload-plugins
 # (SessionStart matches startup, resume, clear, compact and fork; ConfigChange
@@ -87,6 +88,18 @@
 # it is also recorded under `<config dir>/sc-session/<sha256 of that starting
 # id>.json`, so the running MCP server tags and scopes by the session's
 # current id (swarm_mcp.session). The matcher includes `clear` for that.
+#
+# AND IT REFRESHES THE BUILD BOARD ONCE (BOARD-WIRE, part of #1773). In a
+# project that already has a board folder (`.claude/build-board/`) or a run
+# record (`launched.jsonl` in `.sc-swarmcloud-runs/`, or the older
+# `.claude/sc-swarmcloud-runs/`), the bridge's `sc build-board --no-open`
+# runs beside the listing, at the same time, under the same watchdog and the
+# same SWARM_SESSION_START_TIMEOUT -- so the hook still finishes inside its
+# budget, and a board slower than that is cut off, its previous page left in
+# place (the page is replaced by a rename). Its output goes nowhere: it adds
+# nothing to the context, and a failure says nothing. It runs with
+# `auto_attach` off too: the board is not an attach. A project with neither
+# gets no board from this hook -- one appears with its first dispatch.
 set -euo pipefail
 
 trap 'exit 0' ERR
@@ -183,6 +196,18 @@ watch_off() {
   fi
 }
 
+# `yes` when this project has a build board or a run record, or nothing: the
+# project as swarm_mcp.launch resolves it, CLAUDE_PROJECT_DIR else here.
+board_wanted() {
+  local project
+  project="${CLAUDE_PROJECT_DIR:-$PWD}"
+  if [ -d "$project/.claude/build-board" ] \
+    || [ -f "$project/.sc-swarmcloud-runs/launched.jsonl" ] \
+    || [ -f "$project/.claude/sc-swarmcloud-runs/launched.jsonl" ]; then
+    printf 'yes'
+  fi
+}
+
 # The re-arm notice on its own. Digits only are interpolated, so the JSON
 # needs no escaping.
 print_rearm() {
@@ -205,17 +230,17 @@ prefs="$(watch_file)" || prefs=""
 rearm="$(watch_minutes "$prefs")" || rearm=""
 off="$(watch_off "$prefs")" || off=""
 
-case "$(lower "${CLAUDE_PLUGIN_OPTION_AUTO_ATTACH:-true}")" in
-  false | 0 | no | off)
-    [ -z "$rearm" ] || print_rearm "$rearm"
-    exit 0
-    ;;
-esac
-
 rearm_or_quiet() {
   [ -z "$rearm" ] || print_rearm "$rearm"
   exit 0
 }
+
+attach=yes
+case "$(lower "${CLAUDE_PLUGIN_OPTION_AUTO_ATTACH:-true}")" in
+  false | 0 | no | off) attach="" ;;
+esac
+board="$(board_wanted)" || board=""
+[ -n "$attach" ] || [ -n "$board" ] || rearm_or_quiet
 
 root="${CLAUDE_PLUGIN_ROOT:-}"
 if [ -z "$root" ]; then
@@ -279,17 +304,40 @@ fi
 # leave the python child uv spawned running after the hook has returned. The
 # shell's own stderr is closed first, because job control reports a killed
 # job there, and Claude Code shows a hook's stderr.
+#
+# The board's refresh is a second launch of its own group, killed by the same
+# watchdog at the same moment.
 exec 2>/dev/null
+groups=()
+bridge=""
 set -m
-uv tool run --from "$from" sc workflows --session-start </dev/null >"$out" 2>/dev/null &
-bridge=$!
+if [ -n "$attach" ]; then
+  uv tool run --from "$from" sc workflows --session-start </dev/null >"$out" 2>/dev/null &
+  bridge=$!
+  groups+=("$bridge")
+fi
+if [ -n "$board" ]; then
+  uv tool run --from "$from" sc build-board --no-open </dev/null >/dev/null 2>&1 &
+  groups+=("$!")
+fi
 set +m
-(sleep "$limit" && { kill -TERM -- "-$bridge" || kill -TERM "$bridge"; }) </dev/null >/dev/null 2>&1 &
+(
+  sleep "$limit"
+  for group in ${groups[@]+"${groups[@]}"}; do
+    kill -TERM -- "-$group" || kill -TERM "$group" || true
+  done
+) </dev/null >/dev/null 2>&1 &
 watchdog=$!
 status=0
-wait "$bridge" 2>/dev/null || status=$?
+if [ -n "$bridge" ]; then
+  wait "$bridge" 2>/dev/null || status=$?
+fi
+for group in ${groups[@]+"${groups[@]}"}; do
+  [ "$group" = "$bridge" ] || wait "$group" 2>/dev/null || true
+done
 kill "$watchdog" 2>/dev/null || true
 
+[ -n "$attach" ] || rearm_or_quiet
 [ "$status" -eq 0 ] || rearm_or_quiet
 [ -s "$out" ] || rearm_or_quiet
 grep -q '"hookSpecificOutput"' "$out" || rearm_or_quiet

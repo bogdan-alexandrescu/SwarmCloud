@@ -436,7 +436,13 @@ def _hook(tmp_path, uv_body: str, **env: str) -> subprocess.CompletedProcess:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     _fake_uv(bin_dir, uv_body)
+    # A project with no board and no run record (BOARD-WIRE): the hook's
+    # session-start board refresh stays out of these tests whatever the
+    # checkout they run in holds.
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
     base = {
+        "CLAUDE_PROJECT_DIR": str(project),
         "PATH": f"{bin_dir}:/usr/bin:/bin",
         "HOME": str(tmp_path),
         "TMPDIR": str(tmp_path),

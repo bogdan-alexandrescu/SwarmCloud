@@ -1119,6 +1119,51 @@ when several sessions share one tenant or workspace.
   whose marks are what `/sc:swarmcloud {attach: "all"}` keeps when it is the
   fallback).
 
+### The build board: this project's work on one local page (#1773)
+
+Owner requirements 2026-10-20: every project that dispatches work through the
+plugin gets the operator's build board for free, with no account or
+publishing involved.
+
+* **What it shows.** Every workflow and single task you submitted against
+  this project's repository (its `origin`), from any Claude Code session or
+  account -- not teammates' work: each lane's state, its pull request and
+  what it waits on. "By feature" groups the lanes by the GitHub issue each
+  names (its `issue` input, else `(#N)` in its title), labelled with the
+  issue's title where SwarmCloud has it; the rest are under "No issue".
+  "Waiting on someone" lists owner questions (the recommended option
+  marked), steps waiting for a person (`AWAITING_INPUT`, `HUMAN_REQUIRED`
+  parks) with their `/sc answer` command, and refused merges and CI parks
+  over 90 minutes; a failed step in general is not listed. In-flight work
+  always shows, finished work for 30 days. Nothing is read from GitHub.
+* **Where it lives.** `<project>/.claude/build-board/index.html`, one
+  self-contained page (inline CSS and JS, light and dark, readable at phone
+  width), with a `cache.json` of what no longer changes beside it.
+* **Never committed.** The folder holds a `.gitignore` of `*`, so git
+  ignores everything in it without your repository's own `.gitignore` being
+  edited -- the rule `.sc-swarmcloud-runs/` follows too. `git status` shows
+  nothing new. The board is never committed, pushed or published.
+* **Local, independent of the Claude account.** The page is a file on this
+  machine, written by the bridge from SwarmCloud's state as you; a
+  claudeswitch rotation or another Claude profile changes nothing.
+* **It keeps itself current** (BOARD-WIRE). The bridge refreshes it in the
+  background after every successful submission (`swarm_workflow`,
+  `swarm_dispatch` for one task or several, `swarm_run_issue`), after
+  `swarm_workflow_launch` and after `swarm_check`, never throttled; and when
+  a row's `swarm_follow` sees a task change state, at most once every 2
+  minutes per project, a change inside that window written when it closes.
+  A refresh never delays or fails the tool behind it: triggers that arrive
+  while one runs coalesce into one more, and a failure goes to the bridge's
+  log and leaves the previous page in place (the next page's banner says
+  why). The SessionStart hook refreshes it once in a project that already
+  has a board or a run record, silently and inside the hook's time budget,
+  with `auto_attach` on or off.
+* **`/sc build-board`** makes one `swarm_build_board` call, opens the page
+  with `open` (macOS) or `xdg-open`, and reports the path, the time written
+  and the counts in one line. A project with no work yet gets an empty board
+  saying "No lanes yet", not an error. From a terminal, `sc build-board`
+  does the same (`--no-open` to only write it).
+
 ### What a row shows, and what it costs
 
 A row writes one short line when its task's state or progress changes, and

@@ -4338,6 +4338,29 @@ def _workflow_created(
     return json.dumps(created, indent=2)
 
 
+def _answered(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bool = False) -> str:
+    """`_call`'s answer, after which the build board is told what happened
+    (BOARD-WIRE, part of #1773): a submission, a launch or a check refreshes
+    it, a follow that saw a state change refreshes it at most every two
+    minutes (`buildboard.AutoRefresh`). The refresh runs in the background,
+    so the answer is never delayed by it, and nothing it raises reaches the
+    caller: the answer returned is `_call`'s, byte for byte. A call that
+    raised refreshes nothing -- a refused submission sent nothing.
+
+    The trigger sits here, around `_call`, rather than inside it: every tool
+    test drives `_call` against a fake control plane, and a refresh there
+    would write a board into whatever checkout the suite runs in."""
+    text = _call(client, name, args, keepalive=keepalive)
+    try:
+        from . import buildboard
+
+        buildboard.after_tool(client, name, text)
+    except Exception as exc:  # noqa: BLE001 - the board never fails the tool behind it
+        print(f"swarm-mcp: build board: the refresh was not started ({type(exc).__name__}: {exc})",
+              file=sys.stderr)
+    return text
+
+
 def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bool = False) -> str:
     """One tool call's answer. `keepalive` says the caller is sending the host
     progress notifications for as long as this runs (`_Keepalive`), so a
@@ -5457,7 +5480,7 @@ def serve(stdin=None, stdout=None) -> int:
         alive = _Keepalive(token).start() if token is not None else None
         try:
             try:
-                text = _call(
+                text = _answered(
                     _client(), params.get("name", ""), params.get("arguments") or {},
                     keepalive=alive is not None,
                 )
