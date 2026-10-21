@@ -378,6 +378,23 @@ lease acquired (capacity already reserved)
   -> task LEASED -> DISPATCHED
 ```
 
+A GKE attempt's `execution_name` is `<namespace>/<job>`
+(`swarm-tenant-eng/swarm-918a848f969e406389fd-1`), and it is that on both
+writes: the dispatcher records the string it rendered, and the worker's
+`record_attempt_start` writes the same string, which the Job hands it as
+`SWARM_EXECUTION_NAME`. GKE injects no Job name into a pod, so before #1804 a
+GKE worker recorded its pod's HOSTNAME (`swarm-<task>-<gen>-<5 chars>`, no
+namespace) over the dispatcher's record; the gate then asked the cluster for a
+Job of the pod's name and called live agents gone, and cancel's probe could not
+read the name at all. A pod name is now a **legacy** form: it is mapped to its
+Job, `swarm-<task>-<gen>` in the tenant's namespace, only when it is exactly
+that attempt's Job or pod (by task id and generation), and anything else stays
+unreadable or unchecked -- never "gone", which would release a slot a live
+agent holds. The gate's [10] (`scripts/e2e-test.sh` `capacity_holder_verdict`)
+always maps it; the reconciler's `GkeBackend.probe` and `namespace_of` map it
+when their caller passes the attempt's `task_id`, `tenant_id` and generation, and a
+mapped Job must still be a platform-managed Job of that agent and generation.
+
 Any failure in that sequence releases the lease and returns the agent to `READY`.
 A slot held by a container that will never exist is a permanent capacity leak
 until the reconciler notices; releasing immediately is free.

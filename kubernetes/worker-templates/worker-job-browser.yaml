@@ -210,6 +210,12 @@ spec:
             # itself: GKE injects no Job name of its own.
             - name: RUNNER_JOB_NAME
               value: "__JOB_NAME__"
+            # This attempt's execution name, `<namespace>/<job>`, exactly as the
+            # dispatcher records it (GKE_EXECUTION_NAME_ENV in dispatch.py). The
+            # worker records it in place of its pod's HOSTNAME, which no reader
+            # could look up (#1804).
+            - name: SWARM_EXECUTION_NAME
+              value: "__NAMESPACE__/__JOB_NAME__"
             # NO PROVIDER KEY IS PROJECTED HERE, deliberately.
             #
             # Every process in this container runs as uid 10001, so anything in

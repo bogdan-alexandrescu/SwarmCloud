@@ -16005,9 +16005,27 @@ def _config_backend(config: Any) -> str | None:
     return backend if isinstance(backend, str) else None
 
 
+#: The GKE attempt's `<namespace>/<job>`, rendered into the Job by
+#: `scheduler.dispatch.GkeJobDispatcher._manifest` (GKE_EXECUTION_NAME_ENV
+#: there; tests/unit/worker/test_gke_execution_name_recorded.py holds the two
+#: spellings together, as this image cannot import the scheduler).
+EXECUTION_NAME_ENV = "SWARM_EXECUTION_NAME"
+
+
 def _execution_name() -> str | None:
-    for name in ("CLOUD_RUN_EXECUTION", "K_REVISION", "JOB_NAME", "HOSTNAME"):
-        value = os.environ.get(name)
+    """The name this attempt's execution is recorded under.
+
+    EXECUTION_NAME_ENV FIRST (#1804). A GKE Job sets none of the Cloud Run
+    names, so a GKE worker fell through to HOSTNAME -- its POD's name,
+    `swarm-<task>-<gen>-<5 chars>` -- and `record_attempt_start` wrote it over
+    the dispatcher's `<namespace>/<job>`: the gate then asked the cluster for a
+    Job of the pod's name and called a live agent gone, and the reconciler's
+    cancel probe could not read it at all. The dispatcher's own string is the
+    one every reader looks up. Cloud Run sets no EXECUTION_NAME_ENV and is
+    unchanged.
+    """
+    for name in (EXECUTION_NAME_ENV, "CLOUD_RUN_EXECUTION", "K_REVISION", "JOB_NAME", "HOSTNAME"):
+        value = (os.environ.get(name) or "").strip()
         if value:
             return value
     return None

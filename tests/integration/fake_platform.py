@@ -133,9 +133,13 @@ HEALTHY: dict[str, Any] = {
     # Task ids whose API state should disagree with Firestore, mapped to what
     # the API should claim instead.
     "api_state_override": {},
-    # "idle" | "live" | "dead" | "gke" -- dead is a task holding capacity
-    # against an execution that has completed; gke is one running on GKE
-    # Autopilot, whose cluster this caller may not read (403).
+    # "idle" | "live" | "dead" | "gke" | "gke_job" | "gke_pod" | "gke_pod_gone"
+    # -- dead is a task holding capacity against an execution that has
+    # completed; gke is one running on GKE Autopilot, whose cluster this caller
+    # may not read (403). The gke_* three are on a cluster it MAY read (#1804):
+    # gke_job records `<namespace>/<job>` for a live Job; gke_pod records the
+    # legacy pod name of that live Job; gke_pod_gone records a pod name whose
+    # Job is really gone (404).
     "executions": "idle",
     # What GET /v1/workflows/<id> reports once every step has succeeded.
     "workflow_state": "SUCCEEDED",
@@ -171,7 +175,7 @@ def scenario(**deviations: Any) -> dict[str, Any]:
 #: drained: the caller writes into a pipe and would otherwise block.
 CURL_SHIM = r'''#!/usr/bin/env python3
 """A curl that answers from FAKE_SWARM_SCENARIO. See tests/integration/fake_platform.py."""
-import json, os, re, sys
+import base64, json, os, re, sys
 
 sys.path.insert(0, os.environ["FAKE_SWARM_HELPERS"])
 from fake_platform import (  # noqa: E402
@@ -439,12 +443,15 @@ def attempt_documents():
     }
     if SCENARIO["spend_recorded"]:
         out["att_foreign"].update(SPEND)
-    if SCENARIO["executions"] == "gke":
+    if SCENARIO["executions"] in ("gke", "gke_job", "gke_pod", "gke_pod_gone"):
+        recorded = "swarm-tenant-%s/%s" % (TENANT, GKE_JOB)
+        if SCENARIO["executions"] in ("gke_pod", "gke_pod_gone"):
+            recorded = GKE_JOB + "-2cq5s"
         out["att_inflight"] = {
             "attempt_id": "att_inflight", "task_id": "task_inflight",
             "tenant_id": TENANT, "generation": 2, "lease_id": "lease_z",
             "backend": "GKE_AUTOPILOT",
-            "execution_name": "swarm-tenant-%s/swarm-inflight-2" % TENANT,
+            "execution_name": recorded,
         }
     if SCENARIO["executions"] in ("live", "dead"):
         out["att_inflight"] = {
@@ -461,10 +468,16 @@ def attempt_documents():
 #: under test turns on the execution's STATE and not on a name that stopped
 #: matching.
 EXECUTION = "exec-inflight"
+#: The in-flight task's GKE Job, as the dispatcher names it:
+#: `swarm-<task id without task_>-<generation>`.
+GKE_JOB = "swarm-inflight-2"
+#: Where the readable cluster's API answers.
+GKE_ENDPOINT = "10.9.8.7"
 
 
 def tasks_by_state(state):
-    if SCENARIO["executions"] in ("live", "dead", "gke") and state == "RUNNING":
+    if SCENARIO["executions"] in ("live", "dead", "gke", "gke_job", "gke_pod",
+                                  "gke_pod_gone") and state == "RUNNING":
         return {"task_inflight": {
             "id": "task_inflight", "tenant_id": TENANT, "state": "RUNNING",
             "runner_profile": "mock", "current_generation": 2,
@@ -633,9 +646,22 @@ if "firestore.googleapis.com" in url and "/documents/" in url:
     respond(200, firestore_document(collection, doc_id, data))
 
 if "container.googleapis.com" in url:
+    if SCENARIO["executions"] in ("gke_job", "gke_pod", "gke_pod_gone"):
+        respond(200, {"endpoint": GKE_ENDPOINT, "masterAuth": {
+            "clusterCaCertificate": base64.b64encode(b"fake-cluster-ca").decode()}})
     # The gate's cluster read (terraform/bootstrap/verify_cluster_read.tf) not in
     # effect: the suite must fail on it, not skip it.
     respond(403, {"error": {"code": 403, "message": "Required \"container.clusters.get\" permission"}})
+
+if url.startswith("https://%s/apis/batch/v1/namespaces/" % GKE_ENDPOINT):
+    # jobs.get, by exact name: the Job the dispatcher created is the only one
+    # there, live, unless the scenario says it is gone. A request for the POD's
+    # name is a 404, as on the real cluster -- which is what #1804's gate did.
+    ns_job = url.split("/namespaces/", 1)[1]
+    live = SCENARIO["executions"] != "gke_pod_gone"
+    if live and ns_job == "swarm-tenant-%s/jobs/%s" % (TENANT, GKE_JOB):
+        respond(200, {"metadata": {"name": GKE_JOB}, "status": {"active": 1}})
+    respond(404, {"kind": "Status", "code": 404, "reason": "NotFound"})
 
 if "run.googleapis.com" in url and "/executions" in url:
     respond(200, {"executions": executions()})

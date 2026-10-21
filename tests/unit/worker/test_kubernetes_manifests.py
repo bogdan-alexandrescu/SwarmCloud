@@ -2641,6 +2641,22 @@ def test_the_browser_job_names_itself_for_the_workers_self_consistency_check():
         assert env.get("RUNNER_JOB_NAME") == job["metadata"]["name"], source
 
 
+def test_the_browser_job_hands_its_worker_the_execution_name_the_dispatcher_records():
+    """#1804: without it a GKE worker recorded its pod's HOSTNAME as the
+    attempt's execution_name, which neither the gate nor cancel could find.
+    Both producers, so the YAML an operator reads says what dispatches."""
+    for source, job in (
+        ("render.py", _rendered_job("browser")),
+        ("GkeJobDispatcher._manifest", _dispatcher_job("browser")),
+    ):
+        worker = job["spec"]["template"]["spec"]["containers"][0]
+        env = {e["name"]: e.get("value") for e in worker.get("env") or []}
+        meta = job["metadata"]
+        # MUTATION: drop SWARM_EXECUTION_NAME from worker-job-browser.yaml, or
+        # render it as `__JOB_NAME__` alone, and render.py fails here.
+        assert env.get("SWARM_EXECUTION_NAME") == f"{meta['namespace']}/{meta['name']}", source
+
+
 def test_the_worker_role_stays_empty_with_the_config_map_mounted(tenant_docs):
     """A volume mount is fetched by the kubelet, never the pod's token, and
     that token is not mounted. Nothing is added to the worker Role."""

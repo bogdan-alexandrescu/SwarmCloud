@@ -2560,6 +2560,18 @@ def verified_namespace(tenant_id: str, stored: Any, derived: str, prefix: str) -
     return derived
 
 
+#: The GKE attempt's full execution name, `<namespace>/<job>`, on the worker
+#: container (#1804; owner decision 2026-10-21). `agent_worker.lifecycle.
+#: _execution_name` prefers it over every other source, so `record_attempt_start`
+#: writes the name `GkeJobDispatcher.dispatch` returned rather than the pod's
+#: HOSTNAME. GKE injects neither name into a pod: before this, a GKE worker
+#: recorded `swarm-<task>-<gen>-<5 chars>`, the gate's [10] asked for a Job of
+#: that name and called seven live agents gone, and cancel's probe answered
+#: "not a <namespace>/<job> name" and left the Job running until the sweep.
+#: GKE only: a Cloud Run worker still records CLOUD_RUN_EXECUTION.
+GKE_EXECUTION_NAME_ENV = "SWARM_EXECUTION_NAME"
+
+
 @dataclass(frozen=True)
 class GkeTarget:
     endpoint: str
@@ -2745,6 +2757,12 @@ class GkeJobDispatcher:
         # FROM THIS SAME RENDER, so the comparison proves only that this
         # dispatcher agrees with itself; GKE injects no Job name of its own.
         env.append({"name": "RUNNER_JOB_NAME", "value": job_name})
+        # The attempt's execution name, from THIS render: the namespace below
+        # is `metadata.namespace` and `dispatch` returns this very string, so
+        # what the worker records and what the dispatcher records are one value
+        # (GKE_EXECUTION_NAME_ENV says why it exists).
+        namespace = self.namespace_for(tenant)
+        env.append({"name": GKE_EXECUTION_NAME_ENV, "value": f"{namespace}/{job_name}"})
         # THE STEP'S MODEL comes from `gke_worker_env` above (`step_model`,
         # #1435), the one source both backends share. Only a scheduler with no
         # WORKER_CLASS_MODELS leaves it unset for a classed profile, and then
@@ -2820,7 +2838,7 @@ class GkeJobDispatcher:
             "kind": "Job",
             "metadata": {
                 "name": job_name,
-                "namespace": self.namespace_for(tenant),
+                "namespace": namespace,
                 "labels": labels,
                 "annotations": dict(not_evictable),
             },
@@ -3026,8 +3044,11 @@ class GkeJobDispatcher:
         manifest = self._manifest(task=task, lease=lease, profile=profile, tenant=tenant,
                                   sized=sized)
         namespace = manifest["metadata"]["namespace"]
+        # What the attempt records, read back from the render BEFORE anything
+        # is created: the worker records the same string from its env.
+        recorded = _manifest_execution_name(manifest)
         try:
-            created = self._api().create_namespaced_job(namespace=namespace, body=manifest)
+            self._api().create_namespaced_job(namespace=namespace, body=manifest)
         except DispatchError:
             raise
         except Exception as exc:  # kubernetes.client.ApiException and transport errors
@@ -3089,10 +3110,24 @@ class GkeJobDispatcher:
                 f"{self.presented_identity()}: {exc}",
                 code="gke_create_job_failed",
             ) from exc
-        name = getattr(getattr(created, "metadata", None), "name", None)
-        if not name and isinstance(created, dict):
-            name = created.get("metadata", {}).get("name")
-        return f"{namespace}/{name or manifest['metadata']['name']}"
+        # The name the worker was handed, never a second derivation of it
+        # (#1804). The Job is created by exact name, never `generateName`, so
+        # the server's answer cannot name another Job; and nothing is checked
+        # AFTER the create, because a dispatch that raised there would release
+        # the lease of a Job that runs.
+        return recorded
+
+
+def _manifest_execution_name(manifest: dict[str, Any]) -> str:
+    """GKE_EXECUTION_NAME_ENV as `GkeJobDispatcher._manifest` rendered it."""
+    for container in manifest["spec"]["template"]["spec"]["containers"]:
+        for entry in container.get("env") or []:
+            if entry.get("name") == GKE_EXECUTION_NAME_ENV:
+                return str(entry["value"])
+    raise DispatchError(
+        f"the rendered GKE job carries no {GKE_EXECUTION_NAME_ENV}; nothing was created",
+        code="gke_create_job_failed",
+    )
 
 
 # --------------------------------------------------------------------------

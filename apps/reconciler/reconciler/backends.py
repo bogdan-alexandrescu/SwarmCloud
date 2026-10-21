@@ -312,9 +312,15 @@ class NamespacedBackend(Protocol):
     name: str
 
     def namespace_for(self, tenant_id: str, recorded: str | None = None) -> str: ...
-    def namespace_of(self, execution_name: str | None) -> str | None: ...
+    def namespace_of(
+        self, execution_name: str | None, *, task_id: str | None = None,
+        tenant_id: str | None = None, generation: int | None = None,
+    ) -> str | None: ...
     def list_executions_in(self, namespaces: Iterable[str]) -> NamespacedListing: ...
-    def probe(self, execution_name: str) -> Probe: ...
+    def probe(
+        self, execution_name: str, *, task_id: str | None = None,
+        tenant_id: str | None = None, generation: int | None = None,
+    ) -> Probe: ...
     def terminate(self, execution: ExecutionView) -> bool: ...
     def termination(self, execution: ExecutionView) -> Termination | None: ...
     def list_job_resources(self) -> list[JobResourceView]: ...
@@ -1449,17 +1455,60 @@ class GkeBackend:
         derived = sanitize_name(f"{self._prefix}{tenant_id}")
         return verified_namespace(tenant_id, recorded, derived, self._prefix, self._log)
 
-    def namespace_of(self, execution_name: str | None) -> str | None:
+    def namespace_of(
+        self,
+        execution_name: str | None,
+        *,
+        task_id: str | None = None,
+        tenant_id: str | None = None,
+        generation: int | None = None,
+    ) -> str | None:
         """The namespace part of a GKE attempt's `execution_name`.
 
         The dispatcher records `<namespace>/<job>` (`GkeJobDispatcher.dispatch`),
-        so this is where THIS attempt's Job was created -- a better answer than
-        any derivation from the tenant, because it is what actually happened.
+        and since #1804 the worker records the same string, so this is where
+        THIS attempt's Job was created -- a better answer than any derivation
+        from the tenant, because it is what actually happened.
+
+        A LEGACY record -- the pod's name, `swarm-<task>-<gen>-<5 chars>`, which
+        a GKE worker wrote before #1804 -- names no namespace. Given the
+        attempt's task, tenant and generation it is mapped to the tenant's
+        namespace (`_legacy_job` says how exactly); without them, or for a name
+        that is not that attempt's pod, the answer is None, as before.
         """
-        if not execution_name or "/" not in str(execution_name):
+        if not execution_name:
             return None
+        if "/" not in str(execution_name):
+            legacy = self._legacy_job(str(execution_name), task_id, tenant_id, generation)
+            return legacy[0] if legacy else None
         namespace = str(execution_name).split("/", 1)[0].strip()
         return namespace or None
+
+    def _legacy_job(
+        self,
+        name: str,
+        task_id: str | None,
+        tenant_id: str | None,
+        generation: int | None,
+    ) -> tuple[str, str] | None:
+        """`(namespace, job)` for a bare name that is EXACTLY this attempt's Job or pod.
+
+        A GKE worker recorded its pod's HOSTNAME before #1804. The Job
+        controller names a Job's pod `<job>-<5 random characters>`, and the
+        dispatcher names the Job `sanitize_name("swarm", <task id without
+        task_>, <generation>)` in the tenant's derived namespace -- so the
+        mapping is computed FROM THE ATTEMPT, never read out of the name: the
+        name must be that Job, or that Job plus a 5-character suffix, and
+        nothing else maps. Another task's pod, another generation's, a name
+        without its ids: None, and the caller's answer stays UNREADABLE rather
+        than becoming a 404 that would call a live agent gone.
+        """
+        if not task_id or not tenant_id or generation is None:
+            return None
+        job = sanitize_name("swarm", str(task_id).replace("task_", ""), str(generation))
+        if name != job and not re.fullmatch(re.escape(job) + r"-[a-z0-9]{5}", name):
+            return None
+        return self.namespace_for(str(tenant_id)), job
 
     # -- reads ----------------------------------------------------------
     def list_executions_in(self, namespaces: Iterable[str]) -> NamespacedListing:
@@ -1506,7 +1555,14 @@ class GkeBackend:
             executions=views, readable=frozenset(readable), unreadable=unreadable
         )
 
-    def probe(self, execution_name: str) -> Probe:
+    def probe(
+        self,
+        execution_name: str,
+        *,
+        task_id: str | None = None,
+        tenant_id: str | None = None,
+        generation: int | None = None,
+    ) -> Probe:
         """Read ONE Job by name, for when its namespace could not be listed.
 
         A namespaced `get`, which the `swarm-reaper` Role grants alongside
@@ -1522,9 +1578,21 @@ class GkeBackend:
         * a Job with neither -- running, as far as anyone can prove.
         * 403 (a missing namespace or RoleBinding), 401, anything else --
           nothing is proven, and the caller must go on holding the slot.
+
+        `execution_name` is `<namespace>/<job>`. A LEGACY pod-name record
+        (#1804) is read as its Job only when the caller names the attempt's
+        task, tenant and generation and the name is exactly that attempt's pod
+        (`_legacy_job`); the Job then still has to be a platform-managed Job of
+        that task and generation, or it is not ours to judge.
         """
-        namespace = self.namespace_of(execution_name)
-        name = str(execution_name).split("/", 1)[1].strip() if namespace else ""
+        legacy = None
+        if "/" not in str(execution_name):
+            legacy = self._legacy_job(str(execution_name), task_id, tenant_id, generation)
+        if legacy is not None:
+            namespace, name = legacy
+        else:
+            namespace = self.namespace_of(execution_name)
+            name = str(execution_name).split("/", 1)[1].strip() if namespace else ""
         if not namespace or not name:
             return Probe(ProbeOutcome.UNREADABLE, detail="not a <namespace>/<job> name")
         if not namespace.startswith(self._prefix):
@@ -1546,6 +1614,15 @@ class GkeBackend:
             return Probe(
                 ProbeOutcome.UNREADABLE,
                 detail=f"{namespace}/{name}: not a platform-managed Job",
+            )
+        if legacy is not None and (
+            (view.task_id and view.task_id != task_id)
+            or (view.generation is not None and view.generation != generation)
+        ):
+            # The Job a legacy name maps to says it runs another attempt.
+            return Probe(
+                ProbeOutcome.UNREADABLE,
+                detail=f"{namespace}/{name}: not the Job of {task_id} generation {generation}",
             )
         if view.phase is ExecutionPhase.RUNNING:
             return Probe(ProbeOutcome.ACTIVE, execution=view, detail=f"{namespace}/{name}: active")

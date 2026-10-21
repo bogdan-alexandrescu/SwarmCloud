@@ -285,9 +285,11 @@ gke_job_status() {
 VERDICT=""
 VERDICT_DETAIL=""
 capacity_holder_verdict() {
-  local attempt="$1" tenant="$2" running="$3" exec_name backend ns name answer
+  local attempt="$1" tenant="$2" running="$3" exec_name backend ns name answer task gen hex job
   exec_name="$(jq -r '.execution_name // ""' <<<"${attempt}")"
   backend="$(jq -r '.backend // ""' <<<"${attempt}")"
+  task="$(jq -r '.task_id // ""' <<<"${attempt}")"
+  gen="$(jq -r '.generation // "" | tostring' <<<"${attempt}")"
   # An attempt without one is a task the control plane never actually handed
   # to a backend -- the same finding by another route.
   if [[ -z "${exec_name}" || "${exec_name}" == "null" ]]; then
@@ -296,9 +298,26 @@ capacity_holder_verdict() {
   fi
   if [[ "${backend}" == "GKE_AUTOPILOT" ]]; then
     if [[ "${exec_name}" == */* ]]; then
+      # `<namespace>/<job>`: what the dispatcher records, and since #1804 what
+      # the worker records too (SWARM_EXECUTION_NAME).
       ns="${exec_name%%/*}"; name="${exec_name##*/}"
     else
-      ns="$(tenant_namespace "${tenant}")"; name="${exec_name}"
+      # A bare name. Before #1804 a GKE worker recorded its POD's hostname,
+      # `swarm-<task>-<gen>-<5 chars>`, and jobs/<pod> is a 404 for a live Job:
+      # the 06:45Z 2026-10-21 gate called seven running agents gone that way.
+      # The Job is computed FROM THE ATTEMPT, the dispatcher's way
+      # (sanitize_name("swarm", <task id without task_>, <generation>), which
+      # is that string unchanged for an id of [a-z0-9]), and the name must be
+      # exactly that Job or that Job plus a 5-character pod suffix. Anything
+      # else is not checked: a 404 for a name we cannot map proves nothing.
+      hex="${task#task_}"; job="swarm-${hex}-${gen}"
+      if [[ ! "${hex}" =~ ^[a-z0-9]+$ || ! "${gen}" =~ ^[0-9]+$ || "${#job}" -gt 63 ]] \
+         || [[ "${exec_name}" != "${job}" && ! "${exec_name}" =~ ^${job}-[a-z0-9]{5}$ ]]; then
+        VERDICT="unchecked"
+        VERDICT_DETAIL="GKE execution ${exec_name} not checked: it names no namespace and is not the Job or pod of ${task:-its task} generation ${gen:-unknown}"
+        return 0
+      fi
+      ns="$(tenant_namespace "${tenant}")"; name="${job}"
     fi
     gke_cluster_access
     case "${GKE_ACCESS}" in
