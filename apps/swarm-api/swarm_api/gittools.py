@@ -110,6 +110,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Protocol
 from urllib.parse import quote
 
+from google.api_core.exceptions import GoogleAPICallError
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
@@ -174,6 +175,9 @@ MAX_BODY_BYTES = 64 * 1024
 #: the tenant's prefix (invariant 9). A large fetch bundle is put beside it.
 BUNDLE_OBJECT = "tenants/{tenant}/attempts/{attempt}/git/{call}.bundle"
 FETCH_OBJECT = "tenants/{tenant}/attempts/{attempt}/git/{call}.fetch.bundle"
+#: The refusal when the bucket will not take a large fetch bundle. A 422, not
+#: the bare 500 it was: the worker retries a 5xx, and this does not heal on retry.
+FETCH_STORE_FAILED = "fetch_bundle_store_failed"
 
 #: The most haves a body may carry. A have only shrinks a bundle, so the
 #: newest `gitexec.MAX_HAVES` of them are used and the rest dropped.
@@ -496,8 +500,12 @@ class GcsBundles:
         return size
 
     def upload(self, key: str, src: Path) -> None:
+        # Create-only: generation 0 means "no live object", so an existing one
+        # is never replaced (the grant, terraform/infra/git_tools.tf, is
+        # objectCreator, which could not overwrite it either).
         self._get().blob(key).upload_from_filename(str(src),
-                                                   content_type="application/x-git-bundle")
+                                                   content_type="application/x-git-bundle",
+                                                   if_generation_match=0)
 
 
 # --------------------------------------------------------------------------
@@ -794,7 +802,17 @@ class GitTools:
                 raise GitToolRefused("too_large", f"the bundle is {size} bytes, over the "
                                                   f"{INLINE_BUNDLE_BYTES} sent inline, and this "
                                                   "deployment has no bucket for it")
-            self.bundles.upload(key, path)
+            try:
+                self.bundles.upload(key, path)
+            except GoogleAPICallError as exc:
+                # A 403 (no grant), a 412 (the object exists) or GCS failing:
+                # a named refusal, audited, under 500 so the worker does not
+                # ask again for a bundle that cannot be stored (#1815).
+                log.warning("git_fetch bundle upload refused: %s %s", key, type(exc).__name__)
+                raise GitToolRefused(FETCH_STORE_FAILED, f"the bundle is {size} bytes, over the "
+                                                         f"{INLINE_BUNDLE_BYTES} sent inline, and "
+                                                         "it could not be stored for the worker "
+                                                         f"({type(exc).__name__})") from None
             return {"bundle_object": key, "bundle_sha256": digest}
 
         haves = list(dict.fromkeys(reversed(body.haves)))[:MAX_HAVES]

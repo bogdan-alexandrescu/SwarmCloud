@@ -625,6 +625,120 @@ def test_rebase_onto_is_served_as_the_fetch_it_starts_with(client, db, origin):
     assert audit_rows(db)[-1]["tool"] == "git_rebase_onto"
 
 
+# a fetch bundle over the inline cap (#1815, GIT-FETCH-BUNDLES)
+# --------------------------------------------------------------------------
+
+
+class FakeBlob:
+    def __init__(self, bucket: "FakeBucket", key: str) -> None:
+        self.bucket, self.key = bucket, key
+
+    def upload_from_filename(self, filename: str, **kwargs: Any) -> None:
+        from google.api_core import exceptions as gexc
+
+        self.bucket.uploads.append((self.key, kwargs))
+        if self.bucket.refuse is not None:
+            raise self.bucket.refuse
+        if kwargs.get("if_generation_match") == 0 and self.key in self.bucket.objects:
+            raise gexc.PreconditionFailed("the object already exists")
+        self.bucket.objects[self.key] = Path(filename).read_bytes()
+
+
+class FakeBucket:
+    """The artifact bucket as `GcsBundles` drives it: no client, no network."""
+
+    def __init__(self, refuse: Exception | None = None) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.uploads: list[tuple[str, dict[str, Any]]] = []
+        self.refuse = refuse
+
+    def blob(self, key: str) -> FakeBlob:
+        return FakeBlob(self, key)
+
+
+@pytest.fixture
+def bucket(app, monkeypatch) -> FakeBucket:
+    """Every bundle is "large", and goes to a `GcsBundles` over a fake bucket."""
+    from swarm_api import gittools
+    from swarm_api.gittools import GcsBundles
+
+    monkeypatch.setattr(gittools, "INLINE_BUNDLE_BYTES", 0)
+    fake = FakeBucket()
+    store = GcsBundles("swarm-artifacts-test")
+    store._bucket = fake
+    monkeypatch.setattr(app.state.bundles, "upload", store.upload)
+    return fake
+
+
+def test_a_large_fetch_bundle_is_created_under_the_proven_attempts_own_prefix_only(
+        client, db, origin, bucket):
+    attempt, _ = running_task(client, db)
+    t = attempt.tuple
+    response = call(client, attempt, "git_fetch", {"ref": "main", "haves": [origin["a"]]},
+                    request_id="req-big")
+    assert response.status_code == 200, response.text
+    key = f"tenants/{t.tenant_id}/attempts/{t.attempt_id}/git/req-big.fetch.bundle"
+    # MUTATION: build the key from anything but the proven attempt (or another
+    # template than FETCH_OBJECT) and the object lands outside the one prefix
+    # the git-fetch-bundles-only IAM condition admits.
+    assert response.json()["bundle_object"] == key
+    assert [k for k, _ in bucket.uploads] == [key]
+    raw = bucket.objects[key]
+    assert hashlib.sha256(raw).hexdigest() == response.json()["bundle_sha256"]
+    # MUTATION: drop if_generation_match=0 from GcsBundles.upload and an
+    # existing object would be overwritten (objectCreator refuses it anyway).
+    assert bucket.uploads[0][1].get("if_generation_match") == 0
+
+
+def test_a_bundle_the_bucket_refuses_is_a_named_audited_refusal_the_worker_does_not_retry(
+        client, db, origin, bucket):
+    from google.api_core import exceptions as gexc
+
+    bucket.refuse = gexc.Forbidden("storage.objects.create denied")
+    attempt, _ = running_task(client, db)
+    response = call(client, attempt, "git_fetch", {"ref": "main", "haves": [origin["a"]]})
+    # MUTATION: let the Forbidden escape deliver() and this is a bare 500,
+    # which agent_worker's ChildApi.call retries (status >= 500).
+    assert 400 <= response.status_code < 500 and response.status_code not in (403, 409, 429), \
+        response.text
+    # MUTATION: rename or drop the refusal's code and the agent cannot tell it apart.
+    assert response.json()["code"] == "fetch_bundle_store_failed"
+    assert "denied" not in response.text
+    # MUTATION: raise before handle() audits and no row records the failed call.
+    row = audit_rows(db)[-1]
+    assert (row["tool"], row["result"], row["code"]) == (
+        "git_fetch", "refused", "fetch_bundle_store_failed")
+
+
+def test_a_fetch_bundle_object_that_exists_is_never_overwritten(client, db, origin, bucket):
+    attempt, _ = running_task(client, db)
+    t = attempt.tuple
+    key = f"tenants/{t.tenant_id}/attempts/{t.attempt_id}/git/req-1.fetch.bundle"
+    bucket.objects[key] = b"earlier"
+    response = call(client, attempt, "git_fetch", {"ref": "main", "haves": [origin["a"]]})
+    # MUTATION: upload without if_generation_match=0 and the fake bucket
+    # replaces the object and answers 200.
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "fetch_bundle_store_failed"
+    assert bucket.objects[key] == b"earlier"
+
+
+def test_a_fetch_bundle_within_the_inline_cap_never_touches_the_bucket(
+        client, db, origin, app, monkeypatch):
+    from swarm_api.gittools import GcsBundles
+
+    fake = FakeBucket()
+    store = GcsBundles("swarm-artifacts-test")
+    store._bucket = fake
+    monkeypatch.setattr(app.state.bundles, "upload", store.upload)
+    attempt, _ = running_task(client, db)
+    response = call(client, attempt, "git_fetch", {"ref": "main", "haves": [origin["a"]]})
+    assert response.status_code == 200, response.text
+    # MUTATION: send every bundle through the bucket and this fails.
+    assert "bundle" in response.json() and "bundle_object" not in response.json()
+    assert fake.uploads == []
+
+
 def test_a_tool_that_is_not_one_of_the_five_is_404(client, db):
     attempt, _ = running_task(client, db)
     response = call(client, attempt, "git_push", {"ref": "main"})
