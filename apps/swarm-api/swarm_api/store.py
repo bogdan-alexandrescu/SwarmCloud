@@ -46,10 +46,13 @@ import base64
 import binascii
 import json
 import logging
+import random
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Sequence
 
+from google.api_core import exceptions as gexc
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
@@ -94,7 +97,7 @@ from .codec import (
     workflow_to_firestore,
 )
 from . import modelprices, refusals
-from .errors import Conflict, NotFound, Unpageable, ValidationFailed
+from .errors import Conflict, NotFound, RateLimited, Unpageable, ValidationFailed
 from .executioncancel import ExecutionTarget
 
 log = logging.getLogger(__name__)
@@ -231,6 +234,65 @@ _WORKER_AWAITED_STATES = frozenset({TaskState.DISPATCHED, TaskState.STARTING})
 _EXECUTION_STATES = frozenset(
     {TaskState.LEASED, TaskState.DISPATCHED, TaskState.STARTING, TaskState.RUNNING}
 )
+
+
+# --------------------------------------------------------------------------
+# A cancel that meets contention (CANCEL-RETRY, part of #1822)
+#
+# The cancel answered 500 21 times in 48 h (2026-10-21 system analysis) when
+# its transaction met contention. Two shapes, and neither has committed:
+# `Aborted` on a transactional READ, which `firestore.transactional` does not
+# retry, and the decorator's own commit retries running out, which it reports
+# as a `ValueError` with the message below. Both are run again here; nothing
+# else is. Not `DeadlineExceeded`: a deadline can expire after the commit
+# landed, and a second run would write a second event.
+# --------------------------------------------------------------------------
+
+#: How many times the cancel's transaction runs before it refuses. Each run is
+#: itself up to five commit attempts inside `firestore.transactional`.
+CANCEL_TRANSACTION_ATTEMPTS = 4
+#: The full-jitter pause before run n+1 is uniform in [0, base * 2**n]: at most
+#: 0.1 + 0.2 + 0.4 s. Jittered so two cancels that collided do not collide again.
+CANCEL_RETRY_BASE_SECONDS = 0.1
+#: The wall-clock budget for the retries: well inside a request's time, so a
+#: caller hears a named refusal rather than its own client timing out. A pause
+#: that would end past it is not taken.
+CANCEL_RETRY_BUDGET_SECONDS = 2.0
+#: What the refusal tells the caller to wait. Contention clears in well under
+#: a second; one is the smallest `Retry-After` the handler writes.
+CANCEL_RETRY_AFTER_SECONDS = 1.0
+#: `firestore_v1.base_transaction._EXCEED_ATTEMPTS_TEMPLATE`'s fixed prefix.
+_COMMIT_RETRIES_EXHAUSTED = "Failed to commit transaction in "
+#: Replaced by the tests, which record the pauses rather than take them.
+_contention_sleep = time.sleep
+
+
+class CancelContended(RateLimited):
+    """The cancel's transaction stayed contended through every retry.
+
+    503, retryable, and nothing was written. A `RateLimited` only so the API's
+    error handler writes the `Retry-After` it writes for that class; it is not
+    a rate limit, and its status says so. Not a 4xx, so not a new refusal
+    behind a switch: no request this answers was ever going to succeed.
+    """
+
+    status_code = 503
+    code = "cancel_contended"
+
+    def __init__(self, message: str, *, result: dict[str, Any] | None = None) -> None:
+        super().__init__(message, CANCEL_RETRY_AFTER_SECONDS)
+        #: A workflow cancel's partial result, for the route to act on the
+        #: steps it did cancel; served in `detail` as well. None for a task.
+        self.result = result
+        if result:
+            self.detail = {**self.detail, **result}
+
+
+def _is_contention(exc: BaseException) -> bool:
+    """True only for a failure that cannot have committed."""
+    if isinstance(exc, gexc.Aborted):
+        return True
+    return isinstance(exc, ValueError) and str(exc).startswith(_COMMIT_RETRIES_EXHAUSTED)
 
 
 def first_cancel_target(
@@ -1372,8 +1434,6 @@ class Store:
         task is now terminal.
         """
         ref = self._db.collection(TASKS).document(task_id)
-        transaction = self._db.transaction()
-
         @firestore.transactional
         def _apply(txn: Any) -> Task:
             snap = _snapshot(txn.get(ref))
@@ -1537,7 +1597,34 @@ class Store:
                 )
             return task_from_dict({**data, **patch}), target
 
-        return _apply(transaction)
+        # CONTENTION IS RUN AGAIN, THEN REFUSED BY NAME (CANCEL-RETRY, #1822).
+        # A fresh transaction each run, and every run re-reads: a run that
+        # follows a cancel someone else committed sees the flag (no second
+        # execution stop) or a terminal task (the usual 409), exactly as a
+        # second press does. Anything that is not contention is raised as is.
+        deadline = time.monotonic() + CANCEL_RETRY_BUDGET_SECONDS
+        last: BaseException | None = None
+        for attempt in range(CANCEL_TRANSACTION_ATTEMPTS):
+            try:
+                return _apply(self._db.transaction())
+            except Exception as exc:
+                if not _is_contention(exc):
+                    raise
+                last = exc
+            if attempt + 1 == CANCEL_TRANSACTION_ATTEMPTS:
+                break
+            pause = random.uniform(0, CANCEL_RETRY_BASE_SECONDS * 2**attempt)
+            if time.monotonic() + pause >= deadline:
+                break
+            _contention_sleep(pause)
+        log.warning(
+            "cancel of task %s stayed contended after %d attempts: %s",
+            task_id, attempt + 1, type(last).__name__,
+        )
+        raise CancelContended(
+            f"cancelling task {task_id!r} met concurrent writes on every attempt; "
+            "nothing was changed, retry the cancel"
+        ) from last
 
     def append_event(
         self,
@@ -1979,7 +2066,7 @@ class Store:
             .document(workflow_id)
             .update({"cancel_requested": True, "updated_at": self._now()})
         )
-        cancelled, already_terminal = [], []
+        cancelled, already_terminal, contended = [], [], []
         for step in workflow.steps:
             if not step.task_id:
                 continue
@@ -1994,12 +2081,26 @@ class Store:
                 already_terminal.append(step.task_id)
             except NotFound:
                 already_terminal.append(step.task_id)
-        return {
+            except CancelContended:
+                # Its own retries are spent (CANCEL-RETRY, #1822). The other
+                # steps are still cancelled, and the caller is told to retry:
+                # a second workflow cancel re-runs only what is left, the
+                # steps ended here reading as already terminal.
+                contended.append(step.task_id)
+        result = {
             "workflow_id": workflow_id,
             "cancel_requested": True,
             "tasks_cancelled": cancelled,
             "tasks_already_terminal": already_terminal,
         }
+        if contended:
+            raise CancelContended(
+                f"cancelling {len(contended)} step(s) of workflow {workflow_id!r} met "
+                "concurrent writes on every attempt; the other steps were cancelled, "
+                "retry the cancel",
+                result={**result, "tasks_contended": contended},
+            )
+        return result
 
     # -- pools, quota, control -------------------------------------------
 

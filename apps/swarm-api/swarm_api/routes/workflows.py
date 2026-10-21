@@ -33,6 +33,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
+from fastapi.responses import JSONResponse
 from swarm_common.models import Task
 from swarm_common.states import TERMINAL_STATES
 
@@ -57,7 +58,7 @@ from ..deps import (
 from ..rollup import RollupResult, SweepReport
 from ..schemas import WorkflowCreate
 from ..stalls import stalled_workflows
-from ..store import workflow_listing_token
+from ..store import CancelContended, workflow_listing_token
 from ..waker import ring
 
 log = logging.getLogger(__name__)
@@ -582,10 +583,21 @@ def cancel_workflow(
     # cancels nothing, their own included.
     require_member(ctx, auth)
     targets: list = []
-    result = ctx.store.cancel_workflow(
-        tenant_id, workflow_id, by=auth.email, tenant_member=auth.tenant_member,
-        targets=targets,
-    )
+    # A step whose cancel stayed contended through its retries (CANCEL-RETRY,
+    # #1822) does not stop the others: the store cancels them and then refuses
+    # with what it did. Every step it cancelled is still stopped, cascaded and
+    # woken below, so the refusal is RETURNED, not raised -- a raised error's
+    # response would drop these background tasks, and a retry names no
+    # execution for a step whose first cancel already committed.
+    refused: CancelContended | None = None
+    try:
+        result = ctx.store.cancel_workflow(
+            tenant_id, workflow_id, by=auth.email, tenant_member=auth.tenant_member,
+            targets=targets,
+        )
+    except CancelContended as exc:
+        refused = exc
+        result = exc.result or {}
     # Each running step's execution is asked to stop now, as the task route
     # does (#627); a step cancelled before names none.
     for target in targets:
@@ -619,5 +631,13 @@ def cancel_workflow(
         background.add_task(
             ring, ctx.waker, ctx.metrics, "workflow_cancelled",
             tenant_id=tenant_id, workflow_id=workflow_id,
+        )
+    if refused is not None:
+        # The shape and header `main.api_error_handler` gives a raised
+        # `RateLimited`; FastAPI attaches `background` to a returned response.
+        return JSONResponse(
+            status_code=refused.status_code,
+            content=refused.to_payload(),
+            headers={"Retry-After": str(max(1, int(refused.retry_after_seconds) + 1))},
         )
     return result
