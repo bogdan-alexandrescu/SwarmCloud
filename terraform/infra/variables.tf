@@ -257,6 +257,30 @@ variable "immutable_image_tags" {
   default = false
 }
 
+# The registry's cleanup (modules/artifact_registry, #1886).
+variable "cleanup_dry_run" {
+  description = "True makes Artifact Registry evaluate the swarm-images cleanup policies and log what they would delete, deleting nothing."
+  type        = bool
+  # True, not the module's false (owner 2026-10-21): no environment deletes an
+  # image until its tfvars says so, which is the owner's call after reading the
+  # would-delete list (docs/runbooks/registry-cleanup.md).
+  default = true
+}
+
+variable "untagged_ttl" {
+  description = "How long an untagged swarm-images version survives before delete-untagged removes it. Go duration, e.g. 604800s."
+  type        = string
+  # 7 days, the module's default, unchanged by #1886.
+  default = "604800s"
+}
+
+variable "keep_recent_versions" {
+  description = "How many of the newest versions of every swarm-images package keep-recent keeps, whatever their tags."
+  type        = number
+  # 20, the module's default, unchanged by #1886.
+  default = 20
+}
+
 # ---------------------------------------------------------------------------
 # Tenancy
 # ---------------------------------------------------------------------------
