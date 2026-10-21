@@ -238,6 +238,19 @@ def test_the_new_fields_come_last_so_no_positional_construction_moves():
     """Every field before them keeps its position."""
     assert [f.name for f in fields(Task)][-1] == "model_class"
     assert [f.name for f in fields(WorkflowStep)][-1] == "model_class"
-    assert [f.name for f in fields(Attempt)][-1] == "model"
+    # RS-4 (contract request 111) appends the sized_* record after `model`;
+    # `model` keeps its position and only RS-4's six fields follow it.
+    # MUTATION: inserting an RS-4 field before `model`, or any other field
+    # after it, turns this red.
+    attempt_names = [f.name for f in fields(Attempt)]
+    assert attempt_names[attempt_names.index("model") :] == [
+        "model",
+        "size_version",
+        "sized_cpu_request",
+        "sized_cpu_limit",
+        "sized_memory_gib",
+        "sized_disk_gib",
+        "sized_live_split",
+    ]
     names = [f.name for f in fields(profiles.RunnerProfile)]
     assert names[-2:] == ["model_classes", "default_model_class"]
