@@ -184,7 +184,7 @@ run "every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one" {
   # allow policy that may share a role and a principal with different
   # condition expressions -- one per projectIamAdmin chunk here, since they
   # are per-chunk bindings rather than one ORed expression (deployer_conditions.tf
-  # explains why). 16 roles / 10 per chunk is 2 today (14 with enable_github_hooks_dedup_role
+  # explains why). 15 roles / 10 per chunk is 2 today (14 with enable_github_hooks_dedup_role
   # off, which this file runs, and 15 until #150 took swarmSecretLister off;
   # still 2 each time); this guards the day
   # deployer_grantable_project_roles grows past 100 roles (10 chunks), which
@@ -729,6 +729,23 @@ run "the_iam_admin_conditions_hasonly_lists_never_exceed_gcps_ten_element_limit"
     ])) == toset(local.deployer_grantable_project_roles)
     error_message = "the projectIamAdmin condition's hasOnly() lists, combined, no longer grant exactly deployer_grantable_project_roles"
   }
+
+  # VERIFY-GKE-READ-2 (part of #1754; owner decision 2026-10-21): swarm-verify's
+  # conditioned clusterViewer is granted from this root, which the owner
+  # applies, so CI may never modify a clusterViewer binding. hasOnly() limits
+  # which roles CI grants, never to whom or under what condition: on this list,
+  # CI could grant itself clusterViewer unconditioned, which reaches the other
+  # team's agents-staging cluster. No chunk may name any container.* role.
+  # MUTATION: put "roles/container.clusterViewer" back on
+  # deployer_grantable_project_roles and this is red.
+  assert {
+    condition = length([
+      for r in local.deployer_grantable_project_roles : r if startswith(r, "roles/container.")
+      ]) == 0 && alltrue([
+      for k, m in google_project_iam_member.deployer_project_iam_admin : !strcontains(m.condition[0].expression, "roles/container.")
+    ])
+    error_message = "CI's scoped projectIamAdmin may grant a container role. swarm-verify's conditioned clusterViewer is granted from terraform/bootstrap (verify_cluster_read.tf), which the owner applies; CI's allow-list never carries it"
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -993,12 +1010,6 @@ run "every_project_role_the_verify_identity_holds_is_grantable" {
     condition = alltrue([
       contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, google_project_iam_member.verify_reads_firestore.role),
       contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, google_project_iam_member.verify_reads_run.role),
-      # VERIFY-GKE-READ (part of #1754): the conditioned clusterViewer, on
-      # terraform/bootstrap's list, which the owner applies before the release.
-      # MUTATION: drop it from deployer_grantable_project_roles and this is
-      # red; drop this line and the release finds the gap mid-apply, a 403.
-      alltrue([for k, m in google_project_iam_member.verify_views_swarm_cluster : contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, m.role)]),
-      length(google_project_iam_member.verify_views_swarm_cluster) == 1,
     ])
     error_message = "terraform/infra/verify.tf grants a project-level role the scoped projectIamAdmin may not grant; add it to deployer_grantable_project_roles"
   }

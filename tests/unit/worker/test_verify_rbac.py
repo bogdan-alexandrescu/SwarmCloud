@@ -13,11 +13,16 @@ kubernetes/rbac/verify-rbac.yaml as render.py renders it:
     authenticates -- and to nobody else;
   * rendered only when the operator's apply passes `--verify-uid` -- so not in
     the workspace deployer's renders, nor in register-tenant.sh's A9 re-render,
-    which expects every object it renders to exist -- and never in a
-    `swarm-tenant-u-*` namespace or a `--workspace-id` render, even when asked:
+    which expects every object it renders to exist -- and only in the eng and
+    smoke tenants' own namespaces (owner decision 2026-10-21,
+    VERIFY-GKE-READ-2): never in a `swarm-tenant-u-*` namespace, a
+    `--workspace-id` render or any other tenant's, even when asked.
     kubernetes/policies/workspace-provisioner-scope.yaml admits only the Roles
     and subjects the deployer's render had before, so the read there would be
-    refused and fail the deployer's next apply.
+    refused and fail the deployer's next apply;
+  * `render.py verify-read` names the account kubernetes/apply.sh resolves the
+    uniqueId of -- swarm-verify where the read is rendered, nothing elsewhere --
+    so apply.sh asks rather than restating which namespaces carry it.
 
 Offline: the renderer is imported by path and run through `main()`, the path
 kubernetes/apply.sh takes.
@@ -164,24 +169,51 @@ def _values(tenant: str, uid: str) -> dict[str, str]:
     return render.tenant_values(parser.parse_args(argv))
 
 
-@pytest.mark.parametrize(
-    ("tenant", "argv", "rendered"),
-    [
-        ("eng", (), True),
-        ("research", (), True),
-        # The workspace deployer's two shapes: a person's namespace, and a group
-        # workspace's (labelled by --workspace-id). Its scope policy admits
-        # neither the Role name nor the subject, so not even when asked.
-        ("u-alice", (), False),
-        ("research", ("--workspace-id", "w-000000"), False),
-    ],
-    ids=["terraform-tenant", "registered-tenant", "personal", "group-workspace"],
-)
-def test_the_read_is_rendered_only_where_the_operator_applies(tenant, argv, rendered):
+#: (tenant, extra render arguments, whether the read is rendered).
+WHERE = [
+    ("eng", (), True),
+    ("smoke", (), True),
+    # Any other tenant, Terraform's or registered: owner decision 2026-10-21,
+    # the gate reads Jobs in eng and smoke and nowhere else.
+    ("research", (), False),
+    # eng's id with another namespace inside the prefix (--namespace is
+    # forwarded by apply.sh): not eng's namespace, so not the read.
+    ("eng", ("--namespace", "swarm-tenant-eng-canary"), False),
+    # The workspace deployer's two shapes: a person's namespace, and a group
+    # workspace's (labelled by --workspace-id). Its scope policy admits
+    # neither the Role name nor the subject, so not even when asked.
+    ("u-alice", (), False),
+    ("eng", ("--workspace-id", "w-000000"), False),
+]
+WHERE_IDS = ["eng", "smoke", "other-tenant", "eng-other-namespace", "personal", "group-workspace"]
+
+
+@pytest.mark.parametrize(("tenant", "argv", "rendered"), WHERE, ids=WHERE_IDS)
+def test_the_read_is_rendered_only_in_eng_and_smoke(tenant, argv, rendered):
     docs = _render(tenant, "--verify-uid", VERIFY_UID, *argv)
     # MUTATION: render it everywhere and the personal and workspace renders
-    # carry objects the deployer's scope policy refuses, failing its apply.
+    # carry objects the deployer's scope policy refuses, failing its apply;
+    # drop the tenant allow-list and research's namespace gains the read the
+    # owner decided against.
     assert bool(_verify_docs(docs)) is rendered, [d["kind"] for d in _verify_docs(docs)]
+
+
+def _verify_read(tenant: str, *argv: str) -> str:
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        render.main(["verify-read", "--tenant", tenant, "--project", PROJECT, *argv])
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize(("tenant", "argv", "rendered"), WHERE, ids=WHERE_IDS)
+def test_verify_read_names_the_account_exactly_where_the_read_is_rendered(tenant, argv, rendered):
+    """kubernetes/apply.sh resolves swarm-verify's uniqueId only where the
+    render will bind it, and asks render.py where that is: a workspace
+    deployer's apply never looks the account up (its guard admits no such
+    describe), and the rule is stated once, in the renderer.
+    MUTATION: print the account for every tenant, or for none, and this is red."""
+    out = _verify_read(tenant, *argv)
+    assert out == (f"{VERIFY_GSA}\n" if rendered else "\n"), out
 
 
 def test_the_rbac_file_names_no_other_identity_and_no_other_cluster():

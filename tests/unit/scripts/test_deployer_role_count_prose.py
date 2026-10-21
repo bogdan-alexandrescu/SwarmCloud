@@ -237,6 +237,21 @@ def test_the_list_is_parsed_not_typed():
     assert not any("secret_lister" in r for r in roles)
 
 
+def test_ci_may_grant_no_container_role():
+    """swarm-verify's conditioned roles/container.clusterViewer is granted from
+    terraform/bootstrap (verify_cluster_read.tf), which the owner applies, and
+    never from terraform/infra (VERIFY-GKE-READ-2, part of #1754; owner
+    decision 2026-10-21). hasOnly() limits which roles CI grants, never to whom
+    or under what condition, so a container role on this list is one CI could
+    grant itself unconditioned, reaching the other team's agents-staging
+    cluster. The prose counts are therefore of a list without it: 15.
+    MUTATION: put "roles/container.clusterViewer" back on
+    deployer_grantable_project_roles and this is red."""
+    roles = grantable_roles()
+    assert not [r for r in roles if r.startswith("roles/container.")], roles
+    assert len(roles) == 15, roles
+
+
 def test_a_gated_role_is_off_by_default_and_read_by_nothing_else():
     """swarmGithubHooksDedup (terraform/bootstrap/github_hooks_role.tf) joins
     the list only when enable_github_hooks_dedup_role is on. The variable

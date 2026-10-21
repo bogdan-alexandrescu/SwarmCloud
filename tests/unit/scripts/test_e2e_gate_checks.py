@@ -10,7 +10,8 @@ failed three e2e checks, each on a test defect (#1754, items 3-5):
   [10] it compared every capacity holder with Cloud Run executions only, and
        flagged ten eng claude-code agents running on GKE Autopilot. It now reads
        the newest attempt's backend and asks GKE for GKE work. Since
-       VERIFY-GKE-READ swarm-verify holds that read (terraform/infra/verify.tf,
+       VERIFY-GKE-READ swarm-verify holds that read (terraform/bootstrap/
+       verify_cluster_read.tf, owner-applied; and in eng and smoke,
        kubernetes/rbac/verify-rbac.yaml), so a refused cluster read is the grant
        missing and fails the check; an unreachable cluster, or a namespace the
        read is not rendered in, is still "not checked".
@@ -255,8 +256,11 @@ def test_a_refused_cluster_read_is_a_refusal_naming_the_grant(tmp_path: Path) ->
     assert r.returncode == 0, r.stderr
     # MUTATION: leave a 403 as "no:" and the missing grant is a skip again.
     assert r.stdout.strip().startswith("refused:"), r.stdout
-    # The reader is sent to the grant, not left to guess which one.
-    assert "terraform/infra/verify.tf" in r.stdout
+    # The reader is sent to the grant, not left to guess which one: the
+    # owner-applied bootstrap root, since VERIFY-GKE-READ-2.
+    # MUTATION: name terraform/infra/verify.tf again, where CI cannot grant it.
+    assert "terraform/bootstrap/verify_cluster_read.tf" in r.stdout
+    assert "terraform/infra/verify.tf" not in r.stdout
     assert "clusters/swarm-autopilot" in log.read_text()
 
 
@@ -273,6 +277,10 @@ def test_a_refused_job_read_names_the_rbac_and_its_apply(tmp_path: Path) -> None
     assert r.stdout.startswith("unreadable "), r.stdout
     assert "kubernetes/rbac/verify-rbac.yaml" in r.stdout
     assert "kubernetes/apply.sh --tenant eng" in r.stdout
+    # apply.sh resolves swarm-verify's uniqueId itself (VERIFY-GKE-READ-2), and
+    # refuses the flag on its command line, so the reader is not told to pass it.
+    # MUTATION: keep "--verify-uid <swarm-verify uniqueId>" in the message.
+    assert "--verify-uid" not in r.stdout
 
 
 # --- [10]'s judgement over what the loop counted -----------------------------
