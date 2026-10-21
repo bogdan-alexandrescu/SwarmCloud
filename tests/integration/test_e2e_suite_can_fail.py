@@ -396,6 +396,33 @@ def test_gke_work_whose_cluster_read_is_refused_fails_naming_the_bootstrap_grant
     assert not run.mentions("with no live execution behind them: 1"), run.transcript
 
 
+@pytest.mark.parametrize("executions", ["gke_job", "gke_pod"])
+def test_a_live_gke_job_passes_whichever_name_its_attempt_recorded(tmp_path, executions):
+    """#1804: the 06:45Z gate called seven live GKE agents gone.
+
+    Their attempts recorded the POD's name (`swarm-<task>-<gen>-<5 chars>`), and
+    [10] asked the cluster for a Job of that name. It now asks for the Job the
+    pod belongs to, and an attempt recorded since the fix names it outright.
+    """
+    run = run_suite(tmp_path, executions=executions)
+    # MUTATION: look a legacy pod name up as a Job name and gke_pod fails here
+    # on the cluster's 404, as the gate did.
+    assert run.passed, run.transcript
+    # Checked, not skipped: a GKE holder the gate could not map would pass as
+    # "not checked", which is not what this asserts.
+    assert run.mentions("with no live execution behind them: 0"), run.transcript
+    assert not run.mentions("holding capacity on GKE not checked"), run.transcript
+
+
+def test_a_gke_job_that_is_really_gone_still_fails_under_a_legacy_pod_name(tmp_path):
+    run = run_suite(tmp_path, executions="gke_pod_gone")
+    # MUTATION: treat every legacy record as alive, or as "not checked", and a
+    # dead Job recorded before the fix holds capacity with a green gate.
+    assert not run.passed, run.transcript
+    assert run.mentions("with no live execution behind them: expected '0', got '1'"), run.transcript
+    assert run.mentions("swarm-tenant-eng/swarm-inflight-2 is gone"), run.transcript
+
+
 def test_no_in_flight_work_reports_not_measured(tmp_path):
     """Nothing was running, so nothing could be compared. Not a pass."""
     run = run_suite(tmp_path, executions="idle")

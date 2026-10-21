@@ -212,6 +212,65 @@ def test_a_gke_job_named_without_a_namespace_is_looked_up_in_the_tenants(tmp_pat
     assert asked == ["swarm-tenant-eng swarm-cf154a98da3f42bfae36-1"]
 
 
+#: #1804: before SWARM_EXECUTION_NAME, a GKE worker recorded its POD's hostname,
+#: the Job's name and a 5-character suffix, with no namespace.
+LEGACY_POD = "swarm-cf154a98da3f42bfae36-1-2cq5s"
+
+
+def test_a_live_job_recorded_under_its_pod_name_is_asked_for_as_its_job(tmp_path: Path) -> None:
+    """The 06:45Z gate run: seven live agents called gone over a 404 on jobs/<pod>."""
+    attempt = dict(GKE_ATTEMPT, execution_name=LEGACY_POD)
+    r, verdict, detail, asked = _verdict(tmp_path, attempt, answer="running")
+    assert r.returncode == 0, r.stderr
+    # MUTATION: look the pod name up as a Job and the cluster's 404 makes a
+    # live agent "gone"; strip more or less than the pod suffix and the same.
+    assert asked == ["swarm-tenant-eng swarm-cf154a98da3f42bfae36-1"]
+    assert verdict == "ok", (verdict, detail)
+
+
+def test_a_job_recorded_under_its_pod_name_that_is_really_gone_still_fails(tmp_path: Path) -> None:
+    attempt = dict(GKE_ATTEMPT, execution_name=LEGACY_POD)
+    _, verdict, detail, asked = _verdict(tmp_path, attempt, answer="gone")
+    assert asked == ["swarm-tenant-eng swarm-cf154a98da3f42bfae36-1"]
+    # MUTATION: call every legacy record "ok" or "unchecked" and a dead GKE Job
+    # recorded before the fix holds capacity unseen.
+    assert verdict == "gone", (verdict, detail)
+
+
+def test_a_live_job_recorded_as_namespace_and_job_passes(tmp_path: Path) -> None:
+    """The name every attempt records since #1804."""
+    _, verdict, _, asked = _verdict(tmp_path, GKE_ATTEMPT, answer="running")
+    assert asked == ["swarm-tenant-eng swarm-cf154a98da3f42bfae36-1"]
+    assert verdict == "ok"
+
+
+@pytest.mark.parametrize(
+    "name,changes",
+    [
+        # Another task's pod.
+        ("swarm-3f3f8e2700ed46f89c17-1-2cq5s", {}),
+        # This task's pod, another generation's Job.
+        ("swarm-cf154a98da3f42bfae36-2-2cq5s", {}),
+        # Not a pod suffix.
+        ("swarm-cf154a98da3f42bfae36-1-2cq5", {}),
+        ("swarm-cf154a98da3f42bfae36-1-2CQ5S", {}),
+        # A pod name with no generation to check it against.
+        (LEGACY_POD, {"generation": None}),
+        # Something that is no Job or pod of this task at all.
+        ("localhost", {}),
+    ],
+)
+def test_a_bare_name_that_is_not_this_attempts_job_or_pod_is_not_checked(
+        tmp_path: Path, name: str, changes: dict) -> None:
+    attempt = dict(GKE_ATTEMPT, execution_name=name, **changes)
+    _, verdict, detail, asked = _verdict(tmp_path, attempt, answer="gone")
+    # MUTATION: look any bare name up as a Job and a name the gate cannot map
+    # exactly reads "gone" off a 404 that proves nothing about this attempt.
+    assert asked == [], asked
+    assert verdict == "unchecked", (verdict, detail)
+    assert "not checked" in detail
+
+
 def test_a_cloud_run_holder_is_still_compared_with_cloud_run(tmp_path: Path) -> None:
     attempt = {"attempt_id": "att_c", "task_id": "t", "tenant_id": "eng", "generation": 1,
                "backend": "CLOUD_RUN_JOB",
