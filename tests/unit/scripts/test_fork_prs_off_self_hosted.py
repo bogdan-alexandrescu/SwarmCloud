@@ -564,6 +564,7 @@ HOSTED_JOBS: dict[str, str] = {
     "accept.yml:smoke": CLOUD,
     "accept.yml:acceptance": CLOUD,
     "accept.yml:acceptance-2": CLOUD,
+    "accept.yml:tenant-isolation": CLOUD,
     "accept.yml:report": CLOUD,
     "accept.yml:live-browser": CLOUD,
     "application.yml:build": CLOUD,

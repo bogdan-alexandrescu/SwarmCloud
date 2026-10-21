@@ -58,8 +58,10 @@ NEEDS_ID_TOKEN = {
     # OWN account, not the deployer (terraform/bootstrap/acceptance.tf).
     # `sandbox` and `sandbox-results` talk only to GitHub. `live-browser` is
     # the group's scheduled run off the red path (2026-10-14, SPEED-C2); its
-    # report, `live-browser-report`, talks only to GitHub.
-    "accept.yml": {"target", "quiesce", "smoke", "acceptance", "acceptance-2", "report", "live-browser"},
+    # report, `live-browser-report`, talks only to GitHub. `tenant-isolation`
+    # runs the cross-tenant Firestore probe (2026-10-20, ISO-ACCEPT-WIRE).
+    "accept.yml": {"target", "quiesce", "smoke", "acceptance", "acceptance-2", "tenant-isolation", "report",
+                   "live-browser"},
 }
 
 WIF_TF = REPO / "terraform" / "bootstrap" / "wif.tf"
