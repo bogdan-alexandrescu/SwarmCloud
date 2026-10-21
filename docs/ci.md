@@ -1758,7 +1758,7 @@ through `swarm-api`:
 | grant | scope | why |
 |---|---|---|
 | `roles/run.invoker` | the `swarm-api` service | every suite submits and reads through the API |
-| `roles/datastore.viewer` | project | the suites read task, lease and pool documents directly (`fs_get`, `fs_count`) |
+| `roles/datastore.viewer` | project | the suites read agent, lease and pool documents directly (`fs_get`, `fs_count`) |
 | `roles/run.viewer` | project | invariant 1 is asserted by counting Cloud Run executions |
 | `roles/storage.objectViewer` | the artifact bucket | smoke proves artifacts land under the tenant's own prefix (invariant 9) |
 | `roles/container.clusterViewer`, **conditioned** | project, to `projects/<p>/locations/<region>/clusters/swarm-autopilot` exactly | e2e [10] reads the cluster's endpoint and CA. Granted by **terraform/bootstrap**, which the owner applies ([`verify_cluster_read.tf`](../terraform/bootstrap/verify_cluster_read.tf)) |
@@ -1766,7 +1766,7 @@ through `swarm-api`:
 
 **The last two are owner decisions of 2026-10-20 and 2026-10-21 (#1754,
 VERIFY-GKE-READ and VERIFY-GKE-READ-2).** e2e [10], "no task is holding
-capacity against an execution that is gone", compares every task holding
+capacity against an execution that is gone", compares every agent holding
 capacity with the backend its attempt names. Before the two grants it could
 read Cloud Run only, and the 2026-10-20 baseline reported ten eng agents
 running on GKE as holders "not checked: no GKE read". The gate could not see a
