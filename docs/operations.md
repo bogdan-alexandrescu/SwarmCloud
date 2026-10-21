@@ -445,7 +445,7 @@ severity, the owner's choice of 2026-10-21:
 | Severity | Policies | Notifies |
 |---|---|---|
 | CRITICAL (6) and ERROR (8) | the tick, the isolation and IAM tripwires, 5xx, dispatch, the reconciler, the wake backlog and dead letters | `urgent_notification_channels` (Slack) **and** `extra_notification_channels` (email) |
-| WARNING (7) | generation-fencing, job-executions-failing, pr-stranded, schedule-needs-attention, tasks-dead-lettered, worker-action-ended, workspace-stuck | `extra_notification_channels` (email) only |
+| WARNING (7) | `generation-fencing`, `job-executions-failing`, `pr-stranded`, `schedule-needs-attention`, `tasks-dead-lettered`, `worker-action-ended`, `workspace-stuck` | `extra_notification_channels` (email) only |
 
 Each policy takes its channels from its own `severity` field
 (`channels_by_severity` in `terraform/modules/monitoring/alerts.tf`), so a
