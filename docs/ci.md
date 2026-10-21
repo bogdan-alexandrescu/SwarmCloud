@@ -3781,18 +3781,30 @@ and a lane's docs-only `changed-guards.sh` run still narrows to
 `DOC_GUARD_TESTS`. The list is kept **once**, in that script:
 `select_unit_tests.py`'s `guard_tests()` reads the array from it, a list it
 cannot read or a guard that no longer exists runs the whole suite, and
-`tests/unit/scripts/test_select_unit_tests.py` holds the two equal. It holds,
-besides #642's docs guards, UI route seam and `test_specsign_covers`, the
-whole-tree tests -- files that walk `apps/`, `tests/` or `docs/` and assert
-over every file -- of at most 10 CI-seconds each:
-`test_collection_stays_cheap`, `test_awaiting_input_readers`,
-`test_artifacts_read_path`, `test_declared_dependencies`,
-`test_spec_signing_every_submitter`, `test_mcp_admission`,
-`test_helpers_import_by_unique_name` and `test_docs_agent_vocabulary`. Every
-pull request and every lane pays for the set, which is why the bound: a
-heavier whole-tree file (`test_state_colour_discriminability`, 34.7 s;
-`test_docs_cite_worker_symbols`, 26.0 s; `test_unit_shards`, 25.5 s) is left
-to main's push run. Add a whole-tree test to `GUARD_TESTS` when you write one.
+`tests/unit/scripts/test_select_unit_tests.py` holds the two equal.
+
+**What is in it is read from the array, not from here.** The set is #642's
+docs guards, the UI route seam and `test_specsign_covers`, then the
+whole-tree tests: files that read every file of a directory -- `apps/`,
+`tests/`, `docs/`, `scripts/`, `terraform/`, `kubernetes/`, `.github/` or
+`images/` -- and assert over each, so a new file there breaks them without
+naming them. `GUARD_TESTS` lists them one path a line, with a comment naming
+the lane that added each group and why. This page named them test by test
+until CI-GUARDS-MORE added twenty in one go and the list here fell behind
+(CI-GUARDS-DOCS, part of #1822); it names none now, so it cannot drift.
+
+**The bound.** Every pull request and every lane pays for the set, so a file
+is in it only if its recorded weight in `unit_test_durations.json` is at most
+10 CI-seconds; the walkers CI-GUARDS-MORE and CI-GUARDS-DOCS added are each under 5 (a
+test in `test_select_unit_tests.py` holds that per group, and a file with no
+weight recorded is measured once and left out if it is over 5 s). A heavier
+whole-tree file is left to main's push run, which runs every file:
+`test_state_colour_discriminability` (34.7 s), `test_docs_cite_worker_symbols`
+(26.0 s), `test_unit_shards` (25.5 s), `test_ci_gate` (28.2 s),
+`test_merge_queue_workflows` (26.4 s), the `test_build_images_*` files, and
+`test_shellcheck_ci` (no weight recorded; it takes minutes). Plugin and
+single-package `apps/` walkers are not in it: whether to add them is not
+decided. Add a whole-tree test to `GUARD_TESTS` when you write one.
 
 ## A pull request scans the images it builds
 

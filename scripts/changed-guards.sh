@@ -93,7 +93,10 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # After test_docs_agent_vocabulary: the walkers of scripts/, terraform/ and
 # kubernetes/, the same defect class one directory over (a new .tf, .yaml or
 # .sh breaks them and names none), each under 5 CI-seconds, about 11 s
-# together (CI-GUARDS-MORE, part of #1822).
+# together (CI-GUARDS-MORE, part of #1822). After test_swarm_verify_image_
+# helpers: the walkers of .github/ and images/ -- every workflow, every
+# Dockerfile, or every file of one image directory -- each under 5
+# CI-seconds, about 12 s together (CI-GUARDS-DOCS, part of #1822).
 GUARD_TESTS=(
   tests/unit/scripts/test_docs_describe_what_was_built.py
   tests/unit/scripts/test_docs_spec_amendments.py
@@ -127,6 +130,13 @@ GUARD_TESTS=(
   tests/unit/worker/test_checkpoint_retention.py
   tests/unit/worker/test_workspace_provisioner_scope.py
   tests/unit/scripts/test_swarm_verify_image_helpers.py
+  tests/unit/scripts/test_fork_prs_off_self_hosted.py
+  tests/unit/scripts/test_workflow_step_reachability.py
+  tests/unit/scripts/test_image_streaming.py
+  tests/unit/scripts/test_pr_image_scan.py
+  tests/unit/scripts/test_ui_node_line.py
+  tests/unit/worker/test_jev_browser_image.py
+  tests/unit/worker/test_repo_index_extract.py
 )
 # The guards that read docs: all a docs-only diff selects of GUARD_TESTS.
 # Pull-request CI runs the whole GUARD_TESTS even for a docs-only change.
