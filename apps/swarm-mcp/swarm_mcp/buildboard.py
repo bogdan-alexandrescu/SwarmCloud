@@ -56,11 +56,13 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from swarm_common.states import TERMINAL_STATES
 
@@ -890,3 +892,185 @@ def open_page(path: str | Path) -> str | None:
     if done.returncode != 0:
         return f"{argv[0]} exited {done.returncode}; open {path} yourself"
     return None
+
+
+# --------------------------------------------------------------------------
+# Keeping itself current (BOARD-WIRE, part of #1773)
+# --------------------------------------------------------------------------
+
+#: A row's follow that sees a state change refreshes the board at most this
+#: often per project. Rows follow every task of every running workflow, and a
+#: busy project changes state many times a minute; each refresh is a listing
+#: plus one read per moving lane, so a refresh per change would spend the
+#: bridge's 20/s on the board. A change inside the window is written when the
+#: window closes, never dropped: the last change of a run is the one a reader
+#: most wants to see.
+FOLLOW_REFRESH_SECONDS = 120.0
+
+#: The tools after whose SUCCESS the board is refreshed unthrottled (owner
+#: requirement: "updated automatically when work is dispatched"): every
+#: submission (`swarm_workflow`, `merge_pr` included; `swarm_dispatch`, one
+#: task or `tasks`; `swarm_run_issue`, whose planner is work submitted), the
+#: launch that submits or attaches, and `swarm_check`. A refused call raises
+#: before this is consulted, so it refreshes nothing.
+ALWAYS_AFTER = frozenset({"swarm_workflow", "swarm_dispatch", "swarm_workflow_launch",
+                          "swarm_run_issue", "swarm_check"})
+
+
+def _log(message: str) -> None:
+    """Into the bridge's stderr, which the host keeps in its MCP log and
+    never shows as a tool's answer."""
+    print(f"swarm-mcp: build board: {message}", file=sys.stderr)
+
+
+def _refresh_project(client: Any, project: Path) -> dict[str, Any]:
+    return refresh(client, project=project)
+
+
+def _thread(run: Callable[[], None]) -> None:
+    threading.Thread(target=run, name="build-board", daemon=True).start()
+
+
+def _timer(seconds: float, run: Callable[[], None]) -> None:
+    timer = threading.Timer(seconds, run)
+    timer.daemon = True
+    timer.start()
+
+
+class AutoRefresh:
+    """The board's automatic refresh: in the background, coalesced, throttled
+    only for follows, and never able to fail or delay the tool behind it.
+
+    ONE REFRESH AT A TIME. A trigger while one runs is remembered, and however
+    many arrive they cost ONE more refresh once it ends -- the running one may
+    have read before the submission that triggered them. A submission's
+    refresh (`submitted`) is never throttled; a follow's (`followed`) runs only
+    when the project's last refresh, of either kind, is `FOLLOW_REFRESH_SECONDS`
+    old, else once at the end of that window, unless a refresh started since
+    the deferral covers it. A daemon thread does the work: a refresh cut short
+    when the bridge exits leaves the previous page, because the page is
+    replaced by a rename (`write`).
+
+    Every failure -- a raise, or a refresh that answered `error` -- is logged
+    and forgotten; the next trigger tries again.
+    """
+
+    def __init__(
+        self,
+        *,
+        refresh: Callable[[Any, Path], dict[str, Any]] | None = None,
+        project: Callable[[], Path | None] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        start: Callable[[Callable[[], None]], None] = _thread,
+        after: Callable[[float, Callable[[], None]], None] = _timer,
+    ) -> None:
+        self._refresh = refresh or _refresh_project
+        self._project = project or (lambda: _project())
+        self._clock = clock
+        self._start = start
+        self._after = after
+        self._lock = threading.Lock()
+        self._busy = False
+        #: 0 nothing pending, 1 a follow's, 2 a submission's: the stronger wins.
+        self._pending = 0
+        self._client: Any = None
+        self._last: dict[str, float] = {}
+        self._deferred: dict[str, float] = {}
+        self._states: dict[str, str] = {}
+
+    def submitted(self, client: Any) -> None:
+        self._request(client, 2)
+
+    def followed(self, client: Any, reply: str) -> None:
+        """A follow's reply: a refresh, throttled, when a task's state moved
+        since this bridge last saw it, or when the reply names a transition
+        itself (`compact.watch_progress`). A task seen for the first time is
+        no change: the submission's own refresh already showed it."""
+        try:
+            found = json.loads(reply)
+        except (TypeError, ValueError):
+            return
+        if not isinstance(found, dict):
+            return
+        changed = bool(found.get("transitions"))
+        tasks = found.get("tasks")
+        with self._lock:
+            for task in tasks if isinstance(tasks, list) else []:
+                if not isinstance(task, dict) or not isinstance(task.get("state"), str):
+                    continue
+                task_id = str(task.get("task_id") or "")
+                before = self._states.get(task_id)
+                if before is not None and before != task["state"]:
+                    changed = True
+                self._states[task_id] = task["state"]
+        if changed:
+            self._request(client, 1)
+
+    def _request(self, client: Any, level: int) -> None:
+        with self._lock:
+            self._client = client
+            self._pending = max(self._pending, level)
+            if self._busy:
+                return
+            self._busy = True
+        try:
+            self._start(self._drain)
+        except Exception as exc:  # noqa: BLE001 - no thread is no refresh, never a failed tool
+            with self._lock:
+                self._busy = False
+            _log(f"the refresh could not start ({type(exc).__name__}: {exc})")
+
+    def _drain(self) -> None:
+        while True:
+            with self._lock:
+                level, self._pending = self._pending, 0
+                client = self._client
+                if level == 0:
+                    self._busy = False
+                    return
+            try:
+                self._once(client, forced=level == 2)
+            except Exception as exc:  # noqa: BLE001 - logged and forgotten; the next trigger tries again
+                _log(f"the refresh failed ({type(exc).__name__}: {exc})")
+
+    def _once(self, client: Any, *, forced: bool) -> None:
+        project = self._project()
+        if project is None:
+            _log("no project directory, so no board to refresh")
+            return
+        key = str(project)
+        now = self._clock()
+        with self._lock:
+            last = self._last.get(key)
+            if not forced and last is not None and now - last < FOLLOW_REFRESH_SECONDS:
+                if key not in self._deferred:
+                    self._deferred[key] = now
+                    self._after(FOLLOW_REFRESH_SECONDS - (now - last), lambda: self._fire(client, key))
+                return
+            self._last[key] = now
+        got = self._refresh(client, project)
+        if isinstance(got, dict) and got.get("error"):
+            _log(str(got["error"]))
+
+    def _fire(self, client: Any, key: str) -> None:
+        """The end of a follow's window: refresh, unless one started after
+        the change was deferred and so already shows it."""
+        with self._lock:
+            deferred = self._deferred.pop(key, None)
+            last = self._last.get(key)
+            if deferred is None or (last is not None and last > deferred):
+                return
+        self._request(client, 1)
+
+
+#: The bridge's one refresher: one per process, as the bridge serves one project.
+AUTO = AutoRefresh()
+
+
+def after_tool(client: Any, name: str, reply: str) -> None:
+    """What a tool's successful answer does to the board: called by the
+    bridge after every tool call that did not raise."""
+    if name in ALWAYS_AFTER:
+        AUTO.submitted(client)
+    elif name == "swarm_follow":
+        AUTO.followed(client, reply)

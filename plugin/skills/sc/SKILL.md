@@ -1,7 +1,7 @@
 ---
 name: sc
-description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 100 followed, closest to finish first, the plugin's `max_live_rows`) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 100), every run's and row's expanded details naming the workspace it runs in, who started it and its LLM account; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. `check` reads which of this project's SwarmCloud workflows and tasks are stuck or stale (swarm_check, read-only) and then gives every running workflow of the project that has no row in this session its live rows; `watch [interval]` runs that `check` every interval (default 30m, at least 5m) with Claude Code's CronCreate and remembers it for the project; the watch also arms itself (CronList first, never a second job) whenever this session attaches to or starts SwarmCloud work, and `watch off` stops it and keeps it off for the project until `watch` again. `keys` says whether a TypeSafe key is set for you and your tenant and which one a task would use; `keys set <provider> [--tenant]` gives the developer a one-time console link to paste the key into themselves — the key never passes through this session. `roles` shows the roles of the workspace this session acts in (read-only); a role is changed only by the developer, typed at their own terminal. Use when asked "is my TypeSafe key set", "set my TypeSafe key", "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
-argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | check | inputs | answer <wf_id> <step_id> [file ...] | watch [interval] | watch off | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run> | keys | keys set <provider> [--tenant] | roles]"
+description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 100 followed, closest to finish first, the plugin's `max_live_rows`) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 100), every run's and row's expanded details naming the workspace it runs in, who started it and its LLM account; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. `check` reads which of this project's SwarmCloud workflows and tasks are stuck or stale (swarm_check, read-only) and then gives every running workflow of the project that has no row in this session its live rows; `watch [interval]` runs that `check` every interval (default 30m, at least 5m) with Claude Code's CronCreate and remembers it for the project; the watch also arms itself (CronList first, never a second job) whenever this session attaches to or starts SwarmCloud work, and `watch off` stops it and keeps it off for the project until `watch` again. `build-board` refreshes this project's local build board (`.claude/build-board/index.html`, git-ignored, never committed) and opens it in the browser. `keys` says whether a TypeSafe key is set for you and your tenant and which one a task would use; `keys set <provider> [--tenant]` gives the developer a one-time console link to paste the key into themselves — the key never passes through this session. `roles` shows the roles of the workspace this session acts in (read-only); a role is changed only by the developer, typed at their own terminal. Use when asked "is my TypeSafe key set", "set my TypeSafe key", "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
+argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | check | inputs | answer <wf_id> <step_id> [file ...] | build-board | watch [interval] | watch off | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run> | keys | keys set <provider> [--tenant] | roles]"
 arguments:
   - verb
   - target
@@ -40,6 +40,8 @@ allowed-tools:
   - Bash(sc roles)
   - Bash(sc roles --json)
   - Bash(sc roles list:*)
+  - Bash(open /*/.claude/build-board/index.html)
+  - Bash(xdg-open /*/.claude/build-board/index.html)
   - Bash(uv run swarm doctor:*)
   - Bash(uv run swarm profiles:*)
   - CronCreate
@@ -54,7 +56,8 @@ This skill reads only, except `run`, which submits and says so first,
 developer asks for exactly that, `answer`, which sends a workflow step
 only what the developer types into this host's own form, and
 `swarm_task_answer`, which records on a task an answer the developer gave
-here to its agent's question.
+here to its agent's question. `build-board` writes one local, git-ignored
+page and nothing in SwarmCloud.
 
 ## The verb
 
@@ -71,6 +74,7 @@ one action — never a second one the developer did not ask for:
 | `attach --all` | live rows for every running workflow THIS Claude Code session started (at most 100), and one per running single task it dispatched (at most 100); `max_live_rows` moves both, 1-200 | no |
 | `check` | which of THIS SESSION's workflows and tasks in THIS PROJECT are stuck or stale, stuck first, each with its reason, evidence, console link and next command: `swarm_check`. Then live rows for every running workflow and single task of the project that has none in this session | no (attaching submits nothing) |
 | `watch [interval]` | a `check` every interval (default `30m`, at least `5m`) in this session, through Claude Code's CronCreate, remembered for this project so the next session re-arms it: `swarm_check_schedule`. It also arms itself when this session attaches or starts work (see "Arming the watch") | schedules a prompt in this session; nothing in SwarmCloud |
+| `build-board` | refreshes this project's build board, `.claude/build-board/index.html`, and opens it in the browser: `swarm_build_board` | writes the local page only (git-ignored); nothing in SwarmCloud |
 | `inputs` | the workflow steps of your tenant waiting for a person's answer: `swarm_inputs` | no |
 | `answer <wf_id> <step_id> [file ...]` | the developer answers that step in this host's own form: `swarm_workflow_input`. You never write the answer | **yes**, what the developer typed |
 | `watch off` | cancels this session's watch and saves "off" for the project, so nothing arms it again until `watch` | no |
@@ -295,6 +299,32 @@ re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
    say so in one line, and LEAVE the watch armed -- a check every interval
    is one read, and the next workflow is watched without anyone re-arming
    it. A check never cancels its own job; only `watch off` does.
+
+### `build-board`
+
+This project's build board (#1773): one local HTML page of every lane of
+the work the developer submitted against this project's repository -- its
+state, pull request and what it waits on, grouped by feature -- and a
+"Waiting on someone" list. It lives at `<project>/.claude/build-board/`,
+beside a `.gitignore` of `*`, so it is never committed, and it belongs to no
+Claude account. The bridge already refreshes it after every dispatch, check
+and attach, and as rows see work move; this verb refreshes it now and shows
+it.
+
+1. Make ONE `swarm_build_board` call (no arguments). It reads, renders and
+   writes the page and answers `{path, written_at, counts, waiting}`.
+2. Open the returned `path` -- the absolute path, exactly as answered -- with
+   `open <path>` on macOS or `xdg-open <path>` elsewhere (the session's
+   platform says which). Those two commands, for that one file, are all this
+   verb runs; if the open fails, give the path for the developer to open.
+3. Report in ONE line: the path, `written_at`, and the `counts` (lanes,
+   merged/done, in flight, queued, needs you) with `waiting`.
+
+A project with no work yet gets an empty board that says "No lanes yet": it
+is a board, not an error -- open it and report zero lanes. An `error` in the
+answer is a failed refresh: say it in one line and, when `path` is not null,
+that the previous page is still there to open. Nothing here is written to
+SwarmCloud; no other command is run.
 
 ### `inputs`
 
