@@ -607,4 +607,11 @@
 @media (max-width: 560px) {
   .tl-ctl > .c-seg.tl-span { flex: 1 1 100%; flex-wrap: nowrap; }
   .tl-ctl > .c-seg.tl-span > button { flex: 1 1 0; justify-content: center; }
+  /* THE KIND CONTROL RUNS THE COLUMN WIDE TOO (visual QA run 2, work-a-012,
+     2026-10-20): left `flex: none`, all / standalone / workflow steps stopped
+     short of the edge the span control and the selects reach. Its segments
+     keep their content basis (`workflow steps` is three times `all`) and
+     share what is left. */
+  .tl-ctl > .c-seg.tl-kind { flex: 1 1 100%; }
+  .tl-ctl > .c-seg.tl-kind > button { justify-content: center; }
 }

@@ -115,7 +115,11 @@ Opening it folds the agent list to its 64px strip (the shipped `[`), so at
 1280 the file gets about 850px and split is available. A summary line
 carries the totals, the base, the patch, and the PR, linked both ways. The
 Code card's "Show the diff" becomes "Changes ›", and the step inspector gets
-"Changes · N files ›".
+"Changes · N files ›". *Amended 2026-10-20 (visual QA run 2, WG-7): on a
+workflow the inspector's link reads "This step’s changes · N files ›" and a
+matrix column's link to its agent's own tab reads "Agent’s changes ›", drawn
+only on the columns the step filter shows, so no link on the workflow page
+shares its Changes tab's name for a narrower scope.*
 
 * **Optimises:** reach. One name and one place everywhere, and the least
   change to reading, because it is the viewer the owner already approved.

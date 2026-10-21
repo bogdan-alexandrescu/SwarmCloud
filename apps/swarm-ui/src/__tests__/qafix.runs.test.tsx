@@ -11,6 +11,15 @@
  *           with All first, beside the Workflows filter's 'Running 2 ·
  *           Finished 0 · Failed 1 · All 3'.
  *
+ * QAFIX2-WORK-MINOR (visual QA run 2, wf_b6e2441b419f423a84eb, 2026-10-20):
+ *
+ *   work-a-011  at 390 the six states wrapped three to a row, each segment
+ *           keeping its own right and top hairline, so the 3×2 grid's inner
+ *           joins notched and it read as six loose buttons. It is one grid
+ *           of three equal columns now, each line drawn once.
+ *   work-a-012  (Runs' part) the control runs the column wide, as the search
+ *           box under it does.
+ *
  * Every assertion names the mutation that turns it red.
  */
 import { fireEvent, render, waitFor, within } from '@testing-library/react'
@@ -144,5 +153,46 @@ describe('QA-084: the Runs state filter is worded as the Workflows one is', () =
     fireEvent.click(within(chips).getByRole('button', { name: /^Not ready/ }))
     // MUTATION: print the filter's key (`in not ready`) and this is red.
     expect(visible(container.querySelector('.rn-none'))).toBe('No run of the 1 read matches in Not ready.')
+  })
+})
+
+describe('work-a-011: at 390 the Runs state filter is one 3×2 grid with every join drawn once', () => {
+  it('lays the six states in three equal columns, with no doubled or notched hairline', async () => {
+    const { container } = await mountList([run('run_' + 'c9'.repeat(10))])
+    const seg = within(container).getByRole('group', { name: 'Which runs' })
+    const cells = [...seg.querySelectorAll<HTMLElement>(':scope > button')]
+    expect(cells).toHaveLength(6)
+    // MUTATION: drop the Runs phone rule and the shared control's wrapping
+    // flex row applies again: content-sized cells whose joins do not line up.
+    expect(painted(seg, 'display', PHONE)).toBe('grid')
+    // MUTATION: size the tracks by content (`auto`) and the vertical joins of
+    // the two rows fall at different x again.
+    expect(painted(seg, 'grid-template-columns', PHONE)).toBe('repeat(3, minmax(0, 1fr))')
+    // MUTATION (work-a-012): leave the control its content's width and it
+    // stops short of the column edge the search box reaches.
+    expect(painted(seg, ['flex', 'flex-basis'], PHONE)).toBe('1 1 100%')
+    const right = (b: HTMLElement) => painted(b, ['border-right', 'border-right-width'], PHONE)
+    const top = (b: HTMLElement) => painted(b, ['border-top', 'border-top-width'], PHONE)
+    cells.forEach((b, i) => {
+      const label = b.textContent ?? String(i)
+      // A row's last cell meets the control's own border, so it draws no
+      // right hairline of its own; every other cell draws the join once.
+      // MUTATION: drop the `:nth-child(3n)` rule and the 3rd cell's line
+      // doubles the control's right border, a notch at the row's end.
+      if (i % 3 === 2) expect(right(b), label).toBe('0')
+      else expect(right(b), label).toMatch(/^1px solid/)
+      // The first row sits under the control's own top border; only the
+      // second row draws the line between the rows.
+      // MUTATION: keep the shared `border-top` + `margin-top: -1px` on the
+      // first row and the line between rows is drawn by six cells, not three.
+      if (i < 3) expect(top(b), label).toBe('0')
+      else expect(top(b), label).toMatch(/^1px solid/)
+      // MUTATION: keep the shared `margin-top: -1px` and the second row
+      // rides 1px into the first.
+      expect(painted(b, 'margin-top', PHONE), label).toBe('0')
+    })
+    // The desktop control keeps its one row.
+    // MUTATION: move the grid out of the phone query and this is red.
+    expect(painted(seg, 'display', WIDE)).toBe('inline-flex')
   })
 })

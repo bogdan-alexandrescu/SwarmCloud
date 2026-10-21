@@ -54,6 +54,7 @@ import { WorkspacePeopleScreen } from './WorkspacePeople'
 import { WorkspacesYouAdminScreen } from './WorkspacesYouAdmin'
 import { WORKSPACE_PEOPLE_ADDRESS } from './roles'
 import { QuotaDetailScreen } from './QuotaDetail'
+import { tableMode, usePhoneTables } from './capacityPoll'
 import { RuntimesScreen } from './Runtimes'
 import { CountNote, FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
 import { SubmitScreen } from './Submit'
@@ -1850,8 +1851,13 @@ function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: num
   // and no "reading…" that never resolves (#503). The Submit chooser is not
   // one of them: it reads your recent submissions and carries that read's age
   // on its own refresh (QA G1-05/G4-23).
-  if (at.sectionId === HELP || (at.sectionId === CAPACITY && at.tab === API_READS_TAB)) {
-    return <span className="ctl-em">reads nothing</span>
+  if (at.sectionId === HELP) return <span className="ctl-em">reads nothing</span>
+  // API READS SAYS WHOSE READS ARE NOT ITS OWN (capacity-005, visual QA run 2).
+  // "reads nothing" over a table of reads, every one `200 ok` and `just now`,
+  // read as "no reads" -- the opposite of the page. The page lists the reads
+  // the OTHER screens made; it issues none, which is what this says.
+  if (at.sectionId === CAPACITY && at.tab === API_READS_TAB) {
+    return <span className="ctl-em">no reads of its own</span>
   }
   // `reads` is about ANOTHER screen until this one's scope has begun (the
   // first render of a route comes before its layout effect), and a screen
@@ -1942,12 +1948,16 @@ function SectionQuestion({ section, topic = null }: { section: SectionQuestionDe
     <span
       id={cardId}
       role={state.pinned ? 'dialog' : 'tooltip'}
+      // A PINNED CARD IS A NAMED DIALOG (a11y-keyboard-003, visual QA run 2):
+      // role=dialog with no name is announced as "dialog" and nothing else.
+      // Its own title is the name, the same words its `?` says after "Help:".
+      aria-labelledby={`${cardId}-title`}
       className="ctl-q-card"
       data-focus-return={triggerId}
       style={placement}
       ref={cardRef}
     >
-      <strong className="ctl-q-title">{section.label} answers</strong>
+      <strong id={`${cardId}-title`} className="ctl-q-title">{section.label} answers</strong>
       <span className="ctl-q-body">{section.question}</span>
       {topic !== null && <span className="ctl-q-body" data-topic={topic}>{HELP_TOPICS[topic].short}</span>}
       {/* Inline, from tokens, like the topic cards' own link: styles.css is
@@ -2172,6 +2182,7 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
   // The ages are the point, so they move on their own rather than only when a
   // fetch happens to land -- on the shared clock the head and the dock read.
   const now = useNow(AGE_TICK_MS)
+  const phone = usePhoneTables()
   // The panel's "Failures only" row sets this too (Sky spine, API reads).
   const [failuresOnly, setFailuresOnly] = useState(asked)
   useEffect(() => setFailuresOnly(asked), [asked])
@@ -2241,11 +2252,16 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
               five or more columns, compared across rows -- scrolls with its
               first column held in view, and only a record of four columns or
               fewer stacks. This is a data table: the route stays pinned at the
-              left edge while the outcome, latency and age scroll beside it. */}
+              left edge while the outcome, latency and age scroll beside it.
+              AT THE PHONE IT STACKS (capacity-004, visual QA run 2): every
+              other Capacity table is a `data-label` record below 560px
+              (`tableMode`, QA G5-08), and in a 356px scrollport this one cut
+              Took mid-number at the card's edge. Every cell already carries
+              its label, so the record reads whole. */}
           {shown.length === 0 ? (
             <p className="ctl-panel-note">no route is failing</p>
           ) : (
-            <div className="ctl-table is-scroll">
+            <div className={`ctl-table ${tableMode(phone)}`}>
               <table role="table">
                 <thead role="rowgroup">
                   <tr role="row">

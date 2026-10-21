@@ -336,6 +336,12 @@
    says a column is absent and why none can exist -- so it takes `--text`.
    Two classes, so it outranks `.ctl-panel-note` wherever that rule sits. */
 .ctl-panel-note.ten-budget { color: var(--text); }
+/* admin-009 (visual QA run 2, 2026-10-20): POOL LIMITS' NON-ADMIN LINE IS A
+   SENTENCE, so it is set in the prose face. `.ctl-panel-note` is mono because
+   it usually qualifies a figure with a term; `Admins only. You can read every
+   ceiling; ...` is the one explanatory sentence on the screen, and in mono it
+   read as output. Two classes, so it outranks the primitive's shorthand. */
+.ctl-panel-note.adm-locked { font-family: var(--font); }
 
 /* TENANTS FITS AT 1440 (#503, measured with the 84+236px nav). The roster was
    sized by its content with a 20ch cap on each identity, arithmetic done

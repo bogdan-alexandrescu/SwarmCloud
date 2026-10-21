@@ -439,6 +439,31 @@ a peak of five agents. The lane runs first, because both later agents need its
 branch. In the worst case its two settles take the job's whole 30 minutes;
 the claude-code agents it runs take a few minutes each.
 
+### tenant-isolation
+
+One `generic` pytest agent runs
+[`test_cross_tenant_firestore.py`](../tests/acceptance/fixtures/tenant-isolation/test_cross_tenant_firestore.py)
+in a smoke worker, started in the probe's own directory and naming it, which is
+how the probe opts in. With the worker's own credential, from its pod's
+metadata server, it asks Firestore to update `workspace_settings/<B>`, get
+`tenants/<B>` and create under `leases/`, for a tenant id B that does not
+exist. Each must be answered 403 `PERMISSION_DENIED`. Every write carries a
+precondition that cannot hold, so nothing is written either way (#1457,
+[tenant-settings-integrity.md](design/tenant-settings-integrity.md) §6).
+
+There are three checks, one per question. Each is judged from the probe's own
+`ISO-ACCEPT-RESULT` line for it, read from stdout's tail when the agent
+SUCCEEDED and from `last_error` (stderr's tail) otherwise. A check passes only
+on its PASS line and an agent that SUCCEEDED. An agent that was held, parked or
+timed out is a FAIL, not a SKIP: a proof of isolation that did not run proves
+nothing.
+
+The probe is red until the worker's Firestore role is removed, by design. So
+`accept.yml` runs this group in its own job, `acceptance (tenant-isolation)`,
+beside wave 2. That job is report-only until the repository variable
+`ISO_PROBE_REQUIRED` is `true`
+([ci.md](ci.md#the-cross-tenant-firestore-probe-is-report-only-until-the-cutover)).
+
 ## Pull requests on the sandbox
 
 The direct-pr and integrate checks open real pull requests on the sandbox,

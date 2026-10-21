@@ -484,6 +484,19 @@
    the button's own line, and every target is 44px. */
 @media (max-width: 560px) {
   .in-ref, .in-rounds, .in-seg-o, .rn-search, .rn-row > td { min-height: 44px; }
+  /* THE STATE FILTER IS ONE 3×2 GRID, EACH LINE DRAWN ONCE (visual QA run 2,
+     work-a-011, 2026-10-20). The shared phone rule (components.css V207) wraps
+     six segments three to a row, but each keeps its own right and top
+     hairline: content-sized cells put the two rows' joins at different x,
+     and a row's last cell drew a second line against the control's border,
+     so the grid read as six loose buttons. Three equal tracks; a cell draws
+     its right line unless it ends a row and its top line only on the second
+     row. And it runs the column wide, as the search box under it does
+     (work-a-012). */
+  .rn-filters > .c-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); flex: 1 1 100%; }
+  .rn-filters > .c-seg > button { margin-top: 0; border-top: 0; border-right: 1px solid var(--line); justify-content: center; }
+  .rn-filters > .c-seg > button:nth-child(3n) { border-right: 0; }
+  .rn-filters > .c-seg > button:nth-child(n+4) { border-top: 1px solid var(--line); }
   .in-choice { flex-direction: column; gap: 6px; }
   .rn-table thead { display: none; }
   .rn-table, .rn-row > td { display: block; width: 100%; }
