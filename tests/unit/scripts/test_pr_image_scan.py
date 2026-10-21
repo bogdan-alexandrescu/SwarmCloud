@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .ci_fold_layout import check_steps
 from .test_build_images_local import _builds, _local, _value
 from .test_build_mirror import _refresh
 
@@ -200,9 +201,11 @@ def test_ruff_check_is_a_gated_job():
     jobs = _jobs()
     job = jobs["ruff"]
     assert job["name"] == "ruff check"
-    runs = "\n".join(str(s.get("run", "")) for s in job["steps"])
+    # The check runs as the `ruff check · ...` steps of `quick-checks` since
+    # CI-FOLD (#1799); `ruff` keeps the name (test_ci_fold.py).
+    runs = "\n".join(str(s.get("run", "")) for s in check_steps("application.yml", "ruff"))
     assert "uv run --frozen --only-dev ruff check" in runs, runs
-    assert "ruff" in jobs["ci-gate"]["needs"]
+    assert {"ruff", "quick-checks"} <= set(jobs["ci-gate"]["needs"])
 
 
 # --------------------------------------------------------------------------

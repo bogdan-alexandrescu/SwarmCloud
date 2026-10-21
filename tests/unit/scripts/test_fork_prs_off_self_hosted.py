@@ -12,8 +12,10 @@ the VMs. Pushes and same-repository PRs may.
 OWNER DECISION, 2026-10-14: "make sure we use CI runners for all jobs moving
 forward if capacity allows". So EVERY job uses the one approved expression
 unless it is in HOSTED_JOBS below, and each HOSTED_JOBS entry names a reason
-this file checks against the job (today the only reason is a cloud identity
-through workload identity). Repository secrets on a guarded job are refused
+this file checks against the job: a cloud identity through workload identity,
+the pool's own judge, or -- since CI-FOLD (#1799, owner approval 2026-10-21)
+-- a job that runs nothing on a VM's worth of setup: a name-keeper that only
+reads `needs`, or a fixed summary (test_ci_fold.py). Repository secrets on a guarded job are refused
 except the ones GUARDED_SECRETS names for that job (owner decision
 2026-10-14: secrets on ephemeral self-hosted VMs accepted). A new job that silently uses a hosted image fails here,
 and so does a job that keeps a hosted entry after its credential is gone.
@@ -529,6 +531,8 @@ def test_every_guarded_job_in_the_workflows_resolves_safely() -> None:
 
 CLOUD = "cloud"
 JUDGE = "judge"
+KEEPER = "keeper"
+SUMMARY = "summary"
 
 REASONS = {
     CLOUD: (
@@ -539,6 +543,14 @@ REASONS = {
     JUDGE: (
         "judges the self-hosted pool and sets SELF_HOSTED_CI (runner-fallback.yml): "
         "on the pool it would queue behind the outage it exists to notice"
+    ),
+    KEEPER: (
+        "only reads its `needs` -- a name-keeper with no action, no checkout and "
+        "no secret (CI-FOLD, #1799): a VM create and boot (~52 s) bought it nothing"
+    ),
+    SUMMARY: (
+        "only writes a fixed step summary -- no action, no checkout, no `needs`, "
+        "no secret (CI-FOLD, #1799): a VM create and boot bought it nothing"
     ),
 }
 
@@ -582,6 +594,20 @@ HOSTED_JOBS: dict[str, str] = {
     "security.yml:images": CLOUD,
     "terraform.yml:plan": CLOUD,
     "runner-fallback.yml:judge": JUDGE,
+    # CI-FOLD (#1799): the name-keepers of the folded sub-minute checks, the
+    # two that stand for the shards, and terraform's fixed summary.
+    "application.yml:workflows": KEEPER,
+    "application.yml:ruff": KEEPER,
+    "application.yml:manifests": KEEPER,
+    "application.yml:python-checks": KEEPER,
+    "application.yml:python": KEEPER,
+    "application.yml:ui": KEEPER,
+    "security.yml:filesystem": KEEPER,
+    "security.yml:secrets": KEEPER,
+    "security.yml:policy": KEEPER,
+    "terraform.yml:validate": KEEPER,
+    "terraform.yml:test": KEEPER,
+    "terraform.yml:plan-not-run": SUMMARY,
 }
 
 _SECRET = re.compile(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)")
@@ -617,6 +643,12 @@ def _reason_holds(reason: str, job: dict, workflow_permissions: object) -> bool:
         return _id_token(job, workflow_permissions) and any(
             u.startswith("google-github-actions/auth@") for u in _uses(job)
         )
+    if reason in (KEEPER, SUMMARY):
+        steps = job.get("steps") or []
+        bare = bool(steps) and all("uses" not in s and "run" in s for s in steps) and not _secrets(job)
+        if reason == KEEPER:
+            return bare and bool(job.get("needs"))
+        return bare and not job.get("needs") and all("GITHUB_STEP_SUMMARY" in s["run"] for s in steps)
     if reason == JUDGE:
         return any(
             u.startswith("actions/create-github-app-token@")
@@ -709,6 +741,16 @@ def test_the_reason_checks_can_fail() -> None:
         assert not _reason_holds(reason, bare, {"contents": "read"}), reason
     cloud = {"permissions": {"id-token": "write"}, "steps": [{"uses": "google-github-actions/auth@v3"}]}
     assert _reason_holds(CLOUD, cloud, None)
+    # A name-keeper or a summary job stops qualifying the moment it checks
+    # out, runs an action or holds a secret. MUTATION: drop the `uses` test.
+    keeper = {"needs": ["checks"], "steps": [{"run": 'test "${VERDICT}" = success'}]}
+    assert _reason_holds(KEEPER, keeper, None)
+    assert not _reason_holds(KEEPER, {**keeper, "steps": [{"uses": "actions/checkout@v5"}, *keeper["steps"]]}, None)
+    assert not _reason_holds(KEEPER, {**keeper, "steps": [{"run": "echo ${{ secrets.X }}"}]}, None)
+    summary = {"steps": [{"run": 'echo done >> "$GITHUB_STEP_SUMMARY"'}]}
+    assert _reason_holds(SUMMARY, summary, None)
+    assert not _reason_holds(SUMMARY, {**summary, "needs": "x"}, None)
+    assert not _reason_holds(SUMMARY, {"steps": [{"uses": "actions/checkout@v5"}, *summary["steps"]]}, None)
     # A job's own permissions replace the workflow's.
     assert not _id_token({"permissions": {"contents": "read"}}, {"id-token": "write"})
     assert _id_token({}, {"id-token": "write"})

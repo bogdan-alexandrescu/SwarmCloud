@@ -513,13 +513,19 @@ def test_the_gate_refuses_a_reuse_it_cannot_vouch_for(needs, event, needle):
 
 def test_every_reach_condition_is_the_job_s_own_if():
     """gate() judges an unlisted skip by REACH, so REACH must be what each
-    job's `if:` says before its reuse clause. MUTATION: change a job's `if:`
+    job's `if:` says before its reuse clause. A CI-FOLD name-keeper
+    (test_ci_fold.py, ci_fold_layout.py) carries the same condition after `always() && `, so a
+    failed folded job never reads as its skip. MUTATION: change a job's `if:`
     without REACH."""
+    from .ci_fold_layout import FOLDED
+
+    keepers = set(FOLDED["application.yml"][1])
     jobs = _jobs()
     assert set(reuse.REACH) == set(reuse.REUSABLE)
     for key in reuse.REUSABLE:
         clause = "!contains(fromJSON(needs.changes.outputs.reused || '[]'), '%s')" % key
-        assert jobs[key]["if"] == f"{reuse.reach_if(key)} && {clause}", (key, jobs[key]["if"])
+        always = "always() && " if key in keepers else ""
+        assert jobs[key]["if"] == f"{always}{reuse.reach_if(key)} && {clause}", (key, jobs[key]["if"])
 
 
 def test_ci_gate_runs_the_reuse_verdict_after_its_own():

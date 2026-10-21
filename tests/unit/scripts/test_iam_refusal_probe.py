@@ -35,6 +35,7 @@ import pytest
 import yaml
 
 from .application_paths import app_paths, reaches
+from .ci_fold_layout import check_steps
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "iam-refusal-probe.sh"
@@ -202,11 +203,12 @@ def test_the_revert_runs_on_every_path_after_a_write_could_have_happened():
 
 def test_the_workflow_is_linted_on_every_pull_request_that_touches_it():
     """It runs only when dispatched, so a pull request is the one place it is parsed."""
-    application = _workflow(WORKFLOWS / "application.yml")
     assert reaches(".github/workflows/iam-refusal-probe.yml"), app_paths()
     lint = [
         step.get("run") or ""
-        for step in application["jobs"]["workflows"]["steps"]
+        # The `release workflow wiring (actionlint) · ...` steps of
+        # `quick-checks` since CI-FOLD (#1799).
+        for step in check_steps("application.yml", "workflows")
         if "actionlint" in (step.get("run") or "")
     ]
     assert any(".github/workflows/iam-refusal-probe.yml" in run for run in lint), lint
