@@ -361,6 +361,16 @@ if args[:2] == ["builds", "submit"]:
         print("ERROR: build step 0 failed: swarm-repo-index --lsp-self-test", file=sys.stderr)
         sys.exit(1)
     sys.exit(0)
+# Reading the builds' status and logs back is part of building (the submit is
+# --async). Every build has finished by the first read.
+if args[:2] == ["builds", "list"]:
+    sys.exit(0)
+if args[:2] == ["builds", "describe"]:
+    print("SUCCESS")
+    sys.exit(0)
+if args[:2] == ["builds", "log"]:
+    print("fake build log")
+    sys.exit(0)
 print("fake gcloud: a build-only run has no business calling " + " ".join(args), file=sys.stderr)
 sys.exit(2)
 '''
@@ -382,6 +392,7 @@ def _build_only(tmp_path: Path, *args: str, fail: str = ""):
         FAKE_FAIL=fail,
         BUILD_POLL_INTERVAL="0.1",
         BUILD_SUBMIT_STAGGER="0",
+        BUILD_STATUS_INTERVAL="0",
     )
     proc = subprocess.run(
         ["bash", str(root / "scripts" / "build-images.sh"), *args],
@@ -410,10 +421,11 @@ def test_build_only_builds_and_pushes_nothing(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr[-3000:]
 
-    others = [e["args"] for e in events if e["args"][:2] != ["builds", "submit"]]
+    building = (["builds", "submit"], ["builds", "list"], ["builds", "describe"], ["builds", "log"])
+    others = [e["args"] for e in events if e["args"][:2] not in building]
     assert not others, f"a build-only run called gcloud for more than a build: {others}"
 
-    submits = {e["target"]: e for e in events}
+    submits = {e["target"]: e for e in events if e["args"][:2] == ["builds", "submit"]}
     # The browser's chain builds agent-runtime-base-nocodex (BROWSER-NO-CODEX),
     # not the base asked for here, so the base is its own build.
     assert set(submits) == {"swarm-api", "swarm-verify", "agent-runtime-base", "agent-runtime-browser"}, sorted(submits)

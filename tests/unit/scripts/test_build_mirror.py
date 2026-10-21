@@ -222,6 +222,7 @@ def _env(tmp_path: Path, bindir: Path, **extra: str) -> dict[str, str]:
         "BUILD_PARALLELISM": "2",
         "BUILD_POLL_INTERVAL": "0.1",
         "BUILD_SUBMIT_STAGGER": "0",
+        "BUILD_STATUS_INTERVAL": "0",
         "SWARM_PYTHON": sys.executable,
         **extra,
     }

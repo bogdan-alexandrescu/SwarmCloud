@@ -17,6 +17,12 @@
 # build/build-logs/<tag>/<image>.log and printed with the image's name on every
 # line, so interleaved builds stay attributable.
 #
+# Every submit is `--async`, and ONE loop reads the status of every build in
+# flight, every BUILD_STATUS_INTERVAL seconds (default 15). A 429
+# RESOURCE_EXHAUSTED from Cloud Build -- on a submit or a status read -- is
+# waited out with exponential backoff, never reported as a failed image
+# (CB-429-RETRY, read_build_states below).
+#
 # ONE BUILD PER COMMIT, and this script is the one path to it. application.yml
 # runs it on every push to main and uploads the manifest it writes; release.yml
 # runs it with --reuse-ci, which fetches THAT manifest instead of building
@@ -355,8 +361,32 @@ REUSE_CHECK=0
 # made it seven), and the two derived images share the slots the base frees,
 # so ten images would only finish at the same time with more.
 PARALLELISM="${BUILD_PARALLELISM:-4}"
-# How often the scheduler looks for finished builds. A build takes minutes.
+# How often the scheduler looks for finished submits. Local and free: it reads
+# the status file each backgrounded submit writes, and calls no API.
 POLL_INTERVAL="${BUILD_POLL_INTERVAL:-2}"
+# HOW OFTEN CLOUD BUILD IS ASKED, in whole seconds (0 = every scheduler tick,
+# which only the tests use). Main's image build failed 27 times on 2026-10-20
+# and 2026-10-21 on `429 RESOURCE_EXHAUSTED` for
+# cloudbuild.googleapis.com/get_requests: the per-minute status-read quota of
+# saga-agents-staging, a project SHARED with another team that draws on the
+# same quota. Each image was a blocking `gcloud builds submit`, which polls its
+# own build while it streams the log, so four images were four pollers, per
+# commit, and every main commit runs its own build. Now one `builds list
+# --ongoing` per round covers every build in flight, and a build is described
+# (and its log fetched) once, when it leaves that list. 15 s against a build of
+# minutes costs at most 15 s of a build's wall-clock time.
+STATUS_INTERVAL="${BUILD_STATUS_INTERVAL:-15}"
+# A 429 is retried this many attempts in all, after BACKOFF, 2*BACKOFF, ...
+# seconds (capped at BACKOFF_MAX), each scaled by a random 50-100% so that four
+# builds of one commit -- and the next commit's build -- do not retry in step.
+# The default schedule waits about 5+10+20+40+80 s: past a quota minute twice.
+QUOTA_RETRIES="${BUILD_QUOTA_RETRIES:-6}"
+QUOTA_BACKOFF="${BUILD_QUOTA_BACKOFF:-5}"
+QUOTA_BACKOFF_MAX="${BUILD_QUOTA_BACKOFF_MAX:-120}"
+# A build whose status stays unreadable on a 429 for this many rounds in a row
+# is failed, named as unreadable rather than broken, so a quota that never
+# comes back cannot hold the job until its own timeout.
+QUOTA_ROUNDS="${BUILD_QUOTA_ROUNDS:-10}"
 # A pause between two submissions started in the same pass. Every gcloud
 # process opens the same sqlite credential cache under ~/.config/gcloud, and
 # several opening it in the same instant is how parallel gcloud reports
@@ -453,13 +483,19 @@ fi
 [[ "${#TARGETS[@]}" -gt 0 ]] || TARGETS=("${ALL_TARGETS[@]}")
 [[ "${PARALLELISM}" =~ ^[1-9][0-9]*$ ]] \
   || die "--parallel (or BUILD_PARALLELISM) must be a positive whole number, not '${PARALLELISM}'"
+[[ "${STATUS_INTERVAL}" =~ ^[0-9]+$ ]] \
+  || die "BUILD_STATUS_INTERVAL must be a whole number of seconds, not '${STATUS_INTERVAL}'"
+[[ "${QUOTA_RETRIES}" =~ ^[1-9][0-9]*$ && "${QUOTA_ROUNDS}" =~ ^[1-9][0-9]*$ ]] \
+  || die "BUILD_QUOTA_RETRIES and BUILD_QUOTA_ROUNDS must be positive whole numbers"
+[[ "${QUOTA_BACKOFF}" =~ ^[0-9]+([.][0-9]+)?$ && "${QUOTA_BACKOFF_MAX}" =~ ^[0-9]+([.][0-9]+)?$ ]] \
+  || die "BUILD_QUOTA_BACKOFF and BUILD_QUOTA_BACKOFF_MAX must be numbers of seconds"
 
 # NOTE: the only bash on the reference workstation is 3.2.57 (Apple ships no
 # newer one). Empty arrays are therefore always expanded as ${arr[@]+"${arr[@]}"},
 # because plain "${arr[@]}" on an empty array is an unbound-variable error under
 # `set -u` in 3.2. No associative arrays, no mapfile, no ${var,,} anywhere.
 # The scheduler below cannot use bash 4.3's "wait for any child" either, so a
-# finished build is found by the status file it writes when it exits.
+# finished submit is found by the status file it writes when it exits.
 
 if [[ "${LOCAL_BUILD}" -eq 1 ]]; then require_cmd docker jq; else require_cmd gcloud jq; fi
 TAG="${TAG:-$(git_sha)}"
@@ -1178,7 +1214,12 @@ fi
 if [[ -n "${CLOUDBUILD_SOURCE_STAGING_DIR:-}" ]]; then
   SUBMIT_ARGS+=(--gcs-source-staging-dir="${CLOUDBUILD_SOURCE_STAGING_DIR}")
 fi
-[[ "${ASYNC}" -eq 1 ]] && SUBMIT_ARGS+=(--async)
+# ALWAYS --async: the submit returns once the build is created, and
+# read_build_states watches every build in flight from one loop. A blocking
+# submit polls its own build for as long as it runs -- the per-build polling
+# that spent the shared project's get_requests quota (CB-429-RETRY). The
+# script's own --async flag only stops it watching.
+SUBMIT_ARGS+=(--async)
 
 # --build-only tags each image with this name, on the build worker only. It
 # names no registry host, and no config built from it lists an image to push.
@@ -1208,7 +1249,11 @@ fi
 # ones). T_STATE is pending -> running -> ok | failed, or pending -> skipped
 # for an image that was never submitted.
 # T_RETRIED is 1 once an image has been rebuilt after a pull that got no answer.
+# T_BUILD_ID is the Cloud Build id of a running image once its submit returned
+# (empty while it is still submitting); T_UNREAD counts the status rounds in a
+# row a 429 kept it from being read.
 T_NAME=(); T_CONFIG=(); T_SUBS=(); T_STATE=(); T_PID=(); T_START=(); T_NOTE=(); T_RETRIED=()
+T_BUILD_ID=(); T_UNREAD=()
 
 # Row of an image in T_NAME, or failure if it is not part of this run.
 row_of() {
@@ -1265,6 +1310,7 @@ for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
     refuse_if_pushes "${config}" "${target}"
     T_NAME+=("${target}"); T_CONFIG+=("${config}"); T_SUBS+=("${subs}")
     T_STATE+=(pending); T_PID+=(""); T_START+=(0); T_NOTE+=(""); T_RETRIED+=("")
+    T_BUILD_ID+=(""); T_UNREAD+=(0)
     continue
   fi
 
@@ -1296,6 +1342,7 @@ for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
 
   T_NAME+=("${target}"); T_CONFIG+=("${config}"); T_SUBS+=("${subs}")
   T_STATE+=(pending); T_PID+=(""); T_START+=(0); T_NOTE+=(""); T_RETRIED+=("")
+  T_BUILD_ID+=(""); T_UNREAD+=(0)
 done
 
 # ---------------------------------------------------------------------------
@@ -1712,24 +1759,92 @@ show_log() {
   fi
 }
 
+# Whether gcloud's output in a file is Cloud Build refusing on QUOTA: the 429
+# RESOURCE_EXHAUSTED that main's image build failed on 27 times on 2026-10-20
+# and 2026-10-21 (cloudbuild.googleapis.com/get_requests, shared with the other
+# team in saga-agents-staging). gcloud prints the HTTP status and the API's
+# status name; either is enough, and nothing else prints them.
+quota_exhausted() {
+  [[ -s "$1" ]] || return 1
+  grep -Eq -e 'RESOURCE_EXHAUSTED' -e '"code": *429' -e "'status': '429'" -e 'HTTP(/[0-9.]+)? 429' "$1"
+}
+
+# Seconds to wait before attempt $1+1: QUOTA_BACKOFF doubled per attempt,
+# capped at QUOTA_BACKOFF_MAX, scaled by a random 50-100%. $2 salts the random
+# number, because a backgrounded subshell may start from its parent's seed and
+# builds retrying in step would meet the next quota minute together.
+quota_delay() {
+  awk -v b="${QUOTA_BACKOFF}" -v m="${QUOTA_BACKOFF_MAX}" -v a="$1" \
+      -v r="$(( (RANDOM + ${2:-0} * 7919) % 32768 ))" \
+      'BEGIN { d = b * 2 ^ (a - 1); if (d > m) d = m; printf "%.2f", d * (0.5 + r / 65534) }'
+}
+
+# Run a gcloud READ ($4...) with stdout to $2 and stderr to $3, retrying a 429
+# with backoff and jitter up to QUOTA_RETRIES attempts, each logged with its
+# attempt number. Any other failure returns at once with gcloud's exit status,
+# as it always did; a 429 that outlasts every attempt returns non-zero too, and
+# the caller -- which can tell the two apart with quota_exhausted "$3" -- leaves
+# that build for the next round rather than failing it.
+gcloud_quota_retry() {
+  local label="$1" out="$2" errf="$3" attempt=1 rc delay
+  shift 3
+  while :; do
+    rc=0
+    "$@" >"${out}" 2>"${errf}" </dev/null || rc=$?
+    if [[ "${rc}" -eq 0 ]] || ! quota_exhausted "${errf}"; then return "${rc}"; fi
+    if [[ "${attempt}" -ge "${QUOTA_RETRIES}" ]]; then
+      warn "${label}: still 429 RESOURCE_EXHAUSTED after ${attempt} attempts"
+      return "${rc}"
+    fi
+    delay="$(quota_delay "${attempt}" 0)"
+    warn "${label}: Cloud Build answered 429 RESOURCE_EXHAUSTED (attempt ${attempt}/${QUOTA_RETRIES}); retrying in ${delay}s"
+    sleep "${delay}"
+    attempt=$((attempt + 1))
+  done
+}
+
 launch_build() {
   local i="$1"
   local target="${T_NAME[$i]}" config="${T_CONFIG[$i]}" subs="${T_SUBS[$i]}"
   local log="${LOG_DIR}/${T_NAME[$i]}.log" status="${LOG_DIR}/${T_NAME[$i]}.status"
   local sub_args=()
   [[ -z "${subs}" ]] || sub_args=(--substitutions "${subs}")
-  rm -f "${log}" "${status}" "${status}.tmp"
+  rm -f "${log}" "${log}.attempt" "${status}" "${status}.tmp"
+  T_BUILD_ID[i]=""
+  T_UNREAD[i]=0
 
   # The subshell's LAST act is to write its exit status, renamed into place so
   # the scheduler never reads half a file. stdin is closed: a background job
   # that reads the terminal is stopped by it.
+  #
+  # The submit is --async (SUBMIT_ARGS), so this is the upload and the create,
+  # and the build is watched by read_build_states. A submit refused with a 429
+  # is submitted again after a backoff, up to QUOTA_RETRIES attempts -- unless
+  # its output already names a build id: then Cloud Build created the build
+  # before something answered 429, a second submit would build the image
+  # twice, and the build is watched instead.
   (
-    submit_rc=0
-    gcloud builds submit "${REPO_ROOT}" \
-      "${SUBMIT_ARGS[@]}" \
-      --config "${config}" \
-      ${sub_args[@]+"${sub_args[@]}"} \
-      </dev/null 2>&1 | redact >"${log}" || submit_rc=$?
+    attempt=1
+    while :; do
+      submit_rc=0
+      gcloud builds submit "${REPO_ROOT}" \
+        "${SUBMIT_ARGS[@]}" \
+        --config "${config}" \
+        ${sub_args[@]+"${sub_args[@]}"} \
+        </dev/null 2>&1 | redact >"${log}.attempt" || submit_rc=$?
+      cat "${log}.attempt" >>"${log}"
+      if [[ "${submit_rc}" -eq 0 ]] || ! quota_exhausted "${log}.attempt"; then break; fi
+      if [[ -n "$(build_id_in "${log}.attempt")" ]]; then submit_rc=0; break; fi
+      if [[ "${attempt}" -ge "${QUOTA_RETRIES}" ]]; then
+        warn "${target}: the submit was still refused with 429 RESOURCE_EXHAUSTED after ${attempt} attempts"
+        break
+      fi
+      delay="$(quota_delay "${attempt}" "${i}")"
+      warn "${target}: the submit was refused with 429 RESOURCE_EXHAUSTED (attempt ${attempt}/${QUOTA_RETRIES}); submitting again in ${delay}s"
+      sleep "${delay}"
+      attempt=$((attempt + 1))
+    done
+    rm -f "${log}.attempt"
     printf '%s\n' "${submit_rc}" >"${status}.tmp"
     mv -f "${status}.tmp" "${status}"
   ) &
@@ -1797,15 +1912,43 @@ finish_build() {
   fi
 }
 
+# Whether any build has been created and is waiting on read_build_states.
+watching_any() {
+  local i
+  for ((i = 0; i < ${#T_NAME[@]}; i++)); do
+    if [[ "${T_STATE[$i]}" == running && -n "${T_BUILD_ID[$i]}" ]]; then return 0; fi
+  done
+  return 1
+}
+
+# A submit came back with exit status $2. A refused one is a failed build, as
+# it always was; with the script's own --async the build counts as done once it
+# is created; otherwise the build it created is watched from here on.
+submit_returned() {
+  local i="$1" rc="$2" id
+  if [[ "${rc}" != 0 || "${ASYNC}" -eq 1 ]]; then
+    finish_build "${i}" "${rc}"
+    return 0
+  fi
+  id="$(build_id_in "${LOG_DIR}/${T_NAME[$i]}.log")"
+  if [[ -z "${id}" ]]; then
+    finish_build "${i}" 1 "the submit printed no build id, so its build cannot be watched"
+    return 0
+  fi
+  if ! watching_any; then NEXT_STATUS_AT=$(( $(date +%s) + STATUS_INTERVAL )); fi
+  T_BUILD_ID[i]="${id}"
+  info "${T_NAME[$i]}: build ${id} created; its status is read every ${STATUS_INTERVAL}s with the others"
+}
+
 reap_finished() {
   local i rc status
   for ((i = 0; i < ${#T_NAME[@]}; i++)); do
-    [[ "${T_STATE[$i]}" == running ]] || continue
+    [[ "${T_STATE[$i]}" == running && -z "${T_BUILD_ID[$i]}" ]] || continue
     status="${LOG_DIR}/${T_NAME[$i]}.status"
     if [[ -f "${status}" ]]; then
       rc="$(tr -d '[:space:]' <"${status}")"
       wait "${T_PID[$i]}" 2>/dev/null || true
-      finish_build "${i}" "${rc}"
+      submit_returned "${i}" "${rc}"
     elif ! kill -0 "${T_PID[$i]}" 2>/dev/null; then
       # Gone. It may have written its status between the two checks above; if
       # so, the next pass reads it. If not, it was killed before it could.
@@ -1818,9 +1961,103 @@ reap_finished() {
   done
 }
 
+# Append build $1's Cloud Build log to its log file, redacted, once it has
+# ended: a blocking submit streamed it, an --async one does not, and a failure
+# is read there -- by the operator, and by pull_got_no_answer.
+fetch_build_log() {
+  local i="$1"
+  local log="${LOG_DIR}/${T_NAME[$i]}.log" out="${LOG_DIR}/.build-log.out" errf="${LOG_DIR}/.build-log.err"
+  if gcloud_quota_retry "${T_NAME[$i]}: build ${T_BUILD_ID[$i]} log" "${out}" "${errf}" \
+       gcloud builds log "${T_BUILD_ID[$i]}" --project "${PROJECT_ID}" --region "${CLOUDBUILD_REGION}"; then
+    redact <"${out}" >>"${log}"
+  else
+    printf '(the build log could not be read: %s)\n' "$(redact <"${errf}" | sed -n 1p)" >>"${log}"
+  fi
+  rm -f "${out}" "${errf}"
+}
+
+# A round in which a 429 kept build $1's status from being read. It is not a
+# failure -- the build is running on Cloud Build regardless -- until QUOTA_ROUNDS
+# such rounds in a row, when the run stops waiting and says the status, not the
+# build, is what could not be had.
+status_unread() {
+  local i="$1"
+  T_UNREAD[i]=$(( T_UNREAD[i] + 1 ))
+  if [[ "${T_UNREAD[$i]}" -ge "${QUOTA_ROUNDS}" ]]; then
+    finish_build "${i}" 1 "its status stayed unreadable on 429 RESOURCE_EXHAUSTED for ${QUOTA_ROUNDS} rounds; the build itself may yet succeed"
+  fi
+}
+
+# ONE status read for every build in flight, at most every STATUS_INTERVAL
+# seconds (CB-429-RETRY). `builds list --ongoing` names every QUEUED or WORKING
+# build in the region; a watched build it does not name is described once,
+# which says how it ended (or that it is still being created), and its log is
+# fetched. A 429 is retried by gcloud_quota_retry and, if it outlasts that,
+# leaves the build for the next round. Any other error is what it was when the
+# blocking submit hit it: the build's status cannot be had, and it fails --
+# except the list, which is only a shortcut, and falls back to describing each
+# build this round.
+read_build_states() {
+  local i id target state listed=1 now
+  local out="${LOG_DIR}/.status.out" errf="${LOG_DIR}/.status.err"
+  watching_any || return 0
+  now="$(date +%s)"
+  [[ "${now}" -ge "${NEXT_STATUS_AT}" ]] || return 0
+
+  if ! gcloud_quota_retry "Cloud Build status" "${out}" "${errf}" \
+       gcloud builds list --project "${PROJECT_ID}" --region "${CLOUDBUILD_REGION}" \
+         --ongoing --format='value(id)'; then
+    if quota_exhausted "${errf}"; then
+      listed=quota
+    else
+      die_if_auth_failure "$(cat "${errf}")"
+      warn "could not list the ongoing builds; describing each one this round:"
+      redact <"${errf}" | sed -n '1,2s/^/     /p' >&2
+      listed=0
+    fi
+  fi
+
+  for ((i = 0; i < ${#T_NAME[@]}; i++)); do
+    [[ "${T_STATE[$i]}" == running && -n "${T_BUILD_ID[$i]}" ]] || continue
+    id="${T_BUILD_ID[$i]}"
+    target="${T_NAME[$i]}"
+    if [[ "${listed}" == quota ]]; then status_unread "${i}"; continue; fi
+    if [[ "${listed}" == 1 ]] && grep -qxF -- "${id}" "${out}"; then T_UNREAD[i]=0; continue; fi
+    if ! gcloud_quota_retry "${target}: build ${id} status" "${out}.one" "${errf}.one" \
+         gcloud builds describe "${id}" --project "${PROJECT_ID}" --region "${CLOUDBUILD_REGION}" \
+           --format='value(status)'; then
+      if quota_exhausted "${errf}.one"; then status_unread "${i}"; continue; fi
+      die_if_auth_failure "$(cat "${errf}.one")"
+      finish_build "${i}" 1 "its status could not be read: $(redact <"${errf}.one" | sed -n 1p)"
+      continue
+    fi
+    T_UNREAD[i]=0
+    state="$(tr -d '[:space:]' <"${out}.one")"
+    case "${state}" in
+      SUCCESS)
+        fetch_build_log "${i}"
+        finish_build "${i}" 0 ;;
+      QUEUED|WORKING|PENDING|STATUS_UNKNOWN|"") ;;
+      *)
+        fetch_build_log "${i}"
+        finish_build "${i}" 1 "Cloud Build reports ${state}" ;;
+    esac
+  done
+  rm -f "${out}" "${errf}" "${out}.one" "${errf}.one"
+
+  # From the whole second the round ENDED in, plus one: `date +%s` rounds down,
+  # so without it two rounds could land milliseconds apart across a second.
+  now="$(date +%s)"
+  if [[ "${STATUS_INTERVAL}" -gt 0 ]]; then
+    NEXT_STATUS_AT=$(( now + STATUS_INTERVAL + 1 ))
+  else
+    NEXT_STATUS_AT="${now}"
+  fi
+}
+
 # Background jobs IGNORE SIGINT when job control is off, which it is in a
 # script, so without this a Ctrl-C would end the scheduler and leave every
-# in-flight `gcloud builds submit` polling on its own. Stopping them locally
+# in-flight `gcloud builds submit` uploading on its own. Stopping them locally
 # does NOT cancel the builds: Cloud Build runs them to completion regardless,
 # which is said rather than left to be discovered.
 on_interrupt() {
@@ -1853,8 +2090,10 @@ if [[ "${#T_NAME[@]}" -gt 0 ]]; then
 fi
 
 ABORT=""
+NEXT_STATUS_AT=0
 while [[ "${#T_NAME[@]}" -gt 0 ]]; do
   reap_finished
+  read_build_states
 
   launched=0
   for ((i = 0; i < ${#T_NAME[@]}; i++)); do

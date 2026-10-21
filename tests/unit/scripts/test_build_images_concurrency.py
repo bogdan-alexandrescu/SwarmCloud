@@ -72,13 +72,13 @@ pytestmark = pytest.mark.skipif(
 # and on stderr (so attribution is tested on both streams), sleeps for as long
 # as a build is supposed to take, and fails for any image named in FAKE_FAIL.
 FAKE_GCLOUD = r'''#!{python}
-import fnmatch, hashlib, json, os, re, sys, time, uuid
+import fcntl, fnmatch, hashlib, json, os, re, sys, time, uuid
 
 args = sys.argv[1:]
 
 
 def record(**event):
-    event["t"] = time.time()
+    event.setdefault("t", time.time())
     with open(os.environ["FAKE_EVENTS"], "a") as fh:
         fh.write(json.dumps(event) + "\n")
 
@@ -143,17 +143,93 @@ if args[:3] == ["artifacts", "repositories", "describe"]:
     print("projects/p/locations/r/repositories/swarm-images")
     sys.exit(0)
 
+# A 429 the way gcloud prints one when the SHARED project's per-minute
+# `cloudbuild.googleapis.com/get_requests` quota is spent (main's image build,
+# 2026-10-20 and 2026-10-21). FAKE_429_<KIND>=N makes the first N calls of that
+# kind fail with it.
+QUOTA_ERROR = (
+    "ERROR: (gcloud.builds.{verb}) HttpError accessing <https://cloudbuild.googleapis.com/v1/"
+    "projects/p/locations/r/builds>: response: <{{'status': '429'}}>, content <{{\n"
+    '  "error": {{\n    "code": 429,\n'
+    "    \"message\": \"Quota exceeded for quota metric 'Get requests' and limit 'Get requests "
+    "per minute' of service 'cloudbuild.googleapis.com'\",\n"
+    '    "status": "RESOURCE_EXHAUSTED"\n  }}\n}}>'
+)
+STATE = os.path.join(os.path.dirname(os.environ["FAKE_EVENTS"]), "fake-builds")
+os.makedirs(STATE, exist_ok=True)
+
+
+def bump(name):
+    # Locked: concurrent submits bump the same counter, and an unlocked
+    # read-modify-write reads a half-written file.
+    with open(os.path.join(STATE, name), "a+") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        fh.seek(0)
+        n = int(fh.read() or "0") + 1
+        fh.seek(0)
+        fh.truncate()
+        fh.write(str(n))
+    return n
+
+
+def quota_spent(kind, verb):
+    refuse = int(os.environ.get(f"FAKE_429_{kind.upper()}", "0"))
+    if refuse and bump(f"calls-{kind}") <= refuse:
+        record(event="429", kind=kind)
+        print(QUOTA_ERROR.format(verb=verb), file=sys.stderr)
+        sys.exit(1)
+
+
+def flaky(target):
+    """FAKE_FLAKY_TARGET's first FAKE_FLAKY_TIMES builds fail with the log in
+    FAKE_FLAKY_LOG_FILE (test_build_images_retry_no_answer.py)."""
+    if target != os.environ.get("FAKE_FLAKY_TARGET"):
+        return None
+    if bump(f"flaky-{target}") > int(os.environ.get("FAKE_FLAKY_TIMES", "0")):
+        return None
+    return open(os.environ["FAKE_FLAKY_LOG_FILE"]).read()
+
+
+def failing(target):
+    return target in set(filter(None, os.environ.get("FAKE_FAIL", "").split(",")))
+
+
+def build_log(target):
+    return f"fake-build-stdout target={target}\nfake-build-stderr target={target}\n"
+
+
 if args[:2] == ["builds", "submit"]:
     config = args[args.index("--config") + 1]
     match = re.search(r"cloudbuild-(.+)\.yaml$", config) or re.search(
         r"/images/([^/]+)/cloudbuild\.yaml$", config
     )
     target = match.group(1)
-    build_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, target))
+    quota_spent("submit", "submit")
     uploaded_creds = [
         rel for rel in upload_set(args[2]) if rel.rsplit("/", 1)[-1].startswith("gha-creds-")
     ]
-    record(event="start", target=target, uploaded_creds=uploaded_creds)
+    record(event="start", target=target, uploaded_creds=uploaded_creds, asynchronous="--async" in args)
+    seconds = float(os.environ.get("FAKE_BUILD_SECONDS", "1"))
+    flaky_log = flaky(target)
+    if "--async" in args:
+        # What --async does: create the build, print its id, return. The build
+        # runs on Cloud Build's side; only a status read can say it finished.
+        build_id = str(uuid.uuid4())
+        with open(os.path.join(STATE, build_id + ".json"), "w") as fh:
+            json.dump({
+                "target": target,
+                "done_at": time.time() + seconds,
+                "failed": bool(flaky_log) or failing(target),
+                "log": flaky_log or build_log(target),
+            }, fh)
+        print("Created [https://cloudbuild.googleapis.com/v1/projects/p/locations/r/"
+              f"builds/{build_id}].", file=sys.stderr, flush=True)
+        print(f"ID {build_id} STATUS QUEUED", flush=True)
+        sys.exit(0)
+    # Without --async, `builds submit` streams the log and polls the build's
+    # status itself, about once a second in real time: one status read per
+    # 0.1 s here, recorded, so a per-build poller is counted.
+    build_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, target))
     print(f"fake-build-stdout target={target}", flush=True)
     print(
         "Created [https://cloudbuild.googleapis.com/v1/projects/p/locations/r/"
@@ -162,11 +238,54 @@ if args[:2] == ["builds", "submit"]:
         flush=True,
     )
     print(f"fake-build-stderr target={target}", file=sys.stderr, flush=True)
-    time.sleep(float(os.environ.get("FAKE_BUILD_SECONDS", "1")))
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        record(event="status", kind="stream", target=target)
+        quota_spent("status", "submit")
+        time.sleep(0.1)
     record(event="end", target=target)
-    if target in set(filter(None, os.environ.get("FAKE_FAIL", "").split(","))):
+    if flaky_log:
+        print(flaky_log, file=sys.stderr)
+        sys.exit(1)
+    if failing(target):
         print(f"ERROR: fake build of {target} failed", file=sys.stderr)
         sys.exit(1)
+    sys.exit(0)
+
+
+def build_of(build_id):
+    with open(os.path.join(STATE, build_id + ".json")) as fh:
+        return json.load(fh)
+
+
+if args[:2] == ["builds", "list"]:
+    record(event="status", kind="list", ongoing="--ongoing" in args)
+    quota_spent("status", "list")
+    now = time.time()
+    for name in sorted(os.listdir(STATE)):
+        if name.endswith(".json") and build_of(name[:-5])["done_at"] > now:
+            print(name[:-5])
+    sys.exit(0)
+
+if args[:2] == ["builds", "describe"]:
+    build_id = args[2]
+    record(event="status", kind="describe", build=build_id)
+    quota_spent("status", "describe")
+    build = build_of(build_id)
+    if build["done_at"] > time.time():
+        print("WORKING")
+        sys.exit(0)
+    # The build ended at done_at, whenever its end is first seen.
+    if not os.path.exists(os.path.join(STATE, build_id + ".ended")):
+        open(os.path.join(STATE, build_id + ".ended"), "w").close()
+        record(event="end", target=build["target"], t=build["done_at"])
+    print("FAILURE" if build["failed"] else "SUCCESS")
+    sys.exit(0)
+
+if args[:2] == ["builds", "log"]:
+    record(event="log", build=args[2])
+    quota_spent("log", "log")
+    print(build_of(args[2])["log"], end="")
     sys.exit(0)
 
 if args[:4] == ["artifacts", "docker", "tags", "list"]:
@@ -268,6 +387,11 @@ def _run(
         "BUILD_PARALLELISM": str(parallel),
         "BUILD_POLL_INTERVAL": "0.1",
         "BUILD_SUBMIT_STAGGER": "0",
+        # Cloud Build's status is read every tick here; a test of the read's
+        # pacing passes its own.
+        "BUILD_STATUS_INTERVAL": "0",
+        "BUILD_QUOTA_BACKOFF": "0.1",
+        "BUILD_QUOTA_BACKOFF_MAX": "0.4",
         **fakes,
     }
     env.pop("GITHUB_ACTIONS", None)
