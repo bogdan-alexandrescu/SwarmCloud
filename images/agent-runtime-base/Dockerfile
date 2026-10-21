@@ -820,7 +820,11 @@ RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
 # CVE-2026-111064 and GHSA-2g87-pp6c-29x5 (fixed in 3.14.4, published
 # 2026-10-05; 3.14.5 on 2026-10-11). The image scan in CI is the re-scan.
 ARG CHECKOV_VERSION=3.3.17
-ARG CHECKOV_EXCLUDE_NEWER=2026-10-19T00:00:00Z
+# MOVED 2026-10-21 to 2026-10-21T00:00:00Z, checkov unchanged: the 10-19 cutoff
+# resolved certifi 2026.10.18, and the image scan refused the base images on
+# GHSA-6q48-6c7w-9gw2 (CRITICAL: bundled emSign root CAs with compromised keys),
+# fixed in certifi 2026.10.19, published 2026-10-20T02:24Z.
+ARG CHECKOV_EXCLUDE_NEWER=2026-10-21T00:00:00Z
 RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_DOWNLOADS=never \
     UV_CACHE_DIR=/tmp/uv-cache \
       uv tool install --python /usr/local/bin/python3.11 \
