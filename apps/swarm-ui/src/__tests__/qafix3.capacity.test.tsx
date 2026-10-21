@@ -10,9 +10,8 @@
 //   capacity-002       Accounts' remove button is drawn off until it is armed.
 //   pools Set by       The configured case is the word, as on Pool limits (QA-099).
 //
-// capacity-007 (the sticky head over the first row) has no case here: see the
-// PR body. The head sticks by design (V091), and what the capture showed is a
-// segment boundary, which vqa.l15.capacity.test.tsx's V091 case already holds.
+//   capacity-007      A scroll stops a Pools or matrix row below the sticky
+//                     head, not under it (lane QAFIX3-CAPACITY-HEADER).
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -185,6 +184,51 @@ describe('capacity-012: at 390 a Pools record keeps its Use meter', () => {
     // MUTATION: put `display: block` back on the phone `.cap-use` -- the track
     // and its figure stack instead of sharing the line, the figure under a bar.
     expect(painted(track.parentElement!, 'display', PHONE)).toBe('grid')
+  })
+})
+
+describe('capacity-007: a scroll stops a row below the sticky head, not under it', () => {
+  // The head sticks above 900px (V091). A scroll that brings a row into view
+  // -- Tab to a link in it, Page Down, `scrollIntoView`, an anchor -- stops it
+  // at the scroller's top padding, so that padding has to be the head's own
+  // height (and the bell bar's, where one is drawn), read from the rule that
+  // sets the head's height rather than restated as pixels.
+  const SAFE = { width: 800 } as const
+  const headRow = (sel: string): HTMLElement => build(`${sel} > table > thead > tr`, hosts)
+
+  it('makes each sticky head exactly one row tall, from a token', () => {
+    for (const sel of ['div.cap-families > div.ctl-table.is-scroll', 'div.cap-mx > div.ctl-table.is-scroll']) {
+      // MUTATION: drop `height: var(--row-h)` from the sticky heads' row
+      // (styles/capacity.css) -- the head is its content's ~28px and the
+      // padding below no longer names the height it is drawn at.
+      expect(painted(headRow(sel), 'height', WIDE), sel).toBe('var(--row-h)')
+    }
+  })
+
+  it('pads the page scroller by the bar and the Pools head, so the first row clears it', () => {
+    const head = headRow('div.ctl-frame > div.ctl-scroll > div.app > div.cap-families > div.ctl-table.is-scroll')
+    const h = painted(head, 'height', WIDE) ?? 'no height on the head row'
+    const scroller = head.closest('.ctl-scroll')!
+    // MUTATION: drop the `.ctl-scroll:has(.cap-families ...)` rule -- the
+    // scroller keeps styles.css's bar-only padding (0px on Capacity) and a
+    // row scrolled into view stops under the head, as capacity-007 captured.
+    expect(painted(scroller, 'scroll-padding-top', WIDE)).toBe(`calc(0px + ${h})`)
+    const barred = headRow('div.ctl-frame.has-ctl-bar > div.ctl-scroll > div.cap-families > div.ctl-table.is-scroll')
+    // MUTATION: replace `var(--ctl-bar-h, 0px)` with 0 -- under an open
+    // object's bar the row stops 48px short, under the bar and the head.
+    expect(painted(barred.closest('.ctl-scroll')!, 'scroll-padding-top', WIDE)).toBe(`calc(48px + ${h})`)
+    // MUTATION: lift the rule out of `@media (min-width: 900px)` -- below 900
+    // the head does not stick, and a row would stop a head's height short.
+    expect(painted(scroller, 'scroll-padding-top', SAFE)).toBe('0px')
+  })
+
+  it('pads the matrix\'s own scroller by its head', () => {
+    const head = headRow('div.cap-mx > div.ctl-table.is-scroll')
+    const wrap = head.closest('.ctl-table')!
+    // MUTATION: drop `scroll-padding-top` from `.cap-mx > .ctl-table.is-scroll`
+    // -- the matrix scrolls itself (V091), so the page's padding never reaches
+    // it and its rows stop under its head.
+    expect(painted(wrap, 'scroll-padding-top', WIDE)).toBe(painted(head, 'height', WIDE) ?? 'no height on the head row')
   })
 })
 
