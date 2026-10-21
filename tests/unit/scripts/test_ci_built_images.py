@@ -272,7 +272,7 @@ sys.exit(2)
 # Enough gcloud for build-images.sh to build offline: every submit is recorded
 # and succeeds at once, and each tag reads back as one digest.
 FAKE_GCLOUD = r'''#!{python}
-import hashlib, json, os, re, sys
+import hashlib, json, os, re, sys, uuid
 
 args = sys.argv[1:]
 
@@ -289,6 +289,19 @@ if args[:2] == ["builds", "submit"]:
     config = args[args.index("--config") + 1]
     match = re.search(r"cloudbuild-(.+)\.yaml$", config) or re.search(r"/images/([^/]+)/cloudbuild\.yaml$", config)
     record(event="builds-submit", target=match.group(1))
+    # --async prints the id of the build it created; the script watches it.
+    print("Created [https://cloudbuild.googleapis.com/v1/projects/p/locations/r/builds/"
+          + str(uuid.uuid4()) + "].", file=sys.stderr)
+    sys.exit(0)
+# Every build has finished by the first status read: none is ongoing, each
+# describes as SUCCESS, and its log is one line.
+if args[:2] == ["builds", "list"]:
+    sys.exit(0)
+if args[:2] == ["builds", "describe"]:
+    print("SUCCESS")
+    sys.exit(0)
+if args[:2] == ["builds", "log"]:
+    print("fake build log")
     sys.exit(0)
 if args[:4] == ["artifacts", "docker", "tags", "list"]:
     image = args[4]
@@ -403,6 +416,7 @@ def _fakes(tmp_path: Path, world: dict) -> tuple[Path, dict]:
         "BUILD_PARALLELISM": "8",
         "BUILD_POLL_INTERVAL": "0.05",
         "BUILD_SUBMIT_STAGGER": "0",
+        "BUILD_STATUS_INTERVAL": "0",
     }
     # This suite runs INSIDE GitHub Actions in CI; nothing here may annotate or
     # write to the real job's summary, or reach the real API with its token.

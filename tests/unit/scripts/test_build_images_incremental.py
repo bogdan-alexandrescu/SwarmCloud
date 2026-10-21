@@ -70,7 +70,7 @@ pytestmark = pytest.mark.skipif(
 # tag; `tags add` points a tag at the digest named; `tags list` answers from
 # what it remembers, else from the build.
 FAKE_GCLOUD = r'''#!{python}
-import hashlib, json, os, re, sys
+import hashlib, json, os, re, sys, uuid
 
 args = sys.argv[1:]
 state_path = os.environ["FAKE_TAGS"]
@@ -89,6 +89,19 @@ if args[:2] == ["builds", "submit"]:
     config = args[args.index("--config") + 1]
     match = re.search(r"cloudbuild-(.+)\.yaml$", config) or re.search(r"/images/([^/]+)/cloudbuild\.yaml$", config)
     record(event="builds-submit", target=match.group(1))
+    # --async prints the id of the build it created; the script watches it.
+    print("Created [https://cloudbuild.googleapis.com/v1/projects/p/locations/r/builds/"
+          + str(uuid.uuid4()) + "].", file=sys.stderr)
+    sys.exit(0)
+# Every build has finished by the first status read: none is ongoing, each
+# describes as SUCCESS, and its log is one line.
+if args[:2] == ["builds", "list"]:
+    sys.exit(0)
+if args[:2] == ["builds", "describe"]:
+    print("SUCCESS")
+    sys.exit(0)
+if args[:2] == ["builds", "log"]:
+    print("fake build log")
     sys.exit(0)
 if args[:4] == ["artifacts", "docker", "tags", "add"]:
     src, dst = args[4], args[5]
@@ -181,6 +194,7 @@ class Sandbox:
             "BUILD_PARALLELISM": "8",
             "BUILD_POLL_INTERVAL": "0.05",
             "BUILD_SUBMIT_STAGGER": "0",
+            "BUILD_STATUS_INTERVAL": "0",
             # APT_REFRESH names the build in build-images.sh, and an image
             # that upgrades OS packages is reused only from a record of the
             # same one. Pinned here, and written into every record below, so

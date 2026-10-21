@@ -12,20 +12,19 @@ got no answer at all is retried once; anything that did answer -- a failed
 RUN step, a manifest-unknown, a refused push -- fails as it did.
 
 Runs the real script against the fake `gcloud` of
-test_build_images_concurrency.py, with a thin wrapper in front of it that
-fails the first N `builds submit` calls for one image with a scripted build
-log, and counts every submit of that image.
+test_build_images_concurrency.py, which fails the first N builds of one image
+with a scripted build log (FAKE_FLAKY_*). Since CB-429-RETRY the script submits
+with --async, so a failure arrives as a FAILURE status and the log is read back
+with `builds log`; the fake models both that and the blocking submit.
 """
 
 from __future__ import annotations
 
-import os
-import stat
 from pathlib import Path
 
 from .test_build_images_concurrency import _run
 
-# What Cloud Build streams back through `gcloud builds submit` when a step's
+# What a Cloud Build log says when a step's
 # `docker build` cannot reach the registry for its FROM image.
 PULL_NO_ANSWER = (
     'Step #0: ERROR: failed to solve: ghcr.io/astral-sh/uv:0.4: failed to resolve '
@@ -41,56 +40,22 @@ BUILD_BROKEN = (
     'ERROR: build step 0 "gcr.io/cloud-builders/docker" failed: step exited with non-zero status: 1'
 )
 
-WRAPPER = r"""#!/usr/bin/env bash
-# Fails the first FLAKY_TIMES submits of FLAKY_TARGET with FLAKY_LOG, then
-# hands everything to the fake gcloud behind it.
-if [[ "${1:-} ${2:-}" == "builds submit" ]]; then
-  config=""
-  prev=""
-  for a in "$@"; do
-    if [[ "${prev}" == "--config" ]]; then config="${a}"; fi
-    prev="${a}"
-  done
-  case "${config}" in
-    *"cloudbuild-${FLAKY_TARGET}.yaml"|*"/images/${FLAKY_TARGET}/cloudbuild.yaml")
-      n=$(( $(cat "${FLAKY_DIR}/submits" 2>/dev/null || echo 0) + 1 ))
-      printf '%s\n' "${n}" >"${FLAKY_DIR}/submits"
-      if [[ "${n}" -le "${FLAKY_TIMES}" ]]; then
-        cat "${FLAKY_LOG_FILE}" >&2
-        exit 1
-      fi
-      ;;
-  esac
-fi
-exec "${REAL_GCLOUD}" "$@"
-"""
-
 TARGET = "swarm-api"
 
 
 def _flaky_run(tmp_path: Path, log: str, times: int):
-    wrap = tmp_path / "wrap"
-    wrap.mkdir()
-    gcloud = wrap / "gcloud"
-    gcloud.write_text(WRAPPER)
-    gcloud.chmod(gcloud.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     log_file = tmp_path / "flaky.log"
     log_file.write_text(log + "\n")
-    # _run puts its fake gcloud in tmp_path/bin; the wrapper goes in front.
     root, proc, events = _run(
         tmp_path,
         [TARGET, "swarm-scheduler"],
         parallel=2,
         seconds=0.2,
-        PATH=f"{wrap}{os.pathsep}{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
-        REAL_GCLOUD=str(tmp_path / "bin" / "gcloud"),
-        FLAKY_TARGET=TARGET,
-        FLAKY_TIMES=str(times),
-        FLAKY_DIR=str(tmp_path),
-        FLAKY_LOG_FILE=str(log_file),
+        FAKE_FLAKY_TARGET=TARGET,
+        FAKE_FLAKY_TIMES=str(times),
+        FAKE_FLAKY_LOG_FILE=str(log_file),
     )
-    submits_file = tmp_path / "submits"
-    submits = int(submits_file.read_text().strip()) if submits_file.exists() else 0
+    submits = len([e for e in events if e["event"] == "start" and e["target"] == TARGET])
     return root, proc, submits
 
 
