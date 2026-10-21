@@ -50,11 +50,16 @@
    holds nothing and is not drawn (`.ctl-bar:empty`, fixture mode or an API
    with no feed), so no 48px gap opens over the rows. With the filter drawn
    (`has-filter`), the filter sticks there and the heads 60px lower -- its
-   44px field and 8px of ground above and below. */
-.adm-ceilings { --adm-stick: var(--ctl-bar-h, 48px); --adm-filter-h: 0px; }
-.ctl-scroll:has(> .ctl-bar:empty) .adm-ceilings { --adm-stick: 0px; }
+   44px field and 8px of ground above and below.
+   The two offsets are declared on the scroller that holds the section too,
+   so its scroll padding (below) reads the same values the heads stick at. */
+.adm-ceilings,
+.ctl-scroll:has(.adm-ceilings) { --adm-stick: var(--ctl-bar-h, 48px); --adm-filter-h: 0px; }
+.ctl-scroll:has(> .ctl-bar:empty) .adm-ceilings,
+.ctl-scroll:has(> .ctl-bar:empty):has(.adm-ceilings) { --adm-stick: 0px; }
 @media (min-width: 900px) {
-  .adm-ceilings.has-filter { --adm-filter-h: 60px; }
+  .adm-ceilings.has-filter,
+  .ctl-scroll:has(.adm-ceilings.has-filter) { --adm-filter-h: 60px; }
   .adm-ceilings.has-filter > .adm-filter {
     position: sticky;
     top: var(--adm-stick, 48px);
@@ -75,6 +80,21 @@
     position: sticky;
     top: calc(var(--adm-stick, 48px) + var(--adm-filter-h, 0px));
     z-index: 1;
+  }
+  /* A SCROLL STOPS A ROW BELOW THE FILTER AND THE HEAD, NOT UNDER THEM
+     (lane QAFIX3-LIMITS-HEADER, the follow-up to capacity-007, part of
+     #1680). A scroll that brings a row into view (Tab to its `edit`, Page
+     Down, `scrollIntoView`, an anchor) stops it at the scroller's top
+     padding, and here that was the bell bar's alone (styles.css
+     `.ctl-scroll`): the row came to rest under the stuck filter and head.
+     styles/capacity.css pads the page by the bar and a `--row-h` head and
+     leaves this scroller to this sheet, which alone knows the filter. So
+     the padding is the heads' own `top` plus the head's height, `--row-h`
+     (capacity.css sets the head row to it): the offset and the padding
+     read the same three values, so they cannot drift apart. No snapping:
+     whether tables snap is still the owner's question from #1863. */
+  .ctl-scroll:has(.adm-ceilings .cap-families .ctl-table.is-scroll > table.adm-limits > thead) {
+    scroll-padding-top: calc(var(--adm-stick, 48px) + var(--adm-filter-h, 0px) + var(--row-h));
   }
 }
 @media (min-width: 1280px) {
