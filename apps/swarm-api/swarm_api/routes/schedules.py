@@ -78,6 +78,7 @@ from itertools import chain
 from typing import Any, Iterable, Mapping
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, Query, Response, status
+from fastapi.responses import JSONResponse
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
@@ -91,6 +92,7 @@ from ..issueruns import TERMINAL_RUN_STATES, IssueRuns, RunState
 from ..repositories import COLLECTION as REPOSITORIES
 from ..repositories import Repositories, platform_of
 from ..schedules import ScheduleConflict, ScheduleForbidden, ScheduleInvalid
+from ..store import CancelContended
 from . import tasks as task_routes
 from . import workflows as workflow_routes
 
@@ -845,12 +847,22 @@ def pause_schedule(
 def _cancel_one(ctx: AppContext, auth: AuthContext, tenant_id: str, kind: str, item_id: str,
                 background: BackgroundTasks) -> str:
     """One task or workflow through the platform's own cancel route body, so
-    its execution stop, child cascade and wake happen exactly as there."""
+    its execution stop, child cascade and wake happen exactly as there.
+
+    `contended`: the cancel's transaction stayed contended through its
+    retries (#1822), so the item is still live and pausing again with
+    `cancel_live` finishes it. A task's route raises that refusal; a
+    workflow's RETURNS it as the 503 response, after cancelling every step
+    it could, so it is read off the response rather than caught."""
     try:
         if kind == "task":
             task_routes.cancel_task(item_id, background, tenant_id=tenant_id, auth=auth, ctx=ctx)
         else:
-            workflow_routes.cancel_workflow(item_id, background, tenant_id=tenant_id, auth=auth, ctx=ctx)
+            answer = workflow_routes.cancel_workflow(item_id, background, tenant_id=tenant_id, auth=auth, ctx=ctx)
+            if isinstance(answer, JSONResponse) and answer.status_code == CancelContended.status_code:
+                return "contended"
+    except CancelContended:
+        return "contended"
     except Conflict:
         return "already_ended"
     except NotFound:
