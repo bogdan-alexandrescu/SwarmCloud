@@ -684,9 +684,11 @@ module "monitoring" {
   # that module is behind a `count` (as for workspace_deployer above).
   gke_cluster_name = "${var.name_prefix}-autopilot"
 
-  alert_emails                = var.alert_emails
-  extra_notification_channels = var.extra_notification_channels
-  create_alerts               = var.create_alerts
+  alert_emails                 = var.alert_emails
+  extra_notification_channels  = var.extra_notification_channels
+  urgent_notification_channels = var.urgent_notification_channels
+  require_alert_channels       = var.require_alert_channels
+  create_alerts                = var.create_alerts
 
   # The declared tenants, whose forge slots the workspace job must never bind.
   tenant_ids = local.tenant_ids

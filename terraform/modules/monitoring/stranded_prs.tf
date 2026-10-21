@@ -106,12 +106,21 @@ resource "google_monitoring_alert_policy" "pr_stranded" {
         "metric.type = \"logging.googleapis.com/user/${google_logging_metric.pr_stranded.name}\"",
       ])
 
+      # ONE INCIDENT PER (tenant, reason), NOT ONE PER LOG ENTRY (#1817: 520
+      # entries in 7 days, every one a fresh incident). The sweep re-logs a
+      # still-stranded pull request every six hours and runs every 30 minutes,
+      # so a 7-hour window (25200s) never empties while one stays stranded;
+      # the 300s window it replaces emptied five minutes after each entry and
+      # opened a new incident on the next. 3600s sustained means a person is
+      # told once a pull request has been reported stranded for an hour, and
+      # the incident closes about seven hours after the last one is merged.
+      # Threshold stays 0: one stranded pull request is still enough.
       comparison      = "COMPARISON_GT"
       threshold_value = 0
-      duration        = "0s"
+      duration        = "3600s"
 
       aggregations {
-        alignment_period     = "300s"
+        alignment_period     = "25200s"
         per_series_aligner   = "ALIGN_DELTA"
         cross_series_reducer = "REDUCE_SUM"
         group_by_fields      = ["metric.label.tenant_id", "metric.label.reason"]
@@ -119,7 +128,7 @@ resource "google_monitoring_alert_policy" "pr_stranded" {
     }
   }
 
-  notification_channels = local.notification_channels
+  notification_channels = local.channels_by_severity["WARNING"]
 
   documentation {
     mime_type = "text/markdown"

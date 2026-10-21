@@ -130,7 +130,7 @@ resource "google_monitoring_alert_policy" "tenant_namespace_mismatch" {
     }
   }
 
-  notification_channels = local.notification_channels
+  notification_channels = local.channels_by_severity["ERROR"]
 
   documentation {
     mime_type = "text/markdown"
