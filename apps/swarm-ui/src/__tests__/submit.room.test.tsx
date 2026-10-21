@@ -204,7 +204,7 @@ describe('the room box is one sentence, and an unread room is the unread mark', 
     expect(mark, 'an unread room is drawn without the unread mark').not.toBeNull()
     expect(mark!.getAttribute('aria-label')).toBe(HELP['room-unknown-not-zero'].short)
     const line = mark!.closest('p')!
-    expect((line.textContent ?? '').replace(/\s+/g, ' ')).toContain('room unknown · 1 of 3 pools could not be read')
+    expect((line.textContent ?? '').replace(/\s+/g, ' ')).toContain('room unknown: 1 of 3 pools could not be read')
     // The pool count is the only numeral in the room slot.
     expect((line.textContent ?? '').replace('1 of 3 pools', ''), 'a figure in the slot of a room nobody measured').not.toMatch(/\d/)
     // "not measured" is the absent mark's word, and the rule is the mark's now.

@@ -1,4 +1,4 @@
-import { useId, type ReactNode } from 'react'
+import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { read, route, type Result } from './fetch'
 import { helpAnchor, type TopicId } from './help'
 import {
@@ -166,6 +166,24 @@ export function DispatchChoice({
   const repoRequired = needsRepository(draft.strategy, draft.carrier)
   const repoMissing = repoRequired && draft.repositoryUrl.trim() === ''
   const repoRefused = repositorySchemeRefused(draft.repositoryUrl)
+  // THE FIELD'S SENTENCES ARE ITS DESCRIPTION, AND THE REFUSAL COMES INTO VIEW
+  // (visual QA run 3, sf-002). At 1440 the field could sit at the fold with
+  // the scheme warning under it out of sight. When the URL TURNS refused --
+  // not on every keystroke after, which would move the page under the typist
+  // -- the warning is scrolled to the nearest edge that shows it, which moves
+  // nothing when it is already in view.
+  const sayId = useId()
+  const refusedSay = `${sayId}-scheme`
+  const missingSay = `${sayId}-missing`
+  const refusedRef = useRef<HTMLParagraphElement>(null)
+  useEffect(() => {
+    if (repoRefused) refusedRef.current?.scrollIntoView?.({ block: 'nearest' })
+  }, [repoRefused])
+  const repoSays = [
+    repoRefused ? refusedSay : null,
+    repoMissing ? missingSay : null,
+    errors?.repository_url ? refusedSayId('repository_url') : null,
+  ].filter((x): x is string => x !== null)
 
   // THE STRATEGIES THIS SCALE CAN TAKE, and no others (TS-14). A task cannot
   // integrate -- there is no final step to receive anyone's patches -- so at
@@ -286,13 +304,14 @@ export function DispatchChoice({
         placeholder="https://github.com/owner/repo.git"
         value={draft.repositoryUrl}
         aria-invalid={repoRefused || undefined}
+        aria-describedby={repoSays.length === 0 ? undefined : repoSays.join(' ')}
         onChange={(e) => set({ repositoryUrl: e.target.value })}
       />
       {repoRefused && (
         // UNDER ANY STRATEGY. `collect` does not need a repository, but a
         // repository that IS given is validated whatever the strategy, so
         // `not a url` under the default is refused on the click just the same.
-        <p className="warn-text" role="alert">
+        <p id={refusedSay} ref={refusedRef} className="warn-text" role="alert">
           The API accepts only a URL starting with {REPOSITORY_SCHEMES.join(', ')}, so it will
           refuse this one.
         </p>
@@ -302,7 +321,7 @@ export function DispatchChoice({
         // (`DispatchOptions.needs_repository`) and names its own refusal; this
         // copy exists so the refusal is not a surprise, and if it ever drifts
         // it shows a wrong caution rather than stopping a valid submission.
-        <p className="warn-text" role="alert">
+        <p id={missingSay} className="warn-text" role="alert">
           {/* SENTENCES (QA G4-31): these opened lowercase beside the scheme
               warning's capital. */}
           {draft.strategy === 'collect'

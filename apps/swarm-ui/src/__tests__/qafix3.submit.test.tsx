@@ -18,7 +18,7 @@
  * access.page.test.tsx does; names and descriptions through Testing Library;
  * copy off the rendered text.
  */
-import { fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { createElement, useState } from 'react'
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 
@@ -181,12 +181,14 @@ describe('sf-002: an invalid repository URL is drawn as invalid and its message 
     const ids = (field.getAttribute('aria-describedby') ?? '').split(/\s+/).filter((s) => s !== '')
     // MUTATION: drop `aria-describedby` from `#dsp-repo` -> a screen reader hears "invalid" and no reason.
     expect(ids.map((id) => visible(document.getElementById(id))).join(' ')).toMatch(/^The API accepts only a URL starting with https:\/\//)
+    // One field on the page at a time: both are `#dsp-repo`.
+    cleanup()
     expect(repoField('https://github.com/o/r.git').getAttribute('aria-describedby')).toBeNull()
   })
 
   it('brings the message into view when the field turns invalid, and not on every keystroke', () => {
     const seen: Element[] = []
-    const scroll = vi.fn(function (this: Element) { seen.push(this) })
+    const scroll = vi.fn(function (this: Element, _arg?: ScrollIntoViewOptions) { seen.push(this) })
     // jsdom draws no layout and has no `scrollIntoView` to spy on; put back what was there.
     const was = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView')
     Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, writable: true, value: scroll })

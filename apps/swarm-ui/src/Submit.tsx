@@ -27,11 +27,9 @@ import {
 } from './Dispatch'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
 import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused, type ApiError, type Result } from './fetch'
-import { HELP } from './help'
 import { HelpCard } from './HelpCard'
 import { clearTaskPrefill, peekTaskPrefill } from './submitPrefill'
-import { Mark } from './primitives'
-import { ModelClassSelect, RoomFact, RunnerPicker, sentModelClass, useProviderKeys } from './RunnerPicker'
+import { ModelClassSelect, RoomFact, RunnerPicker, UnreadRoom, sentModelClass, useProviderKeys } from './RunnerPicker'
 import { AUTO, BROWSER_TOOL_KEY, BrowserToolPicker, declaredBrowserTools, jevAllowed, profileEgress, useJevJudgment, useTypesafeKey, withBrowserTool } from './BrowserToolPicker'
 import { QA_IDENTITY_KEY, QaIdentityOption, declaredQaIdentities, useGrantedQaIdentity, withQaIdentity } from './QaIdentityGrants'
 import { useRoleGate } from './Profile'
@@ -1667,9 +1665,10 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
                   accessible name is `room-unknown-not-zero`'s rule, then
                   `room unknown` and the count of pools that did not answer. No
                   room figure, and no digit in the room slot but that pool
-                  count, which §8.5 allows as a bare count. */}
-              <Mark kind="unread" say={HELP['room-unknown-not-zero'].short} /> room unknown ·{' '}
-              {room.unread.length} of {profile.pools.length} pools could not be read
+                  count, which §8.5 allows as a bare count. The picker's own
+                  `UnreadRoom`, so the two cannot drift: this line said
+                  "room unknown ·" after the picker's stopped (work-b-006). */}
+              <UnreadRoom profile={profile} unread={room.unread.length} />
             </>
           )
         ) : (

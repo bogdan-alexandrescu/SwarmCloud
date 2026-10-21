@@ -89,7 +89,7 @@ describe('RunnerPicker: every row says its room and its key', () => {
     const mark = room.querySelector('.ctl-mark.is-unread')
     expect(mark, 'an unread room is drawn without the unread mark').not.toBeNull()
     expect(mark!.getAttribute('aria-label')).toBe(HELP['room-unknown-not-zero'].short)
-    expect(visible(room)).toBe('not read room unknown · 1 of 3 pools could not be read')
+    expect(visible(room)).toBe('not read room unknown: 1 of 3 pools could not be read')
     expect(visible(room).replace('1 of 3 pools', ''), 'a figure in the slot of a room nobody measured').not.toMatch(/\d/)
   })
 
