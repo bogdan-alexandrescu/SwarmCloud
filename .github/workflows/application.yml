@@ -542,7 +542,8 @@ jobs:
     # Job-level permissions REPLACE the workflow's. actions: read lists the
     # `tested-tree-<tree>` records and the runs that wrote them, and
     # pull-requests: read names the pull request a push to main merged (the
-    # `reuse` step, main only). Nothing here writes or mints a cloud token.
+    # `reuse` step, main and same-repository pull requests). Nothing here
+    # writes or mints a cloud token.
     permissions:
       contents: read
       actions: read
@@ -561,10 +562,13 @@ jobs:
       changed: ${{ steps.changed.outputs.changed }}
       ui: ${{ steps.diff.outputs.ui }}
       images: ${{ steps.images.outputs.images }}
-      # The JSON list of job ids main's push run skips because a run of the
-      # identical tree passed them (B1). Empty everywhere else; every job
-      # reads it as `fromJSON(needs.changes.outputs.reused || '[]')`.
+      # The JSON list of job ids this run skips because a run of the
+      # identical tree passed them: main's push run (B1) or a pull request's
+      # run (CI-TREE-REUSE, #1798). Empty everywhere else; every job reads it
+      # as `fromJSON(needs.changes.outputs.reused || '[]')`.
       reused: ${{ steps.reuse.outputs.reused }}
+      # The URL of the run those jobs passed in; ci-gate cites it.
+      reused_from: ${{ steps.reuse.outputs.reused_from }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -835,14 +839,25 @@ jobs:
         # `build images` still needs `python`, `shell` and `manifests`; a
         # reused job is skipped by its own `if:`, so the build starts as soon
         # as what was not reused has passed.
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        #
+        # AND A PULL REQUEST FROM THIS REPOSITORY (CI-TREE-REUSE, #1798, owner
+        # approval 2026-10-21). Since CI-EARLY a lane's `swarm/**` push runs
+        # this workflow, and its pull request ran it again on the same tree:
+        # 18% of all VM hours. `--event pull_request` reuses only a completed,
+        # green push run of a `swarm/**` branch whose commit has the tree this
+        # run checked out (refs/pull/N/merge) -- trees, never shas, so once
+        # main moves nothing is reused. Never a fork's pull request. ci-gate's
+        # `ci_reuse.py gate` step then passes a skip only when this step
+        # listed it, and names the run.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          python3 scripts/lib/ci_reuse.py find --repo "${REPO}" --sha "${SHA}" \
+          python3 scripts/lib/ci_reuse.py find --repo "${REPO}" --sha "${SHA}" --event "${EVENT}" \
             --github-output "${GITHUB_OUTPUT}" --summary "${GITHUB_STEP_SUMMARY}"
 
       - name: does the change reach an image
@@ -2136,9 +2151,10 @@ jobs:
     # out (a pull request's merge commit, which is the tree its squash merge
     # commits to main when it is up to date), the event, the `changes` job's
     # python mode and every test job that concluded success.
-    # scripts/lib/ci_reuse.py writes it, and on main reads it back and
-    # checks every fact against the GitHub API and git before skipping
-    # anything (the `changes` job's `reuse` step).
+    # scripts/lib/ci_reuse.py writes it, and on main -- or, for a lane
+    # push's record, on that lane's pull request (CI-TREE-REUSE, #1798) --
+    # reads it back and checks every fact against the GitHub API and git
+    # before skipping anything (the `changes` job's `reuse` step).
     #
     # IN CI-GATE'S `needs`, so the record exists before the pull request can
     # merge: a record uploaded after the merge would race main's lookup.
@@ -2259,6 +2275,24 @@ jobs:
           # neither the base nor the merge base.
           fetch-depth: 0
           persist-credentials: false
+
+      - name: a job skipped by reuse passes only when the reuse step listed it
+        # CI-TREE-REUSE (#1798). The step above counts every skip as a pass;
+        # this one asks where each skip came from. A reusable job this change
+        # reaches (its own `if:` before the reuse clause, ci_reuse.py REACH)
+        # that was skipped passes only when the `changes` job's `reuse` step
+        # listed it and named the run it passed in. The summary cites that
+        # run, so a reader can see where the green came from.
+        if: github.event_name != 'workflow_dispatch'
+        # GATE_NEEDS, not NEEDS: test_ci_gate.py runs the one step reading
+        # NEEDS as the gate's first judgement.
+        env:
+          GATE_NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          python3 scripts/lib/ci_reuse.py gate --needs "${GATE_NEEDS}" --event "${EVENT}" \
+            --summary "${GITHUB_STEP_SUMMARY}"
 
       - name: wait for terraform.yml at this commit
         # A dispatch has no pull request, push or queue entry to compare, and
