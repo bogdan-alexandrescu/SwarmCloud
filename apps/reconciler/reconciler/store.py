@@ -24,6 +24,7 @@ allowed to touch `pool.active`.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Iterable
@@ -1659,3 +1660,39 @@ class ControlStore:
         }
         self._db.collection("reconciler_passes").document(pass_id).set(doc)
         return pass_id
+
+    # -- executions Cloud Run will not cancel (#1822) ----------------------
+    #: The reconciler's own record of an execution it may not kill and must not
+    #: ask about every pass. Named here, not in swarm_common: nothing else reads
+    #: or writes it. One document per execution, keyed by a digest of its full
+    #: name because a Firestore document id cannot hold the slashes.
+    WEDGED_COLLECTION = "reconciler_wedged_executions"
+
+    @staticmethod
+    def _wedged_id(execution_name: str) -> str:
+        return hashlib.sha256(execution_name.encode()).hexdigest()
+
+    def wedged_execution(self, execution_name: str) -> dict[str, Any] | None:
+        """The wedged record for this execution, or None. Raises on a failed read."""
+        snap = (
+            self._db.collection(self.WEDGED_COLLECTION)
+            .document(self._wedged_id(execution_name))
+            .get()
+        )
+        if not snap.exists:
+            return None
+        doc = snap.to_dict() or {}
+        # A digest collision would hand one execution another's backoff.
+        return doc if doc.get("execution") == execution_name else None
+
+    def record_wedged_execution(self, execution_name: str, record: dict[str, Any]) -> None:
+        """Write the whole wedged record (`repair.Reconciler._terminate` builds it)."""
+        self._db.collection(self.WEDGED_COLLECTION).document(
+            self._wedged_id(execution_name)
+        ).set({**record, "execution": execution_name})
+
+    def clear_wedged_execution(self, execution_name: str) -> None:
+        """Forget it: the stop was confirmed, so there is nothing left to back off from."""
+        self._db.collection(self.WEDGED_COLLECTION).document(
+            self._wedged_id(execution_name)
+        ).delete()

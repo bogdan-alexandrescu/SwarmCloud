@@ -453,6 +453,17 @@ def _short(text: Any, limit: int = 300) -> str:
     return " ".join(str(text or "").split())[:limit]
 
 
+def _within(created_at: datetime | None, now: datetime, seconds: int) -> bool:
+    """Whether something created at `created_at` is at most `seconds` old.
+
+    An unknown create time reads as young, so what cannot be dated is still
+    reported once by the instance that sees it rather than never.
+    """
+    if created_at is None:
+        return True
+    return (now - created_at).total_seconds() <= seconds
+
+
 def execution_is_finished(execution: Any) -> bool:
     """True only when Cloud Run's own record proves this execution is over.
 
@@ -489,6 +500,40 @@ def execution_is_finished(execution: Any) -> bool:
     if int(getattr(execution, "running_count", 0) or 0) > 0:
         return False
     return not bool(getattr(execution, "reconciling", False))
+
+
+#: Cloud Run's own words when it refuses a cancel: `400 Execution '...' cannot
+#: be cancelled because it is not running.`
+CANCEL_REFUSED_NOT_RUNNING = "because it is not running"
+#: Added (PEP 678) to the re-raised cancel error when the re-read execution has
+#: no running task and no completion time: the shape Cloud Run will neither
+#: cancel nor call finished. `swarm-job-eng-mock-5lrt8`, `-rsdxp`, `-ww2gb` and
+#: `-r5877` have read so since 2026-10-04T10:33:07Z (#1822).
+WEDGED_NOTE = "cloud run reports no running task and no completion time"
+
+
+def cancel_refused_as_not_running(exc: BaseException) -> bool:
+    """True when a failed termination is Cloud Run refusing an execution it does
+    not count as running, while not recording it as finished either.
+
+    Either Cloud Run said so (`CANCEL_REFUSED_NOT_RUNNING`), or the re-read
+    found the wedged shape and `CloudRunBackend._confirmed_finished` noted it on
+    the error. This proves nothing about the compute, and releases nothing: the
+    reconciler only uses it to stop asking every pass when no lease holds the
+    execution (`repair.Reconciler._terminate`).
+    """
+    if CANCEL_REFUSED_NOT_RUNNING in str(exc):
+        return True
+    return any(WEDGED_NOTE in str(note) for note in getattr(exc, "__notes__", ()) or ())
+
+
+#: How young an unattributed, unfinished execution must be for a pass to log it.
+#: The "already reported" memory has to hold across instances, and the
+#: reconciler runs with min_instance_count 0, so it is derived from the
+#: execution's own create time rather than kept: every one-minute pass sees an
+#: execution inside its first 15 minutes, and no pass logs it after. Two
+#: instances logging the same one needs both to pass over it in that window.
+UNATTRIBUTED_REPORT_HORIZON_SECONDS = 900
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +573,12 @@ class CloudRunBackend:
         #: Unattributed executions already logged by this instance, so each is
         #: logged ONCE rather than on every one-minute pass. Pruned to what the
         #: latest listing returned, so it never outgrows the listing itself.
+        #: Across instances, `UNATTRIBUTED_REPORT_HORIZON_SECONDS` is the memory.
         self._reported_unattributed: set[str] = set()
+        #: Unattributed executions the latest listing returned already finished:
+        #: counted, never logged one by one. The pass summary reports it
+        #: (`ReconcileReport.unattributed_finished`).
+        self.unattributed_finished = 0
 
     @property
     def parent(self) -> str:
@@ -603,10 +653,16 @@ class CloudRunBackend:
         a warning every minute for five hours beside a held lease, and the
         noise was read as the reason for the hold.
 
+        Only an UNFINISHED one is logged, and only inside its first
+        `UNATTRIBUTED_REPORT_HORIZON_SECONDS`: the in-process memory alone reset
+        on every new instance, and on 2026-10-21 the line was ~70k a day, 95%
+        of it about executions already over (mostly swarm-verify acceptance
+        runs). A finished one is counted in `unattributed_finished` instead.
+
         An execution carrying a TASK id but no attempt id is kept: #372's live
         claude-code execution came back exactly so, and the orphan rule's
         stand-aside for it, and the obsolete-generation rule's kill of an old
-        one, both need to see it. It is logged once too.
+        one, both need to see it. It is logged by the same rule.
 
         Neither kind can make this backend unreadable. Logging one is wrapped:
         a failure there is logged and the listing goes on, because a listing
@@ -614,6 +670,8 @@ class CloudRunBackend:
         """
         views: list[ExecutionView] = []
         listed: set[str] = set()
+        finished = 0
+        now = datetime.now(timezone.utc)
         for job in self._list_jobs():
             job_name = getattr(job, "name", "")
             if not self._is_managed(job):
@@ -631,7 +689,11 @@ class CloudRunBackend:
                     views.append(view)
                     continue
                 listed.add(view.name)
-                if view.name not in self._reported_unattributed:
+                if view.ended:
+                    finished += 1
+                elif view.name not in self._reported_unattributed and _within(
+                    view.created_at, now, UNATTRIBUTED_REPORT_HORIZON_SECONDS
+                ):
                     self._reported_unattributed.add(view.name)
                     try:
                         self._log_unattributed(execution, view, job_name)
@@ -645,6 +707,7 @@ class CloudRunBackend:
                 if view.task_id:
                     views.append(view)
         self._reported_unattributed &= listed
+        self.unattributed_finished = finished
         return views
 
     def _log_unattributed(self, execution: Any, view: ExecutionView, job_name: str) -> None:
@@ -657,7 +720,7 @@ class CloudRunBackend:
         written -- is what this line exists to show next time, so it names each
         identifier that neither the environment nor a label supplied.
 
-        Once per execution for as long as listings keep returning it (see
+        Once per unfinished execution, inside its first minutes (see
         `list_executions`), not once per pass. It never carries
         an environment VALUE other than the swarm ids already on the view: the
         template's environment holds the worker's whole configuration.
@@ -955,8 +1018,19 @@ class CloudRunBackend:
                 )
             return False
         if not execution_is_finished(current):
+            wedged = (
+                int(getattr(current, "running_count", 0) or 0) == 0
+                and as_datetime(getattr(current, "completion_time", None)) is None
+            )
+            if wedged and isinstance(cause, BaseException):
+                # Marked for `cancel_refused_as_not_running`; the error is
+                # still re-raised as it was, so nothing about the slot changes.
+                cause.add_note(WEDGED_NOTE)
             if self._log:
-                self._log.error(
+                # A warning for the wedged shape: whether it is an error is
+                # `repair.Reconciler._terminate`'s call, which knows whether a
+                # lease holds it. Every other unproven stop stays an ERROR.
+                (self._log.warning if wedged else self._log.error)(
                     "cloud run still reports this execution as running; NOT releasing the slot",
                     execution=execution.name,
                     cause=str(cause),

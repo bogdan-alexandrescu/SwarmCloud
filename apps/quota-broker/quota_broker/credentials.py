@@ -82,6 +82,12 @@ REFRESH_SUFFIX = "-refresh"
 #: (`settings.held_refresh_margin`).
 DEFAULT_HELD_REFRESH_MARGIN = timedelta(minutes=30)
 
+#: How often "subscription credential needs a human" is repeated while one
+#: credential stays dead. Hourly, not per sweep: the account's own state
+#: (`reauth_required`) already says it on every listing, and twelve ERRORs an
+#: hour for one fact buried the rest of the broker's log (#1822).
+NEEDS_A_HUMAN_REPEAT = timedelta(hours=1)
+
 
 class SecretStore(Protocol):
     def access(self, name: str) -> str:
@@ -199,13 +205,26 @@ class CredentialRefresher:
         #: emitted for. The warning is worth saying once per token and worth
         #: nothing 288 times a day.
         self._warned: dict[str, str] = {}
+        #: secret name -> when "needs a human" was last logged for it. Logged on
+        #: the transition into that state and then at most once per
+        #: `NEEDS_A_HUMAN_REPEAT`, not on every five-minute sweep: one dead
+        #: account wrote it 576 times in 48 hours (#1822). Cleared when the
+        #: credential next proves usable, so dying again is a transition again.
+        self._needs_human_logged: dict[str, datetime] = {}
 
     def refresh_tenant(self, tenant_id: str, provider: str) -> RefreshOutcome:
-        return self._refresh(
-            f"swarm-tenant-{tenant_id}-{provider}",
-            tenant_id=tenant_id,
-            provider=provider,
-        )
+        base = f"swarm-tenant-{tenant_id}-{provider}"
+        return self._recovered(base, self._refresh(base, tenant_id=tenant_id, provider=provider))
+
+    def _recovered(self, base: str, outcome: RefreshOutcome) -> RefreshOutcome:
+        """Forget a "needs a human" once the credential proves usable again.
+
+        Only a refresh or a still-valid token proves that; a failed read or a
+        transient refresh error says nothing, and must not re-arm the line.
+        """
+        if outcome.refreshed or outcome.reason == "still_valid":
+            self._needs_human_logged.pop(base, None)
+        return outcome
 
     def _refresh(
         self, base: str, *, tenant_id: str, provider: str, held: bool = False
@@ -373,11 +392,20 @@ class CredentialRefresher:
         try:
             fresh = refresh(credential, self._endpoint, now=now)
         except ReauthRequired as exc:
-            # Terminal. Say so once, loudly, and stop.
-            self._log.error(
-                "subscription credential needs a human; tasks will park",
-                extra={"tenant_id": tenant_id, "provider": provider, "error": str(exc)},
-            )
+            # Terminal. Say so once, loudly, and stop -- once per transition,
+            # and once an hour while it lasts (`_needs_human_logged`).
+            last = self._needs_human_logged.get(base)
+            if last is None or now - last >= NEEDS_A_HUMAN_REPEAT:
+                self._needs_human_logged[base] = now
+                self._log.error(
+                    "subscription credential needs a human; tasks will park",
+                    extra={
+                        "tenant_id": tenant_id,
+                        "provider": provider,
+                        "error": str(exc),
+                        "repeated": last is not None,
+                    },
+                )
             return RefreshOutcome(tenant_id, provider, False, "reauth_required")
         except CredentialError as exc:
             self._log.warning(
@@ -446,8 +474,11 @@ class CredentialRefresher:
         takes the base name directly so the two callers share one implementation
         rather than drifting into two that must be kept in step.
         """
-        return self._refresh(
-            secret_base, tenant_id=label or secret_base, provider="account", held=held
+        return self._recovered(
+            secret_base,
+            self._refresh(
+                secret_base, tenant_id=label or secret_base, provider="account", held=held
+            ),
         )
 
     def _base_state(self, base: str, access_token: str) -> tuple[_BaseState, str]:
