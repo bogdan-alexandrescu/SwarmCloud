@@ -44,10 +44,10 @@ from swarm_common.models import (
     pool_names_for,
     utcnow,
 )
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
+from swarm_common.profiles import RUNNER_PROFILES, effective_size, resolve_backend
 from swarm_common.states import ParkReason, TaskState, assert_transition
 
-from . import gitidentity
+from . import gitidentity, runnersizes
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
 from .cifix import stamp as stamp_ci_fix
@@ -670,7 +670,13 @@ class SubmissionService:
         validate_input_size(spec.metadata, 16 * 1024, label="metadata")
         reject_non_finite(spec.metadata, label="metadata", step_id=step_id)
         validate_storable(spec.metadata, label="metadata")
-        resource_class = validate_resource_class_override(profile, resource_class_override)
+        # "Larger" is judged at the CURRENT runner sizes (design §4.8), read
+        # only when a step names a class: most submissions name none.
+        resource_class = validate_resource_class_override(
+            profile, resource_class_override,
+            sizes=(runnersizes.current_sizes(self._store.db)
+                   if resource_class_override is not None else None),
+        )
         timeout = validate_timeout(profile, spec.timeout_seconds)
         # The model class, by name, and `Task.model` from its pin (#1435,
         # docs/design/model-per-step.md §4.4). For a task, a batch entry, a
@@ -1865,9 +1871,13 @@ class SubmissionService:
             visible.append(pool_to_api(pool))
         visible.sort(key=lambda p: p["name"])
 
+        # Units at the CURRENT runner size version, which is what admission
+        # charges (design §4.4); a Cloud Run profile at the code default.
+        sizes = runnersizes.current_sizes(self._store.db)
         profiles: dict[str, Any] = {}
         for name, profile in RUNNER_PROFILES.items():
-            backend = resolve_backend(profile).value
+            resolved = resolve_backend(profile)
+            backend = resolved.value
             required = pool_names_for(
                 tenant_id=tenant_id,
                 provider=profile.provider,
@@ -1875,7 +1885,7 @@ class SubmissionService:
                 runner_profile=name,
                 backend=backend,
             )
-            units = RESOURCE_CLASSES[profile.resource_class].units
+            units = effective_size(profile.resource_class, sizes, resolved).units
             # Narrowed to `required` before the analyser sees it. Every name in
             # `required` is built from THIS caller's tenant id, so none of them
             # is another tenant's pool -- and restricting the map here is what

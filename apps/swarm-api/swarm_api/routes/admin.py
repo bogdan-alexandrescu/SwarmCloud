@@ -29,7 +29,7 @@ from swarm_common.identity import Principal
 from swarm_common.models import ProviderState, SlotPool, Task, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
-from .. import roles
+from .. import roles, runnersizes
 from ..attempt_totals import totals_for, with_totals
 from ..browser_logins import CarryReaper
 from ..auth import AuthContext
@@ -65,6 +65,9 @@ from ..schemas import (
     PauseRequest,
     PlatformSettingsRequest,
     ProviderEnableRequest,
+    RunnerSizesPreviewRequest,
+    RunnerSizesRequest,
+    RunnerSizesRestoreRequest,
     TenantFindingsEpicRequest,
     TenantLimitsRequest,
 )
@@ -207,6 +210,87 @@ def put_platform_settings(
     settings = ctx.store.set_platform_settings(changes, by=auth.email)
     ctx.metrics.admin_actions.labels(action="platform_settings").inc()
     return settings
+
+
+# -- runner sizes -----------------------------------------------------------
+#
+# docs/design/runner-sizes.md §4.5. The logic is `swarm_api.runnersizes`; the
+# bounds, the defaults and the class names are the frozen contract's. Any
+# platform admin may change sizes, with a reason, and every version is audited
+# and restorable (owner Q4). The scheduler reads the current version once per
+# drain pass and pins it on the attempt, so a change applies to the NEXT
+# admission and never to a running agent.
+
+@router.get("/runner-sizes")
+def get_runner_sizes(
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The current version's sizes, the code defaults, the frozen bounds, which
+    profiles follow a resize and which are fixed, and the list prices."""
+    return runnersizes.served(runnersizes.current(ctx.db))
+
+
+@router.post("/runner-sizes:preview")
+def preview_runner_sizes(
+    body: RunnerSizesPreviewRequest,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """What the body would do, nothing written: every refusal, units and
+    dollars an hour before and after, what the platform-wide pools admit, and
+    the class's 7-day use (`recent_use`, design §4.9). A refused body is
+    `valid: false` here, not a 422: the console previews as an admin types."""
+    return runnersizes.preview(ctx.db, body.classes, now=ctx.now())
+
+
+@router.put("/runner-sizes")
+def put_runner_sizes(
+    body: RunnerSizesRequest,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Write version N+1 from version `base_version` and the body.
+
+    409 `stale_base_version` when another admin saved in between; 422
+    `size_out_of_bounds` naming every refusal; 422 `below_recent_peak` for an
+    unconfirmed memory cut under the class's 7-day max peak (owner Q6).
+    """
+    payload = runnersizes.put(
+        ctx.db, base_version=body.base_version, classes=body.classes, reason=body.reason,
+        by=auth.email, confirm_below_recent_peak=body.confirm_below_recent_peak, now=ctx.now(),
+    )
+    ctx.metrics.admin_actions.labels(action="runner_sizes").inc()
+    return payload
+
+
+@router.post("/runner-sizes/restore")
+def restore_runner_sizes(
+    body: RunnerSizesRestoreRequest,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Write a NEW version whose classes are `version`'s (0: the code
+    defaults), `restored_from` naming it. The pointer is never rewound, so the
+    audit reads forward."""
+    payload = runnersizes.restore(
+        ctx.db, base_version=body.base_version, version=body.version, reason=body.reason,
+        by=auth.email, confirm_below_recent_peak=body.confirm_below_recent_peak, now=ctx.now(),
+    )
+    ctx.metrics.admin_actions.labels(action="runner_sizes").inc()
+    return payload
+
+
+@router.get("/runner-sizes/versions")
+def list_runner_size_versions(
+    limit: int = Query(default=50, ge=1, le=runnersizes.VERSIONS_PAGE_MAX),
+    before: int | None = Query(default=None, ge=1),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The audit, newest first: who, when, why, what changed, and what a
+    restore restored from. `before` pages back from a version."""
+    return runnersizes.versions(ctx.db, limit=limit, before=before)
 
 
 # -- concurrency limits ---------------------------------------------------

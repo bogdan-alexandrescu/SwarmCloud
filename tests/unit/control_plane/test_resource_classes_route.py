@@ -30,12 +30,17 @@ def test_route_serves_the_frozen_catalogue_exactly(client):
 
     assert set(served) == set(RESOURCE_CLASSES), "a class the catalogue has and the route drops is invisible to every caller"
     for name, rc in RESOURCE_CLASSES.items():
+        # SIZES-API (#1689): with no size version written, the code defaults,
+        # the request under its old name `cpu` and its own, and the burst limit.
         assert served[name] == {
             "name": rc.name,
             "cpu": rc.cpu,
+            "cpu_request": rc.cpu,
+            "cpu_limit": rc.cpu_limit_cores,
             "memory_gib": rc.memory_gib,
             "disk_gib": rc.disk_gib,
             "units": rc.units,
+            "size_version": 0,
         }, f"{name} drifted from the frozen catalogue"
 
 

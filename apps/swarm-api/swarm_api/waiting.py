@@ -13,9 +13,11 @@ apart: the bar is labelled "last scheduler pass", this line is the live one.
 HOW IT AVOIDS RESTATING ADMISSION
 ----------------------------------
   * `required` is `pool_names_for(...)` -- the frozen function admission calls
-    -- with the backend `resolve_backend` picks, and `units` is
-    `RESOURCE_CLASSES[task.resource_class]`, which is what the scheduler's
-    drain loop weighs a task by (`scheduler/loop.py`, `_admit_one`).
+    -- with the backend `resolve_backend` picks, and `units` is the class's
+    size at the CURRENT runner size version for that backend
+    (`effective_size`, design §4.4), which is what the scheduler's drain loop
+    weighs a task by (`scheduler/loop.py`, `_admit_one`): a READY task is not
+    admitted yet, so it is the version current now that it will be charged.
   * whether a pool refuses is `headroom.analyse_profile`'s answer, which is
     `evaluate_capacity` underneath. The states below only DESCRIBE a refusal
     that function already made (a limit of 0, a limit below the task's units,
@@ -43,10 +45,17 @@ from datetime import datetime
 from typing import Any, Iterable, Mapping, Sequence
 
 from swarm_common.models import SlotPool, Task, pool_names_for, utcnow
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
+from swarm_common.profiles import (
+    RESOURCE_CLASSES,
+    RUNNER_PROFILES,
+    ResourceSize,
+    effective_size,
+    resolve_backend,
+)
 from swarm_common.states import BlockedReason, TaskState
 
 from .headroom import analyse_profile
+from .runnersizes import current_sizes
 
 log = logging.getLogger(__name__)
 
@@ -74,25 +83,34 @@ _TIER = {
 }
 
 
-def required_pools(task: Task) -> tuple[list[str], int] | None:
+def required_pools(
+    task: Task, sizes: Mapping[str, ResourceSize] | None = None
+) -> tuple[list[str], int] | None:
     """Every pool admission would reserve for this task, and its units.
 
     None when the task names a profile or resource class the catalogue no
     longer has: admission could not place it either, and a guess at its pools
-    would be a confident answer about pools it may not need.
+    would be a confident answer about pools it may not need. `sizes` is the
+    current runner size version (None: the code defaults).
     """
     profile = RUNNER_PROFILES.get(task.runner_profile)
     resource = RESOURCE_CLASSES.get(task.resource_class)
     if profile is None or resource is None:
         return None
+    backend = resolve_backend(profile)
     required = pool_names_for(
         tenant_id=task.tenant_id,
         provider=task.provider,
         resource_class=task.resource_class,
         runner_profile=task.runner_profile,
-        backend=resolve_backend(profile).value,
+        backend=backend.value,
     )
-    return required, resource.units
+    try:
+        units = effective_size(task.resource_class, sizes, backend).units
+    except KeyError:
+        # A class the catalogue holds and the size defaults do not.
+        units = resource.units
+    return required, units
 
 
 def read_pools(db: Any, names: Iterable[str]) -> tuple[dict[str, dict[str, Any] | None], bool]:
@@ -128,6 +146,7 @@ def waiting_for(
     *,
     listing_complete: bool,
     as_of: datetime | None = None,
+    sizes: Mapping[str, ResourceSize] | None = None,
 ) -> dict[str, Any] | None:
     """The live admission picture for a READY task; None for any other state.
 
@@ -138,7 +157,7 @@ def waiting_for(
     if task.state is not TaskState.READY:
         return None
     when = as_of or utcnow()
-    need = required_pools(task)
+    need = required_pools(task, sizes)
     if need is None:
         return {
             "as_of": when,
@@ -253,13 +272,26 @@ def waiting_for_page(db: Any, tasks: Sequence[Task], *, as_of: datetime) -> dict
     """
     ready = [t for t in tasks if t.state is TaskState.READY]
     ready_ids = {t.id for t in ready}
+    sizes = _sizes(db) if ready else None
     names: list[str] = []
     for t in ready:
-        need = required_pools(t)
+        need = required_pools(t, sizes)
         if need is not None:
             names.extend(need[0])
     raw, complete = read_pools(db, names) if names else ({}, True)
     return {
-        t.id: waiting_for(t, raw, listing_complete=complete, as_of=as_of) if t.id in ready_ids else None
+        t.id: waiting_for(t, raw, listing_complete=complete, as_of=as_of, sizes=sizes)
+        if t.id in ready_ids else None
         for t in tasks
     }
+
+
+def _sizes(db: Any) -> Mapping[str, ResourceSize] | None:
+    """The current runner size version, read once per page (two documents).
+    A failed read weighs the page at the code defaults rather than failing
+    the task GET it rides on, as a failed pool read does."""
+    try:
+        return current_sizes(db)
+    except Exception as exc:  # the task itself was read; only this reading failed
+        log.warning("waiting_for: runner size read failed: %s", type(exc).__name__)
+        return None

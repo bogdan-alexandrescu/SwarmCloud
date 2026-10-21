@@ -12,8 +12,9 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, Request
 
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
+from swarm_common.profiles import RUNNER_PROFILES, Backend, effective_size, resolve_backend
 
+from .. import runnersizes
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context
 from ..served_limits import configured_limits
@@ -138,45 +139,36 @@ def resource_classes(
     # hole. There is nothing tenant-specific to compute -- this is the same
     # published catalogue every caller already picks from by name.
     auth: AuthContext = Depends(current_auth),  # noqa: ARG001
+    ctx: AppContext = Depends(get_context),
 ) -> dict:
-    """The REQUESTED side of "requested vs utilised".
+    """The REQUESTED side of "requested vs utilised", at the CURRENT size version.
 
     Every attempt records what it USED (`peak_rss_bytes`, `peak_disk_bytes`)
     and nothing served what it was GIVEN, so a reader could see "peak RSS
     6.1 GiB" with no way to tell whether that is comfortable or one chatty
-    prompt from an OOM kill. On this platform it is the latter more often than
-    it looks: `requests == limits` everywhere, so there is no burst headroom to
-    absorb an overshoot, and `oom_near_miss` exists precisely because the
-    attempt that finished at 97% of its ceiling looks like a clean success.
+    prompt from an OOM kill. Memory is request == limit everywhere (invariant
+    7), so there is no burst headroom to absorb an overshoot, and
+    `oom_near_miss` exists precisely because the attempt that finished at 97%
+    of its ceiling looks like a clean success. CPU alone has two numbers:
+    `cpu_request`, guaranteed and billed, and `cpu_limit`, what a GKE pod may
+    burst to; `cpu` is the request under its old name.
 
     WHY A ROUTE RATHER THAN A TABLE IN THE CLIENT. A served value cannot drift
-    at all. `check-contract-parity.sh` does now assert the TypeScript copies the
-    client keeps, but an asserted copy of these five numbers would still have to
-    be edited in two places every time a class is resized -- and the screen most
-    likely to be trusted, "did this agent fit?", is the worst one to leave
-    depending on somebody remembering the second place.
-
-    Static and non-sensitive: no store read, no tenant filter, nothing here
-    that is not already implied by the `resource_class` a caller submits.
+    at all, and since runner sizes became an admin setting (SIZES-API, design
+    §4.5) a client table would be wrong after the first resize with no deploy
+    to correct it. Each class is the current version's
+    (`runnersizes.current`), validated on read, the code defaults when no
+    version is written or the stored one is malformed; `size_version` says
+    which (0: the defaults). Two document reads, no tenant filter, nothing
+    here that is not already implied by the `resource_class` a caller submits.
     """
+    setting = runnersizes.current(ctx.db)
     return {
+        "size_version": setting.in_effect,
         "resource_classes": {
-            name: {
-                "name": rc.name,
-                # Both the request and the limit. Not a floor with burst above it.
-                "cpu": rc.cpu,
-                "memory_gib": rc.memory_gib,
-                # A SLICE OF memory_gib, not capacity on top of it: the
-                # workspace is a memory-backed tmpfs, because the Terraform
-                # google provider cannot express Cloud Run's disk-backed
-                # empty_dir (`medium` accepts only "MEMORY").
-                "disk_gib": rc.disk_gib,
-                # Weighted capacity units, which is what admission counts --
-                # never a number of agents.
-                "units": rc.units,
-            }
-            for name, rc in sorted(RESOURCE_CLASSES.items())
-        }
+            name: runnersizes.class_entry(name, size, setting.in_effect)
+            for name, size in sorted(setting.sizes.items())
+        },
     }
 
 
@@ -215,14 +207,17 @@ def runtimes(
     drift. Resize a class or retime a profile in the frozen catalogue and this
     route moves with it in the same commit.
 
-    `secrets` lists environment variable NAMES. This route reads no environment,
-    no secret store and no Firestore document. The ONE value it serves that is
-    not the catalogue's is `models`, each class's model ID: that is Terraform's
-    (`runner_models`, owner's Q1 of #1435), read from this service's own
-    WORKER_CLASS_MODELS at start, the map the scheduler dispatches with, so the
-    route reports what a step of each class will run.
+    `secrets` lists environment variable NAMES. This route reads no environment
+    and no secret store. Two values are not the catalogue's. `models`, each
+    class's model ID, is Terraform's (`runner_models`, owner's Q1 of #1435),
+    read from this service's own WORKER_CLASS_MODELS at start, the map the
+    scheduler dispatches with, so the route reports what a step of each class
+    will run. `resources` is the current runner size version's for a GKE
+    profile and the code default for a Cloud Run one (`effective_size`, design
+    §4.7): the two documents `/v1/resource-classes` reads.
     """
     class_models = ctx.settings.worker_class_models
+    setting = runnersizes.current(ctx.db)
     # EVERY profile, including disabled ones, each carrying its own
     # `available` flag and reason. A caller reading a task that names `codex`
     # still needs its image, backend and resource class to render that task;
@@ -230,7 +225,11 @@ def runtimes(
     # merely unrepeatable. The flag is what a submit form filters on.
     catalogue = {}
     for name, profile in sorted(RUNNER_PROFILES.items()):
-        rc = RESOURCE_CLASSES[profile.resource_class]
+        backend = resolve_backend(profile)
+        size = effective_size(profile.resource_class, setting.sizes, backend)
+        # A Cloud Run profile runs at the code defaults, version 0, whatever
+        # the setting says: Cloud Run fixes resources on the Job.
+        size_version = setting.in_effect if backend is Backend.GKE_AUTOPILOT else 0
         catalogue[name] = {
             # Exactly the string to send as `runner_profile` on a submission --
             # unless `available` is false, in which case submitting it is
@@ -249,7 +248,7 @@ def runtimes(
             # the two agree -- that is a fact about the catalogue, not a
             # guarantee of this route.
             "backend": profile.backend.value,
-            "resolved_backend": resolve_backend(profile).value,
+            "resolved_backend": backend.value,
             # None means the runner consumes no external provider's quota, so it
             # runs for a tenant who has registered no credential at all. That is
             # what keeps `mock` usable as a smoke path on a brand-new tenant.
@@ -279,21 +278,6 @@ def runtimes(
             # answer, and an answer that needs a second request plus a
             # client-side join against /v1/resource-classes is the shape that
             # ends up hand-copied into a client instead.
-            "resources": {
-                "name": rc.name,
-                # Both the request and the limit: `requests == limits`
-                # platform-wide, so there is no burst headroom above this.
-                "cpu": rc.cpu,
-                "memory_gib": rc.memory_gib,
-                # A SLICE OF memory_gib, not storage on top of it: the workspace
-                # is a memory-backed tmpfs because the Terraform google provider
-                # cannot express Cloud Run's disk-backed empty_dir
-                # (`medium` accepts only "MEMORY").
-                "disk_gib": rc.disk_gib,
-                # Weighted capacity units, which is what admission counts --
-                # never a number of agents. Same units /v1/capacity reports per
-                # pool, so the two can be read together.
-                "units": rc.units,
-            },
+            "resources": runnersizes.class_entry(profile.resource_class, size, size_version),
         }
     return {"runtimes": catalogue}
