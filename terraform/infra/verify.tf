@@ -44,11 +44,11 @@ resource "google_service_account" "verify" {
   # under the name (#334 security review).
   # 256 characters at most -- the provider refuses a longer description at
   # plan time, which is how an earlier wording of this line failed CI. This one
-  # is 245. It names what the identity CAN do (any runner ceiling, through
+  # is 255. It names what the identity CAN do (any runner ceiling, through
   # admin_pool_users) rather than what race-test does with it (mock's), and it
   # says it is not an admin: the wording before 2026-09-24's correction said it
   # was one.
-  description = "Runs the verification suites inside the VPC. Reads Firestore, Cloud Run executions and artifact objects. Writes only through swarm-api: as its own tenant, and runner ceilings where admin_pool_users names it (for race-test). Not a platform admin."
+  description = "Runs the verification suites inside the VPC. Reads Firestore, Cloud Run executions, GKE Jobs and artifact objects. Writes only through swarm-api: as its own tenant, and runner ceilings where admin_pool_users names it (for race-test). Not a platform admin."
 }
 
 # WHY THIS IS NO LONGER THE ONLY GRANT.
@@ -63,9 +63,12 @@ resource "google_service_account" "verify" {
 # assertion ran -- twice in two days, for two different reasons.
 #
 # So the grants below are the ones the suites actually exercise, and no more.
-# All three are READ-ONLY at the project level; everything the gate writes, it
-# writes through swarm-api, which is the property the original comment was
-# protecting and which still holds.
+# All are READ-ONLY; the two project-level ones are datastore.viewer and
+# run.viewer. The GKE read's IAM half, clusterViewer conditioned to the swarm
+# cluster, is NOT here: terraform/bootstrap/verify_cluster_read.tf grants it,
+# which the owner applies, so CI's allow-list never carries the role (see
+# below). Everything the gate writes, it writes through swarm-api, which is the
+# property the original comment was protecting and which still holds.
 #
 # NOT EVERY WRITE IS AS ITS OWN TENANT, by owner decision on 2026-09-24: in dev
 # this identity is also on `admin_pool_users`, because race-test narrows
@@ -121,6 +124,24 @@ resource "google_storage_bucket_iam_member" "verify_reads_artifacts" {
   role   = "roles/storage.objectViewer"
   member = "serviceAccount:${google_service_account.verify.email}"
 }
+
+# The swarm cluster, for e2e-test.sh [10] (owner decisions 2026-10-20 and
+# 2026-10-21, #1754). A task holding capacity on GKE is compared with its Job:
+# container.clusters.get for the endpoint and CA, then jobs.get in the
+# tenant's namespace. Neither is granted from this root.
+#
+#   * roles/container.clusterViewer, conditioned to swarm-autopilot, is
+#     terraform/bootstrap/verify_cluster_read.tf's. This root is applied by
+#     CI's deployer, whose scoped projectIamAdmin may modify only the roles on
+#     deployer_grantable_project_roles -- which limits WHICH roles, never to
+#     whom or under what condition. Granted from here, clusterViewer would have
+#     to be on that list, and CI could then grant it unconditioned, reaching
+#     the other team's agents-staging cluster. So it is not on the list, and no
+#     grant of it is here (tests/terraform/verify_gke_read.tftest.hcl holds
+#     that this root grants swarm-verify no container role at all).
+#   * the Job read is Kubernetes RBAC -- kubernetes/rbac/verify-rbac.yaml,
+#     `get` and `list` on jobs.batch in the eng and smoke namespaces -- applied
+#     by kubernetes/apply.sh.
 
 resource "google_cloud_run_v2_job" "verify" {
   project  = var.project_id

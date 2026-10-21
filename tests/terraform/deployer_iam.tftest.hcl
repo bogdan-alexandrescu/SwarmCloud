@@ -729,6 +729,23 @@ run "the_iam_admin_conditions_hasonly_lists_never_exceed_gcps_ten_element_limit"
     ])) == toset(local.deployer_grantable_project_roles)
     error_message = "the projectIamAdmin condition's hasOnly() lists, combined, no longer grant exactly deployer_grantable_project_roles"
   }
+
+  # VERIFY-GKE-READ-2 (part of #1754; owner decision 2026-10-21): swarm-verify's
+  # conditioned clusterViewer is granted from this root, which the owner
+  # applies, so CI may never modify a clusterViewer binding. hasOnly() limits
+  # which roles CI grants, never to whom or under what condition: on this list,
+  # CI could grant itself clusterViewer unconditioned, which reaches the other
+  # team's agents-staging cluster. No chunk may name any container.* role.
+  # MUTATION: put "roles/container.clusterViewer" back on
+  # deployer_grantable_project_roles and this is red.
+  assert {
+    condition = length([
+      for r in local.deployer_grantable_project_roles : r if startswith(r, "roles/container.")
+      ]) == 0 && alltrue([
+      for k, m in google_project_iam_member.deployer_project_iam_admin : !strcontains(m.condition[0].expression, "roles/container.")
+    ])
+    error_message = "CI's scoped projectIamAdmin may grant a container role. swarm-verify's conditioned clusterViewer is granted from terraform/bootstrap (verify_cluster_read.tf), which the owner applies; CI's allow-list never carries it"
+  }
 }
 
 # ---------------------------------------------------------------------------

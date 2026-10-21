@@ -203,14 +203,26 @@ foreign_tenant_refused() {
 #
 # GKE IS READ OVER REST, as Cloud Run is: the verify image has no kubectl and no
 # Cloud SDK. Two reads -- container.clusters.get for the endpoint and CA, then
-# the Job in its namespace -- and swarm-verify may hold neither:
-# terraform/infra/verify.tf grants it run.invoker, datastore.viewer, run.viewer
-# and objectViewer on the artifact bucket, and no container role. Without the
-# read a GKE holder is reported "not checked: no GKE read", never failed.
-# Granting the read is the owner's IAM decision, and this suite does not make it.
+# the Job in its namespace -- and since VERIFY-GKE-READ (owner decision
+# 2026-10-20) swarm-verify holds both, narrowly:
+#   * roles/container.clusterViewer, conditioned to this cluster's resource
+#     name (terraform/bootstrap/verify_cluster_read.tf
+#     verify_views_swarm_cluster, which the owner applies -- never CI, since
+#     VERIFY-GKE-READ-2);
+#   * `get` and `list` on jobs.batch in the eng and smoke namespaces
+#     (kubernetes/rbac/verify-rbac.yaml, by kubernetes/apply.sh --tenant eng
+#     and --tenant smoke, which resolve swarm-verify's uniqueId themselves).
+# So a REFUSED cluster read is the grant missing -- not applied, or removed --
+# and fails this check: a gate that skipped it would pass [10] with the grant
+# gone, which is the silence this check exists to end. An UNREACHABLE cluster,
+# and a refused Job read, stay "not checked": every namespace but eng's and
+# smoke's -- other tenants, the workspace deployer's swarm-tenant-u-* and group
+# workspaces -- is deliberately not given the Job read (owner decision
+# 2026-10-21; render.py verify_read_wanted), so a 403 there is expected.
 
 # gke_cluster_access -> sets GKE_ACCESS to "ok" (with GKE_ENDPOINT and
-# GKE_CA_FILE) or "no:<why>", once. Called directly, never in $().
+# GKE_CA_FILE), "refused:<why>" (the grant is missing) or "no:<why>" (not
+# measured), once. Called directly, never in $().
 gke_cluster_access() {
   local out status rc=0
   [[ -z "${GKE_ACCESS}" ]] || return 0
@@ -237,7 +249,7 @@ gke_cluster_access() {
           GKE_ACCESS="no:cluster ${GKE_CLUSTER} answered with no endpoint or CA"
         fi
         ;;
-      401|403) GKE_ACCESS="no:no GKE read (container.clusters.get on ${GKE_CLUSTER} answered HTTP ${status})" ;;
+      401|403) GKE_ACCESS="refused:container.clusters.get on ${GKE_CLUSTER} answered HTTP ${status}; swarm-verify's conditioned clusterViewer (terraform/bootstrap/verify_cluster_read.tf, applied by the owner's make bootstrap) is not in effect" ;;
       *)       GKE_ACCESS="no:cluster ${GKE_CLUSTER} could not be read (HTTP ${status})" ;;
     esac
   fi
@@ -259,7 +271,8 @@ gke_job_status() {
         jq -r 'if ([ .status.conditions[]? | select((.type == "Complete" or .type == "Failed") and .status == "True") ]
                    | length) > 0 then "finished" else "running" end' <"${out}" | tr -d '\n' ;;
       404)     printf 'gone' ;;
-      401|403) printf 'unreadable no GKE read (jobs.get in %s answered HTTP %s)' "${ns}" "${status}" ;;
+      401|403) printf 'unreadable no RBAC read (jobs.get in %s answered HTTP %s; kubernetes/rbac/verify-rbac.yaml is applied by kubernetes/apply.sh --tenant %s, in the eng and smoke namespaces only)' \
+                 "${ns}" "${status}" "${ns#"${TENANT_NAMESPACE_PREFIX}"}" ;;
       *)       printf 'unreadable the cluster answered HTTP %s' "${status}" ;;
     esac
   fi
@@ -267,7 +280,8 @@ gke_job_status() {
 }
 
 # capacity_holder_verdict NEWEST_ATTEMPT_JSON TENANT RUNNING_EXECUTIONS -> sets
-# VERDICT to ok | gone | unchecked and VERDICT_DETAIL to why. Directly, not $().
+# VERDICT to ok | gone | unchecked | refused and VERDICT_DETAIL to why.
+# Directly, not $().
 VERDICT=""
 VERDICT_DETAIL=""
 capacity_holder_verdict() {
@@ -287,10 +301,15 @@ capacity_holder_verdict() {
       ns="$(tenant_namespace "${tenant}")"; name="${exec_name}"
     fi
     gke_cluster_access
-    if [[ "${GKE_ACCESS}" != "ok" ]]; then
-      VERDICT="unchecked"; VERDICT_DETAIL="GKE Job ${ns}/${name} not checked: ${GKE_ACCESS#no:}"
-      return 0
-    fi
+    case "${GKE_ACCESS}" in
+      ok) ;;
+      refused:*)
+        VERDICT="refused"; VERDICT_DETAIL="GKE Job ${ns}/${name} could not be read: ${GKE_ACCESS#refused:}"
+        return 0 ;;
+      *)
+        VERDICT="unchecked"; VERDICT_DETAIL="GKE Job ${ns}/${name} not checked: ${GKE_ACCESS#no:}"
+        return 0 ;;
+    esac
     answer="$(gke_job_status "${ns}" "${name}")"
     case "${answer}" in
       running)       VERDICT="ok";        VERDICT_DETAIL="GKE Job ${ns}/${name} is running" ;;
@@ -303,6 +322,32 @@ capacity_holder_verdict() {
     *" ${exec_name##*/} "*) VERDICT="ok";   VERDICT_DETAIL="execution ${exec_name##*/} is running" ;;
     *)                      VERDICT="gone"; VERDICT_DETAIL="execution ${exec_name##*/}, which is not running" ;;
   esac
+}
+
+# judge_capacity_holders CHECKED MISMATCHED UNCHECKED REFUSED -> [10]'s verdict
+# over what its loop counted. A refusal is a failure (the read is granted, so
+# its absence is a deployment defect); unchecked is a skip; a holder against a
+# dead execution or Job is a failure.
+judge_capacity_holders() {
+  local checked="$1" mismatched="$2" unchecked="$3" refused="$4"
+  if [[ "${refused}" -gt 0 ]]; then
+    t_fail "${refused} task(s) holding capacity on GKE could not be checked: ${GKE_ACCESS#refused:}"
+  fi
+  if [[ "${unchecked}" -gt 0 ]]; then
+    # Not measured, and said so: an unreachable cluster, or a namespace the
+    # Job read is not rendered in, is not a dead backend.
+    if [[ "${GKE_ACCESS}" == "ok" ]]; then
+      t_skip "${unchecked} task(s) holding capacity on GKE not checked: the cluster did not answer for their Jobs (each is named above)"
+    else
+      t_skip "${unchecked} task(s) holding capacity on GKE not checked: ${GKE_ACCESS#no:}"
+    fi
+  fi
+  if [[ "$(( checked + unchecked + refused ))" -eq 0 ]]; then
+    t_skip "no task was in DISPATCHED, STARTING or RUNNING while this check ran, so control plane and backend could not be compared"
+  elif [[ "${checked}" -gt 0 ]]; then
+    t_info "checked ${checked} task(s) holding capacity against their backend"
+    assert_eq "0" "${mismatched}" "tasks holding capacity with no live execution behind them"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -725,6 +770,7 @@ if EXECUTIONS="$(cloud_run_executions 2>"${EXEC_ERR}")"; then
   MISMATCHED=0
   CHECKED=0
   UNCHECKED=0
+  REFUSED=0
   for state in DISPATCHED STARTING RUNNING; do
     ROWS="$(fs_query tasks "$(fs_field_filter state EQUAL "$(jq -nc --arg v "${state}" '{stringValue:$v}')")" 50 \
       | jq -c "${FS_JQ} doc" || true)"
@@ -743,6 +789,10 @@ if EXECUTIONS="$(cloud_run_executions 2>"${EXEC_ERR}")"; then
           UNCHECKED=$(( UNCHECKED + 1 ))
           t_info "task ${TID} is ${state}: ${VERDICT_DETAIL}"
           ;;
+        refused)
+          REFUSED=$(( REFUSED + 1 ))
+          t_info "task ${TID} is ${state}: ${VERDICT_DETAIL}"
+          ;;
         *)
           CHECKED=$(( CHECKED + 1 ))
           MISMATCHED=$(( MISMATCHED + 1 ))
@@ -751,21 +801,7 @@ if EXECUTIONS="$(cloud_run_executions 2>"${EXEC_ERR}")"; then
       esac
     done <<<"${ROWS}"
   done
-  if [[ "${UNCHECKED}" -gt 0 ]]; then
-    # Not measured, and said so: a read this identity does not hold is not a
-    # dead backend. The grant that would measure it is the owner's to make.
-    if [[ "${GKE_ACCESS}" == "ok" ]]; then
-      t_skip "${UNCHECKED} task(s) holding capacity on GKE not checked: the cluster did not answer for their Jobs (each is named above)"
-    else
-      t_skip "${UNCHECKED} task(s) holding capacity on GKE not checked: ${GKE_ACCESS#no:}"
-    fi
-  fi
-  if [[ "$(( CHECKED + UNCHECKED ))" -eq 0 ]]; then
-    t_skip "no task was in DISPATCHED, STARTING or RUNNING while this check ran, so control plane and backend could not be compared"
-  elif [[ "${CHECKED}" -gt 0 ]]; then
-    t_info "checked ${CHECKED} task(s) holding capacity against their backend"
-    assert_eq "0" "${MISMATCHED}" "tasks holding capacity with no live execution behind them"
-  fi
+  judge_capacity_holders "${CHECKED}" "${MISMATCHED}" "${UNCHECKED}" "${REFUSED}"
 else
   ERR_DETAIL="$(cat "${EXEC_ERR}")"
   rm -f "${EXEC_ERR}"

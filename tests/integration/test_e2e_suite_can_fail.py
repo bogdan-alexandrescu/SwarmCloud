@@ -382,11 +382,17 @@ def test_a_task_holding_capacity_against_a_dead_execution_is_caught(tmp_path):
     assert run.mentions("with no live execution behind them"), run.transcript
 
 
-def test_gke_work_this_identity_cannot_read_is_not_checked_rather_than_failed(tmp_path):
-    """#1754: ten eng agents on GKE were flagged as holding dead Cloud Run executions."""
+def test_gke_work_whose_cluster_read_is_refused_fails_naming_the_bootstrap_grant(tmp_path):
+    """#1754: ten eng agents on GKE were flagged as holding dead Cloud Run executions.
+
+    The gate now holds a cluster read (terraform/bootstrap/verify_cluster_read.tf),
+    so a refused one is a deployment defect and fails, naming the grant -- and the
+    GKE holder is still never judged against Cloud Run's executions.
+    """
     run = run_suite(tmp_path, executions="gke")
-    assert run.passed, run.transcript
-    assert run.mentions("not checked: no GKE read"), run.transcript
+    assert not run.passed, run.transcript
+    assert run.mentions("could not be checked: container.clusters.get"), run.transcript
+    assert run.mentions("verify_cluster_read.tf"), run.transcript
     assert not run.mentions("with no live execution behind them: 1"), run.transcript
 
 

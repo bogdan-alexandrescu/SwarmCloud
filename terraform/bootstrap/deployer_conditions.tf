@@ -343,6 +343,14 @@ locals {
   # deployer (#79), and the five custom roles below are defined in
   # platform_roles.tf, by the owner.
   #
+  # roles/container.clusterViewer IS NOT ON IT either (VERIFY-GKE-READ-2, part
+  # of #1754; owner decision 2026-10-21), for the same reason: on the list, CI
+  # could grant clusterViewer to itself or anyone, unconditioned, and reach the
+  # other team's agents-staging cluster's endpoint and CA. swarm-verify's grant
+  # of it, conditioned to swarm-autopilot, is made by THIS root
+  # (verify_cluster_read.tf), as the workspace deployer's is
+  # (workspace_deployer.tf).
+  #
   # tests/terraform/deployer_iam.tftest.hcl plans those modules and fails if
   # any of them grants a role missing from this list -- the failure that would
   # otherwise arrive as a 403 in the middle of a release.

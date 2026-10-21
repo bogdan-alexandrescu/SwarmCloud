@@ -6,6 +6,7 @@
     kubernetes/render.py job --tenant eng --profile browser \
         --task task_9f3a --attempt att_7b21 --lease lease_c4 --generation 3
     kubernetes/render.py identity --tenant eng   # namespace, GSA, KSA
+    kubernetes/render.py verify-read --tenant eng  # swarm-verify, if it reads Jobs here
     kubernetes/render.py swarm-system            # the live relay's ingress
 
 Every manifest here is a template with `__TOKEN__` placeholders rather than a
@@ -261,6 +262,14 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "RECONCILER_UID": re.compile(
         r"^([0-9]{15,25}|swarm-reconciler@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com)$"
     ),
+    # The verification gate (rbac/verify-rbac.yaml), by email and by uniqueId,
+    # pinned to swarm-verify's account id like the two above: this name decides
+    # who may read a tenant's Jobs, and the only identity that should is the
+    # gate's (scripts/e2e-test.sh [10], VERIFY-GKE-READ).
+    "VERIFY_GSA": re.compile(r"^swarm-verify@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$"),
+    # Numeric only, unlike the two above: the read is rendered only when this is
+    # given (verify_read_files), so there is no email fallback to admit.
+    "VERIFY_UID": re.compile(r"^[0-9]{15,25}$"),
     # The workspace deployer, as the subject of its ClusterRoleBinding and as
     # the caller its scope policy matches. Pinned to the account id like the
     # two above, by email or by uniqueId: the same two spellings, for the same
@@ -448,6 +457,59 @@ def tenant_files(bound: Iterable[str] = ()) -> tuple[str, ...]:
         return TENANT_FILES
     at = TENANT_FILES.index("rbac/worker-rbac.yaml") + 1
     return TENANT_FILES[:at] + LEGACY_KSA_FILES + TENANT_FILES[at:]
+
+
+#: The verification gate's Job read (VERIFY-GKE-READ): `get` and `list` on
+#: jobs.batch, bound to swarm-verify. Appended AFTER the tenant files, so every
+#: document before it renders as it did before it existed.
+VERIFY_FILES = ("rbac/verify-rbac.yaml",)
+
+#: The tenants whose own namespaces carry it: eng, which the gate runs as, and
+#: smoke, the release acceptance tenant. Owner decision 2026-10-21
+#: (VERIFY-GKE-READ-2): no other tenant, no personal (`u-*`) namespace and no
+#: group workspace, and the workspace deployer's scope is not widened for it.
+VERIFY_READ_TENANTS = ("eng", "smoke")
+
+
+def verify_read_wanted(tenant: str, namespace: str, workspace_id: str = "") -> bool:
+    """Whether a tenant render carries the verify read: in eng's and smoke's
+    own namespaces, and nowhere else -- not under `--namespace` naming another
+    one, and never with `--workspace-id`.
+
+    kubernetes/apply.sh asks this (`render.py verify-read`) before it looks up
+    swarm-verify's uniqueId, so the rule is stated once, here.
+
+    NEVER in a person's namespace (`swarm-tenant-u-*`) or a group workspace's
+    (--workspace-id), even when asked: the deployer applies those, and
+    policies/workspace-provisioner-scope.yaml admits from it only the Roles,
+    RoleBindings and subjects the tenant render held before this file, so a
+    verify Role there would fail its next apply. A GKE holder in any namespace
+    without the read is "not checked" by the gate.
+    """
+    return (
+        not workspace_id
+        and tenant in VERIFY_READ_TENANTS
+        and namespace == f"{NAMESPACE_PREFIX}{tenant}"
+    )
+
+
+def verify_read_files(
+    tenant: str, namespace: str, verify_uid: str = "", workspace_id: str = ""
+) -> tuple[str, ...]:
+    """VERIFY_FILES when the render is one verify_read_wanted() admits and the
+    operator's apply names swarm-verify's uniqueId; nothing otherwise.
+
+    ON --verify-uid, because the binding is only useful with it: the gate
+    reaches the API with an OAuth access token, and GKE presents it by uniqueId,
+    so an email-only binding applies cleanly and authorises nobody (the
+    2026-09-24 dispatch failure). It also keeps the read out of every render
+    that does not ask for it: the workspace deployer's, and register-tenant.sh's
+    A9 check, which re-renders the namespace and expects every object it
+    renders to exist.
+    """
+    if not verify_uid or not verify_read_wanted(tenant, namespace, workspace_id):
+        return ()
+    return VERIFY_FILES
 
 
 #: The cluster-scoped objects `kubernetes/apply.sh --policies` applies, in
@@ -770,6 +832,11 @@ def tenant_values(args: argparse.Namespace) -> dict[str, str]:
         or f"swarm-scheduler@{args.project}.iam.gserviceaccount.com",
         "RECONCILER_UID": args.reconciler_uid
         or f"swarm-reconciler@{args.project}.iam.gserviceaccount.com",
+        # The verification gate, the subject of rbac/verify-rbac.yaml: derived
+        # like the two emails above, and its uniqueId passed in like theirs --
+        # but with no fallback, because without it the read is not rendered.
+        "VERIFY_GSA": f"swarm-verify@{args.project}.iam.gserviceaccount.com",
+        **({"VERIFY_UID": args.verify_uid} if args.verify_uid else {}),
         "PROJECT_ID": args.project,
         "REGION": args.region,
         "PSS_ENFORCE": args.pss_enforce,
@@ -1274,6 +1341,20 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
             ),
         )
     parser.add_argument(
+        "--verify-uid",
+        default="",
+        help=(
+            "the numeric uniqueId of swarm-verify@<project>, the verification gate, "
+            "bound by rbac/verify-rbac.yaml to read Jobs. GKE presents it by uniqueId "
+            "for the OAuth access token the gate uses, as for the scheduler. Resolve it "
+            "with `gcloud iam service-accounts describe "
+            "swarm-verify@<project>.iam.gserviceaccount.com --format='value(uniqueId)'`. "
+            "The read is rendered only when this is given, and only in the eng and smoke "
+            "tenants' own namespaces, never with --workspace-id (verify_read_wanted). "
+            "kubernetes/apply.sh resolves and passes it itself."
+        ),
+    )
+    parser.add_argument(
         "--gsa",
         default="",
         help=(
@@ -1445,6 +1526,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     add_tenant_arguments(identity)
 
+    # WHETHER THE RENDER BINDS swarm-verify (VERIFY-GKE-READ-2): the account's
+    # email on one line where a tenant render carries the Job read
+    # (verify_read_wanted), an empty line elsewhere. kubernetes/apply.sh asks
+    # here, with the same forwarded arguments, before it resolves the
+    # account's uniqueId -- so the namespaces that carry the read are named in
+    # one place, and a workspace deployer's apply never looks the account up.
+    verify_read = sub.add_parser(
+        "verify-read",
+        help="swarm-verify's email if a tenant render carries its Job read, else an empty line",
+        allow_abbrev=False,
+    )
+    add_tenant_arguments(verify_read)
+
     # swarm-system's ingress (docs/design/live-browser.md §8.3). Its one input
     # is READ by kubernetes/apply.sh --swarm-system from swarm-api's service
     # and subnet, and refused on that script's command line, like the tenant
@@ -1550,7 +1644,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.spec_verify_keys_file
             else None
         )
-        manifest = render_files(tenant_files(bound_ksas(args)), values)
+        files = tenant_files(bound_ksas(args)) + verify_read_files(
+            values["TENANT_ID"], values["NAMESPACE"], args.verify_uid, args.workspace_id
+        )
+        manifest = render_files(files, values)
         if args.workspace_id:
             manifest = label_workspace(manifest, args.workspace_id)
         if spec_data is not None:
@@ -1559,6 +1656,10 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "identity":
         values = check_values(tenant_values(args))
         sys.stdout.write(f"{values['NAMESPACE']} {values['GSA_EMAIL']} {values['KSA_NAME']}\n")
+    elif args.command == "verify-read":
+        values = check_values(tenant_values(args))
+        wanted = verify_read_wanted(values["TENANT_ID"], values["NAMESPACE"], args.workspace_id)
+        sys.stdout.write(f"{values['VERIFY_GSA'] if wanted else ''}\n")
     elif args.command == "policies":
         sys.stdout.write(render_files(POLICY_FILES, policy_values(args)))
     elif args.command == "swarm-system":

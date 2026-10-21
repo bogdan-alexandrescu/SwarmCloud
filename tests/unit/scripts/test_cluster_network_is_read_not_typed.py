@@ -207,6 +207,14 @@ case "$*" in
   *"auth list"*) if [[ -f "${d}/account" ]]; then cat "${d}/account"; fi ;;
   *"iam service-accounts describe swarm-scheduler@"*) echo 117405034245659033603 ;;
   *"iam service-accounts describe swarm-reconciler@"*) echo 108023754768362642341 ;;
+  # The verification gate (VERIFY-GKE-READ-2): created by terraform/infra, so
+  # present unless a test removes it.
+  *"iam service-accounts describe swarm-verify@"*)
+    if [[ -f "${d}/no-verify" ]]; then
+      printf 'ERROR: (gcloud.iam.service-accounts.describe) NOT_FOUND: Unknown service account.\n' >&2
+      exit 1
+    fi
+    echo 100000000000000000077 ;;
   # Created by the owner's bootstrap apply (docs/workspaces.md §2.3), so it may
   # not exist yet when the policies are applied.
   *"iam service-accounts describe swarm-workspace-deployer@"*)
@@ -1020,6 +1028,90 @@ def test_apply_refuses_a_bound_ksa_on_the_command_line(tmp_path, args):
     output = result.stdout + result.stderr
     assert result.returncode != 0, f"apply.sh accepted {args[0]!r}:\n{output}"
     assert "IAM policy" in result.stderr and "--bound-ksa" in result.stderr, output
+    assert not (cluster.dir / "applied-dry-run.yaml").exists()
+
+
+# ---------------------------------------------------------------------------
+# swarm-verify's Job read: apply.sh resolves its uniqueId itself
+# (VERIFY-GKE-READ-2, part of #1754; owner decision 2026-10-21)
+# ---------------------------------------------------------------------------
+
+#: What the fake gcloud answers for swarm-verify's uniqueId.
+VERIFY_UID = "100000000000000000077"
+VERIFY_GSA = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+
+
+def _verify_binding(manifest: str) -> list[dict[str, Any]]:
+    return [
+        d for d in yaml.safe_load_all(manifest) if d
+        and d.get("kind") == "RoleBinding" and d["metadata"]["name"] == "swarm-verify-reader"
+    ]
+
+
+@pytest.mark.parametrize("tenant", ["eng", "smoke"])
+def test_apply_binds_swarm_verify_by_the_unique_id_it_resolves(tmp_path, tenant):
+    """Nobody has to remember --verify-uid: apply.sh looks the uniqueId up, as
+    it does the scheduler's and the reconciler's, and the eng and smoke renders
+    bind it. MUTATION: drop the uid_of swarm-verify line, or the --verify-uid
+    it passes, and the Job read is not rendered."""
+    cluster = Cluster(tmp_path, FAKE)
+    result = cluster.run(APPLY, "--tenant", tenant)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert f"iam service-accounts describe {VERIFY_GSA}" in cluster.log("gcloud")
+    bindings = _verify_binding((cluster.dir / "applied-dry-run.yaml").read_text())
+    assert len(bindings) == 1, output
+    assert bindings[0]["metadata"]["namespace"] == f"swarm-tenant-{tenant}"
+    assert [subject["name"] for subject in bindings[0]["subjects"]] == [VERIFY_GSA, VERIFY_UID]
+
+
+def test_apply_without_swarm_verify_renders_nothing(tmp_path):
+    """As fatal as a missing scheduler: an eng render without the read would
+    apply cleanly and leave e2e [10] failing on a 403 nobody connects to this.
+    MUTATION: fall back to an empty uid and this renders."""
+    cluster = Cluster(tmp_path, FAKE)
+    (cluster.dir / "no-verify").write_text("")
+    result = cluster.run(APPLY, "--tenant", "eng")
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert f"could not resolve the uniqueId of {VERIFY_GSA}" in result.stderr, output
+    assert not (cluster.dir / "applied-dry-run.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [["--tenant", "research"], ["--tenant", "u-alice"], ["--tenant", "eng", "--workspace-id", "w-000000"]],
+    ids=["other-tenant", "personal", "group-workspace"],
+)
+def test_apply_elsewhere_never_looks_swarm_verify_up(tmp_path, args):
+    """Only eng and smoke carry the read (owner decision 2026-10-21). Elsewhere
+    the account is not described at all -- the workspace deployer runs this
+    script, and its scope is not widened by a lookup it has no use for -- and
+    nothing is bound. MUTATION: resolve the uid for every tenant render and
+    the gcloud log names swarm-verify."""
+    cluster = Cluster(tmp_path, FAKE)
+    (cluster.dir / "no-verify").write_text("")
+    result = cluster.run(APPLY, *args)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "swarm-verify@" not in cluster.log("gcloud"), cluster.log("gcloud")
+    assert _verify_binding((cluster.dir / "applied-dry-run.yaml").read_text()) == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [["--verify-uid", VERIFY_UID], [f"--verify-uid={VERIFY_UID}"], ["--verify", VERIFY_UID]],
+    ids=["full", "equals", "abbreviated"],
+)
+def test_apply_refuses_a_verify_uid_on_the_command_line(tmp_path, args):
+    """The uniqueId is resolved, not typed: forwarded after the resolved one,
+    a typed value would win and bind whatever number it named.
+    MUTATION: forward --verify-uid like any other render argument."""
+    cluster = Cluster(tmp_path, FAKE)
+    result = cluster.run(APPLY, "--tenant", "eng", *args)
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, f"apply.sh accepted {args[0]!r}:\n{output}"
+    assert "--verify-uid" in result.stderr and "resolves" in result.stderr, output
     assert not (cluster.dir / "applied-dry-run.yaml").exists()
 
 

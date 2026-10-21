@@ -9,8 +9,12 @@ failed three e2e checks, each on a test defect (#1754, items 3-5):
        calls act as, and a control asserts another tenant's task IS refused.
   [10] it compared every capacity holder with Cloud Run executions only, and
        flagged ten eng claude-code agents running on GKE Autopilot. It now reads
-       the newest attempt's backend and asks GKE for GKE work; with no GKE read
-       it says "not checked" instead of failing.
+       the newest attempt's backend and asks GKE for GKE work. Since
+       VERIFY-GKE-READ swarm-verify holds that read (terraform/bootstrap/
+       verify_cluster_read.tf, owner-applied; and in eng and smoke,
+       kubernetes/rbac/verify-rbac.yaml), so a refused cluster read is the grant
+       missing and fails the check; an unreachable cluster, or a namespace the
+       read is not rendered in, is still "not checked".
   [6]  it expected the producer that never wrote its promised file to SUCCEED.
        The platform now fails that producer (`expected outputs missing`,
        end_cause outputs_missing) and its dependant never runs.
@@ -149,15 +153,39 @@ GKE_ATTEMPT = {"attempt_id": "att_g", "task_id": "task_cf154a98da3f42bfae36", "t
                "generation": 1, "backend": "GKE_AUTOPILOT", "execution_name": GKE_EXEC}
 
 
-def test_a_gke_holder_with_no_gke_read_is_not_checked_rather_than_failed(tmp_path: Path) -> None:
-    """The baseline's ten eng claude-code agents, with swarm-verify holding no GKE read."""
+def test_a_gke_holder_the_cluster_refuses_is_refused_not_skipped(tmp_path: Path) -> None:
+    """The baseline's ten eng claude-code agents, now that swarm-verify holds the
+    cluster read: a 403 on it is the grant missing, and that is a finding."""
     r, verdict, detail, asked = _verdict(
-        tmp_path, GKE_ATTEMPT, access="no:no GKE read (container.clusters.get answered HTTP 403)")
+        tmp_path, GKE_ATTEMPT,
+        access="refused:container.clusters.get on swarm-autopilot answered HTTP 403")
+    assert r.returncode == 0, r.stderr
+    # MUTATION: keep reading a refusal as "unchecked" and a gate whose grant was
+    # never applied passes [10] on a skip, which is the silence it exists to end.
+    assert verdict == "refused", (verdict, detail)
+    assert "HTTP 403" in detail
+    assert asked == []
+
+
+def test_a_gke_holder_on_an_unreachable_cluster_is_not_checked(tmp_path: Path) -> None:
+    r, verdict, detail, asked = _verdict(
+        tmp_path, GKE_ATTEMPT, access="no:the GKE API could not be reached (curl exit 28)")
     assert r.returncode == 0, r.stderr
     # MUTATION: compare it with Cloud Run executions again and it is "gone".
     assert verdict == "unchecked", (verdict, detail)
-    assert "not checked: no GKE read" in detail
+    assert "not checked: the GKE API could not be reached" in detail
     assert asked == []
+
+
+def test_a_job_read_refused_in_its_namespace_is_not_checked(tmp_path: Path) -> None:
+    """A personal namespace is not given the verify read (render.py
+    verify_read_files), so a jobs.get 403 there is not a finding."""
+    _, verdict, detail, _ = _verdict(
+        tmp_path, GKE_ATTEMPT, answer="unreadable no RBAC read (jobs.get in swarm-tenant-eng answered HTTP 403)")
+    # MUTATION: read the job's 403 as "gone" and every holder in a namespace
+    # without the read fails.
+    assert verdict == "unchecked", (verdict, detail)
+    assert "jobs.get in swarm-tenant-eng" in detail
 
 
 def test_a_gke_holder_whose_job_runs_is_fine(tmp_path: Path) -> None:
@@ -217,7 +245,7 @@ access_token() { printf 'fake'; }
 '''
 
 
-def test_a_refused_cluster_read_means_no_gke_read(tmp_path: Path) -> None:
+def test_a_refused_cluster_read_is_a_refusal_naming_the_grant(tmp_path: Path) -> None:
     log = tmp_path / "curl.log"
     r = run_bash(
         CURL_403 + functions(SUITE, "gke_cluster_access")
@@ -226,10 +254,74 @@ def test_a_refused_cluster_read_means_no_gke_read(tmp_path: Path) -> None:
         env={"CURL_LOG": str(log), "TMPDIR": str(tmp_path)},
     )
     assert r.returncode == 0, r.stderr
-    # MUTATION: read a 403 as "no job running" and every GKE holder fails.
-    assert r.stdout.strip().startswith("no:"), r.stdout
-    assert "no GKE read" in r.stdout
+    # MUTATION: leave a 403 as "no:" and the missing grant is a skip again.
+    assert r.stdout.strip().startswith("refused:"), r.stdout
+    # The reader is sent to the grant, not left to guess which one: the
+    # owner-applied bootstrap root, since VERIFY-GKE-READ-2.
+    # MUTATION: name terraform/infra/verify.tf again, where CI cannot grant it.
+    assert "terraform/bootstrap/verify_cluster_read.tf" in r.stdout
+    assert "terraform/infra/verify.tf" not in r.stdout
     assert "clusters/swarm-autopilot" in log.read_text()
+
+
+def test_a_refused_job_read_names_the_rbac_and_its_apply(tmp_path: Path) -> None:
+    curl_job_403 = CURL_403.replace("container.clusters.get", "jobs.get")
+    r = run_bash(
+        curl_job_403 + functions(SUITE, "gke_job_status")
+        + f'\nGKE_CA_FILE={tmp_path}/ca\nGKE_ENDPOINT=10.0.0.2\n'
+        + 'gke_job_status swarm-tenant-eng swarm-x-1\n',
+        env={"CURL_LOG": str(tmp_path / "curl.log"), "TMPDIR": str(tmp_path)},
+    )
+    assert r.returncode == 0, r.stderr
+    # MUTATION: read a 403 as "gone" and a namespace without the read fails every holder.
+    assert r.stdout.startswith("unreadable "), r.stdout
+    assert "kubernetes/rbac/verify-rbac.yaml" in r.stdout
+    assert "kubernetes/apply.sh --tenant eng" in r.stdout
+    # apply.sh resolves swarm-verify's uniqueId itself (VERIFY-GKE-READ-2), and
+    # refuses the flag on its command line, so the reader is not told to pass it.
+    # MUTATION: keep "--verify-uid <swarm-verify uniqueId>" in the message.
+    assert "--verify-uid" not in r.stdout
+
+
+# --- [10]'s judgement over what the loop counted -----------------------------
+
+
+def _judge(tmp: Path, checked: int, mismatched: int, unchecked: int, refused: int, access: str = "ok"):
+    return run_bash(
+        functions(SUITE, "judge_capacity_holders")
+        + f"\nGKE_ACCESS='{access}'\n"
+        + f"judge_capacity_holders {checked} {mismatched} {unchecked} {refused}\n",
+        env={"TMPDIR": str(tmp)},
+    )
+
+
+def test_a_refused_cluster_read_fails_the_check(tmp_path: Path) -> None:
+    r = _judge(tmp_path, 3, 0, 0, 10, access="refused:container.clusters.get on swarm-autopilot answered HTTP 403")
+    assert r.returncode == 0, r.stderr
+    fails = lines(r, "FAIL")
+    # MUTATION: report refused holders with t_skip and this is empty.
+    assert len(fails) == 1, r.stderr
+    assert "10 task(s)" in fails[0] and "HTTP 403" in fails[0]
+
+
+def test_unchecked_holders_are_a_skip_and_not_a_failure(tmp_path: Path) -> None:
+    r = _judge(tmp_path, 3, 0, 2, 0)
+    assert lines(r, "FAIL") == [], r.stderr
+    # MUTATION: fail on unchecked and a personal namespace without the read reds the gate.
+    assert len(lines(r, "SKIP")) == 1, r.stderr
+    assert len(lines(r, "PASS")) == 1, r.stderr
+
+
+def test_a_gone_gke_job_fails_the_check(tmp_path: Path) -> None:
+    r = _judge(tmp_path, 3, 1, 0, 0)
+    # MUTATION: drop the assert_eq and a dead GKE Job holding capacity passes.
+    assert len(lines(r, "FAIL")) == 1, r.stderr
+
+
+def test_nothing_holding_capacity_is_not_measured(tmp_path: Path) -> None:
+    r = _judge(tmp_path, 0, 0, 0, 0)
+    assert lines(r, "FAIL") == [] and lines(r, "PASS") == [], r.stderr
+    assert len(lines(r, "SKIP")) == 1, r.stderr
 
 
 def test_the_shared_cluster_is_never_read(tmp_path: Path) -> None:

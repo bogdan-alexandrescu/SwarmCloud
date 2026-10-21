@@ -1748,6 +1748,108 @@ empty one.
 Which Node line is *current* is not something a test can know. That is a fact
 about a date, and it is decided in [`versions.md`](versions.md).
 
+## What the gate's own identity, swarm-verify, may read
+
+The in-VPC gate's suites run as `swarm-verify`
+([`terraform/infra/verify.tf`](../terraform/infra/verify.tf)). Every grant is
+one a suite actually exercises, all of them are reads, and every write goes
+through `swarm-api`:
+
+| grant | scope | why |
+|---|---|---|
+| `roles/run.invoker` | the `swarm-api` service | every suite submits and reads through the API |
+| `roles/datastore.viewer` | project | the suites read agent, lease and pool documents directly (`fs_get`, `fs_count`) |
+| `roles/run.viewer` | project | invariant 1 is asserted by counting Cloud Run executions |
+| `roles/storage.objectViewer` | the artifact bucket | smoke proves artifacts land under the tenant's own prefix (invariant 9) |
+| `roles/container.clusterViewer`, **conditioned** | project, to `projects/<p>/locations/<region>/clusters/swarm-autopilot` exactly | e2e [10] reads the cluster's endpoint and CA. Granted by **terraform/bootstrap**, which the owner applies ([`verify_cluster_read.tf`](../terraform/bootstrap/verify_cluster_read.tf)) |
+| Role `swarm-verify-reader`: `get`, `list` on `jobs.batch` | the `eng` and `smoke` tenant namespaces only ([`kubernetes/rbac/verify-rbac.yaml`](../kubernetes/rbac/verify-rbac.yaml)) | e2e [10] reads a GKE-backed holder's Job |
+
+**The last two are owner decisions of 2026-10-20 and 2026-10-21 (#1754,
+VERIFY-GKE-READ and VERIFY-GKE-READ-2).** e2e [10], "no task is holding
+capacity against an execution that is gone", compares every agent holding
+capacity with the backend its attempt names. Before the two grants it could
+read Cloud Run only, and the 2026-10-20 baseline reported ten eng agents
+running on GKE as holders "not checked: no GKE read". The gate could not see a
+dead GKE Job holding a slot, which is the thing [10] exists to see.
+
+They are narrow on purpose, because this project is shared and holds the other
+team's `agents-staging` cluster:
+
+* **clusterViewer, not container.viewer.** clusterViewer is
+  `container.clusters.get` and `.list`, which read the cluster's endpoint and
+  CA and no Kubernetes object. container.viewer would read objects in every
+  cluster: Pods and their env, ConfigMaps, Secrets' metadata.
+* **Conditioned to our cluster.** GKE has no per-cluster IAM resource, so a
+  project binding with a condition on the cluster's resource name is the only
+  scope there is, as for the dispatchers' grants in `modules/iam`. The
+  expression names the cluster exactly, or a path under it. A bare
+  `startsWith` would also admit any cluster whose name began with ours.
+  `tests/terraform/verify_gke_read.tftest.hcl` holds the role, the member, the
+  expression, and that no other project-level container role reaches
+  swarm-verify.
+* **Granted by the owner, never by CI.** The grant is in
+  `terraform/bootstrap`, applied by hand with `make bootstrap`, not in
+  `terraform/infra`, which the release's deployer applies. The deployer's
+  scoped `projectIamAdmin` may modify only the roles on
+  `deployer_grantable_project_roles`
+  ([`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf)),
+  and `hasOnly()` limits **which roles** a change touches, never the member or
+  the condition. Had the grant been CI's, clusterViewer would have to be on
+  that list, and then any CI run could grant it unconditioned, to itself or
+  anyone, and reach `agents-staging`'s endpoint and CA. So the role is not on
+  the list, and `tests/terraform/deployer_iam.tftest.hcl` fails if any
+  `roles/container.*` role joins it. `verify_gke_read.tftest.hcl` also fails
+  if `terraform/infra` (or a module it calls) grants swarm-verify any
+  container role at all. The owner applies the one new binding with
+  `make bootstrap` before the release that first runs the GKE read. Until
+  then [10] fails on the refused cluster read (below), which is what it should
+  do.
+* **The Job read is Kubernetes RBAC, in our cluster only.** `get` and `list`
+  on `jobs.batch`: no pods, no logs, no secrets, no ConfigMaps, no `watch`, no
+  write. RBAC cannot narrow a read to fields, so a Job read returns the Job's
+  pod template too, env included. That env holds task metadata, the public
+  step-spec keys and a KMS key name, and never a credential: the worker
+  templates carry no `secretKeyRef`, and provider keys and forge tokens are
+  read from Secret Manager at run time. swarm-verify can already read the task
+  documents behind that metadata through `datastore.viewer`. The Role and its
+  binding exist only inside swarm-autopilot, so they cannot reach
+  `agents-staging`. The binding names swarm-verify by email **and by numeric
+  uniqueId**, because the gate authenticates with an OAuth access token and
+  GKE presents a service account on that path by uniqueId
+  (`dispatcher-rbac.yaml` has the 2026-09-24 measurement).
+* **In eng and smoke only.** `render.py` renders the read in the `eng` and
+  `smoke` tenants' own namespaces and nowhere else
+  (`render.verify_read_wanted`): no other tenant, no personal
+  `swarm-tenant-u-*` namespace, no group workspace, even when asked. The
+  workspace deployer's scope is not widened for it:
+  `policies/workspace-provisioner-scope.yaml` admits from the deployer only
+  the Roles and subjects its render already held. A GKE holder in any
+  namespace without the read is reported "not checked", never failed.
+* **`kubernetes/apply.sh` resolves the uniqueId itself.** For an eng or smoke
+  render it looks swarm-verify's uniqueId up with `uid_of`, exactly as it does
+  the scheduler's and the reconciler's, and passes `--verify-uid` to the
+  render. A missing account is fatal, as it is for the scheduler. Elsewhere it
+  does not look the account up at all, so the workspace deployer, which runs
+  the same script, makes no new call. `--verify-uid` on `apply.sh`'s own
+  command line is refused, in full or abbreviated. A typed value would win
+  over the resolved one. So binding the read is:
+
+  ```bash
+  kubernetes/apply.sh --tenant eng --confirm
+  kubernetes/apply.sh --tenant smoke --confirm
+  ```
+
+  `render.py` still renders the read only when it is given `--verify-uid`. An
+  email-only binding would authorise nobody on the gate's path, and this
+  keeps the read out of `register-tenant.sh`'s A9 check, which re-renders a
+  namespace and expects every object to exist.
+
+**A refused cluster read now FAILS [10]**, where before it was a skip. The read
+is granted, so a 403 on it means the grant is not applied or has been removed.
+A gate that skipped it would pass with the grant gone, and that silence is what
+[10] exists to end. An unreachable cluster, or a refused Job read (a namespace
+without the RBAC), is still "not checked".
+
 ## The release reads one job's log, and the owner applies the grant
 
 The in-VPC gate (`scripts/verify-remote.sh`, run by `release.yml` as

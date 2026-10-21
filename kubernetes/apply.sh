@@ -178,6 +178,12 @@ IDENTITY_FLAGS=(--bound-ksa)
 # one that goes stale when the subnet changes.
 LIVE_FLAGS=(--swarm-api-egress-cidr --swarm-api-egress-source)
 
+# SWARM-VERIFY'S uniqueId IS RESOLVED, NOT PASSED (VERIFY-GKE-READ-2), as the
+# scheduler's and the reconciler's are: forwarded after the resolved value, a
+# typed `--verify-uid` would win and bind whatever number it named into the
+# eng and smoke namespaces' Job read.
+VERIFY_FLAGS=(--verify-uid)
+
 # derived_flag_for ARG FLAG... -- print the FLAG that ARG spells, and succeed,
 # when ARG (the part before any `=`) is one of the FLAGs or ANY PREFIX of one.
 #
@@ -251,6 +257,11 @@ while [[ $# -gt 0 ]]; do
         die "'${1%%=*}' would reach the renderer as ${IDENTITY_FLAG}, which this script reads from
        the tenant GSA's IAM policy (its roles/iam.workloadIdentityUser members); it cannot
        be passed, in full or abbreviated. Bind the KSA in IAM and re-run."
+      fi
+      if VERIFY_FLAG="$(derived_flag_for "$1" "${VERIFY_FLAGS[@]}")"; then
+        die "'${1%%=*}' would reach the renderer as ${VERIFY_FLAG}, which this script resolves
+       itself (swarm-verify's uniqueId, by uid_of, for the eng and smoke renders); it
+       cannot be passed, in full or abbreviated."
       fi
       RENDER_ARGS+=("$1"); shift ;;
   esac
@@ -876,7 +887,28 @@ else
 
   SCHEDULER_UID="$(uid_of "swarm-scheduler@${PROJECT_ID}.iam.gserviceaccount.com")"
   RECONCILER_UID="$(uid_of "swarm-reconciler@${PROJECT_ID}.iam.gserviceaccount.com")"
-  info "rbac subjects  scheduler=${SCHEDULER_UID} reconciler=${RECONCILER_UID}"
+
+  # THE VERIFICATION GATE'S uniqueId (VERIFY-GKE-READ-2, owner decision
+  # 2026-10-21), for the Job read kubernetes/rbac/verify-rbac.yaml binds in the
+  # eng and smoke namespaces only. render.py says whether this render carries
+  # it (`verify-read`, with the same forwarded arguments) so the namespaces are
+  # named once, there; elsewhere -- every other tenant, a person's namespace, a
+  # group workspace -- the account is not looked up at all, and the workspace
+  # deployer, which runs this script for those, gains no lookup. Where the read
+  # is rendered, a missing account is as FATAL as a missing scheduler: an eng
+  # render without it applies cleanly and leaves e2e [10] failing on a 403.
+  VERIFY_GSA="$("${PYTHON}" "${HERE}/render.py" verify-read --tenant "${TENANT}" \
+    ${WORKSPACE_ARGS[@]+"${WORKSPACE_ARGS[@]}"} \
+    "${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}")" \
+    || die "could not ask render.py whether tenant ${TENANT}'s render binds swarm-verify (above);
+       nothing was rendered or applied."
+  VERIFY_UID=""
+  VERIFY_ARGS=()
+  if [[ -n "${VERIFY_GSA}" ]]; then
+    VERIFY_UID="$(uid_of "${VERIFY_GSA}")"
+    VERIFY_ARGS=(--verify-uid "${VERIFY_UID}")
+  fi
+  info "rbac subjects  scheduler=${SCHEDULER_UID} reconciler=${RECONCILER_UID} verify=${VERIFY_UID:-not bound in this namespace}"
 
   # THE CLUSTER'S NETWORK, READ FROM THE CLUSTER THE CHECKS ABOVE APPROVED.
   #
@@ -998,6 +1030,7 @@ else
     ${SPEC_ARGS[@]+"${SPEC_ARGS[@]}"} \
     --scheduler-uid "${SCHEDULER_UID}" \
     --reconciler-uid "${RECONCILER_UID}" \
+    ${VERIFY_ARGS[@]+"${VERIFY_ARGS[@]}"} \
     --pod-cidr "${CLUSTER_POD_CIDR}" \
     --service-cidr "${CLUSTER_SERVICE_CIDR}" \
     --cluster-dns-ip "${CLUSTER_DNS_IP}" \

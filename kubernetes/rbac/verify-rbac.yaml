@@ -1,0 +1,94 @@
+# The verification gate's read of a tenant namespace: Jobs, and nothing else.
+#
+# WHY THIS FILE EXISTS. scripts/e2e-test.sh [10] ("No task is holding capacity
+# against an execution that is gone") compares every task holding capacity
+# with the backend its attempt names. On 2026-10-20 (#1754) it flagged ten eng
+# claude-code agents running on GKE Autopilot because it could read only Cloud
+# Run; after GATE-FIX it asked GKE, and swarm-verify held no GKE read, so it
+# reported each "not checked: no GKE read". A dead GKE Job holding a slot was
+# invisible to the gate. Owner decision 2026-10-20: a NARROW read.
+#
+# WHAT IT IS. `get` and `list` on jobs.batch, in this namespace. The gate reads
+# one Job by name (`GET /apis/batch/v1/namespaces/<ns>/jobs/<name>`) and its
+# status conditions. It is NOT given:
+#   * secrets, configmaps, pods, pods/log (whatever the agent printed),
+#     events, or `watch`;
+#   * any write.
+# WHAT A JOB DOES SHOW. RBAC cannot narrow a read to fields, so `get` returns
+# the whole Job, its pod template included -- env and all. What the dispatcher
+# puts there is task metadata, the public step-spec keys and a KMS key name
+# (dispatch.py spec_job_env), and never a credential: the worker templates
+# carry no secretKeyRef by design, provider keys are read from Secret Manager at
+# run time, and a forge token never reaches a Job environment (CLAUDE.md). The
+# task documents that metadata comes from are already readable by swarm-verify
+# through roles/datastore.viewer, so this read adds no class of data the gate
+# could not already see.
+# The IAM half -- roles/container.clusterViewer, conditioned to this cluster's
+# resource name -- is terraform/bootstrap/verify_cluster_read.tf, which the
+# owner applies (never CI), and reads no Kubernetes object either. Between
+# them the gate can find the cluster and read a Job; it cannot read anything a
+# Job's pod holds.
+#
+# WHERE IT IS RENDERED. In the eng and smoke tenants' own namespaces and
+# nowhere else (owner decision 2026-10-21, VERIFY-GKE-READ-2;
+# render.verify_read_wanted), and only when render.py is given --verify-uid,
+# swarm-verify's numeric uniqueId. kubernetes/apply.sh --tenant eng (or smoke)
+# resolves that itself, as it does the scheduler's, and refuses the flag on its
+# own command line. Never in a `swarm-tenant-u-*` namespace or a render with
+# --workspace-id, which the workspace deployer applies:
+# kubernetes/policies/workspace-provisioner-scope.yaml admits from it only the
+# Roles and subjects that render had before this file, and would refuse these
+# two objects and fail its apply. A GKE holder in any namespace without the
+# read is reported "not checked" by the gate.
+#
+# Last in the render, so every document before it renders exactly as it did
+# before it existed (test_live_netpol.py and its siblings hold them by digest).
+#
+# These objects exist only inside swarm-autopilot, so agents-staging, the
+# other team's cluster in this shared project, cannot be reached by them.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: swarm-verify-reader
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+    app.kubernetes.io/part-of: swarm
+  annotations:
+    swarm.saga.xyz/rationale: >-
+      The verification gate (swarm-verify) reads a Job's status to tell a task
+      holding capacity against a live Job from one holding it against a Job
+      that is gone or finished (scripts/e2e-test.sh [10]). Jobs only: no pod,
+      log, secret, configmap or write.
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: swarm-verify-reader
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+    app.kubernetes.io/part-of: swarm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: swarm-verify-reader
+subjects:
+  # By email and by numeric uniqueId, for the reason dispatcher-rbac.yaml gives:
+  # the gate reaches the Kubernetes API with a Google OAuth ACCESS token from
+  # the Cloud Run metadata server, and on that path GKE presents a service
+  # account as its uniqueId. The email is kept for the paths that present it
+  # (kubectl with an impersonated GSA). Without --verify-uid nothing here is
+  # rendered at all, so there is no fallback subject.
+  - kind: User
+    name: __VERIFY_GSA__
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: "__VERIFY_UID__"
+    apiGroup: rbac.authorization.k8s.io
