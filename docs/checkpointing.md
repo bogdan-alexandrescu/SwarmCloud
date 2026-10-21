@@ -181,16 +181,40 @@ cannot collide with an agent's file, and every gzip reader skips it — the
 console's checkpoint browser lists an incremental archive's own members, which
 are the changes; its manifest says `"kind": "incremental"`.
 
-**A chain never crosses an attempt.** A resume is a new attempt, and its first
-checkpoint is full. That is what keeps retention simple: the reconciler keeps
-every checkpoint of the attempt `task.latest_checkpoint` names
-(`reconciler/checkpoints.py`, `classify`), because which of them is the full
-archive is in the bytes, not the key.
+**A chain never crosses an attempt, and a resume continues it** (CHECKPOINT-FAST,
+#1822). A resume is a new attempt. Its restore copies every layer it replayed
+under the new attempt's own prefix, at the same id and with the same bytes, with
+a manifest labelled `restored` that names the attempt it came from, and seeds the
+incremental index from the restored tree. The copy is server-side
+(CHECKPOINT-COPY): the object store's `copy`, a GCS rewrite inside the bucket
+from the earlier attempt's key to this one's, both under the tenant's own prefix,
+so no archive byte is sent from the worker again and the worker's existing read
+and write grants on that prefix are all it needs. So the first checkpoint after a
+restore holds only what changed since it -- each retry used to re-archive the
+~102k files it had just restored -- and its bases are found beside it. That is
+what keeps retention simple: the reconciler keeps every checkpoint of the
+attempt `task.latest_checkpoint` names (`reconciler/checkpoints.py`,
+`classify`), because which of them is the full archive is in the bytes, not the
+key. A restored checkpoint whose `seq` the ids cannot continue from, or a copy
+that fails or writes a size other than the restored archive's, leaves the chain
+unseeded and the next checkpoint full.
 
 **Chains are short.** A new full archive is written after
 `CHECKPOINT_CHAIN_MAX` (24) incremental ones, or as soon as the incremental
-archives since the last full one weigh as much as it does, whichever is first.
-A restore refuses a chain longer than 200 or one that loops.
+archives since the last full one weigh as much as it does, whichever is first --
+except on the PERIODIC checkpoint of a tree of `CHECKPOINT_LARGE_TREE_ENTRIES`
+(50,000) entries or more, where the weight rule waits for the next final, park
+or cancellation checkpoint (and the chain still rebases once it holds
+`CHECKPOINT_EXPANSION_RATIO` of content, so a restore accepts it). A checkpoint
+walks 300-560 entries a second, and the full re-read that rule forced right
+after a big incremental took 561 s on 240,122 files (2026-10-21). A restore
+refuses a chain longer than 200 or one that loops.
+
+**Archives are compressed at zlib level 6**, gzip's default (`CHECKPOINT_GZIP_LEVEL`):
+measured on this repository's tree, 1.8 times the speed of level 9 for 0.45%
+more bytes. The format is unchanged, so level-9 archives older workers wrote
+still restore. "checkpoint written" logs `walk_s`, `archive_s`, `upload_s` and
+`entries`, so a checkpoint getting slower shows before it meets a bound.
 
 ---
 

@@ -1903,15 +1903,22 @@ class CheckpointManager:
         deleted: int,
         file_count: int,
     ) -> bool:
-        """Upload a restored layer under this attempt's prefix at its own id; False on failure.
+        """Copy a restored layer under this attempt's prefix at its own id; False on failure.
 
-        The archive's bytes as they were (so its digest, and the base its
-        header names, are unchanged), then a manifest saying what it is:
+        The archive is copied inside the bucket by the store's `copy`
+        (CHECKPOINT-COPY, #1822): a GCS rewrite, so no archive byte is sent
+        from the worker again. Its source is the key `_download_chain` read
+        the layer from, beside the restored head, which `_owns` holds under
+        this task's prefix; its destination is this attempt's. Both are under
+        the tenant's own prefix (invariant 9). The bytes are unchanged, so
+        its digest, and the base its header names, are too; `path`, the
+        downloaded layer, gives the size the copy must match. Then a manifest
+        saying what it is:
         `"label": "restored"` and the attempt it came from. The manifest is
         the commit marker the console's listing reads -- without it the copy
         would be listed as a checkpoint that was never committed -- and it is
         not on this attempt's document, so no pointer can select it
-        (`Worker._recorded_checkpoint`). A failed upload is not a failed
+        (`Worker._recorded_checkpoint`). A failed copy is not a failed
         restore -- the tree is restored -- and leaves the chain unseeded, so
         the next checkpoint is a full archive, as before.
         """
@@ -1939,8 +1946,17 @@ class CheckpointManager:
             base_checkpoint_id=base[0] if base is not None else None,
             base_archive_sha256=base[1] if base is not None else None,
         )
+        if checkpoint_id == restored.checkpoint_id:
+            source = restored.archive_key
+        else:
+            source = f"{restored.archive_key.rsplit('/', 2)[0]}/{checkpoint_id}/{ARCHIVE_NAME}"
         try:
-            self._store.upload_file(copy.archive_key, path, content_type="application/gzip")
+            copied = self._store.copy(source, copy.archive_key)
+            if copied != copy.archive_bytes:
+                raise CheckpointError(
+                    f"copied {copied} bytes of {checkpoint_id}, not the "
+                    f"{copy.archive_bytes} it restored"
+                )
             self._store.upload_bytes(
                 copy.manifest_key,
                 json.dumps(
