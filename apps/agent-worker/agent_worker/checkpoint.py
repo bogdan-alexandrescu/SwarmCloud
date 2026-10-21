@@ -112,7 +112,9 @@ CHECKPOINT_EXPANSION_RATIO = 8
 #: filling the container's memory before the agent starts (#227). Twice the
 #: per-archive bound, because a chain is a full archive and the incrementals
 #: on it, and it is rebased once the incrementals weigh as much as the full
-#: (`_create`); every layer this platform wrote is under
+#: (`_create`) -- or, on a large tree's periodic checkpoint, once the chain
+#: holds `CHECKPOINT_EXPANSION_RATIO` of content, so the layer after that is
+#: the last; every layer this platform wrote is under
 #: `CHECKPOINT_EXPANSION_RATIO` on its own. It is the largest resource
 #: class's whole memory, so a chain past it could not be restored anyway.
 RESTORE_EXPANSION_RATIO = 2 * CHECKPOINT_EXPANSION_RATIO
@@ -244,8 +246,34 @@ BUILD_DIRS: tuple[str, ...] = (".venv", "__pycache__", "dist", ".test-build", "c
 #: A restore downloads and replays the whole chain, so the chain is bounded:
 #: at the 120 s interval this is a full archive at least every 48 minutes of
 #: steady change. A chain is also rebased once its incremental archives
-#: together outweigh the full archive they sit on (`CheckpointManager._create`).
+#: together outweigh the full archive they sit on (`CheckpointManager._create`)
+#: -- except on a large tree's PERIODIC checkpoint (`CHECKPOINT_LARGE_TREE_ENTRIES`).
 CHECKPOINT_CHAIN_MAX = 24
+
+#: A tree of at least this many entries is LARGE: its PERIODIC checkpoint is
+#: not rebased because the chain's incrementals outweigh the full archive
+#: under them, only at `CHECKPOINT_CHAIN_MAX` or past
+#: `CHECKPOINT_EXPANSION_RATIO` of content (CHECKPOINT-FAST, #1822). The
+#: final, park, cancellation and every other non-periodic checkpoint keeps
+#: the bytes rule, so the chain a resume replays is rebased where the attempt
+#: stops. Measured 2026-10-21: a checkpoint walks and archives about 300-560
+#: entries a second, so a full re-read of 110k-240k entries took 371-561 s;
+#: task_8cff3654 wrote a full of 1,573 files, an incremental of 100,706 files
+#: (155 MB) that outweighed it, and then a FULL periodic of 240,122 files in
+#: 561 s. At 50,000 a full re-read is already 90-170 s of a 120 s interval, so
+#: the incrementals it would save are cheaper than the rebase; below it the
+#: rule is today's, and a full re-read of a small tree costs seconds.
+CHECKPOINT_LARGE_TREE_ENTRIES = 50_000
+
+#: The zlib level every checkpoint archive is compressed at: gzip's own
+#: default, not 9 (CHECKPOINT-FAST, #1822). Measured 2026-10-21 on this
+#: repository's tree (3,294 files, 76 MB of tar, one core): level 9 took
+#: 6.0 s for 22.32 MB, level 6 took 3.3 s for 22.42 MB -- 1.8 times the speed
+#: for 0.45% more bytes. Compression is single-threaded in the worker, on the
+#: checkpoint's clock, and 9 bought almost nothing. The format is unchanged
+#: (gzip over pax tar), so a restore reads the level-9 archives older workers
+#: wrote exactly as it reads these.
+CHECKPOINT_GZIP_LEVEL = 6
 
 #: The longest a PERIODIC checkpoint waits while the tree has not changed:
 #: 2 -> 4 -> 8 -> 10 minutes at the default 120 s interval (#637, owner
@@ -767,21 +795,26 @@ class _CappedFile(io.FileIO):
 class _GzipWriter(io.RawIOBase):
     """gzip (RFC 1952) over `raw`, with an optional header comment.
 
-    What `tarfile`'s `w:gz` wrote, at the same level 9, plus the FCOMMENT
-    field the gzip module cannot write: `CHAIN_COMMENT_PREFIX`. `tell` is
-    the uncompressed offset, which is all `tarfile` asks of it.
+    What `tarfile`'s `w:gz` wrote, at `CHECKPOINT_GZIP_LEVEL` rather than
+    its 9, plus the FCOMMENT field the gzip module cannot write:
+    `CHAIN_COMMENT_PREFIX`. `tell` is the uncompressed offset, which is all
+    `tarfile` asks of it.
     """
 
     def __init__(self, raw: Any, *, comment: bytes | None) -> None:
         super().__init__()
         self._raw = raw
-        self._deflate = zlib.compressobj(9, zlib.DEFLATED, -zlib.MAX_WBITS)
+        level = CHECKPOINT_GZIP_LEVEL
+        self._deflate = zlib.compressobj(level, zlib.DEFLATED, -zlib.MAX_WBITS)
         self._crc = 0
         self._size = 0
         flags = 0x10 if comment is not None else 0
+        # XFL as gzip(1) sets it: 2 for "maximum compression", 4 for
+        # "fastest", 0 otherwise. A reader ignores it.
+        xfl = 2 if level == 9 else 4 if level == 1 else 0
         # magic, deflate, flags, mtime 0 (as `tarfile` wrote no name or
-        # time that meant anything), "maximum compression", unknown OS.
-        raw.write(b"\x1f\x8b\x08" + bytes([flags]) + b"\0\0\0\0\x02\xff")
+        # time that meant anything), XFL, unknown OS.
+        raw.write(b"\x1f\x8b\x08" + bytes([flags]) + b"\0\0\0\0" + bytes([xfl]) + b"\xff")
         if comment is not None:
             if b"\0" in comment:
                 raise CheckpointError("a checkpoint's gzip comment cannot hold a NUL")
@@ -936,14 +969,23 @@ class CheckpointManager:
         #: THE CHAIN (#637). What the last committed checkpoint of this
         #: attempt archived, entry by entry (`_signature`), and its id and
         #: digest: the next one archives only what differs. None until this
-        #: attempt has committed a checkpoint, so every attempt's first one is
-        #: full and a chain never crosses an attempt -- a restore, which
-        #: starts a new attempt, starts a new chain.
+        #: attempt has committed a checkpoint or restored one (`restore`,
+        #: CHECKPOINT-FAST): a restore seeds it from the restored tree and
+        #: copies the restored chain's archives under THIS attempt's prefix,
+        #: so the first checkpoint after it is incremental and a chain still
+        #: never crosses an attempt.
         self._index: dict[str, tuple[Any, ...]] | None = None
         self._base: tuple[str, str] | None = None
         self._chain_length = 0
         self._chain_bytes = 0
         self._full_bytes = 0
+        #: File content the chain's archives hold, the full one included,
+        #: against `RESTORE_EXPANSION_RATIO`: a large tree's periodic
+        #: checkpoint skips the bytes rule only while the chain stays one a
+        #: restore accepts.
+        self._chain_content = 0
+        #: File content the last archive `_walk` wrote held.
+        self._archived_content = 0
         #: True when the last `create_if_changed` found nothing to write.
         self.last_unchanged = False
         #: Entries walked and bytes written so far (#1808): the heartbeat's
@@ -1044,38 +1086,51 @@ class CheckpointManager:
         #
         # The tool caches under HOME (`TOOL_CACHES`, #286) are left out by
         # `_write_archive` itself, which matches them as it walks.
-        skip = frozenset(
-            path.relative_to(ws.work).as_posix()
-            for path in (ws.artifacts_link(), ws.artifacts_link(ws.checkout()))
-            if ws.is_artifacts_link(path)
-        ) | {ws.input_path.relative_to(ws.work).as_posix()}
-        if self.leaves_out_extra_repos:
-            skip |= {EXTRA_REPOS_DIR}
+        skip = self._skip(ws)
         self.last_unchanged = False
         build_dirs = _BuildDirFilter(ws.work, self.excluded_dirs)
         racy_after = time.time_ns() - RACY_WINDOW_NS
         previous = self._index
         base = self._base
+        # A LARGE TREE'S PERIODIC CHECKPOINT KEEPS ITS CHAIN (CHECKPOINT-FAST,
+        # #1822): rebasing there re-read every entry of the tree right after a
+        # big incremental -- 561 s for 240,122 files. The bytes rule waits for
+        # the next checkpoint that is not periodic (the final, park or
+        # cancellation one), and the length and content bounds still hold, so
+        # every chain this writes is one `restore` replays.
+        keep_chain = (
+            only_if_changed
+            and previous is not None
+            and len(previous) >= CHECKPOINT_LARGE_TREE_ENTRIES
+            and self._chain_content < self._max_bytes * CHECKPOINT_EXPANSION_RATIO
+        )
         if previous is not None and (
-            self._chain_length >= CHECKPOINT_CHAIN_MAX or self._chain_bytes >= self._full_bytes
+            self._chain_length >= CHECKPOINT_CHAIN_MAX
+            or (self._chain_bytes >= self._full_bytes and not keep_chain)
         ):
             # Rebase: a restore replays the whole chain, so it is kept short
             # and never heavier than the full archive under it.
             previous, base = None, None
         index: dict[str, tuple[Any, ...]] = {}
         deleted: list[str] = []
+        walk_s = 0.0
         if previous is not None:
             # Two walks. The first only stats, so an unchanged tree costs no
             # archive at all, and the deletions are known before the archive
             # opens -- they travel in its gzip header, where the digest
             # covers them. The second archives what differs from `previous`.
+            started = time.monotonic()
             index = self._scan(ws.work, skip=skip, build_dirs=build_dirs)
+            walk_s = time.monotonic() - started
             deleted = _deleted_since(previous, index)
             unchanged = not deleted and index == previous
             if only_if_changed and unchanged:
                 self.last_unchanged = True
                 self._log.info(
-                    "checkpoint unchanged; nothing written", label=label, entries=len(index)
+                    "checkpoint unchanged; nothing written",
+                    label=label,
+                    entries=len(index),
+                    walk_s=round(walk_s, 3),
                 )
                 return None
         if before_upload is not None:
@@ -1104,6 +1159,7 @@ class CheckpointManager:
         with tempfile.TemporaryDirectory(prefix="swarm-ckpt-") as tmpdir:
             archive_path = Path(tmpdir) / ARCHIVE_NAME
             archived: dict[str, tuple[Any, ...]] = {}
+            started = time.monotonic()
             file_count = self._write_archive(
                 ws.work,
                 archive_path,
@@ -1128,6 +1184,8 @@ class CheckpointManager:
                     f"{self._max_bytes} byte cap; refusing to upload"
                 )
             digest = _sha256(archive_path)
+            archive_s = time.monotonic() - started
+            started = time.monotonic()
             self._store.upload_file(archive_key, archive_path, content_type="application/gzip")
 
             record = CheckpointRecord(
@@ -1162,6 +1220,7 @@ class CheckpointManager:
                 ).encode("utf-8"),
                 content_type="application/json",
             )
+            upload_s = time.monotonic() - started
             self._written += 1
 
         # The chain moves only once the manifest is up: a checkpoint that
@@ -1169,23 +1228,46 @@ class CheckpointManager:
         # committed.
         if base is None:
             self._chain_length, self._chain_bytes, self._full_bytes = 0, 0, size
+            self._chain_content = self._archived_content
         else:
             self._chain_length += 1
             self._chain_bytes += size
+            self._chain_content += self._archived_content
         self._index = index
         self._base = (checkpoint_id, digest)
 
+        # The durations (CHECKPOINT-FAST): a checkpoint getting slower shows
+        # here, and in which phase, long before it meets the heartbeat's
+        # bound. `walk_s` is the stat-only first walk of an incremental (0 for
+        # a full archive, which has none), `archive_s` the walk that writes
+        # and compresses the archive and its digest, `upload_s` the archive's
+        # and the manifest's uploads; `entries` is every entry walked.
         self._log.info(
             "checkpoint written",
             checkpoint_id=checkpoint_id,
             bytes=size,
             files=file_count,
+            entries=len(index),
+            walk_s=round(walk_s, 3),
+            archive_s=round(archive_s, 3),
+            upload_s=round(upload_s, 3),
             label=label,
             kind="incremental" if base is not None else "full",
             base=base[0] if base is not None else None,
             deleted=len(deleted),
         )
         return record
+
+    def _skip(self, ws: Workspace) -> frozenset[str]:
+        """The paths of `work/` no checkpoint archives; see `_create`."""
+        skip = frozenset(
+            path.relative_to(ws.work).as_posix()
+            for path in (ws.artifacts_link(), ws.artifacts_link(ws.checkout()))
+            if ws.is_artifacts_link(path)
+        ) | {ws.input_path.relative_to(ws.work).as_posix()}
+        if self.leaves_out_extra_repos:
+            skip |= {EXTRA_REPOS_DIR}
+        return skip
 
     def _scan(
         self, source: Path, *, skip: frozenset[str], build_dirs: _BuildDirFilter
@@ -1345,6 +1427,8 @@ class CheckpointManager:
         finally:
             for dir_fd, _, _ in stack:
                 os.close(dir_fd)
+        if tar is not None:
+            self._archived_content = expanded[0]
         if too_deep and tar is not None:
             # Counted by path, with no descriptor held (`walk_tree`), and no
             # link followed: a count, not an archive, so a race here costs a
@@ -1665,15 +1749,29 @@ class CheckpointManager:
         def skip(name: str, link: str) -> None:
             skipped.append((name, link))
 
-        layers: list[tuple[str, Path, list[str]]] = []
+        layers: list[tuple[str, Path, list[str], str]] = []
         #: File content written so far, over every layer; see
         #: `RESTORE_EXPANSION_RATIO`.
         expanded = [0]
+        # THE CHAIN CONTINUES (CHECKPOINT-FAST, #1822). Each layer is copied
+        # under this attempt's own prefix, at its own id and with its own
+        # bytes, so the first checkpoint after the restore can name the
+        # restored head as its base and `_download_chain` finds every base
+        # beside it: a chain still never crosses an attempt, and the
+        # reconciler's reclaim of the earlier attempt takes nothing this
+        # chain needs (it keeps the pointer's whole attempt). Only when this
+        # attempt's ids continue past every layer's (`_continues_ids`): an id
+        # that restarted at 1 would write over a copy.
+        copy = self._continues_ids(record) and record.attempt_id != self._attempt_id
+        sizes: list[int] = []
+        copy_s = 0.0
         try:
             self._download_chain(record, ws, layers)
+            copy = copy and all(self._continues_ids(record, cid) for cid, _, _, _ in layers)
+            below: tuple[str, str] | None = None
             # Oldest first: the full archive, then each change in order.
-            for position, (checkpoint_id, path, deleted) in enumerate(reversed(layers)):
-                self._apply_layer(
+            for position, (checkpoint_id, path, deleted, digest) in enumerate(reversed(layers)):
+                files = self._apply_layer(
                     checkpoint_id,
                     path,
                     ws.work,
@@ -1682,12 +1780,26 @@ class CheckpointManager:
                     on_skip=skip,
                     expanded=expanded,
                 )
+                sizes.append(path.stat().st_size)
+                if copy:
+                    started = time.monotonic()
+                    copy = self._copy_layer(
+                        record,
+                        checkpoint_id,
+                        path,
+                        digest=digest,
+                        base=below,
+                        deleted=len(deleted),
+                        file_count=files,
+                    )
+                    copy_s += time.monotonic() - started
+                below = (checkpoint_id, digest)
                 path.unlink(missing_ok=True)
         except CheckpointError:
             _empty_directory(ws.work)
             raise
         finally:
-            for _, path, _ in layers:
+            for _, path, _, _ in layers:
                 path.unlink(missing_ok=True)
         self._log_skipped_links(record, skipped)
 
@@ -1704,15 +1816,13 @@ class CheckpointManager:
         # id, or name an object key longer than GCS accepts, and invariant 8
         # says this attempt must keep checkpointing; its ids start again at 1
         # instead.
-        restored_seq = record.seq
-        is_count = isinstance(restored_seq, int) and not isinstance(restored_seq, bool)
-        if is_count and 0 <= restored_seq <= RESTORED_SEQ_MAX:
-            self._seq = max(self._seq, restored_seq)
+        if self._continues_ids(record):
+            self._seq = max(self._seq, record.seq)
         else:
             self._log.warning(
                 "the restored checkpoint's seq is not a count; this attempt's ids start at 1",
                 checkpoint_id=record.checkpoint_id,
-                seq_type=type(restored_seq).__name__,
+                seq_type=type(record.seq).__name__,
             )
         # `walk_tree`, not `Path.rglob`, which recurses on Python 3.11: a
         # restored tree 1,000 levels deep raised `RecursionError` here, after
@@ -1727,18 +1837,143 @@ class CheckpointManager:
                         restored += 1
                 except OSError:
                     continue
+        seeded = False
+        if copy and sizes:
+            # SEEDED FROM THE RESTORED TREE, not from the archives: what the
+            # next checkpoint compares against is this tree as it stands on
+            # disk (new inodes, ctimes of now), the same stat-only walk
+            # `_create` makes, with the same skips. A restored file the agent
+            # then changes reads as changed and is archived; one it deletes
+            # is named deleted. A file the restore wrote in the racy window
+            # before the walk is marked racy, as `_create` marks it, and the
+            # next checkpoint archives it again.
+            racy_after = time.time_ns() - RACY_WINDOW_NS
+            index = self._scan(
+                ws.work,
+                skip=self._skip(ws),
+                build_dirs=_BuildDirFilter(ws.work, self.excluded_dirs),
+            )
+            for rel, signature in index.items():
+                if signature[0] == "f" and max(signature[3], signature[4]) >= racy_after:
+                    index[rel] = signature + ("racy",)
+            self._index = index
+            self._base = (record.checkpoint_id, record.archive_sha256)
+            self._full_bytes = sizes[0]
+            self._chain_length = len(sizes) - 1
+            self._chain_bytes = sum(sizes[1:])
+            self._chain_content = expanded[0]
+            seeded = True
         self._log.info(
             "checkpoint restored",
             checkpoint_id=record.checkpoint_id,
             from_attempt=record.attempt_id,
             files=restored,
+            layers=len(sizes),
+            chain_continued=seeded,
+            copy_s=round(copy_s, 3),
         )
         return restored
 
+    def _continues_ids(self, record: CheckpointRecord, checkpoint_id: str | None = None) -> bool:
+        """True when this attempt's ids continue from `record.seq` (#174), past `checkpoint_id`.
+
+        The manifest is data read from a bucket, so its `seq` is continued
+        from only when it is a non-negative integer no larger than
+        `RESTORED_SEQ_MAX`. With `checkpoint_id`, also that the id is one
+        `create` writes and is numbered no later than that `seq`, so no id
+        this attempt writes from now on can be the id of a copied layer.
+        """
+        seq = record.seq
+        if not isinstance(seq, int) or isinstance(seq, bool):
+            return False
+        if not 0 <= seq <= RESTORED_SEQ_MAX:
+            return False
+        if checkpoint_id is None:
+            return True
+        return bool(_CHECKPOINT_ID_RE.fullmatch(checkpoint_id)) and int(checkpoint_id[5:]) <= seq
+
+    def _copy_layer(
+        self,
+        restored: CheckpointRecord,
+        checkpoint_id: str,
+        path: Path,
+        *,
+        digest: str,
+        base: tuple[str, str] | None,
+        deleted: int,
+        file_count: int,
+    ) -> bool:
+        """Upload a restored layer under this attempt's prefix at its own id; False on failure.
+
+        The archive's bytes as they were (so its digest, and the base its
+        header names, are unchanged), then a manifest saying what it is:
+        `"label": "restored"` and the attempt it came from. The manifest is
+        the commit marker the console's listing reads -- without it the copy
+        would be listed as a checkpoint that was never committed -- and it is
+        not on this attempt's document, so no pointer can select it
+        (`Worker._recorded_checkpoint`). A failed upload is not a failed
+        restore -- the tree is restored -- and leaves the chain unseeded, so
+        the next checkpoint is a full archive, as before.
+        """
+        prefix = checkpoint_prefix(
+            tenant_id=self._tenant_id,
+            task_id=self._task_id,
+            attempt_id=self._attempt_id,
+            checkpoint_id=checkpoint_id,
+        )
+        copy = CheckpointRecord(
+            checkpoint_id=checkpoint_id,
+            seq=int(checkpoint_id[5:]),
+            task_id=self._task_id,
+            attempt_id=self._attempt_id,
+            tenant_id=self._tenant_id,
+            generation=self._generation,
+            created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            archive_key=f"{prefix}/{ARCHIVE_NAME}",
+            manifest_key=f"{prefix}/{MANIFEST_NAME}",
+            archive_bytes=path.stat().st_size,
+            archive_sha256=digest,
+            file_count=file_count,
+            uri=self._store.uri(f"{prefix}/"),
+            clone_base=restored.clone_base,
+            base_checkpoint_id=base[0] if base is not None else None,
+            base_archive_sha256=base[1] if base is not None else None,
+        )
+        try:
+            self._store.upload_file(copy.archive_key, path, content_type="application/gzip")
+            self._store.upload_bytes(
+                copy.manifest_key,
+                json.dumps(
+                    {
+                        **asdict(copy),
+                        "label": "restored",
+                        "kind": "incremental" if base is not None else "full",
+                        "deleted": deleted,
+                        "restored_from_attempt": restored.attempt_id,
+                    },
+                    indent=2,
+                ).encode("utf-8"),
+                content_type="application/json",
+            )
+        except Exception as exc:  # noqa: BLE001 -- the GCS client's errors are its own types
+            self._log.warning(
+                "the restored chain could not be copied under this attempt; the next "
+                "checkpoint is a full archive",
+                checkpoint_id=checkpoint_id,
+                error=type(exc).__name__,
+            )
+            return False
+        return True
+
     def _download_chain(
-        self, record: CheckpointRecord, ws: Workspace, layers: list[tuple[str, Path, list[str]]]
+        self,
+        record: CheckpointRecord,
+        ws: Workspace,
+        layers: list[tuple[str, Path, list[str], str]],
     ) -> None:
         """Download `record`'s archive and every base it names, newest first, into `layers`.
+
+        Each layer is `(checkpoint_id, path, deleted, archive_sha256)`.
 
         Each archive is checked against the digest that names it before its
         header is read: the head's against the record (which the attempt
@@ -1755,7 +1990,7 @@ class CheckpointManager:
         while True:
             name = ARCHIVE_NAME if not layers else f"base-{len(layers):03d}.tar.gz"
             path = ws.restore / name
-            layers.append((checkpoint_id, path, []))
+            layers.append((checkpoint_id, path, [], expected))
             self._store.download_file(key, path)
             digest = _sha256(path)
             if digest != expected:
@@ -1765,7 +2000,7 @@ class CheckpointManager:
                 )
             seen.add(checkpoint_id)
             base, deleted = _chain_header(path, checkpoint_id)
-            layers[-1] = (checkpoint_id, path, deleted)
+            layers[-1] = (checkpoint_id, path, deleted, digest)
             if base is None:
                 return
             if base[0] in seen or len(layers) >= RESTORE_CHAIN_MAX:
@@ -1786,8 +2021,8 @@ class CheckpointManager:
         incremental: bool,
         on_skip: Callable[[str, str], None],
         expanded: list[int] | None = None,
-    ) -> None:
-        """Extract one archive of a chain into `work/`, after its deletions.
+    ) -> int:
+        """Extract one archive of a chain into `work/`, after its deletions; its non-directory members.
 
         An incremental archive lands on the tree its bases made. What it
         names deleted is removed first; then whatever stands where one of its
@@ -1836,6 +2071,7 @@ class CheckpointManager:
                     f"checkpoint {checkpoint_id} could not be extracted: {type(exc).__name__}"
                 ) from exc
         _unmake_escaped_links(work, members, on_skip)
+        return sum(1 for member in members if not member.isdir())
 
     def _log_skipped_links(self, record: CheckpointRecord, skipped: list[tuple[str, str]]) -> None:
         """One warning naming the first `SKIPPED_LINKS_NAMED` skipped links, and the count.

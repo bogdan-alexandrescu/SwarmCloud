@@ -240,6 +240,13 @@ def test_the_first_checkpoint_after_a_restore_archives_only_changed_files(
         # MUTATION: skip re-uploading the restored layers -> the base is
         # missing under att_2 and the restore below fails.
         assert store.exists(f"{key}/{ARCHIVE_NAME}"), checkpoint_id
+        # ... each with a manifest that says what it is, so the console lists
+        # a restored copy rather than a checkpoint that was never committed.
+        manifest = json.loads(store.download_bytes(f"{key}/manifest.json"))
+        # MUTATION: copy the archive alone -> no manifest to read.
+        assert manifest["label"] == "restored"
+        assert manifest["restored_from_attempt"] == "att_1"
+        assert manifest["attempt_id"] == "att_2"
     # ... and it restores the changed tree, deletion included, byte-identical.
     again = workspace_mod.create(tmp_path / "ws3", "att_3")
     _manager(store, _logger(log_stream), attempt_id="att_3").restore(first, again)
