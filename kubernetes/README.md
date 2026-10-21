@@ -1,9 +1,11 @@
 # `kubernetes/` — the GKE Autopilot execution path
 
-Cloud Run Jobs is the primary backend and holds everything it can. This
-directory covers what it cannot: the `browser` profile, which needs a
-`/dev/shm` Cloud Run will not let us size, and any future profile above the
-Cloud Run ceiling of 8 vCPU / 32 GiB.
+GKE Autopilot runs every agent profile but `mock`, `post-verdict` and
+`claude-code-review`: `browser` and `claude-code-browser` for a `/dev/shm`
+Cloud Run will not let us size, and `claude-code`, `codex`, `generic`,
+`indexer` and `merge` for their start time and internet path
+([docs/architecture.md](../docs/architecture.md) §5). This directory is that
+path's tenant namespace, policies and Job templates.
 
 That makes this the one path where a tenant's agent shares a kernel and a
 network with another tenant's agent, so it is the path where every boundary has
@@ -25,7 +27,7 @@ to be written down rather than assumed.
 | `rbac/provisioner-rbac.yaml` | The workspace deployer's ClusterRole and binding, and its two reads in `kube-system` — the one cluster-scoped grant here ([docs/workspaces.md](../docs/workspaces.md) §2.3) |
 | `worker-templates/worker-job.yaml` | The canonical worker Job |
 | `worker-templates/worker-job-browser.yaml` | The same, plus shared memory for Chromium |
-| `render.py` | Fills in the placeholders; sizing comes from the frozen catalogue, the cluster's network from its inputs |
+| `render.py` | Fills in the placeholders; sizing comes from the catalogue's code defaults (a scheduler-dispatched pod takes the admin-set size pinned at admission), the cluster's network from its inputs |
 | `apply.sh` | Checks it is pointed at the right cluster, reads that cluster's network and the tenant GSA's Workload Identity bindings, renders, applies |
 | `cluster-network.sh` | Reads the pod range, service range, kube-dns IP and NodeLocal DNSCache address from the live cluster (sourced) |
 | `network_parity.py` | Compares an applied egress policy with the live network; run by `scripts/lib/check-cluster-network-parity.sh`. With `--live-ingress`, compares swarm-system's three live-relay policies with swarm-api's egress range; run by `apply.sh --swarm-system --confirm` |
@@ -189,6 +191,26 @@ GKE's network-policy doc gives for Dataplane V2. Port 988 on that address is
 gone: this cluster's metadata server listens on `169.254.169.252:988`, which GKE
 lists only for clusters without Dataplane V2, so `.254:988` matched nothing.
 
+**Memory is one number; CPU bursts to its class's limit.** Every container
+sets memory and ephemeral-storage request == limit, and a CPU limit up to
+`CPU_BURST_MAX_RATIO` (2) times its CPU request: invariant 7 as amended by
+contract request 108 (RS-1, [docs/design/runner-sizes.md](../docs/design/runner-sizes.md)).
+A CPU burst is throttled under contention, never killed, and Autopilot bills
+the request; memory past a request is what gets a long-running agent
+OOM-killed. The cluster holds the rule at admission,
+`kubernetes/policies/pod-security.yaml` (`a cpu limit must be between its request and twice it (invariant 7, RS-1)`),
+and the policies must be applied before a renderer that bursts ships: on
+2026-10-20 they still required CPU request == limit and refused every GKE job
+for about 40 minutes, until PR 1747 amended them. The tenant ResourceQuota's
+`limits.cpu` is the same multiple of its `requests.cpu`
+(`kubernetes/render.py::tenant_values`), or it would run out at half the pods
+the requests line admits. Where the numbers come from differs by renderer:
+`kubernetes/render.py::render_job`, the incident-repro Job, renders the code
+defaults (`RESOURCE_CLASSES`, standard 4 cores requested, 8 limit, 8 GiB); the
+scheduler renders a dispatched pod from the size it pinned at admission,
+which follows an admin's runner-size version, so after a resize the two
+differ and the scheduler's is the one that ran.
+
 **Two service accounts, deliberately.** See the conflicts below.
 
 **No provider key in a Job's environment, not even for the profiles that need
@@ -232,13 +254,13 @@ and the policy appear there as `configured (server dry run)`.
 ## What this directory does NOT cover
 
 Worth stating plainly, because the care taken over these files invites the
-assumption that they protect the platform: **they protect the GKE path only, and
-the GKE path carries the least traffic.** Per `swarm_common.profiles`, `mock`,
-`generic`, `claude-code` and `codex` are all pinned to `Backend.CLOUD_RUN_JOB`;
-only `browser` (and anything above the Cloud Run 8 vCPU / 32 GiB ceiling) reaches
-Autopilot.
+assumption that they protect the platform: **they protect the GKE path only.**
+Per `swarm_common.profiles`, that path carries `browser`, `claude-code`,
+`claude-code-browser`, `codex`, `generic`, `indexer` and `merge`, which is
+nearly every step; `mock`, `post-verdict` and `claude-code-review` stay on
+`Backend.CLOUD_RUN_JOB` (and `await-input` is never run at all).
 
-So for the profiles a caller actually uses, none of the following applies: the
+So for the Cloud Run profiles, and for a GKE profile's Cloud Run fallback Job, none of the following applies: the
 default-deny NetworkPolicy, the cross-tenant ingress denial, the per-tenant
 ResourceQuota and LimitRange, or the ValidatingAdmissionPolicies. Cloud Run worker
 jobs run with `vpc_access { egress = "ALL_TRAFFIC" }` into the shared VPC
@@ -248,8 +270,8 @@ consequences are worth being explicit about:
 
 * the ResourceQuota is **not** a platform-wide ceiling. On the Cloud Run path the
   Firestore slot-pool accounting is the only thing bounding a tenant, so the
-  "second line of defence for when that accounting is wrong" does not exist where
-  most work runs;
+  "second line of defence for when that accounting is wrong" does not exist for
+  the Cloud Run profiles;
 * `default-deny.yaml`'s own rationale — one tenant's agent opening a socket to
   another's, which no IAM scoping stops because none of it goes through a Google
   API — describes a risk that is mitigated here and must be mitigated separately

@@ -223,6 +223,8 @@ belongs to whoever created it first.
 | `quota/{provider}:{tenant}` | provider health per tenant key | quota broker |
 | `tenants/{id}` | limits, registered providers, GSA, GCS prefix, namespace | admin API, `register-tenant.sh` |
 | `workflows/{id}` | DAG of steps | api, scheduler |
+| `control/runner_sizes` | the current runner-size version, who moved it and when | admin API |
+| `runner_size_versions/{version}` | one immutable runner-size table, its reason and what changed | admin API |
 
 Firestore has no joins, so a task document carries everything admission needs —
 tenant, provider, resource class, runner profile, priority — and the hot path is
@@ -282,11 +284,41 @@ consolidation. So "Spot preferred" and "no preemption" are mutually exclusive,
 and the frozen `RunnerProfile.__post_init__` raises if a profile tries to set
 anything but `ON_DEMAND_ONLY`. See [cost-control.md](cost-control.md).
 
-### requests == limits, no bursting
+### Memory never bursts; CPU may burst past its request
 
-Bursting past a request is precisely what gets a container OOM-killed when the
-node comes under pressure. A burst that usually works is a burst that fails on
-the busiest day. Both numbers are set to the same value everywhere.
+Memory and ephemeral storage are one number on every container: request ==
+limit. Memory is not compressible, so a container that uses more than it
+requested is the one Autopilot kills when the node comes under pressure, and
+the workspace is a tmpfs inside that memory, so the kill takes the work with
+it. A memory burst that usually works is one that fails on the busiest day.
+
+CPU is the exception (contract request 108, the runner-sizes design's RS-1,
+accepted by the owner 2026-10-20 for #1689). On GKE Autopilot a container's
+CPU limit may be up to `CPU_BURST_MAX_RATIO` (2) times its request
+(`apps/common/swarm_common/profiles.py::CPU_BURST_MAX_RATIO`), and every class
+runs at that ratio: `standard` requests 4 cores and may use 8. The reasons it
+is safe for CPU and not for memory:
+
+* a CPU burst on a busy node is throttled, never killed. The worst a burst
+  can do is run at its request, which is the old ceiling, so no attempt runs
+  slower than before;
+* Autopilot bills requests, so the limit costs nothing, and admission
+  charges units on the request too: a burst borrows other pods' idle
+  requested CPU on the same node and is not counted against any pool;
+* the pod's QoS class becomes Burstable, so under a node-wide kernel OOM it
+  is chosen before a Guaranteed pod. Memory request == limit keeps it out of
+  the first eviction tier; the case left is the one invariant 8's periodic
+  checkpoint already bounds.
+
+Cloud Run renders the request alone: a Cloud Run container is given, and
+billed, its `limits`, so a limit above the request there would double the
+bill rather than allow a burst. The GKE manifest renders the two numbers in
+`apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher._manifest`, and the
+cluster's admission policy refuses anything else:
+`kubernetes/policies/pod-security.yaml` (`a cpu limit must be between its request and twice it (invariant 7, RS-1)`).
+That policy still demanded CPU request == limit when bursting first
+released, and refused every GKE job for about 40 minutes on 2026-10-20 until
+it was amended; the policy and the renderer are one rule in two places.
 
 ### Resource classes were measured, not guessed
 
@@ -299,11 +331,65 @@ One working Claude Code lane on the reference workstation, measured 2026-09-15:
 | node/tsx guards | 207 MB |
 | **total** | **~2.5 GiB** |
 
-`standard` is 4 vCPU / 8 GiB — roughly 2x measured, because an agent's peak is
-not its average and the cost of being wrong is an OOM kill. `browser` is
-8 / 16 (Chromium), `large` is 8 / 32 (the Cloud Run ceiling). The worker reports
-peak RSS and peak disk per attempt so these get corrected from production rather
-than from arithmetic. See [scaling.md](scaling.md#6-right-sizing).
+The classes are about 2x that, because an agent's peak is not its average and
+the cost of being wrong is an OOM kill. Their code defaults
+(`RESOURCE_CLASSES`), which run whenever no admin has saved a size:
+
+| class | CPU request | CPU limit | memory (request = limit) | workspace tmpfs (of the memory) | units |
+|---|---|---|---|---|---|
+| `standard` | 4 | 8 | 8 GiB | 4 GiB | 1 |
+| `browser` | 4 | 8 | 8 GiB | 4 GiB | 1 |
+| `large` | 8 | 16 | 32 GiB | 16 GiB | 4 |
+
+`large`'s memory is the Cloud Run ceiling, and so is every class's CPU
+**request** (8); a limit may exceed it because Cloud Run never renders the
+limit. Measured on 41 implement attempts on 2026-10-20 in `standard`: mean CPU
+1.74 of 4 cores, at the 4-core limit 22% of the time (30% on runs of 40
+minutes or more), memory peak at most 6.0 of 8 GiB — which is why CPU got a
+burst limit and memory did not move. The worker reports CPU, throttling,
+peak RSS and peak disk per attempt so these keep being corrected from
+production rather than from arithmetic. See [scaling.md](scaling.md#6-right-sizing).
+
+### Runner sizes are a versioned setting, pinned at admission
+
+The class **names** and the **bounds** are frozen code; the live sizes are not
+(contract requests 109-111, [design/runner-sizes.md](design/runner-sizes.md)).
+A platform admin changes a class's CPU request, CPU limit and memory in
+Admin › Runner sizes, which calls `PUT /v1/admin/runner-sizes` with a reason.
+The route validates the whole table with the frozen `check_size` (the request
+0.5-8 cores in quarter cores, the limit at most twice the request, memory
+2-32 GiB and 1-6.5 GiB per core, the class order, the live-browser split),
+derives `units` itself, and in one transaction writes a new immutable
+document `runner_size_versions/{version}` and moves the pointer
+`control/runner_sizes` to it. Every version is the whole table and is never
+updated or deleted, so the collection is the audit trail and a restore is a
+new version copying an old one. No pointer is version 0, the code defaults.
+
+The owner's answers bind the page: `disk_gib` is shown, not edited; a memory
+cut below the class's 7-day max peak is refused as `below_recent_peak`
+unless the admin types the class name as a typed confirmation; two admins
+saving from the same base version get a 409, and the second reloads.
+
+The scheduler reads the version once per admission pass
+(`apps/scheduler/scheduler/loop.py::Scheduler._size_version`) and, for each
+agent, derives one size from it before the lease
+(`apps/scheduler/scheduler/loop.py::Scheduler._admit_one`). That one object
+is the lease's units, the attempt's record (`size_version` and the `sized_*`
+fields) and the pod the GKE renderer draws, so a version saved between the
+lease and the dispatch cannot split them, and a running agent keeps the size it
+was admitted with: nothing re-renders a running pod or re-charges a lease. A
+stored version that fails `check_size` reads as the code defaults, logged at
+ERROR. `GET /v1/resource-classes` serves the current version, which is how
+the console's pickers and the MCP plugin follow a resize without a deploy.
+
+Only GKE profiles follow: `browser`, `claude-code`, `claude-code-browser`,
+`codex`, `generic`, `indexer` and `merge`. The Cloud Run profiles `mock`,
+`post-verdict` and `claude-code-review` always run at the code defaults,
+because Cloud Run fixes resources on the Job, not on the execution, and
+updating a shared Job in place would race between schedulers; the page lists
+them under "does not follow". A GKE profile's Cloud Run fallback Job does not
+follow either: Terraform sizes it from the code defaults it mirrors in
+`terraform/infra/locals.tf`.
 
 ### A known risk, accepted deliberately
 
@@ -319,7 +405,7 @@ feature partially undermined the reason for the choice.
 What is deployed: that feature is not used and cannot be. The Terraform google
 provider cannot express it — `empty_dir.medium` accepts only `"MEMORY"` — so a
 workspace is a tmpfs slice of the container's memory (`standard` ~4 GiB of its
-8, `browser` ~8 of 16, `large` ~16 of 32) and the deployment runs on the fully-GA
+8, `browser` ~4 GiB of its 8, `large` ~16 GiB of its 32) and the deployment runs on the fully-GA
 path, **with** live migration.
 
 Checkpointing is not relaxed on that news. Live migration covers infrastructure
@@ -357,7 +443,7 @@ and the hosted domain must be `saga.xyz`.
 | 4. Never sleep through a long wait | `agent_worker/quota.py` |
 | 5. Fencing generations | `agent_worker/lifecycle.py` step 1, `reconciler/repair.py` step 1 |
 | 6. No Spot | `profiles.RunnerProfile.__post_init__` |
-| 7. requests == limits | `scheduler/dispatch.py`, Terraform job/pod specs |
+| 7. Memory request == limit; CPU limit <= 2x request on GKE | `profiles.check_size`, `scheduler/sizes.py`, `scheduler/dispatch.py`, `kubernetes/policies/pod-security.yaml`, Terraform job specs (request only) |
 | 8. Mandatory checkpointing | `agent_worker/checkpoint.py` |
 | 9. Per-tenant isolation | `swarm_api/credentials.py`, `agent_worker/secrets.py`, Terraform `tenancy` module |
 | 10. Callers pick profiles by name | `swarm_api/validation.py` |
