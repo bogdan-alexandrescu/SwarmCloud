@@ -35,11 +35,12 @@ from swarm_common.models import (
 )
 from swarm_common.profiles import RUNNER_PROFILES, step_model_class
 from swarm_common.states import BlockedReason, EventType, ParkReason, TaskState
-from swarm_common.models import ProviderState
+from swarm_common.models import ProviderState, utcnow
 
 from .prgate import wait_for_api
 from . import sessiontag
 from .task_input import TaskMasking, masking_for
+from .waiting_detail import build_waiting, mask_waiting, waiting_row
 from .validation import (
     DEFAULT_CARRIER,
     DEFAULT_STRATEGY,
@@ -523,6 +524,7 @@ def task_to_api(
     console_url: str | None = None,
     heartbeat: dict[str, Any] | None = None,
     summary: bool = False,
+    waiting: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Public JSON shape. Contains no credential material and no backend spec.
 
@@ -709,6 +711,13 @@ def task_to_api(
         # Null for every other state, and on routes that do not compute it.
         # `blocked_by` above is the scheduler's record from its last pass.
         "waiting_for": waiting_for,
+        # #1782 (WAIT-API): why a PARKED, READY or QUEUED task waits, what
+        # resumes it and when it is next checked, built by
+        # `swarm_api.waiting_detail` from what the platform recorded (never
+        # by this serialiser, which reads nothing) and masked here by the
+        # task's own masker, string by string. The GET serves it in full,
+        # a listing row `{reason, summary}`; null on a route that built none.
+        "waiting": mask_waiting(waiting, masking.text),
         # #379: the subscription account the LATEST attempt runs on, derived
         # by `swarm_api.task_accounts` from this task's own account events
         # (never by this serialiser, which reads nothing). Null on routes that
@@ -1414,12 +1423,30 @@ def workflow_to_api(
         **workflow_claude_session(step_tasks or {}),
         "steps": [
             _step_to_api(
-                s, _step_masking(workflow, s, step_tasks or {}), console_url, summary=summary
+                s,
+                _step_masking(workflow, s, step_tasks or {}),
+                console_url,
+                summary=summary,
+                waiting=_step_waiting(s, step_tasks or {}),
             )
             for s in workflow.steps
         ],
         "links": {"console": workflow_console_url(console_url, workflow.workflow_id)},
     }
+
+
+def _step_waiting(step: WorkflowStep, step_tasks: Mapping[str, Task]) -> dict[str, Any] | None:
+    """A waiting step's one line (#1782): `{reason, summary}` off its task, masked.
+
+    Built from the task document alone -- no event, pool or related read --
+    so a workflow view costs nothing more for it. Null for a step with no task
+    read, and for one whose task is not waiting.
+    """
+    task = step_tasks.get(step.task_id) if step.task_id else None
+    if task is None:
+        return None
+    row = waiting_row(build_waiting(task, as_of=utcnow()))
+    return mask_waiting(row, masking_for(task, warm=False).text)
 
 
 def _step_masking(
@@ -1444,6 +1471,7 @@ def _step_to_api(
     console_url: str | None = None,
     *,
     summary: bool = False,
+    waiting: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One workflow step. Its `input` is served MASKED, with its count.
 
@@ -1476,6 +1504,8 @@ def _step_to_api(
         # task's is (`served_model_class`).
         **served_model_class(step.runner_profile, step.model_class),
         "links": {"console": agent_console_url(console_url, step.task_id)},
+        # #1782: why a waiting step waits, in one line (`_step_waiting`).
+        "waiting": waiting,
     }
     if summary:
         return base

@@ -1,0 +1,89 @@
+# Why an agent is waiting: the `waiting` object (#1782)
+
+`GET /v1/tasks/{id}` serves `waiting` on a PARKED, READY or QUEUED agent. It
+says why the agent waits, what ends the wait and when the scheduler next looks
+at it. Every other state serves `null`. Built by
+`apps/swarm-api/swarm_api/waiting_detail.py`.
+
+## Why it exists
+
+During the 2026-10-20/21 CI stall every merge step's page said "waiting for
+CI · eligible since 19:46:25" and nothing else, whether its checks were
+queued, failing or done. The park events already held the facts: the pull
+request's head, each pending check by name, the wakes so far, whether the
+attempt was refunded, and the next check time. `waiting` collects those facts
+and adds one sentence that sums them up.
+
+## The rules it keeps
+
+* **Recorded facts only.** It reads the task document, its newest 100 events,
+  the `waiting_for` pool reading (#362) and, for a dependency or children
+  park, one batched read of the tenant's related agents. A fact that was not
+  recorded is `null`. Nothing is inferred to fill it.
+* **Nothing is fetched from GitHub or a provider at read time.** The CI detail
+  is what the merge step recorded at its last check. `last_checked_at` is
+  that check's time, not the time of the read.
+* **Read-only and tenant-scoped** (invariant 9). `tasks_by_id` and
+  `list_tasks` both drop another tenant's document, so a dependency id that
+  names one serves `state: null`.
+* **Masked.** Every string goes through the agent's own masker
+  (`TaskMasking.text`), the same one `last_error` already goes through.
+* **CREDENTIAL_MISSING serves names only.** These are the provider, each
+  workspace-secret `consumer/slot` and each MCP server's name, taken from an
+  allow-list. A recorded mapping is never copied whole, so a value, or any
+  part of one, cannot be served.
+
+## Shape
+
+```
+waiting = {
+  reason,         # the ParkReason, or READY_CAPACITY, QUEUED
+  summary,        # one sentence: "CI on PR #1779: 5 checks pending (checkov,
+                  #   ci-gate, python (unit), ...); re-checked 2 times; next check 19:46Z"
+  since,          # when this wait began, from the events (a merge step's CI clock:
+                  #   merge_wait.first_parked_at); null when not recorded
+  next_check_at,  # next_eligible_at for the parks where it is a check time; null otherwise
+  resumes_when,   # plain words: what ends the wait
+  detail: {...},  # per reason, below
+  history: [{at, kind, text}],   # newest last, at most 20
+  history_read,   # false when no events were read: an empty history is "not read"
+  read_at,
+}
+```
+
+`next_check_at` is null for AWAITING_INPUT, HUMAN_REQUIRED and
+CHILDREN_INCOMPLETE. Their parks write the park instant into
+`next_eligible_at`, and nothing happens at that time.
+
+**Eligible but not resumed.** Sometimes a timed park's `next_eligible_at` has
+passed and the agent is still PARKED. The summary then ends with "eligible
+since HH:MMZ, still parked: ...", and the history ends with an `eligible`
+entry. Both give the newest `blocked_by` entry that is not the park's own
+copy, or "waiting for the scheduler's next pass" when there is none.
+
+## Detail per reason
+
+| reason | detail |
+|---|---|
+| CI_PENDING | `pull_request {number, url}`, taken from the park's `merge_wait.pull_request`, else from the signed `merge_target.number`. Then `head`, `code`, `pending`, `failed` (when recorded), `wakes`, `attempts_counted` (false when `attempt_refunded`; null when not recorded), `last_checked_at`, `wake_requested_at` |
+| READY_CAPACITY | `waiting_for` as #362 serves it, then the binding `pool`, `pool_state`, `active`, `limit`, `units` and `last_pass` (`blocked_by`). `place_in_line` is null: working it out would mean reading every READY agent behind the pool on each request. `place_in_line_unavailable` says so |
+| PROVIDER_QUOTA_EXHAUSTED, PROVIDER_COOLDOWN, PROVIDER_OUTAGE | `provider`, `account` (recorded `account_id`, else the latest attempt's), `provider_state`, `source`, `account_pool_reason`, `wait_seconds`, `until` |
+| SCHEDULED_RETRY | `last_error` (masked), `attempt` (used), `next_attempt`, `max_attempts`, `next_try_at`, `cause` |
+| DEPENDENCY_INCOMPLETE | `waiting_on [{task_id, step_id, state}]` (current states, one batched read), `states_read` |
+| CHILDREN_INCOMPLETE | `children [{task_id, state}]`, `unfinished`, `total`, `states_read` |
+| AWAITING_INPUT | `who_may_answer {tenant_id, text}`, `opened_at`, `expires_at`, `answer_command` (`/sc answer WF STEP`) |
+| HUMAN_REQUIRED | `who_may_answer`, `expires_at` (null: no park records it), `answer_route` (`POST /v1/tasks/{id}/human-ready`), `cause` |
+| CREDENTIAL_MISSING | `provider`, `secret_names`, `account_pool`, `forge_connection`, `workspace_secrets [{consumer, slot}]`, `mcp_servers [{name, code}]` |
+| BUDGET_EXHAUSTED | `budget` (null: no writer records it today) |
+| MANUAL_PAUSE | `paused_by` (null unless recorded), `paused_at` (the park event's time), `error` |
+
+## Where it is served
+
+* `GET /v1/tasks/{id}`: in full.
+* `GET /v1/tasks` (both views): `waiting: {reason, summary}` on each row. The
+  row is built from its own document and the page's single `waiting_for`
+  pool read. No events or related agents are read per row, so a listing's
+  CI summary comes from `metadata.merge_wait`.
+* `GET /v1/workflows`, `GET /v1/workflows/{id}`: each step serves
+  `waiting: {reason, summary}` off its agent, and so does each agent row the
+  route serves.

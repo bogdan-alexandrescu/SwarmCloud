@@ -42,6 +42,7 @@ from .tasks import require_member
 from ..attempt_totals import totals_for, with_totals
 from ..children import PARENT_CANCELLED, ChildService
 from ..codec import task_to_api, workflow_claude_session, workflow_dispatch, workflow_to_api
+from ..waiting_detail import build_waiting, waiting_row
 from ..task_accounts import accounts_for
 from ..errors import ValidationFailed
 from ..people import add_names, name_lookup
@@ -482,7 +483,13 @@ def _by_ids(
         ],
         "tasks": [
             with_totals(
-                task_to_api(t, account=accounts.get(t.id), console_url=ctx.settings.console_url),
+                task_to_api(
+                    t,
+                    account=accounts.get(t.id),
+                    console_url=ctx.settings.console_url,
+                    # #1782: a waiting step task's one line, off its document.
+                    waiting=waiting_row(build_waiting(t, as_of=ctx.now())),
+                ),
                 totals,
             )
             for t in step_tasks
@@ -546,7 +553,13 @@ def get_workflow(
         # (`attempt_totals.totals_for`).
         "tasks": [
             with_totals(
-                task_to_api(t, account=accounts.get(t.id), console_url=ctx.settings.console_url),
+                task_to_api(
+                    t,
+                    account=accounts.get(t.id),
+                    console_url=ctx.settings.console_url,
+                    # #1782: a waiting step task's one line, off its document.
+                    waiting=waiting_row(build_waiting(t, as_of=ctx.now())),
+                ),
                 totals,
             )
             for t in tasks.items

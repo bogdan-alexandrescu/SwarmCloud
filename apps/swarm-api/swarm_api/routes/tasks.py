@@ -62,6 +62,7 @@ from ..task_input import TaskMasking, input_copy, masking_for
 from ..utilisation import MAX_ATTEMPTS as UTILISATION_ATTEMPTS
 from ..utilisation import utilisation_of
 from ..waiting import waiting_for_page
+from ..waiting_detail import build_waiting, read_inputs, waiting_row
 from ..waker import TASK_FINISHED, ring
 
 router = APIRouter(prefix="/v1/tasks", tags=["tasks"])
@@ -269,6 +270,9 @@ def list_tasks(
     # 2026-10-05, P1 follow-up): one batched attempts query per 30 rows of the
     # page, never one per task (`swarm_api.attempt_totals.totals_for`).
     totals = totals_for(ctx.db, tenant_id, [task.id for task in page.items])
+    # #1782: each row's one-line reason, from the row's own document and the
+    # pool reading above -- no event, pool or related read per row.
+    now = ctx.now()
     payload: dict = {
         "tasks": [
             with_totals(
@@ -279,6 +283,9 @@ def list_tasks(
                     console_url=ctx.settings.console_url,
                     heartbeat=beats.get(task.id),
                     summary=summary,
+                    waiting=waiting_row(
+                        build_waiting(task, waiting_for=waiting.get(task.id), as_of=now)
+                    ),
                 ),
                 totals,
             )
@@ -308,6 +315,17 @@ def get_task(
     # 2026-10-05, lane review P1): the task document describes only the attempt
     # that ended last. One attempt query; see `swarm_api.attempt_totals`.
     totals = totals_for(ctx.db, tenant_id, [task.id])
+    # #1782: why it waits, in full -- its newest events and, for a dependency
+    # or children park, ONE read of the tenant's related tasks. Read-only.
+    reads = read_inputs(ctx.store, task)
+    detail = build_waiting(
+        task,
+        events=reads.events,
+        waiting_for=waiting.get(task.id),
+        related=reads.related,
+        account=accounts.get(task.id),
+        as_of=ctx.now(),
+    )
     served = with_totals(
         task_to_api(
             task,
@@ -315,6 +333,7 @@ def get_task(
             account=accounts.get(task.id),
             console_url=ctx.settings.console_url,
             heartbeat=beats.get(task.id),
+            waiting=detail,
         ),
         totals,
     )
