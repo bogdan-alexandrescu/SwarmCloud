@@ -3348,13 +3348,6 @@ interface SizedShare {
   cpu_limit: number
 }
 
-/** RS-4's fields as the attempt row may carry them. Absent or null: not recorded. */
-interface SizedRecord {
-  sized_cpu_request?: unknown
-  sized_cpu_limit?: unknown
-  sized_live_split?: unknown
-}
-
 function finite(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v)
 }
@@ -3388,18 +3381,18 @@ function burstWords(request: number, limit: number): string {
  *                              never had to itself
  *
  * Null when the attempt carries no usable record -- every attempt admitted
- * before RS-4, and any API that does not serve the fields -- so those read
- * exactly as they did. `AttemptRow` in types.ts does not declare the fields
- * (this lane's territory is this file), hence `SizedRecord` above.
+ * before RS-4, and an API older than the fields (`attempt_to_api` serves them
+ * since the SIZES-DETAIL review) -- so those read exactly as they did. The
+ * values are still checked, not trusted: a malformed stored number reads as
+ * no record rather than as a size.
  */
 function sizedCpuWords(a: AttemptRow): string | null {
-  const rec = a as AttemptRow & SizedRecord
-  const request = rec.sized_cpu_request
-  const limit = rec.sized_cpu_limit
+  const request: unknown = a.sized_cpu_request
+  const limit: unknown = a.sized_cpu_limit
   if (!finite(request) || !finite(limit)) return null
   const n = (v: number) => Number(v.toFixed(2))
   if (a.backend === 'CLOUD_RUN_JOB') return `${n(request)} cores guaranteed, no burst on Cloud Run`
-  const split = rec.sized_live_split
+  const split: unknown = a.sized_live_split
   if (typeof split === 'object' && split !== null) {
     const worker = sizedShare((split as Record<string, unknown>).worker)
     const display = sizedShare((split as Record<string, unknown>).display)
