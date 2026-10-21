@@ -150,13 +150,14 @@ describe('G1-08: a phone Running row keeps its state, profile and workflow', () 
       tenant_id: 'eng',
     } as TaskPage)
 
-  // MUTATION: drop the `.ov-prun-sub` line, or print the full workflow id in it.
-  it('draws a second line with state, profile and the short workflow id, linking to the workflow', async () => {
+  // MUTATION: drop the `.ov-prun-sub` line, or cut the workflow id in it
+  // (visual QA run 3, overview-automate-006: the id is whole since 2026-10-21).
+  it('draws a second line with state, profile and the whole workflow id, linking to the workflow', async () => {
     const el = await mount({ tasks: tasks() })
     const rows = [...el.querySelectorAll('#ov-running .ov-prun li')]
     expect(rows.length).toBe(2)
     const subs = rows.map((r) => text(r.querySelector('.ov-prun-sub')))
-    expect(subs).toEqual(['running · claude-code · wf_ccdd14…', 'running · codex · wf_99ee00…'])
+    expect(subs).toEqual(['running · claude-code · wf_ccdd1422ab', 'running · codex · wf_99ee0011cc'])
     // Two "implement" rows are now two different lines.
     expect(new Set(subs).size).toBe(2)
     const wf = rows[0]!.querySelector<HTMLAnchorElement>('.ov-prun-sub a')!
@@ -180,7 +181,7 @@ describe('G1-08: a phone Running row keeps its state, profile and workflow', () 
   })
 })
 
-describe('G1-13: a disabled tile shows its whole reason, two lines before it cuts', () => {
+describe('G1-13: a disabled tile shows its whole reason, uncut at every width', () => {
   const REASON = 'the merge chain (#295) is disabled until its review step stops looping'
   const profile = {
     resource_class: 'standard',
@@ -199,21 +200,21 @@ describe('G1-13: a disabled tile shows its whole reason, two lines before it cut
     expect(small.getAttribute('title')).toContain(REASON)
   })
 
-  // MUTATION: put `white-space: nowrap` back on the disabled tile's reason, or drop the two-line clamp.
-  it('wraps the reason to two lines rather than one ellipsis', () => {
+  // MUTATION: put `white-space: nowrap` back on the disabled tile's reason, or
+  // clamp it again (visual QA run 3, overview-automate-005: two lines cut
+  // "Use claude-code." at 1440).
+  it('wraps the reason, whole, rather than one ellipsis or a two-line clamp', () => {
     const host = document.createElement('div')
     host.innerHTML = '<div class="ov-headroom"><div class="ov-hps"><div class="ov-hp is-off"><span class="ov-idc">x</span><b class="ov-hp-off">disabled</b><small>r</small></div></div></div>'
     document.body.appendChild(host)
     const small = host.querySelector('.ov-hp.is-off small')!
     for (const env of [WIDE, PHONE]) expect(painted(small, 'white-space', env)).not.toBe('nowrap')
-    expect(painted(small, '-webkit-line-clamp', WIDE)).toBe('2')
-    expect(painted(small, 'display', WIDE)).toBe('-webkit-box')
-    expect(painted(small, '-webkit-box-orient', WIDE)).toBe('vertical')
-    expect(painted(small, 'overflow', WIDE)).toBe('hidden')
+    expect(painted(small, '-webkit-line-clamp', WIDE)).toBeNull()
+    expect(painted(small, 'overflow', WIDE)).toBe('visible')
     // WHOLE ON A PHONE (live QA OV-13, 2026-10-11): the cut text was only in
     // a `title`, which a touch screen cannot open.
-    // MUTATION: drop the phone block's unclamp in overview.css.
-    expect(painted(small, '-webkit-line-clamp', PHONE)).not.toBe('2')
+    // MUTATION: clamp the reason again at any width in overview.css.
+    expect(painted(small, '-webkit-line-clamp', PHONE)).toBeNull()
     expect(painted(small, 'overflow', PHONE)).toBe('visible')
     // An available tile's one-line foot is unchanged.
     host.querySelector('.ov-hp')!.classList.remove('is-off')
