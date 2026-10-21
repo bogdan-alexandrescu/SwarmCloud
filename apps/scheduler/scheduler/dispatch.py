@@ -5,7 +5,9 @@ runs until capacity has already been reserved in Firestore, and every failure
 path hands that capacity straight back rather than leaving a slot held by a
 container that will never exist.
 
-Cloud Run Jobs is the primary backend. GKE Autopilot takes browser work, because
+Cloud Run Jobs was chosen as the primary backend; since 2026-10-10 GKE
+Autopilot runs every agent profile but `mock` (docs/architecture.md §5). GKE
+first took browser work, because
 Chromium needs a large /dev/shm and GKE gives direct control over it.
 That is `browser`, and `claude-code-browser` since contract request 67
 (2026-10-11).
