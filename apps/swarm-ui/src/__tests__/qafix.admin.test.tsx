@@ -134,8 +134,12 @@ describe('QA-037: a refused Edit is reachable, and says why', () => {
       // reader the route will refuse.
       expect(document.querySelector('aside.adm-side')).toBeNull()
       expect(edit.getAttribute('aria-expanded')).toBe('false')
-      // It still looks unavailable. MUTATION: drop `.is-blocked`'s opacity.
-      expect(painted(edit, 'opacity', WIDE)).toBe('.4')
+      // It still looks unavailable, by its edge and its ink rather than a
+      // fade (run 3, admin-007: `opacity: .4` was 2.33:1 in dark;
+      // qafix3.admin.test.tsx holds the contrast). MUTATION: drop
+      // `.is-blocked`'s dashed edge.
+      expect(painted(edit, 'border-style', WIDE)).toBe('dashed')
+      expect(painted(edit, 'color', WIDE)).toBe('var(--text-faint)')
       expect(painted(edit, 'cursor', WIDE)).toBe('not-allowed')
     }
   })
@@ -197,9 +201,10 @@ describe('QA-045: In use and Ceiling draw their figures alike', () => {
       expect(painted(figure, 'font-family', WIDE)).toBe('var(--mono)')
       expect(painted(figure, 'font-variant-numeric', WIDE)).toBe('tabular-nums')
       // MUTATION: leave In use a right-aligned `td.is-num`: one figure at its
-      // column's right edge, the other at 6ch from its column's left.
+      // column's right edge, the other at 6ch from its column's left. Both are
+      // flush left in the slot since run 3 (admin-004, qafix3.admin.test.tsx).
       expect(painted(figure, 'width', WIDE)).toBe('6ch')
-      expect(painted(figure, 'text-align', WIDE)).toBe('right')
+      expect(painted(figure, 'text-align', WIDE)).toBe('left')
       expect(painted(figure, 'display', WIDE)).toBe('inline-block')
     }
     const heads = [...document.querySelectorAll('table.adm-limits thead th')]
@@ -219,8 +224,11 @@ describe('QA-045: In use and Ceiling draw their figures alike', () => {
       // MUTATION: drop the phone `.adm-inuse` rule: `0` sits 5ch into the
       // value column while `20` starts at its edge.
       expect(painted(figure, 'text-align', PHONE)).toBe('left')
-      expect(painted(figure, 'width', PHONE)).toBe('auto')
     }
+    // In use's figure is its field's only part; Ceiling's keeps its 6ch slot so
+    // `edit` after it is at one x in every record (run 3, admin-009).
+    expect(painted(row.querySelector('.adm-inuse')!, 'width', PHONE)).toBe('auto')
+    expect(painted(row.querySelector('.adm-ceiling')!, 'width', PHONE)).toBe('6ch')
   })
 })
 

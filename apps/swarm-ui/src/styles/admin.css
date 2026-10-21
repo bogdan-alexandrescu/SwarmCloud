@@ -214,12 +214,18 @@
    column's left, under a left one: one row drew `0` and `20` in two faces at
    two alignments. Both figures are now this slot, in the figure face
    `td.is-num` gives a figure everywhere else (styles.css, mono tabular), and
-   both heads are left over them (AdminSettings.tsx `LIMIT_COLUMNS`). */
+   both heads are left over them (AdminSettings.tsx `LIMIT_COLUMNS`).
+   AND BOTH FIGURES START WHERE THEIR HEAD STARTS (visual QA run 3,
+   admin-004, 2026-10-21). Right-aligned in a 6ch slot under a LEFT head,
+   In use's `0` sat 5ch into its column and read as centred, and Ceiling's
+   `8`, `20` and `100` started at three x's under one head: ragged. Flush left,
+   every figure starts at its head's first letter; the slot keeps its fixed
+   width, so `edit` after it still starts at one x. */
 .adm-inuse,
 .adm-ceiling {
   display: inline-block;
   width: 6ch;
-  text-align: right;
+  text-align: left;
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
 }
@@ -229,8 +235,15 @@
    `disabled`, so a keyboard reaches the reason on it (`Admins only: …`), and
    `.limit-edit button:disabled` (styles.css) no longer matches it: this is
    that rule's look, and its hover is held still. */
-.adm-ceiling-cell .limit-edit > button.is-blocked { opacity: .4; cursor: not-allowed; }
-.adm-ceiling-cell .limit-edit > button.is-blocked:hover { color: var(--text-dim); border-color: var(--ctl-bd); }
+/* LEGIBLE, AND MARKED BY ITS EDGE (visual QA run 3, admin-007, 2026-10-21).
+   `opacity: .4` over `--text-dim` was 2.33:1 in dark: the one control a
+   keyboard now reaches to hear why it is locked was the hardest word on the
+   row to read. The word is `--text-faint` at full strength (above 4.5:1 on
+   `--surface` in both themes) and the edge is dashed, the console's mark for
+   something there but not available (`.is-phantom`), so a locked `edit` is
+   still told apart from a live one without fading it. */
+.adm-ceiling-cell .limit-edit > button.is-blocked { color: var(--text-faint); border-style: dashed; cursor: not-allowed; }
+.adm-ceiling-cell .limit-edit > button.is-blocked:hover { color: var(--text-faint); border-color: var(--ctl-bd); }
 .adm-ceiling.is-unset { color: var(--text-dim); }
 /* THE CONFIGURED HARD LIMIT'S SLOT (G5-21): Pools' `/100` (`.cap-was`, the
    micro mono of styles.css) after the effective figure. A fixed width that is
@@ -258,6 +271,12 @@
    carries no margin, it touched it. The same `--ctl-s5` on its own top
    collapses with the section's in the first case and is the gap in the
    second. */
+/* AND THE TWO CARDS BEFORE IT (visual QA run 3, admin-002, 2026-10-21):
+   Additional repositories and Model prices carried no margin, so they sat
+   ~2px apart, one box read as two. Every card under the families takes the
+   same `--ctl-s5`. */
+.adm-repo-limits,
+.adm-prices,
 .adm-fallback-token { margin-top: var(--ctl-s5); }
 .adm-token-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .adm-token-form > input {
@@ -539,7 +558,13 @@ table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg {
    `/10` far below its figure where it was. Here they are three columns of one
    row, the figure starting where every other value in the record does. The
    key track restates styles.css's (`--stack-key` and its fallback): change
-   the two together. */
+   the two together.
+   THE TWO SLOTS KEEP THEIR WIDTHS (visual QA run 3, admin-009, 2026-10-21).
+   They were `width: auto` here, so the `auto` tracks were as wide as `8`,
+   `50 /100` or `—` and `edit` moved from record to record. At 6ch and 7ch,
+   as in the table, the tracks are one width down the page and `edit` is at
+   one x; the figure is flush left in its slot, so it still starts at the
+   value column. */
 /* THE RECORD BEING EDITED IS TINTED TO ITS EDGES (VQA V193). On a phone the
    row is a record card with 16px of padding, and the tint on its cells
    (`tr.is-editing > th, > td`, above) stopped 16px short of the card's
@@ -554,8 +579,8 @@ table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg {
   .is-stacked > table > tbody > tr > td.adm-ceiling-cell {
     grid-template-columns: minmax(0, var(--stack-key, calc(var(--t-micro) * 10.5))) auto auto minmax(0, 1fr);
   }
-  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-ceiling { grid-column: 2; width: auto; margin: 0; text-align: left; }
-  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-was { grid-column: 3; width: auto; margin: 0; }
+  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-ceiling { grid-column: 2; margin: 0; }
+  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-was { grid-column: 3; margin: 0; }
   .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .limit-edit { grid-column: 4; }
   /* In use's figure starts at the value column too (QA-045), like Ceiling's. */
   .is-stacked > table > tbody > tr > td > .adm-inuse { width: auto; text-align: left; }

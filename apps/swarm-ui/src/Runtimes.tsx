@@ -836,8 +836,28 @@ function RuntimeCard({
  * every card, and it is `#help/credential-names-not-values` -- linked from the
  * column and from the footer.
  */
-/** A secret name with a break opportunity after each `_`, and nowhere else. */
+/**
+ * The longest secret name drawn as one unbreakable word.
+ *
+ * WHOLE WHEN IT FITS (visual QA run 3, capacity-003, 2026-10-21). With a
+ * `<wbr>` after every `_`, the 390 line `demo-vendor · any one of DEMO_API_KEY,
+ * DEMO_OAUTH_TOKEN` broke at `DEMO_API_` / `KEY`: a name that fits the next
+ * line whole was split, which reads as a break mid-word. A name is one token,
+ * so it carries no break at all and moves to the next line whole. 28
+ * characters is what that line holds: the catalogue card's value column at
+ * 390 is ~260px (358px of content, less the card's padding, the 9ch key and
+ * the gap), and the name's 14px mono is ~8.4px an advance. Every secret the
+ * catalogue mounts today is 23 characters or fewer.
+ */
+const WHOLE_SECRET_CHARS = 28
+
+/**
+ * A secret name, whole when it fits a phone's line (`WHOLE_SECRET_CHARS`);
+ * longer, with a break opportunity after each `_` and nowhere else, so it never
+ * runs out of the card (`.rt-cred code` is `overflow-wrap: normal`).
+ */
 function breakAtUnderscores(name: string): ReactNode {
+  if (name.length <= WHOLE_SECRET_CHARS) return name
   const parts = name.split('_')
   return parts.map((part, i) => (
     <Fragment key={i}>
@@ -947,8 +967,9 @@ export function Credential({ runtime }: { runtime: Runtime }) {
           {i > 0 && ', '}
           {/* Never broken mid-word (QA D22), but WHOLE at 1440 (live QA
               CAP-14): it was cut to `CLAUDE_CODE_OAUTH_…` on a card with room,
-              and the name is the one fact this row exists to show. It may
-              break only after an underscore, between the name's own words. */}
+              and the name is the one fact this row exists to show. One that
+              fits a phone's line never breaks (capacity-003); a longer one
+              may break only after an underscore, between its own words. */}
           <code title={s}>{breakAtUnderscores(s)}</code>
         </span>
       ))}

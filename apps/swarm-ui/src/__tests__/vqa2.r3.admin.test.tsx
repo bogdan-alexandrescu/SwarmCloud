@@ -283,7 +283,9 @@ describe('V160: a pool id segment longer than the line wraps inside the card', (
     const id = 'tenant:swarm-platform-integration-acceptance-environment-long-name'
     await limits([pool(id)])
     const segs = [...document.getElementById(`limit-${id}`)!.querySelectorAll('th .ctl-sub > .adm-key-seg')]
-    expect(segs.map((s) => s.textContent)).toEqual(['tenant:', 'swarm-platform-integration-acceptance-environment-long-name'])
+    // One `kind:name` pair, so one segment (visual QA run 3, admin-003): it
+    // is the segment's own wrapping that keeps it inside the card.
+    expect(segs.map((s) => s.textContent)).toEqual([id])
     for (const env of [PHONE, WIDE]) {
       for (const s of segs) {
         // MUTATION: put `white-space: nowrap` back as the winner: the segment

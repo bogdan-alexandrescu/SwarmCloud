@@ -118,8 +118,9 @@ describe('G5-11: a pool key is never cut by a clause that repeats it', () => {
     await waitFor(() => expect(document.getElementById(`limit-${SMOKE}`)).not.toBeNull(), WAIT)
     const sub = document.getElementById(`limit-${SMOKE}`)!.querySelector('th .ctl-sub')!
     expect(sub.textContent).toBe(SMOKE)
-    // One break opportunity after each colon, and none elsewhere.
-    expect(sub.querySelectorAll('wbr')).toHaveLength(3)
+    // One break opportunity, after the colon that ends a `kind:name` pair
+    // (visual QA run 3, admin-003), and none elsewhere.
+    expect(sub.querySelectorAll('wbr')).toHaveLength(1)
     for (const w of sub.querySelectorAll('wbr')) expect(w.previousSibling?.textContent?.endsWith(':')).toBe(true)
     expect(painted(sub, 'overflow-wrap', WIDE)).toBe('normal')
     expect(painted(sub, 'word-break', WIDE)).toBe('keep-all')
