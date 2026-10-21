@@ -188,7 +188,9 @@ def test_a_diff_that_only_adds_an_unrelated_file_still_runs_the_whole_tree_guard
 # The walkers outside apps/, tests/ and docs/ (CI-GUARDS-MORE, part of #1822):
 # each reads every file of a scripts/, terraform/ or kubernetes/ directory, so
 # a new file there breaks it without any test naming the file. All weigh
-# under 5 CI-seconds; the heavier ones stay with main's push run.
+# under 5 CI-seconds; the heavier ones stay with main's push run
+# (test_shellcheck_ci has no weight recorded yet but takes minutes: it stays
+# out, which the median rule below cannot see).
 OUTSIDE_WALKERS = (
     "tests/unit/common/test_startup_progress_contract.py",
     "tests/unit/control_plane/test_reconciler_cloud_run_stall_guard.py",
@@ -210,7 +212,6 @@ OUTSIDE_WALKERS = (
     "tests/unit/worker/test_checkpoint_retention.py",
     "tests/unit/worker/test_workspace_provisioner_scope.py",
     "tests/unit/scripts/test_swarm_verify_image_helpers.py",
-    "tests/unit/scripts/test_shellcheck_ci.py",
 )
 
 

@@ -92,7 +92,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # request and every lane pays for this set (CI-GUARDS-ALWAYS, part of #1822).
 # After test_docs_agent_vocabulary: the walkers of scripts/, terraform/ and
 # kubernetes/, the same defect class one directory over (a new .tf, .yaml or
-# .sh breaks them and names none), each under 5 CI-seconds, about 12 s
+# .sh breaks them and names none), each under 5 CI-seconds, about 11 s
 # together (CI-GUARDS-MORE, part of #1822).
 GUARD_TESTS=(
   tests/unit/scripts/test_docs_describe_what_was_built.py
@@ -127,7 +127,6 @@ GUARD_TESTS=(
   tests/unit/worker/test_checkpoint_retention.py
   tests/unit/worker/test_workspace_provisioner_scope.py
   tests/unit/scripts/test_swarm_verify_image_helpers.py
-  tests/unit/scripts/test_shellcheck_ci.py
 )
 # The guards that read docs: all a docs-only diff selects of GUARD_TESTS.
 # Pull-request CI runs the whole GUARD_TESTS even for a docs-only change.
