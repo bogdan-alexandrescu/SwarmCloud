@@ -532,6 +532,33 @@ describe('Outputs: the answer first, then every file', () => {
     expect(api.count(`/v1/tasks/${REF}/artifacts`), 'the listing was asked for with no summary to list').toBe(0)
   })
 
+  // task-019, QAFIX3-AGENT (visual QA run 3, wf_d598fa7bffdb41fc9d76,
+  // 2026-10-21; part of #1680): a value written only when the attempt ends --
+  // the answer, the file list, the commit cloned -- wore the `reading` chip,
+  // the word for a read in flight, though no read was in flight. It keeps the
+  // temporary (dotted) silhouette and says its own not-yet instead.
+  it('words a value due at finish as its not-yet, never `reading`', async () => {
+    await openPane(
+      finishedRoutes({
+        [`/v1/tasks/${REF}`]: { task: task({ state: 'RUNNING', completed_at: null, result_summary: null }) },
+        [`/v1/tasks/${REF}/answer`]: answer({ status: 'not_yet', source: null, object: null, format: null, content: null, complete: null, is_error: null, subtype: null, num_turns: null, attempt: attemptBlock(false) }),
+        [`/v1/tasks/${REF}/transcript`]: transcript({ stream: stream({ source: 'live', age_seconds: 2 }), format: 'claude-stream-json', steps: [step(1, { text: 'Reading.' })], complete: false, attempt: attemptBlock(false) }),
+        [`/v1/tasks/${REF}/logs`]: logs([logStream('agent_stderr', { source: 'live' }), logStream('stdout', { source: 'live' }), logStream('stderr', { source: 'live' })], false),
+      }),
+    )
+    const out = await sectionReady('Outputs', /uploaded when the attempt ends/)
+    const inputs = await sectionReady('Inputs', /reported at\s*finish/)
+    const marks = [...out.querySelectorAll<HTMLElement>('.ctl-mark.is-pending'), ...inputs.querySelectorAll<HTMLElement>('li .ctl-mark.is-pending')]
+    // MUTATION: drop the not-yet marks altogether -- the silhouette that says "temporary" goes with the word.
+    expect(marks.length).toBeGreaterThanOrEqual(3)
+    for (const m of marks) {
+      // MUTATION: draw `<Mark kind="pending">` before the words again -- `reading uploaded when the attempt ends` (task-019).
+      expect(m.textContent, m.getAttribute('aria-label') ?? '').not.toMatch(/reading/)
+    }
+    // MUTATION: lose the words with the chip -- a dotted mark that says nothing.
+    expect(marks.map((m) => m.textContent)).toEqual(expect.arrayContaining(['not yet', 'uploaded when the attempt ends', 'reported at finish']))
+  })
+
   it('says a route this deployment does not serve is not served, never that there is no answer', async () => {
     // A fresh Response per read: a body can be read once.
     await openPane(finishedRoutes({ [`/v1/tasks/${REF}/answer`]: () => json({ detail: 'Not Found' }, 404) }))
