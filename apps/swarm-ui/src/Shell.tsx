@@ -4,7 +4,6 @@ import {
   useCallback,
   useContext,
   useEffect,
-  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -812,19 +811,14 @@ export function Screen<T>({
   // THE FAILURE PANEL'S `Try again` UNMOUNTS WITH ITS PANEL (a11y-keyboard-001):
   // the read it starts puts the screen back to `loading`, and focus went to
   // <body> with the button. It is handed to the head's refresh first, which
-  // stays mounted through the read (`⟳ reading…`) and is the same press; on an
-  // admin gate, which draws no refresh, to the page's heading.
+  // stays mounted through the read (`⟳ reading…`) and is the same press. The
+  // one failure that draws no head refresh, an admin gate, draws no Try again
+  // either (`FailedPanel`), so there is always a refresh to hand it to.
   const headRefresh = useRef<HTMLButtonElement>(null)
-  const headingId = useId()
   const retryFromPanel = useCallback(() => {
-    const heading = document.getElementById(headingId)
-    if (headRefresh.current !== null) headRefresh.current.focus()
-    else if (heading !== null) {
-      heading.tabIndex = -1
-      heading.focus()
-    }
+    headRefresh.current?.focus()
     retry()
-  }, [headingId, retry])
+  }, [retry])
 
   const data =
     state.status === 'ok' ? state.data : state.status === 'stale' ? state.data : null
@@ -847,7 +841,7 @@ export function Screen<T>({
           established. A per-screen copy would be a second opinion about the
           environment, and the second opinion is the one that gets believed
           because it is next to what you are reading. */}
-      <PageHead title={title} help={help} headingId={headingId}>
+      <PageHead title={title} help={help}>
         {/* An admin gate is not a read to renew: the panel says `admin only`
             (#138). The head keeps its height without it (`.c-phead`'s
             min-height, visual QA V064), so the title does not move. */}
