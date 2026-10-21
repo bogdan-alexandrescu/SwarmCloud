@@ -3,7 +3,7 @@
  * part of #1633, owner decision 2026-10-19 "All under Profile; Admin by
  * role").
  *
- *   * A platform admin (`/v1/tenants/me` `is_admin`) sees Admin with its five
+ *   * A platform admin (`/v1/tenants/me` `is_admin`) sees Admin with its six
  *     pages, Workspaces you admin last.
  *   * A person whose stored role is `admin` in a GROUP workspace
  *     (`/v1/tenants/mine`) sees Admin with only Workspaces you admin, which
@@ -156,12 +156,12 @@ describe('who sees Admin (NAV-ADMIN-ROLE)', () => {
     expect(panelRows()).toEqual(['Workspaces you admin'])
   })
 
-  it('shows a platform admin the five Admin pages, with Workspaces you admin last', async () => {
+  it('shows a platform admin the six Admin pages, Runner sizes beside Pool limits (SIZES-UI) and Workspaces you admin last', async () => {
     serve(ME(true), [PERSONAL, group('eng', 'admin', { role: { name: 'admin', source: 'platform_admin' } })])
     await shell('admin', 'limits')
     await waitFor(() => expect(adminItem()).not.toBeNull())
     expect(adminItem()!.getAttribute('href')).toBe('/admin/limits')
-    expect(panelRows()).toEqual(['Pool limits', 'Tenants', 'Platform counts', 'People', 'Workspaces you admin'])
+    expect(panelRows()).toEqual(['Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'People', 'Workspaces you admin'])
   })
 })
 
