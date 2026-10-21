@@ -430,7 +430,8 @@ def test_the_skill_is_granted_only_the_exact_open_commands():
 def test_the_plugin_version_moved_one_patch_with_its_pin():
     manifest = json.loads(_MANIFEST.read_text())
     version = tuple(int(part) for part in manifest["version"].split("."))
-    assert version == (_VERSION_BEFORE[0], _VERSION_BEFORE[1], _VERSION_BEFORE[2] + 1)  # MUTATION: no bump -- 0.5.47.
+    # Past it, not equal to it: a later lane (WAIT-PLUGIN, 0.5.49) moves it again.
+    assert version > _VERSION_BEFORE  # MUTATION: no bump -- 0.5.47.
     pinned = manifest["mcpServers"]["swarmcloud"]["args"]
     assert any(f"@sc-v{manifest['version']}#" in arg for arg in pinned)  # MUTATION: bump the version, not the pin -- absent.
 

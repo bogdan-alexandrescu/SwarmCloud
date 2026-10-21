@@ -168,6 +168,40 @@ def with_console(answer: dict[str, Any], document: Any) -> dict[str, Any]:
     return answer
 
 
+def waiting_brief(document: Any) -> dict[str, Any] | None:
+    """A waiting task's `{reason, summary, next_check_at}`, from the API's `waiting` (#1782).
+
+    WAIT-API builds `waiting` from what the platform recorded -- a merge
+    step's pull request and pending checks, a pool's units, a provider's
+    window -- and puts it into one sentence, `summary`. The plugin carries
+    that sentence and the next check, never the `detail` and `history`: those
+    are the console page's, and a row re-reads its reply on every turn.
+
+    None when there is no sentence to carry: a task that is not waiting, and
+    an API older than WAIT-API, which serves no `waiting` at all. Every reader
+    then keeps the line it printed before.
+
+    None, too, when the API's reason is not the task's park reason: a READY
+    step still marked DEPENDENCY_INCOMPLETE is waiting for a parent, and the
+    API's READY sentence ("every pool has room") would send the reader to
+    capacity instead -- the park reason stays the answer there.
+    """
+    waiting = document.get("waiting") if isinstance(document, dict) else None
+    if not isinstance(waiting, dict):
+        return None
+    park = document.get("park_reason")
+    if park and waiting.get("reason") != park:
+        return None
+    summary = waiting.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        return None
+    return {
+        "reason": waiting.get("reason"),
+        "summary": " ".join(summary.split()),
+        "next_check_at": waiting.get("next_check_at"),
+    }
+
+
 def new_cursor(streams: tuple[str, ...] = STREAMS) -> dict[str, Any]:
     """The cursor for a task nothing has been read from yet.
 
@@ -402,6 +436,9 @@ def _follow_one(
             "step_id": task.get("step_id"),
             "runner_profile": task.get("runner_profile"),
             "park_reason": task.get("park_reason"),
+            # Why it waits, in the API's own sentence (#1782): what
+            # `progress.state_line` writes instead of the bare park reason.
+            "waiting": waiting_brief(task),
             # What a READY task is waiting on, as the scheduler recorded it --
             # `progress.state_line` names it, so a row waiting for capacity
             # says which pool refused rather than only that it waits.

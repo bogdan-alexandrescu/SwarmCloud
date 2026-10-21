@@ -67,12 +67,21 @@ import threading
 import time
 import zlib
 from collections import OrderedDict
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from swarm_common.states import PENDING_STATES
 
 from .client import SwarmClient, SwarmError, task_id_of
-from .follow import AGENT_STREAMS, DEFAULT_EVENT_PAGE, console_link, follow, follow_command, render
+from .follow import (
+    AGENT_STREAMS,
+    DEFAULT_EVENT_PAGE,
+    console_link,
+    follow,
+    follow_command,
+    render,
+    waiting_brief,
+)
 from .follow import STREAMS as RUNNER_STREAMS
 from .patches import describe_task, explain_failure
 from .render import describe_blocker, parse_time, task_label
@@ -188,10 +197,12 @@ def encode_since(
     said: dict[str, Any],
     groups: dict[str, str] | None = None,
     failures: dict[str, int] | None = None,
+    waits: dict[str, str] | None = None,
 ) -> str:
     """The cursor, the states last reported, the one-off lines already said,
     which tasks are read from the runner's streams rather than the agent's,
-    and how many calls in a row could not read each task.
+    how many calls in a row could not read each task, and the key of each
+    waiting task's reason last written (`waiting_key`, #1782).
 
     base64url of compact JSON: opaque to the caller, readable by anyone
     debugging a row, and carrying nothing the follow report did not already
@@ -214,6 +225,11 @@ def encode_since(
         "g": {k: v for k, v in (groups or {}).items() if v == "runner"},
         "f": {k: int(v) for k, v in (failures or {}).items() if v},
     }
+    said_waits = {k: str(v) for k, v in (waits or {}).items() if v}
+    if said_waits:
+        # Only when a task waits with a reason the API put into words: a
+        # token for an API older than WAIT-API stays byte for byte as it was.
+        payload["w"] = said_waits
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     body = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
     return f"{body}.{_checksum(body)}"
@@ -441,6 +457,19 @@ def read_failures(token: Any) -> dict[str, int]:
     }
 
 
+def read_waits(token: Any) -> dict[str, str]:
+    """Each waiting task's `waiting_key` last written, from a token (#1782).
+
+    Empty for a token that cannot be read, or one minted before this: the
+    row then writes the reason once more, which is a repeat, never a loss.
+    """
+    payload = _payload(token)
+    raw = payload.get("w") if payload is not None else None
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): v for k, v in raw.items() if isinstance(v, str) and v}
+
+
 def decode_since(
     token: Any,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, set[str]], dict[str, str], str | None]:
@@ -584,6 +613,60 @@ def narrate(line: str) -> list[str]:
 # What a task is doing, as one line
 # --------------------------------------------------------------------------
 
+def _clock_words(at: Any, now: datetime) -> str | None:
+    """`02:46Z`, or `2026-10-22 02:46Z` on another day -- the API's own form."""
+    when = parse_time(at)
+    if when is None:
+        return None
+    when = when.astimezone(timezone.utc)
+    if when.date() == now.astimezone(timezone.utc).date():
+        return when.strftime("%H:%MZ")
+    return when.strftime("%Y-%m-%d %H:%MZ")
+
+
+def waiting_words(brief: dict[str, Any], now: datetime | None = None) -> str:
+    """A waiting task's one line: the API's summary, then its next check (#1782).
+
+    The next check is added only when the summary does not already name that
+    time -- a CI park's summary ends "next check 02:46Z" and a provider's says
+    "until 03:10Z" -- so `/sc status` never prints one time twice.
+    """
+    words = str(brief.get("summary") or "")
+    clock = _clock_words(brief.get("next_check_at"), now or datetime.now(timezone.utc))
+    # The time of day alone decides "already named": the API dates a time on
+    # another day than ITS clock's, and this bridge's clock may disagree.
+    if clock is not None and clock.rsplit(" ", 1)[-1] not in words:
+        words += f"; next check {clock}"
+    return words
+
+
+def waiting_fields(task: dict[str, Any]) -> dict[str, Any]:
+    """`swarm_status`'s `waiting` and `waiting_line` for a waiting task (#1782).
+
+    `waiting` is `waiting_brief`; `waiting_line` is what `/sc status <task>`
+    prints after the state, e.g. `CI on PR #1779: 5 checks pending; next check
+    02:46Z`. Empty -- no key at all -- for a task the API gave no reason in
+    words, so an older API's row is exactly the row it was.
+    """
+    brief = waiting_brief(task)
+    if brief is None:
+        return {}
+    return {"waiting": brief, "waiting_line": waiting_words(brief)}
+
+
+def waiting_key(task: dict[str, Any]) -> str | None:
+    """What a row compares to decide that a waiting task's reason is news.
+
+    The CRC-32 of the words the row would write, so the `since` token carries
+    eight hex digits per task, not the sentence. None when the API put no
+    reason into words (`waiting_brief`): an older API, or a task not waiting.
+    """
+    brief = waiting_brief(task)
+    if brief is None:
+        return None
+    return f"{zlib.crc32(waiting_words(brief).encode('utf-8')):08x}"
+
+
 def state_line(task: dict[str, Any]) -> str:
     """Where one task is, in words -- above all, WHY a waiting task waits.
 
@@ -600,6 +683,15 @@ def state_line(task: dict[str, Any]) -> str:
         # step held on DEPENDENCY_INCOMPLETE is waiting for a parent, not for
         # capacity, and saying both would send the reader to the wrong one.
         reason = task.get("park_reason")
+        brief = waiting_brief(task)
+        if brief is not None:
+            # WHY IN THE API'S OWN WORDS (#1782): the recorded facts -- the
+            # pull request, the checks still pending, the pool that binds --
+            # rather than one sentence per reason that reads the same for a
+            # queued check, a failing one and a finished one. The summary
+            # already names a READY task's binding pool, so no blockers.
+            why = clip(waiting_words(brief), 240) + (f" ({reason})" if reason else "")
+            return f"[{label}] waiting · {state} · {why}; holds no capacity"
         if reason:
             why = f"{_PARKED_BECAUSE.get(str(reason), str(reason).lower())} ({reason})"
         else:
@@ -667,6 +759,7 @@ def watch(
         )
     cursor, states, said, groups, note = decode_since(since)
     failures = read_failures(since)
+    waits = read_waits(since)
     first_call = since in (None, "")
     wait = max(0.0, min(float(wait_seconds or 0), MAX_WAIT_SECONDS))
     budget = max(0, int(max_log_bytes))
@@ -719,8 +812,19 @@ def watch(
                 now = task.get("state") if task.get("read") == "ok" else None
                 # A failed read is `render`'s line (`! <error>`); a finished
                 # task's closing line is too. This says only where a task MOVED.
+                said_wait = waiting_key(task) if now is not None and not task.get("terminal") else None
                 if now is not None and now != before and not task.get("terminal"):
                     lines.append(state_line(task))
+                elif said_wait is not None and said_wait != waits.get(task_id):
+                    # The SAME state, a NEW reason (#1782): a CI park whose
+                    # checks moved, a READY task whose binding pool changed.
+                    # Once per change -- the key rides in the token -- never
+                    # once per poll.
+                    lines.append(state_line(task))
+                if said_wait is not None:
+                    waits[task_id] = said_wait
+                elif now is not None:
+                    waits.pop(task_id, None)
                 if before in _PENDING and now is not None and now not in _PENDING:
                     started = True
                 if now is not None:
@@ -881,7 +985,7 @@ def watch(
         # each result, and with `since` first it showed a cursor instead of
         # what the task was doing. JSON keeps this order through the tool.
         "lines": shown,
-        "since": encode_since(cursor, states, said, groups, failures),
+        "since": encode_since(cursor, states, said, groups, failures, waits),
         "tasks": tasks,
         "all_finished": all_finished,
         "stop": stop,

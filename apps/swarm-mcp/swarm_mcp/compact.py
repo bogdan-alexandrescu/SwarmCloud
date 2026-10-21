@@ -61,7 +61,7 @@ from swarm_common.states import CONCURRENCY_STATES
 
 from . import details
 from .client import TERMINAL, SwarmClient, SwarmError
-from .follow import console_link, event_type
+from .follow import console_link, event_type, waiting_brief
 from .progress import (
     _PENDING,
     PENDING_POLL_CAP_SECONDS,
@@ -74,6 +74,8 @@ from .progress import (
     outcome,
     questions_count,
     questions_words,
+    waiting_key,
+    waiting_words,
 )
 from .render import _DEPENDENCY_WAIT, describe_blocker, merge_row, parse_time, task_label
 
@@ -349,6 +351,15 @@ def progress_line(client: SwarmClient, task: dict[str, Any], now: datetime) -> t
     if state in _PENDING:
         since = parse_time(task.get("updated_at")) or parse_time(task.get("created_at"))
         waited = f"waiting {_span((now - since).total_seconds())}" if since else "waiting"
+        brief = waiting_brief(task)
+        if brief is not None:
+            # WHY IN THE API'S OWN WORDS (#1782), and a new line only when
+            # those words change: they are the key's second half, where a
+            # running task keeps its checkpoint. An older API serves none and
+            # keeps the line and key below.
+            words = waiting_words(brief, now)
+            return (f"[{label}] {state} · {waited} · waits: {clip(words, 240)}",
+                    f"{wake}|{waiting_key(task)}")
         return f"[{label}] {state} · {waited} · waits: {waits_for(task)}", f"{wake}|"
     started = parse_time(task.get("started_at"))
     ended = parse_time(task.get("completed_at")) if task.get("terminal") else None
