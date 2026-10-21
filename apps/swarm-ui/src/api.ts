@@ -26,7 +26,7 @@ import type {
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AdminPool, AttemptRow, AttemptsPage, TaskEventsPage, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
   ModelPrice, ModelPriceChange, ModelPriceRate, ModelPriceTable, ModelPriceTier, PlatformSettings,
-  RunnerInputContract, Runtime, TaskState,
+  RunnerInputContract, Runtime, TaskState, Waiting,
   TaskWindow, Tenant,
   Workflow, WorkflowPage,
   Account, AccountStateName, AccountsPage, RefreshResponse,
@@ -442,7 +442,10 @@ function fixtureGit(task: Task): Record<string, unknown> {
 
 async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> {
   const page = await fixtureTasks()
-  const task = page.status === 'ok' ? page.data.tasks.find((t) => t.id === taskId) : undefined
+  const listed = page.status === 'ok' ? page.data.tasks : []
+  // THE WAITING FIXTURES (#1782) are reached by id and kept off the list, so
+  // every count the list's fixtures pin stays where it was.
+  const task = listed.find((t) => t.id === taskId) ?? fixtureWaitingTasks(listed).find((t) => t.id === taskId)
   if (!task) {
     return {
       status: 'error',
@@ -4013,6 +4016,206 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
       ],
     },
   }
+}
+
+/**
+ * ONE WAITING AGENT PER REASON (#1782, WAIT-UI-PANEL), each carrying the full
+ * `waiting` object `GET /v1/tasks/{id}` serves (swarm_api/waiting_detail.py),
+ * so the agent page's "Why it's waiting" panel renders every reason in
+ * development: `/agents/waiting/work/task/task_wait_<reason>`.
+ *
+ * The CI one is the case that asked for the panel: SIZES-SCHED-2's merge step
+ * on 2026-10-21, head 1968b677, five pending checks, two wakes, the attempts
+ * refunded, and a history long enough to fold. Several facts are null on
+ * purpose -- an unrecorded expiry, a place in line the API does not compute,
+ * an unread dependency state -- because "not recorded" is a path the panel
+ * must draw, and a fixture that filled every field would hide it.
+ */
+function fixtureWaitingTasks(listed: Task[]): Task[] {
+  const base = listed.find((t) => t.state === 'PARKED') ?? listed[0]
+  if (base === undefined) return []
+  const now = Date.now()
+  const at = (minsAgo: number) => new Date(now - minsAgo * 60_000).toISOString()
+  const one = (
+    reason: string,
+    summary: string,
+    resumes: string,
+    detail: Record<string, unknown>,
+    over: { next?: number | null; since?: number | null; history?: Waiting['history']; task?: Partial<Task> } = {},
+  ): Task => {
+    const next = over.next === undefined ? -12 : over.next
+    const nextAt = next === null ? null : at(next)
+    const ready = reason === 'READY_CAPACITY'
+    const since = over.since === undefined ? 47 : over.since
+    const waiting: Waiting = {
+      reason,
+      summary,
+      since: since === null ? null : at(since),
+      next_check_at: nextAt,
+      resumes_when: resumes,
+      detail,
+      // The history `_history_text` writes for the one event that began the
+      // wait: a READY row's is the promotion, every other row's the park.
+      history: over.history ?? [
+        ready
+          ? { at: at(since ?? 47), kind: 'ready', text: 'ready: promoted' }
+          : { at: at(since ?? 47), kind: 'parked', text: `parked: ${reason}` },
+      ],
+      history_read: true,
+      read_at: at(0),
+    }
+    return {
+      ...base,
+      id: `task_wait_${reason.toLowerCase()}`,
+      state: ready ? 'READY' : 'PARKED',
+      park_reason: ready ? null : (reason as Task['park_reason']),
+      blocked_by: null,
+      next_eligible_at: nextAt,
+      current_lease_id: null,
+      created_at: at(60),
+      updated_at: at(3),
+      waiting,
+      ...over.task,
+    }
+  }
+  const checks = ['checkov', 'ci-gate', 'python (unit)', 'ui (typecheck + component)', 'integration (emulator)']
+  const pr = { number: 1779, url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/1779' }
+  return [
+    one(
+      'CI_PENDING',
+      'CI on PR #1779: 5 checks pending (checkov, ci-gate, python (unit), ...); re-checked 2 times; next check soon',
+      "its pull request's checks settle (swarm-api's wake tick marks the step), or the fallback re-check",
+      {
+        pull_request: pr,
+        head: '1968b677e0c4a51f2d93b7c86a0e15d4f3b2a917',
+        code: 'CI_PENDING',
+        pending: checks,
+        failed: ['shell'],
+        wakes: 2,
+        attempts_counted: false,
+        last_checked_at: at(16),
+        wake_requested_at: null,
+      },
+      {
+        task: { workflow_id: 'wf_sizes_sched_2', step_id: 'merge' },
+        history: [
+          { at: at(47), kind: 'parked', text: 'parked: CI_PENDING, 5 checks pending' },
+          { at: at(32), kind: 'ready', text: 'ready: woke on the fallback re-check (was CI_PENDING)' },
+          { at: at(31), kind: 'running', text: 'running: an attempt started (a re-check, for a merge step)' },
+          { at: at(31), kind: 'parked', text: 'parked: CI_PENDING, 5 checks pending, wake 1, attempt refunded' },
+          { at: at(17), kind: 'ready', text: 'ready: woke on the fallback re-check (was CI_PENDING)' },
+          { at: at(16), kind: 'running', text: 'running: an attempt started (a re-check, for a merge step)' },
+          { at: at(16), kind: 'parked', text: 'parked: CI_PENDING, 5 checks pending, wake 2, attempt refunded' },
+        ],
+      },
+    ),
+    one(
+      'READY_CAPACITY',
+      'Ready; capacity binds on runner:merge (4 of 4 units in use)',
+      'runner:merge has room for 1 units and the scheduler admits it',
+      {
+        pool: 'runner:merge', pool_state: 'full', active: 4, limit: 4, units: 1,
+        place_in_line: null,
+        place_in_line_unavailable: 'not computed: it would read every READY task behind the binding pool on each request',
+        last_pass: [{ reason: 'RUNNER_LIMIT', pool: 'runner:merge', active: 4, limit: 4 }],
+      },
+      { next: null, since: 9 },
+    ),
+    one(
+      'SCHEDULED_RETRY',
+      'Retry scheduled: attempt 2 of 3 (worker_exit)',
+      'the retry time passes and the scheduler re-admits it',
+      {
+        last_error: 'exit status 1: pytest collected 2 failures in tests/unit/control_plane/test_waiting_detail.py',
+        attempt: 1, next_attempt: 2, max_attempts: 3, next_try_at: at(-4), cause: 'worker_exit',
+      },
+      { next: -4, since: 6 },
+    ),
+    one(
+      'PROVIDER_QUOTA_EXHAUSTED',
+      'Provider quota exhausted on anthropic (account acct-team-2)',
+      "the provider's window passes and the scheduler re-admits it",
+      { provider: 'anthropic', account: 'acct-team-2', provider_state: 'exhausted', source: 'worker', account_pool_reason: null, wait_seconds: 1800, until: at(-25) },
+      { next: -25 },
+    ),
+    one(
+      'PROVIDER_COOLDOWN',
+      'Provider cooling down on anthropic',
+      "the provider's window passes and the scheduler re-admits it",
+      { provider: 'anthropic', account: null, provider_state: 'cooldown', source: null, account_pool_reason: null, wait_seconds: 300, until: at(-5) },
+      { next: -5 },
+    ),
+    one(
+      'PROVIDER_OUTAGE',
+      'Provider outage on anthropic',
+      "the provider's window passes and the scheduler re-admits it",
+      { provider: 'anthropic', account: null, provider_state: 'outage', source: 'status page', account_pool_reason: null, wait_seconds: null, until: at(-10) },
+      { next: -10 },
+    ),
+    one(
+      'DEPENDENCY_INCOMPLETE',
+      'Waiting on 2 upstream steps: implement (RUNNING), task_a3881bec (state not read)',
+      'every upstream step it depends on has SUCCEEDED',
+      {
+        waiting_on: [
+          { task_id: 'task_a073aff5', step_id: 'implement', state: 'RUNNING' },
+          { task_id: 'task_a3881bec', step_id: null, state: null },
+        ],
+        states_read: true,
+      },
+      { next: null },
+    ),
+    one(
+      'CHILDREN_INCOMPLETE',
+      'Waiting for 1 of 2 children to finish (1 RUNNING)',
+      'every child it submitted has finished',
+      {
+        children: [
+          { task_id: 'task_8ea5c26d', state: 'RUNNING' },
+          { task_id: 'task_99284d38', state: 'SUCCEEDED' },
+        ],
+        unfinished: 1, total: 2, states_read: true,
+      },
+      { next: null },
+    ),
+    one(
+      'AWAITING_INPUT',
+      'Waiting for a member of u-bogdan to answer; /sc answer wf_sizes_sched_2 approve',
+      'a member of the tenant answers, or the window expires and its default applies',
+      {
+        who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of tenant u-bogdan' },
+        opened_at: at(47), expires_at: at(-240), answer_command: '/sc answer wf_sizes_sched_2 approve',
+      },
+      { next: null },
+    ),
+    one(
+      'HUMAN_REQUIRED',
+      'Waiting for a person: sign in on its console page, then say it is ready',
+      "a member of the tenant calls human-ready (the console's Ready button)",
+      {
+        who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of tenant u-bogdan' },
+        expires_at: null, answer_route: 'POST /v1/tasks/task_wait_human_required/human-ready', cause: null,
+      },
+      { next: null },
+    ),
+    one(
+      'CREDENTIAL_MISSING',
+      'Credential missing: anthropic key, github/token',
+      "the tenant registers the credential and the scheduler's credential sweep finds it",
+      {
+        provider: 'anthropic', secret_names: ['anthropic key', 'github/token'], account_pool: null,
+        forge_connection: null, workspace_secrets: [{ consumer: 'github', slot: 'token' }], mcp_servers: [],
+      },
+    ),
+    one('BUDGET_EXHAUSTED', 'Budget exhausted', 'the budget is raised or its period resets', { budget: null }, { next: null }),
+    one(
+      'MANUAL_PAUSE',
+      'Paused by alice@example.com',
+      "what paused it clears and the scheduler's pause sweep returns it",
+      { paused_by: 'alice@example.com', paused_at: at(47), error: null },
+      { next: null },
+    ),
+  ]
 }
 
 async function fixtureTasks(): Promise<Result<TaskPage>> {
