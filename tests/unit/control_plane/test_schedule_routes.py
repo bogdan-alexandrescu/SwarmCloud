@@ -41,6 +41,7 @@ from swarm_api.auth import StaticTokenVerifier
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
 from swarm_api.routes import schedules as schedule_routes
+from swarm_api.store import CancelContended
 from swarm_api.validation import SCHEDULE_METADATA_KEY
 from swarm_api.waker import NullWaker
 
@@ -818,3 +819,76 @@ def test_cancel_live_on_another_tenants_schedule_is_a_404_and_cancels_nothing(cl
     assert stored(db, theirs) == before
     assert set(_task_states(db).values()) == {"READY"}
 
+
+
+# ---------------------------------------------------------------------------
+# A contended cancel under `cancel_live` (CANCEL-SCHED-CONTENDED, part of #1822)
+# ---------------------------------------------------------------------------
+
+def _contended(ctx, monkeypatch, method: str) -> None:
+    """The store's cancel stays contended, as `CancelContended` after its
+    retries: a workflow's with the partial result its route acts on."""
+
+    def refuse(tenant_id: str, item_id: str, **kwargs: Any) -> Any:
+        result = {"tasks_cancelled": [], "tasks_contended": ["task_held"]} if method == "cancel_workflow" else None
+        raise CancelContended("the cancel stayed contended; retry", result=result)
+
+    monkeypatch.setattr(ctx.store, method, refuse)
+
+
+def test_a_contended_task_cancel_is_reported_not_raised(client, ctx, db, executor, monkeypatch) -> None:
+    sid = create(client)["schedule_id"]
+    assert client.post(f"/v1/schedules/{sid}:run", json={}, headers=auth_header("alice")).status_code == 200
+    [held] = [k.split("/")[1] for k in db.docs if k.startswith("tasks/") and k.count("/") == 1]
+    _contended(ctx, monkeypatch, "request_cancel_with_target")
+    response = client.post(f"/v1/schedules/{sid}:pause", json={"cancel_live": True, "confirm": "nightly sweep"},
+                           headers=auth_header("alice"))
+    # MUTATION: drop `except CancelContended` in `_cancel_one` and the pause
+    # answers the 503 with the schedule paused and nothing reported.
+    assert response.status_code == 200, response.text
+    [item] = response.json()["cancelled"]
+    # MUTATION: report a contended task as `cancel_requested` and the caller
+    # is told a live task was cancelled.
+    assert (item["kind"], item["id"], item["result"]) == ("task", held, "contended")
+    assert stored(db, sid)["state"] == "paused"
+    assert db.docs[f"tasks/{held}"]["state"] == "READY"
+    # MUTATION: audit before the outcome is known and the record says otherwise.
+    entry = next(e for e in audit(client, sid) if e["action"] == "cancel_live")
+    assert entry["detail"]["items"] == [item]
+    # Pausing again, once the contention clears, finishes it.
+    monkeypatch.undo()
+    again = client.post(f"/v1/schedules/{sid}:pause", json={"cancel_live": True, "confirm": "nightly sweep"},
+                        headers=auth_header("alice"))
+    assert again.status_code == 200, again.text
+    assert [i["result"] for i in again.json()["cancelled"]] == ["cancel_requested"]
+    assert db.docs[f"tasks/{held}"]["state"] == "CANCELLED"
+
+
+def test_a_contended_workflow_cancel_is_reported_as_contended(client, ctx, db, executor, monkeypatch) -> None:
+    executor.kind = "workflow"
+    sid = create(client)["schedule_id"]
+    assert client.post(f"/v1/schedules/{sid}:run", json={}, headers=auth_header("alice")).status_code == 200
+    _contended(ctx, monkeypatch, "cancel_workflow")
+    response = client.post(f"/v1/schedules/{sid}:pause", json={"cancel_live": True, "confirm": "nightly sweep"},
+                           headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    [item] = response.json()["cancelled"]
+    # MUTATION: ignore the 503 `cancel_workflow` returns and the workflow
+    # still live reads as `cancel_requested`.
+    assert (item["kind"], item["result"]) == ("workflow", "contended")
+    entry = next(e for e in audit(client, sid) if e["action"] == "cancel_live")
+    # MUTATION: record the item before its outcome and the audit disagrees.
+    assert entry["detail"]["items"] == [item]
+
+
+def test_a_normal_cancel_live_pause_is_unchanged(client, db, executor) -> None:
+    executor.kind = "workflow"
+    sid = create(client)["schedule_id"]
+    assert client.post(f"/v1/schedules/{sid}:run", json={}, headers=auth_header("alice")).status_code == 200
+    response = client.post(f"/v1/schedules/{sid}:pause", json={"cancel_live": True, "confirm": "nightly sweep"},
+                           headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    # MUTATION: read every returned response as contended and an uncontended
+    # workflow cancel is reported as still live.
+    assert [i["result"] for i in response.json()["cancelled"]] == ["cancel_requested"]
+    assert set(_task_states(db).values()) == {"CANCELLED"}
