@@ -88,6 +88,7 @@ from swarm_common.states import TERMINAL_STATES
 from . import awaitinput, checkout, render, session, workflows
 from .client import SwarmClient, SwarmError, task_id_of
 from .follow import console_link
+from .sc import WORKFLOW_PAGE_SIZE
 
 #: (a) and (b)'s window, in minutes: the owner's "N min (default 20)".
 DEFAULT_STALE_MINUTES = 20
@@ -102,11 +103,10 @@ EVENT_PAGE = 20
 #: them, says they were not checked, and costs nothing more -- the same
 #: ceiling `sc.WORKFLOW_DETAIL_READS` gives `/sc attach --all`.
 MAX_WORKFLOW_DETAILS = 30
-#: Pages of the running-workflow list read, as `sc.running_workflows` reads.
-WORKFLOW_LIST_PAGES = 4
-WORKFLOW_PAGE_SIZE = 50
-#: Pages of ONE task state read for the caller's single tasks.
-SINGLE_TASK_PAGES = 3
+#: The running-workflow list is read to its last page, through
+#: `sc.walk_running_workflows`, asking the API for this session's work only
+#: (CHECK-FILTER, #1749); its page size is `sc.WORKFLOW_PAGE_SIZE`, imported
+#: above, and the single tasks are read to their last page the same way.
 #: Task reads (one task, or one page of its events) per check. A check runs
 #: every 30 minutes by default; a project with more candidates than this is
 #: told which were not checked rather than made to wait.
@@ -712,57 +712,71 @@ def _page(client: SwarmClient, params: list[tuple[str, str]]) -> dict[str, Any]:
     return data
 
 
-def _workflow_lists(client: SwarmClient) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-    """`(running, recent, notes)`: the unfinished workflows (paged as
-    `sc.running_workflows` pages them) and the newest page of ALL of them --
-    the only place a finished workflow with a stale RUNNING cache, or a
-    failed merge step, can be seen."""
-    from .sc import ACTIVE_WORKFLOW_STATES
+def server_scope(key: str | None, sid: str | None, record: session.Record) -> dict[str, str]:
+    """What `GET /v1/workflows` is asked to filter by for this session's
+    check or attach-all (CHECK-FILTER, owner decision 2026-10-20, #1749).
 
-    running: list[dict[str, Any]] = []
-    notes: dict[str, Any] = {}
-    token: str | None = None
-    for _ in range(WORKFLOW_LIST_PAGES):
-        params = [("state", s) for s in ACTIVE_WORKFLOW_STATES] + [("active", "true"),
-                                                                     ("limit", str(WORKFLOW_PAGE_SIZE))]
-        if token:
-            params.append(("page_token", token))
-        page = _page(client, params)
-        running += [w for w in page["workflows"] if isinstance(w, dict) and w.get("state") not in _TERMINAL]
-        if "stalled_workflows" in page and "reconciler_stalled_workflows" not in notes:
-            notes["reconciler_stalled_workflows"] = page["stalled_workflows"]
-        notes.setdefault("tenant_id", page.get("tenant_id"))
-        token = page.get("next_page_token") or None
-        if token is None:
-            break
-    if token is not None:
-        notes["running_incomplete_because"] = (
-            f"stopped after {WORKFLOW_LIST_PAGES} pages of running workflows; older ones are not checked"
-        )
+    THE SESSION whenever it is known: only work tagged with it can be `own`
+    (`session.ownership` decides the tag first), so the API dropping the rest
+    loses nothing -- and a session's own work is a page or two however many
+    workflows the tenant runs. With no session, nothing is asked: there is no
+    candidate, and the whole tenant is read to count what was left out.
+
+    THE REPOSITORY only beside the session and only while the project's
+    record is EMPTY. Work in the record is this project's whatever it clones
+    (SC-TITLES), so a repository filter would drop recorded work in another
+    repository; with nothing recorded the repository is the whole rule, and
+    the API applies it exactly as `_in_scope` does -- any step's repository."""
+    if not sid:
+        return {}
+    params = {"claude_session": sid}
+    if key and not record.ids and not record.submitted:
+        params["repository"] = key
+    return params
+
+
+def _workflow_lists(
+    client: SwarmClient, scoped: dict[str, str] | None = None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """`(running, recent, notes)`: the unfinished workflows, every page of
+    them (`sc.walk_running_workflows`, filtered by the API to `scoped`), and
+    the newest page of ALL of them -- the only place a finished workflow with
+    a stale RUNNING cache, or a failed merge step, can be seen."""
+    from .sc import walk_running_workflows
+
+    walk = walk_running_workflows(client, **(scoped or {}))
+    notes: dict[str, Any] = {"tenant_id": walk["tenant_id"]}
+    if "stalled_workflows" in walk:
+        notes["reconciler_stalled_workflows"] = walk["stalled_workflows"]
+    if "incomplete_because" in walk:
+        notes["running_incomplete_because"] = walk["incomplete_because"]
+    if "filtered_by_api" in walk:
+        notes["filtered_by_api"] = walk["filtered_by_api"]
     recent_page = _page(client, [("limit", str(WORKFLOW_PAGE_SIZE))])
     recent = [w for w in recent_page["workflows"] if isinstance(w, dict)]
-    return running, recent, notes
+    notes["tenant_id"] = notes["tenant_id"] or recent_page.get("tenant_id")
+    return walk["workflows"], recent, notes
 
 
 def _single_tasks(client: SwarmClient) -> tuple[list[dict[str, Any]], str | None]:
     """The caller's unfinished tasks in no workflow, as the task route serves
-    them (with `heartbeat_at` and a READY task's live `waiting_for`)."""
+    them (with `heartbeat_at` and a READY task's live `waiting_for`), every
+    page of each state."""
     from .sc import _callers_tasks_in, _live_states
 
     found: dict[str, dict[str, Any]] = {}
-    short: list[str] = []
+    gaps: list[str] = []
     for state in _live_states():
-        tasks, _, complete = _callers_tasks_in(client, state, SINGLE_TASK_PAGES)
-        if not complete:
-            short.append(state)
+        tasks, _, gap = _callers_tasks_in(client, state)
+        if gap:
+            gaps.append(gap)
         for task in tasks:
             task_id = task_id_of(task)
             if (not task_id or task.get("workflow_id") or task.get("parent_task_id")
                     or task.get("state") in _TERMINAL):
                 continue
             found.setdefault(str(task_id), task)
-    gap = (f"stopped after {SINGLE_TASK_PAGES} pages of {', '.join(short)} tasks; older ones are "
-           "not checked") if short else None
+    gap = f"{'; '.join(gaps)}; older ones are not checked" if gaps else None
     return list(found.values()), gap
 
 
@@ -772,11 +786,18 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
     reads = _Reads(client, MAX_TASK_READS)
     pulls = pulls or _PullStates()
     record = session.project_record()
-    running, recent, notes = _workflow_lists(client)
+    running, recent, notes = _workflow_lists(client, server_scope(scope, sid, record))
     # THIS SESSION'S OWN (SC-SESSION-SCOPE): a list row that already names
     # another session, or names none on a deployment that serves the tag, is
     # never read step by step; the rest are decided off their step tasks.
     left_out = {"workflows": session.counts(), "single_tasks": session.counts()}
+    out_of_scope = {"workflows": 0, "single_tasks": 0}
+    # What the API left out for us (CHECK-FILTER): counted as if this check
+    # had left it out itself, so the report reads the same either way.
+    by_api = (notes.get("filtered_by_api") or {}).get("left_out") or {}
+    for kind in ("other_session", "untagged"):
+        left_out["workflows"][kind] += int(by_api.get(kind) or 0)
+    out_of_scope["workflows"] += int(by_api.get("other_repository") or 0)
 
     def foreign(row: dict[str, Any]) -> str | None:
         if session.METADATA_KEY not in row:
@@ -825,7 +846,6 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
 
     flagged: list[dict[str, Any]] = []
     in_scope_running: list[dict[str, Any]] = []
-    out_of_scope = {"workflows": 0, "single_tasks": 0}
     jobs: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]] = []
 
     for wid, envelope, error in envelopes:

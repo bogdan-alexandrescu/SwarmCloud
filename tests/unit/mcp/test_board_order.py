@@ -240,7 +240,7 @@ def test_sc_workflows_prints_progress_the_current_step_and_the_medians(monkeypat
                                   "age_seconds": 720, "median_seconds": 1200}],
                      "remaining_median_seconds": 600, "eta_seconds": 1080},
     }
-    monkeypatch.setattr(sc, "running_workflows", lambda client: {
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: {
         "tenant_id": "eng", "count": 1, "complete": True, "workflows": [entry]})
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"tenant_id": "eng", "count": 0, "complete": True,
                                                              "tasks": []})

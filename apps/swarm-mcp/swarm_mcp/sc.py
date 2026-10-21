@@ -708,17 +708,18 @@ ACTIVE_WORKFLOW_STATES: tuple[str, ...] = tuple(
 
 _TERMINAL_VALUES = frozenset(s.value for s in TERMINAL_STATES)
 
-#: Pages of `GET /v1/workflows` read before the list says it stopped short,
-#: from a deployment that filters only after its rollup (no `filter` in its
-#: answer): there a tenant with a long finished history can need several pages
-#: to reach an old running workflow. A deployment that serves `active=true`
-#: from its indexed stored-state query skips stored SUCCEEDED and CANCELLED
-#: history in the query (owner decision 2026-10-06, P4: measured that day, the
-#: old walk read 4 pages of 50 to list 7 running workflows and still said it
-#: was incomplete), and is read until its last page or a page full of
-#: unfinished workflows -- usually one; still at most this many when newer
-#: FAILED or DEAD_LETTERED history, which the query must keep, fills them.
-WORKFLOW_LIST_PAGES = 4
+#: One page of `GET /v1/workflows`, as the running-workflow walk asks for it;
+#: `check` imports it rather than restating it (#1749 found the walk's
+#: constants stated twice, in this module and in check.py).
+#:
+#: NO PAGE CAP (owner decision 2026-10-20, #1749). The walk used to stop after
+#: 4 pages of 50 and say so; in tenant eng that day every check and attach-all
+#: hit it, and a session's work older than the tenant's newest 200 running
+#: workflows was never flagged. The fix the owner chose is the server-side
+#: filter -- the check and attach-all ask for their own session's work
+#: (`claude_session=`), which is a page or two -- and the walk reads to the
+#: last page. It stops short only when a read fails, or the API hands back a
+#: token it was already given, and says which.
 WORKFLOW_PAGE_SIZE = 50
 
 #: How many workflow detail reads (`GET /v1/workflows/{id}`) run at once.
@@ -850,15 +851,94 @@ def _read_detail(client: SwarmClient, entry: dict[str, Any], now: datetime | Non
     return entry
 
 
+def walk_running_workflows(
+    client: SwarmClient,
+    *,
+    claude_session: str | None = None,
+    repository: str | None = None,
+) -> dict[str, Any]:
+    """Every page of the tenant's unfinished workflows, newest first:
+    `{workflows, tenant_id, pages, stalled_workflows?, filtered_by_api?,
+    incomplete_because?}`.
+
+    The route is asked for `active=true` and `ACTIVE_WORKFLOW_STATES`, and,
+    when given, for one Claude Code session's work and one repository's
+    (CHECK-FILTER, #1749) -- and each row is checked AGAIN for being
+    unfinished, because a deployment older than those filters ignores them.
+    `filtered_by_api` is present only when the route echoed the session or
+    repository filter in `filter`, i.e. applied it; it carries the route's
+    `left_out` counts summed over the pages, which a caller reports beside
+    the rows it left out itself.
+
+    EVERY PAGE is read: a page that comes back short, or full, says nothing
+    about what is behind it. The walk stops early only on a failed read --
+    the first page's failure raises (`SwarmError`: "could not ask" is never an
+    empty list), a later one is kept as `incomplete_because` with what was
+    read -- or on a token the route already handed back, which would loop."""
+    out: dict[str, Any] = {"workflows": [], "tenant_id": None, "pages": 0}
+    token: str | None = None
+    seen: set[str] = set()
+    echoed: dict[str, Any] | None = None
+    while True:
+        try:
+            page = client.workflows(
+                states=ACTIVE_WORKFLOW_STATES,
+                active=True,
+                limit=WORKFLOW_PAGE_SIZE,
+                page_token=token,
+                **({"claude_session": claude_session} if claude_session else {}),
+                **({"repository": repository} if repository else {}),
+            )
+        except SwarmError as exc:
+            if out["pages"] == 0:
+                raise
+            out["incomplete_because"] = (
+                f"reading page {out['pages'] + 1} of the running workflows failed ({exc}); "
+                "older running workflows, if any, are not listed"
+            )
+            break
+        out["pages"] += 1
+        out["tenant_id"] = out["tenant_id"] or page.get("tenant_id")
+        if "stalled_workflows" in page and "stalled_workflows" not in out:
+            out["stalled_workflows"] = page["stalled_workflows"]
+        out["workflows"] += [w for w in page["workflows"]
+                             if isinstance(w, dict) and w.get("state") not in _TERMINAL_VALUES]
+        filtered = page.get("filter")
+        if isinstance(filtered, dict) and ("claude_session" in filtered or "repository" in filtered):
+            if echoed is None:
+                echoed = {"claude_session": filtered.get("claude_session"),
+                          "repository": filtered.get("repository"), "left_out": {}}
+            for reason, count in (filtered.get("left_out") or {}).items():
+                if isinstance(count, int):
+                    echoed["left_out"][reason] = echoed["left_out"].get(reason, 0) + count
+        following = page.get("next_page_token") or None
+        if following is None:
+            break
+        if following in seen or following == token:
+            out["incomplete_because"] = (
+                f"GET /v1/workflows handed back the same page token after {out['pages']} pages; "
+                "older running workflows, if any, are not listed"
+            )
+            break
+        seen.add(following)
+        token = following
+    if echoed is not None:
+        out["filtered_by_api"] = echoed
+    return out
+
+
 def running_workflows(
     client: SwarmClient,
     *,
     now: datetime | None = None,
-    pages: int = WORKFLOW_LIST_PAGES,
     detail_reads: int | None = None,
+    claude_session: str | None = None,
+    repository: str | None = None,
 ) -> dict[str, Any]:
     """The caller's tenant's workflows that are not over, CLOSEST TO FINISH
-    FIRST in workspace blocks (`group_by_workspace`, `board.order`).
+    FIRST in workspace blocks (`group_by_workspace`, `board.order`), read to
+    the last page (`walk_running_workflows`) -- the whole tenant's, or with
+    `claude_session` / `repository` only those the API keeps for them.
 
     EVERY one is read in detail (`detail_reads` None), at most
     `WORKFLOW_DETAIL_CONCURRENCY` at a time: its progress is what orders it.
@@ -870,52 +950,16 @@ def running_workflows(
     workflow; a median that could not be read leaves them out and says so.
 
     The tenant is the API's: `GET /v1/workflows` answers for the caller's own
-    tenant (`tenant_scope`), and nothing here names one. The route is asked for
-    `active=true` and `ACTIVE_WORKFLOW_STATES`, and the answer is filtered
-    AGAIN, because a deployment older than those filters ignores the
-    parameters and serves every workflow -- and attaching a finished one would
-    start rows with nothing to watch. A workflow whose detail read says it has
-    since finished is dropped for the same reason. Raises `SwarmError` when
-    the list itself cannot be read: "could not ask" is never an empty list.
-
-    ONE PAGE when the route says it filtered in its query
-    (`filter.stored_states`) and the page is either the last one or FULL of
-    unfinished workflows: then it is the running set, or more than a page of
-    it -- which is reported, not walked. The query leaves out only stored
-    SUCCEEDED and CANCELLED (`Store.stored_states_for`); a stored FAILED or
-    DEAD_LETTERED workflow is still fetched, because a retry can revive it,
-    and the route drops it after deriving. So a short page with a token is
-    newer failed history in front of older running workflows, and the walk
-    goes on, up to `pages` pages, exactly as for a deployment without the
-    filter. `incomplete_because` says which of the two stopped it.
+    tenant (`tenant_scope`), and nothing here names one. A workflow whose
+    detail read says it has since finished is dropped: attaching a finished
+    one would start rows with nothing to watch. Raises `SwarmError` when the
+    list itself cannot be read; `incomplete_because` is said only when a
+    later page's read failed.
     """
     now = now or datetime.now(timezone.utc)
-    found: list[dict[str, Any]] = []
-    tenant: str | None = None
-    token: str | None = None
-    read = 0
-    indexed = False
-    full_page = False
-    for _ in range(max(1, pages)):
-        page = client.workflows(
-            states=ACTIVE_WORKFLOW_STATES,
-            active=True,
-            limit=WORKFLOW_PAGE_SIZE,
-            page_token=token,
-        )
-        read += 1
-        tenant = tenant or page.get("tenant_id")
-        unfinished = 0
-        for workflow in page["workflows"]:
-            if isinstance(workflow, dict) and workflow.get("state") not in _TERMINAL_VALUES:
-                found.append(_running_entry(workflow, now, page.get("tenant_id")))
-                unfinished += 1
-        token = page.get("next_page_token") or None
-        filtered = page.get("filter")
-        indexed = isinstance(filtered, dict) and bool(filtered.get("stored_states"))
-        full_page = indexed and unfinished >= WORKFLOW_PAGE_SIZE
-        if token is None or full_page:
-            break
+    walk = walk_running_workflows(client, claude_session=claude_session, repository=repository)
+    tenant = walk["tenant_id"]
+    found = [_running_entry(workflow, now, tenant) for workflow in walk["workflows"]]
 
     detailed = found if detail_reads is None else found[: max(0, detail_reads)]
     if detailed:
@@ -929,9 +973,11 @@ def running_workflows(
     out: dict[str, Any] = {
         "tenant_id": tenant,
         "count": len(listed),
-        "complete": token is None,
+        "complete": "incomplete_because" not in walk,
         "workflows": listed,
     }
+    if "filtered_by_api" in walk:
+        out["filtered_by_api"] = walk["filtered_by_api"]
     if any(isinstance(entry.get("progress"), dict) for entry in listed):
         found_medians = board.medians(client, now=now)
         for entry in listed:
@@ -943,14 +989,8 @@ def running_workflows(
             if key in found_medians
         }
         out["medians"]["steps_with_history"] = len(found_medians.get("by_step") or {})
-    if token is not None:
-        out["incomplete_because"] = (
-            f"a page of {WORKFLOW_PAGE_SIZE} unfinished workflows was full; read "
-            f"{read} page(s), and older running workflows are not listed"
-            if full_page
-            else f"stopped after {read} pages of {WORKFLOW_PAGE_SIZE} workflows; older "
-            "running workflows, if any, are not listed"
-        )
+    if "incomplete_because" in walk:
+        out["incomplete_because"] = walk["incomplete_because"]
     return out
 
 
@@ -961,14 +1001,14 @@ def running_workflows(
 # outside any workflow, read through the existing `GET /v1/tasks` filters only:
 # `state` (one value per request) and `submitted_by=me`.
 
-#: Pages of ONE state read before the list says it stopped short. `state` and
-#: `submitted_by` together are filtered after the route takes its cursor
-#: (`Store.list_tasks`), so a page holds only the caller's share of the
-#: tenant's tasks in that state and may come back short with a token: a tenant
-#: whose other members queue hundreds of tasks needs more than one page to
-#: reach the caller's. Unfinished tasks are few; past this many pages the list
-#: says so rather than keep the hook's ten seconds waiting.
-SINGLE_TASK_PAGES = 3
+#: One page of ONE state's walk. `state` and `submitted_by` together are
+#: filtered after the route takes its cursor (`Store.list_tasks`), so a page
+#: holds only the caller's share of the tenant's tasks in that state and may
+#: come back short with a token: a tenant whose other members queue hundreds
+#: of tasks needs more than one page to reach the caller's. The walk reads to
+#: the last page, as the workflow walk does (#1749: a cap of 3 pages left a
+#: caller's older tasks unlisted behind other members' newer ones), and stops
+#: short only on a failed read or a repeated token.
 SINGLE_TASK_PAGE_SIZE = 50
 
 #: How many single tasks the session-start context names one by one.
@@ -1014,29 +1054,42 @@ def _single_task_entry(task: dict[str, Any], now: datetime, tenant: Any = None) 
     return with_console(entry, task)
 
 
-def _callers_tasks_in(client: SwarmClient, state: str, pages: int) -> tuple[list[dict[str, Any]], str | None, bool]:
-    """The caller's own tasks in one state: `(tasks, tenant_id, complete)`."""
+def _callers_tasks_in(client: SwarmClient, state: str) -> tuple[list[dict[str, Any]], str | None, str | None]:
+    """The caller's own tasks in one state, every page: `(tasks, tenant_id,
+    gap)`. `gap` is None when the last page was read, and a sentence when a
+    later page's read failed or the route repeated a token; the first page's
+    failure raises."""
     found: list[dict[str, Any]] = []
     tenant: str | None = None
     token: str | None = None
-    for _ in range(max(1, pages)):
+    seen: set[str] = set()
+    pages = 0
+    while True:
         params = [("state", state), ("submitted_by", "me"), ("limit", str(SINGLE_TASK_PAGE_SIZE))]
         if token:
             params.append(("page_token", token))
-        data = _tasks_page(client, params)
+        try:
+            data = _tasks_page(client, params)
+        except SwarmError as exc:
+            if pages == 0:
+                raise
+            return found, tenant, f"reading page {pages + 1} of the {state} tasks failed ({exc})"
+        pages += 1
         found += [t for t in data["tasks"] if isinstance(t, dict)]
         tenant = tenant or data.get("tenant_id")
-        token = data.get("next_page_token") or None
-        if token is None:
-            break
-    return found, tenant, token is None
+        following = data.get("next_page_token") or None
+        if following is None:
+            return found, tenant, None
+        if following in seen or following == token:
+            return found, tenant, f"GET /v1/tasks handed back the same {state} page token after {pages} pages"
+        seen.add(following)
+        token = following
 
 
 def running_tasks(
     client: SwarmClient,
     *,
     now: datetime | None = None,
-    pages: int = SINGLE_TASK_PAGES,
 ) -> dict[str, Any]:
     """The caller's running SINGLE tasks, the longest-running first
     (`board.order`, by state age): not finished, in no workflow, and
@@ -1051,20 +1104,22 @@ def running_tasks(
     hand a workflow's step or a finished task a row. A task a PARENT TASK
     submitted (`parent_task_id`) is left out: it was not dispatched from a
     session, and its parent's row is where it shows. Raises `SwarmError` when
-    any read fails: "could not ask" is never an empty list.
+    a state's first read fails: "could not ask" is never an empty list. A
+    later page's failure keeps what was read and says so in
+    `incomplete_because`.
     """
     now = now or datetime.now(timezone.utc)
     states = _live_states()
     with ThreadPoolExecutor(max_workers=len(states)) as pool:
-        walks = list(pool.map(lambda state: _callers_tasks_in(client, state, pages), states))
+        walks = list(pool.map(lambda state: _callers_tasks_in(client, state), states))
     tenant: str | None = None
     seen: set[str] = set()
     found: list[dict[str, Any]] = []
-    short: list[str] = []
-    for state, (tasks, page_tenant, complete) in zip(states, walks):
+    gaps: list[str] = []
+    for state, (tasks, page_tenant, gap) in zip(states, walks):
         tenant = tenant or page_tenant
-        if not complete:
-            short.append(state)
+        if gap:
+            gaps.append(gap)
         for task in tasks:
             entry = _single_task_entry(task, now, page_tenant)
             task_id = entry["task_id"]
@@ -1083,13 +1138,12 @@ def running_tasks(
     out: dict[str, Any] = {
         "tenant_id": tenant,
         "count": len(found),
-        "complete": not short,
+        "complete": not gaps,
         "tasks": found,
     }
-    if short:
+    if gaps:
         out["incomplete_because"] = (
-            f"stopped after {pages} pages of {SINGLE_TASK_PAGE_SIZE} {', '.join(short)} tasks; "
-            "older running tasks of yours, if any, are not listed"
+            f"{'; '.join(gaps)}; older running tasks of yours, if any, are not listed"
         )
     return out
 

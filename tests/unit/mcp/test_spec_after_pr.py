@@ -81,7 +81,7 @@ def test_sc_workflows_says_which_pull_request_a_workflow_waits_for(monkeypatch):
         "steps_total": 2, "current_steps": [],
         "waiting_for": "waiting for PR #41 to merge",
     }
-    monkeypatch.setattr(sc, "running_workflows", lambda client: {
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: {
         "workflows": [entry], "complete": True, "tenant_id": "eng"})
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"tasks": [], "complete": True})
     out = io.StringIO()

@@ -326,7 +326,7 @@ def _running(count: int, workspaces=("eng",)) -> dict:
 
 
 def test_launch_all_honours_the_100_cap_and_names_each_workspace(_plugin_root, monkeypatch):
-    monkeypatch.setattr(sc, "running_workflows", lambda client: _running(105))
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: _running(105))
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 0, "tasks": []})
     out = launch.for_all(_NoTenants())
     assert out["max_live_rows"] == 100
@@ -343,7 +343,7 @@ def test_launch_all_honours_the_100_cap_and_names_each_workspace(_plugin_root, m
 
 def test_launch_all_honours_the_plugin_option(_plugin_root, monkeypatch):
     monkeypatch.setenv("SWARM_PLUGIN_MAX_LIVE_ROWS", "4")
-    monkeypatch.setattr(sc, "running_workflows", lambda client: _running(6))
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: _running(6))
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 7, "tasks": [
         {"task_id": f"task_{n}", "label": f"lane {n}", "workspace": "eng", "claude_session": SESSION}
         for n in range(7)]})
@@ -358,7 +358,7 @@ def test_launch_all_honours_the_plugin_option(_plugin_root, monkeypatch):
 
 
 def test_launch_all_groups_several_workspaces_and_uses_display_names(_plugin_root, monkeypatch):
-    monkeypatch.setattr(sc, "running_workflows", lambda client: _running(4, ("u-bogdan", "eng")))
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: _running(4, ("u-bogdan", "eng")))
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 0, "tasks": []})
     client = types.SimpleNamespace(tenants_mine=lambda: [
         {"tenant_id": "eng", "display_name": "Engineering"},
@@ -423,7 +423,7 @@ def test_swarm_status_names_each_tasks_workspace():
 
 
 def test_sc_workflows_prints_the_workspace_first_on_every_line(monkeypatch):
-    monkeypatch.setattr(sc, "running_workflows", lambda client: {
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: {
         "tenant_id": "eng", "count": 1, "complete": True,
         "workflows": [{"workflow_id": "wf_1", "workspace": "u-bogdan", "label": "gate", "state": "RUNNING",
                        "age_seconds": 90, "current_steps": []}],

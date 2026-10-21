@@ -129,7 +129,10 @@ class Api:
     def tenants_mine(self):
         return []
 
-    def workflows(self, *, states=(), active=False, limit=None, page_token=None):
+    def workflows(self, *, states=(), active=False, limit=None, page_token=None,
+                  claude_session=None, repository=None):
+        # The session and repository filters are ignored, as a deployment
+        # older than CHECK-FILTER ignores them: the check filters each row itself.
         query = [("state", s) for s in states] + ([("active", "true")] if active else [])
         return self.request("GET", "/v1/workflows?" + "&".join(f"{k}={v}" for k, v in query))
 

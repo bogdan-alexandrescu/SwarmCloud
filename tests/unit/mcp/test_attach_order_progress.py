@@ -59,7 +59,7 @@ _LISTED = [
 
 def test_launches_run_closest_to_finish_first_and_the_cap_leaves_out_the_furthest(monkeypatch):
     monkeypatch.setenv("SWARM_PLUGIN_MAX_LIVE_ROWS", "3")
-    monkeypatch.setattr(sc, "running_workflows", lambda client: {"count": 5, "complete": True,
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: {"count": 5, "complete": True,
                                                                  "workflows": [dict(e) for e in _LISTED]})
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 0, "tasks": []})
     out = launch.for_all(_NoTenants())
@@ -69,7 +69,7 @@ def test_launches_run_closest_to_finish_first_and_the_cap_leaves_out_the_furthes
 
 def test_the_workspace_blocks_follow_their_closest_workflow(monkeypatch):
     listed = [_wf("wf_e1", 0, 2, 10, "eng"), _wf("wf_u1", 1, 2, 10, "u-bogdan"), _wf("wf_e2", 1, 2, 5, "eng")]
-    monkeypatch.setattr(sc, "running_workflows", lambda client: {"count": 3, "complete": True, "workflows": listed})
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: {"count": 3, "complete": True, "workflows": listed})
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 0, "tasks": []})
     out = launch.for_all(_NoTenants())
     assert [l["workflow_id"] for l in out["launches"]] == ["wf_u1", "wf_e2", "wf_e1"]
@@ -77,7 +77,7 @@ def test_the_workspace_blocks_follow_their_closest_workflow(monkeypatch):
 
 def test_the_single_task_launch_runs_the_longest_running_task_first(monkeypatch):
     monkeypatch.setenv("SWARM_PLUGIN_MAX_LIVE_ROWS", "2")
-    monkeypatch.setattr(sc, "running_workflows", lambda client: {"count": 0, "complete": True, "workflows": []})
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: {"count": 0, "complete": True, "workflows": []})
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 3, "tasks": [
         {"task_id": "task_new", "label": "new", "workspace": "eng", "claude_session": SESSION,
          "state_age_seconds": 20, "age_seconds": 20},

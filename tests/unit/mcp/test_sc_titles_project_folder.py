@@ -193,7 +193,7 @@ def test_every_launch_path_appends_exactly_one_record_line(where, monkeypatch):
 
     entry = {"workflow_id": "wf_all", "title": "all one", "steps_total": 2, "claude_session": SESSION,
              "repository_url": REPO}
-    monkeypatch.setattr(sc, "running_workflows", lambda client: {"count": 1, "complete": True, "workflows": [entry]})
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: {"count": 1, "complete": True, "workflows": [entry]})
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 0, "tasks": []})
     server._call(_Recorder(), "swarm_workflow_launch", {"attach": "all"})
     assert len(_lines(folder)) == 3
@@ -270,7 +270,7 @@ def _workflows(monkeypatch) -> None:
         wf("wf_other_project", SESSION, FAR),       # in ANOTHER project's record only: left out
         wf("wf_theirs", OTHER, REPO),               # another session's, though recorded here: left out
     ]
-    monkeypatch.setattr(sc, "running_workflows", lambda client: {"count": len(entries), "complete": True,
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: {"count": len(entries), "complete": True,
                                                                   "workflows": entries})
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 0, "tasks": []})
 
@@ -324,7 +324,7 @@ def _check(monkeypatch) -> dict:
         "wf_theirs": (OTHER, REPO, None),
     }
     running = [listed(wid, sid) for wid, (sid, _, _) in rows.items()]
-    monkeypatch.setattr(check, "_workflow_lists", lambda client: (running, [], {"tenant_id": "eng"}))
+    monkeypatch.setattr(check, "_workflow_lists", lambda client, scoped=None: (running, [], {"tenant_id": "eng"}))
     monkeypatch.setattr(check, "_single_tasks", lambda client: ([
         {"id": "task_recorded_far", "state": "RUNNING", "claude_session": SESSION, "repository_url": FAR},
         {"id": "task_old_far", "state": "RUNNING", "claude_session": SESSION, "repository_url": FAR},

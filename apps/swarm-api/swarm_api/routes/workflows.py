@@ -28,16 +28,20 @@ the submitter filter keeps using the email.
 from __future__ import annotations
 
 import logging
+import re
+from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
 from swarm_common.models import Task
 from swarm_common.states import TERMINAL_STATES
 
+from .. import sessiontag
 from ..auth import AuthContext
 from .tasks import require_member
 from ..attempt_totals import totals_for, with_totals
 from ..children import PARENT_CANCELLED, ChildService
-from ..codec import task_to_api, workflow_dispatch, workflow_to_api
+from ..codec import task_to_api, workflow_claude_session, workflow_dispatch, workflow_to_api
 from ..task_accounts import accounts_for
 from ..errors import ValidationFailed
 from ..people import add_names, name_lookup
@@ -49,8 +53,10 @@ from ..deps import (
     submission_scope,
     tenant_scope,
 )
+from ..rollup import RollupResult, SweepReport
 from ..schemas import WorkflowCreate
 from ..stalls import stalled_workflows
+from ..store import workflow_listing_token
 from ..waker import ring
 
 log = logging.getLogger(__name__)
@@ -67,6 +73,63 @@ WORKFLOW_VIEWS: tuple[str, ...] = ("full", "summary")
 #: name. 50 workflows of up to `max_workflow_steps` (50) steps is the step-read
 #: cost of a 50-row list page; the Timeline asks in chunks of this size.
 MAX_WORKFLOW_IDS = 50
+
+#: `GET /v1/workflows?claude_session=&repository=` (CHECK-FILTER, #1749): the
+#: store page the filter reads, and how many of them one request reads before
+#: it answers with what matched and a token. Neither the session nor the
+#: repository is a field of the frozen `Workflow` -- both are on its step
+#: tasks -- so no Firestore index can serve them and the route filters after
+#: deriving. 10 pages of 100 is 1,000 running workflows a request: past the
+#: 250 tenant eng had running on 2026-10-20, and a bound on what one request
+#: can cost, since every row scanned is a rollup's step reads.
+FILTER_PAGE_SIZE = 100
+MAX_FILTER_PAGES = 10
+
+#: Why a row the scope filter read was not served, counted in
+#: `filter.left_out`: the bridge reports other sessions' and untagged work
+#: as left out (SC-SESSION-SCOPE), and cannot count what it never received.
+LEFT_OUT_REASONS: tuple[str, ...] = ("other_session", "untagged", "other_repository")
+
+#: `owner@host:path`, the scp-like spelling git accepts for ssh -- the same
+#: pattern `swarm_mcp.checkout._SCP_LIKE` reads.
+_SCP_LIKE = re.compile(r"^(?:[^@/\s]+@)?(?P<host>[^:/\s]+):(?P<path>[^\s]+)$")
+
+
+def repository_key(value: Any) -> str | None:
+    """`host/owner/repo`, lower-cased, for any spelling of one repository --
+    https (with or without `.git`, userinfo or a port), ssh://, git@host:, or
+    bare `owner/repo` (GitHub) -- and None for anything that names none.
+
+    THE BRIDGE'S RULE, RESTATED BECAUSE THE TWO APPS SHARE NO PACKAGE BUT THE
+    FROZEN ONE: `swarm_mcp.check.repo_key` is what the bridge scopes by, and a
+    filter that normalised differently would leave out work the bridge counts
+    as in scope. `test_workflow_list_scope_filter` holds the two equal over
+    every spelling either has met."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if "://" not in text and "@" not in text and ":" not in text:
+        # `host/owner/repo` names its host; only a bare `owner/repo` is
+        # GitHub's. A GitHub owner never holds a dot, a host always does.
+        first = text.strip("/").split("/", 1)[0]
+        text = f"https://{text}" if "." in first else f"https://github.com/{text}"
+    scp = None if "://" in text else _SCP_LIKE.match(text)
+    if scp and not text.startswith(("/", ".", "~")):
+        text = f"https://{scp.group('host')}/{scp.group('path').lstrip('/')}"
+    try:
+        parts = urlsplit(text)
+        host = parts.hostname
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in ("https", "ssh", "git+ssh") or not host:
+        return None
+    segments = [s for s in parts.path.strip("/").split("/") if s]
+    if len(segments) < 2:
+        return None
+    owner, repo = segments[0], segments[1]
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    return f"{host}/{owner}/{repo}".lower() if owner and repo else None
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -122,6 +185,8 @@ def list_workflows(
     active: bool = Query(default=False),
     view: str | None = Query(default=None, description="`full` (default) or `summary`"),
     ids: list[str] | None = Query(default=None),
+    claude_session: str | None = Query(default=None),
+    repository: str | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
@@ -162,6 +227,20 @@ def list_workflows(
     and `tasks` carries every step task the derivation read, served as
     `GET /v1/workflows/{id}` serves its own, with its account and attempt
     totals. It takes no `page_token`, `state` or `active`: it is not a page.
+
+    `claude_session` and `repository` (CHECK-FILTER, owner decision
+    2026-10-20, #1749) keep only the workflows a step task of which carries
+    that `metadata.claude_session` / clones that repository (any spelling,
+    `repository_key`); each combines with the state filters. The sc plugin's
+    check and attach-all read only their own session's work this way, where
+    they used to page through the whole tenant's running set and stop after
+    four pages of it. Neither is a field of the frozen `Workflow`, so no
+    index can serve them: the route derives a store page, keeps what matches,
+    and pages on INSIDE the request until `limit` rows matched or
+    `MAX_FILTER_PAGES` store pages were read -- one page of what matched,
+    and a token that continues past its last row. `filter` echoes both
+    (normalised), so a client tells this route from one that ignored them,
+    and `filter.left_out` counts the rows read and not served, by why.
     """
     if view is not None and view not in WORKFLOW_VIEWS:
         raise ValidationFailed(
@@ -169,25 +248,50 @@ def list_workflows(
             detail={"known_views": list(WORKFLOW_VIEWS)},
         )
     summary = view == "summary"
+    session = repo = None
+    if claude_session is not None:
+        session = sessiontag.valid(claude_session)
+        if session is None:
+            raise ValidationFailed(
+                f"claude_session {claude_session!r} is not a Claude Code session id",
+                detail={"pattern": sessiontag.PATTERN},
+            )
+    if repository is not None:
+        repo = repository_key(repository)
+        if repo is None:
+            raise ValidationFailed(
+                f"repository {repository!r} names no repository; give a URL or owner/repo",
+            )
     if ids:
+        if session is not None or repo is not None:
+            raise ValidationFailed(
+                "ids reads the named workflows, not a page: it takes no claude_session or repository",
+                detail={"ids_exclusive_of": ["claude_session", "repository"]},
+            )
         return _by_ids(
             ids, view=view, page_token=page_token, state=state, active=active,
             tenant_id=tenant_id, submitted_by=submitted_by, ctx=ctx,
         )
     stored_states = ctx.store.stored_states_for(active=active, states=state)
-    page = ctx.store.list_workflows(
-        tenant_id,
-        limit=paged_limit(ctx, limit),
-        page_token=page_token,
-        submitted_by=submitted_by,
-        stored_states=stored_states,
-    )
-    results, report = ctx.rollups.for_workflows(tenant_id, page.items)
-    if active:
-        results = [r for r in results if r.to_api().get("state") not in _TERMINAL]
-    if state:
-        wanted = set(state)
-        results = [r for r in results if r.to_api().get("state") in wanted]
+    scope: dict[str, Any] = {}
+    if session is None and repo is None:
+        page = ctx.store.list_workflows(
+            tenant_id,
+            limit=paged_limit(ctx, limit),
+            page_token=page_token,
+            submitted_by=submitted_by,
+            stored_states=stored_states,
+        )
+        results, report = ctx.rollups.for_workflows(tenant_id, page.items)
+        results = _in_states(results, active=active, state=state)
+        next_page_token = page.next_page_token
+    else:
+        results, report, next_page_token, left_out = _scoped_page(
+            ctx, tenant_id, limit=paged_limit(ctx, limit), page_token=page_token,
+            submitted_by=submitted_by, stored_states=stored_states, active=active, state=state,
+            session=session, repo=repo,
+        )
+        scope = {"claude_session": session, "repository": repo, "left_out": left_out}
     payload = {
         # Each step's input is masked by its own task's masker, from the step
         # tasks the rollup already read (the PR #229 review); a step whose task
@@ -203,7 +307,7 @@ def list_workflows(
             )
             for r in results
         ],
-        "next_page_token": page.next_page_token,
+        "next_page_token": next_page_token,
         "tenant_id": tenant_id,
         # What was filtered and where. A client that sees `stored_states` knows
         # the running set came from the indexed query, not a walk through
@@ -213,6 +317,7 @@ def list_workflows(
             "active": active,
             "states": list(state) if state else None,
             "stored_states": stored_states,
+            **scope,
         },
         # What deriving this page cost and whether it was complete. A caller
         # that saw `step_read_budget_exhausted` knows some rows below read
@@ -229,6 +334,95 @@ def list_workflows(
     if summary:
         payload["view"] = "summary"
     return payload
+
+
+def _in_states(
+    results: list[RollupResult], *, active: bool, state: list[str] | None
+) -> list[RollupResult]:
+    """The rows whose DERIVED state the `active` / `state` filters keep."""
+    if active:
+        results = [r for r in results if r.to_api().get("state") not in _TERMINAL]
+    if state:
+        wanted = set(state)
+        results = [r for r in results if r.to_api().get("state") in wanted]
+    return results
+
+
+def _left_out_because(result: RollupResult, session: str | None, repo: str | None) -> str | None:
+    """Why the scope filter does not serve this row (`LEFT_OUT_REASONS`), or
+    None when it matches. The session is the one the row is SERVED with
+    (`workflow_claude_session`, off its step tasks through their maskers), so
+    the filter keeps exactly the rows a client comparing `claude_session`
+    would keep; a workflow none of whose step tasks could be read carries no
+    tag and counts as untagged."""
+    if session is not None:
+        tagged = workflow_claude_session(result.step_tasks).get(sessiontag.KEY)
+        if tagged != session:
+            return "other_session" if tagged else "untagged"
+    if repo is not None:
+        if repo not in {repository_key(t.repository_url) for t in result.step_tasks.values()}:
+            return "other_repository"
+    return None
+
+
+def _merge(total: SweepReport, part: SweepReport) -> None:
+    for name in ("examined", "written", "agreed", "disagreed", "unknown", "step_reads"):
+        setattr(total, name, getattr(total, name) + getattr(part, name))
+    total.step_read_budget_exhausted = total.step_read_budget_exhausted or part.step_read_budget_exhausted
+
+
+def _scoped_page(
+    ctx: AppContext,
+    tenant_id: str,
+    *,
+    limit: int,
+    page_token: str | None,
+    submitted_by: str | None,
+    stored_states: list[str] | None,
+    active: bool,
+    state: list[str] | None,
+    session: str | None,
+    repo: str | None,
+) -> tuple[list[RollupResult], SweepReport, str | None, dict[str, int]]:
+    """`(rows, report, next_page_token, left_out)`: one page of the rows the
+    session / repository filter keeps, read store page by store page.
+
+    THE TOKEN IS THE LAST ROW SERVED'S. When `limit` matches are reached
+    before the end of a store page, the page's own token would skip the rows
+    after the last one served, so the token is minted on that row
+    (`workflow_listing_token`) and the rest of the page is read again by the
+    next request -- and counted in `left_out` only then, so a walk counts
+    each row once. When the store page ends exactly there, or the scan stops
+    at `MAX_FILTER_PAGES`, the store page's token is the position."""
+    matched: list[RollupResult] = []
+    report = SweepReport()
+    left_out = {reason: 0 for reason in LEFT_OUT_REASONS}
+    token = page_token
+    for _ in range(MAX_FILTER_PAGES):
+        page = ctx.store.list_workflows(
+            tenant_id,
+            limit=FILTER_PAGE_SIZE,
+            page_token=token,
+            submitted_by=submitted_by,
+            stored_states=stored_states,
+        )
+        results, read = ctx.rollups.for_workflows(tenant_id, page.items)
+        _merge(report, read)
+        token = page.next_page_token
+        kept = _in_states(results, active=active, state=state)
+        for index, result in enumerate(kept):
+            why = _left_out_because(result, session, repo)
+            if why is not None:
+                left_out[why] += 1
+                continue
+            matched.append(result)
+            if len(matched) == limit:
+                if index < len(kept) - 1:
+                    token = workflow_listing_token(result.workflow)
+                return matched, report, token, left_out
+        if token is None:
+            break
+    return matched, report, token, left_out
 
 
 def _named(ctx: AppContext, workflows: list[dict], tasks: list[dict]) -> None:

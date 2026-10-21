@@ -121,14 +121,30 @@ def test_an_api_that_ignores_a_filter_still_lists_only_single_unfinished_tasks()
     assert entry["console"] == "https://c.test/agents/task_live"
 
 
-def test_a_list_that_pages_past_its_cap_says_it_stopped_short():
+def test_every_page_is_read_and_only_a_failed_read_stops_the_list_short():
+    """No page cap (#1749): the caller's tasks behind four pages of other
+    members' are listed. A later page that cannot be read keeps what was read
+    and says so; the first page's failure is an error (below)."""
     class _Client:
-        def request(self, method, path, **_):
-            return {"tasks": [], "next_page_token": "more", "tenant_id": "eng"}
+        def __init__(self) -> None:
+            self.asked: dict[str, int] = {}
 
-    listing = sc.running_tasks(_Client(), pages=2)
+        def request(self, method, path, **_):
+            state = path.split("state=", 1)[1].split("&", 1)[0]
+            page = self.asked[state] = self.asked.get(state, 0) + 1
+            if state == "PARKED" and page == 3:
+                raise SwarmError("GET /v1/tasks -> 503: unavailable")
+            last = page == 5
+            rows = [{"id": f"task_{state}", "state": state}] if last else []
+            return {"tasks": rows, "next_page_token": None if last else f"p{page}", "tenant_id": "eng"}
+
+    listing = sc.running_tasks(_Client())
+    # MUTATION: bring a page cap back and the tasks on page 5 are not listed.
+    assert {t["task_id"] for t in listing["tasks"]} == {
+        "task_SUBMITTED", "task_QUEUED", "task_READY", "task_LEASED", "task_DISPATCHED",
+        "task_STARTING", "task_RUNNING"}
     assert listing["complete"] is False
-    assert "older running tasks" in listing["incomplete_because"]
+    assert "PARKED" in listing["incomplete_because"] and "503" in listing["incomplete_because"]
 
 
 def test_a_failed_read_is_an_error_not_an_empty_list():

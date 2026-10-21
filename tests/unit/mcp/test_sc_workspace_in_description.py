@@ -216,7 +216,7 @@ def _this_session(monkeypatch):
 
 
 def test_attach_all_names_runs_alone_and_describes_each_workspace(_plugin_root, monkeypatch):
-    monkeypatch.setattr(sc, "running_workflows", lambda client: {"count": 2, "complete": True, "workflows": [
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: {"count": 2, "complete": True, "workflows": [
         {"workflow_id": "wf_00", "workspace": "eng", "title": "flow 00", "label": None, "steps_total": 3,
          "claude_session": SESSION},
         {"workflow_id": "wf_01", "workspace": "u-bogdan", "title": "flow 01", "label": None, "steps_total": 1,
