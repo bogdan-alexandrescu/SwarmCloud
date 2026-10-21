@@ -27,6 +27,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
 import type { ArtifactContent, GitSummary, Task, Workflow, WorkflowStep } from '../types'
+import type { CascadeEnv } from './cssgate'
+import { painted } from './marks'
 import { attempt, issueRun, task as baseTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -314,7 +316,7 @@ describe('the matrix: which step changed which file', () => {
     const integ = stepTask('t_fix', { ...FIX_GIT, role: 'integrator', pull_request: pr } as GitSummary)
     render(<Tab steps={THREE} tasks={[THREE_TASKS[0]!, THREE_TASKS[1]!, integ]} />)
     await waitFor(() => expect(head('fix').textContent).toMatch(/integrate · fix/))
-    expect(within(head('implement')).getByRole('link', { name: 'Changes ›' }).getAttribute('href')).toMatch(/\/t_impl\/changes$/)
+    expect(within(head('implement')).getByRole('link', { name: 'Agent’s changes ›' }).getAttribute('href')).toMatch(/\/t_impl\/changes$/)
     // In the bar, and in the viewer's bar once the open file's hunks are drawn.
     expect(within(document.querySelector<HTMLElement>('.chg-mx-bar')!).getByRole('link', { name: 'PR #553 ↗' }).getAttribute('href')).toBe(pr.url)
     await waitFor(() => expect(document.querySelector<HTMLAnchorElement>('a.diff-pr')?.getAttribute('href')).toBe(pr.url))
@@ -464,5 +466,49 @@ describe('the addresses carry the step filter and the open file', () => {
     const p = pathToAddress('/workflows/wf_one/changes', '?step=fix&file=src%2Fa.ts')!
     expect(changesAtOf(fromAddress(p.address).view)).toEqual({ step: 'fix', file: 'src/a.ts' })
     expect(roundTrip('/workflows/wf_one/changes', '?step=fix&file=src%2Fa.ts')).toBe('/workflows/wf_one/changes?step=fix&file=src%2Fa.ts')
+  })
+})
+
+// QAFIX2-WORK-MINOR (visual QA run 2, wf_b6e2441b419f423a84eb, 2026-10-20).
+describe("WG-7: a step column's link names its scope, and a filtered page carries one", () => {
+  it('says Agent’s changes, not Changes, on every column the page shows', async () => {
+    render(<Tab steps={THREE} tasks={THREE_TASKS} />)
+    await waitFor(() => expect(head('implement').textContent).toMatch(/2 files/))
+    for (const key of ['implement', 'review', 'fix']) {
+      // MUTATION: label the column link 'Changes ›' again -- the tab's own
+      // name, for a link that leaves the tab for the agent's -- and this is red.
+      expect(within(head(key)).queryByRole('link', { name: 'Changes ›' }), key).toBeNull()
+      expect(within(head(key)).getByRole('link', { name: 'Agent’s changes ›' }), key).toBeTruthy()
+    }
+  })
+
+  it('carries the link only on the step the page is filtered to, not once per dimmed column', async () => {
+    render(<Tab steps={THREE} tasks={THREE_TASKS} start={{ step: 'fix', file: null }} />)
+    await waitFor(() => expect(head('implement').classList.contains('is-dim')).toBe(true))
+    // MUTATION: draw the link on every column whatever the filter and the
+    // filtered page repeats it three times, two of them on dimmed steps.
+    expect(within(table()).getAllByRole('link', { name: 'Agent’s changes ›' })).toHaveLength(1)
+    expect(within(head('fix')).getByRole('link', { name: 'Agent’s changes ›' }).getAttribute('href')).toMatch(/\/t_fix\/changes$/)
+  })
+})
+
+describe("WG-9: the matrix's step headers wrap, so six step columns fit a 1440 frame", () => {
+  const WIDE: CascadeEnv = { width: 1440 }
+
+  it('lets a step header break between its lines and inside a long step id', async () => {
+    render(<Tab steps={THREE} tasks={THREE_TASKS} />)
+    await waitFor(() => expect(head('implement').textContent).toMatch(/2 files/))
+    const th = head('implement')
+    // MUTATION: leave the step header `white-space: nowrap` (the shared
+    // `thead th` rule) and every column is as wide as its longest line --
+    // the label, its file count and its link side by side -- and six of them
+    // ran past the 1440 frame, clipping `synthesis` and scrolling sideways.
+    expect(painted(th, 'white-space', WIDE)).toBe('normal')
+    // MUTATION: drop `overflow-wrap: anywhere` and one long mono step id
+    // (`implement-logs-tab`) still holds its column at its own width.
+    expect(painted(th.querySelector('.mono')!, 'overflow-wrap', WIDE)).toBe('anywhere')
+    // The File column's header keeps its one line.
+    // MUTATION: (control) unset nowrap on every header and this is red.
+    expect(painted(table().querySelector('thead th:not([data-step])')!, 'white-space', WIDE)).toBe('nowrap')
   })
 })
