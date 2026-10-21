@@ -48,6 +48,7 @@ import { OnboardingScreen, SetupCard } from './Onboarding'
 import { AccessScreen } from './Access'
 import { PeopleScreen } from './People'
 import { PlatformCountsScreen } from './PlatformCounts'
+import { RunnerSizesScreen } from './RunnerSizes'
 import { ProfilesScreen } from './Profiles'
 import { ProfileScreen } from './Profile'
 import { WorkspacePeopleScreen } from './WorkspacePeople'
@@ -503,6 +504,12 @@ export const SECTIONS: SectionDef[] = [
       'What is each ceiling set to, who is registered to use this platform, how many agents are in each state, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer?',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
+      // SIZES-UI (part of #1689, docs/design/runner-sizes.md §4.6): each
+      // class's CPU request, CPU limit and memory, versioned and audited.
+      // Beside Pool limits because a resize moves what a ceiling admits.
+      // Admin only: any PLATFORM admin may change sizes (owner Q4), never a
+      // workspace admin -- a size is the platform's, not a workspace's.
+      { id: 'runner-sizes', label: 'Runner sizes', admin: true },
       { id: 'tenants', label: 'Tenants', admin: true },
       // The id stays `counts`, so `#counts` (LEGACY) and `#history/counts`
       // (MOVED_PANES) both land here.
@@ -2131,6 +2138,8 @@ function SectionBody({
 
     case 'admin/limits':
       return <AdminSettingsScreen />
+    case 'admin/runner-sizes':
+      return <RunnerSizesScreen />
     case 'admin/tenants':
       return <TenantsScreen />
     case 'admin/counts':

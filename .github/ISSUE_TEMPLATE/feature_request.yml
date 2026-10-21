@@ -66,6 +66,7 @@ body:
         - "Web UI · Capacity › Provider quota (/capacity/accounts/quota)"
         - "Web UI · Capacity › API reads (/capacity/api-reads)"
         - "Web UI · Admin › Pool limits (/admin/limits)"
+        - "Web UI · Admin › Runner sizes (/admin/runner-sizes)"
         - "Web UI · Admin › Tenants (/admin/tenants)"
         - "Web UI · Admin › Platform counts (/admin/counts)"
         - "Web UI · Admin › People (/admin/people)"

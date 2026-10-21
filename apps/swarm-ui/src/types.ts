@@ -2030,6 +2030,113 @@ export interface ResourceClassSpec {
 }
 
 /**
+ * ADMIN › RUNNER SIZES (SIZES-UI; part of #1689): `swarm_api.runnersizes`'
+ * shapes, docs/design/runner-sizes.md §4.5. One class's size as a version
+ * stores it. `units` is derived by the API (`units_for`) and never sent;
+ * `disk_gib` is shown, never edited (owner Q5).
+ */
+export interface RunnerShare {
+  cpu_request: number
+  cpu_limit: number
+  memory_gib: number
+}
+
+export interface RunnerSize extends RunnerShare {
+  disk_gib: number
+  units: number
+  /** The browser class's alone: the live pod's two containers. */
+  live_split?: { worker: RunnerShare; display: RunnerShare }
+}
+
+/** `GET /v1/admin/runner-sizes`, and every write's answer (`runnersizes.served`). */
+export interface RunnerSizesDoc {
+  /** The pointer's version; what a write's `base_version` must equal. 0: none written. */
+  current_version: number
+  /** The version whose sizes are in effect: 0 when none is written or it is malformed. */
+  in_effect_version: number
+  malformed: boolean
+  classes: Record<string, RunnerSize>
+  defaults: Record<string, RunnerSize>
+  /** The frozen bounds, served so a keystroke is checked against what `check_size` refuses with. */
+  bounds: {
+    cpu_request: { min: number; max: number; step: number }
+    cpu_burst_max_ratio: number
+    memory_gib: { min: number; max: number }
+    memory_per_cpu: { min: number; max: number }
+    live_split: { worker_min_cpu: number; worker_min_memory_gib: number; display_min_cpu: number; display_min_memory_gib: number }
+  }
+  /** Per class: GKE profiles that follow a resize, Cloud Run ones fixed at the code default (owner Q3). */
+  followers: Record<string, { follows: string[]; fixed: string[] }>
+  prices: { vcpu_hour: number; gib_hour: number; source: string }
+  updated_at: string | null
+  updated_by: string | null
+}
+
+/** One refusal, the frozen `SizeRefusal` as served. `field` may be dotted: `live_split.worker.cpu_limit`. */
+export interface RunnerSizeRefusal {
+  class: string
+  field: string
+  value: number | null
+  bound: string
+}
+
+/**
+ * One class's 7-day use (`recent_use`, §4.9). Every share is NULL where no
+ * record that feeds it exists -- LIVE-UTIL's samples, a measured limit -- and
+ * null is "no data", never 0%.
+ */
+export interface RunnerRecentUse {
+  attempts: number
+  since: string
+  memory_peak_gib_max: number | null
+  memory_peak_gib_p95: number | null
+  cpu_mean_cores_median: number | null
+  share_idle: number | null
+  share_above_request: number | null
+  share_at_limit: number | null
+  share_at_limit_long: number | null
+  throttled_share: number | null
+  oom_near_miss: number
+  by_size_version: {
+    size_version: number
+    attempts: number
+    wall_minutes_median: number | null
+    wall_minutes_median_long: number | null
+    memory_peak_gib_max: number | null
+    share_at_limit: number | null
+    throttled_share: number | null
+  }[]
+}
+
+/** `POST /v1/admin/runner-sizes:preview`: what a body would do; nothing written. */
+export interface RunnerSizesPreview {
+  base_version: number
+  valid: boolean
+  refusals: RunnerSizeRefusal[]
+  /** `*_after` is null for a class the body leaves refused. */
+  classes: Record<string, { units_before: number; units_after: number | null; cost_hour_before: number; cost_hour_after: number | null }>
+  pools: { pool: string; hard_limit: number; admits_before: Record<string, number>; admits_after: Record<string, number | null> }[]
+  /** Only the classes the body names, or every class for an empty body. */
+  recent_use: Record<string, RunnerRecentUse>
+  /** The classes a save needs `confirm_below_recent_peak` for (owner Q6). */
+  below_recent_peak: string[]
+}
+
+/** One row of `GET /v1/admin/runner-sizes/versions`: the audit. */
+export interface RunnerSizeVersion {
+  version: number
+  previous_version: number | null
+  created_at: string | null
+  created_by: string | null
+  reason: string | null
+  changed: { class: string; field: string; from: number | null; to: number | null }[] | null
+  restored_from: number | null
+}
+
+/** A change, by class then field; a live share's fields under `live_split.<role>`. */
+export type RunnerSizeChanges = Record<string, Record<string, number | Record<string, Record<string, number>>>>
+
+/**
  * One entry of `GET /v1/runtimes` -- `routes/platform.py:90-181`.
  *
  * WHAT A RUNNER PROFILE NAME MEANS, served rather than copied. Invariant 10

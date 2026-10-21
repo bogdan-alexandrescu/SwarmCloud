@@ -152,6 +152,9 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
   ],
   admin: [
     { key: 'limits', label: 'Pool limits', icon: 'admin', to: 'admin/limits' },
+    // SIZES-UI (part of #1689): a platform admin's alone, so `adminPagesFor`
+    // never hands it to someone who administers only a group workspace.
+    { key: 'runner-sizes', label: 'Runner sizes', icon: 'runtimes', to: 'admin/runner-sizes' },
     { key: 'tenants', label: 'Tenants', icon: 'tenants', to: 'admin/tenants' },
     { key: 'counts', label: 'Platform counts', icon: 'counts', to: 'admin/counts' },
     // #847 W8 (docs/workspaces.md §6.4): a SECTIONS tab and a route, and

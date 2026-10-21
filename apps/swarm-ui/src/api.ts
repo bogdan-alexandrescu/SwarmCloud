@@ -44,6 +44,7 @@ import type {
   WorkspaceRoleOverride, WorkspaceRoles, WorkspaceRoster,
   AdminWorkspaceRoles, AdminWorkspaceRolesPage,
   QaIdentityGrantDoc, QaIdentityList, QaIdentityMine,
+  RunnerSizeChanges, RunnerSizesDoc, RunnerSizesPreview, RunnerSizeVersion,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -6773,6 +6774,62 @@ export async function requestLoan(): Promise<Result<LoanRequestAnswer>> {
 /** `GET /v1/admin/people` (admin): everyone, pending first, the last 50 audit entries, the lendable accounts. */
 export async function loadPeople(): Promise<Result<PeopleDoc>> {
   return readAs(route('/v1/admin/people'), (raw) => raw as PeopleDoc)
+}
+
+// -- Admin › Runner sizes (SIZES-UI; part of #1689) ---------------------------
+//
+// docs/design/runner-sizes.md §4.5. Every route is `admin_auth`. The sizes,
+// bounds, followers and prices are SERVED, never copied here: the frozen
+// contract owns them and a copy is one more number to drift.
+
+/** `GET /v1/admin/runner-sizes`: the current version, the defaults, the frozen bounds, followers, prices. */
+export async function loadRunnerSizes(): Promise<Result<RunnerSizesDoc>> {
+  return readAs(route('/v1/admin/runner-sizes'), (raw) => raw as RunnerSizesDoc)
+}
+
+/**
+ * `POST /v1/admin/runner-sizes:preview`: what `classes` would do, nothing
+ * written. A refused body is `valid: false` with every refusal, not a 422,
+ * so the console previews as an admin types.
+ */
+export async function previewRunnerSizes(classes: RunnerSizeChanges, baseVersion: number): Promise<Result<RunnerSizesPreview>> {
+  return writeTo(route('/v1/admin/runner-sizes:preview'), 'POST', { classes, base_version: baseVersion }) as Promise<Result<RunnerSizesPreview>>
+}
+
+/**
+ * `PUT /v1/admin/runner-sizes`: version `base_version + 1`. 409
+ * `stale_base_version` when another admin saved in between; 422
+ * `size_out_of_bounds`; 422 `below_recent_peak` for an unconfirmed memory cut.
+ */
+export async function saveRunnerSizes(body: {
+  base_version: number
+  reason: string
+  classes: RunnerSizeChanges
+  confirm_below_recent_peak: boolean
+}): Promise<Result<RunnerSizesDoc>> {
+  return writeTo(route('/v1/admin/runner-sizes'), 'PUT', body) as Promise<Result<RunnerSizesDoc>>
+}
+
+/** `POST /v1/admin/runner-sizes/restore`: a NEW version with `version`'s classes (0: the code defaults). */
+export async function restoreRunnerSizes(body: {
+  base_version: number
+  version: number
+  reason: string
+  confirm_below_recent_peak: boolean
+}): Promise<Result<RunnerSizesDoc>> {
+  return writeTo(route('/v1/admin/runner-sizes/restore'), 'POST', body) as Promise<Result<RunnerSizesDoc>>
+}
+
+/** `GET /v1/admin/runner-sizes/versions`: the audit, newest first. A row that is not an object is dropped. */
+export async function loadRunnerSizeVersions(): Promise<Result<RunnerSizeVersion[]>> {
+  return readAs(
+    route('/v1/admin/runner-sizes/versions?limit=50'),
+    (raw) => {
+      const rows = (raw as { versions?: unknown } | null)?.versions
+      return Array.isArray(rows) ? rows.filter((r): r is RunnerSizeVersion => typeof r === 'object' && r !== null && typeof (r as RunnerSizeVersion).version === 'number') : []
+    },
+    (d) => d.length === 0,
+  )
 }
 
 /** `POST /v1/admin/workspaces/{workspace_id}/approve` (admin): approve, then publish the workspace id. */

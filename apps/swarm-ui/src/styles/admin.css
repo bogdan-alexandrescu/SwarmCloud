@@ -568,3 +568,49 @@ table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg {
   .is-stacked .adm-changed > .adm-changed-part { display: block; }
   .is-stacked .adm-changed > .adm-changed-part > .adm-changed-sep { display: none; }
 }
+
+/* -- Runner sizes --------------------------------------------------------- */
+/* SIZES-UI (part of #1689; docs/design/runner-sizes.md §4.6): one card per
+   class, its three numbers side by side with the bound under each, then the
+   units, the dollars, who follows a resize and the 7-day readings. The cards
+   wrap to one column on a phone; nothing here is wider than its field. */
+.rs-classes { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ctl-gutter); margin: var(--ctl-s2) 0; }
+.rs-class {
+  display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+}
+.rs-class-h { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-family: var(--mono); }
+.rs-split-h { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
+.rs-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 8px 12px; }
+.rs-field .c-inp { max-width: 8rem; }
+.rs-bound, .rs-note, .rs-disk, .rs-follows, .rs-fixed, .rs-version-line, .rs-hints-few, .rs-none {
+  margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
+}
+.rs-refusal { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--bad-ink); }
+.rs-class-refusals { margin: 0; padding-left: 1.1rem; }
+.rs-split { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--line-soft); }
+.rs-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: var(--t-meta); }
+.rs-facts dt { color: var(--text-dim); }
+.rs-facts dd { margin: 0; font-family: var(--mono); }
+.rs-free { font-family: var(--font); color: var(--text-dim); }
+.rs-use { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--line-soft); }
+.rs-recent { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.rs-readings { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 4px 12px; margin: 0; font-size: var(--t-micro); }
+.rs-readings dt { color: var(--text-dim); }
+.rs-readings dd { margin: 0; font-family: var(--mono); }
+.rs-hints { margin: 0; padding-left: 1.1rem; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.rs-pools { width: 100%; border-collapse: collapse; font-size: var(--t-meta); }
+.rs-pools th, .rs-pools td { padding: 4px 8px; border-bottom: 1px solid var(--line-soft); text-align: left; }
+.rs-pools td { font-family: var(--mono); }
+.rs-save { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; margin: var(--ctl-s2) 0; }
+.rs-save .c-field { width: 100%; max-width: 40rem; }
+.rs-saved, .rs-error { margin: 0; font-size: var(--t-meta); }
+.rs-error { color: var(--bad-ink); }
+.rs-versions { display: flex; flex-direction: column; gap: 10px; margin: 0 0 var(--ctl-s2); padding: 0; list-style: none; }
+.rs-version { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; padding-bottom: 8px; border-bottom: 1px solid var(--line-soft); }
+.rs-version-head { font-size: var(--t-meta); }
+.rs-version-why { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
+.rs-version-changes { margin: 0; padding-left: 1.1rem; font-size: var(--t-micro); font-family: var(--mono); color: var(--text-dim); }
+@media (min-width: 1280px) {
+  .rs-classes { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}

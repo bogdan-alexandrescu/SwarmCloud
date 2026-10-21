@@ -113,6 +113,8 @@ export const FIXED: Readonly<Record<string, string>> = {
   // at the spine's foot; that path and `/reference` still land here.
   'capacity/api-reads': '/capacity/api-reads',
   'admin/limits': '/admin/limits',
+  // SIZES-UI (part of #1689): Admin › Runner sizes.
+  'admin/runner-sizes': '/admin/runner-sizes',
   'admin/tenants': '/admin/tenants',
   'admin/counts': '/admin/counts',
   // #847 W8: Admin › People, everyone who has signed in and their workspace requests.
