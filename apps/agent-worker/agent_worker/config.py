@@ -139,6 +139,18 @@ def heartbeat_beat_seconds(grace_seconds: int, platform_interval_seconds: int) -
     return beat
 
 
+#: `heartbeat_meanwhile_max_seconds` in lease timeouts: the bound `from_env`
+#: sets is this many `LEASE_TIMEOUT_SECONDS`. `lifecycle._heartbeat_meanwhile`
+#: divides the bound by it to get back ONE lease timeout, the longest a
+#: checkpoint may go without progress past the bound before it is a wedge
+#: (#1808): one lease timeout is the silence the lease itself was sized to
+#: tolerate.
+HEARTBEAT_MEANWHILE_BOUND_LEASE_TIMEOUTS = 3
+
+#: The hard ceiling, in bounds (#1808): see `heartbeat_meanwhile_ceiling_seconds`.
+HEARTBEAT_MEANWHILE_CEILING_BOUNDS = 4
+
+
 #: How far below the worker the runner child runs (`nice`, 0-19), and every
 #: process it forks with it: the agent, its compilers, its test runners. A
 #: build with `-p` equal to the core count competed with the heartbeat at the
@@ -225,11 +237,30 @@ class WorkerConfig:
     #: `LEASE_TIMEOUT_SECONDS`). Meant to be long enough for an honest
     #: checkpoint of a large tree now that the tool caches are left out (not
     #: measured against the 2 GiB cap), and bounded so that a checkpoint
-    #: running past it is treated as wedged. An unbounded thread would keep a wedged attempt's lease, and the
+    #: running past it is treated as wedged -- unless its progress counter
+    #: still advances, up to `heartbeat_meanwhile_ceiling_seconds` (#1808). An unbounded thread would keep a wedged attempt's lease, and the
     #: capacity reserved behind it, alive for ever while the supervision loop
     #: is not running to notice; bounded, the lease lapses one lease timeout
     #: later and the reconciler reclaims it as it would a silent worker.
     heartbeat_meanwhile_max_seconds: int = 360
+    #: The HARD ceiling on that thread (#1808): four bounds, 1,440 s (24 min)
+    #: at the default 120 s lease timeout. Past the bound the thread keeps
+    #: beating only while the checkpoint writer's progress counter advances
+    #: (`CheckpointManager.progress`), and this is the time no progress
+    #: extends. A checkpoint that walks and writes forever -- an agent filling
+    #: the tree faster than the archiver reads it -- is still progress, so
+    #: without a ceiling it would hold the lease, and the capacity reserved
+    #: behind it, for as long as the agent kept writing, with the supervision
+    #: loop not running to notice. Four bounds because the reclaim it answers
+    #: was a 7.5 min checkpoint of 291 MB that grew by 100 MB between
+    #: checkpoints (task_8cff36540fd44bf7839f, 2026-10-21). Four bounds is
+    #: three times that checkpoint; at its rate (291 MB in about 450 s, on a
+    #: CPU the agent was saturating) it is about 930 MB written, nearly half
+    #: the 2 GiB archive cap. A checkpoint needing longer than that is better
+    #: ended and retried from the last one than allowed to hold the lease.
+    #: Past it the lease lapses one lease timeout later and the reconciler
+    #: reclaims it, as it does at the bound for a wedge.
+    heartbeat_meanwhile_ceiling_seconds: int = 4 * 360
 
     # --- safety caps ---------------------------------------------------------
     max_stdout_bytes: int = 32 * 1024 * 1024
@@ -549,6 +580,12 @@ class WorkerConfig:
             )
         if self.heartbeat_meanwhile_max_seconds <= 0:
             raise ConfigError("the checkpoint heartbeat's bound must be positive")
+        if self.heartbeat_meanwhile_ceiling_seconds < self.heartbeat_meanwhile_max_seconds:
+            raise ConfigError(
+                "the checkpoint heartbeat's ceiling must not be under its bound "
+                f"({self.heartbeat_meanwhile_ceiling_seconds} s < "
+                f"{self.heartbeat_meanwhile_max_seconds} s)"
+            )
         if self.checkpoint_interval_seconds <= 0:
             raise ConfigError(
                 "checkpointing is mandatory; a non-positive interval would disable it"
@@ -626,7 +663,14 @@ class WorkerConfig:
             timeout_seconds=_int_env("TASK_TIMEOUT_SECONDS", profile.timeout_seconds),
             termination_grace_seconds=_int_env("TERMINATION_GRACE_SECONDS", 20),
             control_poll_seconds=_int_env("CONTROL_POLL_SECONDS", 10),
-            heartbeat_meanwhile_max_seconds=3 * settings.lease_timeout_seconds,
+            heartbeat_meanwhile_max_seconds=(
+                HEARTBEAT_MEANWHILE_BOUND_LEASE_TIMEOUTS * settings.lease_timeout_seconds
+            ),
+            heartbeat_meanwhile_ceiling_seconds=(
+                HEARTBEAT_MEANWHILE_CEILING_BOUNDS
+                * HEARTBEAT_MEANWHILE_BOUND_LEASE_TIMEOUTS
+                * settings.lease_timeout_seconds
+            ),
             repository_url=repo,
             repository_ref=ref,
             git_harvest_enabled=_bool_env("GIT_HARVEST_ENABLED", True),

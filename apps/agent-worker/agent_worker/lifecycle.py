@@ -9463,7 +9463,9 @@ class Worker:
         """
         if self.ws is None:
             return None
-        with self._heartbeat_meanwhile(f"checkpoint ({label})"):
+        with self._heartbeat_meanwhile(
+            f"checkpoint ({label})", progress=self.checkpoints.progress.reading
+        ):
             record = self._write_checkpoint(label, only_if_changed=label == "periodic")
         if record is None:
             return None
@@ -10252,7 +10254,9 @@ class Worker:
         }
 
     @contextmanager
-    def _heartbeat_meanwhile(self, what: str) -> Iterator[None]:
+    def _heartbeat_meanwhile(
+        self, what: str, *, progress: Callable[[], tuple[int, int]] | None = None
+    ) -> Iterator[None]:
         """Heartbeat the lease from a thread for as long as the block runs.
 
         THE CHECKPOINT RAN ON THE LOOP THAT HEARTBEATS THE LEASE (#286), so the
@@ -10287,6 +10291,25 @@ class Worker:
         prolonging a lease that is no longer this attempt's. The loop sees the
         same signal on its next poll and acts on it as it always has.
 
+        PAST THE BOUND ONLY WHILE IT PROVABLY ADVANCES, AND NEVER PAST THE
+        CEILING (#1808, owner decision 2026-10-21). A checkpoint of a growing
+        tree (238,819 files, 291 MB, about 7.5 min) outlasted the 360 s bound
+        while still archiving, and a live agent was reclaimed three times in a
+        row. So a block that passes `progress` -- the checkpoint passes its
+        writer's counter (`CheckpointManager.progress`), files and bytes,
+        which only grow -- keeps beating past the bound for as long as the
+        reading moves: it is read at every wake, and no advance within ONE
+        LEASE TIMEOUT (the bound over
+        `config.HEARTBEAT_MEANWHILE_BOUND_LEASE_TIMEOUTS`) is a wedge, which
+        stops the beating exactly as the bound did. Advancing or not, it stops
+        at `heartbeat_meanwhile_ceiling_seconds` (`config.WorkerConfig` says
+        why). Every other rule holds past the bound unchanged: the fence is
+        asked before every beat, a cancel does not stop it. A block that
+        passes no counter (a clone, a push) stops at the bound as before. One
+        `heartbeat_extended` event, once the block ends, records the bound,
+        the time used, the progress seen and how it ended, so a reclaim -- or
+        the absence of one -- is explainable from the log.
+
         A CANCEL DOES NOT STOP IT (owner decision 2026-09-29, PR #288). A
         cancelled attempt still writes a checkpoint on its way out
         (`self._checkpoint("cancellation")`), and that checkpoint needs the lease alive as
@@ -10301,11 +10324,24 @@ class Worker:
         fields). It cannot clear `released_at`, and a lease with `released_at`
         set reads as released (`ControlSignals.is_fenced`) whatever its expiry.
         """
+        from .config import HEARTBEAT_MEANWHILE_BOUND_LEASE_TIMEOUTS
+
         stop = threading.Event()
         interval = self.cfg.heartbeat_interval_seconds
         bound = self.cfg.heartbeat_meanwhile_max_seconds
+        ceiling_seconds = max(bound, self.cfg.heartbeat_meanwhile_ceiling_seconds)
+        # One lease timeout: the longest the block may go without progress
+        # past the bound before it is treated as wedged.
+        stall = bound / HEARTBEAT_MEANWHILE_BOUND_LEASE_TIMEOUTS
         opened = time.monotonic()
         deadline = opened + bound
+        ceiling = opened + ceiling_seconds
+        # What the extension saw, for its one log event: the reading at the
+        # block's start, the last reading that moved and when, how it ended.
+        first = progress() if progress is not None else (0, 0)
+        last_reading = [first]
+        advanced_at = [opened]
+        extension: dict[str, str] = {}
 
         # When this thread last asked for a beat: it never asks twice within
         # an interval, whatever `_last_beat_started` says.
@@ -10317,28 +10353,60 @@ class Worker:
             starts = [t for t in (self._last_beat_started, *asked) if t is not None]
             return max(starts) + interval if starts else opened
 
+        def limit(now: float) -> float | None:
+            """When beating must stop as things stand; None once it must stop now."""
+            if progress is not None:
+                reading = progress()
+                if reading != last_reading[0]:
+                    last_reading[0], advanced_at[0] = reading, now
+            if now < deadline:
+                return min(deadline, ceiling)
+            stalled_at = advanced_at[0] + stall
+            if progress is None or now >= stalled_at:
+                if extension:
+                    extension["ended"] = "no progress"
+                self.log.warning(
+                    "stopped heartbeating the lease during a long operation: it "
+                    "outlasted its bound"
+                    + (" and made no progress for a lease timeout" if progress else "")
+                    + ", and the lease is left to expire",
+                    during=what,
+                    bound_seconds=bound,
+                )
+                return None
+            if now >= ceiling:
+                if extension:
+                    extension["ended"] = "ceiling"
+                self.log.warning(
+                    "stopped heartbeating the lease during a long operation: it "
+                    "reached its hard ceiling while still making progress, and the "
+                    "lease is left to expire",
+                    during=what,
+                    bound_seconds=bound,
+                    ceiling_seconds=ceiling_seconds,
+                )
+                return None
+            extension.setdefault("ended", "finished")
+            return min(ceiling, stalled_at)
+
         def beat() -> None:
             while True:
                 now = time.monotonic()
-                remaining = deadline - now
-                if remaining <= 0:
-                    self.log.warning(
-                        "stopped heartbeating the lease during a long operation: it "
-                        "outlasted its bound, and the lease is left to expire",
-                        during=what,
-                        bound_seconds=bound,
-                    )
+                until = limit(now)
+                if until is None:
                     return
-                if stop.wait(max(0.0, min(due() - now, remaining))):
+                if stop.wait(max(0.0, min(due() - now, until - now))):
                     return
-                if time.monotonic() >= deadline:
-                    continue  # the top of the loop logs the bound and ends
+                if time.monotonic() >= until:
+                    continue  # the top of the loop re-reads and decides
                 if time.monotonic() < due():
                     continue  # another beat landed meanwhile; wait for the next
                 asked[:] = [time.monotonic()]
                 try:
                     signals = self.control.poll()
                     if signals.is_fenced(self.cfg.generation):
+                        if extension:
+                            extension["ended"] = "fenced"
                         # The relay stops forwarding now, not at the next poll.
                         self.mcp.mark_fenced()
                         self.log.warning(
@@ -10369,6 +10437,8 @@ class Worker:
                         error=f"{type(exc).__name__}: {exc}",
                     )
                     if not unreachable:
+                        if extension:
+                            extension["ended"] = "heartbeat failed"
                         return
 
         thread = threading.Thread(target=beat, name="heartbeat-meanwhile", daemon=True)
@@ -10382,6 +10452,20 @@ class Worker:
                 self.log.warning(
                     "a heartbeat during a long operation is still in flight; going on without it",
                     during=what,
+                )
+            if extension:
+                reading = progress() if progress is not None else first
+                self.log.info(
+                    "kept heartbeating the lease past its bound while a long "
+                    "operation made progress",
+                    event="heartbeat_extended",
+                    during=what,
+                    bound_seconds=bound,
+                    ceiling_seconds=ceiling_seconds,
+                    seconds=round(time.monotonic() - opened, 1),
+                    files=reading[0] - first[0],
+                    bytes=reading[1] - first[1],
+                    ended=extension["ended"],
                 )
 
     def _sleep_with_heartbeat(self, seconds: float) -> None:
