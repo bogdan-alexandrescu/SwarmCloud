@@ -592,10 +592,24 @@ and `images/agent-runtime-browser/swarm-handoff` do now:
   more to show; else the largest scrolling element on the page by the area it
   shows (the 64 px rail scrolls too, and is not the page). It names no class,
   so a console that moves its scroller still segments. Each segment scrolls
-  that element by its own visible height, the count is the route's `segments`
-  or the pages it actually holds, whichever is fewer, and the element chosen
-  is written in the route's manifest entry as `scroller`
-  (`swarm_qa.py` (`MEASURE_JS`)).
+  that element by its own visible height **less what is stuck over its top
+  once scrolled**, the count is the route's `segments` or the pages it
+  actually holds, whichever is fewer, and the element chosen is written in
+  the route's manifest entry as `scroller` (`swarm_qa.py` (`MEASURE_JS`)).
+  The step was the whole visible height until QAFIX3-QATOOL (PR 1843): at 390
+  the agent list's tab bar (`.ag-list-tabs`) is 55 px and sticky at the
+  scroller's top, so each segment's first 55 px of new rows sat under the
+  bar and no image showed them, and those rows were never reviewed (run 3, finding `task-021`). After
+  each scroll the capture now measures how far down from the scroller's top
+  edge an element stuck there covers it (`swarm_qa.py` (`STUCK_JS`)): a
+  `fixed` box spanning that edge, or a `sticky` one sitting at its `top`
+  inset and sticking to this scroller rather than to a table inside it,
+  under half the height the scroller shows. It then scrolls back by that
+  much, so the next segment overlaps the last by it and the hidden rows are
+  in one image or the other. The overlap of each step, in px, is written in
+  the route's manifest entry as `overlaps`, one number per scroll between
+  segments (0 where nothing was stuck), so a review can tell a repeated row
+  at a segment's top from a defect.
 * **It waits for the page to stop reading, and says so when it never does.**
   `networkidle`, `document.fonts.ready` and the `ready` selector are all met
   in the middle of a read: the fixture build reads on timers with no network
@@ -683,6 +697,7 @@ success" names.
   "routes": [
     {"id": "runs", "status": "captured",
      "images": ["work-a/runs--desktop--light--s1.png"],
+     "overlaps": [],
      "console_errors": 0, "page_errors": 0, "failed_requests": 0,
      "text": "work-a/runs--desktop--light.txt",
      "a11y": "work-a/runs--desktop--light.a11y.json"}
