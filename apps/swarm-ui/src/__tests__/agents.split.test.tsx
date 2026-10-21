@@ -154,7 +154,7 @@ describe('the detail has a header row: state pill, name, Copy link, Stop', () =>
   })
 })
 
-describe('underline tabs with counts, and an unknown count is a dash with its reason', () => {
+describe('underline tabs with counts, and an unknown count is words or a dash with its reason', () => {
   it('draws the four panes as the canonical `Tabs` (tablist form), Attempts counted from the task, the rest a dash until known', async () => {
     api.loadTask.mockResolvedValue(ok(agent()))
     render(split('attempts'))
@@ -164,7 +164,8 @@ describe('underline tabs with counts, and an unknown count is a dash with its re
     await waitFor(() => expect(tab('Attempts').querySelector('.c-tabs em')?.textContent).toBe('2'))
     expect(tab('Attempts').getAttribute('aria-selected')).toBe('true')
     const artifacts = tab('Artifacts').querySelector('.c-tabs em')!
-    expect(artifacts.textContent).toBe('—')
+    // Not a bare dash (visual QA run 3, ff-009): a running agent's files are `not yet` counted.
+    expect(artifacts.textContent).toBe('not yet')
     expect(artifacts.getAttribute('title')).toMatch(/not known/)
     expect(tab('Checkpoints').querySelector('.c-tabs em')?.textContent).toBe('—')
     expect(tab('Details').querySelector('.c-tabs em')).toBeNull()

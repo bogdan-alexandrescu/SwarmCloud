@@ -91,8 +91,14 @@ export function AgHead({
   useEffect(() => {
     if (task !== null) rememberAgentName(task)
   }, [task])
+  // NOT A <header> (axe on every task route, visual QA run 3, #1680): outside
+  // a sectioning element a <header> is a banner landmark, so beside the trail
+  // bar's (`.ctl-bar`, App.tsx) the page had two (landmark-no-duplicate-banner,
+  // landmark-unique), and on a phone, inside the split's region, a banner
+  // that was not top-level. The page has one banner; this is the agent's head
+  // inside the split, which is named already (`Agent <id>`).
   return (
-    <header className="ag-head">
+    <div className="ag-head">
       {task !== null && <AgParentLink task={task} />}
       <div className="ag-head-row">
         {task !== null ? (
@@ -130,7 +136,7 @@ export function AgHead({
           button's tooltip, so it had to be hovered to be read. */}
       <TaskIdLine id={taskId} className="ag-head-id" />
       <AgHeadMeta task={task} />
-    </header>
+    </div>
   )
 }
 
@@ -157,6 +163,33 @@ function AgHeadline({ task, runs, now }: { task: Task; runs: number; now: number
 const ROLE_SAY: Readonly<Record<DispatchRole, string>> = {
   contributor: 'adds to the shared PR',
   integrator: 'opens the shared PR',
+}
+
+/**
+ * WHAT WAS NOT READ, AND WHY (visual QA run 3, ff-007, #1680). `accountText`'s
+ * title for an account that is not a real id repeats the chip's words
+ * (`not read.`), so the fact said neither which account was meant nor why it
+ * was missing. Each status the API answers (`swarm_api/task_accounts.py`) gets
+ * its sentence; a status this console does not know keeps `accountText`'s.
+ */
+const ACCOUNT_SAY: Readonly<Record<string, string>> = {
+  absent:
+    'The subscription account this agent’s latest attempt runs on is not shown: the API did not send it with this task (an older API, or a read that does not carry accounts).',
+  unread:
+    'The subscription account this agent’s latest attempt runs on was not read: the read of its account events failed or stopped short at its cap, and no older attempt’s account is shown in its place.',
+  not_assigned_yet: 'The latest attempt has not been given a subscription account yet: it has not asked the pool for one.',
+  not_assigned: 'The latest attempt ended without being given a subscription account.',
+  no_model_call: 'This agent’s profile calls no model, so it runs on no subscription account.',
+  not_pooled: 'This agent’s profile does not take a subscription token, so it never asks the account pool.',
+}
+
+/** The account fact's title: the head's sentence for a status, then any swaps `accountText` noted. */
+function accountTitle(account: Task['account'], text: { title: string; known: boolean }): string {
+  if (text.known) return text.title
+  const say = ACCOUNT_SAY[account === null || account === undefined ? 'absent' : account.status]
+  if (say === undefined) return text.title
+  const gaveBack = /Gave back: .*$/.exec(text.title)?.[0]
+  return gaveBack === undefined ? say : `${say} ${gaveBack}`
 }
 
 /**
@@ -210,8 +243,8 @@ export function AgHeadMeta({ task }: { task: Task | null }) {
             : [
                 {
                   key: 'account',
-                  className: account.known ? undefined : 'is-absent',
-                  title: account.title,
+                  className: account.known ? undefined : 'is-absent ag-head-why',
+                  title: accountTitle(task.account, account),
                   // AN ID IS MONO, A SENTENCE IS NOT (V149, visual QA #1038):
                   // `account not read` was bold mono in a sans line, drawn as
                   // if `not read` were an account's name. Only a real account

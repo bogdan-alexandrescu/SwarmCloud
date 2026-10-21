@@ -442,6 +442,11 @@
 .ag-head-facts > li.ag-head-dispatch { flex-wrap: wrap; }
 .ag-head-dlast { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .ag-head-facts > li.is-absent { color: var(--text-faint); }
+/* A FACT THAT WAS NOT READ SAYS WHY ON HOVER, AND SHOWS THAT IT DOES (visual
+   QA run 3, ff-007, #1680): `account not read` gave no hint that its title
+   held what was not read and why. A dotted underline and the help pointer are
+   the platform's own mark for "hover for the explanation". */
+.ag-head-facts > li.ag-head-why { text-decoration: underline dotted; text-decoration-color: var(--line); text-underline-offset: 3px; cursor: help; }
 .ag-head-facts b { color: var(--text); font-weight: 550; }
 .ag-head-facts .ctl-link { font-weight: 550; }
 .ag-head-dchip {
@@ -513,12 +518,21 @@
    -- the foot of whatever it held -- was under the API-reads line, and
    focusing a control there scrolled the page 16px to reach it. It
    sticks 16px down and is 16px shorter, so at every scroll offset its foot is
-   the scrollport's foot. qa.u11a.logs.test.tsx holds the two 16px together. */
+   the scrollport's foot. qa.u11a.logs.test.tsx holds the two 16px together.
+   AND UNDER THE TRAIL BAR, NOT UNDER THE SCROLLPORT'S TOP (visual QA run 3,
+   task-010, #1680). Inside an open object `.ctl-bar` (notifications.css) is
+   sticky at the scroller's top, 48px tall at z-index 20, over the page AND
+   this column; the column stuck at 16px, so after a 48px scroll the bar was
+   drawn over Copy link, Stop and Close. It sticks `--ctl-bar-h` lower -- 0
+   where no bar is drawn, so every other page is unchanged -- and is that much
+   shorter, so its foot is still the scrollport's. At scroll top it is where
+   it always was (the bar is in flow above `.app`), so nothing moves when the
+   page starts to scroll. qafix3.agenthead.test.tsx. */
 @media (min-width: 1100px) {
   .app.has-inspector > .ctl-drawer.ag-split {
-    top: 16px;
-    height: calc(100vh - var(--dock-h, 28px) - 16px);
-    max-height: calc(100vh - var(--dock-h, 28px) - 16px);
+    top: calc(var(--ctl-bar-h, 0px) + 16px);
+    height: calc(100vh - var(--dock-h, 28px) - var(--ctl-bar-h, 0px) - 16px);
+    max-height: calc(100vh - var(--dock-h, 28px) - var(--ctl-bar-h, 0px) - 16px);
   }
   /* THE HEADER STAYS IN VIEW AT THE FOOT OF A LONG LIST (owner QA R4,
      2026-10-04). At the bottom of Live and Recent (12,499px) the column

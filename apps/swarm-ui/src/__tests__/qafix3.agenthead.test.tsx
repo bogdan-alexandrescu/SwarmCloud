@@ -60,12 +60,15 @@ describe('task-010: the agent column sticks under the trail bar, not under the s
     // The bar the column has to clear: sticky at the scroller's top, over the agent.
     expect(painted(bar, 'position', WIDE)).toBe('sticky')
     expect(painted(bar, 'top', WIDE)).toBe('0')
+    // The bar's height, read off the sheet: `--ctl-bar-h` under `.has-ctl-bar`.
+    const barH = painted(bar, 'height', WIDE)
+    expect(barH).toBe('48px')
     const top = (painted(col, 'top', WIDE) ?? '').replace(/\s+/g, ' ')
     // MUTATION: set the column's `top` back to `16px` and the bar draws over Copy link, Stop and ✕ after a 48px scroll.
-    expect(top).toMatch(/^calc\(var\(--ctl-bar-h, 0px\) \+ 16px\)$/)
+    expect(top).toBe(`calc(${barH} + 16px)`)
     const h = (painted(col, 'height', WIDE) ?? '').replace(/\s+/g, ' ')
     // MUTATION: drop `- var(--ctl-bar-h, 0px)` from the height and the column's foot runs under the API-reads line.
-    expect(h).toMatch(/^calc\(100vh - (var\(--dock-h, 28px\)|28px) - var\(--ctl-bar-h, 0px\) - 16px\)$/)
+    expect(h).toMatch(new RegExp(`^calc\\(100vh - (var\\(--dock-h, 28px\\)|28px) - ${barH} - 16px\\)$`))
     // MUTATION: leave max-height at the old figure and the column can still grow under the dock.
     expect((painted(col, 'max-height', WIDE) ?? '').replace(/\s+/g, ' ')).toBe(h)
   })
