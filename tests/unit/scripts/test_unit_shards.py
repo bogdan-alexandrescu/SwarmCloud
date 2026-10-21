@@ -40,6 +40,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .ci_fold_layout import check_steps
+
 REPO = Path(__file__).resolve().parents[3]
 APPLICATION = REPO / ".github" / "workflows" / "application.yml"
 DURATIONS = REPO / "tests" / "unit" / "scripts" / "unit_test_durations.json"
@@ -122,7 +124,8 @@ def test_the_build_still_waits_for_the_unit_tests():
 
 def test_the_old_python_jobs_other_checks_still_run():
     """MUTATION: drop any step from python-checks."""
-    runs = "\n".join(str(s.get("run", "")) for s in _jobs()["python-checks"]["steps"])
+    # Its steps run in `quick-checks` since CI-FOLD (#1799).
+    runs = "\n".join(str(s.get("run", "")) for s in check_steps("application.yml", "python-checks"))
     for needle in ("uv lock --check", "uv sync --frozen", "check-frozen-contract.sh", "compileall",
                    "test_plugin_bridge_install.py", "destroy.sh --self-test"):
         assert needle in runs, needle

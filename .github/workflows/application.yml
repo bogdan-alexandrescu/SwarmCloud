@@ -392,11 +392,12 @@ jobs:
           echo "::warning title=${tag} not tagged yet::${bump} set version ${version}; no release on main has passed verify since it, and the next one tags ${tag}."
 
   workflows:
+    # NAME-KEEPER (CI-FOLD, #1799): the `release workflow wiring (actionlint) · ...` steps of
+    # `quick-checks` run the check; this passes only on its verdict `success`.
     name: release workflow wiring (actionlint)
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
-    # Skipped when the change reaches nothing in this workflow (`changes`).
-    needs: changes
-    if: needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows')
+    runs-on: ubuntu-24.04
+    needs: [changes, quick-checks]
+    if: always() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows')
     # release.yml runs only on main, so NOTHING on a pull request ever parses
     # it: a mistyped `needs.` reference, a step output that does not exist or
     # an input an action does not take would first fail during a release. Now
@@ -424,54 +425,23 @@ jobs:
     # `ready` label after it merged. application.yml carries `ci-gate`, the
     # check main's ruleset requires: a broken expression there holds every pull
     # request.
-    env:
-      ACTIONLINT_VERSION: "1.7.7"
-      # actionlint_1.7.7_linux_amd64.tar.gz in the release's
-      # actionlint_1.7.7_checksums.txt. A version bump changes both lines.
-      ACTIONLINT_SHA256: "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
     steps:
-      - uses: actions/checkout@v5
-
-      # THE BINARY IS PINNED BY DIGEST AND CACHED (2026-10-14). This step
-      # used to fetch rhysd's download-actionlint.bash and let it curl the
-      # release tarball into tar. That curl has no -f and no retry, so when
-      # GitHub's release download answered an error page -- 92 bytes on
-      # run 38261213312, 1,812 bytes after 19 s on run 38205803599 -- tar
-      # read it as the archive ("gzip: stdin: not in gzip format") and the
-      # job failed; both passed on a rerun at the same commit. Now the tarball
-      # comes from the release URL directly, with -f and retries on any
-      # error, its sha256 must equal the one rhysd's checksums file lists for
-      # this version, and the cache below means most runs download nothing.
-      - name: restore the pinned actionlint
-        id: actionlint-cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/actionlint-bin
-          key: actionlint-${{ env.ACTIONLINT_VERSION }}-${{ env.ACTIONLINT_SHA256 }}
-
-      - name: download the pinned actionlint
-        if: steps.actionlint-cache.outputs.cache-hit != 'true'
+      - name: the folded check passed in `quick-checks`
+        env:
+          CHECK: release workflow wiring (actionlint)
+          VERDICT: ${{ needs.quick-checks.outputs.workflows }}
         run: |
           set -euo pipefail
-          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 --max-time 120 \
-            -o "${RUNNER_TEMP}/${tarball}" \
-            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
-          echo "${ACTIONLINT_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
-          mkdir -p "${RUNNER_TEMP}/actionlint-bin"
-          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}/actionlint-bin" actionlint
-
-      - name: actionlint release.yml, hotfix.yml, accept.yml, application.yml, iam-refusal-probe.yml, ci-fix.yml and auto-merge.yml
-        run: |
-          set -euo pipefail
-          "${RUNNER_TEMP}/actionlint-bin/actionlint" -version
-          "${RUNNER_TEMP}/actionlint-bin/actionlint" -shellcheck= -pyflakes= \
-            .github/workflows/release.yml .github/workflows/hotfix.yml \
-            .github/workflows/accept.yml .github/workflows/application.yml \
-            .github/workflows/iam-refusal-probe.yml .github/workflows/ci-fix.yml \
-            .github/workflows/auto-merge.yml
+          if [ "${VERDICT}" = "success" ]; then
+            echo "'${CHECK}' passed in its folded job"
+            exit 0
+          fi
+          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
+          exit 1
 
   ruff:
+    # NAME-KEEPER (CI-FOLD, #1799): the `ruff check · ...` steps of
+    # `quick-checks` run the check; this passes only on its verdict `success`.
     # THE HOUSE PYTHON LINTER IN CI (owner decision 2026-10-14; docs/ci.md
     # "ruff lint is the house Python linter"). PR 1289 pinned ruff 0.17.0 in
     # the root pyproject's dev group with a lint-only rule set (E4, E7, E9, F)
@@ -481,24 +451,22 @@ jobs:
     # `--output-format github` turns each finding into an annotation on its
     # line. Required through ci-gate's `needs`, like every job here.
     name: ruff check
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
-    needs: changes
-    if: needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ruff')
+    runs-on: ubuntu-24.04
+    needs: [changes, quick-checks]
+    if: always() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ruff')
     steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: ruff check
-        run: uv run --frozen --only-dev ruff check --output-format github .
+      - name: the folded check passed in `quick-checks`
+        env:
+          CHECK: ruff check
+          VERDICT: ${{ needs.quick-checks.outputs.ruff }}
+        run: |
+          set -euo pipefail
+          if [ "${VERDICT}" = "success" ]; then
+            echo "'${CHECK}' passed in its folded job"
+            exit 0
+          fi
+          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
+          exit 1
 
   changes:
     # WHAT THIS CHANGE CAN REACH, decided once for every job below (owner
@@ -906,6 +874,8 @@ jobs:
           echo "the change reaches ${count:-0} image(s): $(paste -sd' ' "${RUNNER_TEMP}/image-list")"
 
   python-checks:
+    # NAME-KEEPER (CI-FOLD, #1799): the `lock / contract / format / bridge install · ...` steps of
+    # `quick-checks` run the check; this passes only on its verdict `success`.
     # Everything `format / unit tests` checked besides the unit suite: the lock,
     # the frozen contract, the format pass, the plugin bridge's install from
     # git, the destroy-guard self-test. Its own job so it runs BESIDE the
@@ -913,31 +883,183 @@ jobs:
     # None of it can be reached by a change confined to docs/ or
     # apps/swarm-ui/, so it runs only when `changes` says python=all.
     name: lock / contract / format / bridge install
+    runs-on: ubuntu-24.04
+    needs: [changes, quick-checks]
+    if: always() && (needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks')
+    steps:
+      - name: the folded check passed in `quick-checks`
+        env:
+          CHECK: lock / contract / format / bridge install
+          VERDICT: ${{ needs.quick-checks.outputs.python-checks }}
+        run: |
+          set -euo pipefail
+          if [ "${VERDICT}" = "success" ]; then
+            echo "'${CHECK}' passed in its folded job"
+            exit 0
+          fi
+          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
+          exit 1
+
+  quick-checks:
+    # SUB-MINUTE CHECKS SHARE A JOB (CI-FOLD, #1799; owner approval
+    # 2026-10-21; docs/ci.md "Sub-minute checks share a job"). Four checks
+    # that each paid a VM create and boot (~52 s) for under a minute of work
+    # run here as steps, each named `<the old job's name> · <what it does>`
+    # and carrying its old job's `if:` -- its reach and its reuse clause -- so
+    # a check the change does not reach, or a run of the identical tree
+    # already passed, is skipped here exactly as its job was. Every check step
+    # runs `!cancelled()`: one check failing never hides another's answer,
+    # and any failed step fails this job, and ci-gate with it. The `verdict`
+    # step gives each check one result, and its old job id -- `workflows`,
+    # `ruff`, `manifests`, `python-checks` -- stays as a name-keeper on
+    # ubuntu-24.04 that reports it under the old name.
+    #
+    # Step ids are the contract: `setup-*` is the shared setup, every step of
+    # a check is `<old job id>-*`, and the last is `verdict`
+    # (tests/unit/scripts/test_ci_fold.py). A step with neither prefix would
+    # fail the job with no name-keeper saying which check it was.
+    name: sub-minute checks (actionlint, ruff, manifests, python checks)
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: changes
-    if: (needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks')
+    # Runs when any one of its checks would have run.
+    if: (needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows')) || (needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ruff')) || (needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'manifests')) || ((needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks'))
+    outputs:
+      workflows: ${{ steps.verdict.outputs.workflows }}
+      ruff: ${{ steps.verdict.outputs.ruff }}
+      manifests: ${{ steps.verdict.outputs.manifests }}
+      python-checks: ${{ steps.verdict.outputs.python-checks }}
+    env:
+      ACTIONLINT_VERSION: "1.7.7"
+      # actionlint_1.7.7_linux_amd64.tar.gz in the release's
+      # actionlint_1.7.7_checksums.txt. A version bump changes both lines.
+      ACTIONLINT_SHA256: "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
     steps:
-      - uses: actions/checkout@v5
+      # The shared setup: every check here needed some of it, and none of it
+      # carries an `if:`, so a skipped setup step can never read as a failed
+      # one in the verdict.
+      - name: setup · checkout
+        id: setup-checkout
+        uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v7
+      - name: setup · uv
+        id: setup-uv
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
-      - uses: actions/setup-python@v6
+      - name: setup · python
+        id: setup-python
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: the lock agrees with every pyproject.toml
+      - name: setup · kubectl
+        id: setup-kubectl
+        uses: azure/setup-kubectl@v5
+        with:
+          # Pinned. An old client silently drops fields it does not understand,
+          # so a manifest can "validate" while losing its security context.
+          version: ${{ env.KUBECTL_VERSION }}
+
+      # --- release workflow wiring (actionlint) ------------------------------
+      # Why these seven files: the `workflows` name-keeper's comment.
+      #
+      # THE BINARY IS PINNED BY DIGEST AND CACHED (2026-10-14). This step
+      # used to fetch rhysd's download-actionlint.bash and let it curl the
+      # release tarball into tar. That curl has no -f and no retry, so when
+      # GitHub's release download answered an error page -- 92 bytes on
+      # run 38261213312, 1,812 bytes after 19 s on run 38205803599 -- tar
+      # read it as the archive ("gzip: stdin: not in gzip format") and the
+      # job failed; both passed on a rerun at the same commit. Now the tarball
+      # comes from the release URL directly, with -f and retries on any
+      # error, its sha256 must equal the one rhysd's checksums file lists for
+      # this version, and the cache below means most runs download nothing.
+      - name: release workflow wiring (actionlint) · restore the pinned actionlint
+        id: workflows-cache
+        if: ${{ !cancelled() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows') }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/actionlint-bin
+          key: actionlint-${{ env.ACTIONLINT_VERSION }}-${{ env.ACTIONLINT_SHA256 }}
+
+      - name: release workflow wiring (actionlint) · download the pinned actionlint
+        id: workflows-download
+        if: ${{ !cancelled() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows') && steps.workflows-cache.outputs.cache-hit != 'true' }}
+        run: |
+          set -euo pipefail
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 --max-time 120 \
+            -o "${RUNNER_TEMP}/${tarball}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
+          mkdir -p "${RUNNER_TEMP}/actionlint-bin"
+          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}/actionlint-bin" actionlint
+
+      - name: release workflow wiring (actionlint) · actionlint release.yml, hotfix.yml, accept.yml, application.yml, iam-refusal-probe.yml, ci-fix.yml and auto-merge.yml
+        id: workflows-actionlint
+        if: ${{ !cancelled() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows') }}
+        run: |
+          set -euo pipefail
+          "${RUNNER_TEMP}/actionlint-bin/actionlint" -version
+          "${RUNNER_TEMP}/actionlint-bin/actionlint" -shellcheck= -pyflakes= \
+            .github/workflows/release.yml .github/workflows/hotfix.yml \
+            .github/workflows/accept.yml .github/workflows/application.yml \
+            .github/workflows/iam-refusal-probe.yml .github/workflows/ci-fix.yml \
+            .github/workflows/auto-merge.yml
+
+      # --- ruff check ----------------------------------------------------------
+      # Why: the `ruff` name-keeper's comment.
+      - name: ruff check · ruff check
+        id: ruff-check
+        if: ${{ !cancelled() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ruff') }}
+        run: uv run --frozen --only-dev ruff check --output-format github .
+
+      # --- kubernetes manifests ----------------------------------------------
+      # The offline manifest validator parses YAML; the runner's system python
+      # has no PyYAML. Installing it here keeps the validator free of a cluster
+      # AND free of the repo's virtualenv.
+      - name: kubernetes manifests · install PyYAML
+        id: manifests-pyyaml
+        if: ${{ !cancelled() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'manifests') }}
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: kubernetes manifests · render and validate
+        # The repository's own validator, not a second implementation.
+        #
+        # The files in kubernetes/ are TEMPLATES with __TOKEN__ placeholders, and
+        # `kubectl apply --dry-run` over them reports errors that are not errors
+        # -- which, as scripts/lib/validate-manifests.sh's own header says, is
+        # worse than not checking at all, because it trains people to ignore the
+        # output. CI validated the raw templates while `make lint` validated the
+        # rendered ones, so the correct validator existed and was not the one CI
+        # ran. This renders with kubernetes/render.py first, exactly as an
+        # operator does, and additionally fails on any placeholder that survives.
+        #
+        # The posture assertions live once, in that script, which is also what
+        # `make lint` runs: "every rule that got restated in a second place
+        # here has since drifted."
+        id: manifests-validate
+        if: ${{ !cancelled() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'manifests') }}
+        run: ./scripts/lib/validate-manifests.sh
+
+      # --- lock / contract / format / bridge install -------------------------
+      # What and why: the `python-checks` name-keeper's comment.
+      - name: lock / contract / format / bridge install · the lock agrees with every pyproject.toml
         # `uv sync --frozen` installs what uv.lock says without checking it
         # against the pyproject files, so a stale or hand-edited lock passed
         # every job here (#76). One check is enough: every job reads this one
         # lock. tests/unit/scripts/test_uv_lock_check_step.py holds it here.
+        id: python-checks-lock
+        if: ${{ !cancelled() && (needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks') }}
         run: uv lock --check
 
-      - name: sync
+      - name: lock / contract / format / bridge install · sync
+        id: python-checks-sync
+        if: ${{ !cancelled() && (needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks') }}
         run: uv sync --frozen --all-extras --dev
 
-      - name: the frozen contract is unchanged, or its change is recorded as accepted
+      - name: lock / contract / format / bridge install · the frozen contract is unchanged, or its change is recorded as accepted
+        id: python-checks-contract
         # apps/common/swarm_common is frozen by CONTRACT.md. Every other
         # component was written against those exact types, so a change there
         # breaks all of them at once and must be a deliberate, discussed act.
@@ -965,13 +1087,15 @@ jobs:
         # accepted in session on 2026-09-24 (PR #44). The logic lives in the
         # script so that what it compares against is tested
         # (tests/unit/scripts/test_frozen_contract_check.py).
-        if: github.event_name == 'pull_request'
+        if: ${{ !cancelled() && (needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks') && github.event_name == 'pull_request' }}
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: ./scripts/lib/check-frozen-contract.sh --pr-base "${PR_BASE_SHA}" --pr-head "${PR_HEAD_SHA}"
 
-      - name: format check
+      - name: lock / contract / format / bridge install · format check
+        id: python-checks-format
+        if: ${{ !cancelled() && (needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks') }}
         run: |
           uv run python -m compileall -q apps tests
           # Fail on syntax-level problems and obviously dead imports without
@@ -992,7 +1116,8 @@ jobs:
           print("ok")
           PY
 
-      - name: the plugin's bridge installs from git, the way the plugin fetches it
+      - name: lock / contract / format / bridge install · the plugin's bridge installs from git, the way the plugin fetches it
+        id: python-checks-bridge
         # A marketplace install copies ONLY plugin/, so the bridge reaches a
         # user one way: plugin.json's `uv tool run --from 'swarm-mcp @
         # git+https://github.com/...#subdirectory=apps/swarm-mcp'`, with
@@ -1015,15 +1140,45 @@ jobs:
         # on `swarm_tenants`, which main's #770 added and the head predates.
         # github.sha is the commit this job checked out; GitHub serves it by
         # sha while the pull request's merge ref exists.
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && (needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks') }}
         env:
           SWARM_BRIDGE_INSTALL_REF: ${{ github.sha }}
         run: uv run pytest tests/unit/mcp/test_plugin_bridge_install.py -q -s
 
-      - name: destroy-guard self-test
+      - name: lock / contract / format / bridge install · destroy-guard self-test
+        id: python-checks-destroy-guard
+        if: ${{ !cancelled() && (needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks') }}
         # The guard is the only thing between `make destroy` and another team's
         # production cluster, so it is verified on every run, not before use.
         run: ./scripts/destroy.sh --self-test
+
+      - name: verdict · each folded check's own result, for its name-keeper
+        # One result per check, by step id: `success` only when every shared
+        # `setup-*` step succeeded, none of the check's own `<old job id>-*`
+        # steps failed or was cancelled, and at least one of them ran;
+        # `skipped` when none ran; `failure` otherwise. Each name-keeper
+        # passes on `success` alone (docs/ci.md "Sub-minute checks share a
+        # job"). The same text in application.yml, security.yml and
+        # terraform.yml; tests/unit/scripts/test_ci_fold.py holds them equal.
+        id: verdict
+        if: always()
+        env:
+          STEPS: ${{ toJSON(steps) }}
+          CHECKS: workflows ruff manifests python-checks
+        run: |
+          set -euo pipefail
+          read -r -a checks <<< "${CHECKS}"
+          for check in "${checks[@]}"; do
+            result="$(printf '%s\n' "${STEPS}" | jq -r --arg check "${check}" '
+              [to_entries[] | select(.key | startswith("setup-")) | .value.outcome] as $setup
+              | [to_entries[] | select(.key | startswith($check + "-")) | .value.outcome] as $own
+              | if ($setup | length) == 0 or any($setup[]; . != "success") then "failure"
+                elif any($own[]; . == "failure" or . == "cancelled") then "failure"
+                elif any($own[]; . == "success") then "success"
+                else "skipped" end')"
+            echo "${check}: ${result}"
+            echo "${check}=${result}" >> "${GITHUB_OUTPUT}"
+          done
 
   python-unit:
     # THE UNIT SUITE, SHARDED BY FILE (owner request 2026-10-07). As one job it
@@ -1270,7 +1425,9 @@ jobs:
     # was the one job doing all of it; auto-merge.yml's comments, ci-fix.yml's
     # log reads and every doc name it, and `build` below still needs it.
     name: format / unit tests
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # ON ubuntu-24.04 SINCE CI-FOLD (#1799): it reads `needs` and runs
+    # nothing else, so a VM create and boot (~52 s) bought it nothing.
+    runs-on: ubuntu-24.04
     needs: [changes, python-checks, python-unit]
     if: always()
     steps:
@@ -1507,7 +1664,9 @@ jobs:
     # THE CHECK NAME `swarm-ui typecheck / component tests` IS KEPT, on a job
     # that only reads the others' results, as `format / unit tests` is above.
     name: swarm-ui typecheck / component tests
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # ON ubuntu-24.04 SINCE CI-FOLD (#1799): it reads `needs` and runs
+    # nothing else, so a VM create and boot (~52 s) bought it nothing.
+    runs-on: ubuntu-24.04
     needs: [changes, ui-build, ui-tests]
     if: always()
     steps:
@@ -1652,50 +1811,25 @@ jobs:
           uv run pytest tests/integration -q -m serial
 
   manifests:
+    # NAME-KEEPER (CI-FOLD, #1799): the `kubernetes manifests · ...` steps of
+    # `quick-checks` run the check; this passes only on its verdict `success`.
     name: kubernetes manifests
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
-    # Skipped when the change reaches nothing in this workflow (`changes`).
-    needs: changes
-    if: needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'manifests')
+    runs-on: ubuntu-24.04
+    needs: [changes, quick-checks]
+    if: always() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'manifests')
     steps:
-      - uses: actions/checkout@v5
-
-      - uses: azure/setup-kubectl@v5
-        with:
-          # Pinned. An old client silently drops fields it does not understand,
-          # so a manifest can "validate" while losing its security context.
-          version: ${{ env.KUBECTL_VERSION }}
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      # The offline manifest validator parses YAML; the runner's system python
-      # has no PyYAML. Installing it here keeps the validator free of a cluster
-      # AND free of the repo's virtualenv.
-      - name: install PyYAML
-        run: python3 -m pip install --quiet pyyaml
-
-      - name: render and validate
-        # The repository's own validator, not a second implementation.
-        #
-        # The files in kubernetes/ are TEMPLATES with __TOKEN__ placeholders, and
-        # `kubectl apply --dry-run` over them reports errors that are not errors
-        # -- which, as scripts/lib/validate-manifests.sh's own header says, is
-        # worse than not checking at all, because it trains people to ignore the
-        # output. CI validated the raw templates while `make lint` validated the
-        # rendered ones, so the correct validator existed and was not the one CI
-        # ran. This renders with kubernetes/render.py first, exactly as an
-        # operator does, and additionally fails on any placeholder that survives.
-        run: ./scripts/lib/validate-manifests.sh
-
-      # The posture assertions used to be written out here, inline, and NOWHERE
-      # ELSE -- so `make lint` passed on a tree that failed this job, and the
-      # only way to find out was to push. That is the shape CLAUDE.md names:
-      # "every rule that got restated in a second place here has since
-      # drifted." The rule now lives once, in the script the step above already
-      # runs, which is also what `make lint` runs. There is nothing left to
-      # restate here, so this step is gone rather than reduced to a call.
+      - name: the folded check passed in `quick-checks`
+        env:
+          CHECK: kubernetes manifests
+          VERDICT: ${{ needs.quick-checks.outputs.manifests }}
+        run: |
+          set -euo pipefail
+          if [ "${VERDICT}" = "success" ]; then
+            echo "'${CHECK}' passed in its folded job"
+            exit 0
+          fi
+          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
+          exit 1
 
   build-check:
     # A PULL REQUEST BUILDS THE IMAGES IT CHANGES, AND PUSHES NOTHING (#650,
@@ -2239,7 +2373,7 @@ jobs:
     # the gate's.
     name: ci-gate
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
-    needs: [shell, workflows, ruff, changes, python-checks, python-unit, ui-build, ui-tests, integration, manifests, build-check, build, tested-tree]
+    needs: [shell, workflows, ruff, changes, quick-checks, python-checks, python-unit, ui-build, ui-tests, integration, manifests, build-check, build, tested-tree]
     if: always()
     # The script gives up at 90 minutes (CI_GATE_WAIT) and says what was still
     # pending; this is only the backstop behind it.

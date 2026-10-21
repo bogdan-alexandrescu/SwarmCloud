@@ -28,6 +28,7 @@ import pytest
 import yaml
 
 from .application_paths import app_paths, reaches
+from .ci_fold_layout import check_steps
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "ci-fix.sh"
@@ -808,7 +809,7 @@ def test_the_workflow_never_checks_out_or_interpolates_the_pr_it_is_fixing():
 def test_the_workflow_is_linted_and_its_tests_run_on_the_prs_that_change_it():
     """It runs only after a red CI on a swarm branch, so a broken expression in
     it would first show on the PR it was meant to fix."""
-    app = yaml.safe_load(APPLICATION.read_text())
     assert reaches(".github/workflows/ci-fix.yml"), app_paths()
-    runs = "\n".join(step.get("run", "") for step in app["jobs"]["workflows"]["steps"])
+    # The actionlint steps of `quick-checks` since CI-FOLD (#1799).
+    runs = "\n".join(step.get("run", "") for step in check_steps("application.yml", "workflows"))
     assert ".github/workflows/ci-fix.yml" in runs, "ci-fix.yml is not linted"

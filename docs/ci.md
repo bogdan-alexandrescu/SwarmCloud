@@ -168,6 +168,97 @@ the VM has none). It has `gh`, `unzip`, docker with buildx, `jq` and
 `shellcheck`, passwordless sudo, and a writable tool cache. Anything else
 comes from a setup action.
 
+### Sub-minute checks share a job
+
+**Owner approval, 2026-10-21 (#1799, FIX 2 of the ci-runners capacity
+review).** In the 24 h from 2026-10-20 06:00 to 2026-10-21 06:00 UTC, 3,313 of
+7,341 self-hosted VM jobs (45%) did under 60 s of work, 18.4 h in all. Each
+one paid a VM create and boot (about 52 s created-to-started at best) and took
+a slot under the pool's cap, so the boot cost more than the check did. The most
+frequent were `what this change reaches`, `platform policy assertions`,
+`secret scan`, the two name-keepers, `ruff check`, `release workflow wiring
+(actionlint)`, `ci-gate`, `kubernetes manifests` and `trivy (repo)`.
+
+So the sub-minute checks that share a setup now run as steps of one job per
+workflow:
+
+| workflow | folded job | the checks it runs as steps |
+|---|---|---|
+| `application.yml` | `quick-checks` | `release workflow wiring (actionlint)` · `ruff check` · `kubernetes manifests` · `lock / contract / format / bridge install` |
+| `security.yml` | `checks` | `secret scan` · `platform policy assertions` |
+| `terraform.yml` | `offline` | `fmt / validate / tflint` · `terraform test` |
+
+Three jobs that run no check of their own move to `ubuntu-24.04` without
+folding: `format / unit tests` and `swarm-ui typecheck / component tests`
+read `needs` and nothing else, and `plan (not run on a pull request)` writes a
+fixed summary.
+
+**Self-hosted VMs a same-repository pull request run starts**, counting each
+matrix once (the four unit and four vitest shards are untouched and add the
+same before and after):
+
+| workflow | before | after |
+|---|---:|---:|
+| `application.yml` | 15 | 10 |
+| `security.yml` | 4 | 3 |
+| `terraform.yml` | 4 | 2 |
+| **all three** | **23** | **15** |
+
+That is 8 fewer VMs a run when the change reaches terraform.yml, and 6 fewer
+when it does not (terraform.yml is path-filtered).
+
+**Every check still fails the run on its own.** Each folded step is named
+`<the old job's name> · <what it does>`, so a reader looking for `ruff check`
+finds `ruff check · ruff check`. Every one runs `!cancelled()`, so one check
+failing never hides another's answer, and a failed step fails the folded job.
+Its last step, `verdict` (`always()`), reads `toJSON(steps)` and gives each
+check one result by step id: `success` only when every shared `setup-*` step
+succeeded, none of the check's own `<old id>-*` steps failed or was cancelled,
+and at least one of them ran; `skipped` when none ran; `failure` otherwise.
+
+**The name-keeper rule.** Every old job id stays, as a name-keeper: a job on
+GitHub-hosted `ubuntu-24.04` (no VM) that needs the folded job, runs
+`always()`, and passes only when the folded job's verdict for its check is
+exactly `success`. An empty verdict (the folded job died, was cancelled or
+never ran) fails it. A name-keeper never passes when its folded step failed,
+and a skip would read as a pass, which is why it is `always()` and never
+inherits the default `success()`. The ids and names stay because something
+reads each one:
+
+* `secret scan` and `platform policy assertions` are required by ruleset
+  `main-protection` (24160219), as is `trivy (repo)`, which stays a job of its
+  own (below). Its five contexts were read from
+  this repository (`REQUIRED_CONTEXTS` in
+  [`test_merge_queue_workflows.py`](../tests/unit/scripts/test_merge_queue_workflows.py),
+  the ruleset read of 2026-10-01), not live;
+* `workflows`, `ruff`, `manifests` and `python-checks` are what
+  `scripts/lib/ci_reuse.py` reuses, records and gates by (CI-TREE-REUSE,
+  #1798). Each keeps its old `if:` after `always() &&`, and the folded step
+  carries the same condition, so a check a run of the identical tree already
+  passed is skipped in both places. `build` needs `manifests`, and ci-gate
+  needs all four and `quick-checks`;
+* `validate` is what main's `plan` needs, and ci-gate fails on any failed job
+  of a terraform.yml run.
+
+**What did not fold, and why.** `trivy (repo)` is sub-minute too, but it
+uploads SARIF, so it is the one security.yml job that holds
+`security-events: write`. Folded into `checks`, that permission would reach the
+`secret scan` and `platform policy assertions` steps, which run repository
+scripts a lane's pull request can edit (`scripts/destroy.sh --self-test`).
+Owner decision 2026-10-21 on PR 1813: one VM a run buys least privilege, and
+`checks` holds `contents: read` only. `what this change reaches` decides what every
+other job runs, so nothing can start until it ends; checks folded into it
+would hold the shards back. `ci-gate` and `record the tested tree` check the
+repository out and run scripts (ci-gate also waits for terraform.yml), which
+is more than reading `needs`, so they stay on the pool. Both `checkov` jobs
+were not among the sub-minute ones and share none of the folded setup.
+`shellcheck`, the shards, `swarm-ui typecheck / build`, the integration tests
+and the image build are the heavy jobs this change leaves alone, and a fork's
+pull request still runs everything on GitHub-hosted runners.
+[`test_ci_fold.py`](../tests/unit/scripts/test_ci_fold.py) holds the counts
+above, every check name, each name-keeper's runner and verdict, and runs the
+verdict step against faked step outcomes.
+
 ### CI falls back to GitHub-hosted runners on its own
 
 Measured 2026-10-17 (part of #1483): runner-dispatcher registers the pool's

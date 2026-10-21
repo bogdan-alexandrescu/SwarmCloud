@@ -145,6 +145,8 @@ def test_an_unreadable_report_is_not_a_pass(tmp_path):
 
 
 def _filesystem_steps() -> list[dict[str, Any]]:
+    # Its own job, not folded into `checks` by CI-FOLD (#1799): it uploads
+    # SARIF, so it alone holds security-events: write (owner, 2026-10-21).
     workflow = yaml.safe_load(WORKFLOW.read_text())
     return workflow["jobs"]["filesystem"]["steps"]
 

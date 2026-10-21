@@ -51,6 +51,7 @@ import pytest
 import yaml
 
 from .application_paths import app_paths, diff_step, reaches
+from .ci_fold_layout import PATCH_NOTE
 
 REPO = Path(__file__).resolve().parents[3]
 APPLICATION = REPO / ".github" / "workflows" / "application.yml"
@@ -105,13 +106,24 @@ def test_each_job_runs_only_on_the_gates_output():
         # test_build_images_local.py runs that step against the plan's answer.
         "build-check": "github.event_name == 'pull_request' && needs.changes.outputs.images == 'true'",
     }
+    # CI-FOLD (#1799, test_ci_fold.py): four of those are name-keepers whose
+    # steps run in `quick-checks`. Each keeps its condition after `always() &&
+    # ` -- a keeper skipped because the folded job failed would read as passed
+    # -- and `quick-checks` runs when any one of them is reached (that file
+    # evaluates its `if:` over every combination).
+    folded = {"workflows", "ruff", "manifests", "python-checks"}
     for job_id, condition in expected_if.items():
         assert "changes" in _needs(jobs[job_id]), f"{job_id} does not need changes"
-        assert jobs[job_id].get("if") == condition, (job_id, jobs[job_id].get("if"))
+        if job_id in folded:
+            condition = "always() && " + condition
+        assert jobs[job_id].get("if") == condition, f"{job_id}: {jobs[job_id].get('if')} {PATCH_NOTE}"
+    assert "quick-checks" in jobs, f"no quick-checks job {PATCH_NOTE}"
+    assert "changes" in _needs(jobs["quick-checks"]), "quick-checks does not need changes"
     # Every job but the gate's own reads, the aggregators, ci-gate and main's
     # build is listed above: a new job must decide what reaches it.
     # tested-tree reads `changes`' result, not its outputs: it records whatever ran.
-    rest = set(jobs) - set(expected_if) - {"changes", "python", "ui", "ci-gate", "build", "tested-tree"}
+    rest = set(jobs) - set(expected_if) - {"changes", "python", "ui", "ci-gate", "build", "tested-tree",
+                                           "quick-checks"}
     assert not rest, f"jobs that do not read the changes gate: {sorted(rest)}"
 
 

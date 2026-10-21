@@ -57,6 +57,12 @@ env:
 # with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
 jobs:
   filesystem:
+    # NOT FOLDED, on purpose (owner decision 2026-10-21 on PR 1813): this is
+    # the one check that uploads SARIF, so it is the one job that holds
+    # security-events: write. Folded into `checks`, that permission would
+    # reach `secret scan` and `platform policy assertions`, which run
+    # repository scripts (scripts/destroy.sh --self-test) a lane's pull
+    # request can edit. One VM a run buys least privilege.
     name: trivy (repo)
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Uploads SARIF to code scanning: the only reason this job holds
@@ -128,44 +134,25 @@ jobs:
           scripts/trivy-new-findings.sh gate --base "${base}"
 
   secrets:
+    # NAME-KEEPER (CI-FOLD, #1799): the `secret scan · ...` steps of
+    # `checks` run the check; this passes only on its verdict `success`.
     name: secret scan
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ubuntu-24.04
+    needs: checks
+    if: always()
     steps:
-      - uses: actions/checkout@v5
-        with:
-          # Full history: a key removed in the latest commit is still a leaked
-          # key if it is reachable anywhere in the branch.
-          fetch-depth: 0
-
-      - name: trivy secret scan (history)
+      - name: the folded check passed in `checks`
+        env:
+          CHECK: secret scan
+          VERDICT: ${{ needs.checks.outputs.secrets }}
         run: |
           set -euo pipefail
-          # Into the job's temp dir, not /usr/local/bin: the self-hosted VM's
-          # runner user cannot write there (GitHub's image lets it).
-          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
-            | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
-          export PATH="${RUNNER_TEMP}/bin:${PATH}"
-          trivy fs --scanners secret --severity HIGH,CRITICAL --exit-code 1 --no-progress .
-
-      - name: no service account keys in the repository
-        # WIF exists so that no downloadable key is ever needed. A committed key
-        # is a credential with no expiry and no record of where it was copied.
-        run: |
-          set -euo pipefail
-          # Scan TRACKED files only, via git ls-files. Scanning the working tree
-          # would match vendored library source (cryptography and google-auth
-          # both contain PEM header literals) and report a leak that is not one.
-          fail=0
-          if git ls-files -z | xargs -0 grep -lIE '"type"[[:space:]]*:[[:space:]]*"service_account"' 2>/dev/null; then
-            echo "::error::a Google service account key appears to be committed"
-            fail=1
+          if [ "${VERDICT}" = "success" ]; then
+            echo "'${CHECK}' passed in its folded job"
+            exit 0
           fi
-          if git ls-files -z | xargs -0 grep -nIE -- '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----' 2>/dev/null; then
-            echo "::error::a private key appears to be committed"
-            fail=1
-          fi
-          if [ "${fail}" -eq 0 ]; then echo "no keys found"; fi
-          exit "${fail}"
+          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
+          exit 1
 
   iac:
     name: checkov (terraform + kubernetes)
@@ -261,12 +248,111 @@ jobs:
           category: checkov-kubernetes
 
   policy:
+    # NAME-KEEPER (CI-FOLD, #1799): the `platform policy assertions · ...` steps of
+    # `checks` run the check; this passes only on its verdict `success`.
     name: platform policy assertions
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ubuntu-24.04
+    needs: checks
+    if: always()
     steps:
-      - uses: actions/checkout@v5
+      - name: the folded check passed in `checks`
+        env:
+          CHECK: platform policy assertions
+          VERDICT: ${{ needs.checks.outputs.policy }}
+        run: |
+          set -euo pipefail
+          if [ "${VERDICT}" = "success" ]; then
+            echo "'${CHECK}' passed in its folded job"
+            exit 0
+          fi
+          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
+          exit 1
 
-      - name: no Spot anywhere
+  checks:
+    # SUB-MINUTE CHECKS SHARE A JOB (CI-FOLD, #1799; owner approval
+    # 2026-10-21; docs/ci.md "Sub-minute checks share a job"). `secret scan`
+    # and `platform policy assertions` -- two of the ruleset's required
+    # checks -- each paid a VM create and boot (~52 s) for under a minute of
+    # work. `trivy (repo)` stays its own job (`filesystem`, above), so this one
+    # holds no write permission. They run here as steps named `<the old job's
+    # name> · <what it does>`, every one `!cancelled()` so one check failing
+    # never hides another's answer, and any failed step fails this job. The
+    # `verdict` step gives each check one result, and its old job id --
+    # `secrets`, `policy` -- stays as a name-keeper on
+    # ubuntu-24.04 that reports it under the required name.
+    #
+    # Step ids are the contract: `setup-*` is the shared setup, every step of
+    # a check is `<old job id>-*`, and the last is `verdict`
+    # (tests/unit/scripts/test_ci_fold.py).
+    name: sub-minute checks (secret scan, policy)
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # Read-only (owner decision 2026-10-21 on PR 1813): these steps run
+    # repository scripts, so they get no write permission of any kind.
+    permissions:
+      contents: read
+    outputs:
+      secrets: ${{ steps.verdict.outputs.secrets }}
+      policy: ${{ steps.verdict.outputs.policy }}
+    steps:
+      - name: setup · checkout
+        id: setup-checkout
+        uses: actions/checkout@v5
+        with:
+          # Full history, for `secret scan`: a key removed in the latest commit
+          # is still a leaked key if it is reachable anywhere in the branch.
+          fetch-depth: 0
+
+      - name: setup · install trivy
+        id: setup-trivy
+        # Explicit and pinned, not aquasecurity/trivy-action: that action's
+        # setup restores its binary from actions/cache at /home/runner/.local/bin,
+        # which exists on GitHub's image but not on the self-hosted VM, so the
+        # cache "hit" extracted nowhere and `trivy` was missing (exit 127, then
+        # no trivy-fs.sarif). The install goes into the job's temp dir (the
+        # self-hosted runner user cannot write /usr/local/bin) and works the same
+        # on both runner kinds.
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
+            | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      # --- secret scan ---------------------------------------------------------
+      # First, before any step below writes a report into the checkout.
+      - name: secret scan · trivy secret scan (history)
+        id: secrets-trivy
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          # trivy is the shared `setup · install trivy` step's.
+          trivy fs --scanners secret --severity HIGH,CRITICAL --exit-code 1 --no-progress .
+
+      - name: secret scan · no service account keys in the repository
+        id: secrets-keys
+        if: ${{ !cancelled() }}
+        # WIF exists so that no downloadable key is ever needed. A committed key
+        # is a credential with no expiry and no record of where it was copied.
+        run: |
+          set -euo pipefail
+          # Scan TRACKED files only, via git ls-files. Scanning the working tree
+          # would match vendored library source (cryptography and google-auth
+          # both contain PEM header literals) and report a leak that is not one.
+          fail=0
+          if git ls-files -z | xargs -0 grep -lIE '"type"[[:space:]]*:[[:space:]]*"service_account"' 2>/dev/null; then
+            echo "::error::a Google service account key appears to be committed"
+            fail=1
+          fi
+          if git ls-files -z | xargs -0 grep -nIE -- '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----' 2>/dev/null; then
+            echo "::error::a private key appears to be committed"
+            fail=1
+          fi
+          if [ "${fail}" -eq 0 ]; then echo "no keys found"; fi
+          exit "${fail}"
+
+      # --- platform policy assertions ----------------------------------------
+      - name: platform policy assertions · no Spot anywhere
+        id: policy-spot
+        if: ${{ !cancelled() }}
         # Verified constraint: Spot Pods cannot use GKE Autopilot extended run
         # time, so Spot and the platform's no-preemption requirement are
         # mutually exclusive. The frozen catalogue raises at import if a profile
@@ -313,7 +399,9 @@ jobs:
           if [ "${fail}" -eq 0 ]; then echo "no spot configuration"; fi
           exit "${fail}"
 
-      - name: no public Cloud Run services
+      - name: platform policy assertions · no public Cloud Run services
+        id: policy-public
+        if: ${{ !cancelled() }}
         # allUsers on a control-plane service would put an agent-execution API on
         # the public internet with no identity behind it.
         run: |
@@ -349,13 +437,17 @@ jobs:
           fi
           echo "no public bindings beyond the GitHub push receiver's and the acceptance fixture's"
 
-      - name: destroy guard still catches offenders
+      - name: platform policy assertions · destroy guard still catches offenders
+        id: policy-destroy-guard
+        if: ${{ !cancelled() }}
         # This guard is the only thing between `make destroy` and another team's
         # live cluster in the shared project. It is verified here as well as in
         # `make test`, because it is security-critical rather than merely tested.
         run: ./scripts/destroy.sh --self-test
 
-      - name: the frozen contract is intact
+      - name: platform policy assertions · the frozen contract is intact
+        id: policy-contract
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           for f in states.py models.py profiles.py admission.py config.py identity.py; do
@@ -365,6 +457,34 @@ jobs:
           grep -q 'Spot is disabled platform-wide' apps/common/swarm_common/profiles.py \
             || { echo "::error::the Spot guard has been removed from profiles.py"; exit 1; }
           echo "contract present"
+
+      - name: verdict · each folded check's own result, for its name-keeper
+        # One result per check, by step id: `success` only when every shared
+        # `setup-*` step succeeded, none of the check's own `<old job id>-*`
+        # steps failed or was cancelled, and at least one of them ran;
+        # `skipped` when none ran; `failure` otherwise. Each name-keeper
+        # passes on `success` alone (docs/ci.md "Sub-minute checks share a
+        # job"). The same text in application.yml, security.yml and
+        # terraform.yml; tests/unit/scripts/test_ci_fold.py holds them equal.
+        id: verdict
+        if: always()
+        env:
+          STEPS: ${{ toJSON(steps) }}
+          CHECKS: secrets policy
+        run: |
+          set -euo pipefail
+          read -r -a checks <<< "${CHECKS}"
+          for check in "${checks[@]}"; do
+            result="$(printf '%s\n' "${STEPS}" | jq -r --arg check "${check}" '
+              [to_entries[] | select(.key | startswith("setup-")) | .value.outcome] as $setup
+              | [to_entries[] | select(.key | startswith($check + "-")) | .value.outcome] as $own
+              | if ($setup | length) == 0 or any($setup[]; . != "success") then "failure"
+                elif any($own[]; . == "failure" or . == "cancelled") then "failure"
+                elif any($own[]; . == "success") then "success"
+                else "skipped" end')"
+            echo "${check}: ${result}"
+            echo "${check}=${result}" >> "${GITHUB_OUTPUT}"
+          done
 
   images:
     name: trivy (published images)

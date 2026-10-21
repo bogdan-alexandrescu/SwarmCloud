@@ -38,6 +38,7 @@ import pytest
 import yaml
 
 from .application_paths import app_paths, reaches
+from .ci_fold_layout import FOLDED_HOSTS, check_steps
 
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO / ".github" / "workflows"
@@ -1068,11 +1069,12 @@ def test_a_push_after_ready_disables_auto_merge_and_removes_the_label(run_disabl
 def test_the_workflow_is_linted_on_every_pull_request_that_touches_it():
     """It runs only on pull_request_target, from main, so a broken expression
     would first show on the first `ready` label after merge."""
-    application = _workflow(WORKFLOWS / "application.yml")
     assert reaches(".github/workflows/auto-merge.yml"), app_paths()
     lint = [
         step.get("run") or ""
-        for step in application["jobs"]["workflows"]["steps"]
+        # The `release workflow wiring (actionlint) · ...` steps of
+        # `quick-checks` since CI-FOLD (#1799).
+        for step in check_steps("application.yml", "workflows")
         if "actionlint" in (step.get("run") or "")
     ]
     assert any(".github/workflows/auto-merge.yml" in run for run in lint), lint
@@ -1083,6 +1085,11 @@ def _job_check_names(path: Path) -> set[str]:
     workflow = _workflow(path)
     names = set()
     for job_id, job in (workflow.get("jobs") or {}).items():
+        # A folded job reports no check name of its own that anything
+        # requires; its name-keepers report the old ones (CI-FOLD,
+        # test_ci_fold.py).
+        if job_id == FOLDED_HOSTS.get(path.name):
+            continue
         condition = str(job.get("if") or "")
         if "!= 'pull_request'" in condition or ("pull_request" not in condition and "schedule" in condition):
             continue

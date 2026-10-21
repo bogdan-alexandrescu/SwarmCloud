@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO / ".github" / "workflows"
 LANE_BRANCHES = "swarm/**"
@@ -130,7 +131,9 @@ def test_the_merge_step_holds_every_run_at_the_head_whatever_its_event(runs, sta
 # --- the trivy gate's base on a lane push ------------------------------------
 def _gate(tmp_path: Path, *, event: str, ref: str, base: str, ls_remote: str = f"{MAIN_TIP}\trefs/heads/main\n",
           ls_status: int = 0) -> tuple[subprocess.CompletedProcess[str], str]:
-    steps = _workflow("security.yml")["jobs"]["filesystem"]["steps"]
+    # security.yml's own `trivy (repo)` job: CI-FOLD (#1799) leaves it unfolded
+    # so that only it holds security-events: write (owner, 2026-10-21).
+    steps = yaml.safe_load((WORKFLOWS / "security.yml").read_text())["jobs"]["filesystem"]["steps"]
     (gate,) = [s for s in steps if "scripts/trivy-new-findings.sh gate" in str(s.get("run", ""))]
     env = gate.get("env") or {}
     assert env.get("EVENT") == "${{ github.event_name }}", env

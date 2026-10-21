@@ -61,6 +61,7 @@ import pytest
 import yaml
 
 from .application_paths import app_paths, reaches
+from .ci_fold_layout import FOLDED_HOSTS, check_steps
 
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO / ".github" / "workflows"
@@ -696,6 +697,10 @@ def test_the_script_follows_the_house_rules():
 def _always_run_checks() -> set[str]:
     names = set()
     for job_id, job in (_workflow(WORKFLOWS / "security.yml").get("jobs") or {}).items():
+        # The job security.yml's sub-minute checks are folded into reports no
+        # required name; its name-keepers do (CI-FOLD, test_ci_fold.py).
+        if job_id == FOLDED_HOSTS["security.yml"]:
+            continue
         condition = str(job.get("if") or "")
         if "!= 'pull_request'" in condition or ("pull_request" not in condition and "schedule" in condition):
             continue
@@ -736,12 +741,13 @@ def test_a_pull_request_touching_only_the_gate_runs_its_tests_and_actionlint():
     its tests and lints its workflow. The gate is application.yml's own job
     now, so actionlint reads it with application.yml, and the script is under
     scripts/**. MUTATION: drop either path, or application.yml from actionlint."""
-    application = _workflow(WORKFLOWS / "application.yml")
     assert reaches("scripts/ci-gate.sh"), app_paths()
     assert reaches(".github/workflows/application.yml"), app_paths()
     lint = [
         step.get("run") or ""
-        for step in application["jobs"]["workflows"]["steps"]
+        # The `release workflow wiring (actionlint) · ...` steps of
+        # `quick-checks` since CI-FOLD (#1799).
+        for step in check_steps("application.yml", "workflows")
         if "actionlint" in (step.get("run") or "")
     ]
     assert any(".github/workflows/application.yml" in run for run in lint), lint
