@@ -2312,15 +2312,15 @@ a merge step runs its own CI-fix rounds on its pull request
 (`mergewake._on_red`). A standalone fix submitted beside them is racing that
 round for the same branch. In 72 h to 2026-10-21 this fixer ran 91 times and
 failed 34, and 22 of those failures were a push rejected because the lane's
-round had moved the branch first. So when the continued task's workflow has a
+round had moved the branch first. So when the continued agent's workflow has a
 merge step in any non-terminal state (QUEUED or PARKED on its CI wait counts),
 the API's ci-fix submit path (`cifix.stamp`) answers 409 `ci_fix_lane_owns_pr`
-naming that merge step. It makes no task and takes no claim. The script logs
+naming that merge step. It starts no agent and takes no claim. The script logs
 the skip, comments nothing, and passes. The check has to be the API's.
 `SWARM_CI_FIX_SA` is continuation-scoped and is served only what it submitted
 (`deps.submission_scope`), so CI-FIXER-ONE's read from the script got a 404
 for every real lane. The API reads with its own access, and the fixer gains
-no read. A task in no workflow, a workflow with no merge step, and a merge
+no read. An agent in no workflow, a workflow with no merge step, and a merge
 step that has finished are fixed as before. The refusal ships **on**
 (`REFUSAL_CI_FIX_LANE_OWNS_PR=off` turns it off). One gap remains: the
 script's own attempt cap is checked before it submits, so a pull request
