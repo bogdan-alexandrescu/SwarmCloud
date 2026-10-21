@@ -153,7 +153,7 @@ on the same release. So, in this order:
    any other subnet, or at project level, is a stop.
 2. A new scheduler revision checks each Job it made once, at that Job's next
    dispatch, and rebuilds one that lacks the block (`_refresh_image`). Dispatch
-   one `mock` task in u-bogdan for each `swarm-job-u-bogdan-*`. The log reads
+   one `mock` agent in u-bogdan for each `swarm-job-u-bogdan-*`. The log reads
    `workspace, identity or network changed: vpc_access`.
 3. For each Job, `gcloud run jobs describe swarm-job-u-bogdan-<profile>`
    must show `run.googleapis.com/vpc-access-egress: all-traffic` and the
