@@ -261,10 +261,9 @@ green run in the container proves nothing CI has not. Owner decision,
 a unit run would have caught (#248, #249). A brief written for a SwarmCloud
 step must therefore not repeat "do not run tests"; a brief for a local lane
 still must. Its one pre-finish command is **`scripts/changed-guards.sh`**,
-after the area run: it runs the repo-wide guard set
-(`test_docs_describe_what_was_built`, `test_docs_spec_amendments`, the UI
-route seam in `test_runtimes_screen.py`, `test_specsign_covers`) and every unit
-test file that names a changed path, in one `pytest -n auto` call, then
+after the area run: it runs the repo-wide guard set (`GUARD_TESTS` in
+`scripts/changed-guards.sh`, the one list, which pull-request CI reads too)
+and every unit test file that names a changed path, in one `pytest -n auto` call, then
 `scripts/lib/check-contract-parity.sh` — about a minute for the guard set
 alone, each pytest call held to 540 s. A selection that weighs more than 540
 CI-seconds (`unit_test_durations.json`) is not one call: run without
