@@ -78,17 +78,24 @@ export function useProviderKeys(): ProviderKeys {
 }
 
 /**
- * A ROOM NOBODY COULD MEASURE, as `RoomFact` and `CanStartFact` both say it.
+ * A ROOM NOBODY COULD MEASURE, as `RoomFact` and `CanStartFact` both say it,
+ * and the task form's profile facts (`ProfileFacts`, Submit.tsx) too.
  *
  * THE COUNT CLAUSE IS ONE UNIT (visual QA QA-069): in a card's column it
  * broke as "… pools could not / be read", one word alone on the last line. It
  * breaks before the count or not at all (`.sb-room-unread` is `nowrap`); the
  * clause is about 30 characters, well inside the narrowest card.
+ *
+ * SO THE LINE BREAKS AFTER "room unknown:", NEVER AFTER A BARE DOT (visual QA
+ * run 3, work-b-006). The unit left one place to break, and the separator
+ * before it was " · ": every card ended its line on a dangling dot, at every
+ * size. A colon ends a line as a sentence does -- what follows says why the
+ * room is unknown -- where a dot is a list separator with nothing after it.
  */
-function UnreadRoom({ profile, unread }: { profile: RunnerProfile; unread: number }) {
+export function UnreadRoom({ profile, unread }: { profile: RunnerProfile; unread: number }) {
   return (
     <>
-      <Mark kind="unread" say={HELP['room-unknown-not-zero'].short} /> room unknown ·{' '}
+      <Mark kind="unread" say={HELP['room-unknown-not-zero'].short} /> room unknown:{' '}
       <span className="sb-room-unread">{unread} of {profile.pools.length} pools could not be read</span>
     </>
   )

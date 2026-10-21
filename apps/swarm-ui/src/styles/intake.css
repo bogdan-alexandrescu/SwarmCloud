@@ -498,6 +498,15 @@
   .rn-filters > .c-seg > button:nth-child(3n) { border-right: 0; }
   .rn-filters > .c-seg > button:nth-child(n+4) { border-top: 1px solid var(--line); }
   .in-choice { flex-direction: column; gap: 6px; }
+  /* THE HEADING FIRST, THEN ITS CONTROL, THEN WHAT THE CHOICE MEANS (visual
+     QA run 3, work-b-004). The column took the row's source order -- control,
+     then text -- so Required | Auto, the merge switch and the fix-rounds
+     field each sat above the heading that names it. The text block gives its
+     lines to the column and its heading is drawn first; the explanation and
+     any fault stay under the control they are about. Desktop is unchanged:
+     the control beside its text, as the row reads left to right. */
+  .in-choice > .in-choice-t { display: contents; }
+  .in-choice-t > b, .in-choice-t > label { order: -1; }
   .rn-table thead { display: none; }
   .rn-table, .rn-row > td { display: block; width: 100%; }
   /* ONE COMPACT CARD PER RUN (visual QA V112, 2026-10-11): seven labelled

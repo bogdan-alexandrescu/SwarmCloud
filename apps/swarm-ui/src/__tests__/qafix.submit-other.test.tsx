@@ -185,8 +185,8 @@ describe('QA-069: an unread room never leaves one word on its last line', () => 
       ['a', profile({ pools: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'], admission: admission({ headroom: null, basis: 'unknown', complete: false, unread: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'] }) })],
     ])
     const room = card(el, 'a').querySelector('.sbf-runner-room')!
-    // The copy is unchanged: only where it may break changed.
-    expect(visible(room)).toBe('not read room unknown · 7 of 7 pools could not be read')
+    // QA-069 changed only where it may break; the separator is a colon since run 3 (work-b-006).
+    expect(visible(room)).toBe('not read room unknown: 7 of 7 pools could not be read')
     // MUTATION: drop the `sb-room-unread` span -> nothing holds the clause together.
     const clause = room.querySelector('.sb-room-unread')
     expect(clause, 'the count clause is not one unit').not.toBeNull()

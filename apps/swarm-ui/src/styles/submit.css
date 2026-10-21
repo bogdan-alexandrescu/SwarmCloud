@@ -61,6 +61,14 @@
    styles.css, so an equal selector would lose to the one it corrects. */
 input.dsp-repo { background: var(--surface); }
 input.dsp-repo::placeholder { color: var(--text-faint); opacity: 1; }
+/* A URL THE API WILL REFUSE IS DRAWN REFUSED (visual QA run 3, sf-002). The
+   field set `aria-invalid` and no rule painted it, so at 1440 a refused URL
+   looked like any other while its sentence sat under it, below the fold. The
+   warn edge doubled by an inset ring, as the issue form's fix-rounds field
+   and the field editor (`.sbf-field [aria-invalid]`) draw theirs; the
+   sentence is brought into view by `DispatchChoice` and is the field's
+   description. */
+input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: inset 0 0 0 1px var(--warn); }
 .sb-step .sbf-move-n {
   width: 20px; height: 20px;
   background: var(--sk-acs); color: var(--sk-ac);
