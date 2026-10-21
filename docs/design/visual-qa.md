@@ -597,9 +597,9 @@ and `images/agent-runtime-browser/swarm-handoff` do now:
   actually holds, whichever is fewer, and the element chosen is written in
   the route's manifest entry as `scroller` (`swarm_qa.py` (`MEASURE_JS`)).
   The step was the whole visible height until QAFIX3-QATOOL (PR 1843): at 390
-  the task list's tab bar is 55 px and sticky at the scroller's top, so each
-  segment's first 55 px of new rows sat under the bar and no image showed
-  them, and those rows were never reviewed (run 3, finding task-021). After
+  the agent list's tab bar (`.ag-list-tabs`) is 55 px and sticky at the
+  scroller's top, so each segment's first 55 px of new rows sat under the
+  bar and no image showed them, and those rows were never reviewed (run 3, finding `task-021`). After
   each scroll the capture now measures how far down from the scroller's top
   edge an element stuck there covers it (`swarm_qa.py` (`STUCK_JS`)): a
   `fixed` box spanning that edge, or a `sticky` one sitting at its `top`
