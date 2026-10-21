@@ -59,10 +59,15 @@ class StopBackend:
             tenant_id=TENANT,
         )
         self.probed: list[str] = []
+        self.probe_ids: list[dict[str, Any]] = []
         self.terminated: list[ExecutionView] = []
 
-    def probe(self, execution_name: str) -> Probe:
+    def probe(
+        self, execution_name: str, *, task_id: str | None = None,
+        tenant_id: str | None = None, generation: int | None = None,
+    ) -> Probe:
         self.probed.append(execution_name)
+        self.probe_ids.append({"task_id": task_id, "tenant_id": tenant_id, "generation": generation})
         return Probe(self.outcome, execution=self.view)
 
     def terminate(self, execution: ExecutionView) -> bool:
@@ -238,3 +243,40 @@ def test_the_route_needs_an_allowed_invoker(db, monkeypatch):
 def test_parse_push_reads_the_attributes_when_there_is_no_body():
     envelope = {"message": {"attributes": dict(IDS)}}
     assert parse_push(envelope) == IDS
+
+
+class GkeStopBackend(StopBackend):
+    """The GKE backend, by the name the stopper keys it on."""
+
+    name = "GKE_AUTOPILOT"
+
+
+def test_a_gke_attempt_is_probed_with_its_own_ids(db):
+    """#1804: a GKE attempt recorded before the fix carries its pod's name
+    (swarm-<task>-<gen>-xxxxx). GkeBackend.probe maps that name to its Job only
+    with the attempt's task, tenant and generation, so the stopper must pass
+    them -- else cancel answers UNREADABLE and the Job runs until the sweep."""
+    seed(db)
+    db.seed(
+        f"attempts/{ATTEMPT}",
+        {"task_id": TASK, "tenant_id": TENANT, "backend": "GKE_AUTOPILOT",
+         "execution_name": "swarm-1-1-ab3cd", "generation": 1, "completed_at": None},
+    )
+    backend = GkeStopBackend()
+    stop = stopper(db, backend)
+
+    stop.stop(tenant_id=TENANT, task_id=TASK, attempt_id=ATTEMPT)
+
+    # MUTATION: call backend.probe(name) alone in stopexec._decide and this
+    # reads [{task_id: None, ...}].
+    assert backend.probe_ids == [{"task_id": TASK, "tenant_id": TENANT, "generation": 1}]
+
+
+def test_a_cloud_run_attempt_is_probed_by_name_alone(db):
+    """Cloud Run's probe takes the execution name only; nothing else is sent."""
+    seed(db)
+    backend = StopBackend()
+    stopper(db, backend).stop(tenant_id=TENANT, task_id=TASK, attempt_id=ATTEMPT)
+
+    # MUTATION: pass the ids to every backend and this reads TASK, not None.
+    assert backend.probe_ids == [{"task_id": None, "tenant_id": None, "generation": None}]

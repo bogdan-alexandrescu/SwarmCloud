@@ -300,7 +300,10 @@ class UnreadableGke:
     def namespace_for(self, tenant_id: str, recorded: str | None = None) -> str:
         return recorded or f"{ReconcilerConfig.namespace_prefix}{tenant_id}"
 
-    def namespace_of(self, execution_name: str | None) -> str | None:
+    def namespace_of(
+        self, execution_name: str | None, *, task_id: str | None = None,
+        tenant_id: str | None = None, generation: int | None = None,
+    ) -> str | None:
         head, sep, _ = str(execution_name or "").partition("/")
         return head if sep and not head.startswith("projects") else None
 
@@ -312,7 +315,10 @@ class UnreadableGke:
             unreadable={mine: "403 Forbidden"},
         )
 
-    def probe(self, execution_name: str) -> Probe:
+    def probe(
+        self, execution_name: str, *, task_id: str | None = None,
+        tenant_id: str | None = None, generation: int | None = None,
+    ) -> Probe:
         self.probed.append(execution_name)
         return Probe(ProbeOutcome.UNREADABLE, detail="403")
 
