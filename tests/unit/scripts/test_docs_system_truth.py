@@ -7,6 +7,9 @@ describing a different one:
     export". No export was ever taken and no backup schedule exists; what the
     database `swarm` actually has is 7 days of point-in-time recovery, with
     delete protection off, so those versions die with the database.
+    #1818 (lane FS-BACKUPS, the owner's option b) then turned delete
+    protection on and added a daily backup kept 7 days; the tests under its
+    heading hold the docs to that.
   * docs/scaling.md said the control plane "autoscales on its own" and listed
     no network, regional-quota or namespace-Job ceiling.
   * docs/architecture.md called Cloud Run Jobs the primary backend and every
@@ -76,6 +79,9 @@ def test_dr_gives_firestores_recovery_point_as_point_in_time_not_an_export():
     # MUTATION: restore "| Firestore data | last export |" -> red.
     assert "last export" not in row, row
     assert "point-in-time" in row and "7 days" in row, row
+    # MUTATION: restore "nothing once the database itself is deleted" -> red (#1818: a backup outlives it).
+    assert "nothing once the database itself is deleted" not in row, row
+    assert "daily backup" in row, row
     body = _flat(objectives)
     # What was read live, with its date and where.
     for fact in (ANALYSIS, "`gcloud firestore backups schedules list --database=swarm`", "`[]`",
@@ -85,16 +91,113 @@ def test_dr_gives_firestores_recovery_point_as_point_in_time_not_an_export():
         assert fact in body, fact
 
 
+# --------------------------------------------------------------------------
+# #1818 (FS-BACKUPS): delete protection on, a daily backup kept 7 days
+# --------------------------------------------------------------------------
+
+INFRA_VARIABLES_TF = REPO / "terraform" / "infra" / "variables.tf"
+FIRESTORE_VARIABLES_TF = REPO / "terraform" / "modules" / "firestore" / "variables.tf"
+OFFBOARDING = DOCS / "runbooks" / "tenant-offboarding.md"
+
+
+def _tf_block(text: str, header: str) -> str:
+    """The body of a top-level HCL block, from its header to the closing brace in column 0."""
+    start = text.index(header)
+    end = re.search(r"^\}", text[start:], flags=re.M)
+    assert end, header
+    return text[start: start + end.end()]
+
+
+def _backup_retention_seconds() -> int:
+    block = _tf_block(_text(FIRESTORE_VARIABLES_TF), 'variable "backup_retention" {')
+    return _tf_number(block, r'default\s*=\s*"(\d+)s"')
+
+
+def test_the_platform_database_takes_its_own_delete_protection_not_the_shared_switch():
+    module = _tf_block(_text(MAIN_TF), 'module "firestore" {')
+    # MUTATION: pass `delete_protection = var.deletion_protection` again -> red (dev turns that off).
+    assert re.search(r"^\s*delete_protection\s*=\s*var\.firestore_delete_protection\s*$", module, flags=re.M), module
+    variable = _tf_block(_text(INFRA_VARIABLES_TF), 'variable "firestore_delete_protection" {')
+    # MUTATION: default firestore_delete_protection to false -> red.
+    assert re.search(r"^\s*default\s*=\s*true\s*$", variable, flags=re.M), variable
+    # MUTATION: set `firestore_delete_protection = false` in dev.tfvars -> red.
+    assert not re.search(r"^\s*firestore_delete_protection\s*=\s*false", _text(DEV_TFVARS), flags=re.M)
+
+
+def test_the_backup_retention_is_seven_days_like_point_in_time():
+    # MUTATION: default backup_retention to "8467200s" -> red; the docs below say 7 days.
+    assert _backup_retention_seconds() == 7 * 24 * 3600
+
+
+def test_the_backup_schedule_type_is_exempt_from_the_managed_by_label():
+    import json
+
+    types = json.loads(_text(REPO / "scripts" / "lib" / "unlabelable-types.json"))["types"]
+    # MUTATION: drop google_firestore_backup_schedule from the list -> red (the plan guard would
+    # block the release on a resource that cannot carry managed-by).
+    assert "google_firestore_backup_schedule" in types
+    assert types == sorted(types)
+
+
 def test_dr_says_what_delete_protection_and_abandon_do_from_the_terraform():
     main_tf = _text(MAIN_TF)
     assert re.search(r'module "firestore" \{.*?deletion_policy\s*=\s*"ABANDON"', main_tf, flags=re.S)
+    # dev still turns the shared switch off; the database no longer follows it.
     assert re.search(r"^deletion_protection\s*=\s*false", _text(DEV_TFVARS), flags=re.M)
-    body = _flat(_text(DR))
+    body = _flat(_section(_text(DR), "## 1. Recovery objectives"))
     # MUTATION: say ABANDON protects the database from deletion -> red (only from terraform destroy).
     assert '`deletion_policy = "ABANDON"`' in body
     assert "protects only against `terraform destroy`" in body
-    assert "delete protection is off" in body
-    assert "`deletion_protection = false`" in body
+    # MUTATION: leave "delete protection is off" as the current state -> red.
+    assert "delete protection is off" not in body
+    for fact in ("Delete protection is on", "`firestore_delete_protection`",
+                 "`deletion_protection = false`", "a daily backup", "kept 7 days", "`604800s`",
+                 "outlives the database"):
+        # MUTATION: drop any one of these facts -> red.
+        assert fact in body, fact
+
+
+def test_dr_prevention_no_longer_says_point_in_time_is_all_there_is():
+    prevention = _flat(_section(_text(DR), "### Prevention"))
+    # MUTATION: restore "point-in-time recovery and nothing else" -> red.
+    assert "nothing else" not in prevention
+    assert "delete protection off" not in prevention
+    for fact in ("delete protection", "daily backup", "7 days"):
+        assert fact in prevention, fact
+
+
+def test_dr_restores_a_scheduled_backup_into_a_new_database_never_swarm():
+    restore = _section(_text(DR), "### Restore from a scheduled backup")
+    commands = [c for c in restore.replace("\\\n", " ").splitlines() if c.lstrip().startswith("gcloud firestore databases restore")]
+    # MUTATION: drop the restore command -> red.
+    assert commands, restore
+    for command in commands:
+        assert "--source-backup=" in command, command
+        # MUTATION: restore into --destination-database=swarm -> red.
+        assert not re.search(r"--destination-database=swarm(?![-\w])", command), command
+        assert "--destination-database=" in command, command
+    assert "swarm-restore-" in restore
+    body = _flat(restore)
+    # MUTATION: drop the instruction to read the new database first -> red.
+    assert "never writes into `swarm`" in body
+    assert "Read the new database before anything else" in body
+    assert "gcloud firestore backups list" in body
+
+
+def test_dr_restore_drill_needs_the_owners_separate_ok():
+    drill = _flat(_section(_text(DR), "### Restore drill"))
+    # MUTATION: present the drill as free to run any time -> red.
+    assert "bills a restore" in drill
+    assert "owner's separate OK" in drill
+
+
+def test_offboarding_says_backups_keep_a_tenants_documents_for_the_backup_window():
+    days = _backup_retention_seconds() // 86400
+    body = _flat(_text(OFFBOARDING))
+    # MUTATION: drop the backups bullet from the inventory -> red.
+    assert "daily backup" in body
+    assert f"up to {days} days" in body, days
+    assert "same window as point-in-time recovery" in body
 
 
 def test_dr_restores_point_in_time_into_a_new_database_never_swarm():

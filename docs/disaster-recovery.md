@@ -22,42 +22,58 @@ document is really about:
 |---|---|---|---|
 | A single worker/execution | ≤ 120 s of agent work | minutes | checkpoint restore on a new attempt |
 | A control-plane service | 0 | minutes | redeploy the previous digest |
-| Firestore data | any minute in the last 7 days (point-in-time recovery); nothing once the database itself is deleted | ~1 h | point-in-time restore into a NEW database id (§4) |
+| Firestore data | any minute in the last 7 days (point-in-time recovery); the last daily backup, kept 7 days, once the database itself is deleted | ~1 h | point-in-time restore, or a restore from a scheduled backup, into a NEW database id (§4) |
 | Terraform state file | last write | minutes | bucket object versioning |
 | Whole environment | as above | ~1–2 h | `make bootstrap` -> `up` |
 | Provider keys | n/a | manual | re-registered by an admin |
 
-### Firestore's recovery point, as read on 2026-10-21
+### Firestore's recovery point
 
-This row said "last export" until 2026-10-21. The system analysis of that day
-(epic #1822) read the live project with read-only `gcloud` and found that there
-is no export to fall back to:
+What protects the database `swarm` since #1818 (the owner chose option (b) on
+2026-10-21; lane FS-BACKUPS):
 
-* **Point-in-time recovery is on, for 7 days.** The database `swarm` keeps a
-  version of every document for the last 7 days, readable at any whole
-  minute (`point_in_time_recovery`, default `true`, in
-  `terraform/modules/firestore/variables.tf`). That is the recovery point
-  today: any minute of the last week.
-* **No backup schedule exists.**
-  `gcloud firestore backups schedules list --database=swarm` returned `[]`.
-* **No export has ever been taken.** `gs://swarm-artifacts-saga-agents-staging/backups/`
-  does not exist, and that prefix is where `purge-data.sh` writes its
-  pre-delete export, so no purge with a backup has ever completed either.
-* **Point-in-time versions are deleted with the database**, and delete
-  protection is off: dev sets `deletion_protection = false`
-  (`terraform/environments/dev/dev.tfvars`), which `terraform/infra/main.tf`
-  passes to the database as its delete protection. One `gcloud firestore
-  databases delete` (or a console click) removes the data and its 7 days of
-  history together, and nothing else holds a copy.
+* **Point-in-time recovery, 7 days.** The database keeps a version of every
+  document for the last 7 days, readable at any whole minute
+  (`point_in_time_recovery`, default `true`, in
+  `terraform/modules/firestore/variables.tf`). It covers a bad write or a
+  wrong delete of documents. **Point-in-time versions are deleted with the
+  database**, so it does not cover losing the database.
+* **Delete protection is on.** `terraform/infra/main.tf` passes
+  `firestore_delete_protection` (default `true`, `terraform/infra/variables.tf`)
+  to the database. It is its own variable on purpose: dev still sets
+  `deletion_protection = false` (`terraform/environments/dev/dev.tfvars`) for
+  the GKE cluster and the Cloud Run services, and the database used to follow
+  that switch. A `gcloud firestore databases delete` or a console delete is now
+  refused. Anyone holding `datastore.databases.update` can still turn
+  protection off first, which is why the backup below exists too.
+* **Firestore's managed backup: a daily backup, kept 7 days** (`604800s`,
+  `backup_retention` in `terraform/modules/firestore/variables.tf`;
+  `terraform/modules/firestore/backups.tf`). A backup outlives the database:
+  Firestore does not delete a database's backups when the database is deleted.
+  So a deleted database loses at most the 24 h since the last backup. 7 days
+  matches the point-in-time window on purpose: an offboarded tenant's
+  documents survive in a backup no longer than they already survive as
+  point-in-time versions (`docs/runbooks/tenant-offboarding.md`). The bench
+  database (`swarm-bench`) is disposable and has no backup.
 * **`deletion_policy = "ABANDON"` protects only against `terraform destroy`**
   (`terraform/infra/main.tf`, `module "firestore"`): Terraform forgets the
   database instead of deleting it. It does nothing about a delete made
-  anywhere else.
+  anywhere else; delete protection does that.
 
-Whether to turn on delete protection and a backup schedule (Firestore's
-managed daily or weekly backups, which outlive a deleted database) is the
-owner's decision, on #1818. Until it is made, the honest RPO for "the database
-was deleted" is total loss.
+How to list the backups, and restore one, is in §4.
+
+**Before #1818, as read on 2026-10-21.** This row said "last export" until
+2026-10-21. The system analysis of that day (epic #1822) read the live project
+with read-only `gcloud` and found that there was no export to fall back to.
+`gcloud firestore backups schedules list --database=swarm` returned `[]`: no
+backup schedule existed. **No export has ever been taken**:
+`gs://swarm-artifacts-saga-agents-staging/backups/` does not exist, and that
+prefix is where `purge-data.sh` writes its pre-delete export. Delete
+protection was off, because the database followed dev's
+`deletion_protection = false`, and the point-in-time versions are deleted with
+the database. One delete would have removed the data and its 7 days of history
+together, and nothing else held a copy: the honest RPO for "the database was
+deleted" was total loss.
 
 ---
 
@@ -140,9 +156,10 @@ While it is broken:
 
 ### Prevention
 
-What protects the data today is point-in-time recovery and nothing else (§1,
-read 2026-10-21): no backup schedule, no export ever taken, delete protection
-off. Backups and delete protection are the owner's decision on #1818.
+Three things protect the data (§1, since #1818): point-in-time recovery for
+7 days, delete protection on the database, and a daily backup kept 7 days
+that outlives the database. Before #1818 point-in-time recovery was the only
+one, and it is deleted with the database.
 
 `purge-data.sh` exports the database to GCS before deleting anything, unless
 `--no-backup`. A one-off export, which outlives the database:
@@ -204,6 +221,48 @@ from the live leases. If you must restore while work is in flight:
 3. reconcile pools against live leases — with nothing running, every `active`
    should be 0;
 4. `./scripts/resume-swarm.sh`.
+
+### Restore from a scheduled backup
+
+The path when the database itself is gone, or when the damage is older than
+anything you want to rebuild from point-in-time versions. **A restore never
+writes into `swarm`**: `gcloud firestore databases restore` always creates a
+NEW database, in the backup's location, holding the data as of that backup.
+
+List the daily backups of `swarm` (each is kept 7 days, §1), pick one, and
+restore it into a new id:
+
+```bash
+gcloud firestore backups list --location="$REGION" --project "$PROJECT_ID" \
+  --format="table(name.basename(), database, snapshotTime, state)"
+
+backup="<id from the list>"
+dest="swarm-restore-$(date -u +%Y%m%d%H%M)"
+
+gcloud firestore databases restore \
+  --source-backup="projects/${PROJECT_ID}/locations/${REGION}/backups/${backup}" \
+  --destination-database="$dest" --project "$PROJECT_ID"
+```
+
+The restore runs as a long-running operation; the new database is usable when
+`gcloud firestore databases describe --database="$dest"` shows it and the
+operation is done. **Read the new database before anything else**: its
+`tenants`, `pools` and the newest `tasks` tell you which day you got back.
+Nothing points at it until you make it live, and making it live is the same
+undrilled step as for a point-in-time restore above (import it into
+`module "firestore"`'s state, then change `firestore_database`). With work in
+flight, pause and drain first exactly as above: a backup's `pools/*` carry
+that day's `active` counts. Whether a restore brings the indexes and TTL
+policies with it was not verified (#1818); compare against
+`terraform/modules/firestore/indexes.tf` before any service uses it.
+
+### Restore drill
+
+No restore of either kind has been drilled. A drill restores the newest backup
+into `swarm-restore-drill-<date>`, reads it, and deletes it. It creates a
+database and **bills a restore** (charged per GiB restored), so it runs only
+with the owner's separate OK, never as a side effect of a release or of this
+runbook. Approving #1818 did not approve a drill.
 
 ### What is actually lost
 
@@ -380,6 +439,7 @@ always to stop admitting.
 | Checkpoint resume works | `make failure-test` | attempts resume, capacity returns |
 | Capacity returns on every failure | `make failure-test` | no leaked leases |
 | State recovery | list generations, `state push` into a scratch environment | empty plan |
+| Firestore backup restore | [§4 Restore drill](#restore-drill), only with the owner's separate OK | a `swarm-restore-drill-<date>` database that reads as that day, then deleted |
 
 Run the first two before any teardown, and the rest after any change to
 admission, dispatch or the reconciler.

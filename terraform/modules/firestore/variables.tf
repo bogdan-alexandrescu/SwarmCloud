@@ -135,3 +135,30 @@ variable "bench_database_id" {
     error_message = "bench_database_id must be empty, swarm-bench, or swarm-bench-<suffix>."
   }
 }
+
+variable "daily_backup" {
+  description = <<-EOT
+    Give the platform database Firestore's managed daily backup (backups.tf).
+    On by default (#1818): a backup outlives a deleted database, its
+    point-in-time versions do not. The bench database never gets one.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "backup_retention" {
+  description = <<-EOT
+    How long each daily backup is kept, in seconds with an `s` suffix.
+    604800s (7 days) is the owner's choice on #1818: the same window as
+    point-in-time recovery, so an offboarded tenant's documents survive in a
+    backup no longer than they already survive as point-in-time versions.
+    Firestore's maximum is 8467200s (14 weeks).
+  EOT
+  type        = string
+  default     = "604800s"
+
+  validation {
+    condition     = can(regex("^[1-9][0-9]*s$", var.backup_retention)) && try(tonumber(trimsuffix(var.backup_retention, "s")) <= 8467200, false)
+    error_message = "backup_retention must be a whole number of seconds with an `s` suffix, at most 8467200s (14 weeks, Firestore's maximum)."
+  }
+}
