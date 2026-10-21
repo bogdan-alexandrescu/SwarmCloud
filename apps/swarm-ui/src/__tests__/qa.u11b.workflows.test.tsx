@@ -162,7 +162,11 @@ describe('N1: a step row never prints over the next one', () => {
       }
       // The narrow cases really were stacked: the check above ran.
       expect(stacked).toBeGreaterThanOrEqual(rows.length * 2)
-    })
+      // ~12s on an idle container (three cascades over ten rows): over a third
+      // of the 30s suite default, so a busy CI shard timed it out at 30s on run
+      // 39590823754 with nothing wrong. Own budget, as qa.u12.runs and
+      // keyboard already carry; a hang still fails.
+    }, 120_000)
   }
 })
 
