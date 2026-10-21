@@ -19,6 +19,7 @@ import pytest
 
 from agent_worker import handoff as handoff_mod
 from agent_worker.control import RemoteControlPlane
+from swarm_api.waiting_detail import _as_dt
 
 from control_plane.fakes import FakeFirestore as ApiFirestore
 from state_routes_harness import (
@@ -95,6 +96,11 @@ def test_a_remote_human_park_records_when_it_expires(api_db, opener):
     # worker's `expires_at` is at most the request's own latency earlier.
     # MUTATION: no `expires_at` on this path -> KeyError.
     # MUTATION: another bound (say the hold's seconds) -> fails.
-    lag = detail["next_eligible_at"] + bound - detail["expires_at"]
+    # It crosses the routes as JSON, so it is stored as an ISO instant, which
+    # `waiting_detail._as_dt` reads as it reads a datetime.
+    expires = _as_dt(detail["expires_at"])
+    # MUTATION: a naive instant (no offset) -> `_as_dt` reads it, this fails.
+    assert expires is not None and expires.tzinfo is not None
+    lag = _as_dt(detail["next_eligible_at"]) + bound - expires
     assert timedelta(0) <= lag < timedelta(seconds=30), lag
     assert detail["cause"] == "hold_expired"

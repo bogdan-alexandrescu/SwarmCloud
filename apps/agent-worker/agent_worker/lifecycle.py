@@ -2351,6 +2351,10 @@ class Worker:
                 head=str(wait.get("head") or ""),
                 pull_request=int(wait.get("pull_request") or 0),
                 pending=[str(name) for name in wait.get("pending") or []],
+                # Absent when the step read no check at this head: not read
+                # is not "none failed" (WAIT-RECORD, part of #1782).
+                failed=([str(name) for name in wait["failed"]]
+                        if isinstance(wait.get("failed"), list) else None),
                 max_wakes=(mergeslot_mod.MERGE_SLOT_MAX_WAITS if slot_wait
                            else mergetrain_mod.TRAIN_MAX_WAITS if train_wait
                            else merge_mod.MERGE_CI_MAX_WAKES),

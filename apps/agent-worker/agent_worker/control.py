@@ -1963,6 +1963,7 @@ class ControlPlane:
         fallback_seconds: int,
         counter: str = "wakes",
         ci_clock: bool = True,
+        failed: Sequence[str] | None = None,
     ) -> bool:
         """A merge step's CI wait: PARKED on CI_PENDING, slot given back.
 
@@ -1986,6 +1987,14 @@ class ControlPlane:
             the scheduler wakes the park then even if swarm-api's tick never
             marks it, so a dead tick or a broken token never strands a merge.
 
+        WHAT THE PANEL READS (WAIT-RECORD, part of #1782). `failed` names the
+        checks whose latest run at `head` failed (`merge.latest_reading`); the
+        event records it beside `pending`, and `pull_request`, which before
+        this only `merge_wait` held. `merge_wait` keeps `failed` too, for a
+        reader that has only the document. None -- the step read no check at
+        this head -- records no `failed` anywhere. Additive: every field a
+        reader read before keeps its value, and `blocked_by` is unchanged.
+
         A wait for the repository's merge slot (`mergeslot.MERGE_SLOT_WAIT`,
         merge race #295) is refunded on its own `counter`, `slot_waits`,
         with its own `max_wakes`, and stops the CI clock (`ci_clock` False):
@@ -2003,6 +2012,9 @@ class ControlPlane:
         reason = ParkReason.CI_PENDING
         now = utcnow()
         names = [str(name) for name in pending]
+        recorded: dict[str, Any] = (
+            {} if failed is None else {"failed": [str(name) for name in failed]}
+        )
 
         def _apply(txn: Any) -> tuple[bool, int]:
             task = self._fenced_task(txn, write=write)
@@ -2033,6 +2045,7 @@ class ControlPlane:
                     (first if isinstance(first, datetime) else now) if ci_clock else None
                 ),
                 "parked_at": now,
+                **recorded,
             }
             payload: dict[str, Any] = {
                 "state": TaskState.PARKED.value,
@@ -2070,6 +2083,8 @@ class ControlPlane:
                 "code": code,
                 "head": head,
                 "pending": names,
+                "pull_request": pull_request,
+                **recorded,
             },
         )
         self.release_lease(f"parked:{reason.value}")
@@ -3024,12 +3039,22 @@ class RemoteControlPlane(ControlPlane):
         fallback_seconds: int,
         counter: str = "wakes",
         ci_clock: bool = True,
+        failed: Sequence[str] | None = None,
     ) -> bool:
         """A merge step's CI wait. The counter, its bound, the CI clock and
         the fallback are swarm-api's, chosen from `code` exactly as the merge
-        step chooses them (`attemptstate._park_payload`)."""
+        step chooses them (`attemptstate._park_payload`).
+
+        `pull_request` and `failed` (WAIT-RECORD, part of #1782) ride in the
+        park's `detail`, which swarm-api merges into the PARKED event: the
+        `ci` body is strict (`attemptstate.CiWait`) and would refuse a field
+        it does not name. So on this path `merge_wait` holds no `failed`;
+        the event, which `waiting_detail` reads first, does."""
+        recorded: dict[str, Any] = {"pull_request": int(pull_request)}
+        if failed is not None:
+            recorded["failed"] = [str(name) for name in failed]
         answer = self._park(
-            ParkReason.CI_PENDING, detail=None, uploads=None,
+            ParkReason.CI_PENDING, detail=recorded, uploads=None,
             ci={"code": code, "head": head, "pull_request": int(pull_request),
                 "pending": [str(name) for name in pending]},
         )
