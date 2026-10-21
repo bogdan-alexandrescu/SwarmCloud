@@ -6,7 +6,8 @@ the owner's answers, 2026-10-21 under the overnight pre-authorisation:
 1. `swarm_workflow_launch` takes `rows: "summary" | "per-step"`, passed to
    `launch.for_attach` and `launch.for_all`, so `attach --all --per-step`
    works too. The `--per-step` suffix in the `attach` value was read for
-   one release and is refused since SC-ATTACH-SUFFIX-DROP (0.5.53). The tool's description says what is true now: split copies,
+   one release and is refused since SC-ATTACH-SUFFIX-DROP (0.5.53). The
+   tool's description says what is true now: split copies,
    a summary row, a cap of 100 within 1-200.
 2. The bridge computes the summary row's count line: `swarm_follow` `format:
    "summary"` returns it, sorted into the buckets run.js uses, and the

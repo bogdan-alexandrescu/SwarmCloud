@@ -173,8 +173,9 @@ reply's `launches` holds several copies, `SC · <name> · N steps · rows 1-8`,
 `rows 9-16`..., each a run of its own: launch EVERY entry of `launches`, each
 with its own args. `/sc attach <wf_id> --per-step` (pass `{attach: "<wf_id>",
 rows: "per-step"}`) uses per-step for this one attach, and `--summary` (`rows:
-"summary"`) the summary row; `rows` outranks the setting. The older
-`{attach: "<wf_id> --per-step"}` is still read until plugin 0.5.52.
+"summary"`) the summary row; `rows` outranks the setting. `attach` is the
+workflow id alone: the bridge refuses a flag inside it, so the mode always
+goes in `rows`.
 By hand it attaches ANY workflow your tenant may read, this session's or
 not: when the reply carries `not_this_session` (`this_session: false`), say
 in one line that the workflow is not this session's -- another Claude Code
