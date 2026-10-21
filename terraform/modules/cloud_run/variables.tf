@@ -90,6 +90,12 @@ variable "services" {
     invokers          = optional(map(string), {})
     health_check_path = optional(string, "/healthz")
     container_port    = optional(number, 8080)
+    # How many 5 s startup-probe failures a new instance gets before Cloud Run
+    # kills it: 12, a start killed at about 96 s, for every service that does
+    # not set it. Raise it for one service that is known to start
+    # slowly but healthily, never module-wide: a broken image should still be
+    # killed promptly everywhere else (#1816).
+    startup_failure_threshold = optional(number, 12)
   }))
 
   validation {
