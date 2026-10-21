@@ -6257,6 +6257,11 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    so it drew the browser's own 1px `auto` ring -- the '?' beside Overview's
    '8/8 reads' -- beside 2px solid rings on every other control. */
 .help-glyph:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* HELPCARD'S `?` STEPS ITS FILL UNDER THE POINTER AS `.ctl-q-glyph` DOES
+   (admin-008, visual QA run 2). Its fill is an inline style, which beats any
+   rule here, so the inline value reads `var(--help-glyph-fill,
+   var(--ctl-q-fill))` and this sets the one name it leaves open. */
+.help-glyph:hover { --help-glyph-fill: var(--ctl-q-fill-hover); }
 /* EVERY `?` CLEARS THE TRAIL BAR WHEN FOCUS SCROLLS TO IT (QA-022, visual QA
    2026-10-20). On a task page the scroller had already moved (the list keeps
    the open agent's row in view), so the list head's `Help: Work answers` --
