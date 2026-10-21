@@ -29,6 +29,27 @@ variable "worker_firestore_access" {
   nullable    = false
 }
 
+# DEFAULTS EMPTY: every tenant keeps its worker_firestore binding, so adding
+# this changes no plan. The per-tenant twin of worker_firestore_access above,
+# because the cutover goes one tenant at a time (owner decision Q7: u-bogdan,
+# then eng, then all) and the global switch cannot take eng's role alone. A
+# listed tenant's binding is filtered out of the for_each; every other tenant
+# keeps its tenant-id key, so the plan destroys the listed binding and touches
+# no other. Every entry must be a key of var.tenants: a name that is not one
+# would plan nothing, and an empty plan for a cutover step reads like one that
+# worked. terraform/infra refuses an entry not yet in state_via_api_tenants.
+variable "worker_firestore_off_tenants_iam" {
+  description = "Tenant ids (keys of var.tenants) whose worker gets NO swarmTenantWorkerFirestore binding even while worker_firestore_access is true. Default [] = every tenant keeps today's grant."
+  type        = list(string)
+  default     = []
+  nullable    = false
+
+  validation {
+    condition     = alltrue([for t in var.worker_firestore_off_tenants_iam : contains(keys(var.tenants), t)])
+    error_message = "every worker_firestore_off_tenants_iam entry must be a tenant in var.tenants, by its exact id: an entry that names none removes nothing, and \"*\" is not supported."
+  }
+}
+
 variable "artifact_bucket" {
   type = string
 }

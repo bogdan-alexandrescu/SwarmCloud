@@ -214,6 +214,11 @@ module "tenancy" {
   # tenant; false removes every one of them.
   worker_firestore_access = var.worker_firestore_access
 
+  # The same last step, one Terraform tenant at a time (variables.tf says why it
+  # defaults empty, and when an entry plans): a listed tenant's binding is
+  # destroyed and every other tenant's keeps its key.
+  worker_firestore_off_tenants_iam = var.worker_firestore_off_tenants_iam
+
   # Only the dispatcher and the reconciler may name a tenant SA on a Job.
   # The deployer is here because it DEPLOYS the tenant jobs that run as these
   # accounts, which needs actAs on each (see deployer.tf). Static key, so a new
