@@ -1637,12 +1637,20 @@ function GroupHead({
   return (
     <div className="tl-row is-group" data-group={block.key}>
       <div className="tl-lab">
+        {/* THE TITLE GIVES WAY AS A LANE'S NAME DOES (visual QA run 3,
+            work-a-004, 2026-10-21). A bare link or text run in this flex
+            `<b>` is as wide as its text, so a long title ran to the column's
+            edge and was sheared there with no ellipsis, while the lanes under
+            it ended in `…` before their mark. `.tl-name-k` is the name part
+            that shrinks and cuts (timeline.css); the link keeps its colour. */}
         <b>
           {state !== null && state in STATE_MARK && <StateMark state={state as TaskState} bare />}
           {block.kind === 'workflow' && workflow?.status === 'ok' ? (
-            <a href={`/workflows/${encodeURIComponent(block.key)}`} title={block.key}>{title}</a>
+            <a className="tl-name-k" href={`/workflows/${encodeURIComponent(block.key)}`} title={block.key}>{title}</a>
           ) : (
-            title
+            <span className="tl-name-k" title={title}>
+              {title}
+            </span>
           )}
         </b>
         <small>{note}</small>
