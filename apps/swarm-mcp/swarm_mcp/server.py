@@ -4549,9 +4549,23 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             _remember_territory(client, check, [(lane["lane"], task_id)])
         return json.dumps(reply, indent=2)
 
+    format_received = args.get("format") if name == "swarm_follow" else None
+    if name == "swarm_follow" and isinstance(format_received, str):
+        # Normalised ONCE, here, and written back, so the guard below, the
+        # `step_id`/`parents` checks, the follower and the reply's shape all
+        # read one value (#1865): a row agent that JSON-encoded the argument
+        # twice sent '"progress"', the guard refused it, and the row -- told
+        # to stop on a format error -- ended UNKNOWN while its task finished.
+        # Surrounding whitespace and ONE layer of MATCHING quotes go; a lone
+        # quote or a still-unknown word is refused below, as received.
+        fmt = format_received.strip()
+        if len(fmt) >= 2 and fmt[0] == fmt[-1] and fmt[0] in "\"'":
+            fmt = fmt[1:-1]
+        args = {**args, "format": fmt or None}
     if name == "swarm_follow" and (args.get("format") or "json") not in ("json", "lines", "progress", "summary"):
         raise SwarmError(
-            f"unknown format {args.get('format')!r}; swarm_follow takes json, lines, progress or summary"
+            f"unknown format {format_received!r}; "
+            "swarm_follow takes json, lines, progress or summary"
         )
 
     if name == "swarm_follow" and args.get("since") not in (None, "") and args.get("cursor"):
