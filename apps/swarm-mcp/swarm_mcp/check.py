@@ -39,6 +39,9 @@ THE RULES, each with the control that is NOT flagged:
     dependency FAILED, was CANCELLED or DEAD_LETTERED. Any other park reason
     -- a provider quota window, a retry backoff -- is the platform waiting by
     design, and is not flagged.
+    Both (b) and (c) carry `waiting_summary` in their evidence: the API's one
+    line on why the task waits (#1782) -- the pull request and the checks
+    still pending, the pool that binds -- left out when the API serves none.
 (d) `merge_refused` (STUCK): a `merge` step FAILED with `head_moved`,
     `merge_conflict` or `checks_failed`, and its pull request is still
     OPEN. The API serves no pull request state, so it is read from
@@ -87,7 +90,7 @@ from swarm_common.states import TERMINAL_STATES
 
 from . import awaitinput, checkout, render, session, workflows
 from .client import SwarmClient, SwarmError, task_id_of
-from .follow import console_link
+from .follow import console_link, waiting_brief
 from .sc import WORKFLOW_PAGE_SIZE
 
 #: (a) and (b)'s window, in minutes: the owner's "N min (default 20)".
@@ -496,6 +499,18 @@ def _binding(task: dict[str, Any], reads: _Reads) -> dict[str, Any]:
     return out
 
 
+def _with_summary(evidence: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
+    """`evidence`, with the API's one line on why the task waits (#1782).
+
+    Left out, never null, when the API served none: an API older than
+    WAIT-API keeps exactly the evidence it had.
+    """
+    brief = waiting_brief(task)
+    if brief is not None:
+        evidence["waiting_summary"] = brief["summary"]
+    return evidence
+
+
 def _waiting(task: dict[str, Any], reads: _Reads, now: datetime, window: int) -> dict[str, Any] | None:
     """(b): READY or QUEUED longer than the window, with its binding pool."""
     created = render.parse_time(task.get("created_at"))
@@ -511,6 +526,7 @@ def _waiting(task: dict[str, Any], reads: _Reads, now: datetime, window: int) ->
     evidence = _age_evidence(entered, now)
     evidence["window_minutes"] = window
     evidence["binding"] = _binding(task, reads)
+    _with_summary(evidence, task)
     pool = evidence["binding"].get("pool")
     held = f", bound by pool {pool}" if pool else ""
     return {
@@ -537,7 +553,7 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
         return {
             "kind": STUCK, "rule": "parked",
             "reason": f"PARKED on DEPENDENCY_INCOMPLETE, and its dependency will not complete: {names}",
-            "evidence": {"park_reason": reason, "dependencies": dependencies},
+            "evidence": _with_summary({"park_reason": reason, "dependencies": dependencies}, task),
         }
     if reason not in ("HUMAN_REQUIRED", "CI_PENDING"):
         return None
@@ -555,7 +571,7 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
     else:
         text = (f"PARKED on HUMAN_REQUIRED for {evidence['age_is']} {age} min: only a person "
                 "promotes it -- open its console and take control")
-    return {"kind": STUCK, "rule": "parked", "reason": text, "evidence": evidence}
+    return {"kind": STUCK, "rule": "parked", "reason": text, "evidence": _with_summary(evidence, task)}
 
 
 def _clock(value: datetime | None) -> str:

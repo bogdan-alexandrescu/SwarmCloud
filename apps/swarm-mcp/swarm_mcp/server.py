@@ -4599,9 +4599,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             # state -- a QUEUED task is the one a person opens it to watch.
             # `workspace`: the tenant the task runs in, from its own document
             # (SC-ROWS), which `/sc status` prints first on the task's line.
+            # `waiting`/`waiting_line` (#1782): why a waiting task waits, in
+            # the API's words, printed after the state; absent otherwise.
             rows.append(with_console(
                 {"task_id": t, "workspace": workflows.workspace_of(task), "state": task.get("state"),
-                 "masked": masked_counts(task)}, task
+                 "masked": masked_counts(task), **progress.waiting_fields(task)}, task
             ))
         return json.dumps(rows, indent=2)
 

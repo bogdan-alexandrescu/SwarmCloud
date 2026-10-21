@@ -221,6 +221,16 @@ def test_waiting_brief_ignores_what_is_not_a_summary():
     assert follow.waiting_brief({}) is None  # MUTATION: KeyError on an older API.
 
 
+def test_a_park_reason_the_summary_does_not_describe_keeps_the_park_reason():
+    # A READY step still marked DEPENDENCY_INCOMPLETE waits for a parent; the
+    # API's READY sentence would send the reader to capacity instead.
+    task = {"state": "READY", "park_reason": "DEPENDENCY_INCOMPLETE",
+            "waiting": {"reason": "READY_CAPACITY", "summary": "Ready; every pool has room"}}
+    assert follow.waiting_brief(task) is None  # MUTATION: ignore the park reason -- a brief.
+    same = {**task, "waiting": {"reason": "DEPENDENCY_INCOMPLETE", "summary": "Waiting on 1 upstream steps"}}
+    assert follow.waiting_brief(same)["summary"] == "Waiting on 1 upstream steps"  # MUTATION: never trust it -- None.
+
+
 # --------------------------------------------------------------------------
 # swarm_check's evidence
 # --------------------------------------------------------------------------
