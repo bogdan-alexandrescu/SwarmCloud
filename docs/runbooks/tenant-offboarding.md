@@ -40,8 +40,8 @@ documents lose `<id>` from their `lend_to` lists.
   protection to them.
 
 > **The deny-list.** `saga-agents-staging` is a shared project. It holds
-> another team's live GKE cluster `agents-staging`, their VPC, their buckets
-> and twelve of their service accounts. The list of protected names lives
+> another team's live GKE cluster `agents-staging`, their VPC, their buckets,
+> their service accounts and their Cloud Run services. The list of protected names lives
 > once, in `SHARED_DENY_LIST` in `scripts/lib/common.sh`, and is not copied
 > here (a second copy is how the two drift). Print the live list with:
 >
