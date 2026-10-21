@@ -651,7 +651,10 @@ token, never *accepted* from the request.
 ## Operating in a shared project
 
 `saga-agents-staging` holds another team's live GKE cluster (`agents-staging`),
-their VPC, their buckets and 12 service accounts. Protections:
+their VPC, six of their buckets, nineteen of their service accounts and two of
+their Cloud Run services (`oracle-api`, `oracle-web`) — counted from
+`SHARED_DENY_LIST` after the 2026-10-21 read of the live project, which found
+twelve the 2026-09-15 list did not name. Protections:
 
 * `SHARED_DENY_LIST` in `scripts/lib/common.sh` — one list, read by `destroy.sh`,
   `purge-data.sh` and `configure-kubectl.sh`;

@@ -144,11 +144,14 @@ CLAUDE.md states the rule plainly: "The deny-list lives once, in
 The test proving the guard works did not. `tests/integration/test_destroy_guard.py`
 carried its own hand-written list of "the real neighbours in the shared project"
 and passed it to the guard as `--argjson deny`. It had **fourteen entries where
-`SHARED_DENY_LIST` has twenty** — one cluster, one VPC, two subnets, the shared
+`SHARED_DENY_LIST` had twenty** — one cluster, one VPC, two subnets, the shared
 default network, three buckets and twelve service accounts, counted on
 2026-09-24 by walking the array rather than by restating a remembered number,
 which is how this paragraph and the test's own docstring both came to say
-twenty-one. Absent from it entirely: the three shared
+twenty-one. (It has thirty-two since the 2026-10-21 read of the live project
+added seven service accounts, three buckets and the
+`oracle-api`/`oracle-web` Cloud Run services; the derivation below followed
+without an edit, which is the point of it.) Absent from it entirely: the three shared
 buckets — `saga-agents-crawled-media-staging`, `saga-agents-files-staging`,
 `saga-agents-terraform-state-staging` — and the other team's Compute Engine
 default service account. A plan deleting any of those had never been shown to be

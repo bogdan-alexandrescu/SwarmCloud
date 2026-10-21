@@ -243,8 +243,12 @@ load_env() {
 }
 
 # Resources owned by other teams in this shared project. Verified against the
-# live project on 2026-09-15. Nothing this repo runs may delete, modify or even
-# point kubectl at anything in this list.
+# live project on 2026-09-15, and the service accounts, buckets and Cloud Run
+# services read again on 2026-10-21 at 09:45Z (read-only; epic #1822), which
+# added the twelve that had appeared since: seven service accounts, three
+# buckets and two Cloud Run services. qa-console@ is NOT one of them -- it is
+# this platform's own (terraform/bootstrap/qa_identity.tf). Nothing this repo
+# runs may delete, modify or even point kubectl at anything in this list.
 SHARED_DENY_LIST=(
   "agents-staging"
   "agents-staging-vpc"
@@ -254,6 +258,9 @@ SHARED_DENY_LIST=(
   "saga-agents-crawled-media-staging"
   "saga-agents-files-staging"
   "saga-agents-terraform-state-staging"
+  "ai-studio-avatars-staging"
+  "promptlab-avatars-staging"
+  "saga-agents-staging_cloudbuild"
   "api-service@saga-agents-staging.iam.gserviceaccount.com"
   "publisher@saga-agents-staging.iam.gserviceaccount.com"
   "209012342332-compute@developer.gserviceaccount.com"
@@ -266,6 +273,15 @@ SHARED_DENY_LIST=(
   "staging-gke-nodes@saga-agents-staging.iam.gserviceaccount.com"
   "crawler@saga-agents-staging.iam.gserviceaccount.com"
   "tournament-digest@saga-agents-staging.iam.gserviceaccount.com"
+  "ai-studio-api@saga-agents-staging.iam.gserviceaccount.com"
+  "ai-studio-deployer@saga-agents-staging.iam.gserviceaccount.com"
+  "ai-studio-runner@saga-agents-staging.iam.gserviceaccount.com"
+  "oracle-api@saga-agents-staging.iam.gserviceaccount.com"
+  "oracle-ticker@saga-agents-staging.iam.gserviceaccount.com"
+  "oracle-web@saga-agents-staging.iam.gserviceaccount.com"
+  "promptlab-api@saga-agents-staging.iam.gserviceaccount.com"
+  "oracle-api"
+  "oracle-web"
 )
 
 is_shared_resource() {
@@ -273,6 +289,27 @@ is_shared_resource() {
   for protected in "${SHARED_DENY_LIST[@]}"; do
     [[ "${candidate}" == "${protected}" ]] && return 0
   done
+  return 1
+}
+
+# shared_resource_kind ENTRY -> sa, bucket, run-service, cluster, ... : the first
+# `classify` rule in lib/destroy-guard-proof-cases.json whose glob matches, or
+# exit 1. The one place a SHARED_DENY_LIST entry is told apart by kind:
+# scripts/verify-destroy-guard.sh proves the plan guard per kind and
+# `destroy.sh --verify-shared` describes each neighbour per kind, and the
+# post-destroy check named its buckets by hand until 2026-10-21, when the three
+# buckets added to the list that day were the three it never looked at. The RHS
+# of `==` is deliberately unquoted: that is what makes bash treat it as a glob.
+shared_resource_kind() {
+  local entry="$1" glob kind
+  while IFS=$'\t' read -r glob kind; do
+    [[ -n "${glob}" ]] || continue
+    # shellcheck disable=SC2053  # glob matching is intended, not accidental
+    if [[ "${entry}" == ${glob} ]]; then
+      printf '%s' "${kind}"
+      return 0
+    fi
+  done < <(jq -r '.classify[] | "\(.glob)\t\(.kind)"' "${SWARM_LIB_DIR}/destroy-guard-proof-cases.json")
   return 1
 }
 
