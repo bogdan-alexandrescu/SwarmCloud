@@ -305,13 +305,14 @@ CODECS: tuple[Codec, ...] = (
         # is lifted out of `metadata.claude_session`: `codec.claude_session_of`.
         # `model_class_defaulted` (#1435, MODEL-API) says the served
         # `model_class` is the profile's default because none was stored:
-        # `codec.served_model_class`.
+        # `codec.served_model_class`. `waiting` (#1782, WAIT-API) is built by
+        # `swarm_api.waiting_detail` from the task, its events and its pools.
         api_computed=(
             "dispatch", "start_problem", "owner_answers", "claude_session",
             "model_class_defaulted",
             "input_redaction_count", "metadata_redaction_count",
             "last_error_redaction_count", "result_summary_redaction_count",
-            "repository_url_redaction_count", "waiting_for", "account", "links",
+            "repository_url_redaction_count", "waiting_for", "waiting", "account", "links",
             "heartbeat_at", "heartbeat_grace_seconds", "heartbeat",
             "forge_credential_source",
         ),

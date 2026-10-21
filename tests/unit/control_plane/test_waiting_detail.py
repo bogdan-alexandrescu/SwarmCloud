@@ -30,7 +30,7 @@ from swarm_api.waiting_detail import (
     waiting_row,
 )
 
-from .conftest import auth_header, seed_pool, seed_task, seed_tenant
+from .conftest import auth_header, seed_task, seed_tenant
 
 READ_AT = datetime(2026, 10, 21, 20, 10, tzinfo=timezone.utc)
 REPO = "https://github.com/bogdan-alexandrescu/SwarmCloud.git"

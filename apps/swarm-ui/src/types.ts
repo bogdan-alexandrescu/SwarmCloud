@@ -819,6 +819,14 @@ export interface Task {
    */
   waiting_for?: WaitingFor | null
   /**
+   * #1782 (WAIT-API). Why a PARKED, READY or QUEUED task waits, built by
+   * `swarm_api/waiting_detail.py` from what the platform recorded -- never
+   * read from GitHub or a provider. `GET /v1/tasks/{id}` serves it in full;
+   * a listing row serves `WaitingRow`. Null for every other state; OPTIONAL
+   * because an older API does not send it.
+   */
+  waiting?: Waiting | WaitingRow | null
+  /**
    * #379. The subscription account the LATEST attempt runs on, derived by
    * `swarm_api/task_accounts.py` from this task's own account events. OPTIONAL
    * and nullable: an older API does not send it, and a route that did not
@@ -2617,6 +2625,74 @@ export interface WaitingFor {
 }
 
 /**
+ * #1782: what a waiting task is waiting on. `reason` is the ParkReason, or
+ * READY_CAPACITY, QUEUED. A fact that was not recorded is null, never guessed.
+ */
+export type WaitingReason =
+  | 'READY_CAPACITY'
+  | 'QUEUED'
+  | 'PROVIDER_QUOTA_EXHAUSTED'
+  | 'PROVIDER_COOLDOWN'
+  | 'PROVIDER_OUTAGE'
+  | 'SCHEDULED_RETRY'
+  | 'DEPENDENCY_INCOMPLETE'
+  | 'CHILDREN_INCOMPLETE'
+  | 'MANUAL_PAUSE'
+  | 'BUDGET_EXHAUSTED'
+  | 'CREDENTIAL_MISSING'
+  | 'CI_PENDING'
+  | 'HUMAN_REQUIRED'
+  | 'AWAITING_INPUT'
+  | (string & {})
+
+/** A list row's and a workflow step's form of `waiting`. */
+export interface WaitingRow {
+  reason: WaitingReason
+  /** One plain sentence: "CI on PR #1779: 5 checks pending (...); re-checked 2 times; next check 02:46Z". */
+  summary: string
+}
+
+/** One entry of `waiting.history`, newest last, at most 20. */
+export interface WaitingHistoryEntry {
+  at: string
+  /** queued | parked | ready | running | retrying | quota_exhausted | wake | eligible */
+  kind: string
+  text: string
+}
+
+/** `waiting` in full, as `GET /v1/tasks/{id}` serves it. */
+export interface Waiting extends WaitingRow {
+  /** When this wait began, from the events; null when not recorded. */
+  since: string | null
+  /** The time the scheduler may next act; null for a park only a person or another task ends. */
+  next_check_at: string | null
+  /** Plain words: what ends the wait. */
+  resumes_when: string
+  /**
+   * Per reason (docs/api.md "Why a task is waiting"). CI_PENDING:
+   * pull_request {number, url}, head, code, pending, failed, wakes,
+   * attempts_counted, last_checked_at, wake_requested_at. READY_CAPACITY:
+   * waiting_for, pool, pool_state, active, limit, units, place_in_line,
+   * place_in_line_unavailable, last_pass. Provider parks: provider, account,
+   * provider_state, source, account_pool_reason, wait_seconds, until.
+   * SCHEDULED_RETRY: last_error (masked), attempt, next_attempt,
+   * max_attempts, next_try_at, cause. DEPENDENCY_INCOMPLETE: waiting_on
+   * [{task_id, step_id, state}], states_read. CHILDREN_INCOMPLETE: children
+   * [{task_id, state}], unfinished, total, states_read. AWAITING_INPUT:
+   * who_may_answer, opened_at, expires_at, answer_command. HUMAN_REQUIRED:
+   * who_may_answer, expires_at, answer_route, cause. CREDENTIAL_MISSING:
+   * provider, secret_names, account_pool, forge_connection,
+   * workspace_secrets, mcp_servers -- names only. BUDGET_EXHAUSTED: budget.
+   * MANUAL_PAUSE: paused_by, paused_at, error.
+   */
+  detail: Record<string, unknown>
+  history: WaitingHistoryEntry[]
+  /** False on a route that read no events: an empty history is then "not read". */
+  history_read: boolean
+  read_at: string
+}
+
+/**
  * The lead line: "tenant:eng  20/20 units", "tenant:eng paused",
  * "tenant:eng: limit unknown". Null when nothing refuses the task.
  *
@@ -3612,6 +3688,8 @@ export interface WorkflowStep {
   /** The step's model class, resolved as its task's is (`Task.model_class`, #1435). Absent: an older API. */
   model_class?: string | null
   model_class_defaulted?: boolean
+  /** #1782: a waiting step's one line, off its task. Null: not waiting, or no task read. */
+  waiting?: WaitingRow | null
   /**
    * The step's input, MASKED by its TASK's masker (the PR #229 review), so a
    * literal the workflow's metadata names is masked here as on the task. Null
