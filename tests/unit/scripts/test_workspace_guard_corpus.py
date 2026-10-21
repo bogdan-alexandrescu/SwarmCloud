@@ -258,7 +258,12 @@ def test_the_judge_reads_the_deny_list_as_guard_deny_json_prints_it(tmp_path: Pa
                       "stdin": None, "expect": str(expect), "wd9_fallback": True,
                       "env_impersonate": "", "env_project": ""})
         wants.append(("argument", name, name in scan))
-    for i, name in enumerate(sorted(whole)):
+    # A context is gke_<project>_<location>_<cluster> and ctx_fail reads the
+    # cluster as its last `_` field, so only a name that could be a cluster's
+    # is put there: `saga-agents-staging_cloudbuild` (a bucket, on the list
+    # since 2026-10-21) cannot be, and as a context's tail it reads as
+    # `cloudbuild`. The argument cases above still cover it by name.
+    for i, name in enumerate(sorted(n for n in whole if "_" not in n)):
         kubeconfig = tmp_path / f"kubeconfig-{i}"
         kubeconfig.write_text(f"current-context: gke_p_l_{name}\n")
         argv = [a for a in rec["argv"] if not a.startswith("--context")]
