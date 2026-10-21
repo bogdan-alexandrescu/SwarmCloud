@@ -15,7 +15,10 @@ holds the issue forms:
   design's illustrative `#overview/now` predates;
 * every task pane (`TASK_PANES`, plus Details, the bare task) is captured, on
   the fixture task the route list names, which must exist in the fixture
-  build's task list;
+  build's task list -- except Browser, captured on the one fixture task that
+  runs `claude-code-browser` (QAFIX2-QABROWSER, owner decision 2026-10-21):
+  the ordinary fixture agent has no live browser, so its Browser pane is a
+  page that build can never fill;
 * every `settings/*` page in FIXED is captured;
 * the list parses as `swarm_qa` reads it, and a mockup it names exists.
 
@@ -41,6 +44,10 @@ API_TS = SRC / "api.ts"
 SWARM_QA = REPO / "images" / "agent-runtime-browser" / "swarm_qa.py"
 #: The task's own page, `/agents/<tab>/<id>`, is its Details pane.
 DETAIL = "detail"
+#: The pane captured on the live-browser fixture task rather than the fixture task.
+BROWSER_PANE = "browser"
+#: The catalogue profile whose session reads `live_browser: true` in the fixture build.
+BROWSER_PROFILE = "claude-code-browser"
 
 
 def _routes() -> dict:
@@ -70,6 +77,26 @@ def _task_panes() -> list[str]:
     return panes
 
 
+def _fixture_tasks() -> dict[str, tuple[str, str]]:
+    """`{task id: (state, profile)}` for every literal `mk(id, state, profile, ...)` in fixtureTasks."""
+    rows = re.findall(r"mk\('(task_[A-Za-z0-9_]+)',\s*'([A-Z_]+)',\s*'([a-z0-9-]+)'", _read(API_TS))
+    assert len(rows) >= 10, "fixtureTasks parsed to too few rows"
+    return {tid: (state, profile) for tid, state, profile in rows}
+
+
+def _task_of(route: dict) -> str:
+    seg = route["address"].split("/")
+    assert seg[:2] == ["work", "task"] and len(seg) > 2, f"{route['id']}: not a task route"
+    return seg[2]
+
+
+def _pane_task(pane: str | None) -> str:
+    """The task a pane is captured on: Browser on the live-browser fixture task, the rest on the fixture task."""
+    if pane == BROWSER_PANE:
+        return _task_of(next(r for _g, r in _all_routes() if r["id"] == "task-browser"))
+    return _routes()["fixture_task"]
+
+
 def test_every_sections_tab_is_in_a_route_group():
     tabs = {f"{sid}/{tid}" for sid, _label, section_tabs in _sections(_read(APP_TSX)) for tid, _ in section_tabs}
     sections = {sid for sid, _label, _tabs in _sections(_read(APP_TSX))}
@@ -82,13 +109,13 @@ def test_every_sections_tab_is_in_a_route_group():
 
 def test_every_route_path_is_the_routers_path():
     fixed = _fixed()
-    task = _routes()["fixture_task"]
     for group, route in _all_routes():
         address, path = route["address"], route["path"]
         seg = address.split("/")
         if seg[:2] == ["work", "task"]:
-            assert seg[2] == task, f"{group}/{route['id']}: a task pane on {seg[2]}, not the fixture task {task}"
             pane = seg[3] if len(seg) > 3 else None
+            task = _pane_task(pane)
+            assert seg[2] == task, f"{group}/{route['id']}: a task pane on {seg[2]}, not {task}"
             want = f"/agents/live/{task}" + (f"/{pane}" if pane else "")
         else:
             assert address in fixed, f"{group}/{route['id']}: {address!r} is not an address in FIXED (paths.ts)"
@@ -99,13 +126,46 @@ def test_every_route_path_is_the_routers_path():
 def test_every_task_pane_and_settings_page_is_captured():
     task = _routes()["fixture_task"]
     addresses = {route["address"] for _group, route in _all_routes()}
-    panes = {f"work/task/{task}"} | {f"work/task/{task}/{p}" for p in _task_panes()}
+    panes = {f"work/task/{task}"} | {f"work/task/{_pane_task(p)}/{p}" for p in _task_panes()}
     assert len(panes) == 1 + len(_task_panes())
     assert not sorted(panes - addresses), f"task panes no route captures: {sorted(panes - addresses)}"
     settings = {a for a in _fixed() if a.startswith("settings/")}
     assert settings and not sorted(settings - addresses), f"settings pages no route captures: {sorted(settings - addresses)}"
     # The fixture task is a task the fixture build lists, so its panes render.
     assert re.search(rf"mk\('{re.escape(task)}',", _read(API_TS)), f"{task} is not in api.ts fixtureTasks"
+
+
+def test_the_browser_route_is_on_the_fixture_build_live_browser_agent():
+    """QAFIX2-QAROUTE found `task-browser` on task_a073aff5, an ordinary
+    `claude-code` agent: the fixture build answers `live_browser: false` for
+    it, so the route captured a pane that build can never fill. The route is
+    on the one RUNNING fixture task on `claude-code-browser`, whose fixture
+    session reads live (owner decision 2026-10-21, QAFIX2-QABROWSER)."""
+    route = next((r for _g, r in _all_routes() if r["id"] == "task-browser"), None)
+    assert route is not None, "routes.json has no task-browser route"
+    task = _task_of(route)
+    assert route["address"] == f"work/task/{task}/{BROWSER_PANE}", route["address"]
+    tasks = _fixture_tasks()
+    # MUTATION: point task-browser back at task_a073aff5 (profile claude-code) -> fails.
+    assert task in tasks, f"task-browser is on {task}, which is not an mk(...) row of fixtureTasks in api.ts"
+    state, profile = tasks[task]
+    # MUTATION: give the new fixture row profile 'claude-code' -> fails.
+    assert profile == BROWSER_PROFILE, f"task-browser is on {task}, a {profile!r} task, not {BROWSER_PROFILE!r}"
+    # MUTATION: make the new fixture row SUCCEEDED -> fails (a finished agent's browser is closed).
+    assert state == "RUNNING", f"task-browser is on {task}, which is {state}, not RUNNING"
+    # MUTATION: point the route at the browser task but leave it the fixture_task too -> fails.
+    assert task != _routes()["fixture_task"], "the live-browser task is not the ordinary fixture task"
+    # MUTATION: leave the fixture branch of loadLiveSession answering false for every id -> fails.
+    assert re.search(rf"'{re.escape(task)}'", _live_session_fixture()), (
+        f"the fixture branch of loadLiveSession never names {task}, so its Browser pane reads no live browser"
+    )
+
+
+def _live_session_fixture() -> str:
+    """The body of `loadLiveSession` in api.ts: its fixture branch names the one live task."""
+    text = _read(API_TS)
+    start = text.index("export async function loadLiveSession(")
+    return _balanced(text, text.index("{", text.index(")", start)), "{", "}")
 
 
 def test_route_ids_are_unique_file_name_safe_and_ready_selectors_are_set():
