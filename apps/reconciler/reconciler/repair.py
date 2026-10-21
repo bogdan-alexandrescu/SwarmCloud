@@ -54,6 +54,7 @@ from .backends import (
     NamespacedListing,
     Probe,
     ProbeOutcome,
+    cancel_refused_as_not_running,
     is_placeholder_execution_name,
 )
 from .checkpoints import CheckpointCollector, CheckpointStore
@@ -87,6 +88,7 @@ from .model import (
     LeaseView,
     TaskView,
     Termination,
+    as_datetime,
 )
 from .progress import assess
 from .startproblem import START_PROBLEM_STATES
@@ -120,6 +122,25 @@ HELD_PAST_TTL = "lease held past its TTL; capacity is not being returned"
 #: enough to page on and quiet enough that one stuck lease does not drown the
 #: log at the one-minute tick.
 HELD_ALERT_REPEAT_SECONDS = 3600
+
+#: The ERROR written ONCE, when an execution is first marked wedged (#1822):
+#: Cloud Run refuses to cancel it as "not running" yet never records it
+#: finished, and no unreleased lease names it. Four such executions
+#: (`swarm-job-eng-mock-5lrt8` and three more, since 2026-10-04) wrote ~11.5k
+#: ERRORs a day and 8 Cloud Run calls a minute, one kill a pass each, while
+#: holding no slot at all.
+WEDGED_EXECUTION = "cloud run will not cancel this execution and no lease holds it; backing off"
+#: The first retry of a wedged execution, doubled on every refusal after it.
+#: Five passes: long enough to stop the per-pass flood, short enough that an
+#: execution Cloud Run was only slow to settle is retried within minutes.
+WEDGED_BACKOFF_BASE_SECONDS = 300
+#: The longest a wedged execution waits between kills: four tries a day. Not
+#: longer, because the only cost of a try is one call and one INFO line, and a
+#: try is what notices the day Cloud Run finally records it finished.
+WEDGED_BACKOFF_CAP_SECONDS = 6 * 3600
+#: How long a wedged record outlives its next try, as `expires_at`, so a TTL
+#: policy on that field can retire the record of an execution nobody lists.
+WEDGED_RECORD_RETENTION = timedelta(days=7)
 
 #: The line written once per eviction -- a stuck attempt fenced, or a Job left
 #: running terminated -- so an operator can find every one with a single
@@ -352,6 +373,10 @@ class ReconcileReport:
     tasks_examined: int = 0
     leases_examined: int = 0
     executions_examined: int = 0
+    #: Executions under a `swarm-` job that carry no attempt id and are already
+    #: over -- mostly swarm-verify acceptance runs. Counted here, not logged one
+    #: by one: ~67k lines a day said nothing an operator could act on (#1822).
+    unattributed_finished: int = 0
     findings: int = 0
     #: Detected, then held back because what would prove them was unreadable.
     #: See SuppressedFinding. Zero on a healthy pass; anything else is a lease
@@ -400,6 +425,7 @@ class ReconcileReport:
             "tasks_examined": self.tasks_examined,
             "leases_examined": self.leases_examined,
             "executions_examined": self.executions_examined,
+            "unattributed_finished": self.unattributed_finished,
             "findings": self.findings,
             "findings_suppressed": self.findings_suppressed,
             "suppressed": [s.as_dict() for s in self.suppressed],
@@ -1046,6 +1072,10 @@ class Reconciler:
                     found = self._look_namespaced(backend, snapshot, sight, report)
                 else:
                     found = backend.list_executions()
+                    # Only the Cloud Run backend counts these; others have none.
+                    counted = getattr(backend, "unattributed_finished", 0)
+                    if isinstance(counted, int):
+                        report.unattributed_finished += counted
             except Exception as exc:
                 # A backend we cannot see is a backend we must not act on: with
                 # no execution list, every task there looks like a missing
@@ -1898,7 +1928,7 @@ class Reconciler:
         if finding.kind is FindingKind.LOST_AFTER_FINISH:
             return self._repair_lost_after_finish(finding, outcome)
         if finding.kind in _TERMINATE_ONLY:
-            return self._repair_left_running(finding, outcome, handles)
+            return self._repair_left_running(finding, outcome, handles, snapshot)
         if finding.kind in _FENCE_ONLY:
             return self._repair_stuck(finding, outcome)
         cannot_start = finding.kind is FindingKind.WORKER_CANNOT_START
@@ -1946,7 +1976,7 @@ class Reconciler:
         # for ten hours (#560). Nothing is fenced now that this pass cannot
         # also release and repair.
         proof_by_absence_of_a_start = False
-        if not self._terminate(finding, outcome, handles):
+        if not self._terminate(finding, outcome, handles, snapshot):
             remaining = self._never_started_wait(finding.lease_id, snapshot)
             if remaining is None or remaining > 0:
                 if remaining is not None:
@@ -2208,13 +2238,28 @@ class Reconciler:
         )
 
     def _terminate(
-        self, finding: Finding, outcome: RepairOutcome, handles: dict[str, Any]
+        self,
+        finding: Finding,
+        outcome: RepairOutcome,
+        handles: dict[str, Any],
+        snapshot: ControlSnapshot,
     ) -> bool:
         """Stop the finding's execution; True only when there is nothing left running.
 
         True, too, when there was nothing to stop. False means the caller must
         NOT go on to release anything: the kill was refused, failed, or not
-        confirmed, and `outcome` already says which.
+        confirmed, or is backing off, and `outcome` already says which.
+
+        AN EXECUTION CLOUD RUN WILL NOT CANCEL, THAT NO LEASE HOLDS, IS ASKED
+        LESS OFTEN (#1822). Cloud Run can refuse a cancel as "not running" and
+        still never record the execution finished; asking again every pass
+        changes nothing. When no unreleased lease names the execution, the
+        refusal is recorded (`ControlStore.record_wedged_execution`), ONE error
+        says so, and the kill is retried on a doubling backoff capped at
+        `WEDGED_BACKOFF_CAP_SECONDS`. Nothing is released either way: there is
+        no slot behind it. When a lease DOES name it, none of that applies and
+        every pass tries the kill and keeps the slot, as before: a lease is
+        only ever released on a confirmed stop (invariant 3).
         """
         if finding.execution is None or not finding.execution.is_active:
             return True
@@ -2223,12 +2268,28 @@ class Reconciler:
             outcome.skipped = "backend_unavailable"
             outcome.actions.append("did NOT release: backend unavailable to confirm the kill")
             return False
+        name = finding.execution.name
+        held = self._lease_names_execution(finding, snapshot)
+        wedged = None if held else self._wedged_record(name)
+        if wedged is not None:
+            next_try = as_datetime(wedged.get("next_try"))
+            if next_try is not None and snapshot.taken_at < next_try:
+                outcome.skipped = "wedged_backoff"
+                outcome.actions.append(
+                    f"did NOT terminate: Cloud Run has refused to cancel {name} "
+                    f"{int(wedged.get('refusals') or 0)} time(s) as not running; "
+                    f"next try at {next_try.isoformat()}"
+                )
+                return False
         try:
             outcome.terminated = bool(backend.terminate(finding.execution))
         except Exception as exc:
+            if not held and cancel_refused_as_not_running(exc):
+                if self._back_off_wedged(finding, wedged, exc, snapshot.taken_at, outcome):
+                    return False
             self._log.error(
                 "termination failed; NOT releasing the slot",
-                execution=finding.execution.name,
+                execution=name,
                 error=str(exc),
             )
             outcome.skipped = f"termination_failed: {exc}"
@@ -2238,8 +2299,132 @@ class Reconciler:
             outcome.skipped = "termination_unconfirmed"
             outcome.actions.append("did NOT release: termination was not confirmed")
             return False
-        outcome.actions.append(f"terminated {finding.execution.name}")
+        outcome.actions.append(f"terminated {name}")
+        if wedged is not None:
+            self._forget_wedged(name)
         return True
+
+    @staticmethod
+    def _lease_names_execution(finding: Finding, snapshot: ControlSnapshot) -> bool:
+        """Whether any unreleased lease could be this execution's.
+
+        Generous on purpose: the finding's own lease, a lease of the
+        execution's attempt, or a lease whose attempt records this execution's
+        name. Each answers yes, and yes keeps the kill on every pass.
+        """
+        if finding.lease_id:
+            return True
+        execution = finding.execution
+        if execution is None:
+            return False
+        for lease in snapshot.leases.values():
+            if lease.is_released:
+                continue
+            if execution.attempt_id and lease.attempt_id == execution.attempt_id:
+                return True
+            attempt = snapshot.attempts.get(lease.attempt_id)
+            if attempt is not None and attempt.execution_name == execution.name:
+                return True
+        return False
+
+    def _wedged_record(self, name: str) -> dict[str, Any] | None:
+        """The execution's wedged record, or None -- also when it cannot be read.
+
+        An unread record costs one extra kill this pass, which is what every
+        pass did before it existed; it never holds a kill back.
+        """
+        try:
+            return self._store.wedged_execution(name)
+        except Exception as exc:
+            self._log.warning(
+                "could not read the wedged-execution record; trying the kill",
+                execution=name,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+
+    def _back_off_wedged(
+        self,
+        finding: Finding,
+        previous: dict[str, Any] | None,
+        exc: Exception,
+        now: datetime,
+        outcome: RepairOutcome,
+    ) -> bool:
+        """Record one more "not running" refusal and when to try next.
+
+        False when the record could not be written: the caller then reports
+        the failed kill exactly as it did before records existed, and the next
+        pass tries again.
+        """
+        execution = finding.execution
+        if execution is None:
+            return False
+        refusals = int((previous or {}).get("refusals") or 0) + 1
+        delay = min(
+            WEDGED_BACKOFF_BASE_SECONDS * 2 ** (refusals - 1), WEDGED_BACKOFF_CAP_SECONDS
+        )
+        next_try = now + timedelta(seconds=delay)
+        why = " ".join(str(exc).split())[:300]
+        first_seen = as_datetime((previous or {}).get("first_seen")) or now
+        try:
+            self._store.record_wedged_execution(
+                execution.name,
+                {
+                    "backend": execution.backend,
+                    "task_id": execution.task_id,
+                    "attempt_id": execution.attempt_id,
+                    "first_seen": first_seen,
+                    "last_refused": now,
+                    "refusals": refusals,
+                    "next_try": next_try,
+                    "reason": why,
+                    "expires_at": next_try + WEDGED_RECORD_RETENTION,
+                },
+            )
+        except Exception as write_exc:
+            self._log.warning(
+                "could not record a wedged execution; it will be tried again next pass",
+                execution=execution.name,
+                error=f"{type(write_exc).__name__}: {write_exc}",
+            )
+            return False
+        if previous is None:
+            self._log.error(
+                WEDGED_EXECUTION,
+                execution=execution.name,
+                why=why,
+                task_id=execution.task_id,
+                attempt_id=execution.attempt_id,
+                next_try=next_try.isoformat(),
+            )
+        else:
+            self._log.info(
+                "cloud run still will not cancel a wedged execution; backing off",
+                execution=execution.name,
+                refusals=refusals,
+                first_seen=first_seen.isoformat(),
+                next_try=next_try.isoformat(),
+            )
+        outcome.skipped = f"execution_wedged: {why}"
+        outcome.actions.append(
+            f"did NOT terminate: Cloud Run refused to cancel it as not running "
+            f"({refusals} time(s)); no lease holds it; next try at {next_try.isoformat()}"
+        )
+        return True
+
+    def _forget_wedged(self, name: str) -> None:
+        """Drop the wedged record of an execution whose stop is now confirmed."""
+        try:
+            self._store.clear_wedged_execution(name)
+        except Exception as exc:
+            # A leftover record only delays the next kill of an execution that
+            # is already over; it holds no slot.
+            self._log.warning(
+                "could not clear a wedged-execution record",
+                execution=name,
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
     def _repair_stuck(self, finding: Finding, outcome: RepairOutcome) -> RepairOutcome:
         """Fence a stuck attempt, and leave the rest to the worker and the next pass.
@@ -2432,7 +2617,11 @@ class Reconciler:
         return outcome
 
     def _repair_left_running(
-        self, finding: Finding, outcome: RepairOutcome, handles: dict[str, Any]
+        self,
+        finding: Finding,
+        outcome: RepairOutcome,
+        handles: dict[str, Any],
+        snapshot: ControlSnapshot,
     ) -> RepairOutcome:
         """Terminate a Job whose task already finished; release only its own lease.
 
@@ -2454,7 +2643,7 @@ class Reconciler:
                 + (f" and release {finding.lease_id}" if finding.lease_id else "")
             )
             return outcome
-        if not self._terminate(finding, outcome, handles):
+        if not self._terminate(finding, outcome, handles, snapshot):
             return outcome
         # The Job's worker died with it, before its own `finally` could give
         # its account back, and with no fence here nothing else releases for
