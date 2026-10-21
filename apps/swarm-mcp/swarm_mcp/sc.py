@@ -1355,6 +1355,24 @@ def _quietly(read: Callable[[], dict[str, Any]]) -> dict[str, Any] | None:
         return None
 
 
+def cmd_build_board(client: SwarmClient, args, out) -> int:
+    """`sc build-board [--no-open]`: refresh this project's build board (#1773),
+    print its path and open it in the default browser. Read-only towards
+    SwarmCloud; a failed read leaves the previous page and exits 1."""
+    from . import buildboard
+
+    got = buildboard.refresh(client)
+    if "error" in got:
+        print(f"sc: {got['error']}", file=sys.stderr)
+        return EXIT_FAIL
+    out.write(f"{got['path']}\n")
+    if not getattr(args, "no_open", False):
+        why = buildboard.open_page(got["path"])
+        if why:
+            print(f"sc: {why}", file=sys.stderr)
+    return EXIT_OK
+
+
 def cmd_workflows(client: SwarmClient, args, out) -> int:
     if getattr(args, "session_start", False):
         # THE HOOK'S MODE: silent on everything but a running workflow. A
@@ -4802,6 +4820,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the plugin's SessionStart hook output, and nothing when none run or on failure",
     )
     wf.set_defaults(func=cmd_workflows)
+
+    bb = sub.add_parser(
+        "build-board",
+        help="refresh this project's build board (.claude/build-board/index.html) and open it",
+    )
+    _common(bb, root=False)
+    bb.add_argument("--no-open", action="store_true", help="refresh and print the path; open nothing")
+    bb.set_defaults(func=cmd_build_board)
 
     # -- which deployment, and who you are on it -------------------------
     li = sub.add_parser(
