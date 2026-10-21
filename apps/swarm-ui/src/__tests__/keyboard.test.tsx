@@ -41,7 +41,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import STYLES from '../styles.css?raw'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { act, createEvent, fireEvent, render } from '@testing-library/react'
 
 import { App, SECTIONS } from '../App'
@@ -339,7 +339,27 @@ describe('keyboard traversal', () => {
     expect(POINTERS.length, 'the sheet parsed into almost no cursor rules').toBeGreaterThan(20)
   })
 
-  it('reaches every control on every route, and nothing swallows Tab', async () => {
+  /**
+   * A SWEEP THAT OUTLIVES ITS TEST IS STOPPED BEFORE THE NEXT ONE STARTS.
+   *
+   * A test that times out is abandoned, not cancelled: its body keeps
+   * rendering routes and advancing the shared fake clock. On 2026-10-19 (16:42Z
+   * and 23:34Z, #1822) the sweep crossed its limit on a busy runner and the
+   * drawer test after it found "no rows" in a DOM the sweep was still
+   * rendering into. So the sweep checks `sweepStopped` between routes, and
+   * this hook sets it and waits until the sweep has really returned: the next
+   * test starts on an empty page whatever the sweep's own outcome, and a sweep
+   * timeout is reported as itself.
+   */
+  let sweepStopped = false
+  let sweepRun: Promise<void> = Promise.resolve()
+  afterEach(async () => {
+    sweepStopped = true
+    // The sweep's own failure is reported by its own test, not again here.
+    await sweepRun.catch(() => undefined)
+  }, 120_000)
+
+  async function sweepEveryRoute(): Promise<void> {
     const per: { route: string; stops: number; helps: number; elements: number }[] = []
     const findings: Finding[] = []
     const unsupported = new Set<string>()
@@ -351,9 +371,14 @@ describe('keyboard traversal', () => {
     let helps = 0
 
     for (const route of ROUTES) {
+      if (sweepStopped) return
       window.location.hash = `#${route}`
       const { container, unmount } = render(<App />)
       await settle()
+      if (sweepStopped) {
+        unmount()
+        return
+      }
 
       // A screen's own `<style>` element and the cursors in it. Overview
       // shipped one (`OVERVIEW_CSS`) until U8 folded it into styles.css, where
@@ -521,7 +546,14 @@ describe('keyboard traversal', () => {
     // 4/4 of CI run 39342685547, whose sweep renders the same fifteen routes.
     // 240s was 76% of the idle cost, so any busy runner crossed it, and the
     // abandoned sweep kept rendering into the next test, which then found no
-    // agent rows. A genuine hang still fails, at eight minutes.
+    // agent rows (the hook above now stops it). A genuine hang still fails,
+    // at eight minutes.
+  }
+
+  it('reaches every control on every route, and nothing swallows Tab', async () => {
+    sweepStopped = false
+    sweepRun = sweepEveryRoute()
+    await sweepRun
   }, 480_000)
 
   /**
