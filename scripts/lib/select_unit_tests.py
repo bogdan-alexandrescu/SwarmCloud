@@ -14,9 +14,14 @@ miss is a red main, never an untested release.
 
 WHAT IT SELECTS, for a change it can reason about:
 
+  * the repository-wide guard set, ALWAYS, whatever changed: changed-guards.sh's
+    GUARD_TESTS array, read from that script (guard_tests) so the list lives
+    once. Whole-tree tests no changed path names went unrun on pull requests
+    and turned main red (test_collection_stays_cheap for 19 commits,
+    test_awaiting_input_readers for 6; CI-GUARDS-ALWAYS, part of #1822);
   * everything `scripts/changed-guards.sh --list` selects for the same paths:
-    the repository-wide guard set and every test whose text names a changed
-    path (--guards: that list, read from a file the caller wrote);
+    the guard set and every test whose text names a changed path (--guards:
+    that list, read from a file the caller wrote);
   * every test file that imports, directly or through any chain of other
     modules under apps/, scripts/ and tests/unit, a changed Python module;
   * every test whose text names a changed path the way a test builds one: its
@@ -235,6 +240,24 @@ def script_closure(root: Path, changed: list[str]) -> list[str]:
     return out
 
 
+# Where the one guard list lives (CI-GUARDS-ALWAYS). A bash array of one
+# path a line; lanes run it through changed-guards.sh, pull requests here.
+GUARD_SCRIPT = "scripts/changed-guards.sh"
+
+
+def guard_tests(root: Path, array: str = "GUARD_TESTS") -> list[str] | None:
+    """The test files in GUARD_SCRIPT's `array`: [] when the tree has no such
+    script, None when it has one this cannot read the array from."""
+    path = root / GUARD_SCRIPT
+    if not path.is_file():
+        return []
+    found = re.search(rf"^{re.escape(array)}=\(\n(.*?)^\)", path.read_text(errors="replace"), re.M | re.S)
+    if not found:
+        return None
+    names = [line.split("#", 1)[0].strip() for line in found.group(1).splitlines()]
+    return [n for n in names if n]
+
+
 def is_test(rel: str) -> bool:
     name = rel.rsplit("/", 1)[-1]
     return name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py"))
@@ -255,6 +278,10 @@ def select(root: Path, changed: list[str], guards: list[str] | None = None) -> d
     all_tests = sorted(str(p.relative_to(root)) for p in _python_files(root, "tests/unit") if is_test(str(p.relative_to(root))))
     if not all_tests:
         return {"python": "all", "areas": "", "tests": [], "why": "no test file under tests/unit: the checkout is not the repository"}
+    always = guard_tests(root)
+    if always is None:
+        return {"python": "all", "areas": "", "tests": [],
+                "why": f"no GUARD_TESTS array could be read from {GUARD_SCRIPT}: the guard set is unknown"}
     chosen: set[str] = set()
     # The change's own test files.
     chosen.update(c for c in changed if c in all_tests)
@@ -269,16 +296,17 @@ def select(root: Path, changed: list[str], guards: list[str] | None = None) -> d
         text = (root / t).read_text(errors="replace")
         if any(names_path(text, p) for p in virtual):
             chosen.add(t)
-    # changed-guards.sh's selection: its guard set and its own text readers.
+    # The guard set, always, and changed-guards.sh's selection: its guard set
+    # and its own text readers.
     unknown = []
-    for g in guards or []:
+    for g in [*always, *(guards or [])]:
         if g in all_tests:
             chosen.add(g)
         else:
             unknown.append(g)
     if unknown:
         return {"python": "all", "areas": "", "tests": [],
-                "why": f"changed-guards.sh selected {len(unknown)} file(s) that are not unit tests here: {unknown[0]}"}
+                "why": f"changed-guards.sh names {len(unknown)} file(s) that are not unit tests here: {unknown[0]}"}
     if len(chosen) >= FULL_FRACTION * len(all_tests):
         return {"python": "all", "areas": "", "tests": [],
                 "why": f"the change reaches {len(chosen)} of {len(all_tests)} test files; running all of them costs little more"}

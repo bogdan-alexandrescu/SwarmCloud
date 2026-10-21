@@ -3727,9 +3727,12 @@ whose change reaches beyond `docs/` and `apps/swarm-ui/` (`python=all`), the
 the files [`scripts/lib/select_unit_tests.py`](../scripts/lib/select_unit_tests.py)
 says the change reaches, which are
 
+* the repository-wide guard set, **always, whatever changed**: the
+  `GUARD_TESTS` array in `scripts/changed-guards.sh`, which the selector reads
+  from that file rather than keeping a copy ([below](#a-miss-costs-a-red-main-so-the-whole-tree-tests-always-run));
 * everything `scripts/changed-guards.sh --list` selects for the same diff --
-  the repository-wide guard set and every test whose text names a changed
-  path, the same selection a SwarmCloud agent runs before it finishes;
+  that guard set and every test whose text names a changed path, the same
+  selection a SwarmCloud agent runs before it finishes;
 * every test that imports a changed module through any chain of imports under
   `apps/`, `scripts/` and `tests/unit` (relative imports resolved; a changed
   `__init__.py` reaches every importer of its package);
@@ -3755,6 +3758,38 @@ merge-train run and a queue entry pass the diff's `python=all` straight
 through and run every file, and main reuses unit shards only from a run of the
 whole suite. `lock / contract / format / bridge install` still runs on a
 selected pull request.
+
+### A miss costs a red main, so the whole-tree tests always run
+
+**CI-GUARDS-ALWAYS (part of #1822, 2026-10-21).** Main's own CI was red on 78
+of 231 merged commits (34%) in the 72 h to 2026-10-21, and 14 of 32 failed
+releases were "CI never built" a red main's commit. The two longest
+test-caused streaks were tests no changed path names, because they read the
+whole tree: `test_collection_stays_cheap` imports every module in
+`tests/unit/scripts` (19 commits red, 2026-10-20 03:11-06:54Z, until PR 1705),
+and `test_awaiting_input_readers` walks `apps/` and `scripts/` for every
+reader of `HUMAN_REQUIRED` (6 commits, 2026-10-19 06:47-07:30Z). A diff that
+adds a module or a reader breaks them without naming them, so selection by
+path never ran them.
+
+So every selected pull request runs `GUARD_TESTS` from
+[`scripts/changed-guards.sh`](../scripts/changed-guards.sh) whatever it
+changed, a docs-only one included (a lane's docs-only run still narrows to
+`DOC_GUARD_TESTS`). The list is kept **once**, in that script:
+`select_unit_tests.py`'s `guard_tests()` reads the array from it, a list it
+cannot read or a guard that no longer exists runs the whole suite, and
+`tests/unit/scripts/test_select_unit_tests.py` holds the two equal. It holds,
+besides #642's docs guards, UI route seam and `test_specsign_covers`, the
+whole-tree tests -- files that walk `apps/`, `tests/` or `docs/` and assert
+over every file -- of at most 10 CI-seconds each:
+`test_collection_stays_cheap`, `test_awaiting_input_readers`,
+`test_artifacts_read_path`, `test_declared_dependencies`,
+`test_spec_signing_every_submitter`, `test_mcp_admission`,
+`test_helpers_import_by_unique_name` and `test_docs_agent_vocabulary`. Every
+pull request and every lane pays for the set, which is why the bound: a
+heavier whole-tree file (`test_state_colour_discriminability`, 34.7 s;
+`test_docs_cite_worker_symbols`, 26.0 s; `test_unit_shards`, 25.5 s) is left
+to main's push run. Add a whole-tree test to `GUARD_TESTS` when you write one.
 
 ## A pull request scans the images it builds
 
@@ -4412,8 +4447,10 @@ and the contract-parity script (#591, #611, #614; issue #642). Those tests read
 source and docs **as text**, so an import graph does not find them; their text
 naming the changed file does.
 
-**What it selects.** For a non-empty diff: the fixed guard set (always, but only
-its two doc guards for a docs-only diff, below), every
+**What it selects.** For a non-empty diff: the fixed guard set (`GUARD_TESTS`,
+which pull-request CI also runs on every pull request,
+[above](#a-miss-costs-a-red-main-so-the-whole-tree-tests-always-run); always,
+but only its doc guards for a docs-only diff, below), every
 changed `tests/unit/**/test_*.py`, and every `tests/unit/**/test_*.py` whose
 text names a changed path by repo-relative path or basename. A generic basename
 (`__init__.py`, `package.json`, …) selects by full path only, or it would pick
@@ -4428,10 +4465,12 @@ rather than reading as an empty diff.
 **A docs-only change selects only the doc guards** (GUARDS-DEDUP, part of
 #1694). Docs-only lanes spent 44-50 min in guards on 2026-10-19/20. When every
 changed path is under `docs/` or ends in `.md`, the script selects
-`test_docs_describe_what_was_built`, `test_docs_spec_amendments` and the tests
+`DOC_GUARD_TESTS` -- `test_docs_describe_what_was_built`,
+`test_docs_spec_amendments` and `test_docs_agent_vocabulary` -- and the tests
 whose text names a changed doc, and runs no contract-parity check. The UI route
-seam and `test_specsign_covers` read source, not docs, and the parity check
-skips `.md` files outright, so none of them can go red on a doc change. A doc
+seam, `test_specsign_covers` and the other whole-tree guards read source, not
+docs, and the parity check skips `.md` files outright, so none of them can go
+red on a doc change. A doc
 beside any other path keeps the whole guard set.
 
 **The worker does not run it again on the same tree** (GUARDS-DEDUP). The
