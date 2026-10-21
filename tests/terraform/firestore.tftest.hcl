@@ -567,3 +567,89 @@ run "workspace_roles_have_their_indexes" {
     error_message = "admin_audit needs (target_tenant_id, at DESC) for a workspace's audit list, newest first"
   }
 }
+
+# #1818 (owner's option b, 2026-10-21): the platform database gets Firestore's
+# managed daily backup, kept 7 days -- the point-in-time window, so an
+# offboarded tenant's documents outlive it no longer than they already did. A
+# backup outlives a deleted database; point-in-time versions do not. The
+# disposable bench database gets none.
+run "the_platform_database_has_a_daily_backup_kept_7_days" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    bench_database_id = "swarm-bench"
+  }
+
+  # MUTATION: delete backups.tf, or set daily_backup's default to false -> red.
+  assert {
+    condition     = length(google_firestore_backup_schedule.daily) == 1
+    error_message = "the platform database must have exactly one daily backup schedule (#1818)"
+  }
+
+  # MUTATION: point the schedule at google_firestore_database.bench[0].name -> red.
+  assert {
+    condition     = google_firestore_backup_schedule.daily[0].database == google_firestore_database.this.name && google_firestore_backup_schedule.daily[0].database == "swarm"
+    error_message = "the schedule belongs to the platform database `swarm`"
+  }
+
+  # MUTATION: add a schedule on the bench database -> red.
+  assert {
+    condition     = alltrue([for s in google_firestore_backup_schedule.daily : s.database != "swarm-bench"])
+    error_message = "the bench database is disposable and gets no backup"
+  }
+
+  # MUTATION: default backup_retention to "8467200s" (14 weeks) -> red.
+  assert {
+    condition     = google_firestore_backup_schedule.daily[0].retention == "604800s"
+    error_message = "backups are kept 7 days, the point-in-time window (#1818 option b)"
+  }
+
+  # MUTATION: replace daily_recurrence {} with weekly_recurrence -> red.
+  assert {
+    condition     = length(google_firestore_backup_schedule.daily[0].daily_recurrence) == 1 && length(google_firestore_backup_schedule.daily[0].weekly_recurrence) == 0
+    error_message = "the schedule is daily, so a deleted database loses at most 24 h"
+  }
+
+  # MUTATION: default delete_protection to false -> red.
+  assert {
+    condition     = google_firestore_database.this.delete_protection_state == "DELETE_PROTECTION_ENABLED"
+    error_message = "delete protection is on for the platform database (#1818)"
+  }
+}
+
+run "a_module_instance_with_backups_off_gets_no_schedule" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    daily_backup = false
+  }
+
+  # MUTATION: drop the count on google_firestore_backup_schedule.daily -> red.
+  assert {
+    condition     = length(google_firestore_backup_schedule.daily) == 0
+    error_message = "daily_backup = false must create no schedule"
+  }
+}
+
+run "a_backup_retention_over_14_weeks_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    backup_retention = "8467201s"
+  }
+
+  # MUTATION: drop the <= 8467200s validation -> red (Firestore's maximum, 14 weeks).
+  expect_failures = [var.backup_retention]
+}
