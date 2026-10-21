@@ -262,10 +262,12 @@ describe('QA-042: the two help links on Platform counts read as two', () => {
     expect(first.closest('.counts-help')).not.toBeNull()
     // MUTATION: drop the `.counts-help a + a` rule: the links sit 8px apart,
     // both underlined, and read as one phrase.
-    expect(painted(second, 'border-left-style', WIDE)).toBe('solid')
-    expect(painted(second, 'border-left-width', WIDE)).toBe('1px')
-    expect(painted(second, 'padding-left', WIDE)).toBe('var(--ctl-s2)')
-    expect(painted(first, 'border-left-style', WIDE)).toBeNull()
+    // The rule is the link's `::before`, in the gap, since visual QA run 3
+    // (admin-010; shell.qafix3.test.tsx holds where it is clipped).
+    expect(painted(second, 'border-left-style', WIDE, 'before')).toBe('solid')
+    expect(painted(second, 'border-left-width', WIDE, 'before')).toBe('1px')
+    expect(painted(second, 'content', WIDE, 'before')).toBe("''")
+    expect(painted(first, 'border-left-style', WIDE, 'before')).toBeNull()
   })
 })
 

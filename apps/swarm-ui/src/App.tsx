@@ -2312,14 +2312,18 @@ function RouteRow({ probe, now }: { probe: ProbeRecord; now: number }) {
         {/* THE CONCRETE CALL, in the raw-id slot under the readable name
             (§6.7). A route is a template now (CH-18) -- one row for every
             task's attempts read -- so this is how a reader still finds WHICH
-            task's read the outcome beside it belongs to. Always drawn, as the
-            slot always is: the name and the id, never one.
+            task's read the outcome beside it belongs to.
             CUT BELOW 900px, WHOLE IN ITS TITLE (CH-13): the route cell is the
             held column, which has a ceiling, and a checkpoint file's URL is
-            110 characters -- one line, ellipsized, rather than six. */}
-        <span className="ctl-sub" title={probe.lastUrl}>
-          {probe.lastUrl}
-        </span>
+            110 characters -- one line, ellipsized, rather than six.
+            ONLY WHERE IT SAYS SOMETHING (visual QA run 3, capacity-015, part
+            of #1680): a call with no id and no query is its route, and the
+            row printed `/v1/capacity` over `/v1/capacity`. */}
+        {probe.lastUrl !== probe.path && (
+          <span className="ctl-sub" title={probe.lastUrl}>
+            {probe.lastUrl}
+          </span>
+        )}
       </th>
       <td role="cell" data-label="Last attempt">{timeAgo(probe.lastAttemptAt, now)}</td>
       <td role="cell" data-label="Outcome">

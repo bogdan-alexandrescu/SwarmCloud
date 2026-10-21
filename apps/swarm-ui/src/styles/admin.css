@@ -483,12 +483,33 @@
    read as one phrase. A hairline rule between them parts them without
    putting a character inside either link's name, as a `::before` `·` would.
    Scoped to this page's footer: `HelpLinks` (HelpCard.tsx) draws every
-   screen's, and the shared fix is asked in the PR. */
-.counts-help a + a {
+   screen's, and the shared fix is asked in the PR.
+   THE RULE IS IN THE GAP, AND CLIPPED WHERE THE LINK WRAPS (visual QA run 3,
+   admin-010, part of #1680). As the link's own left border it went with the
+   link onto line two at 390 and stood alone at the line's start. Drawn 5px
+   before the link, in the row's 8px gap, it parts two links on one line; a
+   link that starts a line sits 4px inside `.counts-help`'s clip, which puts
+   its rule at -1px, outside it. The 4px is room for a link's focus ring,
+   handed back by the negative margin. */
+.counts-help {
+  overflow: hidden;
+  padding-right: 4px;
+  padding-bottom: 4px;
+  padding-left: 4px;
+  margin-right: -4px;
+  margin-bottom: -4px;
+  margin-left: -4px;
+}
+.counts-help a + a { position: relative; }
+.counts-help a + a::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
   border-left-width: 1px;
   border-left-style: solid;
   border-left-color: var(--line);
-  padding-left: var(--ctl-s2);
 }
 .counts-notrun .ctl-card-body { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--text-dim); font-size: var(--t-meta); }
 

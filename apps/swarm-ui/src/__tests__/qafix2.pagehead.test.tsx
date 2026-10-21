@@ -132,6 +132,9 @@ describe('capacity/api-reads', () => {
   it('capacity-004: stacks into labelled records at the phone breakpoint, like every Capacity table', async () => {
     media(true)
     noteFixtureProbe(route('/v1/tenants/me', {}), 40, true)
+    // A call with an id, so the row draws its URL line: a call that is its
+    // route draws none (visual QA run 3, capacity-015).
+    noteFixtureProbe(route('/v1/tasks/{id}/checkpoints', { id: 'task_b40e5a1c' }), 40, true)
     window.history.replaceState(null, '', '/capacity/api-reads')
     render(<App />)
     const table = await waitFor(() => {

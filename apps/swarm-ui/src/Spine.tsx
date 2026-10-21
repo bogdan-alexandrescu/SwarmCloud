@@ -1968,12 +1968,24 @@ export function SkyShell({
             scroller reserves can stop that mid-page; the header is already
             on screen whenever `Top` is (compacted to 36px by then), so here
             it covers nothing and costs no chrome. Last in the row, after the
-            tags; the title gives way first. */}
-        {scroll === 'far' && (
-          <button type="button" className="sk-top" onClick={toTop} aria-label="Back to the top of the page">
-            &#8593; Top
-          </button>
-        )}
+            tags; the title gives way first.
+
+            ITS PLACE IS HELD FROM THE FIRST FRAME (visual QA run 3,
+            work-b-007, part of #1680). Mounted only once the page was far
+            down, it pushed the tags beside it about 60px left as it arrived.
+            The same button is always in the row now, `is-idle` until then:
+            `visibility: hidden` keeps its width and takes it out of sight,
+            out of the tab order and out of the accessibility tree. */}
+        <button
+          type="button"
+          className={scroll === 'far' ? 'sk-top' : 'sk-top is-idle'}
+          onClick={toTop}
+          aria-label="Back to the top of the page"
+          aria-hidden={scroll === 'far' ? undefined : true}
+          tabIndex={scroll === 'far' ? undefined : -1}
+        >
+          &#8593; Top
+        </button>
       </header>
       {drawer && <div className="sk-scrim" onClick={() => setDrawer(false)} aria-hidden />}
       {/* THE DRAWER IS A DIALOG TO ASSISTIVE TECHNOLOGY TOO (CH-12), as it
@@ -2421,8 +2433,32 @@ function TenantPicker({
  * (`onJump`): the hash goes on the address and focus moves to the section.
  */
 function PhoneJumps({ onJump }: { onJump: (id: string) => void }) {
+  // THE ROW SAYS IT SCROLLS (visual QA run 3, ffp-001, part of #1680). Its
+  // scrollbar is hidden, so a row cut at the glass edge read as complete and
+  // Recent failures, fifth of eight, was never seen. Each side that has more
+  // chips past it is marked and fades (`.sk-otp.is-more-end`, styles.css),
+  // read on every scroll and resize; a row that fits is marked on neither.
+  const rowRef = useRef<HTMLElement | null>(null)
+  const [more, setMore] = useState({ start: false, end: false })
+  useEffect(() => {
+    const row = rowRef.current
+    if (row === null) return
+    const read = () => {
+      const start = row.scrollLeft > 1
+      const end = row.scrollLeft + row.clientWidth < row.scrollWidth - 1
+      setMore((m) => (m.start === start && m.end === end ? m : { start, end }))
+    }
+    read()
+    row.addEventListener('scroll', read, { passive: true })
+    window.addEventListener('resize', read)
+    return () => {
+      row.removeEventListener('scroll', read)
+      window.removeEventListener('resize', read)
+    }
+  }, [])
+  const cls = `sk-otp${more.start ? ' is-more-start' : ''}${more.end ? ' is-more-end' : ''}`
   return (
-    <nav className="sk-otp" aria-label="On this page">
+    <nav className={cls} aria-label="On this page" ref={rowRef}>
       {OVERVIEW_JUMPS.map((j) => (
         <a
           key={j.id}
