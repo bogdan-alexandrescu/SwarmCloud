@@ -283,6 +283,17 @@ def current(db: Any) -> SizeVersion:
     return SizeVersion(number, table, number, **stamp)
 
 
+def current_or_defaults(db: Any | None) -> SizeVersion:
+    """`current(db)`, or the code defaults (version 0) for a caller with no
+    store: the offline smoke matrix builds `/v1/runtimes` by calling the route
+    with a context that carries settings and no database
+    (tests/integration/test_smoke_backend_matrix.py), and the catalogue it
+    reads there is the code's."""
+    if db is None:
+        return SizeVersion(0, default_sizes(), 0)
+    return current(db)
+
+
 def current_sizes(db: Any) -> Mapping[str, ResourceSize]:
     """The table in effect, for a reader that needs only the sizes."""
     return current(db).sizes

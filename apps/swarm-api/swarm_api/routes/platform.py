@@ -217,7 +217,7 @@ def runtimes(
     §4.7): the two documents `/v1/resource-classes` reads.
     """
     class_models = ctx.settings.worker_class_models
-    setting = runnersizes.current(ctx.db)
+    setting = runnersizes.current_or_defaults(getattr(ctx, "db", None))
     # EVERY profile, including disabled ones, each carrying its own
     # `available` flag and reason. A caller reading a task that names `codex`
     # still needs its image, backend and resource class to render that task;
