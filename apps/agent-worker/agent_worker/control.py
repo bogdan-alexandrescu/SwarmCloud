@@ -111,6 +111,7 @@ from .errors import (
     TenantMismatchError,
 )
 from .hardening import PROTECTED
+from .logs import submitter_service
 from .quota import UNKNOWN_WAIT_SECONDS
 from .startup import StartupInterrupted
 from .statecall import new_request_id
@@ -697,6 +698,11 @@ class ControlPlane:
         # make it. See `_heartbeat_deadline`.
         self._heartbeat_interval = heartbeat_interval_seconds
         self._lease_released = False
+        # The task's `submitted_by`, as the last task read this attempt made
+        # served it (`fetch_task`; `state/open` on the routes). Kept only so
+        # the `generation_fenced` line can name a service submitter
+        # (`_fence_fields`): no read is made for it. Never logged as it is.
+        self._submitted_by: Any = None
         # `retry` and `timeout` for every Firestore call a worker makes before
         # its runner exists, applied inside `startup_budget()`. The entrypoint
         # supplies a bounded budget (`__main__.firestore_startup_call_options`).
@@ -864,9 +870,11 @@ class ControlPlane:
         snap = self._task_ref().get(**self.call_options("poll"))
         if not snap.exists:
             raise FencedError(self.generation, -1, "task document no longer exists")
-        return self._assert_tenant(
+        task = self._assert_tenant(
             snap.to_dict() or {}, kind="task", document_id=self.task_id
         )
+        self._submitted_by = task.get("submitted_by")
+        return task
 
     def fetch_task_snapshot(self) -> tuple[dict[str, Any], Any]:
         """`fetch_task`, and beside the dict the snapshot's Firestore `create_time`.
@@ -880,6 +888,7 @@ class ControlPlane:
         if not snap.exists:
             raise FencedError(self.generation, -1, "task document no longer exists")
         doc = self._assert_tenant(snap.to_dict() or {}, kind="task", document_id=self.task_id)
+        self._submitted_by = doc.get("submitted_by")
         return doc, getattr(snap, "create_time", None)
 
     def fetch_attempt(self, attempt_id: str) -> dict[str, Any] | None:
@@ -1277,7 +1286,25 @@ class ControlPlane:
         # A retry after a DEADLINE_EXCEEDED that had landed rewrites the same
         # event id with the same bytes, so the read budget's predicate is safe.
         ref.set(document, **self.call_options("event"))
-        self._log.info("event", event_type=event_type.value, detail=document["detail"])
+        self._log.info("event", event_type=event_type.value, detail=document["detail"],
+                       **self._fence_fields(event_type))
+
+    def _fence_fields(self, event_type: EventType) -> dict[str, Any]:
+        """`submitter_service` for a `generation_fenced` event line, else nothing.
+
+        The log-based metric behind the generation-fencing alert extracts it,
+        and the alert drops the submitters in `fencing_alert_excluded_submitters`
+        (terraform/modules/monitoring): verify-remote fences on purpose, but it
+        submits as `eng`, so a tenant filter could not drop its fences without
+        hiding eng's real ones (FENCE-SUBMITTER, part of #1822). A service
+        account's short name or `person`, never an address
+        (`logs.submitter_service`). Only the fence's line carries it: nothing
+        else reads it.
+        """
+        if event_type is not EventType.GENERATION_FENCED:
+            return {}
+        name = submitter_service(self._submitted_by)
+        return {} if name is None else {"submitter_service": name}
 
     # -- state transitions -------------------------------------------------
     def _current_state(self) -> TaskState:
@@ -2569,6 +2596,7 @@ class RemoteControlPlane(ControlPlane):
         if lease is not None:
             self._assert_tenant(lease, kind="lease", document_id=self.lease_id)
         self._task = task
+        self._submitted_by = task.get("submitted_by")
         self._absorb_fence(answer.get("fence"))
         self._lease = lease
         own = _instants(answer.get("attempt"), _ATTEMPT_INSTANTS)
@@ -2796,7 +2824,8 @@ class RemoteControlPlane(ControlPlane):
         event_id = new_id("evt")
         self._post("event", {"event_id": event_id, "type": event_type.value,
                              "detail": detail or {}}, call="event")
-        self._log.info("event", event_type=event_type.value, detail=detail or {})
+        self._log.info("event", event_type=event_type.value, detail=detail or {},
+                       **self._fence_fields(event_type))
 
     # -- state transitions -------------------------------------------------------
 

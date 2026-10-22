@@ -245,6 +245,12 @@ resource "google_monitoring_alert_policy" "generation_fenced" {
       # verify-remote's own. Filtered on the metric's tenant_id label
       # (metrics.tf, EXTRACT(jsonPayload.labels.tenant_id)) so a real race in
       # any other tenant still fires.
+      #
+      # And on its submitter_service label (FENCE-SUBMITTER, part of #1822):
+      # verify-remote submits as eng, so its fences carry eng's tenant id
+      # (eng 347, smoke 57 over the 7 days measured 2026-10-22), and only the
+      # submitter tells them from eng's real races. A fence whose line names
+      # no submitter has an empty label and is still counted.
       filter = join(" AND ", concat(
         [
           "resource.type = \"cloud_run_job\"",
@@ -252,6 +258,9 @@ resource "google_monitoring_alert_policy" "generation_fenced" {
         ],
         length(var.fencing_alert_excluded_tenants) == 0 ? [] : [
           "NOT metric.label.tenant_id = one_of(${join(", ", [for t in var.fencing_alert_excluded_tenants : "\"${t}\""])})",
+        ],
+        length(var.fencing_alert_excluded_submitters) == 0 ? [] : [
+          "NOT metric.label.submitter_service = one_of(${join(", ", [for s in var.fencing_alert_excluded_submitters : "\"${s}\""])})",
         ],
       ))
 

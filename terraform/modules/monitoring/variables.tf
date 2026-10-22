@@ -120,6 +120,28 @@ variable "fencing_alert_excluded_tenants" {
   }
 }
 
+variable "fencing_alert_excluded_submitters" {
+  description = <<-EOT
+    Service accounts, by short name, whose generation_fenced events the
+    generation-fencing policy does not count. The worker writes the
+    submitter's short name on the fence's line (`swarm-verify` for
+    swarm-verify@<project>.iam.gserviceaccount.com; `person` for anyone
+    else, never an address) and the metric extracts it as submitter_service.
+    `swarm-verify` because verify-remote's race and concurrency tests fence
+    on purpose but submit as eng: over the 7 days measured 2026-10-22 eng had
+    347 fences and smoke 57, so no tenant filter could drop them without
+    hiding eng's real ones (FENCE-SUBMITTER, part of #1822).
+    The metric still counts them; only the alert ignores them.
+  EOT
+  type        = list(string)
+  default     = ["swarm-verify"]
+
+  validation {
+    condition     = alltrue([for s in var.fencing_alert_excluded_submitters : can(regex("^[a-z0-9-]+$", s))])
+    error_message = "fencing_alert_excluded_submitters are service-account short names, [a-z0-9-] only: each is written into a Monitoring filter unescaped."
+  }
+}
+
 variable "error_rate_threshold" {
   description = "5xx responses per second, averaged over the alert window, before the API is considered unhealthy."
   type        = number

@@ -62,6 +62,13 @@ locals {
       description = "A worker found its fencing generation stale and exited without running the agent (CONTRACT.md invariant 5). A nonzero rate means two attempts raced."
       labels = {
         tenant_id = "EXTRACT(jsonPayload.labels.tenant_id)"
+        # Who submitted the fenced task: a service account's short name
+        # (`swarm-verify`) or `person`, NEVER an address
+        # (agent_worker.logs.submitter_service). A per-call field, so top
+        # level. It exists because verify-remote fences on purpose but
+        # submits as eng (eng 347, smoke 57 over 7 days, 2026-10-22), and
+        # the alert excludes it by submitter (fencing_alert_excluded_submitters).
+        submitter_service = "EXTRACT(jsonPayload.submitter_service)"
       }
     }
     "quota_exhausted" = {
