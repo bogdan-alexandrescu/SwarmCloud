@@ -141,6 +141,14 @@ def test_the_type_is_available_because_its_file_exists() -> None:
     assert schedulefire.load_executor(entry) is visual_qa
 
 
+def test_its_caps_are_the_owners_after_the_first_measured_run() -> None:
+    # QA run 5b (wf_025ae735511546d99eff: 17 steps, 362 screenshots) cost $23.62,
+    # 94% of the provisional $25; BGD set 40 / 80 / 1 on 2026-10-22 (VQ7-CAPS, #1933).
+    # MUTATION: restore the provisional per_run_usd=25, per_day_usd=50 and this fails.
+    caps = scheduletypes.budget_caps(scheduletypes.get(TYPE))
+    assert (caps.per_run_usd, caps.per_day_usd, caps.max_concurrent) == (40, 80, 1)
+
+
 def test_it_files_issues_and_never_merges_or_pushes() -> None:
     entry = scheduletypes.get(TYPE)
     # §6: "No merge gate exists to set: it files issues and changes no code."

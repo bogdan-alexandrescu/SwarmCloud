@@ -33,7 +33,8 @@ after a hand-off park, the worker's summary of the earlier attempts'
 hand-offs, `$SWARM_HANDOFF/resumed.md`, follows the caller's prompt
 (`resume_summary`; RESUME-PROGRESS), and on an attempt whose proxied browser
 has no egress, `$SWARM_HANDOFF/egress.md` says so (`egress_notice`;
-EGRESS-GATE). Nothing else crosses. The credential is the tenant's secret, or a pool
+EGRESS-GATE), as `$SWARM_HANDOFF/qa-target.md` says why the gate could not
+sign the agent in to its QA target (`qa_target_notice`; VQ4-WIRE). Nothing else crosses. The credential is the tenant's secret, or a pool
 account's OAuth token when the attempt holds an account, and it is passed in
 exactly one variable: `ANTHROPIC_API_KEY` (metered API access) or
 `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription token from
@@ -278,6 +279,7 @@ from ..jevkey import KEY_FILE_ENV as JEV_KEY_FILE_ENV
 from ..logs import StructuredLogger
 from ..qa_identity import NOTICE_NAME as _QA_NOTICE_NAME
 from ..qa_identity import requested as qa_identity_requested
+from ..qa_target import NOTICE_NAME as QA_TARGET_NOTICE_NAME
 from .base import RunnerContext, RunnerFailure, run_runner
 from ..livegate.presets import PRESETS as DEVICE_PRESETS
 from .cliagent import CliAgentSpec, agent_working_directory, cli_stream_files, run_cli_agent
@@ -635,6 +637,15 @@ def egress_notice(spool: str) -> str | None:
     no egress (`handoff.EGRESS_NOTICE_NAME`, written by `HandoffPath.prepare`
     before this runner starts, and absent otherwise), or None."""
     return _spool_text(spool, EGRESS_NOTICE_NAME)
+
+
+def qa_target_notice(spool: str) -> str | None:
+    """VQ4-WIRE: why the gate did not sign the agent in to its QA target (a
+    pending host, a challenge; `qa_target.NOTICE_NAME`, written by
+    `QaTargetSignIn` before this runner starts, and absent otherwise), or
+    None. A cause and what to do, never the credential: the runner reads
+    this file and not the secret."""
+    return _spool_text(spool, QA_TARGET_NOTICE_NAME)
 
 
 def resume_summary(spool: str) -> str | None:
@@ -1149,6 +1160,12 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     stopped = egress_notice(env.get(HANDOFF_ENV, ""))
     if stopped and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{stopped}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
+    # A QA target the gate could not sign in to (VQ4-WIRE): the agent learns
+    # it at start, and checks the public screens rather than the login page.
+    signed_out = qa_target_notice(env.get(HANDOFF_ENV, ""))
+    if signed_out and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{signed_out}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
     refusal = live_browser_refusal(env, browsers, endpoint)
     if refusal:

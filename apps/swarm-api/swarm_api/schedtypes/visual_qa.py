@@ -61,14 +61,14 @@ TYPE = "visual-qa"
 #: `file` settings bound how many and at what severity.
 FILE = "issues"
 
-#: PROVISIONAL, pending the owner (questions.json, VQ7-Q1): no QA run has been
-#: measured. A run at the design's bounds is 8 haiku captures, 8 opus reviews,
-#: up to 10 sonnet flows at each width, an opus report and a sonnet filing
-#: step; $25 covers that, and $50 a day is the daily firing plus one run-now.
-#: One at a time: a firing makes one workflow, and a second live one would QA
-#: the same application twice. A schedule may set lower figures; raising them
-#: is a change to this line, in a pull request.
-BUDGET_CAPS = scheduletypes.BudgetCaps(per_run_usd=25, per_day_usd=50, max_concurrent=1)
+#: Measured, then set by the owner: the first full-console QA run (run 5b,
+#: wf_025ae735511546d99eff: 17 steps, 362 screenshots) cost $23.62, 94% of the
+#: provisional $25 per run. BGD set $40 a run and $80 a day on 2026-10-22
+#: (VQ7-CAPS, #1933): headroom over that run, and the daily firing plus one
+#: run-now. One at a time: a firing makes one workflow, and a second live one
+#: would QA the same application twice. A schedule may set lower figures;
+#: raising them is a change to this line, in a pull request.
+BUDGET_CAPS = scheduletypes.BudgetCaps(per_run_usd=40, per_day_usd=80, max_concurrent=1)
 
 #: `check_target`'s refusal: the same for another tenant's target and for none.
 TARGET_NOT_FOUND = "qa_target_not_found"

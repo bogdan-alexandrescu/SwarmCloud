@@ -213,7 +213,8 @@ describe('work-a-007: a live row’s try leads its meta line, so the cut never t
     expect(said.indexOf('dispatched'), said).toBeLessThan(said.indexOf('claude-code'))
     // MUTATION: drop the separator after the try: `attempt 1 of 3claude-code`.
     expect(said).toMatch(/attempt 1 of 3 · claude-code · claude-opus-5-5 · alex/)
-    // The line is still one line, cut at its end (agents.css `.cr-sub`).
+    // A fact longer than the row is still cut at its end (agents.css `.cr-sub`);
+    // at 390 the line wraps between its facts (qafix5.agents, work-a-007).
     expect(painted(sub, 'text-overflow', PHONE)).toBe('ellipsis')
   })
 

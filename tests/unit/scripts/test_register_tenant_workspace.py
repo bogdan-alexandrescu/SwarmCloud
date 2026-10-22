@@ -68,6 +68,13 @@ NAMESPACE = f"swarm-tenant-{TENANT}"
 BUCKET = f"swarm-artifacts-{PROJECT}"
 SLOT = f"swarm-tenant-{TENANT}-git-u-" + hashlib.sha256(PRINCIPAL.encode()).hexdigest()[:16]
 TWIN = SLOT + "-refresh"
+#: The tenant's QA target credential secret (docs/design/visual-qa-any-app.md
+#: §2.1, §7 V-1/V-2): the deployer makes it for a PERSONAL workspace only (BGD,
+#: 2026-10-22), with swarm-api alone bound on it.
+QA = f"swarm-tenant-{TENANT}-qa"
+API = f"swarm-api@{PROJECT}.iam.gserviceaccount.com"
+QA_ADDER = "roles/secretmanager.secretVersionAdder"
+QA_ACCESSOR = "roles/secretmanager.secretAccessor"
 STOPPED = 3
 
 WORKLOAD = "roles/iam.workloadIdentityUser"
@@ -458,13 +465,28 @@ def test_create_runs_every_step_and_ends_ready(job: Job, created: dict) -> None:
                               ("roles/logging.logWriter", None), ("roles/monitoring.metricWriter", None)}
 
     # A6: the slot and its twin, labelled as swarm-api labels its own; the
-    # worker reads the slot and never the twin.
-    assert set(world["secrets"]) == {SLOT, TWIN}
+    # worker reads the slot and never the twin. And the QA secret.
+    # MUTATION: drop qa_secret_ensure from ws_a6 and QA is missing here.
+    assert set(world["secrets"]) == {SLOT, TWIN, QA}
     assert world["secrets"][SLOT]["labels"]["tenant"] == TENANT
     assert world["secrets"][TWIN]["labels"]["provider"].endswith("-refresh")
     assert _members(world["secrets"][SLOT]["policy"], "roles/secretmanager.secretAccessor") == {
         f"serviceAccount:{WORKER}"}
     assert world["secrets"][TWIN]["policy"].get("bindings", []) == []
+    # A6, the QA secret: labelled as qa_targets.tf labels its own, and swarm-api
+    # alone holds V-1 and V-2 on it -- never the worker, whose agent would then
+    # read a test account's password out of Secret Manager itself.
+    qa = world["secrets"][QA]
+    # MUTATION: label it for the forge slot (provider=...) instead and these fail.
+    assert qa["labels"]["component"] == "qa-target-credential", qa["labels"]
+    assert qa["labels"]["tenant"] == TENANT, qa["labels"]
+    # MUTATION: grant the worker either role, or any third role, and this fails.
+    assert {b["role"]: set(b["members"]) for b in qa["policy"].get("bindings", [])} == {
+        QA_ADDER: {f"serviceAccount:{API}"}, QA_ACCESSOR: {f"serviceAccount:{API}"}}
+    creates = [c for c in created["world"]["calls"] if c["tool"] == "gcloud"
+               and c["argv"][:3] == ["secrets", "create", QA]]
+    # MUTATION: create it with --replication-policy automatic and this fails.
+    assert len(creates) == 1 and "user-managed" in creates[0]["argv"], creates
 
     # A7: the namespace and its objects, with §8's quota.
     quota = world["k8s"][f"ResourceQuota/{NAMESPACE}/swarm-tenant-quota"]["spec"]["hard"]
@@ -746,6 +768,50 @@ def test_a_stale_bucket_binding_goes_to_the_owner_and_is_never_removed(job: Job)
     assert not any("remove-iam-policy-binding" in c for c in job.calls("gcloud"))
 
 
+def _qa_secret(tenant: str, component: str = "qa-target-credential", members: tuple[str, ...] = ()) -> dict:
+    """A QA secret someone made before the job ran, labelled for `tenant`."""
+    bindings = [{"role": QA_ACCESSOR, "members": list(members)}] if members else []
+    return {"labels": {"managed-by": "swarm-register-tenant", "component": component, "tenant": tenant,
+                       "swarm-tenant": tenant}, "policy": {"version": 1, "etag": "BwX=", "bindings": bindings}}
+
+
+def test_a_qa_secret_labelled_for_another_tenant_holds_the_job_slot_not_ours(job: Job) -> None:
+    job.edit(lambda w: w["secrets"].update({QA: _qa_secret("u-mallory")}))
+    proc = job.create()
+    out = _out(proc)
+    # MUTATION: map qa_secret_ensure's 3 to a plain failure and this is exit 1, failed.
+    assert proc.returncode == STOPPED, out
+    record = job.record()
+    assert _field(record, "state") == "needs_owner", out
+    assert _field(record, "steps", "A6", "code") == "SLOT_NOT_OURS", record.get("steps")
+    assert "u-mallory" in proc.stderr, out
+    # MUTATION: adopt the secret (bind swarm-api on it) and this fails.
+    assert not any(c[:3] == ["secrets", "add-iam-policy-binding", QA] for c in job.calls("gcloud")), out
+    assert job.read()["secrets"][QA]["policy"]["bindings"] == []
+    assert job.doc(f"tenants/{TENANT}") is None, "nothing after A6 runs"
+
+
+def test_a_qa_secret_another_account_reads_holds_the_job_slot_not_ours(job: Job) -> None:
+    foreign = f"serviceAccount:{WORKER}"
+    job.edit(lambda w: w["secrets"].update({QA: _qa_secret(TENANT, members=(foreign,))}))
+    proc = job.create()
+    out = _out(proc)
+    # MUTATION: ignore qa_secret_ensure's 4 and the run ends ready.
+    assert proc.returncode == STOPPED, out
+    assert _field(job.record(), "steps", "A6", "code") == "SLOT_NOT_OURS", job.record().get("steps")
+    # MUTATION: remove the foreign member and this fails: a removal is never the job's.
+    assert job.read()["secrets"][QA]["policy"]["bindings"] == [{"role": QA_ACCESSOR, "members": [foreign]}]
+    assert not any(c[:3] == ["secrets", "add-iam-policy-binding", QA] for c in job.calls("gcloud")), out
+
+
+def test_the_qa_secret_is_made_empty_and_its_value_never_printed(created: dict) -> None:
+    world = created["world"]
+    # MUTATION: pass --data-file to the create and this fails.
+    assert not any("versions" in c["argv"] or any(a.startswith("--data-file") for a in c["argv"])
+                   for c in world["calls"] if c["tool"] == "gcloud" and QA in c["argv"])
+    assert f"qa secret: created {QA}" in created["stderr"], created["stderr"][-4000:]
+
+
 UPLOAD = f"https://storage.googleapis.com/upload/storage/v1/b/{BUCKET}/o"
 
 
@@ -993,7 +1059,7 @@ def test_verify_of_a_migrated_record_renders_without_the_legacy_ksa(job: Job, re
     assert proc.returncode == 0, _out(proc)
     assert _field(job.record(), "state") == "ready"
     assert _steps(job.record())["A9"] == "done"
-    assert set(job.read()["secrets"]) == {SLOT, TWIN}
+    assert set(job.read()["secrets"]) == {SLOT, TWIN, QA}
 
 
 def test_verify_of_a_job_made_record_still_needs_the_legacy_objects(job: Job, ready_world: dict) -> None:
@@ -1561,7 +1627,10 @@ def test_a_service_is_admitted_on_the_api_backend_only_and_its_account_is_never_
 
 def test_a_service_gets_a_team_slot_with_no_twin_and_a_labelled_namespace(service_created: dict) -> None:
     world = service_created["world"]
+    # MUTATION: run qa_secret_ensure for a service too and swarm-tenant-<t>-qa appears here.
     assert set(world["secrets"]) == {S_SLOT}, sorted(world["secrets"])
+    assert not any(c["argv"][2:3] == [f"swarm-tenant-{S_TENANT}-qa"] for c in world["calls"]
+                   if c["tool"] == "gcloud" and c["argv"][:1] == ["secrets"])
     assert world["secrets"][S_SLOT]["labels"]["tenant"] == S_TENANT
     assert _members(world["secrets"][S_SLOT]["policy"], "roles/secretmanager.secretAccessor") == {
         f"serviceAccount:{S_WORKER}"}
@@ -1720,7 +1789,11 @@ def test_a_group_create_makes_its_team_slot_label_and_group_tenant(group_created
     assert _steps(record) == {f"A{i}": "done" for i in range(1, 10)}
     # A6: the TEAM slot and its twin, empty, the worker on the slot only.
     slot, twin = f"swarm-tenant-{G_TENANT}-git", f"swarm-tenant-{G_TENANT}-git-refresh"
+    # MUTATION: run qa_secret_ensure for every kind and swarm-tenant-<g>-qa appears
+    # here: the deployer's secret binder stops at swarm-tenant-u-.
     assert set(world["secrets"]) == {slot, twin}, sorted(world["secrets"])
+    assert not any(c["argv"][2:3] == [f"swarm-tenant-{G_TENANT}-qa"] for c in world["calls"]
+                   if c["tool"] == "gcloud" and c["argv"][:1] == ["secrets"])
     assert {world["secrets"][s]["labels"]["tenant"] for s in (slot, twin)} == {G_TENANT}
     assert _members(world["secrets"][slot]["policy"], "roles/secretmanager.secretAccessor") == {
         f"serviceAccount:{G_WORKER}"}

@@ -1419,6 +1419,312 @@
       ]
     },
     {
+      "name": "A6 reads the person's QA secret",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "describe",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "A6 reads the QA secret's policy",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "get-iam-policy",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "no read of another person's QA secret",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "describe",
+        "swarm-tenant-u-bob-qa",
+        "--project",
+        "{project_id}"
+      ]
+    },
+    {
+      "name": "no read of a group's QA secret",
+      "rule": "C1",
+      "expect": "refuse",
+      "kind": "group",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "describe",
+        "swarm-tenant-{tenant_id}-qa",
+        "--project",
+        "{project_id}",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "create the person's QA secret, empty, in the workload region",
+      "rule": "C6",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "user-managed",
+        "--locations",
+        "us-central1",
+        "--labels",
+        "managed-by=swarm-register-tenant,swarm-env=dev,component=qa-target-credential,tenant={tenant_id},swarm-tenant={tenant_id}"
+      ]
+    },
+    {
+      "name": "a QA secret replicated automatically",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "automatic",
+        "--labels",
+        "managed-by=swarm-register-tenant,swarm-env=dev,component=qa-target-credential,tenant={tenant_id},swarm-tenant={tenant_id}"
+      ]
+    },
+    {
+      "name": "a QA secret with no region",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "user-managed",
+        "--labels",
+        "managed-by=swarm-register-tenant,swarm-env=dev,component=qa-target-credential,tenant={tenant_id},swarm-tenant={tenant_id}"
+      ]
+    },
+    {
+      "name": "a QA secret with no labels",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "user-managed",
+        "--locations",
+        "us-central1"
+      ]
+    },
+    {
+      "name": "a QA secret created with material in it",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "user-managed",
+        "--locations",
+        "us-central1",
+        "--labels",
+        "managed-by=swarm-register-tenant,swarm-env=dev,component=qa-target-credential,tenant={tenant_id},swarm-tenant={tenant_id}",
+        "--data-file",
+        "{casedir}/value"
+      ]
+    },
+    {
+      "name": "another person's QA secret",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "swarm-tenant-u-bob-qa",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "user-managed",
+        "--locations",
+        "us-central1",
+        "--labels",
+        "managed-by=swarm-register-tenant,swarm-env=dev,component=qa-target-credential,tenant={tenant_id},swarm-tenant={tenant_id}"
+      ]
+    },
+    {
+      "name": "V-1: swarm-api adds versions to the QA secret",
+      "rule": "C6",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{api_email}",
+        "--role",
+        "roles/secretmanager.secretVersionAdder"
+      ]
+    },
+    {
+      "name": "V-2: swarm-api reads the QA secret",
+      "rule": "C6",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{api_email}",
+        "--role",
+        "roles/secretmanager.secretAccessor"
+      ]
+    },
+    {
+      "name": "the worker never reads the QA secret",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/secretmanager.secretAccessor"
+      ]
+    },
+    {
+      "name": "swarm-api gets no other role on the QA secret",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{api_email}",
+        "--role",
+        "roles/secretmanager.admin"
+      ]
+    },
+    {
+      "name": "nobody else on the QA secret",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{scheduler_email}",
+        "--role",
+        "roles/secretmanager.secretAccessor"
+      ]
+    },
+    {
+      "name": "swarm-api on another person's QA secret",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "swarm-tenant-u-bob-qa",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{api_email}",
+        "--role",
+        "roles/secretmanager.secretAccessor"
+      ]
+    },
+    {
+      "name": "a group's QA secret is not the deployer's to create",
+      "rule": "C6",
+      "expect": "refuse",
+      "kind": "group",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "swarm-tenant-{tenant_id}-qa",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "user-managed",
+        "--locations",
+        "us-central1",
+        "--labels",
+        "managed-by=swarm-register-tenant,swarm-env=dev,component=qa-target-credential,tenant={tenant_id},swarm-tenant={tenant_id}"
+      ]
+    },
+    {
+      "name": "a service's QA secret is not the deployer's to bind",
+      "rule": "C6",
+      "expect": "refuse",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "swarm-tenant-{tenant_id}-qa",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:swarm-api@{project_id}.iam.gserviceaccount.com",
+        "--role",
+        "roles/secretmanager.secretAccessor"
+      ]
+    },
+    {
       "name": "apply the tenant namespace on our context",
       "rule": "C7",
       "expect": "allow",

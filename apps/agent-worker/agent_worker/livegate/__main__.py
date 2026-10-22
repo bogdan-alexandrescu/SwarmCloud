@@ -119,6 +119,9 @@ from .pointer import css_to_frame
 from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, Device, UnknownPreset, resolve
 from .qaidentity import OP as QA_IDENTITY_OP
 from .qaidentity import QaIdentity, QaIdentityRefused, QaInjector
+from .qatarget import OP as QA_SIGN_IN_OP
+from .qatarget import QaTarget, QaTargetRefused
+from .qatarget import handle_ctl as qa_target_ctl
 from .report import agent_report, browser_report, device_report, egress_report, encode_report, page_origin
 from .rfb import ControlState, FrameHub, RfbSession, masked
 from .rfb import metrics_log as rfb_metrics_log
@@ -1231,6 +1234,9 @@ class LiveGate:
         #: The task's QA identity, for the gate's life; and the injector of
         #: the Chromium running now (qaidentity.py, QI-GATE).
         self.qa = QaIdentity(self.record, clock=clock)
+        #: The attempt's QA target (qatarget.py, VQ-4): held for the gate's
+        #: life, across relaunches, like the QA identity.
+        self.qa_target = QaTarget(self.record, clock=clock)
         self.qa_injector: QaInjector | None = None
         self.wiped = False
         #: Chromium's pipe closed (a wipe, or a crash, until a relaunch is up):
@@ -1342,7 +1348,8 @@ class LiveGate:
         self.control = ControlState(self.touch)
         current = self._current
         self.carry = SessionCarry(current.call, record=self.record, agent_connected=self._agent_connected,
-                                  excluded_host=lambda: self.qa.host)
+                                  excluded_host=lambda: self.qa.host,
+                                  excluded_origins=self.qa_target.excluded_origins)
         self.tabs = TabKeeper(current.call, record=self.record, agent_connected=self._agent_connected,
                               shown=self._shown_target)
         await self._launch()
@@ -1435,6 +1442,7 @@ class LiveGate:
             on_tool=self._tool_used,
             wall=self._wall,
             qa=self.qa,
+            qa_target=self.qa_target,
         )
         # A refused agent connection says when the gate takes control back.
         self.proxy.control_lease_seconds = self._lease_seconds
@@ -1482,6 +1490,9 @@ class LiveGate:
         if self.qa.armed and not self.qa.wiped:
             # A relaunch: the new browser is signed in before the agent reconnects.
             await self.qa_injector.start()
+        if self.qa_target.armed and not self.qa_target.wiped:
+            # A relaunch: the target's rules hold on the new browser too.
+            await self.proxy.start_qa_target()
         self.cdp_server = await self.deps.serve_cdp(self.proxy, self.cfg.cdp_host, self.cfg.cdp_port)
         self._ready_browser = browser
 
@@ -1830,6 +1841,8 @@ class LiveGate:
             return self.set_browser_tools(args)
         if op == QA_IDENTITY_OP:
             return await self.qa_identity(args)
+        if op == QA_SIGN_IN_OP:
+            return await self.qa_sign_in(args)
         raise ValueError("not an operation of the gate")
 
     # -- the QA identity (qaidentity.py) -----------------------------------------
@@ -1851,6 +1864,19 @@ class LiveGate:
         if injector is not None and not self.browser_closed:
             await injector.refresh()
         return result
+
+    async def qa_sign_in(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """The worker's `qa_sign_in` (qatarget.py): set the QA target and start
+        its held sign-in, or `{poll: true}` for how it ended. Refused after the
+        wipe and for a malformed one (`refused:<field>`); never logged."""
+        if self.wiped:
+            self.record("qa_sign_in_refused", {"cause": "wiped"})
+            raise OpRefused("wiped")
+        proxy = self.proxy if not self.browser_closed else None
+        try:
+            return await qa_target_ctl(self.qa_target, proxy, args)
+        except QaTargetRefused as exc:
+            raise OpRefused(exc.code) from None
 
     async def _on_qa_host(self, expect: Any) -> bool:
         """A hand-off would be on the console host: named by `expect`, or the page shown."""
@@ -1982,6 +2008,8 @@ class LiveGate:
             "egress": self.egress.stats() if self.egress is not None else {"route": "direct"},
             # QI-GATE: whether the QA identity is held, never the credential.
             "qa_identity": self.qa.status(),
+            # VQ-4: the QA target's sign-in state, never the credential.
+            "qa_target": self.qa_target.status(),
         }
 
     async def open_tunnel(self, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -2366,6 +2394,7 @@ class LiveGate:
             return
         # The credential goes before Chromium does (§4.4), and the verb is refused from here.
         self.qa.wipe()
+        self.qa_target.wipe()
         if self.qa_injector is not None:
             await self.qa_injector.close()
         self.wiped = True
