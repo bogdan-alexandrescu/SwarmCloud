@@ -1259,3 +1259,17 @@ variable "settings_mac_key_previous_version" {
     error_message = "settings_mac_key_previous_version must be a version NUMBER, or null; never a value."
   }
 }
+
+variable "swarm_workers_log_view_enabled" {
+  description = "Whether to create the swarm-workers log view on _Default and swarm-api's viewAccessor binding on it (log_view.tf, agent-autonomy.md §3.5, row L-1)."
+  type        = bool
+  # Off because Cloud Logging refuses the view: release run 39742374084
+  # (2026-10-22) failed with "Error 400: Filter exceeds the view filter nesting
+  # depth limit of 1.", and Google's LogView reference allows a view filter
+  # only an AND of =/!= checks on the source, resource type and log id -- never
+  # a cluster or namespace label, so no view on _Default can keep the other
+  # team's agents-staging containers out. The redesign (a dedicated bucket fed
+  # by a sink, say) waits for the owner (#1933); until then logs_query answers
+  # logs_unavailable. Turning this on unchanged fails the apply again.
+  default = false
+}

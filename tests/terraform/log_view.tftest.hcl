@@ -148,11 +148,59 @@ variables {
   }
 }
 
+# OFF BY DEFAULT (lane AU5-VIEWOFF, part of #1933). Release run 39742374084
+# (2026-10-22) failed creating the view: "Filter exceeds the view filter
+# nesting depth limit of 1." A view filter may only AND `=`/`!=` checks on the
+# source, resource type and log id, so no view on _Default can select by
+# cluster or namespace. Until the owner decides the redesign, the default plan
+# holds no view, no L-1 binding, and no view name for swarm-api to read.
+run "the_swarm_workers_view_is_off_by_default" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # MUTATION: default = true on var.swarm_workers_log_view_enabled (or dropping the view's count) turns this red.
+  assert {
+    condition     = length(google_logging_log_view.swarm_workers) == 0
+    error_message = "with swarm_workers_log_view_enabled at its default (false) no google_logging_log_view is planned: Cloud Logging refuses this filter on a view (nesting depth limit of 1)"
+  }
+
+  # MUTATION: dropping the count from google_logging_log_view_iam_member.swarm_api_reads_swarm_workers turns this red.
+  assert {
+    condition     = length(google_logging_log_view_iam_member.swarm_api_reads_swarm_workers) == 0
+    error_message = "with the view off, row L-1's binding is not planned either"
+  }
+
+  # MUTATION: value = local.swarm_workers_log_view unconditionally turns this red.
+  assert {
+    condition     = output.swarm_workers_log_view == null
+    error_message = "with the view off, the swarm_workers_log_view output is null, so nothing is pointed at a view that does not exist"
+  }
+}
+
 run "the_swarm_workers_view_reads_swarmcloud_resources_and_nothing_else" {
   command = plan
 
   module {
     source = "../../terraform/infra"
+  }
+
+  # The switch the redesign turns on (log_view.tf, "OFF BY DEFAULT"): with it
+  # on, the view and its binding plan exactly as AU5-LOG-VIEW wrote them.
+  variables {
+    swarm_workers_log_view_enabled = true
+  }
+
+  # The switch still builds the view, once, and the output names it.
+  # MUTATION: count = 0 on google_logging_log_view.swarm_workers (or the output null regardless) turns this red.
+  assert {
+    condition = (
+      length(google_logging_log_view.swarm_workers) == 1
+      && output.swarm_workers_log_view == "projects/saga-agents-staging/locations/global/buckets/_Default/views/swarm-workers"
+    )
+    error_message = "with swarm_workers_log_view_enabled = true exactly one swarm-workers view is planned and the output names it"
   }
 
   # _Default is where GKE containers and Cloud Run already write; a view on
@@ -161,8 +209,8 @@ run "the_swarm_workers_view_reads_swarmcloud_resources_and_nothing_else" {
   # MUTATION: bucket = ".../buckets/_Required" (or name = "swarm-logs") turns this red.
   assert {
     condition = (
-      google_logging_log_view.swarm_workers.bucket == "projects/saga-agents-staging/locations/global/buckets/_Default"
-      && google_logging_log_view.swarm_workers.name == "swarm-workers"
+      google_logging_log_view.swarm_workers[0].bucket == "projects/saga-agents-staging/locations/global/buckets/_Default"
+      && google_logging_log_view.swarm_workers[0].name == "swarm-workers"
     )
     error_message = "the view must be swarm-workers on this project's _Default bucket (location global), where SwarmCloud's container and Cloud Run logs already land"
   }
@@ -172,8 +220,8 @@ run "the_swarm_workers_view_reads_swarmcloud_resources_and_nothing_else" {
   # MUTATION: dropping "managed-by=swarm-terraform; " from the description turns this red.
   assert {
     condition = (
-      startswith(google_logging_log_view.swarm_workers.description, "managed-by=swarm-terraform")
-      && startswith(google_logging_log_view.swarm_workers.name, "swarm-")
+      startswith(google_logging_log_view.swarm_workers[0].description, "managed-by=swarm-terraform")
+      && startswith(google_logging_log_view.swarm_workers[0].name, "swarm-")
     )
     error_message = "the view carries managed-by=swarm-terraform in its description (it has no labels) and an id beginning swarm-"
   }
@@ -182,7 +230,7 @@ run "the_swarm_workers_view_reads_swarmcloud_resources_and_nothing_else" {
   # wrapped around them, no branch the evaluation below never sees.
   # MUTATION: appending ` OR resource.type="k8s_container"` to the filter turns this red.
   assert {
-    condition     = google_logging_log_view.swarm_workers.filter == join(" OR ", [for b in local.swarm_workers_log_branches : "(${b})"])
+    condition     = google_logging_log_view.swarm_workers[0].filter == join(" OR ", [for b in local.swarm_workers_log_branches : "(${b})"])
     error_message = "the view's filter must be exactly the OR of local.swarm_workers_log_branches, each parenthesised"
   }
 
@@ -268,11 +316,23 @@ run "swarm_api_reads_the_view_and_only_the_view" {
     source = "../../terraform/infra"
   }
 
+  # The switch the redesign turns on (log_view.tf, "OFF BY DEFAULT"): with it
+  # on, the view and its binding plan exactly as AU5-LOG-VIEW wrote them.
+  variables {
+    swarm_workers_log_view_enabled = true
+  }
+
+  # MUTATION: count = 0 on google_logging_log_view_iam_member.swarm_api_reads_swarm_workers turns this red.
+  assert {
+    condition     = length(google_logging_log_view_iam_member.swarm_api_reads_swarm_workers) == 1
+    error_message = "with swarm_workers_log_view_enabled = true row L-1's binding is planned, once"
+  }
+
   # Row L-1: a binding on the VIEW's own IAM policy. The resource type is the
   # scope; a google_project_iam_member here would be the project.
   # MUTATION: role = "roles/logging.viewer" (or privateLogViewer) turns this red.
   assert {
-    condition     = google_logging_log_view_iam_member.swarm_api_reads_swarm_workers.role == "roles/logging.viewAccessor"
+    condition     = google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].role == "roles/logging.viewAccessor"
     error_message = "swarm-api's role on the view is roles/logging.viewAccessor; logging.viewer reads every log in this SHARED project"
   }
 
@@ -290,7 +350,7 @@ run "swarm_api_reads_the_view_and_only_the_view" {
 
   # MUTATION: member = module.iam.service_account_members["swarm-scheduler"] turns this red.
   assert {
-    condition     = google_logging_log_view_iam_member.swarm_api_reads_swarm_workers.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+    condition     = google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
     error_message = "the view's reader is swarm-api's account and nobody else (row L-1)"
   }
 
@@ -298,10 +358,10 @@ run "swarm_api_reads_the_view_and_only_the_view" {
   # MUTATION: name = "_AllLogs" (the bucket's every-log view) turns this red.
   assert {
     condition = (
-      google_logging_log_view_iam_member.swarm_api_reads_swarm_workers.parent == "projects/saga-agents-staging"
-      && google_logging_log_view_iam_member.swarm_api_reads_swarm_workers.location == "global"
-      && google_logging_log_view_iam_member.swarm_api_reads_swarm_workers.bucket == google_logging_log_view.swarm_workers.bucket
-      && google_logging_log_view_iam_member.swarm_api_reads_swarm_workers.name == google_logging_log_view.swarm_workers.name
+      google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].parent == "projects/saga-agents-staging"
+      && google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].location == "global"
+      && google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].bucket == google_logging_log_view.swarm_workers[0].bucket
+      && google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].name == google_logging_log_view.swarm_workers[0].name
     )
     error_message = "swarm-api's binding must be on exactly the swarm-workers view this root creates, never _AllLogs or another view"
   }
