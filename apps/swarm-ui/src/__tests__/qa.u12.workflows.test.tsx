@@ -204,7 +204,12 @@ describe('R10: one money format, and Cost and Owner hold what they show', () => 
     // The figure, its coverage and the 5px between them.
     expect(room('cost')).toBeGreaterThanOrEqual(textPx('$12.92', cost, WIDE) + 5 + textPx('10/12', cost, WIDE))
     expect(room('owner')).toBeGreaterThanOrEqual(textPx('swarm-pipeline', row.querySelector('td[data-col="owner"]')!, WIDE))
-    expect(room('workflow'), 'the name').toBeGreaterThanOrEqual(128)
+    // A head the cascade hides (Shape and Runners below 1680, G3-09) draws
+    // no column; `fixedColumns` counts every head, so its width goes back to
+    // the name, the one column with no width (from 1280 Cost is 128px, c28).
+    const hidden = cols.filter((c) => painted(t.querySelector(`thead th[data-col="${c.col}"]`)!, 'display', WIDE) === 'none')
+    expect(hidden.map((c) => c.col)).toEqual(['shape', 'runners'])
+    expect(room('workflow') + hidden.reduce((a, c) => a + c.end - c.start, 0), 'the name').toBeGreaterThanOrEqual(128)
   })
 })
 

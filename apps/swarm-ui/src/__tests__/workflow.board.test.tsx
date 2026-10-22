@@ -897,7 +897,7 @@ describe('a stage too wide to draw', () => {
     expect(b.container.querySelectorAll('.node')).toHaveLength(STAGE_FITS + 3)
     // ...and the trade is stated on the canvas rather than left to be noticed.
     expect(b.container.querySelector('.wf-zoom .wf-zoom-note')!.textContent).toBe(
-      'figures not drawn',
+      'figures hidden at this zoom. Choose Figures, or open a step, to see them.',
     )
   })
 
@@ -1177,7 +1177,7 @@ describe('semantic zoom', () => {
     expect(dNode.querySelector('.node-nums')).toBeNull()
     expect(dNode.querySelectorAll('.node-num')).toHaveLength(0)
     const dMark = details.container.querySelector('.wf-zoom .wf-zoom-note')!
-    expect(dMark.textContent).toBe('figures not drawn')
+    expect(dMark.textContent).toBe('figures hidden at this zoom. Choose Figures, or open a step, to see them.')
     expect(dMark.getAttribute('aria-label')).toContain(
       'decision about the zoom and not a fact about the steps',
     )
@@ -1192,7 +1192,7 @@ describe('semantic zoom', () => {
     expect(nNode.querySelector('.node-id')!.textContent).toBe('scan-0')
     expect(nNode.querySelector('.node-state')!.textContent).toBe('not started')
     const nMark = names.container.querySelector('.wf-zoom .wf-zoom-note')!
-    expect(nMark.textContent).toBe('profile, duration and figures not drawn')
+    expect(nMark.textContent).toBe('profile, duration and figures hidden at this zoom. Choose Figures, or open a step, to see them.')
     // NAMED, NOT COUNTED. "3 fields hidden" is a number a reader has to go and
     // check; these are the fields.
     expect(nMark.getAttribute('aria-label')).toContain('profile, duration and figures')
@@ -1219,7 +1219,7 @@ describe('semantic zoom', () => {
     expect(failed.querySelector('.node-dur')).toBeNull()
     expect(failed.querySelector('.node-nums')).toBeNull()
     expect(container.querySelector('.wf-zoom .wf-zoom-note')!.textContent).toBe(
-      'profile, duration and figures not drawn',
+      'profile, duration and figures hidden at this zoom. Choose Figures, or open a step, to see them.',
     )
   })
 
@@ -1736,7 +1736,7 @@ describe('the owner’s decisions: the open card', () => {
     const { container } = card(w, tasks, 'details')
     const note = container.querySelector<HTMLElement>('.wf-zoom .wf-zoom-note')
     expect(note, 'the zoom notice is not a .wf-zoom-note').toBeTruthy()
-    expect(note!.textContent).toBe('figures not drawn')
+    expect(note!.textContent).toBe('figures hidden at this zoom. Choose Figures, or open a step, to see them.')
     // NOT A DATA MARK. `.ctl-mark.is-partial` says a READ came back partial;
     // a zoom is a choice about the view, and the amber one-sided dash made the
     // reader's own choice look like something the platform failed to report.
@@ -1750,7 +1750,7 @@ describe('the owner’s decisions: the open card', () => {
     // ... and under Auto, which picks `details` for a six-wide stage on its own.
     const six = wideStage(6)
     const auto = card(six.w, six.tasks)
-    expect(auto.container.querySelector('.wf-zoom .wf-zoom-note')?.textContent).toBe('figures not drawn')
+    expect(auto.container.querySelector('.wf-zoom .wf-zoom-note')?.textContent).toBe('figures hidden at this zoom. Choose Figures, or open a step, to see them.')
 
     // FAINT, AND NOTHING ELSE: --text-faint in both themes, no border, no dash.
     for (const theme of THEMES) {

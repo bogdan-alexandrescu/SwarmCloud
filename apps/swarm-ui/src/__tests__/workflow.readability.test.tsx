@@ -229,7 +229,7 @@ describe('#108: the workflow graph has a key for its edge kinds', () => {
     // three kinds are named for a screen reader too.
     expect(key.closest('[aria-hidden="true"]')).toBeNull()
     const items = within(key).getAllByRole('listitem')
-    expect(items.map((li) => li.querySelector('.wf-key-word')?.textContent)).toEqual(['order', 'staged', 'declared'])
+    expect(items.map((li) => li.querySelector('.wf-key-word')?.textContent)).toEqual(['runs after', 'file passed on', 'file expected, not arrived'])
     // EACH SAMPLE IS AN EDGE, painted by the same classes the canvas uses, so
     // the key cannot drift from what it explains.
     const groups = items.map((li) => li.querySelector('svg g')?.getAttribute('class'))

@@ -244,7 +244,11 @@ describe('the list table fits 1440 with no sideways scroll (#503)', () => {
     const widths = heads.map((h) => at(h, 'width') ?? '')
     const named = heads.map((h, i) => [h.getAttribute('data-col'), widths[i]!] as const).filter(([c]) => c !== 'workflow')
     for (const [c, w] of named) expect(w, `${c} has no width: ${widths.join(', ')}`).toMatch(/(%|px)$/)
-    const used = named.reduce((t, [, w]) => t + (w.endsWith('%') ? (Number.parseFloat(w) / 100) * 1056 : Number.parseFloat(w)), 0)
+    // A head the cascade hides (Shape and Runners below 1680, G3-09) draws no
+    // column, so it takes nothing from the name (from 1280 Cost is 128px, c28).
+    const hidden = heads.filter((h) => at(h, 'display') === 'none').map((h) => h.getAttribute('data-col'))
+    expect(hidden).toEqual(['shape', 'runners'])
+    const used = named.filter(([c]) => !hidden.includes(c)).reduce((t, [, w]) => t + (w.endsWith('%') ? (Number.parseFloat(w) / 100) * 1056 : Number.parseFloat(w)), 0)
     // 200px until U12 R10 (owner QA, 2026-10-04): Cost and Owner were cut
     // ('$0.6024 1/3' by 3px, 'swarm-…' in 74px), and each now holds what it
     // shows. The name still keeps the most room of any column (D8), cut with
