@@ -4015,6 +4015,35 @@ function asSentence(message: string): string {
   return /[.!?]$/.test(m) ? m : `${m}.`
 }
 
+/** The broker's `validate_label` (`quota_broker/accounts.py` `_LABEL`), restated. */
+const LABEL_MAX = 40
+
+/**
+ * WHY THIS LABEL WOULD BE REFUSED, in words, or null when it fits (#1912).
+ *
+ * The broker's rule is `^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`: the label
+ * becomes part of a Secret Manager name and a Kubernetes annotation, so it is
+ * not this form's to relax. `AI-ENG-2` was sent as typed and came back as "a
+ * service the API depends on did not answer". Capitals never reach here --
+ * the input lowercases as it is typed (owner decision 2026-10-22, "Lowercase
+ * as typed, plus 400") -- so everything below is a character or a shape that
+ * has no lowercase spelling. An empty label is not a fault: Start is simply
+ * disabled, as it always was.
+ */
+function labelFault(label: string): string | null {
+  if (label === '') return null
+  const bad = [...label].find((c) => !/[a-z0-9-]/.test(c))
+  if (bad !== undefined) {
+    return /\s/.test(bad)
+      ? 'a space is not allowed: use a dash. Only lowercase letters, digits and dashes.'
+      : `"${bad}" is not allowed: only lowercase letters, digits and dashes.`
+  }
+  if (label.startsWith('-')) return 'it must start with a letter or a digit, not a dash.'
+  if (label.endsWith('-')) return 'it must end with a letter or a digit, not a dash.'
+  if (label.length > LABEL_MAX) return `it is ${label.length} characters; at most ${LABEL_MAX}.`
+  return null
+}
+
 function AddAccount({
   board,
   accounts,
@@ -4084,6 +4113,10 @@ function AddAccount({
   }
 
   const trimmed = label.trim()
+  // Read off the label as typed, not `trimmed`: a space anywhere, the ends
+  // included, is a character the broker refuses, and trimming it away
+  // silently would send something other than what is on screen.
+  const fault = labelFault(label)
   // Owned labels only: a LENT account shares the screen and is not in this
   // tenant's namespace, so warning that its name is taken would be wrong.
   const replacing = accounts.some((a) => a.owner_tenant === owner && a.label === trimmed)
@@ -4100,7 +4133,9 @@ function AddAccount({
   // BOTH callers now gate on the same `trimmed`, and this line is the backstop
   // rather than the rule.
   const start = async () => {
-    if (trimmed === '') return
+    // A REFUSED LABEL IS NEVER SENT (#1912): Start is disabled for it, and
+    // Enter in the field reaches here without the button.
+    if (trimmed === '' || fault !== null) return
     const lendTo = splitTenants(lend).filter((t) => t !== owner)
     set({ kind: 'starting' })
     const res = await beginAccountSignIn({
@@ -4265,7 +4300,12 @@ function AddAccount({
             spellCheck={false}
             autoComplete="off"
             placeholder="laptop"
-            onChange={(e) => setLabel(e.target.value)}
+            aria-invalid={fault !== null ? true : undefined}
+            aria-describedby="acct-label-rule"
+            // LOWERCASED AS IT IS TYPED (#1912, owner decision 2026-10-22):
+            // the broker accepts only lowercase, and `AI-ENG-2` is plainly
+            // meant as `ai-eng-2`, so the field holds what will be sent.
+            onChange={(e) => setLabel(e.target.value.toLowerCase())}
           />
           {/* THE CONSTRAINT STAYS BESIDE THE INPUT. A field whose rule is one
               hover away is a field people fill in wrong, so this is one of the
@@ -4278,10 +4318,23 @@ function AddAccount({
             <code>
               {owner}:{trimmed || 'label'}
             </code>
-            <span className="mono" aria-label="Lowercase letters, digits and dashes, starting and ending alphanumeric, at most 40 characters.">
+            <span
+              id="acct-label-rule"
+              className={`mono acct-label-rule${fault !== null ? ' is-fault warn-text' : ''}`}
+              aria-label="Lowercase letters, digits and dashes, starting and ending alphanumeric, at most 40 characters."
+            >
               a-z 0-9 - · ≤40
             </span>
           </p>
+          {/* THE FAULT IS SAID IN WORDS, under the rule it breaks (#1912). The
+              rule line above is marked as the fault, and Start stays disabled
+              until the label fits: the form never sends a label the broker
+              would refuse. */}
+          {fault !== null && (
+            <p className="warn-text acct-label-fault" role="alert">
+              <strong>This label would be refused:</strong> {fault}
+            </p>
+          )}
           {/* A DESTRUCTIVE OUTCOME, NAMED BEFORE IT HAPPENS (§6). */}
           {replacing && (
             <p className="warn-text">
@@ -4320,7 +4373,7 @@ function AddAccount({
           </p>
 
           <p className="acct-buttons">
-            <button type="submit" disabled={state.kind === 'starting' || trimmed === ''}>
+            <button type="submit" disabled={state.kind === 'starting' || trimmed === '' || fault !== null}>
               {state.kind === 'starting' ? 'asking for a sign-in link…' : 'Start the sign-in'}
             </button>
             {closable && (
