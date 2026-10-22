@@ -154,6 +154,7 @@ Three things about this half that are easy to get wrong:
 | B6 | Artifacts and checkpoints under `gs://swarm-artifacts-<project>/tenants/<id>/`, every version, including the `.tenant` marker `register-tenant.sh` writes | workers | the bucket is shared; only the prefix is the tenant's | [6](#6-delete-everything-the-tenant-left) |
 | B7 | A provider secret added out of band for a provider that is *not* in the tenant's tfvars `providers` list (labels `component=tenant-credential`, `managed-by=swarm-secrets`) | `scripts/create-secrets.sh` | outside terraform's `for_each` | [10](#10-remove-what-the-platform-created-at-runtime) |
 | B8 | What the personal-workspace job made for a `u-<id>` tenant beyond B1 and B6: the forge slot `swarm-tenant-<id>-git` and its `-refresh` twin (labels `managed-by=swarm-api`, `tenant=<id>`, no `component` label, so B7's filter does not find them); the worker's `roles/storage.objectViewer` and `objectUser` bucket grants, each conditioned on `tenants/<id>/`; on the WD9 fallback its project and bucket-metadata roles; and the Firestore records `workspaces/<id>`, `workspace_ids/<w-id>`, `people/<id>`, `loan_requests/<id>` and `pending_loans/<id>` | the Cloud Run job `swarm-workspace-apply` (A3 to A9) and swarm-api | personal workspaces are outside terraform by design (WD3, WD4), and the job may not delete anything (guard rule C9) | [the workspace section](#a-personal-workspace-made-by-the-workspace-job) |
+| B9 | The tenant's empty QA credential secret `swarm-tenant-<id>-qa` (labels `component=qa-target-credential`, `managed-by=swarm-register-tenant`, `tenant=<id>`), with swarm-api's `secretVersionAdder` and `secretAccessor` bindings on its own policy. A terraform tenant's `-qa` is terraform's (`managed-by=swarm-terraform`) and goes with step 7 | `scripts/register-tenant.sh` (VQ3-REGISTER) | outside terraform's `for_each` | [10](#10-remove-what-the-platform-created-at-runtime) |
 
 What stays whatever you do, and is worth saying so nobody reports it deleted:
 
@@ -1185,6 +1186,32 @@ empty. It checks each name as well:
 )
 ```
 
+**The QA credential secret registration made (B9).** Irreversible: whatever
+QA-target credential was stored in it goes with it. Selected by all three
+labels, so a terraform tenant's `-qa` (`managed-by=swarm-terraform`, step 7's)
+and tenant `<id>`'s provider secret for a provider named `qa`
+(`component=tenant-credential`, B7's) are never listed, then checked by the
+exact name. Its two swarm-api bindings live on the secret's own policy and go
+with it:
+
+```bash
+( set -eu
+  : "${TENANT:?run step 1 in this shell}" "${OUT:?run step 1 in this shell}"
+  gcloud secrets list --project "$PROJECT_ID" \
+    --filter="labels.component=qa-target-credential AND labels.tenant=${TENANT} AND labels.managed-by=swarm-register-tenant" \
+    --format='value(name.basename())' > "$OUT/qa-secrets.txt"
+  cat "$OUT/qa-secrets.txt"
+  n=0
+  while read -r s; do
+    [ -n "$s" ] || continue
+    [ "$s" = "swarm-tenant-${TENANT}-qa" ] || { echo "skipping $s"; continue; }
+    gcloud secrets delete "$s" --project "$PROJECT_ID" --quiet
+    n=$((n + 1))
+  done < "$OUT/qa-secrets.txt"
+  echo "$n qa secret(s) deleted of $(grep -c . "$OUT/qa-secrets.txt" || true) listed"
+)
+```
+
 This used to be `scripts/purge-data.sh --secrets --artifacts`, which also
 deleted the records and the live objects. Step 6 does both now, for every
 object version rather than only the live ones. And `purge-data.sh` first
@@ -1411,7 +1438,9 @@ for the member.
 provider secrets came from `scripts/create-secrets.sh`
 (`component=tenant-credential`, `managed-by=swarm-secrets`, including the
 `-refresh` twins), which makes them B7, and step 10's provider-secret block
-deletes them. Its jobs, if any, are the dispatcher's (B3), and step 10 deletes
+deletes them. Its QA credential secret `swarm-tenant-<id>-qa`, if
+`register-tenant.sh` made one, is B9, and step 10's QA-secret block deletes it.
+Its jobs, if any, are the dispatcher's (B3), and step 10 deletes
 those too. What to check here is that the record agrees:
 
 ```bash
