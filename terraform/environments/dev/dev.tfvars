@@ -699,6 +699,15 @@ enable_child_tasks = true
 # Read from Cloud Run (gcloud run services describe swarm-api), the value
 # `terraform output swarm_api_url` gives; swarm_api_url_is_wired checks it.
 swarm_api_url = "https://swarm-api-tonstldhta-uc.a.run.app"
+# SCHEDULER-MADE JOBS ON THE SWARM VPC (#1893; owner decision 2026-10-21, part
+# of re-doing isolation cutover a1). The Cloud Run Jobs swarm-scheduler creates
+# for self-service u-<email> tenants had no VPC egress, so a worker switched to
+# state-through-swarm-api reached swarm-api from the internet and its ingress
+# answered 404 (the a1 rollback). On: those Jobs get ALL_TRAFFIC egress on the
+# swarm subnet, tag swarm-worker, and the existing swarm-job-u-* are refreshed.
+# Its one IAM row, roles/compute.networkUser for swarm-scheduler on the swarm
+# subnet only (owner: keep it), holds at dev-iam for the owner.
+tenant_job_vpc_egress = true
 # ISOLATION CUTOVER STEP a1 (#1457, docs/runbooks/isolation-cutover.md), ROLLED
 # BACK 2026-10-21. With u-bogdan listed, its Cloud Run workers could not reach
 # swarm-api: the Jobs the scheduler creates for a tenant terraform does not know
