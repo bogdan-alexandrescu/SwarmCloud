@@ -126,7 +126,7 @@ def test_a_headroom_with_no_reading_renders_as_absent_and_never_as_100():
         "u-bogdan accounts usagepoll.py cannot read"
     )
     assert "w === null" in loop, "an account whose binding window is absent must be recognised too"
-    assert loop.count("unread.push(a.label)") == 3, (
+    assert loop.count("unread.push(accountName(a))") == 3, (
         "never-observed, no-binding-window and readingOf's never/absent must "
         "all land in `unread`; a path that skips it silently becomes headroom"
     )
@@ -212,7 +212,7 @@ def test_a_stale_reading_is_labelled_with_its_age():
     ago` past `AGED_AFTER_MS`. A fresh age is the head's refresh control's.
     """
     fn = uncommented(body_of(src("Overview.tsx"), "function accountHeadroom("))
-    assert "projected.push(a.label)" in fn, (
+    assert "projected.push(accountName(a))" in fn, (
         "a stale or cleared reading must be set apart as projected, not "
         "counted as headroom"
     )
@@ -282,7 +282,7 @@ def test_the_accounts_check_still_names_the_never_polled_accounts():
     """
     fn = uncommented(body_of(src("checks.ts"), "function accountCheck("))
     assert "a.observed_at === null" in fn
-    assert "never.map((a) => a.label).join(', ')" in fn, "it must name them"
+    assert "never.map((a) => accountName(a)).join(', ')" in fn, "it must name them"
     assert "unknown rather than zero" in fn
     assert "cannot be counted as headroom" in fn
 
