@@ -265,6 +265,46 @@ describe('QA targets: the credential form', () => {
     expect((calls.find((c) => c.method === 'PUT')!.body as Json).link_token).toBe(token)
   })
 
+  it('the Repositories mount hands the shell\u2019s link to the form, so a link read before the bar was rewritten still opens it', async () => {
+    const token = runtimeValue()
+    // The shell has already rewritten the bar to the page's own address.
+    window.history.replaceState(null, '', '/repositories?page=qa-targets')
+    const calls = live('admin')
+    const { RepositoriesScreen } = await import('../Repositories')
+    render(<RepositoriesScreen view="page=qa-targets" go={vi.fn()} qaLink={{ targetId: LOGIN, token }} />)
+    // MUTATION: drop `link={qaLink}` from Repositories' mount and no form opens.
+    const form = await waitFor(() => {
+      const f = document.querySelector<HTMLFormElement>('form.qa-cred')
+      if (f === null) throw new Error('no credential form')
+      return f
+    }, WAIT)
+    expect(form.getAttribute('data-target-id')).toBe(LOGIN)
+    form.querySelector<HTMLInputElement>('input[name="username"]')!.value = 'qa-bot@example.com'
+    form.querySelector<HTMLInputElement>('input[name="password"]')!.value = runtimeValue(18)
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PUT').length).toBe(1), WAIT)
+    // MUTATION: pass the mount a link without its token and the API refuses the write.
+    expect((calls.find((c) => c.method === 'PUT')!.body as Json).link_token).toBe(token)
+    expect(document.documentElement.outerHTML).not.toContain(token)
+  })
+
+  // KNOWN GAP, EXPECTED TO FAIL (review of VQ-6): the plugin's link is
+  // `/qa-targets/<id>/credential?t=<token>` (VQ-2's `mint_link`), and
+  // paths.ts `pathToAddress` has no route for it, so the console answers it
+  // with Not found and the form never opens. Routing it needs paths.ts and
+  // App.tsx, outside this lane's territory, and is asked of the owner in the
+  // PR's questions. `it.fails` keeps CI green while the route is missing and
+  // turns red the day it lands: then make this a plain `it`.
+  it.fails('the console routes the plugin\u2019s credential link to the QA targets page, without its token', async () => {
+    const { pathToAddress } = await import('../paths')
+    const token = runtimeValue()
+    const route = pathToAddress(`/qa-targets/${LOGIN}/credential`, `?t=${token}`)
+    // MUTATION: route `/qa-targets/<id>/credential` in paths.ts and this passes (so `it.fails` goes red).
+    expect(route).not.toBeNull()
+    expect(route!.address).toBe('work/repositories?page=qa-targets')
+    expect(route!.address).not.toContain(token)
+  })
+
   it('the link parser reads only the credential path and never another `t`', async () => {
     const { qaCredentialLinkFrom } = await import('../qaTargetsApi')
     const token = runtimeValue()

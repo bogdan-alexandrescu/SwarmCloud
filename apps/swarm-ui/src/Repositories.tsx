@@ -9,6 +9,7 @@ import { GitTokensPage, PermissionsPage } from './GitTokens'
 import { RepoDot, useRepoStatuses } from './PermissionCards'
 import { QA_TARGETS_PAGE, QaTargetsScreen } from './QaTargets'
 import type { ForgeRepoStatus } from './api'
+import type { QaLink } from './qaTargetsApi'
 import { useRoleGate } from './Profile'
 import { CountNote, PageHead } from './Shell'
 import { timeAgo } from './types'
@@ -40,7 +41,7 @@ import './styles/repositories.css'
  *
  * Classes are `ur-` so a later pass can swap them for lane U0's components.
  */
-export function RepositoriesScreen({ view, go }: { view: string | null; go: (to: string) => void }) {
+export function RepositoriesScreen({ view, go, qaLink }: { view: string | null; go: (to: string) => void; qaLink?: QaLink | null }) {
   const q = new URLSearchParams(view ?? '')
   const page = q.get('page')
   const repo = q.get('repo')
@@ -48,7 +49,10 @@ export function RepositoriesScreen({ view, go }: { view: string | null; go: (to:
   if (page === 'tokens') return <GitTokensPage go={go} />
   if (page === 'permissions') return <PermissionsPage go={go} />
   // QA targets (VQ-6, docs/design/visual-qa-any-app.md §6): Repositories → QA targets → Run.
-  if (page === 'qa-targets') return <QaTargetsScreen go={go} />
+  // `qaLink` is the credential link's target and token when the shell read
+  // them off the bar before it rewrote the address (as App.tsx's `keyLink`
+  // does for ProviderKeys); left undefined, the page reads the bar itself.
+  if (page === 'qa-targets') return <QaTargetsScreen go={go} link={qaLink} />
   if (repo !== null && repo !== '') return <RepositoryDetail key={repo} repoId={repo} tab={q.get('tab')} go={go} pr={q.get('pr')} graph={{ view: q.get('view'), q: q.get('q') }} />
   // The list's heading is written HERE, as a literal, because
   // tests/unit/control_plane/test_nav_headings_agree.py reads the tab's
