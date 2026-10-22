@@ -49,7 +49,11 @@ What `capture` does, and why each:
 5. Per route: sets the route's PERSONA (`persona` in the route list:
    `member`, today's fixture identity, when absent, or `platform-admin`) as
    the cookie PERSONA_COOKIE on the console's origin, on EVERY route, so no
-   route inherits the one before it's, then navigates and waits for `load`, then up to NETWORK_IDLE_MS for
+   route inherits the one before it's. The cookie is the console fixture's:
+   a `--settle generic` capture whose route list names no persona sets it on
+   no route, and records `persona: null` (VQ5-PERSONA; BGD, 2026-10-22:
+   "Skip it when no route names a persona and --settle generic"). Then it
+   navigates and waits for `load`, then up to NETWORK_IDLE_MS for
    the network to go quiet (the console polls, so it may never be quiet for
    long: not reaching it is recorded, not fatal), then `document.fonts.ready`,
    then the route's `ready` selector, then until the page shows no pending
@@ -693,6 +697,15 @@ def persona_of(route: dict) -> str:
     return route.get("persona", DEFAULT_PERSONA)
 
 
+def sets_persona(routes: dict, settle: str) -> bool:
+    """Whether the capture sets PERSONA_COOKIE at all: always under the
+    console's settle; under `--settle generic` only when some route in the
+    route list names a persona. Someone else's app has no use for the
+    console fixture's cookie (VQ5-PERSONA)."""
+    return settle != "generic" or any(
+        "persona" in route for group in routes["groups"].values() for route in group)
+
+
 def _settle_generic(page) -> list[str]:
     """`--settle generic`: wait until the DOM has not changed
     (DOM_CHANGES_JS) for GENERIC_QUIET_MS, for up to SETTLE_TIMEOUT_MS.
@@ -719,18 +732,22 @@ def _settle_generic(page) -> list[str]:
 
 
 def _capture_route(page, errors: _Errors, *, context, base: str, group: str, route: dict, preset: str, theme: str,
-                   out: Path, axe_source: str | None, settle: str = "console") -> dict:
-    """One route at one preset and theme. Raises with the step that failed."""
+                   out: Path, axe_source: str | None, settle: str = "console",
+                   persona_cookie: bool = True) -> dict:
+    """One route at one preset and theme. Raises with the step that failed.
+    `persona_cookie` False (sets_persona) sets no PERSONA_COOKIE."""
     rid, ready = route["id"], route["ready"]
     stem = _stem(group, rid, preset, theme)
-    persona = persona_of(route)
+    persona = persona_of(route) if persona_cookie else None
     errors.reset()
     step = "persona"
     try:
         # Set for the member too: a cookie is not storage, RESET_STATE_JS
         # leaves it, and the route before may have been the admin.
-        parts = urlsplit(base)
-        context.add_cookies([{"name": PERSONA_COOKIE, "value": persona, "url": f"{parts.scheme}://{parts.netloc}"}])
+        if persona is not None:
+            parts = urlsplit(base)
+            context.add_cookies([{"name": PERSONA_COOKIE, "value": persona,
+                                  "url": f"{parts.scheme}://{parts.netloc}"}])
         step = "navigate"
         page.goto(base + route["path"], wait_until="load", timeout=NAV_TIMEOUT_MS)
         idle = True
@@ -852,6 +869,7 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
         "routes": [], "failed": [],
     }
     group_routes = routes["groups"][group]
+    persona_cookie = sets_persona(routes, settle)
 
     def fail_all(preset: str, theme: str, why: str) -> None:
         manifest["failed"].extend({"id": r["id"], "preset": preset, "theme": theme, "error": why}
@@ -882,7 +900,7 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                     try:
                         entry = _capture_route(page, errors, context=context, base=base, group=group, route=route,
                                                preset=preset, theme=theme, out=out, axe_source=axe_source,
-                                               settle=settle)
+                                               settle=settle, persona_cookie=persona_cookie)
                         manifest["routes"].append(entry)
                         why = []
                         if entry["pending"]:
