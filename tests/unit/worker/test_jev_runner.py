@@ -265,7 +265,9 @@ def _run_body(monkeypatch, tmp_path, *, endpoint, key_file, backend=None, browse
             monkeypatch.delenv(name, raising=False)
         else:
             monkeypatch.setenv(name, value)
-    for name in ("SWARM_GIT", "SWARM_SEARCH", "SWARM_HANDOFF", "JEV_API_URL"):
+    # SWARM_STATE too: an agent container exports it, and the runner then
+    # registers `swarm-state` beside the browser tools under test.
+    for name in ("SWARM_GIT", "SWARM_SEARCH", "SWARM_HANDOFF", "SWARM_STATE", "JEV_API_URL"):
         monkeypatch.delenv(name, raising=False)
     if backend is None:
         monkeypatch.delenv("SWARM_JEV_BACKEND", raising=False)
