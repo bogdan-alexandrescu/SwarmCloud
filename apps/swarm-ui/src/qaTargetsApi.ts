@@ -11,6 +11,7 @@ import { read, route, write, type Result } from './fetch'
  *   PATCH  /v1/qa-targets/{id}                   change (a workspace admin); a new host is pending
  *   DELETE /v1/qa-targets/{id}                   delete, with its credential (a workspace admin)
  *   POST   /v1/qa-targets/{id}:run               a member starts a run: {screens?, file}
+ *   POST   /v1/qa-targets/{id}:approve-host      a PLATFORM admin approves the host: {host, extra_origin?} (VQ-Q1, audited)
  *   POST   /v1/qa-targets/{id}/credential-links  a one-time link to the credential form (an admin)
  *   PUT    /v1/qa-targets/{id}/credential        the form's write, with the link's token
  *
@@ -242,6 +243,19 @@ export async function runQaTarget(id: string, file: 'issues' | 'none'): Promise<
   const r = await write(route('/v1/qa-targets/{target_id}:run', { target_id: id }), 'POST', { file })
   if (r.status !== 'ok') return r.status === 'error' ? r : { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The run was not answered.' } }
   return { ...r, data: { workflow_id: str(rec(r.data).workflow_id) } }
+}
+
+/**
+ * A platform admin's approval of the host they typed (§1.2, VQ-Q1), and the
+ * login's extra origin only when the target declares one: the API approves
+ * an origin only when it is named. The answer is the target as it now is.
+ */
+export async function approveQaTargetHost(id: string, host: string, extraOrigin: string | null): Promise<Result<QaTarget | null>> {
+  const body: { host: string; extra_origin?: string } = { host }
+  if (extraOrigin !== null) body.extra_origin = extraOrigin
+  const r = await write(route('/v1/qa-targets/{target_id}:approve-host', { target_id: id }), 'POST', body)
+  if (r.status !== 'ok') return r.status === 'error' ? r : { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The approval was not answered.' } }
+  return { ...r, data: normQaTarget(rec(r.data).qa_target) }
 }
 
 /** A one-time link for the signed-in admin; only its token is kept, by the caller, in memory. */

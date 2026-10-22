@@ -3,10 +3,12 @@ import { loadRepositories } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
 import { repoName } from './RepositoriesData'
 import { UrLink, UrRefresh, UrRegion, useUrRead, writeFailure } from './RepositoriesParts'
+import { useIsAdmin } from './PermissionCards'
 import { useRoleGate } from './Profile'
 import { PageHead } from './Shell'
 import { timeAgo } from './types'
 import {
+  approveQaTargetHost,
   cannotRunBecause,
   createQaTarget,
   deleteQaTarget,
@@ -44,6 +46,15 @@ import './styles/repositories.css'
  * new or changed host is pending again. Run is disabled on a target that
  * cannot run now, with the reason beside it, so nobody presses a button the
  * API is certain to refuse; the API is still the gate.
+ *
+ * APPROVE HOST (lane VQ6-APPROVE, §1.2) is drawn on a target whose host is
+ * not approved, to a PLATFORM admin only: `principal.is_admin`, read by
+ * `useIsAdmin` exactly as the permission cards read it, whatever the
+ * caller's workspace role. The admin types the host, and the login's extra
+ * origin when the target declares one, and nothing is sent until both match;
+ * the API's `admin_auth` is still the gate and its refusal is said in its own
+ * words. The approved target the API answers is drawn at once, until a read
+ * of a later revision replaces it.
  *
  * THE CREDENTIAL IS NEVER HELD BY THIS PAGE, exactly as ProviderKeys.tsx
  * holds a key: the two fields are uncontrolled, their values live in the DOM
@@ -85,6 +96,10 @@ export function QaTargetsScreen({ go, link }: { go: (to: string) => void; link?:
   // member runs. A viewer does neither. The server decides.
   const adminGate = useRoleGate('admin', 'register, change or set the credential of a QA target')
   const runGate = useRoleGate('member', 'run a QA target')
+  // A PLATFORM admin approves a host (VQ-Q1): not a workspace role. Unread is no control.
+  const platformAdmin = useIsAdmin() === true
+  // Targets the approve route answered, by id, drawn over the list's row of the same revision.
+  const [approved, setApproved] = useState<Record<string, QaTarget>>({})
   // The credential form's target and its link token, read once; the token is
   // null once it has been sent.
   const [cred, setCred] = useState<QaLink | null>(() => (link !== undefined ? link : linkFromLocation()))
@@ -178,13 +193,18 @@ export function QaTargetsScreen({ go, link }: { go: (to: string) => void; link?:
       >
         {(rows) => (
           <div className="ur-cards">
-            {rows.map((t) => (
+            {rows.map((row) => {
+              const fresh = approved[row.id]
+              const t = fresh !== undefined && fresh.revision === row.revision ? fresh : row
+              return (
               <TargetCard
                 key={t.id}
                 t={t}
                 go={go}
                 admin={adminGate === null}
+                platformAdmin={platformAdmin}
                 runGate={runGate}
+                onApproved={(doc) => setApproved((was) => ({ ...was, [doc.id]: doc }))}
                 onEdit={() => setEditing(t)}
                 onCredential={() => void openCredential(t)}
                 onDeleted={() => {
@@ -192,7 +212,8 @@ export function QaTargetsScreen({ go, link }: { go: (to: string) => void; link?:
                   list.reload()
                 }}
               />
-            ))}
+              )
+            })}
           </div>
         )}
       </UrRegion>
@@ -221,7 +242,9 @@ function TargetCard({
   t,
   go,
   admin,
+  platformAdmin,
   runGate,
+  onApproved,
   onEdit,
   onCredential,
   onDeleted,
@@ -229,6 +252,10 @@ function TargetCard({
   t: QaTarget
   go: (to: string) => void
   admin: boolean
+  /** The session is a platform admin (`principal.is_admin`): Approve host is drawn. */
+  platformAdmin: boolean
+  /** The target the approve route answered. */
+  onApproved: (doc: QaTarget) => void
   /** The caller's role is below `member`: Run is disabled and this says why. */
   runGate: string | null
   onEdit: () => void
@@ -241,6 +268,8 @@ function TargetCard({
   const [started, setStarted] = useState<string | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [approving, setApproving] = useState(false)
+  const canApprove = platformAdmin && t.host !== null && t.host_state !== 'approved'
 
   async function run() {
     if (why !== null || runGate !== null) return
@@ -317,7 +346,22 @@ function TargetCard({
             </Button>
           </>
         )}
+        {canApprove && !approving && (
+          <Button size="sm" onClick={() => setApproving(true)}>
+            Approve host
+          </Button>
+        )}
       </div>
+      {canApprove && approving && (
+        <ApproveHostForm
+          t={t}
+          onClose={() => setApproving(false)}
+          onApproved={(doc) => {
+            setApproving(false)
+            onApproved(doc)
+          }}
+        />
+      )}
       {confirmDelete && (
         <div className="ur-cacts" role="group" aria-label={`Delete ${t.name}`}>
           <span className="ur-small">{`Delete ${t.name}? Its test credential is deleted with it.`}</span>
@@ -344,6 +388,73 @@ function TargetCard({
       )}
     </Card>
     </div>
+  )
+}
+
+/** A typed host as the API compares it (`approve_host`): trimmed, lower case, no trailing dot. */
+function typedHost(text: string): string {
+  return text.trim().toLowerCase().replace(/\.+$/, '')
+}
+
+/**
+ * A platform admin's confirmation of the host, and of the login's extra
+ * origin when one is declared (§1.2). Nothing is sent until what is typed is
+ * the target's own; the API checks the same again and says its refusal.
+ */
+function ApproveHostForm({ t, onClose, onApproved }: { t: QaTarget; onClose: () => void; onApproved: (doc: QaTarget) => void }) {
+  const host = t.host ?? ''
+  const origin = t.sign_in.extra_origin
+  const [typed, setTyped] = useState('')
+  const [typedOrigin, setTypedOrigin] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState<string | null>(null)
+  const matches = host !== '' && typedHost(typed) === host && (origin === null || typedOrigin.trim() === origin)
+
+  async function submit(e: FormEvent) {
+    e.preventDefault()
+    if (!matches || busy) return
+    setBusy(true)
+    setFailed(null)
+    const r = await approveQaTargetHost(t.id, host, origin)
+    setBusy(false)
+    if (r.status === 'error') {
+      setFailed(writeFailure(r.error))
+      return
+    }
+    if (r.status === 'ok' && r.data !== null) onApproved(r.data)
+    else setFailed('The approval was answered without the target; refresh to read its host.')
+  }
+
+  return (
+    <form className="qa-approve" data-target-id={t.id} onSubmit={(e) => void submit(e)} autoComplete="off">
+      <p className="ur-small">
+        {`Approving ${host} lets this workspace's visual-QA runs open it. The approval is recorded under your name.`}
+        {origin !== null && ` The login also signs in through ${origin}, approved with it.`}
+      </p>
+      <label>
+        Type the host to confirm{' '}
+        <input name="confirm_host" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={host} spellCheck={false} />
+      </label>
+      {origin !== null && (
+        <label>
+          Type the login&rsquo;s extra origin{' '}
+          <input name="confirm_extra_origin" value={typedOrigin} onChange={(e) => setTypedOrigin(e.target.value)} placeholder={origin} spellCheck={false} />
+        </label>
+      )}
+      <span className="ur-cacts">
+        <Button type="submit" kind="primary" size="sm" busy={busy} disabled={!matches}>
+          {`Approve ${host}`}
+        </Button>
+        <Button size="sm" onClick={onClose}>
+          Cancel
+        </Button>
+      </span>
+      {failed !== null && (
+        <p className="ur-small ur-bad" role="alert">
+          {failed}
+        </p>
+      )}
+    </form>
   )
 }
 
