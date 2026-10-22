@@ -282,7 +282,8 @@ export function Dock() {
             (visual QA QA-039, 2026-10-20). As bare text between facts a
             ` · ` could not be taken away, and at 390px the strip broke after
             one and left it hanging at the end of the first line. On a phone
-            the separators step aside and the facts are spaced instead, so
+            the separators step aside and each fact opens with a dot of its
+            own that a line start clips (styles.css, run 5b), so
             the route count and the p95 come back (D39 had dropped them to
             hold one line, and the line wrapped anyway). */}
         <span className="ctl-dock-facts">

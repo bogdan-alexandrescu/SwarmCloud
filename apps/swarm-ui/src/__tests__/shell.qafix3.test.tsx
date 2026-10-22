@@ -18,7 +18,8 @@
  *   work-b-008   Access's title sat 2-4px lower than Setup's: the head row is
  *                centred, so a taller set of actions moved the title.
  *   work-a-008 (+ work-b-003) At 390 the dock's Reads facts ran together:
- *                the separators were hidden and only a gap was left.
+ *                the separators were hidden and only a gap was left (the
+ *                hairline that fixed it became a spaced dot in run 5b).
  *   admin-010    At 390 the rule between Platform counts' two help links
  *                stood alone at the start of the second line.
  */
@@ -238,7 +239,10 @@ describe('work-b-008: the page title sits at one height whatever the actions bes
 })
 
 describe('work-a-008 (+ work-b-003): the Reads facts are parted on a phone', () => {
-  it('rules a hairline before each fact, clipped where a fact starts a line', () => {
+  it('marks the start of each fact, clipped where a fact starts a line', () => {
+    // The mark was a 1px hairline until visual QA run 5b (r3:work-a-008) found
+    // it flush against the text; it is a spaced dot now, and
+    // qafix5.shell-admin.test.tsx holds its spacing.
     const f = fragment(
       '<div class="ctl-dock-facts"><span class="ctl-dock-fact">3 routes<span class="ctl-dock-sep"> · </span></span>' +
         '<span class="ctl-dock-fact">p95 40ms</span></div>',
@@ -247,17 +251,16 @@ describe('work-a-008 (+ work-b-003): the Reads facts are parted on a phone', () 
     const fact = f.querySelectorAll<HTMLElement>('.ctl-dock-fact')[1]!
     for (const theme of THEMES) {
       const env = { ...PHONE, theme }
-      // MUTATION: drop the phone `.ctl-dock-fact` border and the facts run
+      // MUTATION: drop the phone `.ctl-dock-fact` mark and the facts run
       // together, `3 routes p95 40ms`, with only a gap between them.
-      expect(painted(fact, 'border-left-style', env)).toBe('solid')
-      expect(painted(fact, 'border-left-width', env)).toBe('1px')
-      // MUTATION: drop the -1px margin or the clip and a fact that starts the
-      // second line carries a rule before it, the QA-039 defect turned round.
-      expect(painted(fact, 'margin-left', env)).toBe('-1px')
+      expect(painted(fact, 'content', env, 'before')).toBe("'·'")
+      // MUTATION: drop the negative margin or the clip and a fact that starts
+      // the second line carries a mark before it, the QA-039 defect turned round.
+      expect(painted(fact, 'margin-left', env)).toBe('-2ch')
       expect(painted(facts, 'overflow', env)).toBe('hidden')
     }
-    // Wider, the text ` · ` is the separator and no rule is drawn.
-    expect(painted(fact, 'border-left-style', WIDE)).toBeNull()
+    // Wider, the text ` · ` is the separator and no mark is drawn.
+    expect(painted(fact, 'content', WIDE, 'before')).toBeNull()
   })
 })
 
