@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Result } from '../fetch'
 import type { Task, TaskPage, WorkflowStep } from '../types'
 import { whyAgent } from '../types'
+import { layoutOf } from '../dag'
 import { nodeNote, stepWhy } from '../stepviews'
 import { task } from './runfixture'
 
@@ -156,5 +157,35 @@ describe('nodeNote on a cancelled step', () => {
     expect(nodeNote(steps[1]!, joined(req), steps, byId(failed, req), null)).toBeNull()
     // MUTATION: drop the `failedParentOf(...) === null` check from `nodeNote`.
     expect(nodeNote(steps[1]!, joined(cascaded), steps, byId(cascaded), null)).toBeNull()
+  })
+
+  it('is measured into the layout, so the taller node overlaps no other', () => {
+    // A fan: `checkpoints` failed, three siblings beside `synthesis`, one of
+    // them cancelled by the cascade and noted, the others not.
+    const wide = [
+      ...steps,
+      step('outline', ['checkpoints'], 'tsk_outline'),
+      step('review', ['synthesis', 'outline'], 'tsk_review'),
+    ]
+    const outline = { ...cascaded, id: 'tsk_outline', step_id: 'outline', cancel_requested: true }
+    const review = { ...cascaded, id: 'tsk_review', step_id: 'review', depends_on: ['tsk_synthesis', 'tsk_outline'] }
+    const tasks = byId(failed, cascaded, outline, review)
+    const noted = new Set(
+      wide.filter((s) => nodeNote(s, joined(tasks.get(s.task_id!)!), wide, tasks, null) !== null).map((s) => s.step_id),
+    )
+    expect([...noted].sort()).toEqual(['checkpoints', 'review', 'synthesis'])
+    const { nodes, nodeW } = layoutOf(wide, undefined, 'figures', noted)
+    const box = (id: string) => nodes.find((n) => n.step.step_id === id)!
+    // MUTATION: drop the `noted ? NOTE_H : 0` term from `heightOf` (dag.ts), so a noted node is no taller.
+    const unnoted = layoutOf(wide, undefined, 'figures', new Set()).nodes.find((n) => n.step.step_id === 'synthesis')!
+    expect(box('synthesis').h).toBeGreaterThan(unnoted.h)
+    for (const a of nodes) {
+      for (const b of nodes) {
+        if (a === b) continue
+        const apart = a.x + nodeW <= b.x || b.x + nodeW <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y
+        // MUTATION: place each level's top a fixed node height below the last in `layoutOf` (dag.ts), not below its tallest node.
+        expect(apart, `${a.step.step_id} overlaps ${b.step.step_id}`).toBe(true)
+      }
+    }
   })
 })
