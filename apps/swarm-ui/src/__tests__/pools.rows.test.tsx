@@ -3,8 +3,8 @@
 // Scan twenty pools for the one that is full, and from that row reach who holds
 // it and where its ceiling is set. Already true before this file, and pinned
 // here so it stays true: every row draws a utilisation track and a `%` cell
-// (`.cap-use`), and `Set by` is blank where the configured limit is what
-// applies. What this file added:
+// (`.cap-use`), and `Set by` is a faint `·` where the configured limit is
+// what applies (owner decision 2026-10-22, c14). What this file added:
 //
 //   * ABNORMAL ROWS FIRST, inside each family: a full pool is at the top of
 //     its family, then the rest in the one order every pool list shares
@@ -22,11 +22,12 @@
 // longer names the pool. Or keep the router stripping `?pool=` off
 // `capacity/pools` / `capacity/holders` -- `canonical` loses it.
 
-import { render, waitFor } from '@testing-library/react'
+import { render, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
 import type { Capacity, Pool } from '../types'
+import { THEMES, painted } from './marks'
 
 const api = vi.hoisted(() => ({ loadCapacity: vi.fn() }))
 vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), ...api }))
@@ -104,10 +105,17 @@ describe('Pools puts the abnormal row first and measures every row (#125)', () =
       expect(r.querySelector('.cap-use-pct')!.textContent).toMatch(/%$/)
     }
     expect(rowOf('runner:zeta').querySelector('.cap-use-pct')!.textContent).toBe('100%')
-    // Never blank since browser QA D32 (2026-10-04); the word in the dim ink
-    // since QA-099 (run 2, Pool limits) and run 3 (Pools).
-    expect(rowOf('global').querySelector('td[data-label="Set by"]')!.textContent).toBe('configured')
-    expect(rowOf('global').querySelector('td[data-label="Set by"] .cap-setby-cfg')).not.toBeNull()
+    // Never blank since browser QA D32 (2026-10-04); a faint dot named
+    // `configured`, owner decision 2026-10-22, c14 (the word is Pool limits'
+    // alone). MUTATION: print the word in the Pools cell again.
+    const cfg = rowOf('global').querySelector<HTMLElement>('td[data-label="Set by"]')!
+    expect(cfg.textContent).toBe('·')
+    // MUTATION: drop the dot's `role="img"`/`aria-label`.
+    const dot = within(cfg).getByRole('img', { name: 'configured' })
+    for (const theme of THEMES) {
+      // MUTATION: draw `.cap-setby-cfg` in `--text-dim`.
+      expect(painted(dot, 'color', { width: 1440, theme }), theme).toBe('var(--text-faint)')
+    }
     expect(rowOf('tenant:eng').querySelector('td[data-label="Set by"]')!.textContent).toBe('AIMD back-off')
   })
 })

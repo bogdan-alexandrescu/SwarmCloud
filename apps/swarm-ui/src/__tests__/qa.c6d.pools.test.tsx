@@ -7,21 +7,21 @@
 //          limits breaks a key only after a colon. The scope stays on every
 //          Pools row (CP-2, an owner decision) but is the part that is cut.
 //   G5-19  Set by said "configured" on 28 of 29 rows (capacity.html §G: Set by
-//          only when it is not "configured"). The configured case was a faint
-//          dot; since QA-099 (run 2, Pool limits) and run 3 (Pools) it is the
-//          word in the dim ink, quieter than the overrides in ink.
+//          only when it is not "configured"). The configured case is a faint
+//          dot on Pools (owner decision 2026-10-22, c14, reversing run 3's
+//          word); Pool limits alone prints the word in the dim ink (QA-099).
 //
 // BREAK IT: make the scope shrink like the key -- the first case fails; drop
 // the `<wbr>` or the keep-all rule -- the second fails; draw the word again --
-// the third fails.
+// the third fails; print the word on Pools -- the third fails too (c14).
 
-import { render, waitFor } from '@testing-library/react'
+import { render, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
 import type { Capacity, Me, Pool } from '../types'
 import type { CascadeEnv } from './cssgate'
-import { painted } from './marks'
+import { THEMES, painted } from './marks'
 import CAPACITY_CSS from '../styles/capacity.css?raw'
 
 const api = vi.hoisted(() => ({ loadCapacity: vi.fn(), loadAdminPools: vi.fn(), loadMe: vi.fn(), setPoolLimit: vi.fn() }))
@@ -129,17 +129,25 @@ describe('G5-11: a pool key is never cut by a clause that repeats it', () => {
 })
 
 describe('G5-19: Set by draws nothing loud for "configured"', () => {
-  it('is the word, quieter, on Pools (QA-099 there too, run 3), and the term in ink otherwise', async () => {
+  it('is the faint dot on Pools (G5-19; owner decision 2026-10-22, c14), and the term in ink otherwise', async () => {
     api.loadCapacity.mockResolvedValue(ok(capacity()))
     render(<CapacityScreen />)
     await waitFor(() => expect(document.querySelector('.cap-families tbody tr')).not.toBeNull(), WAIT)
-    const cells = [...document.querySelectorAll('.cap-families td[data-label="Set by"]')]
+    const cells = [...document.querySelectorAll<HTMLElement>('.cap-families td[data-label="Set by"]')]
     const texts = cells.map((c) => (c.textContent ?? '').trim())
-    expect(texts).not.toContain('·')
-    expect(texts).toContain('configured')
+    // MUTATION: print the word `configured` on Pools again (PR 1853's cell)
+    // -- owner decision 2026-10-22, c14: the word is Pool limits' alone.
+    expect(texts).not.toContain('configured')
+    expect(texts).toContain('·')
     expect(texts).toContain('provider quota')
-    const word = cells.find((c) => c.textContent === 'configured')!.querySelector('.cap-setby-cfg')!
-    expect(word.getAttribute('title')).toMatch(/^configured\. /)
+    const cell = cells.find((c) => c.textContent === '·')!
+    // MUTATION: drop the dot's `role="img"`/`aria-label` -- it is read as a
+    // bare middle dot.
+    const dot = within(cell).getByRole('img', { name: 'configured' })
+    for (const theme of THEMES) {
+      // MUTATION: draw `.cap-setby-cfg` in `--text-dim` -- the dot is faint.
+      expect(painted(dot, 'color', { ...WIDE, theme }), theme).toBe('var(--text-faint)')
+    }
   })
 
   it('is the word, quieter, on a Pool limits row (QA-099, run 2)', () => {

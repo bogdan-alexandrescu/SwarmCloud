@@ -17,13 +17,13 @@
  * mono face on `.n` heads, let a credential name break, blank the configured
  * Set by, drop the links head, or print `${n} units` -- each turns a case red.
  */
-import { render, waitFor } from '@testing-library/react'
+import { render, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
 import type { Capacity, Pool, Runtime } from '../types'
 import type { CascadeEnv } from './cssgate'
-import { painted } from './marks'
+import { THEMES, painted } from './marks'
 
 const api = vi.hoisted(() => ({ loadCapacity: vi.fn(), loadAdminPools: vi.fn() }))
 vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), ...api }))
@@ -91,7 +91,7 @@ describe('D22: a credential name never breaks mid-token', () => {
 })
 
 describe('D32: Set by is never blank, and a unit is a unit', () => {
-  it('says configured on a Pools row whose ceiling is the configured limit, and heads the links column', async () => {
+  it('marks configured with the faint dot on a Pools row whose ceiling is the configured limit (owner decision 2026-10-22, c14), and heads the links column', async () => {
     const data: Capacity = { tenant_id: 'eng', generated_at: '2026-10-02T10:00:00Z', pools: [pool('global', 1, 40), pool('runner:alpha', 1, 10, { hard_limit: 20, adaptive_target: 10 })], runner_profiles: {} } as Capacity
     api.loadCapacity.mockResolvedValue(ok(data))
     render(<CapacityScreen />)
@@ -100,9 +100,18 @@ describe('D32: Set by is never blank, and a unit is a unit', () => {
     expect(cells.length).toBeGreaterThanOrEqual(2)
     for (const c of cells) expect((c.textContent ?? '').trim(), 'a blank Set by').not.toBe('')
     const texts = cells.map((c) => c.textContent)
-    // The configured case is the word in the dim ink (QA G5-19, QA-099, run 3).
-    expect(texts).toContain('configured')
-    expect(document.querySelector('.cap-families td[data-label="Set by"] .cap-setby-cfg')).not.toBeNull()
+    // The configured case is a faint dot on Pools, never blank (D32) and
+    // never the word (owner decision 2026-10-22, c14; the word is Pool
+    // limits' alone). MUTATION: print `configured` in the Pools cell again.
+    expect(texts).toContain('·')
+    expect(texts).not.toContain('configured')
+    const cell = cells.find((c) => c.textContent === '·') as HTMLElement
+    // MUTATION: drop the dot's `role="img"`/`aria-label` -- D32's blank, to a reader.
+    const dot = within(cell).getByRole('img', { name: 'configured' })
+    for (const theme of THEMES) {
+      // MUTATION: draw `.cap-setby-cfg` in `--text-dim` or `--text`.
+      expect(painted(dot, 'color', { ...WIDE, theme }), theme).toBe('var(--text-faint)')
+    }
     expect(texts).toContain('AIMD back-off')
     const heads = [...document.querySelectorAll('.cap-families thead th')].map((th) => (th.textContent ?? '').trim())
     for (const h of heads) expect(h, 'a column with no visible head').not.toBe('')
