@@ -52,6 +52,20 @@ function ok<T>(data: T): Result<T> {
   return { status: 'ok', data, fetchedAt: Date.now(), serverAt: '2026-10-01T10:00:00Z' }
 }
 
+/**
+ * THE CATALOGUE ANSWERS LATE (FLAKE-UI-2, part of #1680). On the `push` run
+ * 39719361013 of PR 1924 the catalogue landed after `waitFor`'s 2 s budget
+ * (`asyncUtilTimeout`, setup.ts): `useResourceClasses` asks for it from a
+ * passive effect, which React runs only after the task rows' commit, and on a
+ * loaded runner that commit alone took seconds. Answering 2.5 s after the ask
+ * forces that order on every run instead of on a busy one.
+ */
+const CATALOGUE_LATE_MS = 2500
+
+function lateCatalogue(): Promise<Result<{ resource_classes: ResourceClasses }>> {
+  return new Promise((resolve) => setTimeout(() => resolve(ok({ resource_classes: CLASSES })), CATALOGUE_LATE_MS))
+}
+
 function waiting(over: Partial<Task>): Task {
   return task({ state: 'READY', started_at: null, completed_at: null, ...over })
 }
@@ -113,7 +127,7 @@ describe('taskGroup: the Waiting tab split, by blockerGroup with the task units'
 describe('the Agents list splits Waiting into Needs action and No room', () => {
   it('draws each waiting task under the group its blockers put it in', async () => {
     api.loadTasks.mockResolvedValue(ok({ tasks: [FULL, TOO_SMALL, UNSET_TASK], tenant_id: 'acme' }))
-    api.loadResourceClasses.mockResolvedValue(ok({ resource_classes: CLASSES }))
+    api.loadResourceClasses.mockImplementation(lateCatalogue)
 
     render(<AgentsScreen onOpen={() => {}} />)
 
@@ -179,7 +193,7 @@ describe('Capacity puts the pools that need a person under "Needs action" at the
   it('holds exactly the blockerGroup needs-action pools, and leaves a full pool in its family', async () => {
     const data: Capacity = { pools: POOLS, runner_profiles: {}, tenant_id: 'eng', generated_at: '2026-10-01T10:00:00Z' }
     api.loadCapacity.mockResolvedValue(ok(data))
-    api.loadResourceClasses.mockResolvedValue(ok({ resource_classes: CLASSES }))
+    api.loadResourceClasses.mockImplementation(lateCatalogue)
 
     render(<CapacityScreen />)
 
