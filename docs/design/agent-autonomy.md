@@ -318,6 +318,24 @@ L-1 binding are therefore off (`swarm_workers_log_view_enabled`, default
 `false`, lane AU5-VIEWOFF), and `logs_query` answers `logs_unavailable`, its
 documented refusal, until the owner decides the redesign (#1933).
 
+**Redesigned: a bucket of its own, fed by a sink (BGD, 2026-10-22, #1960).**
+A sink filter takes the full query language where a view filter cannot, so
+the selecting moved to a sink. `terraform/infra/log_bucket.tf` creates the log
+bucket `swarm-worker-logs` in the project's region with 30-day retention and a
+project sink, `swarm-worker-logs`, with its own writer identity, that routes
+into it only SwarmCloud's workers: `k8s_container` in the swarm cluster in
+namespaces `swarm-tenant-*`, and `cloud_run_job` named `swarm-job-*`. It never
+names the other team's cluster, not even to exclude it. The sink's writer
+identity holds `roles/logging.bucketWriter` on that bucket alone (a project
+binding whose condition is the bucket's name), the one IAM row this adds
+beside L-1. The view keeps its id, `swarm-workers`, now on that bucket, with
+the simplest filter a view takes (`SOURCE("projects/<project>")`); L-1 is
+unchanged. Two consequences. Worker logs are stored twice: `_Default` keeps
+its copy, and the new bucket holds a second for 30 days. And the platform's
+own components (`swarm-system`, the `swarm-*` services) are no longer in the
+view, so failure-review reads workers' logs only through it. The switch is on
+in dev and off in prod; `tests/terraform/log_view.tftest.hcl` holds all of it.
+
 Until the view exists, `logs_query` answers `logs_unavailable`, a real refusal
 that says what is missing. Platform components' logs (scheduler, reconciler,
 swarm-api) are **not** in a tenant agent's reach under invariant 9: they mix
