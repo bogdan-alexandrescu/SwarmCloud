@@ -42,6 +42,7 @@ vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof i
 
 const { AccountsScreen } = await import('../Accounts')
 const { accountName } = await import('../accountName')
+const { deriveChecks } = await import('../checks')
 
 const WAIT = { timeout: 5000 } as const
 const WIDE: CascadeEnv = { width: 1440 }
@@ -117,7 +118,7 @@ describe('the Name is shown in place of the label, with the id still printed', (
     // account it is is no longer on the row.
     expect(row('eng:ai-eng-2').id).toBe('eng:ai-eng-2')
     // MUTATION: print `account.label` in the pane's <h3> (Accounts.tsx Detail).
-    expect(within(pane).getByRole('heading', { level: 3 }).textContent).toBe('AI Eng 2')
+    expect(pane.querySelector('.acct-dhead h3')!.textContent).toBe('AI Eng 2')
     // MUTATION: drop the id from the pane's subtitle (`.acct-idt`).
     expect(pane.querySelector('.acct-idt')!.textContent).toContain('eng:ai-eng-2')
   })
@@ -127,7 +128,7 @@ describe('the Name is shown in place of the label, with the id still printed', (
     // MUTATION: make `accountName` return '' for a missing Name -- the row's
     // heading is empty.
     expect(row('eng:ai-eng-2').name).toBe('ai-eng-2')
-    expect(within(pane).getByRole('heading', { level: 3 }).textContent).toBe('ai-eng-2')
+    expect(pane.querySelector('.acct-dhead h3')!.textContent).toBe('ai-eng-2')
   })
 
   it('reads an absent, blank or null Name as no Name at all', () => {
@@ -137,6 +138,33 @@ describe('the Name is shown in place of the label, with the id still printed', (
     expect(accountName({ label: 'ai-eng-2', display_name: null })).toBe('ai-eng-2')
     expect(accountName({ label: 'ai-eng-2' })).toBe('ai-eng-2')
     expect(accountName({ label: 'ai-eng-2', display_name: 'AI Eng 2' })).toBe('AI Eng 2')
+  })
+})
+
+describe('the Overview names an account by its Name too', () => {
+  it("puts the Name in the Accounts check's detail", () => {
+    const loading = { status: 'loading', since: 0 } as const
+    const checks = deriveChecks(
+      {
+        capacity: loading,
+        tasks: loading,
+        leases: loading,
+        providers: loading,
+        stats: loading,
+        workflows: loading,
+        accounts: ok({
+          accounts: [account({ state: 'REAUTH_REQUIRED', display_name: 'AI Eng 2' })],
+          tenant_id: 'eng',
+        } as AccountsPage),
+      },
+      Date.now(),
+    )
+    const accounts = checks.find((c) => c.label === 'Accounts')!
+    expect(accounts.status).toBe('found')
+    const detail = accounts.status === 'found' ? accounts.problems.map((p) => p.detail).join(' ') : ''
+    // MUTATION: name accounts by `a.label` in checks.ts `accountCheck` -- the
+    // Overview's check says `ai-eng-2` after the owner renamed it.
+    expect(detail).toContain('AI Eng 2')
   })
 })
 
