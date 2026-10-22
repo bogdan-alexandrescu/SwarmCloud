@@ -194,8 +194,10 @@ describe('N18 work-a-005: a free lane draws its current state to now, not as hel
     // floor width can no longer grow leftward from 'now'.
     expect(park.style.left).toBe('')
     // MUTATION: draw the current park with the pills' layout and it pushes
-    // them left: the three pills are still three, laid out as before.
-    expect(row.querySelectorAll('.tl-seg.is-hold')).toHaveLength(3)
+    // them left. Its three attempts, minutes apart at 24 h, are one counted
+    // pill (QAFIX4-TIMELINE-2, c00), and the park is not among them.
+    expect(row.querySelectorAll('.tl-seg.is-hold')).toHaveLength(1)
+    expect(row.querySelector('.tl-seg.is-hold .tl-seg-n')?.textContent).toBe('3')
     // MUTATION: give the current park the `is-hold` class and it paints as
     // held capacity.
     expect(park.classList.contains('is-hold')).toBe(false)
