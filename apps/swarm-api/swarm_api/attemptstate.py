@@ -100,6 +100,11 @@ MERGE_TRAIN_ENTRIES = "merge_train_entries"
 CHILD_AWAIT_RESUMES = "child_await_resumes"
 MERGE_WAIT = "merge_wait"
 HUMAN_WAIT_RESUMES = "human_wait_resumes"
+#: An agent's release wait (AU7-REFUND): the block its park's detail carries
+#: (`questions.RELEASE_WAIT_KEY`, what `mergewake.release_wait_of` reads) and
+#: the waits refunded so far (`control.RELEASE_WAIT_RESUMES_METADATA_KEY`).
+RELEASE_WAIT = "release_wait"
+RELEASE_WAIT_RESUMES = "release_wait_resumes"
 HUMAN_RETURNED = "human_returned"
 HUMAN_READY = "human_ready"
 CHILD_CASCADE = "child_cascade"
@@ -116,6 +121,10 @@ CI_MAX_WAKES = 60
 SLOT_MAX_WAITS = 200
 TRAIN_MAX_WAITS = 200
 CI_FALLBACK_SECONDS = 900
+#: `control.RELEASE_WAIT_MAX_RESUMES` (4), which says why it is not the CI
+#: wait's 60: a release wait is woken once per release, so each refund is a
+#: whole release, the child await's shape and its bound.
+RELEASE_WAIT_MAX_RESUMES = 4
 #: `mergeslot.MERGE_SLOT_WAIT` and `mergetrain.TRAIN_WAITING`: the CI-park
 #: codes counted on their own counters and off the CI clock.
 MERGE_SLOT_WAIT = "merge_slot_wait"
@@ -1237,7 +1246,9 @@ class AttemptState:
         The refund rule is the reason's, with the server's bound (§4.4):
         CHILDREN_INCOMPLETE is `park_awaiting_children`, CI_PENDING is
         `park_ci_pending` (which needs `ci`), HUMAN_REQUIRED is `handoff`'s
-        human park; any other reason is `ControlPlane.park`, no refund.
+        human park, and DEPENDENCY_INCOMPLETE whose detail carries a
+        `release_wait` block is `park_release_wait` (AU7-REFUND); any other
+        reason is `ControlPlane.park`, no refund.
         """
         body: ParkBody = call.body
         attempt = call.attempt
@@ -1307,6 +1318,8 @@ class AttemptState:
         }
         extra: dict[str, Any] = {}
         refund = False
+        release_wait = (reason is ParkReason.DEPENDENCY_INCOMPLETE
+                        and isinstance(detail.get(RELEASE_WAIT), Mapping))
         if reason is ParkReason.CHILDREN_INCOMPLETE:
             used = _count(metadata.get(CHILD_AWAIT_RESUMES))
             refund = used < CHILD_AWAIT_MAX_RESUMES and attempt_count > 0
@@ -1323,6 +1336,17 @@ class AttemptState:
                 metadata[HUMAN_WAIT_RESUMES] = used + 1
                 payload["metadata"] = metadata
             extra = {HUMAN_WAIT_RESUMES: used + (1 if refund else 0)}
+        elif release_wait:
+            # An agent's release wait (AU7-REFUND): refunded within the
+            # server's bound. Its instant is the park's, as the direct path
+            # writes it; only the merge-wake tick ends the wait.
+            used = _count(metadata.get(RELEASE_WAIT_RESUMES))
+            refund = used < RELEASE_WAIT_MAX_RESUMES and attempt_count > 0
+            payload["next_eligible_at"] = now
+            if refund:
+                metadata[RELEASE_WAIT_RESUMES] = used + 1
+                payload["metadata"] = metadata
+            extra = {RELEASE_WAIT_RESUMES: used + (1 if refund else 0)}
         elif reason is ParkReason.CI_PENDING:
             ci = body.ci
             assert ci is not None
@@ -1361,7 +1385,7 @@ class AttemptState:
         kind = EventType.PARKED
         event_detail: dict[str, Any] = {
             "reason": reason.value, "next_eligible_at": payload["next_eligible_at"],
-            **({"attempt_refunded": refund} if reason in (
+            **({"attempt_refunded": refund} if release_wait or reason in (
                 ParkReason.CHILDREN_INCOMPLETE, ParkReason.CI_PENDING,
                 ParkReason.HUMAN_REQUIRED) else {}),
             **extra, **detail}

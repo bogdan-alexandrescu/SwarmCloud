@@ -160,6 +160,22 @@ _UNPINNED = object()
 CHILD_AWAIT_RESUMES_METADATA_KEY = "child_await_resumes"
 CHILD_CASCADE_METADATA_KEY = "child_cascade"
 
+#: An agent's release wait (lane AU7-REFUND, docs/design/agent-autonomy.md
+#: §3.8): the waits whose attempt `park_release_wait` refunded, and the bound
+#: on them. Restated as `swarm_api.attemptstate.RELEASE_WAIT_RESUMES` and
+#: `RELEASE_WAIT_MAX_RESUMES`, the routes' park's own key and bound, and
+#: reserved from callers by `swarm_api.validation`;
+#: tests/unit/worker/test_release_wait_refund.py holds them equal.
+#: 4, NOT THE CI WAIT'S 60: the CI bound counts the wakes of ONE wait, which
+#: its 15-minute fallback wakes over and over (60 is about 15 h of one pull
+#: request). A release wait is woken once, by the merge-wake tick on a
+#: terminal release, so each refund is a whole release and 60 would bound
+#: nothing. One refund per woken wait is the child await's shape, and its 4
+#: (`config.max_child_await_resumes`) fits: an agent that ships, waits, finds
+#: the release red, fixes and waits again a few times still has its attempts.
+RELEASE_WAIT_RESUMES_METADATA_KEY = "release_wait_resumes"
+RELEASE_WAIT_MAX_RESUMES = 4
+
 #: A merge step's CI wait (lane MS2, docs/merge-step.md "Revised 2026-10-06"
 #: §1): `metadata.merge_wait` on the task, written by `park_ci_pending`. Read by
 #: swarm-api's wake tick (`swarm_api.mergewake`), which adds the marker below,
@@ -1979,6 +1995,90 @@ class ControlPlane:
         self.release_lease(f"parked:{reason.value}")
         return refunded
 
+    def park_release_wait(
+        self,
+        *,
+        detail: dict[str, Any],
+        max_resumes: int,
+        uploads: list[Any] | None = None,
+    ) -> bool:
+        """An agent's release wait (§3.8): PARKED on DEPENDENCY_INCOMPLETE with
+        its `release_wait` block, slot given back (invariant 4).
+
+        Lane AU7-REFUND, decided 2026-10-22 ("Refund within a bound, like the
+        CI wait"): the await park's shape exactly (`park_awaiting_children`).
+        ONE FENCED TRANSACTION: a superseded attempt gets `FencedWriteRefused`
+        with nothing written, so it can neither park the task nor refund an
+        attempt (invariant 5). Inside it the attempt admission counted is
+        refunded -- `attempt_count` down by one,
+        `metadata.release_wait_resumes` up by one -- while fewer than
+        `max_resumes` have been, so waiting for a release does not spend the
+        task's attempts, and a wait parked on the last one can still be woken
+        (the merge-wake tick wakes no task whose retries are exhausted). Past
+        the bound the park counts like any attempt, as every release wait did
+        before this lane, so an agent that waits for ever still ends at
+        `max_attempts`.
+
+        `detail` is the park's `blocked_by` entry, `release_wait` included:
+        the tick reads the wait there. `next_eligible_at` is the instant of
+        the park; only the tick ends the wait (`scheduler.loop.owner_wait`).
+        `uploads` is recorded in the same transaction, as `park` records it
+        (#166). Returns whether the attempt was refunded. The attempt's end,
+        the event and the release follow the transaction, as in every park.
+        """
+        write = "release-wait park"
+        reason = ParkReason.DEPENDENCY_INCOMPLETE
+        now = utcnow()
+
+        def _apply(txn: Any) -> tuple[bool, int]:
+            task = self._fenced_task(txn, write=write)
+            current = _as_state(task.get("state"))
+            assert_transition(current, TaskState.PARKED)
+            index = self._read_carry_index(txn) if uploads else None
+            metadata = dict(task.get("metadata") or {})
+            used = _count(metadata.get(RELEASE_WAIT_RESUMES_METADATA_KEY))
+            attempt_count = int(task.get("attempt_count", 0))
+            refund = used < max_resumes and attempt_count > 0
+            payload: dict[str, Any] = {
+                "state": TaskState.PARKED.value,
+                "park_reason": reason.value,
+                "next_eligible_at": now,
+                "current_lease_id": None,
+                "blocked_by": [{"reason": reason.value, **detail}],
+                "updated_at": now,
+            }
+            if refund:
+                metadata[RELEASE_WAIT_RESUMES_METADATA_KEY] = used + 1
+                payload["metadata"] = metadata
+                payload["attempt_count"] = attempt_count - 1
+            txn.update(self._task_ref(), payload)
+            if uploads:
+                self._record_parked_uploads(txn, index, uploads, at=now)
+            return refund, used + (1 if refund else 0)
+
+        refunded, resumes = self._run_transaction(_apply)
+        # Best effort, as in `park`: the park has landed, and the event and
+        # the release below are what give the slot back.
+        try:
+            self.record_attempt_end(exit_code=ExitCode.PARKED, error=reason.value)
+        except Exception as exc:
+            self._log.warning(
+                "the release-wait park landed but its attempt end was not recorded",
+                error=f"{type(exc).__name__}: {str(exc)[:300]}",
+            )
+        self.emit(
+            EventType.PARKED,
+            {
+                "reason": reason.value,
+                "next_eligible_at": now,
+                "attempt_refunded": refunded,
+                RELEASE_WAIT_RESUMES_METADATA_KEY: resumes,
+                **detail,
+            },
+        )
+        self.release_lease(f"parked:{reason.value}")
+        return refunded
+
     def park_ci_pending(
         self,
         *,
@@ -3055,6 +3155,22 @@ class RemoteControlPlane(ControlPlane):
         """The await park. `max_resumes` is swarm-api's own bound there
         (`attemptstate.CHILD_AWAIT_MAX_RESUMES`, the worker's default 4)."""
         answer = self._park(ParkReason.CHILDREN_INCOMPLETE, detail=detail, uploads=uploads)
+        return bool(answer.get("refunded"))
+
+    def park_release_wait(
+        self,
+        *,
+        detail: dict[str, Any],
+        max_resumes: int,
+        uploads: list[Any] | None = None,
+    ) -> bool:
+        """An agent's release wait, as one route call. `max_resumes` is not
+        sent: the bound is swarm-api's (`attemptstate.RELEASE_WAIT_MAX_RESUMES`),
+        which refunds a DEPENDENCY_INCOMPLETE park only when its detail
+        carries the `release_wait` block. `next_eligible_at` is the park's
+        instant, as on the direct path."""
+        answer = self._park(ParkReason.DEPENDENCY_INCOMPLETE, detail=detail, uploads=uploads,
+                            next_eligible_at=utcnow())
         return bool(answer.get("refunded"))
 
     def park_ci_pending(

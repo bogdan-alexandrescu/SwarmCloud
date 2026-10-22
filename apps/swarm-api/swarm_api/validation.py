@@ -1222,6 +1222,14 @@ HUMAN_HANDOFFS_METADATA_KEY = "human_handoffs"
 #: set it would turn a park into a free re-queue.
 HUMAN_RETURNED_METADATA_KEY = "human_returned"
 
+#: An agent's release wait (lane AU7-REFUND, docs/design/agent-autonomy.md
+#: §3.8): the waits whose attempt the worker's release-wait park refunded,
+#: counted against `attemptstate.RELEASE_WAIT_MAX_RESUMES`. A caller who set
+#: it would choose how many free attempts the task has left: a negative or
+#: zero count buys waits beyond the bound. The worker restates it
+#: (`control.RELEASE_WAIT_RESUMES_METADATA_KEY`).
+RELEASE_WAIT_RESUMES_METADATA_KEY = "release_wait_resumes"
+
 #: The pull requests a workflow's root step waits for before it may start
 #: (`after`, lane SPEED-D3, `swarm_api.prgate`): written by `submit_workflow`
 #: from the spec's `after` and then only by the wake tick. A caller who set
@@ -1270,6 +1278,7 @@ RESERVED_METADATA_KEYS = (
     FORGE_SOURCE_METADATA_KEY,
     AFTER_PRS_METADATA_KEY,
     QA_TARGET_METADATA_KEY,
+    RELEASE_WAIT_RESUMES_METADATA_KEY,
 )
 
 #: Reserved like every key above, and refused by the same function in the
@@ -2026,6 +2035,11 @@ _RESERVED_BECAUSE = {
         f"metadata.{HUMAN_RETURNED_METADATA_KEY} is reserved: it records a person's "
         "return of the live browser during an attempt, written only by "
         "POST /v1/tasks/{task_id}/live/control/return. Drop the key from metadata."
+    ),
+    RELEASE_WAIT_RESUMES_METADATA_KEY: (
+        f"metadata.{RELEASE_WAIT_RESUMES_METADATA_KEY} is reserved: it is set only "
+        "by the worker, to count the release waits whose attempt was refunded. "
+        "Drop the key from metadata."
     ),
     OWNER_ANSWERS_METADATA_KEY: (
         f"metadata.{OWNER_ANSWERS_METADATA_KEY} is reserved: it holds the owner's "
