@@ -34,6 +34,12 @@ first -- the workspace's owner or a platform admin, exactly who may set the
 workspace default it overrides -- so a member's answers 403 with nothing
 written. `inherit` clears it. Its `admin_audit` entry commits with it.
 
+`agents_may_file_issues` (AU-0 REG-FLAG, docs/design/agent-autonomy.md §3.2,
+owner decision Q2: "admin-set, off by default") is gated exactly as `context`
+(`_context_by`): §3.2 names the workspace's admin, so a member's answers 403
+before anything is written, and the change and its `admin_audit` entry
+(`agents_may_file_issues_set`) commit in one transaction.
+
 WORKSPACE ROLES (docs/design/workspace-roles.md §4.1, §4.8, Q13; lane
 ROLES-GATES-AUTOMATE). Register, PATCH, DELETE, index and index:run need the
 role `member` (`_member`): a `viewer` is `role_member_required`, through its
@@ -339,9 +345,11 @@ def patch_repository(
     merge_policy_by = _platform_admin(body.model_fields_set, auth, "merge_policy")
     readable_by = _platform_admin(body.model_fields_set, auth, "readable_by_tasks")
     context_by = _context_by(ctx, auth, tenant_id) if body.context is not None else None
+    file_issues_by = (_context_by(ctx, auth, tenant_id)
+                      if body.agents_may_file_issues is not None else None)
     record = _store(ctx).patch(tenant_id, repo_id, body, platform_by=platform_by,
                                merge_policy_by=merge_policy_by, readable_by=readable_by,
-                               context_by=context_by)
+                               context_by=context_by, file_issues_by=file_issues_by)
     log.info(
         "repository patch tenant=%s repo_id=%s by=%s fields=%s", tenant_id, record["repo_id"],
         auth.email, ",".join(sorted(body.model_dump(exclude_none=True))),
