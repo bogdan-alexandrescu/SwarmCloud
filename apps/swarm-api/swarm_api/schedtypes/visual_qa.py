@@ -10,7 +10,9 @@ never taken from the schedule), and `QaTargets.record_run` (the run record the
 worker's route reads before it serves a target to a task). The one difference
 is the submission: `firing.submit_workflow`, so the workflow is the owner's,
 carries the firing's `metadata.schedule` mark, and spends one place of the
-firing's room. A firing files issues (`file: "issues"`, `:run`'s default);
+firing's room. It is made inside `validation.qa_target_mark_allowed(mark)`,
+as `:run`'s is: `metadata.qa_target` is a reserved key (VQ2-RESERVE), and
+without the exemption every browser step is refused 422. A firing files issues (`file: "issues"`, `:run`'s default);
 nothing in the schedule can make it push or merge.
 
 A REFUSAL, NOT A FAILURE. `runnable`'s refusals are `ApiError`s below 500
@@ -49,6 +51,7 @@ from ..qatargets import QaTargets, render_run
 from ..schedules import ScheduleInvalid
 from ..schemas import WorkflowCreate
 from ..store import TASKS
+from ..validation import qa_target_mark_allowed
 
 log = logging.getLogger(__name__)
 
@@ -123,8 +126,13 @@ def create(firing: Any) -> list[dict[str, Any]]:
     # Every refusal of `:run` propagates: the firing ends `refused` with its code.
     target = targets.runnable(tenant_id, target_id, file=FILE)
     workflow, mark, browser = render_run(target, screens=None, file=FILE)
-    item = firing.submit_workflow(WorkflowCreate.model_validate(workflow),
-                                  repo_id=str(target.get("repo_id") or "") or None)
+    # The mark is reserved (`validation.QA_TARGET_METADATA_KEY`, VQ2-RESERVE):
+    # only this exact value, only for this submission, gets past the refusal,
+    # as in `run_target`. `firing.submit_workflow` opens the schedule's own
+    # exemption inside it; the two are separate and both are needed.
+    with qa_target_mark_allowed(mark):
+        item = firing.submit_workflow(WorkflowCreate.model_validate(workflow),
+                                      repo_id=str(target.get("repo_id") or "") or None)
     task_ids = browser_task_ids(firing.ctx.db, tenant_id, item["id"], browser)
     targets.record_run(tenant_id=tenant_id, target=target, workflow_id=item["id"],
                        task_ids=task_ids, file=FILE, by=(firing.owner.email or "").strip().lower())

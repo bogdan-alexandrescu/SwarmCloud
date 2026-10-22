@@ -50,8 +50,9 @@ tasks are recorded in `qa_target_runs/{workflow_id}`.
 
 WHY A RUN RECORD AS WELL AS THE MARK. `metadata.qa_target` is one of
 `validation.RESERVED_METADATA_KEYS` (VQ2-RESERVE): a caller's mark is refused
-at submission, and `run_target` alone writes it, inside
-`validation.qa_target_mark_allowed`. The record stays as the first defence,
+at submission, and only `run_target` and a `visual-qa` schedule's firing
+(`schedtypes/visual_qa.py` `create`, the same `:run` on a schedule) write it,
+each inside `validation.qa_target_mark_allowed`. The record stays as the first defence,
 which predates the reservation: the worker's route serves a target only to a
 task the run record names, for that target, in that tenant, so a mark this
 module did not write reads as missing however it reached the store.

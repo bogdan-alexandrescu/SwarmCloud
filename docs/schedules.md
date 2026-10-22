@@ -1319,7 +1319,11 @@ on-demand one is `POST /v1/qa-targets/{id}:run`.
   owner: the same `QaTargets.runnable`, `render_run` and `record_run` the
   route calls, in its order. The one difference is that the workflow is
   submitted through the firing, so it carries the firing's mark and spends a
-  place of its room. It runs with `file: "issues"`, `:run`'s default.
+  place of its room. It runs with `file: "issues"`, `:run`'s default. The
+  browser steps' `metadata.qa_target` is a reserved key (VQ2-RESERVE), so the
+  firing submits inside `validation.qa_target_mark_allowed(mark)` exactly as
+  `:run` does. Without it every firing would be refused 422 and submit
+  nothing.
 * **Why a refusal, not a failure.** Every refusal of `:run` is the firing's:
   a host still `pending` (`qa_target_host_pending`), the repository
   registration's `agents_may_file_issues` off (`issue_writes_off`), an
