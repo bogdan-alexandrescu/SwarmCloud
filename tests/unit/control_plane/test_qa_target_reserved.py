@@ -19,7 +19,8 @@ What these tests hold, over the real app and the in-memory Firestore:
     schedule's is;
   * `:run` still stamps its browser steps and its tasks are admitted;
   * `qatargets.METADATA_KEY`, the key `:run` writes and the worker's route
-    reads, is the reserved one.
+    reads, is the reserved one, and it is served as stored
+    (`task_input.PLATFORM_METADATA_KEYS`).
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from typing import Any
 
 import pytest
 
-from swarm_api import qatargets
+from swarm_api import qatargets, task_input
 from swarm_api.errors import ValidationFailed
 from swarm_api.validation import (
     QA_TARGET_METADATA_KEY,
@@ -79,6 +80,10 @@ def test_the_key_is_reserved_under_the_name_run_writes():
     assert QA_TARGET_METADATA_KEY in RESERVED_METADATA_KEYS
     # MUTATION: rename the key in validation.py alone and `:run` writes a key nothing refuses.
     assert QA_TARGET_METADATA_KEY == qatargets.METADATA_KEY == "qa_target"
+    # Served as stored, unmasked, as every platform-written key is: the console
+    # and the worker's route read `{id, revision}` back exactly.
+    # MUTATION: give task_input its own list without the key and this is red.
+    assert QA_TARGET_METADATA_KEY in task_input.PLATFORM_METADATA_KEYS
 
 
 @pytest.mark.parametrize("value", [MARK, {}, None, "qat_forged"], ids=repr)
