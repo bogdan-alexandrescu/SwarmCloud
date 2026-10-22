@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { loadCapacity, loadModelClasses, loadStats, type ModelClassOffer } from './api'
 import {
   CeilingTag,
@@ -940,6 +940,12 @@ export function AddSetting({ idPrefix, offers, onAdd, onOwn }: {
   )
 }
 
+/** The task form's card for runner `name`, or its radio when it is drawn bare. */
+function runnerCard(form: HTMLFormElement | null, name: string): HTMLElement | null {
+  const radio = [...(form?.querySelectorAll<HTMLInputElement>('input[name="runner-profile"]') ?? [])].find((r) => r.value === name)
+  return radio === undefined ? null : (radio.closest<HTMLElement>('.sbf-runner') ?? radio)
+}
+
 /* ========================================================================== */
 
 export function SubmitScreen() {
@@ -1153,6 +1159,9 @@ function Form({ capacity }: { capacity: Capacity }) {
   const classSent = sentModelClass(offers?.[chosen], modelClass)
 
   const pick = (name: string) => {
+    // Where the pressed card is, before the render the pick causes (N27).
+    const card = runnerCard(formRef.current, name)
+    pickedAt.current = card === null ? null : { name, top: card.getBoundingClientRect().top }
     setChosen(name)
     setBrowserTool(AUTO)
     setQaOn(false)
@@ -1204,22 +1213,39 @@ function Form({ capacity }: { capacity: Capacity }) {
   // (visual QA QA-101): an untouched form drew a greyed-out button and no
   // sentence naming what was missing. One clause per term of `blocked`, in
   // its order, so the line and the button cannot disagree.
-  const why = [
-    ...(chosen === '' ? ['choose a runner'] : []),
-    ...(chosen !== '' && !built.ok ? [built.message] : []),
-    ...(chosen !== '' && missing.length > 0 ? [`fill in ${missing.join(', ')}`] : []),
-    ...(pushes && repo === '' ? ['give a repository url to push to'] : []),
-    ...(badRepo ? ['give a repository url the API accepts'] : []),
-    ...(chosen !== '' && tooBig !== null ? [tooBig] : []),
-    ...(mcpUnfilled.length > 0 ? [`give ${mcpUnfilled.join(', ')} ${mcpUnfilled.length === 1 ? 'its' : 'their'} credential`] : []),
+  // EACH CLAUSE KNOWS ITS STEP (visual QA run 4, N27): below 1080 the step
+  // that holds the field draws its own clauses (`WhyAt`), because the panel
+  // is the last thing on the page and at 390 it was three screens away.
+  const whySteps: readonly (readonly [1 | 2 | 3, string])[] = [
+    ...(chosen === '' ? [[1, 'choose a runner'] as const] : []),
+    ...(chosen !== '' && !built.ok ? [[2, built.message] as const] : []),
+    ...(chosen !== '' && missing.length > 0 ? [[2, `fill in ${missing.join(', ')}`] as const] : []),
+    ...(pushes && repo === '' ? [[3, 'give a repository url to push to'] as const] : []),
+    ...(badRepo ? [[3, 'give a repository url the API accepts'] as const] : []),
+    ...(chosen !== '' && tooBig !== null ? [[2, tooBig] as const] : []),
+    ...(mcpUnfilled.length > 0 ? [[2, `give ${mcpUnfilled.join(', ')} ${mcpUnfilled.length === 1 ? 'its' : 'their'} credential`] as const] : []),
   ]
+  const why = whySteps.map(([, clause]) => clause)
+  const whyAt = (step: 1 | 2 | 3) => {
+    const clauses = whySteps.filter(([n]) => n === step).map(([, clause]) => clause)
+    return clauses.length === 0 || justSent ? null : <p className="sb-note sbf-why-at">Not ready: {clauses.join('; ')}.</p>
+  }
   const unsent = chosen === '' ? [] : unsentSettings(fields)
   // ROOM 0 IS A TASK THAT WAITS, NOT ONE REFUSED (visual QA QA-108). The send
   // is still ready -- the API takes it, and it lands READY or PARKED holding
   // no capacity (invariant 1) -- but "Ready to send" over a full pool said
   // nothing about it not starting yet. A measured zero only: an unread room
   // is never read as none (TS-23).
-  const waits = profile !== null && headroomFor(profile).agents === 0
+  // AND A ROOM NOT READ MAY WAIT (visual QA run 4, N26): claude-code-browser,
+  // whose pools could not be read, said nothing while its neighbours at 0 said
+  // "waits". It is told it MAY wait -- never that it will, never that it will
+  // not. A runner no pool caps (`uncapped`) does not wait for room at all.
+  const roomNow = profile === null ? null : headroomFor(profile)
+  const waits: 'yes' | 'maybe' | 'no' =
+    roomNow === null ? 'no'
+      : roomNow.agents === 0 ? 'yes'
+      : roomNow.agents === null && roomNow.basis !== 'uncapped' ? 'maybe'
+      : 'no'
   // WHAT THIS CLICK WOULD SEND, as one comparable value. After a 201 the
   // button is "Submit another" for as long as the form still says exactly
   // what was sent (VQA V048, owner decision Q1 on #1038): one more click on an
@@ -1260,6 +1286,37 @@ function Form({ capacity }: { capacity: Capacity }) {
     if (restarted === 0) return
     formRef.current?.querySelector<HTMLElement>('input[name="runner-profile"]:not(:disabled)')?.focus()
   }, [restarted])
+  // A RUNNER PICK STAYS ON THE PICK, AND ITS DETAIL COMES INTO VIEW (visual QA
+  // run 4, N27). At 390 each pick left the page at its top with the runner's
+  // detail -- `ProfileFacts`, drawn under the cards -- below the fold: the pick
+  // re-draws all three steps, and the page moved under the card that was
+  // pressed. Before the paint, the scroller is moved back by exactly what the
+  // card moved, then on by as much of the detail as is below the fold, but
+  // never so far that the card itself leaves the top. The scroller's own
+  // `scrollTop`, not `scrollIntoView`, which moves every ancestor, the page
+  // included; and nothing moves when nothing did.
+  const pickedAt = useRef<{ name: string; top: number } | null>(null)
+  useLayoutEffect(() => {
+    const was = pickedAt.current
+    pickedAt.current = null
+    if (was === null || was.name !== chosen) return
+    const card = runnerCard(formRef.current, chosen)
+    if (card === null) return
+    // The console's scroller; the document's outside it. jsdom has neither.
+    const scroller = card.closest<HTMLElement>('.ctl-scroll') ?? (document.scrollingElement as HTMLElement | null | undefined) ?? null
+    if (scroller === null) return
+    const moved = card.getBoundingClientRect().top - was.top
+    if (moved !== 0) scroller.scrollTop = scroller.scrollTop + moved
+    const port = scroller.getBoundingClientRect()
+    const portBottom = scroller === document.scrollingElement ? window.innerHeight : port.bottom
+    const portTop = scroller === document.scrollingElement ? 0 : port.top
+    const detail = formRef.current?.querySelector<HTMLElement>('.sbf-room') ?? null
+    if (detail === null) return
+    const below = detail.getBoundingClientRect().bottom - portBottom
+    const spare = card.getBoundingClientRect().top - portTop
+    const by = Math.min(below, spare)
+    if (by > 0) scroller.scrollTop = scroller.scrollTop + by
+  }, [chosen])
   // The send panel's "`prompt` missing" takes the reader to that field.
   const toField = (key: string) => {
     const f = fields.find((x) => x.name.trim() === key)
@@ -1388,6 +1445,7 @@ function Form({ capacity }: { capacity: Capacity }) {
           )}
           {bad.runner_profile && <p id={refusedSayId('runner_profile')} tabIndex={-1} className="warn-text" role="alert">{bad.runner_profile}</p>}
           {profile && <ProfileFacts name={chosen} profile={profile} pools={capacity.pools} />}
+          {whyAt(1)}
         </Move>
 
         {/* NO `aside` (B7.4): this was the second copy of `input-is-opaque` on
@@ -1418,6 +1476,7 @@ function Form({ capacity }: { capacity: Capacity }) {
             </>
           )}
           {bad.input && <p id={refusedSayId('input')} tabIndex={-1} className="warn-text" role="alert">{bad.input}</p>}
+          {whyAt(2)}
         </Move>
 
         {/* `steps={1}`: a standalone task IS one step, and that is the number the
@@ -1433,6 +1492,7 @@ function Form({ capacity }: { capacity: Capacity }) {
             scale="task"
             errors={{ strategy: bad.strategy, carrier: bad.carrier, repository_url: bad.repository_url }}
           />
+          {whyAt(3)}
         </Move>
       </div>
 
@@ -1489,7 +1549,9 @@ function Form({ capacity }: { capacity: Capacity }) {
                 on a dependency; invariant 1 says neither holds capacity. */}
             <li className="ctl-fact">
               <b>lands as</b>
-              {waits ? 'READY or PARKED · waits for room · costs nothing' : 'READY or PARKED · costs nothing'}
+              {waits === 'yes' ? 'READY or PARKED · waits for room · costs nothing'
+                : waits === 'maybe' ? 'READY or PARKED · may wait for room: room not read · costs nothing'
+                : 'READY or PARKED · costs nothing'}
             </li>
             {unsent.length > 0 && (
               <li className="ctl-fact">
@@ -1550,7 +1612,17 @@ function Form({ capacity }: { capacity: Capacity }) {
               {roleGate}
             </p>
           )}
-          <p className="sb-note">Nothing runs until the scheduler admits it into every pool it needs.</p>
+          {/* SAY IT UNDER THE BUTTON (owner decision 2026-10-22, Console Design
+              Calls 2 c09; box comment 6283735984). "Ready to send" over a live
+              "Start one agent" with a measured room of 0 said nothing about the
+              task not starting: the heading and the button stay -- the send is
+              valid, and it lands holding nothing (invariant 1) -- and this note
+              says what happens next, in the warning ink. A MEASURED zero only:
+              an unread room keeps the admits note, and "lands as" says it may
+              wait (N26). It follows `profile`, so each room read re-decides it. */}
+          {waits === 'yes'
+            ? <p className="sb-note sbf-wait">Room for 0 now: it is accepted and waits, holding nothing, until every pool it needs has room.</p>
+            : <p className="sb-note">Nothing runs until the scheduler admits it into every pool it needs.</p>}
           {/* THE OUTCOME IS DRAWN BESIDE THE BUTTON THAT CAUSED IT (VQA V002,
               owner decision Q1 on #1038), as the issue form draws it. It was
               at the top of the build column, ~1,400px above the button at

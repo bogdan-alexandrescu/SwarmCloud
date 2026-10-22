@@ -208,6 +208,16 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
 /* THE PRIMARY ACTION IS THE ACCENT, and disabled it is the pale accent the
    frame draws (`.btn.pri.dis`), not a grey bar (#503). */
 .sb-note { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+/* ROOM FOR 0 NOW IS SAID IN THE WARNING INK (owner decision 2026-10-22, c09):
+   the task is accepted and waits, so it is not a refusal (`--warn`) and not a
+   footnote (`--text-dim`); `--warn-ink` is the runner card's "key missing". */
+.sb-note.sbf-wait { color: var(--warn-ink); }
+/* THE REASON AT ITS STEP (visual QA run 4, N27). Below 1080 the send panel is
+   the last thing on the page, and at 390 its "Not ready" line sat about three
+   screens below the field it was about; each step now says its own clause.
+   From 1080 the panel is sticky beside the steps (the rule below), so the
+   step's copy is not drawn there. */
+.sbf-why-at { margin-top: var(--ctl-s2); }
 
 /* WHAT THE CLICK DID, UNDER THE BUTTON (VQA V002/V049, owner decision Q1 on
    #1038). Every submit form draws its outcome here; the panel's own gap is
@@ -417,6 +427,7 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
    on the task, workflow and issue forms alike. */
 @media (min-width: 1080px) {
   .sbf > .sbf-side { align-self: stretch; }
+  .sbf-why-at { display: none; }
 }
 
 /* THE SEND CARD IS ITS COLUMN'S WIDTH, NEVER ITS CONTENT'S (browser QA N2,
