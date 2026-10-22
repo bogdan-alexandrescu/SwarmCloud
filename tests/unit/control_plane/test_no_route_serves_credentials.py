@@ -444,6 +444,9 @@ SECRET_PAYLOAD_READERS = {
     "forgeapp.py",
     # A tenant's forge token, sent to GitHub for issue previews and writes.
     "forge.py",
+    # The tenant's `-git-wf` slot, the credential for a workflow-touching push
+    # on its platform: true registration only, scrubbed from every answer.
+    "gittools.py",
 }
 
 
