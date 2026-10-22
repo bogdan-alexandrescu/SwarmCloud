@@ -70,6 +70,7 @@ from .routes import (
     people,
     platform,
     qa_identity,
+    qatargets,
     repositories,
     roles,
     runs,
@@ -117,6 +118,10 @@ UNCAPTURED_ROUTES = frozenset({
     # The QA identity's credential (docs/design/qa-identity.md §4.3): the
     # third route that serves credential material.
     qa_identity.ISSUE_ROUTE,
+    # A QA target's test credential (docs/design/visual-qa-any-app.md §2.1,
+    # §2.2): the one route that takes it, and the worker's that serves it.
+    qatargets.CREDENTIAL_ROUTE,
+    qatargets.ISSUE_ROUTE,
 })
 
 # --------------------------------------------------------------------------
@@ -478,6 +483,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # worker's credential, in UNCAPTURED_ROUTES; a member's read of its own
     # workspace's grant; and the platform admin's grants.
     app.include_router(qa_identity.router)
+    # QA targets (docs/design/visual-qa-any-app.md §1, §2, §6, lane VQ-2):
+    # registration, host approval, the credential link, `:run`, and the
+    # worker's read of its attempt's target, in UNCAPTURED_ROUTES.
+    app.include_router(qatargets.router)
 
     # Inner to `observe`, so a request it refuses is still counted.
     app.add_middleware(FrontDoor, owner=app)
