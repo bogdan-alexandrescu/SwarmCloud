@@ -130,6 +130,9 @@ def test_every_metadata_key_the_worker_reads_is_signed():
         "merge_wait",
         "owner_answers",
         "question_wait",
+        # The release waits refunded so far (AU7-REFUND), read by the
+        # release-wait park exactly as `child_await_resumes` is by the await's.
+        "release_wait_resumes",
     }
     assert not unsigned, (
         f"agent_worker reads metadata keys {sorted(unsigned)} that the step-spec signature "
@@ -162,6 +165,8 @@ def test_every_metadata_key_the_worker_reads_is_signed():
 #: steps (VQ2-RESERVE, docs/design/visual-qa-any-app.md §1.1): written by
 #: `:run`, read only by swarm-api's worker route, which serves a target only
 #: to a task the run record names; no worker acts on the mark itself.
+#: And the release waits refunded so far (AU7-REFUND), written by the
+#: worker's release-wait park between attempts, as `child_await_resumes` is.
 UNSIGNED_PLATFORM_KEYS = {
     "schedule",
     "human_wait_resumes",
@@ -179,6 +184,7 @@ UNSIGNED_PLATFORM_KEYS = {
     "forge_credential_source",
     "after_prs",
     "qa_target",
+    "release_wait_resumes",
 }
 
 
@@ -202,6 +208,7 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         START_PROBLEM_METADATA_KEY,
         OWNER_ANSWERS_METADATA_KEY,
         QA_TARGET_METADATA_KEY,
+        RELEASE_WAIT_RESUMES_METADATA_KEY,
     )
 
     # MUTATION: drop QA_TARGET_METADATA_KEY from RESERVED_METADATA_KEYS and this is red.
@@ -224,6 +231,7 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         FORGE_SOURCE_METADATA_KEY,
         AFTER_PRS_METADATA_KEY,
         QA_TARGET_METADATA_KEY,
+        RELEASE_WAIT_RESUMES_METADATA_KEY,
     } == UNSIGNED_PLATFORM_KEYS
 
 

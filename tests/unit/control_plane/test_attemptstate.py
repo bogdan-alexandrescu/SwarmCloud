@@ -453,6 +453,61 @@ def test_an_await_park_refunds_by_the_servers_bound(client, db):
     assert task["metadata"]["child_await_resumes"] == 1
 
 
+def _release_wait_park(request_id: str) -> dict[str, Any]:
+    """The worker's release-wait park (AU7-REFUND): no number in it."""
+    return {"request_id": request_id, "reason": "DEPENDENCY_INCOMPLETE",
+            "next_eligible_at": datetime.now(timezone.utc).isoformat(),
+            "detail": {"park_phase": "release_wait",
+                       "release_wait": {"sha": "a" * 40, "attempt_id": ATTEMPT,
+                                        "asked_at": "2026-10-22T00:00:00+00:00"}}}
+
+
+def test_a_release_wait_park_refunds_by_the_servers_bound_and_not_past_it(client, db):
+    from swarm_api.attemptstate import RELEASE_WAIT_MAX_RESUMES
+
+    worker = Worker()
+    opened(client, db, worker, attempt_count=2,
+           metadata={"release_wait_resumes": RELEASE_WAIT_MAX_RESUMES - 1})
+    response = worker.post(client, "park", _release_wait_park("rw-1"))
+    assert response.status_code == 200, response.text
+    task = db.docs[f"tasks/{TASK}"]
+    # MUTATION: drop the release-wait branch from `_park_payload` and nothing is refunded.
+    assert response.json()["refunded"] is True
+    assert task["attempt_count"] == 1
+    assert task["metadata"]["release_wait_resumes"] == RELEASE_WAIT_MAX_RESUMES
+    assert task["park_reason"] == "DEPENDENCY_INCOMPLETE"
+    (parked,) = _events(db, "parked")
+    assert parked["detail"]["attempt_refunded"] is True
+
+
+def test_a_release_wait_park_past_the_bound_refunds_nothing(client, db):
+    from swarm_api.attemptstate import RELEASE_WAIT_MAX_RESUMES
+
+    worker = Worker()
+    opened(client, db, worker, attempt_count=2,
+           metadata={"release_wait_resumes": RELEASE_WAIT_MAX_RESUMES})
+    response = worker.post(client, "park", _release_wait_park("rw-2"))
+    assert response.status_code == 200, response.text
+    task = db.docs[f"tasks/{TASK}"]
+    # MUTATION: refund without the bound (`refund = attempt_count > 0`) and this is red.
+    assert response.json()["refunded"] is False
+    assert task["attempt_count"] == 2
+    assert task["metadata"]["release_wait_resumes"] == RELEASE_WAIT_MAX_RESUMES
+    assert task["state"] == "PARKED"
+
+
+def test_a_stale_generations_release_wait_park_is_409_and_writes_nothing(client, db):
+    worker = Worker()
+    opened(client, db, worker, attempt_count=2)
+    db.docs[f"tasks/{TASK}"].update({"current_generation": 2, "current_lease_id": "lease_new"})
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "park", _release_wait_park("rw-3"))
+    # MUTATION: apply the refund before `_fenced` reads the task and the stale park refunds.
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "attempt_fenced"
+    assert db.docs == before
+
+
 # --------------------------------------------------------------------------
 # release: this tuple's lease, whatever the body names
 # --------------------------------------------------------------------------

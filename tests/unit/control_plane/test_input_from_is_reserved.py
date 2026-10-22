@@ -339,7 +339,30 @@ def test_every_service_written_key_is_reserved_in_one_place():
         # A QA run's mark on its browser steps, written by `:run` (VQ2-RESERVE).
         # MUTATION: drop it from RESERVED_METADATA_KEYS and this tuple is red.
         "qa_target",
+        # The release waits whose attempt was refunded (AU7-REFUND), written
+        # only by the worker's release-wait park. A caller who set it would
+        # choose how many refunds the task has left.
+        # MUTATION: drop it from RESERVED_METADATA_KEYS and this tuple is red.
+        "release_wait_resumes",
     )
+
+
+def test_a_caller_supplied_release_wait_resumes_is_refused_and_creates_nothing(client, db):
+    """AU7-REFUND: the counter of refunded release waits is the worker's to write."""
+    response = client.post(
+        "/v1/tasks",
+        headers=auth_header("alice"),
+        json={"runner_profile": "mock",
+              "metadata": {"unit": "payments", "release_wait_resumes": -100}},
+    )
+
+    assert _created(db) == {"tasks": [], "workflows": []}
+    # MUTATION: leave the key out of RESERVED_METADATA_KEYS and this is a 201.
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == RESERVED_CODE
+    assert body["detail"]["reserved_metadata_keys"] == ["release_wait_resumes"]
+    assert "metadata.release_wait_resumes" in body["message"]
 
 
 def test_the_worker_reads_the_key_this_service_reserves():
