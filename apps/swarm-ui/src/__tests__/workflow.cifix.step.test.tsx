@@ -1,7 +1,7 @@
 /**
  * A WORKFLOW'S CI-FIX ROUND IS DRAWN AS A STEP (STATUS-TRUE, part of #1914).
  *
- * BGD, 2026-10-22, https://swarm.saga.xyz/workflows/wf_15160fca1d07438ab594:
+ * BGD, 2026-10-22, the console page /workflows/wf_15160fca1d07438ab594:
  * CI on PR 1905 had failed and the merge step's round `ci-fix:1` was RUNNING,
  * and nothing on the page said so. The round is appended to the lane's
  * workflow after submission, and its task belongs to the round's OWN
