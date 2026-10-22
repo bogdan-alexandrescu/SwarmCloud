@@ -24,7 +24,7 @@
 // Every token-shaped value is built at runtime; nothing here is a credential.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { repo, serve, visible } from './repofixture'
 
 const WAIT = { timeout: 4000 }
@@ -299,21 +299,25 @@ describe('QA targets: the credential form', () => {
     expect(document.documentElement.outerHTML).not.toContain(token)
   })
 
-  // KNOWN GAP, EXPECTED TO FAIL (review of VQ-6): the plugin's link is
-  // `/qa-targets/<id>/credential?t=<token>` (VQ-2's `mint_link`), and
-  // paths.ts `pathToAddress` has no route for it, so the console answers it
-  // with Not found and the form never opens. Routing it needs paths.ts and
-  // App.tsx, outside this lane's territory, and is asked of the owner in the
-  // PR's questions. `it.fails` keeps CI green while the route is missing and
-  // turns red the day it lands: then make this a plain `it`.
-  it.fails('the console routes the plugin\u2019s credential link to the QA targets page, without its token', async () => {
-    const { pathToAddress } = await import('../paths')
+  // THE ROUTE (lane VQ6-ROUTE, part of #1933; decided 2026-10-22, VQ-6's
+  // question 1): the plugin's link is `/qa-targets/<id>/credential?t=<token>`
+  // (VQ-2's `mint_link`), and paths.ts resolves it to the QA targets page with
+  // the token dropped, the way it drops the key link's.
+  it('the console routes the plugin\u2019s credential link to the QA targets page, without its token', async () => {
+    const { pathToAddress, addressToPath } = await import('../paths')
     const token = runtimeValue()
     const route = pathToAddress(`/qa-targets/${LOGIN}/credential`, `?t=${token}`)
-    // MUTATION: route `/qa-targets/<id>/credential` in paths.ts and this passes (so `it.fails` goes red).
+    // MUTATION: drop the `/qa-targets/<id>/credential` case from paths.ts `pathToAddress` and this is null.
     expect(route).not.toBeNull()
     expect(route!.address).toBe('work/repositories?page=qa-targets')
+    // MUTATION: keep the link's query in the address (`?page=qa-targets&t=..`) and the token survives into it.
     expect(route!.address).not.toContain(token)
+    expect(addressToPath(route!.address, 'live')).toBe('/repositories?page=qa-targets')
+    // A trailing slash is the same link; anything else under `/qa-targets` is not served.
+    expect(pathToAddress(`/qa-targets/${LOGIN}/credential/`, `?t=${token}`)?.address).toBe('work/repositories?page=qa-targets')
+    // MUTATION: route any `/qa-targets/...` path and these are not null.
+    expect(pathToAddress(`/qa-targets/${LOGIN}`, `?t=${token}`)).toBeNull()
+    expect(pathToAddress(`/qa-targets/${LOGIN}/credential/more`, `?t=${token}`)).toBeNull()
   })
 
   it('the link parser reads only the credential path and never another `t`', async () => {
@@ -524,5 +528,111 @@ describe('QA targets: a platform admin approves a pending host (VQ6-APPROVE, §1
     await waitFor(() => expect(visible(card(PENDING))).toContain(message), WAIT)
     // MUTATION: mark the row approved on a refusal and the state flips.
     expect(card(PENDING).getAttribute('data-host-state')).toBe('pending')
+  })
+})
+
+describe('QA targets: the credential link, opened in the console (VQ6-ROUTE)', () => {
+  /** The console, opened at the plugin's link, live, as a workspace admin. */
+  async function openLink(token: string) {
+    window.history.replaceState(null, '', `/qa-targets/${LOGIN}/credential?t=${token}`)
+    const calls = live('admin')
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    const logs = (['log', 'info', 'warn', 'error', 'debug'] as const).map((k) => vi.spyOn(console, k))
+    const { App } = await import('../App')
+    render(<App />)
+    // Read straight after the first render's effects, before any read lands.
+    const firstBar = window.location.href
+    return { calls, setItem, logs, firstBar }
+  }
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('lands on the QA targets page with the credential form open for the link\u2019s target', async () => {
+    const token = runtimeValue()
+    const { calls } = await openLink(token)
+    // MUTATION: drop the credential path from paths.ts and the console draws Not found; no form.
+    // MUTATION: drop App's capture (or pass `qaLink` as null) and the page mounts after the bar was rewritten; no form.
+    const form = await waitFor(() => {
+      const f = document.querySelector<HTMLFormElement>('form.qa-cred')
+      if (f === null) throw new Error('no credential form')
+      return f
+    }, WAIT)
+    expect(form.getAttribute('data-target-id')).toBe(LOGIN)
+    expect(window.location.pathname).toBe('/repositories')
+    expect(new URLSearchParams(window.location.search).get('page')).toBe('qa-targets')
+    form.querySelector<HTMLInputElement>('input[name="username"]')!.value = 'qa-bot@example.com'
+    form.querySelector<HTMLInputElement>('input[name="password"]')!.value = runtimeValue(18)
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PUT').length).toBe(1), WAIT)
+    // MUTATION: hand the page the link without its token (`token: null`) and the form refuses before the PUT.
+    const put = calls.find((c) => c.method === 'PUT')!
+    expect(put.url.split('?')[0]).toBe(`/v1/qa-targets/${LOGIN}/credential`)
+    expect((put.body as Json).link_token).toBe(token)
+  })
+
+  it('App hands the page the link it read off the bar, once', async () => {
+    // The page reads the bar itself when no link is handed to it, and here it
+    // mounts in App's first render, so the cases above pass on that read
+    // alone. This one stands in for RepositoriesScreen and reads what App hands it.
+    const token = runtimeValue()
+    window.history.replaceState(null, '', `/qa-targets/${LOGIN}/credential?t=${token}`)
+    live('admin')
+    const handed: unknown[] = []
+    vi.doMock('../Repositories', () => ({
+      RepositoriesScreen: ({ view, go, qaLink }: { view: string | null; go: (to: string) => void; qaLink?: unknown }) => {
+        handed.push({ view, qaLink })
+        return (
+          <div>
+            <button type="button" onClick={() => go('work/repositories')}>away</button>
+            <button type="button" onClick={() => go('work/repositories?page=qa-targets')}>back</button>
+          </div>
+        )
+      },
+    }))
+    try {
+      const { App } = await import('../App')
+      render(<App />)
+      // MUTATION: drop App's capture (pass no `qaLink` to RepositoriesScreen) and the first mount is handed undefined.
+      expect(handed[0]).toEqual({ view: 'page=qa-targets', qaLink: { targetId: LOGIN, token } })
+      fireEvent.click(button(document, 'away')!)
+      await waitFor(() => expect(handed.some((h) => (h as { view: string | null }).view === null)).toBe(true), WAIT)
+      const before = handed.length
+      fireEvent.click(button(document, 'back')!)
+      await waitFor(() => expect(handed.length).toBeGreaterThan(before), WAIT)
+      // MUTATION: never clear App's ref once handed over and the page, opened again, is handed the used token.
+      expect(handed.slice(before)).toEqual(handed.slice(before).map(() => ({ view: 'page=qa-targets', qaLink: null })))
+    } finally {
+      vi.doUnmock('../Repositories')
+    }
+  })
+
+  it('the bar no longer carries `t` after the first render', async () => {
+    const token = runtimeValue()
+    const { firstBar } = await openLink(token)
+    // MUTATION: keep the query in paths.ts's route (`${QA_TARGETS_PAGE}&${query}`) and normalise writes `t` back into the bar.
+    expect(firstBar).not.toContain(token)
+    expect(new URL(firstBar).searchParams.has('t')).toBe(false)
+    await waitFor(() => expect(document.querySelector('form.qa-cred')).not.toBeNull(), WAIT)
+    expect(window.location.href).not.toContain(token)
+    // Never in another URL either: no link, no request's address, no history state.
+    expect(document.documentElement.outerHTML).not.toContain(token)
+    expect(JSON.stringify(window.history.state ?? null)).not.toContain(token)
+  })
+
+  it('nothing writes the token to storage or to the console', async () => {
+    const token = runtimeValue()
+    const { calls, setItem, logs } = await openLink(token)
+    await waitFor(() => expect(document.querySelector('form.qa-cred')).not.toBeNull(), WAIT)
+    // MUTATION: keep the captured link in sessionStorage (or localStorage) for a later mount and these see it.
+    expect(setItem.mock.calls.filter((c) => String(c[1]).includes(token))).toEqual([])
+    const stored = [window.localStorage, window.sessionStorage].flatMap((s) => Object.keys(s).map((k) => `${k}=${s.getItem(k)}`))
+    expect(stored.filter((kv) => kv.includes(token))).toEqual([])
+    // MUTATION: log the captured link in App and this sees it.
+    for (const spy of logs) expect(spy.mock.calls.filter((c) => c.some((a) => JSON.stringify(a ?? null)?.includes(token)))).toEqual([])
+    // MUTATION: put the token in a read's address and this sees it.
+    expect(calls.filter((c) => c.url.includes(token))).toEqual([])
   })
 })
