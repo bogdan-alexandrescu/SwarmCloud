@@ -943,8 +943,17 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
    that shrank to make room for `← AUTO` beside it, and it broke mid-token.
    A backend is one identifier: it keeps its width and its letters together,
    and the annotation wraps under it instead when the track is tight. (0,5,0)
-   because the primitive's rule is (0,3,1) and loads after this sheet. */
-.ctl-facts.is-rows > .ctl-fact.rt-runs-on { flex-wrap: wrap; row-gap: 0; }
+   because the primitive's rule is (0,3,1) and loads after this sheet.
+   THE FACT ITSELF NEVER WRAPS (visual QA run 5b, r2:capacity-007, part of
+   #1680). It was `flex-wrap: wrap` from when `← AUTO` was its own item; once
+   the backend and the annotation became one value item (below), that wrap
+   could only move the WHOLE value -- `CLOUD_RUN_JOB ← AUTO` -- to the row's
+   start, under `runs on`, whenever key plus value outgrew the card's track,
+   which it did on demo-wide at 1440. `nowrap` keeps the value beside its key;
+   the primitive's `min-width: 0` on it (styles.css `.ctl-facts.is-rows >
+   .ctl-fact > :not(b)`) lets it shrink to the room left, so the wrap happens
+   inside it, under CLOUD_RUN_JOB. */
+.ctl-facts.is-rows > .ctl-fact.rt-runs-on { flex-wrap: nowrap; }
 .ctl-facts.is-rows > .ctl-fact.rt-runs-on .rt-backend { flex: none; overflow-wrap: normal; }
 /* capacity-007 (visual QA run 2, 2026-10-20): `← AUTO` WRAPPED UNDER THE KEY.
    The annotation was the fact's own flex item, so its wrap went to the row's
