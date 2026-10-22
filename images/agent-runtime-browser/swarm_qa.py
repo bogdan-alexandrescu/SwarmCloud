@@ -49,9 +49,13 @@ What `capture` does, and why each:
 5. Per route: sets the route's PERSONA (`persona` in the route list:
    `member`, today's fixture identity, when absent, or `platform-admin`) as
    the cookie PERSONA_COOKIE on the console's origin, on EVERY route, so no
-   route inherits the one before it's. The cookie is the console fixture's:
-   a `--settle generic` capture whose route list names no persona sets it on
-   no route, and records `persona: null` (VQ5-PERSONA; BGD, 2026-10-22:
+   route inherits the one before it's. The page writes it (`document.cookie`,
+   PERSONA_COOKIE_JS), loading the console's origin first when it shows
+   another; never `context.add_cookies`, which Playwright sends as
+   `Storage.setCookies` and the live gate refuses with every cookie API, by
+   design (#1980: run 5 failed every route there). The cookie is the console
+   fixture's: a `--settle generic` capture whose route list names no
+   persona sets it on no route, and records `persona: null` (VQ5-PERSONA; BGD, 2026-10-22:
    "Skip it when no route names a persona and --settle generic"). Then it
    navigates and waits for `load`, then up to NETWORK_IDLE_MS for
    the network to go quiet (the console polls, so it may never be quiet for
@@ -192,6 +196,10 @@ NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 PERSONAS = ("member", "platform-admin")
 DEFAULT_PERSONA = PERSONAS[0]
 PERSONA_COOKIE = "swarm_qa_persona"
+#: Writes the cookie text it is handed from the page, on the page's own origin:
+#: the gate passes page.evaluate, and refuses Storage.setCookies (#1980). Write
+#: only: nothing here ever reads a cookie back.
+PERSONA_COOKIE_JS = "(cookie) => { document.cookie = cookie; }"
 
 #: `swarm-handoff device` waits up to 30 s for the worker (DEVICE_WAIT_SECONDS
 #: there); this is that plus room for the process itself.
@@ -731,7 +739,7 @@ def _settle_generic(page) -> list[str]:
         waited += SETTLE_POLL_MS
 
 
-def _capture_route(page, errors: _Errors, *, context, base: str, group: str, route: dict, preset: str, theme: str,
+def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict, preset: str, theme: str,
                    out: Path, axe_source: str | None, settle: str = "console",
                    persona_cookie: bool = True) -> dict:
     """One route at one preset and theme. Raises with the step that failed.
@@ -739,15 +747,21 @@ def _capture_route(page, errors: _Errors, *, context, base: str, group: str, rou
     rid, ready = route["id"], route["ready"]
     stem = _stem(group, rid, preset, theme)
     persona = persona_of(route) if persona_cookie else None
-    errors.reset()
     step = "persona"
     try:
         # Set for the member too: a cookie is not storage, RESET_STATE_JS
-        # leaves it, and the route before may have been the admin.
+        # leaves it, and the route before may have been the admin. Written by
+        # the page, so the page must be on the console's origin: the first
+        # route (about:blank) and one after a failed load go there first;
+        # every other route is still on the route before it's.
         if persona is not None:
-            parts = urlsplit(base)
-            context.add_cookies([{"name": PERSONA_COOKIE, "value": persona,
-                                  "url": f"{parts.scheme}://{parts.netloc}"}])
+            here = _origin(page.url)
+            if here is None or here != _origin(base):
+                page.goto(base, wait_until="load", timeout=NAV_TIMEOUT_MS)
+            page.evaluate(PERSONA_COOKIE_JS, f"{PERSONA_COOKIE}={persona}; path=/; SameSite=Lax")
+        # After the persona step, so what the origin's own load logged is not
+        # the route's.
+        errors.reset()
         step = "navigate"
         page.goto(base + route["path"], wait_until="load", timeout=NAV_TIMEOUT_MS)
         idle = True
@@ -898,7 +912,7 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                 page.emulate_media(color_scheme=theme, reduced_motion="reduce")
                 for route in group_routes:
                     try:
-                        entry = _capture_route(page, errors, context=context, base=base, group=group, route=route,
+                        entry = _capture_route(page, errors, base=base, group=group, route=route,
                                                preset=preset, theme=theme, out=out, axe_source=axe_source,
                                                settle=settle, persona_cookie=persona_cookie)
                         manifest["routes"].append(entry)
