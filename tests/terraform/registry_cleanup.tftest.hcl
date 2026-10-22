@@ -123,7 +123,7 @@ run "the_registry_keeps_channels_promotions_and_the_pin_and_deletes_stale_tags" 
   }
 }
 
-run "the_root_passes_dry_run_ttl_and_keep_count_and_dev_is_a_dry_run" {
+run "the_root_passes_dry_run_ttl_and_keep_count_and_dev_deletes_for_real" {
   command = plan
 
   module {
@@ -179,12 +179,13 @@ run "the_root_passes_dry_run_ttl_and_keep_count_and_dev_is_a_dry_run" {
     error_message = "terraform/infra/main.tf passes cleanup_dry_run, untagged_ttl and keep_recent_versions to module \"artifact_registry\""
   }
 
-  # MUTATION: set `cleanup_dry_run = false` in dev.tfvars, or remove the line,
-  # and this fails. Turning it off is the owner's call, after the would-delete
-  # list (docs/runbooks/registry-cleanup.md), and it is made by editing this.
+  # MUTATION: set `cleanup_dry_run = true` in dev.tfvars, or remove the line,
+  # and this fails. dev deletes for real since the owner read the would-delete
+  # list (2026-10-22, #1886: "Go live via a PR"); the line stays explicit, so
+  # going back to a dry run is this one edit and this assertion with it.
   assert {
-    condition     = length(regexall("(?m)^cleanup_dry_run\\s*=\\s*true\\b", file("${var.tf_root}/environments/dev/dev.tfvars"))) == 1
-    error_message = "terraform/environments/dev/dev.tfvars sets cleanup_dry_run = true (owner 2026-10-21: dry run first)"
+    condition     = length(regexall("(?m)^cleanup_dry_run\\s*=\\s*false\\b", file("${var.tf_root}/environments/dev/dev.tfvars"))) == 1
+    error_message = "terraform/environments/dev/dev.tfvars sets cleanup_dry_run = false (owner 2026-10-22: live after the would-delete list)"
   }
 
   # MUTATION: change the root's cleanup_dry_run default to false and this
