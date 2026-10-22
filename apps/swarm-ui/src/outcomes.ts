@@ -767,9 +767,26 @@ export function instantLabel(iso: string, tz: string): string {
   return fmt(iso, tz, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
 }
 
-/** `Sep 12, 00:00 → now`: the range the server resolved and bucketed, in its zone. */
-export function ledgerRange(d: Pick<Outcomes, 'since' | 'until' | 'generated_at' | 'tz'>): string {
-  const toNow = Math.abs(Date.parse(d.until) - Date.parse(d.generated_at)) < 2_000
+/**
+ * HOW OLD A READ MAY BE AND STILL END AT 'now': five minutes. The pages
+ * re-read the ledger well inside that, so a live page always says 'now'; a
+ * read older than this is one the page is showing from before.
+ */
+export const LEDGER_NOW_MS = 5 * 60_000
+
+/**
+ * `Sep 12, 00:00 → now`: the range the server resolved and bucketed, in its zone.
+ *
+ * 'NOW' IS THE READER'S, NOT THE READ'S (visual QA 5b:QA-014, 2026-10-22).
+ * A range that ran to its own `generated_at` printed 'now' however long ago
+ * that was: the fixture's ledger, generated on Sep 25, read 'Sep 12, 00:00 →
+ * now, 14d' with the clock at Oct 19, a span the page never read. It ends at
+ * 'now' only while the read is within `LEDGER_NOW_MS` of `now`, and at its
+ * own instant otherwise.
+ */
+export function ledgerRange(d: Pick<Outcomes, 'since' | 'until' | 'generated_at' | 'tz'>, now: number = Date.now()): string {
+  const generated = Date.parse(d.generated_at)
+  const toNow = Math.abs(Date.parse(d.until) - generated) < 2_000 && Math.abs(now - generated) < LEDGER_NOW_MS
   return `${instantLabel(d.since, d.tz)} → ${toNow ? 'now' : instantLabel(d.until, d.tz)}`
 }
 

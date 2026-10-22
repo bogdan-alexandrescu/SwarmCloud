@@ -88,10 +88,23 @@
    its own link, and that link's `::after` covers the box, so a click anywhere
    but an id still opens the list. The ids sit above the cover. */
 .ov-att.is-split { position: relative; }
-.ov-att.is-split > .ov-att-go { text-decoration: none; }
-.ov-att.is-split > .ov-att-go::after { content: ''; position: absolute; inset: 0; border-radius: inherit; }
-.ov-att.is-split > .ov-att-go:focus-visible { outline: none; }
-.ov-att.is-split > .ov-att-go:focus-visible::after { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.ov-att.is-split .ov-att-go { text-decoration: none; }
+.ov-att.is-split .ov-att-go::after { content: ''; position: absolute; inset: 0; border-radius: inherit; }
+.ov-att.is-split .ov-att-go:focus-visible { outline: none; }
+.ov-att.is-split .ov-att-go:focus-visible::after { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+/* THE WORKFLOW IS A WAY OUT AS PLAIN AS THE LIST (visual QA 5b:wg-dark-D1,
+   2026-10-22). The only way to the failed workflow was its id in the ids
+   line, under a prominent link to the Agents list. Each named workflow now
+   has `Workflow <id> →` above `Agents · FAILED →`, in a column that does not
+   shrink: drawn by `.ov-att-go`, the list link's own rule, but above the
+   cover rather than carrying one, so a click elsewhere still opens the list.
+   The id gives way with an ellipsis, the arrow never; its title is whole. */
+.ov-att-acts { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; max-width: 45%; min-width: 0; }
+.ov-att.is-split .ov-att-wf { position: relative; z-index: 1; display: inline-flex; gap: 0.3em; max-width: 100%; min-width: 0; }
+.ov-att.is-split .ov-att-wf::after { content: none; }
+.ov-att.is-split .ov-att-wf:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.ov-att-wf:hover .ov-att-wf-t { text-decoration: underline; text-underline-offset: 2px; }
+.ov-att-wf-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ov-att-ids a { position: relative; z-index: 1; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .ov-att-ids a:hover { color: var(--sk-ac); }
 /* The skeleton of a check card, while the checks read: the card's own box
@@ -372,6 +385,10 @@
      wraps and the link drops under them, at the right edge. */
   .ov-att { flex-wrap: wrap; }
   .ov-att-go { flex-basis: 100%; text-align: right; }
+  /* A split card's links share that line, side by side at its right edge
+     (5b:wg-dark-D1), so each keeps its own width. */
+  .ov-att-acts { flex-basis: 100%; flex-direction: row; flex-wrap: wrap; justify-content: flex-end; gap: 2px 14px; max-width: none; }
+  .ov-att-acts > .ov-att-go { flex-basis: auto; }
   /* THE DETAIL IS READABLE BEFORE IT IS CUT (visual QA QA-100, 2026-10-20):
      four lines, beside an ids line or not -- now the rule at every width
      (`.ov-att-t small` above), so the phone has no clamp of its own. */
