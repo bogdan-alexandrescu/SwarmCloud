@@ -35,6 +35,7 @@ import RUNS_CSS from '../styles/runs.css?raw'
 import NAMES_CSS from '../styles/names.css?raw'
 import STYLES from '../styles.css?raw'
 import { cascade, type CascadeEnv } from './cssgate'
+import { cellStyle, lengthPx } from './tablefit'
 
 const WAIT = { timeout: 4000 }
 const JSON_HEADERS = { 'content-type': 'application/json' }
@@ -278,6 +279,13 @@ describe('V215: the list header is one line', () => {
     for (const th of container.querySelectorAll('.rn-table th')) {
       expect(painted(th, 'white-space', DESKTOP), th.textContent!).toBe('nowrap')
     }
-    expect(painted(container.querySelector('.rn-table th[data-col="approval"]')!, 'width', DESKTOP)).toBe('90px')
+    // The header is 72px drawn (V215's measurement); the column holds it
+    // inside its own padding. It was pinned at '90px' until N20 (visual QA
+    // run 4) moved the cells to 6px a side and the column to 86px.
+    // MUTATION: narrow the column below 72px plus its padding and the header
+    // wraps, the head row taller than the rows, as V215 saw it.
+    const approval = container.querySelector('.rn-table th[data-col="approval"]')!
+    const st = cellStyle(approval, DESKTOP)
+    expect(lengthPx(painted(approval, 'width', DESKTOP), 0)! - st.pl - st.pr).toBeGreaterThanOrEqual(72)
   })
 })
