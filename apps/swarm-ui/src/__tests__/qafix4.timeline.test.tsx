@@ -159,7 +159,10 @@ describe('N18 work-a-005: a free lane draws its current state to now, not as hel
     // MUTATION: draw a park only from a `parked` event (as before) and there
     // is none: the lane is its three pills and nothing says it is parked.
     expect(park, 'no current park').toBeDefined()
+    // MUTATION: end the task-derived park at its start instead of `now` and
+    // the hatching stops short of 'now'.
     expect(park!.to).toBe(NOW)
+    // MUTATION: start the park at `now` and it is a zero-length span.
     expect(park!.from).toBeLessThan(NOW)
     // MUTATION: start the park before the newest attempt began and a free
     // span is drawn inside a held one.
@@ -187,11 +190,17 @@ describe('N18 work-a-005: a free lane draws its current state to now, not as hel
     // MUTATION: anchor the mark at its start (`left`) and a park that began
     // under the pills is a 0 px sliver short of now.
     expect(park.style.right).toBe('0%')
+    // MUTATION: set both `left` and `right` on the current mark and its
+    // floor width can no longer grow leftward from 'now'.
     expect(park.style.left).toBe('')
     // MUTATION: draw the current park with the pills' layout and it pushes
     // them left: the three pills are still three, laid out as before.
     expect(row.querySelectorAll('.tl-seg.is-hold')).toHaveLength(3)
+    // MUTATION: give the current park the `is-hold` class and it paints as
+    // held capacity.
     expect(park.classList.contains('is-hold')).toBe(false)
+    // MUTATION: title the current park as an attempt ('holds …') and its
+    // tooltip says the opposite of the hatching.
     expect(park.getAttribute('title')).toMatch(/nothing held/)
     for (const env of ENVS) {
       const at = `${env.width} ${env.theme}`
@@ -213,7 +222,11 @@ describe('N18 work-a-005: a free lane draws its current state to now, not as hel
       const row = lane(id)!
       // MUTATION: anchor at the start and the line ends short of now.
       expect(wait.style.right, id).toBe('0%')
+      // MUTATION: give the current wait the `is-hold` class and the line
+      // paints as a held-capacity pill.
       expect(wait.classList.contains('is-hold'), id).toBe(false)
+      // MUTATION: title the current wait as an attempt and its tooltip says
+      // it holds capacity.
       expect(wait.getAttribute('title'), id).toMatch(/nothing held/)
       // Neither lane draws its present as an attempt holding capacity: no
       // hold runs open to now (invariant 1: queued and ready hold nothing).
@@ -244,10 +257,65 @@ describe('N19 work-a-008: a workflow group says how many of its steps the span d
     // MUTATION: print `${steps.length} steps` again and the header says 5
     // over four lanes.
     expect(head.textContent).toMatch(/4 of 5 steps have attempts in this span/)
+    // MUTATION: print the plain `${n} steps` when k < n and '5 steps' sits
+    // over four lanes again.
     expect(head.textContent).not.toMatch(/^\D*5 steps/)
     // MUTATION: count without naming and nothing says which step is missing.
     expect(head.textContent).toMatch(/publish/)
+    // MUTATION: drop the `task_id === null` case from stepsGap's reason and
+    // a step with no task reads as one whose attempt is outside the span.
     expect(head.textContent).toMatch(/not started/)
+  })
+
+  it('names a step whose task is drawn as an empty lane nowhere as having no lane', async () => {
+    // The fifth step has a task, created up front and parked on its
+    // dependencies with no attempt: the view draws it as an empty lane.
+    const publish = task('task_publish', 'PARKED', {
+      workflow_id: 'wf_five', step_id: 'publish', park_reason: 'DEPENDENCY_INCOMPLETE', attempt_count: 0, current_generation: 0, started_at: null,
+    })
+    api.loadWorkflow.mockResolvedValue(
+      ok({
+        workflow: { ...WF_READ.workflow, steps: [...WF_READ.workflow.steps.slice(0, 4), { step_id: 'publish', task_id: 'task_publish' }] },
+        tasks: [...WF_READ.tasks, publish],
+      } as unknown as WorkflowRead),
+    )
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(lane('task_publish'), 'the empty lane is drawn').not.toBeNull())
+    const head = document.querySelector<HTMLElement>('.tl-row.is-group[data-group="wf_five"] .tl-lab')!
+    // The count stays true: the fifth step has no attempt in this span.
+    // MUTATION: count neverRan lanes into `ran` and the header says '5 steps'
+    // over a step that never ran.
+    expect(head.textContent).toMatch(/4 of 5 steps have attempts in this span/)
+    // MUTATION: drop `!stepRan(s, empty)` from stepsGap and the header says
+    // 'no lane: publish (no attempt yet)' directly above publish's lane.
+    expect(head.querySelector('.tl-wf-gap'), 'no "no lane" line over a drawn lane').toBeNull()
+    expect(head.textContent).not.toMatch(/no lane/)
+  })
+
+  it('says a step whose only attempt is outside the span has "no attempt in this span"', async () => {
+    // The fifth step ran before the span: its task has attempts, none on the page.
+    const publish = task('task_publish', 'SUCCEEDED', { workflow_id: 'wf_five', step_id: 'publish', attempt_count: 1, completed_at: ago(3000) })
+    api.loadWorkflow.mockResolvedValue(
+      ok({
+        workflow: { ...WF_READ.workflow, steps: [...WF_READ.workflow.steps.slice(0, 4), { step_id: 'publish', task_id: 'task_publish' }] },
+        tasks: [...WF_READ.tasks, publish],
+      } as unknown as WorkflowRead),
+    )
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    const head = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('.tl-row.is-group[data-group="wf_five"] .tl-lab')
+      expect(el?.textContent).toMatch(/steps/)
+      return el!
+    })
+    // MUTATION: draw an empty lane for every step with no row on the page
+    // (the other form of N19) and the header would have to count it.
+    expect(lane('task_publish'), 'no lane for an attempt outside the span').toBeNull()
+    // MUTATION: count tasks with attempt_count > 0 as having attempts in the
+    // span and the header says '5 steps' over four lanes.
+    expect(head.textContent).toMatch(/4 of 5 steps have attempts in this span/)
+    // MUTATION: word every task-backed gap 'no attempt yet' and a step that
+    // ran yesterday reads as one that never ran.
+    expect(head.textContent).toMatch(/publish \(no attempt in this span\)/)
   })
 
   it('keeps the plain count when every step has an attempt in the span', async () => {

@@ -1256,6 +1256,7 @@ export function TimelineLanesScreen({
                   workflow={b.kind === 'workflow' ? (workflows.get(b.key) ?? null) : null}
                   onRetry={() => retryWorkflow(b.key)}
                   ran={b.kind === 'workflow' ? allLanes.filter((l) => !l.neverRan && l.task?.workflow_id === b.key) : []}
+                  empty={b.kind === 'workflow' ? allLanes.filter((l) => l.neverRan && l.task?.workflow_id === b.key) : []}
                 />
                 {b.lanes.map((l) => [
                   <LaneRow
@@ -1595,6 +1596,7 @@ function GroupHead({
   onRetry,
   name = null,
   ran = [],
+  empty = [],
 }: {
   block: LaneBlock
   workflow: WorkflowState | null
@@ -1603,6 +1605,8 @@ function GroupHead({
   name?: string | null
   /** Its lanes with an attempt in this span, before the filters. */
   ran?: readonly Lane[]
+  /** Its steps drawn as an empty lane (a task with no attempt yet), before the filters. */
+  empty?: readonly Lane[]
 }) {
   let title: string
   let note: ReactNode
@@ -1625,7 +1629,7 @@ function GroupHead({
       ) : (
         stepsNote(workflow.read, ran)
       )
-    if (workflow?.status === 'ok') gap = stepsGap(workflow.read, ran)
+    if (workflow?.status === 'ok') gap = stepsGap(workflow.read, ran, empty)
   } else if (block.kind === 'standalone') {
     title = 'Standalone'
     note = `${block.lanes.length} ${block.lanes.length === 1 ? 'agent' : 'agents'} in this span`
@@ -1677,7 +1681,9 @@ function GroupHead({
  * place under every filter -- and `stepsGap` names the others.
  */
 function stepRan(step: { step_id: string; task_id?: string | null }, ran: readonly Lane[]): boolean {
-  return ran.some((l) => (step.task_id != null && l.taskId === step.task_id) || l.task?.step_id === step.step_id)
+  return ran.some(
+    (l) => (step.task_id != null && l.taskId === step.task_id) || (typeof step.step_id === 'string' && l.task?.step_id === step.step_id),
+  )
 }
 
 export function stepsNote(read: WorkflowRead, ran: readonly Lane[]): string {
@@ -1691,14 +1697,17 @@ export function stepsNote(read: WorkflowRead, ran: readonly Lane[]): string {
   return `${k} of ${n} ${n === 1 ? 'step has' : 'steps have'} attempts in this span · ${state}`
 }
 
-export function stepsGap(read: WorkflowRead, ran: readonly Lane[]): string | null {
+// A step whose task has no attempt yet is drawn as its own empty lane
+// ('never ran yet · no attempt', from the workflow read), so it is not one
+// the header names as having no lane: that would deny the lane under it.
+export function stepsGap(read: WorkflowRead, ran: readonly Lane[], empty: readonly Lane[] = []): string | null {
   const why = (s: { task_id?: string | null }): string => {
     if (s.task_id === null) return 'not started'
     const t = read.tasks.find((x) => x.id === s.task_id)
     return t !== undefined && t.attempt_count === 0 ? 'no attempt yet' : 'no attempt in this span'
   }
   const out = read.workflow.steps
-    .filter((s) => typeof s.step_id === 'string' && !stepRan(s, ran))
+    .filter((s) => typeof s.step_id === 'string' && !stepRan(s, ran) && !stepRan(s, empty))
     .map((s) => `${s.step_id} (${why(s)})`)
   return out.length === 0 ? null : `no lane: ${out.join(', ')}`
 }
