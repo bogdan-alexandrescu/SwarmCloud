@@ -58,6 +58,16 @@ set -euo pipefail
 args="$*"
 fail() { printf '%s\n' "$1" >&2; exit 1; }
 case "${args}" in
+  # The tenant's QA secret (register-tenant.sh section 4b), present and
+  # complete, so a run here makes nothing on it: test_register_tenant_qa_secret.py
+  # drives that step against a stateful fake.
+  *"secrets describe swarm-tenant-"*"-qa "*)
+    q="${args#*secrets describe swarm-tenant-}"; q="${q%%-qa *}"
+    jq -nc --arg t "${q}" '{name:"projects/x/secrets/swarm-tenant-\($t)-qa", labels:{component:"qa-target-credential", tenant:$t, "swarm-tenant":$t}}' ;;
+  *"secrets get-iam-policy swarm-tenant-"*"-qa "*)
+    p="${args#* --project }"; p="${p%% *}"
+    jq -nc --arg m "serviceAccount:swarm-api@${p}.iam.gserviceaccount.com" \
+      '{bindings:[{role:"roles/secretmanager.secretVersionAdder", members:[$m]}, {role:"roles/secretmanager.secretAccessor", members:[$m]}]}' ;;
   *"auth print-access-token"*)        echo "fake-access-token" ;;
   *"firestore databases describe"*)   echo "projects/x/databases/swarm" ;;
   *"identity groups describe"*)       echo "groups/1" ;;
