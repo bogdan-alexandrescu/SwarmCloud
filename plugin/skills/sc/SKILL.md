@@ -304,6 +304,24 @@ re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
    step holds no lease and no capacity (invariant 1). HUMAN_REQUIRED stays a
    STUCK `parked` flag.
 
+   `owner_questions` (beside `flagged`, never inside it, and never counted as
+   stuck or stale) lists this session's tasks in this project, finished in
+   the last 7 days, whose agent asked the owner questions (its
+   `questions.json`) that have no answer yet: each entry's `workspace`,
+   `workflow` and `step_id` (or a single task's `title`), `task_id`,
+   `console`, `open` (how many) and the open `questions` whole -- each
+   `{index, question, options, recommended, context}`. It is how a question
+   from a row nobody watched end, or one that ended before a compaction, is
+   raised again. When it holds any, put EACH question to the person in this
+   turn, BEFORE any other report, with AskUserQuestion: the question, its
+   options as given (label and description), the `recommended` one marked
+   "(recommended)", its `context` beside it. Then record each pick with
+   `swarm_task_answer {task_id, question_index: <its index>, choice}` (see
+   [Answers given here are recorded on the task](#answers-given-here-are-recorded-on-the-task)).
+   Never pick an answer yourself, and never leave the questions only in the
+   check's answer. A question whose read failed is under `unchecked` with
+   its reason: say so and give its console link.
+
    `unchecked` lists what was not checked and why -- say so, never call it
    fine. `repository: null` means the check was not scoped (`repository_note`
    says why). Nothing flagged is an answer: say "nothing stuck or stale in
@@ -381,8 +399,14 @@ a correction is a new round in the workflow, not a second answer.
 ### Answers given here are recorded on the task
 
 A task's agent, or a workflow step's, may ask the person questions (its
-`questions.json`: a row's result's `questions`, `swarm_result`'s
-`owner_questions`). When the person answers one of them in this session --
+`questions.json`: a row's result's `questions`, a run's result's
+`owner_questions`, `swarm_check`'s `owner_questions`, `swarm_result`'s
+`owner_questions`). Whenever a run's result or a check carries
+`owner_questions`, the session puts EACH one to the person in that turn,
+before any other report, with AskUserQuestion -- the question, its options
+as given, the recommended one marked -- and records the pick with
+`swarm_task_answer`; it never answers one itself and never leaves them in a
+result or a log line alone. When the person answers one of them in this session --
 with AskUserQuestion or in chat -- record each answer on that question's task
 with ONE `swarm_task_answer` call per question:
 `{task_id, question_index, choice?, text?}`. `question_index` is the
@@ -561,6 +585,19 @@ The one verb that writes: it spends the shared pool, a step at a time.
 4. Report what the workflow returned: its `workflow_id`, its state, and any
    `error` verbatim — `NOT_SUBMITTED`, `SUBMISSION_UNKNOWN`,
    `SUBMITTED_UNVERIFIED` and `FOLLOW_REFUSED` each say what to do next.
+   When its result carries `owner_questions` -- one entry per step or task
+   whose agent asked the owner and has no answer yet, `{step_id or title,
+   task_id, workflow_id, console, questions}`, each question `{index,
+   question, options, recommended, context}` -- put EACH question to the
+   person in that turn, BEFORE any other report, with AskUserQuestion: the
+   question, its options as given, the `recommended` one marked
+   "(recommended)". Then record each pick with `swarm_task_answer {task_id,
+   question_index: <its index>, choice}`. Never pick an answer yourself, and
+   never leave them only in the result or in the run's "asks the owner" log
+   line. An entry with `questions_unread` was counted but not read: read its
+   questions with `swarm_result` (its `owner_questions`) and ask those. The
+   same holds for every run this skill launches -- `attach`, `attach --all`,
+   a dispatch's rows -- whenever its result carries them.
 5. Last, the mandatory final step, once a spec was submitted -- every outcome
    but `NOT_SUBMITTED`, `SUBMISSION_UNKNOWN` and `SUBMITTED_UNVERIFIED`
    included:

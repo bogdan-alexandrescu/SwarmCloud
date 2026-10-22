@@ -1,7 +1,7 @@
 export const meta = {
   name: 'swarmcloud',
   description: 'SwarmCloud: run a SwarmCloud workflow spec with every step executing in SwarmCloud and shown here as one [SwarmCloud] row per step, by the console\'s stage, plus at most two setup rows',
-  whenToUse: 'You have a SwarmCloud workflow spec, the JSON that swarm workflow reads, and want each step visible in /workflows while it runs remotely: pass the spec object, the spec object with its file as {spec, spec_path}, its JSON text, or the path of the spec file as args. Or a workflow already running in SwarmCloud lost its rows when this session restarted: pass {attach: "<workflow_id>"} to submit nothing, report its finished steps once and start a row for every unfinished one. Or list every workflow of your tenant still running in SwarmCloud: pass {attach: "all"} for the {attach: "<workflow_id>"} call that attaches each, one run per workflow. Or show SwarmCloud SINGLE tasks -- dispatched with swarm_dispatch, in no workflow -- as live rows: pass {attach_tasks: [{task_id, title, console}]} for one [SwarmCloud] row per task, titled from its label. The sc plugin launches each run from a copy of this script titled after its workflow or its tasks (swarm_workflow_launch, swarm_dispatch\'s rows).',
+  whenToUse: 'You have a SwarmCloud workflow spec, the JSON that swarm workflow reads, and want each step visible in /workflows while it runs remotely: pass the spec object, the spec object with its file as {spec, spec_path}, its JSON text, or the path of the spec file as args. Or a workflow already running in SwarmCloud lost its rows when this session restarted: pass {attach: "<workflow_id>"} to submit nothing, report its finished steps once and start a row for every unfinished one. Or list every workflow of your tenant still running in SwarmCloud: pass {attach: "all"} for the {attach: "<workflow_id>"} call that attaches each, one run per workflow. Or show SwarmCloud SINGLE tasks -- dispatched with swarm_dispatch, in no workflow -- as live rows: pass {attach_tasks: [{task_id, title, console}]} for one [SwarmCloud] row per task, titled from its label. The sc plugin launches each run from a copy of this script titled after its workflow or its tasks (swarm_workflow_launch, swarm_dispatch\'s rows). When the result carries owner_questions -- the questions a step\'s or task\'s agent asked the owner, still unanswered -- put EACH one to the person in that turn, before any other report, with AskUserQuestion: the question, its options as given, the recommended one marked; then record each pick with swarm_task_answer {task_id, question_index: its index, choice}. Never pick an answer yourself, and never leave them only in the result or a log line.',
   phases: [
     { title: 'Submit', detail: 'given a path, one sc:workflow agent reads the file with swarm_workflow_spec; one sc:workflow agent submits the spec with swarm_workflow by reference when it can, checked against the digest, and probes the follow every row makes' },
     { title: 'Attach', detail: 'given {attach: workflow_id}, one sc:workflow agent reads the workflow with swarm_workflow_status and probes the follow every row makes; given {attach: "all"}, one sc:workflow agent lists the running workflows and your running single tasks with swarm_workflows and the run returns the attach call for each workflow and one for the tasks; nothing is submitted' },
@@ -499,7 +499,7 @@ const NESTED_STEP_FIELDS = ['answer_excerpt', 'cost_usd', 'duration_s', 'pr_url'
 function stepAnswer(answer) {
   if (!answer || typeof answer !== 'object') return answer
   if (!answer.result || typeof answer.result !== 'object') {
-    if (!Object.prototype.hasOwnProperty.call(answer, 'result')) return answer
+    if (!Object.prototype.hasOwnProperty.call(answer, 'result')) return withQuestions(Object.assign({}, answer), answer.questions)
   }
   const outer = answer.result && typeof answer.result === 'object' ? answer.result : {}
   const nested = outer.result && typeof outer.result === 'object' && !Array.isArray(outer.result) &&
@@ -517,7 +517,118 @@ function stepAnswer(answer) {
     last_error: text(given.last_error),
   }
   if (text(given.console)) flat.console = given.console
+  return withQuestions(flat, given.questions)
+}
+
+// THE QUESTIONS A ROW HANDS ON (PLUGIN-OWNER-QUESTIONS, part of #1904).
+// Measured 2026-10-22 on plugin 0.5.53: the bridge served a step's questions
+// whole in its row's `result` (swarm_mcp.compact.step_result), STEP_FIELDS
+// accepted them, and stepAnswer() dropped them -- NOVPC-JOBS and
+// QAFIX4-AGENT-PANES wrote questions.json and their results carried none, so
+// the owner found them only in the console. So a row's `questions` are kept,
+// each as {index, question, options: [{label, description}], recommended,
+// context}: `index` is the question's 0-based place in what the agent wrote,
+// the `question_index` swarm_task_answer records the pick under, kept when an
+// entry that is not a question is dropped before it. An empty text reads as
+// null, as every text above. Capped like the narrated fields are, so a row
+// cannot carry a file's worth into the run's result: QUESTIONS_MAX questions,
+// OPTIONS_MAX options each, every text clipped.
+const QUESTIONS_MAX = 20
+const OPTIONS_MAX = 10
+const QUESTION_CHARS = 2000
+const LABEL_TEXT_CHARS = 200
+const OPTION_CHARS = 500
+
+function ownerQuestions(given) {
+  if (!Array.isArray(given)) return []
+  // Newlines kept: a question's context is often a list.
+  const text = (value, limit) => {
+    if (typeof value !== 'string' || value === '') return null
+    return value.length <= limit ? value : value.slice(0, limit - 1) + '…'
+  }
+  const isObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value)
+  const out = []
+  for (let index = 0; index < given.length && out.length < QUESTIONS_MAX; index++) {
+    const entry = given[index]
+    if (!isObject(entry)) continue
+    const options = Array.isArray(entry.options) ? entry.options.filter(isObject).slice(0, OPTIONS_MAX) : []
+    out.push({
+      index: index,
+      question: text(entry.question, QUESTION_CHARS),
+      options: options.map((option) => ({ label: text(option.label, LABEL_TEXT_CHARS), description: text(option.description, OPTION_CHARS) })),
+      recommended: text(entry.recommended, LABEL_TEXT_CHARS),
+      context: text(entry.context, QUESTION_CHARS),
+    })
+  }
+  return out
+}
+
+// `flat` with its `questions` read by ownerQuestions(), or without the key
+// when the agent asked none -- as `console` is left out when there is none.
+function withQuestions(flat, given) {
+  const asked = ownerQuestions(given)
+  if (asked.length > 0) flat.questions = asked
+  else delete flat.questions
   return flat
+}
+
+// THE RUN'S `owner_questions` (PLUGIN-OWNER-QUESTIONS). One entry per step or
+// task whose agent asked the owner and has no answer yet: `{step_id}` (or a
+// task's `{title}`), `task_id`, `workflow_id` for a step, `console` when the
+// API served one, and the open `questions`, each paired here with the name
+// its log line uses. Each `asker` is
+// {where, name, task_id, console, questions, asked, answered}: `questions`
+// the list ownerQuestions() read, `asked` a count a summary row reported
+// without the list (an sc:summary agent older than this script), `answered`
+// the indexes the console already holds an answer for. A count with no list
+// is listed too, saying how to read them, never dropped.
+function ownerQuestionEntries(askers, workflowId) {
+  const entries = []
+  for (const asker of askers) {
+    const whole = Array.isArray(asker.questions) ? asker.questions : []
+    const answered = Array.isArray(asker.answered) ? asker.answered : []
+    const open = whole.filter((question) => answered.indexOf(question.index) < 0)
+    const counted = whole.length === 0 && typeof asker.asked === 'number' && asker.asked > 0 ? Math.trunc(asker.asked) : 0
+    if (open.length === 0 && counted === 0) continue
+    const entry = Object.assign({}, asker.where, { task_id: asker.task_id || null })
+    if (workflowId) entry.workflow_id = workflowId
+    withConsole(entry, asker.console)
+    entry.questions = open
+    if (counted > 0) {
+      entry.questions_count = counted
+      entry.questions_unread = 'the summary row reported ' + counted + ' question(s) without their text: read them with swarm_result {task_id: "' + asker.task_id + '"}, its owner_questions'
+    }
+    entries.push({ name: asker.name, entry: entry })
+  }
+  return entries
+}
+
+// ONE line per entry, when the run ends: what is asked, and where to answer.
+function logOwnerQuestions(named) {
+  for (const pair of named) {
+    const name = pair.name
+    const entry = pair.entry
+    const where = ' · answer them in this session, or in the console' + (consoleLink(entry.console) ? ' ' + consoleLink(entry.console) : '')
+    if (entry.questions.length === 0) {
+      log(name + ' asks the owner ' + entry.questions_count + ' question(s) · read them with swarm_result ' + entry.task_id + where)
+      continue
+    }
+    const first = entry.questions[0].question || '(no question text)'
+    log(name + ' asks the owner ' + entry.questions.length + " question(s): '" + clip(first, 120) + "'" + where)
+  }
+}
+
+// `result` with its `owner_questions`, each logged once: [] when none asked.
+function withOwnerQuestions(result, askers, workflowId) {
+  const named = ownerQuestionEntries(askers, workflowId)
+  logOwnerQuestions(named)
+  result.owner_questions = named.map((pair) => pair.entry)
+  return result
+}
+
+// A per-step or per-task row as an asker for withOwnerQuestions().
+function rowAsker(row, where, name) {
+  return { where: where, name: name, task_id: row && row.task_id, console: row && row.console, questions: row && row.questions }
 }
 
 const WORKFLOW_STATE = {
@@ -1483,13 +1594,17 @@ async function attachTasks(given, cap, rowMode) {
       return withConsole(Object.assign(row, result), result.console || task.console)
     },
   )
-  return {
+  const done = {
     attach: 'tasks',
     state: 'FOLLOWED',
     error: null,
     tasks: rows,
     not_followed: rest.map((task) => withConsole({ task_id: task.task_id, workspace: task.workspace || null, title: task.title || null }, task.console)),
   }
+  return withOwnerQuestions(done, rows.filter(Boolean).map((row) => {
+    const name = titleName([row.title, row.task_id])
+    return rowAsker(row, { title: row.title || row.task_id }, name)
+  }), null)
 }
 
 // A workflow as its rows show it: `id`; `name`, the title's name; `count`,
@@ -1658,7 +1773,7 @@ async function finish(wf, rows, knownConsole) {
   }
   if (reattached) finished.reattached = reattached
   if (workflowLink) finished.console = workflowConsole.trim()
-  return finished
+  return withOwnerQuestions(finished, rows.filter(Boolean).map((row) => rowAsker(row, { step_id: row.step_id }, row.step_id)), wf.id)
 }
 
 // THE SUMMARY ROW (PLUGIN-ROW-SPLIT). The buckets a count line sorts a state
@@ -1692,7 +1807,11 @@ const SUMMARY = {
           park_reason: { type: ['string', 'null'] },
           pr_url: { type: ['string', 'null'] },
           cost_usd: { type: ['number', 'null'] },
-          questions: { type: ['number', 'null'] },
+          // The questions whole, as the follow's `outcome.questions` gave
+          // them (PLUGIN-OWNER-QUESTIONS); a number from an older agent.
+          questions: { type: ['array', 'number', 'null'] },
+          // The indexes `outcome.owner_answers` already answers.
+          answered: { type: ['array', 'null'], items: { type: 'number' } },
           last_error: { type: ['string', 'null'] },
         },
         required: ['task_id', 'state'],
@@ -1738,7 +1857,7 @@ function summaryNotices(name, item) {
   if (item.state === 'PARKED' && item.park_reason === 'AWAITING_INPUT') {
     lines.push(name + ' waits for a person · answer it with swarm_workflow_input, or in the console' + link)
   }
-  const asked = typeof item.questions === 'number' && item.questions > 0 ? Math.trunc(item.questions) : 0
+  const asked = typeof item.asked === 'number' && item.asked > 0 ? Math.trunc(item.asked) : 0
   if (asked > 0) lines.push(name + ' · ' + asked + ' question(s) for the owner' + link)
   return lines
 }
@@ -1823,9 +1942,18 @@ async function followSummary(view, items) {
       if (told.state !== item.state || (told.park_reason || null) !== (item.park_reason || null)) moved = true
       item.state = told.state
       item.park_reason = told.park_reason || null
-      for (const key of ['pr_url', 'cost_usd', 'questions', 'last_error']) {
+      for (const key of ['pr_url', 'cost_usd', 'last_error']) {
         if (told[key] !== null && told[key] !== undefined) item[key] = told[key]
       }
+      // The questions whole when the row gave them (an older sc:summary
+      // gives only how many); `asked` counts them for the notice either way.
+      if (Array.isArray(told.questions)) {
+        item.questions = ownerQuestions(told.questions)
+        item.asked = told.questions.length
+      } else if (typeof told.questions === 'number') {
+        item.asked = told.questions
+      }
+      if (Array.isArray(told.answered)) item.answered = told.answered.filter((index) => typeof index === 'number' && index >= 0)
     }
     notice()
     const now = summaryLine(view.noun, items, view.console)
@@ -1848,9 +1976,18 @@ function summaryResult(item, key) {
   for (const field of ['pr_url', 'cost_usd', 'park_reason', 'last_error']) {
     if (item[field] !== null && item[field] !== undefined) out[field] = item[field]
   }
-  if (typeof item.questions === 'number' && item.questions > 0) out.questions = item.questions
+  // The questions whole (PLUGIN-OWNER-QUESTIONS), else the count an older
+  // sc:summary reported.
+  if (Array.isArray(item.questions) && item.questions.length > 0) out.questions = item.questions
+  else if (typeof item.asked === 'number' && item.asked > 0) out.questions = item.asked
   if (item.finished_before_attach) out.finished_before_attach = true
   return withConsole(out, item.console)
+}
+
+// A summary item as an asker for withOwnerQuestions().
+function summaryAsker(item, where) {
+  return { where: where, name: item.name, task_id: item.task_id, console: item.console,
+    questions: item.questions, asked: item.asked, answered: item.answered }
 }
 
 // THE SUMMARY OF A WORKFLOW: one row follows every unfinished step, then one
@@ -1905,7 +2042,7 @@ async function summarizeWorkflow(wf, steps, knownConsole) {
   if (TERMINAL.indexOf(state) < 0) {
     finished.resume = 'the workflow is ' + (state || 'not read') + ' in SwarmCloud and this row has stopped: /sc attach ' + wf.id + ' follows it again'
   }
-  return withConsole(finished, workflowConsole)
+  return withOwnerQuestions(withConsole(finished, workflowConsole), items.map((item) => summaryAsker(item, { step_id: item.id })), wf.id)
 }
 
 // THE SUMMARY OF A TASK BATCH: one row follows every task; nothing derives a
@@ -1934,7 +2071,7 @@ async function summarizeTasks(tasks) {
     not_followed: [],
   }
   if (items.some((item) => TERMINAL.indexOf(item.state) < 0)) out.resume = 'some tasks still run in SwarmCloud and this row has stopped: /sc attach --all follows them again'
-  return out
+  return withOwnerQuestions(out, items.map((item) => summaryAsker(item, { title: item.title || item.task_id })), null)
 }
 
 // ATTACH one workflow: nothing is submitted. One read, one probe, a row per

@@ -66,6 +66,18 @@ THE RULES, each with the control that is NOT flagged:
     schedule tick ends an overdue wait within one, so a wait still parked
     after two means the sweep is not running. HUMAN_REQUIRED stays STUCK
     under (c), as before.
+(g) `owner_questions` (PLUGIN-OWNER-QUESTIONS, part of #1904): this
+    session's tasks in this project, finished in the last
+    `OWNER_QUESTIONS_DAYS`, whose agent asked the owner questions (its
+    `questions.json`) with an index the task's `owner_answers` does not
+    answer. INFORMATION, like (f), never a flag: a sweep on 2026-10-22 found
+    36 such questions across two session tags that no session had raised,
+    because the run that saw them end dropped them, or ended before a
+    compaction. Each entry carries the open questions whole, read by
+    `progress.owner_questions` (redacted, by name) -- once per task while
+    the bridge lives, since a finished task's questions never change. A
+    read that fails is under `unchecked` with its reason, and tried again
+    on the next check.
 
 Every age is measured from evidence and says which: the event that entered
 the state when the newest page of events holds it, else a LOWER BOUND from
@@ -82,13 +94,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from swarm_common.states import TERMINAL_STATES
 
-from . import awaitinput, checkout, render, session, workflows
+from . import awaitinput, checkout, progress, render, session, workflows
 from .client import SwarmClient, SwarmError, task_id_of
 from .follow import console_link, waiting_brief
 from .sc import WORKFLOW_PAGE_SIZE
@@ -809,6 +821,154 @@ def _single_tasks(
     return list(found.values()), gap, by_api
 
 
+#: (g)'s window: a finished task's questions are raised again for this long.
+#: A week covers a lane that ended over a weekend; older work is the
+#: console's to show.
+OWNER_QUESTIONS_DAYS = 7
+
+#: One page of finished tasks per request, and at most this many pages per
+#: terminal state: a session's own finished work in a week, newest first.
+OWNER_QUESTIONS_PAGE = 50
+OWNER_QUESTIONS_MAX_PAGES = 10
+
+#: A finished task's questions, by task id, as `progress.owner_questions`
+#: read them (all of them, never only the open ones: an answer given since
+#: must still take one off). Kept while the bridge lives -- the check runs
+#: every 30 minutes in the same process -- bounded, oldest dropped first.
+_ASKED: dict[str, list[dict[str, Any]]] = {}
+_ASKED_CAP = 1024
+_ASKED_LOCK = threading.Lock()
+
+
+def _questions_of(client: SwarmClient, task: dict[str, Any]) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """`(questions, None)`, from the cache or one read; `(None, why)` when the
+    read failed, which is NOT cached."""
+    tid = str(task_id_of(task) or "")
+    with _ASKED_LOCK:
+        kept = _ASKED.get(tid)
+    if kept is not None:
+        return kept, None
+    try:
+        read = progress.owner_questions(client, task)
+    except SwarmError as exc:
+        return None, f"its questions could not be read: {exc}"
+    if read.get("questions_unavailable_because"):
+        return None, str(read["questions_unavailable_because"])
+    questions = [q for q in read.get("questions") or [] if isinstance(q, dict)]
+    with _ASKED_LOCK:
+        if tid not in _ASKED and len(_ASKED) >= _ASKED_CAP:
+            _ASKED.pop(next(iter(_ASKED)))
+        _ASKED[tid] = questions
+    return questions, None
+
+
+def _finished_tasks(client: SwarmClient, sid: str, since: datetime) -> tuple[list[dict[str, Any]], list[str]]:
+    """`(tasks, failures)`: the caller's tasks of this session in every
+    terminal state, newest first, back to the first page that reaches a task
+    created before `since` (one finished inside the window was created
+    before it only if it ran or waited for longer than the window, and is
+    then the console's). `failures` says which reads failed or stopped."""
+    from .sc import _tasks_page
+
+    found: dict[str, dict[str, Any]] = {}
+    failures: list[str] = []
+    for state in sorted(_TERMINAL):
+        token: str | None = None
+        seen: set[str] = set()
+        for page in range(1, OWNER_QUESTIONS_MAX_PAGES + 1):
+            params = [("state", state), ("submitted_by", "me"), ("claude_session", sid),
+                      ("limit", str(OWNER_QUESTIONS_PAGE))]
+            if token:
+                params.append(("page_token", token))
+            try:
+                data = _tasks_page(client, params)
+            except SwarmError as exc:
+                failures.append(f"reading page {page} of this session's {state} tasks failed ({exc}); "
+                                "their questions for the owner are not listed")
+                break
+            older = False
+            for task in data["tasks"]:
+                tid = task_id_of(task) if isinstance(task, dict) else None
+                if not tid:
+                    continue
+                found.setdefault(str(tid), task)
+                created = render.parse_time(task.get("created_at"))
+                older = older or (created is not None and created < since)
+            token = data.get("next_page_token")
+            if older or not token or token in seen:
+                break
+            seen.add(token)
+        else:
+            failures.append(f"more than {OWNER_QUESTIONS_MAX_PAGES} pages of this session's {state} tasks "
+                            f"in {OWNER_QUESTIONS_DAYS} days; older ones' questions are not listed")
+    return list(found.values()), failures
+
+
+def _owner_questions(client: SwarmClient, scope: str | None, sid: str | None, record: session.Record,
+                     now: datetime, names: dict[str, str], tenant: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """`(entries, unchecked)`: (g), this session's finished tasks in this
+    project whose questions for the owner have an index with no answer."""
+    if not sid:
+        # No session, no candidate (`session.UNKNOWN_NOTE`): nothing is read.
+        return [], []
+    since = now - timedelta(days=OWNER_QUESTIONS_DAYS)
+    tasks, failures = _finished_tasks(client, sid, since)
+    unchecked: list[dict[str, Any]] = [{"task_id": None, "workflow_id": None, "section": "owner_questions",
+                                        "why": why} for why in failures]
+    wanted: list[tuple[dict[str, Any], set[int]]] = []
+    for task in tasks:
+        count = progress.questions_count(task)
+        ended = render.parse_time(task.get("completed_at"))
+        if count == 0 or ended is None or ended < since:
+            continue
+        ident = task.get("workflow_id") or task_id_of(task)
+        if session.ownership(session.owner_of(task), sid, record=record, ident=ident,
+                             in_repository=_in_scope(scope, [task.get("repository_url")])) != "own":
+            continue
+        answered = {a.get("question_index") for a in progress.owner_answers(task)}
+        if all(index in answered for index in range(count)):
+            continue  # every counted question has an answer: no read
+        wanted.append((task, {i for i in answered if isinstance(i, int)}))
+
+    def read(job: tuple[dict[str, Any], set[int]]) -> tuple[dict[str, Any], set[int], Any, str | None]:
+        task, answered = job
+        questions, why = _questions_of(client, task)
+        return task, answered, questions, why
+
+    entries: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(wanted)))) as pool:
+        for task, answered, questions, why in pool.map(read, wanted):
+            where = {"task_id": task_id_of(task), "workflow_id": task.get("workflow_id")}
+            if questions is None:
+                unchecked.append({**where, "section": "owner_questions", "why": why})
+                continue
+            open_ = [{"index": i, **q} for i, q in enumerate(questions) if i not in answered]
+            if not open_:
+                continue
+            metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+            name = metadata.get("title") or metadata.get("unit")
+            entry: dict[str, Any] = {"workspace": workflows.workspace_of(task, names, fallback=tenant), **where}
+            if task.get("workflow_id"):
+                entry["workflow"] = name or task.get("workflow_id")
+                entry["step_id"] = task.get("step_id")
+            else:
+                entry["title"] = name or task_id_of(task)
+            link = console_link(task)
+            if link:
+                entry["console"] = link
+            entry.update({
+                "state": task.get("state"),
+                "finished_at": _iso(render.parse_time(task.get("completed_at"))),
+                "open": len(open_),
+                "questions": open_,
+                "answer_with": (f"AskUserQuestion, then swarm_task_answer {{task_id: {task_id_of(task)!r}, "
+                                "question_index: <its index>, choice: <the option the person picked>}"),
+            })
+            entries.append(entry)
+    entries.sort(key=lambda e: str(e.get("finished_at") or ""), reverse=True)
+    return entries, unchecked
+
+
 def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: datetime,
                   names: dict[str, str], sid: str | None = None,
                   pulls: _PullStates | None = None) -> dict[str, Any]:
@@ -981,6 +1141,9 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
             return (AWAITING_INPUT, item)
         return ("flagged", item)
 
+    asked, asked_unchecked = _owner_questions(client, scope, sid, record, now, names, tenant)
+    unchecked.extend(asked_unchecked)
+
     awaiting: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max(1, min(8, len(jobs)))) as pool:
         for outcome in pool.map(run, jobs):
@@ -993,6 +1156,7 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
         "tenant_id": tenant,
         "flagged": flagged,
         "awaiting_input": awaiting,
+        "owner_questions": asked,
         "running": {"workflows": in_scope_running, "single_tasks": in_scope_singles},
         "out_of_scope": out_of_scope,
         "other_sessions": left_out,
@@ -1073,6 +1237,10 @@ def run(
         # (f): steps waiting for a person, as information -- never counted
         # as stuck or stale, and never a reason for the watch to alarm.
         "awaiting_input": [i for r in per_tenant for i in r["awaiting_input"]],
+        # (g): questions a lane's agent asked the owner and nobody answered,
+        # whole -- information like (f), never counted as stuck or stale.
+        # The session puts each to the person (skill: `check`).
+        "owner_questions": [i for r in per_tenant for i in r["owner_questions"]],
         "running": {
             "workflows": [w for r in per_tenant for w in r["running"]["workflows"]],
             "single_tasks": [t for r in per_tenant for t in r["running"]["single_tasks"]],
