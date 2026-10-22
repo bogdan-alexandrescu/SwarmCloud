@@ -1576,6 +1576,11 @@ class Worker:
         if awaited is not None:
             return awaited
 
+        # ---- STEP 9b': the owner's answers, or a release (AU-7) ----------
+        waited = self._await_owner_or_release(result)
+        if waited is not None:
+            return waited
+
         # ---- STEP 9c: an index run's graph write, after its agent (IX1) --
         if self._index_phases is not None:
             stopped = self._index_after_agent(result)
@@ -2468,6 +2473,92 @@ class Worker:
             )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
+    def _await_owner_or_release(self, result: ChildResult) -> Outcome | None:
+        """Park for the owner's answers or for a release, when the agent asked (AU-7).
+
+        docs/design/agent-autonomy.md §3.8 and §3.9. Only for an agent that
+        exited 0: one that failed fails its attempt in the ordinary way. An
+        `await-answers` beside a `questions.json` with a blocking question
+        parks HUMAN_REQUIRED; an `await-release.json` parks
+        DEPENDENCY_INCOMPLETE. A file that asks and is not well formed is
+        not a park: the attempt ends as it would have, with a line saying
+        why, and the questions file's own fault in its summary. None means
+        "finalise". Both parks checkpoint and upload first (invariants 4
+        and 8), and both are fenced (invariant 5).
+        """
+        ws = self.ws
+        assert ws is not None
+        if result.exit_code != 0 or result.timed_out or result.killed:
+            return None
+        try:
+            asked = questions_mod.await_answers(ws.artifacts)
+        except questions_mod.Rejected as exc:
+            self.log.warning("the agent asked to wait for answers; not parked", reason=str(exc))
+            asked = None
+        if asked is not None:
+            return self._park_for_answers(asked)
+        try:
+            sha = questions_mod.await_release(ws.artifacts)
+        except questions_mod.Rejected as exc:
+            self.log.warning("the agent asked to wait for a release; not parked", reason=str(exc))
+            sha = None
+        if sha is not None:
+            return self._park_for_release(sha)
+        return None
+
+    def _park_for_answers(self, asked: dict[str, Any]) -> Outcome:
+        """Checkpoint, upload, PARKED(HUMAN_REQUIRED) with `question_wait`, release, exit.
+
+        §3.9 step 1. The hand-off's park exactly (`handoff_mod.park_human_required`):
+        no lease, no tokens, the attempt refunded within `max_human_resumes`,
+        and only a person -- here, the last blocking answer -- returns it to
+        READY. The record carries the validated questions, which is how
+        swarm-api serves them while the task has no result summary.
+        """
+        cfg = self.cfg
+        self._checkpoint("question-wait")
+        uploaded = self._upload_outputs().get("artifacts")
+        wait = {**asked, "attempt_id": cfg.attempt_id, "asked_at": utcnow().isoformat()}
+        self.log.info(
+            "the agent asked the owner blocking questions; parking until they answer",
+            questions=len(asked["questions"]),
+            blocking=len(asked["blocking"]),
+        )
+        with self._metrics_after_the_record():
+            park = handoff_mod.park_human_required(
+                self.control,
+                max_resumes=self.handoff.max_resumes,
+                detail={"park_phase": "question_wait", questions_mod.QUESTION_WAIT_KEY: wait},
+                uploads=uploaded if isinstance(uploaded, list) else None,
+            )
+        if park.returned_by is not None:
+            return Outcome(exit_code=ExitCode.PARKED, state=TaskState.READY)
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
+
+    def _park_for_release(self, sha: str) -> Outcome:
+        """Checkpoint, upload, PARKED(DEPENDENCY_INCOMPLETE) with `release_wait`, release, exit.
+
+        §3.8. swarm-api's merge-wake tick reads the release of `sha` and
+        returns the task to READY once it is terminal; nothing here waits.
+        """
+        cfg = self.cfg
+        self._checkpoint("release-wait")
+        uploaded = self._upload_outputs().get("artifacts")
+        now = utcnow()
+        self.log.info("the agent asked to wait for a release; parking", sha=sha)
+        with self._metrics_after_the_record():
+            self.control.park(
+                reason=ParkReason.DEPENDENCY_INCOMPLETE,
+                next_eligible_at=now,
+                detail={
+                    "park_phase": "release_wait",
+                    questions_mod.RELEASE_WAIT_KEY: {
+                        "sha": sha, "attempt_id": cfg.attempt_id, "asked_at": now.isoformat()},
+                    **({"artifacts": uploaded} if isinstance(uploaded, list) else {}),
+                },
+            )
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
+
     def _verify_spec(self, task: dict[str, Any], create_time: Any) -> None:
         """Contract request 34's check, with its log line and its legacy note.
 
@@ -3014,6 +3105,11 @@ class Worker:
         # could lift.
         payload["attempt_count"] = int(task.get("attempt_count") or 0)
         payload.setdefault("resumed_from_checkpoint", bool(self._restored_from))
+        # The owner's answers to the blocking questions this task parked on
+        # (AU-7, §3.9 step 4): `work/answers.json`, and the prompt's last
+        # block between nonce lines, as data. Nothing for a task that never
+        # waited on one.
+        questions_mod.resume_with_answers(ws.work, payload, task)
         ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
 
         # ---- STEP 6: tenant credentials ---------------------------------

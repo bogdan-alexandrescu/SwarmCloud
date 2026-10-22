@@ -32,12 +32,24 @@
  *
  * NOTHING IS READ FOR A TASK THAT ASKED NONE: the count is on the task
  * document already, so a task without questions costs no request.
+ *
+ * A BLOCKING QUESTION HOLDS THE AGENT (lane AU-7, docs/design/agent-autonomy.md
+ * §3.9). An agent that asked with `"blocking": true` is parked until the owner
+ * answers, holding no capacity. Its questions are in the park's
+ * `question_wait` record (`blocked_by`, then `metadata` once swarm-api has
+ * adopted it), not in a result summary, so they are counted from there. The
+ * read says so in `waiting`: while it is open the card leads with "this agent
+ * is waiting for you", how many blocking questions are left and when it is
+ * ended unanswered (72 hours), marks each blocking question, and says the
+ * same answer can be given by `/answer <n> <option>` on the agent's issue,
+ * linked when it was posted. The last blocking answer resumes the agent; the
+ * card then says it resumed.
  */
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 
 import { answerQuestion, loadQuestions, type AgentQuestion, type OwnerAnswer, type TaskQuestions } from './api'
 import { Button } from './components'
-import { errorHeading, type ApiError } from './fetch'
+import { errorHeading, type ApiError, type Result } from './fetch'
 import { feedData, markRead, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 import { useRoleGate } from './Profile'
 import { useRead } from './RunFiles'
@@ -49,10 +61,78 @@ const OTHER = '\u0000other'
 /** The longest free-text answer the API takes (`agent_questions.MAX_ANSWER_CHARS`). */
 const MAX_ANSWER_CHARS = 2000
 
-/** How many questions the worker validated in the task's `questions.json`, else 0. */
-export function questionCount(task: Pick<Task, 'result_summary'> | null): number {
+/** A served question, with whether it holds the agent (AU-7). */
+type WaitedQuestion = AgentQuestion & { blocking?: boolean }
+
+/** `waiting` on the read of a question wait (`agent_questions._serve_wait`). */
+interface QuestionWait {
+  open: boolean
+  blocking: number[]
+  unanswered: number[]
+  asked_at: string | null
+  expires_at: string | null
+  issue_comment_url: string | null
+}
+
+type QuestionsRead = TaskQuestions & { waiting?: QuestionWait }
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/** The question wait the task is parked on, else the one it last had, else null. */
+function questionWaitOf(task: Partial<Pick<Task, 'blocked_by' | 'metadata'>> | null): { questions: unknown[] } | null {
+  for (const b of task?.blocked_by ?? []) {
+    const w = (b as Record<string, unknown>).question_wait
+    if (isRecord(w) && Array.isArray(w.questions) && w.questions.length > 0) return { questions: w.questions }
+  }
+  const m = task?.metadata?.question_wait
+  return isRecord(m) && Array.isArray(m.questions) && m.questions.length > 0 ? { questions: m.questions } : null
+}
+
+/**
+ * How many questions the worker validated in the task's `questions.json`, else
+ * how many its question wait holds (AU-7), else 0.
+ */
+export function questionCount(task: Partial<Pick<Task, 'result_summary' | 'blocked_by' | 'metadata'>> | null): number {
   const n = (task?.result_summary as Record<string, unknown> | null | undefined)?.questions
-  return typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : 0
+  if (typeof n === 'number' && Number.isInteger(n) && n > 0) return n
+  return questionWaitOf(task)?.questions.length ?? 0
+}
+
+/** The lead of a card whose agent is parked on its blocking questions, or says it resumed. */
+function WaitingNote({ wait, taskId }: { wait: QuestionWait; taskId: string }) {
+  if (!wait.open) {
+    return (
+      <p className="dt-note qc-waiting" data-waiting="resumed">
+        This agent waited on these and was resumed when its blocking questions were answered.
+      </p>
+    )
+  }
+  const left = wait.unanswered.length
+  return (
+    <div className="dt-note qc-waiting" role="status" data-waiting="open">
+      <p>
+        <b>This agent is waiting for you.</b> It is parked, holding no capacity, until{' '}
+        {left === 1 ? 'the blocking question below is' : `the ${left} blocking questions below are`} answered; the last
+        answer resumes it.
+        {wait.expires_at ? ` Unanswered, it is ended ${new Date(wait.expires_at).toLocaleString()}.` : ''}
+      </p>
+      <p>
+        You can also answer on its issue: reply <code>/answer &lt;n&gt; &lt;option&gt;</code>
+        {wait.issue_comment_url ? (
+          <>
+            {' '}
+            to{' '}
+            <a href={wait.issue_comment_url} target="_blank" rel="noreferrer">
+              the questions SwarmCloud posted for {taskId}
+            </a>
+          </>
+        ) : null}
+        .
+      </p>
+    </div>
+  )
 }
 
 /** The bell's item for this task's questions (`notifications.agent_questions`). */
@@ -153,7 +233,7 @@ function Question({
   mayAnswer,
   onSaved,
 }: {
-  q: AgentQuestion
+  q: WaitedQuestion
   n: number
   taskId: string
   mayAnswer: boolean
@@ -190,6 +270,12 @@ function Question({
     <li className="qc-q">
       <p className="qc-text">
         <span className="qc-n">{n}.</span> {q.question ?? '—'}
+        {q.blocking === true && (
+          <>
+            {' '}
+            <span className="dt-chip qc-blocking">blocking</span>
+          </>
+        )}
       </p>
       {q.context && <p className="dt-note qc-context">{q.context}</p>}
       {!editing && saved !== null ? (
@@ -278,10 +364,16 @@ export function QuestionsCard({ task }: { task: Task }) {
 }
 
 function AskedCard({ task, count }: { task: Task; count: number }) {
-  // Keyed on the attempt count, so a re-run's file is read once it ends.
-  const { state } = useRead<TaskQuestions>(() => loadQuestions(task.id), task.id, `${task.attempt_count}`, null)
+  // Keyed on the attempt count and the state, so a re-run's file is read once
+  // it ends and a parked agent's questions are read again once it resumes.
+  const { state } = useRead<QuestionsRead>(
+    () => loadQuestions(task.id) as Promise<Result<QuestionsRead>>,
+    task.id,
+    `${task.attempt_count}:${task.state}`,
+    null,
+  )
   // What the last saved answer returned, until the next read of the questions.
-  const [fresh, setFresh] = useState<TaskQuestions | null>(null)
+  const [fresh, setFresh] = useState<QuestionsRead | null>(null)
   const read = state.status === 'ok' || state.status === 'stale' ? state.data : null
   const data = fresh ?? read
   // A VIEWER ANSWERS NOTHING (docs/design/workspace-roles.md §4.8): the
@@ -304,6 +396,7 @@ function AskedCard({ task, count }: { task: Task; count: number }) {
           <span className="dt-chip">{questionsWord(count)}</span>
         </span>
       </div>
+      {data?.status === 'ok' && data.waiting && <WaitingNote wait={data.waiting} taskId={task.id} />}
       <p className="dt-note">
         {who} asked you {count === 1 ? 'this' : 'these'} instead of guessing. Pick an option or write your own: the
         answer is stored on this agent, where {launcher(task)} reads it with swarm_result.

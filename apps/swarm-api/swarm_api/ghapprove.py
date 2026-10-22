@@ -71,6 +71,31 @@ INVARIANT 1. An approval holds nothing while it waits, and a comment changes
 nothing until it approves: a plan's workflow is then submitted QUEUED
 through `SubmissionService`, a merge's continuation through
 `issueci._merge` on the run's next visit, exactly as from the console.
+
+`/answer <n> <option>`: THE OWNER ANSWERS AN AGENT'S BLOCKING QUESTION ON ITS
+ISSUE (docs/design/agent-autonomy.md §3.9, owner decision Q5, lane AU-7).
+An agent parked HUMAN_REQUIRED on a blocking question
+(`agent_questions.parked_wait`) whose task belongs to an issue run gets one
+comment on that run's issue (`render_questions`, posted once per wait under
+its marker): each question with its options, recommended first, which ones
+block, and the exact reply syntax, naming the submitter by the GitHub login
+of their onboarding connection when they have one (never their address).
+The same poll then reads that thread from the wait's cursor. A reply whose
+first non-blank line is `/answer <n> <option>` is taken only when the same
+checks an approval's comment meets hold -- a GitHub `User`, not an app, not
+the platform's own login, not edited, mapped by `member_for` to a member of
+the task's tenant who is still one, at the role `member` or above -- AND the
+member may answer this task by `agent_questions.answer_refusal` (its
+submitter, or an admin), the wait is still open, `<n>` names one of its
+questions and `<option>` is exactly one of that question's labels. Then it
+is `agent_questions.answer_question`, the console's own path, with `via:
+github-comment`: stored, history kept, and the last blocking answer
+returns the agent to READY. Any other `/answer` is IGNORED AND RECORDED
+(`answer_comment_ignored`): a log line and an entry in the wait's `ignored`
+list naming the comment, the login and the reason, never acted on and
+never replied to. A wait past 72 hours is dead-lettered by the same poll
+(`agent_questions.expire_question_waits`). An AWAITING_INPUT step is not
+polled here: it has no agent and is answered through `awaitinput` alone.
 """
 
 from __future__ import annotations
@@ -87,7 +112,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from . import approvals, schedaudit
 from .errors import ApiError, NotFound, RoleMemberRequired, RoleUnavailable, UpstreamUnavailable
-from .forgeapp import ACTIVE, CONNECTIONS
+from .forgeapp import ACTIVE, CONNECTIONS, connection_id_for
 from .forgewrite import ForgeWriteNotFound, GitHubWriter
 from .issuecomments import APPROVE_COMMAND, neutralise_mentions
 from .issueruns import (
@@ -623,6 +648,355 @@ def poll(ctx: Any, *, out_of_time: Callable[[], bool] = lambda: False) -> dict[s
             log.warning("github comment approvals: %s tenant=%s not polled (%s)",
                         item.approval_id, item.tenant_id, code)
     tokens.clear()
+    # The agents' blocking questions ride the same tick (§3.9): their own
+    # counts, their own failures, never this poll's.
+    counts.update(poll_answers(ctx, out_of_time=out_of_time))
+    return counts
+
+
+# --------------------------------------------------------------------------
+# `/answer <n> <option>` on an agent's issue (§3.9, owner decision Q5)
+# --------------------------------------------------------------------------
+
+#: The reply command, as the questions comment shows it.
+ANSWER_COMMAND = "/answer"
+#: The first non-blank line of a reply: the command, a question number and
+#: the option's label (quotes around it are allowed and dropped).
+_ANSWER_LINE = re.compile(r"^/answer[ \t]+(\d{1,3})[ \t]+(.+?)[ \t]*$", re.IGNORECASE)
+#: What an `/answer` that answered nothing is recorded as.
+ANSWER_IGNORED = "answer_comment_ignored"
+#: The answer's `via`: a label for where it was given, never a permission.
+ANSWER_VIA = "github-comment"
+#: Question waits read per tick, and how many ignored replies one keeps.
+QUESTION_THREADS_PER_TICK = 20
+MAX_IGNORED = 20
+#: A parked task's issue run (`validation.ISSUE_RUN_METADATA_KEY`).
+_ISSUE_RUN_KEY = "issue_run"
+
+
+def question_marker(task_id: str, attempt_id: str) -> str:
+    return f"<!-- swarmcloud-question:{task_id}:{attempt_id} -->"
+
+
+def parse_answer(body: Any) -> tuple[int, str] | None:
+    """(the 1-based question number, the option) a reply's first non-blank line names, or None."""
+    if not isinstance(body, str) or body.startswith(_OUR_MARKER):
+        return None
+    for line in body.splitlines():
+        if line.strip():
+            found = _ANSWER_LINE.match(line.strip())
+            if not found:
+                return None
+            option = found.group(2).strip()
+            if len(option) >= 2 and option[0] == option[-1] and option[0] in "\"'`":
+                option = option[1:-1].strip()
+            return int(found.group(1)), option
+    return None
+
+
+def render_questions(task_id: str, wait: Mapping[str, Any], owner_login: str | None) -> str:
+    """The comment on the agent's issue: who it waits for, each question, the reply syntax.
+
+    Every text is the agent's, so it is redacted and its @-mentions
+    neutralised before it is public; the owner is named by GitHub login only.
+    """
+    from .agent_questions import _redacted_question
+
+    blocking = set(wait.get("blocking") or [])
+    who = f"@{owner_login}" if owner_login else "the person who launched it"
+    lines = [
+        question_marker(task_id, str(wait.get("attempt_id") or "")),
+        f"**SwarmCloud: agent `{task_id}` is parked until {who} answers its blocking "
+        f"question{'s' if len(blocking) != 1 else ''}.** It holds no capacity while it waits, "
+        "and is ended after 72 hours unanswered.",
+        "",
+    ]
+    for n, entry in enumerate(wait.get("questions") or [], start=1):
+        question, _ = _redacted_question(entry)
+        mark = " **(blocking)**" if n - 1 in blocking else ""
+        lines.append(f"{n}. {neutralise_mentions(question['question'] or '')}{mark}")
+        options = sorted(question["options"], key=lambda o: o["label"] != question["recommended"])
+        for option in options:
+            rec = " _(recommended)_" if option["label"] == question["recommended"] else ""
+            desc = f": {neutralise_mentions(option['description'])}" if option["description"] else ""
+            lines.append(f"   - `{neutralise_mentions(option['label'] or '')}`{rec}{desc}")
+        if question["context"]:
+            lines.append(f"   > {neutralise_mentions(question['context']).replace(chr(10), ' ')}")
+    lines += [
+        "",
+        "Answer in the console on the agent's Questions card, or reply with one comment per "
+        "answer whose first line is exactly:",
+        "",
+        f"    {ANSWER_COMMAND} <question number> <option>",
+        "",
+        "for example `/answer 1 " + str(((wait.get("questions") or [{}])[0].get("recommended")) or "<option>")
+        + "`. A reply counts only from a member of the workspace who connected this GitHub "
+        "account in onboarding and may answer this agent (who launched it, or an admin); "
+        "any other reply is ignored and recorded.",
+        "",
+        f"_Written by SwarmCloud for agent `{task_id}`._",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+@dataclasses.dataclass
+class QuestionItem:
+    """One agent parked on a blocking question, with the issue it is asked on."""
+
+    task_id: str
+    tenant_id: str
+    doc: Mapping[str, Any]
+    wait: Mapping[str, Any]
+    run: IssueRun
+    thread: IssueRef
+
+
+def question_candidates(ctx: Any) -> list[QuestionItem]:
+    """Every agent parked on a blocking question whose task is an issue run's, across tenants."""
+    from .agent_questions import EXPIRY_SCAN, parked_wait
+
+    db = ctx.db
+    query = (db.collection("tasks")
+             .where(filter=FieldFilter("state", "==", "PARKED"))
+             .where(filter=FieldFilter("park_reason", "==", "HUMAN_REQUIRED"))
+             .limit(EXPIRY_SCAN))
+    items: list[QuestionItem] = []
+    for snap in query.stream():
+        doc = snap.to_dict() or {}
+        wait = parked_wait(doc)
+        run_id = (doc.get("metadata") or {}).get(_ISSUE_RUN_KEY)
+        if wait is None or not isinstance(run_id, str) or not run_id:
+            continue
+        tenant_id = str(doc.get("tenant_id") or "")
+        try:
+            run = IssueRuns(db, now=ctx.now).get(tenant_id, run_id)
+        except (NotFound, ApiError):
+            continue
+        # The run is read in the task's own tenant: another tenant's run is
+        # the not-found above, so a task can never point the poll elsewhere.
+        if run.tenant_id != tenant_id:
+            continue
+        items.append(QuestionItem(task_id=str(doc.get("id") or snap.id), tenant_id=tenant_id,
+                                  doc=doc, wait=wait, run=run, thread=run.issue))
+    items.sort(key=lambda i: i.task_id)
+    return items
+
+
+def _owner_login(db: Any, tenant_id: str, email: str | None) -> str | None:
+    """The GitHub login of the submitter's ACTIVE onboarding connection here, else None."""
+    if not email:
+        return None
+    snap = db.collection(CONNECTIONS).document(connection_id_for(tenant_id, email)).get()
+    doc = snap.to_dict() if snap.exists else None
+    if not doc or doc.get("tenant_id") != tenant_id or doc.get("state") != ACTIVE:
+        return None
+    login = str(doc.get("forge_login") or "").strip()
+    return login if re.fullmatch(r"[A-Za-z0-9-]{1,39}", login) else None
+
+
+def _patch_wait(db: Any, item: QuestionItem, patch: Callable[[dict[str, Any]], None]) -> bool:
+    """Adopt the wait into `metadata.question_wait` and apply `patch` to it, in
+    one transaction guarded on the task still parked on the SAME wait."""
+    from google.cloud import firestore
+
+    from swarm_common.admission import _snapshot
+
+    from .agent_questions import QUESTION_WAIT_KEY, adopt_wait, parked_wait
+
+    ref = db.collection("tasks").document(item.task_id)
+
+    @firestore.transactional
+    def _apply(txn: Any) -> bool:
+        snap = _snapshot(txn.get(ref))
+        data = snap.to_dict() if snap.exists else None
+        if data is None or data.get("tenant_id") != item.tenant_id:
+            return False
+        wait = parked_wait(data)
+        if wait is None or wait.get("attempt_id") != item.wait.get("attempt_id"):
+            return False
+        metadata = dict(data.get("metadata") or {})
+        adopt_wait(metadata, wait)
+        record = dict(metadata[QUESTION_WAIT_KEY])
+        patch(record)
+        metadata[QUESTION_WAIT_KEY] = record
+        txn.update(ref, {"metadata": metadata})
+        return True
+
+    return _apply(db.transaction())
+
+
+def _recorded(item: QuestionItem) -> Mapping[str, Any]:
+    """The adopted record of THIS wait, or {} before it was adopted."""
+    from .agent_questions import QUESTION_WAIT_KEY
+
+    record = (item.doc.get("metadata") or {}).get(QUESTION_WAIT_KEY)
+    if isinstance(record, Mapping) and record.get("attempt_id") == item.wait.get("attempt_id"):
+        return record
+    return {}
+
+
+def _post_questions(ctx: Any, item: QuestionItem, token: str) -> bool:
+    """Post the questions comment once per wait; True when it is there now."""
+    if isinstance(_recorded(item).get("comment"), Mapping):
+        return True
+    writer: GitHubWriter = ctx.forge_writer
+    marker = question_marker(item.task_id, str(item.wait.get("attempt_id") or ""))
+    found = writer.find_comment(item.thread, marker, token, login=item.run.forge_login)
+    posted = found or writer.create_comment(
+        item.thread, render_questions(item.task_id, item.wait,
+                                      _owner_login(ctx.db, item.tenant_id, item.doc.get("submitted_by"))),
+        token)
+    comment = {"id": posted.id, "url": posted.url, "login": posted.login,
+               "thread": item.thread.short, "posted_at": ctx.now()}
+    return _patch_wait(ctx.db, item, lambda record: record.update(comment=comment))
+
+
+def _verify_answerer(ctx: Any, item: QuestionItem, comment: Comment, own_logins: set[str]) -> Any:
+    """The member's AuthContext when the §4.9 checks and the answer rule hold; Refused otherwise."""
+    from .agent_questions import answer_refusal
+
+    if comment.user_type != "User" or comment.login.lower().endswith("[bot]"):
+        raise Refused("a bot's comment answers nothing")
+    if comment.via_app:
+        raise Refused("a comment written through an app answers nothing")
+    if comment.login.strip().lower() in own_logins:
+        raise Refused("this account writes SwarmCloud's own comments, so it is not a member's answer")
+    if not comment.created_at or comment.updated_at != comment.created_at:
+        raise Refused("an edited comment answers nothing")
+    email = member_for(ctx.db, item.tenant_id, comment.login, comment.user_id)
+    if email is None:
+        raise Refused("no member of this workspace has connected this GitHub account in onboarding")
+    try:
+        auth = _member_auth(ctx, item.tenant_id, email, comment.id)
+    except _NotMember:
+        raise Refused("the member this GitHub account belongs to is no longer a member of the workspace") from None
+    except UpstreamUnavailable:
+        raise Refused("membership could not be asked of the directory", retry=True) from None
+    _require_member(ctx, auth)
+    refusal = answer_refusal(item.doc.get("submitted_by"), auth.email, is_admin=auth.is_admin)
+    if refusal is not None:
+        raise Refused(refusal)
+    return auth
+
+
+def answer_from_comment(ctx: Any, item: QuestionItem, comment: Comment, own_logins: set[str]) -> bool:
+    """One reply: True when it answered; False when it is no `/answer`; Refused otherwise."""
+    from .agent_questions import AnswerBody, answer_question
+    from .agent_output import AgentOutputService
+
+    parsed = parse_answer(comment.body)
+    if parsed is None:
+        return False
+    number, option = parsed
+    auth = _verify_answerer(ctx, item, comment, own_logins)
+    questions = item.wait.get("questions") or []
+    if not 1 <= number <= len(questions):
+        raise Refused(f"question {number} is not one of this agent's {len(questions)} question(s)")
+    labels = [o.get("label") for o in questions[number - 1].get("options") or [] if isinstance(o, Mapping)]
+    if option not in labels:
+        raise Refused(f"the option is not one of question {number}'s labels")
+    try:
+        answer_question(
+            ctx.store, AgentOutputService(ctx.inspection), ctx.db, item.tenant_id, item.task_id,
+            AnswerBody(question_index=number - 1, choice=option, via=ANSWER_VIA),
+            submitted_by=None, email=auth.email, is_admin=auth.is_admin, now=ctx.now(),
+        )
+    except UpstreamUnavailable:
+        raise Refused("the answer could not be stored now", retry=True) from None
+    except ApiError as exc:
+        # Our own refusal sentences (the label, the history cap): constant text.
+        raise Refused(exc.message) from None
+    log.info("agent question answered by github comment task=%s tenant=%s comment=%s",
+             item.task_id, item.tenant_id, comment.id)
+    return True
+
+
+def _ignore(ctx: Any, item: QuestionItem, comment: Comment, reason: str) -> None:
+    """`answer_comment_ignored`: a log line and an entry on the wait; never acted on."""
+    entry = {"comment_id": comment.id, "login": comment.login[:100], "reason": reason[:300],
+             "at": ctx.now()}
+    log.info("%s task=%s tenant=%s comment=%s login=%s reason=%s", ANSWER_IGNORED, item.task_id,
+             item.tenant_id, comment.id, comment.login[:100], reason[:300])
+
+    def patch(record: dict[str, Any]) -> None:
+        ignored = [e for e in record.get("ignored") or [] if isinstance(e, Mapping)]
+        record["ignored"] = (ignored + [entry])[-MAX_IGNORED:]
+
+    _patch_wait(ctx.db, item, patch)
+
+
+def poll_question_thread(ctx: Any, item: QuestionItem, token: str) -> dict[str, int]:
+    """Post the questions once, then read the issue's new replies from the wait's cursor."""
+    counts = {"posted": 0, "answered": 0, "ignored": 0}
+    had = isinstance(_recorded(item).get("comment"), Mapping)
+    if not _post_questions(ctx, item, token):
+        return counts  # the wait moved on meanwhile
+    counts["posted"] += 0 if had else 1
+    record = _recorded(item)
+    cursor = record.get("cursor") if isinstance(record.get("cursor"), Mapping) else {}
+    last_id = int(cursor.get("last_comment_id") or 0)
+    since = _aware(cursor.get("since")) or _aware(item.wait.get("asked_at"))
+    posted_id = (record.get("comment") or {}).get("id") if isinstance(record.get("comment"), Mapping) else None
+    own_logins = {str(x).strip().lower() for x in (
+        item.run.forge_login, (record.get("comment") or {}).get("login")
+        if isinstance(record.get("comment"), Mapping) else None) if x}
+    writer: GitHubWriter = ctx.forge_writer
+    for comment in _list_comments(writer, item.thread, token, since):
+        if comment.id <= last_id or comment.id == posted_id:
+            continue
+        try:
+            answered = answer_from_comment(ctx, item, comment, own_logins)
+        except Refused as refused:
+            if refused.retry:
+                break
+            last_id, since = comment.id, _aware(comment.created_at) or since
+            _ignore(ctx, item, comment, refused.message)
+            counts["ignored"] += 1
+            continue
+        last_id, since = comment.id, _aware(comment.created_at) or since
+        if answered:
+            counts["answered"] += 1
+    moved = {"last_comment_id": last_id, "since": since}
+    _patch_wait(ctx.db, item, lambda r: r.update(cursor=moved))
+    return counts
+
+
+def poll_answers(ctx: Any, *, out_of_time: Callable[[], bool] = lambda: False) -> dict[str, int]:
+    """The tick's question poll: expire 72-hour waits, then post and read. Never raises."""
+    from .agent_questions import expire_question_waits
+
+    counts = {"question_threads": 0, "questions_posted": 0, "answered": 0, "answers_ignored": 0,
+              "question_waits_expired": 0, "question_errors": 0}
+    try:
+        counts["question_waits_expired"] = expire_question_waits(ctx.db, ctx.now())
+        items = question_candidates(ctx)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("agent questions: the waits could not be read (%s)", type(exc).__name__)
+        counts["question_errors"] += 1
+        return counts
+    tokens: dict[str, str | None] = {}
+    for item in items[:QUESTION_THREADS_PER_TICK]:
+        if out_of_time():
+            break
+        try:
+            if item.tenant_id not in tokens:
+                tenant = ctx.store.get_tenant(item.tenant_id)
+                tokens[item.tenant_id] = ctx.forge_tokens.token_for(tenant) if tenant is not None else None
+            token = tokens[item.tenant_id]
+            if not token:
+                continue
+            counts["question_threads"] += 1
+            got = poll_question_thread(ctx, item, token)
+            counts["questions_posted"] += got["posted"]
+            counts["answered"] += got["answered"]
+            counts["answers_ignored"] += got["ignored"]
+        except Exception as exc:  # noqa: BLE001 -- one wait's failure does not stop the rest
+            counts["question_errors"] += 1
+            code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
+            tokens.setdefault(item.tenant_id, None)
+            log.warning("agent questions: task %s tenant=%s not polled (%s)", item.task_id,
+                        item.tenant_id, code)
+    tokens.clear()
     return counts
 
 
@@ -655,6 +1029,8 @@ def announce_merge(ctx: Any, run: IssueRun, record: Mapping[str, Any], token: st
 
 
 __all__ = [
+    "ANSWER_COMMAND",
+    "ANSWER_IGNORED",
     "COMMAND",
     "CURSORS",
     "VIA",
@@ -664,9 +1040,12 @@ __all__ = [
     "command_text",
     "handle",
     "member_for",
+    "parse_answer",
     "parse_command",
+    "poll_answers",
     "pick",
     "poll",
     "poll_thread",
     "render_merge_request",
+    "render_questions",
 ]

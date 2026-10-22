@@ -167,7 +167,8 @@ def test_a_member_who_may_not_answer_this_agent_is_ignored(api_context, db, writ
 
     counts = ghapprove.poll_answers(api_context)
 
-    # MUTATION: skip `answer_refusal` and any member answers another's agent.
+    # MUTATION: make `agent_questions.answer_refusal` return None and any member answers
+    # another's agent (`_verify_answerer` and `answer_question` both ask it).
     assert counts["answers_ignored"] == 1
     assert _task(db)["state"] == "PARKED"
     assert "launched" in _wait(db)["ignored"][0]["reason"]

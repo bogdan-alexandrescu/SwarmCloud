@@ -81,6 +81,29 @@ the shape of an id and can carry nothing else.
 
 The notification (`notifications.agent_questions`) stops listing a task once
 every question it asked has an answer (`unanswered`).
+
+A BLOCKING QUESTION PARKS THE AGENT UNTIL IT IS ANSWERED
+(docs/design/agent-autonomy.md §3.9, owner decision Q5; lane AU-7). An agent
+that asked with `"blocking": true` and `await-answers` is parked
+HUMAN_REQUIRED by its worker, no lease held, with a `question_wait` record
+in the park's `blocked_by` entry: the questions the worker validated, the
+indices that block, the attempt and when it asked. A parked task has no
+result summary, so this module serves THAT record's questions (each text
+redacted here, as the artifact read would), and adopts it into
+`metadata.question_wait` the first time it writes for it -- an answer, or
+the issue comment `ghapprove` posts -- moving any earlier wait and its
+answers to `metadata.question_waits_earlier`, so one wait's answers are
+never read as another's. When the answer just stored leaves no blocking
+question unanswered, the same transaction returns the task to READY through
+`handoff.ready_writes`, the transition `human-ready` makes: nothing is
+leased here, and the next attempt is admitted all-or-nothing under a new
+generation (invariants 1, 2, 5). A task that cannot be resumed (a cancel
+asked for, its last attempt used) keeps the answer and is not moved.
+Unanswered for `QUESTION_WAIT_MAX_SECONDS` (72 hours), it is dead-lettered
+with `last_error: "owner question unanswered"` (`expire_question_waits`),
+which failure-review skips by rule. Only HUMAN_REQUIRED is read as a
+question wait: an AWAITING_INPUT park is a workflow's await-input step,
+answered and expired by `awaitinput` alone, and never promoted or ended here.
 """
 
 from __future__ import annotations
@@ -89,20 +112,24 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from google.cloud import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from swarm_common.admission import _snapshot
+from swarm_common.models import TaskEvent, new_id
+from swarm_common.states import EventType, ParkReason, TaskState, assert_transition
 
 from . import refusals, roles
 from .agent_output import AgentOutputService
-from .codec import owner_answer_to_api, owner_answers_by_index
+from .codec import event_to_firestore, owner_answer_to_api, owner_answers_by_index, task_from_dict
 from .errors import Conflict, Forbidden, NotFound, RoleMemberRequired, ValidationFailed
+from .handoff import ready_writes
 from .redaction import redact
-from .store import TASKS, Store
+from .store import EVENTS, TASKS, Store
 from .task_input import masking_for
 from .validation import OWNER_ANSWERS_METADATA_KEY
 
@@ -141,6 +168,162 @@ QUESTIONS_KEY = "questions"
 #: The worker takes no file larger than this (`agent_worker.questions.MAX_BYTES`);
 #: one byte more says whether the stored object is larger than it took.
 QUESTIONS_MAX_BYTES = 64 * 1024
+
+
+#: The park's record of a blocking question wait (`agent_worker.questions.
+#: QUESTION_WAIT_KEY`), in the park's `blocked_by` entry and, once adopted,
+#: in `metadata`. Spelled again: the worker is not installed in this image.
+QUESTION_WAIT_KEY = "question_wait"
+#: Earlier waits of the same task, each with the answers it was given.
+EARLIER_WAITS_KEY = "question_waits_earlier"
+#: How many earlier waits are kept. A task that waits more often than this
+#: is asking one question at a time; the newest are the ones still relevant.
+MAX_EARLIER_WAITS = 5
+#: How long a blocking question waits before its agent is dead-lettered
+#: (§3.9 step 5): three days, a weekend and a day, at no cost (invariant 1).
+QUESTION_WAIT_MAX_SECONDS = 72 * 3600
+#: The dead-letter's `last_error`, which failure-review skips by rule
+#: (docs/design/failure-review.md §2).
+UNANSWERED = "owner question unanswered"
+#: The READY event's reason when the last blocking answer resumes the agent.
+OWNER_ANSWERED = "owner_answered"
+#: Question waits looked at per expiry sweep: one indexed query across tenants.
+EXPIRY_SCAN = 200
+
+
+def _field(task: Any, name: str) -> Any:
+    """`name` of a Task or of its document: both are read here."""
+    if isinstance(task, dict):
+        return task.get(name)
+    value = getattr(task, name, None)
+    return value.value if hasattr(value, "value") and not isinstance(value, str) else value
+
+
+def _wait_shape(value: Any) -> dict[str, Any] | None:
+    """A question wait as the worker writes it, or None for anything else.
+
+    The document is tenant-writable, so a record that is not this shape is
+    no wait, never guessed at: a list of question maps, the blocking indices
+    inside it, and the attempt that asked.
+    """
+    if not isinstance(value, dict):
+        return None
+    questions = value.get("questions")
+    if not isinstance(questions, list) or not questions or not all(isinstance(q, dict) for q in questions):
+        return None
+    waited = value.get("blocking")
+    if not isinstance(waited, list) or not waited or not all(
+        isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(questions) for i in waited
+    ):
+        return None
+    if not isinstance(value.get("attempt_id"), str):
+        return None
+    return value
+
+
+def parked_wait(task: Any) -> dict[str, Any] | None:
+    """The question wait this task is PARKED on now, from its park's `blocked_by`, else None."""
+    if (_field(task, "state") != TaskState.PARKED.value
+            or _field(task, "park_reason") != ParkReason.HUMAN_REQUIRED.value):
+        return None
+    for entry in _field(task, "blocked_by") or ():
+        if isinstance(entry, dict) and entry.get("reason") == ParkReason.HUMAN_REQUIRED.value:
+            wait = _wait_shape(entry.get(QUESTION_WAIT_KEY))
+            if wait is not None:
+                return wait
+    return None
+
+
+def recorded_wait(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The wait swarm-api adopted into `metadata.question_wait`, else None."""
+    return _wait_shape((metadata or {}).get(QUESTION_WAIT_KEY))
+
+
+def current_wait(task: Any) -> tuple[dict[str, Any] | None, bool]:
+    """(the task's question wait, whether `metadata.owner_answers` answers IT).
+
+    The park's record wins while the task is parked on it; the stored
+    answers are its own only once it was adopted (the same attempt). With
+    no park, the adopted record is the last wait the task had.
+    """
+    metadata = _field(task, "metadata") or {}
+    parked = parked_wait(task)
+    recorded = recorded_wait(metadata)
+    if parked is not None:
+        adopted = recorded is not None and recorded.get("attempt_id") == parked.get("attempt_id")
+        return (recorded if adopted else parked), adopted
+    return recorded, recorded is not None
+
+
+def adopt_wait(metadata: dict[str, Any], wait: dict[str, Any]) -> bool:
+    """Make `wait` the task's `metadata.question_wait`; True when it was not already.
+
+    Any earlier wait, with the answers it was given, moves to
+    `question_waits_earlier` (the newest `MAX_EARLIER_WAITS`), and the
+    answers start empty: a new wait's question 1 is not the old one's.
+    Mutates `metadata`, which the caller writes in its own transaction.
+    """
+    recorded = recorded_wait(metadata)
+    if recorded is not None and recorded.get("attempt_id") == wait.get("attempt_id"):
+        return False
+    answers = metadata.get(OWNER_ANSWERS_METADATA_KEY)
+    if recorded is not None or answers:
+        earlier = [e for e in metadata.get(EARLIER_WAITS_KEY) or [] if isinstance(e, dict)]
+        earlier.append({"wait": recorded, "answers": answers if isinstance(answers, list) else []})
+        metadata[EARLIER_WAITS_KEY] = earlier[-MAX_EARLIER_WAITS:]
+    metadata[QUESTION_WAIT_KEY] = {k: v for k, v in wait.items()}
+    metadata[OWNER_ANSWERS_METADATA_KEY] = []
+    return True
+
+
+def blocking_unanswered(wait: dict[str, Any], metadata: dict[str, Any] | None) -> list[int]:
+    """The wait's blocking indices with no stored answer."""
+    answered = owner_answers_by_index(metadata)
+    return [i for i in wait.get("blocking") or [] if i not in answered]
+
+
+def waiting_count(task: Any) -> int:
+    """How many questions this task is PARKED waiting on, else 0 (the bell's count)."""
+    wait = parked_wait(task)
+    return len(wait["questions"]) if wait is not None else 0
+
+
+def asked_at(task: Any, wait: dict[str, Any]) -> datetime | None:
+    """When the wait began: the EARLIEST of the park instant and what the
+    worker wrote. The document is tenant-writable, and taking the earliest
+    means a forged instant can only end the wait sooner, never hold it."""
+    moments: list[datetime] = []
+    for value in (_field(task, "next_eligible_at"), wait.get("asked_at"), _field(task, "updated_at")):
+        if isinstance(value, str):
+            try:
+                value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+        if isinstance(value, datetime):
+            moments.append(value if value.tzinfo else value.replace(tzinfo=timezone.utc))
+    return min(moments) if moments else None
+
+
+def _redacted_question(entry: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    """`_question`, every text redacted, with how many values were masked."""
+    out = _question(entry)
+    masked = 0
+
+    def clean(value: str | None) -> str | None:
+        nonlocal masked
+        if value is None:
+            return None
+        result = redact(value)
+        masked += result.count
+        return result.text
+
+    out["question"] = clean(out["question"])
+    out["context"] = clean(out["context"])
+    # Labels too, as the artifact read masks them: an answer's choice is
+    # checked against the labels as served, so the two always agree.
+    out["options"] = [{"label": clean(o["label"]), "description": clean(o["description"])}
+                      for o in out["options"]]
+    return out, masked
 
 
 def question_count(summary: dict[str, Any] | None) -> int:
@@ -234,7 +417,10 @@ def read_questions(
         "may_answer_because": refusal,
     }
     if count == 0:
-        return {**out, "status": "none"}
+        wait, adopted = current_wait(task)
+        if wait is None:
+            return {**out, "status": "none"}
+        return _serve_wait(task, wait, adopted, out)
 
     why: str | None = None
     parsed: Any = None
@@ -292,6 +478,47 @@ def read_questions(
     }
 
 
+def _serve_wait(task: Any, wait: dict[str, Any], adopted: bool, out: dict[str, Any]) -> dict[str, Any]:
+    """A question wait's questions, as the worker validated them, redacted here.
+
+    `waiting` says whether the agent is parked on them now, which block,
+    since when and until when, and where on GitHub they were posted.
+    """
+    answers = owner_answers_by_index(task.metadata) if adopted else {}
+    masking = masking_for(task)
+    waited = set(wait["blocking"])
+    served: list[dict[str, Any]] = []
+    masked = 0
+    for i, entry in enumerate(wait["questions"]):
+        question, count = _redacted_question(entry)
+        masked += count
+        served.append({
+            **question,
+            "blocking": i in waited,
+            "answer": owner_answer_to_api(answers[i], masking) if i in answers else None,
+        })
+    began = asked_at(task, wait)
+    comment = wait.get("comment") if isinstance(wait.get("comment"), dict) else {}
+    return {
+        **out,
+        "status": "ok",
+        "count": len(served),
+        "attempt_id": wait.get("attempt_id"),
+        "questions": served,
+        "redacted": masked > 0,
+        "redaction_count": masked,
+        "waiting": {
+            "open": parked_wait(task) is not None,
+            "blocking": sorted(waited),
+            "unanswered": [i for i in sorted(waited) if i not in answers],
+            "asked_at": began.isoformat() if began else None,
+            "expires_at": (began + timedelta(seconds=QUESTION_WAIT_MAX_SECONDS)).isoformat()
+            if began else None,
+            "issue_comment_url": comment.get("url") if isinstance(comment.get("url"), str) else None,
+        },
+    }
+
+
 class AnswerBody(BaseModel):
     """`POST /v1/tasks/{id}/answers`: an option label, free text, or both.
 
@@ -304,7 +531,10 @@ class AnswerBody(BaseModel):
     question_index: int
     choice: str | None = None
     text: str | None = None
-    via: Literal["console", "claude-code"] | None = None
+    #: `github-comment` is the `/answer` reply on the agent's issue
+    #: (`ghapprove.poll_answers`), set by swarm-api, never a caller's word for
+    #: who may answer.
+    via: Literal["console", "claude-code", "github-comment"] | None = None
     session: str | None = None
 
     @field_validator("session")
@@ -388,13 +618,21 @@ def answer_question(
         "session": body.session,
     }
 
+    promoted: dict[str, Any] = {}
+
     @firestore.transactional
     def _apply(txn: Any) -> bool:
+        promoted.clear()  # a retried transaction starts again
         snap = _snapshot(txn.get(ref))
         data = snap.to_dict() if snap.exists else None
         if data is None or data.get("tenant_id") != tenant_id:
             raise NotFound(f"task {task_id!r} not found")
         metadata = dict(data.get("metadata") or {})
+        # A wait the task is parked on is adopted before its first answer,
+        # so an earlier wait's answers are never read as this one's.
+        wait = parked_wait(data)
+        if wait is not None:
+            adopt_wait(metadata, wait)
         current = owner_answers_by_index(metadata)
         previous = current.get(index)
         history: list[dict[str, Any]] = []
@@ -410,6 +648,14 @@ def answer_question(
             })
         current[index] = {**entry, "history": history}
         metadata[OWNER_ANSWERS_METADATA_KEY] = [current[i] for i in sorted(current)]
+        if wait is not None and not blocking_unanswered(wait, metadata) and _resumable(data):
+            # The last blocking answer: PARKED(HUMAN_REQUIRED) -> READY in
+            # this same transaction, as `human-ready` makes it. Nothing is
+            # leased here (invariants 1, 2, 5).
+            moved = {**data, "metadata": metadata}
+            ready_writes(txn, db, moved, email=email, now=now, reason=OWNER_ANSWERED)
+            promoted["by"] = email
+            return previous is not None
         # `metadata` alone: `updated_at` is the task's own lifecycle clock,
         # and an answer on an ended task is not a change to the task.
         txn.update(ref, {"metadata": metadata})
@@ -428,9 +674,91 @@ def answer_question(
             "with_choice": choice is not None,
             "with_text": text is not None,
             "via": body.via,
+            "resumed": bool(promoted),
         },
     )
     return read_questions(
         store, service, tenant_id, task_id,
         submitted_by=submitted_by, viewer=email, viewer_is_admin=is_admin,
     )
+
+
+def _resumable(data: dict[str, Any]) -> bool:
+    """Whether `ready_writes` would move this task: no cancel asked, an attempt left.
+
+    Asked before, so a task that cannot be resumed keeps the answer it was
+    given and is left for the scheduler's sweeps to end, rather than the
+    answer being refused with it.
+    """
+    task = task_from_dict(data)
+    return not task.cancel_requested and not task.retries_exhausted()
+
+
+def expire_question_waits(db: Any, now: datetime, *, limit: int = EXPIRY_SCAN) -> int:
+    """Dead-letter every agent parked on a blocking question past 72 hours (§3.9 step 5).
+
+    One indexed query across tenants for PARKED(HUMAN_REQUIRED); a task
+    whose park carries a question wait that began `QUESTION_WAIT_MAX_SECONDS`
+    ago is ended DEAD_LETTERED with `last_error: "owner question unanswered"`,
+    in a transaction guarded on it still being parked on the SAME wait. A
+    parked task holds no lease, so none is released (invariant 1). Returns
+    how many it ended.
+    """
+    query = (
+        db.collection(TASKS)
+        .where(filter=FieldFilter("state", "==", TaskState.PARKED.value))
+        .where(filter=FieldFilter("park_reason", "==", ParkReason.HUMAN_REQUIRED.value))
+        .limit(limit)
+    )
+    ended = 0
+    for snap in query.stream():
+        doc = snap.to_dict() or {}
+        wait = parked_wait(doc)
+        if wait is None:
+            continue
+        began = asked_at(doc, wait)
+        if began is None or began + timedelta(seconds=QUESTION_WAIT_MAX_SECONDS) > now:
+            continue
+        if _dead_letter(db, str(doc.get("id") or snap.id), str(doc.get("tenant_id") or ""),
+                        wait, now):
+            ended += 1
+    return ended
+
+
+def _dead_letter(db: Any, task_id: str, tenant_id: str, wait: dict[str, Any], now: datetime) -> bool:
+    ref = db.collection(TASKS).document(task_id)
+
+    @firestore.transactional
+    def _apply(txn: Any) -> bool:
+        snap = _snapshot(txn.get(ref))
+        data = snap.to_dict() if snap.exists else None
+        if data is None or data.get("tenant_id") != tenant_id:
+            return False
+        current = parked_wait(data)
+        if current is None or current.get("attempt_id") != wait.get("attempt_id"):
+            return False
+        assert_transition(TaskState.PARKED, TaskState.DEAD_LETTERED)
+        txn.update(ref, {
+            "state": TaskState.DEAD_LETTERED.value,
+            "next_eligible_at": None,
+            "blocked_by": [],
+            "completed_at": now,
+            "last_error": UNANSWERED,
+            # No EndCause names this ending; the contract says None then.
+            "end_cause": None,
+            "updated_at": now,
+        })
+        event = TaskEvent(
+            event_id=new_id("ev"), task_id=task_id, tenant_id=tenant_id,
+            type=EventType.DEAD_LETTERED, at=now, attempt_id=None,
+            detail={"reason": UNANSWERED, "park_reason": ParkReason.HUMAN_REQUIRED.value,
+                    "cause": "question_wait_expired", "attempt_id": wait.get("attempt_id"),
+                    "unanswered": blocking_unanswered(wait, data.get("metadata"))},
+        )
+        txn.set(ref.collection(EVENTS).document(event.event_id), event_to_firestore(event))
+        return True
+
+    done = _apply(db.transaction())
+    if done:
+        log.info("question wait expired", extra={"task_id": task_id, "tenant_id": tenant_id})
+    return done
