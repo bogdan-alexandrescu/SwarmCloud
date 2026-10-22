@@ -1751,7 +1751,9 @@ export function AdditionalRepositoryLimitsCard() {
     let live = true
     // Through the loader, not a bare read: the fixture build answers it there
     // (visual QA run 4 admin-001), and a bare read went to the dev server's 404.
-    void loadPlatformSettings().then((r) => {
+    // Settled, as the price card's loaders are: a partial mock of `./api` that
+    // lacks it must not throw the whole Admin screen away.
+    void settle(() => loadPlatformSettings()).then((r) => {
       if (!live) return
       setSettings(r)
       if (r.status === 'ok' || r.status === 'stale') take(r.data)
