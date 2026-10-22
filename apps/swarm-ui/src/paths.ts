@@ -71,6 +71,20 @@ export function keyLinkToken(pathname: string, search: string): string | null {
   return t === null || t === '' ? null : t
 }
 
+/**
+ * THE QA TARGET CREDENTIAL FORM'S ONE-TIME LINK (lane VQ6-ROUTE, part of
+ * #1933; docs/design/visual-qa-any-app.md §5): the plugin's
+ * `swarm_qa_target_credential_link` hands a workspace admin
+ * `/qa-targets/<id>/credential?t=<token>` (swarm_api `qatargets.mint_link`).
+ * It lands on Work › Repositories › QA targets (QaTargets.tsx
+ * `QA_TARGETS_PAGE`). Not in FIXED, for the key link's reasons, and ITS
+ * TOKEN IS NEVER PART OF THE ADDRESS: neither the target id nor `t` enters the
+ * route. App reads both off the bar once (qaTargetsApi.ts
+ * `qaCredentialLinkFrom`) before its normalise effect rewrites it.
+ */
+export const QA_LINK_ADDRESS = 'work/repositories?page=qa-targets'
+const QA_LINK_PATH = /^\/qa-targets\/[^/]+\/credential$/
+
 /** The scopes a key link may name; anything else is dropped, not guessed at. */
 export function keyLinkScope(query: string): 'user' | 'tenant' | null {
   const scope = new URLSearchParams(query).get('scope')
@@ -487,6 +501,10 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
     const scope = keyLinkScope(query)
     return plain(scope === null ? KEY_LINK_ADDRESS : `${KEY_LINK_ADDRESS}?scope=${scope}`)
   }
+
+  // THE QA CREDENTIAL LINK'S TOKEN (`t`) AND TARGET ARE DROPPED HERE: the route
+  // is the QA targets page alone, so no address the router writes carries them.
+  if (QA_LINK_PATH.test(path)) return plain(QA_LINK_ADDRESS)
 
   // ADMIN › SCHEDULES IS GONE (SCHED-ONE-PAGE, owner decision 2026-10-13):
   // every tenant's schedules are Automate › Schedules' All tenants view, and
