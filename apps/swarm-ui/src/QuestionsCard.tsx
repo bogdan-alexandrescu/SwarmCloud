@@ -297,7 +297,9 @@ function AskedCard({ task, count }: { task: Task; count: number }) {
   return (
     <section id="questions" className="dt-card qc" aria-label="Questions for you">
       <div className="dt-card-head">
-        <b>Questions for you</b>
+        {/* AN h2, AS EVERY DETAILS CARD'S TITLE IS (DtCardHead), so the pane's
+            headings outline lists it; `.dt-card-head > h2` draws it as the `<b>` was. */}
+        <h2>Questions for you</h2>
         <span className="dt-card-r">
           <span className="dt-chip">{questionsWord(count)}</span>
         </span>

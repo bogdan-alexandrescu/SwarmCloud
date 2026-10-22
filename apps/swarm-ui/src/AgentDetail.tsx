@@ -1085,31 +1085,51 @@ function cores(n: number): string {
 
 /**
  * THE MEMORY FIGURE, decided once for the strip and the Resources card.
- * Final peak when an attempt wrote one; the heartbeat's high-water mark so
- * far while the newest attempt runs, labelled with its age; the LAST reading
- * when the attempt is over and wrote no peak (a lost worker), labelled as
- * that and never as a peak.
+ *
+ * IT IS THE NEWEST ATTEMPT'S OWN FIGURE (c06, owner decision 2026-10-22, box
+ * comment 6314119814). It was the worst of every measured attempt, so while
+ * attempt 3 ran at 3 GiB the tile read attempt 2's 7.20 GiB and disagreed
+ * with the Attempts tab. Now: the final peak when the newest attempt wrote
+ * one; its heartbeat's high-water mark so far while it runs, labelled with
+ * its age; its LAST reading when it is over and wrote no peak (a lost
+ * worker), labelled as that and never as a peak; `at exit` before any.
+ *
+ * THE WORST EARLIER ATTEMPT IS KEPT IN VIEW, NOT DROPPED: when an earlier
+ * attempt peaked higher than the newest's figure (or the newest has none
+ * yet), `worst` names it and its ordinal, and the tile and the Resources row
+ * say so. That is the sizing warning the max carried.
  */
 interface MemoryFigure {
   kind: 'peak' | 'live' | 'last' | 'pending' | 'absent' | 'unread'
   bytes: number | null
   at: string | null
-  measured: number
+  /** The earlier attempt that peaked above the newest's figure, by its ordinal (1 = first). */
+  worst: { bytes: number; ordinal: number } | null
 }
 
 function memoryOf(run: AgentRun): MemoryFigure {
   const { task, attempts, events } = run
-  if (attempts === null) return { kind: 'unread', bytes: null, at: null, measured: 0 }
-  const { latest } = orderedAttempts(attempts)
-  const measured = attempts.filter((a) => a.peak_rss_bytes !== null)
-  if (measured.length > 0) {
-    return { kind: 'peak', bytes: Math.max(...measured.map((a) => a.peak_rss_bytes ?? 0)), at: null, measured: measured.length }
-  }
-  if (latest === null) return { kind: 'absent', bytes: null, at: null, measured: 0 }
-  const open = !attemptEnd(latest, task, true).over
-  const hb = newestHeartbeat(latest, events)
-  if (hb?.peakRssBytes != null) return { kind: open ? 'live' : 'last', bytes: hb.peakRssBytes, at: hb.at, measured: 0 }
-  return { kind: open ? 'pending' : 'absent', bytes: null, at: null, measured: 0 }
+  if (attempts === null) return { kind: 'unread', bytes: null, at: null, worst: null }
+  const { ordered, latest } = orderedAttempts(attempts)
+  if (latest === null) return { kind: 'absent', bytes: null, at: null, worst: null }
+  const own = ((): Omit<MemoryFigure, 'worst'> => {
+    if (latest.peak_rss_bytes !== null) return { kind: 'peak', bytes: latest.peak_rss_bytes, at: null }
+    const open = !attemptEnd(latest, task, true).over
+    const hb = newestHeartbeat(latest, events)
+    if (hb?.peakRssBytes != null) return { kind: open ? 'live' : 'last', bytes: hb.peakRssBytes, at: hb.at }
+    return { kind: open ? 'pending' : 'absent', bytes: null, at: null }
+  })()
+  let worst: MemoryFigure['worst'] = null
+  ordered.slice(0, -1).forEach((a, i) => {
+    const b = a.peak_rss_bytes
+    if (b !== null && b > (own.bytes ?? 0) && (worst === null || b > worst.bytes)) worst = { bytes: b, ordinal: i + 1 }
+  })
+  return { ...own, worst }
+}
+
+/** `worst 7.20 GiB, attempt 2`: the earlier attempt that peaked higher, for a caption. */
+function worstWords(worst: MemoryFigure['worst']): string | null {
+  return worst === null ? null : `worst ${bytesLabel(worst.bytes)}, attempt ${worst.ordinal}`
 }
 
 function DtStrip({ run, now }: { run: AgentRun; now: number }) {
@@ -1128,9 +1148,18 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   // is the duration alone, from the same `elapsed()` instant.
   const created = instant(task.created_at)
   const waited = el.phase === 'waiting' && el.ticking && created !== null ? formatDuration(now - created) : null
+  // THE TWO CLOCKS ARE NAMED (c07, owner decision 2026-10-22, box comment
+  // 6314120120). This tile is the newest attempt's run, from its start; the
+  // Progress bars' figure is each attempt whole, queue and cold start
+  // included, and its column head says so. `Run · attempt 3` while it runs,
+  // `Ran · attempt 3` once it ends; the label may wrap in the 115px tile at
+  // 1440 (details.css). A phase with no run to time keeps `Elapsed`.
+  const ordinal = attempts !== null && attempts.length > 0 ? attempts.length : task.attempt_count
+  const runWord = el.phase === 'running' ? 'Run' : el.phase === 'ran' ? 'Ran' : null
+  const clockLabel = runWord === null ? 'Elapsed' : ordinal > 0 ? `${runWord} · attempt ${ordinal}` : runWord
   const cells: DtCell[] = [
     {
-      label: waited !== null ? 'Waiting' : 'Elapsed',
+      label: waited !== null ? 'Waiting' : clockLabel,
       value: waited ?? el.text,
       sub:
         el.phase === 'running' && start !== null ? (
@@ -1186,6 +1215,12 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   const limit = cls === null ? null : cls.memory_gib * GIB
   const memPct = mem.bytes !== null && limit !== null ? pctOf(mem.bytes, limit) : null
   const ofLimit = cls === null ? (noCeiling ?? 'limit unknown') : `of ${cls.memory_gib} GiB`
+  // THE WORST EARLIER ATTEMPT IS THE CAPTION (c06): `of 8 GiB · worst 7.20
+  // GiB, attempt 2 · OOM near miss`, in the alert tone, the owner's words.
+  // A 480-639px pane cuts it at two lines; it is whole in the tooltip, and
+  // Resources' Memory row says it with the reading's age (`so far · 1m ago`).
+  const worst = worstWords(mem.worst)
+  const nearWords = nearMiss ? ' · OOM near miss' : ''
   if (mem.bytes !== null) {
     cells.push({
       label: mem.kind === 'last' ? 'Memory · last reading' : 'Peak memory',
@@ -1193,24 +1228,34 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
       unit: memPct === null ? undefined : `${memPct}%`,
       bar: memPct,
       sub:
-        mem.kind === 'live'
-          ? `${ofLimit} · so far · ${timeAgo(mem.at ?? '', now)}`
-          : mem.kind === 'last'
-            ? `${ofLimit} · no peak was written`
-            : // A PEAK, WRITTEN AT EXIT (G2-11, QA 2026-10-07): `at exit` alone
-              // read as the value at exit, and 26.7 MiB for a Claude Code run
-              // looked like a residue. The worker records the high-water mark
-              // it sampled (`peak_rss_bytes`, agent_worker/metrics.py) and
-              // writes it when the attempt ends.
-              `${ofLimit} · ${attempts.length > 1 ? `worst of ${mem.measured}` : 'peak, written at exit'}${nearMiss ? ' · OOM near miss' : ''}`,
+        worst !== null
+          ? `${ofLimit} · ${worst}${nearWords}`
+          : mem.kind === 'live'
+            ? `${ofLimit} · so far · ${timeAgo(mem.at ?? '', now)}`
+            : mem.kind === 'last'
+              ? `${ofLimit} · no peak was written`
+              : // A PEAK, WRITTEN AT EXIT (G2-11, QA 2026-10-07): `at exit` alone
+                // read as the value at exit, and 26.7 MiB for a Claude Code run
+                // looked like a residue. The worker records the high-water mark
+                // it sampled (`peak_rss_bytes`, agent_worker/metrics.py) and
+                // writes it when the attempt ends.
+                `${ofLimit} · peak, written at exit${nearWords}`,
       // THE LIVE HIGH-WATER MARK IS NOT THE FINAL FIGURE (AG-4): full size,
       // because it is a real measurement, but on its own tone and labelled
-      // `so far` with its age.
-      tone: nearMiss || mem.kind === 'last' ? 'alert' : mem.kind === 'live' ? 'live' : undefined,
+      // `so far` with its age -- unless an earlier attempt was worse, whose
+      // warning takes the alert tone.
+      tone: worst !== null || nearMiss || mem.kind === 'last' ? 'alert' : mem.kind === 'live' ? 'live' : undefined,
       help: 'peak-memory',
     })
   } else if (mem.kind === 'pending') {
-    cells.push({ label: 'Peak memory', value: 'at exit', tone: 'reading', bar: null, sub: `${ofLimit} · no heartbeat reading yet`, help: 'peak-memory' })
+    cells.push({
+      label: 'Peak memory',
+      value: 'at exit',
+      tone: 'reading',
+      bar: null,
+      sub: worst !== null ? `${ofLimit} · ${worst}${nearWords} · no heartbeat reading yet` : `${ofLimit} · no heartbeat reading yet`,
+      help: 'peak-memory',
+    })
   } else if (latest === null) {
     // ONE CAUSE, ONE WORD (QA G2-28): with no attempt, Peak memory, CPU and
     // Cost each say `no attempt`. They said `not recorded`, `no attempt yet`
@@ -1222,7 +1267,8 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
       value: '— not recorded',
       tone: 'absent',
       bar: null,
-      sub: 'no attempt wrote one',
+      // The newest wrote none; an earlier one that did is still named.
+      sub: worst !== null ? `attempt ${attempts.length} wrote none · ${worst}${nearWords}` : 'no attempt wrote one',
       help: 'peak-memory',
     })
   }
@@ -1479,11 +1525,10 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
         <>
           {/* THE RIGHT-HAND FIGURE IS EACH ATTEMPT'S WHOLE SPAN (G2-03): queue
               and cold start are in it, which is why it is longer than the
-              Elapsed tile, and it is labelled so. */}
+              `Run · attempt N` tile, and its head names all three (c07). */}
           <div className="dt-phrow is-head">
             <span />
-            <span />
-            <span>total incl. queue</span>
+            <span>whole attempt: queue + cold start + run</span>
           </div>
           {rows.map((r, i) => (
             <DtPhaseRow key={r.attempt.attempt_id} r={r} live={i === rows.length - 1 ? liveRun(task, now) : null} />
@@ -1635,6 +1680,10 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
   const { latest } = orderedAttempts(attempts)
   const open = latest !== null && !attemptEnd(latest, task, true).over
   const mem = memoryOf(run)
+  // THE WORST EARLIER ATTEMPT, WHOLE (c06): the strip's tile cuts its caption
+  // at two lines in a 480-639px pane; this row never does.
+  const worst = worstWords(mem.worst)
+  const worstNote = worst === null ? '' : ` · ${worst}${attempts?.some((a) => a.oom_near_miss) ? ' · OOM near miss' : ''}`
   const rows: { name: string; value: string; note: string; pct: number | null; warn?: boolean }[] = []
   const unknownLimit = noCeiling ?? 'limit unknown'
   if (attempts === null) {
@@ -1642,15 +1691,22 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
   } else {
     rows.push(
       mem.bytes === null
-        ? { name: 'Memory', value: '—', note: latest === null ? 'no attempt' : mem.kind === 'pending' ? 'written at exit' : 'not recorded', pct: null }
+        ? {
+            name: 'Memory',
+            value: '—',
+            note: (latest === null ? 'no attempt' : mem.kind === 'pending' ? 'written at exit' : 'not recorded') + worstNote,
+            pct: null,
+            warn: worst !== null,
+          }
         : {
             name: 'Memory',
             value: bytesLabel(mem.bytes),
             note:
               (cls === null ? unknownLimit : `of ${cls.memory_gib} GiB`) +
-              (mem.kind === 'live' ? ` · so far · ${timeAgo(mem.at ?? '', now)}` : mem.kind === 'last' ? ' · last reading' : ''),
+              (mem.kind === 'live' ? ` · so far · ${timeAgo(mem.at ?? '', now)}` : mem.kind === 'last' ? ' · last reading' : '') +
+              worstNote,
             pct: cls === null ? null : pctOf(mem.bytes, cls.memory_gib * GIB),
-            warn: mem.kind === 'last',
+            warn: mem.kind === 'last' || worst !== null,
           },
     )
     const disk = latest?.peak_disk_bytes ?? null

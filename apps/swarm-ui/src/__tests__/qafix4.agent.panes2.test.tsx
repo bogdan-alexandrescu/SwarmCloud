@@ -242,7 +242,8 @@ describe('c07: the two clocks are named', () => {
     const t = tile(el, /^Run/)
     // MUTATION: leave the label `Elapsed` while the task runs.
     expect(t.querySelector('.dt-sc-l')?.textContent).toBe('Run · attempt 3')
-    expect(t.querySelector('.dt-sc-v')?.textContent).toBe('3m 0s')
+    // Started three minutes before the fixture was built; a slow run reads `2m 59s`.
+    expect(t.querySelector('.dt-sc-v')?.textContent).toMatch(/^(2m 59s|3m 0s)$/)
     expect(t.querySelector('.dt-sc-s')?.textContent).toMatch(/^since /)
   })
 

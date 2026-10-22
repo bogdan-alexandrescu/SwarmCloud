@@ -290,18 +290,18 @@ describe('G2-03: one running task, one elapsed figure', () => {
     )
     const el = container as HTMLElement
     const want = formatDuration(14 * MIN)
-    expect(tile(el, /^Elapsed/).value).toBe(want)
+    expect(tile(el, /^Run · attempt/).value).toBe(want)
     expect(el.querySelector('.dt-phase.is-cur')?.textContent).toBe(`run ${want}`)
     // Progress: queue 0 + cold 1m + run 14m, measured to now, so no `+`.
     const rows = [...el.querySelectorAll<HTMLElement>('.dt-progress .dt-phrow:not(.is-head)')]
     expect(rows.at(-1)!.querySelector('b')?.textContent).toBe(formatDuration(15 * MIN))
   })
 
-  it('labels the Progress total as including the queue', () => {
+  it('labels the Progress total as the whole attempt: queue, cold start and run (c07)', () => {
     const el = host(live(Date.now()))
     const headRow = el.querySelector('.dt-progress .dt-phrow.is-head')
     expect(headRow, 'the Progress total is unlabelled').not.toBeNull()
-    expect(seen(headRow)).toBe('total incl. queue')
+    expect(seen(headRow)).toBe('whole attempt: queue + cold start + run')
   })
 
   it('prints the header and the Elapsed tile at the same instant in the split', async () => {
@@ -321,7 +321,7 @@ describe('G2-03: one running task, one elapsed figure', () => {
     })
     const header = document.querySelector('.ag-head-hl b')?.textContent
     expect(header).toMatch(/^1[34]m \d+s$/)
-    expect(tile(strip.parentElement!, /^Elapsed/).value).toBe(header)
+    expect(tile(strip.parentElement!, /^Run · attempt/).value).toBe(header)
   })
 })
 
