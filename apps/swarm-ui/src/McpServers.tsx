@@ -1,7 +1,7 @@
 import { useId, useState, type FormEvent, type MouseEvent, type MutableRefObject } from 'react'
 import { USE_FIXTURES, loadCapacity } from './api'
 import { Banner, Button, Card, routedClick } from './components'
-import { read, route, write, type ApiError, type ApiRoute, type Result } from './fetch'
+import { noteFixtureProbe, read, route, write, type ApiError, type ApiRoute, type Result } from './fetch'
 import { addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
@@ -149,18 +149,53 @@ export function normMcpServerList(raw: unknown): McpServerList {
   }
 }
 
+/** The fixture build's answer to an MCP-server WRITE: not served, as an API without the routes answers. */
 function fixtureNotServed<T>(target: ApiRoute): Result<T> {
   void target
   return {
     status: 'error',
-    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no MCP-server routes.' },
+    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no MCP-server writes.' },
   }
+}
+
+/**
+ * `GET /v1/mcp-servers` in the fixture build (QAFIX4-FIXTURE-A, visual QA run
+ * 4 overview-automate-011): two servers on the personal workspace, which its
+ * owner manages, and the egress addresses the intro points at ("from one of
+ * the addresses below"), from the documentation range. One authenticates
+ * with the dispatch's identity, one with nothing; one is disabled, one was
+ * never attached. No secret appears: a server's credential is a workspace
+ * secret the API never serves.
+ */
+async function fixtureMcpServers(target: ApiRoute): Promise<Result<McpServerList>> {
+  await new Promise((r) => setTimeout(r, 90))
+  noteFixtureProbe(target, 90, true)
+  const ago = (ms: number) => new Date(Date.now() - ms).toISOString()
+  const raw = {
+    tenant_id: 'u-bogdan',
+    can_manage: true,
+    egress_addresses: ['203.0.113.17', '203.0.113.18'],
+    last_attached_complete: true,
+    servers: [
+      {
+        name: 'docs-search', url: 'https://mcp.example.com/docs/mcp', description: 'Searches the engineering handbook and the API reference.',
+        auth: { mode: 'dispatch' }, allowed_profiles: ['claude-code'], allowed_tools: ['search', 'fetch_page'],
+        enabled: true, revision: 3, updated_at: ago(2 * 86_400_000), updated_by: 'alice@example.com', last_attached_at: ago(40 * 60_000),
+      },
+      {
+        name: 'status-board', url: 'https://status.example.com/mcp', description: 'Reads the public status page.',
+        auth: { mode: 'none' }, allowed_profiles: [], allowed_tools: [],
+        enabled: false, revision: 1, updated_at: ago(9 * 86_400_000), updated_by: 'alice@example.com', last_attached_at: null,
+      },
+    ],
+  }
+  return { status: 'ok', fetchedAt: Date.now(), data: normMcpServerList(raw) }
 }
 
 /** `GET /v1/mcp-servers`: the selected workspace's registrations, and whether this caller manages them. */
 export async function loadMcpServers(): Promise<Result<McpServerList>> {
   const target = route(LIST)
-  if (USE_FIXTURES) return fixtureNotServed(target)
+  if (USE_FIXTURES) return fixtureMcpServers(target)
   const r = await read<unknown>(target, () => false)
   if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normMcpServerList(r.data) }
   return r

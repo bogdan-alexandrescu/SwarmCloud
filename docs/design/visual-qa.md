@@ -758,6 +758,49 @@ in `App.tsx` and fails when a tab is in one and not the other. A sweep that
 silently skips a new tab is the defect CLAUDE.md's "empty output is not
 success" names.
 
+#### 4.3.1 Amendment, 2026-10-22: the capture persona (QAFIX4-FIXTURE-A, epic #1680)
+
+Run 4 captured the admin group as a person who is not a platform admin
+(admin-004, admin-005). Admin › Tenants drew only "This needs admin access",
+Pool limits only its locked state, and Workspaces you admin only its empty
+state, at both presets and in both themes. So none of the admin controls had
+ever been reviewed. The fixture build now answers as one of two **personas**:
+
+* **`member`**: the fixture identity every earlier run captured. That is
+  alice@example.com in `u-bogdan`, not a platform admin
+  (`principal.is_admin: false`), with no group workspace in
+  `GET /v1/tenants/mine`. It is the default, and every route that names no
+  persona still gets this exact identity.
+* **`platform-admin`**: the same person as a platform admin
+  (`principal.is_admin: true`, `identity.is_admin` on `/v1/profile`) who also
+  administers one group workspace, `eng`. Its stored role there is `admin`,
+  reached as a member, in `GET /v1/tenants/mine`. The admin-gated fixture
+  reads (`/v1/admin/tenants`, `/v1/admin/people`, `/v1/admin/runner-sizes`,
+  `/v1/admin/settings` and the rest) answer this persona. They still refuse
+  the member with the 403 the route gives a non-admin.
+
+How a capture picks one:
+
+1. A route in `routes.json` may carry `"persona": "platform-admin"`. If the
+   key is absent the route is `member`. `load_routes` refuses any other
+   value.
+2. Before **every** route's navigation, `swarm_qa capture` sets the cookie
+   `swarm_qa_persona=<persona>` on the console's origin. It does this for
+   `member` routes too, so no route inherits the persona of the route before
+   it. A cookie is used rather than local or session storage because
+   `RESET_STATE_JS` empties both on every load. The manifest entry records
+   the route's `persona`.
+3. `api.ts` reads the cookie once, when it loads, and only in the fixture
+   build. No live read depends on it. A dev server opened by hand has no
+   cookie, so it is the member; so is any other value.
+
+The admin group's routes (`limits`, `runner-sizes`, `tenants`, `counts`,
+`people`, `workspaces`) carry `platform-admin`. Owner decision c45 holds the
+look of Pool limits' locked view, so that view stays captured once, as the
+member: the route `limits-locked`, with the same address and path and no
+persona. `tests/unit/scripts/test_qa_routes.py` holds both of these, and holds
+the cookie's name on both sides.
+
 ### 4.4 What each step writes
 
 **`manifest.json`, in every capture tarball:**

@@ -168,37 +168,49 @@
         "id": "limits",
         "address": "admin/limits",
         "path": "/admin/limits",
+        "ready": "main h1",
+        "persona": "platform-admin"
+      },
+      {
+        "id": "limits-locked",
+        "address": "admin/limits",
+        "path": "/admin/limits",
         "ready": "main h1"
       },
       {
         "id": "runner-sizes",
         "address": "admin/runner-sizes",
         "path": "/admin/runner-sizes",
-        "ready": "main h1"
+        "ready": "main h1",
+        "persona": "platform-admin"
       },
       {
         "id": "tenants",
         "address": "admin/tenants",
         "path": "/admin/tenants",
-        "ready": "main h1"
+        "ready": "main h1",
+        "persona": "platform-admin"
       },
       {
         "id": "counts",
         "address": "admin/counts",
         "path": "/admin/counts",
-        "ready": "main h1"
+        "ready": "main h1",
+        "persona": "platform-admin"
       },
       {
         "id": "people",
         "address": "admin/people",
         "path": "/admin/people",
-        "ready": "main h1"
+        "ready": "main h1",
+        "persona": "platform-admin"
       },
       {
         "id": "workspaces",
         "address": "admin/workspaces",
         "path": "/admin/workspaces",
-        "ready": "main h1"
+        "ready": "main h1",
+        "persona": "platform-admin"
       }
     ],
     "task": [

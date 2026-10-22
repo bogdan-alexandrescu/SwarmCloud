@@ -65,6 +65,14 @@ export interface ApiError {
    * schedule edit route `write()` also accepts (docs/schedules.md §7.1).
    */
   method?: 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+  /**
+   * The route template of a READ that answered 404 (visual QA run 4,
+   * overview-automate-001): `read()` sets it on a `not_found`, so the failure
+   * copy can tell a read of one item (`/v1/schedules/{id}`) from a read that
+   * names none (`/v1/schedules`), whose 404 means the route itself was not
+   * found. Absent everywhere else.
+   */
+  template?: string
 }
 
 /** Whether a failure is a write's: see `ApiError.method`. */
@@ -222,6 +230,15 @@ export function errorReassurance(e: ApiError): string {
       return 'The request may never have reached the platform. Read the page again to see whether the change was made before sending it again.'
     }
     return 'The platform did not confirm this change. Read the page again to see whether it was made before sending it again.'
+  }
+  if (e.kind === 'not_found' && e.template !== undefined && !e.template.includes('{')) {
+    // A READ THAT NAMES NO ITEM (visual QA run 4, overview-automate-001): a
+    // list, or the caller's own document. Its 404 is the ROUTE not found --
+    // an API without it -- never one item missing or another tenant's, which
+    // is what the copy below says and the Schedules list said over an API
+    // that did not serve schedules. V007 still holds: it names no kind of
+    // thing, only the read.
+    return 'The API has no route for this read, so this deployment does not serve it. Reading it again gets the same answer.'
   }
   if (e.kind === 'not_found') {
     // store.py:369-379 deliberately returns the same 404 whether the task does
@@ -1157,7 +1174,9 @@ export async function read<T>(
           : { message: typeof v.detail === 'string' ? v.detail : undefined }
     }
     const ra = Number(arrived.retryAfter)
-    const err = classifyFailure(arrived.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
+    const classified = classifyFailure(arrived.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
+    // Which route answered 404, for the copy (`ApiError.template`).
+    const err: ApiError = classified.kind === 'not_found' ? { ...classified, template: target.template } : classified
     note(arrived.status, err.kind, false)
     notePreferencesRefusal(arrived.status, err.code, tenant, err.message)
     // A stored tenant the caller is no longer in: dropped, and this READ asked

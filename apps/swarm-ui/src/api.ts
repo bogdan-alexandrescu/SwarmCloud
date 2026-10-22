@@ -44,7 +44,7 @@ import type {
   WorkspaceRoleOverride, WorkspaceRoles, WorkspaceRoster,
   AdminWorkspaceRoles, AdminWorkspaceRolesPage,
   QaIdentityGrantDoc, QaIdentityList, QaIdentityMine,
-  RunnerSizeChanges, RunnerSizesDoc, RunnerSizesPreview, RunnerSizeVersion,
+  RunnerRecentUse, RunnerSize, RunnerSizeChanges, RunnerSizesDoc, RunnerSizesPreview, RunnerSizeVersion,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -59,6 +59,50 @@ export type { AnswerVia, OwnerAnswer, OwnerAnswerVersion } from './types'
  *  component that keeps its own loaders (CheckpointBrowser.tsx) reads this one
  *  flag rather than restating the expression. */
 export const USE_FIXTURES = import.meta.env.DEV && !import.meta.env.VITE_LIVE
+
+/**
+ * WHO THE FIXTURE BUILD ANSWERS AS (QAFIX4-FIXTURE-A; docs/design/visual-qa.md
+ * §4.3, visual QA run 4 admin-004 and admin-005). `member` is the fixture
+ * identity every capture has always seen: alice@example.com in u-bogdan, not
+ * a platform admin, administering no group workspace. `platform-admin` is the
+ * same person as a platform admin who also administers one group workspace,
+ * `eng`, so the admin pages draw their controls rather than their refusals.
+ *
+ * `swarm_qa capture` sets the cookie (`PERSONA_COOKIE` in swarm_qa.py) on the
+ * console's origin before every route's navigation, `member` included, from
+ * the route's `persona` in qa/routes.json. A cookie, not storage: the capture
+ * empties local and session storage on every load. Read ONCE, here, and only
+ * in the fixture build, so no live read ever depends on it; a dev server
+ * opened by hand has no cookie and is the member, as is any other value.
+ */
+export type FixturePersona = 'member' | 'platform-admin'
+const PERSONA_COOKIE = 'swarm_qa_persona'
+
+function readFixturePersona(): FixturePersona {
+  if (typeof document === 'undefined') return 'member'
+  for (const part of document.cookie.split(';')) {
+    const at = part.indexOf('=')
+    if (at > 0 && part.slice(0, at).trim() === PERSONA_COOKIE) {
+      return part.slice(at + 1).trim() === 'platform-admin' ? 'platform-admin' : 'member'
+    }
+  }
+  return 'member'
+}
+
+const FIXTURE_PERSONA: FixturePersona = USE_FIXTURES ? readFixturePersona() : 'member'
+/** Whether the fixture caller is a platform admin: the `platform-admin` persona only. */
+const fixtureIsAdmin = FIXTURE_PERSONA === 'platform-admin'
+/** The group workspace the `platform-admin` persona administers: `tenant:eng` in fixtureCapacity is its pool. */
+const FIXTURE_GROUP = { tenant_id: 'eng', principal: 'eng@example.com' } as const
+
+/** A refusal as an admin-gated route answers a caller who is not a platform admin (`admin_auth`). */
+function fixtureAdminRefusal<T>(target: ApiRoute, latencyMs: number): Result<T> {
+  noteFixtureProbe(target, latencyMs, false)
+  return {
+    status: 'error',
+    error: { kind: 'admin_required', httpStatus: 403, code: 'forbidden', message: 'admin group membership is required' },
+  }
+}
 
 export async function loadCapacity(options: { frame?: boolean } = {}): Promise<Result<Capacity>> {
   if (USE_FIXTURES) return fixtureCapacity()
@@ -2527,8 +2571,11 @@ export async function loadMyTenants(): Promise<Result<TenantChoice[]>> {
   if (USE_FIXTURES) {
     await new Promise((r) => setTimeout(r, 150))
     noteFixtureProbe(route('/v1/tenants/mine'), 150, true, undefined, { frame: true })
-    // The fixture caller has a personal tenant, so there is nothing to pick.
-    return { status: 'empty', fetchedAt: Date.now() }
+    // The member has a personal tenant and no group, so there is nothing to
+    // pick. The platform-admin persona is also a member of `eng`, where its
+    // STORED role is admin -- what Admin › Workspaces you admin lists.
+    if (!fixtureIsAdmin) return { status: 'empty', fetchedAt: Date.now() }
+    return { status: 'ok', fetchedAt: Date.now(), data: fixtureTenantChoices() }
   }
   return read<TenantChoice[]>(route('/v1/tenants/mine'), (rows) => rows.length === 0, { frame: true })
 }
@@ -2656,6 +2703,14 @@ export async function loadTaskWindow(budget: number): Promise<Result<TaskWindow>
   } as Result<TaskWindow>
 }
 
+/** `GET /v1/tenants/mine` for the platform-admin persona: its own workspace first (#1200), then `eng`. */
+function fixtureTenantChoices(): TenantChoice[] {
+  return [
+    { tenant_id: 'u-bogdan', display_name: 'Your workspace (u-bogdan)', kind: 'user', role: { name: 'admin', source: 'personal' }, via: 'personal' },
+    { tenant_id: FIXTURE_GROUP.tenant_id, display_name: FIXTURE_GROUP.principal, kind: 'group', role: { name: 'admin', source: 'override' }, via: 'member' },
+  ]
+}
+
 async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>> {
   await new Promise((r) => setTimeout(r, 150))
   noteFixtureProbe(route('/v1/tenants/me'), 150, true, undefined, { frame: options.frame === true })
@@ -2675,7 +2730,8 @@ async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>>
       },
       principal: {
         email: 'alice@example.com', domain: 'example.com',
-        groups: ['eng@example.com'], is_admin: false,
+        // The persona decides it (FIXTURE_PERSONA): the member is not an admin.
+        groups: ['eng@example.com'], is_admin: fixtureIsAdmin,
       },
       // UNDECLARED, ON PURPOSE. There is no API behind the fixtures, so there
       // is no environment it runs as; this is the shape of an API whose
@@ -2705,6 +2761,27 @@ async function fixtureWindow(budget: number): Promise<Result<TaskWindow>> {
   }
 }
 
+/**
+ * The three tenants fixtureCapacity has pools for, each figure the one its
+ * pool says: `capacity_units` is the `tenant:<id>` pool's hard limit (40, 10,
+ * 2), and u-bogdan is fixtureMe's tenant field for field.
+ */
+function fixtureRoster(): Tenant[] {
+  const created = (days: number) => new Date(Date.now() - 86_400_000 * days).toISOString()
+  const t = (tenant_id: string, kind: string, principal: string, display_name: string, days: number, max_active: number,
+    capacity_units: number, credentials: string[]): Tenant => ({
+    tenant_id, kind, principal, display_name, created_at: created(days), max_active, capacity_units,
+    monthly_budget_usd: null, enabled: true, credentials,
+    service_account: `swarm-agent-worker-${tenant_id}@example-project.iam.gserviceaccount.com`,
+    gcs_prefix: `gs://swarm-artifacts-dev/${tenant_id}`, namespace: `swarm-tenant-${tenant_id}`,
+  })
+  return [
+    t('u-bogdan', 'user', 'alice@example.com', 'Bogdan', 9, 2, 40, ['anthropic']),
+    t(FIXTURE_GROUP.tenant_id, 'group', FIXTURE_GROUP.principal, 'Engineering', 30, 4, 10, ['anthropic', 'openai']),
+    t('smoke', 'group', 'smoke@example.com', 'Smoke tests', 60, 1, 2, []),
+  ]
+}
+
 /** `GET /v1/admin/tenants`, admin-gated. A 403 here is information. */
 export async function loadTenants(): Promise<Result<{ tenants: Tenant[] }>> {
   if (USE_FIXTURES) return fixtureTenants()
@@ -2713,6 +2790,12 @@ export async function loadTenants(): Promise<Result<{ tenants: Tenant[] }>> {
 
 async function fixtureTenants(): Promise<Result<{ tenants: Tenant[] }>> {
   await new Promise((r) => setTimeout(r, 140))
+  // The roster is admin-gated: the platform-admin persona reads it, the
+  // member is refused exactly as before.
+  if (fixtureIsAdmin) {
+    noteFixtureProbe(route('/v1/admin/tenants'), 140, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: { tenants: fixtureRoster() } }
+  }
   noteFixtureProbe(route('/v1/admin/tenants'), 140, false)
   return {
     status: 'error',
@@ -3236,14 +3319,49 @@ export async function setPoolLimit(poolName: string, limit: number): Promise<Res
 // --------------------------------------------------------------------------
 // `GET /v1/settings/model-prices` serves the table to every signed-in member
 // (PRICES-FOLLOWUP); `PUT /v1/admin/settings` (`Store.set_platform_settings`)
-// is admin-only and writes it. No fixture branch, as Admin › Pool limits'
-// other settings card has none: the fixture build serves no platform settings.
+// is admin-only and writes it. The fixture build serves both (QAFIX4-FIXTURE-A,
+// run-4 admin-001): one table, `fixturePrices`, so the members' read and the
+// admin's settings never disagree about a price.
 //
 // NORMALISE OR DROP, NEVER GUESS. An entry with a rate that is not a finite
 // number of 0 or more, or with no `as_of`, is dropped here exactly as
 // `modelprices.entry` drops it on the server: its model then reads "cost not
 // reported", which is what swarm-api prices it at. A zero in its place would
 // be a figure nobody set.
+
+/**
+ * The fixture's price table, as `GET /v1/settings/model-prices` serves it: the
+ * models the fixture runners are pinned to (FIXTURE_RUNTIMES) and the one the
+ * fixture attempts ran. One is tiered, so the tier rows are drawn; one is the
+ * seed (`code`, no admin), one an admin's edit. Built per call, dated off now.
+ */
+function fixturePrices(): Record<string, unknown> {
+  const day = (days: number) => new Date(Date.now() - 86_400_000 * days).toISOString().slice(0, 10)
+  return {
+    'claude-opus-5': { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25, currency: 'USD', source: 'pricing-page', as_of: day(3), updated_by: null },
+    'demo-model-deep-2': { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75, currency: 'USD', source: 'console', as_of: day(12), updated_by: 'ops@example.com' },
+    'demo-model-quick-2': {
+      input: 0.8, output: 4, cache_read: 0.08, cache_write: 1, currency: 'USD', source: 'code', as_of: day(40), updated_by: null,
+      tiers: [
+        { input: 0.8, output: 4, cache_read: 0.08, cache_write: 1, up_to_prompt_tokens: 200_000 },
+        { input: 1.6, output: 6, cache_read: 0.16, cache_write: 2, up_to_prompt_tokens: null },
+      ],
+    },
+  }
+}
+
+/** `GET /v1/admin/settings` in the fixture build: the two repository limits set by an admin, and the price table above. */
+function fixturePlatformSettings(): Record<string, unknown> {
+  return {
+    merge_by_default: false,
+    max_additional_repositories: 4,
+    additional_repositories_budget_gib: 20,
+    model_prices: fixturePrices(),
+    updated_at: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+    updated_by: 'ops@example.com',
+    settings_document: 'present',
+  }
+}
 
 function normRates(r: Record<string, unknown>): Record<ModelPriceRate, number> | null {
   const rates: Partial<Record<ModelPriceRate, number>> = {}
@@ -3319,6 +3437,11 @@ function normPlatformSettings(raw: unknown): PlatformSettings {
  * this, so a non-admin sees the figures read-only.
  */
 export async function loadModelPrices(): Promise<Result<ModelPriceTable>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 90))
+    noteFixtureProbe(route('/v1/settings/model-prices'), 90, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: { model_prices: normModelPrices(fixturePrices()) } }
+  }
   const r = await read<unknown>(route('/v1/settings/model-prices'), () => false)
   if (r.status === 'ok' || r.status === 'stale') {
     return { ...r, data: { model_prices: normModelPrices((r.data as { model_prices?: unknown } | null)?.model_prices) } }
@@ -3328,6 +3451,13 @@ export async function loadModelPrices(): Promise<Result<ModelPriceTable>> {
 
 /** `GET /v1/admin/settings`, with its price table normalised. */
 export async function loadPlatformSettings(): Promise<Result<PlatformSettings>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 90))
+    const target = route('/v1/admin/settings')
+    if (!fixtureIsAdmin) return fixtureAdminRefusal(target, 90)
+    noteFixtureProbe(target, 90, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: normPlatformSettings(fixturePlatformSettings()) }
+  }
   const r = await read<unknown>(route('/v1/admin/settings'), () => false)
   if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normPlatformSettings(r.data) }
   return r as Result<PlatformSettings>
@@ -5989,9 +6119,9 @@ export type OutcomesPart<S extends OutcomeSection> = Omit<Outcomes, OutcomeSecti
 async function fixtureOutcomes(query: URLSearchParams): Promise<Result<Outcomes>> {
   await new Promise((r) => setTimeout(r, 260))
   const target = route('/v1/outcomes', {}, query)
-  // Platform scope is admin-only, and the fixture session is not an admin
+  // Platform scope is admin-only, and the member persona is not an admin
   // (`fixtureMe`), so the fixture answers it the way the route would.
-  if (query.get('scope') === 'platform') {
+  if (query.get('scope') === 'platform' && !fixtureIsAdmin) {
     noteFixtureProbe(target, 260, false)
     return {
       status: 'error',
@@ -6036,21 +6166,325 @@ export async function loadRunnerProfiles(): Promise<Result<string[]>> {
 // RepositoriesData.ts, and a route that is not there yet reads as a 404 with
 // no code, which the screens draw as "not served yet" naming the route.
 //
-// NO FIXTURES. The fixture build has no data for these routes and invents
-// none: it answers each as not served, exactly as an API without them would.
+// THE FIXTURE BUILD SERVES WHAT THE CAPTURES DRAW (QAFIX4-FIXTURE-A, visual
+// QA run 4 admin-002, admin-003, overview-automate-009..012, work-a-011), and
+// nothing else: `FIXTURE_READS` answers the registered repositories, the
+// Settings pages' reads, the people list and the runner sizes, each as the
+// raw body the route serves, so the SAME normaliser a live answer meets runs
+// over it. Every other `readAs` route -- git tokens, the graph, the access
+// routes -- is still answered as not served, exactly as an API without it.
 // ---------------------------------------------------------------------------
 
 function repoNotServed<T>(target: ApiRoute): Result<T> {
   noteFixtureProbe(target, 0, false)
   return {
     status: 'error',
-    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no repository or git-token routes.' },
+    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no repository or git-token routes.', template: target.template },
   }
+}
+
+/** A fixture read's answer: the raw body the route serves, or `admin` for an admin-gated route the member is refused. */
+type FixtureBody = { body: unknown } | 'admin'
+
+const FIXTURE_HOUR = 3_600_000
+const fixtureAgo = (ms: number): string => new Date(Date.now() - ms).toISOString()
+/** A short commit sha, as the fixture tasks write them, from a prefix. */
+const fixtureSha = (prefix: string): string => prefix.padEnd(10, '0')
+
+/**
+ * The registered repositories (run-4 work-a-011): three, one with a long
+ * name so the list's overflow is drawn. Each index is small and agrees with
+ * its own index document (`fixtureRepoIndex`): `coverage.modules` is the
+ * number of modules that document lists.
+ */
+const FIXTURE_REPOS = [
+  { repo_id: 'repo_5e1f0c2a9b3d4e61', repo: 'example-api', on_change: 'webhook', interval_hours: 24, modules: 6, tested: 4, edges: 18, sha: '4c1e9a' },
+  { repo_id: 'repo_7c2d9e4f1a0b3c85', repo: 'example-web', on_change: 'poll', interval_hours: 12, modules: 4, tested: 1, edges: 3, sha: '8d02f7' },
+  { repo_id: 'repo_a4b8c1d2e3f40917', repo: 'example-payments-reconciliation-service-monorepo', on_change: 'off', interval_hours: 168, modules: 8, tested: 5, edges: 27, sha: 'b37a51' },
+] as const
+
+function fixtureRepositories(): unknown {
+  return {
+    repositories: FIXTURE_REPOS.map((r, i) => ({
+      repo_id: r.repo_id, tenant_id: FIXTURE_TENANT, forge: 'github', owner: 'example-org', repo: r.repo,
+      repository_url: `https://github.com/example-org/${r.repo}`, default_branch: 'main',
+      allowed_profiles: ['claude-code'], created_by: 'alice@example.com', created_at: fixtureAgo((20 - i * 5) * 24 * FIXTURE_HOUR),
+      index: {
+        interval_hours: r.interval_hours, on_change: r.on_change, min_change_interval_minutes: 30, paused: false,
+        current_sha: fixtureSha(r.sha), last_indexed_at: fixtureAgo((i + 2) * FIXTURE_HOUR), head_sha: fixtureSha(r.sha),
+        behind_by: 0, stale: false, in_flight_task_id: null,
+        coverage: { modules: r.modules, modules_with_tests: r.tested, test_map_edges: r.edges, always_tests: 1 },
+        next_run_at: new Date(Date.now() + (r.interval_hours - i - 2) * FIXTURE_HOUR).toISOString(),
+        last_failure: null, keep_versions: 5,
+      },
+      last_run: null,
+      index_credential: { source: 'tenant', secret_name: `swarm-tenant-${FIXTURE_TENANT}-git` },
+    })),
+  }
+}
+
+/** `GET /v1/repositories/{repo_id}/index?format=json` for a fixture repository: its modules, as many as its coverage says. */
+function fixtureRepoIndex(repoId: string): unknown {
+  const r = FIXTURE_REPOS.find((x) => x.repo_id === repoId)
+  if (r === undefined) return undefined
+  const modules = Array.from({ length: r.modules }, (_v, i) => ({ path: `src/module_${i + 1}`, files: 4 + i, lines: 300 + 40 * i, language: 'typescript' }))
+  return { index: { commit_sha: fixtureSha(r.sha), truncated: [] }, document: { modules, truncated: [] } }
+}
+
+/** The person both personas are: the shell's alice@example.com, platform role per persona. */
+function fixtureIdentity(): Record<string, unknown> {
+  return {
+    email: 'alice@example.com', display_name: null, display_name_suggested: 'Alice', domain: 'example.com',
+    platform_role: fixtureIsAdmin ? 'admin' : null, is_admin: fixtureIsAdmin,
+  }
+}
+
+/**
+ * `GET /v1/profile` (run-4 overview-automate-012): the person, their
+ * workspaces (`eng` too for the platform-admin persona, as /tenants/mine
+ * says), a GitHub connection per workspace, the TypeSafe key the provider-keys
+ * fixture describes, and the Claude accounts fixtureAccounts holds.
+ */
+function fixtureProfile(): unknown {
+  const workspaces: Record<string, unknown>[] = [{
+    tenant_id: FIXTURE_TENANT, display_name: `Your workspace (${FIXTURE_TENANT})`, kind: 'user',
+    role: { name: 'admin', source: 'personal', via: 'personal' }, state: 'ready', selectable: true, is_acting: true, is_default: true,
+  }]
+  if (fixtureIsAdmin) {
+    workspaces.push({
+      tenant_id: FIXTURE_GROUP.tenant_id, display_name: FIXTURE_GROUP.principal, kind: 'group',
+      role: { name: 'admin', source: 'override', via: 'member' }, state: 'ready', selectable: true, is_acting: false, is_default: false,
+    })
+  }
+  const github = workspaces.map((w, i) => ({
+    tenant_id: w.tenant_id, state: 'active', forge_login: 'alice-example', method: 'app',
+    access_expires_at: new Date(Date.now() + (6 - i) * FIXTURE_HOUR).toISOString(), refreshed_at: fixtureAgo((2 + i) * FIXTURE_HOUR),
+  }))
+  return {
+    identity: fixtureIdentity(),
+    workspaces,
+    default_workspace: { tenant_id: null, source: null, ignored: null },
+    connections: {
+      github,
+      typesafe: {
+        personal: { set: true, set_at: fixtureAgo(5 * 24 * FIXTURE_HOUR), set_by: 'alice@example.com', version: 2 },
+        acting_workspace: { tenant_id: FIXTURE_TENANT, set: false, set_at: null, set_by: null, version: null },
+        uses: 'user',
+      },
+    },
+    notifications: { preferences: { muted: ['finished'], reminder: 'daily' }, topics: [...NOTIFICATION_TOPICS] },
+    claude_accounts: {
+      personal_workspace: FIXTURE_TENANT,
+      // The accounts Capacity › Accounts lists, so the two pages agree: the
+      // tenant's own, and the one lent to it.
+      accounts: fixtureAccounts.map((a) => ({
+        account_id: a.account_id, label: a.label, relation: a.owner_tenant === FIXTURE_TENANT ? 'own' : 'borrowed', state: a.state,
+        windows: a.windows, lent_to_count: a.owner_tenant === FIXTURE_TENANT ? a.lend_to.length : null, stale: a.stale,
+      })),
+      unreadable_document_count: 0,
+    },
+    revision: 3,
+    unavailable: [],
+  }
+}
+
+/** `GET /v1/provider-keys/{provider}` (run-4 overview-automate-009): your key set, the personal tenant's not, so yours is used. Never a value: only whether one is set. */
+function fixtureProviderKeys(provider: string): unknown {
+  return {
+    provider,
+    user: { available: true, set: true, set_at: fixtureAgo(5 * 24 * FIXTURE_HOUR), set_by: 'alice@example.com', version: '2' },
+    tenant: { tenant_id: FIXTURE_TENANT, set: false, set_at: null, set_by: null, version: null },
+    resolution: { tenant_id: FIXTURE_TENANT, uses: 'user' },
+    consumed_by: ['jev'],
+  }
+}
+
+/** `GET /v1/judgment`: the personal workspace's Jev backend, editable by its owner; TypeSafe is available because your key is set. */
+function fixtureJudgment(): unknown {
+  return {
+    tenant_id: FIXTURE_TENANT, can_edit: true,
+    jev: {
+      backend: 'internal-jev', label: 'Internal Jev', available: true, reason: null, default: 'internal-jev',
+      set_at: fixtureAgo(3 * 24 * FIXTURE_HOUR), set_by: 'alice@example.com',
+      options: [
+        { backend: 'internal-jev', label: 'Internal Jev', available: true, reason: null },
+        { backend: 'internal-laya', label: 'Internal Laya', available: true, reason: null },
+        { backend: 'typesafe', label: 'TypeSafe', available: true, reason: null },
+      ],
+    },
+  }
+}
+
+/** `GET /v1/code-intelligence` (run-4 overview-automate-010): off, as it is by default, and the owner may switch it. */
+function fixtureCodeIntelligence(): unknown {
+  return { tenant_id: FIXTURE_TENANT, can_edit: true, jev: false, context: 'on', updated_at: null, updated_by: null }
+}
+
+/** `GET /v1/workspace/roles`: u-bogdan is a personal workspace, which has only its owner, the admin. */
+function fixtureWorkspaceRoles(): unknown {
+  return {
+    tenant_id: FIXTURE_TENANT, kind: 'user', default_role: null, default_source: null, can_manage: true,
+    me: { email: 'alice@example.com', role: 'admin', source: 'personal', via: 'personal' },
+    people: [], roles: FIXTURE_ROLE_SUMMARIES, audit: [],
+  }
+}
+
+const FIXTURE_ROLE_SUMMARIES = [
+  { name: 'viewer', summary: 'Reads the workspace: agents, runs, logs and artifacts.' },
+  { name: 'member', summary: 'Starts and cancels agents and runs, and answers their questions.' },
+  { name: 'admin', summary: 'Changes the workspace: its people, roles, keys and settings.' },
+]
+
+/** `GET /v1/admin/workspaces/roles` (People's roles card): `eng`, whose first admin is the persona. */
+function fixtureAdminWorkspacesRoles(): unknown {
+  return {
+    workspaces: [{
+      tenant_id: FIXTURE_GROUP.tenant_id, group: FIXTURE_GROUP.principal, registered_by: 'ops@example.com',
+      kind: 'group', default_role: 'member', default_source: 'set',
+      people: [{ email: 'alice@example.com', role: 'admin', source: 'override', granted_by: 'ops@example.com', granted_at: fixtureAgo(30 * 24 * FIXTURE_HOUR), reason: 'first admin' }],
+    }],
+    roles: FIXTURE_ROLE_SUMMARIES,
+    next_page_token: null,
+  }
+}
+
+/**
+ * `GET /v1/admin/people` (run-4 admin-003): four people -- three signed in
+ * with a ready workspace, one pending (a requested workspace) -- and one
+ * admin, the persona. `count` and `pending` are counted from the rows.
+ */
+function fixturePeople(): unknown {
+  const ws = (state: string, id: string | null, extra: Record<string, unknown> = {}) => ({
+    state, setup_url: '', setup_command: '', kind: 'personal', workspace_id: id, tenant_id: id, ...extra,
+  })
+  const claude = (source: string, own: number, lent: number, lentBy: string[], providerKey = false) => ({
+    source, own, lent, lent_by: lentBy, provider_key: providerKey,
+  })
+  const ownAccounts = fixtureAccounts.filter((a) => a.owner_tenant === FIXTURE_TENANT)
+  const people = [
+    {
+      email: 'carol@example.com', display_name: 'Carol', teams: [], github: 'none',
+      workspace: ws('requested', null, { request_id: 'wsr_c4r0l', requested_at: fixtureAgo(40 * 60_000), requested_via: 'console' }),
+      claude_account: claude('none', 0, 0, []), loan_request: null,
+      first_seen: fixtureAgo(45 * 60_000), last_seen: fixtureAgo(40 * 60_000), last_submitted: null, last_active: fixtureAgo(40 * 60_000),
+    },
+    {
+      email: 'alice@example.com', display_name: null, teams: [FIXTURE_GROUP.principal], github: 'connected',
+      workspace: ws('ready', FIXTURE_TENANT, { ready_at: fixtureAgo(9 * 24 * FIXTURE_HOUR) }),
+      claude_account: claude('own', ownAccounts.length, 1, [FIXTURE_GROUP.tenant_id]), loan_request: null,
+      first_seen: fixtureAgo(9 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(5 * 60_000), last_submitted: fixtureAgo(20 * 60_000), last_active: fixtureAgo(5 * 60_000),
+    },
+    {
+      email: 'bob@example.com', display_name: 'Bob', teams: [FIXTURE_GROUP.principal], github: 'connected',
+      workspace: ws('ready', 'u-bob', { ready_at: fixtureAgo(6 * 24 * FIXTURE_HOUR) }),
+      claude_account: claude('lent', 0, 1, [FIXTURE_TENANT]), loan_request: { state: 'lent', requested_at: fixtureAgo(6 * 24 * FIXTURE_HOUR), decided_at: fixtureAgo(5 * 24 * FIXTURE_HOUR) },
+      first_seen: fixtureAgo(6 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(3 * FIXTURE_HOUR), last_submitted: fixtureAgo(4 * FIXTURE_HOUR), last_active: fixtureAgo(3 * FIXTURE_HOUR),
+    },
+    {
+      email: 'dave@example.com', display_name: null, teams: [], github: 'expired',
+      workspace: ws('ready', 'u-dave', { ready_at: fixtureAgo(20 * 24 * FIXTURE_HOUR) }),
+      claude_account: claude('provider_key', 0, 0, [], true), loan_request: null,
+      first_seen: fixtureAgo(20 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(4 * 24 * FIXTURE_HOUR), last_submitted: null, last_active: fixtureAgo(4 * 24 * FIXTURE_HOUR),
+    },
+  ]
+  return {
+    people,
+    count: people.length,
+    pending: people.filter((p) => p.workspace.state === 'requested').length,
+    audit: [],
+    lendable_accounts: ownAccounts.map((a) => ({ account_id: a.account_id, owner_tenant: a.owner_tenant, label: a.label, state: a.state, lend_to: a.lend_to })),
+    lendable_error: null,
+    provisioning: { available: true, approved_waiting: 0 },
+    admins: [{ email: 'alice@example.com', role: 'admin', granted_by: 'ops@example.com', granted_at: fixtureAgo(30 * 24 * FIXTURE_HOUR) }],
+    admins_error: null,
+  }
+}
+
+/**
+ * Admin › Runner sizes (run-4 admin-002): the three classes the page sizes,
+ * at the figures `/v1/resource-classes` serves (fixtureResourceClasses), in
+ * effect as version 2 of a two-version history. `browser` carries its live
+ * pod's split. The bounds are the page's own checks' inputs.
+ */
+const FIXTURE_LARGE: RunnerSize = { cpu_request: 8, cpu_limit: 8, memory_gib: 32, disk_gib: 16, units: 4 }
+const FIXTURE_SIZES: Record<string, RunnerSize> = {
+  standard: { cpu_request: 4, cpu_limit: 4, memory_gib: 8, disk_gib: 4, units: 1 },
+  browser: {
+    cpu_request: 4, cpu_limit: 4, memory_gib: 8, disk_gib: 4, units: 1,
+    live_split: { worker: { cpu_request: 3, cpu_limit: 3, memory_gib: 6 }, display: { cpu_request: 1, cpu_limit: 1, memory_gib: 2 } },
+  },
+  large: FIXTURE_LARGE,
+}
+const FIXTURE_SIZE_PRICES = { vcpu_hour: 0.0864, gib_hour: 0.009, source: 'Cloud Run list price, us-central1' }
+
+function fixtureRunnerSizes(): RunnerSizesDoc {
+  return {
+    current_version: 2, in_effect_version: 2, malformed: false,
+    classes: FIXTURE_SIZES,
+    defaults: { ...FIXTURE_SIZES, large: { ...FIXTURE_LARGE, memory_gib: 16 } },
+    bounds: {
+      cpu_request: { min: 0.5, max: 16, step: 0.5 }, cpu_burst_max_ratio: 2,
+      memory_gib: { min: 1, max: 64 }, memory_per_cpu: { min: 1, max: 8 },
+      live_split: { worker_min_cpu: 1, worker_min_memory_gib: 2, display_min_cpu: 0.5, display_min_memory_gib: 1 },
+    },
+    followers: {
+      // GKE profiles follow a resize, Cloud Run ones stay at the code default
+      // (owner Q3): fixtureCapacity runs these four on CLOUD_RUN_JOB.
+      standard: { follows: [], fixed: ['mock', 'generic', 'claude-code', 'codex'] },
+      browser: { follows: ['browser', 'claude-code-browser'], fixed: [] },
+      large: { follows: [], fixed: [] },
+    },
+    prices: FIXTURE_SIZE_PRICES,
+    updated_at: fixtureAgo(4 * 24 * FIXTURE_HOUR), updated_by: 'ops@example.com',
+  }
+}
+
+/** The audit, newest first: version 2 raised `large`'s memory from the code default the history began at. */
+function fixtureRunnerSizeVersions(): unknown {
+  return {
+    versions: [
+      { version: 2, previous_version: 1, created_at: fixtureAgo(4 * 24 * FIXTURE_HOUR), created_by: 'ops@example.com', reason: 'large agents hit the memory limit on monorepo builds', changed: [{ class: 'large', field: 'memory_gib', from: 16, to: 32 }], restored_from: null },
+      { version: 1, previous_version: 0, created_at: fixtureAgo(21 * 24 * FIXTURE_HOUR), created_by: 'ops@example.com', reason: 'first written: the code defaults', changed: [], restored_from: null },
+    ],
+  }
+}
+
+/** The `n`th path segment of a fixture read's URL: 3 is the provider of a provider-keys read. */
+function fixtureSegment(url: string, n: number): string {
+  return decodeURIComponent((url.split('?')[0] ?? '').split('/')[n] ?? '')
+}
+
+/** What a fixture route answers, by template; absent is not served. Admin routes refuse the member. */
+const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | undefined>> = {
+  '/v1/repositories': () => ({ body: fixtureRepositories() }),
+  '/v1/repositories/{repo_id}/index': (url) => {
+    const body = fixtureRepoIndex(fixtureSegment(url, 3))
+    return body === undefined ? undefined : { body }
+  },
+  '/v1/provider-keys/{provider}': (url) => ({ body: fixtureProviderKeys(fixtureSegment(url, 3)) }),
+  '/v1/judgment': () => ({ body: fixtureJudgment() }),
+  '/v1/code-intelligence': () => ({ body: fixtureCodeIntelligence() }),
+  '/v1/profile': () => ({ body: fixtureProfile() }),
+  '/v1/workspace/roles': () => ({ body: fixtureWorkspaceRoles() }),
+  '/v1/admin/people': () => (fixtureIsAdmin ? { body: fixturePeople() } : 'admin'),
+  '/v1/admin/workspaces/roles': () => (fixtureIsAdmin ? { body: fixtureAdminWorkspacesRoles() } : 'admin'),
+  // Admin › Tenants' "Being created": nothing is being built.
+  '/v1/admin/workspaces': () => (fixtureIsAdmin ? { body: { workspaces: [] } } : 'admin'),
+  '/v1/admin/runner-sizes': () => (fixtureIsAdmin ? { body: fixtureRunnerSizes() } : 'admin'),
+  '/v1/admin/runner-sizes/versions': () => (fixtureIsAdmin ? { body: fixtureRunnerSizeVersions() } : 'admin'),
 }
 
 /** A read whose body is normalised before any screen sees it. */
 async function readAs<T>(target: ApiRoute, norm: (raw: unknown) => T, isEmpty: (d: T) => boolean = () => false): Promise<Result<T>> {
-  if (USE_FIXTURES) return repoNotServed<T>(target)
+  if (USE_FIXTURES) {
+    const answer = FIXTURE_READS[target.template]?.(target.url)
+    if (answer === undefined) return repoNotServed<T>(target)
+    await new Promise((r) => setTimeout(r, 80))
+    if (answer === 'admin') return fixtureAdminRefusal<T>(target, 80)
+    noteFixtureProbe(target, 80, true)
+    const data = norm(answer.body)
+    return isEmpty(data) ? { status: 'empty', fetchedAt: Date.now() } : { status: 'ok', fetchedAt: Date.now(), data }
+  }
   const r = await read<unknown>(target, () => false)
   if (r.status === 'ok') {
     const data = norm(r.data)
@@ -7006,7 +7440,59 @@ export async function loadRunnerSizes(): Promise<Result<RunnerSizesDoc>> {
  * so the console previews as an admin types.
  */
 export async function previewRunnerSizes(classes: RunnerSizeChanges, baseVersion: number): Promise<Result<RunnerSizesPreview>> {
+  if (USE_FIXTURES) return fixtureRunnerSizesPreview(classes, baseVersion)
   return writeTo(route('/v1/admin/runner-sizes:preview'), 'POST', { classes, base_version: baseVersion }) as Promise<Result<RunnerSizesPreview>>
+}
+
+/**
+ * The preview's answer in the fixture build (run-4 admin-002): nothing is
+ * resized there, so every class's units and cost stay what they are and the
+ * body is valid -- the preview's table is drawn, at the figures the document
+ * serves. A cost is the class's request at the document's prices. Admin-gated
+ * like the route.
+ */
+async function fixtureRunnerSizesPreview(classes: RunnerSizeChanges, baseVersion: number): Promise<Result<RunnerSizesPreview>> {
+  const target = route('/v1/admin/runner-sizes:preview')
+  await new Promise((r) => setTimeout(r, 80))
+  if (!fixtureIsAdmin) return fixtureAdminRefusal(target, 80)
+  noteFixtureProbe(target, 80, true)
+  const named = Object.keys(classes)
+  const asked = named.length === 0 ? Object.keys(FIXTURE_SIZES) : named.filter((c) => c in FIXTURE_SIZES)
+  const cost = (s: RunnerSize) => Math.round((s.cpu_request * FIXTURE_SIZE_PRICES.vcpu_hour + s.memory_gib * FIXTURE_SIZE_PRICES.gib_hour) * 10_000) / 10_000
+  const units = Object.fromEntries(Object.entries(FIXTURE_SIZES).map(([c, s]) => [c, s.units]))
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      base_version: baseVersion,
+      valid: true,
+      refusals: [],
+      classes: Object.fromEntries(Object.entries(FIXTURE_SIZES).map(([c, s]) => [c, { units_before: s.units, units_after: s.units, cost_hour_before: cost(s), cost_hour_after: cost(s) }])),
+      // The resource pools' ceilings in fixtureCapacity, each admitting the same number before and after.
+      pools: [['resource:standard', 20], ['resource:browser', 4], ['resource:large', 2]].map(([pool, limit]) => {
+        const cls = String(pool).slice('resource:'.length)
+        const admits = { [cls]: Math.floor(Number(limit) / (units[cls] ?? 1)) }
+        return { pool: String(pool), hard_limit: Number(limit), admits_before: admits, admits_after: admits }
+      }),
+      recent_use: Object.fromEntries(asked.map((c) => [c, fixtureRecentUse(c)])),
+      below_recent_peak: [],
+    },
+  }
+}
+
+/** A class's 7-day use, every share null where no record feeds it (LIVE-UTIL's samples are not in the fixture build). */
+function fixtureRecentUse(cls: string): RunnerRecentUse {
+  const size = FIXTURE_SIZES[cls]
+  return {
+    attempts: cls === 'standard' ? 42 : cls === 'browser' ? 6 : 3,
+    since: fixtureAgo(7 * 24 * FIXTURE_HOUR),
+    memory_peak_gib_max: size === undefined ? null : Math.round(size.memory_gib * 0.7 * 10) / 10,
+    memory_peak_gib_p95: size === undefined ? null : Math.round(size.memory_gib * 0.55 * 10) / 10,
+    cpu_mean_cores_median: null,
+    share_idle: null, share_above_request: null, share_at_limit: null, share_at_limit_long: null, throttled_share: null,
+    oom_near_miss: 0,
+    by_size_version: [],
+  }
 }
 
 /**
@@ -7636,9 +8122,46 @@ export interface ApprovalItem {
 
 /** `GET /v1/schedules`: the tenant's schedules, by name. */
 export async function loadSchedules(): Promise<Result<{ schedules: Schedule[]; tenant_id: string }>> {
+  if (USE_FIXTURES) return fixtureSchedules()
   // Never `empty`: the list draws its own Absent beside the built-in rows,
   // which exist whether or not the tenant has made a schedule (§8.3).
   return read(route('/v1/schedules'), () => false)
+}
+
+/**
+ * The tenant's schedules in the fixture build (run-4 overview-automate-001):
+ * one enabled and one paused, of two catalogue types at their fixed risk
+ * tiers (scheduletypes.py). The built-in rows beside them are the fixture's
+ * registered repositories, read by the page itself. No firing, no approval
+ * waiting and no spend today, so nothing here is a figure another read has
+ * to agree with.
+ */
+async function fixtureSchedules(): Promise<Result<{ schedules: Schedule[]; tenant_id: string }>> {
+  await new Promise((r) => setTimeout(r, 110))
+  noteFixtureProbe(route('/v1/schedules'), 110, true)
+  const day = new Date().toISOString().slice(0, 10)
+  const at = (h: number) => new Date(Date.now() + h * FIXTURE_HOUR).toISOString()
+  const base = {
+    tenant_id: FIXTURE_TENANT, params: {}, owner: 'alice@example.com', created_by: 'alice@example.com',
+    last_firing: null, consecutive_failures: 0,
+    spend_today: { day, reported_usd: 0, unreported_attempts: 0, coverage: 'complete' as const }, pending_approvals: 0,
+  }
+  const schedules: Schedule[] = [
+    {
+      ...base, schedule_id: 'sch_3f9a0c1e7b25', name: 'Plan open issues', type: 'issue-plan-only', tier: 'R1',
+      scope: { mode: 'repos', repo_ids: [FIXTURE_REPOS[0].repo_id] }, cron: '0 6 * * 1-5', timezone: 'UTC', words: 'At 06:00, Monday to Friday',
+      gate: { plan: 'approve' }, budget: { per_run_usd: 2, per_day_usd: 6, max_concurrent: 1 }, policy: { overlap: 'skip', catch_up: 'latest', dry_run: false },
+      state: 'enabled', pause: null, created_at: fixtureAgo(12 * 24 * FIXTURE_HOUR), next_run_at: at(18), revision: 3,
+    },
+    {
+      ...base, schedule_id: 'sch_8b2e6d4a1c90', name: 'Weekly cost report', type: 'cost-report', tier: 'R0',
+      scope: { mode: 'all' }, cron: '0 8 * * 1', timezone: 'UTC', words: 'At 08:00 on Monday',
+      gate: { run: 'auto' }, budget: { per_run_usd: 0.5 }, policy: { overlap: 'skip', catch_up: 'skip', dry_run: false },
+      state: 'paused', pause: { by: 'alice@example.com', at: fixtureAgo(2 * 24 * FIXTURE_HOUR), reason: 'holiday week', code: null },
+      created_at: fixtureAgo(30 * 24 * FIXTURE_HOUR), next_run_at: null, revision: 5,
+    },
+  ]
+  return { status: 'ok', fetchedAt: Date.now(), data: { schedules, tenant_id: FIXTURE_TENANT } }
 }
 
 /** `GET /v1/schedules/{id}`: one schedule and its last 50 firings, newest first. */
@@ -7862,7 +8385,7 @@ function scheduleNotServed<T>(target: ApiRoute): Result<T> {
   noteFixtureProbe(target, 0, false)
   return {
     status: 'error',
-    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no schedule routes.' },
+    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no schedule routes.', template: target.template },
   }
 }
 
