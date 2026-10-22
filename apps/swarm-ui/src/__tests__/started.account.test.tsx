@@ -280,8 +280,9 @@ describe('the agent inspector head', () => {
   // the account is in the header's meta line -- each said once, in the one
   // formatter, with the UTC instant in its title.
   function elapsedSub(c: HTMLElement): HTMLElement {
-    const cell = [...c.querySelectorAll<HTMLElement>('.dt-sc')].find((x) => x.querySelector('.dt-sc-l')?.textContent === 'Elapsed')
-    expect(cell, 'no Elapsed cell').toBeTruthy()
+    // The run clock's tile: `Ran · attempt N` once it has ended (c07, 2026-10-22).
+    const cell = [...c.querySelectorAll<HTMLElement>('.dt-sc')].find((x) => /^(Run|Ran) · attempt \d+$/.test(x.querySelector('.dt-sc-l')?.textContent ?? ''))
+    expect(cell, 'no run clock cell').toBeTruthy()
     return cell!.querySelector<HTMLElement>('.dt-sc-s')!
   }
   function submitted(c: HTMLElement): HTMLElement {

@@ -108,7 +108,9 @@ function Shell({ children, sub }: { children: ReactNode; sub: string }) {
   return (
     <section className="dt-card dc" aria-label="Decision">
       <div className="dt-card-head">
-        <b>Decision</b>
+        {/* AN h2, AS EVERY DETAILS CARD'S TITLE IS (DtCardHead), so the pane's
+            headings outline lists it; `.dt-card-head > h2` draws it as the `<b>` was. */}
+        <h2>Decision</h2>
         <span className="dt-note">{sub}</span>
       </div>
       {children}

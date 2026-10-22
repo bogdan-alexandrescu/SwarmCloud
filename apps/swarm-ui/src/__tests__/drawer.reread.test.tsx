@@ -270,7 +270,8 @@ function section(root: HTMLElement, title: string): HTMLElement | undefined {
  */
 function elapsedCell(root: HTMLElement): HTMLElement | undefined {
   return [...root.querySelectorAll<HTMLElement>('.dt-sc')].find((el) =>
-    el.querySelector('.dt-sc-l')?.textContent?.startsWith('Elapsed'),
+    // `Run · attempt N` while it runs (c07, 2026-10-22); `Elapsed` with no run to time.
+    /^(Elapsed|Run|Ran)\b/.test(el.querySelector('.dt-sc-l')?.textContent ?? ''),
   )
 }
 

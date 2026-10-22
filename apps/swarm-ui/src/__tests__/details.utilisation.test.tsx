@@ -222,7 +222,8 @@ describe('the panel polls while the task runs and stops when it finishes', () =>
     await act(async () => {})
     const head = container.querySelector('[data-testid="util-headline"]')
     expect(head?.closest('summary')).not.toBeNull()
-    expect(head?.textContent).toContain('CPU: mean 1.7 of 4 cores · at the limit 20% of the time · throttled 9%')
+    // c05: the summary's limit is named as the enforced one, `(cgroup limit)`.
+    expect(head?.textContent).toContain('CPU: mean 1.7 of 4 cores (cgroup limit) · at the limit 20% of the time · throttled 9%')
   })
 
   // MUTATION: start an interval for a task that was already finished.

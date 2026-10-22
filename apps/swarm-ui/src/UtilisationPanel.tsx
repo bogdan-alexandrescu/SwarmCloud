@@ -17,7 +17,20 @@ import { useEffect, useRef, useState } from 'react'
 import { loadUtilisation } from './api'
 import { UtilisationChart, utilisationHeadline } from './charts/Utilisation'
 import type { Result } from './fetch'
-import type { UtilisationRead } from './utilisation'
+import { cpuSummary, type UtilisationAttempt, type UtilisationRead } from './utilisation'
+
+/**
+ * THE HEADLINE WITH ITS LIMIT NAMED (c05, owner decision 2026-10-22, box
+ * comment 6298220484: "Name every count where it is printed"). `of 2 cores`
+ * is the attempt's cgroup CPU limit -- what the kernel enforced, not the
+ * class's guaranteed size the head prints -- so the line says which it is.
+ * The words are added once, after the mean's `of N cores`, and only when the
+ * route served a limit: `limit not reported` already says there is none.
+ */
+function namedLimit(attempt: UtilisationAttempt | null, text: string): string {
+  if (attempt === null || cpuSummary(attempt).limit === null) return text
+  return text.replace(/^(CPU: mean \S+ of \S+ cores)/, '$1 (cgroup limit)')
+}
 
 /**
  * How often a running task's series is read: the drawer's own cadence
@@ -73,6 +86,7 @@ export function UtilisationPanel({ taskId, live }: { taskId: string; live: boole
   }
   const attempt = got.status === 'empty' ? null : (got.data.attempts[0] ?? null)
   const head = utilisationHeadline(attempt, live)
+  const headline = head.measured ? namedLimit(attempt, head.text) : head.text
   // THE SUMMARY ON THE GLASS, THE CHART ONE CLICK AWAY. Details keeps every
   // chart behind a disclosure so its first 900px stay Now, the strip and the
   // column heads (details.v3.test.tsx). The one line the owner asked for --
@@ -80,7 +94,7 @@ export function UtilisationPanel({ taskId, live }: { taskId: string; live: boole
   // own summary, so it is read without opening anything, and live.
   return (
     <details className="dt-disc ctl-util-disc">
-      <summary data-testid="util-headline">CPU and memory over time · {head.text}</summary>
+      <summary data-testid="util-headline">CPU and memory over time · {headline}</summary>
       <UtilisationChart attempt={attempt} live={live} />
       {got.status === 'stale' && (
         <p className="ctl-chart-note" role="status">

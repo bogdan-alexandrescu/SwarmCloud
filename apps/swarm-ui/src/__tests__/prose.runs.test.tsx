@@ -333,10 +333,15 @@ describe('the run group carries data, not prose', () => {
    * TITLES in the card foot, which are the index the deleted legend used to
    * be and are the one place §8.4 wants words. The screen's own remaining text
    * is keys, state words, marks and units.
+   *
+   * 380 became 390 with QAFIX4-AGENT-PANES-2 (part of #1680), which measured
+   * 386: the owner's design calls name the counts and clocks, so the cores
+   * figure says `(cgroup limit)` and the Elapsed tile says `Run · attempt N`.
+   * Those are labels the owner asked for, not prose growing back.
    */
   const CEILING: Record<string, number> = {
     agents: 30,
-    detail: 380,
+    detail: 390,
     timeline: 100,
     viewer: 35,
   }

@@ -204,7 +204,8 @@ describe('#102 (c): one duration, said once', () => {
     const el = await mount(run())
     // The Elapsed figure is the strip's alone: the Now card repeats neither
     // a `run <duration>` fact nor the figure itself.
-    const elapsed = tile(el, 'Elapsed').querySelector('.dt-sc-v')?.textContent
+    // The run clock's tile, `Ran · attempt 1` once it ended (c07, 2026-10-22).
+    const elapsed = tile(el, 'Ran · attempt').querySelector('.dt-sc-v')?.textContent
     expect(elapsed).toBe('9m 0s')
     expect(nowText(el)).not.toMatch(/\brun\s+\d/)
     expect(nowText(el)).not.toContain(elapsed!)

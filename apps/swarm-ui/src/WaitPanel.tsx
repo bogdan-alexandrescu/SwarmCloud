@@ -398,7 +398,9 @@ export function WaitPanel({ task, now }: { task: Task; now: number }) {
       aria-label="Why it's waiting"
     >
       <div className="dt-card-head">
-        <b>Why it&rsquo;s waiting</b>
+        {/* AN h2, AS EVERY DETAILS CARD'S TITLE IS (DtCardHead), so the pane's
+            headings outline lists it; `.dt-card-head > h2` draws it as the `<b>` was. */}
+        <h2>Why it&rsquo;s waiting</h2>
         <span className="dt-card-r">
           <code className="dt-chip" title="The reason the platform recorded">
             {w.reason}
