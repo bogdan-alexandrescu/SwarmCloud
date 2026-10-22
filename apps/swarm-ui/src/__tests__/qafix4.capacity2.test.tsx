@@ -101,12 +101,12 @@ describe('capacity-009: at 390 a throttled quota record carries its warn rule do
     expect(eng.querySelector('td[data-label="Last 429"]')).not.toBeNull()
     expect(eng.querySelector('td[data-label="Reported"]')).not.toBeNull()
     for (const env of [PHONE, PHONE_LIGHT]) {
-      // MUTATION: drop the `.quota-table.is-stacked ... tr.is-warn` rule from
-      // styles/capacity.css -- styles.css's stacked `3px 46%` half rule wins
-      // again and the bar marks State to 429s only.
+      // MUTATION: put `3px 46%` back on styles.css's shared stacked
+      // `tr.is-warn` rule (the quota-only copy in styles/capacity.css was
+      // folded into it by STACKED-WARN) -- the bar marks State to 429s only.
       expect(painted(eng, 'background-size', env), 'the warn rule covers part of the record').toBe('3px 100%')
-      // MUTATION: give the capacity.css rule a background-image without the
-      // warn hue -- the record keeps a rule, in the wrong colour.
+      // MUTATION: give the shared stacked warn rule a background-image without
+      // the warn hue -- the record keeps a rule, in the wrong colour.
       expect(image(eng, env)).toMatch(/var\(--warn\)/)
       // MUTATION: move the rule back onto the first cell (the name line) --
       // a 3px rule under the first letters of the tenant id.
@@ -131,8 +131,8 @@ describe('capacity-009: at 390 a throttled quota record carries its warn rule do
     atPhone()
     const r = await records()
     const ops = r.ops!
-    // MUTATION: key the capacity.css rule on `tr` rather than `tr.is-warn` --
-    // every quota record, healthy ones too, carries an amber rule.
+    // MUTATION: key the shared stacked warn rule on `tr` rather than
+    // `tr.is-warn` -- every record, healthy ones too, carries an amber rule.
     expect(ops.className).not.toMatch(/is-(warn|bad|paused)/)
     expect(image(ops, PHONE)).toBe('none')
     expect(image(ops.firstElementChild!, PHONE)).toBe('none')
@@ -145,8 +145,8 @@ describe('capacity-009: the desktop table rule is unchanged', () => {
     const eng = r.eng!
     expect(eng.closest('.quota-table')?.classList.contains('is-scroll')).toBe(true)
     const first = eng.firstElementChild!
-    // MUTATION: let the phone rule escape its `.is-stacked` scope (or its
-    // 560px media block) -- the desktop row grows a rule of its own and its
+    // MUTATION: let the stacked warn rule escape its `.is-stacked` scope (or
+    // its 899px media block) -- the desktop row grows a rule of its own and its
     // first cell's half rule is joined by a second one.
     expect(image(eng, WIDE)).toBe('none')
     // MUTATION: change styles.css's table `tr.is-warn > :first-child` half

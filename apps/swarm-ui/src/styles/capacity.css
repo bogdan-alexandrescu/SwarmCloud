@@ -814,19 +814,8 @@
    card. */
 @media (max-width: 560px) {
   .quota-table.is-stacked > table { width: auto; min-width: 0; }
-  /* A THROTTLED RECORD'S RULE RUNS THE WHOLE RECORD (visual QA run 2,
-     capacity-009; part of #1680). The warn tone's half rule (`3px 46%`,
-     centred; styles.css's stacked block) marks one 30px table row, but on a
-     ~200px tenant record it marked State to 429s: it began under the name and
-     stopped above Last 429 and Reported. Here it is the record's full height
-     and DASHED, so it is still a different form from the bad tone's solid
-     full rule and the hatch -- throttled and exhausted stay apart in
-     greyscale, and the state word in State says which it is. The record
-     (`tr`) is the box that holds the name and every field. */
-  .quota-table.is-stacked > table > tbody > tr.is-warn {
-    background-image: repeating-linear-gradient(to bottom, var(--warn) 0 6px, transparent 6px 9px);
-    background-size: 3px 100%;
-  }
+  /* Its warn rule is the shared stacked one (styles.css §B6.3): full height
+     and dashed on every stacked table since STACKED-WARN, so no copy here. */
 }
 
 /* ---------------------------------------------------------------------------
