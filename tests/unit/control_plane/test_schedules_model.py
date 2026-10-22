@@ -45,6 +45,9 @@ CATALOGUE = [
     # and the nightly observed-rate check.
     ("model-prices-refresh", timedelta(hours=24)),
     ("model-prices-check", timedelta(hours=24)),
+    # §3.16, #1933: the platform's own failure review, every 6 hours over 7.
+    # MUTATION: drop the entry, or give it a 1 h minimum, and this list differs.
+    ("failure-review", timedelta(hours=6)),
 ]
 
 
@@ -193,6 +196,12 @@ def test_risk_tiers_follow_section_4_1():
     assert [tier(n) for n in ("issue-plan-only", "epic-triage", "release-health", "ci-flake-hunter",
                               "model-prices-check")] == ["R1"] * 5
     assert tier("dependency-cve-refresh") == "R2" and tier("custom-prompt") == "R3"
+    # failure-review pushes fix runs: R2 behind `merge: approve`, R3 once the
+    # owner's audited switch makes it `auto` (failure-review.md §6, Q8).
+    review = scheduletypes.get("failure-review")
+    switched = schedules.resolve_gate(review, schedules.GateIn(merge="auto"), via_merge_switch=True)
+    # MUTATION: a fixed R2 risk ignores the switch and the R3 assertion fails.
+    assert tier("failure-review") == "R2" and tier("failure-review", gate=switched) == "R3"
 
 
 # --------------------------------------------------------------------------

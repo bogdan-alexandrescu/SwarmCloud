@@ -63,7 +63,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-require_cmd gcloud jq
+# The self-test is jq over a fixture and exits before anything calls gcloud,
+# so it needs jq alone: the self-hosted CI runner that runs it as
+# `platform policy assertions` carries no gcloud.
+if [[ "${SELF_TEST}" -eq 1 ]]; then require_cmd jq; else require_cmd gcloud jq; fi
 GUARD_JQ="${REPO_ROOT}/scripts/lib/destroy-guard.jq"
 [[ -f "${GUARD_JQ}" ]] || die "missing ${GUARD_JQ}"
 

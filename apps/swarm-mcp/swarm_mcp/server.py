@@ -1835,11 +1835,12 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_schedule_create",
         "description": (
             "Create a recurring schedule on your tenant's repositories. `type` is "
-            "one of the catalogue's fourteen: `issue-sweep`, `issue-plan-only`, "
+            "one of the catalogue's fifteen: `issue-sweep`, `issue-plan-only`, "
             "`repo-index-refresh`, `observer`, `epic-triage`, `pr-shepherd`, "
             "`ci-flake-hunter`, `dependency-cve-refresh`, `release-health`, "
             "`docs-drift`, `cost-report`, `custom-prompt`, and the admin-only "
-            "platform types `model-prices-refresh` and `model-prices-check` -- which of them this "
+            "platform types `model-prices-refresh` and `model-prices-check`, and the owner-only "
+            "platform type `failure-review` -- which of them this "
             "deployment can run now is swarm_schedule_types' `available`, and a "
             "type that is not is refused with the available ones named. The type "
             "chooses the work: NO IMAGE OR COMMAND IS ACCEPTED, nor a runner "
