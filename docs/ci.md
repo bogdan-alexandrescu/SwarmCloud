@@ -4681,9 +4681,10 @@ sample set are unchanged, and a separate test fails if the sample list is
 empty or is not two per pattern (an empty parametrisation would only skip).
 
 **What it does not do.** It does not replace the area run (a test that imports
-a changed module without naming its file is not selected), it does not run
-vitest, `terraform test` or anything needing credentials, and a green run proves
-nothing CI has not. `tests/unit/scripts/test_changed_guards.py` holds its
+a changed module without naming its file is not selected), it runs no vitest
+but the stylesheet guards on a swarm-ui `.css` change (see the related-tests
+section below), no `terraform test` and nothing needing credentials, and a
+green run proves nothing CI has not. `tests/unit/scripts/test_changed_guards.py` holds its
 selection against fixture diffs.
 
 ### While it works, a SwarmCloud agent runs only the related tests
@@ -4718,6 +4719,27 @@ changed module through relative imports (`import ... from`, `export ... from`,
 `node_modules` and can be cut into runs. A change to what every component test
 runs under (`vitest.config.ts`, `src/__tests__/setup.ts`, `package.json`, ...)
 is related to no file by import: it is named in a warning and CI runs the suite.
+
+**A stylesheet change also selects the stylesheet guards** (RELATED-CSS-GUARDS,
+part of #1914, owner decision 2026-10-22). Any `.css` under `apps/swarm-ui/`
+adds `stylesheet.gate.test.ts`, `sections.stylesheet.test.ts`,
+`letterspacing.test.ts` and `typescale.test.ts` to the vitest selection, each
+once however many sheets changed. They scan the text of **every** sheet --
+they read it from disk with `import.meta.glob('../styles/*.css')`, directly or
+through `sheets.ts` -- so no import connects them to the sheet a change edits
+and the import graph never selects them. Measured 2026-10-22 on PR 1905: it
+declared `.rn-filters > .c-seg > button` twice in one media block of
+`styles/intake.css`; CI's gate and sections guards refused it, after the
+lane's implement, fix and re-review agents had all passed this script and
+`changed-guards.sh` without running either. The list is one tuple,
+`STYLESHEET_GUARDS` in `scripts/lib/related_tests.py`; `changed-guards.sh`
+reads it (`--stylesheet-guards`) and runs those guards in one vitest call from
+`apps/swarm-ui/node_modules/.bin/vitest`, under the same 540 s limit, and
+fails when vitest is not installed (`npm ci` there first) rather than reading
+an unrun guard as a pass. Only no-render scans of every sheet belong on the
+list: the ~170 screen tests that glob the sheets to compute the cascade
+(through `marks.ts`, `spacingsweep.tsx`, `phone.chrome.test.tsx`) are behaviour
+tests, and CI runs them.
 
 **It never prints an unfiltered command.** Every line names files. A selection
 too big for one run comes back as a few runs: pytest cut by

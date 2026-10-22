@@ -417,3 +417,105 @@ def test_a_failing_part_fails_the_whole_run(tmp_path: Path):
                     if line.startswith("pytest ")]
     assert len(pytest_calls) == 3, pytest_calls
     assert "a part failed" in out
+
+
+# THE STYLESHEET GUARDS (RELATED-CSS-GUARDS, part of #1914). Measured
+# 2026-10-22 on PR 1905: a change to apps/swarm-ui/src/styles/intake.css
+# declared one selector twice in a media block; CI's stylesheet.gate.test.ts
+# and sections.stylesheet.test.ts refused it, and no agent of the lane had run
+# them, because this script ran no vitest at all and related-tests.sh's import
+# graph never reaches a test that globs the sheets from disk. So a change to a
+# swarm-ui stylesheet runs those guards here too, from the one list in
+# scripts/lib/related_tests.py (STYLESHEET_GUARDS).
+UI = "apps/swarm-ui"
+STYLE_GUARDS = (f"{UI}/src/__tests__/stylesheet.gate.test.ts",
+                f"{UI}/src/__tests__/sections.stylesheet.test.ts")
+
+
+def test_a_ui_stylesheet_change_lists_both_stylesheet_guards_once():
+    result = _run("--list", "--files", "-", stdin=f"{UI}/src/styles/intake.css\n")
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    for guard in STYLE_GUARDS:
+        # MUTATION: drop the stylesheet step from changed-guards.sh -> the
+        # guard is not listed and this is red.
+        assert lines.count(guard) == 1, lines
+    # The pytest guard set still runs beside them.
+    assert set(UNIT_GUARDS) <= set(_selected(result.stdout))
+
+
+def test_a_change_with_no_ui_stylesheet_lists_no_stylesheet_guard():
+    result = _run("--list", "--files", "-",
+                  stdin=f"{UI}/src/widget.ts\ndocs/assets/site.css\napps/other/static/intake.css\n")
+    assert result.returncode == 0, result.stderr
+    # MUTATION: run the stylesheet guards for any change, or for a .css
+    # outside apps/swarm-ui -> they are listed and this is red.
+    for guard in STYLE_GUARDS:
+        assert guard not in result.stdout.splitlines(), result.stdout
+
+
+def _fake_ui_repo(tmp_path: Path, vitest_body: str | None) -> tuple[Path, dict[str, str]]:
+    """The fake repository, plus the selector and a swarm-ui tree holding the
+    stylesheet guards; `vitest_body` None leaves vitest uninstalled."""
+    root, env = _fake_repo(tmp_path, "")
+    for lib in ("related_tests.py", "select_unit_tests.py"):
+        shutil.copy(REPO / "scripts" / "lib" / lib, root / "scripts" / "lib" / lib)
+    for guard in STYLE_GUARDS:
+        (root / guard).parent.mkdir(parents=True, exist_ok=True)
+        (root / guard).write_text("const S = import.meta.glob('../styles/*.css')\n")
+    (root / UI / "src" / "styles").mkdir(parents=True, exist_ok=True)
+    (root / UI / "src" / "styles" / "intake.css").write_text(".x { gap: 4px }\n")
+    if vitest_body is not None:
+        vitest = root / UI / "node_modules" / ".bin" / "vitest"
+        vitest.parent.mkdir(parents=True)
+        vitest.write_text("#!/usr/bin/env bash\nprintf 'vitest %s|%s\\n' \"$*\" \"${PWD##*/}\" >> \"$CALLS\"\n"
+                          + vitest_body)
+        vitest.chmod(0o755)
+    return root, env
+
+
+def _run_css(root: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", str(root / "scripts" / "changed-guards.sh"), "--files", "-", *args],
+        cwd=root, env=env, input=f"{UI}/src/styles/intake.css\n",
+        capture_output=True, text=True, timeout=120,
+    )
+
+
+def test_a_ui_stylesheet_change_runs_the_stylesheet_guards_under_the_limit(tmp_path: Path):
+    root, env = _fake_ui_repo(tmp_path, "")
+    result = _run_css(root, env)
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    calls = (root / "calls").read_text().splitlines()
+    vitest = [line for line in calls if line.startswith("vitest ")]
+    # MUTATION: list the guards but never run them -> no vitest call, red.
+    assert len(vitest) == 1, calls
+    # MUTATION: run vitest from the repository root (its config would not
+    # load) -> the recorded directory is not swarm-ui, red.
+    assert vitest[0].endswith("|swarm-ui"), vitest
+    # MUTATION: run vitest with no file arguments (the whole suite) -> red.
+    assert vitest[0].startswith("vitest run "), vitest
+    for guard in STYLE_GUARDS:
+        assert guard[len(UI) + 1:] in vitest[0].rpartition("|")[0].split(), vitest
+    # MUTATION: run vitest without the 540 s limit -> red.
+    assert calls[calls.index(vitest[0]) - 1] == "timeout 540", calls
+
+
+def test_a_failing_stylesheet_guard_fails_the_run(tmp_path: Path):
+    root, env = _fake_ui_repo(tmp_path, "exit 1\n")
+    result = _run_css(root, env)
+    out = result.stdout + result.stderr
+    # MUTATION: ignore vitest's exit status -> exit 0 and this is red.
+    assert result.returncode == 1, out
+    assert "stylesheet guard" in out
+
+
+def test_an_uninstalled_vitest_is_a_failure_that_says_how_to_install_it(tmp_path: Path):
+    root, env = _fake_ui_repo(tmp_path, None)
+    result = _run_css(root, env)
+    out = result.stdout + result.stderr
+    # MUTATION: skip the guards quietly when vitest is missing -> exit 0, red:
+    # an unrun guard is the measured defect, not a pass.
+    assert result.returncode == 1, out
+    assert "npm ci" in out
