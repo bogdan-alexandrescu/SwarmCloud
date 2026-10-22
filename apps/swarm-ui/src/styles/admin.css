@@ -155,8 +155,14 @@
 /* OVER ITS CEILING, NEUTRAL (#133). A ceiling lowered below what is in use is
    a legal state (help `ceiling-change-evicts-nothing`), so this is the neutral
    outlined tag, never `--warn` or `--bad`: the row is reporting an operator's
-   own change back to them, not a fault. */
-.adm-over { display: inline-block; padding: 0 var(--ctl-s1); border: 1px solid var(--line); border-radius: 4px; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; }
+   own change back to them, not a fault.
+   AT IT, THE SAME TAG (visual QA run 3, admin-005; owner decision 2026-10-22,
+   Console Design Calls 2, c04). `full` is admission doing its job -- new work
+   waits for a unit -- so it wears this neutral look too, in the same slot
+   after `edit`, where `.limit-edit` lets it wrap under `edit` in a narrow
+   column. Set by keeps its dim `configured`. */
+.adm-over,
+.adm-full { display: inline-block; padding: 0 var(--ctl-s1); border: 1px solid var(--line); border-radius: 4px; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; }
 /* WHAT A SAVE DID, read from its response (2026-10-07): `tenant:smoke ceiling
    8 → 20`, or, in the warn colour, `Saved, but the ceiling is still 8: …`. It
    takes a line of its own under `edit`, so its length never moves `edit`. */
@@ -245,16 +251,30 @@
    In use's `0` sat 5ch into its column and read as centred, and Ceiling's
    `8`, `20` and `100` started at three x's under one head: ragged. Flush left,
    every figure starts at its head's first letter; the slot keeps its fixed
-   width, so `edit` after it still starts at one x. */
+   width, so `edit` after it still starts at one x.
+   RIGHT-ALIGNED AGAIN, AND THE FIGURE AND ITS `/M` ONE RUN (visual QA run 3,
+   admin-004, QAFIX4-ADMIN-2, 2026-10-22: "regressing ticked QA-045"). Flush
+   left undid what QA-045 had held: `6 /10` drew its `6` 5ch before `/10`
+   and `100 /200` 3ch before it, so the pair split by a gap that changed on
+   every row and the units digits stood at different x's. Right-aligned in
+   the fixed slot, every figure's units digit is at one tabular x down the
+   column, the `/` after it is at one x, and `edit` after both still is. Both
+   figures share the alignment (QA-045); `.adm-fig` (below) holds the pair on
+   one line. The phone record keeps them flush left (the stacked rules). */
 .adm-inuse,
 .adm-ceiling {
   display: inline-block;
   width: 6ch;
-  text-align: left;
+  text-align: right;
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
 }
 .adm-ceiling { margin-inline-end: var(--ctl-s2); }
+/* N /M NEVER BREAKS (admin-004). Two inline blocks side by side are a break
+   opportunity of the box that holds them, and that was the wrapping cell, so
+   `6` could end one line and `/10` start the next. Their own run does not
+   wrap; `edit` and the tags after it are outside it and still may. */
+.adm-fig { display: inline-block; white-space: nowrap; }
 /* A REFUSED EDIT IS DRAWN AS A DISABLED ONE, AND STAYS IN THE TAB ORDER
    (visual QA QA-037, 2026-10-20). It is `aria-disabled` rather than
    `disabled`, so a keyboard reaches the reason on it (`Admins only: …`), and
@@ -585,19 +605,28 @@ table.adm-limits th.pool-name > .ctl-sub { overflow-wrap: normal; word-break: ke
    above gives a key that does wrap the micro step's own leading back from
    `.ctl-sub`'s flush 1, which is sized for one line under a name and set a
    second line on the first.
-   BUT A SEGMENT LONGER THAN THE LINE BREAKS INSIDE ITSELF (VQA V160). Held
+   A SEGMENT LONGER THAN THE LINE BROKE INSIDE ITSELF (VQA V160). Held
    `nowrap`, `tenant:swarm-platform-integration-acceptance-environment-…`
    ran past the card at 400 and the records scrolled sideways inside
    `.ctl-scroll` (446/400) with its tail cut off. So each segment is an
    inline block no wider than the cell rather than a `nowrap` run: one that
    fits is still unbroken, laid on a line of its own at a `<wbr>` (a block
    as wide as its text never breaks inside); only one that cannot fit on
-   any line wraps, at its hyphens first and then anywhere. */
+   any line wrapped, at its hyphens first and then anywhere.
+   NOW IT IS CUT, NEVER BROKEN (visual QA run 3, admin-003, QAFIX4-ADMIN-2).
+   "Anywhere" included right after `tenant:`, which left the kind on one line
+   and its name on the next, the break admin-003 reported. A pair is one
+   run that never wraps: one that fits is whole, one wider than the cell is
+   cut with an ellipsis inside it -- never past the card (V160) -- and the
+   whole id is on `.ctl-sub`'s title (AdminSettings.tsx `PoolRow`). The only
+   break left is the `<wbr>` between pairs. */
 table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg {
   display: inline-block;
   max-width: 100%;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
 }
 
 /* THE CEILING CELL AS A STACKED FIELD (visual QA V011, V012; lane VQA-L15,
@@ -629,8 +658,10 @@ table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg {
   .is-stacked > table > tbody > tr > td.adm-ceiling-cell {
     grid-template-columns: minmax(0, var(--stack-key, calc(var(--t-micro) * 10.5))) auto auto minmax(0, 1fr);
   }
-  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-ceiling { grid-column: 2; margin: 0; }
-  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-was { grid-column: 3; margin: 0; }
+  /* The run is no box here, so its two slots are the grid's columns 2 and 3. */
+  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-fig { display: contents; }
+  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-fig > .adm-ceiling { grid-column: 2; margin: 0; text-align: left; }
+  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-fig > .adm-was { grid-column: 3; margin: 0; }
   .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .limit-edit { grid-column: 4; }
   /* In use's figure starts at the value column too (QA-045), like Ceiling's. */
   .is-stacked > table > tbody > tr > td > .adm-inuse { width: auto; text-align: left; }
