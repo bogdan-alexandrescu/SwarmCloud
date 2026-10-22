@@ -79,9 +79,17 @@ REQUEST_ID = re.compile(r"^[a-z0-9-]{1,64}$")
 #: What a request may say about its child (§6.1). Anything else is refused here
 #: and by the route's strict model.
 CHILD_FIELDS = frozenset(
-    {"runner_profile", "resource_class", "input", "provider", "model", "timeout_seconds",
-     "repository_ref", "model_class"}
+    {"kind", "runner_profile", "resource_class", "input", "provider", "model",
+     "timeout_seconds", "repository_ref", "model_class"}
 )
+#: The child kinds, `swarm_api.children.KIND_*` restated (docs/design/agent-
+#: autonomy.md §3.6): an agent (no `kind` is an agent), an issue run of this
+#: task's repository, or a saved, approved workflow spec by name.
+CHILD_KINDS = ("agent", "issue_run", "workflow")
+#: What a run-kind request may say: `swarm_api.children.ChildIssueRun` and
+#: `ChildWorkflow`'s fields. A workflow is a NAME, never a spec body.
+ISSUE_RUN_FIELDS = frozenset({"kind", "issue", "after_merged"})
+WORKFLOW_FIELDS = frozenset({"kind", "spec_name"})
 #: `swarm_api.childkey.REQUEST_PURPOSE` and the proof headers, restated.
 REQUEST_PURPOSE = "swarm-child-req/v1"
 PROOF_HEADER = "X-Swarm-Attempt-Proof"
@@ -146,6 +154,33 @@ or a refusal:
 the same `request_id`. Anything else will be refused again as written. Limits:
 16 children per task across all its attempts; a child cannot submit children
 of its own; about four requests are answered per ten seconds.
+
+## Start an issue run or a saved workflow
+
+A request may instead name a `kind` (an agent child is `"kind": "agent"`, or
+no `kind` at all):
+
+    {"request_id": "lane-b", "kind": "issue_run", "issue": 7,
+     "after_merged": "crun_..."}
+
+    {"request_id": "nightly", "kind": "workflow", "spec_name": "nightly-docs"}
+
+An `issue_run` plans, builds, reviews and merges an issue of THIS task's
+repository under the run's own gates; `issue` is its number (or
+`owner/repo#N` of this repository; any other repository is refused).
+`after_merged`, optional, names another issue run this task started, by the
+`child_id` it was answered with: the new run is HELD, starting nothing, until
+that one is DONE with its pull request merged, and is cancelled if it ends
+any other way. A `workflow` runs a saved spec of this tenant BY NAME,
+`spec_name`, one a platform admin approved; a spec body (`steps`, `spec`) is
+refused. The answer names the run by `child_id`:
+
+    {"child_id": "crun_...", "request_id": "lane-b", "kind": "issue_run",
+     "state": "HELD", "run_id": null, "workflow_id": null}
+
+Both count toward the 16, and a child cannot start either. Waiting for them
+is the same `await` as below; in `results/children.json` each is listed by
+`child_id` with its run's `state`, whether it `ended`, and its pull request.
 
 ## Wait for the children
 
@@ -927,6 +962,9 @@ class ChildPath:
             data = _read_small_json(path, 64 * 1024)
             if isinstance(data, dict) and isinstance(data.get("task_id"), str):
                 out.append(data["task_id"])
+            elif isinstance(data, dict) and isinstance(data.get("child_id"), str):
+                # A child issue run or workflow (§3.6), by its ledger id.
+                out.append(data["child_id"])
         return out
 
     def await_requested(self, work: Path) -> bool:
@@ -1107,6 +1145,18 @@ class ChildPath:
                     retryable=True,
                 ).as_dict()
             return Refusal(exc.code, exc.message or exc.code).as_dict()
+        run = payload.get("child")
+        if isinstance(run, dict):
+            # A child issue run or workflow (§3.6): answered by its ledger id.
+            child_id = run.get("child_id")
+            if not isinstance(child_id, str):
+                return Refusal("api_unavailable", "the platform answered without a child id",
+                               retryable=True).as_dict()
+            self.log.info("child run submitted", request_id=request_id, child_id=child_id,
+                          kind=run.get("kind"), state=run.get("state"),
+                          created=bool(payload.get("created")))
+            return {"child_id": child_id, "request_id": request_id,
+                    **{k: run.get(k) for k in ("kind", "state", "run_id", "workflow_id")}}
         task = payload.get("task") if isinstance(payload.get("task"), dict) else {}
         task_id = task.get("id")
         if not isinstance(task_id, str):
@@ -1134,6 +1184,20 @@ class ChildPath:
         if named != request_id:
             return Refusal("request_invalid", "request_id must equal the file's name")
         child = {k: v for k, v in data.items() if k != "request_id"}
+        kind = child.get("kind", "agent")
+        if kind not in CHILD_KINDS:
+            return Refusal("request_invalid", f"kind is one of {list(CHILD_KINDS)}")
+        if kind != "agent":
+            allowed = ISSUE_RUN_FIELDS if kind == "issue_run" else WORKFLOW_FIELDS
+            unknown = sorted(set(child) - allowed)
+            if unknown:
+                return Refusal(
+                    "request_invalid",
+                    f"unknown keys {unknown}; an issue_run names an issue of this task's "
+                    "repository, and a workflow names a saved spec by spec_name, never a "
+                    "spec body, an image or a command",
+                )
+            return child
         unknown = sorted(set(child) - CHILD_FIELDS)
         if unknown:
             return Refusal(
@@ -1191,11 +1255,16 @@ class ChildPath:
         except ChildApiError as exc:
             self.log.warning("could not list this task's children", code=exc.code)
             return None
-        return [
-            str(r.get("task_id"))
-            for r in rows
-            if _state(r.get("state")) not in TERMINAL_STATES
-        ]
+        live = []
+        for r in rows:
+            if r.get("child_id"):
+                # A run kind says whether it ended: a run's states are not a
+                # task's (§3.6: DONE, FAILED, REJECTED, CANCELLED, NOT_READY).
+                if not r.get("ended"):
+                    live.append(str(r.get("child_id")))
+            elif _state(r.get("state")) not in TERMINAL_STATES:
+                live.append(str(r.get("task_id")))
+        return live
 
     # -- §3.3 step 7: stage the children's results on resume ---------------
 
@@ -1226,7 +1295,18 @@ class ChildPath:
             return document
         budget = max(0, int(max_total_bytes))
         out = []
-        for row in sorted(rows, key=lambda r: str(r.get("task_id"))):
+        for row in sorted(rows, key=lambda r: str(r.get("task_id") or r.get("child_id"))):
+            if row.get("child_id"):
+                # A child issue run or workflow (§3.6): no artifacts to stage;
+                # its state, and its run's pull request, are the result.
+                out.append({
+                    **{k: row.get(k) for k in ("child_id", "kind", "request_id", "state", "ended",
+                                               "run_id", "workflow_id", "issue", "spec_name",
+                                               "pull_request", "error")},
+                    "outputs": "none",
+                    "files": [],
+                })
+                continue
             child_id = str(row.get("task_id") or "")
             entry: dict[str, Any] = {
                 "task_id": child_id,

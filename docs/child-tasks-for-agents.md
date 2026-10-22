@@ -3,7 +3,8 @@ $SWARM_CHILDREN/README.md for an attempt that has a child path
 (apps/agent-worker/agent_worker/children.py AGENT_GUIDE; the CLI runners add
 one prompt line pointing at it). tests/unit/worker/test_child_tasks_worker.py
 holds this copy equal to that constant: change both or neither. The design and
-its reasons are docs/design/child-tasks.md. -->
+its reasons are docs/design/child-tasks.md, and for the issue_run and workflow
+kinds docs/design/agent-autonomy.md §3.6. -->
 
 # Child tasks: how this agent submits helpers
 
@@ -52,6 +53,33 @@ or a refusal:
 the same `request_id`. Anything else will be refused again as written. Limits:
 16 children per task across all its attempts; a child cannot submit children
 of its own; about four requests are answered per ten seconds.
+
+## Start an issue run or a saved workflow
+
+A request may instead name a `kind` (an agent child is `"kind": "agent"`, or
+no `kind` at all):
+
+    {"request_id": "lane-b", "kind": "issue_run", "issue": 7,
+     "after_merged": "crun_..."}
+
+    {"request_id": "nightly", "kind": "workflow", "spec_name": "nightly-docs"}
+
+An `issue_run` plans, builds, reviews and merges an issue of THIS task's
+repository under the run's own gates; `issue` is its number (or
+`owner/repo#N` of this repository; any other repository is refused).
+`after_merged`, optional, names another issue run this task started, by the
+`child_id` it was answered with: the new run is HELD, starting nothing, until
+that one is DONE with its pull request merged, and is cancelled if it ends
+any other way. A `workflow` runs a saved spec of this tenant BY NAME,
+`spec_name`, one a platform admin approved; a spec body (`steps`, `spec`) is
+refused. The answer names the run by `child_id`:
+
+    {"child_id": "crun_...", "request_id": "lane-b", "kind": "issue_run",
+     "state": "HELD", "run_id": null, "workflow_id": null}
+
+Both count toward the 16, and a child cannot start either. Waiting for them
+is the same `await` as below; in `results/children.json` each is listed by
+`child_id` with its run's `state`, whether it `ended`, and its pull request.
 
 ## Wait for the children
 
