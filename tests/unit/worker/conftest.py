@@ -49,6 +49,21 @@ def _commits_carry_the_tests_identity(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+# The spools the worker exports to the agent beside it, read back by the runners
+# to register the git, search and state MCP servers. A SwarmCloud container
+# exports SWARM_GIT and SWARM_STATE, so the runner tests there saw a
+# `swarm-state` server in `--mcp-config` that CI, which exports none, never
+# registers. A test that wants a spool sets its own after this has run.
+TOOL_SPOOL_VARIABLES = ("SWARM_GIT", "SWARM_SEARCH", "SWARM_STATE")
+
+
+@pytest.fixture(autouse=True)
+def _no_tool_spool_from_the_environment(monkeypatch):
+    """No worker test inherits the container's MCP spools."""
+    for name in TOOL_SPOOL_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def db() -> FakeFirestore:
     return FakeFirestore()
