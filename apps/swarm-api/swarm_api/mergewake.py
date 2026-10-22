@@ -161,6 +161,23 @@ A READ THAT FAILS IS NOT A READING. GitHub down, a credential without
 `checks: read`, a pull request not visible: nothing is marked, the failure is
 reported by task id and code, and the worker's fallback instant
 (`MERGE_CI_FALLBACK_SECONDS`) wakes the park anyway.
+
+A RELEASE WAIT RIDES THE SAME TICK (docs/design/agent-autonomy.md §3.8, lane
+AU-7). An agent that asked to see its change deploy (`await-release.json`)
+is PARKED on DEPENDENCY_INCOMPLETE with a `release_wait` record naming the
+commit. For each of the named tenant's such parks, at most once per
+`RELEASE_READ_SECONDS`, the tick reads the release of that commit from
+GitHub alone, as the `release_status` git tool does (`release_reading`):
+the newest `release.yml` run on the default branch whose head contains the
+commit, its jobs, and the environments it waits at. It returns the task to
+READY -- in a transaction guarded on the same park, writing
+`metadata.release_wait` with what it read -- only on a TERMINAL release:
+deployed, failed, completed, held at an environment for more than
+`RELEASE_HELD_MAX_SECONDS` (reported, not waited through), or the wait's
+own bound, `RELEASE_WAIT_MAX_SECONDS`. Not released yet, running, or
+waiting at an environment for less than six hours is a reading, recorded,
+and the task stays parked holding nothing (invariant 1). Nothing is leased
+here; the next attempt is admitted all-or-nothing (invariants 2, 5).
 """
 
 from __future__ import annotations
@@ -169,7 +186,7 @@ import logging
 import re
 import secrets
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 from google.cloud import firestore
@@ -331,6 +348,10 @@ class WakeReport:
     deferred: int = 0
     truncated: bool = False
     failures: list[dict[str, str]] = field(default_factory=list)
+    #: Release waits (§3.8, AU-7): read, woken to READY, still waiting.
+    release_visited: int = 0
+    release_woken: int = 0
+    release_waiting: int = 0
 
     def to_api(self) -> dict[str, Any]:
         return {
@@ -343,6 +364,10 @@ class WakeReport:
             "rerun": self.rerun,
             "deferred": self.deferred,
             "truncated": self.truncated,
+            # Only when a release wait was read, so a tenant with none
+            # answers exactly as before.
+            **({"releases": {"visited": self.release_visited, "woken": self.release_woken,
+                             "waiting": self.release_waiting}} if self.release_visited else {}),
         }
 
     def fail(self, task_id: str, code: str) -> None:
@@ -1153,6 +1178,236 @@ def _pushed_by(ctx: Any, tenant_id: str, doc: Mapping[str, Any], head: str) -> s
 #: The merge wake's hold key in `forge_limits.QUOTAS` (`sweep_key`).
 MERGE_WAKE_SWEEP = "merge_wake"
 
+#: A release wait's record (`agent_worker.questions.RELEASE_WAIT_KEY`): in
+#: the park's `blocked_by` entry, and in `metadata` once read.
+RELEASE_WAIT_KEY = "release_wait"
+#: How often one release wait is read: a release takes tens of minutes, and
+#: five minutes late is nothing to an agent that parked to wait for it.
+RELEASE_READ_SECONDS = 300
+#: The wait's own bound (§3.8): past it the agent is woken to report.
+RELEASE_WAIT_MAX_SECONDS = 24 * 3600
+#: A release held at an environment longer than this is reported, not
+#: waited through: it is the owner's approval, which may not come today.
+RELEASE_HELD_MAX_SECONDS = 6 * 3600
+#: The release states that end a wait. `completed` is a run that succeeded
+#: with no deploy job to verify it, which nothing more will change.
+RELEASE_TERMINAL = frozenset({"deployed", "failed", "completed"})
+#: The READY event's reason.
+RELEASE_SETTLED = "release_settled"
+
+
+def release_reading(writer: GitHubWriter, ref: IssueRef, sha: str, token: str) -> dict[str, Any]:
+    """The release of `sha`, read from GitHub alone, as `release_status` reads it (§3.7).
+
+    `state` is `not_released`, `running`, `waiting` (with `waiting_at`, the
+    environments it is held at), `deployed`, `failed` or `completed`. The
+    git tool's reading is bound to an attempt's call, so the same reads are
+    made here with the tenant's token and that tool's constants.
+    """
+    from .gittools import (
+        DEPLOY_JOB,
+        FAILED_CONCLUSIONS,
+        RELEASE_RUNS_READ,
+        RELEASE_WORKFLOW,
+        _run_is_own,
+    )
+    from .forgewrite import ForgeWriteNotFound
+
+    default = writer.default_branch(ref, token)
+    chosen: Mapping[str, Any] | None = None
+    for run in writer.workflow_runs(ref, RELEASE_WORKFLOW, token, branch=default,
+                                    limit=RELEASE_RUNS_READ):
+        head = str(run.get("head_sha") or "")
+        if not _SHA.fullmatch(head) or not _run_is_own(run, ref):
+            continue
+        try:
+            status = writer.compare_status(ref, sha, head, token)
+        except ForgeWriteNotFound:
+            continue
+        if status in ("ahead", "identical"):
+            chosen = run
+            break
+    if chosen is None:
+        return {"state": "not_released", "run_id": None, "waiting_at": []}
+    run_id = int(chosen["id"])
+    jobs = writer.run_jobs(ref, run_id, token)
+    names = [(str(j.get("name") or ""), j.get("conclusion")) for j in jobs]
+    deploy = [c for n, c in names if n == DEPLOY_JOB or n.startswith(f"{DEPLOY_JOB} (")]
+    deployed = bool(deploy) and all(c == "success" for c in deploy)
+    if chosen.get("status") == "completed":
+        state = ("deployed" if deployed else "failed" if chosen.get("conclusion") != "success"
+                 else "completed")
+        return {"state": state, "run_id": run_id, "waiting_at": [],
+                "failed_jobs": [n for n, c in names if c in FAILED_CONCLUSIONS][:20]}
+    waiting = sorted({str((d.get("environment") or {}).get("name") or "")[:100]
+                      for d in writer.pending_deployments(ref, run_id, token)
+                      if isinstance(d.get("environment"), Mapping)} - {""})
+    state = "waiting" if waiting or chosen.get("status") == "waiting" else "running"
+    return {"state": state, "run_id": run_id, "waiting_at": waiting}
+
+
+def release_wait_of(doc: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The release wait this task is PARKED on, from its park's `blocked_by`, else None."""
+    if (doc.get("state") != TaskState.PARKED.value
+            or doc.get("park_reason") != ParkReason.DEPENDENCY_INCOMPLETE.value):
+        return None
+    for entry in doc.get("blocked_by") or ():
+        wait = entry.get(RELEASE_WAIT_KEY) if isinstance(entry, Mapping) else None
+        if (isinstance(wait, Mapping) and isinstance(wait.get("sha"), str)
+                and _SHA.fullmatch(wait["sha"]) and isinstance(wait.get("attempt_id"), str)):
+            return wait
+    return None
+
+
+def _repository(doc: Mapping[str, Any]) -> IssueRef | None:
+    url = doc.get("repository_url")
+    matched = _GITHUB_REPOSITORY.match(url) if isinstance(url, str) else None
+    if matched is None:
+        return None
+    try:
+        owner, repo = parse_repository(f"{matched.group(1)}/{matched.group(2)}")
+    except ValueError:
+        return None
+    return IssueRef(owner=owner, repo=repo, number=1)
+
+
+def _moment(value: Any) -> datetime | None:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _release_verdict(doc: Mapping[str, Any], wait: Mapping[str, Any], recorded: Mapping[str, Any],
+                     reading: Mapping[str, Any], now: datetime) -> tuple[str | None, dict[str, Any]]:
+    """(why the wait ends now, or None to keep waiting; the record to write)."""
+    began = min([m for m in (_moment(doc.get("next_eligible_at")), _moment(wait.get("asked_at")))
+                 if m is not None] or [now])
+    state = str(reading.get("state"))
+    held_since = _moment(recorded.get("waiting_since")) if state == "waiting" else None
+    if state == "waiting" and held_since is None:
+        held_since = now
+    record = {**{k: wait.get(k) for k in ("sha", "attempt_id", "asked_at")},
+              "checked_at": now, "state": state, "run_id": reading.get("run_id"),
+              "waiting_at": list(reading.get("waiting_at") or []),
+              "waiting_since": held_since}
+    if state in RELEASE_TERMINAL:
+        return state, record
+    if held_since is not None and now - held_since >= timedelta(seconds=RELEASE_HELD_MAX_SECONDS):
+        return "held_at_environment", record
+    if now - began >= timedelta(seconds=RELEASE_WAIT_MAX_SECONDS):
+        return "release_wait_expired", record
+    return None, record
+
+
+def _write_release(db: Any, tenant_id: str, task_id: str, wait: Mapping[str, Any],
+                   record: dict[str, Any], reason: str | None, now: datetime) -> bool:
+    """Record the reading; with a `reason`, PARKED -> READY in the same transaction."""
+    from swarm_common.models import TaskEvent, new_id
+    from swarm_common.states import EventType, assert_transition
+
+    from .codec import event_to_firestore, task_from_dict
+    from .store import EVENTS
+
+    ref = db.collection(TASKS).document(task_id)
+
+    @firestore.transactional
+    def _apply(txn: Any) -> bool:
+        snap = _snapshot(txn.get(ref))
+        data = snap.to_dict() if snap.exists else None
+        if data is None or data.get("tenant_id") != tenant_id:
+            return False
+        current = release_wait_of(data)
+        if current is None or current.get("attempt_id") != wait.get("attempt_id"):
+            return False
+        metadata = dict(data.get("metadata") or {})
+        task = task_from_dict(data)
+        woken = reason is not None and not task.cancel_requested and not task.retries_exhausted()
+        if woken:
+            metadata[RELEASE_WAIT_KEY] = {**record, "woken_at": now, "wake_reason": reason}
+            assert_transition(TaskState.PARKED, TaskState.READY)
+            txn.update(ref, {"state": TaskState.READY.value, "park_reason": None,
+                             "next_eligible_at": None, "blocked_by": [], "metadata": metadata,
+                             "updated_at": now})
+            event = TaskEvent(
+                event_id=new_id("ev"), task_id=task_id, tenant_id=tenant_id, type=EventType.READY,
+                at=now, attempt_id=None,
+                detail={"reason": RELEASE_SETTLED, "park_reason": ParkReason.DEPENDENCY_INCOMPLETE.value,
+                        "release": reason, "sha": record.get("sha"), "run_id": record.get("run_id"),
+                        "waiting_at": record.get("waiting_at")})
+            txn.set(ref.collection(EVENTS).document(event.event_id), event_to_firestore(event))
+        else:
+            metadata[RELEASE_WAIT_KEY] = record
+            txn.update(ref, {"metadata": metadata})
+        return woken
+
+    return _apply(db.transaction())
+
+
+def wake_release_waits(ctx: Any, tenant: Any, tenant_id: str, *, limit: int,
+                       report: "WakeReport", halted: datetime | None) -> datetime | None:
+    """One tick over `tenant_id`'s release waits (§3.8). Returns the tenant's hold, if one began."""
+    db = ctx.store.db
+    now = ctx.now()
+    writer: GitHubWriter = ctx.forge_writer
+    query = (
+        db.collection(TASKS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("state", "==", TaskState.PARKED.value))
+        .where(filter=FieldFilter("park_reason", "==", ParkReason.DEPENDENCY_INCOMPLETE.value))
+        .limit(limit)
+    )
+    token = ""
+    try:
+        for snap in query.stream():
+            doc = snap.to_dict() or {}
+            if doc.get("tenant_id") != tenant_id:
+                continue
+            wait = release_wait_of(doc)
+            if wait is None:
+                continue
+            task_id = str(doc.get("id") or snap.id)
+            recorded = _mapping(_mapping(doc.get("metadata")).get(RELEASE_WAIT_KEY))
+            if recorded.get("attempt_id") != wait.get("attempt_id"):
+                recorded = {}
+            checked = _moment(recorded.get("checked_at"))
+            if checked is not None and checked <= now and \
+                    now - checked < timedelta(seconds=RELEASE_READ_SECONDS):
+                continue
+            if halted is not None:
+                report.deferred += 1
+                continue
+            report.release_visited += 1
+            ref = _repository(doc)
+            if ref is None:
+                report.fail(task_id, "release_repository_unknown")
+                continue
+            try:
+                if not token:
+                    token = ctx.forge_tokens.token_for(tenant)
+                reading = release_reading(writer, ref, str(wait["sha"]), token)
+            except Exception as exc:
+                code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
+                log.warning("release wait %s tenant=%s: release not read (%s)", task_id, tenant_id, code)
+                report.fail(task_id, code)
+                if isinstance(exc, ForgeRateLimited):
+                    halted = exc.reset or now + forge_limits.DEFAULT_HOLD
+                    forge_limits.QUOTAS.hold(forge_limits.sweep_key(MERGE_WAKE_SWEEP, tenant_id), halted)
+                continue
+            reason, record = _release_verdict(doc, wait, recorded, reading, now)
+            if _write_release(db, tenant_id, task_id, wait, record, reason, now):
+                report.release_woken += 1
+                log.info("release wait %s tenant=%s: woken (%s)", task_id, tenant_id, reason)
+            else:
+                report.release_waiting += 1
+    finally:
+        token = ""
+    return halted
+
 
 def _due(wait: Mapping[str, Any], now: datetime) -> bool:
     """Not read in the last CI_READ_SECONDS. A `checked_at` in the future is
@@ -1310,6 +1565,8 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                        {"checked_at": now, WAKE_MARKER: now, "wake_reason": reason, **patch}):
                 report.woken += 1
                 log.info("merge wake %s tenant=%s: %s", task_id, tenant_id, reason)
+        # The release waits (§3.8, AU-7), under the same hold.
+        wake_release_waits(ctx, tenant, tenant_id, limit=limit, report=report, halted=halted)
     finally:
         token = reading_token = ""
     return report

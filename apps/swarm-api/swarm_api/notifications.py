@@ -76,7 +76,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.states import ParkReason, TaskState
 
 from . import approvals, schedulefire
-from .agent_questions import unanswered
+from .agent_questions import blocking_unanswered, current_wait, parked_wait, unanswered
 from . import workspaces as ws
 from .forgeapp import CONNECTIONS, REFRESH_FAILED, connection_id_for, user_hash
 from .gittokens import COLLECTION as GIT_TOKENS
@@ -502,9 +502,30 @@ def agent_questions(reading: Reading) -> list[dict[str, Any]]:
     detail leads with the step's name, or the runner profile for a task that
     is no workflow step; the question's own text is the console's to read
     (`GET /v1/tasks/{id}/questions`), because it lives in an artifact this
-    feed does not open on every poll."""
+    feed does not open on every poll.
+
+    AN AGENT PARKED ON A BLOCKING QUESTION IS LISTED WHILE IT WAITS (lane
+    AU-7, docs/design/agent-autonomy.md §3.9): it has ended nothing, and
+    the wait is bounded at 72 hours itself, so no window applies; the item
+    says the agent is
+    waiting and how many blocking questions are open. Its id is the same
+    `task:questions:<id>`, so the console's card marks it read as before;
+    the last blocking answer resumes the agent and the item goes."""
     items = []
     for task in reading.own_tasks():
+        wait = parked_wait(task)
+        if wait is not None:
+            _, adopted = current_wait(task)
+            open_ = blocking_unanswered(wait, task.metadata if adopted else None)
+            if not open_:
+                continue
+            items.append(_item(
+                f"task:questions:{task.id}", TASK, True,
+                f"Your agent is waiting for your answer to {len(open_)} "
+                f"question{'s' if len(open_) != 1 else ''}",
+                f"{task.step_id or task.runner_profile} · Task {task.id}",
+                f"/agents/recent/{task.id}#questions", task.updated_at, topic=T_QUESTION))
+            continue
         count = _question_count(task)
         if count <= 0 or task.state not in _ENDED:
             continue

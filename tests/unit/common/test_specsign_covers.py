@@ -118,6 +118,9 @@ def test_every_metadata_key_the_worker_reads_is_signed():
     # as the await park reads `child_await_resumes`. And the person's return
     # that park reads (LB-RETURN), with the "I'm ready" mark it writes in its
     # place: both written while the attempt runs, never at submission.
+    # And the owner's answers to a blocking question with the wait they
+    # answer (lane AU-7), written by swarm-api while the task is parked, and
+    # handed to the resumed agent only as data between nonce lines.
     unsigned = worker_metadata_keys() - set(SIGNED_METADATA_KEYS) - {
         "child_await_resumes",
         "child_cascade",
@@ -125,6 +128,8 @@ def test_every_metadata_key_the_worker_reads_is_signed():
         "human_returned",
         "human_ready",
         "merge_wait",
+        "owner_answers",
+        "question_wait",
     }
     assert not unsigned, (
         f"agent_worker reads metadata keys {sorted(unsigned)} that the step-spec signature "

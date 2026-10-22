@@ -238,6 +238,18 @@ def accounts_held_by(db: Any, task_id: str) -> set[str]:
     return held
 
 
+def owner_wait(task: Task, key: str) -> bool:
+    """Whether the worker's park carries an agent's `release_wait` or `question_wait` (AU-7).
+
+    Those parks are swarm-api's to end: the merge-wake tick wakes a release
+    wait on a terminal release, and the question sweep holds a blocking
+    question for 72 hours. A scheduler sweep that promoted or expired them
+    on its own clock would break both.
+    """
+    return any(isinstance(block, dict) and isinstance(block.get(key), dict)
+               for block in task.blocked_by or ())
+
+
 def account_park_provider(task: Task) -> str | None:
     """The provider a worker's no-account park waits on, or None for any other park.
 
@@ -1705,6 +1717,10 @@ class Scheduler:
             return False
         if not self._pull_requests_merged(task, report):
             return False
+        if owner_wait(task, "release_wait"):
+            # An agent's release wait (AU-7, agent-autonomy §3.8): only
+            # swarm-api's merge-wake tick, on a terminal release, returns it.
+            return False
         if not task.depends_on:
             # Counted in the metric as well as the report. Incrementing only
             # the report here made `swarm_scheduler_promoted{kind=
@@ -2105,6 +2121,10 @@ class Scheduler:
                         f"{task.max_attempts}); retries exhausted"
                     ),
                 )
+                continue
+            if owner_wait(task, "question_wait"):
+                # A blocking question (AU-7, §3.9) is held for 72 hours and
+                # ended by swarm-api with "owner question unanswered".
                 continue
             parked_at = task.next_eligible_at or task.updated_at
             if parked_at + timedelta(seconds=limit) > now:
