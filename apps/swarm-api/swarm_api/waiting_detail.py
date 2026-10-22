@@ -253,12 +253,30 @@ def _ci(task: Task, facts: dict[str, Any], park: TaskEvent | None, as_of: dateti
     wakes = _int(facts.get("wakes")) if "wakes" in facts else _int(wait.get("wakes"))
     refunded = facts.get("attempt_refunded")
     last_checked = park.at if park is not None else _as_dt(wait.get("parked_at"))
+    head_at = _str(facts.get("head")) or _str(wait.get("head"))
+    # THE WAKE TICK'S NEWER READING, when it read the checks at the head this
+    # park waits at after the park was recorded (STATUS-TRUE, part of #1914;
+    # `mergewake.READING_KEY`): on wf_15160fca1d07438ab594 the line named
+    # ci-gate pending for minutes after it had FAILED and a fix round was
+    # running, because only the park's own facts were read. The line then
+    # says when it was read, and names the round under way.
+    reading = _mapping(wait.get("reading"))
+    read_at = _as_dt(reading.get("read_at"))
+    newer = (
+        bool(reading) and head_at is not None and reading.get("head") == head_at
+        and read_at is not None and (last_checked is None or read_at > last_checked)
+    )
+    fix_round = _mapping(reading.get("fix_round")) if newer else {}
+    if newer:
+        pending = _names(reading.get("pending"))
+        failed = _names(reading.get("failed"))
+        last_checked = read_at
     detail = {
         "pull_request": (
             {"number": number, "url": pull_request_url(task.repository_url, number)}
             if number is not None else None
         ),
-        "head": _str(facts.get("head")) or _str(wait.get("head")),
+        "head": head_at,
         "code": _str(facts.get("code")) or _str(wait.get("code")),
         "pending": pending,
         "failed": failed,
@@ -266,10 +284,15 @@ def _ci(task: Task, facts: dict[str, Any], park: TaskEvent | None, as_of: dateti
         "attempts_counted": (not refunded) if isinstance(refunded, bool) else None,
         "last_checked_at": last_checked,
         "wake_requested_at": _as_dt(wait.get("wake_requested_at")),
+        "fix_round": (
+            {"kind": _str(fix_round.get("kind")), "round": _int(fix_round.get("round")),
+             "task_id": _str(fix_round.get("task_id")), "state": _str(fix_round.get("state"))}
+            if fix_round else None
+        ),
     }
     where = f"CI on PR #{number}" if number is not None else "CI on its pull request"
     parts: list[str] = []
-    if pending is not None:
+    if pending is not None and not (newer and not pending and failed):
         shown = pending[:SUMMARY_NAMES]
         more = ", ..." if len(pending) > SUMMARY_NAMES else ""
         names = f" ({', '.join(shown)}{more})" if shown else ""
@@ -279,6 +302,12 @@ def _ci(task: Task, facts: dict[str, Any], park: TaskEvent | None, as_of: dateti
     if not parts:
         parts.append("checks not recorded")
     head = f"{where}: {', '.join(parts)}"
+    if fix_round:
+        state = _str(fix_round.get("state"))
+        head += (f"; fix round {_int(fix_round.get('round'))} "
+                 f"{state.lower() if state else 'state not read'}")
+    if newer:
+        head += f"; read {_hhmm(read_at, as_of)}"
     if wakes is not None:
         head += f"; re-checked {wakes} times"
     if task.next_eligible_at is not None:

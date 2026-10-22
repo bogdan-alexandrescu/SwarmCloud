@@ -483,6 +483,64 @@ def _record(db: Any, tenant_id: str, task_id: str, head: str, patch: dict[str, A
     return bool(_apply(transaction))
 
 
+#: The tick's own CI reading, inside `merge_wait` (STATUS-TRUE, part of
+#: #1914): `{head, read_at, pending, failed}` and, while a CI-fix round runs
+#: at that head, `fix_round: {kind, round, task_id, state}`. The worker's
+#: `pending` is what it read when it PARKED; on wf_15160fca1d07438ab594 the
+#: merge step's line kept naming `ci-gate` pending after it had FAILED and a
+#: round was running, because this tick read the failure, handed it to the
+#: round and wrote no part of it down. A RECORD for the waiting line
+#: (`waiting_detail._ci`), never a decision: nothing reads it to wake, merge
+#: or claim. Inside `merge_wait` on purpose: the worker's next park rewrites
+#: that record whole, so a reading never outlives the park it was taken in.
+READING_KEY = "reading"
+
+
+def _round_under_way(ctx: Any, db: Any, tenant_id: str, task_id: str,
+                     head: str) -> dict[str, Any] | None:
+    """The CI-fix round claimed at `head` with a task, and that task's state.
+
+    Read fresh, not off the tick's copy of the merge task: a round this tick
+    claimed is on the document only. None when there is none, it was refused,
+    or its task is not this tenant's.
+    """
+    snap = db.collection(TASKS).document(task_id).get()
+    data = snap.to_dict() if snap.exists else None
+    if not data or data.get("tenant_id") != tenant_id:
+        return None
+    rounds = _rounds(_mapping(data.get("metadata")))
+    if not rounds or rounds[-1].get("head") != head or rounds[-1].get("error"):
+        return None
+    entry = rounds[-1]
+    fix_task = entry.get("task_id")
+    if not isinstance(fix_task, str) or not TASK_ID_RE.match(fix_task):
+        return None
+    try:
+        task = ctx.store.get_task(tenant_id, fix_task, submitted_by=None)
+    except NotFound:
+        return None
+    return {"kind": ROUND_KIND["rounds"], "round": int(entry.get("round") or 0),
+            "task_id": fix_task, "state": task.state.value}
+
+
+def _reading(ctx: Any, db: Any, tenant_id: str, task_id: str, head: str,
+             read: _Reading, now: datetime) -> dict[str, Any] | None:
+    """`READING_KEY`'s value for a reading that read the checks; else None."""
+    if read.checks is None:
+        return None
+    record: dict[str, Any] = {
+        "head": head,
+        "read_at": now,
+        "pending": sorted(dict.fromkeys(str(n) for n in read.checks.pending)),
+        "failed": read.checks.failing_names(),
+    }
+    if read.reason == "red":
+        under_way = _round_under_way(ctx, db, tenant_id, task_id, head)
+        if under_way is not None:
+            record["fix_round"] = under_way
+    return record
+
+
 # --------------------------------------------------------------------------
 # A red reading with rounds left: the CI-fix hand-off (lane MS7)
 # --------------------------------------------------------------------------
@@ -1205,11 +1263,16 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                     with forge_limits.acting_as(tenant_credential):
                         kind, reason = _on_red(ctx, db, tenant, doc, ref, head, read, token,
                                                now)
-                    if kind == _FIXING:
-                        report.fixing += 1
-                        continue
-                    if kind == _RERUN:
-                        report.rerun += 1
+                    if kind in (_FIXING, _RERUN):
+                        # The reading is recorded, no `checked_at`: the next
+                        # tick reads the round, or the re-run, as before.
+                        noted = _reading(ctx, db, tenant_id, task_id, head, read, now)
+                        if noted is not None:
+                            _record(db, tenant_id, task_id, head, {READING_KEY: noted})
+                        if kind == _FIXING:
+                            report.fixing += 1
+                        else:
+                            report.rerun += 1
                         continue
                 elif reason == CONFLICTING:
                     with forge_limits.acting_as(tenant_credential):
@@ -1236,9 +1299,12 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                     log.warning("github quota: merge wake tenant=%s rate-limited; held until %s",
                                 tenant_id, halted.isoformat())
                 continue
+            noted = _reading(ctx, db, tenant_id, task_id, head, read, now)
+            if noted is not None:
+                patch[READING_KEY] = noted
             if reason is None:
                 report.waiting += 1
-                _record(db, tenant_id, task_id, head, {"checked_at": now})
+                _record(db, tenant_id, task_id, head, {"checked_at": now, **patch})
                 continue
             if _record(db, tenant_id, task_id, head,
                        {"checked_at": now, WAKE_MARKER: now, "wake_reason": reason, **patch}):

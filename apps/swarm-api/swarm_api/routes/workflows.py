@@ -519,20 +519,33 @@ def get_workflow(
     # The same filter on the step tasks: a workflow the caller submitted has
     # step tasks the caller submitted, and a row that is not theirs is not
     # served whatever workflow it claims to belong to.
-    tasks = ctx.store.list_tasks(
+    page = ctx.store.list_tasks(
         tenant_id, workflow_id=workflow_id, limit=200, submitted_by=submitted_by
     )
+    # EVERY STEP'S TASK, READ BY ID WHEN THE PAGE DOES NOT HOLD IT (STATUS-TRUE,
+    # part of #1914). A merge fix round is appended as a step (`ci-fix:<n>`)
+    # after submission, and its task belongs to the round's OWN workflow
+    # (`mergewake._hand_off`), so the `workflow_id` query never returns it:
+    # wf_15160fca1d07438ab594 derived UNKNOWN "step_tasks_missing ... ci-fix:1"
+    # while that task read RUNNING. A page the workflow outgrew is the same
+    # gap. The step ids are in hand, so the missing ones are point reads
+    # (`tasks_by_id`, tenant-checked), filtered by submitter as the page is;
+    # every step is then either on the page or read by id, which is what makes
+    # one still missing ABSENT, and the derivation complete.
+    tasks = list(page.items)
+    held = {t.id for t in tasks}
+    named = [s.task_id for s in workflow.steps if s.task_id and s.task_id not in held]
+    if named:
+        found = ctx.store.tasks_by_id(tenant_id, named)
+        tasks += [
+            found[i] for i in dict.fromkeys(named)
+            if i in found and (submitted_by is None or found[i].submitted_by == submitted_by)
+        ]
     # Derived from the tasks this route already loaded rather than from a second
-    # read of the same documents. `complete` is false when that page truncated,
-    # which turns a step missing from it into "not read" instead of "not there"
-    # -- `max_workflow_steps` is 50 against a limit of 200, so it cannot happen
-    # today, and a route that would start lying if the limit ever changed is a
-    # route that is already wrong.
-    result = ctx.rollups.for_workflow_from_tasks(
-        workflow, tasks.items, complete=tasks.next_page_token is None
-    )
-    accounts = accounts_for(ctx.db, tenant_id, tasks.items)
-    totals = totals_for(ctx.db, tenant_id, [t.id for t in tasks.items])
+    # read of the same documents.
+    result = ctx.rollups.for_workflow_from_tasks(workflow, tasks, complete=True)
+    accounts = accounts_for(ctx.db, tenant_id, tasks)
+    totals = totals_for(ctx.db, tenant_id, [t.id for t in tasks])
 
     payload = {
         # The step copies of each input are masked by the tasks' own maskers,
@@ -541,13 +554,15 @@ def get_workflow(
         "workflow": workflow_to_api(
             workflow,
             result.to_api(),
-            step_tasks={t.id: t for t in tasks.items},
+            step_tasks={t.id: t for t in tasks},
             console_url=ctx.settings.console_url,
         ),
         # Read back off the tasks, which is where the options are stored; the
         # frozen `Workflow` dataclass has no metadata field to hold them. The
-        # list route has no equivalent because it loads no tasks.
-        "dispatch": workflow_dispatch(tasks.items),
+        # list route has no equivalent because it loads no tasks. The
+        # workflow's own tasks only: a fix round's task read by id is its own
+        # workflow's, with that workflow's options.
+        "dispatch": workflow_dispatch(page.items),
         # #379: each step's account, one bounded query per 30 steps. And each
         # step's totals across every attempt (lane review P1), which the
         # console's Workflows cost columns show, read the same bounded way
@@ -563,7 +578,7 @@ def get_workflow(
                 ),
                 totals,
             )
-            for t in tasks.items
+            for t in tasks
         ],
     }
     _named(ctx, [payload["workflow"]], payload["tasks"])
