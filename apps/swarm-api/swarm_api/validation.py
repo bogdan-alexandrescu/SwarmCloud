@@ -2129,8 +2129,10 @@ def qa_target_mark_allowed(mark: Mapping[str, Any]) -> Iterator[None]:
     `submit_workflow` a person uses, with the mark on each browser step's own
     metadata, so the mark travels in the spec and is in each task from the one
     write that creates it. Only the exact value passes, only inside this
-    block, which `run_target` alone enters around its own submission call; a
-    ContextVar set in one request is not visible to another's.
+    block, which two callers enter, each around its own submission call:
+    routes/qatargets.py `run_target` and a visual-qa schedule firing's
+    schedtypes/visual_qa.py `create`. A ContextVar set in one request is not
+    visible to another's.
     """
     token = _QA_TARGET_MARK.set(dict(mark))
     try:
