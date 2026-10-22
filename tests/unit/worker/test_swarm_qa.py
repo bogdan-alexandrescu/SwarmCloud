@@ -106,9 +106,11 @@ def _white(_x, _y):
 #: clientHeight, clientWidth), its overflow-y, its tag, classes and
 #: attributes, its own text, whether it has no box (`hidden`), its parent,
 #: its CSS `position` and `top` (`pos`, `top` in px) and where its box is on
-#: the screen (`rt` its top, `rh` its height; `ch` when not given). Selectors are the shapes the scripts and the
-#: route list use: `tag`, `.class`, `[attr="v"]`, `[attr*="v"]`, `*`,
-#: descendant and comma.
+#: the screen (`rt` its top, `rh` its height; `ch` when not given), its
+#: top padding (`pt`, px) and its CSS `bottom` inset (`bottom`, px).
+#: `innerText` is the drawn text of the element and everything under it.
+#: Selectors are the shapes the scripts and the route list use: `tag`,
+#: `.class`, `[attr="v"]`, `[attr*="v"]`, `*`, descendant and comma.
 _DOM_PROGRAM = r"""
 const spec = JSON.parse(process.argv[1]);
 const els = spec.nodes.map((n) => ({
@@ -117,6 +119,7 @@ const els = spec.nodes.map((n) => ({
   scrollHeight: n.sh || 0, clientHeight: n.ch || 0, clientWidth: n.cw || 0, scrollTop: 0, parentElement: null,
   _text: n.text || '', _hidden: n.hidden || false, _pos: n.pos || 'static',
   _top: n.top === undefined ? 'auto' : n.top + 'px', _rt: n.rt || 0, _rh: n.rh === undefined ? (n.ch || 0) : n.rh,
+  _pt: (n.pt || 0) + 'px', _bottom: n.bottom === undefined ? 'auto' : n.bottom + 'px',
 }));
 spec.nodes.forEach((n, i) => { els[i].parentElement = n.parent === undefined ? null : els[n.parent]; });
 const simple = (el, s) => {
@@ -142,6 +145,8 @@ els.forEach((el) => {
   el.contains = (o) => { for (let x = o; x; x = x.parentElement) if (x === el) return true; return false; };
   el.getClientRects = () => (el._hidden ? [] : [{}]);
   el.getBoundingClientRect = () => ({ top: el._rt, bottom: el._rt + el._rh, height: el._rh });
+  Object.defineProperty(el, 'innerText', { get: () => els.filter((o) => !o._hidden && el.contains(o) && o._text)
+    .map((o) => o._text).join('\n') });
 });
 globalThis.window = globalThis;
 globalThis.innerHeight = spec.inner_height;
@@ -149,7 +154,8 @@ globalThis.document = {
   documentElement: els[0], scrollingElement: els[0], body: els[1],
   querySelectorAll: all, querySelector: (s) => all(s)[0] || null,
 };
-globalThis.getComputedStyle = (el) => ({ overflowY: el._oy, visibility: 'visible', position: el._pos, top: el._top });
+globalThis.getComputedStyle = (el) => ({ overflowY: el._oy, visibility: 'visible', position: el._pos, top: el._top,
+  bottom: el._bottom, paddingTop: el._pt, borderTopWidth: '0px' });
 globalThis.NodeFilter = { SHOW_TEXT: 4 };
 document.createTreeWalker = (root) => {
   const texts = els.filter((el) => el._text && root.contains(el)).map((el) => ({ data: el._text, parentElement: el }));
@@ -229,6 +235,9 @@ class FakePage:
         # answers with it). `at` is where the scroller is, clamped as a
         # browser clamps scrollTop.
         self.sticky = 0
+        # A bar fixed over the scroller's bottom edge (the Reads bar): the
+        # bottom `bottom` px of what it shows are under it, at every offset.
+        self.bottom = 0
         self.at = 0
         self.slow = set(slow)
         self.scroll_height = scroll_height
@@ -245,6 +254,10 @@ class FakePage:
         # path -> how long, in ms after the load, the page shows a "reading…"
         # marker; None for a page that never stops reading.
         self.pending = {}
+        # path -> how long, in ms after the load, the body text goes on
+        # changing (a read landing with no marker: an attempt count, a cost,
+        # a lane's events); None for text that never stops changing.
+        self.text_changes = {}
         self.elapsed = 0
         # What the console keeps in the profile across loads (localStorage):
         # the fake app writes one key per page it loaded, as RecentWorkflows
@@ -300,10 +313,21 @@ class FakePage:
                 return []
             clears = self.pending[self._path()]
             return ['"reading…" in button.c-refresh'] if clears is None or self.elapsed < clears else []
+        if expression == getattr(self.qa, "TEXT_JS", None):
+            path = self._path()
+            if path in self.text_changes:
+                stops = self.text_changes[path]
+                if stops is None or self.elapsed < stops:
+                    # A different count on every poll, the same length.
+                    return [24, format(self.elapsed, "08x"), "span.tl-unread"]
+            return [24, "0000ffff", None]
         if expression == self.qa.SCROLL_JS:
             self.log.append(("scroll", arg))
             self.at = max(0, min(arg, self.scroll_height - self.viewport_height))
-            return self.sticky if self.at > 0 else 0
+            top = self.sticky if self.at > 0 else 0
+            # STUCK_JS answers `[top, bottom]`; a bare number (what it
+            # answered before the bottom cover) is still read as the top.
+            return [top, self.bottom] if self.bottom else top
         if expression == self.qa.AXE_RUN_JS:
             return {"violations": []}
         self.log.append(("evaluate", expression[:40]))
@@ -525,7 +549,12 @@ def test_file_names_carry_route_preset_theme_segment(qa, world):
     assert [n for n in names if n.startswith("work-a/timeline--desktop--light--")] == [
         "work-a/timeline--desktop--light--s1.png"
     ]
-    assert len(names) == 4 * (3 + 1)
+    # At phone-390 `timeline` runs to its scroller's end all the same (owner
+    # decision c49): three images there, one on the desktop.
+    assert [n for n in names if n.startswith("work-a/timeline--phone-390--light--")] == [
+        f"work-a/timeline--phone-390--light--s{i}.png" for i in (1, 2, 3)
+    ]
+    assert len(names) == 2 * (3 + 1) + 2 * (3 + 3)
     manifest = _manifest(bundle)
     listed = sorted(i for r in manifest["routes"] for i in r["images"])
     assert listed == names, "the manifest names exactly the images the tarball holds"
@@ -688,15 +717,16 @@ def test_what_is_stuck_over_the_scroller_is_measured_on_the_page(qa):
     gone = {"tag": "div", "cls": "toast", "parent": 5, "pos": "sticky", "top": 0, "rt": 60, "rh": 90, "hidden": True}
     probe = "(ready) => { (" + qa.MEASURE_JS + ")(ready); return (" + qa.STUCK_JS + ")(); }"
     # MUTATION: return 0 from STUCK_JS and this fails: the tab bar is 55 px.
-    assert _run_js(probe, _sticky_dom(table, thead, tabs, rail, gone), "main h1") == 55
+    # It answers `[top, bottom]` (QAFIX4-QATOOL): nothing covers the bottom here.
+    assert _run_js(probe, _sticky_dom(table, thead, tabs, rail, gone), "main h1") == [55, 0]
     # A sticky element with a negative inset (`.ag-tabs-edge`, top: -18px)
     # covers what shows of it.
     edge = dict(tabs, cls="ag-tabs-edge", top=-18, rt=42, rh=73)
-    assert _run_js(probe, _sticky_dom(edge), "main h1") == 55
+    assert _run_js(probe, _sticky_dom(edge), "main h1") == [55, 0]
     # MUTATION: count a sticky element that is not at its inset (not stuck,
     # further down the page) and this fails.
-    assert _run_js(probe, _sticky_dom(dict(tabs, rt=400)), "main h1") == 0
-    assert _run_js(probe, _sticky_dom(table, thead, rail, gone), "main h1") == 0
+    assert _run_js(probe, _sticky_dom(dict(tabs, rt=400)), "main h1") == [0, 0]
+    assert _run_js(probe, _sticky_dom(table, thead, rail, gone), "main h1") == [0, 0]
     # MUTATION: let SCROLL_JS resolve to null again and the capture never
     # learns the header's height.
     assert qa.STUCK_JS in qa.SCROLL_JS
@@ -716,7 +746,9 @@ def test_a_route_is_shot_only_after_its_reading_marker_clears(qa, world):
     manifest = _manifest(bundle)
     runs = next(r for r in manifest["routes"] if r["id"] == "runs")
     assert runs["status"] == "captured" and runs["settled"] is True, runs
-    assert manifest["failed"] == []
+    # `timeline` asks for one segment of a 2000 px page, so it is in `failed`
+    # as cut (QAFIX4-QATOOL); /runs, which settled and ran to its end, is not.
+    assert [f for f in manifest["failed"] if f["id"] == "runs"] == []
 
 
 def test_a_route_that_never_settles_is_reported_and_its_wait_is_bounded(qa, world):
@@ -731,7 +763,9 @@ def test_a_route_that_never_settles_is_reported_and_its_wait_is_bounded(qa, worl
     (timeline,) = [r for r in manifest["routes"] if r["id"] == "timeline"]
     assert timeline["status"] == "unsettled" and timeline["settled"] is False, timeline
     assert timeline["pending"] == ['"reading…" in button.c-refresh'], timeline
-    waited = sum(e[1] for e in world.page.log if e[0] == "wait")
+    # The timeline is the group's last route: its wait is every wait after its load.
+    last_load = max(i for i, e in enumerate(world.page.log) if e[0] == "goto")
+    waited = sum(e[1] for e in world.page.log[last_load:] if e[0] == "wait")
     assert qa.SETTLE_TIMEOUT_MS <= waited <= qa.SETTLE_TIMEOUT_MS + qa.SETTLE_POLL_MS, waited
 
 
@@ -786,6 +820,202 @@ def test_two_captures_in_a_row_start_from_the_same_clean_state(qa, world):
                       for p in sorted(out.rglob("*.txt"))})
     assert len(texts[0]) == 8 and texts[0] == texts[1], "two captures in a row differ"
     assert all(t.endswith("storage at load []") for t in texts[0].values()), texts[0]
+
+
+# --------------------------------------------------------------------------
+# QAFIX4-QATOOL (part of #1680): visual QA run 4's capture defects
+# --------------------------------------------------------------------------
+
+
+def _one_route(world, **extra):
+    routes = json.loads(world.routes.read_text(encoding="utf-8"))
+    routes["groups"]["work-a"] = [{"id": "runs", "address": "work/runs", "path": "/runs", "ready": "main h1", **extra}]
+    world.routes.write_text(json.dumps(routes), encoding="utf-8")
+
+
+def test_a_phone_capture_runs_to_the_scrollers_end_whatever_the_routes_budget(qa, world):
+    """The owner's decision c49 (2026-10-22, box comment 6283704756): run 4's
+    phone captures stopped at their route's budget (4, or 3 for `now`) before
+    the page ended, on six routes in both themes. At phone-390 the capture
+    takes segments until the scroller's end, up to MAX_SEGMENTS."""
+    _one_route(world, segments=4)
+    page = world.page
+    page.scroll_height, page.viewport_height = 9 * 844, 844
+    code, _out, bundle = _capture(qa, world, presets="phone-390", themes="light")
+    assert code == 0
+    manifest = _manifest(bundle)
+    (entry,) = manifest["routes"]
+    # MUTATION: keep the route's `segments` as the phone-390 budget and this
+    # fails: four images of a nine-viewport page.
+    assert len(entry["images"]) == 9, entry["images"]
+    # MUTATION: write `truncated: True` for every entry and this fails: the
+    # ninth segment reached the scroller's end.
+    assert entry["truncated"] is False and entry["reached"] == entry["total"] == 9 * 844, entry
+    assert manifest["failed"] == []
+
+
+def test_a_phone_capture_cut_at_max_segments_says_so(qa, world, capsys):
+    _one_route(world, segments=4)
+    page = world.page
+    page.scroll_height, page.viewport_height = 15 * 844, 844
+    code, _out, bundle = _capture(qa, world, presets="phone-390", themes="light")
+    assert code == 0
+    manifest = _manifest(bundle)
+    (entry,) = manifest["routes"]
+    # MUTATION: drop MAX_SEGMENTS from the phone budget (scroll until the end
+    # with no bound) and this fails: fifteen images.
+    assert len(entry["images"]) == qa.MAX_SEGMENTS == 12, entry["images"]
+    # MUTATION: leave the entry as it was (no `truncated`) and this fails: a
+    # cut capture recorded as complete.
+    assert entry["truncated"] is True and entry["reached"] == 12 * 844 and entry["total"] == 15 * 844, entry
+    # MUTATION: record the cut only in the entry and this fails: the summary
+    # lists it, as it lists an unsettled route.
+    (failed,) = manifest["failed"]
+    assert failed["id"] == "runs" and "cut" in failed["error"] and "10128 of 12660 px" in failed["error"], failed
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["truncated"] == 1
+
+
+def test_a_desktop_capture_keeps_its_routes_budget_and_says_when_it_cut(qa, world):
+    _one_route(world, segments=4)
+    page = world.page
+    page.scroll_height, page.viewport_height = 9 * 900, 900
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    (entry,) = _manifest(bundle)["routes"]
+    # MUTATION: give every preset MAX_SEGMENTS and this fails: nine images.
+    assert len(entry["images"]) == 4, entry["images"]
+    # MUTATION: set `truncated` only for phone-390 and this fails.
+    assert entry["truncated"] is True and entry["reached"] == 4 * 900 and entry["total"] == 9 * 900, entry
+    assert qa.segment_budget({"segments": 4}, "desktop") == 4
+    assert qa.segment_budget({}, "desktop") == qa.DEFAULT_SEGMENTS
+    assert qa.segment_budget({"segments": 3}, "phone-390") == qa.MAX_SEGMENTS
+
+
+def test_a_page_whose_text_keeps_changing_is_shot_only_once_it_stops(qa, world):
+    """Box comment 6283709068 and 6283730057 (run 4's task-007, work-a-001,
+    work-a-002, work-a-003): the agent list's 'attempt … of 3', the Workflows
+    Cost's '—' and the Timeline's 'events not read on N lanes' were shot
+    while their reads landed, with no skeleton, `aria-busy` or "reading…" on
+    the page, and recorded settled. The page now counts as settled only once
+    its body text has stopped changing for TEXT_QUIET_MS."""
+    _one_route(world)
+    world.page.text_changes = {"/runs": 3000}
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    shots = [e[4] for e in world.page.log if e[0] == "shot"]
+    # MUTATION: settle on PENDING_JS alone (no TEXT_JS) and this fails: the
+    # shots are taken at 300 ms, mid-read.
+    # MUTATION: set TEXT_QUIET_MS to 0 and this fails the same way.
+    assert shots and all(t >= 3000 + qa.TEXT_QUIET_MS for t in shots), shots
+    (entry,) = _manifest(bundle)["routes"]
+    assert entry["settled"] is True and entry["status"] == "captured", entry
+    # The window is longer than the fixture build's longest single timer
+    # (620 ms, api.ts) and leaves the Timeline's ~4.5 s of lane reads room
+    # under the timeout.
+    assert 620 < qa.TEXT_QUIET_MS and 4500 + qa.TEXT_QUIET_MS < qa.SETTLE_TIMEOUT_MS
+
+
+def test_a_page_whose_text_never_stops_changing_is_shot_unsettled_and_says_where(qa, world):
+    _one_route(world)
+    world.page.text_changes = {"/runs": None}
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    manifest = _manifest(bundle)
+    (entry,) = manifest["routes"]
+    # MUTATION: return [] from `_settle` when only the text is still moving
+    # at SETTLE_TIMEOUT_MS and this fails: the page is recorded settled.
+    assert entry["settled"] is False and entry["status"] == "unsettled", entry
+    (what,) = entry["pending"]
+    assert "text still changing" in what and "span.tl-unread" in what, what
+    assert "text of" not in what, "the page's own text is never written into the manifest"
+    (failed,) = manifest["failed"]
+    assert "settle" in failed["error"] and "text still changing" in failed["error"], failed
+    waited = sum(e[1] for e in world.page.log if e[0] == "wait")
+    assert qa.SETTLE_TIMEOUT_MS <= waited <= qa.SETTLE_TIMEOUT_MS + qa.SETTLE_POLL_MS, waited
+
+
+def test_the_text_fingerprint_moves_with_the_drawn_text_and_carries_none_of_it(qa):
+    """TEXT_JS, run: its answer is the body text's length and hash and where
+    it last changed, so the settle loop compares two polls without the
+    page's text ever leaving the page."""
+    dom = {"inner_height": 900, "nodes": [
+        {"tag": "html", "sh": 900, "ch": 900}, {"tag": "body", "parent": 0, "sh": 900, "ch": 900},
+        {"tag": "main", "parent": 1, "text": "Agents"},
+        {"tag": "span", "cls": "ag-attempt", "parent": 2, "text": "attempt … of 3"},
+        {"tag": "span", "cls": "skeleton", "parent": 2, "text": "hidden", "hidden": True},
+    ]}
+    probe = ("() => { const f = (" + qa.TEXT_JS + "); const a = f();"
+             " document.querySelector('span.ag-attempt')._text = 'attempt 3 of 3';"
+             " const b = f(); const c = f(); return [a, b, c]; }")
+    a, b, c = _run_js(probe, dom, None)
+    # MUTATION: answer a constant and this fails: the landed read is not seen.
+    assert a[:2] != b[:2], (a, b)
+    # MUTATION: hash anything that moves between polls (a counter, the time) and this fails.
+    assert b[:2] == c[:2], (b, c)
+    assert a[0] == len("Agents\nattempt … of 3"), a
+    assert "attempt" not in json.dumps([a, b, c]), "the fingerprint carries the page's text"
+
+
+def _drawer_dom(*extra) -> dict:
+    """Task detail at 390 (run 4's task-006): the phone header is 44 px, the
+    open task `div.drawer.ctl-drawer.ag-split` is fixed under it and is the
+    scroller, with the drawer's 18 px of top padding; its tab strip
+    (`.ag-tabs-edge`, agents.css) is sticky at `top: -18px`, so stuck it sits
+    at the scroller's top edge; the Reads bar is fixed at the screen's foot,
+    over the scroller's bottom 45 px."""
+    return {"inner_height": 844, "nodes": [
+        {"tag": "html", "sh": 844, "ch": 844, "cw": 390},
+        {"tag": "body", "parent": 0, "sh": 844, "ch": 844, "cw": 390},
+        {"tag": "div", "cls": "drawer ctl-drawer ag-split", "parent": 1, "oy": "auto", "pos": "fixed",
+         "sh": 3000, "ch": 772, "cw": 390, "rt": 44, "pt": 18},
+        {"tag": "div", "cls": "ag-tabs-edge", "parent": 2, "pos": "sticky", "top": -18, "rt": 44, "rh": 45},
+        {"tag": "div", "cls": "ag-split-pane", "parent": 2, "sh": 2900, "ch": 2900, "rt": 89},
+        {"tag": "main", "parent": 4, "sh": 2900, "ch": 2900, "rt": 89},
+        {"tag": "h1", "parent": 5, "sh": 40, "ch": 40, "rt": 89},
+        {"tag": "div", "cls": "ctl-reads", "parent": 1, "pos": "fixed", "bottom": 0, "rt": 771, "rh": 73},
+        *extra,
+    ]}
+
+
+def test_a_strip_stuck_inside_a_drawer_and_a_fixed_bar_over_its_foot_are_measured(qa):
+    """Box comment 6314118924 (run 4's task-006): the drawer's tab strip and
+    the Reads bar hid rows from every segment and the manifest said
+    overlaps [0, 0]. STUCK_JS measured the strip's inset from the scroller's
+    border edge, 18 px above where a browser sticks it (from the padding
+    edge), and counted nothing at the scroller's foot."""
+    probe = "(ready) => { (" + qa.MEASURE_JS + ")(ready); return (" + qa.STUCK_JS + ")(); }"
+    toast = {"tag": "div", "cls": "toast", "parent": 1, "pos": "fixed", "rt": 300, "rh": 40}
+    # MUTATION: measure a sticky inset from the scroller's border edge again
+    # (`top + inset`) and the first number is 0: the strip is not counted.
+    # MUTATION: count nothing over the scroller's bottom edge and the second is 0.
+    # A fixed box clear of the bottom edge (the toast mid-screen) covers none of it.
+    # MUTATION: count every fixed box below the top edge as a bottom cover and
+    # the second number is 516.
+    assert _run_js(probe, _drawer_dom(toast), "main h1") == [45, 45]
+    no_bar = _drawer_dom()
+    no_bar["nodes"] = [n for n in no_bar["nodes"] if n.get("cls") != "ctl-reads"]
+    assert _run_js(probe, no_bar, "main h1") == [45, 0]
+
+
+def test_a_bar_fixed_over_the_scrollers_foot_shortens_each_step(qa, world):
+    """Each step is the visible height less what is stuck at the top and
+    what covers the bottom, so the rows under the Reads bar in one segment
+    are clear in the next; `overlaps` is still one number per step (both
+    together, the px the next segment repeats), and `covers` splits it."""
+    _one_route(world)
+    page = world.page
+    page.scroll_height, page.viewport_height, page.sticky, page.bottom = 3000, 772, 45, 45
+    code, _out, bundle = _capture(qa, world, presets="phone-390", themes="light")
+    assert code == 0
+    (entry,) = _manifest(bundle)["routes"]
+    at = [e[5] for e in page.log if e[0] == "shot"]
+    shown = [(y + (page.sticky if y > 0 else 0), y + page.viewport_height - page.bottom) for y in at]
+    # MUTATION: step by the visible height less only the top (QAFIX3) and
+    # rows 727..772 are under the bar in segment 1 and above segment 2.
+    for (_, end), (start, _) in zip(shown, shown[1:]):
+        assert start <= end, f"rows {end}..{start} are in no segment: {shown}"
+    assert entry["overlaps"] == [90] * (len(at) - 1), entry
+    assert entry["covers"] == [{"top": 45, "bottom": 45}] * (len(at) - 1), entry
 
 
 # --------------------------------------------------------------------------

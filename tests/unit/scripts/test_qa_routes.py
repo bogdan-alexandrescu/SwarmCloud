@@ -192,3 +192,28 @@ def test_the_list_reads_as_swarm_qa_reads_it_and_every_mockup_exists():
     for mockup in document["mockups"]:
         assert (REPO / mockup["path"]).is_file(), f"mockup {mockup['id']}: {mockup['path']} does not exist"
         assert mockup["compare_with"] in ids, f"mockup {mockup['id']} compares with no route"
+
+
+#: Run 4's phone captures that stopped at their budget before the page ended
+#: (box comment 6283704756): admin-006, capacity-001, capacity-003,
+#: overview-automate-008 and work-a-010. (capacity-002, "capacity/runtimes",
+#: is an address the list no longer has.)
+RUN4_CUT = ("limits", "pools", "holders", "now", "timeline")
+
+
+def test_a_phone_capture_runs_to_the_end_and_segments_governs_the_desktop():
+    """The owner's decision c49 (2026-10-22): at phone-390 every route is
+    captured until its scroller ends, up to MAX_SEGMENTS; a route's
+    `segments` governs the desktop preset only."""
+    spec = importlib.util.spec_from_file_location("swarm_qa_budget_check", SWARM_QA)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    routes = dict((route["id"], route) for _group, route in _all_routes())
+    assert set(RUN4_CUT) <= set(routes), sorted(set(RUN4_CUT) - set(routes))
+    for rid, route in routes.items():
+        # MUTATION: keep the route's `segments` as the phone budget and this
+        # fails on `now` (3) and on every route at the default (4).
+        assert module.segment_budget(route, "phone-390") == module.MAX_SEGMENTS, rid
+        # MUTATION: give the desktop MAX_SEGMENTS too and this fails.
+        assert module.segment_budget(route, "desktop") == route.get("segments", module.DEFAULT_SEGMENTS), rid
