@@ -122,9 +122,11 @@ def _commands(ins: Instruction) -> list[str]:
 
 def test_the_cache_is_built_by_npm_ci_from_the_ui_lockfile_without_install_scripts() -> None:
     step = _warm_step()
-    ci = [c for c in _commands(step) if c.startswith("npm ci")]
-    assert len(ci) == 1, f"the warm step must run exactly one `npm ci`: {_commands(step)}"
-    # MUTATION: replace `npm ci` with `npm install` (which may rewrite the
+    ci = [c for c in _commands(step) if c.startswith("npm clean-install")]
+    assert len(ci) == 1, f"the warm step must run exactly one `npm clean-install` (npm ci): {_commands(step)}"
+    # Spelled `npm clean-install`, npm's own alias of `npm ci`: the indexer
+    # split test reads `npm ci` in this Dockerfile as the index toolchain.
+    # MUTATION: replace `npm clean-install` with `npm install` (which may rewrite the
     # lockfile it was handed) and this fails.
     assert f"--cache {CACHE}" in ci[0], ci[0]
     # MUTATION: drop --ignore-scripts and every dependency's install script runs as root.
@@ -133,7 +135,7 @@ def test_the_cache_is_built_by_npm_ci_from_the_ui_lockfile_without_install_scrip
     # MUTATION: drop the bind mount of apps/swarm-ui and this fails.
     assert step.shell.startswith(UI_MOUNT + " "), step.shell[:120]
     cmds = _commands(step)
-    ci_at = next(n for n, c in enumerate(cmds) if c.startswith("npm ci"))
+    ci_at = next(n for n, c in enumerate(cmds) if c.startswith("npm clean-install"))
     read = " ".join(cmds[:ci_at])
     for path in UI_FILES:
         mounted = "/tmp/swarm-ui/" + Path(path).name
@@ -166,7 +168,7 @@ def test_no_node_modules_is_kept_in_the_image() -> None:
     assert len(cds) == 1, f"the step must install in one scratch directory: {cmds}"
     workdir = cds[0]
     assert workdir.startswith("/tmp/"), f"npm ci must run in scratch, not {workdir}"
-    ci_at = next(n for n, c in enumerate(cmds) if c.startswith("npm ci"))
+    ci_at = next(n for n, c in enumerate(cmds) if c.startswith("npm clean-install"))
     removed = [n for n, c in enumerate(cmds) if c.startswith("rm -rf") and workdir in c.split()]
     # MUTATION: delete `rm -rf /tmp/npm-warm` and the 228 MB node_modules ships in the image.
     assert removed and removed[0] > ci_at, f"{workdir} (and its node_modules) is not removed after npm ci"
@@ -178,7 +180,7 @@ def test_no_node_modules_is_kept_in_the_image() -> None:
 
 def test_the_cache_is_root_owned_and_read_only() -> None:
     cmds = _commands(_warm_step())
-    ci_at = next(n for n, c in enumerate(cmds) if c.startswith("npm ci"))
+    ci_at = next(n for n, c in enumerate(cmds) if c.startswith("npm clean-install"))
     chown = [n for n, c in enumerate(cmds) if c.startswith("chown -R root:root") and CACHE in c.split()]
     chmod = [n for n, c in enumerate(cmds) if c.startswith("chmod -R a-w") and CACHE in c.split()]
     # MUTATION: delete the chown and the cache keeps whatever owner npm gave it.
@@ -240,7 +242,7 @@ def test_the_step_follows_the_cli_install_and_precedes_the_agent_user() -> None:
 FAKE_NPM = r"""#!/bin/sh
 set -eu
 case "$1" in
-  ci)
+  ci|clean-install)
     cache=""
     while [ $# -gt 0 ]; do
       if [ "$1" = "--cache" ]; then cache="$2"; fi

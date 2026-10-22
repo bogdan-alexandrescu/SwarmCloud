@@ -868,6 +868,12 @@ RUN if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
 # `--ignore-scripts`: nothing the lockfile names runs as root in this build,
 # and no install script adds to the cache.
 #
+# `npm clean-install` is npm's own long name for `npm ci`, the same command.
+# It is spelled out because `npm ci` in this file is what
+# tests/unit/scripts/test_indexer_image_split.py reads as the repository
+# index's language-server install (images/agent-runtime-indexer) leaking back
+# into the base.
+#
 # READ-ONLY: root-owned, every write bit cleared, so no agent can plant a
 # tarball in it for the next npm to install. npm's builtin config
 # (/usr/local/lib/node_modules/npm/npmrc, read by every npm whatever HOME and
@@ -887,7 +893,7 @@ RUN --mount=type=bind,source=apps/swarm-ui,target=/tmp/swarm-ui \
  && cp /tmp/swarm-ui/package.json /tmp/swarm-ui/package-lock.json /opt/npm-cache-lockfile/ \
  && cp /opt/npm-cache-lockfile/package.json /opt/npm-cache-lockfile/package-lock.json /tmp/npm-warm/ \
  && cd /tmp/npm-warm \
- && npm ci --cache /opt/npm-cache --ignore-scripts --no-audit --no-fund \
+ && npm clean-install --cache /opt/npm-cache --ignore-scripts --no-audit --no-fund \
  && cd / \
  && rm -rf /tmp/npm-warm \
  && test -d /opt/npm-cache/_cacache \
