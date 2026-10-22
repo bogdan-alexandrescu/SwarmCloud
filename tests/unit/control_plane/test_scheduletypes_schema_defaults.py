@@ -29,8 +29,10 @@ def test_issue_sweep_serves_its_default_exclusions() -> None:
 def test_every_served_default_is_what_create_stores() -> None:
     for entry in TYPES:
         schema = params_schema(entry.params_model)
-        if "spec" in (schema.get("required") or []):
-            continue  # custom-prompt: no create without a spec, so no all-default model.
+        if schema.get("required"):
+            # custom-prompt's spec, visual-qa's target: no create without
+            # them, so no all-default model.
+            continue
         stored = entry.params_model().model_dump(mode="json")
         for name, prop in schema.get("properties", {}).items():
             assert "default" in prop, f"{entry.name}.{name} serves no default"
