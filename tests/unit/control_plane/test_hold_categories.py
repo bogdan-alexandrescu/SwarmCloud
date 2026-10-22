@@ -111,6 +111,41 @@ def test_a_change_inside_a_tenant_scope_function_is_held_tenancy(path, function)
     assert elsewhere is None
 
 
+def test_a_change_just_below_a_tenant_scope_def_is_held_tenancy():
+    # Within git's three context lines of the def, the `@@` header names the
+    # function before it, and the def is an unchanged context line.
+    path = "apps/swarm-api/swarm_api/deps.py"
+    patch = "\n".join([
+        "--- a/apps/swarm-api/swarm_api/deps.py",
+        "+++ b/apps/swarm-api/swarm_api/deps.py",
+        "@@ -40,6 +40,6 @@ def current_auth(",
+        "     return auth",
+        "",
+        " def tenant_scope(auth):",
+        "-    return auth.tenant",
+        '+    return request.headers["x-tenant"]',
+        "",
+    ]) + "\n"
+    held = _hold([path], patches={path: patch})
+    # MUTATION: stop scanning a hunk's context lines for a tenant-scope def before a changed line and this is None.
+    assert held is not None and held["reasons"] == ["tenancy"]
+    # MUTATION: count a tenant-scope def that follows every changed line and this is not None.
+    assert _hold([path], patches={path: _patch_def_after()}) is None
+
+
+def _patch_def_after() -> str:
+    return "\n".join([
+        "--- a/apps/swarm-api/swarm_api/deps.py",
+        "+++ b/apps/swarm-api/swarm_api/deps.py",
+        "@@ -40,6 +40,6 @@ def current_auth(",
+        "-    return auth",
+        "+    return auth or None",
+        "",
+        " def tenant_scope(auth):",
+        "     return auth.tenant",
+    ]) + "\n"
+
+
 def test_a_prompt_naming_a_tenant_scope_function_is_held_at_plan():
     plan = _plan("apps/swarm-api/swarm_api/deps.py", prompt="Widen tenant_scope to accept a header.")
     held = issueruns.plan_hold(plan, platform=True, hard_stop_paths=[])

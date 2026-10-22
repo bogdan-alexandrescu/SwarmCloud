@@ -1194,6 +1194,27 @@ def _hunk_context(patch: str) -> list[str]:
     return [line.split("@@", 2)[2] for line in patch.splitlines() if line.startswith("@@") and line.count("@@") >= 2]
 
 
+#: A tenant-scope function's own `def` line, as a hunk's context line shows it.
+_TENANCY_DEF = re.compile(r"^\s*(?:async\s+)?def\s+(?:" + "|".join(TENANCY_FUNCTIONS) + r")\s*\(")
+
+
+def _changed_after_tenancy_def(patch: str) -> bool:
+    """A hunk whose unchanged context shows a tenant-scope `def` before a
+    changed line. Within git's three context lines of the `def`, the `@@`
+    header names the function BEFORE it, so the header alone misses the edit."""
+    seen_def = False
+    for line in patch.splitlines():
+        if line.startswith("@@"):
+            seen_def = False
+        elif line.startswith(("+++", "---")):
+            continue
+        elif line[:1] == " " and _TENANCY_DEF.match(line[1:]):
+            seen_def = True
+        elif line[:1] in ("+", "-") and seen_def:
+            return True
+    return False
+
+
 def _category_hits(
     paths: list[str], patches: Mapping[str, str | None] | None, prompt_text: str,
 ) -> list[tuple[str, list[str]]]:
@@ -1222,7 +1243,11 @@ def _category_hits(
     scan(STOP_SECRETS, SECRETS_PATTERNS, changed(_SECRETS_LINE), terms(_SECRETS_LINE))
     scan(
         STOP_TENANCY, TENANCY_PATTERNS,
-        lambda patch: changed(_TENANCY_NAME)(patch) or any(_TENANCY_NAME.search(c) for c in _hunk_context(patch)),
+        lambda patch: (
+            changed(_TENANCY_NAME)(patch)
+            or any(_TENANCY_NAME.search(c) for c in _hunk_context(patch))
+            or _changed_after_tenancy_def(patch)
+        ),
         terms(_TENANCY_NAME),
     )
     # An ADDED line: removing a reference to the other team's resources is
