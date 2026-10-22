@@ -411,10 +411,13 @@ describe('Progress | Resources: two columns from a 640px pane, one below', () =>
     expect(one?.trim().split(/\s+(?![^(]*\))/) ?? ['auto']).toHaveLength(1)
   })
 
-  it('on a phone the strip moves above the Now card', () => {
+  // c08 (owner decision 2026-10-22, box comment 6314120811): one order at
+  // every width. A phone moved the strip above the Now card; it no longer does.
+  it('on a phone the strip stays below the Now card, as at 1440', () => {
     const el = host(runOf())
     const strip = el.querySelector<HTMLElement>('.dt-strip')!
-    expect(Number(painted(strip, 'order', { width: 390, container: 380 }) ?? '0')).toBeLessThan(0)
+    // MUTATION: put `.dt > .dt-strip { order: -1 }` back in details.css's phone block.
+    expect(Number(painted(strip, 'order', { width: 390, container: 380 }) ?? '0')).toBe(0)
     expect(Number(painted(strip, 'order', { width: 1440, container: 700 }) ?? '0')).toBe(0)
   })
 
