@@ -245,7 +245,7 @@ describe('O1: Needs a look is a row of check cards', () => {
     expect(ran).toBeLessThanOrEqual(total)
     expect(found).toBeLessThanOrEqual(ran)
     // MUTATION: count the checks that fired as the problems.
-    expect(Number(m![4])).toBe(el.querySelectorAll('#ov-needs a.ov-att').length)
+    expect(Number(m![4])).toBe(el.querySelectorAll('#ov-needs .ov-att:not(.is-skel)').length)
     expect(text(cnt)).not.toMatch(/derived/i)
     expect(cnt.getAttribute('aria-label')).toMatch(new RegExp(`^${ran} of ${total} checks ran and found `))
     expect(cnt.getAttribute('aria-label')).toMatch(/Derived on every read from /)

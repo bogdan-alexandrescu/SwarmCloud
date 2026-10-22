@@ -170,9 +170,9 @@ function page(tasks: Task[]): Result<TaskPage> {
   return ok({ tasks, next_page_token: null, tenant_id: 'eng' } as TaskPage)
 }
 
-/** The Needs a look card whose title matches. Its title is `.ov-att-t b`, its link word `.ov-att-go`. */
+/** The Needs a look card whose title matches: an `a.ov-att`, or a `div.ov-att.is-split` when it links the workflows it names (N11). Its title is `.ov-att-t b`, its link word `.ov-att-go`. */
 function problem(el: HTMLElement, pattern: RegExp): HTMLElement {
-  const row = [...el.querySelectorAll<HTMLElement>('a.ov-att')].find((p) => pattern.test(text(p.querySelector('.ov-att-t b'))))
+  const row = [...el.querySelectorAll<HTMLElement>('.ov-att:not(.is-skel)')].find((p) => pattern.test(text(p.querySelector('.ov-att-t b'))))
   expect(row, `no check card matches ${pattern}: ${[...el.querySelectorAll('.ov-att-t b')].map(text).join(' | ')}`).toBeDefined()
   return row!
 }

@@ -73,6 +73,14 @@ export interface Problem {
    * the click.
    */
   linkLabel?: string
+  /**
+   * The workflows the headline names, each with its own address (visual QA
+   * N11, 2026-10-21). The card is one link to `href`, so an id inside it
+   * could not be a link of its own -- a link inside a link is invalid -- and
+   * run 4 reached wf_5e5ad3… through Work › Workflows instead. A problem that
+   * carries this list is drawn with each id as a link beside the card's own.
+   */
+  workflows?: { id: string; href: string }[]
 }
 
 export type Check =
@@ -610,6 +618,9 @@ function failedProblem(failed: Task[], now: number, count: string, scope: string
     // this item counts.
     href: '#work/running/recent/failed',
     linkLabel: 'Agents · FAILED',
+    // EACH WORKFLOW THE HEADLINE NAMES OPENS ITSELF (visual QA N11): the
+    // same two `workflowClause` names, in its order.
+    workflows: namedWorkflows(failed).map(([id]) => ({ id, href: `#work/workflows?wf=${encodeURIComponent(id)}` })),
   }
 }
 
@@ -670,15 +681,25 @@ export function newestFailureClause(failed: Task[], now: number): string {
  * most failures first, two named at most.
  */
 function workflowClause(failed: Task[]): string {
+  const ranked = rankedWorkflows(failed)
+  if (ranked.length === 0) return ''
+  const named = namedWorkflows(failed).map(([id, n], i) => (i === 0 ? `${n} in workflow ${id}` : `${n} in ${id}`))
+  const rest = ranked.length - named.length
+  return ` · ${named.join(', ')}${rest > 0 ? ` +${pluralise(rest, 'workflow')}` : ''}`
+}
+
+/** The failures' workflows with their counts, most failures first, then by id. */
+function rankedWorkflows(failed: Task[]): [string, number][] {
   const by = new Map<string, number>()
   for (const t of failed) {
     if (t.workflow_id) by.set(t.workflow_id, (by.get(t.workflow_id) ?? 0) + 1)
   }
-  if (by.size === 0) return ''
-  const ranked = [...by.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-  const named = ranked.slice(0, 2).map(([id, n], i) => (i === 0 ? `${n} in workflow ${id}` : `${n} in ${id}`))
-  const rest = ranked.length - named.length
-  return ` · ${named.join(', ')}${rest > 0 ? ` +${pluralise(rest, 'workflow')}` : ''}`
+  return [...by.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+}
+
+/** The workflows `workflowClause` names by id: the first two of the ranking. */
+function namedWorkflows(failed: Task[]): [string, number][] {
+  return rankedWorkflows(failed).slice(0, 2)
 }
 
 // ---------------------------------------------------------------------------
