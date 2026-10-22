@@ -56,17 +56,24 @@ function ok<T>(data: T): Result<T> {
 }
 
 /**
- * THE CATALOGUE ANSWERS LATE (FLAKE-UI-2, part of #1680). On the `push` run
- * 39719361013 of PR 1924 the catalogue landed after `waitFor`'s 2 s budget
- * (`asyncUtilTimeout`, setup.ts): `useResourceClasses` asks for it from a
- * passive effect, which React runs only after the task rows' commit, and on a
- * loaded runner that commit alone took seconds. Answering 2.5 s after the ask
- * forces that order on every run instead of on a busy one.
+ * THE CATALOGUE ANSWERS ONLY WHEN LET GO (FLAKE-UI-2, part of #1680). On the
+ * `push` run 39719361013 of PR 1924 it answered after the task rows had
+ * drawn: `useResourceClasses` asks from a passive effect, which React runs
+ * only after the screen's own commit, and on a loaded runner that commit took
+ * seconds. Holding the answer until `primeCatalogue` lets it go keeps that
+ * order -- the screen's read first, the catalogue after -- on every run and
+ * at no cost in time, so the prime below is what makes these tests pass.
  */
-const CATALOGUE_LATE_MS = 2500
-
-function lateCatalogue(): Promise<Result<{ resource_classes: ResourceClasses }>> {
-  return new Promise((resolve) => setTimeout(() => resolve(ok({ resource_classes: CLASSES })), CATALOGUE_LATE_MS))
+function holdCatalogue(): () => void {
+  let release = (): void => {}
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  api.loadResourceClasses.mockImplementation(async () => {
+    await gate
+    return ok({ resource_classes: CLASSES })
+  })
+  return release
 }
 
 /**
@@ -81,7 +88,7 @@ function lateCatalogue(): Promise<Result<{ resource_classes: ResourceClasses }>>
  * `setup.ts`'s `forgetProbes` drops the shared read between tests, so this
  * runs in every test that renders a screen.
  */
-async function primeCatalogue(): Promise<void> {
+async function primeCatalogue(release: () => void): Promise<void> {
   let landed = (): void => {}
   const held = new Promise<void>((resolve) => {
     landed = resolve
@@ -94,6 +101,7 @@ async function primeCatalogue(): Promise<void> {
     return null
   }
   const { unmount } = render(<Prime />)
+  release()
   await held
   unmount()
 }
@@ -173,15 +181,15 @@ describe('taskGroup: the Waiting tab split, by blockerGroup with the task units'
 describe('the Agents list splits Waiting into Needs action and No room', () => {
   it('draws each waiting task under the group its blockers put it in', async () => {
     api.loadTasks.mockResolvedValue(ok({ tasks: [FULL, TOO_SMALL, UNSET_TASK], tenant_id: 'acme' }))
-    api.loadResourceClasses.mockImplementation(lateCatalogue)
+    const release = holdCatalogue()
 
-    await primeCatalogue()
+    await primeCatalogue(release)
     render(<AgentsScreen onOpen={() => {}} />)
     await settle()
 
-    // MUTATION: drop `primeCatalogue()` above and, with the catalogue answering
-    // after the list's read (`lateCatalogue`), this reads ['tsk_unsetpool'] --
-    // the push run 39719361013 failure, every run.
+    // MUTATION: drop `primeCatalogue(release)` above and the list draws with
+    // the catalogue still held, so this reads ['tsk_unsetpool'] -- the push
+    // run 39719361013 failure, every run.
     expect(taskIds(section(/^Needs action/))).toEqual(['tsk_toosmall0', 'tsk_unsetpool'])
     // MUTATION: prime through anything but the shared read the list uses and
     // the list asks the catalogue a second time.
@@ -249,14 +257,14 @@ describe('Capacity puts the pools that need a person under "Needs action" at the
     // was the fixture, behind a real 180 ms timer, so the board waited on a
     // clock (FLAKE-UI-2). No lease decides the group under test.
     api.loadLeases.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
-    api.loadResourceClasses.mockImplementation(lateCatalogue)
+    const release = holdCatalogue()
 
-    await primeCatalogue()
+    await primeCatalogue(release)
     render(<CapacityScreen />)
     await settle()
 
     const names = (el: Element) => [...el.querySelectorAll('tbody .ctl-sub')].map((s) => s.textContent ?? '').sort()
-    // MUTATION: drop `primeCatalogue()` above and `resource:large` -- too small
+    // MUTATION: drop `primeCatalogue(release)` above and `resource:large` -- too small
     // only once the catalogue says a large task weighs 4 -- is missing here.
     expect(names(section(/^Needs action/))).toEqual(['resource:large', 'resource:standard', 'runner:codex', 'tenant:eng'])
     // MUTATION: as above, a second catalogue read means the board did not

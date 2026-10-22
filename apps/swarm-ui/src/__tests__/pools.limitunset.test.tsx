@@ -39,8 +39,6 @@ const { CapacityScreen } = await import('../Capacity')
 const { AdminSettingsScreen } = await import('../AdminSettings')
 
 const WAIT = { timeout: 5000 } as const
-/** `fixtureMe`'s latency (api.ts): the fixture who-am-I read answers after this. */
-const ME_FIXTURE_MS = 150
 
 function ok<T>(data: T): Result<T> {
   return { status: 'ok', data, fetchedAt: Date.now(), serverAt: '2026-10-01T10:00:00Z' }
@@ -151,18 +149,12 @@ describe('Pool limits draws a pool with no limit set as that, not as 0 agents', 
     expect(slot.getAttribute('aria-label') ?? '').toMatch(/^No limit set/)
     expect(row.querySelector('.adm-unset')!.textContent).toBe('no limit set')
     expect(row.querySelector('td[data-label="Ceiling (units)"]')!.textContent ?? '').not.toMatch(/\d/)
-    // THE WHO-AM-I READ LANDS BEFORE THE CLICK (FLAKE-UI-2, part of #1680).
-    // Under Vitest `loadMe` is the fixture, which answers after a 150 ms timer
-    // as the `member` persona (`is_admin: false`, since QAFIX4-FIXTURE-A). On
-    // a loaded runner the capacity render outlasts that timer, so the read had
-    // landed, `edit` was refused, and the editor never opened. Waiting past
-    // the timer forces that order on every run.
-    await new Promise((resolve) => setTimeout(resolve, ME_FIXTURE_MS + 50))
     // The who-am-I read has landed before the click, on every run: the order
-    // that failed in CI, now with an admin answering it.
+    // that failed in CI, now with an admin answering it. Unstubbed, the member
+    // fixture's 150 ms timer races the click again.
     expect(api.loadMe).toHaveBeenCalledTimes(1)
-    // MUTATION: drop the `loadMe` stub (the member fixture answers) and `edit`
-    // is refused -- this name and the field below are never found.
+    // MUTATION: answer `adminMe()` with `is_admin: false` -- what the member
+    // fixture says -- and `edit` is refused: no button has this name, every run.
     const edit = screen.getByRole('button', { name: 'Edit ceiling for tenant:eng' })
     fireEvent.click(edit)
     const field = (await screen.findByLabelText('Hard limit for tenant:eng', { exact: false })) as HTMLInputElement
