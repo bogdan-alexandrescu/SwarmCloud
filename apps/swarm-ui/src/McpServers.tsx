@@ -231,10 +231,10 @@ function modeWords(m: McpAuthMode): string {
  * field says nothing either way, and the cell says so.
  */
 function LastUsed({ at, complete }: { at: string | null | undefined; complete: boolean }) {
-  if (at === undefined) return <td title="This API does not say when a server was last used.">not served</td>
-  if (at !== null) return <td title={at}>{timeAgo(at)}</td>
-  return complete ? <td>never</td>
-    : <td title="Not among the newest attaches the API read; it may have been used before them.">not recently</td>
+  if (at === undefined) return <td data-label="Last used" title="This API does not say when a server was last used.">not served</td>
+  if (at !== null) return <td data-label="Last used" title={at}>{timeAgo(at)}</td>
+  return complete ? <td data-label="Last used">never</td>
+    : <td data-label="Last used" title="Not among the newest attaches the API read; it may have been used before them.">not recently</td>
 }
 
 /** Settings › MCP servers, routed in-app like the panel's own links. */
@@ -273,6 +273,7 @@ function Registrations({ data, onChange }: { data: McpServerList; onChange: () =
   const [busy, setBusy] = useState<string | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
   const edited = editing === null ? undefined : data.servers.find((s) => s.name === editing)
+  const named = [...new Set(data.servers.flatMap((s) => s.allowed_profiles))].sort()
 
   async function flip(s: McpServer) {
     if (busy !== null) return
@@ -299,7 +300,7 @@ function Registrations({ data, onChange }: { data: McpServerList; onChange: () =
       {data.servers.length === 0 ? (
         <p className="ur-small">No MCP server is registered for {data.tenant_id || 'this workspace'} yet.</p>
       ) : (
-        <table role="table" aria-label="Registered MCP servers">
+        <table role="table" className="mcp-servers" aria-label="Registered MCP servers">
           <thead>
             <tr>
               <th scope="col">Name</th>
@@ -315,23 +316,23 @@ function Registrations({ data, onChange }: { data: McpServerList; onChange: () =
           <tbody>
             {data.servers.map((s) => (
               <tr key={s.name}>
-                <th scope="row">
+                <th scope="row" data-label="Name">
                   <code>{s.name}</code>
                   {s.description !== '' && <div className="jb-note">{s.description}</div>}
                 </th>
-                <td><code className="sbf-cut" title={s.url}>{s.url}</code></td>
-                <td>
+                <td data-label="URL"><code className="sbf-cut" title={s.url}>{s.url}</code></td>
+                <td data-label="Credential">
                   {modeWords(s.auth.mode)}
                   {s.auth.mode === 'workspace_secret' && <>, granted to <code>{s.consumer}</code></>}
                 </td>
-                <td>{s.allowed_profiles.length === 0 ? 'every profile that takes MCP servers' : s.allowed_profiles.join(', ')}</td>
-                <td>{s.allowed_tools.length === 0 ? 'every tool it lists' : s.allowed_tools.join(', ')}</td>
-                <td title={s.updated_at === null ? undefined : `changed ${timeAgo(s.updated_at)}${s.updated_by === null ? '' : ` by ${s.updated_by}`}`}>
+                <td data-label="Profiles">{s.allowed_profiles.length === 0 ? 'every profile that takes MCP servers' : s.allowed_profiles.join(', ')}</td>
+                <td data-label="Tools">{s.allowed_tools.length === 0 ? 'every tool it lists' : s.allowed_tools.join(', ')}</td>
+                <td data-label="State" title={s.updated_at === null ? undefined : `changed ${timeAgo(s.updated_at)}${s.updated_by === null ? '' : ` by ${s.updated_by}`}`}>
                   {s.enabled ? 'enabled' : 'disabled'}
                 </td>
                 <LastUsed at={s.last_attached_at} complete={data.last_attached_complete} />
                 {data.can_manage && (
-                  <td>
+                  <td data-label="Actions">
                     <span className="pk-form-row">
                       <Button size="sm" aria-label={`Edit ${s.name}`} onClick={() => setEditing(editing === s.name ? null : s.name)}>
                         Edit
@@ -350,9 +351,9 @@ function Registrations({ data, onChange }: { data: McpServerList; onChange: () =
       )}
       {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
       {data.can_manage && edited !== undefined && (
-        <ServerForm key={`edit-${edited.name}`} editing={edited} onDone={() => { setEditing(null); onChange() }} />
+        <ServerForm key={`edit-${edited.name}`} editing={edited} named={named} onDone={() => { setEditing(null); onChange() }} />
       )}
-      {data.can_manage && <ServerForm key="register" editing={null} onDone={onChange} />}
+      {data.can_manage && <ServerForm key="register" editing={null} named={named} onDone={onChange} />}
     </>
   )
 }
@@ -386,9 +387,23 @@ function EgressAddresses({ addresses }: { addresses: string[] | null }) {
   )
 }
 
-/** The profiles a registration may name: those whose served contract declares `mcp_servers`. */
-function mcpProfiles(profiles: Readonly<Record<string, RunnerProfile>>): string[] {
-  return Object.entries(profiles)
+/**
+ * The profiles a registration may name: those whose served contract declares
+ * `mcp_servers`. NULL WHEN NO CONTRACT SERVES `inputs` AT ALL (visual QA
+ * 5b:QA-010, #1680): an API older than MCP-INPUTS, or the fixture build, has
+ * not said which profiles take MCP servers, and reading that silence as "none"
+ * drew "No profile here takes MCP servers yet" under a table listing
+ * docs-search for claude-code. `inputs: {}` is served-and-empty, a measured
+ * "declares nothing" (`swarm_api.runnerinputs.input_contract`), and counts.
+ */
+function mcpProfiles(profiles: Readonly<Record<string, RunnerProfile>>): string[] | null {
+  const entries = Object.entries(profiles)
+  const served = entries.some(([, p]) => {
+    const contract: unknown = p.input_contract
+    return isRecord(contract) && isRecord(contract.inputs)
+  })
+  if (!served) return null
+  return entries
     .filter(([, p]) => declaredMcpServers(p) !== null)
     .map(([name]) => name)
     .sort()
@@ -405,7 +420,7 @@ const AUTH_CHOICES: ReadonlyArray<{ mode: McpAuthMode; label: string }> = [
 ]
 
 /** Register (editing null) or change one registration. Its name is fixed once registered. */
-function ServerForm({ editing, onDone }: { editing: McpServer | null; onDone: () => void }) {
+function ServerForm({ editing, named, onDone }: { editing: McpServer | null; named: readonly string[]; onDone: () => void }) {
   const id = useId()
   const capacity = useUrRead(loadCapacity, 'capacity')
   const [name, setName] = useState(editing?.name ?? '')
@@ -420,8 +435,17 @@ function ServerForm({ editing, onDone }: { editing: McpServer | null; onDone: ()
   const [saved, setSaved] = useState<string | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
 
-  const served = capacity.state.status === 'ok' || capacity.state.status === 'stale' ? mcpProfiles(capacity.state.data.runner_profiles) : null
-  const offered = [...new Set([...(served ?? []), ...profiles])].sort()
+  const state = capacity.state
+  const read = state.status === 'ok' || state.status === 'stale'
+  const served = state.status === 'ok' || state.status === 'stale' ? mcpProfiles(state.data.runner_profiles) : null
+  // Unread or unserved, the profiles this workspace's registrations already
+  // name are offered: the API accepted each of them as taking MCP servers.
+  const offered = [...new Set([...(served ?? named), ...profiles])].sort()
+  const unsaid = served === null
+    ? read
+      ? 'This API does not say which profiles take MCP servers'
+      : 'The runner list could not be read'
+    : null
   const verb = editing === null ? 'Register' : 'Save'
 
   async function save(e: FormEvent) {
@@ -512,8 +536,8 @@ function ServerForm({ editing, onDone }: { editing: McpServer | null; onDone: ()
           <legend>Profiles that may use it</legend>
           {offered.length === 0 ? (
             <span className="jb-note">
-              {served === null
-                ? 'The runner list could not be read, so this registration allows every profile that takes MCP servers.'
+              {unsaid !== null
+                ? `${unsaid}, so this registration allows every profile that takes MCP servers.`
                 : 'No profile here takes MCP servers yet; leaving this empty allows every one that does.'}
             </span>
           ) : (
@@ -525,7 +549,10 @@ function ServerForm({ editing, onDone }: { editing: McpServer | null; onDone: ()
                   <span className="jb-text"><code>{p}</code></span>
                 </label>
               ))}
-              <span className="jb-note">None ticked allows every profile that takes MCP servers.</span>
+              <span className="jb-note">
+                {unsaid !== null && `${unsaid}; these are the profiles this workspace's servers already name. `}
+                None ticked allows every profile that takes MCP servers.
+              </span>
             </>
           )}
         </fieldset>
