@@ -1198,8 +1198,17 @@ export function CheckCard({ problem: p }: { problem: Problem }) {
   // is `Agents · FAILED →`, whose `::after` covers the box so a click anywhere
   // else still opens the list (`.ov-att.is-split`). A card that names none
   // keeps the one-link markup below.
+  //
+  // THE WORKFLOW IS REACHED AS PLAINLY AS THE LIST (visual QA 5b:wg-dark-D1,
+  // 2026-10-22). With only the id in the sentence linked, the card's one
+  // prominent link opened the Agents list and the failed workflow hid in the
+  // ids line. Each named workflow now has a `Workflow <id> →` link beside the
+  // list's, drawn by the same rule, and every link's accessible name starts
+  // with where it goes: the list's is `Agents · FAILED: <headline>`, no longer
+  // the headline alone, which named the card rather than the destination.
   const workflows = p.workflows ?? []
   if (workflows.length > 0) {
+    const go = p.linkLabel ?? 'Open'
     return (
       <div className={`ov-att is-${p.severity} is-split`}>
         {p.severity === 'bad' ? <BadMark /> : <WarnMark />}
@@ -1214,9 +1223,16 @@ export function CheckCard({ problem: p }: { problem: Problem }) {
             {detail}
           </small>
         </span>
-        <a className="ov-att-go" href={toPath(p.href)} aria-label={`${p.headline}. ${p.detail}`}>
-          {p.linkLabel ?? 'Open'} &rarr;
-        </a>
+        <span className="ov-att-acts">
+          {workflows.map((w) => (
+            <a key={w.id} className="ov-att-go ov-att-wf" href={toPath(w.href)} title={`Open workflow ${w.id}`}>
+              <span className="ov-att-wf-t">Workflow {w.id}</span> <span aria-hidden="true">&rarr;</span>
+            </a>
+          ))}
+          <a className="ov-att-go" href={toPath(p.href)} aria-label={`${go}: ${p.headline}. ${p.detail}`}>
+            {go} &rarr;
+          </a>
+        </span>
       </div>
     )
   }

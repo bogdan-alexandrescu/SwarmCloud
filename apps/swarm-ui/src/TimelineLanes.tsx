@@ -255,6 +255,14 @@ export const MARK_GAP_PX = 2
  * it (`.tl-mkr.is-end`, Q6), a mid-lane mark is centred on it (`.tl-mkr`).
  */
 const MARK_FROM_PX = { end: 2, mid: -MARK_PX / 2 } as const
+/**
+ * THE CLEAR PIXELS BETWEEN 'now' AND THE CHART'S EDGE that a bar or an end
+ * mark keeps (visual QA r3:work-a-005, seen again in run 5b, 2026-10-22). A
+ * bar running to now was laid out flush with the track's right edge, against
+ * the chart's border, and read as cut off there; a073aff5's merged pill read
+ * as a half-clipped '3'. Four pixels show the bar's own end inside the chart.
+ */
+export const TRACK_END_PX = 4
 
 /**
  * WHERE A LANE'S MARKS ARE DRAWN, as percentages of its track (VQA V039).
@@ -310,7 +318,8 @@ export const BAR_WORDS_MIN_PX = 36
  *   the other marks only, and moves no bar.
  *
  * Nothing moves right, and only as far left as it has to; the titles still
- * give the instants. Unmeasured, the instants and the bars' old floor.
+ * give the instants. The right-most item ends `TRACK_END_PX` short of the
+ * track's edge (r3:work-a-005), so a bar running to now shows its end. Unmeasured, the instants and the bars' old floor.
  */
 export function laneLayout(
   bars: readonly { from: number; to: number; min?: number }[],
@@ -336,8 +345,10 @@ export function laneLayout(
   // Right to left; at one start a mark is placed before the bar under it.
   const rank = { mid: 0, end: 1, bar: 2 } as const
   items.sort((a, b) => b.start - a.start || rank[a.kind] - rank[b.kind] || b.i - a.i)
-  // The next start to the right, of a bar, an end mark and a mid mark.
-  const edge = { bar: trackPx + MARK_GAP_PX, end: trackPx + MARK_GAP_PX, mid: trackPx + MARK_GAP_PX }
+  // The next start to the right, of a bar, an end mark and a mid mark: the
+  // first is the track's edge less `TRACK_END_PX`, so nothing touches it.
+  const end = trackPx - TRACK_END_PX + MARK_GAP_PX
+  const edge = { bar: end, end, mid: end }
   const out = { bars: plain.bars.slice(), marks: plain.marks.slice() }
   for (const it of items) {
     if (it.kind === 'bar') {
