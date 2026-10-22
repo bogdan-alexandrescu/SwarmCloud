@@ -2377,12 +2377,28 @@ fixer by hand and push the fix-up from a laptop.
 
 1. **Only the pull request's current head.** A red run for a commit the branch
    has already moved past is ignored.
-2. **The log is redacted, then capped.** `gh run view --log-failed` goes
-   through `redact` (`scripts/lib/common.sh`) before anything else reads it,
-   then each failed job keeps an equal share of its tail, 16 KiB in all
-   (`LOG_EXCERPT_MAX_BYTES`). `redact` is a pattern list and not a boundary
-   (its own header says so); what makes a leak survivable is that the excerpt
-   is stored as an agent's input, which the API serves masked.
+2. **Every failed job is read, cut where it failed, redacted, then capped.**
+   The script lists the run's jobs through the Actions API and reads each
+   failed job's own log (`actions/jobs/<id>/logs`), not `gh run view
+   --log-failed`: on run 39703499595 (PR 1905) that returned 106 lines, all
+   from `ci-gate`, and none from the three failed jobs whose names contain
+   `/`. Everything goes through `redact` (`scripts/lib/common.sh`) before
+   anything else reads it. Each job's log is cut where its failed step ended
+   (the first `##[error]Process completed with exit code`, else the line
+   before `Post job cleanup`), so the runner's git cleanup never takes the
+   room: on PR 1905 the plain 3,000-byte tail was half cleanup, and the
+   failing test sat just above it. Of what is left, the lines that name a
+   failure are kept in order -- a vitest `FAIL <file> > <test>` line with the
+   block under it (`FAILURE_BLOCK_LINES`), pytest's `FAILED`/`ERROR` node ids,
+   `E` lines and short summary, every `##[error]` -- and a job with none of
+   those keeps its plain tail. A gate over `needs` (`ci-gate`), whose log only
+   restates other jobs, comes last. The whole is 16 KiB at most
+   (`LOG_EXCERPT_MAX_BYTES`). The merge step's own fix rounds build their
+   excerpt by the same rules in Python (`swarm_api/issueci.py`,
+   `_check_section`; CIFIX-EXCERPT, part of #1914). `redact` is a pattern list
+   and not a boundary (its own header says so); what makes a leak survivable
+   is that the excerpt is stored as an agent's input, which the API serves
+   masked.
 3. **One step, through the API, by name.** It submits a one-step workflow:
    runner profile `claude-code`, the excerpt in `input.prompt`, strategy
    `direct-pr`, and `continues_task` naming the red branch's agent. No image,
