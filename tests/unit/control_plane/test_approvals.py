@@ -30,6 +30,7 @@ No credentials, no network, no emulator.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 from datetime import timedelta
 
@@ -61,7 +62,9 @@ SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
 SWITCH = refusals.env_name("hold_approver_required")
 REPO = "repo_00000000000000a1"
 #: The first types' executor files, as S6 adds them (test_schedule_routes.py).
-BUILT = frozenset({"issue-sweep", "issue-plan-only", "repo-index-refresh", "observer"})
+BUILT = frozenset({"issue-sweep", "issue-plan-only", "repo-index-refresh", "observer", "failure-review"})
+#: A platform admin who is not the platform owner (FR3-MERGESWITCH).
+ADMIN = "erin@example.com"
 
 
 def _bootstrap_plan() -> dict:
@@ -88,6 +91,7 @@ def group_map():
         "bob@example.com": (RESEARCH_GROUP,),
         "carol@example.com": (),
         OWNER: ("swarm-admins@example.com", ENG_GROUP),
+        ADMIN: ("swarm-admins@example.com", ENG_GROUP),
     }
 
 
@@ -657,6 +661,75 @@ def test_in_a_platform_repository_only_a_platform_admin_switches(client, db):
     assert switched.status_code == 200, switched.text
     back = _switch(client, switched.json()["schedule"], "approve", user="dave")
     assert back.status_code == 200
+
+
+# An owner-only platform type (FR3-MERGESWITCH, part of #1933). Owner
+# decision Q8: "merge: auto, set once by you through the audited merge switch
+# at creation"; decided 2026-10-22: "The owner may switch an owner-only
+# platform type".
+
+def _failure_review(client, db, user="root"):
+    seed_tenant(db, "eng")
+    response = client.post("/v1/schedules", headers=auth_header(user), json={
+        "name": "failure review", "type": "failure-review", "scope": {"mode": "platform"},
+        "cron": "0 */6 * * *", "timezone": "UTC",
+    })
+    assert response.status_code == 201, response.text
+    return response.json()["schedule"]
+
+
+def test_the_owner_who_created_a_failure_review_switches_it_to_auto_and_is_audited(client, db):
+    review = _failure_review(client, db)
+    switched = _switch(client, review, "auto", user="root")
+    # MUTATION: drop the owner-only branch in merge_mode and the creator gets 403 second_person_required.
+    assert switched.status_code == 200, switched.text
+    assert switched.json()["schedule"]["gate"]["merge"] == "auto"
+    entry = _audit(db, review["schedule_id"])[-1]
+    # MUTATION: write the switch with action gate_merge_approve, or by someone else, and this fails.
+    assert entry["action"] == "gate_merge_auto" and entry["by"] == OWNER
+    # MUTATION: drop the gate's from/to from the audit detail and this fails.
+    assert entry["detail"]["gate"]["from"]["merge"] == "approve"
+    assert entry["detail"]["gate"]["to"]["merge"] == "auto"
+
+
+def test_a_member_cannot_switch_a_failure_review_to_auto(client, db):
+    review = _failure_review(client, db)
+    refused = _switch(client, review, "auto", user="dave")
+    # MUTATION: let any member but the last editor switch an owner-only platform type and this is 200.
+    assert refused.status_code == 403 and refused.json()["code"] == "platform_admin_required"
+    assert db.docs[f"schedules/{review['schedule_id']}"]["gate"]["merge"] == "approve"
+
+
+def test_a_platform_admin_may_switch_a_failure_review_to_auto(client, db):
+    review = _failure_review(client, db)
+    switched = _switch(client, review, "auto", user="erin")
+    # MUTATION: require is_owner alone (not is_admin) in the owner-only branch and this is 403.
+    assert switched.status_code == 200, switched.text
+    assert _audit(db, review["schedule_id"])[-1]["by"] == ADMIN
+
+
+def test_a_platform_scope_type_that_is_not_owner_only_keeps_the_two_person_rule(client, db, monkeypatch):
+    review = _failure_review(client, db)
+    # The same type declared admin-creatable at platform scope: the owner-only
+    # property is read from the declaration, not from the type's name.
+    entry = scheduletypes.get("failure-review")
+    monkeypatch.setitem(scheduletypes.BY_NAME, "failure-review",
+                        dataclasses.replace(entry, creators={"platform": "admin"}))
+    refused = _switch(client, review, "auto", user="root")
+    # MUTATION: exempt every platform-scope schedule (not only an owner-only type) and this is 200.
+    assert refused.status_code == 403 and refused.json()["code"] == "second_person_required"
+    switched = _switch(client, review, "auto", user="dave")
+    # MUTATION: refuse a member here (apply the owner-only rule to every platform scope) and this is 403.
+    assert switched.status_code == 200, switched.text
+
+
+def test_a_repository_scope_schedule_created_by_the_owner_keeps_the_two_person_rule(client, db):
+    sweep = _sweep(client, db, user="root")
+    refused = _switch(client, sweep, "auto", user="root")
+    # MUTATION: exempt the owner from the two-person rule on any schedule and this is 200.
+    assert refused.status_code == 403 and refused.json()["code"] == "second_person_required"
+    switched = _switch(client, sweep, "auto", user="dave")
+    assert switched.status_code == 200, switched.text
 
 
 def test_a_type_whose_floor_forbids_auto_merge_is_refused(client, db):
