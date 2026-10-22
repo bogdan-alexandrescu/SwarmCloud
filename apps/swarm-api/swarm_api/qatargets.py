@@ -1011,6 +1011,10 @@ def render_run(target: Mapping[str, Any], *, screens: Sequence[str] | None,
 # --------------------------------------------------------------------------
 
 
+#: A flow step's id is this prefix and the flow's id (`qaspec.render`).
+FLOW_STEP_PREFIX = "flow-"
+
+
 class QaTargetRequest(_AttemptFields):
     task_id: str = Field(min_length=1, max_length=128)
 
@@ -1114,6 +1118,7 @@ class QaTargetIssuer:
         if target.get("revision") != mark.get("revision"):
             raise Conflict("the QA target changed since this run started; start a new run")
         answer = self._answer(target)
+        answer["mutating"] = self._mutating(target, task)
         sign_in = target.get("sign_in") or {"kind": "none"}
         if sign_in.get("kind") == "own_login":
             answer["sign_in"].update(self._credential(tenant_id, target))
@@ -1162,6 +1167,29 @@ class QaTargetIssuer:
             "exclusions": {"paths": paths, "controls": controls},
             "sign_in": served_sign_in,
         }
+
+    @staticmethod
+    def _mutating(target: Mapping[str, Any], task: Mapping[str, Any]) -> bool:
+        """True only for a flow step of this run whose flow the stored target
+        declares `mutating: true`, on a `non_production` target (§3; BGD,
+        2026-10-22, lane VQ4-MUTATING). The flow is the task's own `step_id`,
+        `flow-<id>` as `qaspec.render` names it: the mark is one value for
+        every browser step of the run (`validation.qa_target_mark_allowed`
+        admits only that value), and only a rendered run carries the mark, so
+        the step id beside it was written by this service too. Nothing in the
+        request is read. A capture or discovery step, an undeclared flow, a
+        production target, and anything unreadable answer False."""
+        if target.get("environment") != "non_production":
+            return False
+        step_id = task.get("step_id")
+        if not isinstance(step_id, str) or not step_id.startswith(FLOW_STEP_PREFIX):
+            return False
+        flow_id = step_id[len(FLOW_STEP_PREFIX):]
+        flows = target.get("flows")
+        if not flow_id or not isinstance(flows, list):
+            return False
+        return any(isinstance(flow, Mapping) and flow.get("id") == flow_id
+                   and flow.get("mutating") is True for flow in flows)
 
     def _credential(self, tenant_id: str, target: Mapping[str, Any]) -> dict[str, str]:
         if not credential_status(target)["set"]:

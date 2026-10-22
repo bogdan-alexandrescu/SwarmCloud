@@ -17,7 +17,12 @@ attempt key (test_live_api's harness):
     the tenant's secret at that moment, `Cache-Control: no-store`; the
     `live_audit` row and every log line carry the target id and never the
     value; an unreachable secret is 503 `qa_credential_unavailable`;
-  * the route is in `main.UNCAPTURED_ROUTES`.
+  * the route is in `main.UNCAPTURED_ROUTES`;
+  * `mutating` is true only for a flow step of the rendered run (the task's
+    own server-written `step_id`, `flow-<id>`) whose flow the stored target
+    declares `mutating: true`, on a `non_production` target (§3; lane
+    VQ4-MUTATING, BGD 2026-10-22). Every other step answers false, and a
+    caller's `mutating` in the request is refused, never read.
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ import pytest
 from swarm_api.handoff import LIVE_AUDIT
 from swarm_api.main import UNCAPTURED_ROUTES
 from swarm_api.qa_identity import qa_identity_message
-from swarm_api.qatargets import qa_target_message
+from swarm_api.qatargets import FLOW_STEP_PREFIX, qa_target_message, render_run
 
 from .conftest import seed_tenant
 from .test_live_api import (  # noqa: F401 - fixtures are used by name
@@ -82,7 +87,9 @@ class CountingStore(FakeQaCredentials):
 
 
 def seed_target(db: Any, *, tenant: str = "eng", target_id: str = TARGET, own_login: bool = True,
-                host_state: str = "approved", revision: int = 1) -> dict[str, Any]:
+                host_state: str = "approved", revision: int = 1,
+                environment: str | None = None,
+                flows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     sign_in: dict[str, Any] = {"kind": "none"}
     if own_login:
         sign_in = {"kind": "own_login", "login_path": "/login", "signed_in_selector": "nav .me",
@@ -99,14 +106,22 @@ def seed_target(db: Any, *, tenant: str = "eng", target_id: str = TARGET, own_lo
                        "set_by": "root@example.com" if own_login else None,
                        "version": "projects/p/secrets/swarm-tenant-eng-qa/versions/1" if own_login else None},
     }
+    if environment is not None:
+        doc["environment"] = environment
+    if flows is not None:
+        doc["flows"] = flows
     db.docs[f"qa_targets/{target_id}"] = doc
     return doc
 
 
 def stamp(db: Any, task: dict[str, Any], *, target_id: str = TARGET, revision: int = 1,
-          record: bool = True, run_tenant: str = "eng", task_ids: list[str] | None = None) -> None:
-    """What `:run` writes: the mark on the step task, and the run record."""
+          record: bool = True, run_tenant: str = "eng", task_ids: list[str] | None = None,
+          step_id: str | None = None) -> None:
+    """What `:run` writes: the mark on the step task, and the run record.
+    `step_id` is the rendered step's id, written by workflow expansion."""
     task["workflow_id"] = WORKFLOW
+    if step_id is not None:
+        task["step_id"] = step_id
     task["metadata"] = {**(task.get("metadata") or {}), "qa_target": {"id": target_id, "revision": revision}}
     if record:
         db.docs[f"qa_target_runs/{WORKFLOW}"] = {
@@ -306,3 +321,101 @@ def test_a_credential_missing_from_the_secret_is_503(client, ldb, store, running
 def test_the_route_is_never_captured():
     # MUTATION: drop ISSUE_ROUTE from main.UNCAPTURED_ROUTES and this fails.
     assert PATH.replace(ATTEMPT, "{attempt_id}") in UNCAPTURED_ROUTES
+
+
+# --------------------------------------------------------------------------
+# `mutating` (§3; lane VQ4-MUTATING, part of #1933)
+# --------------------------------------------------------------------------
+
+FLOWS = [
+    {"id": "checkout", "goal": "Buy one item", "start_path": "/", "mutating": True},
+    {"id": "browse", "goal": "Find an item", "start_path": "/", "mutating": False},
+]
+
+
+def mutating_answer(client, ldb, running, *, environment: str = "non_production",
+                    flows: list[dict[str, Any]] | None = None, step_id: str | None = "flow-checkout",
+                    **over: Any):
+    attempt, doc = running
+    seed_target(ldb, own_login=False, environment=environment,
+                flows=FLOWS if flows is None else flows)
+    stamp(ldb, doc, step_id=step_id)
+    return ask(client, attempt, **over)
+
+
+def test_a_mutating_flow_step_on_a_non_production_target_is_mutating(client, ldb, running):
+    response = mutating_answer(client, ldb, running)
+    assert response.status_code == 200, response.text
+    # MUTATION: leave `mutating` out of `QaTargetIssuer._answer` and this fails.
+    assert response.json()["mutating"] is True
+
+
+def test_the_same_flow_on_a_production_target_is_not_mutating(client, ldb, running):
+    response = mutating_answer(client, ldb, running, environment="production")
+    assert response.status_code == 200, response.text
+    # MUTATION: drop the `non_production` check in `QaTargetIssuer._mutating` and this is true.
+    assert response.json()["mutating"] is False
+
+
+def test_a_target_with_no_environment_is_production_and_not_mutating(client, ldb, running):
+    attempt, doc = running
+    seed_target(ldb, own_login=False, flows=FLOWS)
+    stamp(ldb, doc, step_id="flow-checkout")
+    response = ask(client, attempt)
+    assert response.status_code == 200, response.text
+    # MUTATION: default a missing environment to non_production in `_mutating` and this is true.
+    assert response.json()["mutating"] is False
+
+
+def test_a_non_mutating_flow_is_not_mutating(client, ldb, running):
+    response = mutating_answer(client, ldb, running, step_id="flow-browse")
+    assert response.status_code == 200, response.text
+    # MUTATION: answer true for any declared flow in `_mutating` and this is true.
+    assert response.json()["mutating"] is False
+
+
+@pytest.mark.parametrize("flags", [None, "true", 1])
+def test_only_a_boolean_true_declaration_is_mutating(client, ldb, running, flags):
+    flows = [{"id": "checkout", "goal": "Buy one item", "start_path": "/", "mutating": flags}]
+    response = mutating_answer(client, ldb, running, flows=flows)
+    assert response.status_code == 200, response.text
+    # MUTATION: test the declaration's truthiness, not `is True`, and "true" and 1 are mutating.
+    assert response.json()["mutating"] is False
+
+
+@pytest.mark.parametrize("step_id", ["capture-home", "discover"])
+def test_a_capture_step_is_not_mutating(client, ldb, running, step_id):
+    response = mutating_answer(client, ldb, running, step_id=step_id)
+    assert response.status_code == 200, response.text
+    # MUTATION: answer true whenever the target declares a mutating flow and this is true.
+    assert response.json()["mutating"] is False
+
+
+@pytest.mark.parametrize("step_id", ["flow-search", "flow-", "flow-checkout-1", "checkout", None],
+                         ids=["another-flow", "empty-flow", "suffixed", "no-prefix", "no-step-id"])
+def test_a_step_naming_another_flow_or_none_is_not_mutating(client, ldb, running, step_id):
+    response = mutating_answer(client, ldb, running, step_id=step_id)
+    assert response.status_code == 200, response.text
+    # MUTATION: match the flow by prefix (`startswith`) in `_mutating` and "suffixed" is true;
+    # read any flow's declaration in place of the named one and every case is true.
+    assert response.json()["mutating"] is False
+
+
+def test_a_caller_supplied_mutating_is_refused_and_never_read(client, ldb, running):
+    response = mutating_answer(client, ldb, running, step_id="flow-browse", mutating=True)
+    # MUTATION: let `QaTargetRequest` accept extra fields and read `body.mutating`, and this is 200 true.
+    assert response.status_code == 422, response.text
+    assert issued_rows(ldb) == []
+    plain = ask(client, running[0])
+    assert plain.status_code == 200, plain.text
+    # MUTATION: carry anything from the request into `_mutating` and this differs.
+    assert plain.json()["mutating"] is False
+
+
+def test_the_flow_step_prefix_is_what_render_run_names_a_flow_step(ldb):
+    target = seed_target(ldb, own_login=False, environment="non_production", flows=FLOWS)
+    workflow, _, browser = render_run(target, screens=None, file="issues")
+    flow_steps = sorted(s for s in browser if s.startswith(FLOW_STEP_PREFIX))
+    # MUTATION: rename the flow step in `qaspec.render` and every flow answers read-only.
+    assert flow_steps == sorted(FLOW_STEP_PREFIX + f["id"] for f in FLOWS)
+    assert {s["step_id"] for s in workflow["steps"] if "metadata" in s} >= set(flow_steps)
