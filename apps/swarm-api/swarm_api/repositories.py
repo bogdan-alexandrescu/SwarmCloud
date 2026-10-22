@@ -67,6 +67,16 @@ WHAT A REGISTRATION IS, AND WHY EACH RULE:
     admin" is a role this API does not have yet (routes/repositories.py), so
     it is a platform admin acting in their own tenant, as for `platform` --
     and each change is an `admin_audit` entry in the same transaction.
+  * `agents_may_file_issues` (AU-0 REG-FLAG, docs/design/agent-autonomy.md
+    §3.2, owner decision Q2, 2026-10-22: "Per repository registration,
+    admin-set, off by default"): whether an agent's `issue_create` and
+    `issue_comment` may write to this repository. Raised GitHub reach, so it
+    reads off unless stored `true` (`agents_may_file_issues_of`), except on
+    the platform's own registration (`platform: true`), which the owner set
+    on -- and which an admin's stored `false` still turns off. Set by the
+    workspace's admin (as for `context`; the route checks), and each change
+    is an `admin_audit` entry (`agents_may_file_issues_set`) in the same
+    transaction.
   * `context` (CTXQ-SET, docs/design/context-quality.md §4.7): `on` or
     `off`, whether a step on this repository is staged with graph context,
     over the workspace's code-intelligence default (`swarm_api.codeintel`).
@@ -212,6 +222,10 @@ AUDIT_PLATFORM_CLEARED = "repository_platform_cleared"
 AUDIT_MERGE_POLICY_SET = "repository_merge_policy_set"
 #: The `admin_audit` action for a change of `readable_by_tasks`, either way.
 AUDIT_READABLE_BY_TASKS_SET = "repository_readable_by_tasks_set"
+#: The registration field §3.2's issue tools read, and the `admin_audit`
+#: action for a change of it, either way (agent-autonomy.md §3.2 names it).
+AGENTS_MAY_FILE_ISSUES_FIELD = "agents_may_file_issues"
+AUDIT_AGENTS_MAY_FILE_ISSUES_SET = "agents_may_file_issues_set"
 #: What a PATCH sends to clear a repository's `merge_policy` back to the
 #: platform default. Never stored: the stored value is null, which every
 #: reader already takes as "no override" (`merge_policy_of`). A word rather
@@ -406,6 +420,17 @@ def readable_by_tasks_of(data: Mapping[str, Any]) -> bool:
     return data.get("readable_by_tasks") is True
 
 
+def agents_may_file_issues_of(data: Mapping[str, Any]) -> bool:
+    """Whether an agent may write issues and comments to the registration's
+    repository (agent-autonomy.md §3.2). A stored boolean is the answer; with
+    none (or a malformed value) only the platform's own registration is on,
+    by the owner's Q2 -- every other registration is off."""
+    value = data.get(AGENTS_MAY_FILE_ISSUES_FIELD)
+    if isinstance(value, bool):
+        return value
+    return platform_of(data)
+
+
 def merge_policy_of(data: Mapping[str, Any]) -> str | None:
     """A registration's `merge_policy`, or None when it set none. A stored
     value that is not one of `MERGE_POLICIES` reads as none: the platform
@@ -483,6 +508,26 @@ def _readable_audit(
             "tenant_id": data.get("tenant_id"),
             "repository": f"{data.get('owner')}/{data.get('repo')}",
             "readable_by_tasks": {"from": readable_by_tasks_of(data), "to": to},
+        },
+    })
+
+
+def _file_issues_audit(
+    txn: Any, db: Any, data: Mapping[str, Any], *, to: bool, by: str, at: datetime,
+) -> None:
+    """One `admin_audit` entry for a change of `agents_may_file_issues`,
+    inside `txn`. `from` is what the registration READ before the change --
+    a platform registration that never set the field was on."""
+    ref = db.collection(AUDIT_COLLECTION).document()
+    txn.set(ref, {
+        "action": AUDIT_AGENTS_MAY_FILE_ISSUES_SET,
+        "target_repo_id": data.get("repo_id"),
+        "by": by,
+        "at": at,
+        "detail": {
+            "tenant_id": data.get("tenant_id"),
+            "repository": f"{data.get('owner')}/{data.get('repo')}",
+            AGENTS_MAY_FILE_ISSUES_FIELD: {"from": agents_may_file_issues_of(data), "to": to},
         },
     })
 
@@ -589,7 +634,8 @@ class RepositoryPatch(_Body):
     `allowed_profiles`, `default_branch`, `paused`; and the hard stops'
     `platform` (a platform admin's only) and `hard_stop_paths`
     (docs/schedules.md §4.4); `merge_policy` (a platform admin's only); and
-    `context` (the workspace owner's or a platform admin's, CTXQ-SET).
+    `context` (the workspace owner's or a platform admin's, CTXQ-SET); and
+    `agents_may_file_issues` (the workspace admin's, AU-0 REG-FLAG).
     Never the repository, the tenant or anything an index run writes."""
 
     default_branch: str | None = Field(default=None, min_length=1, max_length=255)
@@ -605,6 +651,8 @@ class RepositoryPatch(_Body):
     readable_by_tasks: StrictBool | None = None
     #: The graph-context override; "inherit" clears it (`CONTEXT_INHERIT`).
     context: Literal["on", "off", "inherit"] | None = None
+    #: The workspace admin's only, as `context` is: §3.2's issue writes.
+    agents_may_file_issues: StrictBool | None = None
 
     @field_validator("default_branch")
     @classmethod
@@ -624,7 +672,8 @@ class RepositoryPatch(_Body):
     @model_validator(mode="after")
     def _changes_something(self) -> "RepositoryPatch":
         top = (self.default_branch, self.allowed_profiles, self.paused, self.platform,
-               self.hard_stop_paths, self.merge_policy, self.readable_by_tasks, self.context)
+               self.hard_stop_paths, self.merge_policy, self.readable_by_tasks, self.context,
+               self.agents_may_file_issues)
         if all(value is None for value in top) and (
             self.index is None or not self.index.changes()
         ):
@@ -776,6 +825,8 @@ def to_api(data: Mapping[str, Any]) -> dict[str, Any]:
         "readable_by_tasks": readable_by_tasks_of(data),
         # "inherit": the workspace's code-intelligence setting decides.
         "context": context_of(data) or CONTEXT_INHERIT,
+        # What §3.2's issue tools read: the platform default applied.
+        AGENTS_MAY_FILE_ISSUES_FIELD: agents_may_file_issues_of(data),
         "created_by": data.get("created_by"),
         "created_at": _iso(data.get("created_at")),
         "updated_at": _iso(data.get("updated_at")),
@@ -958,13 +1009,15 @@ class Repositories:
         self, tenant_id: str, repo_id: str, body: RepositoryPatch, *,
         platform_by: str | None = None, merge_policy_by: str | None = None,
         readable_by: str | None = None, context_by: str | None = None,
+        file_issues_by: str | None = None,
     ) -> dict[str, Any]:
         """The settings a PATCH may change, in one transaction, tenant re-checked.
 
         `platform` changes only with `platform_by`, the admin the route
         checked, and its `admin_audit` entry is written in this transaction;
         `readable_by_tasks` likewise with `readable_by`, and `context` with
-        `context_by`, the workspace owner or admin the route checked."""
+        `context_by`, the workspace owner or admin the route checked, and
+        `agents_may_file_issues` with `file_issues_by`, checked the same way."""
         if body.platform is not None and not platform_by:
             raise Forbidden("only a platform admin may set or clear platform")
         if body.readable_by_tasks is not None and not readable_by:
@@ -973,6 +1026,8 @@ class Repositories:
             raise Forbidden("only a platform admin may set merge_policy")
         if body.context is not None and not context_by:
             raise Forbidden("only the workspace's owner or a platform admin may set context")
+        if body.agents_may_file_issues is not None and not file_issues_by:
+            raise Forbidden("only the workspace's admin may set agents_may_file_issues")
         if not _REPO_ID.match(repo_id or ""):
             raise self.not_found((repo_id or "")[:64])
         ref = self._ref(repo_id)
@@ -1018,6 +1073,11 @@ class Repositories:
                 changes[CONTEXT_FIELD] = context
                 _context_audit(txn, self._db, data, to=context,
                                by=str(context_by), at=changes["updated_at"])
+            files = body.agents_may_file_issues
+            if files is not None and files != agents_may_file_issues_of(data):
+                changes[AGENTS_MAY_FILE_ISSUES_FIELD] = files
+                _file_issues_audit(txn, self._db, data, to=files,
+                                   by=str(file_issues_by), at=changes["updated_at"])
             txn.update(ref, changes)
             merged = dict(data)
             merged.update(changes)
