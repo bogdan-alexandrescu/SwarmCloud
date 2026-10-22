@@ -39,7 +39,7 @@ import pytest
 from swarm_api.handoff import LIVE_AUDIT
 from swarm_api.main import UNCAPTURED_ROUTES
 from swarm_api.qa_identity import qa_identity_message
-from swarm_api.qatargets import qa_target_message
+from swarm_api.qatargets import FLOW_STEP_PREFIX, qa_target_message, render_run
 
 from .conftest import seed_tenant
 from .test_live_api import (  # noqa: F401 - fixtures are used by name
@@ -410,3 +410,12 @@ def test_a_caller_supplied_mutating_is_refused_and_never_read(client, ldb, runni
     assert plain.status_code == 200, plain.text
     # MUTATION: carry anything from the request into `_mutating` and this differs.
     assert plain.json()["mutating"] is False
+
+
+def test_the_flow_step_prefix_is_what_render_run_names_a_flow_step(ldb):
+    target = seed_target(ldb, own_login=False, environment="non_production", flows=FLOWS)
+    workflow, _, browser = render_run(target, screens=None, file="issues")
+    flow_steps = sorted(s for s in browser if s.startswith(FLOW_STEP_PREFIX))
+    # MUTATION: rename the flow step in `qaspec.render` and every flow answers read-only.
+    assert flow_steps == sorted(FLOW_STEP_PREFIX + f["id"] for f in FLOWS)
+    assert {s["step_id"] for s in workflow["steps"] if "metadata" in s} >= set(flow_steps)
