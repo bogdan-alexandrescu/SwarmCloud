@@ -131,6 +131,47 @@ class ChecksForbidden(ForgeWriteForbidden):
     code = "checks_forbidden"
 
 
+class RulesUnavailableOnPlan(ChecksForbidden):
+    """GitHub's 403 for a rules read on a plan that has no rulesets.
+
+    GITTOOLS-PLAN403 (#1188, measured 2026-10-22): a PRIVATE repository owned
+    by a user on the free plan answers `rules/branches/{b}` with HTTP 403
+    "Upgrade to GitHub Pro or make this repository public to enable this
+    feature." whatever token asks, so no token can fix it and no ruleset can
+    exist there. `branch_rules` reads it as "no rules". It is a
+    `ChecksForbidden`, so a reader that does not expect it still fails closed.
+    """
+
+
+#: How GitHub's plan answer begins. The one statement of it in swarm-api:
+#: `rules_unavailable_on_plan` is what every reader asks.
+_PLAN_LACKS_RULESETS = "Upgrade to GitHub Pro or make this repository public"
+
+
+def rules_unavailable_on_plan(status: int, message: str) -> bool:
+    """Whether a rules read's answer is GitHub saying the plan has no rulesets.
+
+    Exactly a 403 whose message starts with the plan sentence. Every other 403
+    -- "Resource not accessible by personal access token", an SSO demand, a
+    blocked repository -- is the credential or the repository, and refuses."""
+    return status == 403 and message.strip().startswith(_PLAN_LACKS_RULESETS)
+
+
+def _answer_message(raw: bytes) -> str:
+    """The `message` of a GitHub error body, or "" when it has none."""
+    try:
+        data = json.loads(raw.decode("utf-8")) if raw else None
+    except Exception:
+        return ""
+    message = data.get("message") if isinstance(data, dict) else None
+    return message if isinstance(message, str) else ""
+
+
+#: Repositories whose plan answer has been logged by this process: once each,
+#: since every push and `pr_checks` on such a repository reads it again.
+_PLAN_LOGGED: set[str] = set()
+
+
 class ForgeUnreachable(ForgeWriteError):
     """GitHub could not be reached, timed out, answered 5xx or rate-limited.
 
@@ -447,8 +488,12 @@ class GitHubWriter:
         self, method: str, url: str, token: str, what: str, *, needs: str,
         payload: dict[str, Any] | None = None, ok: tuple[int, ...] = (200,),
         forbidden: type[ForgeWriteForbidden] = ForgeWriteForbidden,
+        plan_gated: bool = False,
     ) -> Any:
-        """One request, its status mapped to a code, its JSON answer (or None)."""
+        """One request, its status mapped to a code, its JSON answer (or None).
+
+        `plan_gated`: the route is one GitHub withholds on some plans, and its
+        plan answer is `RulesUnavailableOnPlan` rather than `forbidden`."""
         headers = github_headers(token)
         body = None
         if payload is not None:
@@ -482,6 +527,12 @@ class GitHubWriter:
             )
         if status >= 500:
             raise ForgeUnreachable(f"GitHub answered HTTP {status} for {what}")
+        if status == 403 and plan_gated and rules_unavailable_on_plan(
+                status, _answer_message(raw[:MAX_RESPONSE_BYTES])):
+            raise RulesUnavailableOnPlan(
+                f"GitHub keeps {what} for paid plans or public repositories (HTTP 403): "
+                "no ruleset can exist on this repository's plan"
+            )
         if status == 403:
             raise forbidden(
                 f"GitHub refused the tenant's forge credential for {what} (HTTP 403): "
@@ -742,10 +793,21 @@ class GitHubWriter:
     def branch_rules(self, ref: IssueRef, branch: str, token: str) -> list[dict[str, Any]]:
         """The rules that apply to `branch` (`rules/branches/{branch}`), as GitHub lists them."""
         what = f"the rules of {ref.repository}@{branch}"
-        data = self._call(
-            "GET", self._url(ref, f"rules/branches/{quote(branch, safe='')}?per_page=100"),
-            token, what, needs=RULES_READ, forbidden=ChecksForbidden,
-        )
+        try:
+            data = self._call(
+                "GET", self._url(ref, f"rules/branches/{quote(branch, safe='')}?per_page=100"),
+                token, what, needs=RULES_READ, forbidden=ChecksForbidden, plan_gated=True,
+            )
+        except RulesUnavailableOnPlan:
+            # GITTOOLS-PLAN403: none can exist on this plan, so there are none.
+            # The default-branch and own-branch tests are the caller's, and
+            # do not depend on this read.
+            if ref.repository not in _PLAN_LOGGED:
+                _PLAN_LOGGED.add(ref.repository)
+                log.info("%s has no branch rules: GitHub keeps rulesets for paid plans "
+                         "or public repositories (HTTP 403 on rules/branches); read as none",
+                         ref.repository)
+            return []
         if not isinstance(data, list):
             raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
         return [rule for rule in data if isinstance(rule, dict)]

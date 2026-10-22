@@ -26,7 +26,12 @@ What each case pins, from §7's row G5:
 * `pr_checks` returns red with the failing row's redacted log tail;
 * Q1 = A: a rewrite of the task's own branch goes through only under a lease
   on the tip swarm-api recorded, is audited as a rewrite, and a branch that
-  moved under someone else is refused, never forced.
+  moved under someone else is refused, never forced;
+* GITTOOLS-PLAN403 (#1188): a private repository on a plan without rulesets,
+  whose rules read GitHub answers 403 "Upgrade to GitHub Pro or make this
+  repository public...", has no rules: the push goes through and `pr_checks`
+  answers. Every other 403 on that read is still `forge_refused`, and the
+  default branch is still never pushed.
 """
 
 from __future__ import annotations
@@ -148,12 +153,17 @@ class Forge(GitHubWrites):
         #: (repository, ref) -> sha; (repository, sha, path) -> text.
         self.refs: dict[tuple[str, str], str] = {}
         self.files: dict[tuple[str, str, str], str] = {}
+        #: (status, body) the rules read answers instead of `self.rules`.
+        self.rules_answer: tuple[int, dict[str, Any]] | None = None
 
     def __call__(self, method, url, headers, body, timeout):
         parsed = urlparse(url)
         parts = parsed.path.strip("/").split("/")
         repository = "/".join(parts[1:3])
         rest = parts[3:]
+        if method == "GET" and rest[:2] == ["rules", "branches"] and self.rules_answer:
+            self.calls.append((method, url, dict(headers), body))
+            return self.rules_answer[0], json.dumps(self.rules_answer[1]).encode()
         if method == "GET" and repository not in self.repos:
             self.calls.append((method, url, dict(headers), body))
             return 404, json.dumps({"message": "Not Found"}).encode()
@@ -856,6 +866,94 @@ def test_pr_checks_with_no_pull_request_is_none(client, db):
     response = call(client, attempt, "pr_checks", {"pr": None})
     assert response.status_code == 200, response.text
     assert response.json()["state"] == "none" and response.json()["rows"] == []
+
+
+# --------------------------------------------------------------------------
+# GITTOOLS-PLAN403: a plan on which no ruleset can exist
+# --------------------------------------------------------------------------
+
+#: GitHub's answer to `rules/branches/{b}` for a private repository owned by a
+#: user on the free plan, measured on bogdan-alexandrescu/swarmcloud-sandbox
+#: 2026-10-22 08:4xZ with the owner's own token.
+PLAN_403 = {
+    "message": "Upgrade to GitHub Pro or make this repository public to enable this feature.",
+    "documentation_url": "https://docs.github.com/rest/repos/rules#get-rules-for-a-branch",
+    "status": "403",
+}
+#: A 403 that IS the credential: the control that keeps the read fail-closed.
+TOKEN_403 = {"message": "Resource not accessible by personal access token", "status": "403"}
+
+
+def test_a_push_to_a_repository_whose_plan_has_no_rulesets_goes_through(
+        client, db, origin, forge):
+    forge.rules_answer = (403, PLAN_403)
+    attempt, _ = running_task(client, db)
+    c = _commit(origin["work"], "c")
+    response = call(client, attempt, "git_push_branch", push_fields(origin))
+    # MUTATION: drop the `except RulesUnavailableOnPlan: return []` in
+    # forgewrite.GitHubWriter.branch_rules and this is 422 forge_refused.
+    assert response.status_code == 200, response.text
+    assert remote_tip(origin, OWN_BRANCH) == c
+    # MUTATION: same change; the audit row then reads forge_refused.
+    assert audit_rows(db)[-1]["result"] == "ok"
+
+
+def test_pr_checks_on_a_repository_whose_plan_has_no_rulesets_returns_rows(
+        client, db, forge):
+    forge.rules_answer = (403, PLAN_403)
+    attempt, _ = running_task(client, db)
+    head = "b" * 40
+    forge.open_pull(8, head, ref=OWN_BRANCH)
+    forge.check(head, "lint", "success")
+    response = call(client, attempt, "pr_checks", {"pr": None})
+    # MUTATION: make `rules_unavailable_on_plan` answer False and this is 422 forge_refused.
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["pr"] == 8 and [row["name"] for row in body["rows"]] == ["lint"]
+
+
+def test_any_other_403_on_the_rules_read_still_refuses_the_push_and_pr_checks(
+        client, db, origin, forge):
+    forge.rules_answer = (403, TOKEN_403)
+    attempt, _ = running_task(client, db)
+    _commit(origin["work"], "c")
+    pushed = call(client, attempt, "git_push_branch", push_fields(origin))
+    # MUTATION: have branch_rules return [] on every 403 (drop the message
+    # test in `rules_unavailable_on_plan`) and this push goes through.
+    assert pushed.json()["code"] == "forge_refused", pushed.text
+    assert remote_tip(origin, OWN_BRANCH) is None
+    forge.open_pull(9, "c" * 40, ref=OWN_BRANCH)
+    checked = call(client, attempt, "pr_checks", {"pr": None}, request_id="req-2")
+    # MUTATION: same change; pr_checks then answers 200.
+    assert checked.json()["code"] == "forge_refused", checked.text
+
+
+def test_the_plan_path_still_never_pushes_the_default_branch(client, db, origin, forge):
+    forge.rules_answer = (403, PLAN_403)
+    attempt, _ = running_task(client, db)
+    _commit(origin["work"], "c")
+    response = call(client, attempt, "git_push_branch", push_fields(origin, branch="main"))
+    # MUTATION: move the default-branch test in gittools._push after the rules
+    # read and skip it when the plan has no rules, and main moves.
+    assert response.json()["code"] == "protected_branch", response.text
+    assert remote_tip(origin, "main") == origin["b"]
+
+
+def test_the_plan_case_is_logged_once_per_repository_at_info(forge, caplog):
+    forge.rules_answer = (403, PLAN_403)
+    writer = forgewrite.GitHubWriter(send=forge)
+    # A repository of its own: the memo of logged repositories is per process.
+    ref = forgewrite.IssueRef(owner=OWNER, repo=f"{REPO}-{secrets.token_hex(4)}", number=1)
+    forge.repos.add(ref.repository)
+    token = make_token()
+    with caplog.at_level("INFO", logger="swarm_api.forgewrite"):
+        assert writer.branch_rules(ref, "main", token) == []
+        assert writer.branch_rules(ref, "swarm/x", token) == []
+    named = [r for r in caplog.records if "plan" in r.getMessage()
+             and ref.repository in r.getMessage()]
+    # MUTATION: log on every read (drop the per-repository memo) and this is 2.
+    assert len(named) == 1 and named[0].levelname == "INFO"
+    assert token not in caplog.text
 
 
 # --------------------------------------------------------------------------

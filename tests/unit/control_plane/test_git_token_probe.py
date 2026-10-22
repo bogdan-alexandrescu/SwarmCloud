@@ -326,6 +326,27 @@ def test_merge_reader() -> None:
     assert states(down)["merge"] is None and not down.complete
 
 
+
+def test_merge_reader_on_a_plan_without_rulesets_is_ok_and_any_other_403_is_not() -> None:
+    """GITTOOLS-PLAN403 (#1188): a private repository on a user's free plan
+    answers the rules read 403 "Upgrade to GitHub Pro or make this repository
+    public..." whatever the token; no ruleset can exist there, so nothing
+    restricts merging. Any other 403 still reads as unknown."""
+    plan = {"message": "Upgrade to GitHub Pro or make this repository public to enable "
+                       "this feature.",
+            "documentation_url": "https://docs.github.com/rest/repos/rules"}
+    merge = checks(run(classic_value(), ProbeForge(status={"rules": 403},
+                                                   body={"rules": plan})))["merge"]
+    # MUTATION: drop the `rules_unavailable_on_plan` test in gittokens.read_merge
+    # and this is "unknown", "could not be read (HTTP 403)".
+    assert merge.state == "ok", merge
+    assert "plan" in merge.reason and "403" in merge.evidence
+    other = checks(run(classic_value(), ProbeForge(status={"rules": 403}, body={
+        "rules": {"message": "Resource not accessible by personal access token"}})))["merge"]
+    # MUTATION: have read_merge treat every 403 as the plan answer and this is "ok".
+    assert other.state == "unknown", other
+
+
 # -- close issues --------------------------------------------------------------------
 
 
