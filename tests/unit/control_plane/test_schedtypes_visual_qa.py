@@ -41,6 +41,7 @@ from swarm_api.groups import StaticGroups
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
 from swarm_api.schedtypes import visual_qa
+from swarm_api.schemas import WorkflowCreate
 from swarm_api.waker import NullWaker
 
 from .conftest import NoForgeTokens, api_settings, auth_header, seed_tenant
@@ -220,6 +221,49 @@ def test_a_firing_runs_the_targets_run_as_the_owner_marked(db, ctx, resolver) ->
     assert run["target_id"] == target["id"] and run["tenant_id"] == CAROL_TENANT
     assert sorted(run["task_ids"]) == sorted(t["id"] for t in made if t["step_id"] in browser)
     assert run["by"] == CAROL and run["file"] == "issues"
+
+
+def test_a_firings_qa_target_mark_gets_past_the_reserved_key_check(db, ctx, resolver, monkeypatch) -> None:
+    """`metadata.qa_target` is reserved (VQ2-RESERVE): `submit_workflow` refuses
+    it on every step unless the submission runs inside `qa_target_mark_allowed`
+    with that exact mark. The firing goes through the REAL service and its real
+    `reject_reserved_metadata`, nothing faked between them."""
+    target = carol_target(db, resolver)
+    schedule = qa_schedule(db, target["id"])
+    rendered: list[tuple[dict[str, Any], dict[str, Any], list[str]]] = []
+
+    def render_and_keep(*args: Any, **kwargs: Any):
+        answer = qatargets.render_run(*args, **kwargs)
+        rendered.append(answer)
+        return answer
+
+    monkeypatch.setattr(visual_qa, "render_run", render_and_keep)
+    # The service is the real one: no fake that skips the check.
+    assert type(ctx.submissions).__module__ == "swarm_api.service"
+
+    # MUTATION: remove `with qa_target_mark_allowed(mark):` around `firing.submit_workflow`
+    # in schedtypes/visual_qa.py `create` and this raises 422 invalid_dispatch,
+    # `reserved_metadata_keys: ["qa_target"]`, with nothing submitted.
+    (item,) = visual_qa.create(firing_for(ctx, schedule, room=1))
+
+    ((workflow, mark, browser),) = rendered
+    assert mark == {"id": target["id"], "revision": target["revision"]}
+    made = {t["step_id"]: t for t in tasks(db) if t.get("workflow_id") == item["id"]}
+    assert browser and set(browser) <= set(made)
+    for step_id in browser:
+        assert made[step_id]["metadata"]["qa_target"] == mark
+    # The schedule's own mark rode along: the two exemptions are separate and both held.
+    assert all((t.get("metadata") or {}).get("schedule", {}).get("schedule_id") == SCHEDULE_ID
+               for t in made.values())
+
+    # CONTROL: the same rendered workflow, submitted by the same owner outside
+    # the block, is refused by the same check -- so the pass above is the wrap.
+    owner = schedulefire.schedule_owner_auth(ctx, schedule)
+    with pytest.raises(ApiError) as caught:
+        ctx.submissions.submit_workflow(owner, WorkflowCreate.model_validate(workflow))
+    assert caught.value.status_code == 422 and caught.value.code == "invalid_dispatch"
+    assert caught.value.detail == {"reserved_metadata_keys": ["qa_target"]}
+    assert len(workflows(db)) == 1
 
 
 def test_a_firing_with_no_room_creates_nothing(db, ctx, resolver) -> None:
