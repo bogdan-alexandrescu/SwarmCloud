@@ -150,6 +150,13 @@ the console's form checks the link token):
    `swarm-tenant-<tenant>-qa` (§7: one Terraform-declared secret per tenant,
    its value a JSON map keyed by target id; VQ-Q2, answered, §9), disables the previous version, and records on the target
    only `credential: {set: true, set_at, set_by, version}`.
+   A tenant Terraform does not declare gets the same secret, empty, with the
+   same QA labels and swarm-api alone bound, from `scripts/register-tenant.sh`
+   (`--group` or `--user`, section 4b, `scripts/lib/forge-slot.sh`
+   `qa_secret_ensure`); a personal workspace that the swarm-workspace-apply job
+   builds does not get one yet, because that job's call guard and the
+   deployer's `outside_personal_workers` alert do not admit a swarm-api binding
+   (VQ3-REGISTER's question to the owner).
 4. The value is never returned by any route, never logged, never written to
    Firestore. "Is it set?" is the only question the API answers.
 

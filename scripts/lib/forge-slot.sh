@@ -37,6 +37,10 @@
 # ALONE, forge_slot_ensure_single: an App refresh token belongs to a person,
 # and a service account is not one, so there is no twin to make or to keep
 # the worker off.
+#
+# THE QA SECRET. qa_secret_ensure, at the end, makes the tenant's empty
+# `swarm-tenant-<tenant>-qa` with swarm-api alone bound on it: the same
+# create-and-bind for every path that registers a tenant Terraform does not.
 set -euo pipefail
 
 FORGE_SLOT_CALL="${FORGE_SLOT_CALL:-}"
@@ -172,4 +176,117 @@ forge_slot_ensure_pair() {
     --member "${member}" --role roles/secretmanager.secretAccessor \
     || { "${FORGE_SLOT_SHOW_ERR}"; return 1; }
   ok "forge slot: granted roles/secretmanager.secretAccessor on ${slot} to ${email}"
+}
+
+# --- the tenant's QA target credential secret ---------------------------------
+#
+# `swarm-tenant-<tenant>-qa` (docs/design/visual-qa-any-app.md §2.1, §7):
+# terraform/infra/qa_targets.tf declares it for every tenant in var.tenants,
+# and a tenant this script registers is not one, so it is made here (BGD,
+# 2026-10-22: "register-tenant.sh creates it"). The same shape:
+#
+#   * EMPTY. swarm-api adds every version from the console's one-time form;
+#     no value ever passes through here.
+#   * qa_targets.tf's own labels -- component, tenant, swarm-tenant -- and
+#     swarm-env, which Terraform's local.labels carries. NOT managed-by=
+#     swarm-terraform: destroy.sh and the plan guard read that label as "in
+#     Terraform's state", and this secret is not.
+#     tests/unit/scripts/test_register_tenant_qa_secret.py reads the labels off
+#     qa_targets.tf, so a label moved there fails here.
+#   * Pinned to the workload region, as qa_targets.tf's user_managed replicas
+#     are: automatic replication would copy a test account's password into
+#     regions nothing here runs in.
+#   * V-1 secretVersionAdder and V-2 secretAccessor for swarm-api, on this one
+#     secret, and NOBODY ELSE: not the tenant's worker, whose agent would then
+#     read a password out of Secret Manager itself. Terraform's two bindings
+#     are authoritative; here they are added, and a policy naming any other
+#     member is reported (return 4), never repaired -- removing a member is
+#     not something registration does.
+QA_SECRET_COMPONENT="qa-target-credential"
+# Set when qa_secret_ensure returns 4: the member that should not be there.
+QA_SECRET_FOREIGN=""
+
+# qa_secret_labels TENANT -> the --labels value for the tenant's QA secret.
+qa_secret_labels() {
+  printf 'managed-by=swarm-register-tenant,swarm-env=%s,component=%s,tenant=%s,swarm-tenant=%s' \
+    "${ENVIRONMENT}" "${QA_SECRET_COMPONENT}" "$1" "$1"
+}
+
+# qa_secret_present NAME TENANT -> 0 present and this tenant's QA secret, or
+# created; 1 failed; 3 present but not this tenant's QA secret
+# (FORGE_SLOT_LABELLED says whose). A name does not say whose a secret is
+# (register-tenant.sh "whose secret is it?"): swarm-tenant-eng-qa is also
+# tenant eng's key for a provider named `qa`, which the worker reads.
+qa_secret_present() {
+  local name="$1" tenant="$2" rc=0 component
+  "${FORGE_SLOT_PROBE}" "${FORGE_SLOT_WORK}/qa.json" \
+    gcloud secrets describe "${name}" --project "${PROJECT_ID}" --format=json || rc=$?
+  if [[ "${rc}" -eq 1 ]]; then
+    if [[ "${FORGE_SLOT_DRY_RUN}" == "1" ]]; then
+      info "qa secret: would create ${name} (empty, labelled component=${QA_SECRET_COMPONENT} tenant=${tenant}, in ${REGION})"
+      return 0
+    fi
+    if "${FORGE_SLOT_CALL}" /dev/null gcloud secrets create "${name}" --project "${PROJECT_ID}" \
+         --replication-policy user-managed --locations "${REGION}" \
+         --labels "$(qa_secret_labels "${tenant}")"; then
+      ok "qa secret: created ${name} (empty, labelled component=${QA_SECRET_COMPONENT} tenant=${tenant})"
+      return 0
+    fi
+    # Made between the describe and the create: ALREADY_EXISTS is success
+    # when the labels below say it is ours.
+    rc=0
+    "${FORGE_SLOT_PROBE}" "${FORGE_SLOT_WORK}/qa.json" \
+      gcloud secrets describe "${name}" --project "${PROJECT_ID}" --format=json || rc=$?
+    [[ "${rc}" -eq 0 ]] || { [[ "${rc}" -eq 2 ]] || "${FORGE_SLOT_SHOW_ERR}"; return 1; }
+  fi
+  [[ "${rc}" -eq 0 ]] || return 1
+  FORGE_SLOT_LABELLED="$(jq -r '.labels.tenant // ""' "${FORGE_SLOT_WORK}/qa.json")"
+  component="$(jq -r '.labels.component // ""' "${FORGE_SLOT_WORK}/qa.json")"
+  [[ "${FORGE_SLOT_LABELLED}" == "${tenant}" && "${component}" == "${QA_SECRET_COMPONENT}" ]] || {
+    [[ "${component}" == "${QA_SECRET_COMPONENT}" ]] || FORGE_SLOT_LABELLED="${FORGE_SLOT_LABELLED:-nobody} (component=${component:-none})"
+    return 3
+  }
+  dim "qa secret: ${name} is present; kept"
+}
+
+# qa_secret_ensure TENANT API_EMAIL -> 0 the secret present, empty as far as
+# this goes, and swarm-api holding V-1 and V-2 on it; 1 failed (the reason
+# printed); 3 a secret of that name that is not this tenant's QA secret
+# (FORGE_SLOT_LABELLED); 4 another member holds a role on it
+# (QA_SECRET_FOREIGN). Idempotent: a re-run over a complete secret reads and
+# changes nothing.
+qa_secret_ensure() {
+  local tenant="$1" email="$2" rc=0 role
+  local name="swarm-tenant-${tenant}-qa" member="serviceAccount:${email}"
+  local policy="${FORGE_SLOT_WORK}/qa-policy.json"
+  [[ -n "${FORGE_SLOT_CALL}" && -n "${FORGE_SLOT_PROBE}" && -n "${FORGE_SLOT_SHOW_ERR}" \
+     && -d "${FORGE_SLOT_WORK}" ]] \
+    || { err "qa secret: the caller named no runner (FORGE_SLOT_CALL, _PROBE, _SHOW_ERR, _WORK)"; return 1; }
+  qa_secret_present "${name}" "${tenant}" || return $?
+  "${FORGE_SLOT_PROBE}" "${policy}" gcloud secrets get-iam-policy "${name}" \
+    --project "${PROJECT_ID}" --format=json || rc=$?
+  if [[ "${rc}" -eq 1 && "${FORGE_SLOT_DRY_RUN}" == "1" ]]; then
+    # A dry run's secret does not exist yet: there is no policy to read.
+    info "qa secret: would grant roles/secretmanager.secretVersionAdder and roles/secretmanager.secretAccessor on ${name} to ${email}, and nobody else"
+    return 0
+  fi
+  [[ "${rc}" -eq 0 ]] || { [[ "${rc}" -eq 2 ]] || "${FORGE_SLOT_SHOW_ERR}"; return 1; }
+  QA_SECRET_FOREIGN="$(jq -r --arg m "${member}" \
+    '[(.bindings? // [])[] | .role as $r | .members[]? | select(. != $m) | "\(.) (\($r))"] | first // ""' \
+    "${policy}")"
+  [[ -z "${QA_SECRET_FOREIGN}" ]] || return 4
+  for role in roles/secretmanager.secretVersionAdder roles/secretmanager.secretAccessor; do
+    if iam_policy_binds_member "${policy}" "${role}" "${member}"; then
+      dim "qa secret: ${email} already holds ${role} on ${name}; kept"
+      continue
+    fi
+    if [[ "${FORGE_SLOT_DRY_RUN}" == "1" ]]; then
+      info "qa secret: would grant ${role} on ${name} to ${email}"
+      continue
+    fi
+    "${FORGE_SLOT_CALL}" /dev/null gcloud secrets add-iam-policy-binding "${name}" --project "${PROJECT_ID}" \
+      --member "${member}" --role "${role}" \
+      || { "${FORGE_SLOT_SHOW_ERR}"; return 1; }
+    ok "qa secret: granted ${role} on ${name} to ${email}"
+  done
 }

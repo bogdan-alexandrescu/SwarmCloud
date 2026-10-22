@@ -3388,6 +3388,58 @@ if [[ "${#PROVIDERS[@]}" -gt 0 ]]; then
   done
 fi
 
+# --- 4b. the QA target credential secret --------------------------------------
+#
+# swarm-tenant-<tenant>-qa, the secret an own-login QA target's test account is
+# stored in (docs/design/visual-qa-any-app.md §2.1). terraform/infra/qa_targets.tf
+# makes it for the tenants in var.tenants, and this tenant is not one, so it is
+# made here, the way Terraform makes it: empty, labelled as qa_targets.tf labels
+# it, and V-1/V-2 -- swarm-api's account as version adder and accessor, on this
+# one secret, and nobody else. Never the worker granted in section 4: its agent
+# must never read a password out of Secret Manager. scripts/lib/forge-slot.sh
+# qa_secret_ensure is the one create-and-bind, with the plain runners below.
+#
+# Made for every registration, whatever --providers says: a tenant with no
+# provider key can still have a QA target. A re-run reads and changes nothing.
+step "QA target credential secret"
+QA_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-register-qa.XXXXXX")"
+qa_call() {
+  local out="$1"
+  shift
+  "$@" >"${out}" 2>"${QA_WORK}/call.err"
+}
+qa_show_err() {
+  [[ -s "${QA_WORK}/call.err" ]] || return 0
+  die_if_auth_failure "$(cat "${QA_WORK}/call.err")"
+  redact <"${QA_WORK}/call.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+}
+qa_probe() {
+  if qa_call "$@"; then return 0; fi
+  if gcloud_not_found "$(cat "${QA_WORK}/call.err")"; then return 1; fi
+  qa_show_err
+  return 2
+}
+QA_API_EMAIL="$(platform_account_email "${FORGE_READER_ID}")" \
+  || die "terraform/modules/service_account_ids lists no platform account ${FORGE_READER_ID}, so there is
+  no account to let store and read swarm-tenant-${TENANT_ID}-qa. Sections 1-4 above are made; nothing
+  was changed on the QA secret."
+QA_RC=0
+FORGE_SLOT_CALL=qa_call FORGE_SLOT_PROBE=qa_probe FORGE_SLOT_SHOW_ERR=qa_show_err \
+  FORGE_SLOT_WORK="${QA_WORK}" FORGE_SLOT_DRY_RUN="${DRY_RUN}" \
+  qa_secret_ensure "${TENANT_ID}" "${QA_API_EMAIL}" || QA_RC=$?
+rm -rf "${QA_WORK}"
+case "${QA_RC}" in
+  0) ;;
+  3) die "swarm-tenant-${TENANT_ID}-qa already exists labelled tenant='${FORGE_SLOT_LABELLED:-nobody}', not
+  this tenant's QA target credential secret (component=${QA_SECRET_COMPONENT}, tenant=${TENANT_ID}).
+  It is not adopted and nothing was granted on it. Find out whose it is before re-running." ;;
+  4) die "swarm-tenant-${TENANT_ID}-qa grants ${QA_SECRET_FOREIGN}. swarm-api is the only account that
+  may hold a role on a QA secret (V-1, V-2): anyone else can read a test account's password. This is
+  reported, not repaired; remove that member, then re-run. Nothing was granted on it." ;;
+  *) die "could not make swarm-tenant-${TENANT_ID}-qa or its swarm-api bindings (the reason is above).
+  Sections 1-4 above are made; a re-run makes what is missing." ;;
+esac
+
 # --- 5. Kubernetes ------------------------------------------------------------
 #
 # The whole namespace, applied by kubernetes/apply.sh, not assembled here.
