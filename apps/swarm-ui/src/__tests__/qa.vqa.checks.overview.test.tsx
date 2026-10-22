@@ -118,7 +118,7 @@ describe('QA-013: the Needs a look head counts the cards it draws', () => {
   it('says how many problems the checks that fired found, and draws that many cards', async () => {
     const el = await mount({ providers: ok(TWO_THROTTLED) })
     const lead = el.querySelector('#ov-needs')!
-    const cards = lead.querySelectorAll('a.ov-att')
+    const cards = lead.querySelectorAll('.ov-att:not(.is-skel)')
     expect(cards.length, 'two throttled providers, two cards').toBe(2)
     // MUTATION: put back `· ${found} found something`, which reads "1" over two cards.
     expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^checks (\d+)\/\1 · 1 found 2 problems$/)
@@ -127,7 +127,7 @@ describe('QA-013: the Needs a look head counts the cards it draws', () => {
   it('says one problem in the singular', async () => {
     const el = await mount({ providers: ok({ ...TWO_THROTTLED, providers: TWO_THROTTLED.providers.slice(0, 1) }) })
     const lead = el.querySelector('#ov-needs')!
-    expect(lead.querySelectorAll('a.ov-att').length).toBe(1)
+    expect(lead.querySelectorAll('.ov-att:not(.is-skel)').length).toBe(1)
     // MUTATION: drop the `problem`/`problems` choice and always say "problems".
     expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^checks (\d+)\/\1 · 1 found 1 problem$/)
   })

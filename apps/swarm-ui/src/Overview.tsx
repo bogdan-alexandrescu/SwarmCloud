@@ -1189,6 +1189,34 @@ export function CheckCard({ problem: p }: { problem: Problem }) {
   // ` — ` is a no-break space, so the dash ends the clause it follows and a
   // clamped line cannot open on a lone "—…".
   const detail = keepDash(p.detail)
+  // EACH WORKFLOW THE CARD NAMES IS A LINK OF ITS OWN (visual QA N11,
+  // 2026-10-21). A link cannot sit inside a link, so a card that names one
+  // is a box rather than an `<a>`: the ids are links, and the card's own link
+  // is `Agents · FAILED →`, whose `::after` covers the box so a click anywhere
+  // else still opens the list (`.ov-att.is-split`). A card that names none
+  // keeps the one-link markup below.
+  const workflows = p.workflows ?? []
+  if (workflows.length > 0) {
+    return (
+      <div className={`ov-att is-${p.severity} is-split`}>
+        {p.severity === 'bad' ? <BadMark /> : <WarnMark />}
+        <span className="ov-att-t">
+          <b title={p.headline}>{title}</b>
+          {ids !== null && (
+            <small className="ov-att-ids" title={ids}>
+              {linkedIds(keepDash(ids), workflows)}
+            </small>
+          )}
+          <small className={ids === null ? undefined : 'is-one'} title={p.detail}>
+            {detail}
+          </small>
+        </span>
+        <a className="ov-att-go" href={toPath(p.href)} aria-label={`${p.headline}. ${p.detail}`}>
+          {p.linkLabel ?? 'Open'} &rarr;
+        </a>
+      </div>
+    )
+  }
   return (
     <a className={`ov-att is-${p.severity}`} href={toPath(p.href)} aria-label={`${p.headline}. ${p.detail}`}>
       {p.severity === 'bad' ? <BadMark /> : <WarnMark />}
@@ -1206,6 +1234,29 @@ export function CheckCard({ problem: p }: { problem: Problem }) {
       <span className="ov-att-go">{p.linkLabel ?? 'Open'} &rarr;</span>
     </a>
   )
+}
+
+/** The ids line with every workflow id it names drawn as a link to that workflow. */
+function linkedIds(text: string, workflows: readonly { id: string; href: string }[]): ReactNode[] {
+  const out: ReactNode[] = []
+  let rest = text
+  for (;;) {
+    let next: { at: number; w: { id: string; href: string } } | null = null
+    for (const w of workflows) {
+      const at = rest.indexOf(w.id)
+      if (at >= 0 && (next === null || at < next.at)) next = { at, w }
+    }
+    if (next === null) break
+    if (next.at > 0) out.push(rest.slice(0, next.at))
+    out.push(
+      <a key={out.length} href={toPath(next.w.href)} title={`Open workflow ${next.w.id}`}>
+        {next.w.id}
+      </a>,
+    )
+    rest = rest.slice(next.at + next.w.id.length)
+  }
+  if (rest !== '') out.push(rest)
+  return out
 }
 
 /**
@@ -1467,8 +1518,10 @@ export function ProfileTile({
   // as binding too, and "binds browser" could be `resource:browser` or
   // `runner:browser` -- both bound. Raising either one alone admits nothing.
   const binds = profile.admission?.binding.length ? profile.admission.binding : h.binding !== null ? [h.binding] : []
-  const bindWords = binds.map((b) => (poolLabelAmong(b, binds) === poolLabel(b) ? bindingLabel(b, tenant) : poolLabelAmong(b, binds))).join(' + ')
+  const bindLabels = binds.map((b) => (poolLabelAmong(b, binds) === poolLabel(b) ? bindingLabel(b, tenant) : poolLabelAmong(b, binds)))
   const paused = binding !== null && isPaused(binding)
+  // The line names the binding pools (`binds …`) only here; `why` below agrees.
+  const bound = h.agents !== null && h.blockers.length <= 1 && !paused && h.binding !== null
   // More than one pool can refuse at once, and "refusing" rather than "full":
   // one of them may be PAUSED, which has the opposite remedy.
   const why =
@@ -1481,7 +1534,7 @@ export function ProfileTile({
         : paused
           ? `${bindingLabel(binding.name, tenant)} paused`
           : h.binding !== null
-            ? `binds ${bindWords}`
+            ? `binds ${bindLabels.join(' + ')}`
             : h.missing.length > 0
               ? `${countOf(h.missing.length, 'pool')} uncapped`
               : 'nothing binds'
@@ -1506,7 +1559,21 @@ export function ProfileTile({
       ) : (
         <b>+{h.agents}</b>
       )}
-      <small>{why}</small>
+      {/* EACH BINDING POOL WHOLE (visual QA N10): the line wraps between the
+          names at ` + `, never inside one. Every other line keeps its one cut line. */}
+      {bound ? (
+        <small className="ov-hp-binds">
+          binds{' '}
+          {bindLabels.map((label, i) => (
+            <span key={i}>
+              {i > 0 && ' + '}
+              <span className="ov-hp-pool">{label}</span>
+            </span>
+          ))}
+        </small>
+      ) : (
+        <small>{why}</small>
+      )}
     </div>
   )
 }

@@ -83,6 +83,17 @@
 .ov-att-t small.ov-att-ids { -webkit-line-clamp: 1; }
 .ov-att-t small.ov-att-ids { display: block; white-space: nowrap; text-overflow: ellipsis; }
 .ov-att-go { font-size: var(--t-micro); color: var(--sk-ac); white-space: nowrap; }
+/* A CARD THAT NAMES WORKFLOWS LINKS EACH ONE (visual QA N11, 2026-10-21).
+   A link cannot hold a link, so such a card is a box: `Agents · FAILED →` is
+   its own link, and that link's `::after` covers the box, so a click anywhere
+   but an id still opens the list. The ids sit above the cover. */
+.ov-att.is-split { position: relative; }
+.ov-att.is-split > .ov-att-go { text-decoration: none; }
+.ov-att.is-split > .ov-att-go::after { content: ''; position: absolute; inset: 0; border-radius: inherit; }
+.ov-att.is-split > .ov-att-go:focus-visible { outline: none; }
+.ov-att.is-split > .ov-att-go:focus-visible::after { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.ov-att-ids a { position: relative; z-index: 1; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.ov-att-ids a:hover { color: var(--sk-ac); }
 /* The skeleton of a check card, while the checks read: the card's own box
    and rhythm, its lines as the canonical skeleton bars (walkthrough F). */
 .ov-att.is-skel { cursor: default; }
@@ -250,6 +261,12 @@
 .ov-hp b { font: 650 var(--t-lead)/var(--lh-lead) var(--font); font-variant-numeric: tabular-nums; }
 .ov-hp b.is-zero { color: var(--s-warn); }
 .ov-hp small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* THE BINDING POOLS, EVERY ONE ON THE TILE (visual QA N10, 2026-10-21): cut to
+   one line, the mock tile read "binds global + standard + C…" and hid the
+   backend pool, binding as much as the other two. The line wraps at ` + `,
+   never inside a pool's name; the tile's title still holds the full names. */
+.ov-hp small.ov-hp-binds { white-space: normal; text-overflow: clip; }
+.ov-hp-pool { white-space: nowrap; }
 /* A DISABLED TILE'S REASON WRAPS TO TWO LINES (QA G1-13, 2026-10-07): cut to
    one, "the merge chain (#295) is disab…" could not be read without opening
    Pools. Past two lines it is cut, whole in the line's title. */
