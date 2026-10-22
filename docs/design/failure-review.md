@@ -281,7 +281,9 @@ died".
    one-person workspace by typing the schedule's name.
    **Owner decision, 2026-10-22 (Q8): "merge: auto, set once by you through
    the audited merge switch at creation".** The owner creates the schedule
-   and makes that switch once, so the `gate_merge_auto` row names the owner;
+   and makes that switch once, alone and without the two-person rule, because
+   failure-review is owner-only at platform scope (`merge_mode` lets the owner
+   or a platform admin switch such a type), so the `gate_merge_auto` row names the owner;
    the type's own default stays `approve` and nothing in the code sets
    `auto`. Every hold of step 5 still stops a merge. The run's merge continuation
    then merges on a `MERGE` verdict and green CI, as every issue run does.
