@@ -1183,6 +1183,17 @@ locals {
       # default, switches nobody.
       SWARM_STATE_VIA_API_TENANTS = join(",", var.state_via_api_tenants)
 
+      # The tenant-Job VPC switch (tenant_job_vpc.tf `tenant_job_vpc_egress`,
+      # #1893): on, the Jobs this scheduler creates carry terraform's
+      # vpc_access. The names are module.network's, the outputs module
+      # "cloud_run_jobs" is given (main.tf), so the two kinds of Job cannot
+      # name different subnets. The switch value REFERENCES the grant so the
+      # scheduler's new revision is applied after it exists.
+      TENANT_JOB_VPC_EGRESS   = var.tenant_job_vpc_egress && length(google_compute_subnetwork_iam_member.scheduler_tenant_job_subnet) == 1 ? "true" : "false"
+      TENANT_JOB_NETWORK      = module.network.network_id
+      TENANT_JOB_SUBNETWORK   = module.network.subnetwork_id
+      TENANT_JOB_NETWORK_TAGS = module.network.worker_network_tag
+
       # The live browser's display sidecar (scheduler.settings
       # `live_browser_sidecar`; docs/design/live-browser.md, LB-Lon). On, a
       # claude-code-browser GKE pod carries the `display` native sidecar and
