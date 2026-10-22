@@ -114,14 +114,17 @@ def cache_env(cache: Path, tmp: Path, *, own_volume: bool) -> dict[str, str]:
 IMAGE_NPM_CACHE = Path("/opt/npm-cache")
 
 
-def seed_npm_cache(cache: Path, log: Any, *, image_cache: Path = IMAGE_NPM_CACHE) -> int:
+def seed_npm_cache(cache: Path, log: Any, *, image_cache: Path | None = None) -> int:
     """Copy the image's npm cache into the attempt's, writable; the bytes copied.
 
     A no-op (0) when the image cache is absent or empty, and when the
     attempt's npm cache already holds content, so a second call copies
     nothing. A copy that fails is logged and emptied, never raised: the
     attempt then runs with the empty cache it would have had anyway.
+    `image_cache` defaults to `IMAGE_NPM_CACHE`, read at call time.
     """
+    if image_cache is None:
+        image_cache = IMAGE_NPM_CACHE
     dest = cache / CACHE_SUBDIRS["npm_config_cache"]
     if not image_cache.is_dir() or not any(image_cache.iterdir()):
         log.info("npm image cache absent or empty; not seeded", image_cache=str(image_cache))
