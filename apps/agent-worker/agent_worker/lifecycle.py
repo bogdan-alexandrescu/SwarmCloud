@@ -144,6 +144,7 @@ from swarm_redaction import RULES as CREDENTIAL_RULES
 from swarm_redaction import redact as redact_text
 
 from . import artifact_manifest as manifest_mod
+from . import cachedirs as cachedirs_mod
 from . import children as children_mod
 from . import continuation as continuation_mod
 from . import egress as egress_mod
@@ -2676,6 +2677,11 @@ class Worker:
         )
         ws = self.ws
         self.log.info("workspace created", path=str(ws.root), cache=str(ws.cache))
+        # AU8-SEED: the image's warmed npm cache, copied into the attempt's
+        # own before the agent starts. Never raises: a failed copy is logged
+        # and leaves the empty cache npm had before.
+        if ws.cache is not None:
+            cachedirs_mod.seed_npm_cache(ws.cache, self.log)
 
         # ---- STEP 4: fetch the task and VERIFY ITS SPEC -----------------
         # Contract request 34 (#342). Immediately after the fetch and before
