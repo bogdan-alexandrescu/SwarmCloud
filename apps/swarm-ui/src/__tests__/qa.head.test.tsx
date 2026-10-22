@@ -160,7 +160,12 @@ describe('Q2/Q10: one page head, no breadcrumb row on a section page', () => {
       unmount()
     }
     expect(visited).toHaveLength(PAGES.length)
-  })
+    // Fourteen full `<App />` renders, each waiting on its head and its
+    // freshness: a busy CI shard (keyboard's 355 s sweep beside it) timed it
+    // out at the 30 s suite default on run 39761444188 with nothing wrong,
+    // while the same tree passed on run 39761767060. Own budget, as
+    // walk.copy and qa.u12.runs already carry; a hang still fails.
+  }, 120_000)
 
   it('keeps the breadcrumb inside an open object', async () => {
     window.location.hash = '#work/task/t-1'
