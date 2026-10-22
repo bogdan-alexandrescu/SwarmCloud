@@ -293,7 +293,15 @@ finding) carries over.
    rendered pages, exclusions and `robots.txt` honoured, written as
    `screens.json` in the route-list format. swarm-api stores it on the target
    as `discovered` and starts the QA run from it; a person can promote it to
-   `screens`.
+   `screens`. `--base` may carry a path, and discovery then starts there and
+   keeps only the links under it, still refusing userinfo, a query, a
+   fragment, an IP literal and an internal name, because an app served under
+   a sub-path (`https://demo.playwright.dev/todomvc/`) was otherwise crawled
+   from its origin's `/` (#1981). `--hash-routes` (off by default) also lists
+   a page's links to itself whose fragment starts with `#/` as routes, never
+   `#section`, because a hash-routed app's screens are otherwise one route.
+   A page whose main document answered 4xx or 5xx is not listed, because the
+   first external proof listed and captured a GitHub Pages 404 as a screen.
 2. **capture-<group>**: `claude-code-browser`, haiku, as the console's, with
    the console-specific parts replaced (§4.2). Groups of at most 8 screens,
    at most 8 groups (60 screens a run, the discovery cap).
@@ -327,6 +335,13 @@ failed flow never costs the screen findings.
 
 Nothing else changes: presets by name, the theme set twice, segments, the
 manifest, the tar names, the findings shape.
+
+Two checks hold for every capture, the console's included (#1981). A route
+whose main document answered 4xx or 5xx is a failed route at `navigate`,
+with the status, not a captured one. A subresource that answered 4xx or 5xx
+is in the route's `errors.json` as `bad_responses`, its URL (origin and
+path) and status, because an HTTP error is not a failed request, and the
+console's "Failed to load resource" line carries no URL.
 
 ### 4.3 The review checklist
 

@@ -8,8 +8,9 @@
         --bundle "$SWARM_ARTIFACTS_DIR/capture-work-a.tar" [--axe] \\
         [--keep-storage] [--settle console|generic] [--clock INSTANT]
 
-    python -m swarm_qa discover --base https://app.example \\
-        --max-pages 60 --max-depth 3 [--exclude GLOB ...] --out screens.json
+    python -m swarm_qa discover --base https://app.example[/path/] \\
+        --max-pages 60 --max-depth 3 [--exclude GLOB ...] [--hash-routes] \\
+        --out screens.json
 
     python -m swarm_qa diff A.tar B.tar --out DIR [--threshold 0.001]
 
@@ -57,7 +58,8 @@ What `capture` does, and why each:
    fixture's: a `--settle generic` capture whose route list names no
    persona sets it on no route, and records `persona: null` (VQ5-PERSONA; BGD, 2026-10-22:
    "Skip it when no route names a persona and --settle generic"). Then it
-   navigates and waits for `load`, then up to NETWORK_IDLE_MS for
+   navigates and waits for `load` (a main document that answered 4xx or 5xx
+   fails the route at `navigate`, with its status: #1981), then up to NETWORK_IDLE_MS for
    the network to go quiet (the console polls, so it may never be quiet for
    long: not reaching it is recorded, not fatal), then `document.fonts.ready`,
    then the route's `ready` selector, then until the page shows no pending
@@ -83,10 +85,15 @@ What `capture` does, and why each:
    `failed`. Segments, because a model is handed a tall
    image downscaled until its text is unreadable, and whether a full-page
    capture through the gate needs a metrics override is unverified.
-   `animations="disabled"`, `caret="hide"`.
-6. Records what the page said, beside the PNGs: console and page errors and
-   failed requests (an address as origin and path only: a query can carry a
-   token), the body text, and the ARIA snapshot (`locator.aria_snapshot()`;
+   `animations="disabled"`, `caret="hide"`. A shot whose size is not the
+   viewport's (VIEWPORT_JS, read after it) is taken again, up to
+   SHOT_RETRIES times, each in the entry's `reshot`; one still off is kept and
+   listed in `failed` (`_shot` says what was measured at phone-390, #1981).
+6. Records what the page said, beside the PNGs: console and page errors,
+   failed requests, and the subresources that answered 4xx or 5xx with
+   their status (`bad_responses`: an HTTP error is no failed request, so a
+   "Failed to load resource" otherwise has no URL), each address as origin
+   and path only (a query can carry a token), the body text, and the ARIA snapshot (`locator.aria_snapshot()`;
    Playwright deprecated `page.accessibility` in its favour).
 7. `--axe` runs axe-core from the image (AXE_SCRIPT, pinned in the
    Dockerfile) and writes `<route>--<preset>--<theme>.axe.json`.
@@ -117,9 +124,16 @@ default only the console's route list and template rely on:
   route list with neither runs on the page's real clock.
 
 `discover` writes a route list for an app nobody listed (§4.1): from `--base`
-it loads each page through the live browser, reads its links (LINKS_JS, the
-rendered `a[href]`s), and keeps the same-origin ones (scheme, host and port;
-the path only: a query or fragment can carry a token), breadth first. It
+(an http(s) address at a public host name, its path where the app starts:
+`discover_base`) it loads each page through the live browser, reads its
+links (LINKS_JS, the rendered `a[href]`s), and keeps the same-origin ones
+(scheme, host and port) under the base's path, breadth first, as paths from
+the origin (what `capture --base <origin>` takes). It keeps the path only: a
+query or fragment can carry a token. `--hash-routes` also keeps a page's
+links to itself whose fragment is a route (`#/active`, HASH_ROUTE), as
+routes of their own, never `#section`. A page whose main document answered
+4xx or 5xx is not listed (`http_errors`); one listed at a cap and never
+loaded is `unchecked`, and its capture reads the status. It
 never lists or loads a path matching an exclusion (DEFAULT_EXCLUDE, always,
 plus each `--exclude` glob) or a `robots.txt` `Disallow` line of the `*`
 group; it lists at most `--max-pages` (DISCOVER_MAX_PAGES at most) paths at
@@ -145,6 +159,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import fnmatch
+import ipaddress
 import json
 import os
 import re
@@ -262,6 +277,19 @@ ROBOTS_MAX_BYTES = 512 * 1024
 ROBOTS_UNREACHABLE = "User-agent: *\nDisallow: /\n"
 #: A page's links are read up to this many.
 MAX_LINKS = 2000
+#: Host suffixes that only ever name something inside a cluster, a VPC or a
+#: LAN: `swarm_egress.policy.INTERNAL_SUFFIXES`, restated because the image
+#: cannot import it (a unit test holds the two equal). `discover --base`
+#: refuses a host ending in one, as it refuses a single-label name and an IP
+#: literal: discovery is for a deployed app, never an internal address.
+INTERNAL_SUFFIXES = (
+    ".local", ".localhost", ".internal", ".cluster.local", ".svc", ".localdomain",
+    ".home.arpa", ".intranet", ".lan",
+)
+#: A hash route's path (`--hash-routes`): the fragment after `#`, up to its
+#: own `?`, when it is `/` and path characters. `#section` is an anchor, not a
+#: route, and `#access_token=...` is a credential; neither matches.
+HASH_ROUTE = re.compile(r"/[A-Za-z0-9._~%/-]*")
 
 DIFF_THRESHOLD = 0.001
 #: The colour a changed pixel is painted in a diff image (magenta: a console
@@ -459,6 +487,12 @@ DOM_CHANGES_JS = """() => {
   return [window.__swarmQaDom.count, window.__swarmQaDom.where];
 }"""
 #: `discover`: the page's rendered links, resolved by the browser.
+#: The window's size and device pixel ratio, read after each screenshot to
+#: check the shot is the viewport's size (`_shot`).
+VIEWPORT_JS = "() => [window.innerWidth, window.innerHeight, window.devicePixelRatio || 1]"
+#: How many times `_shot` takes a screenshot again when it is not the size
+#: of the viewport, before it keeps it and lists it in `failed`.
+SHOT_RETRIES = 2
 LINKS_JS = "() => Array.from(document.querySelectorAll('a[href]'), (a) => a.href).slice(0, %d)" % MAX_LINKS
 AXE_INJECT_JS = "(source) => { (0, eval)(source); return typeof axe !== 'undefined'; }"
 AXE_RUN_JS = "() => axe.run(document, {resultTypes: ['violations']})"
@@ -596,11 +630,13 @@ class _Errors:
         page.on("console", self._console)
         page.on("pageerror", self._page_error)
         page.on("requestfailed", self._request_failed)
+        page.on("response", self._response)
 
     def reset(self):
         self.console: list[str] = []
         self.page: list[str] = []
         self.requests: list[str] = []
+        self.responses: list[dict] = []
 
     def _console(self, message):
         try:
@@ -618,9 +654,20 @@ class _Errors:
         except Exception:  # noqa: BLE001
             pass
 
+    def _response(self, response):
+        # An HTTP error is no failed request (`requestfailed` is a network
+        # failure), so without this a 404 left only the console's "Failed to
+        # load resource", with no URL (#1981).
+        try:
+            status = response.status
+            if isinstance(status, int) and status >= 400:
+                self.responses.append({"url": _where(response.url), "status": status})
+        except Exception:  # noqa: BLE001
+            pass
+
     def document(self) -> dict:
         return {"console_errors": self.console[:MAX_MESSAGES], "page_errors": self.page[:MAX_MESSAGES],
-                "failed_requests": self.requests[:MAX_MESSAGES]}
+                "failed_requests": self.requests[:MAX_MESSAGES], "bad_responses": self.responses[:MAX_MESSAGES]}
 
 
 def _write(path: Path, data: bytes | str) -> None:
@@ -739,6 +786,59 @@ def _settle_generic(page) -> list[str]:
         waited += SETTLE_POLL_MS
 
 
+def png_size(data: bytes) -> tuple[int, int] | None:
+    """A PNG's (width, height) from its IHDR, or None when it is no PNG."""
+    if len(data) >= 24 and data.startswith(_PNG_SIGNATURE) and data[12:16] == b"IHDR":
+        width, height = struct.unpack(">II", data[16:24])
+        return width, height
+    return None
+
+
+def _viewport_sizes(answer: Any) -> list[tuple[int, int]]:
+    """VIEWPORT_JS's answer as the sizes a shot of the viewport may have: its
+    CSS size (the gate's headed Chromium draws one screen pixel per CSS
+    pixel) and that times the device pixel ratio. [] when it is not one."""
+    if not isinstance(answer, (list, tuple)) or len(answer) < 2:
+        return []
+    width, height = answer[0], answer[1]
+    ratio = answer[2] if len(answer) > 2 else 1
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in (width, height, ratio)):
+        return []
+    return [(round(width), round(height)), (round(width * ratio), round(height * ratio))]
+
+
+def _shot(page, segment: int) -> tuple[bytes, list[dict], str | None]:
+    """One screenshot of the viewport, taken again (up to SHOT_RETRIES times)
+    while its size is not the viewport's. Returns the PNG, a record of each
+    shot taken again, and a line for `failed` when the last one is still off.
+
+    MEASURED (#1981, task_aa240c7a75894ff9852b): at phone-390 the first
+    screenshot after every full document load came out 980x2121 with the
+    page drawn small, while the page reported innerWidth 390; every later
+    shot in the same document was 390x844. Playwright 1.63 sizes a viewport
+    shot from `innerWidth`/`innerHeight` read at the shot, over the visual
+    viewport's scale (crPage `takeScreenshot`), so a 980-wide shot is one taken
+    before the page's layout had taken the preset's 390 px viewport (Chromium's
+    980 px default). The device is set before the first navigation
+    (`capture`), so the order here is not the cause; the shot is checked
+    against the viewport read just after it, and taken again."""
+    reshot: list[dict] = []
+    attempt = 0
+    while True:
+        png = page.screenshot(type="png", animations="disabled", caret="hide", timeout=SHOT_TIMEOUT_MS)
+        size = png_size(png)
+        sizes = _viewport_sizes(page.evaluate(VIEWPORT_JS))
+        if size is None or not sizes or size in sizes:
+            return png, reshot, None
+        view = sizes[0]
+        if attempt >= SHOT_RETRIES:
+            return png, reshot, (f"segment {segment} was {size[0]}x{size[1]}, not the page's viewport "
+                                 f"{view[0]}x{view[1]}, after {attempt + 1} shots (kept as it came)")
+        reshot.append({"segment": segment, "size": list(size), "viewport": list(view)})
+        attempt += 1
+        page.wait_for_timeout(SETTLE_POLL_MS)
+
+
 def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict, preset: str, theme: str,
                    out: Path, axe_source: str | None, settle: str = "console",
                    persona_cookie: bool = True) -> dict:
@@ -763,7 +863,12 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
         # the route's.
         errors.reset()
         step = "navigate"
-        page.goto(base + route["path"], wait_until="load", timeout=NAV_TIMEOUT_MS)
+        response = page.goto(base + route["path"], wait_until="load", timeout=NAV_TIMEOUT_MS)
+        # None for a same-document navigation (a hash route from the route
+        # before it): no document answered, so there is no status to read.
+        status = getattr(response, "status", None) if response is not None else None
+        if isinstance(status, int) and status >= 400:
+            raise _RouteFailed(f"navigate: the main document answered HTTP {status}")
         idle = True
         try:
             page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_MS)
@@ -779,13 +884,16 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
         measured = page.evaluate(MEASURE_JS, ready)
         total, view = measured[0], max(1, measured[1])
         budget = segment_budget(route, preset)
-        images, overlaps, covers = [], [], []
+        images, overlaps, covers, reshot, off_size = [], [], [], [], []
         step = "segment 1"
         _top, under = _stuck(page.evaluate(SCROLL_JS, 0), view)
         y = 0
         for segment in range(1, budget + 1):
             step = f"segment {segment}"
-            png = page.screenshot(type="png", animations="disabled", caret="hide", timeout=SHOT_TIMEOUT_MS)
+            png, again, off = _shot(page, segment)
+            reshot.extend(again)
+            if off is not None:
+                off_size.append(off)
             name = image_name(group, rid, preset, theme, segment)
             _write(out / name, png)
             images.append(name)
@@ -819,6 +927,7 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
             "settled": not pending, "pending": pending, "scroller": measured[2] if len(measured) > 2 else None,
             "overlaps": overlaps, "covers": covers,
             "truncated": truncated, "reached": reached, "total": total,
+            "reshot": reshot, "off_viewport": off_size,
             "text": f"{stem}.txt", "a11y": f"{stem}.a11y.json", "errors": f"{stem}.errors.json",
         }
         if axe_source is not None:
@@ -827,12 +936,14 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
                 raise RuntimeError("axe-core did not load in the page")
             _write(out / f"{stem}.axe.json", json.dumps(page.evaluate(AXE_RUN_JS), indent=1))
             entry["axe"] = f"{stem}.axe.json"
+    except _RouteFailed:
+        raise
     except Exception as exc:  # noqa: BLE001 -- a failed route is a finding
         where = f"ready selector {ready!r} not found" if step == "ready" else step
         raise _RouteFailed(f"{where}: {type(exc).__name__}: {_one_line(exc)}") from exc
     _write(out / f"{stem}.errors.json", json.dumps(errors.document(), indent=1))
     entry.update({"console_errors": len(errors.console), "page_errors": len(errors.page),
-                  "failed_requests": len(errors.requests)})
+                  "failed_requests": len(errors.requests), "bad_responses": len(errors.responses)})
     return entry
 
 
@@ -920,6 +1031,8 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                         if entry["pending"]:
                             why.append(f"did not settle in {SETTLE_TIMEOUT_MS} ms: still showing "
                                        + "; ".join(entry["pending"]) + " (shot as it stood)")
+                        if entry["off_viewport"]:
+                            why.extend(entry["off_viewport"])
                         if entry["truncated"]:
                             why.append(f"cut at {len(entry['images'])} segments: reached {entry['reached']} "
                                        f"of {entry['total']} px (the rest is in no image)")
@@ -967,6 +1080,52 @@ def same_origin_path(href: Any, origin: tuple[str, str, int]) -> str | None:
     if _origin(href) != origin:
         return None
     return urlsplit(str(href)).path or "/"
+
+
+def discover_base(base: str) -> tuple[tuple[str, str, int], str, str]:
+    """`discover --base` checked: http(s), a host name that is neither an IP
+    literal nor internal (a single label, `localhost`, INTERNAL_SUFFIXES:
+    swarm_egress.policy's rule), and no userinfo, query or fragment. A path
+    is allowed (#1981: an app served under https://demo.playwright.dev/todomvc/).
+    Returns the origin, `scheme://host[:port]` as given, and the start path
+    (`/` when there is none)."""
+    if not isinstance(base, str) or "?" in base or "#" in base or "@" in base:
+        raise UsageError("--base must be an http(s) address with no userinfo, query or fragment")
+    origin = _origin(base)
+    if origin is None:
+        raise UsageError("--base must be an http(s) address")
+    host = origin[1].rstrip(".")
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        raise UsageError("--base must name a host, not an IP address")
+    if "." not in host or host == "localhost" or any(("." + host).endswith(s) for s in INTERNAL_SUFFIXES):
+        raise UsageError("--base must name a public host, not an internal one")
+    parts = urlsplit(base)
+    return origin, f"{parts.scheme}://{parts.netloc}", parts.path or "/"
+
+
+def under(path: str, start: str) -> bool:
+    """Whether `path` is the start path or below it: `/todomvc/` keeps
+    `/todomvc`, `/todomvc/` and `/todomvc/x`, never `/todomvcx`."""
+    prefix = start.rstrip("/")
+    return not prefix or path == prefix or path.startswith(prefix + "/")
+
+
+def hash_route(href: Any, document: str) -> str | None:
+    """`document#/route` when `href` is a link on `document` itself (same
+    path, no query) whose fragment is route-shaped (HASH_ROUTE, cut at its
+    own `?`); else None."""
+    try:
+        parts = urlsplit(str(href))
+    except ValueError:
+        return None
+    if (parts.path or "/") != document or parts.query:
+        return None
+    route = parts.fragment.split("?", 1)[0]
+    return f"{document}#{route}" if HASH_ROUTE.fullmatch(route) else None
 
 
 def excluded(path: str, globs: list[str] | tuple[str, ...]) -> bool:
@@ -1037,38 +1196,42 @@ def route_id(path: str, taken: set[str]) -> str:
     return rid
 
 
-def discover(*, base: str, max_pages: int, max_depth: int, exclude: list[str]) -> dict:
+def discover(*, base: str, max_pages: int, max_depth: int, exclude: list[str],
+             hash_routes: bool = False) -> dict:
     """The route list of what `base` links to, breadth first (module
     docstring). Returns `{"document": route list or None, "why": str}`:
-    None when nothing could be listed (the start page excluded or
-    disallowed), and why."""
+    None when nothing could be listed (the start page excluded, disallowed
+    or answering an HTTP error), and why."""
+    origin, root, start = discover_base(base)
     globs = list(DEFAULT_EXCLUDE) + [g for g in exclude if g not in DEFAULT_EXCLUDE]
-    robots = _fetch_robots(base + "/robots.txt")
+    # robots.txt is the origin's, whatever path the app is served under.
+    robots = _fetch_robots(root + "/robots.txt")
     rules = robots_disallow(robots)
-    origin = _origin(base)
-    if origin is None:
-        raise UsageError("--base must be an http(s) origin")
-    skipped = {"off_origin": 0, "excluded": 0, "robots": 0, "failed": 0}
+    skipped = {"off_origin": 0, "outside_base": 0, "excluded": 0, "robots": 0, "failed": 0, "http_error": 0}
     off: set[str] = set()
+    outside: set[str] = set()
     seen: set[str] = set()
     listed: list[tuple[str, int]] = []
     failed: list[str] = []
+    http_errors: dict[str, int] = {}
+    loaded: set[str] = set()
 
     def admit(path: str, depth: int) -> None:
         if path in seen:
             return
         seen.add(path)
-        if excluded(path, globs):
+        document, _, route = path.partition("#")
+        if excluded(document, globs) or (route and excluded(route, globs)):
             skipped["excluded"] += 1
-        elif disallowed(path, rules):
+        elif disallowed(document, rules):
             skipped["robots"] += 1
         elif len(listed) < max_pages and depth <= max_depth:
             listed.append((path, depth))
 
-    admit("/", 0)
+    admit(start, 0)
     if not listed:
         why = "excluded" if skipped["excluded"] else "disallowed by robots.txt"
-        return {"document": None, "why": f"the start page / is {why}: nothing to discover"}
+        return {"document": None, "why": f"the start page {start} is {why}: nothing to discover"}
     playwright, _browser, context = _connect()
     page = None
     try:
@@ -1082,7 +1245,17 @@ def discover(*, base: str, max_pages: int, max_depth: int, exclude: list[str]) -
             if depth >= max_depth:
                 continue
             try:
-                page.goto(base + path, wait_until="load", timeout=NAV_TIMEOUT_MS)
+                response = page.goto(root + path, wait_until="load", timeout=NAV_TIMEOUT_MS)
+                loaded.add(path)
+                # A 4xx or 5xx document is no screen (#1981: a GitHub Pages
+                # 404 was listed); None is a same-document (hash) navigation.
+                status = getattr(response, "status", None) if response is not None else None
+                if isinstance(status, int) and status >= 400:
+                    at -= 1
+                    listed.pop(at)
+                    http_errors[path] = status
+                    skipped["http_error"] += 1
+                    continue
                 try:
                     page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_MS)
                 except Exception:  # noqa: BLE001 -- an app that polls may never be idle
@@ -1092,6 +1265,7 @@ def discover(*, base: str, max_pages: int, max_depth: int, exclude: list[str]) -
                 skipped["failed"] += 1
                 failed.append(path)
                 continue
+            here = path.partition("#")[0]
             for href in list(hrefs)[:MAX_LINKS]:
                 found = same_origin_path(href, origin)
                 if found is None:
@@ -1099,6 +1273,15 @@ def discover(*, base: str, max_pages: int, max_depth: int, exclude: list[str]) -
                         off.add(str(href))
                         skipped["off_origin"] += 1
                     continue
+                if not under(found, start):
+                    if found not in outside:
+                        outside.add(found)
+                        skipped["outside_base"] += 1
+                    continue
+                if hash_routes:
+                    route = hash_route(href, here)
+                    if route is not None:
+                        admit(route, depth + 1)
                 admit(found, depth + 1)
     finally:
         if page is not None:
@@ -1107,6 +1290,9 @@ def discover(*, base: str, max_pages: int, max_depth: int, exclude: list[str]) -
             except Exception:  # noqa: BLE001
                 pass
         playwright.stop()
+    if not listed:
+        return {"document": None,
+                "why": f"the start page {start} answered HTTP {http_errors.get(start)}: nothing to discover"}
     taken: set[str] = set()
     routes = [{"id": route_id(path, taken), "path": path, "ready": DISCOVER_READY} for path, _depth in listed]
     groups = {f"pages-{n + 1}": routes[i:i + DISCOVER_GROUP_SIZE]
@@ -1117,6 +1303,10 @@ def discover(*, base: str, max_pages: int, max_depth: int, exclude: list[str]) -
             "base": base, "max_pages": max_pages, "max_depth": max_depth, "exclude": globs,
             "robots": "absent" if robots is None else ("unreachable" if robots == ROBOTS_UNREACHABLE else "read"),
             "depths": {path: depth for path, depth in listed}, "skipped": skipped, "failed": failed,
+            "hash_routes": hash_routes, "http_errors": http_errors,
+            # Listed at a cap and never loaded, so their status was not read:
+            # their capture's navigate step reads it.
+            "unchecked": [path for path, _depth in listed if path not in loaded and path not in failed],
         },
     }
     return {"document": document, "why": ""}
@@ -1302,11 +1492,15 @@ def _parser() -> argparse.ArgumentParser:
     cap.add_argument("--clock", default=None,
                      help="freeze the page clock at this ISO 8601 instant (else the route list's clock, if any)")
     dis = sub.add_parser("discover", help="write a route list of the same-origin pages an app links to")
-    dis.add_argument("--base", required=True, help="the app's origin, e.g. https://app.example")
+    dis.add_argument("--base", required=True,
+                     help="where the app starts, e.g. https://app.example or https://app.example/todomvc/; "
+                          "only links under its path are kept")
     dis.add_argument("--max-pages", type=int, default=DISCOVER_MAX_PAGES)
     dis.add_argument("--max-depth", type=int, default=DISCOVER_MAX_DEPTH)
     dis.add_argument("--exclude", action="append", default=[],
                      help=f"a path glob never listed or loaded (repeatable; {', '.join(DEFAULT_EXCLUDE)} always)")
+    dis.add_argument("--hash-routes", action="store_true",
+                     help="also list a page's own links whose fragment is a route (#/active), as routes")
     dis.add_argument("--out", required=True, help="the route list to write, e.g. screens.json")
     dif = sub.add_parser("diff", help="compare two capture tarballs image by image")
     dif.add_argument("a")
@@ -1360,11 +1554,9 @@ def _discover_command(args) -> int:
         sys.stderr.write(f"swarm_qa: no live browser ({ENDPOINT_ENV} is not set): "
                          "discover reads the rendered pages, so it did not run\n")
         return EXIT_NO_LIVE_BROWSER
-    base = args.base.rstrip("/")
+    base = args.base
     try:
-        parts = urlsplit(base)
-        if _origin(base) is None or parts.path or parts.query or parts.fragment:
-            raise UsageError("--base must be an http(s) origin, with no path")
+        discover_base(base)
         if not 1 <= args.max_pages <= DISCOVER_MAX_PAGES:
             raise UsageError(f"--max-pages must be 1..{DISCOVER_MAX_PAGES}")
         if not 0 <= args.max_depth <= DISCOVER_MAX_DEPTH:
@@ -1374,7 +1566,8 @@ def _discover_command(args) -> int:
     except (UsageError, ValueError) as exc:
         sys.stderr.write(f"swarm_qa: {exc}\n")
         return EXIT_USAGE
-    found = discover(base=base, max_pages=args.max_pages, max_depth=args.max_depth, exclude=args.exclude)
+    found = discover(base=base, max_pages=args.max_pages, max_depth=args.max_depth, exclude=args.exclude,
+                     hash_routes=args.hash_routes)
     document = found["document"]
     if document is None:
         sys.stderr.write(f"swarm_qa: {found['why']}\n")
