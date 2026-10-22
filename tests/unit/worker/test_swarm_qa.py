@@ -224,6 +224,15 @@ class _Locator:
         return "- heading \"%s\" [level=1]" % self.page.url
 
 
+class _Response:
+    """What `page.goto` answers for a full document load, and what a
+    `response` listener is handed."""
+
+    def __init__(self, url, status):
+        self.url = url
+        self.status = status
+
+
 class FakePage:
     """What `swarm_qa.capture` may do to a page. `set_viewport_size` fails the
     test outright: the gate owns the size."""
@@ -277,6 +286,19 @@ class FakePage:
         # True: a `document.cookie` write raises (QA-PERSONA-COOKIE: the
         # persona step's own failure is reported as that step).
         self.cookie_fails = False
+        # path -> the HTTP status its main document answers (200 when
+        # absent). A same-document navigation (only the fragment differs)
+        # answers None, as Playwright's `goto` does.
+        self.statuses = {}
+        # path -> [(url, status)] the page's subresources answer, handed to
+        # every `response` listener on a full load of it.
+        self.subresources = {}
+        # (width, height) of the first screenshot after a full document
+        # load, when it differs from the viewport (QA-GENERIC-GAPS: at
+        # phone-390 it came out 980x2121 with the page drawn small); None
+        # for a page whose every shot is the viewport's size, 3x2.
+        self.first_shot = None
+        self.fresh = False
 
     def set_viewport_size(self, *_a, **_kw):
         raise AssertionError("swarm_qa resized the page; the gate owns the size")
@@ -285,6 +307,7 @@ class FakePage:
         self.handlers.setdefault(event, []).append(handler)
 
     def goto(self, url, **kw):
+        same_document = "#" in url and url.split("#")[0] == self.url.split("#")[0]
         self.url = url
         self.elapsed = 0
         self.log.append(("goto", url, kw.get("wait_until")))
@@ -294,6 +317,13 @@ class FakePage:
             self.storage.clear()
         self.loaded_with[url] = sorted(self.storage)
         self.storage["visited:" + url[len(origin):]] = "1"
+        if same_document:
+            return None
+        self.fresh = True
+        for sub_url, status in self.subresources.get(self._path(), []):
+            for handler in self.handlers.get("response", []):
+                handler(_Response(sub_url, status))
+        return _Response(url, self.statuses.get(self._path(), 200))
 
     def add_init_script(self, script=None, **_kw):
         self.init_scripts.append(script)
@@ -332,6 +362,8 @@ class FakePage:
             return list(self.links.get(self._path(), []))
         if expression == self.qa.FONTS_READY_JS:
             return True
+        if expression == getattr(self.qa, "VIEWPORT_JS", None):
+            return [3, 2, 1]
         if expression == self.qa.MEASURE_JS:
             if self.dom is not None:
                 return _run_js(expression, self.dom, arg)
@@ -369,6 +401,10 @@ class FakePage:
         assert "path" not in kw, "swarm_qa names its files itself"
         assert not kw.get("full_page"), "a full-page capture is a downscaled image to the model"
         self.log.append(("shot", self.url, (self.media or {}).get("color_scheme"), dict(kw), self.elapsed, self.at))
+        if self.fresh and self.first_shot is not None:
+            self.fresh = False
+            return _png(*self.first_shot, _white)
+        self.fresh = False
         return _png(3, 2, _white)
 
     def inner_text(self, selector, **_kw):
@@ -1413,11 +1449,11 @@ def site(world, qa, monkeypatch):
     return world
 
 
-def _discover(qa, world, *extra, max_pages="60", max_depth="3"):
+def _discover(qa, world, *extra, max_pages="60", max_depth="3", base=APP):
     out = world.tmp / "screens.json"
     if out.exists():
         out.unlink()
-    code = qa.main(["discover", "--base", APP, "--max-pages", max_pages, "--max-depth", max_depth,
+    code = qa.main(["discover", "--base", base, "--max-pages", max_pages, "--max-depth", max_depth,
                     "--out", str(out), *extra])
     return code, out
 
@@ -1548,3 +1584,215 @@ def test_robots_rules_are_the_star_groups_disallow_lines(qa):
     assert qa.robots_disallow(None) == [] and qa.robots_disallow("User-agent: *\nDisallow:\n") == []
     # MUTATION: treat `*` and `$` literally and these miss.
     assert qa.disallowed("/a/file.pdf", ["/*.pdf$"]) and not qa.disallowed("/a/file.pdf.html", ["/*.pdf$"])
+
+
+# -- QA-GENERIC-GAPS (part of #1981, #1933): the generic path on an external app
+
+TODO_APP = APP + "/todomvc/"
+
+
+def test_discover_starts_at_a_base_with_a_path_and_keeps_only_links_under_it(qa, site):
+    """Epic #1981, the first gap: an app served under a sub-path
+    (https://demo.playwright.dev/todomvc/) is the start, not the origin's /."""
+    site.page.links = {
+        "/todomvc/": [APP + "/todomvc/about", APP + "/todomvc", APP + "/", APP + "/other/x",
+                      APP + "/todomvcx", "https://other.example.test/todomvc/y"],
+        "/todomvc/about": [APP + "/todomvc/about/team"],
+    }
+    code, out = _discover(qa, site, base=TODO_APP)
+    assert code == 0
+    paths = _paths(out)
+    # MUTATION: keep refusing a base with a path and this exits 64.
+    # MUTATION: keep every same-origin link and /, /other/x and /todomvcx are listed.
+    assert sorted(paths) == ["/todomvc", "/todomvc/", "/todomvc/about", "/todomvc/about/team"], paths
+    # MUTATION: start at the origin's / and the first navigation is /.
+    assert _gotos(site)[0] == "/todomvc/"
+    # The paths stay relative to the origin, as `capture --base <origin>` expects.
+    assert all(p.startswith("/todomvc") for p in paths)
+    # MUTATION: fetch robots.txt under the base's path and the origin's own rules are never read.
+    assert site.robots_asked == [APP + "/robots.txt"]
+    document = json.loads(out.read_text(encoding="utf-8"))
+    assert document["discovered"]["skipped"]["outside_base"] == 3, document["discovered"]["skipped"]
+
+
+@pytest.mark.parametrize("base", [
+    "https://user@app.example.test/todomvc/",
+    "https://user:pw@app.example.test/",
+    "https://app.example.test/todomvc/?ref=x",
+    "https://app.example.test/todomvc/?",
+    "https://app.example.test/todomvc/#/active",
+    "ftp://app.example.test/todomvc/",
+    "https://203.0.113.7/todomvc/",
+    "https://[2001:db8::1]/",
+    "https://localhost/todomvc/",
+    "https://intranet/",
+    "https://app.svc.cluster.local/",
+    "https://app.corp.internal/x/",
+])
+def test_discover_still_refuses_a_base_that_is_no_public_http_page(qa, site, base):
+    # MUTATION: drop the userinfo, query, fragment, scheme, IP-literal or
+    # internal-name refusal and this base is crawled.
+    code, out = _discover(qa, site, base=base)
+    assert code == qa.EXIT_USAGE and not out.exists()
+    assert [e for e in site.page.log if e[0] == "goto"] == []
+
+
+def test_discovers_internal_suffixes_are_swarm_egresss():
+    """The internal-name rule is swarm_egress.policy's, restated in the image
+    (which cannot import it): the two lists must not drift."""
+    import ast
+
+    tree = ast.parse((REPO / "apps" / "swarm-egress" / "swarm_egress" / "policy.py").read_text(encoding="utf-8"))
+    egress = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                  and any(getattr(t, "id", None) == "INTERNAL_SUFFIXES" for t in n.targets))
+    # MUTATION: drop a suffix from swarm_qa's list and a cluster name is crawled.
+    assert tuple(_module().INTERNAL_SUFFIXES) == tuple(egress)
+
+
+def test_discover_with_hash_routes_lists_route_shaped_fragments_as_routes(qa, site):
+    """Epic #1981, the second gap: a hash-routed app's routes (#/active,
+    #/completed) are found, but only with --hash-routes."""
+    site.page.links = {
+        "/todomvc/": [TODO_APP + "#/", TODO_APP + "#/active", TODO_APP + "#/completed?token=x",
+                      TODO_APP + "#section", TODO_APP + "#", TODO_APP + "#access_token=abc",
+                      APP + "/todomvc/about#/team"],
+    }
+    code, out = _discover(qa, site, base=TODO_APP)
+    assert code == 0
+    # MUTATION: keep fragments by default and a token-shaped one is a route.
+    assert sorted(_paths(out)) == ["/todomvc/", "/todomvc/about"], _paths(out)
+    code, out = _discover(qa, site, "--hash-routes", base=TODO_APP)
+    assert code == 0
+    paths = _paths(out)
+    # MUTATION: ignore --hash-routes and #/active and #/completed are never listed.
+    # MUTATION: keep any fragment and #section, # and #access_token=... are routes.
+    # MUTATION: keep a hash route's own query and its token is in the route list.
+    # MUTATION: keep a hash link on another document and /todomvc/about#/team is a route.
+    assert sorted(paths) == ["/todomvc/", "/todomvc/#/", "/todomvc/#/active", "/todomvc/#/completed",
+                             "/todomvc/about"], paths
+    document = qa.load_routes(out)
+    ids = [r["id"] for routes in document["groups"].values() for r in routes]
+    assert len(set(ids)) == len(ids) == 5
+
+
+def test_hash_routes_honour_the_exclusions(qa, site):
+    site.page.links = {"/": [APP + "/#/logout", APP + "/#/admin/users", APP + "/#/ok"]}
+    code, out = _discover(qa, site, "--hash-routes", "--exclude", "/admin/*")
+    assert code == 0
+    # MUTATION: test only the document path against the exclusions and #/logout is listed.
+    assert sorted(_paths(out)) == ["/", "/#/ok"], _paths(out)
+
+
+def test_discover_does_not_list_a_page_that_answered_an_http_error(qa, site, capsys):
+    """Epic #1981, the third gap: the origin root was a GitHub Pages 404 and
+    was listed."""
+    site.page.links = {"/": [APP + "/gone", APP + "/broken", APP + "/ok"], "/gone": [APP + "/never"]}
+    site.page.statuses = {"/gone": 404, "/broken": 503}
+    code, out = _discover(qa, site)
+    assert code == 0
+    # MUTATION: ignore the main document's status and /gone and /broken are listed.
+    assert sorted(_paths(out)) == ["/", "/ok"], _paths(out)
+    document = json.loads(out.read_text(encoding="utf-8"))
+    assert document["discovered"]["http_errors"] == {"/gone": 404, "/broken": 503}
+    # MUTATION: read a 404 page's links and /never is listed.
+    assert "/never" not in _paths(out)
+    site.page.statuses = {"/": 404}
+    code, out = _discover(qa, site)
+    # MUTATION: list a start page that answered 404 and capture is handed a 404.
+    assert code == qa.EXIT_NOTHING_CAPTURED and not out.exists()
+    assert "404" in capsys.readouterr().err
+
+
+def test_capture_records_a_page_that_answered_an_http_error_as_failed_at_navigate(qa, world):
+    world.page.statuses = {"/timeline": 404}
+    code, _out, bundle = _capture(qa, world, "--settle", "generic", presets="desktop", themes="light")
+    assert code == 0
+    manifest = _manifest(bundle)
+    # MUTATION: ignore the status and a 404 page is recorded captured.
+    assert [r["id"] for r in manifest["routes"]] == ["runs"]
+    failed = manifest["failed"]
+    assert [f["id"] for f in failed] == ["timeline"]
+    # MUTATION: record it at another step, or without its status, and this fails.
+    assert failed[0]["error"].startswith("navigate: ") and "HTTP 404" in failed[0]["error"], failed
+
+
+def test_a_same_document_navigation_with_no_response_is_captured(qa, world):
+    """A hash route's `goto` on the same document answers no response:
+    that is not an HTTP error."""
+    world.page.url = CONSOLE + "/runs"
+    routes = json.loads(world.routes.read_text(encoding="utf-8"))
+    routes["groups"]["work-a"] = [{"id": "runs-active", "path": "/runs#/active", "ready": "main h1"}]
+    world.routes.write_text(json.dumps(routes), encoding="utf-8")
+    code, _out, bundle = _capture(qa, world, "--settle", "generic", "--keep-storage", presets="desktop",
+                                  themes="light")
+    assert code == 0
+    # MUTATION: treat a None response as a failure and a hash route is never captured.
+    assert [r["id"] for r in _manifest(bundle)["routes"]] == ["runs-active"]
+
+
+def test_an_http_error_subresource_is_recorded_with_its_url_and_status(qa, world):
+    """Epic #1981, the fifth comment: "Failed to load resource ... 404" had
+    no URL, and failed_requests stayed empty (an HTTP error is no failed
+    request)."""
+    world.page.subresources = {"/runs": [(CONSOLE + "/app.js?v=" + "9" * 8, 404), (CONSOLE + "/ok.css", 200),
+                                         ("https://cdn.example.test/font.woff2", 503)]}
+    code, out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    errors = json.loads((out / "work-a" / "runs--desktop--light.errors.json").read_text(encoding="utf-8"))
+    # MUTATION: listen to requestfailed alone and this list is empty.
+    # MUTATION: keep the query and a token in one is in errors.json.
+    assert errors["bad_responses"] == [{"url": CONSOLE + "/app.js", "status": 404},
+                                       {"url": "https://cdn.example.test/font.woff2", "status": 503}]
+    assert errors["failed_requests"] == []
+    entry = next(r for r in _manifest(bundle)["routes"] if r["id"] == "runs")
+    assert entry["bad_responses"] == 2
+    # MUTATION: never reset the list between routes and /timeline carries /runs's.
+    timeline = json.loads((out / "work-a" / "timeline--desktop--light.errors.json").read_text(encoding="utf-8"))
+    assert timeline["bad_responses"] == []
+
+
+def test_the_first_shot_after_a_document_load_is_retaken_at_the_viewports_size(qa, world):
+    """Epic #1981, the phone-390 comment: the first screenshot after a full
+    document load came out 980x2121 with the page drawn small while the page
+    reported innerWidth 390; later shots in the same document were 390x844.
+    A shot whose size is not the page's viewport is taken again."""
+    world.page.first_shot = (9, 21)
+    code, out, bundle = _capture(qa, world, presets="phone-390", themes="light")
+    assert code == 0
+    for name in ("runs--phone-390--light--s1.png", "timeline--phone-390--light--s1.png"):
+        # MUTATION: keep the first shot and segment 1 is the 9x21 image.
+        assert qa.decode_png((out / "work-a" / name).read_bytes())[:2] == (3, 2), name
+    shots = [e for e in world.page.log if e[0] == "shot"]
+    # Three segments a route, and one shot again per route, no more.
+    assert len(shots) == 2 * 3 + 2
+    entry = next(r for r in _manifest(bundle)["routes"] if r["id"] == "runs")
+    # MUTATION: retake silently and the manifest does not say the first shot was wrong.
+    assert entry["reshot"] == [{"segment": 1, "size": [9, 21], "viewport": [3, 2]}]
+    assert not any("viewport" in f["error"] for f in _manifest(bundle)["failed"])
+
+
+def test_a_shot_that_stays_off_the_viewports_size_is_kept_and_listed_failed(qa, world, monkeypatch):
+    world.page.first_shot = (9, 21)
+    shoot = world.page.screenshot
+
+    def always_wrong(**kw):
+        shoot(**kw)
+        return _png(9, 21, _white)
+
+    monkeypatch.setattr(world.page, "screenshot", always_wrong)
+    code, _out, bundle = _capture(qa, world, presets="phone-390", themes="light", group="other")
+    assert code == 0
+    failed = _manifest(bundle)["failed"]
+    # MUTATION: retake forever, or drop the finding, and this differs.
+    assert len(failed) == 1 and "9x21" in failed[0]["error"] and "3x2" in failed[0]["error"], failed
+    shots = [e for e in world.page.log if e[0] == "shot"]
+    assert len(shots) <= 3 * (1 + qa.SHOT_RETRIES)
+
+
+def test_the_viewport_probe_runs_in_a_page(qa):
+    _node()
+    dom = _console_dom()
+    answer = _run_js(qa.VIEWPORT_JS, dom, None)
+    # MUTATION: read another height than the window's and the shot is
+    # compared with something else.
+    assert isinstance(answer, list) and len(answer) == 3 and answer[1] == dom["inner_height"], answer
