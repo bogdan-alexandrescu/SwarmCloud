@@ -119,7 +119,8 @@ def workflows(db) -> list[dict[str, Any]]:
 
 
 def auth_of(ctx, schedule: dict[str, Any]):
-    return schedulefire.schedule_owner_auth(ctx, schedule)
+    """The creating caller's context, as the create route has it: from their token."""
+    return ctx.authenticator.authenticate(f"Bearer token-{schedule['owner'].split('@')[0]}")
 
 
 # ---------------------------------------------------------------------------

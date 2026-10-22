@@ -813,6 +813,7 @@ holds for schedules exactly as for agents.
 | 13 | `model-prices-refresh` | API | R0 | no | auto | auto | admin, platform scope only | 24 h | 2 |
 | 14 | `model-prices-check` | API | R1 | no (issues) | auto | auto | admin, platform scope only | 24 h | 2 |
 | 15 | `failure-review` | one `claude-code` investigator, then API and issue runs | R3 with `merge: auto`, else R2 | yes (fix runs) | plan auto · **approve merge** | plan auto · merge auto, reached only through the audited switch (Q8) | **owner**, platform scope only | 6 h | 3 |
+| 16 | `visual-qa` | workflow: a QA target's `:run` | R1 | no (issues) | auto · merge off | auto · merge off | a **workspace admin** of the tenant, `all` scope | 24 h | 3 |
 
 The **floor** column is the lowest gate the type allows. Between the floor and
 the default, only a platform admin may set the gate (§4.2), with one
@@ -1305,6 +1306,61 @@ on lanes FR-1 (the hold categories in `issueruns.hard_stop_hold`) and FR-2
   already filed (the `HOLD` case) needs a label call that `forgewrite` does
   not have, so for now the comment says the cause is held. Lane FR-4 builds
   the read side of the findings (the route, the bell item and the card).
+
+### 3.17 `visual-qa`
+
+Designed 2026-10-22 for #1933 in
+[design/visual-qa-any-app.md](design/visual-qa-any-app.md) §6; **built by lane
+VQ-7** (`swarm_api/schedtypes/visual_qa.py`, the `TYPES` entry), on lane VQ-2's
+QA targets (`swarm_api/qatargets.py`). A schedule is the optional trigger; the
+on-demand one is `POST /v1/qa-targets/{id}:run`.
+
+* **Does.** A firing **is the target's `:run`**, made by the schedule's
+  owner: the same `QaTargets.runnable`, `render_run` and `record_run` the
+  route calls, in its order. The one difference is that the workflow is
+  submitted through the firing, so it carries the firing's mark and spends a
+  place of its room. It runs with `file: "issues"`, `:run`'s default.
+* **Why a refusal, not a failure.** Every refusal of `:run` is the firing's:
+  a host still `pending` (`qa_target_host_pending`), the repository
+  registration's `agents_may_file_issues` off (`issue_writes_off`), an
+  `own_login` target with no credential set, or a repository no longer
+  registered. The firing ends `refused` with that code and nothing is
+  submitted. A pending host is waiting for a platform admin's approval
+  (VQ-Q1). That is not a defect of the run, and recording it as `failed`
+  would page someone over a decision nobody had made yet. Refused firings
+  still count toward §4.4's consecutive-failure pause, which is what stops a
+  schedule whose host is never approved from refusing every day for ever.
+* **Parameters.** `target` only: a QA target id. Nothing about the run is a
+  schedule parameter. The URL, sign-in, screens, flows and filing rules all
+  belong to the target, which a workspace admin sets (design §1.1). So a
+  schedule can only start a run a member could start by hand (invariant 10).
+* **The tenant.** The target must be the schedule's tenant's own. At create
+  and edit `check_target` refuses anything else with `qa_target_not_found`.
+  It gives the same answer for another tenant's target as for an id that
+  exists nowhere, so an id is never an oracle, as with repositories (§5.1).
+  Each firing reads the target scoped to the tenant again, so a stored
+  document naming another tenant's target is refused `not_found` when it
+  fires.
+* **Creates.** A **workspace admin** of the tenant, `scope: {mode: "all"}`
+  (the target names its one repository). `creators` holds platform roles
+  only, so it says `member`. The workspace-admin rule is `check_target`'s,
+  `routes.qatargets.require_workspace_admin`, the rule that guards changing
+  a target.
+* **Minimum interval.** 24 hours: this runs QA against someone else's
+  application.
+* **Gate.** Run and plan auto, merge **off**, and the floor is the same. It
+  files issues and changes no code, so there is no merge gate to set.
+* **Budget.** `BUDGET_CAPS` in the executor: `per_run_usd` 25, `per_day_usd`
+  50, `max_concurrent` 1. These are **provisional and the owner's to set**
+  (VQ7-Q1): no QA run has been measured. $25 is a run at the design's bounds
+  (8 haiku captures, 8 opus reviews, the flows, an opus report and a sonnet
+  filing step). $50 a day is the daily firing plus one run-now.
+* **Produces.** One QA workflow per firing. Its findings are filed as issues
+  in the target's repository by the workflow's `file` step, through the
+  brokered issue tools (design §5).
+* **Blast radius.** Issues in one repository the tenant registered, at most
+  the target's `max_issues` per run, and read-only traffic to one approved
+  host at the target's rate.
 
 ---
 
