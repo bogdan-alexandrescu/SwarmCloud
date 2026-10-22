@@ -294,7 +294,11 @@ describe('capacity-004: an `unknown` quota row is not drawn in the exhausted red
 })
 
 describe('capacity-002: Accounts\' remove button is drawn off until it is armed', () => {
-  it('is the plain disabled control, unfaded, before the label is typed, and the filled red once it is', async () => {
+  // OWNER DECISION 2026-10-22 ~01:15Z, "Danger outline unarmed" (box comment
+  // 6314115845, part of #1680; lane ACCOUNT-NAME): the plain grey control this
+  // case first pinned is now a danger OUTLINE -- the danger ink on its edge,
+  // no fill -- so it still reads as off, never as the armed fill.
+  it('is the danger outline, unfaded, before the label is typed, and the filled red once it is', async () => {
     await renderAccounts()
     const btn = screen.getByRole('button', { name: 'remove alice-personal' }) as HTMLButtonElement
     expect(btn.disabled).toBe(true)
@@ -303,8 +307,9 @@ describe('capacity-002: Accounts\' remove button is drawn off until it is armed'
       // MUTATION: draw the unarmed button as `danger-filled` again (Accounts.tsx
       // Remove) -- `.c-btn.is-danger-filled:disabled` paints the pale red
       // `--s-badb` ground under a red edge, which reads as armed.
-      expect(painted(btn, ['background', 'background-color'], env)).toBe('var(--surface-2)')
-      expect(painted(btn, ['border-color', 'border'], env)).toBe('var(--line)')
+      expect(painted(btn, ['background', 'background-color'], env)).toBe('transparent')
+      // MUTATION: draw it `secondary` again -- the edge is the grey `--line`.
+      expect(painted(btn, ['border-color', 'border'], env)).toBe('var(--s-bad)')
     }
     // MUTATION: drop `.acct-action > .limit-edit > .c-btn:disabled { opacity: 1 }`
     // (styles/capacity.css) -- `.limit-edit button:disabled` fades it to .4,

@@ -161,6 +161,12 @@ class FakePool:
         self.accounts[account_id]["model_classes"] = list(model_classes)
         return {"account": dict(self.accounts[account_id])}
 
+    def set_display_name(self, account_id: str, *, display_name: str | None) -> dict:
+        self.calls.append(("set_display_name", account_id, display_name))
+        self._maybe_fail()
+        self.accounts[account_id]["display_name"] = display_name
+        return {"account": dict(self.accounts[account_id])}
+
     def set_state(self, account_id: str, *, state: str, reason: str) -> dict:
         self.calls.append(("set_state", account_id, state, reason))
         self._maybe_fail()
@@ -252,6 +258,7 @@ def test_list_marks_a_stale_reading_rather_than_rendering_it_as_a_number(api_con
         ("delete", "/v1/accounts/eng:primary", None),
         ("put", "/v1/accounts/eng:primary/lending", {"lend_to": ["research"]}),
         ("put", "/v1/accounts/eng:primary/model-classes", {"model_classes": ["opus"]}),
+        ("put", "/v1/accounts/eng:primary/name", {"display_name": "Primary"}),
         ("put", "/v1/accounts/eng:primary/state", {"state": "PAUSED", "reason": "x"}),
     ],
 )
@@ -443,6 +450,9 @@ def test_the_pool_takes_subscriptions_only_so_provider_is_not_a_choice(
         ("put", "/v1/accounts/research:shared/state", {"state": "PAUSED", "reason": "x"}),
         ("put", "/v1/accounts/research:shared/lending", {"lend_to": []}),
         ("put", "/v1/accounts/research:shared/model-classes", {"model_classes": ["opus"]}),
+        # MUTATION: drop `_owned(...)` from `set_account_name` -- a borrower
+        # renames the lender's account and this is a 200.
+        ("put", "/v1/accounts/research:shared/name", {"display_name": "Mine now"}),
         ("post", "/v1/accounts/research:shared/refresh", None),
         ("delete", "/v1/accounts/research:shared", None),
     ],
@@ -525,6 +535,99 @@ def test_the_owner_sets_the_model_classes_an_account_serves(client, pool):
     assert narrowed.status_code == 200, narrowed.text
     assert narrowed.json()["account"]["model_classes"] == ["opus"]
     assert ("set_model_classes", "eng:primary", ("opus",)) in pool.calls
+
+
+def test_the_accounts_read_carries_each_accounts_name(api_context):
+    """#1913: the Name rides the listing the console reads, verbatim, and an
+    unnamed account carries none rather than its label."""
+    named = account("eng", "ai-eng-2")
+    named["display_name"] = "AI Eng 2"
+    unnamed = account("eng", "plain")
+    unnamed["display_name"] = None
+    app = create_app(api_context)
+    app.state.account_pool = FakePool(named, unnamed)
+    local = TestClient(app, raise_server_exceptions=False)
+
+    listed = {
+        a["account_id"]: a
+        for a in local.get("/v1/accounts", headers=auth_header("alice")).json()["accounts"]
+    }
+
+    # MUTATION: rebuild each account in `list_accounts` by an allow-list that
+    # omits `display_name` -- the console never sees a Name.
+    assert listed["eng:ai-eng-2"]["display_name"] == "AI Eng 2"
+    assert listed["eng:ai-eng-2"]["account_id"] == "eng:ai-eng-2"
+    assert listed["eng:plain"]["display_name"] is None
+
+
+def test_the_owner_sets_and_clears_an_accounts_name(client, pool):
+    named = client.put(
+        "/v1/accounts/eng:primary/name",
+        headers=auth_header("alice"),
+        json={"display_name": "Primary seat"},
+    )
+
+    # MUTATION: drop the `PUT /{account_id}/name` route -- 404/405.
+    assert named.status_code == 200, named.text
+    assert named.json()["account"]["display_name"] == "Primary seat"
+    # Forwarded as sent: the broker trims and validates, once.
+    # MUTATION: forward `body.display_name.strip()` -- a second, drifting
+    # copy of the broker's rule.
+    assert ("set_display_name", "eng:primary", "Primary seat") in pool.calls
+
+    cleared = client.put(
+        "/v1/accounts/eng:primary/name",
+        headers=auth_header("alice"),
+        json={"display_name": None},
+    )
+    assert cleared.status_code == 200, cleared.text
+    # MUTATION: send "" for None -- the broker refuses an empty Name, so a
+    # Name could never be cleared.
+    assert ("set_display_name", "eng:primary", None) in pool.calls
+    assert cleared.json()["account"]["display_name"] is None
+
+
+def test_a_name_the_broker_refuses_reaches_the_caller_in_its_words(api_context):
+    from swarm_api.errors import ValidationFailed
+
+    broken = FakePool(account("eng", "primary"))
+    words = "an account's Name is at most 60 characters once trimmed; this one is 61"
+
+    def refuse(account_id, *, display_name):
+        raise ValidationFailed(words)
+
+    broken.set_display_name = refuse  # type: ignore[method-assign]
+    app = create_app(api_context)
+    app.state.account_pool = broken
+    local = TestClient(app, raise_server_exceptions=False)
+
+    response = local.put(
+        "/v1/accounts/eng:primary/name",
+        headers=auth_header("alice"),
+        json={"display_name": "x" * 61},
+    )
+
+    # MUTATION: catch the refusal in the route and answer a generic message --
+    # the person renaming never learns the limit.
+    assert response.status_code == 422, response.text
+    assert response.json()["message"] == words
+
+
+def test_the_client_puts_the_name_to_the_brokers_route():
+    transport, seen = _recording_transport(200, {"account": {"account_id": "eng:a b"}})
+    client = BrokerClient(
+        base_url="https://broker.example",
+        tokens=StaticIdToken("t"),
+        transport=transport,
+    )
+
+    client.set_display_name("eng:a b", display_name="AI Eng 2")
+
+    # MUTATION: PUT to `/name` without quoting the id, or send the field under
+    # another key -- the broker's StrictModel refuses it with a bare 422.
+    assert seen[0]["method"] == "PUT"
+    assert seen[0]["url"] == "https://broker.example/v1/accounts/eng%3Aa%20b/name"
+    assert json.loads(seen[0]["body"]) == {"display_name": "AI Eng 2"}
 
 
 def test_a_state_the_broker_rejects_comes_back_as_its_own_422(api_context):
