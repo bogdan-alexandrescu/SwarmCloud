@@ -1293,6 +1293,12 @@ cmd_expect() {
     || die "terraform/modules/service_account_ids lists no swarm-scheduler"
   reconciler="$(platform_account_email swarm-reconciler)" \
     || die "terraform/modules/service_account_ids lists no swarm-reconciler"
+  # swarm-api, the one account V-1 and V-2 bind on a person's QA secret
+  # (docs/design/visual-qa-any-app.md §2.1, §7). Only a personal expectation
+  # carries it, below.
+  local api_email
+  api_email="$(platform_account_email swarm-api)" \
+    || die "terraform/modules/service_account_ids lists no swarm-api"
 
   # These five lines are register-tenant.sh's, character for character, so the
   # condition C4 accepts is the one the script renders (and terraform's, which
@@ -1322,6 +1328,7 @@ cmd_expect() {
     --arg fs_role_id "${FIRESTORE_ROLE_ID}" --arg meta_role_id "${BUCKET_METADATA_ROLE_ID}" \
     --arg env "${ENVIRONMENT}" --arg cluster "${GKE_CLUSTER}" --arg location "${GKE_LOCATION}" \
     --arg kind "${rec_kind}" --arg service_principal "${service_principal}" \
+    --arg api_email "${api_email}" --arg qa_name "swarm-tenant-${tenant}-qa" \
     --arg front_door "$(jq -r '.front_door_backend // ""' "${GUARD_RULES}")" \
     --argjson fs_access "${fs_access}" '
     ($base.project_id) as $p
@@ -1360,6 +1367,11 @@ cmd_expect() {
       # The label the deployer scope policy admits a job-made namespace by
       # (§4.3 A7); C7 requires it on the Namespace.
       + (if $kind == "personal" then {} else {namespace_label: $base.workspace_id} end)
+      # The QA target credential secret of a person, and the one account C6
+      # may bind on it (§2.1, §7 V-1/V-2; BGD 2026-10-22: the deployer job
+      # makes it). A PERSONAL expectation only: the secret binder of the
+      # deployer stops at swarm-tenant-u-, so no group or service has one.
+      + (if $kind == "personal" then {qa_secret: $qa_name, api_email: $api_email} else {} end)
       # The worker database role C5 admits, only when the switch is on.
       + (if $fs_access then {firestore_role: "projects/\($p)/roles/\($fs_role_id)"} else {} end)
       # The two values C10 is made of, only for the kind that is admitted.
