@@ -1,0 +1,35 @@
+{
+  "platform": [
+    "swarm-api",
+    "swarm-scheduler",
+    "swarm-quota-broker",
+    "swarm-reconciler",
+    "swarm-ui",
+    "swarm-verify"
+  ],
+  "gated": {
+    "swarm-egress": {
+      "resources": [],
+      "outputs": ["swarm_egress_manifest"]
+    },
+    "swarm-github-hooks": {
+      "resources": [
+        "google_cloud_run_v2_service.github_hooks",
+        "google_cloud_run_v2_service_iam_member.github_hooks_public"
+      ],
+      "outputs": []
+    },
+    "swarm-graph": {
+      "resources": [],
+      "outputs": ["swarm_graph_manifest"]
+    },
+    "swarm-live": {
+      "resources": [],
+      "outputs": ["swarm_live_manifest"]
+    },
+    "swarm-typesafe-fwd": {
+      "resources": [],
+      "outputs": ["swarm_typesafe_fwd_manifest"]
+    }
+  }
+}

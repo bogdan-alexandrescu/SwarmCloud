@@ -360,6 +360,17 @@ if args[:3] == ["output", "-json", "image_refs"]:
     sys.stdout.write(json.dumps(outputs["image_refs"]) + "\n")
     sys.exit(0)
 
+if args[:2] == ["output", "-json"] and len(args) == 2:
+    # Every output, in terraform's own shape. image-refs.sh --applied reads
+    # it to see which gated services state still holds (#1878).
+    if scenario.get("output_error"):
+        sys.stderr.write(scenario["output_error"] + "\n")
+        sys.exit(1)
+    outputs = scenario.get("outputs") or {}
+    sys.stdout.write(json.dumps({k: {"sensitive": False, "type": "dynamic", "value": v}
+                                 for k, v in outputs.items()}) + "\n")
+    sys.exit(0)
+
 if args[:2] == ["state", "list"]:
     if scenario.get("state_error"):
         sys.stderr.write(scenario["state_error"] + "\n")
@@ -409,6 +420,8 @@ def sandbox(tmp_path: Path, state: dict, registry: dict) -> tuple[Path, dict[str
     root = tmp_path / "repo"
     shutil.copytree(REPO / "scripts", root / "scripts")
     (root / "terraform" / "infra" / ".terraform").mkdir(parents=True)
+    # image-refs.sh --applied reads the gated image list terraform reads.
+    shutil.copy(REPO / "terraform" / "infra" / "images.json", root / "terraform" / "infra" / "images.json")
     tfvars = root / "terraform" / "environments" / "dev"
     tfvars.mkdir(parents=True)
     (tfvars / "dev.tfvars").write_text("")

@@ -36,6 +36,13 @@ NOT_FOUND, and that error has to stay an error: on a live project it means
 drift or the wrong project. The first version asked the registry, and so it
 refused to plan the bootstrap described here.
 
+**A laptop `make tf-plan` refuses to plan a gated service away.**
+`scripts/plan.sh` stops and names the image when state's `image_refs` output
+has no digest for an image in `terraform/infra/images.json` whose service is
+still in state, because without that digest the plan would destroy the service:
+the GitHub push receiver was nearly lost this way (#1878). The next release's
+apply records the digest.
+
 **Read the plan.** `saga-agents-staging` holds another team's live GKE cluster,
 their VPC, buckets, service accounts and Cloud Run services, every one listed
 in `SHARED_DENY_LIST` in `scripts/lib/common.sh`. A plan that proposes to change

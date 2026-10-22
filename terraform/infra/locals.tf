@@ -386,11 +386,22 @@ locals {
 
   # --- images, by digest ---------------------------------------------------
   #
-  # Every image this root deploys. The platform images are named where they
-  # are used (main.tf, verify.tf); the runner images come from the catalogue
-  # mirror above, so a profile that moves to a new image is pinned the day it
-  # moves rather than the day someone remembers this list.
-  platform_images = ["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler", "swarm-ui", "swarm-verify"]
+  # Every image this root deploys. The platform images and the GATED images
+  # are listed once, in images.json, because scripts/lib/image-refs.sh reads
+  # the same file (#1878); the runner images come from the catalogue mirror
+  # above, so a profile that moves to a new image is pinned the day it moves
+  # rather than the day someone remembers this list.
+  #
+  # A gated image is one a resource or output is switched on by
+  # (`lookup(var.image_refs, "<name>", "") != ""`): github_hooks.tf, egress.tf,
+  # graph_service.tf, typesafe_fwd.tf, live.tf. images.json names, per gated
+  # image, the state resources and outputs that need it, so that image-refs.sh
+  # --applied can refuse a plan whose pinned digests would switch them off.
+  # tests/unit/scripts/test_image_refs_gated.py holds every such lookup in this
+  # root to that list.
+  image_list      = jsondecode(file("${path.module}/images.json"))
+  platform_images = local.image_list.platform
+  gated_images    = sort(keys(local.image_list.gated))
   runner_images   = sort(distinct([for name, p in local.runner_profiles : p.image]))
   # The live relay (live.tf) only while it is on. On, it is deployed, so it
   # must have a digest and must be in the `image_refs` output: that output is
@@ -415,6 +426,18 @@ locals {
   # and a Cloud Run Job for a tenant terraform does not know. Only the runner
   # images: the dispatcher never starts a control-plane image.
   worker_image_refs = { for name in local.runner_images : name => local.image[name] }
+
+  # What the `image_refs` output records: every deployed image, and every gated
+  # image this apply was given a digest for. Before #1878 it was the deployed
+  # images alone, so state never recorded swarm-github-hooks, a laptop plan
+  # (scripts/plan.sh pins this output) had no digest for it, and
+  # local.github_hooks_serving planned the push receiver away. A gated image
+  # with no digest is left out rather than mapped to "": "" is not a digest,
+  # and var.image_refs refuses it on the next plan.
+  applied_image_refs = merge(
+    { for name in local.gated_images : name => var.image_refs[name] if contains(keys(var.image_refs), name) },
+    { for name in local.deployed_images : name => local.image[name] },
+  )
 
   tenant_ids = keys(var.tenants)
 

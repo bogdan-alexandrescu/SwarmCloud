@@ -45,6 +45,10 @@
 #      output and either no registry (a fresh project) or a registry nothing
 #      carries :<environment> in yet. With --channel: no image carries the
 #      tag. scripts/plan.sh then plans the registry alone.
+#   4  --applied only: state holds a resource or output that a GATED image
+#      switches on (terraform/infra/images.json), but the digests to pin have
+#      no such image. Planning with them would plan it away, so nothing is
+#      written. See refuse_unpinned_gated_images below (#1878).
 #
 # Usage:
 #   scripts/lib/image-refs.sh --manifest build/deployed-images-dev.json --out build/image-refs-dev.tfvars.json
@@ -68,7 +72,7 @@ while [[ $# -gt 0 ]]; do
     --applied)        SOURCE="applied"; shift ;;
     --out)            OUT="$2"; shift 2 ;;
     --write-manifest) WRITE_MANIFEST="$2"; shift 2 ;;
-    -h|--help)        sed -n '2,52p' "$0"; exit 0 ;;
+    -h|--help)        sed -n '2,56p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -179,6 +183,79 @@ registry_in_state() {
   return 3
 }
 
+# refuse_unpinned_gated_images -- --applied only; exits 4 naming every gated
+# image ${WORK}/refs.json lacks while state holds something it switches on.
+#
+# WHY (#1878). A gated image is one terraform/infra switches a resource or a
+# rendered manifest on with `lookup(var.image_refs, "<name>", "") != ""`: no
+# digest reads as "off". The `image_refs` output used to record the platform
+# and runner images only, so a laptop scripts/plan.sh of dev, pinning that
+# output, had no swarm-github-hooks digest and planned to DESTROY the push
+# receiver and its public invoker. A release plans with the promotion
+# manifest's every digest and kept it, so nothing showed it until a laptop
+# plan was read line by line. The output now records the gated images too;
+# this is for a state no release has re-written yet, and for any image added
+# to images.json later. A plan that would switch a live service off because a
+# digest was not recorded is refused, never planned.
+#
+# The gated images, and what each switches on, are terraform/infra/images.json:
+# the same file terraform reads, so this cannot name a different set.
+refuse_unpinned_gated_images() {
+  local list="${TF_DIR}/images.json" image kind name rc=0
+  [[ -f "${list}" ]] || die "no image list at ${list}"
+  tf -chdir="${TF_DIR}" state list >"${WORK}/gated-resources" 2>"${WORK}/gated-resources.err" || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    err "could not list the resources in terraform state:"
+    redact <"${WORK}/gated-resources.err" | head -n 5 | sed 's/^/     /' >&2
+    die "an unreadable state is not an empty one; refusing to guess which services are deployed"
+  fi
+  rc=0
+  tf -chdir="${TF_DIR}" output -json >"${WORK}/gated-outputs.json" 2>"${WORK}/gated-outputs.err" || rc=$?
+  if [[ "${rc}" -ne 0 ]] || ! jq -e 'type == "object"' "${WORK}/gated-outputs.json" >/dev/null 2>&1; then
+    err "could not read the outputs in terraform state:"
+    redact <"${WORK}/gated-outputs.err" | head -n 5 | sed 's/^/     /' >&2
+    die "an unreadable state is not an empty one; refusing to guess which services are deployed"
+  fi
+  jq -r '.gated | to_entries[] | .key as $i
+         | (.value.resources[] | "\($i)\tresource\t\(.)"),
+           (.value.outputs[]   | "\($i)\toutput\t\(.)")' "${list}" >"${WORK}/gated"
+  : >"${WORK}/unpinned"
+  local visited=0
+  while IFS=$'\t' read -r image kind name; do
+    visited=$((visited + 1))
+    if jq -e --arg i "${image}" 'has($i)' "${WORK}/refs.json" >/dev/null; then
+      continue
+    fi
+    case "${kind}" in
+      resource)
+        # The address itself, or any instance of it (`name[0]`, `name["k"]`).
+        awk -v a="${name}" -v i="${image}" '
+          index($0, a) == 1 && (length($0) == length(a) || substr($0, length(a) + 1, 1) == "[") { print i "\t" $0 }
+        ' "${WORK}/gated-resources" >>"${WORK}/unpinned"
+        ;;
+      output)
+        if jq -e --arg o "${name}" '(.[$o].value // null) as $v | $v != null and $v != ""' \
+             "${WORK}/gated-outputs.json" >/dev/null; then
+          printf '%s\toutput %s\n' "${image}" "${name}" >>"${WORK}/unpinned"
+        fi
+        ;;
+      *) die "${list}: unknown kind '${kind}' for ${image}" ;;
+    esac
+  done <"${WORK}/gated"
+  [[ "${visited}" -gt 0 ]] || die "${list} names no gated image; refusing to skip the check on an empty list"
+  if [[ -s "${WORK}/unpinned" ]]; then
+    cut -f1 "${WORK}/unpinned" | sort -u >"${WORK}/unpinned-images"
+    while IFS= read -r image; do
+      err "the image_refs terraform last applied has no ${image} digest, but state has what it deploys:"
+      awk -F'\t' -v i="${image}" '$1 == i { print "     " $2 }' "${WORK}/unpinned" >&2
+    done <"${WORK}/unpinned-images"
+    err "planning without that digest would plan them away (#1878)."
+    err "the next release's apply records it in image_refs; plan after that release, or deploy through"
+    err "scripts/lib/deploy.sh --manifest <promotion manifest>, which pins every digest."
+    exit 4
+  fi
+}
+
 case "${SOURCE}" in
   manifest)
     [[ -f "${MANIFEST}" ]] || die "no promotion manifest at ${MANIFEST}; run 'make build push' first"
@@ -244,6 +321,9 @@ case "${SOURCE}" in
 esac
 
 check_refs "${WORK}/refs.json"
+if [[ "${SOURCE}" == "applied" ]]; then
+  refuse_unpinned_gated_images
+fi
 
 mkdir -p "$(dirname -- "${OUT}")"
 jq '{image_refs: .}' "${WORK}/refs.json" >"${OUT}"

@@ -117,6 +117,70 @@ run "every_service_and_job_runs_the_digest_it_was_given" {
   }
 }
 
+# #1878. scripts/plan.sh pins output.image_refs, so an image missing from it is
+# an image a laptop plan has no digest for. The receiver's count is
+# `lookup(var.image_refs, "swarm-github-hooks", "") != ""`: before this, the
+# output was the platform and runner images alone, and a laptop plan of dev
+# destroyed the push receiver. Every gated image in terraform/infra/images.json
+# that the apply was given must be recorded, switched on or not.
+run "the_output_records_every_gated_image_it_was_given" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    enable_github_hooks = true
+    image_refs = merge(var.image_refs, {
+      "swarm-egress"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-egress@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      "swarm-github-hooks" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-github-hooks@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      "swarm-graph"        = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-graph@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      "swarm-live"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      "swarm-typesafe-fwd" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-typesafe-fwd@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    })
+  }
+
+  # MUTATION: build output.image_refs from local.deployed_images alone (the
+  # pre-#1878 value) and this fails, naming the five gated images.
+  assert {
+    condition = alltrue([
+      for name in keys(jsondecode(file("../../terraform/infra/images.json")).gated) :
+      lookup(output.image_refs, name, "") == var.image_refs[name]
+    ])
+    error_message = "output.image_refs must record every gated image in images.json the apply was given; scripts/plan.sh pins it, and an image missing from it plans its service away (#1878)"
+  }
+
+  # MUTATION: drop swarm-github-hooks from images.json's gated map and this
+  # fails: the receiver's digest is no longer recorded for a laptop plan.
+  assert {
+    condition     = output.image_refs["swarm-github-hooks"] == var.image_refs["swarm-github-hooks"] && length(google_cloud_run_v2_service.github_hooks) == 1
+    error_message = "with the receiver on and its digest given, the receiver is planned and its digest is in output.image_refs"
+  }
+
+  # MUTATION: map every gated image to lookup(var.image_refs, name, "") with no
+  # `if` and this fails: "" is not a digest and var.image_refs refuses it.
+  assert {
+    condition     = length(output.image_refs) == length(var.image_refs)
+    error_message = "output.image_refs records what was applied and nothing else"
+  }
+}
+
+run "a_gated_image_with_no_digest_is_left_out_of_the_output" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # MUTATION: record gated images as lookup(var.image_refs, name, "") and this
+  # fails: the next plan would be handed "" for swarm-github-hooks.
+  assert {
+    condition     = !contains(keys(output.image_refs), "swarm-github-hooks") && length(output.image_refs) == length(var.image_refs)
+    error_message = "a gated image with no digest is not in output.image_refs; it is never recorded as an empty or made-up reference"
+  }
+}
+
 run "an_image_with_no_digest_fails_the_plan" {
   command = plan
 

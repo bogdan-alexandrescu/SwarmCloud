@@ -576,9 +576,11 @@ run "off_the_relay_is_not_a_deployed_image" {
   }
 
   # A state applied before the release built swarm-live has no digest for it;
-  # with the relay off that must still plan, so it is not in image_refs.
+  # with the relay off that must still plan, so it is not a deployed image.
+  # The `image_refs` output may still record a swarm-live digest it was given:
+  # it records every gated image's digest (#1878), deployed or not.
   assert {
-    condition     = !contains(keys(output.image_refs), "swarm-live")
+    condition     = !contains(local.deployed_images, "swarm-live")
     error_message = "with enable_live_browser off, swarm-live is not a deployed image"
   }
 }
