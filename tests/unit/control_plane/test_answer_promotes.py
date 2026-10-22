@@ -220,6 +220,22 @@ def test_a_hand_off_park_with_no_question_wait_is_not_ended(db) -> None:
     assert _task(db)["state"] == "PARKED"
 
 
+def test_a_wait_behind_a_full_page_of_hand_off_parks_is_still_ended(db) -> None:
+    now = datetime.now(timezone.utc)
+    wait = _parked(db, parked_at=now - timedelta(hours=73))
+    del db.docs[f"tasks/{TASK}"]
+    # Three hand-off parks stored, and sorting, before the wait, two to a page.
+    for n in range(3):
+        db.docs[f"tasks/task_a{n}"] = {
+            **wait, "id": f"task_a{n}",
+            "blocked_by": [{"reason": "HUMAN_REQUIRED", "park_phase": "human_wait"}]}
+    db.docs[f"tasks/{TASK}"] = wait
+
+    # MUTATION: read one unordered `.limit(limit)` page and the wait behind them is never ended.
+    assert agent_questions.expire_question_waits(db, now, limit=2) == 1
+    assert _task(db)["state"] == "DEAD_LETTERED"
+
+
 # -- the bell ----------------------------------------------------------------------------
 
 def test_the_bell_lists_an_open_wait_until_its_last_blocking_answer(client, db) -> None:

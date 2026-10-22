@@ -380,6 +380,13 @@ def resume_with_answers(work: Path | str, payload: dict[str, Any], task: Mapping
     Nothing is written for a task that never waited on a question. The file
     is written whole each attempt, so a stale one restored from a checkpoint
     is replaced, never trusted.
+
+    EVERY attempt after the wait gets them, not only the resume the last
+    answer promoted: `metadata.question_wait` is kept once the wait
+    resolves, so an ordinary retry of the task sees the same answers and
+    the same OWNER ANSWERS block. That is deliberate: a retry restores the
+    checkpoint written after the answers arrived, and its agent is as bound
+    by them as the resume was.
     """
     rows = answers_for(task)
     path = Path(work) / ANSWERS_NAME

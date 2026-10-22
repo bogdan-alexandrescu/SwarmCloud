@@ -753,15 +753,11 @@ class QuestionItem:
 
 def question_candidates(ctx: Any) -> list[QuestionItem]:
     """Every agent parked on a blocking question whose task is an issue run's, across tenants."""
-    from .agent_questions import EXPIRY_SCAN, parked_wait
+    from .agent_questions import parked_human_snapshots, parked_wait
 
     db = ctx.db
-    query = (db.collection("tasks")
-             .where(filter=FieldFilter("state", "==", "PARKED"))
-             .where(filter=FieldFilter("park_reason", "==", "HUMAN_REQUIRED"))
-             .limit(EXPIRY_SCAN))
     items: list[QuestionItem] = []
-    for snap in query.stream():
+    for snap in parked_human_snapshots(db):
         doc = snap.to_dict() or {}
         wait = parked_wait(doc)
         run_id = (doc.get("metadata") or {}).get(_ISSUE_RUN_KEY)
@@ -881,7 +877,7 @@ def _verify_answerer(ctx: Any, item: QuestionItem, comment: Comment, own_logins:
 
 def answer_from_comment(ctx: Any, item: QuestionItem, comment: Comment, own_logins: set[str]) -> bool:
     """One reply: True when it answered; False when it is no `/answer`; Refused otherwise."""
-    from .agent_questions import AnswerBody, answer_question
+    from .agent_questions import AnswerBody, _redacted_question, answer_question
     from .agent_output import AgentOutputService
 
     parsed = parse_answer(comment.body)
@@ -892,7 +888,12 @@ def answer_from_comment(ctx: Any, item: QuestionItem, comment: Comment, own_logi
     questions = item.wait.get("questions") or []
     if not 1 <= number <= len(questions):
         raise Refused(f"question {number} is not one of this agent's {len(questions)} question(s)")
-    labels = [o.get("label") for o in questions[number - 1].get("options") or [] if isinstance(o, Mapping)]
+    # The labels as served and posted (redacted), which `answer_question`
+    # checks the choice against too: a label redaction masks is refused here,
+    # for this reason, rather than by the store with a different one.
+    entry = questions[number - 1]
+    served = _redacted_question(dict(entry))[0]["options"] if isinstance(entry, Mapping) else []
+    labels = [o["label"] for o in served]
     if option not in labels:
         raise Refused(f"the option is not one of question {number}'s labels")
     try:

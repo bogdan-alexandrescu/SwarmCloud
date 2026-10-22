@@ -113,6 +113,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from collections.abc import Iterator
 from typing import Any, Literal
 
 from google.cloud import firestore
@@ -187,7 +188,8 @@ QUESTION_WAIT_MAX_SECONDS = 72 * 3600
 UNANSWERED = "owner question unanswered"
 #: The READY event's reason when the last blocking answer resumes the agent.
 OWNER_ANSWERED = "owner_answered"
-#: Question waits looked at per expiry sweep: one indexed query across tenants.
+#: Parks read per page by `parked_human_snapshots`: the sweep pages through
+#: every PARKED(HUMAN_REQUIRED) task, so this bounds one read, not the sweep.
 EXPIRY_SCAN = 200
 
 
@@ -694,24 +696,45 @@ def _resumable(data: dict[str, Any]) -> bool:
     return not task.cancel_requested and not task.retries_exhausted()
 
 
+def parked_human_snapshots(db: Any, *, page_size: int = EXPIRY_SCAN) -> Iterator[Any]:
+    """Every PARKED(HUMAN_REQUIRED) task across tenants, in document-id order, page by page.
+
+    An unordered `.limit(n)` answers with the same first page on every tick,
+    so once `n` hand-off parks with no question wait exist, a question wait
+    after them is never posted or expired (scheduler `parked_page` documents
+    the same trap). Two equality filters ordered by `__name__` need no
+    composite index. Each document's tenant is the one it names; nothing
+    here decides a tenant (invariant 9).
+    """
+    query = (
+        db.collection(TASKS)
+        .where(filter=FieldFilter("state", "==", TaskState.PARKED.value))
+        .where(filter=FieldFilter("park_reason", "==", ParkReason.HUMAN_REQUIRED.value))
+        .order_by("__name__")
+    )
+    after: str | None = None
+    while True:
+        page = query if after is None else query.start_after({"__name__": after})
+        snaps = list(page.limit(page_size).stream())
+        yield from snaps
+        if len(snaps) < page_size:
+            return
+        after = snaps[-1].id
+
+
 def expire_question_waits(db: Any, now: datetime, *, limit: int = EXPIRY_SCAN) -> int:
     """Dead-letter every agent parked on a blocking question past 72 hours (§3.9 step 5).
 
-    One indexed query across tenants for PARKED(HUMAN_REQUIRED); a task
+    Every PARKED(HUMAN_REQUIRED) task across tenants, `limit` per page
+    (`parked_human_snapshots`); a task
     whose park carries a question wait that began `QUESTION_WAIT_MAX_SECONDS`
     ago is ended DEAD_LETTERED with `last_error: "owner question unanswered"`,
     in a transaction guarded on it still being parked on the SAME wait. A
     parked task holds no lease, so none is released (invariant 1). Returns
     how many it ended.
     """
-    query = (
-        db.collection(TASKS)
-        .where(filter=FieldFilter("state", "==", TaskState.PARKED.value))
-        .where(filter=FieldFilter("park_reason", "==", ParkReason.HUMAN_REQUIRED.value))
-        .limit(limit)
-    )
     ended = 0
-    for snap in query.stream():
+    for snap in parked_human_snapshots(db, page_size=limit):
         doc = snap.to_dict() or {}
         wait = parked_wait(doc)
         if wait is None:

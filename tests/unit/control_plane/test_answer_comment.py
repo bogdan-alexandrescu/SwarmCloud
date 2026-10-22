@@ -187,6 +187,21 @@ def test_an_option_that_is_not_one_of_the_labels_is_ignored(api_context, db, wri
     assert not _task(db)["metadata"].get(OWNER_ANSWERS_METADATA_KEY)
 
 
+def test_a_label_redaction_masks_is_ignored_as_not_a_served_label(api_context, db, writes, parked):
+    masked = "password=" + "q" * 12
+    wait = _task(db)["blocked_by"][0]["question_wait"]
+    wait["questions"][0]["options"][0]["label"] = masked
+    ghapprove.poll_answers(api_context)
+    _reply(writes, f"/answer 1 {masked}", login="alice-gh", user_id=1001)
+
+    counts = ghapprove.poll_answers(api_context)
+
+    assert counts["answers_ignored"] == 1, counts
+    assert not _task(db)["metadata"].get(OWNER_ANSWERS_METADATA_KEY)
+    # MUTATION: check the raw labels and the store refuses it instead, with its own sentence.
+    assert _wait(db)["ignored"][0]["reason"] == "the option is not one of question 1's labels"
+
+
 def test_only_a_first_line_that_is_the_command_is_an_answer():
     assert ghapprove.parse_answer("/answer 1 keep") == (1, "keep")
     assert ghapprove.parse_answer('\n /ANSWER 2 "per task" \nthanks') == (2, "per task")
