@@ -11,7 +11,12 @@
 # coming back, or a different one that slugs the same way. The decision is that
 # such a registration can read NOTHING of the old tenant. Provider secrets are
 # NOT this script's: terraform deletes them with the tenant's removal from
-# tfvars, and the owner chose not to add deletion protection to them.
+# tfvars, and the owner chose not to add deletion protection to them. Two
+# secrets ARE this script's (OWNER DECISION, BGD 2026-10-22, #1977): the forge
+# slot swarm-tenant-<id>-git and the QA secret swarm-tenant-<id>-qa, which
+# scripts/register-tenant.sh makes and no terraform removal reaches. swarm-api
+# hands a tenant the slot of its id, so a slot that outlived its tenant gave
+# the next registration of that id the old tenant's git token or QA password.
 #
 # WHAT IT DELETES, in this order, and why the order:
 #
@@ -37,6 +42,13 @@
 #                                  ledger_of_tenant for how an entry is
 #                                  attributed when its id is only a name
 #        pools/tenant:<id>, pools/provider:<p>:tenant:<id>
+#   2b. Secret Manager: swarm-tenant-<id>-git and swarm-tenant-<id>-qa, by
+#      those two exact ids (TENANT_SECRETS) and never by a listing or a
+#      prefix: `swarm-tenant-<id>-git` is also the start of the -git-wf slot,
+#      and `swarm-tenant-<id>-` of every secret of tenant `<id>-x`. One that
+#      is already gone is reported absent. Only ids are printed, never a
+#      value: nothing here reads one. Before the proof, so that a delete that
+#      did not land keeps the id held like every other residue.
 #   3. VERIFICATION: every one of the above counted again, server side, by a
 #      different call from the one that listed it, and printed as a table. Any
 #      non-zero count fails the run, and the tenant document is kept.
@@ -214,6 +226,15 @@ require_cmd gcloud jq curl
 #: The one GCS prefix this run deletes under. The trailing `/` is what keeps
 #: tenant `eng` from matching tenant `eng-x`.
 GCS_PREFIX_URL="gs://${ARTIFACT_BUCKET}/tenants/${TENANT}/"
+#: The two secrets this run deletes (#1977), by exact id, built from the id
+#: validated above. Never widened to a pattern: see step 2b in the header.
+TENANT_SECRETS=("swarm-tenant-${TENANT}-git" "swarm-tenant-${TENANT}-qa")
+for _secret in "${TENANT_SECRETS[@]}"; do
+  if is_shared_resource "${_secret}"; then
+    die "secret ${_secret} is on the shared deny-list; refusing"
+  fi
+done
+unset _secret
 #: Every Firestore name this run deletes starts with this.
 DOCS_ROOT="projects/${PROJECT_ID}/databases/${FIRESTORE_DATABASE}/documents"
 
@@ -657,6 +678,27 @@ ledger_of_tenant() {
     || die "could not attribute the publication ledger for ${TENANT}"
 }
 
+# secret_state ID -- prints `present` or `absent` for one secret, or dies. A
+# lookup that fails for any reason but NOT_FOUND (a denial, a dead session) is
+# not an absence: the id would be released over a slot nobody looked in.
+# `describe` returns the secret's metadata, never a version's value.
+secret_state() {
+  local id="$1" errf="${WORK}/secret-describe.err"
+  if gcloud secrets describe "${id}" --project "${PROJECT_ID}" --format='value(name)' \
+       >/dev/null 2>"${errf}"; then
+    printf 'present'
+    return 0
+  fi
+  if gcloud_not_found "$(cat "${errf}")" && ! grep -q 'PERMISSION_DENIED' "${errf}"; then
+    printf 'absent'
+    return 0
+  fi
+  die_if_auth_failure "$(cat "${errf}")"
+  err "could not look up secret ${id}; that is NOT proof it is gone:"
+  redact <"${errf}" | head -n 3 | sed 's/^/     /' >&2
+  exit 1
+}
+
 # The pools this run deletes: the tenant's, less any terraform holds.
 pools_to_delete() {
   awk -F'\t' '$3 != "swarm-terraform" {print $1}' "$1"
@@ -708,6 +750,13 @@ inventory() {
 
   ledger_of_tenant "${WORK}/ledger.present"
 
+  local id found secret_rows="${WORK}/inventory-secrets.txt"
+  : >"${secret_rows}"
+  for id in "${TENANT_SECRETS[@]}"; do
+    found="$(secret_state "${id}")" || die "could not inventory secret ${id}"
+    printf '    %-26s %s\n' "${id}" "${found}" >>"${secret_rows}"
+  done
+
   {
     printf '== Inventory: everything tenant %s holds (%s / %s) ==\n' "${TENANT}" "${PROJECT_ID}" "${FIRESTORE_DATABASE}"
     printf '    %-26s %s object version(s), %s byte(s)\n' "${GCS_PREFIX_URL}" "${objects}" "${bytes}"
@@ -728,6 +777,7 @@ inventory() {
       [[ -n "${c}" ]] || continue
       printf '    %-26s left for terraform (managed_by=swarm-terraform)\n' "pools/${c}"
     done < <(pools_for_terraform "${WORK}/pools.tsv")
+    cat "${secret_rows}"
     if [[ "${TENANT_IS_TERRAFORM}" -eq 1 ]]; then
       printf '    %-26s left for terraform (managed_by=swarm-terraform)\n' "tenants/${TENANT}"
     else
@@ -877,6 +927,33 @@ delete_records() {
   commit_deletes "${WORK}/pools.del.names" "pools"
 }
 
+# Step 2b: the two secrets, by exact id. `gcloud secrets delete` on an id that
+# is already gone answers NOT_FOUND, which is reported as absent; any other
+# failure stops the run before the proof, so the tenant document is kept and
+# the id stays held. The table carries ids and a word, never a value.
+delete_tenant_secrets() {
+  local id errf="${WORK}/secret-delete.err" table="${WORK}/secrets-deleted.txt"
+  step "Deleting secrets"
+  printf '== Deleting secrets of tenant %s ==\n' "${TENANT}" >"${table}"
+  for id in "${TENANT_SECRETS[@]}"; do
+    # Stated once more next to the delete: exactly one of the two ids.
+    [[ "${id}" == "swarm-tenant-${TENANT}-git" || "${id}" == "swarm-tenant-${TENANT}-qa" ]] \
+      || die "refusing to delete secret ${id}: not swarm-tenant-${TENANT}-git or -qa"
+    if gcloud secrets delete "${id}" --project "${PROJECT_ID}" --quiet >/dev/null 2>"${errf}"; then
+      printf '    %-34s deleted\n' "${id}" >>"${table}"
+    elif gcloud_not_found "$(cat "${errf}")" && ! grep -q 'PERMISSION_DENIED' "${errf}"; then
+      printf '    %-34s absent\n' "${id}" >>"${table}"
+    else
+      emit "${table}"
+      die_if_auth_failure "$(cat "${errf}")"
+      err "could not delete secret ${id}; it is NOT gone:"
+      redact <"${errf}" | head -n 3 | sed 's/^/     /' >&2
+      die "tenants/${TENANT} was NOT deleted, so the id stays held and this run can be repeated."
+    fi
+  done
+  emit "${table}"
+}
+
 # ---------------------------------------------------------------------------
 # Proof
 # ---------------------------------------------------------------------------
@@ -943,6 +1020,16 @@ prove_gone() {
   ledger_of_tenant "${WORK}/ledger.after"
   proof_row "credential_publications" "$(grep -c . "${WORK}/ledger.after" || true)" \
     "(listed from the ledger, named for ${TENANT})"
+
+  # Looked up again, not trusted from the delete's exit status.
+  for c in "${TENANT_SECRETS[@]}"; do
+    n="$(secret_state "${c}")" || die "could not look up secret ${c}; a failed read is not proof"
+    if [[ "${n}" == "absent" ]]; then
+      proof_row "${c}" 0 "(secret)"
+    else
+      proof_row "${c}" 1 "(secret, still present)"
+    fi
+  done
 
   list_tenant_pools "${WORK}/pools.after.tsv"
   proof_row "pools" "$(pools_to_delete "${WORK}/pools.after.tsv" | grep -c . || true)"
@@ -1065,6 +1152,7 @@ refuse_if_lent_to
 
 delete_objects
 delete_records
+delete_tenant_secrets
 prove_gone
 release_tenant_id
 report_soft_deleted

@@ -1253,7 +1253,7 @@ def test_apply_deletes_exactly_the_tenants_git_and_qa_secrets(tmp_path):
     )
     # MUTATION: print anything other than "deleted" after a successful delete
     # in delete_tenant_secrets -> these rows read otherwise.
-    deleted = _section(run.stderr, "== Deleting secrets")
+    deleted = _section(run.stderr, "== Deleting secrets of tenant")
     assert _row(deleted, GIT) == "deleted", deleted
     assert _row(deleted, QA) == "deleted", deleted
     # MUTATION: drop the two secret rows from prove_gone -> no proof row, and
@@ -1279,7 +1279,7 @@ def test_an_absent_secret_is_reported_absent_and_the_run_succeeds(tmp_path):
     inv = _section(run.stderr, "== Inventory:")
     # MUTATION: print "present" whatever `secrets describe` answered -> "present".
     assert _row(inv, QA) == "absent", inv
-    deleted = _section(run.stderr, "== Deleting secrets")
+    deleted = _section(run.stderr, "== Deleting secrets of tenant")
     # MUTATION: report every non-error delete as "deleted" -> "deleted".
     assert _row(deleted, QA) == "absent", deleted
     assert _row(deleted, GIT) == "deleted", deleted
