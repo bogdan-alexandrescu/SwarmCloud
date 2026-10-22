@@ -528,6 +528,18 @@ github_app_name      = "SwarmCloud Saga"
 # (e983d06e, run 37672097489; revision swarm-api-00176). Runbook step 7.
 enable_forge_refresh = true
 
+# The platform tenant, for the workflow-scoped -git-wf slot (git_tools.tf,
+# docs/design/agent-autonomy.md §3.3, part of #1933). AU2-WF-SLOT declared the
+# slot and asked which tenant it is for. BGD answered, 2026-10-22 08:44Z:
+# "Name the tenant; a follow-up lane adds one tfvars line", and named eng:
+# the tenant whose registration of the SwarmCloud repository every lane here
+# runs on. The release declares swarm-tenant-eng-git-wf EMPTY, with swarm-api's
+# account as its one reader (IAM row L-2, held at dev-iam for the owner). The
+# token itself is stored by the owner, after that apply, with
+# `scripts/create-secrets.sh --git-wf --tenant eng --stdin`, never by a lane
+# and never here: the repository is public. Unset ("") means no slot.
+git_wf_tenant = "eng"
+
 # --- the live browser (docs/design/live-browser.md, #1030) ------------------
 # ON in dev: owner decision 2026-10-11 ~15:00 PDT, once every live-browser lane
 # had merged (LB-Lon). This is step 4 of terraform/infra/live.tf's rollout
