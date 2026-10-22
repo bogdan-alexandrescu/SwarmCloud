@@ -22,7 +22,7 @@ import {
 } from './RepoGraphData'
 import type {
   AnswerVia, ArtifactContent, ArtifactListing, LogStream, LogStreamName, OwnerAnswer, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
-  CheckpointsPage, TaskLogs,
+  CheckpointRecord, CheckpointsPage, LogAttempt, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AdminPool, AttemptRow, AttemptsPage, TaskEventsPage, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
   ModelPrice, ModelPriceChange, ModelPriceRate, ModelPriceTable, ModelPriceTier, PlatformSettings,
@@ -502,31 +502,81 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
       },
     }
   }
-  const at = (minsAgo: number) => new Date(Date.now() - minsAgo * 60_000).toISOString()
-  // THE SAME ATTEMPT ID `fixtureAttempts` MINTS FOR ITS NEWEST ROW. It used to
-  // be a differently-spelled id, so in development every event landed under
-  // "an attempt no document describes" and the per-attempt joins -- checkpoint
-  // sizes, live heartbeat readings, events grouped under their attempt -- were
-  // the one part of the screen nobody ever saw working. A fixture that
-  // exercises fewer code paths than production is a fixture that hides bugs.
-  const attemptId = `att_${task.id.slice(-4)}_3`
+  // THE NEWEST ATTEMPT `fixtureAttempts` SERVES, and every event's time
+  // inside its span (QAFIX4-FIXTURE-B F14a, run 4 task-003): events minted at
+  // fixed minutes put attempt 3 running at 11:52 under a task submitted at
+  // 11:56. The id is the attempts read's own: a differently-spelled one landed
+  // every event under "an attempt no document describes", and the
+  // per-attempt joins -- checkpoint sizes, live heartbeat readings, events
+  // grouped under their attempt -- were never seen working.
+  const spans = fixtureSpans(task)
+  const span = spans[spans.length - 1]
+  const prior = spans[spans.length - 2]
+  const attemptId = span === undefined ? null : fixtureAttemptId(task.id, span.n)
+  const usage = fixtureUsage(task)
   // `event_id` is a COUNTER, not the type: two heartbeats in one attempt are
   // ordinary and a type-derived id made React render duplicate keys the moment
   // this fixture grew a second one.
   let seq = 0
-  const ev = (type: string, minsAgo: number, detail: Record<string, unknown> | null = null) => ({
+  const ev = (type: string, t: number, detail: Record<string, unknown> | null = null) => ({
     event_id: `${task.id}-${++seq}-${type}`,
     task_id: task.id,
     type,
-    at: at(minsAgo),
+    at: new Date(Math.round(t)).toISOString(),
     attempt_id: attemptId,
-    lease_id: `lease-${task.id.slice(-4)}`,
-    // The generation of the attempt these events belong to, matching
-    // `fixtureAttempts`' newest row -- not the task's attempt counter, which is
-    // a different number and made the timeline claim gen 1 under attempt 3.
-    generation: 3,
+    lease_id: task.current_lease_id ?? `lease_${span?.n ?? 0}`,
+    // The generation of the attempt these events belong to -- not the task's
+    // attempt counter, which made the timeline claim gen 1 under attempt 3.
+    generation: span?.n ?? 0,
     detail,
   })
+  const events = []
+  if (span !== undefined) {
+    // Admission to start: a few seconds each, never back past the end of the
+    // attempt before it, or the submission (`fixtureSpans` leaves a gap).
+    const begin = span.started ?? span.admitted
+    const floor = prior?.ended ?? prior?.admitted ?? Date.parse(task.created_at)
+    const lead = Math.min(40_000, (begin - floor) * 0.8)
+    events.push(ev('ready', begin - lead))
+    events.push(ev('lease_acquired', begin - lead * 0.75))
+    const end = span.ended ?? Date.parse(task.updated_at)
+    if (task.state !== 'LEASED') {
+      // The DISPATCHED event's detail carries the execution name: the
+      // workaround from before the attempts read existed.
+      events.push(ev('dispatched', span.started === null ? begin + (end - begin) * 0.3 : begin - lead * 0.5, {
+        execution_name: `swarm-job-u-bogdan-claude-code-${span.n}`, backend: 'CLOUD_RUN_JOB',
+      }))
+    }
+    if (span.started !== null) {
+      events.push(ev('starting', begin - lead * 0.25))
+      if (task.state !== 'STARTING') {
+        const ran = end - begin
+        events.push(ev('running', begin))
+        // Every fifth heartbeat carries a live resource reading
+        // (lifecycle._heartbeat). It is the ONLY per-attempt measurement a
+        // running agent has: `peak_rss_bytes` on the attempt document is
+        // written at the end.
+        events.push(ev('heartbeat', begin + ran * 0.3, { elapsed_seconds: Math.round(ran * 0.3) / 1000, peak_rss_bytes: 1_610_612_736, checkpoints: 0 }))
+        // The worker writes all four keys (control.record_checkpoint). The
+        // attempt document stores only the id, so the size and the uri exist
+        // HERE and nowhere else.
+        const prefix = fixtureCheckpointPrefix(task.id)
+        events.push(ev('checkpoint_completed', begin + ran * 0.5, {
+          checkpoint_id: 'ckpt_0001',
+          uri: `gs://swarm-workspaces/${prefix}/ckpt_0001`,
+          size_bytes: 9_102_336,
+          seq: 1,
+        }))
+        events.push(ev('heartbeat', begin + ran * 0.7, { elapsed_seconds: Math.round(ran * 0.7) / 1000, peak_rss_bytes: 1_842_000_000, checkpoints: 1 }))
+        // Deliberately NO matching event for ckpt_0002, which the attempt
+        // lists: that is the real paging case -- an id with no size and no
+        // uri, which must render as "the event is off this page", not as a
+        // blank cell.
+        if (task.state === 'SUCCEEDED') events.push(ev('succeeded', end, { exit_code: 0 }))
+        if (task.state === 'FAILED') events.push(ev('failed', end, { exit_code: fixtureFailedExitCode(task.last_error), error: task.last_error }))
+      }
+    }
+  }
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -548,50 +598,27 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
                 // look right while showing an impossible run.
                 git: fixtureGit(task),
                 logs: {
-                  stdout: 'gs://swarm-artifacts-dev/u-bogdan/logs/stdout.log',
-                  stderr: 'gs://swarm-artifacts-dev/u-bogdan/logs/stderr.log',
+                  stdout: `gs://swarm-logs/tenants/u-bogdan/tasks/${task.id}/attempts/${attemptId}/logs/final/stdout.log`,
+                  stderr: `gs://swarm-logs/tenants/u-bogdan/tasks/${task.id}/attempts/${attemptId}/logs/final/stderr.log`,
                 },
-                runner: {
-                  usage: {
-                    input_tokens: 8,
-                    output_tokens: 402,
-                    total_cost_usd: 0.0642028,
-                    models: ['claude-opus-5'],
-                  },
-                },
+                // The runner's own report of the newest attempt: the figures
+                // its attempt document carries (`fixtureUsage`), not others.
+                ...(usage === null
+                  ? {}
+                  : {
+                      runner: {
+                        usage: {
+                          input_tokens: usage.input_tokens,
+                          output_tokens: usage.output_tokens,
+                          total_cost_usd: usage.cost_usd,
+                          models: ['claude-opus-5'],
+                        },
+                      },
+                    }),
               }
             : task.result_summary,
       },
-      events: [
-        ev('ready', 12),
-        ev('lease_acquired', 10),
-        // The workaround for having no attempts/leases read path: the
-        // DISPATCHED event's detail carries the execution name.
-        ev('dispatched', 9, { execution_name: 'swarm-job-u-bogdan-claude-code-abc12', backend: 'CLOUD_RUN_JOB' }),
-        ev('starting', 8),
-        ev('running', 8),
-        // Every fifth heartbeat carries a live resource reading
-        // (lifecycle._heartbeat). It is the ONLY per-attempt measurement a
-        // running agent has: `peak_rss_bytes` on the attempt document is
-        // written at the end.
-        ev('heartbeat', 6, { elapsed_seconds: 120.4, peak_rss_bytes: 1_610_612_736, checkpoints: 1 }),
-        // The worker writes all four keys (control.record_checkpoint). The
-        // attempt document stores only the id, so the size and the uri exist
-        // HERE and nowhere else.
-        ev('checkpoint_completed', 4, {
-          checkpoint_id: 'ckpt-00001',
-          uri: 'gs://swarm-artifacts-dev/u-bogdan/checkpoints/ckpt-00001/workspace.tar.zst',
-          size_bytes: 41_235_988,
-          seq: 1,
-        }),
-        ev('heartbeat', 3, { elapsed_seconds: 300.1, peak_rss_bytes: 1_842_000_000, checkpoints: 2 }),
-        // Deliberately NO matching event for ckpt-00002, which `fixtureAttempts`
-        // lists on the attempt: that is the real paging case -- an id with no
-        // size and no uri, which must render as "the event is off this page",
-        // not as a blank cell.
-        ...(task.state === 'SUCCEEDED' ? [ev('succeeded', 1, { exit_code: 0 })] : []),
-        ...(task.state === 'FAILED' ? [ev('failed', 1, { exit_code: fixtureFailedExitCode(task.last_error), error: task.last_error })] : []),
-      ],
+      events,
       eventsDetail: null,
     },
   }
@@ -716,7 +743,74 @@ export async function loadTaskLogs(
 async function fixtureCheckpoints(taskId: string): Promise<Result<CheckpointsPage>> {
   await new Promise((r) => setTimeout(r, 90))
   noteFixtureProbe(route('/v1/tasks/{id}/checkpoints', { id: taskId }), 90, true)
-  const prefix = `tenants/u-bogdan/tasks/${taskId}/checkpoints`
+  const prefix = fixtureCheckpointPrefix(taskId)
+  // THE CHECKPOINTS ITS ATTEMPTS WROTE, under the attempt that wrote them
+  // (QAFIX4-FIXTURE-B F12, run 4 task-004): the listing named attempts `att_2`
+  // and `att_1`, which the attempts read never served -- one of them never
+  // started -- so '2 written, 2 kept' sat over a paragraph calling both
+  // written checkpoints reclaimed. Written is kept here; a reclaimed one is a
+  // component test's case (checkpoint.reclaimed.test.tsx), not this fixture's.
+  const task = fixtureTaskDoc(taskId)
+  const span = task === undefined ? undefined : fixtureNewestSpan(task)
+  const written = span?.checkpoints ?? []
+  const iso = (t: number | null | undefined) => (t === null || t === undefined ? null : new Date(t).toISOString())
+  const begin = span?.started ?? 0
+  const end = span?.ended ?? (task === undefined ? begin : Date.parse(task.updated_at))
+  const record = (checkpointId: string): CheckpointRecord => {
+    const base = {
+      checkpoint_id: checkpointId,
+      attempt_id: fixtureAttemptId(taskId, span?.n ?? 0),
+      attempt_known: true,
+      attempt_created_at: iso(span?.admitted),
+      attempt_completed_at: iso(span?.ended),
+      prefix: `${prefix}/${checkpointId}`,
+      uri: `gs://swarm-workspaces/${prefix}/${checkpointId}`,
+      is_latest_pointer: checkpointId === written[written.length - 1],
+      generation: span?.n ?? 0,
+    }
+    if (checkpointId === 'ckpt_0002') {
+      return {
+        ...base,
+        objects: [
+          { name: 'manifest.json', key: `${prefix}/ckpt_0002/manifest.json`, bytes: 412 },
+          { name: 'workspace.tar.zst', key: `${prefix}/ckpt_0002/workspace.tar.zst`, bytes: 18_442_240 },
+        ],
+        stored_bytes: 18_442_652,
+        manifest: 'present',
+        manifest_detail: null,
+        created_at: iso(begin + (end - begin) * 0.8),
+        seq: 2,
+        label: 'periodic',
+        archive_bytes: 18_442_240,
+        archive_sha256: '3b1f…c7a2',
+        file_count: 184,
+        resumable: true,
+        resumable_detail: null,
+      }
+    }
+    // THE ABSENCE: its manifest is unreadable, so `resumable` is NULL, NOT
+    // FALSE. "cannot tell" and "cannot resume" are different sentences and
+    // the row renders them differently.
+    return {
+      ...base,
+      objects: [
+        { name: 'workspace.tar.zst', key: `${prefix}/${checkpointId}/workspace.tar.zst`, bytes: 9_102_336 },
+      ],
+      stored_bytes: 9_102_336,
+      manifest: 'unreadable',
+      manifest_detail: 'The object is there and did not parse as JSON.',
+      created_at: null,
+      seq: null,
+      label: null,
+      archive_bytes: null,
+      archive_sha256: null,
+      file_count: null,
+      resumable: null,
+      resumable_detail: 'Nothing could be established without the manifest.',
+    }
+  }
+  const checkpoints = [...written].reverse().map(record)
+  const pointer = written[written.length - 1]
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -724,86 +818,85 @@ async function fixtureCheckpoints(taskId: string): Promise<Result<CheckpointsPag
       task_id: taskId,
       tenant_id: 'u-bogdan',
       prefix,
-      count: 2,
-      total_found: 2,
+      count: checkpoints.length,
+      total_found: checkpoints.length,
       next_page_token: null,
       listed: true,
       truncated: false,
-      latest_checkpoint: {
-        pointer: `${prefix}/ckpt_0002`,
-        status: 'present',
-        checkpoint_id: 'ckpt_0002',
-      },
-      checkpoints: [
-        {
-          checkpoint_id: 'ckpt_0002',
-          attempt_id: 'att_2',
-          attempt_known: true,
-          attempt_created_at: new Date(Date.now() - 9 * 60_000).toISOString(),
-          attempt_completed_at: null,
-          prefix: `${prefix}/ckpt_0002`,
-          uri: `gs://swarm-workspaces/${prefix}/ckpt_0002`,
-          is_latest_pointer: true,
-          objects: [
-            { name: 'manifest.json', key: `${prefix}/ckpt_0002/manifest.json`, bytes: 412 },
-            { name: 'workspace.tar.zst', key: `${prefix}/ckpt_0002/workspace.tar.zst`, bytes: 18_442_240 },
-          ],
-          stored_bytes: 18_442_652,
-          manifest: 'present',
-          manifest_detail: null,
-          created_at: new Date(Date.now() - 4 * 60_000).toISOString(),
-          seq: 2,
-          generation: 2,
-          label: 'periodic',
-          archive_bytes: 18_442_240,
-          archive_sha256: '3b1f…c7a2',
-          file_count: 184,
-          resumable: true,
-          resumable_detail: null,
-        },
-        {
-          checkpoint_id: 'ckpt_0001',
-          attempt_id: 'att_1',
-          attempt_known: false,
-          attempt_created_at: null,
-          attempt_completed_at: null,
-          prefix: `${prefix}/ckpt_0001`,
-          uri: `gs://swarm-workspaces/${prefix}/ckpt_0001`,
-          is_latest_pointer: false,
-          objects: [
-            { name: 'workspace.tar.zst', key: `${prefix}/ckpt_0001/workspace.tar.zst`, bytes: 9_102_336 },
-          ],
-          stored_bytes: 9_102_336,
-          manifest: 'unreadable',
-          manifest_detail: 'The object is there and did not parse as JSON.',
-          created_at: null,
-          seq: null,
-          generation: 1,
-          label: null,
-          archive_bytes: null,
-          archive_sha256: null,
-          file_count: null,
-          // NULL, NOT FALSE. "cannot tell" and "cannot resume" are different
-          // sentences and the row renders them differently.
-          resumable: null,
-          resumable_detail: 'Nothing could be established without the manifest.',
-        },
-      ],
+      latest_checkpoint:
+        pointer === undefined
+          ? { pointer: null, status: 'unset', checkpoint_id: null }
+          : { pointer: `${prefix}/${pointer}`, status: 'present', checkpoint_id: pointer },
+      checkpoints,
     },
   }
 }
 
 /**
+ * THE ATTEMPT A FIXTURE LOG, TRANSCRIPT OR ANSWER IS READ FROM: the task's
+ * newest, as the routes pick it with no `attempt_id` (QAFIX4-FIXTURE-B F14b,
+ * run 4 flow-find-failure D7). They named `att_2` or `att_fixture` for every
+ * task, under a source line for the task's own newest attempt. A task never
+ * admitted has none yet.
+ */
+function fixtureLogAttempt(task: Task | undefined): { attemptId: string | null; attempt: LogAttempt; span: FixtureAttemptSpan | undefined } {
+  const span = task === undefined ? undefined : fixtureNewestSpan(task)
+  if (task === undefined || span === undefined) {
+    return {
+      attemptId: null,
+      attempt: { status: 'no_attempt_yet', known: false, generation: null, created_at: null, completed_at: null, exit_code: null },
+      span: undefined,
+    }
+  }
+  return {
+    attemptId: fixtureAttemptId(task.id, span.n),
+    attempt: {
+      status: 'latest',
+      known: true,
+      generation: span.n,
+      created_at: new Date(span.admitted).toISOString(),
+      completed_at: span.ended === null ? null : new Date(span.ended).toISOString(),
+      exit_code: span.exit,
+    },
+    span,
+  }
+}
+
+/**
+ * How a fixture task's agent CLI ended, as its transcript's last `result`
+ * says it: success for a task that succeeded, its error for one that failed,
+ * and nothing for one stopped before the CLI finished (cancelled, parked, or
+ * still running). ONE FAILED TASK ENDS IN THE CLI'S OWN SUCCESS, `task_8e33a3de`
+ * (QA-115, kept as built): the CLI finished and the task failed after it, the
+ * case Logs explains. Every other failed task's transcript ends in its error
+ * (run 4 flow-find-failure D6), where they all used to end 'Summary: Done.'.
+ */
+function fixtureCliResult(task: Task): { subtype: string; is_error: boolean; text: string } | null {
+  if (task.state === 'SUCCEEDED' || (task.state === 'FAILED' && task.id === 'task_8e33a3de')) {
+    return { subtype: 'success', is_error: false, text: '## Summary\n\nDone.' }
+  }
+  if (task.state === 'FAILED') {
+    return { subtype: 'error_during_execution', is_error: true, text: task.last_error ?? 'The agent stopped on an error.' }
+  }
+  return null
+}
+
+/**
  * THE LOG FIXTURE CARRIES ALL THREE CONTENT STATES.
  *
- * stdout has text and is a LIVE tail; stderr exists and is EMPTY (`''`, which
- * is a real answer about a quiet agent and must not render as a failed read).
- * The distinction between `null` and `''` is the whole reason `LogStream.content`
- * is nullable, and a fixture that never produced `''` would leave the branch
- * that renders it unexercised.
+ * stdout has text; stderr exists and is EMPTY (`''`, which is a real answer
+ * about a quiet agent and must not render as a failed read). The distinction
+ * between `null` and `''` is the whole reason `LogStream.content` is nullable,
+ * and a fixture that never produced `''` would leave the branch that renders
+ * it unexercised. An attempt that has not started has no log object yet:
+ * `absent`, the third state.
+ *
+ * THE TASK'S OWN NEWEST ATTEMPT (`fixtureLogAttempt`): its id in every key
+ * and uri, its times in the lines, a LIVE tail while it runs and the final
+ * object once it has ended, and its own end in the last line.
  *
  * THE AGENT STREAMS (#184) are answered only when asked for by name, as the
- * route does: `agent_stdout` is a live NDJSON tail published seconds ago, and
+ * route does: `agent_stdout` is NDJSON ending as its transcript ends, and
  * `agent_stderr` is a measured empty object -- the reference task's shape.
  */
 async function fixtureTaskLogs(
@@ -812,62 +905,68 @@ async function fixtureTaskLogs(
 ): Promise<Result<TaskLogs>> {
   await new Promise((r) => setTimeout(r, 110))
   noteFixtureProbe(route('/v1/tasks/{id}/logs', { id: taskId }), 110, true)
-  const body = [
-    '[13:42:01] cloning https://github.com/example-org/example.git',
-    '[13:42:09] workspace ready at /workspace (tmpfs)',
-    '[13:42:09] claude-code: starting',
-    '[13:44:31] checkpoint ckpt_0002 written (18.4 MB)',
-  ].join('\n')
+  const task = fixtureTaskDoc(taskId)
+  const { attemptId, attempt, span } = fixtureLogAttempt(task)
+  const clock = (t: number) => new Date(Math.round(t)).toISOString().slice(11, 19)
+  const started = span?.started ?? null
+  const ended = span?.ended ?? null
+  const source = ended === null ? 'live' : 'final'
+  const last = ended ?? (task === undefined ? Date.now() : Date.parse(task.updated_at))
+  const wrote = span?.checkpoints.includes('ckpt_0002') === true
+  const body =
+    started === null || task === undefined
+      ? ''
+      : [
+          `[${clock(started)}] cloning ${task.repository_url ?? 'https://github.com/example-org/example.git'}`,
+          `[${clock(started + 8_000)}] workspace ready at /workspace (tmpfs)`,
+          `[${clock(started + 8_000)}] ${task.runner_profile}: starting`,
+          ...(wrote ? [`[${clock(started + (last - started) * 0.8)}] checkpoint ckpt_0002 written (18.4 MB)`] : []),
+          ...(ended === null
+            ? []
+            : [`[${clock(ended)}] ${span?.exit ? `exited ${span.exit}: ${task.last_error ?? span.error ?? ''}`.trim() : 'exited 0'}`]),
+        ].join('\n')
+  const result = task === undefined ? null : fixtureCliResult(task)
+  const agentOut =
+    started === null
+      ? ''
+      : [
+          '{"type":"system","subtype":"init","model":"claude-opus-5"}',
+          '{"type":"assistant","message":{"content":[{"type":"text","text":"Reading the repository."}]}}',
+          ...(result === null || ended === null ? [] : [JSON.stringify({ type: 'result', subtype: result.subtype, is_error: result.is_error, result: result.text })]),
+        ].join('\n')
   const names: readonly LogStreamName[] =
     asked === undefined ? ['stdout', 'stderr'] : typeof asked === 'string' ? [asked] : asked
-  if (names.some((n) => n === 'agent_stdout' || n === 'agent_stderr')) {
-    const agentOut = [
-      '{"type":"system","subtype":"init","model":"claude-opus-5"}',
-      '{"type":"assistant","message":{"content":[{"type":"text","text":"Reading the repository."}]}}',
-    ].join('\n')
-    const pick = (n: LogStreamName): LogStream => {
-      const content = n === 'agent_stdout' ? agentOut : n === 'agent_stderr' ? '' : n === 'stdout' ? body : ''
-      const size = new TextEncoder().encode(content).length
+  const attemptPrefix = `tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId ?? 'none'}/logs/${source}`
+  const pick = (n: LogStreamName): LogStream => {
+    const content = n === 'agent_stdout' ? agentOut : n === 'stdout' ? body : ''
+    const size = new TextEncoder().encode(content).length
+    if (started === null) {
       return {
-        stream: n,
-        source: 'live',
-        status: 'ok',
-        detail: null,
-        key: `tenants/u-bogdan/tasks/${taskId}/attempts/att_2/logs/live/${n}.tail.log`,
-        uri: `gs://swarm-logs/tenants/u-bogdan/tasks/${taskId}/attempts/att_2/logs/live/${n}.tail.log`,
-        content,
-        total_bytes: size,
-        offset: 0,
-        returned_bytes: size,
-        next_offset: null,
-        truncated: false,
-        redacted: false,
-        redaction_count: 0,
-        tail_window: size === 0 ? null : { object_offset: 0, stream_size: size, published_at: new Date(Date.now() - 3_000).toISOString() },
-        object_updated_at: new Date(Date.now() - 3_000).toISOString(),
-        age_seconds: 3,
+        stream: n, source: null, status: 'absent',
+        detail: attemptId === null ? 'No attempt has been admitted yet.' : 'The attempt has not started, so it has written no log.',
+        key: null, uri: null, content: null, total_bytes: null, offset: 0, returned_bytes: 0, next_offset: null,
+        truncated: false, redacted: false, redaction_count: 0, tail_window: null,
       }
     }
+    const key = `${attemptPrefix}/${n}${source === 'live' ? '.tail' : ''}.log`
     return {
+      stream: n,
+      source,
       status: 'ok',
-      fetchedAt: Date.now(),
-      data: {
-        task_id: taskId,
-        tenant_id: 'u-bogdan',
-        attempt_id: 'att_2',
-        attempt: {
-          status: 'latest',
-          known: true,
-          generation: 2,
-          created_at: new Date(Date.now() - 9 * 60_000).toISOString(),
-          completed_at: null,
-          exit_code: null,
-        },
-        read_at: new Date().toISOString(),
-        prefix: `tenants/u-bogdan/tasks/${taskId}/attempts/att_2/`,
-        redaction: { applied_at_read_time: true, rules: 6 },
-        streams: names.map(pick),
-      },
+      detail: null,
+      key,
+      uri: `gs://swarm-logs/${key}`,
+      content,
+      total_bytes: size,
+      offset: 0,
+      returned_bytes: size,
+      next_offset: null,
+      truncated: false,
+      redacted: false,
+      redaction_count: 0,
+      tail_window: source === 'live' && size > 0 ? { object_offset: 0, stream_size: size, published_at: new Date(last - 3_000).toISOString() } : null,
+      object_updated_at: new Date(source === 'live' ? last - 3_000 : last).toISOString(),
+      age_seconds: Math.max(0, Math.round((Date.now() - (source === 'live' ? last - 3_000 : last)) / 1000)),
     }
   }
   return {
@@ -876,54 +975,12 @@ async function fixtureTaskLogs(
     data: {
       task_id: taskId,
       tenant_id: 'u-bogdan',
-      attempt_id: 'att_2',
-      attempt: {
-        status: 'latest',
-        known: true,
-        generation: 2,
-        created_at: new Date(Date.now() - 9 * 60_000).toISOString(),
-        completed_at: null,
-        exit_code: null,
-      },
-      prefix: `tenants/u-bogdan/tasks/${taskId}/logs`,
+      attempt_id: attemptId,
+      attempt,
+      read_at: new Date().toISOString(),
+      prefix: `tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId ?? 'none'}/`,
       redaction: { applied_at_read_time: true, rules: 6 },
-      streams: [
-        {
-          stream: 'stdout',
-          source: 'live',
-          status: 'ok',
-          detail: null,
-          key: `tenants/u-bogdan/tasks/${taskId}/logs/att_2.stdout`,
-          uri: `gs://swarm-logs/tenants/u-bogdan/tasks/${taskId}/logs/att_2.stdout`,
-          content: body,
-          total_bytes: 4096,
-          offset: 0,
-          returned_bytes: body.length,
-          next_offset: 4096,
-          truncated: true,
-          redacted: false,
-          redaction_count: 0,
-          tail_window: { object_offset: 0, stream_size: 4096 },
-        },
-        {
-          stream: 'stderr',
-          source: 'live',
-          status: 'ok',
-          detail: null,
-          key: `tenants/u-bogdan/tasks/${taskId}/logs/att_2.stderr`,
-          uri: `gs://swarm-logs/tenants/u-bogdan/tasks/${taskId}/logs/att_2.stderr`,
-          // An object that exists and is empty. NOT the same as `null`.
-          content: '',
-          total_bytes: 0,
-          offset: 0,
-          returned_bytes: 0,
-          next_offset: null,
-          truncated: false,
-          redacted: false,
-          redaction_count: 0,
-          tail_window: null,
-        },
-      ],
+      streams: names.map(pick),
     },
   }
 }
@@ -1545,37 +1602,28 @@ async function fixtureArtifactListing(taskId: string): Promise<Result<ArtifactLi
   const detail = await fixtureAgentDetail(taskId)
   if (detail.status !== 'ok') return detail as Result<ArtifactListing>
   const finished = detail.data.task.state === 'SUCCEEDED'
-  const uri = (name: string) => `gs://swarm-artifacts-dev/tenants/u-bogdan/tasks/${taskId}/attempts/att_fixture/artifacts/${name}`
+  // The newest attempt's, as every per-task fixture read names it (F14b).
+  const att = fixtureLogAttempt(detail.data.task).attemptId ?? 'none'
+  const uri = (name: string) => `gs://swarm-artifacts-dev/tenants/u-bogdan/tasks/${taskId}/attempts/${att}/artifacts/${name}`
   return {
     status: 'ok',
     fetchedAt: Date.now(),
     data: {
       task_id: taskId,
       complete: finished,
-      attempt_id: finished ? 'att_fixture' : null,
+      attempt_id: finished ? att : null,
       artifact_bytes: finished ? 118_823 : null,
       artifacts_skipped: [],
       artifacts: finished
         ? [
-            { name: 'report.md', bytes: 8241, uri: uri('report.md'), attempt_id: 'att_fixture', kind: 'markdown', content_type: 'text/markdown', role: null },
-            { name: 'diff.patch', bytes: 91233, uri: uri('diff.patch'), attempt_id: 'att_fixture', kind: 'text', content_type: 'text/plain', role: null },
-            { name: 'claude-code.stdout.log', bytes: 9397, uri: uri('claude-code.stdout.log'), attempt_id: 'att_fixture', kind: 'log', content_type: 'text/plain', role: 'agent_stdout' },
-            { name: 'claude-code.stderr.log', bytes: 0, uri: uri('claude-code.stderr.log'), attempt_id: 'att_fixture', kind: 'log', content_type: 'text/plain', role: 'agent_stderr' },
-            { name: 'claude-transcript.json', bytes: 10181, uri: uri('claude-transcript.json'), attempt_id: 'att_fixture', kind: 'json', content_type: 'application/json', role: 'agent_transcript' },
+            { name: 'report.md', bytes: 8241, uri: uri('report.md'), attempt_id: att, kind: 'markdown', content_type: 'text/markdown', role: null },
+            { name: 'diff.patch', bytes: 91233, uri: uri('diff.patch'), attempt_id: att, kind: 'text', content_type: 'text/plain', role: null },
+            { name: 'claude-code.stdout.log', bytes: 9397, uri: uri('claude-code.stdout.log'), attempt_id: att, kind: 'log', content_type: 'text/plain', role: 'agent_stdout' },
+            { name: 'claude-code.stderr.log', bytes: 0, uri: uri('claude-code.stderr.log'), attempt_id: att, kind: 'log', content_type: 'text/plain', role: 'agent_stderr' },
+            { name: 'claude-transcript.json', bytes: 10181, uri: uri('claude-transcript.json'), attempt_id: att, kind: 'json', content_type: 'application/json', role: 'agent_transcript' },
           ]
         : [],
     },
-  }
-}
-
-function fixtureAttemptBlock(finished: boolean): TaskAnswer['attempt'] {
-  return {
-    status: 'latest',
-    known: true,
-    generation: 1,
-    created_at: new Date(Date.now() - 9 * 60_000).toISOString(),
-    completed_at: finished ? new Date(Date.now() - 60_000).toISOString() : null,
-    exit_code: finished ? 0 : null,
   }
 }
 
@@ -1633,14 +1681,15 @@ async function fixtureAnswer(taskId: string): Promise<Result<TaskAnswer>> {
     '## Summary\n\nThe capacity reservation is all-or-nothing across every pool.\n\n' +
     '- concurrency counts from `LEASED`\n- a stale worker exits without running the agent\n'
   const ok = state === 'SUCCEEDED'
+  const { attemptId, attempt } = fixtureLogAttempt(detail.data.task)
   return {
     status: 'ok',
     fetchedAt: Date.now(),
     data: {
       task_id: taskId,
       tenant_id: 'u-bogdan',
-      attempt_id: 'att_fixture',
-      attempt: fixtureAttemptBlock(finished),
+      attempt_id: attemptId,
+      attempt,
       read_at: new Date().toISOString(),
       status: ok ? 'ok' : finished ? 'absent' : 'not_yet',
       source: ok ? 'agent_result_event' : null,
@@ -1670,7 +1719,11 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
   noteFixtureProbe(route('/v1/tasks/{id}/transcript', { id: taskId }), 60, true)
   const detail = await fixtureAgentDetail(taskId)
   if (detail.status !== 'ok') return detail as Result<TaskTranscript>
-  const finished = TERMINAL_STATES.has(detail.data.task.state)
+  const task = detail.data.task
+  // The newest attempt's transcript (F14b): its id, its end, its own result.
+  const { attemptId, attempt, span } = fixtureLogAttempt(task)
+  const finished = span?.ended != null
+  const result = fixtureCliResult(task)
   const step = (n: number, over: Partial<TranscriptStep>): TranscriptStep => ({
     id: `L${n * 120}:0`,
     line_offset: n * 120,
@@ -1686,46 +1739,53 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
     raw: includeRaw ? '{"type":"assistant"}' : null,
     ...over,
   })
-  const steps: TranscriptStep[] = [
-    step(0, { kind: 'init', role: 'system', meta: { model: 'claude-opus-5', permission_mode: 'bypassPermissions', tool_count: 14 } }),
-    step(1, { text: 'Reading the repository before changing anything.' }),
-    step(2, { kind: 'tool_call', tool: { id: 'toolu_01', name: 'Read', input: '{\n  "file_path": "CONTRACT.md"\n}' } }),
-    step(3, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: 'toolu_01', is_error: false, content: '# The contract\n...', images: 0 } }),
-    ...(finished
-      ? [step(4, { kind: 'result', role: null, text: '## Summary\n\nDone.', meta: { subtype: 'success', is_error: false, num_turns: 7 } })]
-      : []),
-  ]
-  const size = 4096
+  // An attempt that has not started has written no transcript yet.
+  const started = span?.started != null
+  const steps: TranscriptStep[] = started
+    ? [
+        step(0, { kind: 'init', role: 'system', meta: { model: 'claude-opus-5', permission_mode: 'bypassPermissions', tool_count: 14 } }),
+        step(1, { text: 'Reading the repository before changing anything.' }),
+        step(2, { kind: 'tool_call', tool: { id: 'toolu_01', name: 'Read', input: '{\n  "file_path": "CONTRACT.md"\n}' } }),
+        step(3, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: 'toolu_01', is_error: false, content: '# The contract\n...', images: 0 } }),
+        ...(finished && result !== null
+          ? [step(4, { kind: 'result', role: null, text: result.text, meta: { subtype: result.subtype, is_error: result.is_error, num_turns: 7 } })]
+          : []),
+      ]
+    : []
+  const size = started ? 4096 : 0
+  const at = span?.ended ?? Date.now() - 4_000
   return {
     status: 'ok',
     fetchedAt: Date.now(),
     data: {
       task_id: taskId,
       tenant_id: 'u-bogdan',
-      attempt_id: 'att_fixture',
-      attempt: fixtureAttemptBlock(finished),
+      attempt_id: attemptId,
+      attempt,
       read_at: new Date().toISOString(),
       stream: {
         stream: 'agent_stdout',
-        source: finished ? 'final' : 'live',
-        status: 'ok',
-        detail: null,
-        uri: `gs://swarm-artifacts-dev/tenants/u-bogdan/tasks/${taskId}/attempts/att_fixture/logs/agent_stdout.log`,
-        object_updated_at: new Date(Date.now() - 4_000).toISOString(),
-        age_seconds: 4,
-        total_bytes: size,
+        source: started ? (finished ? 'final' : 'live') : null,
+        status: started ? 'ok' : 'absent',
+        detail: started ? null : 'The attempt has not started, so it has written no transcript.',
+        uri: started
+          ? `gs://swarm-logs/tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId}/logs/${finished ? 'final' : 'live'}/agent_stdout${finished ? '' : '.tail'}.log`
+          : null,
+        object_updated_at: started ? new Date(at).toISOString() : null,
+        age_seconds: started ? Math.max(0, Math.round((Date.now() - at) / 1000)) : null,
+        total_bytes: started ? size : null,
         offset: 0,
         returned_bytes: size,
         next_offset: null,
         truncated: false,
-        tail_window: finished ? null : { object_offset: 0, stream_size: size, published_at: new Date(Date.now() - 4_000).toISOString() },
+        tail_window: !started || finished ? null : { object_offset: 0, stream_size: size, published_at: new Date(at).toISOString() },
       },
-      format: 'claude-stream-json',
+      format: started ? 'claude-stream-json' : null,
       steps,
       complete: finished,
       window_starts_mid_stream: false,
       skipped_lines: 0,
-      answer_in_window: finished,
+      answer_in_window: finished && result !== null,
       // Known whole only for a whole final read, as #188 decides it.
       capture_truncated: finished ? false : null,
       redaction: { applied_at_read_time: true, rules: 6 },
@@ -1837,6 +1897,10 @@ async function fixtureArtifactContent(
     30,
     true,
   )
+  // The newest attempt's artifacts, and its own reported cost (F14b, F14c).
+  const task = fixtureTaskDoc(taskId)
+  const att = fixtureLogAttempt(task).attemptId ?? 'none'
+  const cost = task === undefined ? null : fixtureUsage(task)?.cost_usd ?? null
   const bodies: Record<string, string> = {
     'synthesis.md':
       '# Synthesis\n\nFive agents looked at the same question.\n\n' +
@@ -1847,7 +1911,7 @@ async function fixtureArtifactContent(
       [
         { type: 'system', subtype: 'init', model: 'claude-opus-4' },
         { type: 'assistant', message: { content: [{ type: 'text', text: 'Reading the repository.' }] } },
-        { type: 'result', subtype: 'success', total_cost_usd: 0.0937 },
+        { type: 'result', subtype: 'success', total_cost_usd: cost },
       ],
       null,
       2,
@@ -1861,11 +1925,11 @@ async function fixtureArtifactContent(
     data: {
       task_id: taskId,
       tenant_id: 'u-bogdan',
-      attempt_id: 'att_fixture',
+      attempt_id: att,
       artifact: { name, bytes, uri: `gs://swarm-artifacts/${name}` },
       status: 'ok',
       detail: null,
-      key: `tenants/u-bogdan/tasks/${taskId}/attempts/att_fixture/artifacts/${name}`,
+      key: `tenants/u-bogdan/tasks/${taskId}/attempts/${att}/artifacts/${name}`,
       uri: `gs://swarm-artifacts/${name}`,
       content,
       total_bytes: bytes,
@@ -2060,7 +2124,11 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
     // the same argument `demo-wide` makes for declaring AUTO, since nothing in
     // the shipped catalogue is AUTO either.
     available: false,
-    disabled_reason: 'demo-vendor refused the registered credential. Use demo-small.',
+    // THE ADVICE NAMES A RUNTIME (QAFIX4-FIXTURE-B F13, run 4 capacity-006): a
+    // caller picks a runtime by name, never a sizing class, so 'Use
+    // demo-small' advised something nobody can choose. demo-probe is the one
+    // runtime here that needs no demo-vendor credential; demo-scribe needs one.
+    disabled_reason: 'demo-vendor refused the registered credential. Use demo-probe, which needs no demo-vendor credential.',
     model_classes: ['demo-deep'], default_model_class: 'demo-deep', models: { 'demo-deep': 'demo-model-deep-2' },
   },
   'demo-wide': {
@@ -2314,11 +2382,16 @@ export async function loadUtilisation(taskId: string): Promise<Result<Utilisatio
  */
 async function fixtureUtilisation(taskId: string): Promise<Result<UtilisationRead>> {
   const now = Date.now()
-  const n = 240
+  // The newest attempt's points, inside its own run (F14a): up to twenty
+  // minutes of them, ending at its end or now, and never before its start.
+  const task = fixtureTaskDoc(taskId)
+  const { attemptId, span } = fixtureLogAttempt(task)
+  const last = span?.ended ?? now
+  const n = span?.started == null ? 240 : Math.max(2, Math.min(240, Math.floor((last - span.started) / 5_000)))
   const points = Array.from({ length: n }, (_, i) => {
-    const cpu = i === 120 ? null : Math.min(4, 0.4 + 1.6 * (1 + Math.sin(i / 14)) + (i % 37 === 0 ? 1.5 : 0))
+    const cpu = i === Math.floor(n / 2) ? null : Math.min(4, 0.4 + 1.6 * (1 + Math.sin(i / 14)) + (i % 37 === 0 ? 1.5 : 0))
     return {
-      at: new Date(now - (n - i) * 5_000).toISOString(),
+      at: new Date(last - (n - i) * 5_000).toISOString(),
       cpu_cores: cpu === null ? null : Number(cpu.toFixed(3)),
       memory_bytes: Math.round((1.5 + i / n * 2.2) * 1024 ** 3),
       throttled_share: cpu === null ? null : cpu >= 3.6 ? 0.35 : 0,
@@ -2332,8 +2405,8 @@ async function fixtureUtilisation(taskId: string): Promise<Result<UtilisationRea
       read_at: new Date(now).toISOString(),
       attempts: [
         {
-          attempt_id: 'att_fixture',
-          generation: 1,
+          attempt_id: attemptId ?? 'none',
+          generation: span?.n ?? 0,
           cpu_limit_cores: 4,
           memory_limit_bytes: 8 * 1024 ** 3,
           throttled_seconds: 41.2,
@@ -2455,17 +2528,23 @@ export async function loadTasksInState(
 async function fixtureStats(options: { frame?: boolean } = {}): Promise<Result<Stats>> {
   await new Promise((r) => setTimeout(r, 220))
   noteFixtureProbe(route('/v1/stats'), 220, true, undefined, { frame: options.frame === true })
+  // COUNTED FROM THE TASK LIST, never typed beside it (QAFIX4-FIXTURE-B F9,
+  // run 4 overview-automate-002 and -003): typed apart, Overview's Waiting
+  // read 2 over a list of 3 and Holding capacity 5 over 7 that hold it. Every
+  // state keeps its key, as `count_tasks_by_state` writes one for each.
+  const tasksByState: Record<string, number> = {
+    SUBMITTED: 0, QUEUED: 0, PARKED: 0, READY: 0, LEASED: 0, DISPATCHED: 0,
+    STARTING: 0, RUNNING: 0, SUCCEEDED: 0, FAILED: 0, CANCELLED: 0,
+    DEAD_LETTERED: 0,
+  }
+  for (const t of fixtureTaskRows()) tasksByState[t.state] = (tasksByState[t.state] ?? 0) + 1
   return {
     status: 'ok',
     fetchedAt: Date.now(),
     data: {
       tenant_id: 'u-bogdan',
       dispatch_paused: false,
-      tasks_by_state: {
-        SUBMITTED: 0, QUEUED: 0, PARKED: 1, READY: 1, LEASED: 1, DISPATCHED: 1,
-        STARTING: 1, RUNNING: 2, SUCCEEDED: 7, FAILED: 1, CANCELLED: 1,
-        DEAD_LETTERED: 0,
-      },
+      tasks_by_state: tasksByState,
       limits: { max_batch_size: 100, max_input_bytes: 65536, max_workflow_steps: 50 },
       generated_at: new Date().toISOString(),
     },
@@ -3044,99 +3123,71 @@ function fixtureFailedExitCode(lastError: string | null): number {
 async function fixtureAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
   await new Promise((r) => setTimeout(r, 160))
   noteFixtureProbe(route('/v1/tasks/{id}/attempts', { id: taskId }), 160, true)
-  const iso = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
-  // THE NEWEST ATTEMPT FOLLOWS THE TASK'S STATE. A fixture that always returned
-  // a finished attempt meant the live-agent path -- no exit code, no
-  // `peak_rss_bytes` yet, the resource figure coming off the newest heartbeat
-  // event instead -- was never once looked at in development, and that is the
-  // path someone opens this screen for when they are worried.
-  const page = await fixtureTasks()
-  const task = page.status === 'ok' ? page.data.tasks.find((t) => t.id === taskId) : undefined
-  const live = task !== undefined && !TERMINAL_STATES.has(task.state)
-  // A live attempt has no exit code yet; a failed task's newest attempt exits
-  // the way its `last_error` says; every other finished one exited 0.
-  const newestExit = live
-    ? null
-    : task?.state === 'FAILED'
-      ? fixtureFailedExitCode(task.last_error)
-      : 0
-  const mk = (n: number, exit: number | null, extra: Partial<AttemptRow> = {}): AttemptRow => ({
-    attempt_id: `att_${taskId.slice(-4)}_${n}`,
-    task_id: taskId,
-    tenant_id: 'u-bogdan',
-    generation: n,
-    lease_id: `lease_${n}`,
-    backend: 'CLOUD_RUN_JOB',
-    execution_name: `swarm-job-u-bogdan-claude-code-${n}`,
-    // PRODUCTION SHAPE: a started attempt's `created_at` IS its start. The
-    // worker's `record_attempt_start` rewrites the scheduler's document with a
-    // non-merge `.set()` (control.py), so admission survives only as the
-    // `lease_acquired` event. The never-started attempt below overrides this
-    // with its admission, because its document was never rewritten.
-    created_at: iso(39 - n * 10),
-    started_at: iso(39 - n * 10),
-    completed_at: exit === null ? null : iso(35 - n * 10),
-    exit_code: exit,
-    error: exit ? `exit status ${exit}` : null,
-    peak_rss_bytes: 1_842_000_000,
-    peak_disk_bytes: null,
-    oom_near_miss: n === 2,
-    checkpoints: [],
-    input_tokens: null,
-    output_tokens: null,
-    cache_read_input_tokens: null,
-    cache_creation_input_tokens: null,
-    cost_usd: null,
-    ...extra,
-  })
-  return {
-    status: 'ok',
-    fetchedAt: Date.now(),
-    data: {
-      attempts: [
-        // The newest attempt carries the measurements a current worker image
-        // records, so the requested-vs-utilised bars and the spend columns are
-        // exercised in development. `ckpt-00002` deliberately has no
-        // `checkpoint_completed` event in fixtureAgentDetail: an id with no
-        // size and no uri is the ordinary paging case, not a defect.
-        mk(3, newestExit, {
-          checkpoints: ['ckpt-00001', 'ckpt-00002'],
-          // THE NEWEST ATTEMPT HOLDS THE TASK'S LEASE when the task holds one.
-          // `attemptEnd` reads an attempt as over once the task stops holding
-          // its lease (a park, a failed dispatch, a reclaim), so a fixture
-          // whose lease ids never matched would show every live agent in
-          // development as ended.
-          lease_id: task?.current_lease_id ?? 'lease_3',
-          // A live attempt has written NO final measurement and no spend: both
-          // are written when it ends. The screen falls back to the heartbeat
-          // for memory and says five different things about the rest.
-          ...(live
-            ? { completed_at: null, peak_rss_bytes: null, peak_disk_bytes: null }
-            : {
-                peak_disk_bytes: 2_147_483_648,
-                input_tokens: 18_422,
-                output_tokens: 7_311,
-                cache_read_input_tokens: 412_880,
-                cache_creation_input_tokens: 21_004,
-                cost_usd: 0.418_2,
-              }),
-        }),
-        // The older two ran before usage capture landed: every spend figure is
-        // null, which must render as em dashes and never as $0.00.
-        mk(2, 1, { peak_rss_bytes: 7_730_941_132 }),
-        // Never started: dispatch was rejected, so there is no exit code and no
-        // measurement at all. It must not read as "exit 0" or as 0 bytes.
-        mk(1, null, {
-          peak_rss_bytes: null,
-          created_at: iso(30),
-          started_at: null,
-          completed_at: null,
-          execution_name: null,
-          error: 'BACKEND_REJECTED',
-        }),
-      ],
-    },
-  }
+  const task = fixtureTaskDoc(taskId)
+  if (task === undefined) return { status: 'ok', fetchedAt: Date.now(), data: { attempts: [] } }
+  return { status: 'ok', fetchedAt: Date.now(), data: { attempts: fixtureAttemptRows(task) } }
+}
+
+/**
+ * A fixture task's attempt documents, NEWEST FIRST, from its timeline
+ * (`fixtureSpans`). Every read that shows an attempt -- the Attempts tab, the
+ * run's header, a workflow step's figures, the spend panel -- reads these, so
+ * a step's total is its attempts' sum and the panel's attempt is one of them
+ * (QAFIX4-FIXTURE-B F14c, run 4 flow-workflow-graph-light-07).
+ *
+ * THE NEWEST ATTEMPT FOLLOWS THE TASK'S STATE. A live one has no exit code,
+ * no `peak_rss_bytes` and no spend yet -- both are written at its end -- so
+ * the live-agent path, with memory off the newest heartbeat, is the one seen
+ * in development. A failed task's newest attempt exits as its `last_error`
+ * says. The older attempts ran before usage capture: every spend figure null,
+ * which must render as em dashes and never as $0.00. The never-started one
+ * (dispatch refused) has no exit code and no measurement at all.
+ */
+function fixtureAttemptRows(task: Task): AttemptRow[] {
+  const spans = fixtureSpans(task)
+  const newest = spans.length
+  const iso = (t: number | null) => (t === null ? null : new Date(t).toISOString())
+  const usage = fixtureUsage(task)
+  return spans
+    .map((sp): AttemptRow => {
+      const latest = sp.n === newest
+      const refused = sp.error === 'BACKEND_REJECTED'
+      const ended = sp.ended !== null
+      return {
+        attempt_id: fixtureAttemptId(task.id, sp.n),
+        task_id: task.id,
+        tenant_id: 'u-bogdan',
+        generation: sp.n,
+        // THE NEWEST ATTEMPT HOLDS THE TASK'S LEASE when the task holds one.
+        // `attemptEnd` reads an attempt as over once the task stops holding
+        // its lease, so lease ids that never matched showed every live agent
+        // in development as ended.
+        lease_id: latest ? (task.current_lease_id ?? `lease_${sp.n}`) : `lease_${sp.n}`,
+        backend: 'CLOUD_RUN_JOB',
+        execution_name: refused || (latest && task.state === 'LEASED') ? null : `swarm-job-u-bogdan-claude-code-${sp.n}`,
+        // PRODUCTION SHAPE: a started attempt's `created_at` IS its start. The
+        // worker's `record_attempt_start` rewrites the scheduler's document
+        // with a non-merge `.set()` (control.py), so admission survives only as
+        // the `lease_acquired` event; a never-started attempt keeps its
+        // admission, because its document was never rewritten.
+        created_at: iso(sp.admitted) ?? task.created_at,
+        started_at: iso(sp.started),
+        completed_at: iso(sp.ended),
+        exit_code: sp.exit,
+        error: sp.error,
+        peak_rss_bytes: sp.started === null || !ended ? null : sp.n === 2 && newest >= 3 ? 7_730_941_132 : 1_842_000_000,
+        peak_disk_bytes: latest && ended && sp.started !== null ? 2_147_483_648 : null,
+        oom_near_miss: sp.n === 2 && newest >= 3,
+        checkpoints: sp.checkpoints,
+        input_tokens: null,
+        output_tokens: null,
+        cache_read_input_tokens: null,
+        cache_creation_input_tokens: null,
+        cost_usd: null,
+        ...(latest && ended && sp.started !== null && usage !== null ? usage : {}),
+      }
+    })
+    .reverse()
 }
 
 /**
@@ -3526,7 +3577,7 @@ export function priceRefusals(error: ApiError): { fields: Record<string, string>
  * and `make test` runs with no node, so it has to be readable as text.
  *
  * Two entries teach the thing the panel exists for. `mock` is capped by THREE
- * pools tied at 15 and `codex` by two tied at 10, so every single-ceiling
+ * pools tied at 15 and `codex` by three tied at 10, so every single-ceiling
  * counterfactual on them reads zero. Those zeros are the shape an operator has
  * to recognise, and they are real numbers off the dev platform, not staged ones.
  *
@@ -3774,7 +3825,8 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
     "blockers": [],
     "binding": [
       "runner:codex",
-      "provider:openai"
+      "provider:openai",
+      "provider:openai:tenant:u-bogdan"
     ],
     "counterfactual": [
       {
@@ -3785,7 +3837,8 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "delta": 0,
         "next_binding": [
           "runner:codex",
-          "provider:openai"
+          "provider:openai",
+          "provider:openai:tenant:u-bogdan"
         ]
       },
       {
@@ -3796,7 +3849,8 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "delta": 0,
         "next_binding": [
           "runner:codex",
-          "provider:openai"
+          "provider:openai",
+          "provider:openai:tenant:u-bogdan"
         ]
       },
       {
@@ -3807,7 +3861,8 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "delta": 0,
         "next_binding": [
           "runner:codex",
-          "provider:openai"
+          "provider:openai",
+          "provider:openai:tenant:u-bogdan"
         ]
       },
       {
@@ -3817,7 +3872,8 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:openai"
+          "provider:openai",
+          "provider:openai:tenant:u-bogdan"
         ]
       },
       {
@@ -3828,7 +3884,8 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "delta": 0,
         "next_binding": [
           "runner:codex",
-          "provider:openai"
+          "provider:openai",
+          "provider:openai:tenant:u-bogdan"
         ]
       },
       {
@@ -3838,7 +3895,19 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "runner:codex"
+          "runner:codex",
+          "provider:openai:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "provider:openai:tenant:u-bogdan",
+        "action": "raise",
+        "headroom_after": 10,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "runner:codex",
+          "provider:openai"
         ]
       }
     ],
@@ -3939,6 +4008,91 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
     "complete": true,
     "unread": [],
     "uncapped": []
+  },
+  "claude-code-browser": {
+    "units": 1,
+    "headroom": 0,
+    "basis": "measured",
+    "blockers": [
+      {
+        "pool": "provider:anthropic:tenant:u-bogdan",
+        "reason": "PROVIDER_CONCURRENCY_LIMIT",
+        "limit": 5,
+        "active": 5,
+        "group": "no_room"
+      }
+    ],
+    "binding": [
+      "provider:anthropic:tenant:u-bogdan"
+    ],
+    "counterfactual": [
+      {
+        "pool": "global",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "tenant:u-bogdan",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "resource:browser",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "backend:GKE_AUTOPILOT",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "provider:anthropic",
+        "action": "raise",
+        "headroom_after": 0,
+        "basis_after": "measured",
+        "delta": 0,
+        "next_binding": [
+          "provider:anthropic:tenant:u-bogdan"
+        ]
+      },
+      {
+        "pool": "provider:anthropic:tenant:u-bogdan",
+        "action": "raise",
+        "headroom_after": 4,
+        "basis_after": "measured",
+        "delta": 4,
+        "next_binding": [
+          "resource:browser",
+          "backend:GKE_AUTOPILOT"
+        ]
+      }
+    ],
+    "complete": true,
+    "unread": [],
+    "uncapped": [
+      "runner:claude-code-browser"
+    ]
   }
 }
 
@@ -4093,7 +4247,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
           ...FIXTURE_AVAILABILITY.codex,
           pools: [
             'global', 'tenant:u-bogdan', 'resource:standard', 'runner:codex',
-            'backend:CLOUD_RUN_JOB', 'provider:openai',
+            'backend:CLOUD_RUN_JOB', 'provider:openai', 'provider:openai:tenant:u-bogdan',
           ],
           admission: FIXTURE_ADMISSION.codex,
           input_contract: FIXTURE_INPUT_CONTRACTS.codex,
@@ -4110,8 +4264,11 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
         },
         // Contract request 67: claude-code on the browser image, so it costs a
         // browser class (1 unit since contract request 79; 2 before) and runs
-        // where the browser image must. No admission row: the panel reads a
-        // missing one as not measured.
+        // where the browser image must. ITS ADMISSION ROW IS SERVED
+        // (QAFIX4-FIXTURE-B F10, run 4 capacity-004): without one, Can start and
+        // Runs out first read a dash beside its full provider pool and Headroom
+        // counted its seven pools unread. Its runner pool has no document, which
+        // the analyser reports as uncapped, not unread.
         'claude-code-browser': {
           resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 1,
           ...FIXTURE_AVAILABILITY['claude-code-browser'],
@@ -4119,6 +4276,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
             'global', 'tenant:u-bogdan', 'resource:browser', 'runner:claude-code-browser',
             'backend:GKE_AUTOPILOT', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
           ],
+          admission: FIXTURE_ADMISSION['claude-code-browser'],
           input_contract: FIXTURE_INPUT_CONTRACTS['claude-code-browser'],
         },
       },
@@ -4130,6 +4288,12 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
         pool('provider:anthropic:tenant:eng', 5, 0),
         pool('provider:openai', 10, 0),
         pool('provider:openai:tenant:eng', 5, 0),
+        // THE POOL openai u-bogdan's QUOTA ROW FEEDS (QAFIX4-FIXTURE-B F11, run 4
+        // capacity-009): `pool_names_for` gives every provider its per-tenant
+        // slice, so codex's list carries it and Provider quota's row links a
+        // pool the board and Holders' accounting both list. At 10, so codex
+        // stays tied, now across three ceilings (FIXTURE_ADMISSION's note).
+        pool('provider:openai:tenant:u-bogdan', 10, 0),
         pool('runner:claude-code', 10, 5),
         pool('runner:mock', 20, 0),
         pool('runner:browser', 4, 0),
@@ -4195,7 +4359,9 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
       history_read: true,
       read_at: at(0),
     }
-    return {
+    // Its own times derive from its submission and its last change, as every
+    // fixture task's do (`fixtureTimed`), not the listed task it is built on.
+    return fixtureTimed({
       ...base,
       id: `task_wait_${reason.toLowerCase()}`,
       state: ready ? 'READY' : 'PARKED',
@@ -4207,7 +4373,7 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
       updated_at: at(3),
       waiting,
       ...over.task,
-    }
+    })
   }
   const checks = ['checkov', 'ci-gate', 'python (unit)', 'ui (typecheck + component)', 'integration (emulator)']
   const pr = { number: 1779, url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/1779' }
@@ -4349,9 +4515,168 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
   ]
 }
 
+// ---------------------------------------------------------------------------
+// THE FIXTURE TIMELINE (QAFIX4-FIXTURE-B, visual QA run 4 F12, F14a-c; part
+// of #1680). Every time a fixture read shows for a task -- its submission, its
+// latest start and end, each attempt's admission, start and end, its events,
+// its checkpoints, its logs' attempt -- derives from ONE task document: its
+// `created_at` (submitted), its `updated_at` (its last change: now while it
+// holds capacity, its end once it has one) and its attempt counter. They were
+// minted apart, so attempt 3 started before its task was submitted, every
+// checkpoint belonged to an attempt that wrote none, and every workflow step
+// ran 5m 0s. Fixture-only: nothing on the live path calls any of this.
+// ---------------------------------------------------------------------------
+
+/** One attempt of a fixture task, in epoch ms. */
+interface FixtureAttemptSpan {
+  n: number
+  admitted: number
+  started: number | null
+  ended: number | null
+  exit: number | null
+  error: string | null
+  checkpoints: string[]
+}
+
+/** A stable small number per id, so a task's run length and figures do not move between reads. */
+function fixtureSeed(id: string): number {
+  let h = 0
+  for (const c of id) h = (h * 31 + c.charCodeAt(0)) % 100_003
+  return h
+}
+
+/** How long a task's attempts ran, per task (2-8 minutes and some seconds), never past 80% of `windowMs`. */
+function fixtureRunMs(id: string, windowMs: number): number {
+  const h = fixtureSeed(id)
+  return Math.min(((2 + (h % 7)) * 60 + (h % 50)) * 1000, Math.floor(windowMs * 0.8))
+}
+
+/** The attempt id `fixtureAttempts` serves for attempt `n` of a task. */
+function fixtureAttemptId(taskId: string, n: number): string {
+  return `att_${taskId.slice(-4)}_${n}`
+}
+
+/**
+ * A fixture task's attempts, oldest first, from its own document.
+ *
+ * One per `attempt_count`, none for a task never admitted (generation 0).
+ * Each attempt has its own slice of the task's span, in order. The canonical
+ * three-attempt shape keeps what it always taught: attempt 1 never started
+ * (dispatch rejected), attempt 2 ran and failed, and the newest follows the
+ * task's state -- open while it holds capacity, not started while LEASED or
+ * DISPATCHED. Only the newest attempt that ran wrote checkpoints, the two the
+ * listing serves; ids are the listing's, so the records and the bucket agree.
+ */
+function fixtureSpans(task: Task): FixtureAttemptSpan[] {
+  const k = task.current_generation === 0 ? 0 : task.attempt_count
+  if (k <= 0) return []
+  const begin = Date.parse(task.created_at)
+  const end = Date.parse(task.updated_at)
+  const live = CONCURRENCY_STATES.has(task.state)
+  const slice = (end - begin) / k
+  const spans: FixtureAttemptSpan[] = []
+  for (let n = 1; n <= k; n++) {
+    const admitted = Math.round(begin + (n - 1) * slice + 0.1 * slice)
+    if (n < k && k >= 3 && n === 1) {
+      spans.push({ n, admitted, started: null, ended: null, exit: null, error: 'BACKEND_REJECTED', checkpoints: [] })
+    } else if (n < k) {
+      spans.push({ n, admitted, started: admitted, ended: Math.round(admitted + 0.6 * slice), exit: 1, error: 'exit status 1', checkpoints: [] })
+    } else {
+      const started = task.state === 'LEASED' || task.state === 'DISPATCHED' ? null : admitted
+      const ended = live ? null : end
+      const exit = ended === null ? null : task.state === 'FAILED' ? fixtureFailedExitCode(task.last_error) : 0
+      const ran = started !== null && task.state !== 'STARTING'
+      spans.push({
+        n, admitted, started, ended, exit,
+        error: exit ? `exit status ${exit}` : null,
+        checkpoints: ran ? ['ckpt_0001', 'ckpt_0002'] : [],
+      })
+    }
+  }
+  return spans
+}
+
+/** Where a fixture task's checkpoints are listed (`fixtureCheckpoints`' prefix). */
+function fixtureCheckpointPrefix(taskId: string): string {
+  return `tenants/u-bogdan/tasks/${taskId}/checkpoints`
+}
+
+/**
+ * The task's own times, from its timeline: `started_at` is its LATEST start
+ * (stepviews' `ran` and the header's Elapsed both read it so), `completed_at`
+ * its end once terminal, and `latest_checkpoint` the newest checkpoint its
+ * attempts wrote -- the listing's pointer -- or none.
+ */
+function fixtureTimed(task: Task): Task {
+  const spans = fixtureSpans(task)
+  const started = [...spans].reverse().find((sp) => sp.started !== null)?.started ?? null
+  const written = spans[spans.length - 1]?.checkpoints ?? []
+  const pointer = written[written.length - 1]
+  return {
+    ...task,
+    started_at: started === null ? null : new Date(started).toISOString(),
+    completed_at: TERMINAL_STATES.has(task.state) ? task.updated_at : null,
+    latest_checkpoint: pointer === undefined ? null : `${fixtureCheckpointPrefix(task.id)}/${pointer}`,
+  }
+}
+
+/** A task's newest attempt in the fixture, or undefined when it was never admitted. */
+function fixtureNewestSpan(task: Task): FixtureAttemptSpan | undefined {
+  const spans = fixtureSpans(task)
+  return spans[spans.length - 1]
+}
+
+/**
+ * The task document a per-task fixture read answers from: the listed one, a
+ * waiting one (#1782), or -- for an id neither has, as a component test hands
+ * one -- the first finished task under that id, so the read answers in the
+ * same shape it always did rather than inventing a second one.
+ */
+function fixtureTaskDoc(taskId: string): Task | undefined {
+  const listed = fixtureTaskRows()
+  const known = listed.find((t) => t.id === taskId) ?? fixtureWaitingTasks(listed).find((t) => t.id === taskId)
+  if (known !== undefined) return known
+  const stand = listed.find((t) => t.state === 'SUCCEEDED')
+  return stand === undefined ? undefined : { ...stand, id: taskId }
+}
+
+/**
+ * What a finished attempt's runner reported, per task, so no two read alike.
+ * mock and generic report nothing (the frozen catalogue says only claude-code
+ * and codex produce usage); `task_wf_scan_a` is a MEASURED zero, the digit
+ * case; `task_f523c160` reported tokens and no cost, which must not read as
+ * free.
+ */
+function fixtureUsage(task: Task): Pick<
+  AttemptRow,
+  'input_tokens' | 'output_tokens' | 'cache_read_input_tokens' | 'cache_creation_input_tokens' | 'cost_usd'
+> | null {
+  if (task.runner_profile === 'mock' || task.runner_profile === 'generic') return null
+  if (task.id === 'task_wf_scan_a') {
+    return { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cost_usd: 0 }
+  }
+  const h = fixtureSeed(task.id)
+  return {
+    input_tokens: 6_000 + (h % 17) * 911,
+    output_tokens: 900 + (h % 13) * 233,
+    cache_read_input_tokens: 40_000 + (h % 23) * 9_871,
+    cache_creation_input_tokens: 3_000 + (h % 11) * 1_207,
+    cost_usd: task.id === 'task_f523c160' ? null : Math.round((0.05 + (h % 40) * 0.0113) * 10_000) / 10_000,
+  }
+}
+
 async function fixtureTasks(): Promise<Result<TaskPage>> {
   await new Promise((r) => setTimeout(r, 350))
   noteFixtureProbe(route('/v1/tasks'), 350, true)
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: { tasks: fixtureTaskRows(), next_page_token: null, tenant_id: 'u-bogdan' },
+  }
+}
+
+/** The fixture's task list, built at one instant: `fixtureTasks` serves it, and the stats and workflow rows count it. */
+function fixtureTaskRows(): Task[] {
   const now = Date.now()
   const at = (minsAgo: number) => new Date(now - minsAgo * 60_000).toISOString()
 
@@ -4363,7 +4688,7 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
     profile: string,
     minsAgo: number,
     extra: Partial<Task> = {},
-  ): Task => ({
+  ): Task => timed(minsAgo, {
     id,
     tenant_id: 'u-bogdan',
     state,
@@ -4372,9 +4697,10 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
     provider: profile === 'mock' ? null : 'anthropic',
     priority: 0,
     created_at: at(minsAgo),
-    updated_at: at(Math.max(0, minsAgo - 6)),
-    started_at: state === 'QUEUED' || state === 'READY' ? null : at(minsAgo - 1),
-    completed_at: ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(state) ? at(minsAgo - 6) : null,
+    // The three times below are set by `timed` from the task's timeline.
+    updated_at: at(minsAgo),
+    started_at: null,
+    completed_at: null,
     submitted_by: 'alice@example.com',
     attempt_count: state === 'FAILED' ? 3 : 1,
     max_attempts: 3,
@@ -4420,127 +4746,168 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
     input: null,
     last_error: state === 'FAILED' ? 'exit status 1: pytest collected 2 failures' : null,
     result_summary: state === 'SUCCEEDED' ? { artifacts: 1, checkpoints: 2 } : null,
-    latest_checkpoint:
-      state === 'SUCCEEDED' || state === 'PARKED'
-        ? 'gs://swarm-artifacts-dev/u-bogdan/checkpoints/ckpt-3.tar.zst'
-        : null,
+    latest_checkpoint: null,
     ...extra,
   })
-
-  return {
-    status: 'ok',
-    fetchedAt: Date.now(),
-    data: {
-      tasks: [
-        mk('task_a073aff5', 'RUNNING', 'claude-code', 4),
-        mk('task_8ea5c26d', 'RUNNING', 'claude-code', 5),
-        // THE BROWSER QA AGENT: the one fixture task with a live browser, so
-        // the Browser pane has a live session to draw in this build, and the
-        // QA route `task-browser` (qa/routes.json) captures it rather than an
-        // ordinary agent's empty pane (QAFIX2-QABROWSER, owner decision
-        // 2026-10-21). `loadLiveSession` answers `live_browser: true` for this
-        // id alone. task_a073aff5 stays the ordinary running agent the tests
-        // name. The prompt is the label a QA reader recognises it by.
-        mk('task_b40e5a1c', 'RUNNING', 'claude-code-browser', 6, {
-          input: { prompt: 'Browser QA agent: open https://example.com and report what the page says.' },
-        }),
-        // THE FENCED SHAPE, which is the twenty-minute DISPATCHED stall that
-        // exposed the missing fields: generation 2 against attempt_count 1,
-        // still naming the generation-1 lease that was never released. This is
-        // the row that tells a developer whether an indicator reads correctly;
-        // with every fixture row at generation == attempt_count, a glyph that
-        // never fires and a glyph that is not wired look identical.
-        mk('task_19d91b82', 'DISPATCHED', 'claude-code', 3, {
-          current_generation: 2,
-          current_lease_id: 'lease_723362a25968460aae35',
-        }),
-        mk('task_92eb4807', 'STARTING', 'claude-code', 2),
-        mk('task_460409cd', 'LEASED', 'claude-code', 1),
-        mk('task_950b8e4a', 'READY', 'claude-code', 1),
-        mk('task_e7d210b6', 'QUEUED', 'claude-code', 0),
-        mk('task_8e33a3de', 'FAILED', 'claude-code', 42),
-        mk('task_a3881bec', 'SUCCEEDED', 'claude-code', 58),
-        mk('task_99284d38', 'SUCCEEDED', 'claude-code', 50),
-        mk('task_f278adec', 'SUCCEEDED', 'claude-code', 48),
-        mk('task_f523c160', 'SUCCEEDED', 'claude-code', 47),
-        mk('task_812d51aa', 'SUCCEEDED', 'claude-code', 46),
-        mk('task_108ef29c', 'SUCCEEDED', 'mock', 90),
-        mk('task_1beb89a5', 'CANCELLED', 'claude-code', 62),
-        // A standalone `direct-pr` task: the one shape that opens a pull
-        // request on its own, so the row chip and the Code panel's published
-        // path are both reachable in development.
-        mk('task_c41d90b7', 'SUCCEEDED', 'claude-code', 20, {
-          dispatch: { strategy: 'direct-pr', carrier: 'checkpoints', role: null, integrates: [] },
-        }),
-        // Part of a workflow, so the graph view has something with edges.
-        //
-        // THE WORKFLOW IS AN `integrate` ONE, and the roles are the real ones
-        // `_step_dispatch` assigns: every step a contributor except the single
-        // sink, whose `integrates` is the topological prefix in apply order.
-        // A `collect` fixture would have left the integrator badge, the
-        // contributor publish panel and the one-pull-request rollup unrendered
-        // in development -- which is how a panel ships untested.
-        mk('task_wf_plan', 'SUCCEEDED', 'claude-code', 30, {
-          workflow_id: 'wf_audit_01', step_id: 'plan', depends_on: [],
-          dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
-        }),
-        mk('task_wf_scan_a', 'SUCCEEDED', 'claude-code', 24, {
-          workflow_id: 'wf_audit_01', step_id: 'scan-scripts', depends_on: ['plan'],
-          dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
-        }),
-        mk('task_wf_scan_b', 'RUNNING', 'claude-code', 24, {
-          workflow_id: 'wf_audit_01', step_id: 'scan-terraform', depends_on: ['plan'],
-          dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
-        }),
-        // PARKED, not "BLOCKED". There is no BLOCKED task state -- a step
-        // waiting on a dependency is PARKED with DEPENDENCY_INCOMPLETE.
-        mk('task_wf_report', 'PARKED', 'claude-code', 24, {
-          workflow_id: 'wf_audit_01', step_id: 'report',
-          depends_on: ['scan-scripts', 'scan-terraform'],
-          park_reason: 'DEPENDENCY_INCOMPLETE',
-          // The listing row's `waiting` (#1782, WAIT-API), in the sentence
-          // `swarm_api/waiting_detail.py` writes, so the Waiting tab's short
-          // reason ("upstream: 1 step") is reachable in development.
-          waiting: { reason: 'DEPENDENCY_INCOMPLETE', summary: 'Waiting on 1 upstream steps: scan-terraform (RUNNING)' },
-          dispatch: {
-            strategy: 'integrate', carrier: 'checkpoints', role: 'integrator',
-            integrates: ['task_wf_plan', 'task_wf_scan_a', 'task_wf_scan_b'],
-          },
-        }),
-        // THE FAN-IN, reproduced from the live workflow that proved the graph
-        // could not express one: `wf_5e5ad3b6f7da4299a839`, five independent
-        // steps and a sixth depending on ALL five. Rendered by the old view it
-        // was indistinguishable from a chain of five, so a fixture that only
-        // ever held the two-fork shape would have let that ship again.
-        //
-        // The step ids are the real ones, `allornothing` included, because the
-        // join's dependency line is the string that used to be ellipsed and its
-        // length is the reason.
-        ...(['cold-start', 'fencing', 'allornothing', 'checkpoints', 'absentzero'].map(
-          (stepId, i) =>
-            mk(`task_fan_${i}`, i === 3 ? 'FAILED' : 'SUCCEEDED', 'claude-code', 40 - i, {
-              workflow_id: 'wf_5e5ad3b6f7da4299a839', step_id: stepId, depends_on: [],
-              // A failure that names a code other than 1, so the fixture's
-              // attempts are seen following `last_error` rather than a
-              // constant (pytest exits 2 when collection is interrupted).
-              ...(i === 3 ? { last_error: 'exit status 2: pytest was interrupted: 1 error during collection' } : {}),
-              dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
-            }),
-        )),
-        mk('task_fan_join', 'CANCELLED', 'claude-code', 35, {
-          workflow_id: 'wf_5e5ad3b6f7da4299a839', step_id: 'synthesis',
-          depends_on: ['cold-start', 'fencing', 'allornothing', 'checkpoints', 'absentzero'],
-          dispatch: {
-            strategy: 'integrate', carrier: 'checkpoints', role: 'integrator',
-            integrates: ['task_fan_0', 'task_fan_1', 'task_fan_2', 'task_fan_3', 'task_fan_4'],
-          },
-        }),
-      ],
-      next_page_token: null,
-      tenant_id: 'u-bogdan',
-    },
+  // ITS LAST CHANGE, from which `fixtureTimed` derives the rest: now while it
+  // holds capacity; its end once terminal, after a run of its own length;
+  // the park or release of its last attempt when it waits again; its
+  // submission when nothing was ever admitted.
+  function timed(minsAgo: number, task: Task): Task {
+    const span = minsAgo * 60_000
+    const last =
+      task.current_generation === 0 || task.attempt_count === 0
+        ? now - span
+        : CONCURRENCY_STATES.has(task.state)
+          ? now
+          : TERMINAL_STATES.has(task.state)
+            ? now - span + fixtureRunMs(task.id, span)
+            : now - span + fixtureRunMs(task.id, span * 0.6)
+    return fixtureTimed({ ...task, updated_at: new Date(last).toISOString() })
   }
+
+  return [
+    // THE REFERENCE AGENT, on its third attempt: attempt 1 was refused at
+    // dispatch and attempt 2 failed, so the Attempts tab, the events and
+    // the checkpoints all have more than one attempt to agree about.
+    mk('task_a073aff5', 'RUNNING', 'claude-code', 4, { attempt_count: 3, current_generation: 3 }),
+    mk('task_8ea5c26d', 'RUNNING', 'claude-code', 5),
+    // THE BROWSER QA AGENT: the one fixture task with a live browser, so
+    // the Browser pane has a live session to draw in this build, and the
+    // QA route `task-browser` (qa/routes.json) captures it rather than an
+    // ordinary agent's empty pane (QAFIX2-QABROWSER, owner decision
+    // 2026-10-21). `loadLiveSession` answers `live_browser: true` for this
+    // id alone. task_a073aff5 stays the ordinary running agent the tests
+    // name. The prompt is the label a QA reader recognises it by.
+    mk('task_b40e5a1c', 'RUNNING', 'claude-code-browser', 6, {
+      input: { prompt: 'Browser QA agent: open https://example.com and report what the page says.' },
+    }),
+    // THE FENCED SHAPE, which is the twenty-minute DISPATCHED stall that
+    // exposed the missing fields: generation 2 against attempt_count 1,
+    // still naming the generation-1 lease that was never released. This is
+    // the row that tells a developer whether an indicator reads correctly;
+    // with every fixture row at generation == attempt_count, a glyph that
+    // never fires and a glyph that is not wired look identical.
+    mk('task_19d91b82', 'DISPATCHED', 'claude-code', 3, {
+      current_generation: 2,
+      current_lease_id: 'lease_723362a25968460aae35',
+    }),
+    mk('task_92eb4807', 'STARTING', 'claude-code', 2),
+    mk('task_460409cd', 'LEASED', 'claude-code', 1),
+    mk('task_950b8e4a', 'READY', 'claude-code', 1),
+    mk('task_e7d210b6', 'QUEUED', 'claude-code', 0),
+    // THE FAILED TASK WHOSE CLI REPORTED SUCCESS (QA-115, kept as built):
+    // its transcript ends `result · success` and the task still failed
+    // after it, which is the case Logs explains. The only one: every other
+    // failed task's transcript ends in its error (`fixtureTranscript`).
+    mk('task_8e33a3de', 'FAILED', 'claude-code', 42, {
+      metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_bcdc9180e4fb4a209f31 },
+    }),
+    mk('task_a3881bec', 'SUCCEEDED', 'claude-code', 58, {
+      metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_bcdc9180e4fb4a209f31 },
+    }),
+    mk('task_99284d38', 'SUCCEEDED', 'claude-code', 50),
+    mk('task_f278adec', 'SUCCEEDED', 'claude-code', 48),
+    mk('task_f523c160', 'SUCCEEDED', 'claude-code', 47),
+    mk('task_812d51aa', 'SUCCEEDED', 'claude-code', 46),
+    mk('task_108ef29c', 'SUCCEEDED', 'mock', 90),
+    mk('task_1beb89a5', 'CANCELLED', 'claude-code', 62, {
+      metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_bcdc9180e4fb4a209f31 },
+    }),
+    // A standalone `direct-pr` task: the one shape that opens a pull
+    // request on its own, so the row chip and the Code panel's published
+    // path are both reachable in development.
+    mk('task_c41d90b7', 'SUCCEEDED', 'claude-code', 20, {
+      dispatch: { strategy: 'direct-pr', carrier: 'checkpoints', role: null, integrates: [] },
+    }),
+    // Part of a workflow, so the graph view has something with edges.
+    //
+    // THE WORKFLOW IS AN `integrate` ONE, and the roles are the real ones
+    // `_step_dispatch` assigns: every step a contributor except the single
+    // sink, whose `integrates` is the topological prefix in apply order.
+    // A `collect` fixture would have left the integrator badge, the
+    // contributor publish panel and the one-pull-request rollup unrendered
+    // in development -- which is how a panel ships untested.
+    // Two attempts: a retry that predates usage capture, then one with figures.
+    mk('task_wf_plan', 'SUCCEEDED', 'claude-code', 30, {
+      workflow_id: 'wf_audit_01', step_id: 'plan', depends_on: [],
+      attempt_count: 2, current_generation: 2,
+      metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_audit_01 },
+      dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
+    }),
+    mk('task_wf_scan_a', 'SUCCEEDED', 'claude-code', 24, {
+      workflow_id: 'wf_audit_01', step_id: 'scan-scripts', depends_on: ['plan'],
+      metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_audit_01 },
+      dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
+    }),
+    mk('task_wf_scan_b', 'RUNNING', 'claude-code', 24, {
+      workflow_id: 'wf_audit_01', step_id: 'scan-terraform', depends_on: ['plan'],
+      metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_audit_01 },
+      dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
+    }),
+    // PARKED, not "BLOCKED". There is no BLOCKED task state -- a step
+    // waiting on a dependency is PARKED with DEPENDENCY_INCOMPLETE.
+    mk('task_wf_report', 'PARKED', 'claude-code', 24, {
+      workflow_id: 'wf_audit_01', step_id: 'report',
+      metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_audit_01 },
+      depends_on: ['scan-scripts', 'scan-terraform'],
+      park_reason: 'DEPENDENCY_INCOMPLETE',
+      // The listing row's `waiting` (#1782, WAIT-API), in the sentence
+      // `swarm_api/waiting_detail.py` writes, so the Waiting tab's short
+      // reason ("upstream: 1 step") is reachable in development.
+      waiting: { reason: 'DEPENDENCY_INCOMPLETE', summary: 'Waiting on 1 upstream steps: scan-terraform (RUNNING)' },
+      dispatch: {
+        strategy: 'integrate', carrier: 'checkpoints', role: 'integrator',
+        integrates: ['task_wf_plan', 'task_wf_scan_a', 'task_wf_scan_b'],
+      },
+    }),
+    // THE FAN-IN, reproduced from the live workflow that proved the graph
+    // could not express one: `wf_5e5ad3b6f7da4299a839`, five independent
+    // steps and a sixth depending on ALL five. Rendered by the old view it
+    // was indistinguishable from a chain of five, so a fixture that only
+    // ever held the two-fork shape would have let that ship again.
+    //
+    // The step ids are the real ones, `allornothing` included, because the
+    // join's dependency line is the string that used to be ellipsed and its
+    // length is the reason.
+    ...(['cold-start', 'fencing', 'allornothing', 'checkpoints', 'absentzero'].map(
+      (stepId, i) =>
+        mk(`task_fan_${i}`, i === 3 ? 'FAILED' : 'SUCCEEDED', 'claude-code', 40 - i, {
+          workflow_id: 'wf_5e5ad3b6f7da4299a839', step_id: stepId, depends_on: [],
+          metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_5e5ad3b6f7da4299a839 },
+          // A failure that names a code other than 1, so the fixture's
+          // attempts are seen following `last_error` rather than a
+          // constant (pytest exits 2 when collection is interrupted).
+          ...(i === 3 ? { last_error: 'exit status 2: pytest was interrupted: 1 error during collection' } : {}),
+          dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
+        }),
+    )),
+    // CANCELLED BEFORE IT RAN: `checkpoints` failed, so the join was never
+    // admitted -- no attempt, no start, no `ran`, no figures.
+    mk('task_fan_join', 'CANCELLED', 'claude-code', 35, {
+      workflow_id: 'wf_5e5ad3b6f7da4299a839', step_id: 'synthesis',
+      depends_on: ['cold-start', 'fencing', 'allornothing', 'checkpoints', 'absentzero'],
+      attempt_count: 0, current_generation: 0,
+      metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_5e5ad3b6f7da4299a839 },
+      dispatch: {
+        strategy: 'integrate', carrier: 'checkpoints', role: 'integrator',
+        integrates: ['task_fan_0', 'task_fan_1', 'task_fan_2', 'task_fan_3', 'task_fan_4'],
+      },
+    }),
+  ]
 }
+
+/**
+ * THE TITLE EACH FIXTURE WORKFLOW'S STEPS CARRY (QAFIX4-FIXTURE-B F14c, run 4
+ * flow-workflow-graph-light-01): the list names a workflow by its steps'
+ * `metadata.title` (`workflowLabel`, stepviews.ts), and no fixture step had
+ * one, so all three read 'Untitled workflow'.
+ */
+const FIXTURE_WORKFLOW_TITLES = {
+  wf_audit_01: 'Audit the operator scripts and the Terraform',
+  wf_5e5ad3b6f7da4299a839: 'Check the five contract invariants, then write one synthesis',
+  wf_bcdc9180e4fb4a209f31: 'Research, draft and review the restore runbook',
+} as const
 
 async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   await new Promise((r) => setTimeout(r, 300))
@@ -4560,7 +4927,7 @@ async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   return {
     status: 'ok',
     fetchedAt: Date.now(),
-    data: { taskById, statesDetail: null, workflows: fixtureWorkflowRows() },
+    data: { taskById, statesDetail: null, workflows: fixtureWorkflowRows(tasks.status === 'ok' ? tasks.data.tasks : undefined) },
   }
 }
 
@@ -4573,7 +4940,18 @@ async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
  * exists -- which is precisely the class of defect the live UI audit kept
  * finding.
  */
-function fixtureWorkflowRows(): Workflow[] {
+function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
+  // A WORKFLOW SPANS ITS STEPS (QAFIX4-FIXTURE-B F14c, run 4
+  // flow-workflow-graph-light-12): created when its first step task was,
+  // last changed when its last one was. Typed apart, the fan-in's 3h 31m
+  // matched neither interval its steps drew.
+  const byId = new Map(rows.map((t) => [t.id, t]))
+  const spanOf = (taskIds: string[]): { created_at: string; updated_at: string } => {
+    const ts = taskIds.map((id) => byId.get(id)).filter((t): t is Task => t !== undefined)
+    const first = Math.min(...ts.map((t) => Date.parse(t.created_at)))
+    const last = Math.max(...ts.map((t) => Date.parse(t.updated_at)))
+    return { created_at: new Date(first).toISOString(), updated_at: new Date(last).toISOString() }
+  }
   const step = (
     step_id: string,
     depends_on: string[],
@@ -4622,8 +5000,7 @@ function fixtureWorkflowRows(): Workflow[] {
         unreadable_steps: [],
         repaired: true,
       },
-      created_at: new Date(Date.now() - 30 * 60_000).toISOString(),
-      updated_at: new Date().toISOString(),
+      ...spanOf(['task_wf_plan', 'task_wf_scan_a', 'task_wf_scan_b', 'task_wf_report']),
       submitted_by: 'alice@example.com',
       priority: 0,
       on_step_failure: 'FAIL_WORKFLOW',
@@ -4671,8 +5048,7 @@ function fixtureWorkflowRows(): Workflow[] {
           unstarted_steps: [],
           steps_read: 6,
         },
-        created_at: new Date(Date.now() - 4 * 3600_000).toISOString(),
-        updated_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
+        ...spanOf(['task_fan_0', 'task_fan_1', 'task_fan_2', 'task_fan_3', 'task_fan_4', 'task_fan_join']),
         submitted_by: 'alice@example.com',
         priority: 0,
         on_step_failure: 'FAIL_WORKFLOW',
@@ -4713,8 +5089,7 @@ function fixtureWorkflowRows(): Workflow[] {
         state: 'QUEUED',
         stored_state: 'QUEUED',
         state_source: 'stored',
-        created_at: new Date(Date.now() - 6 * 3600_000).toISOString(),
-        updated_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
+        ...spanOf(['task_a3881bec', 'task_8e33a3de', 'task_1beb89a5']),
         submitted_by: 'alice@example.com',
         priority: 0,
         on_step_failure: 'FAIL_WORKFLOW',
@@ -5914,86 +6289,18 @@ function rollUpAttempts(attempts: readonly AttemptRow[]): StepUsage {
 }
 
 /**
- * Attempts for the workflow board's step figures.
- *
- * `fixtureAttempts` reports null for every usage field, which is faithful to an
- * attempt that ran before usage capture and would mean every node on the board
- * read "not reported" in development -- the one state that ships unlooked-at
- * would be the ordinary one, which is the failure `fixtureSpendAttempts`
- * already exists to avoid.
- *
- * The mix here is the one the node has to survive, and it is chosen per task id
- * so it does not move between refreshes:
- *
- *   * `task_wf_plan`    figures present on both attempts;
- *   * `task_wf_scan_a`  a MEASURED ZERO cost -- the digit case. A mock runner
- *                       really does cost nothing, and `$0.00` here is a
- *                       reading, not an absence;
- *   * `task_wf_scan_b`  attempts that carry nothing. "not reported";
- *   * anything else     one attempt with figures.
+ * Attempts for the workflow board's step figures: THE SAME ROWS the Attempts
+ * tab and the run's panel read (`fixtureAttemptRows`), so a step's total is
+ * its attempts' sum. Its own rows used to give every step one attempt at
+ * $0.0061 and 58.4k tokens -- the cancelled synthesis too -- beside a panel
+ * whose attempt alone cost $0.418 (QAFIX4-FIXTURE-B F14c, run 4
+ * flow-workflow-graph-light-07 and -08). The mix the node has to survive is
+ * in `fixtureUsage`: figures on the newest attempt and none on a retry
+ * (`task_wf_plan`), a measured zero (`task_wf_scan_a`), and nothing yet on a
+ * running step (`task_wf_scan_b`).
  */
 async function fixtureStepAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
-  await new Promise((r) => setTimeout(r, 70))
-  noteFixtureProbe(route('/v1/tasks/{id}/attempts', { id: taskId }), 70, true)
-  const mk = (n: number, usage: Partial<AttemptRow>, checkpoints: string[] = []): AttemptRow => ({
-    attempt_id: `${taskId}-a${n}`,
-    task_id: taskId,
-    tenant_id: FIXTURE_TENANT,
-    generation: n,
-    lease_id: `lease-${taskId}-${n}`,
-    backend: 'CLOUD_RUN_JOB',
-    execution_name: null,
-    created_at: new Date(Date.now() - 20 * 60_000).toISOString(),
-    started_at: new Date(Date.now() - 19 * 60_000).toISOString(),
-    completed_at: null,
-    exit_code: null,
-    error: null,
-    peak_rss_bytes: null,
-    peak_disk_bytes: null,
-    oom_near_miss: false,
-    checkpoints,
-    input_tokens: null,
-    output_tokens: null,
-    cache_read_input_tokens: null,
-    cache_creation_input_tokens: null,
-    cost_usd: null,
-    ...usage,
-  })
-
-  if (taskId === 'task_wf_scan_a') {
-    return {
-      status: 'ok',
-      fetchedAt: Date.now(),
-      // cost_usd: 0 EXACTLY. A mock runner costs nothing and reported so; the
-      // node must print "$0.00" as a digit, never the absent sentence.
-      data: { attempts: [mk(1, { cost_usd: 0, input_tokens: 0, output_tokens: 0 })] },
-    }
-  }
-  if (taskId === 'task_wf_scan_b') {
-    return { status: 'ok', fetchedAt: Date.now(), data: { attempts: [mk(1, {})] } }
-  }
-  if (taskId === 'task_wf_plan') {
-    return {
-      status: 'ok',
-      fetchedAt: Date.now(),
-      data: {
-        attempts: [
-          mk(2, { input_tokens: 21_400, output_tokens: 3_180, cache_read_input_tokens: 104_000, cache_creation_input_tokens: 9_900, cost_usd: 0.42 }, ['ckpt_plan_2']),
-          // A retry that predates usage capture: real attempt, no figures.
-          mk(1, {}),
-        ],
-      },
-    }
-  }
-  return {
-    status: 'ok',
-    fetchedAt: Date.now(),
-    data: {
-      attempts: [
-        mk(1, { input_tokens: 8_200, output_tokens: 1_050, cache_read_input_tokens: 44_000, cache_creation_input_tokens: 5_100, cost_usd: 0.0061 }, ['ckpt_a', 'ckpt_b']),
-      ],
-    },
-  }
+  return fixtureAttempts(taskId)
 }
 
 /**
@@ -6025,66 +6332,14 @@ async function mapWithLimit<T, R>(
 }
 
 /**
- * Attempts for the spend fixture.
- *
- * Separate from `fixtureAttempts` above, which reports null for every usage
- * field -- a faithful picture of an attempt that ran before usage capture, and
- * the right default for the attempt timeline. Summing those would show the
- * spend panel only in its "nothing measured" state, so the one state that
- * ships unlooked-at would be the ordinary one.
- *
- * The mix here is the one the panel has to survive: figures present on the
- * newest attempt, absent on a retry, and a task whose attempts carry tokens
- * but no cost at all.
+ * Attempts for the spend fixture: the same rows every other attempt read
+ * serves (`fixtureAttemptRows`), so the spend panel's sum is the attempts'.
+ * The mix it has to survive is `fixtureUsage`'s: figures on the newest
+ * finished attempt, none on a retry, a task whose attempt reported tokens and
+ * no cost, and mock and generic runners that report nothing at all.
  */
 async function fixtureSpendAttempts(task: Task): Promise<Result<{ attempts: AttemptRow[] }>> {
-  await new Promise((r) => setTimeout(r, 90))
-  noteFixtureProbe(route('/v1/tasks/{id}/attempts', { id: task.id }), 90, true)
-  const seed = task.id.length + task.attempt_count
-  const mk = (n: number, usage: Partial<AttemptRow>): AttemptRow => ({
-    attempt_id: `${task.id}-a${n}`,
-    task_id: task.id,
-    tenant_id: task.tenant_id,
-    generation: n,
-    lease_id: `lease-${task.id}-${n}`,
-    backend: 'CLOUD_RUN_JOB',
-    execution_name: null,
-    created_at: task.created_at,
-    started_at: task.started_at,
-    completed_at: task.completed_at,
-    exit_code: null,
-    error: null,
-    peak_rss_bytes: null,
-    peak_disk_bytes: null,
-    oom_near_miss: false,
-    checkpoints: [],
-    input_tokens: null,
-    output_tokens: null,
-    cache_read_input_tokens: null,
-    cache_creation_input_tokens: null,
-    cost_usd: null,
-    ...usage,
-  })
-
-  // `mock` and `generic` runners report nothing at all -- the frozen catalogue
-  // says only claude-code and codex produce usage -- so their attempts stay
-  // all-null and the panel has to count them as unmeasured rather than free.
-  if (task.runner_profile === 'mock' || task.runner_profile === 'generic') {
-    return { status: 'ok', fetchedAt: Date.now(), data: { attempts: [mk(1, {})] } }
-  }
-
-  const rows = [
-    mk(task.attempt_count, {
-      input_tokens: 14_000 + seed * 137,
-      output_tokens: 2_100 + seed * 31,
-      cache_read_input_tokens: 96_000 + seed * 811,
-      cache_creation_input_tokens: 11_500 + seed * 57,
-      cost_usd: 0.18 + (seed % 7) * 0.043,
-    }),
-  ]
-  // A retry that predates usage capture: real attempt, no figures on it.
-  if (task.attempt_count > 1) rows.push(mk(task.attempt_count - 1, {}))
-  return { status: 'ok', fetchedAt: Date.now(), data: { attempts: rows } }
+  return fixtureAttempts(task.id)
 }
 
 // ---------------------------------------------------------------------------

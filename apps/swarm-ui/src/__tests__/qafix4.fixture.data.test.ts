@@ -68,6 +68,13 @@ function newest(attempts: readonly AttemptRow[]): AttemptRow | undefined {
 
 const ms = (iso: string | null | undefined): number => (iso ? Date.parse(iso) : NaN)
 
+/**
+ * Two fixture reads are two instants: each builds its documents from its own
+ * `Date.now()`, as two API reads would see a task a moment apart. A time
+ * compared ACROSS reads gets this much slack; within one read, none.
+ */
+const DRIFT = 5_000
+
 describe('F9 (overview-automate-002, -003): the stats are the task list counted', () => {
   it('every state count, and so Waiting and Holding capacity, is what the list holds', async () => {
     const [tasks, stats] = await Promise.all([fixtureTasks(), loadStats()])
@@ -131,11 +138,11 @@ describe('F12 (task-004): every checkpoint is one its attempt wrote', () => {
         const byId = new Map(attempts.map((a) => [a.attempt_id, a]))
         for (const c of listing.checkpoints) {
           const a = byId.get(c.attempt_id)
-          // MUTATION: list the checkpoints under 'att_2' and 'att_1' again -> fails: no attempt has that id.
+          // MUTATION: list fixtureCheckpoints' rows under `'att_2'` again -> fails: no attempt has that id.
           expect(a, `${t.id}: ${c.checkpoint_id} belongs to ${c.attempt_id}, which the attempts read does not list`).toBeDefined()
-          // MUTATION: give the newest attempt `checkpoints: []` -> fails: the attempt says it wrote none.
+          // MUTATION: give fixtureAttemptRows' rows `checkpoints: []` -> fails: the attempt says it wrote none.
           expect(a?.checkpoints, `${t.id}: ${c.attempt_id} does not record ${c.checkpoint_id}`).toContain(c.checkpoint_id)
-          // MUTATION: put a checkpoint under the never-started attempt 1 -> fails.
+          // MUTATION: list the rows under attempt 1 (`fixtureAttemptId(taskId, 1)`) -> fails on task_a073aff5, whose attempt 1 never started.
           expect(a?.started_at, `${t.id}: ${c.checkpoint_id} was written by ${c.attempt_id}, which never started`).toBeTruthy()
           expect(c.attempt_known).toBe(true)
         }
@@ -144,7 +151,7 @@ describe('F12 (task-004): every checkpoint is one its attempt wrote', () => {
         const listed = new Set(listing.checkpoints.map((c) => `${c.attempt_id}/${c.checkpoint_id}`))
         for (const a of attempts) {
           for (const id of a.checkpoints) {
-            // MUTATION: spell the attempt records' ids 'ckpt-00001' again -> fails: written, never listed.
+            // MUTATION: spell fixtureAttemptRows' `checkpoints` as 'ckpt-00001' and 'ckpt-00002' again -> fails: written, never listed.
             expect(listed.has(`${a.attempt_id}/${id}`), `${t.id}: ${a.attempt_id} wrote ${id}, the listing lacks it`).toBe(true)
           }
         }
@@ -198,9 +205,9 @@ describe('F14a (task-003): one timeline per task', () => {
         const now = Date.now()
         const submitted = ms(task.created_at)
         expect(submitted, `${id} has no submitted time`).not.toBeNaN()
-        // MUTATION: restore `created_at: iso(39 - n * 10)` in fixtureAttempts -> fails: attempt 3 of task_a073aff5 (submitted 4m ago) is admitted 9m ago.
+        // MUTATION: mint fixtureAttemptRows' `created_at` as `iso(39 - n * 10)` minutes ago again -> fails: attempt 3 of task_a073aff5 (submitted 4m ago) is admitted 9m ago.
         for (const a of attempts) {
-          expect(ms(a.created_at), `${a.attempt_id} is admitted before ${id} was submitted`).toBeGreaterThanOrEqual(submitted)
+          expect(ms(a.created_at), `${a.attempt_id} is admitted before ${id} was submitted`).toBeGreaterThanOrEqual(submitted - DRIFT)
           if (a.started_at !== null) expect(ms(a.started_at), `${a.attempt_id} starts before its admission`).toBeGreaterThanOrEqual(ms(a.created_at))
           if (a.completed_at !== null) {
             expect(a.started_at, `${a.attempt_id} ends but never started`).not.toBeNull()
@@ -217,23 +224,25 @@ describe('F14a (task-003): one timeline per task', () => {
         }
         // The task's start is its newest attempt's start (stepviews' `ran`: the latest start).
         const started = [...ordered].reverse().find((a) => a.started_at !== null)
-        // MUTATION: restore `started_at: at(minsAgo - 1)` in fixtureTasks' mk() -> fails: Elapsed is 'since' a time no attempt started at.
-        expect(task.started_at, `${id}'s started_at is not its newest attempt's start`).toBe(started?.started_at ?? null)
+        // MUTATION: make fixtureTimed's `started_at` the FIRST started attempt's start -> fails on task_a073aff5: Elapsed is 'since' attempt 2.
+        if (started === undefined) expect(task.started_at, `${id} starts with no attempt started`).toBeNull()
+        else expect(Math.abs(ms(task.started_at) - ms(started.started_at)), `${id}'s started_at is not its newest attempt's start`).toBeLessThanOrEqual(DRIFT)
         const byId = new Map(attempts.map((a) => [a.attempt_id, a]))
         for (const e of events ?? []) {
-          // MUTATION: restore the fixed `ev('ready', 12)` ... in fixtureAgentDetail -> fails: events 12m ago on a task submitted 4m ago.
+          // MUTATION: time fixtureAgentDetail's events at fixed minutes ago again (`ready` 12m ago) -> fails: events 12m ago on a task submitted 4m ago.
           expect(ms(e.at), `${id}: ${e.type} at ${e.at} is before the task was submitted`).toBeGreaterThanOrEqual(submitted)
           expect(ms(e.at), `${id}: ${e.type} is in the future`).toBeLessThanOrEqual(now)
           if (e.attempt_id !== null) {
             const a = byId.get(e.attempt_id)
             expect(a, `${id}: ${e.type} names ${e.attempt_id}, which the attempts read does not list`).toBeDefined()
             expect(e.generation).toBe(a?.generation)
-            expect(ms(e.at), `${id}: ${e.type} precedes the admission of ${e.attempt_id}`).toBeGreaterThanOrEqual(ms(a?.created_at) - 60_000)
-            if (a?.completed_at) expect(ms(e.at), `${id}: ${e.type} follows the end of ${e.attempt_id}`).toBeLessThanOrEqual(ms(a.completed_at))
+            // Admission to start is seconds: the events before a start come before its `created_at` (the start).
+            expect(ms(e.at), `${id}: ${e.type} precedes the admission of ${e.attempt_id}`).toBeGreaterThanOrEqual(ms(a?.created_at) - 60_000 - DRIFT)
+            if (a?.completed_at) expect(ms(e.at), `${id}: ${e.type} follows the end of ${e.attempt_id}`).toBeLessThanOrEqual(ms(a.completed_at) + DRIFT)
           }
         }
         if (task.completed_at !== null) {
-          for (const a of attempts) expect(ms(a.completed_at ?? a.created_at)).toBeLessThanOrEqual(ms(task.completed_at))
+          for (const a of attempts) expect(ms(a.completed_at ?? a.created_at)).toBeLessThanOrEqual(ms(task.completed_at) + DRIFT)
         }
         // The task's attempt counter and generation are its attempts'.
         expect(attempts.length, `${id} counts ${task.attempt_count} attempts and serves ${attempts.length}`).toBe(
@@ -267,7 +276,7 @@ describe('F14b (flow-find-failure D6, D7, P5): logs are the task\'s and its atte
           ['logs', lg.attempt_id, lg.streams.flatMap((s) => [s.key, s.uri])],
           ['agent logs', ag.attempt_id, ag.streams.flatMap((s) => [s.key, s.uri])],
         ] as const) {
-          // MUTATION: restore `attempt_id: 'att_fixture'` in fixtureTranscript -> fails on every task.
+          // MUTATION: name `'att_fixture'` as fixtureTranscript's attempt_id again -> fails on every task.
           expect(attemptId, `${t.id}'s ${what} name ${attemptId}, its newest attempt is ${latest?.attempt_id}`).toBe(latest?.attempt_id ?? null)
           for (const p of paths) {
             if (p === null || p === undefined) continue
@@ -280,7 +289,7 @@ describe('F14b (flow-find-failure D6, D7, P5): logs are the task\'s and its atte
           expect(lg.attempt?.generation).toBe(latest.generation)
           expect(tr.attempt?.exit_code ?? null).toBe(latest.exit_code)
         }
-        const last = [...tr.steps].reverse().find((s) => s.kind === 'result')
+        const last = [...(tr.steps ?? [])].reverse().find((s) => s.kind === 'result')
         if (t.state === 'FAILED' && last !== undefined && last.meta?.['is_error'] !== true) successOnFailure = [...successOnFailure, t.id]
         if (t.state === 'SUCCEEDED') expect(last?.meta?.['is_error'], `${t.id} succeeded`).toBe(false)
         return t.id
@@ -289,7 +298,7 @@ describe('F14b (flow-find-failure D6, D7, P5): logs are the task\'s and its atte
     expect(visited.length).toBe(tasks.length)
     // QA-115, KEPT AS BUILT: one failed task whose CLI reported success, so
     // Logs' "the CLI's success is not the task's" line is drawn. Only that one.
-    // MUTATION: end every transcript in `subtype: 'success'` again -> fails: task_fan_3 joins task_8e33a3de.
+    // MUTATION: make fixtureCliResult answer success for every FAILED task -> fails: task_fan_3 joins task_8e33a3de.
     expect([...successOnFailure].sort()).toEqual(['task_8e33a3de'])
   }, LONG)
 })
@@ -302,9 +311,9 @@ describe('F14c (flow-workflow-graph-light-01, -03, -07, -08, -12): titled workfl
     for (const w of board.workflows) {
       // MUTATION: drop the `metadata: { title }` from the workflow step tasks -> fails: 'Untitled workflow'.
       expect(workflowLabel(w, board.taskById), `${w.workflow_id} is untitled`).not.toBeNull()
-      const tasks = w.steps.map((s) => (s.task_id ? board.taskById.get(s.task_id) : undefined)).filter((t): t is Task => t !== undefined)
+      const tasks = w.steps.map((s) => (s.task_id ? board.taskById?.get(s.task_id) : undefined)).filter((t): t is Task => t !== undefined)
       expect(tasks.length, `${w.workflow_id} joins no task`).toBeGreaterThan(0)
-      // MUTATION: restore `created_at: 4 * 3600_000` ago on wf_5e5ad3b6f7da4299a839 -> fails (3h 31m matches neither interval).
+      // MUTATION: type wf_5e5ad3b6f7da4299a839's `created_at` as 4 hours ago again instead of `spanOf(...)` -> fails (3h 31m matches neither interval).
       expect(w.created_at, `${w.workflow_id} starts after its first step`).toBe(new Date(Math.min(...tasks.map((t) => ms(t.created_at)))).toISOString())
       expect(w.updated_at, `${w.workflow_id} ends before its last step`).toBe(new Date(Math.max(...tasks.map((t) => ms(t.updated_at)))).toISOString())
       const usage = ok(await loadWorkflowUsage(tasks.map((t) => t.id)), `${w.workflow_id}'s step usage`)
@@ -316,7 +325,7 @@ describe('F14c (flow-workflow-graph-light-01, -03, -07, -08, -12): titled workfl
           const got = attempts.map(f).filter((v): v is number => typeof v === 'number')
           return got.length === 0 ? null : got.reduce((x, y) => x + y, 0)
         }
-        // MUTATION: restore fixtureStepAttempts' own `cost_usd: 0.0061` rows -> fails: the step's total is not its attempts'.
+        // MUTATION: give fixtureStepAttempts its own rows again (one attempt at `cost_usd: 0.0061`) -> fails: the step's total is not its attempts'.
         expect(step?.attempts, `${t.id}'s step counts other attempts`).toBe(attempts.length)
         const cost = sum((a) => a.cost_usd)
         if (cost === null) expect(step?.costUsd ?? null, `${t.id}'s step cost`).toBeNull()
@@ -329,7 +338,7 @@ describe('F14c (flow-workflow-graph-light-01, -03, -07, -08, -12): titled workfl
         if (t.state === 'CANCELLED' && t.step_id === 'synthesis') expect(t.started_at, 'the cancelled synthesis ran').toBeNull()
       }
     }
-    // MUTATION: restore `completed_at: at(minsAgo - 6)` with `started_at: at(minsAgo - 1)` in mk() -> fails: every step ran 5m 0s.
+    // MUTATION: make fixtureRunMs return a constant 5 minutes -> fails: the finished steps' `ran` takes three values at most.
     expect(new Set(ranFor).size, `every finished step ran the same ${ranFor[0]} ms`).toBeGreaterThan(3)
   }, LONG)
 })

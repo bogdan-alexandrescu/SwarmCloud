@@ -264,10 +264,15 @@ FIXTURE_PROFILES = {
                         "runner:claude-code", "backend:CLOUD_RUN_JOB",
                         "provider:anthropic", "provider:anthropic:tenant:u-bogdan"]),
     "codex": (1, ["global", "tenant:u-bogdan", "resource:standard", "runner:codex",
-                  "backend:CLOUD_RUN_JOB", "provider:openai"]),
+                  "backend:CLOUD_RUN_JOB", "provider:openai", "provider:openai:tenant:u-bogdan"]),
     "browser": (1, ["global", "tenant:u-bogdan", "resource:browser", "runner:browser",
                     "backend:GKE_AUTOPILOT", "provider:anthropic",
                     "provider:anthropic:tenant:u-bogdan"]),
+    # QAFIX4-FIXTURE-B F10: served, so its headroom is measured. Its runner
+    # pool has no row on the board, so the analyser calls it uncapped.
+    "claude-code-browser": (1, ["global", "tenant:u-bogdan", "resource:browser",
+                                "runner:claude-code-browser", "backend:GKE_AUTOPILOT",
+                                "provider:anthropic", "provider:anthropic:tenant:u-bogdan"]),
 }
 
 
