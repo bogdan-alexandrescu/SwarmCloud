@@ -79,8 +79,14 @@ resource "google_secret_manager_secret" "qa_target" {
   }
 }
 
-# V-1. swarm-api, and NOBODY ELSE, adds a version: the console form is the
-# only writer. Not var.secret_admin_members, which may add to provider keys.
+# V-1. swarm-api adds a version from the console form; no person and not
+# var.secret_admin_members, which may add to provider keys. Two project-level
+# grants conditioned on `swarm-tenant-*` also reach this name and are not
+# this file's: terraform/bootstrap/provider_keys.tf's swarmProviderKeyWriter
+# (swarm-api again; it holds the versions.disable that §2.1's "disables the
+# previous version" needs, and no versions.access) and modules/iam's
+# broker_version_adder (the quota broker, which writes only secrets labelled
+# component=tenant-credential). Neither can read a version.
 resource "google_secret_manager_secret_iam_binding" "qa_target_adder" {
   for_each = google_secret_manager_secret.qa_target
 
