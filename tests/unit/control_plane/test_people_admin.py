@@ -1110,15 +1110,69 @@ def test_the_list_names_each_account_lent_to_a_person_and_nothing_secret(client,
     # MUTATION: drop `lent_accounts`, or key it by owner tenant alone.
     assert hal["lent_accounts"] == [
         {"account_id": "eng:devops-main", "label": "devops main", "owner_tenant": "eng",
-         "owner_name": "Engineering", "state": "AVAILABLE"},
+         "owner_name": "Engineering", "state": "AVAILABLE", "display_name": None},
         {"account_id": "ops-1", "label": None, "owner_tenant": "ops",
-         "owner_name": "ops", "state": "AVAILABLE"},
+         "owner_name": "ops", "state": "AVAILABLE", "display_name": None},
     ]
     assert hal["lent_by"] == ["eng", "ops"]
     assert rows["ivy@example.com"]["claude_account"]["lent_accounts"] == []
     # MUTATION: return the account document as it is.
     text = json.dumps(body["people"])
     assert secret_ref not in text and "secret" not in text
+
+
+def test_each_lent_and_lendable_account_carries_its_name_and_nothing_else_new(
+        client, db, pool) -> None:
+    """ACCOUNT-NAME-2 (#1913; owner decision 2026-10-22, BGD): the People
+    payloads rebuild an account by allow-list, so the Name ACCOUNT-NAME put on
+    the account document never reached them and the lend controls printed the
+    label. Each now carries `display_name` -- the Name, or None for an account
+    without one -- and nothing else it did not carry before."""
+    seed_tenant(db, "eng")
+    _person(db, "u-hal", "hal@example.com")
+    named = {**_pool_account("eng:ai-eng-2", "eng", lend_to=("u-hal",)),
+             "display_name": "AI Eng 2"}
+    plain = _pool_account("eng:plain", "eng", lend_to=("u-hal",))
+    db.docs["accounts/eng:ai-eng-2"] = dict(named)
+    db.docs["accounts/eng:plain"] = dict(plain)
+    pool.accounts.update({"eng:ai-eng-2": dict(named), "eng:plain": dict(plain)})
+
+    body = client.get("/v1/admin/people", headers=auth_header("root")).json()
+
+    lendable = {a["account_id"]: a for a in body["lendable_accounts"]}
+    # MUTATION: leave `display_name` out of `People.lendable`'s allow-list.
+    assert lendable["eng:ai-eng-2"]["display_name"] == "AI Eng 2"
+    # MUTATION: serve the label as `display_name` when the account has no Name.
+    assert lendable["eng:plain"]["display_name"] is None
+    # MUTATION: pass the broker's account through whole instead of by allow-list.
+    assert set(lendable["eng:plain"]) == {
+        "account_id", "owner_tenant", "label", "state", "lend_to", "display_name"}
+
+    lent = {a["account_id"]: a for a in
+            {r["email"]: r for r in body["people"]}["hal@example.com"]
+            ["claude_account"]["lent_accounts"]}
+    # MUTATION: leave `display_name` out of `People._claude_account`'s lent rows.
+    assert lent["eng:ai-eng-2"]["display_name"] == "AI Eng 2"
+    # MUTATION: serve the label as `display_name` when the document has no Name.
+    assert lent["eng:plain"]["display_name"] is None
+    # MUTATION: return the account document as it is.
+    assert set(lent["eng:plain"]) == {
+        "account_id", "label", "owner_tenant", "owner_name", "state", "display_name"}
+
+
+def test_a_lent_account_whose_stored_name_is_not_text_has_none(client, db) -> None:
+    """The lent rows read the account document straight from Firestore, not
+    through the broker that writes it, so a Name that is not a string (a
+    document written by hand) is served as no Name rather than as whatever
+    it holds."""
+    seed_tenant(db, "eng")
+    _person(db, "u-hal", "hal@example.com")
+    db.docs["accounts/eng:odd"] = {**_pool_account("eng:odd", "eng", lend_to=("u-hal",)),
+                                   "display_name": {"text": "AI Eng 2"}}
+    body = client.get("/v1/admin/people", headers=auth_header("root")).json()
+    hal = {r["email"]: r for r in body["people"]}["hal@example.com"]
+    # MUTATION: serve `data.get("display_name")` unchecked.
+    assert hal["claude_account"]["lent_accounts"][0]["display_name"] is None
 
 
 def test_the_list_carries_the_last_audit_entries_newest_first(client, db) -> None:

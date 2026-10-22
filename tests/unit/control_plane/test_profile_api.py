@@ -436,6 +436,34 @@ def test_claude_accounts_are_own_and_borrowed_never_a_group_pool(client, seeded,
     assert accounts["unreadable_document_count"] == 1
 
 
+def test_each_claude_account_carries_its_name_and_nothing_else_new(
+        client, seeded, pool) -> None:
+    """ACCOUNT-NAME-2 (#1913; owner decision 2026-10-22, BGD): 'Your Claude
+    accounts' rebuilds each account by allow-list, so the Name the broker
+    serves never reached it. Each now carries `display_name` -- the Name, or
+    None for an account without one -- and nothing else new."""
+    pool.accounts[0]["display_name"] = "My main one"
+    pool.accounts[1]["display_name"] = None
+    got = client.get("/v1/profile", headers=as_("alice", "eng")).json()
+    rows = {a["account_id"]: a for a in got["claude_accounts"]["accounts"]}
+    # MUTATION: leave `display_name` out of `claude_accounts`' allow-list.
+    assert rows["u-alice:main"]["display_name"] == "My main one"
+    # MUTATION: serve the label as `display_name` when the account has no Name.
+    assert rows["eng:shared"]["display_name"] is None
+    # MUTATION: pass the broker's account through whole instead of by allow-list.
+    assert set(rows["eng:shared"]) == {
+        "account_id", "label", "relation", "state", "windows", "lent_to_count", "stale",
+        "display_name"}
+
+
+def test_a_claude_account_whose_name_is_not_text_has_none(client, seeded, pool) -> None:
+    pool.accounts[0]["display_name"] = ["My main one"]
+    got = client.get("/v1/profile", headers=as_("alice", "eng")).json()
+    rows = {a["account_id"]: a for a in got["claude_accounts"]["accounts"]}
+    # MUTATION: serve `account.get("display_name")` without `_text`.
+    assert rows["u-alice:main"]["display_name"] is None
+
+
 def test_no_personal_workspace_asks_the_broker_nothing(client, seeded, pool) -> None:
     got = client.get("/v1/profile", headers=as_("dave")).json()
     assert pool.calls == []
