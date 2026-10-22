@@ -145,9 +145,11 @@ describe('QA-010: the resolved backend never breaks mid-word beside `← AUTO`',
       // MUTATION: drop `overflow-wrap: normal` and the primitive's `anywhere`
       // wins, which is the `CLOUD_RUN_JO` / `B` break; this reads `anywhere`.
       expect(painted(backend, 'overflow-wrap', env)).toBe('normal')
-      // MUTATION: drop `flex-wrap: wrap` from `.rt-runs-on` and a whole
-      // backend plus its annotation overflow the card instead; reads null.
-      expect(painted(fact, 'flex-wrap', env)).toBe('wrap')
+      // The annotation's wrap is the value item's own (`.rt-runs-on-value`,
+      // capacity-007); the fact never wraps, or the whole value drops under
+      // the key (r2:capacity-007, run 5b, qafix5.capacity.test.tsx).
+      // MUTATION: put `flex-wrap: wrap` back on `.rt-runs-on`; reads `wrap`.
+      expect(painted(fact, 'flex-wrap', env)).toBe('nowrap')
     }
   })
 })
