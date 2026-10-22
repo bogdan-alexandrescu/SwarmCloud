@@ -94,7 +94,7 @@ Every change writes an `admin_audit` row (`qa_target_created`, `_changed`,
 Invariant 10: a caller picks a runner profile **by name** and sends nothing
 that picks an image, a command or a credential. A QA run is started by naming
 a target (`POST /v1/qa-targets/{id}:run`). swarm-api renders the workflow from
-the target (§4) and stamps each browser step's task with
+the target (§4) and stamps each browser step's agent with
 `metadata.qa_target = {id, revision}`, written by swarm-api, never accepted
 from the caller. The worker asks swarm-api for its attempt's target (§2.2);
 nothing about the target travels in the step's input. That is also why this
@@ -162,9 +162,9 @@ The QA-IDENTITY path, generalised from one header to one sign-in:
    registers and before the runner starts, for a `claude-code-browser`
    attempt the worker calls `POST /v1/attempts/{attempt_id}/qa-target` with
    the attempt key (`authenticate_worker`, `verify_proof`, a live lease for
-   this generation). swarm-api reads the **task's** `metadata.qa_target`,
+   this generation). swarm-api reads the **agent's** `metadata.qa_target`,
    resolves the tenant **from the lease**, checks the target is that
-   tenant's, its host `approved`, and answers `204` when the task has no
+   tenant's, its host `approved`, and answers `204` when the agent has no
    target (the common case), else the target's public settings and, for
    `own_login`, the username and password read from Secret Manager at that
    moment. Every answer appends a `live_audit` row (`qa_target_issued`, the
