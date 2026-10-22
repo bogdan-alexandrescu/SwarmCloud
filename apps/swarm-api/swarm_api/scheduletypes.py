@@ -1,4 +1,4 @@
-"""The schedule job-type catalogue: fourteen types, picked BY NAME (docs/schedules.md §3).
+"""The schedule job-type catalogue: fifteen types, picked BY NAME (docs/schedules.md §3).
 
 A schedule names a type from this catalogue and nothing else: no image, no
 command, no profile, no resource class, no backend parameter (invariant 10).
@@ -275,6 +275,21 @@ class ModelPricesCheckParams(Params):
     #: keep it on the firing alone.
     issue_repository: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
     issue_label: str = Field(default="bug", min_length=1, max_length=50)
+
+
+class FailureReviewParams(Params):
+    """§3.16 (docs/design/failure-review.md). Nothing here names a window, a
+    tenant, a profile or a gate: the window is the design's (7 h, one of
+    overlap), the scope is every tenant, the profile is the type's, and the
+    merge gate is the schedule's, set only through the audited switch (Q8)."""
+
+    #: A standing issue in the platform's own repository that gets one
+    #: summary comment per firing (§8, the `cost-report` `post_to_issue`
+    #: pattern). Checked against the `platform: true` registration at fire
+    #: time; any other repository is not written to.
+    summary_issue: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]{0,9}$")
+    #: Each fix run's CI fix rounds (§6 step 3: 3, at most 5, §7).
+    fix_rounds: int = Field(default=3, ge=1, le=5)
 
 
 class CustomPromptParams(Params):
@@ -625,6 +640,31 @@ TYPES: tuple[ScheduleType, ...] = (
         lane="PRICES-REFRESH",
         phase=2,
         forge_permissions=("issues:write",),
+    ),
+    # §3.16, #1933 (docs/design/failure-review.md): every tenant's failures
+    # are read, so the type is platform-scoped and the OWNER's to create (§1).
+    # `merge: approve` is the default and stays so: `auto` is reachable only
+    # through the audited switch, which the owner makes once at creation
+    # (owner decision Q8). Its caps are the owner's tripwires (Q9), in its
+    # executor module's `BUDGET_CAPS`.
+    ScheduleType(
+        name="failure-review",
+        description="Every 6 hours, root-cause every agent, workflow and issue run that failed in the last 7, file one issue per cause and start its fix run; hold IAM, contract, secrets, tenancy, shared and cost fixes for the owner.",
+        executor="task",
+        params_model=FailureReviewParams,
+        min_interval=timedelta(hours=6),
+        default_gate=GateSpec(run="auto", plan="auto", merge="approve"),
+        floor_gate=GateSpec(run="auto", plan="auto", merge="auto"),
+        budget=None,
+        catch_up="skip",
+        risk=lambda gate, params: "R3" if gate.merge == "auto" else "R2",
+        pushes=_always,
+        creators={"platform": "owner"},
+        profile="claude-code",
+        lane="FR-3",
+        phase=3,
+        forge_permissions=("issues:write", *_PR_PUSH, "checks:read"),
+        gate_notes="merge: auto only through the audited switch, made once by the owner (Q8); every hold category stops a merge whatever the gate",
     ),
 )
 

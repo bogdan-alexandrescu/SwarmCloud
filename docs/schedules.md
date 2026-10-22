@@ -812,6 +812,7 @@ holds for schedules exactly as for agents.
 | 12 | `custom-prompt` | workflow from a saved spec | R3 | yes | **approve run + approve merge**; never auto | **approve run + approve merge** | members, with a one-time admin approval of the spec | 6 h | 3 |
 | 13 | `model-prices-refresh` | API | R0 | no | auto | auto | admin, platform scope only | 24 h | 2 |
 | 14 | `model-prices-check` | API | R1 | no (issues) | auto | auto | admin, platform scope only | 24 h | 2 |
+| 15 | `failure-review` | one `claude-code` investigator, then API and issue runs | R3 with `merge: auto`, else R2 | yes (fix runs) | plan auto · **approve merge** | plan auto · merge auto, reached only through the audited switch (Q8) | **owner**, platform scope only | 6 h | 3 |
 
 The **floor** column is the lowest gate the type allows. Between the floor and
 the default, only a platform admin may set the gate (§4.2), with one
@@ -823,8 +824,9 @@ still leaves every hard stop of §4.4 in force.
 **Platform-wide (admin) types** run with `scope: {mode: "platform"}`: the
 platform variants of `observer` and `cost-report`, and `release-health` on the
 platform's own repository. They are created by an admin (§3.13). **Owner-only**
-are the `observer` platform variant, which reads every tenant's aggregates, and
-any schedule whose resolved gate allows an **unattended merge** (`merge:
+are the `observer` platform variant, which reads every tenant's aggregates,
+`failure-review` (§3.16), which reads every tenant's failures, and any
+schedule whose resolved gate allows an **unattended merge** (`merge:
 auto`) in the platform's own repository. Both put the platform's own code or
 every tenant's data within one approval's reach.
 
@@ -1218,38 +1220,89 @@ disagree with the price setting by more than 10%."
   setting.
 * **Creates.** An admin, `scope: {mode: "platform"}` only.
 
-### 3.16 `failure-review` (designed, not built)
+### 3.16 `failure-review`
 
-Designed 2026-10-22 for #1933 (lane AUTONOMY-DESIGN). **Not built: no
-executor module and no `TYPES` entry exist, so it cannot be created and
-nothing fires.** The design is
-[design/failure-review.md](design/failure-review.md), built on the
-capabilities of [design/agent-autonomy.md](design/agent-autonomy.md); its
-lanes are that document's §6.2 (FR-1 to FR-4), after the capability lanes of
-§6.1.
+Designed 2026-10-22 for #1933 (lane AUTONOMY-DESIGN); **built by lane FR-3**
+(`swarm_api/schedtypes/failure_review.py`, the `TYPES` entry). Nothing fires
+until the owner creates the schedule. The design, and the why behind each rule
+below, is [design/failure-review.md](design/failure-review.md). It builds on
+the capabilities of [design/agent-autonomy.md](design/agent-autonomy.md) and
+on lanes FR-1 (the hold categories in `issueruns.hard_stop_hold`) and FR-2
+(`failuredigest`, `failurecauses`).
 
-* **Does.** Every 6 hours, over the previous 7, swarm-api gathers every agent,
-  workflow and issue run that ended FAILED or DEAD_LETTERED in any tenant,
-  skips the expected ones by named rules, and hands a redacted, bounded digest
-  as data to one `claude-code` agent with the platform's repository. That
-  agent root-causes each group and writes `rca.json`. swarm-api then files one
-  issue per new cause in the bug form (a known cause's issue gets a comment),
-  and starts one issue run per issue to plan, implement, review, fix and merge.
-* **Holds.** A cause or a change touching IAM, the frozen contract, secrets,
-  tenant isolation, the other team's resources or cost is filed
-  `needs-owner` and gets no run (owner decision 2026-10-22). Those
-  categories hold every issue run in a `platform: true` repository, not only
-  this type's (owner decision 2026-10-22, Q7).
-* **Default gate.** Plan auto; merge `approve` in the type, switched to
-  `auto` once by the owner through the audited switch (§4.2) when creating
-  the schedule (owner decision 2026-10-22, Q8), with every hard stop of §4.4
-  in force.
-* **Budget.** Tripwires, not a cap on fix runs: `per_run_usd` 200,
-  `per_day_usd` 1000, `max_concurrent` 1 (owner decision 2026-10-22, Q9).
+* **Does.** A firing works the way the `observer` does (§3.4): the tick
+  never waits on an agent.
+  1. **Take in** every earlier firing whose investigator has ended. Its
+     `rca.json` is validated against the digest that firing handed over:
+     every reviewed failure is accounted for exactly once, and every cause has
+     evidence. A file that fails validation, or an investigator that did not
+     succeed, **files nothing**. Its review ends `failed`, with the reason on
+     the record. A valid file is acted on cause by cause (below).
+  2. **Gather and build the digest** over this firing's window. Every agent,
+     workflow and issue run in any tenant that ended FAILED or DEAD_LETTERED
+     (or CANCELLED by the system) in `[fire − 7 h, fire)` is included, and the
+     design's six named skip rules are applied before anything spends.
+  3. **Submit one `claude-code` investigator** in the platform tenant, on
+     the repository that tenant registered `platform: true`, strategy
+     `collect`. It changes no file and writes `rca.json` and `report.md`. The
+     digest is in its prompt as data, between two lines carrying a random
+     nonce.
+* **Acting on a cause** (`failurecauses.decide`):
+  * a **new platform cause** is filed in the bug form, with its sections in
+    the form's order and its label `bug`. The issue goes in the platform's
+    own repository, written with the platform tenant's forge slot, and gets
+    **one fix run** (issue-sweep's `start_run`, with this schedule's gate and
+    `fix_rounds`);
+  * a new cause in a **hold category** (`iam`, `contract`, `secrets`,
+    `tenancy`, `shared`, `cost`) is filed with `needs-owner` and gets **no
+    run**. A cause also counts as held when FR-1's stops find one of these in
+    the files or the fix it names, even if the investigator said `none`: the
+    stricter of the two wins;
+  * a cause **already filed** gets one comment per firing with its new
+    failures. It gets a new run only if none is live and no pull request is
+    open. After two fix runs that did not hold, it is set `held`;
+  * a cause in **another repository's own code** becomes a finding in that
+    tenant (`failure_findings`), never an issue here;
+  * a cause found again with **no new failure** files, comments and starts
+    nothing. This is what keeps the hour two windows share from being acted on
+    twice.
+* **The window.** It is `[fire − 7 h, fire)`. After a failed review, the
+  window starts instead at the last **succeeded** review's end less the hour
+  of overlap, and never more than 48 h back. So the failed firing's hours are
+  reviewed by the next firing (`failure_review_cursors`).
+* **Its own failure.** The investigator carries this firing's schedule mark,
+  which is the digest's `self` rule, so a failed investigator is never in the
+  next digest. Its review files nothing.
+* **Exactly once.** Each cause's progress is recorded on the review. Before
+  anything is written, the issue is looked up by its fingerprint marker, the
+  comment by its per-firing marker, and the fix run among the live runs on
+  its issue. A retried firing, or the next firing after a crash, carries on
+  where the last one stopped.
+* **Parameters.** `summary_issue` (`owner/repo#N`, optional; posted to only
+  when it is in the platform's own repository) and `fix_rounds` (3, at most 5).
+* **Default gate.** Plan auto; merge **`approve`**. Nothing in the code sets
+  `auto`. The owner switches it once, through the audited switch (§4.2), when
+  creating the schedule (owner decision 2026-10-22, Q8). Every hard stop of
+  §4.4, and every FR-1 category, stays in force for each fix run at plan and
+  at merge.
+* **Budget.** Tripwires, not a cap on fix runs (owner decision 2026-10-22,
+  Q9): `per_run_usd` 200, `per_day_usd` 1000, `max_concurrent` 1, the
+  executor's `BUDGET_CAPS`. `max_concurrent` 1 means one firing at a time.
+  Fix runs are not the firing's work items: they hold no place in it, and a
+  firing does not stay live while they run.
 * **Produces.** Issues, issue runs, per-tenant findings for causes in a
-  tenant's own repository, and one summary per firing.
-* **Blast radius.** Merged pull requests in the platform's own repository.
-* **Creates.** The owner, `scope: {mode: "platform"}` only.
+  tenant's own repository, and one summary per firing. The summary goes on
+  `failure_reviews/{firing_id}`, and in the `summary_issue` comment. A
+  firing with nothing to review still writes "0 failures in the window".
+* **Blast radius.** Merged pull requests in the platform's own repository,
+  once the owner has made the switch.
+* **Creates.** The owner, `scope: {mode: "platform"}` only. The schedule's
+  tenant must hold the `platform: true` registration; without one a firing
+  is refused `failure_review_no_platform_repository`.
+* **Not built here.** Adding the `needs-owner` label to an issue that was
+  already filed (the `HOLD` case) needs a label call that `forgewrite` does
+  not have, so for now the comment says the cause is held. Lane FR-4 builds
+  the read side of the findings (the route, the bell item and the card).
 
 ---
 
