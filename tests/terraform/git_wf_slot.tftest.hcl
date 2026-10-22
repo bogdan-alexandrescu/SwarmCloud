@@ -252,3 +252,76 @@ run "a_platform_tenant_id_that_is_not_a_tenant_id_is_refused" {
   # Secret Manager or the tenant resolver would never produce.
   expect_failures = [var.git_wf_tenant]
 }
+
+# dev, as committed (owner decision 2026-10-22 08:44Z, BGD: "Name the tenant;
+# a follow-up lane adds one tfvars line"; lane AU2-TENANT, part of #1933): eng
+# is the platform tenant. A terraform test cannot load a tfvars file into a
+# run, so this run reads git_wf_tenant out of dev.tfvars' text and plans with
+# it: the slot it asserts on is the one dev's release declares. A missing or
+# commented-out line reads as "", which plans no slot and fails every
+# assertion below.
+run "dev_names_eng_as_the_platform_tenant" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    git_wf_tenant = try(regex("(?m)^git_wf_tenant\\s*=\\s*\"([^\"]*)\"\\s*$", file("../../terraform/environments/dev/dev.tfvars"))[0], "")
+  }
+
+  override_resource {
+    target          = module.iam.google_service_account.platform["swarm-api"]
+    override_during = plan
+    values = {
+      email = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      name  = "projects/saga-agents-staging/serviceAccounts/swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = module.tenancy.google_service_account.worker
+    override_during = plan
+    values = {
+      email = "swarm-agent-worker-mock@saga-agents-staging.iam.gserviceaccount.com"
+      name  = "projects/saga-agents-staging/serviceAccounts/swarm-agent-worker-mock@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  # MUTATION: delete or comment out dev.tfvars' git_wf_tenant line (or set it
+  # to "smoke", or set it twice) and this is red.
+  assert {
+    condition     = length(regexall("(?m)^git_wf_tenant\\s*=", file("../../terraform/environments/dev/dev.tfvars"))) == 1 && var.git_wf_tenant == "eng"
+    error_message = "dev.tfvars sets git_wf_tenant = \"eng\", once: BGD named eng the platform tenant on 2026-10-22 (#1933)"
+  }
+
+  # MUTATION: set dev.tfvars' git_wf_tenant to "" and dev declares no slot;
+  # key the slot on every tenant and smoke gets one too.
+  assert {
+    condition     = [for s in google_secret_manager_secret.git_wf : s.secret_id] == ["swarm-tenant-eng-git-wf"]
+    error_message = "with dev's setting, exactly one -git-wf slot exists, swarm-tenant-eng-git-wf, and no other tenant has one"
+  }
+
+  # MUTATION: add module.tenancy.worker_members["eng"] to the binding's
+  # members and eng's agents can push workflow files with their own identity.
+  assert {
+    condition = [
+      for b in google_secret_manager_secret_iam_binding.git_wf_accessor : [b.secret_id, b.role, b.members]
+      ] == [
+      ["swarm-tenant-eng-git-wf", "roles/secretmanager.secretAccessor", toset(["serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"])]
+    ]
+    error_message = "with dev's setting, swarm-api's account is the one reader of swarm-tenant-eng-git-wf, as secretAccessor (IAM row L-2)"
+  }
+
+  # MUTATION: add any tenant's worker member to the binding and this is red;
+  # so does a dev.tfvars with no slot, which has no binding to hold to it.
+  assert {
+    condition = length(google_secret_manager_secret_iam_binding.git_wf_accessor) == 1 && alltrue(flatten([
+      for b in google_secret_manager_secret_iam_binding.git_wf_accessor : [
+        for t, m in module.tenancy.worker_members : !contains(b.members, m)
+      ]
+    ]))
+    error_message = "with dev's setting, no tenant's worker account reads swarm-tenant-eng-git-wf"
+  }
+}
