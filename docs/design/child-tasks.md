@@ -785,3 +785,90 @@ Tests (phase 2), first red then green:
 `uv run pytest tests/unit/common tests/unit/control_plane tests/unit/worker -k 'child or parent or cancel' -q`
 and `scripts/lib/check-contract-parity.sh`. Security review: required (S0 --
 invariants 9 and 10, and a new credential path).
+
+---
+
+## 10. Child issue runs and child workflows (agent-autonomy.md §3.6, lane AU-6)
+
+The spool takes two more kinds beside the agent child, through the same
+request file, the same worker relay, the same attempt proof and the same
+route (`POST /v1/tasks/{parent_task_id}/children`). A request with no `kind`
+is an agent child, as it always was. The design and the owner's decisions
+are [agent-autonomy.md](agent-autonomy.md) §3.6 and §7.1; this section
+records how they are built and why each rule is where it is.
+
+* **`kind: "issue_run"`** names `issue`: a NUMBER in the parent's own
+  repository, or that same repository spelled out (`owner/repo#N`, the
+  issue's URL; GitHub's names compare case-insensitively). Any other
+  repository is `child_run_other_repository` (403), and a parent with no
+  GitHub repository is `child_run_no_repository` (409). The model has no
+  repository, profile, gate or merge field to send. The run is started by
+  `routes.runs.start_run`, the path `POST /v1/runs` and the issue sweep use:
+  the open-work read (whose refusal refuses the child), the merge choice the
+  repository's registration or the platform gives a run that does not say,
+  and `RunCreate`'s default gates. **An agent names an issue, never a gate**,
+  so a child run's plan waits for a person exactly as a person's own run's
+  does by default.
+* **`kind: "workflow"`** names `spec_name`: one of the tenant's
+  custom-prompt schedules ([schedules.md](../schedules.md) §3.12), whose
+  CURRENT spec digest a platform admin approved. Unknown, another tenant's,
+  pending, rejected, or edited since the approval: `child_workflow_unapproved`
+  (403), and nothing is written. A child never opens an approval request: only
+  the schedule's firing does. **A spec body is refused** -- `steps`, `spec` or
+  any other key is a 422 from the strict model, and the worker refuses it
+  before any call -- because a body is images and commands by another name
+  (invariant 10). The workflow is submitted with `merge: "off"`, as the
+  firing submits it (`custom_prompt.submitted_spec`).
+* **Whom it runs as.** The parent's submitter, in the parent's tenant, read
+  only from a parent whose spec signature verifies (§3.1, #1041), and asked
+  of the directory again at every start through `routes.runs.run_owner_auth`:
+  a submitter who left the tenant, or whose role was narrowed below member,
+  starts nothing.
+* **The ledger.** The parent's link is NOT a field on the run or the
+  workflow (that would be a frozen-contract change for the workflow, and an
+  `issue_runs` schema change for the run). It is swarm-api's own collection
+  `child_runs`, one document per (tenant, parent, request id) -- the id is a
+  digest of the three, so the request id is the idempotency key -- with the
+  kind, the issue or spec name, `after_merged`, the state and the run or
+  workflow id. Every query on it is tenant-filtered first (invariant 9).
+  Equality-only queries on two fields, so no composite index is needed.
+* **The cap and the depth rule.** The fan-out cap counts task children AND
+  ledger rows, in the same transaction that re-reads the fence, whichever
+  kind is asked for: 16 is 16 of anything. A child task cannot start a run
+  (its `parent_task_id`), and neither can any task of a child workflow (its
+  signed `workflow_id` is in the ledger) or of a child issue run (the run id
+  its `metadata.issue_run` carries -- a string on the planner, `run_id` in a
+  map on the run's workflows). Such a task cannot submit an agent child
+  either.
+* **`after_merged`** names another issue run THIS parent started, by the
+  `child_id` (or `run_id`) it was answered with; anything else is
+  `child_after_merged_unknown` (422). The new row is **HELD**: no run, no
+  planner, no workflow, so no capacity (invariant 1). `release_held_runs(ctx,
+  tenant_id)` -- the tick's half -- starts it once the predecessor's run is
+  `DONE` with `pull_request.merged` true, claiming it HELD -> STARTING in one
+  transaction so exactly one tick starts it. It is CANCELLED, never started,
+  when the predecessor ends any other way (FAILED, REJECTED, CANCELLED,
+  NOT_READY, or DONE unmerged: green without auto-merge, or already on main),
+  or when the parent ended. A start a crash interrupted (STARTING for more
+  than ten minutes) is FAILED, never retried: a second start could make a
+  second run of one issue.
+* **A start that is refused** (the forge read, the membership check, the
+  submission) deletes the row the request claimed and answers the refusal,
+  so the slot is not spent and the same request id may be sent again.
+* **Waiting.** The resumed worker's listing (§6.2) carries each ledger row by
+  `child_id`, with its run's or workflow's own state and whether it `ended`:
+  for a run `DONE`, `FAILED`, `REJECTED`, `CANCELLED` or `NOT_READY`; for a
+  workflow a terminal task state; for a row that never started, FAILED or
+  CANCELLED. The worker's implicit await parks over a live one exactly as
+  over a live task child.
+
+**What this lane did not wire, and why.** Two call sites sit outside lane
+AU-6's territory and are the owner's questions in its pull request: the
+tick that calls `release_held_runs` (`POST /v1/admin/runs/advance`,
+`routes/admin.py`, beside `advance_tenant_runs`), and the scheduler's await
+sweep (`apps/scheduler/scheduler/children.py`), which reads only task
+children, so a parent waiting on run children alone is promoted early: its
+agent is started again, reads in `results/children.json` that they have not
+ended, and has to await again -- each round an attempt's cost, bounded by
+`max_child_await_resumes`. Until both land, an `after_merged` run stays HELD
+-- holding nothing -- and is never started by itself.
