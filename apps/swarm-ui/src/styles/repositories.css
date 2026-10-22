@@ -14,6 +14,14 @@
    ========================================================================== */
 
 .ur-page { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
+/* ONE GAP UNDER THE PAGE HEAD (visual QA run 4, admin-012, part of #1680).
+   `.c-phead` keeps a `--ctl-s3` bottom margin, which is the whole gap on a
+   `Screen` route and on Platform counts (block flow in `main.work`). Here the
+   page's own `--ctl-s3` gap follows it too, and a flex item's margin does not
+   collapse into the gap, so People, Runner sizes, Workspaces you admin and
+   every other `.ur-page` started its first line 24px under the head, 12px
+   lower than Pool limits' count. The page's gap is the one gap here. */
+.ur-page > .c-phead { margin-bottom: 0; }
 .ur-crumb { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .ur-crumb b { color: var(--text); font-weight: 600; }
 .ur-crumb a { color: var(--sk-ac); text-decoration: none; }
