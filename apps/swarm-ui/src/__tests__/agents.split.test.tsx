@@ -121,7 +121,7 @@ describe('the detail has a header row: state pill, name, Copy link, Stop', () =>
       // The class chip fills in when the resource-class fetch resolves, after
       // the title (#692): wait for it here rather than read it once below.
       const facts = [...(h?.querySelectorAll('.ag-head-facts > li') ?? [])].map((li) => li.textContent)
-      expect(facts.slice(0, 2)).toEqual(['claude-code', 'standard'])
+      expect(facts.slice(0, 2)).toEqual(['claude-code', 'standard class'])
       return h!
     })
     expect(head.querySelector('.sk-st')?.textContent).toMatch(/running/i)

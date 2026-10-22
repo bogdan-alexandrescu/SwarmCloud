@@ -9,7 +9,16 @@ import { LiveControl, type LiveState } from '../LiveBrowser'
 import { addressToPath } from '../paths'
 import { StopRun } from '../StopRun'
 import { TaskIdLine } from '../TaskIdLine'
-import { STRATEGY_LABEL, accountText, clockTime, dispatchOf, elapsed, type DispatchRole, type Task } from '../types'
+import {
+  STRATEGY_LABEL,
+  accountText,
+  clockTime,
+  dispatchOf,
+  elapsed,
+  type DispatchRole,
+  type DispatchStrategy,
+  type Task,
+} from '../types'
 import { useNow } from '../useNow'
 import { Button, CIcon, StateMark } from '../components'
 
@@ -166,6 +175,25 @@ const ROLE_SAY: Readonly<Record<DispatchRole, string>> = {
 }
 
 /**
+ * WHAT EACH CHIP MEANS FOR THIS AGENT'S PULL REQUEST (visual QA run 4, N16,
+ * flow-workflow-graph-light-11): `One PR for all steps` and `adds to the
+ * shared PR` named the dispatch and left the reader to guess whether this
+ * agent opens a pull request. Each chip carries its sentence as its
+ * description (and its title); the `?` after them opens
+ * `strategy-on-a-task`, which says the same, for a phone and a keyboard.
+ */
+const STRATEGY_MEANS: Readonly<Record<DispatchStrategy, string>> = {
+  collect: 'This agent opens no pull request: what it made is collected as its artifacts and checkpoints.',
+  'direct-pr': 'This agent opens its own pull request with its changes.',
+  integrate: 'This agent’s changes go into one pull request for the whole workflow, opened by its integrating step.',
+}
+const ROLE_MEANS: Readonly<Record<DispatchRole, string>> = {
+  contributor:
+    'This agent opens no pull request of its own: it pushes its branch, and the workflow’s integrating step applies its changes to the shared pull request.',
+  integrator: 'This agent opens the workflow’s one pull request, with the contributing steps’ changes applied to it.',
+}
+
+/**
  * WHAT WAS NOT READ, AND WHY (visual QA run 3, ff-007, #1680). `accountText`'s
  * title for an account that is not a real id repeats the chip's words
  * (`not read.`), so the fact said neither which account was meant nor why it
@@ -193,7 +221,7 @@ function accountTitle(account: Task['account'], text: { title: string; known: bo
 }
 
 /**
- * Profile · class (with its size, once the catalogue answers) · workflow ·
+ * Profile · `<class> class` (with its size, once the catalogue answers) · workflow ·
  * account, and the dispatch chips. Sans; mono only for the ids. An account
  * not read is a dash with its reason, never blank. The task id is the line
  * above this one (`TaskIdLine`).
@@ -218,7 +246,13 @@ export function AgHeadMeta({ task }: { task: Task | null }) {
             title: cls === null ? 'The class catalogue has not answered, so its size is not shown.' : undefined,
             li: (
               <>
-                {task.resource_class}
+                {/* EVERY COUNT IS NAMED WHERE IT IS PRINTED (owner decision
+                    2026-10-22, Console Design Calls 2, c05; visual QA run 4,
+                    task-002): beside a CPU tile measured against the
+                    attempt's enforced limit, a bare `standard · 4 vCPU` did
+                    not say the 4 was the class's size. The class is named as
+                    one, and each figure carries its unit. */}
+                {task.resource_class} class
                 {cls !== null && ` · ${cls.cpu} vCPU · ${cls.memory_gib} GiB`}
               </>
             ),
@@ -271,7 +305,11 @@ export function AgHeadMeta({ task }: { task: Task | null }) {
         // the role mean is one topic. The carrier gets no chip -- no worker
         // reads it yet (`CARRIER_NOTE`) -- and the topic names it.
         <li className="is-nodot ag-head-dispatch">
-          {d !== null && d.role !== null && <span className="ag-head-dchip">{STRATEGY_LABEL[d.strategy]}</span>}
+          {d !== null && d.role !== null && (
+            <span className="ag-head-dchip" title={STRATEGY_MEANS[d.strategy]}>
+              {STRATEGY_LABEL[d.strategy]}
+            </span>
+          )}
           {/* THE `?` NEVER SITS ALONE ON A LINE (G2-20): it is held to the
               last chip, so where the chips wrap it goes with one. And it is
               `strategy-on-a-task`, not the Submit form's
@@ -281,7 +319,9 @@ export function AgHeadMeta({ task }: { task: Task | null }) {
             {d === null ? (
               <span className="ag-head-dchip is-absent">dispatch not served</span>
             ) : (
-              <span className="ag-head-dchip">{d.role !== null ? ROLE_SAY[d.role] : STRATEGY_LABEL[d.strategy]}</span>
+              <span className="ag-head-dchip" title={d.role !== null ? ROLE_MEANS[d.role] : STRATEGY_MEANS[d.strategy]}>
+                {d.role !== null ? ROLE_SAY[d.role] : STRATEGY_LABEL[d.strategy]}
+              </span>
             )}
             <HelpCard topic={d === null ? 'dispatch-absent-is-old-api' : 'strategy-on-a-task'} />
           </span>

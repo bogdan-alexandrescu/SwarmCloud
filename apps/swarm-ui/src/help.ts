@@ -339,6 +339,12 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The strategy is fixed when the agent is submitted and does not change while it runs.',
       'Under the integrating strategy each step has a role: a contributor pushes its branch and opens nothing, and the integrator opens the one pull request for the whole workflow.',
+      // WHAT EACH CHIP MEANS FOR THE AGENT'S OWN PULL REQUEST (visual QA run
+      // 4, N16): the topic named the chips and left the reader to work out
+      // which of them opens a pull request. Each chip's words, then what it
+      // means; the chips carry the same sentence as their description.
+      '‘One PR for all steps’ means the agent’s changes go into one pull request for the whole workflow, opened by its integrating step. ‘adds to the shared PR’ means the agent opens no pull request of its own: it pushes its branch, and the integrating step applies its changes. ‘opens the shared PR’ means the agent opens the workflow’s one pull request, with the contributing steps’ changes applied to it.',
+      '‘A PR per step’ means the agent opens its own pull request with its changes. ‘Collect’ means the agent opens no pull request: what it made is collected as its artifacts and checkpoints.',
       'The strategy is what was asked for. Whether a pull request was opened, and which one, is read from the agent’s result summary once it ends.',
     ],
     // READ, not restated, as `dispatch-strategies` reads them.
