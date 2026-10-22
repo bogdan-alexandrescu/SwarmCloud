@@ -75,9 +75,14 @@ describe('D8: the Workflows list never cuts a state, a count or a duration', () 
     // The bar keeps 24px beside the count.
     expect(width('done'), 'steps done').toBeGreaterThanOrEqual(24 + 6 + textPx('10/10', done, WIDE))
     expect(width('duration'), 'duration').toBeGreaterThanOrEqual(textPx('23h 59m so far', dur, WIDE))
-    // The name keeps the most room of any column.
-    const name = width('workflow')
-    for (const c of cols) if (c.col !== 'workflow') expect(name, c.col).toBeGreaterThanOrEqual(c.end - c.start - 20)
+    // The name keeps the most room of any column. A head the cascade hides
+    // (Shape and Runners below 1680, G3-09) draws no column, and its width
+    // goes to the name, the one column with no width: `fixedColumns` counts
+    // every head, so it is given back here (from 1280 Cost is 128px, c28).
+    const hidden = cols.filter((c) => painted(t.querySelector(`thead th[data-col="${c.col}"]`)!, 'display', WIDE) === 'none')
+    expect(hidden.map((c) => c.col)).toEqual(['shape', 'runners'])
+    const name = width('workflow') + hidden.reduce((a, c) => a + c.end - c.start, 0)
+    for (const c of cols) if (c.col !== 'workflow' && !hidden.includes(c)) expect(name, c.col).toBeGreaterThanOrEqual(c.end - c.start - 20)
   })
 
   it('never cuts those three with an ellipsis, and never wraps them', async () => {

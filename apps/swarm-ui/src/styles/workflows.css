@@ -81,6 +81,21 @@
      it is cut. The column stays 100px: the name's floors at 1056 (D8, R10)
      have nothing to give, and the row is already three lines tall. */
   .wfl .wfl-table td[data-col="cost"] .wf-spend-cov { display: block; margin-left: 0; white-space: normal; }
+  /* FROM 1280 THE COVERAGE IS ONE LINE (owner decision c28, 2026-10-22, box
+     comment 6314117148 on #1680). At 1440 the cell read three lines, '$0.426'
+     / '3 of 4' / 'reported'. 128px is the smallest that holds it: '3 of 4
+     reported' is 15 characters of 12px mono (108px) inside the cell's 10px a
+     side. The name pays the 28px: at 1280 with the nav open the list is
+     896px and the name keeps 204px, over the 168px D8 and R10 hold. Below
+     1280 the column stays 100px and V163's wrap stands.
+     The width alone makes it one line: the coverage keeps V163's
+     `white-space: normal` here too. A nowrap would hand a longer coverage to
+     the cell's clip -- '10 of 12 reported' is 122px, and R10 sizes this
+     column for 12 steps -- and the clip takes "reported" again; with normal
+     it wraps at its spaces instead. */
+  @media (min-width: 1280px) {
+    .wfl .wfl-table th[data-col="cost"] { width: 128px; }
+  }
   .wfl .wfl-table td[data-col="owner"] { white-space: nowrap; }
   /* At the micro size, as the row's other secondary facts are: it is what
      lets both hold their longest value and the name keep 168px at 1056. */
@@ -975,3 +990,11 @@
   border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
   box-sizing: border-box;
 }
+
+/* THE ZOOM NOTE WRAPS (N22, visual QA run 4, #1680). It now says why its
+   fields are hidden and how to see them -- 'profile, duration and figures
+   hidden at this zoom. Choose Figures, or open a step, to see them.' -- about
+   500px of micro type. `flex: none` (styles.css, the strip's other caveats)
+   would run that past a 390px column; the note shrinks to the row and wraps.
+   One class deeper than that rule, which comes after this sheet. */
+.wf-zoom > .wf-caveat.wf-zoom-note { flex: 0 1 auto; min-width: 0; }

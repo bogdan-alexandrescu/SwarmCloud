@@ -288,7 +288,9 @@ describe('the states: none of them reads as no changes', () => {
     expect(document.querySelector('.chg-state .ctl-mark.is-zero')).not.toBeNull()
     // The sentence states the fact; the mark, not a coined term, says it is
     // a measured nothing rather than a failed read (owner, 2026-10-11).
-    expect(document.querySelector('.chg-state .ctl-mark.is-zero')!.getAttribute('aria-label')).toBe(
+    // The sentence is the chip's tooltip and the heading's description; the
+    // chip is named by its visible word (N17, qafix4.workflows.test.tsx).
+    expect(document.querySelector('.chg-state .ctl-mark.is-zero')!.getAttribute('title')).toBe(
       'Nothing differed from the clone, so there is no patch.',
     )
     expect(document.querySelector('.chg-state .ctl-mark.is-unread')).toBeNull()

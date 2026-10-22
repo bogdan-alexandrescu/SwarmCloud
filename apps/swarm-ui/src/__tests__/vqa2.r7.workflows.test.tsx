@@ -256,15 +256,18 @@ describe('V163: the list’s Cost cell keeps its coverage whole', () => {
   it('puts the coverage on its own line, wrapping at its spaces, in a column that holds its longest word', () => {
     const host = listRow(false)
     const cov = host.querySelector('.wf-spend-cov')!
-    expect(painted(cov, 'display', { width: 1440 })).toBe('block')
-    expect(painted(cov, 'margin-left', { width: 1440 })).toBe('0')
-    expect(painted(cov, 'white-space', { width: 1440 })).toBe('normal')
+    // Below 1280: from 1280 the column is wide enough for the coverage on one
+    // line (owner decision c28, 2026-10-22; qafix4.workflows.test.tsx).
+    const env = { width: 1100 }
+    expect(painted(cov, 'display', env)).toBe('block')
+    expect(painted(cov, 'margin-left', env)).toBe('0')
+    expect(painted(cov, 'white-space', env)).toBe('normal')
     // The control: the cell itself still clips on one line, so the coverage's
     // own wrapping is what keeps it whole.
-    expect(painted(cov.closest('td')!, 'white-space', { width: 1440 })).toBe('nowrap')
+    expect(painted(cov.closest('td')!, 'white-space', env)).toBe('nowrap')
     // "reported", its longest word, is 8 characters of 12px mono; the cell pads 10px a side.
     const th = html('<div class="wfl"><table class="wfl-table"><thead><tr><th data-col="cost">Cost</th></tr></thead></table></div>').querySelector('th')!
-    expect(Number.parseFloat(painted(th, 'width', { width: 1440 }) ?? '0')).toBeGreaterThanOrEqual('reported'.length * 0.6 * 12 + 20)
+    expect(Number.parseFloat(painted(th, 'width', env) ?? '0')).toBeGreaterThanOrEqual('reported'.length * 0.6 * 12 + 20)
   })
 })
 
