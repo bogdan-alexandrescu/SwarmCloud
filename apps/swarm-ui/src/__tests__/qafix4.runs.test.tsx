@@ -120,12 +120,14 @@ describe('N20 (run-4 work-a-009): at 1440 the Issue column holds a 34-character 
     }
     const ref = row.querySelector('td[data-label="Issue"] .rn-refcut')!
     expect(ref.textContent).toBe(REF_34)
-    // MUTATION: put the cells' 8px a side back (`.rn-row > td { padding: 4px 8px }`),
-    // or the six sized columns' widths, and Issue is 15px short again:
-    // 'bogdan-alexandrescu/SwarmClo…#454', as run 4 saw its reference.
+    // MUTATION: put the six sized columns' widths back (190, 112, 90, 182,
+    // 68, 152) and Issue has 235px for 245: 'bogdan-alexandrescu/SwarmClo…#454',
+    // as run 4 saw its reference.
     expect(room('issue', 'Issue'), 'the issue reference is cut').toBeGreaterThanOrEqual(textPx(REF_34, ref, WIDE))
     // MUTATION: find Issue's room by narrowing Run, Workflow or By below its
-    // id or address (D11, R11, QA-081) and one of these is red.
+    // id or address (D11, R11, QA-081), or put the cells' 8px a side back
+    // (`.rn-row > td { padding: 4px 8px }`) with the narrower columns, and
+    // one of these is red: the run id has 170px for 173.
     expect(room('run', 'Run'), 'the run id is cut').toBeGreaterThanOrEqual(textPx(RUN_ID, row.querySelector('td[data-label="Run"] a')!, WIDE))
     expect(room('workflow', 'Workflow'), 'the workflow id is cut').toBeGreaterThanOrEqual(textPx(WF, row.querySelector('td[data-label="Workflow"] .rn-cut')!, WIDE))
     const by = row.querySelector('td[data-label="By"] .rn-cut')!

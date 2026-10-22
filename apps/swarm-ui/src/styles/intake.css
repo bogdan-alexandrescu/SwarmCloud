@@ -213,19 +213,28 @@
    at 17% the 24-character run id was cut, and the Issue column -- what is
    left -- cut `owner/repo#N`. Run is the id's own width (24 mono characters
    and the padding); Workflow and By give up a few points, cut with titles. */
-.rn-table th[data-col='run'] { width: 190px; }
-.rn-table th[data-col='state'] { width: 112px; }
-.rn-table th[data-col='approval'] { width: 90px; }
+.rn-table th[data-col='run'] { width: 186px; }
+.rn-table th[data-col='state'] { width: 108px; }
+.rn-table th[data-col='approval'] { width: 86px; }
 /* SIZED TO WHAT THEY HOLD (owner QA R11, 2026-10-04): at 11% and 10% the
    Workflow id read 'wf_3c66d93…' and By 'bogdan@sag…' while the Issue column
    had room to give. Every id in a row is drawn at the micro size and every
-   cell keeps 8px a side, so at 1056px the run id (24 mono characters), the
-   workflow id (23), the issue reference (34) and an operator's address
-   (about 20 sans) are all whole; Plan approval ('required') and Created
+   cell kept 8px a side (6px since N20, below), so at 1056px the run id (24
+   mono characters), the workflow id (23), the issue reference (34) and an
+   operator's address (about 20 sans) are all whole; Plan approval ('required') and Created
    ('59m ago') are their words' width. */
-.rn-table th[data-col='workflow'] { width: 182px; }
-.rn-table th[data-col='created'] { width: 68px; }
-.rn-table th[data-col='by'] { width: 152px; }
+.rn-table th[data-col='workflow'] { width: 178px; }
+.rn-table th[data-col='created'] { width: 64px; }
+.rn-table th[data-col='by'] { width: 148px; }
+/* 6PX A SIDE, AND EVERY SIZED COLUMN 4PX NARROWER (visual QA run 4, N20 /
+   work-a-009, 2026-10-22). The widths above filled a 1056px card to the
+   pixel, and the card is 1041px since `.ctl-scroll` holds its 15px scrollbar
+   gutter on every tab (styles.css, run 3): Issue, what is left, lost those
+   15px and read 'example-org/agent-swarm-inf…#512' at 1440. No column had a
+   pixel over its value at 8px a side, so the cells give 2px a side and each
+   sized column the 4px that frees: its value fits exactly as before, and
+   Issue keeps 259px for a 34-character reference's 245 at 1041.
+   qafix4.runs.test.tsx. */
 /* BY IS AN ADDRESS, DRAWN AS THE ROW'S OTHER IDS ARE (visual QA QA-081,
    2026-10-20): at --t-meta 'operator@example.com' filled its 134px to the
    pixel and read 'operator@example.co…' at 1440. The card has no pixel to
@@ -311,12 +320,12 @@
 .rn-table th {
   /* ONE LINE (visual QA V215, 2026-10-16): "Plan approval" wrapped in its
      76px column and made the head row taller than the rows. */
-  text-align: left; padding: 6px 8px; white-space: nowrap;
+  text-align: left; padding: 6px; white-space: nowrap;
   border-bottom: 1px solid var(--line);
   font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim);
 }
 .rn-row > td {
-  height: 32px; padding: 4px 8px;
+  height: 32px; padding: 4px 6px;
   border-bottom: 1px solid var(--line);
   font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
   white-space: nowrap;
@@ -497,6 +506,13 @@
   .rn-filters > .c-seg > button { margin-top: 0; border-top: 0; border-right: 1px solid var(--line); justify-content: center; }
   .rn-filters > .c-seg > button:nth-child(3n) { border-right: 0; }
   .rn-filters > .c-seg > button:nth-child(n+4) { border-top: 1px solid var(--line); }
+  /* SQUARE CELLS IN A ROUNDED CONTROL (visual QA run 4, box comment
+     6298216578, 2026-10-22). Each cell still took `:where(.app button)`'s
+     radius (styles.css), so its right and top hairlines curved off at their
+     ends and every inner join was notched. The cells are square; the
+     control's own radius, with its `overflow: hidden`, rounds the four outer
+     corners. */
+  .rn-filters > .c-seg > button { border-radius: 0; }
   .in-choice { flex-direction: column; gap: 6px; }
   /* THE HEADING FIRST, THEN ITS CONTROL, THEN WHAT THE CHOICE MEANS (visual
      QA run 3, work-b-004). The column took the row's source order -- control,
