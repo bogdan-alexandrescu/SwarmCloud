@@ -1637,17 +1637,21 @@ export function AccessScreen() {
     <div className="ur-page ac-page">
       <PageHead title="Access">
         <UrRefresh reads={[overview]} />
-        <UrRadio<View>
-          label="Whose access"
-          value={view}
-          onChange={setView}
-          options={[
-            { key: 'mine', label: 'Mine' },
-            { key: 'members', label: 'Members', title: 'Every member of the tenant: for an admin' },
-            { key: 'logins', label: 'Browser logins', title: 'Sessions you saved from a live browser in your workspace' },
-          ]}
-        />
+        {/* THE SWITCH AND SETUP ARE ONE GROUP (visual QA run 4, work-b-001, part
+            of #1680). As two items of the head's actions, Setup was the one
+            that wrapped at 390 and sat alone on a third row; in one `.ur-acts`
+            they move to a row together, and at 1440 all of it is one row. */}
         <span className="ur-acts">
+          <UrRadio<View>
+            label="Whose access"
+            value={view}
+            onChange={setView}
+            options={[
+              { key: 'mine', label: 'Mine' },
+              { key: 'members', label: 'Members', title: 'Every member of the tenant: for an admin' },
+              { key: 'logins', label: 'Browser logins', title: 'Sessions you saved from a live browser in your workspace' },
+            ]}
+          />
           <ButtonLink size="sm" href={addressToPath(SETUP)}>
             Setup
           </ButtonLink>
