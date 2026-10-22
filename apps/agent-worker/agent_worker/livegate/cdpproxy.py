@@ -200,6 +200,15 @@ qatarget.py):
   start while a person is in control or the agent is already held
   (`qa_sign_in_busy`). An agent connection refused meanwhile is told why
   (`held_for_qa_sign_in`).
+
+THE DEVICE AGAIN AFTER A CLIPPED CAPTURE (QA-REASSERT; part of #1981). A
+`Page.captureScreenshot` carrying a `clip`, sent from an agent's session,
+lifts the device the gate set on that page from its own session (device.py
+says what was measured). After the reply to one is relayed (or held, in
+control), the proxy runs the hook registered with `after_clipped_capture`
+for the page's targetId, on a task of its own: the hook waits on replies,
+and this runs inside the pipe reader. The agent's command and reply pass
+through unchanged, and nothing about what an agent may send changes.
 """
 
 from __future__ import annotations
@@ -249,6 +258,8 @@ MAX_ACTION_PATH = 256
 #: How long a refused agent connection is asked to wait before it tries
 #: again (`Retry-After`): long enough not to spin, short next to a hand-off.
 RETRY_AFTER_SECONDS = 5
+#: The capture whose clipped form lifts the gate's device (module docstring).
+CAPTURE_SCREENSHOT = "Page.captureScreenshot"
 #: How often a tool still in use is reported again (module docstring).
 TOOL_REPORT_SECONDS = 15.0
 #: A client tag as the path carries it, and the rest of the path after it.
@@ -566,6 +577,10 @@ class CdpProxy:
         self._checks: set[asyncio.Task[None]] = set()
         #: Chromium's pipe closed (`chromium_closed`): nothing written is answered.
         self._gone = False
+        #: Run with a page's targetId after an agent's clipped capture of it
+        #: (module docstring); the gate's `DeviceController.reassert`.
+        self._after_clipped_capture: Callable[[str], Awaitable[None]] | None = None
+        self._reasserts: set[asyncio.Task[None]] = set()
 
     # ------------------------------------------------------------------ state
 
@@ -598,6 +613,11 @@ class CdpProxy:
         if before is None or before[0] != tool or now - self._tool_told_at >= TOOL_REPORT_SECONDS:
             self._tool_told_at = now
             self._on_tool(tool, now)
+
+    def after_clipped_capture(self, hook: Callable[[str], Awaitable[None]]) -> None:
+        """`hook(targetId)` runs after the reply to an agent's clipped
+        `Page.captureScreenshot` is relayed (module docstring)."""
+        self._after_clipped_capture = hook
 
     # ------------------------------------------------------- the gate's calls
 
@@ -911,8 +931,29 @@ class CdpProxy:
             reply["sessionId"] = pending.agent_session
         if self._mode == _PAUSED:
             self._held_responses.append((pending, reply))
+        else:
+            await connection.link.send(reply)
+        self._clipped_capture_answered(pending, connection)
+
+    def _clipped_capture_answered(self, pending: _Pending, connection: AgentConnection) -> None:
+        """The device again on the page an agent's clipped capture lifted it
+        from, on a task: the hook waits on replies, and the reader must not."""
+        hook = self._after_clipped_capture
+        if hook is None or pending.method != CAPTURE_SCREENSHOT or not isinstance(pending.params.get("clip"), Mapping):
             return
-        await connection.link.send(reply)
+        target = connection.sessions.get(pending.agent_session) if pending.agent_session is not None else None
+        if not target:
+            return
+        task = asyncio.get_running_loop().create_task(self._reassert(hook, target))
+        self._reasserts.add(task)
+        task.add_done_callback(self._reasserts.discard)
+
+    @staticmethod
+    async def _reassert(hook: Callable[[str], Awaitable[None]], target: str) -> None:
+        try:
+            await hook(target)
+        except Exception as exc:  # noqa: BLE001 -- a page that closed: nothing to put back
+            log.info("live gate: device not put back after a clipped capture (%s)", type(exc).__name__)
 
     def _undecodable_console_body(self, pending: _Pending, result: Mapping[str, Any]) -> bool:
         """`qa_identity_body` (module docstring): a body the scrub could not read, on the console host."""

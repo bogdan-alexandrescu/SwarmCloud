@@ -344,7 +344,14 @@ whose main document answered 4xx or 5xx is a failed route at `navigate`,
 with the status, not a captured one. A subresource that answered 4xx or 5xx
 is in the route's `errors.json` as `bad_responses`, its URL (origin and
 path) and status, because an HTTP error is not a failed request, and the
-console's "Failed to load resource" line carries no URL.
+console's "Failed to load resource" line carries no URL. A shot is checked
+against the page's layout viewport read at the shot (innerWidth and
+innerHeight over the visual viewport's scale), not the preset's nominal
+size, because a page with no viewport meta tag is correctly laid out at
+980 px on a phone and Playwright's first shot of it is a faithful 980x2121
+(QA-DEVICE, Chrome 153): what was wrong were the later shots, after each
+clipped capture lifted the gate's device, which the gate now puts back
+(`DeviceController.reassert`, QA-REASSERT).
 
 ### 4.3 The review checklist
 
