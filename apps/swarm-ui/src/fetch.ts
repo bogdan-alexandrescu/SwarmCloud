@@ -238,6 +238,10 @@ export function errorReassurance(e: ApiError): string {
     // is what the copy below says and the Schedules list said over an API
     // that did not serve schedules. V007 still holds: it names no kind of
     // thing, only the read.
+    // THE TEST IS THE TEMPLATE'S PATH, NOT ITS QUERY: an item is "named" only
+    // by a `{param}` in the path. A read that named its item in the query
+    // string alone would get this list copy; none does today, and one that
+    // does should put the item in its template's path or extend this check.
     return 'The API has no route for this read, so this deployment does not serve it. Reading it again gets the same answer.'
   }
   if (e.kind === 'not_found') {

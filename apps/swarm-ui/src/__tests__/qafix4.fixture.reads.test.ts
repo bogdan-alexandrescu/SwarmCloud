@@ -11,6 +11,8 @@
 // re-imports the module after setting (or clearing) the cookie.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createElement } from 'react'
+import { cleanup, render, screen } from '@testing-library/react'
 
 type Api = typeof import('../api')
 
@@ -111,6 +113,36 @@ describe('Pool limits\' settings and model prices are served (F1, admin-001)', (
     expect(s.settings_document).toBe('present')
     // MUTATION: serve the admin a different price table from the members' route -> fails.
     expect(Object.keys(s.model_prices).sort()).toEqual(Object.keys(ok(await api.loadModelPrices(), 'prices').model_prices).sort())
+  })
+
+  // THE SCREEN, NOT ONLY THE LOADER (review of this lane): the card read
+  // `/v1/admin/settings` with a bare read(), which no fixture answers, so the
+  // loader's fixture branch never reached it. The network here answers 404,
+  // as the dev server does, so a card that reads around the loader shows
+  // 'Not read'.
+  it('Pool limits\' Additional repositories card draws its two fields for the admin persona', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } })))
+    await apiAs('platform-admin')
+    const { AdditionalRepositoryLimitsCard } = await import('../AdminSettings')
+    render(createElement(AdditionalRepositoryLimitsCard))
+    const count = (await screen.findByLabelText('Most additional repositories per step', {}, { timeout: 4000 })) as HTMLInputElement
+    // MUTATION: read `/v1/admin/settings` with a bare read() in AdditionalRepositoryLimitsCard -> 'Not read', no field.
+    expect(count.value).toBe('4')
+    expect((screen.getByLabelText('Size budget per step, GiB') as HTMLInputElement).value).toBe('20')
+    // MUTATION: count the card's read as failed in the fixture build -> an alert is drawn.
+    expect(screen.queryByRole('alert')).toBeNull()
+    cleanup()
+  })
+
+  it('the member still sees the card\'s refusal, as on a live deployment', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } })))
+    await apiAs(null)
+    const { AdditionalRepositoryLimitsCard } = await import('../AdminSettings')
+    render(createElement(AdditionalRepositoryLimitsCard))
+    // MUTATION: serve `/v1/admin/settings` to the member persona -> the fields are drawn.
+    await screen.findByText('Platform admins only.', {}, { timeout: 4000 })
+    expect(screen.queryByLabelText('Most additional repositories per step')).toBeNull()
+    cleanup()
   })
 })
 

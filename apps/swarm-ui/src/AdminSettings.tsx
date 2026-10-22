@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
 import {
-  loadAdminPools, loadCapacity, loadMe, loadModelClasses, loadModelPrices, priceRefusals, saveModelPrices, setPoolLimit, storeOwnerToken,
+  loadAdminPools, loadCapacity, loadMe, loadModelClasses, loadModelPrices, loadPlatformSettings, priceRefusals, saveModelPrices, setPoolLimit, storeOwnerToken,
 } from './api'
 import { Button, Card } from './components'
 import { errorHeading, isPaused, read, route, write, type ApiError, type Result } from './fetch'
@@ -1749,7 +1749,9 @@ export function AdditionalRepositoryLimitsCard() {
   }
   useEffect(() => {
     let live = true
-    void read<PlatformSettings>(route('/v1/admin/settings'), () => false).then((r) => {
+    // Through the loader, not a bare read: the fixture build answers it there
+    // (visual QA run 4 admin-001), and a bare read went to the dev server's 404.
+    void loadPlatformSettings().then((r) => {
       if (!live) return
       setSettings(r)
       if (r.status === 'ok' || r.status === 'stale') take(r.data)

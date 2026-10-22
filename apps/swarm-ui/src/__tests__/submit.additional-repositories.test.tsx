@@ -38,10 +38,18 @@ const mocks = vi.hoisted(() => ({
   loadTaskLogs: vi.fn(),
 }))
 
+// THE CARD'S READ GOES TO FETCH. Since QAFIX4-FIXTURE-A the card reads through
+// loadPlatformSettings, which the fixture build (this file's build: the task
+// form needs the fixture capacity) answers itself. The Pool limits cases serve
+// `/v1/admin/settings` through fetch, so the loader's live read stands in here.
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
+  const { read, route } = await import('../fetch')
   mocks.loadCapacity.mockImplementation(actual.loadCapacity)
-  return { ...actual, loadCapacity: mocks.loadCapacity, loadCheckpoints: mocks.loadCheckpoints, loadTaskLogs: mocks.loadTaskLogs }
+  return {
+    ...actual, loadCapacity: mocks.loadCapacity, loadCheckpoints: mocks.loadCheckpoints, loadTaskLogs: mocks.loadTaskLogs,
+    loadPlatformSettings: () => read<import('../types').PlatformSettings>(route('/v1/admin/settings'), () => false),
+  }
 })
 
 const actualApi = await vi.importActual<typeof import('../api')>('../api')
