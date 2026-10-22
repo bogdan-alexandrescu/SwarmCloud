@@ -32,7 +32,7 @@ from typing import Any, Sequence
 
 import pytest
 
-from swarm_api import failuredigest, schedulefire, schedules, scheduletypes
+from swarm_api import failurecauses, failuredigest, schedulefire, schedules, scheduletypes
 from swarm_api.errors import Forbidden, ValidationFailed
 from swarm_api.scheduletypes import BudgetCaps
 from swarm_api.schedtypes import failure_review
@@ -106,14 +106,19 @@ def end(db, task: dict[str, Any], state: str = "SUCCEEDED", at: datetime | None 
 def cause(refs: Sequence[str] = ("f-001",), *, hold: str = "none", where: str = "platform",
           fix: str = "Return the seeded error only when the input asks for it; a red-first test "
                      "in tests/unit/worker proves it.",
-          files: Sequence[str] = ("apps/agent-worker/agent_worker/runners/mock.py",)) -> dict[str, Any]:
+          files: Sequence[str] = ("apps/agent-worker/agent_worker/runners/mock.py",),
+          site: str = "apps/agent-worker/agent_worker/runners/mock.py::run",
+          text: str = "The mock runner raises its seeded failure on every input, asked for or not.",
+          **action: Any) -> dict[str, Any]:
+    """One rca cause; `action=` and `existing_issue=` are written only when given,
+    so the default cause is an rca written before `action` existed."""
     return {
-        "fingerprint_of": {"component": "worker", "site": "apps/agent-worker/agent_worker/runners/mock.py::run",
+        "fingerprint_of": {"component": "worker", "site": site,
                            "class": "mock_seeded_failure", "signature": "mock runner failed: seeded failure <n>"},
         "known_fingerprint": None, "failures": list(refs),
-        "cause": "The mock runner raises its seeded failure on every input, asked for or not.",
+        "cause": text,
         "evidence": [{"command": "rg -n 'seeded failure' apps/agent-worker", "result": "runners/mock.py:40 raises it"}],
-        "fix": fix, "files": list(files), "hold": hold, "where": where,
+        "fix": fix, "files": list(files), "hold": hold, "where": where, **action,
     }
 
 
@@ -433,6 +438,171 @@ def test_a_label_github_refuses_leaves_the_cause_held(db, ctx, writes, monkeypat
     # MUTATION: let the label's refusal propagate and the review stops in `filing`, its cause not done.
     assert review["state"] == failure_review.FILED
     assert review["progress"][record["fingerprint"]]["done"] is True
+
+
+# ---------------------------------------------------------------------------
+# The cause's `action` (#2003): no change needed, or an existing open issue
+# ---------------------------------------------------------------------------
+
+SITE = "apps/agent-worker/agent_worker/runners/{}.py::run"
+NO_CHANGE_WHY = ("No new code change: the guard is on main (loop.py owner_wait at :1720). "
+                 "No fix run should be started for this cause.")
+
+
+def fp_of(site: str) -> str:
+    return failurecauses.fingerprint("worker", site, "mock_seeded_failure", "mock runner failed: seeded failure <n>")
+
+
+def hand_filed(writes, number: int, *, state: str = "open", repository: str = SWARM, **extra: Any) -> None:
+    """An issue a person filed in the platform repository (no `title`: `filed` lists only ours)."""
+    writes.issues[number] = {"number": number, "state": state, "repository": repository,
+                             "repository_url": f"https://api.github.com/repos/{repository}",
+                             "labels": [{"name": "bug"}], **extra}
+
+
+def four_failures(db, ctx, **params: Any) -> tuple[dict[str, Any], dict[str, Any], schedulefire.Firing, list[str]]:
+    """Firing 1 over four failures: its schedule, its ended investigator and its refs."""
+    platform_repo(db)
+    for n in range(1, 5):
+        seed_failure(db, f"task_mock{n}", ended=NOW - timedelta(minutes=10 * n))
+    schedule = review_schedule(db, **params)
+    firing = fire(ctx, schedule, NOW)
+    failure_review.create(firing)
+    (investigator,) = investigators(db)
+    end(db, investigator)
+    refs = sorted(reviews(db)[firing.firing["firing_id"]]["refs"])
+    assert len(refs) == 4
+    return schedule, investigator, firing, refs
+
+
+def test_fix_none_and_existing_causes_each_get_exactly_their_own_action(db, ctx, writes, monkeypatch) -> None:
+    schedule, investigator, firing, refs = four_failures(db, ctx, params={"summary_issue": f"{SWARM}#7"})
+    hand_filed(writes, 1778)
+    hand_filed(writes, 1500, state="closed", state_reason="completed")
+    sites = {name: SITE.format(name) for name in ("fixme", "fixed", "known", "closed")}
+    _artifacts(monkeypatch, ctx, {investigator["id"]: rca(
+        firing.firing["firing_id"],
+        cause([refs[0]], site=sites["fixme"], text="The fix cause, filed new."),
+        cause([refs[1]], site=sites["fixed"], text="The cause already fixed on main.", fix=NO_CHANGE_WHY,
+              action="none"),
+        cause([refs[2]], site=sites["known"], text="The cause #1778 already tracks.", action="existing",
+              existing_issue=1778),
+        cause([refs[3]], site=sites["closed"], text="The cause naming a closed issue.", action="existing",
+              existing_issue=1500))})
+
+    failure_review.create(fire(ctx, schedule, NOW + timedelta(hours=6)))
+
+    by_title = {i["title"]: i for i in filed(writes)}
+    # MUTATION: file every cause whatever its action (today's take-in) and four issues are filed.
+    assert sorted(by_title) == ["The cause naming a closed issue.", "The fix cause, filed new."]
+    runs = {r["issue"]["number"] for r in issue_runs(db)}
+    # MUTATION: start no run for `existing` (comment only) and 1778 is not in this set.
+    assert runs == {by_title["The fix cause, filed new."]["number"], 1778,
+                    by_title["The cause naming a closed issue."]["number"]}
+    assert len(issue_runs(db)) == 3
+
+    # `none`: recorded with its evidence, no issue, no run.
+    none_record = db.docs[f"failure_causes/{fp_of(sites['fixed'])}"]
+    # MUTATION: leave a `none` cause in state `open` and nothing tells it from one awaiting a filing.
+    assert none_record["state"] == "no_change" and none_record["issue"] is None and none_record["runs"] == []
+    # MUTATION: drop the investigator's why from the record and the evidence it is fixed is lost.
+    assert "owner_wait at :1720" in none_record["no_change"]["fix"]
+    assert none_record["no_change"]["evidence"][0]["command"].startswith("rg -n")
+
+    # `existing`: one comment on #1778 and its run there; the cause is recorded against it.
+    # One failure-review comment (the run posts its own status comment beside it).
+    (comment,) = [c for c in writes.on_issue(1778) if c["body"].startswith("<!-- failure-review ")]
+    # MUTATION: comment with another body than render_comment's and the marker is not first.
+    assert comment["body"].startswith(failurecauses.comment_marker(
+        fp_of(sites["known"]), failure_review.mark_id(firing.firing["firing_id"])))
+    assert "A new fix run is started" in comment["body"]
+    # MUTATION: skip record_issue for an accepted `existing` and the next recurrence files a new issue.
+    assert db.docs[f"failure_causes/{fp_of(sites['known'])}"]["issue"] == 1778
+
+    # A closed number is refused as `fix`: nothing written to #1500.
+    # MUTATION: accept any number without reading its state and #1500 gets the comment and the run.
+    assert writes.on_issue(1500) == [] and 1500 not in runs
+    summary = reviews(db)[firing.firing["firing_id"]]["summary"]
+    # MUTATION: count a `none` as filed and issues_filed is 3.
+    assert summary["issues_filed"] == 2 and summary["runs_started"] == 3
+    # MUTATION: leave `none` out of the summary and the owner never hears it was dropped.
+    assert summary["no_change"] == [fp_of(sites["fixed"])]
+    (refused,) = summary["existing_refused"]
+    # MUTATION: refuse without saying why and the reason is empty.
+    assert refused["fingerprint"] == fp_of(sites["closed"]) and refused["issue"] == 1500
+    assert "closed" in refused["reason"]
+    (posted,) = writes.on_issue(7)
+    # MUTATION: drop the summary lines and the posted summary does not name either.
+    assert "no change needed: 1" in posted["body"] and fp_of(sites["fixed"]) in posted["body"]
+    assert "#1500" in posted["body"] and "closed" in posted["body"]
+
+
+@pytest.mark.parametrize("seed, why", [
+    ({"repository": "someone-else/repo"}, "not in"),
+    ({"pull_request": {"url": "https://api.github.com/repos/x/y/pulls/1600"}}, "pull request"),
+])
+def test_an_existing_issue_that_is_foreign_or_a_pull_request_is_filed_new(db, ctx, writes, monkeypatch,
+                                                                          seed, why) -> None:
+    schedule, investigator, firing, refs = four_failures(db, ctx)
+    hand_filed(writes, 1600, **seed)
+    _artifacts(monkeypatch, ctx, {investigator["id"]: rca(
+        firing.firing["firing_id"], cause(refs, action="existing", existing_issue=1600))})
+
+    failure_review.create(fire(ctx, schedule, NOW + timedelta(hours=6)))
+
+    # MUTATION: accept an open number without checking its repository or kind and #1600 is written to.
+    assert writes.on_issue(1600) == []
+    (issue,) = filed(writes)
+    assert issue["repository"] == SWARM
+    (run,) = issue_runs(db)
+    assert run["issue"]["number"] == issue["number"]
+    (refused,) = reviews(db)[firing.firing["firing_id"]]["summary"]["existing_refused"]
+    assert refused["issue"] == 1600 and why in refused["reason"]
+
+
+def test_a_held_no_change_cause_stays_held(db, ctx, writes, monkeypatch) -> None:
+    schedule, investigator, firing = first_firing(db, ctx)
+    end(db, investigator)
+    _artifacts(monkeypatch, ctx, {investigator["id"]: rca(
+        firing.firing["firing_id"], cause(hold="iam", files=("terraform/infra/iam_worker.tf",), action="none"))})
+
+    failure_review.create(fire(ctx, schedule, NOW + timedelta(hours=6)))
+
+    # MUTATION: let `action: none` win over the hold and nothing is filed for the owner.
+    (issue,) = filed(writes)
+    assert {"name": "needs-owner"} in issue["labels"]
+    assert issue_runs(db) == []
+    (record,) = records(db)
+    assert record["state"] == "held"
+    assert reviews(db)[firing.firing["firing_id"]]["summary"]["no_change"] == []
+
+
+def test_a_no_change_cause_that_recurs_is_filed_and_run(db, ctx, writes, monkeypatch) -> None:
+    schedule, first, firing1 = first_firing(db, ctx)
+    end(db, first)
+    files = {first["id"]: rca(firing1.firing["firing_id"], cause(fix=NO_CHANGE_WHY, action="none"))}
+    _artifacts(monkeypatch, ctx, files)
+    second_at = NOW + timedelta(hours=6)
+    seed_failure(db, "task_mock2", ended=second_at - timedelta(minutes=30))
+    failure_review.create(fire(ctx, schedule, second_at))
+    assert filed(writes) == [] and issue_runs(db) == []
+    assert records(db)[0]["state"] == "no_change"
+    second = [t for t in investigators(db) if t["id"] != first["id"]][0]
+    firing2_id = second["metadata"]["schedule"]["firing_id"]
+    refs = reviews(db)[firing2_id]["refs"]
+    end(db, second, at=second_at + timedelta(hours=1))
+    # The investigator says "no change" again, over a new failure.
+    files[second["id"]] = rca(firing2_id, cause(tuple(refs), fix=NO_CHANGE_WHY, action="none"))
+
+    failure_review.create(fire(ctx, schedule, NOW + timedelta(hours=12)))
+
+    # MUTATION: trust `none` again on a recurrence and nothing is filed: the code was not fixed after all.
+    (issue,) = filed(writes)
+    (run,) = issue_runs(db)
+    assert run["issue"]["number"] == issue["number"]
+    (record,) = records(db)
+    assert record["state"] == "fixing" and record["issue"] == issue["number"]
+    assert reviews(db)[firing2_id]["summary"]["no_change"] == []
 
 
 def test_the_reviewers_own_failure_is_not_in_the_next_digest_and_files_nothing(db, ctx, writes,

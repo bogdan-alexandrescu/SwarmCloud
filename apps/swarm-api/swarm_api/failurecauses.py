@@ -29,7 +29,7 @@ twice, and a retried firing that observes again changes nothing.
 
 `validate_rca` is §4's gate: nothing is filed from an `rca.json` that does not
 account for every reviewed failure exactly once, give each cause evidence, and
-keep `hold` and `where` inside their vocabularies. A file that fails files
+keep `hold`, `where` and `action` inside their vocabularies. A file that fails files
 nothing (§9).
 
 WHAT THIS MODULE DOES NOT DO: it files no issue and starts no run. It decides,
@@ -58,12 +58,18 @@ CAUSES = "failure_causes"
 
 #: §5's states. `open`: filed, no fix run yet or none live; `fixing`: a fix run
 #: started; `held`: `needs-owner`, no run; `fixed`: its fix merged; `reported`:
-#: a cause in a tenant's own repository, reported to that tenant, never filed here.
-OPEN, FIXING, HELD, FIXED, REPORTED = "open", "fixing", "held", "fixed", "reported"
-STATES = (OPEN, FIXING, HELD, FIXED, REPORTED)
+#: a cause in a tenant's own repository, reported to that tenant, never filed here;
+#: `no_change`: the investigator said no code change is needed (`action: none`,
+#: #2003), recorded with its why and never filed -- until it recurs.
+OPEN, FIXING, HELD, FIXED, REPORTED, NO_CHANGE = "open", "fixing", "held", "fixed", "reported", "no_change"
+STATES = (OPEN, FIXING, HELD, FIXED, REPORTED, NO_CHANGE)
 #: §4's vocabularies.
 HOLDS = ("none", "iam", "contract", "secrets", "tenancy", "shared", "cost")
 WHERE = ("platform", "tenant_repo")
+#: §4's `action` (#2003): `fix` files and runs (the default, and every rca
+#: written before the field existed); `none` needs no code change; `existing`
+#: is an open issue already in the platform repository (`existing_issue`).
+ACTIONS = ("fix", "none", "existing")
 #: §5: two fix runs that did not hold are the owner's to look at.
 MAX_FIX_RUNS = 2
 #: Bounds on a record, so a cause that recurs for months stays one small document.
@@ -132,6 +138,8 @@ class CauseIn(_Strict):
     files: list[str] = Field(default_factory=list, max_length=200)
     hold: Literal["none", "iam", "contract", "secrets", "tenancy", "shared", "cost"]
     where: Literal["platform", "tenant_repo"]
+    action: Literal["fix", "none", "existing"] = "fix"
+    existing_issue: int | None = Field(default=None, ge=1)
 
 
 class Unexplained(_Strict):
@@ -159,6 +167,8 @@ class Cause:
     hold: str
     where: str
     known: bool
+    action: str = "fix"
+    existing_issue: int | None = None
 
 
 def validate_rca(raw: Any, *, firing_id: str, refs: Iterable[str],
@@ -207,7 +217,7 @@ def validate_rca(raw: Any, *, firing_id: str, refs: Iterable[str],
             fingerprint=known_fp or computed, signature=normalise(of.signature, limit=500),
             failures=tuple(item.failures), cause=item.cause, evidence=tuple(item.evidence),
             fix=item.fix, files=tuple(item.files), hold=item.hold, where=item.where,
-            known=known_fp is not None,
+            known=known_fp is not None, action=item.action, existing_issue=item.existing_issue,
         ))
     return causes, list(doc.unexplained)
 
@@ -230,6 +240,7 @@ class Action(str, Enum):
     COMMENT = "comment"                  # already filed: this firing's comment, nothing else
     COMMENT_AND_RUN = "comment_and_run"  # filed, no live fix, a run left: comment and one new run
     HOLD = "hold"                        # comment, set `held`, label `needs-owner`, no run
+    NO_CHANGE = "no_change"              # `action: none`: recorded and summarised, no issue, no run
 
 
 #: How a person closed the cause's issue, when they did (`state_reason` on GitHub).
@@ -388,6 +399,12 @@ class FailureCauses:
             return True
 
         return _apply(self._db.transaction())
+
+    def record_no_change(self, fp: str, *, firing_id: str, fix: str, evidence: Sequence[Mapping[str, Any]]) -> None:
+        """`action: none`: the investigator's why and its evidence, so the record
+        shows what was dropped and on what grounds (#2003)."""
+        self._ref(fp).update({"state": NO_CHANGE, "updated_at": self._now(), "no_change": {
+            "firing_id": firing_id, "fix": fix, "evidence": [dict(e) for e in evidence]}})
 
     def set_state(self, fp: str, state: str, *, merge: Mapping[str, Any] | None = None) -> None:
         """`held` (needs-owner), `fixed` (with the merge that fixed it), or back to `open`."""

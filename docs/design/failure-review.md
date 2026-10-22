@@ -208,7 +208,9 @@ died".
       "fix": "What to change, and the red-first test that proves it.",
       "files": ["apps/reconciler/reconciler/detect.py"],
       "hold": "none",
-      "where": "platform"
+      "where": "platform",
+      "action": "fix",
+      "existing_issue": null
     }
   ],
   "unexplained": [{"failure": "f-007", "tried": "what was read, and why it did not settle it"}]
@@ -217,6 +219,16 @@ died".
 
 * `hold` is one of `none`, `iam`, `contract`, `secrets`, `tenancy`, `shared`,
   `cost`. `where` is `platform` or `tenant_repo` (§1).
+* `action` is `fix` (the default when absent: file an issue, start a run),
+  `none` or `existing` (#2003). `none` means no code change is needed -- the
+  fix is already on main, or the cause is a process with no code site -- and
+  `fix` then says why, with the evidence; the cause is recorded `no_change`
+  with that why and nothing is filed or run. `existing` names an OPEN issue
+  of the platform repository in `existing_issue`. The field exists because
+  the first live take-in (2026-10-22) filed #2001 and started a run for a
+  cause whose rca said in prose "No fix run should be started", and filed
+  #1999 for one it called "part of #1778": the take-in reads fields, never
+  prose.
 * **The fingerprint is swarm-api's, not the agent's**:
   `fr-` + the first 12 hex of SHA-256 over `component|site|class|signature`.
   An agent that names a `known_fingerprint` swarm-api holds gets that one, so a
@@ -267,7 +279,15 @@ died".
    `needs-owner` and gets **no run**; `issue-sweep`'s default
    `labels_exclude` already skips that label, so nothing else picks it up. A
    cause with `where: tenant_repo` gets the per-tenant finding (§1) and no
-   issue here.
+   issue here. A cause with `action: none` gets no issue and no run: it is
+   recorded and listed in the firing's summary as "no change needed", and if
+   the same fingerprint recurs with new failures it is a `fix`, because the code
+   was not fixed after all. A cause with `action: existing` gets §5's comment
+   and its run on that issue instead of a new one, when the number is an open
+   issue of the platform's own repository; any other number (closed, a pull
+   request, moved away, absent) is refused and the cause filed new, the reason
+   in the summary, and nothing is written to another repository. A hold always
+   wins: a held cause is filed `needs-owner` with no run whatever its `action`.
 3. **Start the issue run** with issue-sweep's executor
    (`swarm_api/schedtypes/issue_sweep.py` `start`, with `run_options`):
    planner, implementer steps with red-first tests, review, fix rounds
