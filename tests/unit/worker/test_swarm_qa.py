@@ -549,7 +549,12 @@ def test_file_names_carry_route_preset_theme_segment(qa, world):
     assert [n for n in names if n.startswith("work-a/timeline--desktop--light--")] == [
         "work-a/timeline--desktop--light--s1.png"
     ]
-    assert len(names) == 4 * (3 + 1)
+    # At phone-390 `timeline` runs to its scroller's end all the same (owner
+    # decision c49): three images there, one on the desktop.
+    assert [n for n in names if n.startswith("work-a/timeline--phone-390--light--")] == [
+        f"work-a/timeline--phone-390--light--s{i}.png" for i in (1, 2, 3)
+    ]
+    assert len(names) == 2 * (3 + 1) + 2 * (3 + 3)
     manifest = _manifest(bundle)
     listed = sorted(i for r in manifest["routes"] for i in r["images"])
     assert listed == names, "the manifest names exactly the images the tarball holds"
@@ -758,7 +763,9 @@ def test_a_route_that_never_settles_is_reported_and_its_wait_is_bounded(qa, worl
     (timeline,) = [r for r in manifest["routes"] if r["id"] == "timeline"]
     assert timeline["status"] == "unsettled" and timeline["settled"] is False, timeline
     assert timeline["pending"] == ['"reading…" in button.c-refresh'], timeline
-    waited = sum(e[1] for e in world.page.log if e[0] == "wait")
+    # The timeline is the group's last route: its wait is every wait after its load.
+    last_load = max(i for i, e in enumerate(world.page.log) if e[0] == "goto")
+    waited = sum(e[1] for e in world.page.log[last_load:] if e[0] == "wait")
     assert qa.SETTLE_TIMEOUT_MS <= waited <= qa.SETTLE_TIMEOUT_MS + qa.SETTLE_POLL_MS, waited
 
 

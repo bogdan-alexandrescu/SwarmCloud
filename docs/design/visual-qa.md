@@ -647,6 +647,82 @@ and `images/agent-runtime-browser/swarm-handoff` do now:
   left alone, and cookies are not cleared. A fresh browser context per route would also do it, but opens a
   window the gate has never been measured fitting to a preset.
 
+#### 4.2.2 Amendment, 2026-10-22: what run 4 missed (QAFIX4-QATOOL, epic #1680)
+
+Visual QA run 4 (workflow `wf_ecd935541ced4a539540`, the fixture build of
+main at `fabe4d6c`) missed parts of pages in four ways, all in the capture
+tool. What `swarm_qa.py` does now:
+
+* **A phone capture runs to the scroller's end** (owner decision c49,
+  2026-10-22, box comment 6283704756). At `phone-390` a route takes segments
+  until its scroller ends, up to `MAX_SEGMENTS` (12); its `segments` no
+  longer stops it there. Run 4's phone captures of admin/limits,
+  capacity/pools, capacity/holders, overview/now and the Timeline, among
+  others, stopped at their budget (4, or 3 for `now`) with the page still
+  going, in both themes, and the rows below were in no image (admin-006,
+  capacity-001..003, overview-automate-008, work-a-010). A phone page is
+  several times as tall as the same page at 1440, so a budget written for
+  the desktop cut it. A route's `segments` still governs the desktop preset
+  (`swarm_qa.py` (`TO_THE_END_PRESETS`, `segment_budget`)).
+* **A cut capture says so.** When any preset stops at its budget before the
+  scroller's end, the entry says `truncated: true` with `reached` (the px of
+  the scroller the last segment's foot reached) and `total` (its full
+  height), and the route is listed in `failed` with "cut at N segments:
+  reached R of T px (the rest is in no image)", as an unsettled route is;
+  the capture's summary line counts them as `truncated`. A capture of part
+  of a page recorded as complete is the "empty output is not success" defect
+  in another form. Every entry carries the three keys, `truncated: false`
+  when the last segment reached the end.
+* **Settled means the text has stopped changing too** (box comments
+  6283709068 and 6283730057). Run 4 shot the agent list with every row at
+  "attempt … of 3" while the route's own text file said "attempt 3 of 3"
+  (task-007); the Workflows list's Cost as "—" while its cost read was in
+  flight, and one phone capture showed "—" in its first segment and "$0.426"
+  in its second (work-a-001, work-a-002); and the Timeline strip's "events
+  not read on N lanes" as 27 in both phone images, 19 in the phone text and
+  20 on desktop, while the per-lane event reads landed (work-a-003). Each was
+  recorded settled with nothing pending: those placeholders carry no
+  skeleton, no `aria-busy` and no "reading…". So beyond those markers a page
+  now counts as settled only once its body text (`innerText`, what is drawn)
+  has not changed for **1.5 s** (`TEXT_QUIET_MS`), polled every 150 ms. The
+  window is longer than the fixture build's longest single timer (620 ms in
+  `api.ts`; the head's read is 350 ms), so a chain of reads whose next one
+  starts without changing the text is still inside it; the Timeline's
+  ~4.5 s of lane reads plus the window stay inside the 15 s timeout. It costs
+  every route at least 1.5 s. The page clock is frozen, so a relative time
+  does not keep the text moving. The probe (`TEXT_JS`) hands back the text's
+  length, a hash and the element the last DOM change landed in, **never the
+  text**: a page whose text is still changing at 15 s is shot as it stands,
+  `unsettled`, with "text still changing: N changes in 15000 ms, the last
+  M ms before the shot, last in `<element>`" in `pending` and in `failed`.
+  This catches all three run-4 cases from the tool alone; the console marks
+  nothing new.
+* **What covers the scroller's foot, and a strip stuck inside a drawer, are
+  stepped round** (box comment 6314118924, run 4's task-006). At 390 the open
+  task's scroller is `div.drawer.ctl-drawer.ag-split`; its tab strip
+  (`.ag-tabs-edge`, `sticky; top: -18px`) is stuck over its top ~45 px in
+  every later segment and the fixed Reads bar covers its bottom ~45 px, yet
+  the manifest said `overlaps: [0, 0]`, and the rows under both (attempt 3's
+  model row and first event, the first line of attempt 2's execution, the Now
+  card's Heartbeat, Checkpoints and Output rows) were in no image, on five task
+  panes in both themes. The strip was rejected by `STUCK_JS`'s inset test: a
+  sticky inset is measured from the scroller's **padding** edge, and the
+  drawer has 18 px of top padding, so stuck the strip sits at the scroller's
+  top edge; the test measured from the border edge and expected it 18 px
+  higher. It now adds the scroller's top border and padding. And a `fixed`
+  element whose box spans the scroller's bottom edge, under half its height,
+  now counts as covering the foot. Each step is the visible height **less
+  what covers the bottom where it was and what is stuck at the top where it
+  lands**. `overlaps` stays one number per step, both together (the px the
+  next segment repeats), so a manifest from before reads the same and
+  `MANIFEST_FORMAT` stays 1; the new `covers` splits each step into
+  `{"top", "bottom"}`. At the scroller's very end rows under a fixed bar
+  cannot be scrolled clear of it: no segment can show them, and the review
+  should know that the last ~45 px of a phone task pane sit under the bar.
+
+These reach a capture only once the `agent-runtime-browser` image is rebuilt
+and released.
+
 ### 4.3 The route list: `apps/swarm-ui/qa/routes.json` (new, lane QA-CAPTURE)
 
 ```json
@@ -697,7 +773,8 @@ success" names.
   "routes": [
     {"id": "runs", "status": "captured",
      "images": ["work-a/runs--desktop--light--s1.png"],
-     "overlaps": [],
+     "overlaps": [], "covers": [],
+     "truncated": false, "reached": 840, "total": 840,
      "console_errors": 0, "page_errors": 0, "failed_requests": 0,
      "text": "work-a/runs--desktop--light.txt",
      "a11y": "work-a/runs--desktop--light.a11y.json"}

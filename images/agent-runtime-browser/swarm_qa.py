@@ -47,17 +47,25 @@ What `capture` does, and why each:
    long: not reaching it is recorded, not fatal), then `document.fonts.ready`,
    then the route's `ready` selector, then until the page shows no pending
    read for SETTLE_QUIET_POLLS polls in a row (PENDING_JS: the console's
-   skeletons and its "reading…"), for up to SETTLE_TIMEOUT_MS. A route still
-   reading then is shot as it stands, `unsettled` in its entry and listed in
-   `failed` with what it still showed. The clock is frozen at the route list's
+   skeletons and its "reading…") AND its body text has not changed for
+   TEXT_QUIET_MS (TEXT_JS: a read that lands with no marker changes only the
+   text), for up to SETTLE_TIMEOUT_MS. A route still reading then is shot as
+   it stands, `unsettled` in its entry and listed in `failed` with what it
+   still showed and where its text was still changing (never the text). The
+   clock is frozen at the route list's
    instant (`page.clock.set_fixed_time`, before the first navigation; timers
    still run) so "3 minutes ago" reads the same every run. Viewport-sized
    SEGMENTS, scrolling the page's own scroller (MEASURE_JS: the nearest one
    holding the route's ready element, the document, or the largest on the
    page; its name is the entry's `scroller`) one of its heights at a time, less
-   what is stuck over its top once scrolled (STUCK_JS: a sticky header's rows
-   are otherwise in no image; each overlap is in the entry's `overlaps`), up to
-   the route's `segments` (default DEFAULT_SEGMENTS): a model is handed a tall
+   what is stuck over its top once scrolled and what is fixed over its foot
+   (STUCK_JS: rows under a sticky header or the Reads bar are otherwise in no
+   image; each step's overlap is in the entry's `overlaps`, split in
+   `covers`), until the scroller's end or the budget: MAX_SEGMENTS at
+   phone-390 (TO_THE_END_PRESETS, owner decision c49), the route's `segments`
+   (default DEFAULT_SEGMENTS) at the desktop. A capture cut at its budget
+   before the end says so (`truncated`, `reached`, `total`) and is listed in
+   `failed`. Segments, because a model is handed a tall
    image downscaled until its text is unreadable, and whether a full-page
    capture through the gate needs a metrics override is unverified.
    `animations="disabled"`, `caret="hide"`.
@@ -121,6 +129,12 @@ DIFF_FORMAT = 1
 DEFAULT_SEGMENTS = 4
 #: More than this many viewports of one page is a page to split, not to scroll.
 MAX_SEGMENTS = 12
+#: The presets captured until the scroller's end, up to MAX_SEGMENTS, whatever
+#: the route's `segments` (owner decision c49, 2026-10-22, QAFIX4-QATOOL): in
+#: visual QA run 4 six phone captures stopped at their budget before the page
+#: ended, and the rows below were in no image. A route's `segments` governs
+#: every other preset (the desktop), where a page is a few viewports tall.
+TO_THE_END_PRESETS = frozenset({"phone-390"})
 THEMES = ("light", "dark")
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 
@@ -137,6 +151,18 @@ SHOT_TIMEOUT_MS = 30_000
 #: stands and listed in `failed`: a finding, never a silent image.
 SETTLE_TIMEOUT_MS = 15_000
 SETTLE_POLL_MS = 150
+#: How long the page's body text must go unchanged (TEXT_JS) before it counts
+#: as settled (QAFIX4-QATOOL, run 4's task-007, work-a-001..003): a read that
+#: lands with no marker (the agent list's 'attempt … of 3', the Workflows
+#: Cost's '—', the Timeline's per-lane event reads) changes only the text.
+#: Longer than the fixture build's longest single timer (620 ms, api.ts; the
+#: head's read is 350 ms), so a chain of reads whose next one starts without
+#: changing the text in between is still inside the window, with room for a
+#: slow machine; short enough that the Timeline's ~4.5 s of lane reads plus
+#: this window stay well inside SETTLE_TIMEOUT_MS. It costs every route this
+#: long at least. The page clock is frozen (`set_fixed_time`), so a relative
+#: time ("3 minutes ago") does not keep the text moving.
+TEXT_QUIET_MS = 1_500
 #: Polls in a row with nothing pending before the page counts as settled:
 #: one read landing and the next starting can leave a frame with no marker.
 SETTLE_QUIET_POLLS = 2
@@ -216,6 +242,30 @@ PENDING_JS = """() => {
   }
   return found;
 }"""
+#: What the body text is, without the text (QAFIX4-QATOOL): its length, a
+#: 32-bit FNV-1a hash of `document.body.innerText` (what is drawn), and the
+#: element the last DOM change landed in (a MutationObserver this installs on
+#: the first call; null before any), so the settle loop can say where a page
+#: was still changing. The page's text never leaves the page: a manifest is
+#: read by people who may not see the fixture's data, and a live console's
+#: text is a tenant's.
+TEXT_JS = """() => {
+  const name = (el) => el.localName + (el.id ? '#' + el.id : '') + Array.from(el.classList, (c) => '.' + c).join('');
+  if (!window.__swarmQaText) {
+    window.__swarmQaText = {where: null};
+    if (typeof MutationObserver === 'function') {
+      new MutationObserver((changes) => {
+        const target = changes[changes.length - 1].target;
+        const el = target.nodeType === 1 ? target : target.parentElement;
+        if (el) window.__swarmQaText.where = name(el);
+      }).observe(document.body, {childList: true, characterData: true, subtree: true});
+    }
+  }
+  const text = document.body.innerText || '';
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return [text.length, (h >>> 0).toString(16).padStart(8, '0'), window.__swarmQaText.where];
+}"""
 #: How far down from the scroller's top edge what is stuck there covers it
 #: (QAFIX3-QATOOL, run 3's task-021): at 390 the task list's tab bar
 #: (`.ag-list-tabs`, sticky at top 0) is 55 px, and a segment scrolled by the
@@ -227,12 +277,25 @@ PENDING_JS = """() => {
 #: sticky head covers the table, not the page); either under half the height
 #: the scroller shows (a sticky side rail is as tall as the page and covers
 #: no row across it). Measured after each scroll, because a header sticks
-#: only once scrolled and only inside its own section. Returns whole px.
+#: only once scrolled and only inside its own section.
+#: A sticky inset is measured from the scroller's PADDING edge, inside its
+#: border and top padding (QAFIX4-QATOOL, run 4's task-006): at 390 the open
+#: task's tab strip (`.ag-tabs-edge`, agents.css) is `sticky; top: -18px`
+#: inside `div.drawer.ctl-drawer.ag-split`, which has 18 px of top padding,
+#: so stuck it sits at the scroller's top edge; measured from the border
+#: edge it was expected 18 px higher and was never counted.
+#: AND WHAT COVERS THE SCROLLER'S FOOT: a `fixed` element with a box that
+#: spans the scroller's bottom edge (the Reads bar at 390 covered the
+#: drawer's bottom ~45 px), under half its height, measured the same way.
+#: Returns `[top, bottom]`, whole px.
 STUCK_JS = """() => {
   const doc = document.scrollingElement || document.documentElement;
   const el = window.__swarmQaScroller || doc;
   const top = el === doc ? 0 : el.getBoundingClientRect().top;
   const view = el === doc ? innerHeight : el.clientHeight;
+  const foot = top + view;
+  const own = el === doc ? null : getComputedStyle(el);
+  const pad = own ? (parseFloat(own.borderTopWidth) || 0) + (parseFloat(own.paddingTop) || 0) : 0;
   const sticksHere = (n) => {
     for (let up = n.parentElement; up; up = up.parentElement) {
       if (up === el) return true;
@@ -241,6 +304,7 @@ STUCK_JS = """() => {
     return el === doc;
   };
   let cover = 0;
+  let under = 0;
   for (const n of document.querySelectorAll('*')) {
     if (n === el || n === doc) continue;
     const style = getComputedStyle(n);
@@ -248,18 +312,20 @@ STUCK_JS = """() => {
     if (n.getClientRects().length === 0 || style.visibility === 'hidden') continue;
     const r = n.getBoundingClientRect();
     if (r.height <= 0 || r.height >= view / 2 || r.bottom <= top) continue;
+    if (style.position === 'fixed' && r.top > top + 1) {
+      if (r.top < foot && r.bottom >= foot - 1) under = Math.max(under, foot - r.top);
+      continue;
+    }
     if (style.position === 'sticky') {
       const inset = parseFloat(style.top);
-      if (Number.isNaN(inset) || Math.abs(r.top - (top + inset)) > 1 || !sticksHere(n)) continue;
-    } else if (r.top > top + 1) {
-      continue;
+      if (Number.isNaN(inset) || Math.abs(r.top - (top + pad + inset)) > 1 || !sticksHere(n)) continue;
     }
     cover = Math.max(cover, r.bottom - top);
   }
-  return Math.round(cover);
+  return [Math.round(cover), Math.round(under)];
 }"""
 #: Scrolls the scroller MEASURE_JS chose to `y` and, two frames later,
-#: answers with STUCK_JS: what is stuck over its top there.
+#: answers with STUCK_JS: what is stuck over its top and fixed over its foot there.
 SCROLL_JS = """(y) => {
   const el = window.__swarmQaScroller || document.scrollingElement || document.documentElement;
   el.scrollTop = y;
@@ -448,31 +514,73 @@ def _write(path: Path, data: bytes | str) -> None:
         path.write_bytes(data)
 
 
+def _fingerprint(answer: Any) -> tuple | None:
+    """TEXT_JS's answer as (length, hash), or None when it is not one."""
+    if isinstance(answer, (list, tuple)) and len(answer) >= 2:
+        return (answer[0], answer[1])
+    return None
+
+
 def _settle(page) -> list[str]:
     """Wait until the page has shown no pending marker (PENDING_JS) on
-    SETTLE_QUIET_POLLS polls in a row, for up to SETTLE_TIMEOUT_MS. Returns
-    what it still showed when the time ran out; [] when it settled. The time
-    is counted in the waits it asks for, so the bound is the same whatever
-    the page costs to ask."""
+    SETTLE_QUIET_POLLS polls in a row AND its body text (TEXT_JS) has not
+    changed for TEXT_QUIET_MS, for up to SETTLE_TIMEOUT_MS. Returns what it
+    still showed when the time ran out, and a line saying where its text was
+    still changing (an element's name and a count, never the text); [] when
+    it settled. The time is counted in the waits it asks for, so the bound is
+    the same whatever the page costs to ask."""
     waited, quiet = 0, 0
+    last, since, changes, where = None, 0, 0, None
     while True:
         pending = list(page.evaluate(PENDING_JS) or [])
+        answer = page.evaluate(TEXT_JS)
+        text = _fingerprint(answer)
+        if text != last:
+            if last is not None:
+                changes += 1
+                if isinstance(answer, (list, tuple)) and len(answer) > 2 and isinstance(answer[2], str):
+                    where = answer[2]
+            last, since = text, waited
         quiet = 0 if pending else quiet + 1
-        if quiet >= SETTLE_QUIET_POLLS or (not pending and waited >= SETTLE_TIMEOUT_MS):
+        still = waited - since >= TEXT_QUIET_MS
+        if still and (quiet >= SETTLE_QUIET_POLLS or (not pending and waited >= SETTLE_TIMEOUT_MS)):
             return []
         if waited >= SETTLE_TIMEOUT_MS:
-            return [str(p)[:MAX_ERROR_CHARS] for p in pending]
+            out = [str(p)[:MAX_ERROR_CHARS] for p in pending]
+            if not still:
+                out.append(_one_line(
+                    f"text still changing: {changes} change{'' if changes == 1 else 's'} in {waited} ms, "
+                    f"the last {waited - since} ms before the shot"
+                    + (f", last in {where}" if where else "")))
+            return out
         page.wait_for_timeout(SETTLE_POLL_MS)
         waited += SETTLE_POLL_MS
 
 
-def _stuck(answer: Any, view: int) -> int:
-    """SCROLL_JS's answer as the px a segment overlaps the last: 0 for
-    anything but a number, and under half the view (STUCK_JS counts nothing
-    taller), so every segment still moves on."""
-    if isinstance(answer, bool) or not isinstance(answer, (int, float)):
+def _px(value: Any, view: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
-    return max(0, min(int(answer), (view - 1) // 2))
+    return max(0, min(int(value), (view - 1) // 2))
+
+
+def _stuck(answer: Any, view: int) -> tuple[int, int]:
+    """SCROLL_JS's answer as (what is stuck over the scroller's top, what is
+    fixed over its foot), in px: a bare number is the top alone (STUCK_JS
+    before QAFIX4-QATOOL), anything else is 0, and each is under half the
+    view (STUCK_JS counts nothing taller), so the two together leave a step
+    of at least 1 px and every segment still moves on."""
+    if isinstance(answer, (list, tuple)):
+        return (_px(answer[0], view) if answer else 0, _px(answer[1], view) if len(answer) > 1 else 0)
+    return (_px(answer, view), 0)
+
+
+def segment_budget(route: dict, preset: str) -> int:
+    """How many segments a route may take at `preset`: MAX_SEGMENTS at a
+    preset captured to the scroller's end (TO_THE_END_PRESETS, owner
+    decision c49), else the route's `segments`."""
+    if preset in TO_THE_END_PRESETS:
+        return MAX_SEGMENTS
+    return max(1, int(route.get("segments", DEFAULT_SEGMENTS)))
 
 
 def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict, preset: str, theme: str,
@@ -498,10 +606,10 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
         step = "measure"
         measured = page.evaluate(MEASURE_JS, ready)
         total, view = measured[0], max(1, measured[1])
-        budget = max(1, int(route.get("segments", DEFAULT_SEGMENTS)))
-        images, overlaps = [], []
+        budget = segment_budget(route, preset)
+        images, overlaps, covers = [], [], []
         step = "segment 1"
-        page.evaluate(SCROLL_JS, 0)
+        _top, under = _stuck(page.evaluate(SCROLL_JS, 0), view)
         y = 0
         for segment in range(1, budget + 1):
             step = f"segment {segment}"
@@ -511,16 +619,22 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
             images.append(name)
             if segment == budget or y + view >= total:
                 break
-            # One scroller-height on, less what is stuck over its top there
-            # (STUCK_JS), so the rows under a sticky header are in this
-            # segment or the next. The budget is the route's either way.
-            nxt = y + view
-            stuck = _stuck(page.evaluate(SCROLL_JS, nxt), view)
+            # One scroller-height on, less what is fixed over its foot here
+            # (the Reads bar) and what is stuck over its top there (a sticky
+            # header, a drawer's tab strip), both from STUCK_JS, so the rows
+            # under either are in this segment or the next.
+            nxt = y + view - under
+            stuck, under_next = _stuck(page.evaluate(SCROLL_JS, nxt), view)
             if stuck:
                 nxt -= stuck
-                page.evaluate(SCROLL_JS, nxt)
-            overlaps.append(stuck)
-            y = nxt
+                _, under_next = _stuck(page.evaluate(SCROLL_JS, nxt), view)
+            overlaps.append(stuck + under)
+            covers.append({"top": stuck, "bottom": under})
+            y, under = nxt, under_next
+        # Cut before the end: at its budget, the route's at the desktop or
+        # MAX_SEGMENTS at a phone. Never recorded as complete (c49).
+        reached = min(y + view, total)
+        truncated = reached < total
         step = "text"
         _write(out / f"{stem}.txt", page.inner_text("body"))
         step = "a11y"
@@ -530,7 +644,8 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
             "id": rid, "preset": preset, "theme": theme, "status": "unsettled" if pending else "captured",
             "path": route["path"], "images": images, "network_idle": idle,
             "settled": not pending, "pending": pending, "scroller": measured[2] if len(measured) > 2 else None,
-            "overlaps": overlaps,
+            "overlaps": overlaps, "covers": covers,
+            "truncated": truncated, "reached": reached, "total": total,
             "text": f"{stem}.txt", "a11y": f"{stem}.a11y.json", "errors": f"{stem}.errors.json",
         }
         if axe_source is not None:
@@ -620,11 +735,16 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                         entry = _capture_route(page, errors, base=base, group=group, route=route,
                                                preset=preset, theme=theme, out=out, axe_source=axe_source)
                         manifest["routes"].append(entry)
+                        why = []
                         if entry["pending"]:
-                            manifest["failed"].append({
-                                "id": route["id"], "preset": preset, "theme": theme,
-                                "error": f"did not settle in {SETTLE_TIMEOUT_MS} ms: still showing "
-                                         + "; ".join(entry["pending"]) + " (shot as it stood)"})
+                            why.append(f"did not settle in {SETTLE_TIMEOUT_MS} ms: still showing "
+                                       + "; ".join(entry["pending"]) + " (shot as it stood)")
+                        if entry["truncated"]:
+                            why.append(f"cut at {len(entry['images'])} segments: reached {entry['reached']} "
+                                       f"of {entry['total']} px (the rest is in no image)")
+                        if why:
+                            manifest["failed"].append({"id": route["id"], "preset": preset, "theme": theme,
+                                                       "error": "; ".join(why)})
                     except _RouteFailed as exc:
                         manifest["failed"].append({"id": route["id"], "preset": preset, "theme": theme,
                                                    "error": str(exc)})
@@ -853,8 +973,9 @@ def _capture_command(args) -> int:
                        themes=themes, out=out, bundle=bundle, axe_source=axe_source)
     images = sum(len(r["images"]) for r in manifest["routes"])
     sys.stdout.write(json.dumps({"group": args.group, "images": images, "captured": len(manifest["routes"]),
-                                 "failed": len(manifest["failed"]), "aborted": manifest.get("aborted"),
-                                 "bundle": str(bundle)}) + "\n")
+                                 "failed": len(manifest["failed"]),
+                                 "truncated": sum(1 for r in manifest["routes"] if r.get("truncated")),
+                                 "aborted": manifest.get("aborted"), "bundle": str(bundle)}) + "\n")
     return EXIT_OK if images else EXIT_NOTHING_CAPTURED
 
 
