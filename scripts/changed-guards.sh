@@ -27,6 +27,16 @@
 # then runs them in ONE `pytest -q -n auto -p no:warnings` call, followed by
 # scripts/lib/check-contract-parity.sh. An empty diff runs nothing.
 #
+# A change to a swarm-ui stylesheet (apps/swarm-ui/**.css) also runs the UI's
+# stylesheet guards in one vitest call (RELATED-CSS-GUARDS, part of #1914).
+# They read every sheet from disk, so neither a test's text nor an import
+# names the changed sheet; measured 2026-10-22 on PR 1905, whose duplicate
+# selector in styles/intake.css CI refused after every agent of the lane had
+# passed this script. The list is scripts/lib/related_tests.py's
+# STYLESHEET_GUARDS (`--stylesheet-guards`), the one related-tests.sh selects
+# from; they run in part 1 only, like the parity check, from the package's
+# own node_modules/.bin/vitest. Not installed is a failure, not a pass.
+#
 # A DOCS-ONLY diff -- every changed path under docs/ or ending in .md --
 # selects only the doc guards (DOC_GUARD_TESTS) and the tests whose text
 # names a changed doc, and runs no parity check (GUARDS-DEDUP, part of #1694:
@@ -154,6 +164,9 @@ DOC_GUARD_TESTS=(
   tests/unit/scripts/test_docs_agent_vocabulary.py
 )
 PARITY_CHECK="scripts/lib/check-contract-parity.sh"
+# The stylesheet guards' list and the package they run in (see above).
+STYLESHEET_SELECTOR="scripts/lib/related_tests.py"
+UI_DIR="apps/swarm-ui"
 # Where a run's result is recorded, under the git directory (THE RECORD
 # above). agent_worker.prepublish.GUARDS_RECORD_DIR restates the name.
 RECORD_DIR_NAME="swarm-changed-guards"
@@ -337,6 +350,20 @@ while IFS= read -r test_file; do
   selected+=("${test_file}")
 done <"${work}/selected"
 
+# The stylesheet guards, for a swarm-ui stylesheet change; part 1 runs them.
+style_guards=()
+if [[ "${shard_k}" -le 1 ]] && grep -qE "^${UI_DIR}/.*\.css\$" "${work}/changed"; then
+  require_cmd python3
+  python3 "${REPO_ROOT}/${STYLESHEET_SELECTOR}" --root "${REPO_ROOT}" --changed "${work}/changed" \
+    --stylesheet-guards >"${work}/style-guards" \
+    || { err "${STYLESHEET_SELECTOR} could not name the stylesheet guards"; exit 2; }
+  while IFS= read -r guard; do
+    if [[ -n "${guard}" ]]; then
+      style_guards+=("${guard}")
+    fi
+  done <"${work}/style-guards"
+fi
+
 # The parts a selection this heavy should run as (SHARD_HINT_WEIGHT).
 parts=$(( (weight + SHARD_HINT_WEIGHT - 1) / SHARD_HINT_WEIGHT ))
 [[ "${parts}" -ge 2 ]] || parts=2
@@ -352,6 +379,12 @@ elif [[ "${weight}" -gt "${SHARD_HINT_WEIGHT}" ]]; then
   warn "the selection weighs ${weight} CI-seconds (${DURATIONS}), more than one ${PYTEST_SECONDS} s run may hold: it runs as ${parts} parts in turn; under a 10-minute command limit, ${split_hint}"
 fi
 printf '%s\n' ${selected[@]+"${selected[@]}"}
+if [[ ${#style_guards[@]} -gt 0 ]]; then
+  info "a swarm-ui stylesheet changed: ${#style_guards[@]} stylesheet guard(s) run in one vitest call"
+  for guard in "${style_guards[@]}"; do
+    printf '%s/%s\n' "${UI_DIR}" "${guard}"
+  done
+fi
 if [[ "${shard_k}" -le 1 && "${run_parity}" -eq 1 ]]; then
   printf 'bash %s\n' "${PARITY_CHECK}"
 fi
@@ -495,6 +528,27 @@ else
   fi
 fi
 
+vitest_status=0
+if [[ ${#style_guards[@]} -gt 0 ]]; then
+  vitest_bin="${REPO_ROOT}/${UI_DIR}/node_modules/.bin/vitest"
+  if [[ ! -x "${vitest_bin}" ]]; then
+    err "the stylesheet guards did not run: ${UI_DIR}/node_modules/.bin/vitest is not installed; install it with (cd ${UI_DIR} && npm ci) and run this again"
+    failed=1
+  else
+    step "vitest: ${#style_guards[@]} stylesheet guard(s)"
+    (cd "${REPO_ROOT}/${UI_DIR}" && "${caller_only[@]}" ${deadline[@]+"${deadline[@]}"} "${vitest_bin}" run \
+      "${style_guards[@]}") >"${log}.vitest" 2>&1 || vitest_status=$?
+    tail -n 25 "${log}.vitest" | redact
+    if [[ "${vitest_status}" -eq 124 ]]; then
+      err "the stylesheet guards ran past ${PYTEST_SECONDS} s"
+    fi
+    if [[ "${vitest_status}" -ne 0 ]]; then
+      err "a stylesheet guard failed (exit ${vitest_status}); full output: ${log}.vitest"
+      failed=1
+    fi
+  fi
+fi
+
 if [[ ${#deadline[@]} -gt 0 ]]; then
   deadline=(timeout "${PARITY_SECONDS}")
 fi
@@ -510,7 +564,7 @@ if [[ "${parity_status}" -ne 0 ]]; then
 fi
 
 if [[ "${failed}" -ne 0 ]]; then
-  if [[ "${pytest_status}" -eq 124 || "${parity_status}" -eq 124 ]]; then
+  if [[ "${pytest_status}" -eq 124 || "${vitest_status}" -eq 124 || "${parity_status}" -eq 124 ]]; then
     finish timed_out
   else
     finish failed
@@ -518,7 +572,10 @@ if [[ "${failed}" -ne 0 ]]; then
   exit 1
 fi
 finish passed
-rm -f "${log}" "${log}.parity"
+rm -f "${log}" "${log}.vitest" "${log}.parity"
+if [[ ${#style_guards[@]} -gt 0 ]]; then
+  ok "${#style_guards[@]} stylesheet guard(s) pass"
+fi
 if [[ "${run_parity}" -eq 0 ]]; then
   ok "${#selected[@]} doc guard and doc-reading test file(s) pass"
 elif [[ "${shard_n}" -eq 0 ]]; then

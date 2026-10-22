@@ -25,7 +25,11 @@ WHAT IS RELATED:
     transitively. That is what `vitest related` follows, computed here from
     the source so it needs no node_modules and can be cut into runs. A change
     to what every test runs under (RUNNER_WIDE) relates to no file by import:
-    it is named in a note, and CI runs the suite.
+    it is named in a note, and CI runs the suite;
+  * a change to a swarm-ui stylesheet (`apps/swarm-ui/**.css`) also selects
+    the stylesheet guards (STYLESHEET_GUARDS), which read every sheet from
+    disk and so are reached by no import. changed-guards.sh reads the same
+    list (`--stylesheet-guards`) and runs them before a lane finishes.
 
 OUTPUT, one line each, tab-separated:
 
@@ -69,6 +73,25 @@ RUNNER_WIDE = {
     "vitest.config.ts", "vite.config.ts", "tsconfig.json", "package.json",
     "package-lock.json", "src/__tests__/setup.ts",
 }
+
+# THE STYLESHEET GUARDS (RELATED-CSS-GUARDS, part of #1914): source scans
+# that read EVERY sheet (`import.meta.glob('../styles/*.css')`, directly or
+# through sheets.ts) and assert over the text, so any line of any .css can turn
+# them red. No import connects them to the sheet a change edits, so the graph
+# above never selects them: measured 2026-10-22 on PR 1905, whose duplicate
+# `.rn-filters > .c-seg > button` in styles/intake.css CI's gate and sections
+# guards refused after its implement, fix and re-review agents had run this
+# selection and changed-guards.sh without either. Any swarm-ui .css change
+# selects all of them, once. THE ONE LIST: changed-guards.sh asks for it with
+# `--stylesheet-guards`. Only no-render scans of every sheet belong here; the
+# ~170 screen tests that glob the sheets to compute the cascade (marks.ts,
+# spacingsweep.tsx, phone.chrome) are behaviour tests CI runs on a CSS change.
+STYLESHEET_GUARDS = (
+    "src/__tests__/stylesheet.gate.test.ts",      # duplicate rules, keyframes, lost comment openers
+    "src/__tests__/sections.stylesheet.test.ts",  # each src/styles/*.css parses, no duplicate rules
+    "src/__tests__/letterspacing.test.ts",        # no tracking in any sheet
+    "src/__tests__/typescale.test.ts",            # no raw font sizes or all-caps in any sheet
+)
 
 UI_SOURCE_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs")
 UI_RESOLVE_EXTS = ("", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".d.ts")
@@ -136,7 +159,14 @@ def ui_related(ui_root: Path, changed_ui: list[str]) -> list[str]:
             continue
         reached.add(rel)
         todo.extend(importers.get(rel, ()))
+    if any(c.endswith(".css") for c in changed_ui):
+        reached.update(stylesheet_guards(known))
     return sorted(r for r in reached if is_vitest_file(r))
+
+
+def stylesheet_guards(known: set[str]) -> list[str]:
+    """STYLESHEET_GUARDS that exist in this tree (a gone file is never named)."""
+    return [g for g in STYLESHEET_GUARDS if g in known]
 
 
 def python_related(root: Path, changed: list[str]) -> list[str]:
@@ -192,10 +222,18 @@ def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--changed", required=True, help="file of changed paths, one a line")
     ap.add_argument("--root", default=".")
+    ap.add_argument("--stylesheet-guards", action="store_true",
+                    help="print only the stylesheet guards the change selects, one a line, "
+                         "relative to apps/swarm-ui (changed-guards.sh)")
     args = ap.parse_args(argv)
     root = Path(args.root).resolve()
     changed = sorted({c.strip() for c in Path(args.changed).read_text().splitlines() if c.strip()})
     changed_ui = [c[len(UI) + 1:] for c in changed if c.startswith(f"{UI}/")]
+    if args.stylesheet_guards:
+        if any(c.endswith(".css") for c in changed_ui):
+            for guard in stylesheet_guards(set(_ui_files(root / UI))):
+                print(guard)
+        return 0
     for rel in changed_ui:
         if rel in RUNNER_WIDE:
             print(f"note\t{UI}/{rel} changes how every component test runs; no test imports it, "

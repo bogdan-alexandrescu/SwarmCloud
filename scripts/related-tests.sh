@@ -17,7 +17,11 @@
 # that import a changed Python module (transitively), name a changed path, or
 # are themselves changed -- select_unit_tests.py's rules, which CI uses -- and
 # the vitest files that reach a changed swarm-ui module through its imports,
-# the graph `vitest related` follows. A selection too big for one run comes
+# the graph `vitest related` follows. A change to any apps/swarm-ui/**.css also
+# selects the stylesheet guards, once (STYLESHEET_GUARDS there, the one list):
+# they read every sheet from disk, so no import reaches them, and PR 1905's
+# lane passed this without running them (RELATED-CSS-GUARDS, part of #1914).
+# A selection too big for one run comes
 # back as a few runs of named files (at most ~540 CI-seconds of pytest, or 50
 # vitest files, each), printed to run ONE AFTER ANOTHER in the foreground.
 #

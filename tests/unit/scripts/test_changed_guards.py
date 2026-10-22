@@ -497,7 +497,7 @@ def test_a_ui_stylesheet_change_runs_the_stylesheet_guards_under_the_limit(tmp_p
     # MUTATION: run vitest with no file arguments (the whole suite) -> red.
     assert vitest[0].startswith("vitest run "), vitest
     for guard in STYLE_GUARDS:
-        assert guard[len(UI) + 1:] in vitest[0].split(), vitest
+        assert guard[len(UI) + 1:] in vitest[0].rpartition("|")[0].split(), vitest
     # MUTATION: run vitest without the 540 s limit -> red.
     assert calls[calls.index(vitest[0]) - 1] == "timeout 540", calls
 
