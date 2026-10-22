@@ -541,6 +541,13 @@
 .acct-dhead { display: grid; gap: 4px; min-width: 0; }
 .acct-dhead-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .acct-dhead h3 { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600; overflow-wrap: anywhere; }
+/* THE NAME AND ITS RENAME (#1913): the heading and its ghost button share the
+   line and wrap together; the heading keeps the room it needs. The editor
+   that replaces them stacks its fault under the field. */
+.acct-dhead-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; }
+.acct-dhead-name > h3 { min-width: 0; }
+.acct-rename { display: grid; gap: 4px; min-width: 0; }
+.acct-rename > .warn-text { margin: 0; }
 .acct-idt { margin: 0; font-size: var(--t-meta); color: var(--text-dim); overflow-wrap: anywhere; }
 /* AN ID IS ONE WORD (visual QA V070; Accounts.tsx `Id`). A hyphen is a break
    opportunity, so `u-bogdan` broke to `u-` / `bogdan` in the subtitle, in
@@ -968,3 +975,14 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
    (0,2,1)) would fade that to .4, the faded disabled look V256 retired; this
    (0,4,0) keeps it drawn rather than faded. */
 .acct-action > .limit-edit > .c-btn:disabled { opacity: 1; }
+/* A DANGER OUTLINE WHILE UNARMED (owner decision 2026-10-22, "Danger outline
+   unarmed", box comment 6314115845, part of #1680). The plain grey control
+   above hid that Remove is the one irreversible act here; it is `is-danger`
+   now, and the system's ONE disabled treatment (`.c-btn:disabled`,
+   components.css, (0,2,0)) would repaint it the grey ground and `--line` edge.
+   This (0,5,0) keeps it the danger ink on its edge and its words with no fill,
+   so it reads as dangerous and as off -- never as the armed fill, which is
+   `danger-filled` once the label is typed. */
+.acct-action > .limit-edit > .c-btn.is-danger:disabled {
+  background: transparent; border-color: var(--s-bad); color: var(--s-bad);
+}

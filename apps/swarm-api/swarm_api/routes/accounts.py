@@ -430,6 +430,36 @@ def set_model_classes(
     return pool.set_model_classes(account_id, model_classes=list(body.model_classes))
 
 
+class AccountName(StrictModel):
+    """An account's Name (#1913), or null to clear it so the label shows.
+
+    Declared here, beside the one route that takes it, like
+    `AccountModelClasses`. Required, so an empty body is not read as "clear".
+    The bound only stops an unbounded body: what a Name may be is the broker's
+    `validate_display_name`, and its 422 reaches the caller in its own words.
+    """
+
+    display_name: str | None = Field(max_length=1024)
+
+
+@router.put("/{account_id}/name")
+def set_account_name(
+    account_id: str,
+    body: AccountName,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """Set or clear this account's Name. Owner only, a `member` who may manage
+    that owner's accounts, exactly as lending and the served classes are.
+
+    The Name is display text: the id, the label, the credential secret, the
+    holds and the lending do not change, and work on the account goes on.
+    """
+    _owned(pool, _writer_tenant_id(ctx, auth), account_id)
+    return pool.set_display_name(account_id, display_name=body.display_name)
+
+
 @router.put("/{account_id}/state")
 def set_account_state(
     account_id: str,

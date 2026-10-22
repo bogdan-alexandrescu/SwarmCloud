@@ -4644,7 +4644,7 @@ async function fixtureWorkflows(): Promise<Result<WorkflowPage>> {
 // WHICH OF THEM SWARM-API PASSES THROUGH, because this file has been wrong
 // about that in both directions. `routes/accounts.py` registers GET "",
 // POST "", POST /authorize, POST /exchange, POST /{id}/refresh,
-// PUT /{id}/lending, PUT /{id}/model-classes, PUT /{id}/state and
+// PUT /{id}/lending, PUT /{id}/model-classes, PUT /{id}/name, PUT /{id}/state and
 // DELETE /{id}; the `AccountPool` protocol in `brokerclient.py` -- which is
 // "deliberately not a generic HTTP client", so there is no fallthrough -- has
 // a method for each of those and for nothing else.
@@ -4958,6 +4958,20 @@ export async function setAccountModelClasses(
   if (USE_FIXTURES) return fixtureModelClasses(accountId, modelClasses)
   return write(route('/v1/accounts/{account_id}/model-classes', { account_id: accountId }), 'PUT', {
     model_classes: modelClasses,
+  })
+}
+
+/**
+ * `PUT /v1/accounts/{id}/name` (#1913): set the account's Name, or `null` to
+ * clear it so the label shows again. Sent as typed; the broker trims it and
+ * refuses an empty, over-60-character or control-character Name with a 422 in
+ * its own words, which the Rename editor draws. Display text only: the id, the
+ * secret, the holds and the lending do not change.
+ */
+export async function setAccountName(accountId: string, displayName: string | null): Promise<Result<unknown>> {
+  if (USE_FIXTURES) return fixtureName(accountId, displayName)
+  return write(route('/v1/accounts/{account_id}/name', { account_id: accountId }), 'PUT', {
+    display_name: displayName,
   })
 }
 
@@ -5344,6 +5358,20 @@ async function fixtureModelClasses(accountId: string, modelClasses: string[]): P
   const account: ServedAccount = { ...found, model_classes: modelClasses }
   fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? account : a))
   // The route answers `{"account": ...}`, the same shape lending's does.
+  return { status: 'ok', fetchedAt: Date.now(), data: { account } }
+}
+
+async function fixtureName(accountId: string, displayName: string | null): Promise<Result<unknown>> {
+  await new Promise((r) => setTimeout(r, 180))
+  const found = fixtureAccounts.find((a) => a.account_id === accountId)
+  if (!found) return fixtureRefused(`no account '${accountId}'`)
+  // The broker's two commonest refusals, so the editor's fault can be seen
+  // without a deployment; `validate_display_name` is the rule itself.
+  const name = displayName === null ? null : displayName.trim()
+  if (name === '') return fixtureRefused("an account's Name is 1 to 60 characters once trimmed, and this one is empty; send null to clear it so the label shows")
+  if (name !== null && name.length > 60) return fixtureRefused(`an account's Name is at most 60 characters once trimmed; this one is ${name.length}`)
+  const account: Account = { ...found, display_name: name }
+  fixtureAccounts = fixtureAccounts.map((a) => (a.account_id === accountId ? account : a))
   return { status: 'ok', fetchedAt: Date.now(), data: { account } }
 }
 

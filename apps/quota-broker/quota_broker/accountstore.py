@@ -38,6 +38,7 @@ from .accounts import (
     WindowReading,
     account_id_for,
     secret_name,
+    validate_display_name,
     validate_label,
     validate_model_classes,
     windows_to_firestore,
@@ -281,6 +282,10 @@ class AccountStore:
                 # account is lent to must not widen an opus-only account back
                 # to every class and hand it the next Fable step (R5).
                 model_classes=current.model_classes,
+                # CARRIED OVER, for the reason the holds are: this is a `set`,
+                # and changing who an account is lent to must not forget the
+                # Name its owner gave it (#1913).
+                display_name=current.display_name,
                 # PRESERVED, never re-derived. An account registered before the
                 # naming rule changed keeps pointing at the secret that holds
                 # its credential; re-deriving here would orphan it on the next
@@ -406,6 +411,22 @@ class AccountStore:
         if not getattr(ref.get(), "exists", False):
             return None
         ref.update({"model_classes": list(stored)})
+        return self.get(account_id)
+
+    def set_display_name(self, account_id: str, name: str | None) -> Account | None:
+        """The owner's Name for this account, or None to clear it (#1913).
+
+        Validated by `validate_display_name` and stored trimmed. An UPDATE of
+        the one field, as `set_model_classes` is, so the holds and readings
+        moving under it in other transactions are untouched and a rename never
+        interrupts work on the account. The id, the label and the secret do
+        not change: the Name is display text. None when no such account exists.
+        """
+        stored = None if name is None else validate_display_name(name)
+        ref = self._db.collection(COLLECTION).document(account_id)
+        if not getattr(ref.get(), "exists", False):
+            return None
+        ref.update({"display_name": stored})
         return self.get(account_id)
 
     def remove(self, account_id: str) -> None:

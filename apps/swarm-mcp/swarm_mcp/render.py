@@ -45,6 +45,8 @@ from swarm_common import states as _states
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES
 from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TaskState
 
+from . import details
+
 # --------------------------------------------------------------------------
 # Style
 # --------------------------------------------------------------------------
@@ -844,6 +846,13 @@ def render_accounts(
     rows: list[dict[str, Any]] = []
     for account in accounts:
         account_id = str(account.get("account_id") or account.get("label") or "?")
+        # THE NAME WITH THE ID BESIDE IT (#1913): an owner's Name for the
+        # account, and the id this column always printed, so the Name never
+        # hides which account it is. Free text, so it passes `details.shown`
+        # like any typed value; a credential-shaped one is not printed at all.
+        name = details.shown(account.get("display_name"))
+        if name and name != details.WITHHELD:
+            account_id = f"{name} ({account_id})"
         short = read_window(account, short_key) if short_key else Reading("5h")
         long = read_window(account, long_key) if long_key else Reading("7d")
         binding = binding_window([short, long])

@@ -66,6 +66,7 @@ cannot drive the owner's counter to zero with calls it never earned.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -454,6 +455,18 @@ class Account:
     #: `choose`, `eligibility` and `accounts_serving` all go through it.
     model_classes: tuple[str, ...] = ()
 
+    #: The account's NAME (#1913; owner decision 2026-10-22, BGD, "Editable
+    #: display name"): free text its owner chose, shown wherever the console
+    #: names the account in place of its label. None is "no Name", which is
+    #: every document written before this field, and the label shows.
+    #:
+    #: DISPLAY TEXT, NEVER AN ID. The label cannot change because it is built
+    #: into the account's id, its Secret Manager secret name (`secret_name`)
+    #: and a Kubernetes annotation; renaming is this field instead, so nothing
+    #: here may feed a secret name, an annotation, a filter or `choose()`.
+    #: `validate_display_name` is the one statement of what it may hold.
+    display_name: str | None = None
+
     def serves_class(self, model_class: str | None) -> bool:
         """Whether a step of `model_class` may run on this account.
 
@@ -696,6 +709,7 @@ class Account:
             "token_expires_at": self.token_expires_at,
             "last_refresh_reason": self.last_refresh_reason,
             "model_classes": list(self.model_classes),
+            "display_name": self.display_name,
         }
 
     @classmethod
@@ -746,6 +760,10 @@ class Account:
             # document is unreadable -- out of the pool -- rather than read as
             # absent, which would mean "every class".
             model_classes=_model_classes_from_firestore(data.get("model_classes")),
+            # Descriptive, like the refresh record: a malformed Name reads as
+            # no Name -- the label shows -- rather than taking the account out
+            # of the pool over a piece of display text.
+            display_name=_display_name_from_firestore(data.get("display_name")),
         )
 
 
@@ -767,6 +785,56 @@ def validate_model_classes(classes: Iterable[Any]) -> tuple[str, ...]:
     if len(set(names)) != len(names):
         raise AccountError("model_classes names a class twice")
     return tuple(n for n in MODEL_CLASSES if n in names)
+
+
+#: The longest Name, in characters, once trimmed. The owner's number
+#: (2026-10-22): long enough for "Team Research -- Opus seat 2", short enough
+#: that the list row's heading and the pane's never have to be cut mid-word.
+DISPLAY_NAME_MAX = 60
+
+#: Unicode categories a Name may not hold: control characters (Cc -- a newline,
+#: a tab, NUL, an escape) and the line and paragraph separators (Zl, Zp), each
+#: of which breaks the one line every screen draws a Name on.
+_NAME_FORBIDDEN = frozenset({"Cc", "Zl", "Zp"})
+
+
+def validate_display_name(name: Any) -> str:
+    """`name` as an account stores it: trimmed, 1 to DISPLAY_NAME_MAX
+    characters, capitals and spaces allowed, no control character.
+
+    Raises AccountError, in words a person renaming can act on, for anything
+    else. An EMPTY Name is refused rather than stored: clearing is its own
+    request (None), so an empty field never silently turns into "no Name".
+    """
+    if not isinstance(name, str):
+        raise AccountError("an account's Name is text; send null to clear it")
+    trimmed = name.strip()
+    if not trimmed:
+        raise AccountError(
+            "an account's Name is 1 to 60 characters once trimmed, and this one "
+            "is empty; send null to clear it so the label shows"
+        )
+    if len(trimmed) > DISPLAY_NAME_MAX:
+        raise AccountError(
+            f"an account's Name is at most {DISPLAY_NAME_MAX} characters once "
+            f"trimmed; this one is {len(trimmed)}"
+        )
+    bad = next((c for c in trimmed if unicodedata.category(c) in _NAME_FORBIDDEN), None)
+    if bad is not None:
+        raise AccountError(
+            f"an account's Name may not hold a control character or a line "
+            f"break, and this one holds U+{ord(bad):04X}"
+        )
+    return trimmed
+
+
+def _display_name_from_firestore(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    try:
+        return validate_display_name(raw)
+    except AccountError:
+        return None
 
 
 def _model_classes_from_firestore(raw: Any) -> tuple[str, ...]:

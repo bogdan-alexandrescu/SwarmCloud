@@ -3933,6 +3933,12 @@ export interface Account {
   account_id: string
   owner_tenant: string
   label: string
+  /**
+   * The account's Name (#1913): display text its owner gave it, shown in place
+   * of `label` through `accountName` -- never an id, never matched on. Null is
+   * no Name; ABSENT is a broker older than the field, and reads the same.
+   */
+  display_name?: string | null
   provider: string
   /** Widened to `string`: an unknown state must render as unknown, not crash. */
   state: AccountStateName | string

@@ -75,6 +75,7 @@ from .accounts import (
     hold_log_entry,
     secret_name,
     validate_label,
+    validate_display_name,
     validate_model_classes,
 )
 from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
@@ -224,6 +225,19 @@ class AccountModelClasses(StrictModel):
     """
 
     model_classes: list[str] = Field(default_factory=list, max_length=8)
+
+
+class AccountName(StrictModel):
+    """An account's Name (#1913), or null to clear it so the label shows.
+
+    REQUIRED, so an empty body is refused rather than read as "clear". The
+    bound here only stops an unbounded body; what a Name may be -- trimmed, 1
+    to 60 characters, no control character -- is `accounts.validate_display_name`,
+    the one check of it, so a 61-character Name is refused in its words rather
+    than in pydantic's.
+    """
+
+    display_name: str | None = Field(max_length=1024)
 
 
 class AccountStateChange(StrictModel):
@@ -636,6 +650,10 @@ def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, An
         #: The classes this account's plan serves; empty means every class
         #: (R5). `getattr` for the same reason as `observed_at` above.
         "model_classes": list(getattr(account, "model_classes", ()) or ()),
+        #: The account's Name (#1913), or None for none -- never the label in
+        #: its place, so a reader can tell a named account from an unnamed one.
+        #: Display text only. `getattr` for the same reason as `model_classes`.
+        "display_name": getattr(account, "display_name", None),
         "assigned": account.assigned,
         "windows": windows,
         "observed_at": observed_at.isoformat() if observed_at else None,
@@ -3151,6 +3169,38 @@ def create_app(
             "an account's served model classes changed",
             extra={"account_id": account_id, "model_classes": list(updated.model_classes)},
         )
+        return {"account": account_to_api(updated)}
+
+    @app.put("/v1/accounts/{account_id}/name")
+    def set_account_name(
+        request: Request,
+        account_id: str,
+        body: AccountName,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Set or clear this account's Name (#1913). Owner only.
+
+        Writes the one field: the id, the label, the secret, the holds, the
+        readings, the history and the lending do not change, so a rename never
+        interrupts work on the account. A bad Name is a 422 in
+        `validate_display_name`'s words; null clears it and the label shows.
+        """
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        if body.display_name is not None:
+            try:
+                validate_display_name(body.display_name)
+            except AccountError as exc:
+                raise BrokerValidationError(str(exc)) from None
+        updated = store.set_display_name(account_id, body.display_name)
+        if updated is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        # The account, not the Name: a Name is free text, and a log line is
+        # readable by people the response is not.
+        log.info("an account's Name changed", extra={"account_id": account_id})
         return {"account": account_to_api(updated)}
 
     @app.put("/v1/accounts/{account_id}/state")
