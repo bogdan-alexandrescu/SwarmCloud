@@ -832,13 +832,13 @@ records how they are built and why each rule is where it is.
   kind, the issue or spec name, `after_merged`, the state and the run or
   workflow id. Every query on it is tenant-filtered first (invariant 9).
   Equality-only queries on two fields, so no composite index is needed.
-* **The cap and the depth rule.** The fan-out cap counts task children AND
+* **The cap and the depth rule.** The fan-out cap counts agent children AND
   ledger rows, in the same transaction that re-reads the fence, whichever
-  kind is asked for: 16 is 16 of anything. A child task cannot start a run
-  (its `parent_task_id`), and neither can any task of a child workflow (its
+  kind is asked for: 16 is 16 of anything. A child agent cannot start a run
+  (its `parent_task_id`), and neither can any agent of a child workflow (its
   signed `workflow_id` is in the ledger) or of a child issue run (the run id
   its `metadata.issue_run` carries -- a string on the planner, `run_id` in a
-  map on the run's workflows). Such a task cannot submit an agent child
+  map on the run's workflows). Such an agent cannot submit an agent child
   either.
 * **`after_merged`** names another issue run THIS parent started, by the
   `child_id` (or `run_id`) it was answered with; anything else is
@@ -858,15 +858,15 @@ records how they are built and why each rule is where it is.
 * **Waiting.** The resumed worker's listing (§6.2) carries each ledger row by
   `child_id`, with its run's or workflow's own state and whether it `ended`:
   for a run `DONE`, `FAILED`, `REJECTED`, `CANCELLED` or `NOT_READY`; for a
-  workflow a terminal task state; for a row that never started, FAILED or
+  workflow a terminal state; for a row that never started, FAILED or
   CANCELLED. The worker's implicit await parks over a live one exactly as
-  over a live task child.
+  over a live agent child.
 
 **What this lane did not wire, and why.** Two call sites sit outside lane
 AU-6's territory and are the owner's questions in its pull request: the
 tick that calls `release_held_runs` (`POST /v1/admin/runs/advance`,
 `routes/admin.py`, beside `advance_tenant_runs`), and the scheduler's await
-sweep (`apps/scheduler/scheduler/children.py`), which reads only task
+sweep (`apps/scheduler/scheduler/children.py`), which reads only agent
 children, so a parent waiting on run children alone is promoted early: its
 agent is started again, reads in `results/children.json` that they have not
 ended, and has to await again -- each round an attempt's cost, bounded by
