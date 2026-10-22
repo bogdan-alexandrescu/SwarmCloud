@@ -48,11 +48,13 @@ files issues needs its repository registration's `agents_may_file_issues`
 `SubmissionService.submit_workflow` like any other, and its browser step
 tasks are recorded in `qa_target_runs/{workflow_id}`.
 
-WHY A RUN RECORD AS WELL AS THE MARK. `metadata.qa_target` is not one of
-`validation.RESERVED_METADATA_KEYS` (that file is not this lane's), so a
-caller could write the same mark on a task of their own. The worker's route
-therefore serves a target only to a task the run record names, for that
-target, in that tenant: a mark this module did not write reads as missing.
+WHY A RUN RECORD AS WELL AS THE MARK. `metadata.qa_target` is one of
+`validation.RESERVED_METADATA_KEYS` (VQ2-RESERVE): a caller's mark is refused
+at submission, and `run_target` alone writes it, inside
+`validation.qa_target_mark_allowed`. The record stays as the first defence,
+which predates the reservation: the worker's route serves a target only to a
+task the run record names, for that target, in that tenant, so a mark this
+module did not write reads as missing however it reached the store.
 
 THE WORKER'S ROUTE, `POST /v1/attempts/{attempt_id}/qa-target` (§2.2), is
 proven and fenced as the QA identity's is (`swarm_api.qa_identity`): the
