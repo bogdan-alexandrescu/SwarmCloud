@@ -264,7 +264,7 @@ prompt says the same so the agent does not fight its own gate.
   `non_production`, lifts the first rule for that flow's step only. Nothing
   lifts the second. swarm-api's attempt route decides it: its answer carries
   `mutating: true` only when the stored target is `non_production`, the asking
-  task's own server-written step id is `flow-<id>` of the rendered run, and the
+  agent's own server-written step id is `flow-<id>` of the rendered run, and the
   stored flow `<id>` is declared `mutating: true`; every other step answers
   `false`, and nothing the worker sends is read (lane VQ4-MUTATING).
 * **Never leaving the origin.** A top-frame navigation to anything but the
