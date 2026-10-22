@@ -456,7 +456,8 @@ export { ENDED_BADLY, WHOLE, hhmmUtc, stateView, type Coverage, type OverviewTas
  * newest row was a cancelled agent, so someone opening Overview to find the
  * newest failure read the wrong row first. Failed and dead-lettered rows lead,
  * newest-ended first; the cancelled follow them, newest-ended first, still
- * listed and still counted in the note.
+ * counted in the note. `RecentFailures` splits the two (owner decision c02,
+ * 2026-10-22): the failures in the table, the cancelled under "N cancelled".
  */
 export function failuresOf(
   all: readonly Task[],
@@ -517,39 +518,85 @@ function EndedAgo({ task: t, now }: { task: Task; now: number }) {
   )
 }
 
-/** "Recent failures": mark, agent and why, age, Open (O1). */
+/**
+ * "Recent failures": mark, agent and why, age (O1). The title is the row's
+ * one link (owner decision c03, 2026-10-22).
+ *
+ * THE FAILURES ALONE, THE CANCELLED FOLDED (owner decision c02, 2026-10-22;
+ * visual QA run 2 FF-D3, run 4 flow-find-failure-desktop-D1). One mixed list
+ * put cancelled rows beside the failures someone opened the card to find. The
+ * table lists FAILED and DEAD_LETTERED, newest first, with its own "N more"
+ * past six; under it "N cancelled" opens the cancelled rows in the same row
+ * design, newest first -- one tap away, and a step the cascade cancelled still
+ * names the parent that failed.
+ */
 export function RecentFailures({ tasks }: { tasks: Result<OverviewTaskPage> }) {
   const all = rows(tasks)
   const now = Date.now()
   const view = tasks.status === 'ok' || tasks.status === 'stale' ? stateView(tasks.data, ENDED_BADLY) : null
   const found = view === null ? null : failuresOf(view.rows, now, view)
-  const failed = found === null ? [] : found.rows
-  const titleOf = useRowTitles(failed.slice(0, FAILURE_ROWS))
+  // `failuresOf` lists each kind newest first, so a split keeps both orders.
+  const ended = found === null ? [] : found.rows
+  const failed = ended.filter((t) => t.state !== 'CANCELLED')
+  const cancelled = ended.filter((t) => t.state === 'CANCELLED')
+  const titleOf = useRowTitles(failed.length > 0 ? failed.slice(0, FAILURE_ROWS) : cancelled.slice(0, FAILURE_ROWS))
   if (all === null) return <TaskListAbsent tasks={tasks} />
-  // NOT A REAL ZERO OVER A READ THAT DID NOT REACH (live QA OV-1): the phone
-  // drew `real zero` over its 50 newest while 11 tasks had failed. When the
-  // reads behind this card are not every failed, dead-lettered and cancelled
-  // task, an empty list is "none among what was read", marked partial.
-  if (failed.length === 0) {
-    if (found?.partial) {
-      return (
-        <Absent
-          className="ov-empty"
-          kind="partial"
-          heading={`None among the ${all.length} newest read`}
-          say={`No failed, dead-lettered or cancelled agent among the rows read, but the reads did not reach every such agent${view?.since ? ` (only agents created since ${hhmmUtc(view.since)})` : ''}. Not a zero: unknown beyond what was read.`}
-        />
-      )
-    }
-    return <NoneAmong heading={`None among the ${all.length} newest`} n={all.length} />
-  }
-  const shown = failed.slice(0, FAILURE_ROWS)
   // THE ROWS READ, BY ID (visual QA run 4, N23): a step the cascade cancelled
   // names the parent that failed when that parent is among them -- the page
   // and the per-state reads `stateView` merged, which is where a failed
   // parent older than the page is.
   const byId = new Map<string, Task>(all.map((t) => [t.id, t] as const))
   for (const t of view?.rows ?? []) byId.set(t.id, t)
+  const folded =
+    cancelled.length > 0 ? (
+      <details className="ov-more ov-failures-cancelled">
+        <summary>{cancelled.length} cancelled</summary>
+        {failureTable(cancelled, titleOf, now, 'Recent failures, cancelled', byId)}
+      </details>
+    ) : null
+  // NOT A REAL ZERO OVER A READ THAT DID NOT REACH (live QA OV-1): the phone
+  // drew `real zero` over its 50 newest while 11 tasks had failed. When the
+  // reads behind this card are not every failed, dead-lettered and cancelled
+  // task, an empty list is "none among what was read", marked partial.
+  if (failed.length === 0) {
+    const since = view?.since ? ` (only agents created since ${hhmmUtc(view.since)})` : ''
+    if (cancelled.length > 0) {
+      // NO FAILURE, SOME CANCELLED (c02): the card says there is no failure
+      // and still offers the cancelled under it.
+      return (
+        <>
+          {found?.partial ? (
+            <Absent
+              className="ov-empty"
+              kind="partial"
+              heading={`No failure among the ${all.length} newest read`}
+              say={`No failed or dead-lettered agent among the rows read, but the reads did not reach every such agent${since}. Not a zero: unknown beyond what was read.`}
+            />
+          ) : (
+            <Absent
+              className="ov-empty"
+              kind="zero"
+              heading={`No failure among the ${all.length} newest`}
+              say={`The agent read succeeded and no failed or dead-lettered agent is among the ${all.length} newest.`}
+            />
+          )}
+          {folded}
+        </>
+      )
+    }
+    if (found?.partial) {
+      return (
+        <Absent
+          className="ov-empty"
+          kind="partial"
+          heading={`None among the ${all.length} newest read`}
+          say={`No failed, dead-lettered or cancelled agent among the rows read, but the reads did not reach every such agent${since}. Not a zero: unknown beyond what was read.`}
+        />
+      )
+    }
+    return <NoneAmong heading={`None among the ${all.length} newest`} n={all.length} />
+  }
+  const shown = failed.slice(0, FAILURE_ROWS)
   return (
     <>
     {failureTable(shown, titleOf, now, 'Recent failures', byId)}
@@ -562,6 +609,7 @@ export function RecentFailures({ tasks }: { tasks: Result<OverviewTaskPage> }) {
         {failureTable(failed.slice(FAILURE_ROWS), titleOf, now, 'Recent failures, the rest', byId)}
       </details>
     )}
+    {folded}
     </>
   )
 }
@@ -589,8 +637,8 @@ const FAILURE_ROWS = 6
 /**
  * NAMED (visual QA run 3, a11y-keyboard-003, 2026-10-21): a screen reader's
  * table list read "table, 4 columns" for each, with nothing to tell the six
- * rows from the "N more" under them. `name` is the card's title, and the
- * disclosure's table says it is the rest.
+ * rows from the "N more" under them. `name` is the card's title, and each
+ * disclosure's table says what it holds: the rest, or the cancelled.
  */
 function failureTable(
   failed: Task[],
@@ -602,14 +650,13 @@ function failureTable(
   return (
     // FIXED COLUMNS (browser QA D2, 2026-10-04): the row head inherited the
     // head row's `nowrap`, so one long error drew a 1532px table in a 1056px
-    // card and pushed the age and Open off it. The name takes what the three
-    // narrow columns leave; the error clamps to two lines, whole in its title.
+    // card and pushed the age off it. The name takes what the mark and age
+    // columns leave; the error clamps to two lines, whole in its title.
     <table className="ov-tbl ov-fails" aria-label={name}>
       <colgroup>
         <col className="ov-fc-mark" />
         <col className="ov-fc-name" />
         <col className="ov-fc-age" />
-        <col className="ov-fc-open" />
       </colgroup>
       <tbody>
         {failed.map((t) => {
@@ -645,15 +692,11 @@ function failureTable(
                   </span>
                 )}
               </th>
+              {/* THE ROW ENDS IN ITS AGE (owner decision c03, 2026-10-22):
+                  the row-end Open repeated the title's link, so a row read as
+                  two links to one place. The title is the only one. */}
               <td className="is-num">
                 <EndedAgo task={t} now={now} />
-              </td>
-              <td className="is-num">
-                {/* ONE TAB STOP PER ROW (live QA OV-16): the name above is
-                    the same link, so this one is for the pointer only. */}
-                <a className="ov-open" href={href} tabIndex={-1} aria-hidden="true">
-                  Open
-                </a>
               </td>
             </tr>
           )

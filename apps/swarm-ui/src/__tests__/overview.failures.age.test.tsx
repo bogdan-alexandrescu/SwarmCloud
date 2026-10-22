@@ -8,13 +8,14 @@
  *   * Each row ends in its relative age, inside a `<time>` whose `dateTime`
  *     is the recorded end and whose title is that instant in full -- the age
  *     is what a reader scans for, the instant is what they match to a log.
- *   * Each row's Open link goes to the agent, under the tab its state sits
- *     in (`agentPath`), the same href as the row's name.
+ *   * Each row's title is its one link, to the agent under the tab its
+ *     state sits in (`agentPath`); the row-end Open went by the owner's
+ *     decision c03 (2026-10-22), so the row ends in its age.
  *   * The Waiting card has no height of its own at any width, and nothing
  *     around it stretches it: its column and the grid align to the top.
  *
- * MUTATIONS: print the age bare again (no `<time>` or no title); point Open
- * at `#work/task/<id>` or drop it; put `align-items: stretch` back on
+ * MUTATIONS: print the age bare again (no `<time>` or no title); point the
+ * title at `#work/task/<id>` or put Open back; put `align-items: stretch` back on
  * `.ov-cols > .ov-col`, or give `.ov-card` a `min-height`.
  */
 import { cleanup, render } from '@testing-library/react'
@@ -60,15 +61,21 @@ describe('Recent failures rows', () => {
     expect(at.getAttribute('title')).toMatch(/^ended /)
   })
 
-  it('end in an Open link to the agent, the same place its name goes', () => {
+  // The row-end Open went by the owner's decision c03, 2026-10-22: the
+  // title is the only link, and the row ends in its age.
+  it('link to the agent by the title alone, and end in the age', () => {
     const t = task({ id: 'tsk_fail_open', state: 'DEAD_LETTERED', workflow_id: 'wf_docs', step_id: 'review', completed_at: ago(58) })
     const { container } = render(<RecentFailures tasks={page([t])} />)
     const row = container.querySelector('tbody tr')!
-    const open = row.querySelector<HTMLAnchorElement>('td.is-num a.ov-open')!
-    expect(text(open)).toBe('Open')
-    expect(open.getAttribute('href')).toBe(agentPath(t))
-    expect(open.getAttribute('href')).toBe('/agents/recent/tsk_fail_open')
-    expect(row.querySelector('a.ov-name')?.getAttribute('href')).toBe(open.getAttribute('href'))
+    // MUTATION: put the row-end `.ov-open` link back.
+    expect(row.querySelector('a.ov-open')).toBeNull()
+    expect(row.querySelectorAll('a').length).toBe(1)
+    const name = row.querySelector<HTMLAnchorElement>('a.ov-name')!
+    // MUTATION: point the title at `#work/task/<id>`, or anywhere but `agentPath`.
+    expect(name.getAttribute('href')).toBe(agentPath(t))
+    expect(name.getAttribute('href')).toBe('/agents/recent/tsk_fail_open')
+    // MUTATION: put any cell after the age.
+    expect(row.lastElementChild!.querySelector('time')).not.toBeNull()
   })
 
   it('say a missing end is missing, never a time read off the last write', () => {

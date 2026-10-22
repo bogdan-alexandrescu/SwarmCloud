@@ -176,16 +176,17 @@
    the column gives way and the numeric columns stay whole. */
 .ov-tbl tbody th, .ov-tbl .ov-sub { overflow-wrap: anywhere; }
 .ov-tbl tbody tr:last-child th { border-bottom: 0; }
-/* Recent failures (D2): fixed columns, so the age and Open always sit in the
-   card; the error is two lines at most, and whole in its title. */
+/* Recent failures (D2): fixed columns, so the age always sits in the card;
+   the error is two lines at most, and whole in its title. The row ends in its
+   age (owner decision c03, 2026-10-22: the title is the only link), so the
+   name takes every px the mark and age columns leave. */
 .ov-fails { table-layout: fixed; }
 .ov-fc-mark { width: 28px; }
 .ov-fc-age { width: 76px; }
-.ov-fc-open { width: 48px; }
 /* THE WHOLE WORKFLOW ID ON A WIDE SCREEN (visual QA V263, owner Q5,
    2026-10-16): the short form is the phone's alone, below. The row head
    breaks anywhere (above), so the whole id wraps in its cell rather than
-   pushing the age and Open out of the card. */
+   pushing the age out of the card. */
 .ov-fails .ov-why { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .ov-tbl td:last-child, .ov-tbl th:last-child { padding-right: 0; }
 .ov-sub { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
@@ -196,7 +197,6 @@
 .ov-name:hover { text-decoration-color: currentColor; }
 .ov-wf { color: var(--text-dim); }
 .ov-silent { color: var(--warn); font-size: var(--t-micro); margin-left: 6px; }
-.ov-open { color: var(--sk-ac); font-size: var(--t-micro); text-decoration: none; }
 .ov-dash { color: var(--text-faint); cursor: help; }
 .ov-more { font-size: var(--t-micro); color: var(--text-dim); }
 
@@ -386,27 +386,32 @@
   .ov-lc-foot.is-page { display: block; }
   .ov-lc-h { font-weight: 400; font-size: var(--t-micro); color: var(--text-dim); }
   .ov-rows { display: none; }
-  /* Recent failures stacks (D2): the name and why over the age and Open. */
+  /* Recent failures stacks (D2): the name and why over the age, which is the
+     row's last cell now the Open link is gone (c03), so the name's column is
+     the row's whole width after the mark. */
   .ov-fails, .ov-fails tbody { display: block; }
   .ov-fails colgroup { display: none; }
-  .ov-fails tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+  .ov-fails tr { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
   .ov-fails tr:last-child { border-bottom: 0; }
   .ov-fails td, .ov-fails tbody th { height: auto; padding: 0; border-bottom: 0; }
-  .ov-fails tbody th { grid-column: 2 / 4; grid-row: 1; }
+  .ov-fails tbody th { grid-column: 2; grid-row: 1; }
+  /* THE TITLE IS THE TAP TARGET (owner decision c03, 2026-10-22; run 4
+     flow-find-failure-phone-390-P2): the only link in the row, so it is at
+     least 44px tall, its text at the top as it was. */
+  .ov-fails .ov-name { min-height: 44px; }
   /* The phone's short form, `wf_5e5ad3…`, cut by the sheet from the whole id
      the row carries (V263): about nine characters, then the ellipsis. */
   .ov-fails .ov-wf-id { display: inline-block; max-width: 10ch; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; vertical-align: bottom; }
   .ov-fails td:first-child { grid-row: 1; }
   .ov-fails td.is-num { grid-row: 2; grid-column: 2; text-align: left; }
-  .ov-fails td.is-num:last-child { grid-column: 3; text-align: right; }
   .ov-prun, .ov-prun-more { display: block; }
   /* A DISABLED REASON WHOLE ON A PHONE (live QA OV-13, 2026-10-11): past two
      lines the reason was only in the tile's `title`, which a touch screen
      cannot open. Whole, the sentence costs the tile a line or two of
      height and hides nothing. */
   .ov-hp.is-off small { display: block; -webkit-line-clamp: unset; overflow: visible; }
-  .ov-link, .ov-open { position: relative; }
-  .ov-link::after, .ov-open::after {
+  .ov-link { position: relative; }
+  .ov-link::after {
     content: '';
     position: absolute;
     left: 50%;

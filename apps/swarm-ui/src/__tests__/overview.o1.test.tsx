@@ -12,7 +12,7 @@
 //   * Waiting, and why groups by reason, with a count per group.
 //   * Headroom's rows stay inside the card: profile tiles, pool rows and an
 //     account line stacked in one column, never two side-by-side groups.
-//   * Recent failures end in an age and an Open link.
+//   * Recent failures end in their age; the title is the row's one link (c03, 2026-10-22).
 //   * At 390: one "Overview" (the h1 steps aside for the phone header), the
 //     three lifecycle figures three across, and Running as a compact list.
 //
@@ -392,15 +392,17 @@ describe('O1: Headroom keeps its rows inside the card', () => {
 })
 
 describe('O1: Recent failures', () => {
-  /** MUTATION: drop the age cell or the Open link. */
-  it('ends every row in an age and an Open link to the agent', async () => {
+  /** The row-end Open went by the owner's decision c03, 2026-10-22: the title is the only link. */
+  it('ends every row in its age, its title the one link to the agent', async () => {
     const el = await mount()
     const rows = [...el.querySelectorAll('#ov-failures tbody tr')]
     expect(rows.length).toBe(2)
-    expect(text(rows[0]!.querySelector('td.is-num'))).toBe('25m ago')
-    const open = rows[0]!.querySelector<HTMLAnchorElement>('a.ov-open')!
-    expect(text(open)).toBe('Open')
-    expect(open.getAttribute('href')).toBe('/agents/recent/tsk_fail_1')
+    // MUTATION: drop the age cell, or end the row in anything after it.
+    expect(text(rows[0]!.lastElementChild)).toBe('25m ago')
+    // MUTATION: put the row-end Open link back.
+    expect(rows[0]!.querySelectorAll('a').length).toBe(1)
+    // MUTATION: point the title anywhere but the agent.
+    expect(rows[0]!.querySelector<HTMLAnchorElement>('a.ov-name')!.getAttribute('href')).toBe('/agents/recent/tsk_fail_1')
     expect(rows[0]!.querySelector('.sk-st')?.getAttribute('data-mark')).toBe('failed')
     expect(rows[1]!.querySelector('.sk-st')?.getAttribute('data-mark')).toBe('dead')
     expect(text(el.querySelector('#ov-failures .ctl-card-note'))).toMatch(/last 24h · 1 failed · 1 dead-lettered/)

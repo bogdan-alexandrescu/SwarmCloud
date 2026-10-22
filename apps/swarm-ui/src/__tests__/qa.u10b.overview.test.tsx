@@ -53,12 +53,14 @@ describe('D2: Recent failures fits its card', () => {
     task({ id: 'tsk_cancelled_one', state: 'CANCELLED', completed_at: now, updated_at: now }),
   ]
 
-  it('lays the table out fixed, with fixed age and Open columns and a free name column', () => {
+  // The Open column went by the owner's decision c03, 2026-10-22.
+  it('lays the table out fixed, with fixed mark and age columns and a free name column', () => {
     const { container } = render(<RecentFailures tasks={page(rows)} />)
     const table = container.querySelector<HTMLTableElement>('table.ov-tbl')!
     expect(painted(table, 'table-layout', WIDE)).toBe('fixed')
     const cols = [...table.querySelectorAll('col')]
-    expect(cols.map((c) => c.className)).toEqual(['ov-fc-mark', 'ov-fc-name', 'ov-fc-age', 'ov-fc-open'])
+    // MUTATION: put `<col className="ov-fc-open">` back.
+    expect(cols.map((c) => c.className)).toEqual(['ov-fc-mark', 'ov-fc-name', 'ov-fc-age'])
     // Every column but the name's is a fixed px width; their sum leaves the name most of a 390px phone row.
     const fixed = cols.filter((c) => c.className !== 'ov-fc-name').map((c) => painted(c, 'width', WIDE))
     for (const w of fixed) expect(w).toMatch(/^\d+px$/)
@@ -82,7 +84,7 @@ describe('D2: Recent failures fits its card', () => {
     const name = th.querySelector<HTMLElement>('.ov-name')!
     expect(painted(name, 'display', WIDE)).toBe('-webkit-box')
     expect(name.getAttribute('title')).toContain('tsk_failed_one')
-    // The age and Open never wrap and never leave their column.
+    // The age never wraps and never leaves its column.
     for (const td of container.querySelectorAll('tbody td.is-num')) {
       expect(painted(td, 'white-space', WIDE)).toBe('nowrap')
     }
