@@ -510,7 +510,8 @@ def test_fix_none_and_existing_causes_each_get_exactly_their_own_action(db, ctx,
     assert none_record["no_change"]["evidence"][0]["command"].startswith("rg -n")
 
     # `existing`: one comment on #1778 and its run there; the cause is recorded against it.
-    (comment,) = writes.on_issue(1778)
+    # One failure-review comment (the run posts its own status comment beside it).
+    (comment,) = [c for c in writes.on_issue(1778) if c["body"].startswith("<!-- failure-review ")]
     # MUTATION: comment with another body than render_comment's and the marker is not first.
     assert comment["body"].startswith(failurecauses.comment_marker(
         fp_of(sites["known"]), failure_review.mark_id(firing.firing["firing_id"])))

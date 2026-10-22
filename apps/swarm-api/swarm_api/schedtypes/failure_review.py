@@ -29,7 +29,15 @@ WHAT A FIRING DOES (the `observer`'s pattern: the tick never waits on an agent).
        * a cause in ANOTHER REPOSITORY'S OWN CODE is a finding in that
          tenant (`failure_findings`), never an issue here (§1);
        * a cause found again with NO NEW FAILURE (the hour two windows share)
-         files, comments and runs nothing.
+         files, comments and runs nothing;
+       * a cause the investigator marks `action: none` (no code change: fixed
+         on main already, or a process cause) is recorded `no_change` with its
+         why and listed in the summary, and files and runs nothing -- until it
+         recurs, when it is a `fix` (#2003);
+       * a cause marked `action: existing` is commented and run on that OPEN
+         issue of the platform's own repository; any other number is refused
+         and the cause filed new, the reason in the summary. A hold wins over
+         either.
 
      Then one summary (§8): on the review record, and as one comment on the
      schedule's `summary_issue` when it names an issue in the platform's own
@@ -93,7 +101,7 @@ from ..errors import ApiError, ValidationFailed
 from ..failurecauses import Action, Cause, FailureCauses, Facts
 from ..forge import read_open_work
 from ..forgechecks import evaluate, required_status_checks
-from ..forgewrite import ForgeWriteError, GitHubWriter
+from ..forgewrite import ForgeWriteError, ForgeWriteNotFound, GitHubWriter
 from ..issueci import excerpt_at
 from ..issuecomments import bounded as bounded_body
 from ..issuecomments import neutral
@@ -426,7 +434,7 @@ def prompt(digest_text: str, firing_id: str, repository: str) -> str:
         '["f-001"], "cause": "One sentence: what in the code made these fail, as a fact.", '
         '"evidence": [{"command": "what you ran or read", "result": "what it showed"}], "fix": '
         '"What to change, and the red-first test that proves it.", "files": ["path"], "hold": '
-        '"none", "where": "platform"}], "unexplained": [{"failure": "f-007", "tried": "what you '
+        '"none", "where": "platform", "action": "fix", "existing_issue": null}], "unexplained": [{"failure": "f-007", "tried": "what you '
         'read and why it did not settle it"}]}\n'
         "Rules: every reference (f-001, ...) in the digest, including those listed only by "
         "reference, appears in exactly ONE cause or in `unexplained`, and nothing else does. "
@@ -436,7 +444,12 @@ def prompt(digest_text: str, firing_id: str, repository: str) -> str:
         "apps/common/swarm_common/, secrets, tenant isolation, the other team's resources in "
         "the shared project, or cost (sizes, budgets, ceilings) is held, never none. `where` "
         "is platform for a cause in SwarmCloud, tenant_repo for a cause in another "
-        "repository's own code (a tenant's test or build). A failure you cannot explain from "
+        "repository's own code (a tenant's test or build). `action` is fix (SwarmCloud files an "
+        "issue and starts a fix run), none (no code change is needed: the fix is already on "
+        "main, or a process cause with no code site; `fix` then says why, with the evidence), "
+        "or existing (the cause is an OPEN issue already in the platform repository: its number "
+        "in `existing_issue`, and SwarmCloud comments and runs there instead of filing). Say "
+        "it in `action`, never only in prose: prose is not read. A failure you cannot explain from "
         "what you were given (another tenant's content is not shared; a digest bound dropped "
         "its detail) goes in `unexplained` with why, never a guess.\n"
         f"Then write $SWARM_ARTIFACTS_DIR/{REPORT_FILE}: each cause with its evidence and fix, "
@@ -747,6 +760,42 @@ class _Filing:
 
     # -- one cause --
 
+    @staticmethod
+    def intent_of(cause: Cause, before: Mapping[str, Any] | None) -> str:
+        """§4's `action`, as this firing will act on it (#2003). Decided once, with
+        the record as it was BEFORE this firing observed the cause, and saved.
+
+        A hold wins: a held cause, or one whose record is held, is `fix`
+        (filed or commented `needs-owner`, no run). A `none` whose record was
+        already `no_change` has recurred: the code was not fixed after all.
+        """
+        state = (before or {}).get("state")
+        if cause.hold != "none" or state == failurecauses.HELD:
+            return "fix"
+        if cause.action == "none":
+            return "fix" if state == failurecauses.NO_CHANGE else "none"
+        return "existing" if cause.action == "existing" else "fix"
+
+    def existing_refusal(self, number: int | None) -> str | None:
+        """Why `existing_issue` is not an open issue of the platform's own
+        repository, or None. The number is read only there: nothing is ever
+        written to another repository. A refusal files the cause new."""
+        slug = _slug(self.registration)
+        if not number:
+            return "action existing names no existing_issue"
+        try:
+            issue = self.writer.read_issue(_ref(self.registration, number), number, self.token())
+        except ForgeWriteNotFound:
+            return f"#{number} is not an issue in {slug}"
+        where = str(issue.get("repository_url") or "")
+        if where and not where.lower().endswith(f"/repos/{slug.lower()}"):
+            return f"#{number} is not in {slug} (moved to another repository)"
+        if issue.get("pull_request"):
+            return f"#{number} is a pull request, not an issue"
+        if issue.get("state") != "open":
+            return f"#{number} is closed"
+        return None
+
     def hold_of(self, cause: Cause) -> str:
         """§6 step 5 at proposal: the investigator's hold, widened by FR-1's stops over its files."""
         if cause.hold != "none":
@@ -769,7 +818,7 @@ class _Filing:
             counted = set((before or {}).get("failure_ids") or [])
             progress = self._progress(cause.fingerprint, {
                 "new": [f for f in dict.fromkeys(failure_ids) if f not in counted],
-                "created": before is None})
+                "created": before is None, "intent": self.intent_of(cause, before)})
         if not progress.get("observed"):
             # Idempotent for one firing: a second observation counts nothing.
             self.causes.observe(cause, failure_ids=failure_ids, firing_id=self.review["firing_id"],
@@ -783,10 +832,30 @@ class _Filing:
             return self._progress(cause.fingerprint, {**progress, "action": None, "done": True})
         record = self.refresh_fixed(self.causes.get(cause.fingerprint) or {})
         if "action" not in progress:
-            action = failurecauses.decide(record if record.get("issue") else None, hold=cause.hold,
-                                          where=cause.where, facts=self.facts(record))
+            # A progress saved before `intent` existed is today's `fix`.
+            if progress.get("intent") == "existing" and not record.get("issue"):
+                refused = self.existing_refusal(cause.existing_issue)
+                if refused:
+                    progress = self._progress(cause.fingerprint, {**progress, "intent": "fix", "existing_refused": {
+                        "issue": cause.existing_issue, "reason": refused}})
+                else:
+                    # Recorded first: a retry finds the issue on the record and
+                    # carries on as for any cause already filed.
+                    self.causes.record_issue(cause.fingerprint, int(cause.existing_issue or 0))
+                    record = {**record, "issue": int(cause.existing_issue or 0)}
+                    progress = self._progress(cause.fingerprint, {**progress, "existing": record["issue"]})
+            if progress.get("intent") == "none":
+                action = Action.NO_CHANGE
+            else:
+                action = failurecauses.decide(record if record.get("issue") else None, hold=cause.hold,
+                                              where=cause.where, facts=self.facts(record))
             progress = self._progress(cause.fingerprint, {**progress, "action": action.value})
         action = Action(progress["action"])
+        if action == Action.NO_CHANGE:
+            self.causes.record_no_change(cause.fingerprint, firing_id=self.review["firing_id"],
+                                         fix=neutral(cause.fix, MAX_FIELD_CHARS),
+                                         evidence=[e.model_dump() for e in cause.evidence[:MAX_EVIDENCE]])
+            return self._progress(cause.fingerprint, {**progress, "done": True})
         if action in (Action.FILE_AND_RUN, Action.FILE_HELD):
             number = self.ensure_issue(cause, component, held=action == Action.FILE_HELD)
         else:
@@ -892,7 +961,9 @@ def tally(review: Mapping[str, Any]) -> dict[str, Any]:
     counts = {"causes": 0, "new": 0, "known": 0, "seen_again": 0, "issues_filed": 0,
               "issues_updated": 0, "runs_started": 0, "held": 0, "findings": 0,
               "unexplained": len(review.get("unexplained") or [])}
-    for progress in _mapping(review.get("progress")).values():
+    no_change: list[str] = []
+    refused: list[dict[str, Any]] = []
+    for fp, progress in _mapping(review.get("progress")).items():
         progress = _mapping(progress)
         counts["causes"] += 1
         counts["new" if progress.get("created") else "known"] += 1
@@ -908,7 +979,11 @@ def tally(review: Mapping[str, Any]) -> dict[str, Any]:
         if progress.get("run_id"):
             counts["runs_started"] += 1
         counts["findings"] += int(progress.get("findings") or 0)
-    return counts
+        if action == Action.NO_CHANGE.value:
+            no_change.append(str(fp))
+        if progress.get("existing_refused"):
+            refused.append({"fingerprint": str(fp), **_mapping(progress["existing_refused"])})
+    return {**counts, "no_change": sorted(no_change), "existing_refused": refused}
 
 
 def _parse(raw: str) -> Any:
@@ -923,6 +998,7 @@ def _cause_doc(cause: Cause) -> dict[str, Any]:
         "signature": cause.signature, "failures": list(cause.failures), "cause": cause.cause,
         "evidence": [e.model_dump() for e in cause.evidence], "fix": cause.fix,
         "files": list(cause.files), "hold": cause.hold, "where": cause.where, "known": cause.known,
+        "action": cause.action, "existing_issue": cause.existing_issue,
     }
 
 
@@ -933,6 +1009,8 @@ def _cause_from(doc: Mapping[str, Any]) -> Cause:
         evidence=tuple(failurecauses.Evidence.model_validate(e) for e in doc.get("evidence") or ()),
         fix=str(doc.get("fix") or ""), files=tuple(doc.get("files") or ()), hold=str(doc.get("hold") or "none"),
         where=str(doc.get("where") or "platform"), known=bool(doc.get("known")),
+        action=str(doc.get("action") or "fix"),
+        existing_issue=int(doc["existing_issue"]) if doc.get("existing_issue") else None,
     )
 
 
@@ -945,6 +1023,8 @@ def summary_text(review: Mapping[str, Any]) -> str:
     s = _mapping(review.get("summary"))
     skipped = _mapping(review.get("skipped"))
     rules = ", ".join(f"{rule} {int(skipped.get(rule) or 0)}" for rule in failuredigest.SKIP_RULES)
+    no_change = [str(fp) for fp in s.get("no_change") or []]
+    refused = [_mapping(r) for r in s.get("existing_refused") or []]
     read = len(_mapping(review.get("refs")))
     head = (f"0 failures in the window {_window(review)}." if read == 0 else
             f"{read} failure(s) reviewed in the window {_window(review)}.")
@@ -957,6 +1037,10 @@ def summary_text(review: Mapping[str, Any]) -> str:
         f"{int(s.get('seen_again') or 0)} with nothing new)",
         f"- issues filed: {int(s.get('issues_filed') or 0)}; updated: {int(s.get('issues_updated') or 0)}",
         f"- fix runs started: {int(s.get('runs_started') or 0)}; held `{HOLD_LABEL}`: {int(s.get('held') or 0)}",
+        f"- no change needed: {len(no_change)}" + (f" ({', '.join(f'`{fp}`' for fp in no_change)})"
+                                                   if no_change else ""),
+        *[f"- existing issue refused, filed new: `{r.get('fingerprint')}` named #{r.get('issue')}: "
+          f"{r.get('reason')}" for r in refused],
         f"- findings reported to tenants: {int(s.get('findings') or 0)}",
         f"- unexplained: {int(s.get('unexplained') or 0)}",
         "",
