@@ -85,7 +85,9 @@ import {
  *      broken down by state under its own mark (marks.tsx).
  *   3. Running now beside Recent token cost.
  *   4. Waiting, and why (grouped by reason) beside Headroom.
- *   5. Recent failures, each ending in its age and an Open link.
+ *   5. Recent failures: the failed and dead-lettered, each ending in its age,
+ *      its title the only link (c03, 2026-10-22); the cancelled folded under
+ *      "N cancelled" (c02, 2026-10-22).
  *
  * There is NO FIGURE ROW between the band and the cards (#503): the band
  * already says how many hold capacity, and the global pool's units are a row

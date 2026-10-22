@@ -96,7 +96,7 @@ describe('c02: the failures alone, the cancelled under "N cancelled"', () => {
     // MUTATION: draw the cancelled row in the main table when nothing failed.
     for (const t of container.querySelectorAll('table.ov-fails')) expect(t.closest('details')).not.toBeNull()
     // MUTATION: drop the no-failures words when a cancelled row is read.
-    expect(text(container)).toMatch(/no failed or dead-lettered agent/i)
+    expect(text(container.querySelector('.ov-empty'))).toMatch(/No failure among the 1 newest/)
     const fold = container.querySelector('details.ov-failures-cancelled')!
     // MUTATION: return the empty state alone, without the disclosure.
     expect(fold, 'no "N cancelled" under the empty state').not.toBeNull()
