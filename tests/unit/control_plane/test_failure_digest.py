@@ -471,3 +471,78 @@ def test_gather_reads_the_window_across_tenants_and_never_mixes_a_tenants_docume
     digest = build(docs)
     assert "child" in digest.skipped[fd.PERSON_CANCEL]
     assert _entries(digest)["in-a"]["heartbeat"]["release_reason"] == "lease_silent"
+
+
+# --------------------------------------------------------------------------
+# The content reader: log tails, and platform log lines through the view (AU-5)
+# --------------------------------------------------------------------------
+
+
+class FakeInspection:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.calls: list[dict[str, Any]] = []
+
+    def read_logs(self, tenant_id: str, task_id: str, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append({"tenant_id": tenant_id, "task_id": task_id, **kwargs})
+        offset, length = kwargs["offset"], kwargs["limit_bytes"]
+        raw = self.text.encode()
+        return {"streams": [{"status": "ok", "total_bytes": len(raw),
+                             "content": raw[offset: offset + length].decode()}]}
+
+
+class FakeLogs:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, int]] = []
+
+    def entries(self, view: str, filter_text: str, *, limit: int) -> list[dict[str, Any]]:
+        self.calls.append((view, filter_text, limit))
+        return [{"timestamp": "2026-10-22T11:00:00Z", "severity": "WARNING",
+                 "resource": {"type": "cloud_run_revision"},
+                 "textPayload": "reclaimed lease of att_1: lease silent"}]
+
+
+VIEW = "projects/swarm-proj/locations/global/buckets/_Default/views/swarm-workers"
+
+
+def test_the_content_reader_reads_a_streams_last_bytes_in_the_tasks_own_tenant():
+    inspection = FakeInspection("a" * 20000 + "THE END")
+    content = fd.ApiContent(inspection=inspection, log_view=None)
+    tail = content.log_tail(task("ours", tenant=PLATFORM), "agent_stderr")
+    # MUTATION: read from offset 0 only and the end of the log, which explains it, is lost.
+    assert tail.endswith("THE END") and len(tail.encode()) <= fd.LOG_TAIL_BYTES
+    assert {c["tenant_id"] for c in inspection.calls} == {PLATFORM}
+    assert all(c["stream"] == ["agent_stderr"] for c in inspection.calls)
+
+
+def test_platform_log_lines_are_none_without_the_view_and_never_read():
+    logs = FakeLogs()
+    content = fd.ApiContent(inspection=FakeInspection(""), log_view=None, logs=logs)
+    attempts = [{"attempt_id": "att_1"}]
+    # MUTATION: query Cloud Logging with no view configured (no L-1 binding: a 403 per firing).
+    assert content.platform_logs(task("ours", tenant=PLATFORM, completed_at=at(1)), attempts) is None
+    assert logs.calls == []
+
+
+def test_platform_log_lines_read_only_swarm_services_for_the_agents_own_attempts():
+    logs = FakeLogs()
+    content = fd.ApiContent(inspection=FakeInspection(""), log_view=VIEW, logs=logs)
+    attempts = [{"attempt_id": "att_1"}, {"attempt_id": 'att_2" OR true'}]
+    lines = content.platform_logs(task("ours", tenant=PLATFORM, completed_at=at(1)), attempts)
+    assert "lease silent" in lines
+    view, filter_text, _ = logs.calls[0]
+    assert view == VIEW
+    # MUTATION: a filter without the service clause reads every container in the view.
+    assert 'resource.type="cloud_run_revision"' in filter_text
+    assert 'resource.labels.service_name=("swarm-api" OR "swarm-scheduler" OR "swarm-reconciler")' \
+        in filter_text
+    # MUTATION: pass an attempt id through unchecked and it rewrites the filter.
+    assert '"att_1"' in filter_text and "OR true" not in filter_text
+
+
+def test_a_ci_excerpt_comes_only_from_the_reader_the_caller_names():
+    content = fd.ApiContent(inspection=FakeInspection(""), log_view=None)
+    assert content.ci_excerpt(task("ours", tenant=PLATFORM)) is None
+    named = fd.ApiContent(inspection=FakeInspection(""), log_view=None,
+                          ci_excerpt=lambda t: f"CI red for {t['id']}")
+    assert named.ci_excerpt(task("ours", tenant=PLATFORM)) == "CI red for ours"
