@@ -345,6 +345,14 @@ export interface RepoRecord {
   selection_policy: { policy: string | null; mode: string | null; inherited_from_tenant: boolean | null }
   /** Which credential its index runs clone with; null when not served. */
   index_credential: IndexCredential | null
+  /**
+   * Whether the tenant's agents may file issues here (AU-0 REG-FLAG,
+   * docs/design/agent-autonomy.md §3.2). The API serves it with the platform
+   * default applied (off unless set, on for a `platform: true` registration),
+   * so it is kept as served and never re-derived. Null: not served -- an API
+   * older than REG-FLAG -- which is not a confident off.
+   */
+  agents_may_file_issues: boolean | null
 }
 
 export interface UsedBy {
@@ -442,6 +450,7 @@ export function normRepo(v: unknown): RepoRecord | null {
       inherited_from_tenant: bool(pol.inherited_from_tenant),
     },
     index_credential: normIndexCredential(v.index_credential),
+    agents_may_file_issues: bool(v.agents_may_file_issues),
   }
 }
 

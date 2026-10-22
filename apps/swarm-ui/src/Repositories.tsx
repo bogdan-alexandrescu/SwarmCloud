@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { USE_FIXTURES, loadRepositories, loadRepositoryIndex, runRepositoryIndex } from './api'
+import { loadRepositories, loadRepositoryIndex, patchRepositoryFileIssues, runRepositoryIndex } from './api'
 import { Banner, Button, Card, Dash, EmptyState, NamedMark } from './components'
-import { HEAD_UNREAD, freshness, indexCredentialWords, normRepoList, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
+import { HEAD_UNREAD, freshness, indexCredentialWords, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
 import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrLink, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { RegisterRepository } from './RepositoriesRegister'
 import { RepositoryDetail } from './RepositoriesDetail'
@@ -13,7 +13,6 @@ import type { QaLink } from './qaTargetsApi'
 import { useRoleGate } from './Profile'
 import { CountNote, PageHead } from './Shell'
 import { timeAgo } from './types'
-import { read, route, write, type Result } from './fetch'
 import './styles/repositories.css'
 
 /**
@@ -72,55 +71,6 @@ export function RepositoriesScreen({ view, go, qaLink }: { view: string | null; 
   )
 }
 
-/**
- * WHETHER THE TENANT'S AGENTS MAY FILE ISSUES ON THIS REPOSITORY (AU-0
- * REG-FLAG, docs/design/agent-autonomy.md §3.2, owner decision Q2). The API
- * serves `agents_may_file_issues` with the platform default applied (off
- * unless set, on for a `platform: true` registration), so the card draws the
- * served value and never re-derives it. Null: the API did not serve it.
- *
- * Read off the list's own `GET /v1/repositories` body, in one read, rather
- * than through `normRepo`, which keeps only the fields `RepoRecord` names
- * (RepositoriesData.ts, outside this lane's territory).
- */
-type ListedRepo = RepoRecord & { agents_may_file_issues: boolean | null }
-
-function listed(raw: unknown): ListedRepo[] {
-  const served = new Map<string, boolean>()
-  const recs = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>).repositories : null
-  for (const rec of Array.isArray(recs) ? recs : []) {
-    if (typeof rec !== 'object' || rec === null) continue
-    const { repo_id: id, agents_may_file_issues: on } = rec as Record<string, unknown>
-    if (typeof id === 'string' && typeof on === 'boolean') served.set(id, on)
-  }
-  return normRepoList(raw).map((r) => ({ ...r, agents_may_file_issues: served.get(r.repo_id) ?? null }))
-}
-
-/** `GET /v1/repositories`, as `loadRepositories` reads it, keeping the flag. */
-async function loadListed(): Promise<Result<ListedRepo[]>> {
-  if (USE_FIXTURES) {
-    const r = await loadRepositories()
-    if (r.status === 'ok' || r.status === 'stale') return { ...r, data: r.data.map((x) => ({ ...x, agents_may_file_issues: null })) }
-    return r
-  }
-  const r = await read<unknown>(route('/v1/repositories'), () => false)
-  if (r.status === 'ok') {
-    const data = listed(r.data)
-    return data.length === 0 ? { status: 'empty', fetchedAt: r.fetchedAt, serverAt: r.serverAt } : { ...r, data }
-  }
-  if (r.status === 'stale') return { ...r, data: listed(r.data) }
-  return r
-}
-
-/**
- * `PATCH /v1/repositories/{repo_id}` with `agents_may_file_issues` alone. Only
- * the workspace's admin may send it (routes/repositories.py `_context_by`);
- * the API writes the `agents_may_file_issues_set` audit entry with the change.
- */
-function patchFileIssues(repoId: string, on: boolean): Promise<Result<unknown>> {
-  return write(route('/v1/repositories/{repo_id}', { repo_id: repoId }), 'PATCH', { agents_may_file_issues: on })
-}
-
 function RepositoryList({
   go,
   children,
@@ -128,7 +78,7 @@ function RepositoryList({
   go: (to: string) => void
   children: (meta: ReactNode, actions: ReactNode) => ReactNode
 }) {
-  const { state, reload } = useUrRead(loadListed, 'list')
+  const { state, reload } = useUrRead(loadRepositories, 'list')
   // GitHub permissions per repository (#1086): one dot each, absent until read.
   const perms = useRepoStatuses()
   const [failed, setFailed] = useState<string | null>(null)
@@ -158,10 +108,10 @@ function RepositoryList({
     reload()
   }
 
-  async function setFileIssues(r: ListedRepo, on: boolean) {
+  async function setFileIssues(r: RepoRecord, on: boolean) {
     setFiling(r.repo_id)
     setFileFailed(null)
-    const res = await patchFileIssues(r.repo_id, on)
+    const res = await patchRepositoryFileIssues(r.repo_id, on)
     setFiling(null)
     if (res.status === 'error') {
       setFileFailed(`${repoName(r)}: ${writeFailure(res.error)}`)
@@ -408,7 +358,12 @@ function IndexingUses({ r, go }: { r: RepoRecord; go: (to: string) => void }) {
   )
 }
 
-/** The card's line for `agents_may_file_issues`, with a control for an admin only. */
+/**
+ * The card's line for `agents_may_file_issues` (AU-0 REG-FLAG,
+ * docs/design/agent-autonomy.md §3.2, owner decision Q2), with a control for
+ * an admin only. It draws `RepoRecord`'s value as served and never re-derives
+ * the platform default; null is a dash, with no control to set it.
+ */
 function FileIssues({ on, admin, busy, onSet }: { on: boolean | null; admin: boolean; busy: boolean; onSet: (on: boolean) => void }) {
   return (
     <div className="ur-cmeta ur-file-issues" data-file-issues={on === null ? undefined : String(on)}>

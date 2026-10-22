@@ -6488,6 +6488,13 @@ const FIXTURE_REPOS = [
   { repo_id: 'repo_a4b8c1d2e3f40917', repo: 'example-payments-reconciliation-service-monorepo', on_change: 'off', interval_hours: 168, modules: 8, tested: 5, edges: 27, sha: 'b37a51' },
 ] as const
 
+/**
+ * Each fixture registration's `agents_may_file_issues` once the fixture build
+ * changed it (`patchRepositoryFileIssues`); absent is the platform default the
+ * API applies to a registration that is not `platform: true`, off.
+ */
+const fixtureFileIssues = new Map<string, boolean>()
+
 function fixtureRepositories(): unknown {
   return {
     repositories: FIXTURE_REPOS.map((r, i) => ({
@@ -6504,6 +6511,7 @@ function fixtureRepositories(): unknown {
       },
       last_run: null,
       index_credential: { source: 'tenant', secret_name: `swarm-tenant-${FIXTURE_TENANT}-git` },
+      agents_may_file_issues: fixtureFileIssues.get(r.repo_id) ?? false,
     })),
   }
 }
@@ -7443,6 +7451,25 @@ export async function patchRepositoryKeepVersions(repoId: string, keepVersions: 
   const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
   if (USE_FIXTURES) return repoNotServed<unknown>(target)
   return write(target, 'PATCH', { index: { keep_versions: keepVersions } })
+}
+
+/**
+ * `PATCH /v1/repositories/{repo_id}` with `agents_may_file_issues` alone (AU-0
+ * REG-FLAG, docs/design/agent-autonomy.md §3.2). Only the workspace's admin
+ * may send it (routes/repositories.py `_context_by`); the API writes the
+ * `agents_may_file_issues_set` audit entry with the change. The fixture build
+ * keeps the value for its own registrations, so its list reads it back.
+ */
+export async function patchRepositoryFileIssues(repoId: string, value: boolean): Promise<Result<unknown>> {
+  const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
+  if (USE_FIXTURES) {
+    if (!FIXTURE_REPOS.some((r) => r.repo_id === repoId)) return repoNotServed<unknown>(target)
+    await new Promise((r) => setTimeout(r, 180))
+    noteFixtureProbe(target, 180, true)
+    fixtureFileIssues.set(repoId, value)
+    return { status: 'ok', fetchedAt: Date.now(), data: { repository: { repo_id: repoId, agents_may_file_issues: value }, tenant_id: FIXTURE_TENANT } }
+  }
+  return write(target, 'PATCH', { agents_may_file_issues: value })
 }
 
 // ---------------------------------------------------------------------------
