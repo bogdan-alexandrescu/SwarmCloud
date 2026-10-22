@@ -117,7 +117,8 @@ describe('QA-115: the Failed card on a task’s Details', () => {
     // MUTATION: restore `end cause — not recorded`, which points nowhere.
     expect(card.textContent).not.toMatch(/end cause — not recorded/)
     // MUTATION: drop the pointer to the error -- the absence says nothing again.
-    expect(within(card).getByText('no end cause recorded · the error below is what it wrote')).toBeTruthy()
+    // It leads with where the cause is (QAFIX5-TASK-DETAIL, QA-115 run 5b).
+    expect(within(card).getByText('why it ended: the error below · no end-cause code was written')).toBeTruthy()
   })
 
   it('labels the log preview under the error as not the error (owner 2026-10-20)', async () => {

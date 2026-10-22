@@ -6484,16 +6484,25 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    is as it was. */
 .ctl-dock-sep { white-space: normal; }
 @media (max-width: 560px) {
-  /* AND A HAIRLINE PARTS THEM (visual QA run 3, work-a-008 and work-b-003,
+  /* AND A MARK PARTS THEM (visual QA run 3, work-a-008 and work-b-003,
      part of #1680): spaced only, `3 routes p95 382ms 0 failed` ran together.
-     Every fact carries a rule on its left, pulled 1px outside its box, and
-     the facts are clipped: a fact that starts a line has its rule at -1px,
-     outside the clip, so no rule ever starts a line -- the dangling ` · `
-     QA-039 removed, turned round. The 10px gap QA-039 left is the fact's own
-     5px either side of the rule now, so the column gap is 0. */
+     Run 3's mark was a 1px rule on each fact's left, pulled 1px outside its
+     box, with the facts clipped so a fact that starts a line has its mark
+     outside the clip -- the dangling ` · ` QA-039 removed, turned round. The
+     clip stays; the mark is the dot below now. */
+  /* A SPACED DOT, AS AT 1440, NOT A HAIRLINE (visual QA run 5b, r3:work-a-008,
+     part of #1680). The rule above sat flush against the text,
+     `8 routes|p95 400 ms|0 failed`, and read as a different strip from the
+     ` · ` the wide line draws. Each fact now opens with its own dot, in the
+     mono face's character cells: 1ch of air, the dot, 1ch of air. The fact
+     is pulled 2ch left, so between two facts the dot lands in the 3ch the one
+     before it keeps on its right; a fact that starts a line has its dot at
+     -2ch, outside the clip, so no dot ever starts a line. The text ` · `
+     stays in the markup for the prose budgets and steps aside here. */
   .ctl-dock-facts { display: flex; flex-wrap: wrap; column-gap: 0; row-gap: 0; overflow: hidden; }
   .ctl-dock-sep { display: none; }
-  .ctl-dock-facts > .ctl-dock-fact { margin-left: -1px; padding: 0 5px; border-left-width: 1px; border-left-style: solid; border-left-color: var(--text-faint); }
+  .ctl-dock-facts > .ctl-dock-fact { position: relative; margin-left: -2ch; padding: 0 3ch 0 2ch; }
+  .ctl-dock-facts > .ctl-dock-fact::before { content: '·'; position: absolute; left: 0; top: 0; width: 1ch; text-align: center; }
 }
 .ctl-dock-bad { color: var(--bad-ink); }
 .ctl-dock-caret { margin-left: auto; flex: none; color: var(--text-faint); }
@@ -10979,6 +10988,14 @@ span.sk-ttile { cursor: default; }
   .sk-pbar > .sk-ibtn, .sk-pbar > .sk-tchip { position: relative; }
   .sk-pbar > .sk-ibtn::after, .sk-pbar > .sk-tchip::after { content: ''; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: 44px; transform: translate(-50%, -50%); }
   .sk-pbar > .sk-tchip { overflow: visible; }
+  /* AND SO THE CHIP SAYS `min-width: 0` ITSELF (visual QA run 5b, QA-017,
+     part of #1680). Its `overflow: hidden` had been its zero floor (OV-19,
+     above); once `visible`, a flex item's automatic minimum is its content,
+     so the chip held its whole name. Only an admin is drawn it (the member
+     has one workspace and a plain label), and with the admin tag beside it
+     every admin page at 390 measured 394-398px: a sideways scrollbar and
+     `↑ Top` cut at the glass. The name gives way inside it, as above. */
+  .sk-pbar > .sk-tchip { min-width: 0; }
   .sk-tchip > .sk-tcn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sk-app.has-drawer .sk-dclose { width: 44px; height: 44px; }
   .sk-side { display: none; }

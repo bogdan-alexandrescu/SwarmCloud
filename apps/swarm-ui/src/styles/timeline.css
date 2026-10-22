@@ -426,10 +426,16 @@
   background: var(--s-liveb);
   border: 1.5px solid var(--s-live);
 }
+/* A RUNNING BAR SHOWS ITS END (visual QA r3:work-a-005, seen again in run 5b,
+   2026-10-22). It had no right border, a square right end and a fill fading
+   to transparent, flush with the chart's edge: a bar still running read as a
+   bar cut off, and a merged pill whose newest attempt runs read as a
+   half-clipped count. It keeps the pill's rounded end, dashed for 'not ended
+   yet', on a fill that lightens but never leaves; the layout stops it
+   `TRACK_END_PX` short of the edge. */
 .tl-seg.is-hold.is-open {
-  border-right: 0;
-  border-radius: 6px 0 0 6px;
-  background: linear-gradient(90deg, var(--s-liveb) 80%, transparent);
+  border-right-style: dashed;
+  background: linear-gradient(90deg, var(--s-liveb) 70%, color-mix(in srgb, var(--s-liveb) 45%, var(--surface)));
 }
 .tl-seg.is-unknown-end { border-right-style: dotted; }
 .tl-seg.is-cut {

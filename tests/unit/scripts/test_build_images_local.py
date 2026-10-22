@@ -105,30 +105,35 @@ print("fake gcloud: a local build-only run must not call gcloud", file=sys.stder
 sys.exit(2)
 '''
 
-# The tool mirror is staged from upstream before anything is built
-# (lib/build-mirror.sh tool_mirror_stage_upstream). A real download made this
-# test fail on a connection reset from github.com, so curl serves fake bytes
-# and _local pins the sandbox's manifest to their sha256.
+
+# curl for the tool mirror's upstream staging (lib/build-mirror.sh): a unit
+# test reads no network. On 2026-10-22 a pull request touching only the UI
+# went red here on a real github.com download of trivy (connection reset).
+# Each object's body is fixed by its URL, and _local pins the sandbox's
+# manifest to those bodies, so the download, the sha256 check and the move
+# into build/tool-mirror all still run.
 FAKE_CURL = r'''#!{python}
 import os, sys
 args = sys.argv[1:]
-url = [a for a in args if a.startswith("http")][-1]
+url = [a for a in args if a.startswith("https://")][-1]
 out = args[args.index("-o") + 1]
 os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
 with open(out, "wb") as fh:
     fh.write(("fake " + url + "\n").encode())
 '''
-MANIFEST = Path("images") / "agent-runtime-base" / "tool-mirror.sha256"
 
 
-def _fake_tool_mirror(root: Path) -> None:
+def _pin_fake_tool_mirror(root: Path) -> None:
+    manifest = root / "images" / "agent-runtime-base" / "tool-mirror.sha256"
     rows = []
-    for line in (root / MANIFEST).read_text().splitlines():
-        if line.strip() and not line.startswith("#"):
-            obj = line.split()[1]
-            sha = hashlib.sha256(("fake https://" + obj + "\n").encode()).hexdigest()
-            rows.append(f"{sha}  {obj}\n")
-    (root / MANIFEST).write_text("".join(rows))
+    for line in manifest.read_text().splitlines():
+        if not line.strip() or line.startswith("#"):
+            rows.append(line)
+            continue
+        obj = line.split()[1]
+        body = ("fake https://" + obj + "\n").encode()
+        rows.append(f"{hashlib.sha256(body).hexdigest()}  {obj}")
+    manifest.write_text("\n".join(rows) + "\n")
 
 
 def _digest(target: str) -> str:
@@ -137,7 +142,7 @@ def _digest(target: str) -> str:
 
 def _local(tmp_path: Path, *args: str, fail: str = "", root: Path | None = None):
     root = root or _sandbox(tmp_path)
-    _fake_tool_mirror(root)
+    _pin_fake_tool_mirror(root)
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     for name, body in (("docker", FAKE_DOCKER), ("gcloud", FAKE_GCLOUD), ("curl", FAKE_CURL)):

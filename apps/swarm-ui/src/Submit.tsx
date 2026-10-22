@@ -809,6 +809,11 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
         const note = noteFor(f.name.trim())
         const key = f.name.trim()
         const gap = f.required && missing.has(key) && left.has(f.key)
+        // NOT LEFT YET, STILL SAID AT THE FIELD (visual QA QA-103): at 1440
+        // the panel was the only place that named the empty prompt, and the
+        // field carried a bare `required` tag. A quiet line in the field's own
+        // ink until the reader leaves it; then `gap`'s warning line replaces it.
+        const unfilled = f.required && missing.has(key) && !left.has(f.key)
         const missId = `${id}-missing`
         return (
           <div className={f.required ? 'sbf-field is-required' : 'sbf-field has-remove'} key={f.key}>
@@ -840,7 +845,7 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
               )}
             </div>
             <ValueEditor f={f} id={id} choices={choicesFor(key)} invalid={gap}
-              describedBy={gap ? missId : undefined} onBlur={() => leave(f.key)}
+              describedBy={gap || unfilled ? missId : undefined} onBlur={() => leave(f.key)}
               onChange={(next) => set(i, next)} />
             {/* AFTER ITS FIELD, AND NAMING IT (live QA SUB-17): it came before
                 the value in Tab order, so a screen reader heard "remove" and
@@ -859,6 +864,7 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
                 {profile} will not start without <code>{key}</code>
               </p>
             )}
+            {unfilled && <p id={missId} className="sb-note sbf-unfilled"><code>{key}</code> missing</p>}
             {note && <p className="sbf-note">{note}</p>}
             {/* A ROW WITH NO NAME IS NOT SENT, AND SAYS SO (visual QA QA-102):
                 `buildInput` skips it, and it looked like any other setting. */}
@@ -1498,6 +1504,14 @@ function Form({ capacity }: { capacity: Capacity }) {
           />
           {whyAt(3)}
         </Move>
+        {/* THE REASON KEPT IN VIEW BELOW 1080 (visual QA r4:flow-submit-form-
+            phone-390-02, run 5b). At 390 the send panel -- the only place the
+            empty form said why Start was disabled -- is the last block, below
+            every step and the fold. This line rides the foot of the screen
+            while the steps scroll (`.sbf-dock`, submit.css) and is not drawn
+            from 1080, where the panel is sticky beside the steps. Hidden from
+            the accessibility tree: the button's description is the same line. */}
+        {blocked && !justSent && <p className="sb-note sbf-dock" aria-hidden="true">Not ready: {why.join('; ')}.</p>}
       </div>
 
       {/* ONE PLACE TO ACT, and it carries what the click will do. The old form
