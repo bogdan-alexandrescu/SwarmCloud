@@ -723,6 +723,14 @@ tenant_job_vpc_egress = true
 # tag, as the runbook's switch-on check requires. Its GKE workers already passed
 # every state route on the first try (196 calls, all 200).
 state_via_api_tenants = ["u-bogdan"]
+# ISOLATION CUTOVER STEP a2 (#1457, docs/runbooks/isolation-cutover.md):
+# swarm-api records u-bogdan as a tenant whose worker has no direct Firestore
+# access (WORKER_FIRESTORE_OFF_TENANTS), so the next admin action writes
+# worker_firestore_access false and A9 then refuses the role it still holds.
+# The role itself is removed by hand (runbook a2 step 4, owner-approved), never
+# by the job (rule C9). Only after a1's three u-bogdan agents and verify-remote
+# as eng were green.
+worker_firestore_off_tenants = ["u-bogdan"]
 # THE FORGE BROKER STAYS OFF HERE (#1041, terraform/infra/child_tasks.tf
 # `forge_broker`), although child tasks are on: workers keep reading a
 # person's git-u- slot with their own account through forge_slot_reader.
