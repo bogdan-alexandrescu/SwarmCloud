@@ -13,8 +13,12 @@ For each request it:
    No tool takes a tenant, a namespace, a filter or a path, so none reaches
    swarm-api;
 2. SIGNS a GET of `/v1/attempts/{attempt_id}/reads/{tool}` with the attempt
-   key under `swarm-state-req/v1` (`statecall.state_request_message`), the
-   path WITH its query, so neither the tuple nor an argument can be swapped
+   key under the purpose the key carries (`StateReadsConfig.purpose`):
+   `swarm-state-req/v1` (`statecall.state_request_message`) for a key
+   `state/open` registered for the state purpose, else `swarm-child-req/v1`
+   (`children.request_message`) for a child-purpose key (BGD, 2026-10-22
+   08:54Z, which swarm-api accepts on this route only), the path WITH its
+   query, so neither the tuple nor an argument can be swapped
    under the proof, and sends it with the worker's ID token
    (`children.ChildApi`). A 409 is the fence (invariant 5):
    `StateReadsFenced` is raised, a `ChildSubmitFenced`, so the lifecycle
@@ -47,6 +51,7 @@ from ..children import (
     ChildSubmitFenced,
     _read_small_json,
     _write_atomic,
+    request_message,
 )
 from ..gitmcp.server import MAX_REQUEST_BYTES, REQUEST_ID
 from ..statecall import FENCED_CODES, state_request_message
@@ -60,6 +65,10 @@ _HOUR = 3600.0
 MAX_ARGUMENT_CHARS = 512
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 STATE_READS_FENCED = "attempt_fenced"
+#: The proof purposes a read may be signed under: the key's registration says which.
+PURPOSE_STATE = "state"
+PURPOSE_CHILD = "child"
+_MESSAGES = {PURPOSE_STATE: state_request_message, PURPOSE_CHILD: request_message}
 
 
 class StateReadRefused(Exception):
@@ -90,6 +99,13 @@ class StateReadsConfig:
     lease_id: str
     generation: int
     calls_per_hour: int = CALLS_PER_HOUR
+    #: What the attempt key was registered for: `state` (signs under
+    #: `swarm-state-req/v1`) or `child` (`swarm-child-req/v1`).
+    purpose: str = PURPOSE_STATE
+
+    def __post_init__(self) -> None:
+        if self.purpose not in _MESSAGES:
+            raise ValueError(f"purpose must be one of {sorted(_MESSAGES)}")
 
 
 def validate_request(tool: Any, arguments: Any) -> tuple[str, dict[str, str]]:
@@ -238,12 +254,12 @@ class StateReads:
                 f"{quote(tool, safe='')}?{query}")
 
     def call(self, tool: str, args: dict[str, str]) -> dict[str, Any]:
-        """GET the read, signed under `swarm-state-req/v1`. A 409 raises
+        """GET the read, signed under the key's purpose. A 409 raises
         `StateReadsFenced`; every other refusal is the agent's to read."""
         path = self.path(tool, args)
         timestamp = str(int(self._wall()))
         headers = {
-            PROOF_HEADER: self._sign(state_request_message("GET", path, b"", timestamp)),
+            PROOF_HEADER: self._sign(_MESSAGES[self.cfg.purpose]("GET", path, b"", timestamp)),
             TIMESTAMP_HEADER: timestamp,
         }
         try:

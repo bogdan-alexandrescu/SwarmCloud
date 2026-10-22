@@ -16,8 +16,17 @@ EVERY CALL, IN THIS ORDER, BEFORE ANYTHING IS READ FOR IT:
    `tenant_id` of the agent's choosing for a tool, a `namespace`, a `filter`
    -- is a 422, so no argument can widen what is read;
 2. the worker's ID token is the tuple's tenant's worker account, and the
-   attempt proof (`swarm-state-req/v1`, the key `state/open` registered) is
-   this attempt's (`AttemptState.call_get`: 401, 403);
+   attempt proof is this attempt's (`AttemptState.call_get`: 401, 403):
+   `swarm-state-req/v1` by a key registered for the `state` purpose
+   (`state/open`), OR `swarm-child-req/v1` by a key registered for the
+   `child` purpose (`/child-key`, or `state/open` from a protected heap) --
+   BGD, 2026-10-22 08:54Z: "Also accept the child-purpose proof
+   (swarm-child-req/v1) on the read route", so a tenant not switched to the
+   state routes reads too. Either proof covers the path WITH its query and
+   is verified against THIS attempt's registration for ITS purpose; a
+   failure of both is the one 403, worded as the state one, so the answer
+   is no oracle on which purpose a key carries. Everything after this step
+   is the same for both;
 3. the attempt's budget: `CALLS_PER_HOUR` per attempt (429);
 4. ONE read of the task and the lease, and the fence (`fence_reason`, the
    state routes' own): a stale generation, a released lease, a task that left
@@ -61,7 +70,9 @@ from swarm_common.states import TaskState
 
 from .agent_output import AgentOutputService
 from .attemptstate import AttemptFenced, AttemptState, fence_reason, jsonable
+from .attemptstate import AttemptUnproven
 from .childkey import AttemptTuple
+from .children import ChildUnproven
 from .errors import ApiError, NotFound, ValidationFailed
 from .issueruns import IssueRuns
 from .ratelimit import TokenBucketLimiter
@@ -478,7 +489,7 @@ class AttemptReads:
              authorization: str | None, proof: str | None, timestamp: str | None,
              signed_path: str) -> dict[str, Any]:
         args = tool_arguments(tool, params)
-        attempt = self._state.call_get(
+        attempt = self._prove(
             attempt_id, tenant_id=tenant_id, task_id=task_id, lease_id=lease_id,
             generation=generation, authorization=authorization, proof=proof,
             timestamp=timestamp, signed_path=signed_path)
@@ -488,6 +499,31 @@ class AttemptReads:
         masked, count = JsonMasker(result, literals=literals).value(result)
         return {"ok": True, "tool": tool, "tenant_id": tenant, "result": masked,
                 "redaction": {"applied_at_read_time": True, "count": count}}
+
+    def _prove(self, attempt_id: str, *, tenant_id: str, task_id: str, lease_id: str,
+               generation: int, authorization: str | None, proof: str | None,
+               timestamp: str | None, signed_path: str) -> AttemptTuple:
+        """The worker token, then the state-purpose proof, else the child-purpose one.
+
+        `call_get` authenticates the worker first: a token refusal (401) is
+        never retried under the other purpose. Only its 403 falls through to
+        the child proof, which `ChildService.verify_proof` checks against the
+        registration's `child` purpose, the same skew and the same path WITH
+        its query. Its refusal is re-raised as the state route's own 403."""
+        try:
+            return self._state.call_get(
+                attempt_id, tenant_id=tenant_id, task_id=task_id, lease_id=lease_id,
+                generation=generation, authorization=authorization, proof=proof,
+                timestamp=timestamp, signed_path=signed_path)
+        except AttemptUnproven as unproven:
+            state_refusal = unproven
+        attempt = AttemptTuple(tenant_id, task_id, attempt_id, lease_id, generation)
+        try:
+            self._state.children.verify_proof(attempt, method="GET", path=signed_path,
+                                              body=b"", proof=proof, timestamp=timestamp)
+        except ChildUnproven:
+            raise state_refusal from None
+        return attempt
 
     def _read_doc(self, collection: str, doc_id: str) -> dict[str, Any] | None:
         snap = self._ctx.db.collection(collection).document(doc_id).get()

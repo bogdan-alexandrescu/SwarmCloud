@@ -547,6 +547,15 @@ class ChildPath:
         self._search: Any = None
         #: Why this attempt has no search tool, once decided; None while it has it.
         self.search_unavailable: str | None = "not_prepared"
+        #: Whether the attempt key was registered by `state/open` for the
+        #: `state` purpose (`adopt`): the state reads sign under
+        #: `swarm-state-req/v1` then, and under `swarm-child-req/v1` otherwise.
+        self.state_signed = False
+        #: The state reads' relay (`statemcp.relay.StateReads`), built once by
+        #: `prepare` when the attempt is offered them; None otherwise.
+        self._state_reads: Any = None
+        #: Why this attempt has no state reads, once decided; None while it has them.
+        self.state_reads_unavailable: str | None = "not_prepared"
 
     @property
     def keyed(self) -> bool:
@@ -704,6 +713,7 @@ class ChildPath:
             return
         self._key = key
         self.unavailable = None
+        self.state_signed = "state" in purposes
         self.search_flag = payload.get("search_tool") is True
         self.log.info("child path registered for this attempt", registered_by="state/open")
 
@@ -774,6 +784,7 @@ class ChildPath:
             clone_base=clone_base, private_dir=private_dir, logs_dir=logs_dir, store=store,
         ))
         env.update(self._prepare_search(work))
+        env.update(self._prepare_state_reads(work))
         return env
 
     def _prepare_search(self, work: Path) -> dict[str, str]:
@@ -817,6 +828,47 @@ class ChildPath:
         self.search_unavailable = None
         self.log.info("search tool offered for this attempt")
         return self._search.prepare(work)
+
+    def _prepare_state_reads(self, work: Path) -> dict[str, str]:
+        """The state reads' spool (`$SWARM_STATE`), when this attempt holds a key.
+
+        Every keyed attempt is offered them (docs/design/agent-autonomy.md
+        §3.4): a key `state/open` registered for the state purpose signs under
+        `swarm-state-req/v1`, any other registered key -- the child purpose,
+        `/child-key`'s -- under `swarm-child-req/v1`, which swarm-api accepts
+        on the read route (BGD, 2026-10-22 08:54Z). `no_attempt_key` only when
+        the worker holds no key: no nonce, a refused registration, a
+        tombstone or an unprotected heap's state-only key, which `adopt`
+        never takes. Built once, so the relay's hourly budget survives the
+        credential reload's rebuild of the environment.
+        """
+        if self._state_reads is not None:
+            return self._state_reads.prepare(work)
+        if self._key is None or self._api is None:
+            self.state_reads_unavailable = "no_attempt_key"
+            return {}
+        from .statemcp import relay as state_relay  # lazy: it imports this module
+
+        self._state_reads = state_relay.StateReads(
+            state_relay.StateReadsConfig(
+                tenant_id=self.cfg.tenant_id,
+                task_id=self.cfg.task_id,
+                attempt_id=self.cfg.attempt_id,
+                lease_id=self.cfg.lease_id,
+                generation=int(self.cfg.generation),
+                purpose=state_relay.PURPOSE_STATE if self.state_signed
+                else state_relay.PURPOSE_CHILD,
+            ),
+            sign=self._key.sign,
+            api=self._api,
+            logger=self.log,
+            clock=self._clock,
+            wall=self._wall,
+        )
+        self.state_reads_unavailable = None
+        self.log.info("state reads offered for this attempt",
+                      purpose=self._state_reads.cfg.purpose)
+        return self._state_reads.prepare(work)
 
     def _prepare_children(self, work: Path) -> dict[str, str]:
         if not self.offered:
@@ -982,6 +1034,7 @@ class ChildPath:
             self._has_child_requests(work)
             or (self._git is not None and self._git.has_requests(work))
             or (self._search is not None and self._search.has_requests(work))
+            or (self._state_reads is not None and self._state_reads.has_requests(work))
         )
 
     def _has_child_requests(self, work: Path) -> bool:
@@ -1015,6 +1068,11 @@ class ChildPath:
         # same fenced exit as the git tools' (invariant 5).
         if self._search is not None and self._clock() < deadline:
             answered += self._search.tick(work, limit=SEARCH_REQUESTS_PER_TICK)
+        # The state reads', after the search tool's, on the same budget. A
+        # fenced read raises `statemcp.relay.StateReadsFenced`, a
+        # `ChildSubmitFenced`: the same fenced exit (invariant 5).
+        if self._state_reads is not None and self._clock() < deadline:
+            answered += self._state_reads.tick(work, limit=SEARCH_REQUESTS_PER_TICK)
         return answered
 
     def _tick_children(
