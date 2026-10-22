@@ -8,12 +8,13 @@
 //   a11y-keyboard-003  Every capacity table is named by the heading above it.
 //   capacity-004       An `unknown` quota row is not drawn in the exhausted red.
 //   capacity-002       Accounts' remove button is drawn off until it is armed.
-//   pools Set by       The configured case is the word, as on Pool limits (QA-099).
+//   pools Set by       The configured case is the faint dot on Pools; the word
+//                      is Pool limits' alone (owner decision 2026-10-22, c14).
 //
 //   capacity-007      A scroll stops a Pools or matrix row below the sticky
 //                     head, not under it (lane QAFIX3-CAPACITY-HEADER).
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AccountsBoard } from '../api'
@@ -322,19 +323,25 @@ describe('capacity-002: Accounts\' remove button is drawn off until it is armed'
   })
 })
 
-describe('Pools Set by: the configured case is the word, as on Pool limits (QA-099)', () => {
-  it('prints `configured` in the dim ink, and an override in full ink', async () => {
+describe('Pools Set by: the configured case is the faint dot, the word only on Pool limits (owner decision 2026-10-22, c14)', () => {
+  it('draws `configured` as a faint `·` named configured, and an override in full ink', async () => {
     await renderPools()
     const cfg = rowOf('global').querySelector<HTMLElement>('td[data-label="Set by"]')!
-    // MUTATION: put the `·` back (Capacity.tsx PoolRow) -- the cell reads as
-    // empty to a sighted reader, which is what QA-099 fixed on Pool limits.
-    expect(cfg.textContent).toBe('configured')
-    const word = cfg.querySelector<HTMLElement>('.cap-setby-cfg')!
-    expect(word.getAttribute('title')).toMatch(/^configured\. /)
+    // MUTATION: put the word `configured` back in the cell (Capacity.tsx
+    // PoolRow, as PR 1853 had it) -- owner decision 2026-10-22, c14: the dot
+    // on Pools, the word on Pool limits only.
+    expect(cfg.textContent).toBe('·')
+    // MUTATION: drop `role="img"` or its `aria-label` -- a reader hears a
+    // bare middle dot, not what set the ceiling.
+    const dot = within(cfg).getByRole('img', { name: 'configured' })
+    expect(dot.className).toBe('cap-setby-cfg')
+    // MUTATION: drop `title={by.detail}` from the cell -- the dot loses the
+    // only place that says where the ceiling was configured.
+    expect(cfg.getAttribute('title')).not.toBeNull()
     for (const theme of THEMES) {
-      // MUTATION: draw the word in `--text` -- 28 `configured` rows in ink
-      // drown the one that says `AIMD back-off` (G5-19).
-      expect(painted(word, 'color', { ...WIDE, theme })).toBe('var(--text-dim)')
+      // MUTATION: draw the dot in `--text-dim` (PR 1853's word ink) -- c14
+      // asks for the faint dot, quieter than a word.
+      expect(painted(dot, 'color', { ...WIDE, theme })).toBe('var(--text-faint)')
     }
     expect(rowOf('tenant:eng').querySelector('td[data-label="Set by"]')!.textContent).toBe('AIMD back-off')
   })
