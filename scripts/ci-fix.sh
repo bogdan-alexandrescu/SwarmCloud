@@ -9,7 +9,8 @@
 # from a laptop (#248 and #249, 2026-09-28).
 #
 #   scripts/ci-fix.sh run        the whole attempt, from the environment below
-#   scripts/ci-fix.sh excerpt    stdin: `gh run view --log-failed`;
+#   scripts/ci-fix.sh excerpt    stdin: `gh run view --log-failed`'s shape
+#                                (what `failed_jobs` writes);
 #                                stdout: the redacted, capped excerpt
 #
 # `run` reads GITHUB_REPOSITORY, CI_FIX_RUN_ID, CI_FIX_HEAD_BRANCH and
@@ -36,8 +37,10 @@
 #      409 `ci_fix_lane_owns_pr` naming the merge step
 #      (swarm_api.cifix.CiFixLaneOwnsPr). This script makes no read of its
 #      own, and on that answer logs the skip, comments nothing and passes.
-#   2. The failed jobs' log goes through `redact` BEFORE anything else reads
-#      it, then is cut to each job's tail and capped. A CI log is exactly where
+#   2. Every failed job's log is read through the Actions API (`failed_jobs`)
+#      and goes through `redact` BEFORE anything else reads it, then is cut
+#      at the step that failed, narrowed to the lines that name the failure
+#      and capped (`excerpt`). A CI log is exactly where
 #      a token turns up, and the excerpt is about to be stored in a task's
 #      input and rendered to an agent.
 #   3. It submits a ONE-STEP WORKFLOW through the swarm API: the `claude-code`
@@ -85,6 +88,11 @@ MAX_FIX_ATTEMPTS=2
 # signal: the agent has the branch and can run the failing test itself.
 LOG_EXCERPT_MAX_BYTES=16384
 
+# Lines a vitest `FAIL` block keeps under its `FAIL` line: the assertion, the
+# Expected/Received diff and the code frame, unless vitest's separator ends it
+# first. The same number as issueci.FAILURE_BLOCK_LINES.
+FAILURE_BLOCK_LINES=30
+
 # The runner profile the fix runs as, BY NAME (invariant 10). Named `PROFILE`
 # (not `FIX_RUNNER_PROFILE`) so scripts/lib/check-contract-parity.sh's script
 # runner inputs scan -- which reads a literal `PROFILE="..."` assignment next
@@ -108,44 +116,119 @@ TASK_BRANCH_RE='^swarm/(task_[0-9a-f]{20})$'
 # The excerpt
 # ---------------------------------------------------------------------------
 
-# stdin: `gh run view --log-failed`, one line per log line, as
+# stdin: one line per log line, as `gh run view --log-failed` prints them and
+# as `failed_jobs` below does,
 #   <job> TAB <step> TAB <timestamp> <text>
-# stdout: per failed job, a header and the tail of its log, the whole at most
-# LOG_EXCERPT_MAX_BYTES. Colour codes and timestamps are removed; everything
-# passes through `redact` before it is selected, so what is cut is already
-# masked.
+# stdout: per failed job, a header and what names its failure, the whole at
+# most LOG_EXCERPT_MAX_BYTES. Colour codes and timestamps are removed;
+# everything passes through `redact` before it is selected, so what is cut is
+# already masked.
+#
+# WHAT IS KEPT OF A JOB (CIFIX-EXCERPT, part of #1914). Its log is cut where
+# the failed step ended -- the first `##[error]Process completed with exit
+# code`, else the line before `Post job cleanup` -- so the runner's git
+# cleanup never takes the room. Of what is left, the lines that name a
+# failure are kept in order: a vitest `FAIL <file> > <test>` line with the
+# block under it (the assertion, Expected/Received, the code frame; at most
+# FAILURE_BLOCK_LINES, or to vitest's next separator), pytest's `FAILED` and
+# `ERROR` node ids, its `E` lines, `path.py:N: Error`, the short summary and
+# the count line, and every `##[error]`. A job with none of those but its
+# exit line keeps its plain tail. Measured on PR 1905: the plain 3,000-byte
+# tail of "swarm-ui component tests (2/4)" was half post-job cleanup, and the
+# failing test sat just above it. Jobs keep their order, except that a gate
+# over `needs` (`ci-gate`), whose log only restates other jobs, comes last.
+# The same rules, in Python, build the merge step's round
+# (apps/swarm-api/swarm_api/issueci.py, `_log_failures`, `_excerpt_order`).
 excerpt() {
   local esc=$'\033'
-  sed -E "s/${esc}\\[[0-9;]*[A-Za-z]//g" \
+  sed -E "s/${esc}\\[[0-9;]*[A-Za-z]//g; s/\\r\$//" \
     | redact \
-    | LC_ALL=C awk -F '\t' -v max="${LOG_EXCERPT_MAX_BYTES}" '
+    | LC_ALL=C awk -F '\t' -v max="${LOG_EXCERPT_MAX_BYTES}" -v block="${FAILURE_BLOCK_LINES}" '
+        function is_gate(name) { return tolower(name) ~ /(^|[ _\/-])gate$/ }
+        function is_fail(text) { return text ~ /^[[:space:]]*FAIL[[:space:]]+[^[:space:]]/ }
+        function names_failure(text) {
+          return text ~ /^(FAILED |ERROR |E  |[^ ]+\.py:[0-9]+: [A-Za-z_]|=+ short test summary info|=* ?[0-9]+ (failed|error)|[[:space:]]*(Test Files|Tests)[[:space:]]+[0-9]+ failed)/ \
+            || index(text, "##[error]") > 0
+        }
+        function step_failed(text) { return index(text, "##[error]Process completed with exit code") > 0 }
         {
           job = "log"; text = $0
           if (NF >= 3) {
             job = $1
             text = $3
             for (i = 4; i <= NF; i++) text = text "\t" $i
-            sub(/^[0-9-]+T[0-9:.]+Z /, "", text)
+            sub(/^[0-9-]+T[0-9:.]+Z ?/, "", text)
           }
           if (!(job in count)) { order[++jobs] = job; count[job] = 0 }
           lines[job, ++count[job]] = text
         }
         END {
           if (jobs == 0) exit
+          k = 0
+          for (j = 1; j <= jobs; j++) if (!is_gate(order[j])) sorted[++k] = order[j]
+          for (j = 1; j <= jobs; j++) if (is_gate(order[j])) sorted[++k] = order[j]
           # An equal share each: a cap that kept only the LAST job would hand
           # the fixer one failure and leave the pull request red on the rest.
           budget = int(max / jobs)
           for (j = 1; j <= jobs; j++) {
-            job = order[j]
+            job = sorted[j]
             header = "=== failed job: " job " ==="
             left = budget - length(header) - 1
-            first = count[job] + 1
-            for (n = count[job]; n >= 1 && left > 0; n--) {
+            if (left < 0) continue
+            # The failed step ends here; what follows is post-job cleanup.
+            last = count[job]
+            for (n = 1; n <= count[job]; n++) {
+              if (step_failed(lines[job, n])) { last = n; break }
+              if (lines[job, n] ~ /^Post job cleanup/) { last = n - 1; break }
+            }
+            found = 0
+            for (n = 1; n <= last; n++) keep[n] = 0
+            n = 1
+            while (n <= last) {
+              text = lines[job, n]
+              if (is_fail(text)) {
+                keep[n] = 1; found = 1
+                stop = n + block; if (stop > last) stop = last
+                for (m = n + 1; m <= stop; m++) {
+                  if (index(lines[job, m], "\342\216\257\342\216\257\342\216\257") > 0 || is_fail(lines[job, m])) break
+                  keep[m] = 1
+                }
+                n = m
+                continue
+              }
+              if (names_failure(text)) {
+                keep[n] = 1
+                if (!step_failed(text)) found = 1
+              }
+              n++
+            }
+            print header
+            if (found) {
+              # The failure lines, from the first, with a gap marked.
+              for (n = 1; n <= last && left > 0; n++) {
+                if (!keep[n]) continue
+                text = lines[job, n]
+                if (n > 1 && !keep[n - 1] && kept > 0) {
+                  if (left < 6) break
+                  print "[...]"; left -= 6
+                }
+                size = length(text) + 1
+                if (size > left) {
+                  if (kept == 0) print substr(text, 1, left - 1)
+                  break
+                }
+                print text; left -= size; kept++
+              }
+              kept = 0
+              continue
+            }
+            first = last + 1
+            for (n = last; n >= 1 && left > 0; n--) {
               size = length(lines[job, n]) + 1
               if (size > left) {
                 # A line longer than what is left: its tail, if nothing of
                 # this job has been kept yet, so every job says something.
-                if (first > count[job]) {
+                if (first > last) {
                   lines[job, n] = substr(lines[job, n], size - left + 1)
                   first = n
                 }
@@ -154,11 +237,35 @@ excerpt() {
               left -= size
               first = n
             }
-            if (left < 0) continue
-            print header
-            for (n = first; n <= count[job]; n++) print lines[job, n]
+            for (n = first; n <= last; n++) print lines[job, n]
           }
         }'
+}
+
+# failed_jobs REPO RUN: every failed job of the run, read through the Actions
+# API, on stdout in the shape `excerpt` reads (`<job> TAB log TAB <line>`).
+# Not `gh run view --log-failed`: on run 39703499595 (PR 1905) that returned
+# 106 lines, all from `ci-gate`, and none from the three failed jobs whose
+# names contain `/` ("swarm-ui component tests (2/4)", "(4/4)", "swarm-ui
+# typecheck / component tests"). The job's name travels through the
+# environment, never as awk program text or a -v escape.
+failed_jobs() {
+  local repo="$1" run_id="$2" id name read=0
+  gh api --paginate "repos/${repo}/actions/runs/${run_id}/jobs?per_page=100" \
+    | jq -r '.jobs[]
+        | select(.conclusion == "failure" or .conclusion == "timed_out")
+        | [(.id | tostring), (.name // "job" | gsub("[\t\r\n]"; " "))] | @tsv' \
+    >"${WORK}/jobs.tsv"
+  while IFS=$'\t' read -r id name; do
+    [[ "${id}" =~ ^[0-9]+$ ]] || continue
+    if ! gh api "repos/${repo}/actions/jobs/${id}/logs" >"${WORK}/job.log"; then
+      warn "the log of job ${id} (${name}) could not be read; the excerpt goes without it"
+      continue
+    fi
+    JOB_NAME="${name}" awk '{ print ENVIRON["JOB_NAME"] "\tlog\t" $0 }' "${WORK}/job.log"
+    read=$((read + 1))
+  done <"${WORK}/jobs.tsv"
+  info "read the log of ${read} failed job(s) of run ${run_id}"
 }
 
 # ---------------------------------------------------------------------------
@@ -290,7 +397,7 @@ run_fix() {
   fi
   local attempt=$((made + 1))
 
-  gh run view "${run_id}" --repo "${repo}" --log-failed >"${WORK}/log"
+  failed_jobs "${repo}" "${run_id}" >"${WORK}/log"
   excerpt <"${WORK}/log" >"${WORK}/excerpt"
   if [[ ! -s "${WORK}/excerpt" ]]; then
     {
