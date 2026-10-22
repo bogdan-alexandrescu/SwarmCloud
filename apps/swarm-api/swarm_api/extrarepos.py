@@ -209,7 +209,7 @@ class Resolver:
         if not takes_additional_repositories(profile):
             raise AdditionalRepositoriesUnsupportedProfile(
                 f"{_where(step_id)}runner profile {profile.name!r} does not take additional "
-                "repositories: only an agent profile on GKE does (generic, claude-code, codex, "
+                "repositories: only an agent profile on GKE does (generic, claude-code, claude-code-large, codex, "
                 "browser, claude-code-browser). On a workflow, give this step "
                 "`additional_repositories: []`",
                 detail={**where, "runner_profile": profile.name},

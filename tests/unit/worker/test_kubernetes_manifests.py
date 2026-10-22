@@ -384,10 +384,16 @@ def test_the_quota_fits_the_pod_ceiling_of_every_gke_profile(tenant_docs):
     pods = int(hard["pods"])
     gke = {p.resource_class for p in RUNNER_PROFILES.values() if p.backend.value == "GKE_AUTOPILOT"}
     assert "standard" in gke, gke
+    # The ceiling is in UNITS: every pool admission charges counts a task at
+    # its class's units (contract request 79), so the 100 the GKE_AUTOPILOT
+    # pool admits are 100 standard pods or 25 `large` ones (4 units each,
+    # claude-code-large since contract request 113), never 100 of them.
     for name in sorted(gke):
         rc = RESOURCE_CLASSES[name]
-        assert pods * rc.cpu <= _cores(hard["requests.cpu"]), name
-        assert pods * rc.cpu_limit_cores <= _cores(hard["limits.cpu"]), name
+        admitted = pods // rc.units
+        # MUTATION: drop `// rc.units` and `large` needs 800 cores of a 400-core line.
+        assert admitted * rc.cpu <= _cores(hard["requests.cpu"]), name
+        assert admitted * rc.cpu_limit_cores <= _cores(hard["limits.cpu"]), name
 
 
 def test_the_limit_range_default_cannot_produce_a_burstable_pod(tenant_docs):

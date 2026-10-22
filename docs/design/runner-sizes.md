@@ -160,7 +160,7 @@ From `RUNNER_PROFILES` (`backend=`):
 
 | backend | profiles (class) |
 |---|---|
-| GKE Autopilot | `claude-code` (standard), `codex` (standard), `generic` (standard), `merge` (standard), `indexer` (standard), `browser` (browser), `claude-code-browser` (browser, `live_browser`) |
+| GKE Autopilot | `claude-code` (standard), `claude-code-large` (large, 14,400 s; contract request 113), `codex` (standard), `generic` (standard), `merge` (standard), `indexer` (standard), `browser` (browser), `claude-code-browser` (browser, `live_browser`) |
 | Cloud Run Jobs | `mock` (standard), `post-verdict` (standard, its own Job's account), `claude-code-review` (standard, its own account), `await-input` (standard, `control_plane`: never reserved, never run) |
 
 `terraform/infra/locals.tf` `cloud_run_fallback_profiles` keeps Cloud Run
@@ -497,9 +497,10 @@ phase 1 is wasted.
   (`dispatch.py` `LIVE_DISPLAY_SHARE` comment, `docs/browser-startup-speed.md`
   §11), so 2 guaranteed with room to 3 keeps what it had for Chromium's
   spikes while the agent gets its 2. Pod limit 7, pod request 4.
-* **`large`** is reached by no profile today (every profile names
-  `standard` or `browser`, and a step only shrinks); it gets the same ratio
-  so it is consistent when a profile does name it. Its limit of 16 exceeds
+* **`large`** was reached by no profile when this was written (every
+  profile named `standard` or `browser`, and a step only shrinks); it got the
+  same ratio so it would be consistent when a profile named it. Since
+  2026-10-22 `claude-code-large` does (contract request 113, §1a.3). Its limit of 16 exceeds
   Cloud Run's 8 — which is fine because the ceiling binds the **request**
   (§2.5), and the frozen validator says so (RS-2).
 * **Every request ratio is inside Autopilot's 1:1 to 1:6.5**: standard 1:2,

@@ -71,8 +71,8 @@ LARGEST_REACHABLE = max(CLASSES[p["resource_class"]]["units"] for p in PROFILES.
 HEAVY = max(CLASSES, key=lambda name: CLASSES[name]["units"])
 HEAVY_UNITS = CLASSES[HEAVY]["units"]
 HEAVY_POOL = f"resource:{HEAVY}"
-#: A profile on that class, served only where a test says so: since contract
-#: request 79 no real profile reaches a class above 1 unit.
+#: A profile on that class, served only where a test says so. Until contract
+#: request 113 (2026-10-22, claude-code-large) no real profile reached it.
 HEAVY_PROFILE = {"image": "agent-runtime-base", "resource_class": HEAVY,
                  "backend": "GKE_AUTOPILOT", "provider": None}
 
@@ -217,10 +217,13 @@ def test_zero_is_a_deliberate_stop_and_is_not_warned(harness) -> None:
 
 
 def test_global_is_judged_against_the_largest_class_any_profile_reaches(harness) -> None:
-    # The real catalogue: every profile is 1 unit (contract request 79), so a
-    # global limit of 1 shuts nothing out.
-    assert LARGEST_REACHABLE == 1
-    quiet = harness["run"]("--pool", "global", "--limit", "1")
+    # The real catalogue: since contract request 113 (owner, 2026-10-22)
+    # claude-code-large reaches `large`, 4 units, so a global limit of 3 shuts
+    # it out and 4 does not.
+    assert LARGEST_REACHABLE == HEAVY_UNITS == 4
+    shut = harness["run"]("--pool", "global", "--limit", str(HEAVY_UNITS - 1))
+    assert NEVER in shut.stderr, shut.stderr
+    quiet = harness["run"]("--pool", "global", "--limit", str(HEAVY_UNITS))
     assert NEVER not in quiet.stderr, quiet.stderr
 
     # One profile on the heaviest class, and the same limit now warns.
