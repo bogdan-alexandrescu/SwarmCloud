@@ -56,6 +56,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from .qaidentity import OP as QA_IDENTITY_OP
+from .qatarget import OP as QA_SIGN_IN_OP
 from .session import OPS as SESSION_OPS
 from .tabs import OPS as TABS_OPS
 
@@ -90,8 +91,15 @@ KEY_BYTES = 32
 #:   credential, expires_in}` sets or renews it, `{failed: cause}` clears it
 #:   (qaidentity.py; docs/design/qa-identity.md §4.4, QI-GATE). Refused once
 #:   the attempt's wipe has run. Like the tickets, never logged.
+#: * `qa_sign_in` -- the attempt's QA target (qatarget.py;
+#:   docs/design/visual-qa-any-app.md §2.2, VQ-4): its public settings and,
+#:   for an app with its own login, the test account's username and password,
+#:   which the gate types on a tab of its own with the agent held; `{poll:
+#:   true}` reads how that sign-in ended. Accepted only on this registered
+#:   channel, refused once the attempt's wipe has run, and, like the tickets,
+#:   never logged: the handler's log line names the operation and outcome only.
 OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "theme", "status",
-                 "egress_ticket", "browser_tools", QA_IDENTITY_OP}) | SESSION_OPS | TABS_OPS
+                 "egress_ticket", "browser_tools", QA_IDENTITY_OP, QA_SIGN_IN_OP}) | SESSION_OPS | TABS_OPS
 
 #: The first start's marker, in the sidecar's own /tmp (§3.1; the dispatcher
 #: mounts that volume in the sidecar only). Directly in /tmp, not a subdirectory:

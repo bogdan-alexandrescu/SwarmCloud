@@ -6,6 +6,7 @@
     swarm-handoff status
     swarm-handoff device PRESET
     swarm-handoff theme dark|light|system
+    swarm-handoff sign-in
     swarm-handoff record start NAME [--interval-ms N]
     swarm-handoff record stop
     swarm-handoff serve DIR [--port N]
@@ -32,6 +33,16 @@ Exits:
      3  the wait expired; the worker is checkpointing and parking
      4  the task is being cancelled
      5  refused (rate limit, no live path, reason invalid)
+
+SIGNING IN AGAIN TO A QA TARGET (VQ-4, docs/design/visual-qa-any-app.md
+§2.3). When a visual-QA step sees its target's login page again, `sign-in`
+asks the worker to have the live gate sign in once more: the worker asks
+swarm-api for the target again and the gate types the test account on a tab
+of its own while this agent is held. The agent never holds the password and
+never types it. At most three sign-ins an attempt; a login that asks for MFA
+or a CAPTCHA is refused with its reason and never handed to a person. Exits
+0 when signed in, 5 when refused (no target, exhausted, a challenge, or the
+gate could not sign in).
 
 FLOW GIFS (QA-FLOWS, owner decision 2026-10-19, part of #1649). `record start`
 launches a recorder in the background, detached from the agent's shell, and
@@ -113,6 +124,9 @@ EXIT_STILL_WAITING = 75
 WAIT_SECONDS = 9 * 60
 #: A device switch is answered on the worker's next poll (10 s).
 DEVICE_WAIT_SECONDS = 30
+#: A sign-in is answered once the gate has signed in: up to a minute of the
+#: gate's own bounds, plus the worker's poll on either side.
+SIGN_IN_WAIT_SECONDS = 120
 #: The colour schemes `theme` takes (QA-KIT): `agent_worker.livegate.presets.THEMES`,
 #: restated because this runs under any Python the image carries; a unit test
 #: holds them equal. `system` lifts the override.
@@ -327,6 +341,22 @@ def cmd_theme(args, root):
         return _refuse("no_answer", "the worker did not answer the theme change")
     _out(answer)
     return EXIT_RETURNED if answer.get("outcome") == "applied" else EXIT_REFUSED
+
+
+def cmd_sign_in(args, root):
+    why = _unavailable(root)
+    if why:
+        return _refuse(why, "this attempt has no live browser path")
+    request_id = "s-" + secrets.token_hex(6)
+    _write_atomic(root / "sign-ins" / (request_id + ".json"), {})
+    answer = _await(root, request_id, args.max_seconds, args.poll)
+    if answer is None:
+        return _refuse("no_answer", "the worker did not answer the sign-in in time")
+    if answer.get("outcome") == "applied":
+        _out(answer)
+        return EXIT_RETURNED
+    _out({**answer, "next": NEXT[EXIT_REFUSED]})
+    return EXIT_REFUSED
 
 
 # -- flow GIFs (QA-FLOWS) -------------------------------------------------------
@@ -897,6 +927,9 @@ def build_parser():
     theme.add_argument("theme", choices=THEMES)
     theme.add_argument("--max-seconds", type=float, default=DEVICE_WAIT_SECONDS, help=argparse.SUPPRESS)
     theme.add_argument("--poll", type=float, default=POLL_SECONDS, help=argparse.SUPPRESS)
+    sign_in = sub.add_parser("sign-in", help="have the live gate sign in to this run's QA target again")
+    sign_in.add_argument("--max-seconds", type=float, default=SIGN_IN_WAIT_SECONDS, help=argparse.SUPPRESS)
+    sign_in.add_argument("--poll", type=float, default=POLL_SECONDS, help=argparse.SUPPRESS)
     record = sub.add_parser("record", help="record a flow as $SWARM_ARTIFACTS_DIR/flows/<name>.gif")
     record.add_argument("action", choices=("start", "stop", "_run"))
     record.add_argument("name", nargs="?")
@@ -918,7 +951,7 @@ def main(argv=None):
     if root is None:
         return _refuse("no_live_path", "this task has no live browser ($SWARM_HANDOFF is not set)")
     handler = {"request": cmd_request, "wait": cmd_wait, "status": cmd_status, "device": cmd_device,
-               "theme": cmd_theme, "record": cmd_record}
+               "theme": cmd_theme, "sign-in": cmd_sign_in, "record": cmd_record}
     return handler[args.command](args, root)
 
 
