@@ -280,7 +280,12 @@ describe('QA-115: a failed task’s success line is not offered as its cause', (
     render(<AgentLogs task={failedTask()} />)
     const dock = screen.getByRole('region', { name: 'Logs' })
     // MUTATION: drop the note in `AgentLogs` -- `result · success · 7 turns` ends a FAILED task's log unexplained.
-    const note = await within(dock).findByRole('note')
+    // The finished log's `Ended · complete log` chip is a note too (QAFIX4-AGENT-PANES); this is the other one.
+    const note = await waitFor(() => {
+      const found = within(dock).getAllByRole('note').find((n) => !n.matches('.ag-logs-final'))
+      expect(found).toBeDefined()
+      return found!
+    })
     expect(note.textContent).toMatch(/This agent failed after its CLI reported success/)
     // MUTATION: leave the error out of the note -- the reader is sent elsewhere to learn the cause.
     expect(within(note).getByText('exit status 1').tagName).toBe('CODE')
@@ -294,7 +299,7 @@ describe('QA-115: a failed task’s success line is not offered as its cause', (
     const dock = screen.getByRole('region', { name: 'Logs' })
     await waitFor(() => expect(dock.textContent).toContain('step 2'))
     // MUTATION: draw the note on every failed task -- it would claim a success the transcript never wrote.
-    expect(within(dock).queryByRole('note')).toBeNull()
+    expect(within(dock).queryAllByRole('note').filter((n) => !n.matches('.ag-logs-final'))).toEqual([])
   })
 
   it('names the error button by what it counts: lines, not errors', async () => {
