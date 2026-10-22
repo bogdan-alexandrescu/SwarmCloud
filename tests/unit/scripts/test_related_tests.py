@@ -15,6 +15,7 @@ this checkout with `--files`, which reads a fixture diff instead of git.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -309,3 +310,102 @@ def test_run_executes_each_named_run_in_turn_in_the_foreground(tmp_path):
                for c in calls), calls
     assert any(c.startswith("uv run pytest ") or "|uv run pytest " in c for c in calls), calls
     assert len(calls) == len(_commands(result.stdout))
+
+
+# --- the stylesheet guards (RELATED-CSS-GUARDS, part of #1914) ---------------
+#
+# Measured 2026-10-22 on PR 1905: it changed apps/swarm-ui/src/styles/
+# intake.css and declared `.rn-filters > .c-seg > button` twice in one media
+# block. CI's stylesheet.gate.test.ts and sections.stylesheet.test.ts refused
+# it; the lane's implement, fix and re-review agents ran this script and
+# changed-guards.sh and none of them ran those two files. Both read every
+# sheet from disk (`import.meta.glob`), so no import connects them to a
+# changed .css file and the import graph never selects them.
+
+GATE = "src/__tests__/stylesheet.gate.test.ts"
+SECTIONS = "src/__tests__/sections.stylesheet.test.ts"
+INTAKE = f"{UI}/src/styles/intake.css"
+
+
+def _with_stylesheet_guards(root: Path) -> None:
+    """The synthetic tree, plus the stylesheet guards as the checkout writes
+    them: they glob the sheets and import none of them."""
+    _tree(root)
+    _write(root, f"{UI}/src/styles/intake.css", ".rn-filters { gap: 4px }\n")
+    _write(root, f"{UI}/src/styles/capacity.css", ".cap { gap: 4px }\n")
+    _write(root, f"{UI}/src/styles.css", ":root { --x: 1 }\n")
+    for guard in (GATE, SECTIONS):
+        _write(root, f"{UI}/{guard}",
+               "const SHEETS = import.meta.glob<string>('../styles/*.css', "
+               "{ query: '?raw', import: 'default', eager: true })\n")
+
+
+def test_a_ui_stylesheet_change_selects_both_stylesheet_guards(tmp_path):
+    _with_stylesheet_guards(tmp_path)
+    got = _select(tmp_path, INTAKE)
+    vitest = _files(got["vitest"])
+    # MUTATION: drop the stylesheet-guard rule from related_tests.py (leave
+    # only the import graph) -> neither guard is selected and this is red.
+    assert GATE in vitest, vitest
+    assert SECTIONS in vitest, vitest
+
+
+def test_a_change_with_no_stylesheet_selects_no_stylesheet_guard(tmp_path):
+    _with_stylesheet_guards(tmp_path)
+    got = _select(tmp_path, f"{UI}/src/widget.ts", "apps/foo/foo/core.py")
+    vitest = _files(got["vitest"])
+    # MUTATION: add the stylesheet guards for every UI change (drop the
+    # `.css` test) -> both appear here and this is red.
+    assert GATE not in vitest and SECTIONS not in vitest, vitest
+
+
+def test_a_stylesheet_outside_swarm_ui_selects_no_stylesheet_guard(tmp_path):
+    _with_stylesheet_guards(tmp_path)
+    got = _select(tmp_path, "docs/assets/site.css", "apps/other/static/intake.css")
+    # MUTATION: match any path ending in .css instead of a .css under
+    # apps/swarm-ui/ -> the guards are selected here and this is red.
+    assert got["vitest"] == []
+
+
+def test_several_stylesheets_select_each_stylesheet_guard_once(tmp_path):
+    _with_stylesheet_guards(tmp_path)
+    got = _select(tmp_path, INTAKE, f"{UI}/src/styles/capacity.css", f"{UI}/src/styles.css")
+    flat = [f for run in got["vitest"] for f in run.split()]
+    # MUTATION: append the guards once per changed sheet (no de-duplication)
+    # -> each appears three times and this is red.
+    assert flat.count(GATE) == 1, flat
+    assert flat.count(SECTIONS) == 1, flat
+
+
+def test_every_stylesheet_guard_named_is_a_test_in_this_checkout():
+    # The selector imports select_unit_tests from its own directory, which it
+    # puts on sys.path itself.
+    spec = importlib.util.spec_from_file_location("related_tests_under_test", SELECTOR)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    guards = tuple(module.STYLESHEET_GUARDS)
+    # MUTATION: drop either guard from STYLESHEET_GUARDS -> red.
+    assert GATE in guards and SECTIONS in guards, guards
+    # MUTATION: rename or delete a listed guard without the list following
+    # (the selector would silently skip a file that is gone) -> red.
+    for guard in guards:
+        assert (REPO / UI / guard).is_file(), guard
+        assert module.is_vitest_file(guard), guard
+
+
+def test_the_script_selects_the_stylesheet_guards_for_intake_css_once(tmp_path):
+    diff = tmp_path / "diff.txt"
+    diff.write_text(f"{INTAKE}\n")
+    result = _run("--files", str(diff))
+    assert result.returncode == 0, result.stderr
+    listed = _listed(result.stdout)
+    # MUTATION: leave the selection to the import graph alone -> neither
+    # guard is listed for PR 1905's change, the measured miss.
+    assert listed.count(f"{UI}/{GATE}") == 1, listed
+    assert listed.count(f"{UI}/{SECTIONS}") == 1, listed
+    commands = _commands(result.stdout)
+    # MUTATION: list the guards but leave them out of the runs -> red.
+    assert sum(c.count(f" {GATE}") for c in commands) == 1, commands
+    assert sum(c.count(f" {SECTIONS}") for c in commands) == 1, commands
+    _assert_every_command_names_files(commands)
