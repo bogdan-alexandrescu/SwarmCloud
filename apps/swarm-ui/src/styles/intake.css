@@ -514,13 +514,10 @@
      row. And it runs the column wide, as the search box under it does
      (work-a-012). */
   .rn-filters > .c-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); flex: 1 1 100%; }
-  /* SQUARE CELLS IN A ROUNDED CONTROL (visual QA run 4, box comment
-     6298216578, 2026-10-22). Each cell still took `:where(.app button)`'s
-     radius (styles.css), so its right and top hairlines curved off at their
-     ends and every inner join was notched. The cells are square; the
-     control's own radius, with its `overflow: hidden`, rounds the four outer
-     corners. */
-  .rn-filters > .c-seg > button { margin-top: 0; border-top: 0; border-right: 1px solid var(--line); border-radius: 0; justify-content: center; }
+  /* The cells are square through the shared `.c-seg > button` rule
+     (components.css, box comment 6298216578): the control's own radius
+     rounds the grid's four outer corners. */
+  .rn-filters > .c-seg > button { margin-top: 0; border-top: 0; border-right: 1px solid var(--line); justify-content: center; }
   .rn-filters > .c-seg > button:nth-child(3n) { border-right: 0; }
   .rn-filters > .c-seg > button:nth-child(n+4) { border-top: 1px solid var(--line); }
   .in-choice { flex-direction: column; gap: 6px; }

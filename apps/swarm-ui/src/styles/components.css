@@ -312,7 +312,14 @@
   .c-tabs.ag-split-tabs > button { box-shadow: none; }
 }
 .c-seg { display: inline-flex; border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); overflow: hidden; background: var(--surface); height: var(--h-ctl); flex: none; align-self: flex-start; }
-.c-seg > button { padding: 0 12px; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); border: 0; border-right: 1px solid var(--line); display: flex; gap: 6px; align-items: center; white-space: nowrap; background: none; cursor: pointer; }
+/* SQUARE CELLS IN A ROUNDED CONTROL, IN EVERY SEGMENTED CONTROL AT EVERY
+   WIDTH (visual QA run 4, box comment 6298216578; owner decision 2026-10-22,
+   "Everywhere"). A cell otherwise takes `:where(.app button)`'s radius
+   (styles.css), so its hairlines curve off at their ends and every inner join
+   is notched. The cells -- in a row, wrapped, or stacked in a column
+   (`is-stack`) -- are square; the control's own radius, with its
+   `overflow: hidden`, rounds the four outer corners. */
+.c-seg > button { padding: 0 12px; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); border: 0; border-radius: 0; border-right: 1px solid var(--line); display: flex; gap: 6px; align-items: center; white-space: nowrap; background: none; cursor: pointer; }
 .c-seg > button:last-child { border-right: 0; }
 /* The link form: the same segment, for views that each have an address. */
 .c-seg > a { padding: 0 12px; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); border-right: 1px solid var(--line); display: flex; gap: 6px; align-items: center; white-space: nowrap; text-decoration: none; }
