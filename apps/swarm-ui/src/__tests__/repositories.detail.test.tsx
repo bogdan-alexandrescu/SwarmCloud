@@ -310,7 +310,7 @@ describe('the other tabs', () => {
 })
 
 describe('Settings A: schedule, languages, graph, selection policy, and the token that resolves', () => {
-  it('draws the six cards', async () => {
+  it('draws the seven cards', async () => {
     routes()
     await mount('settings')
     await loaded()
@@ -318,7 +318,8 @@ describe('Settings A: schedule, languages, graph, selection policy, and the toke
     const titles = Array.from(document.querySelectorAll('.ur-detail .c-card h2')).map((h) => visible(h))
     // Languages detected takes the full row under the two columns (V121).
     // Code intelligence (CTXQ-UI) sits under Graph: it is the graph's context, per repository.
-    expect(titles).toEqual(['Schedule and change trigger', 'Graph', 'Code intelligence', 'Selection policy', 'Resolved token', 'Languages detected'])
+    // Issue filing (AU0-REPORECORD) is drawn with a dash when the flag is not served, as here.
+    expect(titles).toEqual(['Schedule and change trigger', 'Issue filing', 'Graph', 'Code intelligence', 'Selection policy', 'Resolved token', 'Languages detected'])
   })
 
   it('languages: a route not served and an index carrying no languages say "not served yet", with no rows', async () => {

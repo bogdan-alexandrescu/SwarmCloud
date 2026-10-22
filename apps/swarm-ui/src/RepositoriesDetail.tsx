@@ -837,6 +837,7 @@ function SettingsTab({
           </Card>
           {/* Drawn only where the registration serves the fields: an API older than lane S11 has no card to show. */}
           {stops !== null && <HardStopsCard stops={stops} />}
+          <FileIssuesCard on={r.agents_may_file_issues} />
         </div>
         <div className="ur-stack">
           <Card title="Graph" className="ur-graph">
@@ -1175,6 +1176,26 @@ function HardStopsCard({ stops }: { stops: RepoHardStops }) {
           </div>
         ))}
       </div>
+    </Card>
+  )
+}
+
+/**
+ * Whether the tenant's agents may file issues here (AU-0 REG-FLAG,
+ * docs/design/agent-autonomy.md §3.2): the served value, shown and not
+ * changed. Its one control is on the Repositories list's card, for a
+ * workspace admin only (Q2); null is an API that did not serve it.
+ */
+function FileIssuesCard({ on }: { on: boolean | null }) {
+  return (
+    <Card title="Issue filing">
+      <p className="ur-meta ur-detail-file-issues" data-file-issues={on === null ? undefined : String(on)}>
+        <span>
+          Agents may file issues{' '}
+          {on === null ? <Dash why="Whether agents may file issues was not served" /> : <b>{on ? 'on' : 'off'}</b>}
+        </span>
+        <span>set on the Repositories list by a workspace admin</span>
+      </p>
     </Card>
   )
 }
