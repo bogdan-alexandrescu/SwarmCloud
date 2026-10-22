@@ -8,10 +8,12 @@ import {
   removeAccount,
   setAccountLending,
   setAccountModelClasses,
+  setAccountName,
   setAccountState,
   type AccountsBoard,
   type ServedAccount,
 } from './api'
+import { accountName } from './accountName'
 import { agentName } from './agentlist'
 import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
@@ -481,9 +483,13 @@ export function attentionRank(a: Account, scope: string | null): number | null {
   return null
 }
 
-/** Alphabetical, the way a reader sees the list: by label, then by id for two equal labels. */
+/**
+ * Alphabetical, the way a reader sees the list: by what each row's heading
+ * says -- its Name, or its label when it has none (#1913) -- then by id for
+ * two equal headings.
+ */
 function byName(a: Account, b: Account): number {
-  return a.label.localeCompare(b.label) || a.account_id.localeCompare(b.account_id)
+  return accountName(a).localeCompare(accountName(b)) || a.account_id.localeCompare(b.account_id)
 }
 
 /**
@@ -555,7 +561,7 @@ function Broken({
   const mine = broken.filter((a) => isOwned(a, scope))
   const lent = broken.filter((a) => !isOwned(a, scope))
   const owners = [...new Set(lent.map((a) => a.owner_tenant))]
-  const names = (xs: Account[]) => xs.map((a) => a.label).join(', ')
+  const names = (xs: Account[]) => xs.map((a) => accountName(a)).join(', ')
   return (
     <div className="acct-callout" role="status">
       <WarnMark />
@@ -572,10 +578,10 @@ function Broken({
                 <button
                   type="button"
                   className="acct-link"
-                  aria-label={`Sign in again to ${a.label}`}
+                  aria-label={`Sign in again to ${accountName(a)}`}
                   onClick={() => onOpen(a.account_id)}
                 >
-                  {mine.length === 1 ? 'Sign in again' : `Sign in again to ${a.label}`}
+                  {mine.length === 1 ? 'Sign in again' : `Sign in again to ${accountName(a)}`}
                 </button>
               </span>
             ))}
@@ -805,7 +811,7 @@ function Pool({
             two. Cancel brings the account back. A sign-in under way keeps both,
             so the pool can still be read while the provider's page is open. */}
         {!(adding && (ui.signin.kind === 'idle' || ui.signin.kind === 'start_failed')) && (
-          <section key={a.account_id} className="acct-pane-detail" aria-label={`Account ${a.label}`}>
+          <section key={a.account_id} className="acct-pane-detail" aria-label={`Account ${accountName(a)}`}>
             <Detail account={a} board={board} now={now} readAt={board.readAt} ui={ui} patch={patch} reload={reload} />
           </section>
         )}
@@ -856,7 +862,10 @@ function AcctItem({
         aria-current={chosen ? 'true' : undefined}
         onClick={onChoose}
       >
-        <b className="acct-li-name">{account.label}</b>
+        {/* THE NAME, IN PLACE OF THE LABEL (#1913): the owner's Name when it
+            has one, the label otherwise. The id under the button stays, so
+            the Name never hides which account this is. */}
+        <b className="acct-li-name">{accountName(account)}</b>
         {/* THE WINDOW IS NAMED AT THE FIGURE (QA G5-23): `69% 5h`. The
             list's % is always the five-hour window, and the only place that
             said so was the sub-line's `· 5h` -- which is the window Clears is
@@ -868,8 +877,8 @@ function AcctItem({
         </small>
       </button>
       <span className="acct-li-meta">
-        {/* The LABEL is the name `cs status` prints; the full id is what gets
-            pasted into a command. Both are here, neither transformed. */}
+        {/* The heading is the Name (or the label); the full id is what gets
+            pasted into a command, and is printed here untransformed. */}
         <span className="raw">{account.account_id}</span>
         {/* LAST GIVEN OUT, ON THE ROW (#127): a pool no worker can reach --
             every account `never` -- otherwise looks like a healthy idle one. */}
@@ -1376,6 +1385,107 @@ function Id({ children, className, after }: { children: string; className?: stri
   )
 }
 
+/**
+ * The pane's heading, and RENAME (#1913; owner decision 2026-10-22, BGD,
+ * "Editable display name").
+ *
+ * The heading is the account's Name, or its label when it has none. Rename
+ * edits the Name in place -- the field opens on the current Name and takes
+ * focus; Enter or Save sends it at once, with no sign-in; Escape or Cancel
+ * sends nothing -- and an emptied field CLEARS the Name, so the label shows
+ * again. A refusal is drawn in the broker's own words and the field stays, so
+ * the typed Name is not lost.
+ *
+ * Owner only, as lending and the served classes are: a borrower's Rename
+ * would be refused by the broker after the console had offered it. The id,
+ * the credential secret, the holds and the lending do not change, and work on
+ * the account goes on through a rename.
+ */
+function NameHead({ account, owned, reload }: { account: Account; owned: boolean; reload: () => void }) {
+  // null: not editing. A string: the field's text.
+  const [draft, setDraft] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<ApiError | null>(null)
+
+  if (draft === null) {
+    return (
+      <div className="acct-dhead-name">
+        <h3>{accountName(account)}</h3>
+        {owned && (
+          <Button
+            kind="ghost"
+            size="sm"
+            onClick={() => {
+              setError(null)
+              setDraft(account.display_name ?? '')
+            }}
+          >
+            Rename
+          </Button>
+        )}
+      </div>
+    )
+  }
+
+  const cancel = () => {
+    if (busy) return
+    setDraft(null)
+    setError(null)
+  }
+  const save = async (e: FormEvent) => {
+    e.preventDefault()
+    if (busy) return
+    const name = draft.trim()
+    setBusy(true)
+    setError(null)
+    const res = await setAccountName(account.account_id, name === '' ? null : name)
+    setBusy(false)
+    if (res.status === 'ok') {
+      setDraft(null)
+      reload()
+    } else if (res.status === 'error' || res.status === 'stale') {
+      setError(res.error)
+    }
+  }
+
+  return (
+    <form className="acct-rename" onSubmit={(e) => void save(e)}>
+      <span className="limit-edit">
+        <input
+          type="text"
+          className="acct-wide"
+          value={draft}
+          disabled={busy}
+          // Focus follows the click that opened the editor, so a keyboard
+          // reader lands in the field rather than back at the page's top.
+          autoFocus
+          // What an empty field saves as: no Name, so the label shows.
+          placeholder={account.label}
+          aria-label={`Name for ${account.account_id}`}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.preventDefault()
+              cancel()
+            }
+          }}
+        />
+        <Button kind="primary" size="sm" type="submit" busy={busy ? 'saving…' : false}>
+          Save name
+        </Button>
+        <Button kind="ghost" size="sm" disabled={busy} onClick={cancel}>
+          Cancel
+        </Button>
+      </span>
+      {error && (
+        <p className="warn-text" role="alert">
+          {errorHeading(error)} &mdash; {error.message} The Name was not changed.
+        </p>
+      )}
+    </form>
+  )
+}
+
 function Detail({
   account,
   board,
@@ -1412,7 +1522,7 @@ function Detail({
             {account.provider} &middot; {lent ? 'lending on' : 'lending off'}
           </Chip>
         </div>
-        <h3>{account.label}</h3>
+        <NameHead account={account} owned={owned} reload={reload} />
         {/* AN ID IS ONE WORD (visual QA V070): `u-bogdan` broke at its hyphen
             onto two lines. Each id is an `.acct-id`, which never breaks inside
             itself; the line breaks between words. */}
@@ -1842,7 +1952,7 @@ function Holding({ account, now, fixture }: { account: Account; now: number; fix
     <div className="acct-action acct-holding">
       <Segmented
         role="tablist"
-        label={`Who holds ${account.label}`}
+        label={`Who holds ${accountName(account)}`}
         value={tab === 'none' ? null : tab}
         options={[
           { key: 'now', label: `Holding now (${account.assigned})` },
@@ -2691,8 +2801,8 @@ function Lending({
         <Dialog
           title={
             willSave.length === 0
-              ? `Stop lending ${account.label}?`
-              : `Lend ${account.label} to ${willSave.join(', ')}?`
+              ? `Stop lending ${accountName(account)}?`
+              : `Lend ${accountName(account)} to ${willSave.join(', ')}?`
           }
           onClose={closeConfirm}
           actions={
@@ -2994,7 +3104,7 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
       {done && <p className="muted small">Moved to {done.toLowerCase()}.</p>}
       {asked !== null && (
         <Dialog
-          title={`Move ${account.label} to ${asked.to.toLowerCase()}?`}
+          title={`Move ${accountName(account)} to ${asked.to.toLowerCase()}?`}
           onClose={close}
           actions={
             <>
@@ -4791,12 +4901,18 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
           aria-label={`Type ${account.label} to confirm removal`}
           onChange={(e) => setTyped(e.target.value)}
         />
-        {/* OFF UNTIL ARMED (visual QA run 3, capacity-002): unarmed, it was
-            the filled red pale-tinted for disabled, which read as ready to
-            fire. It is the plain button, drawn off, until the label is typed,
-            and the filled red only once a click would remove the account. */}
+        {/* A DANGER OUTLINE UNTIL ARMED (owner decision 2026-10-22, "Danger
+            outline unarmed", box comment 6314115845, part of #1680). Unarmed,
+            it was first the filled red pale-tinted for disabled, which read
+            as ready to fire (capacity-002), then the plain grey button, which
+            hid that it is the one irreversible control here. It is the danger
+            ink on its edge and its words with no fill until the label is
+            typed (`.c-btn.is-danger:disabled` in styles/capacity.css), and the
+            filled red only once a click would remove the account. THE LABEL,
+            NOT THE NAME, ARMS IT: the label is the id, and a Name is free
+            text that two accounts may share. */}
         <Button
-          kind={armed ? 'danger-filled' : 'secondary'}
+          kind={armed ? 'danger-filled' : 'danger'}
           disabled={!armed || busy}
           onClick={() => void run()}
         >

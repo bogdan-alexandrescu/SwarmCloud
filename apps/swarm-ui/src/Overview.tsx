@@ -16,6 +16,7 @@ import {
   type StateRead,
 } from './OverviewRegions'
 import { addressToPath } from './paths'
+import { accountName } from './accountName'
 import { HUMAN_PARK_MAX_MS, HandoffBanner, handoffOf, needsYou } from './Handoff'
 import { LiveControl } from './LiveBrowser'
 import { browserTabPath } from './LiveThumb'
@@ -2504,11 +2505,11 @@ export function accountHeadroom(state: Result<AccountsPage>): {
     // PAUSED and DRAINING are deliberate operator states, not faults -- but
     // they do not serve, so they are not counted as headroom either.
     if (a.state !== 'AVAILABLE') {
-      notServing.push(a.label)
+      notServing.push(accountName(a))
       continue
     }
     if (unreadableFor(a, scopeId)) {
-      unreadableHere.push(a.label)
+      unreadableHere.push(accountName(a))
       continue
     }
     // The two ways a reading can be missing, told apart the same way the
@@ -2518,28 +2519,28 @@ export function accountHeadroom(state: Result<AccountsPage>): {
     // cannot read an account's token, so this is the shape the live platform
     // produces.
     if (a.observed_at === null) {
-      unread.push(a.label)
+      unread.push(accountName(a))
       continue
     }
     const w = bindingWindow(a)
     if (w === null) {
-      unread.push(a.label)
+      unread.push(accountName(a))
       continue
     }
     const r = readingOf(a, w.key)
     if (r.kind === 'never' || r.kind === 'absent') {
-      unread.push(a.label)
+      unread.push(accountName(a))
       continue
     }
     if (r.kind !== 'live') {
       // `reset` and `stale`. The account may well have a full window. Nothing
       // has measured it since, and a projection is not headroom.
-      projected.push(a.label)
+      projected.push(accountName(a))
       continue
     }
     const used = Math.max(0, Math.min(100, r.pct))
     if (best === null || used < best.pct) {
-      best = { pct: used, key: w.key, observedAt: r.observedAt, id: a.account_id, label: a.label }
+      best = { pct: used, key: w.key, observedAt: r.observedAt, id: a.account_id, label: accountName(a) }
     }
   }
 

@@ -209,6 +209,10 @@ class AccountPool(Protocol):
         self, account_id: str, *, model_classes: list[str]
     ) -> dict[str, Any]: ...
 
+    def set_display_name(
+        self, account_id: str, *, display_name: str | None
+    ) -> dict[str, Any]: ...
+
     def set_state(self, account_id: str, *, state: str, reason: str) -> dict[str, Any]: ...
 
     # DECLARATIONS ONLY, like every other member of this Protocol.
@@ -503,6 +507,17 @@ class BrokerClient:
             "PUT",
             f"/v1/accounts/{quote(account_id, safe='')}/model-classes",
             payload={"model_classes": list(model_classes)},
+        )
+
+    def set_display_name(
+        self, account_id: str, *, display_name: str | None
+    ) -> dict[str, Any]:
+        # Forwarded as sent, None and all: the broker trims and validates the
+        # Name (`validate_display_name`), once, and None is how it is cleared.
+        return self._call(
+            "PUT",
+            f"/v1/accounts/{quote(account_id, safe='')}/name",
+            payload={"display_name": display_name},
         )
 
     def set_state(self, account_id: str, *, state: str, reason: str) -> dict[str, Any]:

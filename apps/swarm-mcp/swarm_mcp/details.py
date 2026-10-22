@@ -28,8 +28,9 @@ WHERE EACH FIELD COMES FROM -- only what the API already serves, by name:
   identity the submission will be stored under.
 * Profiles: each step's or task's `runner_profile`.
 * LLM: the task's `account` (`swarm_api.task_accounts`: `account_id`,
-  `provider`, `status`), shown by the account's `label` when
-  `GET /v1/accounts` lists it for this tenant, and the task's `model`. A run
+  `provider`, `status`), shown by the account's Name (`display_name`,
+  #1913) or else its `label` when `GET /v1/accounts` lists it for this
+  tenant, and the task's `model`. A run
   started before any account was assigned says `not assigned yet`; its rows
   then say `LLM: <account>` once, on the first progress line after the
   assignment (`follow.render`).
@@ -243,9 +244,10 @@ def merge(many: Iterable[dict[str, list]]) -> dict[str, list]:
 
 
 def account_labels(client: Any) -> dict[str, str]:
-    """`{account_id: label}` from `GET /v1/accounts`: the accounts this tenant
-    may run on, by the label their owner gave. Only those two keys are read.
-    Best effort: an account not listed is shown by its id."""
+    """`{account_id: name}` from `GET /v1/accounts`: the accounts this tenant
+    may run on, by the Name their owner gave (`display_name`, #1913) or else
+    by their label. Only those three keys are read. Best effort: an account
+    not listed is shown by its id."""
     try:
         listing = client.request("GET", "/v1/accounts")
     except Exception:  # noqa: BLE001 - a label is never worth a failed launch
@@ -254,7 +256,10 @@ def account_labels(client: Any) -> dict[str, str]:
     entries = listing.get("accounts") if isinstance(listing, Mapping) else None
     for entry in entries if isinstance(entries, list) else []:
         if isinstance(entry, Mapping) and isinstance(entry.get("account_id"), str):
-            label = shown(entry.get("label"))
+            # The Name first, in place of the label; a credential-shaped Name
+            # is not a name, and the label shows as it does with none.
+            name = shown(entry.get("display_name"))
+            label = name if name and name != WITHHELD else shown(entry.get("label"))
             # A credential-shaped label is not a name: the account is then
             # shown by its id, as an unlisted one is.
             if label and label != WITHHELD:

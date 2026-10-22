@@ -28,6 +28,7 @@ import {
   pluralise,
 } from './types'
 import { waitingShort } from './waitingShort'
+import { accountName } from './accountName'
 
 /**
  * WHAT IS WRONG, derived from real state -- the whole of it, and none of the
@@ -413,7 +414,7 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
       severity: 'bad',
       n: reauth.length,
       headline: `${reauth.length} account${reauth.length === 1 ? ' needs' : 's need'} signing in again`,
-      detail: `${reauth.map((a) => a.label).join(', ')} — the broker has stopped trying, so this removes capacity until a person acts. It will not clear on its own.`,
+      detail: `${reauth.map((a) => accountName(a)).join(', ')} — the broker has stopped trying, so this removes capacity until a person acts. It will not clear on its own.`,
       href: '#capacity/accounts',
     })
   }
@@ -422,7 +423,7 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
       severity: 'warn',
       n: never.length,
       headline: `${never.length} account${never.length === 1 ? ' has' : 's have'} never been polled`,
-      detail: `${never.map((a) => a.label).join(', ')} — no reading has ever arrived, so their utilisation is unknown rather than zero and they cannot be counted as headroom.`,
+      detail: `${never.map((a) => accountName(a)).join(', ')} — no reading has ever arrived, so their utilisation is unknown rather than zero and they cannot be counted as headroom.`,
       href: '#capacity/accounts',
     })
   }
@@ -431,7 +432,7 @@ function accountCheck(accounts: Result<AccountsPage>): Check {
       severity: 'warn',
       n: stale.length,
       headline: `${stale.length} account reading${stale.length === 1 ? ' is' : 's are'} too old to trust`,
-      detail: `${stale.map((a) => a.label).join(', ')} — the last reading is past the broker's staleness window, so the figures are real but describe an earlier moment.`,
+      detail: `${stale.map((a) => accountName(a)).join(', ')} — the last reading is past the broker's staleness window, so the figures are real but describe an earlier moment.`,
       href: '#capacity/accounts',
     })
   }
