@@ -207,34 +207,14 @@ function profile(accounts: Json[]): Json {
 }
 
 /**
- * The screen as `api.ts`'s `normAccount` will serve it once it carries
- * `display_name` too. Today it rebuilds each account by its own allow-list
- * and drops the Name, and `api.ts` is outside this lane: the one-line change
- * is a question in the PR. Everything else is the real read and the real
- * normalisation; only each account's `display_name` is carried across, by id.
+ * The real read and the real normalisation: `normAccount` in `api.ts` carries
+ * `display_name` (ACCOUNT-NAME-3), so nothing here puts the Name back.
  */
 async function mountProfile(body: Json): Promise<HTMLElement> {
   serve((m, url) => (m === 'GET' && url === '/v1/profile' ? { status: 200, body } : null))
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
-  const served = ((body.claude_accounts as Json).accounts as Json[]) ?? []
-  vi.doMock('../api', async (importOriginal) => {
-    const real = await importOriginal<typeof import('../api')>()
-    return {
-      ...real,
-      loadProfile: async () => {
-        const r = await real.loadProfile()
-        if (r.status !== 'ok' || r.data.claude_accounts === undefined) return r
-        const accounts = r.data.claude_accounts.accounts.map((a) => {
-          const raw = served.find((x) => x.account_id === a.account_id)
-          return raw !== undefined && 'display_name' in raw ? { ...a, display_name: raw.display_name as string | null } : a
-        })
-        return { ...r, data: { ...r.data, claude_accounts: { ...r.data.claude_accounts, accounts } } }
-      },
-    }
-  })
   const { ProfileScreen } = await import('../Profile')
-  vi.doUnmock('../api')
   render(<ProfileScreen />)
   await screen.findByText('ada@example.com', undefined, WAIT)
   return screen.getByRole('region', { name: 'Claude accounts' })
@@ -250,8 +230,12 @@ describe("Settings › Profile names each of 'Your Claude accounts' by its Name"
       ]),
     )
     const names = [...region.querySelectorAll('li > b')].map((b) => b.textContent)
+    // MUTATION: drop `display_name` from `normAccount` in api.ts (the page then prints `main`).
     // MUTATION: AccountRow back to `a.label ?? a.account_id`.
     expect(names[0]).toBe('My main one')
+    // The label is not printed beside the Name, and no id appears where none was.
+    expect(visible(region)).not.toMatch(/\bmain ·/)
+    expect(visible(region)).not.toContain('u-ada:main')
     // MUTATION: serve the Name over an absent or null one as something other than the label.
     expect(names.slice(1)).toEqual(['shared', 'other'])
     expect(visible(region)).toMatch(/My main one · yours · AVAILABLE/)

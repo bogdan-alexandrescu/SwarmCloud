@@ -6561,10 +6561,14 @@ function fixtureProfile(): unknown {
     claude_accounts: {
       personal_workspace: FIXTURE_TENANT,
       // The accounts Capacity › Accounts lists, so the two pages agree: the
-      // tenant's own, and the one lent to it.
+      // tenant's own, and the one lent to it. A Name given on Capacity ›
+      // Accounts (or cleared there) shows here too; until one is given or
+      // cleared, `primary` carries one, so the fixture build draws a named
+      // account beside unnamed ones (#1913).
       accounts: fixtureAccounts.map((a) => ({
         account_id: a.account_id, label: a.label, relation: a.owner_tenant === FIXTURE_TENANT ? 'own' : 'borrowed', state: a.state,
         windows: a.windows, lent_to_count: a.owner_tenant === FIXTURE_TENANT ? a.lend_to.length : null, stale: a.stale,
+        display_name: a.display_name !== undefined ? a.display_name : (a.account_id === `${FIXTURE_TENANT}:primary` ? 'Main subscription' : null),
       })),
       unreadable_document_count: 0,
     },
@@ -7208,6 +7212,8 @@ function normAccount(raw: unknown): ProfileClaudeAccount | null {
     lent_to_count: pfNum(r.lent_to_count),
     // An account with no freshness flag is not claimed fresh.
     stale: r.stale !== false,
+    // The account's Name (#1913): null when it has none, so the label shows.
+    display_name: pfStr(r.display_name),
   }
 }
 
