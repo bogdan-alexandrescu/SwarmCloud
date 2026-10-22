@@ -440,7 +440,14 @@ function MoreTabs({ tabs, onSelect }: { tabs: readonly TabDef[]; onSelect: (key:
               }}
             >
               <span className="c-tab-label">{t.label}</span>
-              {t.count !== undefined && <em title={t.why}>{t.count === null ? '—' : t.count}</em>}
+              {/* A WORD APART, as the bar's (`TabCount`, QA-007): the item's
+                  text is `Changes not yet`, which its name holds. */}
+              {t.count !== undefined && (
+                <>
+                  {' '}
+                  <em title={t.why}>{t.count === null ? '—' : t.count}</em>
+                </>
+              )}
             </button>
           ))}
         </div>

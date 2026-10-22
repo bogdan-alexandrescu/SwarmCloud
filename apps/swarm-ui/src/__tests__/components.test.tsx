@@ -490,7 +490,8 @@ describe('Tabs, Segmented and Breadcrumb', () => {
     const links = screen.getAllByRole('link')
     expect(links.map((a) => a.getAttribute('href'))).toEqual(['/agents/live/t1', '/agents/live/t1/attempts', '/agents/live/t1/logs'])
     expect(links[0]!.getAttribute('aria-current')).toBe('page')
-    expect(links[2]!.textContent).toBe('Logs—')
+    // A word apart from its label (QA-007, run 5b): the tab's text is `Logs —`.
+    expect(links[2]!.textContent).toBe('Logs —')
     fireEvent.click(links[1]!)
     expect(go).toHaveBeenCalledWith('/agents/live/t1/attempts')
     // A modified click is the browser's: a new tab, not a route change.

@@ -36,9 +36,22 @@ export interface TabDef {
   why?: string
 }
 
+/**
+ * THE COUNT, A WORD APART FROM THE LABEL (visual QA run 5b, QA-007): with
+ * nothing between the label's span and the count's `<em>` a tab's text ran
+ * `Changesnot yet` / `Attempts3`, which no accessible name can hold (axe
+ * label-content-name-mismatch, WCAG 2.5.3). The space is a text node of its
+ * own, outside the badge: the tab is a flex row, so it draws nothing beside
+ * the row's gap, and the badge still holds only the count.
+ */
 function TabCount({ t }: { t: TabDef }) {
   if (t.count === undefined) return null
-  return <em title={t.why}>{t.count === null ? '—' : t.count}</em>
+  return (
+    <>
+      {' '}
+      <em title={t.why}>{t.count === null ? '—' : t.count}</em>
+    </>
+  )
 }
 
 /** A plain left click a router should take; anything else is the browser's. */

@@ -197,6 +197,17 @@
   line-height: var(--lh-micro);
   color: var(--text-dim);
 }
+/* AT 390 THE LINE WRAPS BETWEEN ITS FACTS (visual QA run 2 work-a-007, still
+   seen in run 5b as QA-040): one line cut at its end lost a live row's
+   profile, model and owner (`dispatched · attempt 1 of 3 · claude-code ·
+   claude-opus…`), and leading with the try (QAFIX2) only chose what was cut.
+   On a phone the line wraps at its ` · ` separators instead, each fact kept
+   whole on its line; a fact longer than the row is still cut by the line's
+   `overflow: hidden`. The wide list keeps one line: it has the room. */
+@media (max-width: 560px) {
+  .row.is-compact > .cr-sub { white-space: normal; }
+  .row.is-compact > .cr-sub > * { white-space: nowrap; }
+}
 /* THE STRIP ROW'S NAME (owner QA R7): folded to 64px the row shows only its
    mark, so its accessible name was the state word ('running'). These words --
    the agent's name and id -- are drawn only in the strip, for a screen
