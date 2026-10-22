@@ -220,7 +220,9 @@ describe('a11y-keyboard-003: every table on Pool limits is named', () => {
   it('names each family table by its family', async () => {
     viewport(1440)
     await limits([pool('global'), pool('tenant:eng'), pool('provider:anthropic')])
-    const tables = screen.getAllByRole('table')
+    // Only the family tables: the Model prices card's own table loads on its
+    // own clock and may or may not be painted yet.
+    const tables = screen.getAllByRole('table').filter((t) => t.classList.contains('adm-limits'))
     expect(tables.length).toBe(3)
     // MUTATION: drop the table's `aria-label`: each is announced as "table".
     for (const name of ['Global', 'Tenants', 'Providers']) expect(screen.getByRole('table', { name: `${name} ceilings` })).toBeTruthy()
