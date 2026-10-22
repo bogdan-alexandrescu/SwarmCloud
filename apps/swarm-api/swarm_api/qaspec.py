@@ -465,12 +465,16 @@ def _capture_prompt(target: Mapping[str, Any], base: str, group: str, routes: Ma
     if "clock" in routes:
         flags.append("--clock")
     out = f"$SWARM_ARTIFACTS_DIR/capture-{group}"
+    # `capture --base` takes the ORIGIN: route paths are origin-relative, as
+    # `discover` writes them (`/todomvc/...` under a `/todomvc` base), so a base
+    # with its path would load `/todomvc/todomvc/`. Discovery keeps the full
+    # base, path included, to know where to start (decided 2026-10-22, QA-ORIGIN).
     return (
         f"Capture, do not review. Visual QA of {target['name']} at {base}.{_sign_in_note(own_login)} "
         f"Write this route list, exactly as given, to /tmp/swarm-qa/routes-{group}.json with the Write "
         f"tool:\n\n```json\n{json.dumps(routes, indent=2, sort_keys=True)}\n```\n\n"
         f"Then run `python -m swarm_qa capture --routes /tmp/swarm-qa/routes-{group}.json --group {group} "
-        f"--base {base} --presets {','.join(widths)} --themes {','.join(themes)} {' '.join(flags)} "
+        f"--base {_origin(base)} --presets {','.join(widths)} --themes {','.join(themes)} {' '.join(flags)} "
         f"--out {out} --bundle {out}.tar`. It writes the tarball whatever happens: a route that failed is "
         f"listed in its manifest's `failed`, not a reason to stop. If it exits non-zero, put its last 40 "
         f"lines in your answer and still make sure capture-{group}.tar exists under $SWARM_ARTIFACTS_DIR. "
