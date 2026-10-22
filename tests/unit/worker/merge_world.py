@@ -148,6 +148,10 @@ class MergeWorld:
              "app": {"id": ACTIONS_APP}},
         ]
         self.statuses: list[dict[str, Any]] = []
+        #: The Actions workflow runs at the head (`GET .../actions/runs`): each
+        #: names the check suite it made and the event that triggered it, the
+        #: event a check run is grouped by (CHECK-RULE, part of #1999).
+        self.workflow_runs: list[dict[str, Any]] = []
         self.issues: dict[int, str] = {7: "OPEN", 9: "CLOSED"}
         #: When set, the closing references GitHub lists, in place of the body's.
         self.closing: list[dict[str, Any]] | None = None
@@ -178,6 +182,8 @@ class MergeWorld:
     def _routes(self) -> None:
         gh = self.github
         gh.route("GET", API, lambda _s: (200, {}, self.repository))
+        gh.route("GET", f"{API}/actions/runs", lambda _s: (200, {}, {
+            "total_count": len(self.workflow_runs), "workflow_runs": self.workflow_runs}))
 
         def pull(_seen):
             body = dict(self.pr)

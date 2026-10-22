@@ -196,13 +196,15 @@ def test_attacker_controlled_text_reaches_a_shell_only_through_env(job: dict):
 
 
 def test_the_github_token_asks_for_the_least_it_needs(workflow: dict, job: dict):
-    """Read the base branch's protection and the head commit's check runs;
-    comment on a refusal. Nothing else.
+    """Read the base branch's protection, the head commit's check runs and the
+    Actions runs that made them (the event each check run is grouped by,
+    CHECK-RULE); comment on a refusal. Nothing else.
     MUTATION: set `contents: write`, add `id-token: write`, or `permissions: write-all`."""
     assert workflow.get("permissions") == {}, workflow.get("permissions")
     assert job.get("permissions") == {
         "contents": "read",
         "checks": "read",
+        "actions": "read",
         "pull-requests": "write",
     }, job.get("permissions")
 
@@ -429,6 +431,7 @@ if [[ "${1:-}" == "api" ]]; then
   done
   case "${path%%\?*}" in
     */check-runs) cat "${FAKE_GH_CHECK_RUNS}" ;;
+    */actions/runs) cat "${FAKE_GH_WORKFLOW_RUNS}" ;;
     */rules/branches/*) cat "${FAKE_GH_RULES}" ;;
     */branches/*) cat "${FAKE_GH_BRANCH}" ;;
     *) echo "fake gh: unexpected endpoint: $*" >&2; exit 3 ;;
@@ -500,6 +503,7 @@ def run_gate(job: dict, tmp_path: Path):
         rules: list[dict] | None = None,
         event_name: str = "pull_request_target",
         dependency_refusal: str = "",
+        workflow_runs: list[dict] | None = None,
     ):
         branch_file = tmp_path / "branch.json"
         branch_file.write_text(json.dumps(branch))
@@ -509,6 +513,9 @@ def run_gate(job: dict, tmp_path: Path):
         check_runs_file = tmp_path / "check-runs.json"
         # Default: nothing else has reported on this head, so item 5 passes.
         check_runs_file.write_text(json.dumps({"check_runs": check_runs if check_runs is not None else []}))
+        # The Actions runs at the head: which event made each check suite.
+        workflow_runs_file = tmp_path / "workflow-runs.json"
+        workflow_runs_file.write_text(json.dumps({"workflow_runs": workflow_runs or []}))
         log = tmp_path / "gh.log"
         comments = tmp_path / "comments.md"
         summary = tmp_path / "summary.md"
@@ -533,6 +540,7 @@ def run_gate(job: dict, tmp_path: Path):
             "FAKE_GH_LOG": str(log),
             "FAKE_GH_BRANCH": str(branch_file),
             "FAKE_GH_CHECK_RUNS": str(check_runs_file),
+            "FAKE_GH_WORKFLOW_RUNS": str(workflow_runs_file),
             "FAKE_GH_RULES": str(rules_file),
             "FAKE_GH_COMMENTS": str(comments),
         }
@@ -1255,6 +1263,55 @@ def test_a_required_check_must_be_success_or_skipped_where_gate_5_tolerates_neut
     assert worker_merge.required_check_state([run]) == "failed"
     assert worker_merge.required_check_state([{**run, "conclusion": "success"}]) == "green"
     assert worker_merge.required_check_state([]) == "pending"
+
+
+#: A check's runs at one head, by (run id, conclusion, event); the event of
+#: each comes from its check suite's Actions run. BGD's decision of
+#: 2026-10-22 (CHECK-RULE, part of #1999 and #1778): a check is decided by
+#: the latest run of EACH event; a re-run replaces the earlier runs of its
+#: own event, and a red push run is never outvoted by a green pull_request
+#: run (CI-EARLY). (case, runs, gate refuses, merge step's state)
+RERUN_PARITY = [
+    ("one event, failed then re-run green",
+     [(1, "failure", "push"), (2, "success", "push")], False, "green"),
+    ("#1778: cancelled then green",
+     [(1, "cancelled", "pull_request"), (2, "success", "pull_request")], False, "green"),
+    ("one event, green then red",
+     [(1, "success", "push"), (2, "failure", "push")], True, "failed"),
+    ("push green, pull_request red",
+     [(1, "success", "push"), (2, "failure", "pull_request")], True, "failed"),
+    ("push red, pull_request green",
+     [(1, "failure", "push"), (2, "success", "pull_request")], True, "failed"),
+    ("listed newest first",
+     [(2, "success", "push"), (1, "failure", "push")], False, "green"),
+]
+
+
+@pytest.mark.parametrize(("case", "runs", "gate_refuses", "merge_state"), RERUN_PARITY,
+                         ids=[c[0] for c in RERUN_PARITY])
+def test_gate_5_and_the_merge_step_judge_the_latest_run_of_each_event(
+    run_gate, case, runs, gate_refuses, merge_state
+):
+    """MUTATION (auto-merge.yml): keep gate 5 over every run -> the re-run
+    cases refuse. MUTATION: take the newest run of a name whatever its event
+    -> "push red, pull_request green" passes. MUTATION (merge.py): drop the
+    per-event grouping -> the merge step's state differs from the table."""
+    suites = {event: 100 + i for i, event in enumerate(sorted({e for _, _, e in runs}))}
+    check_runs = [{"id": run_id, "name": "ci-gate", "status": "completed", "conclusion": conclusion,
+                   "check_suite": {"id": suites[event] + 10 * run_id}}
+                  for run_id, conclusion, event in runs]
+    workflow_runs = [{"id": 900 + run_id, "check_suite_id": suites[event] + 10 * run_id, "event": event}
+                     for run_id, _conclusion, event in runs]
+    proc, _calls, comments = run_gate("A fact-style headline", PROTECTED, check_runs=check_runs,
+                                      workflow_runs=workflow_runs)
+    assert (proc.returncode != 0) is gate_refuses, (case, proc.stderr, comments)
+    facts = [worker_merge.CheckFacts(name="ci-gate", status="completed", conclusion=conclusion,
+                                     run_id=run_id, event=event).as_run()
+             for run_id, conclusion, event in runs]
+    assert worker_merge.required_check_state(facts) == merge_state, case
+    # §8: the merge may be stricter than the gate, never looser.
+    if gate_refuses:
+        assert merge_state == "failed", case
 
 
 @pytest.mark.parametrize(

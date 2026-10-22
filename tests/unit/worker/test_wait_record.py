@@ -8,8 +8,9 @@ serves a fact as null when no writer records it. Owner decision 2026-10-21
     records `failed` -- the required checks whose LATEST run at the head
     failed -- beside `pending`, and `pull_request`, in the PARKED event and in
     `metadata.merge_wait`. A check is judged by its latest run, so a run
-    cancelled and superseded by a success is not failed (#1778 is the same
-    rule for the merge decision, which this lane does not change).
+    cancelled and superseded by a success is not failed. Since CHECK-RULE
+    (BGD 2026-10-22, part of #1999 and #1778) the merge decision reads the
+    same latest run, per event, so the record and the decision agree.
   * A HUMAN_REQUIRED park (`handoff.park_human_required`) records
     `expires_at`: the park instant plus the scheduler's
     `human_park_max_seconds`.
@@ -107,8 +108,8 @@ def test_a_cancelled_run_superseded_by_a_success_is_not_failed(tmp_path):
     outcome = merge.run_merge(world.context())
 
     assert outcome.state is TaskState.PARKED, outcome.message
-    # MUTATION: judge a check by any failed run (`required_check_state` over
-    # all its runs) -> `failed == [CHECK]` -> fails.
+    # MUTATION: judge a check by any failed run (the every-run rule
+    # `required_check_state` had before CHECK-RULE) -> `failed == [CHECK]` -> fails.
     # MUTATION: judge by the last run in GitHub's listing, not the newest id
     # -> the cancelled run (listed last) is taken -> fails.
     assert outcome.ci_wait["failed"] == [], outcome.ci_wait

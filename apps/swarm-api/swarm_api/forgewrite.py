@@ -838,7 +838,13 @@ class GitHubWriter:
         return [rule for rule in data if isinstance(rule, dict)]
 
     def check_runs(self, ref: IssueRef, sha: str, token: str) -> list[dict[str, Any]]:
-        """The LATEST check run of each name at `sha` (`filter=latest`), every page."""
+        """The LATEST check run of each name at `sha` (`filter=latest`), every page.
+
+        Each run of a name listed more than once also carries `event`: the
+        event that triggered its check suite, read from the Actions runs at
+        `sha` in ONE more read (`_suite_events`), which `forgechecks` groups a
+        check's runs by (CHECK-RULE, part of #1999).
+        """
         what = f"the check runs at {ref.repository}@{sha[:12]}"
         url = self._url(ref, f"commits/{quote(sha, safe='')}/check-runs")
         runs: list[dict[str, Any]] = []
@@ -853,7 +859,44 @@ class GitHubWriter:
             runs += [entry for entry in entries if isinstance(entry, dict)]
             if len(entries) < PAGE_SIZE:
                 break
+        names = [run.get("name") for run in runs]
+        if len(names) != len(set(names)):
+            events = self._suite_events(ref, sha, token)
+            for run in runs:
+                suite = run.get("check_suite")
+                event = events.get(suite.get("id")) if isinstance(suite, dict) else None
+                if event is not None:
+                    run["event"] = event
         return runs
+
+    def _suite_events(self, ref: IssueRef, sha: str, token: str) -> dict[Any, str]:
+        """The event of each Actions check suite at `sha`, by suite id.
+
+        A credential without `actions: read` (403), or Actions off (404),
+        reads as no event: each check suite is then its own group, so a green
+        suite still never outvotes a red one.
+        """
+        what = f"the Actions runs at {ref.repository}@{sha[:12]}"
+        url = self._url(ref, "actions/runs")
+        events: dict[Any, str] = {}
+        for page in range(1, MAX_CHECK_PAGES + 1):
+            try:
+                data = self._call(
+                    "GET", f"{url}?head_sha={quote(sha, safe='')}&per_page={PAGE_SIZE}&page={page}",
+                    token, what, needs=ACTIONS_READ,
+                )
+            except (ForgeWriteForbidden, ForgeWriteNotFound):
+                return {}
+            entries = data.get("workflow_runs") if isinstance(data, dict) else None
+            if not isinstance(entries, list):
+                raise ForgeWriteError(f"GitHub's answer for {what} is not a list of workflow runs")
+            for entry in entries:
+                if isinstance(entry, dict) and isinstance(entry.get("event"), str) \
+                        and entry.get("check_suite_id") is not None:
+                    events[entry["check_suite_id"]] = entry["event"]
+            if len(entries) < PAGE_SIZE:
+                break
+        return events
 
     def commit_statuses(self, ref: IssueRef, sha: str, token: str) -> list[dict[str, Any]]:
         """The latest commit status of each context at `sha` (the combined status)."""

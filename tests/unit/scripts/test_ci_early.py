@@ -12,10 +12,13 @@ checks) and terraform.yml (which ci-gate waits for) -- now also run on a push
 to `swarm/**`, the whole of each, while review and fix happen.
 
 WHY PUSH TRIGGERS AND NOT AN EARLY DRAFT PULL REQUEST. The merge step reads
-every run of a required check at the head commit, from any event, and holds
-the check green only when ALL of them are (merge.py `required_check_state`).
-A push run at the head is one more run that must be green: the rule is
-unchanged, never relaxed. A draft opened at implement would be a different
+every run of a required check at the head commit and holds the check green
+only when the LATEST run of EACH event that ran it is green (merge.py
+`required_check_state`; BGD's decision of 2026-10-22, CHECK-RULE, part of
+#1999). A push run at the head is one more event whose latest run must be
+green: a red push run is never outvoted by a green pull_request run. A re-run
+replaces only the earlier runs of its own event, so a flake that passed on
+re-run no longer holds the check (#1999, #1778). A draft opened at implement would be a different
 pull request from the one merged (the integrator pushes its own branch), the
 merge step refuses drafts, and a red draft would start the CI fixer on a
 branch the fix step is about to write.
@@ -108,19 +111,34 @@ def test_a_lane_push_is_cancelled_by_the_next_push_to_its_branch():
     assert _workflow("security.yml")["concurrency"]["group"] == "security-${{ github.ref }}"
 
 
+def _run(run_id: int, event: str, conclusion: str | None, status: str = "completed") -> dict:
+    return {"status": status, "conclusion": conclusion, "run_id": run_id, "event": event}
+
+
 @pytest.mark.parametrize(
     "runs, state",
     [
         # The lane push's run passed; the pull request's is still running.
-        ([{"status": "completed", "conclusion": "success"}, {"status": "in_progress"}], "pending"),
-        # The pull request's run passed; the lane push's run at the same head is red.
-        ([{"status": "completed", "conclusion": "failure"}, {"status": "completed", "conclusion": "success"}], "failed"),
-        ([{"status": "completed", "conclusion": "success"}, {"status": "completed", "conclusion": "success"}], "green"),
+        ([_run(1, "push", "success"), _run(2, "pull_request", None, "in_progress")], "pending"),
+        # The pull request's run passed; the lane push's run at the same head
+        # is red. CI-EARLY: the green pull_request run never outvotes it.
+        ([_run(1, "push", "failure"), _run(2, "pull_request", "success")], "failed"),
+        # The lane push's run passed; the pull request's run is red.
+        ([_run(1, "push", "success"), _run(2, "pull_request", "failure")], "failed"),
+        # ONE event, a flake re-run green: the re-run replaces it (BGD,
+        # 2026-10-22). Under the every-run rule this read "failed" (#1999).
+        ([_run(1, "push", "failure"), _run(2, "push", "success")], "green"),
+        # ONE event, green and then red: the latest is red.
+        ([_run(1, "push", "success"), _run(2, "push", "failure")], "failed"),
+        ([_run(1, "push", "success"), _run(2, "pull_request", "success")], "green"),
     ],
 )
-def test_the_merge_step_holds_every_run_at_the_head_whatever_its_event(runs, state):
+def test_the_merge_step_holds_each_event_s_latest_run_at_the_head(runs, state):
     """The property the push triggers rely on to keep "every required check
-    green at head" exact. MUTATION (merge.py): let the newest run of a name win."""
+    green at head" exact: CI-EARLY (owner, 2026-10-20) with BGD's latest run
+    per event (2026-10-22). MUTATION (merge.py): let the newest run of a name
+    win whatever its event -> the push-red, pull_request-green case reads
+    green. MUTATION: keep the every-run rule -> the re-run case reads failed."""
     # Imported here, not at module top: test_collection_stays_cheap holds every
     # module under tests/unit/scripts to collecting without the service stack.
     from agent_worker import merge

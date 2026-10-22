@@ -548,23 +548,35 @@ def test_ci_gate_runs_the_reuse_verdict_after_its_own():
 # --- the merge step reads a reused green as green ----------------------------
 def test_the_merge_step_reads_a_reused_green_as_green():
     """At a lane's head: the push run's ci-gate passed, and the pull request's
-    ci-gate passed with the heavy jobs skipped by reuse. Every run of a
-    required check is green there (merge.py REQUIRED_GREEN = success,
-    skipped). MUTATION (merge.py): drop `skipped` from REQUIRED_GREEN, or let
-    one red run of a check be outvoted."""
+    ci-gate passed with the heavy jobs skipped by reuse. Each event's latest
+    run of a required check is green there (merge.py REQUIRED_GREEN = success,
+    skipped; a check is decided by the latest run of each event, BGD
+    2026-10-22, beside CI-EARLY's every-event rule). MUTATION (merge.py): drop
+    `skipped` from REQUIRED_GREEN, or let one event's red latest run be
+    outvoted by another event's green one."""
     # Imported here: test_collection_stays_cheap holds every module under
     # tests/unit/scripts to collecting without the service stack.
     from agent_worker import merge
 
-    push_gate = {"name": "ci-gate", "status": "completed", "conclusion": "success"}
-    pr_gate = {"name": "ci-gate", "status": "completed", "conclusion": "success"}
+    push_gate = {"name": "ci-gate", "status": "completed", "conclusion": "success",
+                 "run_id": 1, "event": "push"}
+    pr_gate = {"name": "ci-gate", "status": "completed", "conclusion": "success",
+               "run_id": 2, "event": "pull_request"}
     assert merge.required_check_state([push_gate, pr_gate]) == "green"
     for name in ("unit tests (1/4)", "integration tests (emulator)"):
-        push_job = {"name": name, "status": "completed", "conclusion": "success"}
-        pr_job = {"name": name, "status": "completed", "conclusion": "skipped"}
+        push_job = dict(push_gate, name=name)
+        pr_job = dict(pr_gate, name=name, conclusion="skipped")
         assert merge.required_check_state([push_job, pr_job]) == "green", name
     # Control: a pull request's ci-gate that refused the reuse holds the merge.
     assert merge.required_check_state([push_gate, dict(pr_gate, conclusion="failure")]) == "failed"
+    # The pull request's ci-gate re-run green after a flake: the re-run
+    # replaces the flake of its own event (#1999).
+    rerun = dict(pr_gate, run_id=3)
+    assert merge.required_check_state(
+        [push_gate, dict(pr_gate, conclusion="failure"), rerun]) == "green"
+    # A red latest run in any event stays failed: the push run re-run red.
+    assert merge.required_check_state(
+        [push_gate, dict(push_gate, run_id=4, conclusion="failure"), rerun]) == "failed"
 
 
 def test_main_passes_over_a_pull_request_that_reused_everything(monkeypatch):
