@@ -116,6 +116,29 @@ pass, an ImportError, a fixture bug -- stays failed. tflint is the expected case
 installs it only with `INSTALL_TFLINT=1`, which is off because no tflint
 release passes the image promote gate (images/agent-runtime-base/Dockerfile).
 
+THE CHECKS LEAVE THE TREE AS THEY FOUND IT (PREPUB-UV-OUTSIDE, part of #1964).
+Measured 2026-10-22 on sagaxyz/ai-studio (task_2df71fc1d5d34997957a,
+task_65d0f0328cc6464f8358): graph-pytest's `uv run pytest`, run from
+`runner/` inside the clone, created `runner/.venv` and -- that project had no
+lock -- `runner/uv.lock`, and the publish's `git add --all` committed the
+1,659-line lock into both pull requests; the venv turned that repository's
+own pin guards red during the check. So:
+
+* every `uv` a check runs gets `UV_PROJECT_ENVIRONMENT` in a directory of its
+  own per project directory, under a temporary root outside the checkout that
+  is removed after the round (`uv_outside`, in `run_checks`). Only that
+  command's environment carries it: the gate's, which the agent's session
+  continues with, never does. `UV_CACHE_DIR` stays as cachedirs.py set it.
+* around each round, the working tree is recorded (`record_tree`: `git status
+  --porcelain=v2 --untracked-files=all` and a content hash of every listed
+  path) and, after it, every path a check created or changed is put back
+  (`restore_tree`): a new untracked path removed, a clean tracked path
+  restored from HEAD, a path the agent had changed given back the content it
+  had. The agent's own changes -- recorded before -- are untouched, a fix
+  turn's are recorded by the next round, and what was restored is logged and
+  named in the advisory section. This holds for any tool, not only uv; what
+  the checks run and decide is unchanged.
+
 NOTHING SECRET-SHAPED LEAVES. The checks run without the provider credential
 in their environment, and every byte of output is scrubbed of the runner's
 own secrets and then of every credential pattern (`swarm_redaction.redact`)
@@ -124,11 +147,13 @@ before it reaches a prompt, a log or the pull request.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -1339,6 +1364,15 @@ def select_checks(repo: Path, files: Sequence[str], *, base: str,
 def run_checks(repo: Path, checks: Sequence[Check], *, env: Mapping[str, str],
                runner: Runner = run_command, timeout: float = CHECK_TIMEOUT_SECONDS,
                clock: Callable[[], float] = time.monotonic) -> list[Outcome]:
+    # uv's project environments live outside the clone, and go with the round (#1964).
+    with tempfile.TemporaryDirectory(prefix="prepublish-uv-", dir=_outside(repo, env),
+                                     ignore_cleanup_errors=True) as uv_root:
+        return _run_checks(repo, checks, env=env, runner=uv_outside(runner, Path(uv_root)),
+                           timeout=timeout, clock=clock)
+
+
+def _run_checks(repo: Path, checks: Sequence[Check], *, env: Mapping[str, str],
+                runner: Runner, timeout: float, clock: Callable[[], float]) -> list[Outcome]:
     outcomes: list[Outcome] = []
     for check in checks:
         if check.run is None:
@@ -1361,6 +1395,201 @@ def run_checks(repo: Path, checks: Sequence[Check], *, env: Mapping[str, str],
                                 check.command, output=output, reason=reason,
                                 timed_out=timed_out))
     return outcomes
+
+
+# ---------------------------------------------------------------------------
+# The checks leave no trace in the clone (#1964)
+# ---------------------------------------------------------------------------
+
+
+#: Where uv puts a project's environment; uv's default is `<project>/.venv`,
+#: inside the clone the publish stages with `git add --all`.
+UV_PROJECT_ENV = "UV_PROJECT_ENVIRONMENT"
+#: How many restored paths the log and the advisory section name.
+RESTORED_SHOWN = 10
+#: A path the agent had changed keeps its bytes up to this size to be put
+#: back if a check changes it; a larger one keeps only its hash, and a check
+#: changing it is reported as not restored. 16 MiB holds any source file
+#: without holding an agent's stray dataset in memory.
+RESTORE_MAX_BYTES = 16 * 1024 * 1024
+
+
+def _outside(repo: Path, env: Mapping[str, str]) -> Path:
+    """A directory not inside `repo` for a temporary root: the checks' TMPDIR,
+    else the worker's, else the checkout's parent."""
+    root = Path(repo).resolve()
+    for candidate in (env.get("TMPDIR"), tempfile.gettempdir()):
+        if candidate and Path(candidate).is_dir():
+            path = Path(candidate).resolve()
+            if not path.is_relative_to(root):
+                return path
+    return root.parent
+
+
+def uv_outside(runner: Runner, root: Path) -> Runner:
+    """`runner`, with every `uv` given `UV_PROJECT_ENVIRONMENT` under `root`:
+    one directory per working directory, so two projects never share (and
+    re-sync) one environment. Any other command runs as it was asked."""
+    homes: dict[str, Path] = {}
+
+    def run(argv: Sequence[str], cwd: Path, env: Mapping[str, str], timeout: float) -> Ran:
+        if argv and Path(argv[0]).name == "uv":
+            key = str(Path(cwd).resolve())
+            if key not in homes:
+                homes[key] = root / f"project-{len(homes)}"
+            env = {**env, UV_PROJECT_ENV: str(homes[key])}
+        return runner(argv, cwd, env, timeout)
+    return run
+
+
+@dataclass(frozen=True)
+class _Entry:
+    """One path as it stood: `kind` is file, link, dir (an untracked nested
+    repository), missing, or unknown (unreadable: never touched)."""
+
+    kind: str
+    digest: str | None = None
+    executable: bool = False
+    data: bytes | None = field(default=None, compare=False, repr=False)
+
+
+TreeState = dict[str, _Entry]
+
+
+def _status_paths(repo: Path, *, runner: Runner, env: Mapping[str, str]
+                  ) -> dict[str, bool] | None:
+    """Every path `git status` lists, mapped to whether git tracks it; None
+    when git could not say."""
+    ran = _git(repo, "status", "--porcelain=v2", "--untracked-files=all", "-z",
+               runner=runner, env=env)
+    if ran.code != 0:
+        return None
+    fields = ran.output.split("\0")
+    out: dict[str, bool] = {}
+    i = 0
+    while i < len(fields):
+        entry, i = fields[i], i + 1
+        if entry.startswith("? "):
+            out[entry[2:]] = False
+        elif entry.startswith("1 "):
+            out[entry.split(" ", 8)[8]] = True
+        elif entry.startswith("2 "):
+            out[entry.split(" ", 9)[9]] = True
+            if i < len(fields) and fields[i]:
+                out[fields[i]] = True  # the rename's original path
+            i += 1
+        elif entry.startswith("u "):
+            out[entry.split(" ", 10)[10]] = True
+    return out
+
+
+def _fingerprint(repo: Path, path: str, *, keep: bool) -> _Entry:
+    full = Path(repo) / path.rstrip("/")
+    try:
+        st = os.lstat(full)
+        if stat.S_ISLNK(st.st_mode):
+            return _Entry("link", os.readlink(full))
+        if stat.S_ISDIR(st.st_mode):
+            return _Entry("dir")
+        digest = hashlib.sha256()
+        kept: list[bytes] | None = [] if keep and st.st_size <= RESTORE_MAX_BYTES else None
+        with open(full, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+                if kept is not None:
+                    kept.append(chunk)
+        return _Entry("file", digest.hexdigest(), bool(st.st_mode & 0o111),
+                      b"".join(kept) if kept is not None else None)
+    except FileNotFoundError:
+        return _Entry("missing")
+    except OSError:
+        return _Entry("unknown")
+
+
+def record_tree(repo: Path, *, runner: Runner, env: Mapping[str, str]) -> TreeState | None:
+    """The working tree before a round of checks: every path `git status`
+    lists (the agent's changes) with its content. None when git could not say."""
+    paths = _status_paths(repo, runner=runner, env=env)
+    if paths is None:
+        return None
+    return {path: _fingerprint(repo, path, keep=True) for path in paths}
+
+
+def _remove(repo: Path, path: str) -> None:
+    """Remove `path` and then each directory above it it leaves empty."""
+    full = Path(repo) / path.rstrip("/")
+    if full.is_dir() and not full.is_symlink():
+        shutil.rmtree(full)
+    elif full.is_symlink() or full.exists():
+        full.unlink()
+    parent, root = full.parent, Path(repo)
+    while parent != root and parent.is_relative_to(root):
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+        parent = parent.parent
+
+
+def _put_back(repo: Path, path: str, entry: _Entry) -> bool:
+    """Give `path` the content `entry` recorded; False when it kept too little to."""
+    if entry.kind == "file" and entry.data is None:
+        return False
+    _remove(repo, path)
+    full = Path(repo) / path
+    if entry.kind == "missing":
+        return True
+    full.parent.mkdir(parents=True, exist_ok=True)
+    if entry.kind == "link":
+        os.symlink(str(entry.digest), full)
+        return True
+    full.write_bytes(entry.data or b"")
+    mode = full.stat().st_mode
+    full.chmod(mode | 0o111 if entry.executable else mode & ~0o111)
+    return True
+
+
+def restore_tree(repo: Path, state: TreeState, *, runner: Runner, env: Mapping[str, str]
+                 ) -> tuple[list[str], list[str]] | None:
+    """Undo whatever changed in the working tree since `state` was recorded:
+    a path no longer as recorded gets its recorded content back, a tracked
+    path that was clean is restored from HEAD, and a new untracked path is
+    removed. Returns (restored, could not be restored), or None when git
+    could not list the tree."""
+    now = _status_paths(repo, runner=runner, env=env)
+    if now is None:
+        return None
+    restored: list[str] = []
+    failed: list[str] = []
+    for path in sorted(set(state) | set(now)):
+        try:
+            if path in state:
+                before = state[path]
+                if before.kind in ("unknown", "dir"):
+                    continue
+                if _fingerprint(repo, path, keep=False) == before:
+                    continue
+                (restored if _put_back(repo, path, before) else failed).append(path)
+            elif now[path]:
+                ran = _git(repo, "checkout", "HEAD", "--", path, runner=runner, env=env)
+                if ran.code != 0:
+                    # Not in HEAD: a new file a check staged.
+                    ran = _git(repo, "rm", "-q", "--cached", "-f", "--ignore-unmatch", "--",
+                               path, runner=runner, env=env)
+                    _remove(repo, path)
+                (restored if ran.code == 0 else failed).append(path)
+            else:
+                _remove(repo, path)
+                restored.append(path.rstrip("/"))
+        except OSError:
+            failed.append(path)
+    return sorted(restored), sorted(failed)
+
+
+def _named(paths: Sequence[str]) -> str:
+    shown = ", ".join(f"`{p}`" for p in paths[:RESTORED_SHOWN])
+    return shown + (f" and {len(paths) - RESTORED_SHOWN} more"
+                    if len(paths) > RESTORED_SHOWN else "")
 
 
 # ---------------------------------------------------------------------------
@@ -1467,7 +1696,8 @@ def read_self_check(artifacts_dir: Path) -> str | None:
 def advisory_section(*, graph: Mapping[str, Any], outcomes: Sequence[Outcome],
                      reach: Mapping[str, Any] | None, self_check: str | None,
                      secrets: Sequence[str], jev_gap: Mapping[str, Any] | None = None,
-                     guards: Sequence[str] = ()) -> str:
+                     guards: Sequence[str] = (), restored: Sequence[str] = (),
+                     unrestored: Sequence[str] = ()) -> str:
     """The advisory markdown the worker appends to the pull request's body.
 
     Read by people. No merge path reads it: auto-merge, the review verdict and
@@ -1494,6 +1724,14 @@ def advisory_section(*, graph: Mapping[str, Any], outcomes: Sequence[Outcome],
                                        else "") for o in ran) + ".")
     if guards:
         parts += ["", f"### {GUARDS_CHECK}", *(f"- {note}" for note in guards)]
+    if restored or unrestored:
+        parts += ["", "### Side effects of the checks"]
+        if restored:
+            parts.append(f"The checks changed {len(restored)} path(s) in the working tree, "
+                         f"and the worker restored each before publishing: {_named(restored)}.")
+        if unrestored:
+            parts.append(f"Changed by the checks and NOT restored, so published as the checks "
+                         f"left them: {_named(unrestored)}.")
 
     parts += ["", "### Test reach (M11)"]
     if reach is None:
@@ -1576,12 +1814,15 @@ class Gate:
     _diff: tuple[str, list[str]] | None = field(default=None, init=False, repr=False)
     #: What happened to the guard script in each round, for the advisory section.
     _guards: list[str] = field(default_factory=list, init=False, repr=False)
+    #: The paths a check changed, put back (or not) after its round (#1964).
+    _restored: set[str] = field(default_factory=set, init=False, repr=False)
+    _unrestored: set[str] = field(default_factory=set, init=False, repr=False)
 
     def run(self) -> dict[str, Any]:
         record = self.record
         record.update({"rebase": None, "rounds": [], "fix_turn": False,
                        "conflict_turn": False, "failed": [], "pr_section": False,
-                       "guards": self._guards})
+                       "guards": self._guards, "restored": []})
         if self.remaining() < MIN_GATE_SECONDS:
             record["skipped"] = "budget"
             self.log.warning("too little of the step's budget is left for the pre-publish "
@@ -1624,6 +1865,9 @@ class Gate:
                                                         only=GUARDS_CHECK)}
                 outcomes = [again.pop(o.name, o) for o in outcomes] + list(again.values())
         record["failed"] = [o.name for o in outcomes if o.status == FAILED]
+        record["restored"] = sorted(self._restored)
+        if self._unrestored:
+            record["unrestored"] = sorted(self._unrestored)
         section = pr_section(rebase, outcomes, self.secrets)
         target = Path(self.artifacts_dir) / PR_SECTION_NAME
         if section:
@@ -1668,7 +1912,9 @@ class Gate:
         target.write_text(advisory_section(graph=record["graph"], outcomes=outcomes,
                                            reach=reach, self_check=self_check,
                                            secrets=self.secrets, jev_gap=gap,
-                                           guards=self._guards),
+                                           guards=self._guards,
+                                           restored=sorted(self._restored),
+                                           unrestored=sorted(self._unrestored)),
                           encoding="utf-8")
         record["advisory_section"] = True
 
@@ -1698,12 +1944,33 @@ class Gate:
         checks = [self._guards_check(c, resolved, guard_parts) if c.name == GUARDS_CHECK else c
                   for c in checks]
         timeout = max(30.0, min(CHECK_TIMEOUT_SECONDS, self.remaining() - 30.0))
+        state = record_tree(self.repo, runner=self.runner, env=self.env)
         outcomes = run_checks(self.repo, checks, env=self.env, runner=self.runner,
                               timeout=timeout, clock=self.clock)
+        self._restore(state)
         self.record["rounds"].append([o.record() for o in outcomes])
         self.log.info("pre-publish checks ran", changed_files=len(files),
                       checks=[f"{o.name}:{o.status}" for o in outcomes])
         return outcomes
+
+    def _restore(self, state: TreeState | None) -> None:
+        """Put back what this round's checks changed in the tree, and say so once per path."""
+        result = None if state is None else restore_tree(self.repo, state, runner=self.runner,
+                                                         env=self.env)
+        if result is None:
+            self.log.warning("git could not list the working tree around the pre-publish "
+                             "checks; anything they changed in it is published as they left it")
+            return
+        restored, failed = result
+        new = [p for p in restored if p not in self._restored]
+        if new:
+            self.log.warning("the pre-publish checks changed the working tree; restored "
+                             "before publishing", count=len(new), paths=new[:RESTORED_SHOWN])
+        if failed:
+            self.log.error("the pre-publish checks changed paths that could not be restored",
+                           count=len(failed), paths=failed[:RESTORED_SHOWN])
+        self._restored.update(restored)
+        self._unrestored.update(failed)
 
     def _guards_check(self, check: Check, base: str, parts: int) -> Check:
         """The guard script's check for this round: skipped when a run already
