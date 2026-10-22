@@ -1835,10 +1835,11 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_schedule_create",
         "description": (
             "Create a recurring schedule on your tenant's repositories. `type` is "
-            "one of the catalogue's fifteen: `issue-sweep`, `issue-plan-only`, "
+            "one of the catalogue's sixteen: `issue-sweep`, `issue-plan-only`, "
             "`repo-index-refresh`, `observer`, `epic-triage`, `pr-shepherd`, "
             "`ci-flake-hunter`, `dependency-cve-refresh`, `release-health`, "
-            "`docs-drift`, `cost-report`, `custom-prompt`, and the admin-only "
+            "`docs-drift`, `cost-report`, `custom-prompt`, `visual-qa` (a workspace "
+            "admin's, scope `all`, naming one of the workspace's QA targets), and the admin-only "
             "platform types `model-prices-refresh` and `model-prices-check`, and the owner-only "
             "platform type `failure-review` -- which of them this "
             "deployment can run now is swarm_schedule_types' `available`, and a "
