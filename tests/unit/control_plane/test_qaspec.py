@@ -210,6 +210,29 @@ def test_a_target_clock_reaches_the_route_list_and_the_flag() -> None:
     assert '"clock": "2026-10-19T12:00:00Z"' in prompt
 
 
+def test_a_sub_path_target_discovers_at_its_path_and_captures_at_its_origin() -> None:
+    # Discovery writes route paths relative to the ORIGIN (`/todomvc/...`), so
+    # capture must load them against the origin, or `/todomvc/todomvc/` is what
+    # it opens. Decided 2026-10-22 (QA-ORIGIN): qaspec passes the origin to capture.
+    target = _target(base_url="https://app.example.com/sub", discover={"max_pages": 30, "max_depth": 2})
+    discover = _steps(qaspec.render_discovery(target))["discover"]["prompt"]
+    # MUTATION: pass `_origin(base)` to discover as well and this fails.
+    assert "swarm_qa discover --base https://app.example.com/sub " in discover
+    capture = _steps(qaspec.render(target))["capture-g1"]["prompt"]
+    # MUTATION: pass the full `base` (path included) to `capture --base` and this fails.
+    assert "--base https://app.example.com --presets" in capture
+    assert "--base https://app.example.com/sub" not in capture
+
+
+def test_a_no_path_target_discovers_and_captures_at_the_same_origin() -> None:
+    target = _target(base_url="https://app.example.com:8443", discover={"max_pages": 30, "max_depth": 2})
+    discover = _steps(qaspec.render_discovery(target))["discover"]["prompt"]
+    capture = _steps(qaspec.render(target))["capture-g1"]["prompt"]
+    # MUTATION: drop the port when deriving the capture origin and this fails.
+    assert "swarm_qa discover --base https://app.example.com:8443 " in discover
+    assert "--base https://app.example.com:8443 --presets" in capture
+
+
 def test_an_own_login_targets_captures_carry_keep_storage() -> None:
     spec = qaspec.render(_target(sign_in=_own_login(), screens=_screens(20)))
     captures = [s for s in spec["steps"] if s["step_id"].startswith("capture-")]
