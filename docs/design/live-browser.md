@@ -2082,7 +2082,11 @@ What stands in the way:
    fake one.
 4. **Not over plain HTTP, not to an address.** The gate refuses to enter
    control mode while the top frame is `http:` or its host is an IP literal;
-   the console says why.
+   the console says why. The one exception, decided by BGD on 2026-10-22
+   (GATE-LOOPBACK, part of #1333) so the live-browser acceptance fixture can
+   be controlled, is an origin that is exactly loopback -- `http` at
+   `127.0.0.1`, `::1` or `localhost`, any port, no userinfo -- which the gate
+   treats as secure, as Chromium does; every other `http:` host stays refused.
 5. **A submitter may pin allowed sign-in hosts** for the agent (a list on the
    agent, optional): a hand-off whose `expect` is not on it is refused before
    anyone is asked.
