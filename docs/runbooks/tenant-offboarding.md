@@ -37,7 +37,10 @@ documents lose `<id>` from their `lend_to` lists.
   the deleting in [step 6](#6-delete-everything-the-tenant-left), and proves it
   before it releases the id. Provider secrets stay terraform's to delete, when
   the tenant leaves tfvars in step 7; the owner chose not to add deletion
-  protection to them.
+  protection to them. Owner decision, BGD 2026-10-22 (#1977): the same step 6
+  run also deletes the forge slot `swarm-tenant-<id>-git` and the QA secret
+  `swarm-tenant-<id>-qa`, by those exact ids and behind the same typed
+  confirmation, so an id registered again starts with empty slots.
 
 > **The deny-list.** `saga-agents-staging` is a shared project. It holds
 > another team's live GKE cluster `agents-staging`, their VPC, their buckets,

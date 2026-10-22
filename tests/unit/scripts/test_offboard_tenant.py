@@ -26,7 +26,12 @@ Secret Manager) on PATH, sharing one state file:
     failed proof finds what the first one left instead of printing 0 over
     events no task listing can reach any more;
   * the publication ledger is listed from the ledger itself, so an entry
-    whose secret is already gone is still found.
+    whose secret is already gone is still found;
+  * the tenant's forge slot `swarm-tenant-<id>-git` and QA secret
+    `swarm-tenant-<id>-qa` are deleted, by those two exact names and no
+    other, behind the same typed confirmation, and no secret's value is ever
+    printed (OWNER DECISION, BGD 2026-10-22, #1977: a tenant id registered
+    again starts with empty slots).
 
 The two refusal guards are also MUTATED in-test: the same assertions run
 against a copy of the script with the guard removed, and must then see the
@@ -59,6 +64,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from secrets import token_hex
 
 import pytest
 
@@ -341,7 +347,7 @@ reply(400, {"error": {"code": 400, "message": "fake firestore: unhandled %s %s" 
 '''
 
 #: `gcloud storage ls|rm` over a versioned, soft-deleting bucket, and
-#: `gcloud secrets list`. The rm follows `gcloud storage rm --help`: a
+#: `gcloud secrets list|describe|delete|versions access`. The rm follows `gcloud storage rm --help`: a
 #: wildcard alone removes LIVE versions only; --recursive or --all-versions
 #: removes every version; and --recursive on a bare bucket URL deletes the
 #: bucket, which the fake records so a test can refuse it.
@@ -464,6 +470,39 @@ if args[:2] == ["secrets", "list"]:
         print("\t".join(out))
     sys.exit(0)
 
+if args[:2] in (["secrets", "describe"], ["secrets", "delete"]):
+    # One secret, by its exact id: the first positional after the verb. The
+    # NOT_FOUND line is the shape `gcloud secrets describe|delete` prints for
+    # a secret that does not exist.
+    verb, name = args[1], args[2]
+    log(cmd="secrets-" + verb, name=name)
+    if os.environ.get("FAKE_SECRETS_DENIED") == verb:
+        print("ERROR: (gcloud.secrets.%s) PERMISSION_DENIED: Permission "
+              "'secretmanager.secrets.%s' denied for resource 'projects/%s/secrets/%s'."
+              % (verb, "get" if verb == "describe" else verb, state.get("project", "p"), name),
+              file=sys.stderr)
+        sys.exit(1)
+    hit = [s for s in state["secrets"] if s["name"] == name]
+    if not hit:
+        print("ERROR: (gcloud.secrets.%s) NOT_FOUND: Secret [projects/123456789/secrets/%s] not found."
+              % (verb, name), file=sys.stderr)
+        sys.exit(1)
+    if verb == "describe":
+        print("projects/123456789/secrets/" + name)
+    else:
+        state["secrets"] = [s for s in state["secrets"] if s["name"] != name]
+        save()
+        print("Deleted secret [%s]." % name, file=sys.stderr)
+    sys.exit(0)
+
+if args[:3] == ["secrets", "versions", "access"]:
+    # Here only so that a script which READ a secret would print its value
+    # where the no-value test can see it.
+    name = next(a.split("=", 1)[1] for a in args if a.startswith("--secret="))
+    log(cmd="secrets-access", name=name)
+    print(next(s for s in state["secrets"] if s["name"] == name).get("payload", ""))
+    sys.exit(0)
+
 print("fake gcloud: unhandled " + " ".join(args), file=sys.stderr)
 sys.exit(2)
 '''
@@ -563,6 +602,16 @@ def world(**over) -> dict:
         {"name": f"swarm-tenant-{TENANT}-anthropic", "labels": {"tenant": TENANT}},
         {"name": f"swarm-tenant-{TENANT}-anthropic-refresh", "labels": {"tenant": TENANT}},
         {"name": f"swarm-tenant-{NEIGHBOUR}-anthropic", "labels": {"tenant": NEIGHBOUR}},
+        # What register-tenant.sh makes (#1977), each holding a value built
+        # here at runtime so the no-value test has something to look for. The
+        # `-git-wf` slot starts with `-git` and is not one of the two; eng-x's
+        # pair starts with `swarm-tenant-eng-`.
+        *({"name": name, "labels": {"tenant": owner}, "payload": "v-" + token_hex(16)}
+          for owner, name in ((TENANT, f"swarm-tenant-{TENANT}-git"),
+                              (TENANT, f"swarm-tenant-{TENANT}-qa"),
+                              (TENANT, f"swarm-tenant-{TENANT}-git-wf"),
+                              (NEIGHBOUR, f"swarm-tenant-{NEIGHBOUR}-git"),
+                              (NEIGHBOUR, f"swarm-tenant-{NEIGHBOUR}-qa"))),
     ]
     state = {"docs": docs, "gcs": {BUCKET: gcs}, "gcs_soft": {}, "secrets": secrets}
     for key, value in over.items():
@@ -613,10 +662,19 @@ class Run:
 
     @property
     def writes(self) -> list[dict]:
-        """Everything that changed the database or the bucket."""
+        """Everything that changed the database, the bucket or Secret Manager."""
         fs = [e for e in self.fs_log if e["kind"] in ("commit", "delete", "patch")]
-        gc = [e for e in self.gcloud_log if e.get("cmd") == "rm"]
+        gc = [e for e in self.gcloud_log if e.get("cmd") in ("rm", "secrets-delete")]
         return fs + gc
+
+    def secret_calls(self) -> list[tuple[str, str]]:
+        """Every gcloud call that named one secret, in order. The ledger's
+        `secrets list --filter=labels.tenant:*` names none and is not here."""
+        return [(e["cmd"], e["name"]) for e in self.gcloud_log
+                if e.get("cmd", "").startswith("secrets-") and "name" in e]
+
+    def secret_deletes(self) -> list[str]:
+        return [name for cmd, name in self.secret_calls() if cmd == "secrets-delete"]
 
     def deleted_docs(self) -> list[str]:
         out = []
@@ -916,7 +974,8 @@ def test_apply_deletes_every_record_and_object_of_the_tenant_and_nothing_else(tm
     assert deleted[-1] == f"tenants/{TENANT}", f"the tenant document was not deleted last: {deleted}"
 
     proof = _section(run.stderr, "== Proof:")
-    assert "(13 checks)" in proof, proof
+    # 13, plus one row for each of the two secrets (#1977).
+    assert "(15 checks)" in proof, proof
     for label in (f"gs://{BUCKET}/tenants/{TENANT}/", "tasks", "task events", "events by tenant_id",
                   "attempts", "leases", "workflows", "quota", "outcome_days", "accounts", "account_auth",
                   "credential_publications", "pools"):
@@ -1151,3 +1210,147 @@ def test_a_ledger_entry_is_found_from_the_ledger_not_only_from_secret_labels(tmp
     assert _row(inv, "credential_publications").startswith("3 "), inv
     proof = _section(run.stderr, "== Proof:")
     assert _row(proof, "credential_publications").startswith("0"), proof
+
+
+# ---------------------------------------------------------------------------
+# 9. The tenant's -git slot and -qa secret go with it (#1977)
+# ---------------------------------------------------------------------------
+#
+# OWNER DECISION, BGD 2026-10-22: offboarding deletes swarm-tenant-<id>-git and
+# swarm-tenant-<id>-qa, behind the typed confirmation, so a tenant id registered
+# again later starts with empty slots instead of the old tenant's forge token or
+# QA test-account password.
+
+GIT = f"swarm-tenant-{TENANT}-git"
+QA = f"swarm-tenant-{TENANT}-qa"
+GIT_WF = f"swarm-tenant-{TENANT}-git-wf"
+
+
+def _secret_names(state: dict) -> list[str]:
+    return sorted(sec["name"] for sec in state["secrets"])
+
+
+def test_apply_deletes_exactly_the_tenants_git_and_qa_secrets(tmp_path):
+    before = world()
+    run = _run(tmp_path, before, "--tenant", TENANT, "--apply", typed=TENANT)
+
+    assert run.rc == 0, run.stderr[-4000:]
+    # MUTATION: drop the `gcloud secrets delete` (or either name from
+    # TENANT_SECRETS) in offboard-tenant.sh -> a name is missing from this list.
+    assert run.secret_deletes() == [GIT, QA], run.secret_calls()
+    # MUTATION: add a third name to TENANT_SECRETS, or look the secrets up
+    # anywhere else (a describe in the proof dropped, a delete by list match)
+    # -> this ordered list changes. Inventory, delete, proof: two each.
+    assert run.secret_calls() == [
+        ("secrets-describe", GIT), ("secrets-describe", QA),
+        ("secrets-delete", GIT), ("secrets-delete", QA),
+        ("secrets-describe", GIT), ("secrets-describe", QA),
+    ], run.secret_calls()
+    # MUTATION: delete by a listing filtered on labels.tenant=<id> or on a
+    # `swarm-tenant-<id>-` prefix -> -anthropic, -git-wf or eng-x's pair goes too.
+    assert _secret_names(run.state) == sorted(set(_secret_names(before)) - {GIT, QA}), (
+        _secret_names(run.state)
+    )
+    # MUTATION: print anything other than "deleted" after a successful delete
+    # in delete_tenant_secrets -> these rows read otherwise.
+    deleted = _section(run.stderr, "== Deleting secrets of tenant")
+    assert _row(deleted, GIT) == "deleted", deleted
+    assert _row(deleted, QA) == "deleted", deleted
+    # MUTATION: drop the two secret rows from prove_gone -> no proof row, and
+    # the tenant id is released without anyone having looked again.
+    proof = _section(run.stderr, "== Proof:")
+    assert _row(proof, GIT).startswith("0"), proof
+    assert _row(proof, QA).startswith("0"), proof
+    # MUTATION: drop the secret rows from inventory(), or print "present"
+    # whatever `secrets describe` answered (the absent test) -> these read otherwise.
+    inv = _section(run.stderr, "== Inventory:")
+    assert _row(inv, GIT) == "present", inv
+    assert _row(inv, QA) == "present", inv
+
+
+def test_an_absent_secret_is_reported_absent_and_the_run_succeeds(tmp_path):
+    before = world()
+    before["secrets"] = [sec for sec in before["secrets"] if sec["name"] != QA]
+    run = _run(tmp_path, before, "--tenant", TENANT, "--apply", typed=TENANT)
+
+    # MUTATION: treat a NOT_FOUND from `gcloud secrets delete` as a failure
+    # (drop the gcloud_not_found branch) -> the run dies here.
+    assert run.rc == 0, run.stderr[-4000:]
+    inv = _section(run.stderr, "== Inventory:")
+    # MUTATION: print "present" whatever `secrets describe` answered -> "present".
+    assert _row(inv, QA) == "absent", inv
+    deleted = _section(run.stderr, "== Deleting secrets of tenant")
+    # MUTATION: report every non-error delete as "deleted" -> "deleted".
+    assert _row(deleted, QA) == "absent", deleted
+    assert _row(deleted, GIT) == "deleted", deleted
+    # MUTATION: skip the -git delete once one secret is absent (`break` in the
+    # loop) -> the -git slot survives.
+    assert GIT not in _secret_names(run.state), _secret_names(run.state)
+    assert f"tenants/{TENANT}" not in run.state["docs"], "an absent secret stopped the id's release"
+
+
+def test_a_secret_delete_that_is_refused_fails_and_keeps_the_tenant(tmp_path):
+    """Absent is not an error; a refusal is. A denied delete read as "absent"
+    would release the id with the old tenant's token still in its slot."""
+    before = world()
+    run = _run(tmp_path, before, "--tenant", TENANT, "--apply", typed=TENANT, FAKE_SECRETS_DENIED="delete")
+
+    # MUTATION: replace gcloud_not_found with `true` in delete_tenant_secrets
+    # -> the denied delete reads as absent and the run carries on to exit 0.
+    assert run.rc != 0, run.stderr[-4000:]
+    # MUTATION: move delete_tenant_secrets after release_tenant_id in Main ->
+    # the tenant document is gone before the refused delete, and the id is
+    # free while the old tenant's token may still sit in its slot.
+    assert f"tenants/{TENANT}" in run.state["docs"], "the id was released with the secrets unverified"
+    # MUTATION: make delete_tenant_secrets' failure message omit the id ->
+    # the operator is not told which secret is still there.
+    assert f"could not delete secret {GIT}" in run.stderr, run.stderr[-4000:]
+
+
+def test_nothing_is_deleted_when_the_typed_confirmation_is_wrong(tmp_path):
+    before = world()
+    run = _run(tmp_path, before, "--tenant", TENANT, "--apply", typed="yes", SWARM_ASSUME_YES="1")
+
+    assert run.rc != 0, run.stderr[-3000:]
+    # MUTATION: call delete_tenant_secrets before the `confirm` in Main, or
+    # delete the `unset SWARM_ASSUME_YES` -> a secrets-delete is logged here.
+    assert run.secret_deletes() == [], run.secret_calls()
+    # MUTATION: same -> the secret list in the state shrinks.
+    assert _secret_names(run.state) == _secret_names(before)
+
+
+def test_the_git_wf_slot_and_the_neighbours_secrets_are_never_touched(tmp_path):
+    before = world()
+    run = _run(tmp_path, before, "--tenant", TENANT, "--apply", typed=TENANT)
+
+    assert run.rc == 0, run.stderr[-4000:]
+    named = {name for _, name in run.secret_calls()}
+    # MUTATION: build the ids as `swarm-tenant-${TENANT}-git*`, or loop over a
+    # `secrets list --filter=name:swarm-tenant-${TENANT}-git` -> -git-wf named.
+    assert GIT_WF not in named, run.secret_calls()
+    # MUTATION: same -> -git-wf deleted.
+    assert GIT_WF in _secret_names(run.state)
+    # MUTATION: build the ids from a prefix match on `swarm-tenant-${TENANT}-`
+    # -> eng-x's pair is named or deleted.
+    for other in (f"swarm-tenant-{NEIGHBOUR}-git", f"swarm-tenant-{NEIGHBOUR}-qa"):
+        assert other not in named, run.secret_calls()
+        assert other in _secret_names(run.state)
+
+
+def test_no_secret_value_is_printed(tmp_path):
+    before = world()
+    run = _run(tmp_path, before, "--tenant", TENANT, "--apply", typed=TENANT)
+
+    assert run.rc == 0, run.stderr[-4000:]
+    records = "".join(p.read_text() for p in (tmp_path / "repo" / "build").rglob("*.txt"))
+    assert records, "no offboarding record was written, so the check below would read nothing"
+    for sec in before["secrets"]:
+        if "payload" not in sec:
+            continue
+        # MUTATION: read the secret before deleting it (`gcloud secrets
+        # versions access latest --secret=<id>`) and print it -> its value
+        # appears in the output or the kept record.
+        assert sec["payload"] not in run.stderr, f"the value of {sec['name']} was printed"
+        assert sec["payload"] not in records, f"the value of {sec['name']} was recorded"
+    # MUTATION: same -> a versions-access call is logged.
+    assert not [c for c in run.secret_calls() if c[0] == "secrets-access"], run.secret_calls()
