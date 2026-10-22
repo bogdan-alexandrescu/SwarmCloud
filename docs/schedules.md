@@ -1218,6 +1218,39 @@ disagree with the price setting by more than 10%."
   setting.
 * **Creates.** An admin, `scope: {mode: "platform"}` only.
 
+### 3.16 `failure-review` (designed, not built)
+
+Designed 2026-10-22 for #1933 (lane AUTONOMY-DESIGN). **Not built: no
+executor module and no `TYPES` entry exist, so it cannot be created and
+nothing fires.** The design is
+[design/failure-review.md](design/failure-review.md), built on the
+capabilities of [design/agent-autonomy.md](design/agent-autonomy.md); its
+lanes are that document's §6.2 (FR-1 to FR-4), after the capability lanes of
+§6.1.
+
+* **Does.** Every 6 hours, over the previous 7, swarm-api gathers every agent,
+  workflow and issue run that ended FAILED or DEAD_LETTERED in any tenant,
+  skips the expected ones by named rules, and hands a redacted, bounded digest
+  as data to one `claude-code` agent with the platform's repository. That
+  agent root-causes each group and writes `rca.json`. swarm-api then files one
+  issue per new cause in the bug form (a known cause's issue gets a comment),
+  and starts one issue run per issue to plan, implement, review, fix and merge.
+* **Holds.** A cause or a change touching IAM, the frozen contract, secrets,
+  tenant isolation, the other team's resources or cost is filed
+  `needs-owner` and gets no run (owner decision 2026-10-22). Those
+  categories hold every issue run in a `platform: true` repository, not only
+  this type's (owner decision 2026-10-22, Q7).
+* **Default gate.** Plan auto; merge `approve` in the type, switched to
+  `auto` once by the owner through the audited switch (§4.2) when creating
+  the schedule (owner decision 2026-10-22, Q8), with every hard stop of §4.4
+  in force.
+* **Budget.** Tripwires, not a cap on fix runs: `per_run_usd` 200,
+  `per_day_usd` 1000, `max_concurrent` 1 (owner decision 2026-10-22, Q9).
+* **Produces.** Issues, issue runs, per-tenant findings for causes in a
+  tenant's own repository, and one summary per firing.
+* **Blast radius.** Merged pull requests in the platform's own repository.
+* **Creates.** The owner, `scope: {mode: "platform"}` only.
+
 ---
 
 ## 4. Gates and approvals
