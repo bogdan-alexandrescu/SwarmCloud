@@ -13,7 +13,12 @@
 //     `link_token` with the username and password, which never stay in the DOM;
 //   * an admin's Set credential mints a link and opens the same form with the
 //     token held in memory, never drawn;
-//   * the registration form POSTs the fields VQ-2's `TargetBody` takes.
+//   * the registration form POSTs the fields VQ-2's `TargetBody` takes;
+//   * a PLATFORM admin (`principal.is_admin`, whatever the workspace role)
+//     sees Approve host on a pending target, types the host (and a login's
+//     extra origin) to confirm, and only then POSTs `:approve-host`; anyone
+//     else never sees it, and the API's refusal is said in its own words
+//     (lane VQ6-APPROVE, §1.2, VQ-Q1).
 //
 // The bodies are routes/qatargets.py's and routes/repositories.py's shapes.
 // Every token-shaped value is built at runtime; nothing here is a credential.
@@ -36,10 +41,10 @@ function runtimeValue(n = 24): string {
   return Array.from({ length: n }, (_, i) => 'abcdefghjkmnpqrstuvwxyz23456789'[(i * 7 + n) % 31]).join('') + String(Date.now() % 997)
 }
 
-function me(role: string): Json {
+function me(role: string, platformAdmin = false): Json {
   return {
     tenant: { tenant_id: 'eng', kind: 'group', principal: 'eng@example.com', display_name: null },
-    principal: { email: 'vera@example.com', domain: 'example.com', groups: [], is_admin: false, is_admin_unresolved: false },
+    principal: { email: 'vera@example.com', domain: 'example.com', groups: [], is_admin: platformAdmin, is_admin_unresolved: false },
     environment: 'dev',
     environment_declared: true,
     role: { name: role, source: 'override' },
@@ -70,21 +75,27 @@ function target(id: string, name: string, over: Json = {}): Json {
   }
 }
 
-function targets(): Json {
+function targets(pendingOver: Json = {}): Json {
   return {
     qa_targets: [
       target(APPROVED, 'shop', { themes: ['light'] }),
-      target(PENDING, 'blog', { host_state: 'pending' }),
+      target(PENDING, 'blog', { host_state: 'pending', ...pendingOver }),
       target(LOGIN, 'portal', { sign_in: { kind: 'own_login', login_path: '/login', signed_in_selector: '#me' } }),
     ],
   }
 }
 
-function live(role: string, opts: { run?: Reply; link?: Reply; put?: Reply; create?: Reply } = {}) {
+function live(
+  role: string,
+  opts: { run?: Reply; link?: Reply; put?: Reply; create?: Reply; platformAdmin?: boolean; approve?: Reply; pending?: Json } = {},
+) {
   const calls = serve((m, url) => {
     const path = url.split('?')[0] ?? ''
-    if (m === 'GET' && path === '/v1/tenants/me') return { status: 200, body: me(role) }
-    if (m === 'GET' && path === '/v1/qa-targets') return { status: 200, body: targets() }
+    if (m === 'GET' && path === '/v1/tenants/me') return { status: 200, body: me(role, opts.platformAdmin === true) }
+    if (m === 'GET' && path === '/v1/qa-targets') return { status: 200, body: targets(opts.pending) }
+    if (m === 'POST' && path.endsWith(':approve-host')) {
+      return opts.approve ?? { status: 200, body: { qa_target: target(PENDING, 'blog', { approved_by: 'root@example.com', ...opts.pending, host_state: 'approved' }) } }
+    }
     if (m === 'GET' && path === '/v1/repositories') return { status: 200, body: { repositories: [repo({ repo_id: REPO_ID })] } }
     if (m === 'POST' && path.endsWith(':run')) return opts.run ?? { status: 201, body: { workflow_id: 'wf_' + 'd4'.repeat(8), qa_target: {}, file: 'issues', browser_steps: [] } }
     if (m === 'POST' && path.endsWith('/credential-links')) return opts.link ?? null
@@ -415,5 +426,103 @@ describe('QA targets: registration', () => {
     expect(sent.url).toBe(`/v1/qa-targets/${APPROVED}`)
     // MUTATION: send the whole form on an edit, or leave a removed setting out instead of null.
     expect(sent.body).toEqual({ name: 'shop-2', themes: null })
+  })
+})
+
+describe('QA targets: a platform admin approves a pending host (VQ6-APPROVE, §1.2)', () => {
+  function typeInto(root: ParentNode, name: string, value: string) {
+    const el = root.querySelector<HTMLInputElement>(`input[name="${name}"]`)
+    if (el === null) throw new Error(`no ${name} field`)
+    fireEvent.change(el, { target: { value } })
+  }
+
+  function approveForm(root: ParentNode): HTMLFormElement {
+    const f = root.querySelector<HTMLFormElement>('form.qa-approve')
+    if (f === null) throw new Error('no approve form')
+    return f
+  }
+
+  it('a platform admin sees Approve host on a pending target and not on an approved one', async () => {
+    // A workspace MEMBER who is a platform admin: the platform role decides, not the workspace one.
+    live('member', { platformAdmin: true })
+    await mountPage()
+    // MUTATION: gate Approve host on the workspace admin role (or draw it for nobody) and this never appears.
+    await waitFor(() => expect(button(card(PENDING), 'Approve host')).not.toBeNull(), WAIT)
+    // MUTATION: draw Approve host whatever the host's state and the approved target shows it too.
+    expect(button(card(APPROVED), 'Approve host')).toBeNull()
+  })
+
+  it('a member who is not a platform admin never sees it, even a workspace admin', async () => {
+    const calls = live('admin', { platformAdmin: false })
+    await mountPage()
+    // The workspace-admin controls have drawn, so the session read has landed.
+    await waitFor(() => expect(button(card(APPROVED), 'Edit')).not.toBeNull(), WAIT)
+    await waitFor(() => expect(calls.some((c) => c.url.split('?')[0] === '/v1/tenants/me')).toBe(true), WAIT)
+    // MUTATION: draw Approve host for any workspace admin (`admin` instead of `principal.is_admin`) and this is not null.
+    expect(button(card(PENDING), 'Approve host')).toBeNull()
+    expect(document.querySelector('form.qa-approve')).toBeNull()
+  })
+
+  it('posts :approve-host only once the typed host is the target’s host, then shows it approved', async () => {
+    const calls = live('member', { platformAdmin: true })
+    await mountPage()
+    await waitFor(() => expect(button(card(PENDING), 'Approve host')).not.toBeNull(), WAIT)
+    fireEvent.click(button(card(PENDING), 'Approve host')!)
+    const form = approveForm(card(PENDING))
+    typeInto(form, 'confirm_host', 'blog.example.test.evil')
+    fireEvent.submit(form)
+    // MUTATION: drop the typed-host check and a wrong host is posted.
+    expect(calls.filter((c) => c.method === 'POST')).toEqual([])
+    typeInto(form, 'confirm_host', ' Blog.Example.Test ')
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST').length).toBe(1), WAIT)
+    const sent = calls.find((c) => c.method === 'POST')!
+    // MUTATION: post to another target's id, or to another route.
+    expect(sent.url).toBe(`/v1/qa-targets/${PENDING}:approve-host`)
+    // MUTATION: send anything besides the confirmed host (an extra origin the target never declared, the spec).
+    expect(sent.body).toEqual({ host: 'blog.example.test' })
+    // MUTATION: ignore the API's answer and the row still says pending.
+    await waitFor(() => expect(card(PENDING).getAttribute('data-host-state')).toBe('approved'), WAIT)
+    expect(visible(card(PENDING))).toContain('approved by root@example.com')
+    expect(button(card(PENDING), 'Approve host')).toBeNull()
+  })
+
+  it('a login’s extra origin must be typed too, and is sent with the host', async () => {
+    const origin = 'https://login.example.test'
+    const calls = live('member', {
+      platformAdmin: true,
+      pending: { sign_in: { kind: 'own_login', login_path: '/login', signed_in_selector: '#me', extra_origin: origin } },
+    })
+    await mountPage()
+    await waitFor(() => expect(button(card(PENDING), 'Approve host')).not.toBeNull(), WAIT)
+    fireEvent.click(button(card(PENDING), 'Approve host')!)
+    const form = approveForm(card(PENDING))
+    typeInto(form, 'confirm_host', 'blog.example.test')
+    fireEvent.submit(form)
+    // MUTATION: drop the extra-origin check and the host is approved without the origin it signs in through.
+    expect(calls.filter((c) => c.method === 'POST')).toEqual([])
+    typeInto(form, 'confirm_extra_origin', origin)
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST').length).toBe(1), WAIT)
+    // MUTATION: leave `extra_origin` out of the body and the API approves the host alone.
+    expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ host: 'blog.example.test', extra_origin: origin })
+  })
+
+  it.each([
+    [403, 'forbidden', 'platform admin group membership is needed to approve a host'],
+    [409, 'conflict', "the host named is not this QA target's host now; read it again"],
+    [422, 'invalid', 'host: String should have at most 253 characters'],
+  ])('a %i refusal is said in the API’s own words', async (status, code, message) => {
+    live('member', { platformAdmin: true, approve: { status, body: { code, message } } })
+    await mountPage()
+    await waitFor(() => expect(button(card(PENDING), 'Approve host')).not.toBeNull(), WAIT)
+    fireEvent.click(button(card(PENDING), 'Approve host')!)
+    const form = approveForm(card(PENDING))
+    typeInto(form, 'confirm_host', 'blog.example.test')
+    fireEvent.submit(form)
+    // MUTATION: swallow the refusal (or say a word of our own instead of the API's) and this never appears.
+    await waitFor(() => expect(visible(card(PENDING))).toContain(message), WAIT)
+    // MUTATION: mark the row approved on a refusal and the state flips.
+    expect(card(PENDING).getAttribute('data-host-state')).toBe('pending')
   })
 })
