@@ -108,10 +108,10 @@ async function mount(run: AgentRun): Promise<HTMLElement> {
 }
 
 function section(root: HTMLElement, title: string): HTMLElement | null {
-  // A Details card is headed by `.dt-card-head > b` (agent-details-v3.html A).
+  // A Details card is headed by `.dt-card-head > h2` (`> b` outside AgentDetail.tsx) (agent-details-v3.html A).
   return (
     [...root.querySelectorAll<HTMLElement>('section')].find(
-      (s) => s.querySelector(':scope > h2, :scope > .dt-card-head > b')?.textContent === title,
+      (s) => s.querySelector(':scope > h2, :scope > .dt-card-head > h2, :scope > .dt-card-head > b')?.textContent === title,
     ) ?? null
   )
 }

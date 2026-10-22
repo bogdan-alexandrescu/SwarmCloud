@@ -400,7 +400,7 @@ test('the `?` sits after a label and never after a value', () => {
   // title, then its links, then its one `?`.
   // MUTATION: put a `?` in a strip value, or a second one in a card head.
   const glyphs = markup.split('aria-label="Help: ').length - 1
-  const heads = [...markup.matchAll(/<div class="dt-card-head"><b>[^<]+<\/b>([\s\S]*?)<\/div>/g)]
+  const heads = [...markup.matchAll(/<div class="dt-card-head"><h2>[^<]+<\/h2>([\s\S]*?)<\/div>/g)]
   const inHeads = heads.reduce((n, [, body]) => n + ((body ?? '').split('aria-label="Help: ').length - 1), 0)
   assert.ok(glyphs >= 4, `only ${glyphs} help glyphs on the surface`)
   assert.equal(inHeads, glyphs, 'a help glyph sits somewhere other than after a card heading')
@@ -702,7 +702,7 @@ test('a failed agent’s reason is printed once, and an earlier attempt’s own 
 
 /** The Progress card's event list and its paging note, as markup. */
 function timelineToolbar(markup: string): string {
-  const at = markup.indexOf('<b>Progress</b>')
+  const at = markup.indexOf('<h2>Progress</h2>')
   assert.ok(at >= 0, 'the Progress card is not on the screen')
   return markup.slice(at, markup.indexOf('</section>', at))
 }

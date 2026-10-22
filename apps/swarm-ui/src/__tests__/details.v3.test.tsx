@@ -230,7 +230,7 @@ describe('the Now card leads, and becomes the outcome or the failure', () => {
     )
     const now = el.querySelector<HTMLElement>('.dt > .dt-now')!
     expect(now.dataset.lead).toBe('now')
-    expect(now.querySelector('.dt-card-head > b')?.textContent).toBe('Now')
+    expect(now.querySelector('.dt-card-head > h2')?.textContent).toBe('Now')
     expect(now.querySelector('.dt-phase.is-cur')?.textContent).toMatch(/^run/)
     expect(now.textContent).toMatch(/Checkpoints\s*1 · last 1m ago/)
     expect(now.textContent).toMatch(/Heartbeat/)
@@ -258,7 +258,7 @@ describe('the Now card leads, and becomes the outcome or the failure', () => {
     const el = host(runOf({ task: t, attempts: [attempt(1, { created_at: ago(15), started_at: ago(14), completed_at: ago(1) })] }))
     const lead = el.querySelector<HTMLElement>('.dt > .dt-now')!
     expect(lead.dataset.lead).toBe('outcome')
-    expect(lead.querySelector('.dt-card-head > b')?.textContent).toBe('Outcome')
+    expect(lead.querySelector('.dt-card-head > h2')?.textContent).toBe('Outcome')
     expect(lead.textContent).toMatch(/Pull request\s*#512\s*opened/)
   })
 
@@ -268,7 +268,7 @@ describe('the Now card leads, and becomes the outcome or the failure', () => {
     const el = host(runOf({ task: t, attempts: [attempt(1, { created_at: ago(15), started_at: ago(14), completed_at: null, exit_code: null })] }))
     const lead = el.querySelector<HTMLElement>('.dt > .dt-now')!
     expect(lead.dataset.lead).toBe('failed')
-    expect(lead.querySelector('.dt-card-head > b')?.textContent).toBe('Failed: the worker stopped answering')
+    expect(lead.querySelector('.dt-card-head > h2')?.textContent).toBe('Failed: the worker stopped answering')
     expect(lead.querySelector('.dt-chip')?.textContent).toBe('lost_worker')
     expect(lead.textContent).toMatch(/Error written by\s*reconciler/)
     expect(lead.querySelector('pre')?.textContent).toBe(error)
@@ -283,7 +283,7 @@ describe('the Now card leads, and becomes the outcome or the failure', () => {
     const lead = el.querySelector<HTMLElement>('.dt > .dt-now')!
     expect(lead.dataset.lead).toBe('failed')
     expect(lead.classList.contains('is-neu'), 'a cancel reads as a failure').toBe(true)
-    expect(lead.querySelector('.dt-card-head > b')?.textContent).toBe('Cancelled')
+    expect(lead.querySelector('.dt-card-head > h2')?.textContent).toBe('Cancelled')
     expect(lead.textContent).toContain('No error text was written on the agent.')
   })
 })

@@ -538,11 +538,18 @@ function endCauseOf(task: Task): EndCause | null {
   return typeof c === 'string' && (END_CAUSES as readonly string[]).includes(c) ? (c as EndCause) : null
 }
 
-/** A card's head: its title, then its links and its one `?`. */
+/**
+ * A card's head: its title, then its links and its one `?`.
+ *
+ * THE TITLE IS AN `h2` (N12, visual QA run 4): a bold `<b>` read as
+ * `- text: Now` in the accessibility tree, so a screen-reader user could not
+ * jump between Now, Progress, Resources and Input, while Attempts and
+ * Children are `h2`. styles/details.css draws it exactly as the `<b>` was.
+ */
 function DtCardHead({ title, children }: { title: ReactNode; children?: ReactNode }) {
   return (
     <div className="dt-card-head">
-      <b>{title}</b>
+      <h2>{title}</h2>
       {children !== undefined && <span className="dt-card-r">{children}</span>}
     </div>
   )
@@ -3868,7 +3875,7 @@ function Output({
       data-lead={lead !== undefined ? 'outcome' : undefined}
     >
       <div className="dt-card-head">
-        <b>{lead !== undefined ? 'Outcome' : hasCode ? 'Code' : 'Output'}</b>
+        <h2>{lead !== undefined ? 'Outcome' : hasCode ? 'Code' : 'Output'}</h2>
         {/* THE SCOPE LINE IS NOT OPTIONAL, AND IT IS NOW A QUALIFIER.
             Everything in this panel comes from result_summary, which finish()
             writes ONCE at terminal state. On a retried task it is the last

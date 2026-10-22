@@ -28,7 +28,7 @@ import {
 import { MarkdownInline } from './ArtifactViewer'
 import { GapNotice, LogMarksContext, type LogMarks } from './logMarks'
 import { attemptLine, useRead } from './RunFiles'
-import { TERMINAL_STATES, type AttemptRow, type LogStream, type Task } from './types'
+import { TERMINAL_STATES, clockTime, type AttemptRow, type LogStream, type Task } from './types'
 import { useNow } from './useNow'
 import { Button, Segmented } from './components'
 
@@ -535,18 +535,25 @@ export function AgentLogs({ task }: { task: Task }) {
     return () => ro.disconnect()
   }, [])
 
+  const pausedAt = frozen === null ? null : clockTime(new Date(frozen.at).toISOString(), clock)
   const unreadNote = attemptsUnread && (
     <span className="ctl-sub ag-logs-unread">
       <Mark kind="unread" say="The attempt list did not load, so only the latest attempt can be picked." />{' '}
       <LogWords long="attempts not read" short="" />
     </span>
   )
+  // THE CHIP SAYS IT WITHOUT A HOVER (N13, visual QA run 4): `Final record`
+  // alone left a reader on a failed agent asking what it meant. The short
+  // label holds to eight characters, as the bar's others do, so the chip
+  // never pushes Error under More at the 380px split (qa.u11a.logs).
   const followControl = finished ? (
     <span
       className="ag-logs-final"
+      role="note"
+      aria-label="Agent ended: this is its complete log, so there is nothing to follow"
       title="This agent has finished: its log is the final record, and nothing more will arrive to follow."
     >
-      Final record
+      <LogWords long="Ended · complete log" short="Complete" />
     </span>
   ) : (
     <Button size="sm" aria-pressed={follow} aria-keyshortcuts="F" onClick={toggleFollow}>
@@ -706,8 +713,20 @@ export function AgentLogs({ task }: { task: Task }) {
                   <li className="ctl-fact">
                     <b>source</b>
                     {source === 'live' ? 'live tail' : source === 'final' ? 'final record' : 'the artifact'}
-                    {!follow && frozen !== null && (
-                      <span className="ctl-sub"> · paused {new Date(frozen.at).toLocaleTimeString()}</span>
+                    {/* THE PAGE'S ONE CLOCK (N14, visual QA run 4): 24-hour, the
+                        ISO time and its age as the title, as the head's `ended`
+                        is -- `toLocaleTimeString()` drew `9:25:53 PM` beside it.
+                        And what paused means: following stopped then, and what
+                        arrived since is the count under the log. */}
+                    {!follow && frozen !== null && pausedAt !== null && (
+                      <span className="ctl-sub ag-logs-paused">
+                        {' '}
+                        · following paused at{' '}
+                        <time dateTime={new Date(frozen.at).toISOString()} title={pausedAt.title}>
+                          {pausedAt.text}
+                        </time>
+                        ; anything newer is counted below
+                      </span>
                     )}
                   </li>
                 )}
