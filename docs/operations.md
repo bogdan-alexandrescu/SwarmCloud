@@ -532,6 +532,8 @@ gcloud scheduler jobs describe "swarm-issue-run-advance-$TENANT" \
 
 # One tick by hand, as an admin. The report counts what it visited and moved;
 # a run it could not advance is named with its error code, never its message.
+# `held` counts the after_merged child runs the same tick visited, started,
+# cancelled, failed or left waiting (`children.release_held_runs`).
 ./scripts/api.sh POST "/admin/runs/advance?tenant_id=$TENANT"
 ```
 
