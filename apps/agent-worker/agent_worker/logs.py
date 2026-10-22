@@ -33,6 +33,8 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any, TextIO
 
+from swarm_common.identity import SERVICE_ACCOUNT_EMAIL
+
 from .redact import (
     MAX_SCRUB_BYTES,
     MIN_SECRET_LENGTH,
@@ -43,7 +45,45 @@ from .redact import (
     scrub_text as _scrub,
 )
 
-__all__ = ["REDACTED", "StructuredLogger", "build_logger"]
+__all__ = [
+    "REDACTED",
+    "SUBMITTER_NOT_SERVICE",
+    "StructuredLogger",
+    "build_logger",
+    "submitter_service",
+]
+
+#: `submitter_service` for a submitter that is not a user-managed service
+#: account: a person, or a Google-managed account no workload of ours owns.
+SUBMITTER_NOT_SERVICE = "person"
+
+
+def submitter_service(principal: Any) -> str | None:
+    """Who submitted the task, as a log label: a service account's short name or `person`.
+
+    `swarm-verify@<project>.iam.gserviceaccount.com` is `swarm-verify`; any
+    other address is SUBMITTER_NOT_SERVICE, and None when there is no
+    submitter to name. NEVER the address: logs and metric labels are read
+    widely, and a person's email there is personal data.
+
+    WHY IT EXISTS (FENCE-SUBMITTER, part of #1822). The `generation_fenced`
+    alert excluded tenants to silence verify-remote's deliberate fences, but
+    verify-remote submits as `eng`: over the 7 days measured 2026-10-22 01:11Z
+    eng carried 347 fences and smoke 57, so no tenant filter could drop
+    swarm-verify's without hiding eng's real ones. The alert now excludes
+    submitters by this label (terraform/modules/monitoring, the
+    `fencing_alert_excluded_submitters` variable).
+
+    The short name is `[a-z0-9-]` by SERVICE_ACCOUNT_EMAIL's own pattern, so it
+    is safe in a Monitoring filter. Google-managed accounts do not match on
+    purpose: every workload in a project can run as them.
+    """
+    if not isinstance(principal, str) or not principal.strip():
+        return None
+    email = principal.strip().lower()
+    if SERVICE_ACCOUNT_EMAIL.match(email):
+        return email.split("@", 1)[0]
+    return SUBMITTER_NOT_SERVICE
 
 #: Field names whose values are never printed, no matter where they appear.
 _SENSITIVE_KEYS = frozenset(
