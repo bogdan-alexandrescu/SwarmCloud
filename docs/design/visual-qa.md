@@ -676,7 +676,7 @@ tool. What `swarm_qa.py` does now:
 * **Settled means the text has stopped changing too** (box comments
   6283709068 and 6283730057). Run 4 shot the agent list with every row at
   "attempt … of 3" while the route's own text file said "attempt 3 of 3"
-  (task-007); the Workflows list's Cost as "—" while its cost read was in
+  (`task-007`); the Workflows list's Cost as "—" while its cost read was in
   flight, and one phone capture showed "—" in its first segment and "$0.426"
   in its second (work-a-001, work-a-002); and the Timeline strip's "events
   not read on N lanes" as 27 in both phone images, 19 in the phone text and
@@ -698,13 +698,13 @@ tool. What `swarm_qa.py` does now:
   This catches all three run-4 cases from the tool alone; the console marks
   nothing new.
 * **What covers the scroller's foot, and a strip stuck inside a drawer, are
-  stepped round** (box comment 6314118924, run 4's task-006). At 390 the open
-  task's scroller is `div.drawer.ctl-drawer.ag-split`; its tab strip
+  stepped round** (box comment 6314118924, run 4's `task-006`). At 390 the open
+  agent's scroller is `div.drawer.ctl-drawer.ag-split`; its tab strip
   (`.ag-tabs-edge`, `sticky; top: -18px`) is stuck over its top ~45 px in
   every later segment and the fixed Reads bar covers its bottom ~45 px, yet
   the manifest said `overlaps: [0, 0]`, and the rows under both (attempt 3's
   model row and first event, the first line of attempt 2's execution, the Now
-  card's Heartbeat, Checkpoints and Output rows) were in no image, on five task
+  card's Heartbeat, Checkpoints and Output rows) were in no image, on five agent
   panes in both themes. The strip was rejected by `STUCK_JS`'s inset test: a
   sticky inset is measured from the scroller's **padding** edge, and the
   drawer has 18 px of top padding, so stuck the strip sits at the scroller's
@@ -718,7 +718,7 @@ tool. What `swarm_qa.py` does now:
   `MANIFEST_FORMAT` stays 1; the new `covers` splits each step into
   `{"top", "bottom"}`. At the scroller's very end rows under a fixed bar
   cannot be scrolled clear of it: no segment can show them, and the review
-  should know that the last ~45 px of a phone task pane sit under the bar.
+  should know that the last ~45 px of a phone agent pane sit under the bar.
 
 These reach a capture only once the `agent-runtime-browser` image is rebuilt
 and released.
