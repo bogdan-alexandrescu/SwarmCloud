@@ -192,7 +192,7 @@ describe('QA-045: In use and Ceiling draw their figures alike', () => {
     await limits([pool('global', { active: 0, effective_limit: 20 })])
     const row = document.getElementById('limit-global')!
     const use = row.querySelector('td[data-label="In use (units)"] > .adm-inuse')!
-    const ceiling = row.querySelector('td[data-label="Ceiling (units)"] > .adm-ceiling')!
+    const ceiling = row.querySelector('td[data-label="Ceiling (units)"] > .adm-fig > .adm-ceiling')!
     expect(use.textContent).toBe('0')
     expect(ceiling.textContent).toBe('20')
     for (const figure of [use, ceiling]) {
@@ -202,9 +202,10 @@ describe('QA-045: In use and Ceiling draw their figures alike', () => {
       expect(painted(figure, 'font-variant-numeric', WIDE)).toBe('tabular-nums')
       // MUTATION: leave In use a right-aligned `td.is-num`: one figure at its
       // column's right edge, the other at 6ch from its column's left. Both are
-      // flush left in the slot since run 3 (admin-004, qafix3.admin.test.tsx).
+      // right-aligned in the slot again since QAFIX4-ADMIN-2 (run 3 admin-004,
+      // qafix4.admin2.test.tsx), so `6` stays against its `/10`.
       expect(painted(figure, 'width', WIDE)).toBe('6ch')
-      expect(painted(figure, 'text-align', WIDE)).toBe('left')
+      expect(painted(figure, 'text-align', WIDE)).toBe('right')
       expect(painted(figure, 'display', WIDE)).toBe('inline-block')
     }
     const heads = [...document.querySelectorAll('table.adm-limits thead th')]

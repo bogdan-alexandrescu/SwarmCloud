@@ -116,8 +116,8 @@ afterEach(() => {
   for (const h of hosts.splice(0)) h.remove()
 })
 
-describe('admin-004: In use and Ceiling start where their heads start', () => {
-  it('sets both figures flush left in their fixed slots, under left-aligned heads', async () => {
+describe('admin-004: In use and Ceiling share one alignment under left-aligned heads', () => {
+  it('sets both figures alike in their fixed slots, under left-aligned heads', async () => {
     viewport(1440)
     await limits([pool('global', { active: 0, effective_limit: 20 }), pool('tenant:eng', { active: 12, effective_limit: 100 })])
     const heads = [...document.querySelectorAll('table.adm-limits thead th')]
@@ -125,12 +125,13 @@ describe('admin-004: In use and Ceiling start where their heads start', () => {
     for (const id of ['global', 'tenant:eng']) {
       const row = document.getElementById(`limit-${id}`)!
       const use = row.querySelector('td[data-label="In use (units)"] > .adm-inuse')!
-      const ceiling = row.querySelector('td[data-label="Ceiling (units)"] > .adm-ceiling')!
+      const ceiling = row.querySelector('td[data-label="Ceiling (units)"] > .adm-fig > .adm-ceiling')!
       for (const [figure, over] of [[use, head('In use (units)')], [ceiling, head('Ceiling (units)')]] as const) {
-        // MUTATION: put `text-align: right` back on the slot: `0` sits 5ch
-        // into In use's column (read as centred) and `20` / `100` start at
-        // two x's under Ceiling's left head (read as ragged).
-        expect(painted(figure, 'text-align', WIDE)).toBe('left')
+        // Right-aligned since QAFIX4-ADMIN-2: flush left split `6` from its
+        // `/10` by a gap that changed on every row (qafix4.admin2.test.tsx).
+        // MUTATION: align one slot apart from the other: the two figure
+        // columns stop sharing one alignment (QA-045).
+        expect(painted(figure, 'text-align', WIDE)).toBe('right')
         expect(painted(over, 'text-align', WIDE) ?? 'left').toBe('left')
         // The slot keeps its fixed width, so `edit` after it still starts at one x.
         expect(painted(figure, 'width', WIDE)).toBe('6ch')
@@ -204,8 +205,8 @@ describe('admin-009: edit starts at one x in every phone record', () => {
     for (const id of ['global', 'tenant:eng', 'runner:x']) {
       const cell = document.getElementById(`limit-${id}`)!.querySelector('td.adm-ceiling-cell')!
       expect(cell.closest('.ctl-table')!.classList.contains('is-stacked')).toBe(true)
-      const figure = cell.querySelector(':scope > .adm-ceiling')!
-      const was = cell.querySelector(':scope > .adm-was')!
+      const figure = cell.querySelector(':scope > .adm-fig > .adm-ceiling')!
+      const was = cell.querySelector(':scope > .adm-fig > .adm-was')!
       // MUTATION: put `width: auto` back on either slot at 560px and under:
       // `8`, `50 /100` and `—` each push `edit` to a different x.
       expect(painted(figure, 'width', PHONE), id).toBe('6ch')

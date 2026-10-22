@@ -1227,7 +1227,11 @@ function PoolRow({
         {poolLabel(pool.name)}
         {/* The raw name, because it is what you paste into pool-limit.sh and a
             prettified label is not. */}
-        <span className="ctl-sub">{keyBreaks(pool.name)}</span>
+        {/* THE WHOLE ID ON ITS TITLE (visual QA run 3, admin-003): a pair too
+            long for the cell is cut rather than broken (`.adm-key-seg`). */}
+        <span className="ctl-sub" title={pool.name}>
+          {keyBreaks(pool.name)}
+        </span>
       </th>
       <td role="cell" data-label="In use (units)">
         <span className="adm-inuse">{pool.active}</span>
@@ -1237,26 +1241,31 @@ function PoolRow({
             figure has a fixed width (`.adm-ceiling`), so `edit` starts at the
             same x in every row of every family, and the tags after it -- over
             ceiling, read-only, saved -- wrap below rather than push it. */}
-        {pool.effective_limit === null ? (
-          // A dash in the figure's slot, its reason on it, and the words after
-          // `edit` -- so the words cannot widen the slot and move `edit`.
-          <span className="adm-ceiling is-unset" title={by.detail} aria-label={`No limit set. ${by.detail}`}>
-            —
-          </span>
-        ) : (
-          <span className="adm-ceiling">{pool.effective_limit}</span>
-        )}
-        {/* THE CONFIGURED HARD LIMIT BESIDE THE EFFECTIVE ONE, AS POOLS DRAWS
-            IT (G5-21, QA 2026-10-07): a quota-held pool read "50" here and
-            "50/100" on Pools, and its editor then prefilled 100. A slot of its
-            own and a fixed width, drawn empty when the two agree, so `edit`
-            still starts at one x in every row. */}
-        <span className="adm-was">
-          {pool.effective_limit !== null && pool.hard_limit !== null && pool.effective_limit < pool.hard_limit && (
-            <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
-              /{pool.hard_limit}
+        {/* N /M IS ONE RUN (visual QA run 3, admin-004): the figure and its
+            `/10` share `.adm-fig`, which does not wrap, so they never land on
+            two lines; `edit` and its tags stay outside it, free to wrap. */}
+        <span className="adm-fig">
+          {pool.effective_limit === null ? (
+            // A dash in the figure's slot, its reason on it, and the words after
+            // `edit` -- so the words cannot widen the slot and move `edit`.
+            <span className="adm-ceiling is-unset" title={by.detail} aria-label={`No limit set. ${by.detail}`}>
+              —
             </span>
+          ) : (
+            <span className="adm-ceiling">{pool.effective_limit}</span>
           )}
+          {/* THE CONFIGURED HARD LIMIT BESIDE THE EFFECTIVE ONE, AS POOLS DRAWS
+              IT (G5-21, QA 2026-10-07): a quota-held pool read "50" here and
+              "50/100" on Pools, and its editor then prefilled 100. A slot of its
+              own and a fixed width, drawn empty when the two agree, so `edit`
+              still starts at one x in every row. */}
+          <span className="adm-was">
+            {pool.effective_limit !== null && pool.hard_limit !== null && pool.effective_limit < pool.hard_limit && (
+              <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
+                /{pool.hard_limit}
+              </span>
+            )}
+          </span>
         </span>
         <span className="limit-edit">
           {/* A pool nothing can write gets no editor to open: an enabled
@@ -1298,6 +1307,18 @@ function PoolRow({
               title={`${unitsWord(pool.active - pool.effective_limit)} over: lowering a ceiling evicts nothing, so the work in use finishes and nothing new is admitted until fewer than ${pool.effective_limit} are in use.`}
             >
               over ceiling
+            </span>
+          )}
+          {/* AT ITS CEILING, AND NEUTRAL (visual QA run 3, admin-005; owner
+              decision 2026-10-22, Console Design Calls 2, c04). A full pool is
+              admission working, not a fault: the over-ceiling tag's look, in
+              its slot, exactly at the ceiling and never past it. */}
+          {pool.effective_limit !== null && pool.active === pool.effective_limit && (
+            <span
+              className="adm-full"
+              title={`At its ceiling: ${pool.active} of ${unitsWord(pool.effective_limit)} in use. New work that needs this pool waits.`}
+            >
+              full
             </span>
           )}
           {pool.effective_limit === null && (

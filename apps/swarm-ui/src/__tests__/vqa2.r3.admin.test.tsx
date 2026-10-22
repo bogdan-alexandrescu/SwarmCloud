@@ -277,23 +277,27 @@ describe('V077: the filter of a long list stays in reach down the page', () => {
   })
 })
 
-describe('V160: a pool id segment longer than the line wraps inside the card', () => {
-  it('lays each segment as an inline block no wider than its cell', async () => {
+describe('V160: a pool id segment longer than the line stays inside the card', () => {
+  it('lays each segment as an inline block no wider than its cell, cut rather than broken', async () => {
     viewport(400)
     const id = 'tenant:swarm-platform-integration-acceptance-environment-long-name'
     await limits([pool(id)])
     const segs = [...document.getElementById(`limit-${id}`)!.querySelectorAll('th .ctl-sub > .adm-key-seg')]
     // One `kind:name` pair, so one segment (visual QA run 3, admin-003): it
-    // is the segment's own wrapping that keeps it inside the card.
+    // is the segment's own cut that keeps it inside the card. It no longer
+    // wraps: `overflow-wrap: anywhere` could break it right after `tenant:`
+    // (QAFIX4-ADMIN-2, qafix4.admin2.test.tsx), so it is cut with an ellipsis
+    // and the whole id is on the title.
     expect(segs.map((s) => s.textContent)).toEqual([id])
     for (const env of [PHONE, WIDE]) {
       for (const s of segs) {
-        // MUTATION: put `white-space: nowrap` back as the winner: the segment
-        // runs past the card and the records scroll sideways (446/400).
-        expect(won(s, 'white-space', env)).toBe('normal')
+        // MUTATION: drop `overflow: hidden` or `max-width: 100%`: the
+        // unwrapped segment runs past the card and the records scroll
+        // sideways (446/400).
         expect(won(s, 'display', env)).toBe('inline-block')
         expect(won(s, 'max-width', env)).toBe('100%')
-        expect(won(s, 'overflow-wrap', env)).toBe('anywhere')
+        expect(won(s, 'overflow', env)).toBe('hidden')
+        expect(won(s, 'text-overflow', env)).toBe('ellipsis')
       }
     }
   })
