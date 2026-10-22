@@ -16,8 +16,9 @@ WHAT IS HELD HERE
 * A PENDING HOST MAKES THE FIRING A REFUSAL, NOT A FAILURE: the tick ends it
   `refused` with `qa_target_host_pending`, and nothing is submitted.
 * A TARGET OF ANOTHER TENANT IS REFUSED AT CREATION (`check_target`, the
-  create and edit hook), answering exactly as a missing one, and again at
-  firing time. Creating one is a workspace admin's (§6).
+  create and edit hook, which `POST` and `PATCH /v1/schedules` call),
+  answering exactly as a missing one, and again at firing time. Creating one
+  is a workspace admin's (§6).
 * A DRY RUN submits nothing and says what the firing would do.
 
 No cloud and no emulator: the in-memory Firestore, a fake resolver.
@@ -29,6 +30,7 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
 from swarm_api import qatargets, schedulefire, schedules, scheduletypes
 from swarm_api.auth import StaticTokenVerifier
@@ -36,11 +38,12 @@ from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import AppContext, build_context
 from swarm_api.errors import ApiError, Forbidden
 from swarm_api.groups import StaticGroups
+from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
 from swarm_api.schedtypes import visual_qa
 from swarm_api.waker import NullWaker
 
-from .conftest import NoForgeTokens, api_settings, seed_tenant
+from .conftest import NoForgeTokens, api_settings, auth_header, seed_tenant
 from .test_qa_targets import (
     CAROL,
     CAROL_SHOP,
@@ -320,6 +323,76 @@ def test_only_a_workspace_admin_creates_one(db, ctx, resolver) -> None:
     # CONTROL: a platform admin administers every workspace.
     as_root = qa_schedule(db, target["id"], tenant_id="eng", owner=ROOT)
     assert visual_qa.check_target(ctx, as_root, auth_of(ctx, as_root)) is None
+
+
+# ---------------------------------------------------------------------------
+# The same rules through the routes: POST and PATCH /v1/schedules
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def client(ctx) -> TestClient:
+    return TestClient(create_app(ctx), raise_server_exceptions=False)
+
+
+def create_body(target_id: str) -> dict[str, Any]:
+    return {"name": "nightly-qa", "type": TYPE, "scope": {"mode": "all"},
+            "cron": "0 6 * * *", "timezone": "UTC", "params": {"target": target_id}}
+
+
+def stored_schedules(db) -> list[dict[str, Any]]:
+    return [d for p, d in db.docs.items() if p.startswith("schedules/") and p.count("/") == 1]
+
+
+def test_the_route_refuses_another_tenants_target_at_creation(db, client, resolver) -> None:
+    seed_tenant(db, "eng")
+    theirs = eng_target(db, resolver)
+
+    response = client.post("/v1/schedules", json=create_body(theirs["id"]), headers=auth_header("carol"))
+
+    # MUTATION: drop the `_check_qa_target` call in routes/schedules.py `create_schedule` and this is 201.
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == visual_qa.TARGET_NOT_FOUND
+    # Refused before the transaction: nothing is stored.
+    assert stored_schedules(db) == []
+    # CONTROL: her own target, its host still pending, is created.
+    ours = carol_target(db, resolver, approved=False)
+    created = client.post("/v1/schedules", json=create_body(ours["id"]), headers=auth_header("carol"))
+    assert created.status_code == 201, created.text
+    assert len(stored_schedules(db)) == 1
+
+
+def test_the_route_refuses_a_member_who_is_not_a_workspace_admin(db, client, resolver) -> None:
+    seed_tenant(db, "eng")
+    target = eng_target(db, resolver)
+
+    response = client.post("/v1/schedules", json=create_body(target["id"]), headers=auth_header("alice"))
+
+    # MUTATION: drop the `_check_qa_target` call in `create_schedule` and alice, a member, creates one.
+    assert response.status_code == 403, response.text
+    assert stored_schedules(db) == []
+    # CONTROL: a platform admin administers every workspace.
+    as_root = client.post("/v1/schedules", json=create_body(target["id"]), headers=auth_header("root"))
+    assert as_root.status_code == 201, as_root.text
+
+
+def test_the_route_refuses_an_edit_to_another_tenants_target(db, client, resolver) -> None:
+    seed_tenant(db, "eng")
+    theirs = eng_target(db, resolver)
+    ours = carol_target(db, resolver)
+    created = client.post("/v1/schedules", json=create_body(ours["id"]), headers=auth_header("carol"))
+    assert created.status_code == 201, created.text
+    doc = created.json()["schedule"]
+
+    response = client.patch(f"/v1/schedules/{doc['schedule_id']}",
+                            json={"revision": doc["revision"], "params": {"target": theirs["id"]}},
+                            headers=auth_header("carol"))
+
+    # MUTATION: drop the `_check_qa_target` call in routes/schedules.py `patch_schedule` and this is 200.
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == visual_qa.TARGET_NOT_FOUND
+    (stored,) = stored_schedules(db)
+    assert stored["params"]["target"] == ours["id"]
 
 
 # ---------------------------------------------------------------------------
