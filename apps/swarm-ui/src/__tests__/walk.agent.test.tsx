@@ -88,7 +88,7 @@ describe('B: the metadata is said once, in the header block', () => {
     // each once, as items the sheet separates with a `·`.
     const meta = [...head.querySelectorAll('.ag-head-facts > li')].map((li) => (li.textContent ?? '').trim())
     expect(meta[0], 'the profile is not in the header').toBe('claude-code')
-    expect(meta[1], 'the class is not in the header').toMatch(/^standard( · \d+ vCPU · \d+ GiB)?$/)
+    expect(meta[1], 'the class is not in the header').toMatch(/^standard class( · \d+ vCPU · \d+ GiB)?$/)
     // The pane's own <h1> is hidden under the header (asserted below), and it
     // names the agent, not its profile; what the pane SHOWS repeats nothing.
     const paneShown = pane.cloneNode(true) as HTMLElement

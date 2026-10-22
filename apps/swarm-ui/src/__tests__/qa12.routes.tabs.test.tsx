@@ -106,7 +106,9 @@ describe('QA12-18: the tab bar fits', () => {
   it('keeps every tab on the bar when they fit, and moves the rest to More when they do not', () => {
     expect(fitTabs(keys, W, 2000, 70, 'detail')).toEqual(keys)
     const shown = fitTabs(keys, W, 500, 70, 'detail')
-    expect(shown).toEqual(['detail', 'browser', 'logs', 'changes'])
+    // Filled by rank (c01, 2026-10-22): Details, Logs, Attempts, then the
+    // rest as drawn; drawn in the usual order.
+    expect(shown).toEqual(['detail', 'browser', 'logs', 'attempts'])
   })
 
   it('never puts the open tab in More', () => {

@@ -146,8 +146,8 @@ export function tabStep(key: string, at: number, count: number): number | null {
 
 /**
  * WHICH TABS STAY ON THE BAR (QA12-18): every one when they fit; otherwise a
- * leading run of them that fits beside More, and the open tab always, in its
- * own place in the order. Nothing measured (`room` 0: not laid out) is
+ * run of them that fits beside More, taken in `BAR_RANK`'s order (c01), and
+ * the open tab always; each in its own place in the drawn order. Nothing measured (`room` 0: not laid out) is
  * everything fitting -- a bar is never emptied into More by a missing read.
  *
  * THE GAPS ARE PART OF THE BAR (QA14-UI, owner QA 2026-10-13): on a parked
@@ -168,7 +168,7 @@ export function fitTabs(
   const open = keys.indexOf(current)
   const shown = new Set<string>(open === -1 ? [] : [current])
   let used = open === -1 ? 0 : (widths[open] ?? 0)
-  for (let i = 0; i < keys.length; i++) {
+  for (const i of byRank(keys)) {
     if (i === open) continue
     const w = (widths[i] ?? 0) + (shown.size > 0 ? gap : 0)
     if (used + w > room - moreWidth) break
@@ -176,6 +176,35 @@ export function fitTabs(
     shown.add(keys[i]!)
   }
   return keys.filter((k) => shown.has(k))
+}
+
+/**
+ * THE FAILURE PATH NEVER MOVES (owner decision 2026-10-22, Console Design
+ * Calls 2, c01; visual QA run 4, flow-find-failure-phone-390-P3): filled in
+ * draw order, a 390 bar read `Details · Logs · Changes not counted` and the
+ * Attempts tab -- the next step after a failure -- was behind More, or on it,
+ * depending on which tab was open. An overflowing bar is filled by this rank;
+ * it is still DRAWN in the usual order, and a bar where every tab fits is
+ * not ranked at all.
+ */
+const BAR_RANK: readonly string[] = ['detail', 'logs', 'attempts']
+
+/** The indexes of `keys` in the order the bar is filled: BAR_RANK's, then the rest as drawn. */
+function byRank(keys: readonly string[]): number[] {
+  const ranked = BAR_RANK.map((k) => keys.indexOf(k)).filter((i) => i !== -1)
+  return [...ranked, ...keys.map((_, i) => i).filter((i) => !ranked.includes(i))]
+}
+
+/**
+ * A TAB'S NAME, WITH ITS COUNT SET APART (visual QA run 4, N15): the label
+ * and the count are two elements, and with nothing between them a reader's
+ * name for the tab ran them together -- `Changes not counted` read as a
+ * sentence, or as a tab that is switched off. The name puts a comma between
+ * them, `Changes, not counted`; a tab with no count is its label alone.
+ */
+export function tabName(t: TabDef): string {
+  if (t.count === undefined) return t.label
+  return `${t.label}, ${t.count === null ? 'count not known' : t.count}`
 }
 
 /**
@@ -319,10 +348,17 @@ export function AgTabsEdge({
   // open the tab they land on: automatic activation, since a pane opens as
   // fast as a click opens it. `Tabs` (components/Tabs.tsx) draws the buttons
   // and takes no tabIndex, so it is set on the drawn strip after every draw.
+  // Each tab's name (`tabName`) is set the same way, after every draw, for
+  // the same reason: `Tabs` draws every strip in the console and takes none.
   useLayoutEffect(() => {
     const drawn = [...(box.current?.querySelectorAll<HTMLElement>(':scope > .c-tabs > [role="tab"]') ?? [])]
     const on = drawn.findIndex((el) => el.getAttribute('aria-selected') === 'true')
-    drawn.forEach((el, i) => el.setAttribute('tabindex', i === (on === -1 ? 0 : on) ? '0' : '-1'))
+    drawn.forEach((el, i) => {
+      el.setAttribute('tabindex', i === (on === -1 ? 0 : on) ? '0' : '-1')
+      const t = barTabs[i]
+      if (t === undefined || t.count === undefined) el.removeAttribute('aria-label')
+      else el.setAttribute('aria-label', tabName(t))
+    })
   })
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
     const drawn = [...(box.current?.querySelectorAll<HTMLElement>(':scope > .c-tabs > [role="tab"]') ?? [])]
@@ -346,7 +382,8 @@ export function AgTabsEdge({
 /**
  * MORE: the tabs that did not fit, as a disclosure like `Menu`
  * (components/Overlay.tsx) -- a labelled group of buttons, not an ARIA menu,
- * which would promise arrow-key roving. Each says its count as the bar does.
+ * which would promise arrow-key roving. Each says its count as the bar does,
+ * in the bar's badge and with the bar's name (`tabName`).
  * Escape and a press outside close it; choosing a tab opens it and closes.
  */
 function MoreTabs({ tabs, onSelect }: { tabs: readonly TabDef[]; onSelect: (key: string) => void }) {
@@ -396,6 +433,7 @@ function MoreTabs({ tabs, onSelect }: { tabs: readonly TabDef[]; onSelect: (key:
               key={t.key}
               type="button"
               className="c-menu-item"
+              aria-label={t.count === undefined ? undefined : tabName(t)}
               onClick={() => {
                 setOpen(false)
                 onSelect(t.key)

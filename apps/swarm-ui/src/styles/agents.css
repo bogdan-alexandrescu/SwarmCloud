@@ -982,8 +982,32 @@
 .ag-tabs-more[aria-expanded='true'] { color: var(--text); }
 .ag-tabs-more:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
 .ag-tabs-menu { min-width: 180px; }
-.ag-tabs-menu > .c-menu-item { justify-content: space-between; flex-wrap: nowrap; }
+.ag-tabs-menu > .c-menu-item { justify-content: space-between; flex-wrap: nowrap; white-space: nowrap; }
 .ag-tabs-menu > .c-menu-item em { font: normal 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+/* THE COUNT IS A BADGE, NOT A WORD OF THE NAME (visual QA run 4, N15):
+   `Changes not counted` read as a sentence, or as a tab that is switched off,
+   because the count's words were set in the same line as the name with only
+   a face to tell them apart. Every count -- a number and the words alike, one
+   style for both -- sits in a pill of its own, on the bar and in More.
+   In More the count also gives up `.c-menu-item > em`'s line of its own
+   (`flex-basis: 100%`, `white-space: normal`, components.css): at 390 that
+   dropped `not counted` under `Artifacts`. */
+.c-tabs.ag-split-tabs > button > em,
+.ag-tabs-menu > .c-menu-item > em {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+/* MORE OPENS UPWARD ON LOGS (visual QA run 4, flow-find-failure-phone-390-P4):
+   dropped under the bar, the menu covered the Logs toolbar -- the streams,
+   search and Follow it was opened beside. On Logs the column does not scroll
+   (`.on-logs`), so the agent's head is always above the bar, and the menu
+   opens over it instead. Off Logs it still drops: on a phone the strip is
+   stuck at the column's top there, with nothing above it to open into. */
+.ag-split.on-logs > .ag-tabs-edge .ag-tabs-menu { top: auto; bottom: calc(100% + 4px); }
 .ag-tabs-edge[data-more~='end']::after,
 .ag-tabs-edge[data-more~='start']::before {
   position: absolute;
