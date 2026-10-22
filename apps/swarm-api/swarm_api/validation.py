@@ -1235,6 +1235,16 @@ AFTER_PRS_METADATA_KEY = "after_prs"
 #: The DECLARATION is not here: it is `metadata.dispatch.await_input`, signed.
 AWAIT_INPUT_METADATA_KEY = "await_input"
 
+#: A QA run's mark on each of its browser steps (docs/design/visual-qa-any-app.md
+#: §1.1): `{id, revision}` of the target the step drives, which the worker's
+#: route (`POST /v1/attempts/{id}/qa-target`) resolves the target from. Written
+#: only by `:run`, through `qa_target_mark_allowed`. VQ-2 already made a
+#: caller's mark inert (the route serves a target only to a task `:run`'s
+#: `qa_target_runs` record names); reserving it is the defence in depth decided
+#: 2026-10-22 (VQ2-TARGETS question 3), so no caller's mark reaches the store.
+#: Unsigned: no worker acts on it, only swarm-api reads it.
+QA_TARGET_METADATA_KEY = "qa_target"
+
 #: Every key inside `task.metadata` this service writes and a caller may not,
 #: in the order a refusal names them. One tuple, checked by one function, so a
 #: caller who sent several is told about all of them in one 422 rather than one
@@ -1259,6 +1269,7 @@ RESERVED_METADATA_KEYS = (
     OWNER_ANSWERS_METADATA_KEY,
     FORGE_SOURCE_METADATA_KEY,
     AFTER_PRS_METADATA_KEY,
+    QA_TARGET_METADATA_KEY,
 )
 
 #: Reserved like every key above, and refused by the same function in the
@@ -2016,6 +2027,11 @@ _RESERVED_BECAUSE = {
         "only by the platform's wake tick. Name them in `after` instead, e.g. "
         '"after": {"pr": 41}.'
     ),
+    QA_TARGET_METADATA_KEY: (
+        f"metadata.{QA_TARGET_METADATA_KEY} is reserved: it names the QA target a "
+        "browser step drives, written only by the platform when a target is run. "
+        "Start the run with POST /v1/qa-targets/{id}:run instead."
+    ),
 }
 
 
@@ -2050,6 +2066,31 @@ def schedule_mark_allowed(mark: Mapping[str, Any]) -> Iterator[None]:
         yield
     finally:
         _SCHEDULE_MARK.reset(token)
+
+
+#: The one `metadata.qa_target` value the CURRENT submission may carry, set
+#: only by `qa_target_mark_allowed`. A separate variable from the schedule's,
+#: so neither exemption admits the other's key.
+_QA_TARGET_MARK: ContextVar[Mapping[str, Any] | None] = ContextVar("qa_target_mark", default=None)
+
+
+@contextmanager
+def qa_target_mark_allowed(mark: Mapping[str, Any]) -> Iterator[None]:
+    """Let THIS submission carry `metadata.qa_target == mark`, and nothing else.
+
+    The same scoped exemption as `schedule_mark_allowed`, for the same reason:
+    `:run` (routes/qatargets.py `run_target`) submits through the SAME
+    `submit_workflow` a person uses, with the mark on each browser step's own
+    metadata, so the mark travels in the spec and is in each task from the one
+    write that creates it. Only the exact value passes, only inside this
+    block, which `run_target` alone enters around its own submission call; a
+    ContextVar set in one request is not visible to another's.
+    """
+    token = _QA_TARGET_MARK.set(dict(mark))
+    try:
+        yield
+    finally:
+        _QA_TARGET_MARK.reset(token)
 
 
 def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
@@ -2087,9 +2128,11 @@ def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
         key for key in RESERVED_METADATA_KEYS + REFUSED_UNWRITTEN_METADATA_KEYS
         if key in metadata
     ]
-    allowed = _SCHEDULE_MARK.get()
-    if allowed is not None and metadata.get(SCHEDULE_METADATA_KEY) == allowed:
-        present.remove(SCHEDULE_METADATA_KEY)
+    for key, exempt in ((SCHEDULE_METADATA_KEY, _SCHEDULE_MARK),
+                        (QA_TARGET_METADATA_KEY, _QA_TARGET_MARK)):
+        allowed = exempt.get()
+        if allowed is not None and key in metadata and metadata[key] == allowed:
+            present.remove(key)
     if not present:
         return
     raise DispatchOptionError(
