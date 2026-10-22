@@ -103,8 +103,9 @@ quiet workflow is a few calls an hour, not dozens. A reply with
 call at once.
 
 Keep for each task what its latest reply gave: `state`, `park_reason`, and,
-once it has finished, its `outcome`'s `pr_url`, `cost_usd`, `last_error` and
-the number of its `questions`. A task whose reply row is `terminal` is
+once it has finished, its `outcome`'s `pr_url`, `cost_usd`, `last_error`,
+its `questions` -- the list, whole, exactly as served -- and the
+`question_index` of each entry of its `owner_answers`. A task whose reply row is `terminal` is
 finished: keep what that reply gave -- the bridge does not return a row for
 it again -- and keep its id in `task_ids`.
 
@@ -134,17 +135,23 @@ stopped, as long as the counts keep moving. Nothing was cancelled. Your own
 Every way this row ends is ONE `StructuredOutput` call with exactly:
 
 ```
-{"state": "<FINISHED | running | UNKNOWN>", "last_error": "<text or null>", "tasks": [{"task_id": "<id>", "state": "<state>", "park_reason": "<text or null>", "pr_url": "<text or null>", "cost_usd": <number or null>, "questions": <number>, "last_error": "<text or null>"}]}
+{"state": "<FINISHED | running | UNKNOWN>", "last_error": "<text or null>", "tasks": [{"task_id": "<id>", "state": "<state>", "park_reason": "<text or null>", "pr_url": "<text or null>", "cost_usd": <number or null>, "questions": [<each of outcome.questions, copied as served>], "answered": [<each outcome.owner_answers entry's question_index>], "last_error": "<text or null>"}]}
 ```
 
 * `state` -- `FINISHED` when every task finished, `running` at the turn
   budget, `UNKNOWN` when a rule above sends you here;
 * `tasks` -- one entry per `task:` line of your prompt, in that order, each
   as its latest reply left it; `null` for anything not recorded, never 0 and
-  never a guess.
+  never a guess. `questions` is the finished task's `outcome.questions`
+  copied whole -- every `{question, options, recommended, context}` as the
+  bridge served it, not a count and not a summary: the workflow hands them
+  to the session, which puts them to the person (PLUGIN-OWNER-QUESTIONS).
+  `[]` when it asked none or has not finished.
 
 Copy every id character for character. If `StructuredOutput` refuses the
-answer, call it again with every `last_error` set to null; if it refuses
+answer, call it again with every `last_error` set to null and each
+`questions` as the number of questions it held (the workflow then says how
+to read them); if it refuses
 that too, answer `{"state": "UNKNOWN", "last_error": null, "tasks": []}`: the
 workflow then reads every state from SwarmCloud itself. You never end
 without calling `StructuredOutput`.

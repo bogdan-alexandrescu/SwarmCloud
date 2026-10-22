@@ -94,8 +94,11 @@ def _check(swarm, repository="all"):  # noqa: F811
     return check.run(swarm, repository=repository, names=lambda _c: {})
 
 
-def test_a_finished_task_with_an_unanswered_question_is_listed_whole(swarm, db, sid, reads):  # noqa: F811
+def test_a_finished_task_with_an_unanswered_question_is_listed_whole(swarm, db, sid, reads, monkeypatch):  # noqa: F811
     _finished(db, "task_open", sid, asked=2, answered=(1,))
+    # The test API is configured with no console origin, so it serves no
+    # link; the check's one reader of it stands in for one that does.
+    monkeypatch.setattr(check, "console_link", lambda doc: "https://c.test/agents/" + str(doc.get("id")))
     result = _check(swarm)
     # MUTATION: no `owner_questions` section (the #1904 defect): KeyError.
     (entry,) = result["owner_questions"]
@@ -107,7 +110,7 @@ def test_a_finished_task_with_an_unanswered_question_is_listed_whole(swarm, db, 
     assert entry["open"] == 1
     assert entry["questions"] == [{"index": 0, **_question(0)}], entry["questions"]
     # MUTATION: dropping the console link the API served.
-    assert entry.get("console"), entry
+    assert entry.get("console") == "https://c.test/agents/task_open", entry
     # MUTATION: counting it as stuck or stale -- a question is information.
     assert result["count"]["flagged"] == 0 and result["flagged"] == []
 
@@ -193,3 +196,13 @@ def test_the_cache_still_honours_an_answer_given_since(swarm, db, sid, reads):  
     # MUTATION: caching the OPEN questions instead of the questions: the
     # answer given in the console since never takes one off.
     assert _check(swarm)["owner_questions"][0]["questions"] == [{"index": 1, **_question(1)}]
+
+
+def test_the_tools_description_tells_the_session_to_ask_the_person():
+    from swarm_mcp import server
+
+    (tool,) = [t for t in server.TOOLS if t["name"] == "swarm_check"]
+    # MUTATION: a description that never names the section, or how to raise
+    # it: a session reads the check and leaves the questions in its answer.
+    for word in ("owner_questions", "AskUserQuestion", "swarm_task_answer", "NEVER a flag"):
+        assert word in tool["description"], word
