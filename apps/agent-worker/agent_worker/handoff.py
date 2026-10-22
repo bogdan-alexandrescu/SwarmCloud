@@ -104,6 +104,8 @@ from .egress_ticket import BrowserEgress
 from .qa_identity import NOTICE_NAME as QA_NOTICE_NAME
 from .qa_identity import WORKER_UNPROTECTED as QA_WORKER_UNPROTECTED
 from .qa_identity import QaSignIn, requested
+from .qa_target import CTL_OP as QA_TARGET_OP
+from .qa_target import QaTargetSignIn
 from .errors import ExitCode
 from .hardening import PROTECTED
 from .livegate.tunnel import (
@@ -315,7 +317,7 @@ CDP_PROBE_SECONDS = 2.0
 #: agent exists (browser_resume.py, §5.5.2).
 GATE_OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "theme", "status",
                       "egress_ticket", "browser_tools", "tabs_export", "tabs_restore",
-                      "session_export", "session_import", "qa_identity"})
+                      "session_export", "session_import", "qa_identity", QA_TARGET_OP})
 
 #: EGRESS-GATE: the agent's notice that its proxied browser has no egress
 #: (`egress_ticket.notice`), in the spool while that is so; the claude-code
@@ -836,6 +838,10 @@ class HandoffPath:
         #: only when the verified task names one (`start_qa_identity`).
         self.qa = QaSignIn(cfg, logger=logger, wall=wall,
                            register_secret=getattr(logger, "register_secret", None))
+        #: The QA target's sign-in (VQ-4; qa_target.py): asked for in `prepare`
+        #: by a `claude-code-browser` attempt; swarm-api answers 204 without one.
+        self.qa_target = QaTargetSignIn(cfg, logger=logger, wall=wall,
+                                        register_secret=getattr(logger, "register_secret", None))
         #: The browser-tool state last forwarded to the gate (BSTATUS-API).
         self._browser_tools_sent: dict[str, Any] | None = None
         #: What a park keeps of the browser and a resumed attempt gets back
@@ -1211,6 +1217,12 @@ class HandoffPath:
         except Exception:  # a note must never stop the attempt
             pass
 
+    def _qa_target_channel(self) -> tuple[Any, Any, Any, str | None]:
+        """(gate, attempt key, swarm-api, why nothing may be asked) for the QA target."""
+        gate = self.gate if self.live and not self._wiped else None
+        unavailable = None if getattr(self._memory, "status", None) == PROTECTED else WORKER_UNPROTECTED
+        return gate, getattr(self._children, "_key", None), getattr(self._children, "_api", None), unavailable
+
     def _keep_qa_identity(self, root: Path) -> None:
         """Renew the QA credential when due, and keep the agent's notice current."""
         if self.gate is None or self._wiped:
@@ -1436,6 +1448,10 @@ class HandoffPath:
         self._write_egress_notice(root)
         # Likewise present only while THIS attempt's QA credential is missing.
         self._write_qa_notice(root)
+        # VQ-4: the QA target's sign-in, after the gate registered and before
+        # the runner starts (visual-qa-any-app.md §2.2). Once per attempt.
+        gate, key, api, unavailable = self._qa_target_channel()
+        self.qa_target.start(gate, key, api, root, unavailable)
         # This attempt's runner writes its own; a restored checkpoint's is
         # an earlier attempt's registration, never forwarded as this one's.
         (root / browser_tools.STATE_NAME).unlink(missing_ok=True)
@@ -1525,6 +1541,8 @@ class HandoffPath:
             self._keep_qa_identity(root)
         except Exception as exc:  # nor does the QA identity's
             self.log.warning("qa identity upkeep failed", error=type(exc).__name__)
+        # VQ-4: a running sign-in followed, `swarm-handoff sign-in` answered. Never raises.
+        self.qa_target.keep(*self._qa_target_channel()[:3], root)
         try:
             self._answer_devices(root)
             self._answer_themes(root)

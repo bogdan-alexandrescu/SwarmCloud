@@ -178,6 +178,28 @@ console host (`ConsoleRequests`), for the method policy's
 console host (`qa_identity_host`, Q7): they would sign in as themselves in a
 browser the agent then drives with their workspaces. Control already held
 ends if the page navigates there.
+
+THE QA TARGET (VQ-4; docs/design/visual-qa-any-app.md §2.2 to §2.4 and §3,
+part of #1933). When the gate holds the attempt's QA target (`qa_target`,
+qatarget.py):
+
+* every agent-bound message passes `QaTarget.scrub` on the agent's link, so
+  the password, URL-encoded or base64, reaches the agent by no domain; a
+  base64 body the scrub cannot decode is refused (`qa_target_body`);
+* the target's guard (`QaTargetGuard`) is fed every event from the pipe, and
+  enforces §3's read-only, origin and rate rules on sessions the gate owns;
+* the agent may not continue a paused request rewritten
+  (`QaTarget.agent_refusal`), which would route around the guard;
+* `qa_sign_in` is THE HELD SIGN-IN: the agent is held exactly as for a
+  hand-off (`pause`), the gate signs in on a tab of its own (`SignIn`), and
+  the return keeps §2.2 step 4's order -- clear the gate tab's password
+  inputs and close it, send the agent's tab to `base_url`, then `resume`,
+  which clears every password input on the gate's sessions, delivers the
+  held responses and only then releases the held commands. A person cannot
+  take control while it runs (`qa_sign_in_in_progress`), and it does not
+  start while a person is in control or the agent is already held
+  (`qa_sign_in_busy`). An agent connection refused meanwhile is told why
+  (`held_for_qa_sign_in`).
 """
 
 from __future__ import annotations
@@ -201,6 +223,7 @@ from .. import browser_tools
 from . import cdppolicy
 from .cdppolicy import PolicyPaths
 from .qaidentity import ConsoleRequests, QaIdentity
+from .qatarget import BROWSER_GONE, BUSY, SIGN_IN_FAILED, STATE_FAILED, QaTarget, QaTargetGuard, SignIn
 from .scripts import ADD_BINDING, ADD_SCRIPT, REMOVE_BINDING, REMOVE_SCRIPT, ScriptRegistry
 
 log = logging.getLogger(__name__)
@@ -478,11 +501,21 @@ class CdpProxy:
         on_tool: Callable[[str, float], None] | None = None,
         wall: Callable[[], float] = time.time,
         qa: QaIdentity | None = None,
+        qa_target: QaTarget | None = None,
+        qa_sleep: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         self._send = send_to_chromium
         #: The task's QA identity, or None (module docstring).
         self._qa = qa
         self._console_requests = ConsoleRequests(qa) if qa is not None else None
+        #: The attempt's QA target, its guard on this Chromium, and the held
+        #: sign-in running now (module docstring, THE QA TARGET).
+        self._qa_target = qa_target
+        self._qa_sleep = qa_sleep
+        self._qa_guard = (QaTargetGuard(self, qa_target, record=record, sleep=qa_sleep)
+                          if qa_target is not None else None)
+        self._qa_signing = False
+        self._qa_tasks: set[asyncio.Task[None]] = set()
         self._paths = paths
         self._record = record
         self._on_control_ended = on_control_ended
@@ -616,6 +649,10 @@ class CdpProxy:
             if self.control_lease_seconds:
                 after += (f" (the gate takes it back by itself {int(self.control_lease_seconds)} s "
                           "after their console stops renewing it)")
+        elif self._qa_signing:
+            cause, since = "held_for_qa_sign_in", self._paused_at
+            what = "the agent is held while the live gate signs in to the QA target"
+            after = "the agent's browser comes back when the sign-in ends (at most about a minute)"
         else:
             cause, since = "held_for_handoff", self._paused_at
             what = "the agent is held while the browser is handed to a person"
@@ -647,6 +684,8 @@ class CdpProxy:
             return None
         if self._qa is not None:
             link = _ScrubbedLink(link, self._qa)
+        if self._qa_target is not None:
+            link = _ScrubbedLink(link, self._qa_target)
         connection = AgentConnection(link=link, browser_session=session,
                                      client=client if client in browser_tools.TOOLS else None)
         self._owner[session] = connection
@@ -678,6 +717,8 @@ class CdpProxy:
         call made after this fails at once.
         """
         self._gone = True
+        for task in list(self._qa_tasks):
+            task.cancel()
         self._contexts.clear()
         self._journals.clear()
         pending, self._pending = self._pending, {}
@@ -762,6 +803,13 @@ class CdpProxy:
                 self._note(method, params, "method_policy")
                 await self._reply_error(connection, message, refusal.message())
                 return
+        if self._qa_target is not None:
+            why = self._qa_target.agent_refusal(method, params if isinstance(params, Mapping) else {})
+            if why is not None:
+                self._record("cdp_method_refused", {"method": method, "cause": "qa_target"})
+                self._note(method, params, "method_policy")
+                await self._reply_error(connection, message, why)
+                return
         if self._mode != _OPEN:
             self._held.append((connection, dict(message)))
             return
@@ -807,6 +855,9 @@ class CdpProxy:
     # --------------------------------------------------------- from Chromium
 
     async def on_chromium_message(self, message: Mapping[str, Any]) -> None:
+        if self._qa_guard is not None and "method" in message:
+            # Never waits: the guard answers each pause on a task of its own.
+            self._qa_guard.on_event(message)
         if "id" in message:
             pending = self._pending.pop(message["id"], None)
             if pending is not None:
@@ -845,6 +896,12 @@ class CdpProxy:
                 message = {"error": {"code": _ERROR_CODE, "message": (
                     f"refused by the live gate: {pending.method} for a console request whose body "
                     "the gate cannot read for the QA identity")}}
+            elif (self._qa_target is not None and pending.method in _BODY_METHODS
+                  and self._qa_target.undecodable_body(result)):
+                self._record("cdp_method_refused", {"method": pending.method, "cause": "qa_target_body"})
+                message = {"error": {"code": _ERROR_CODE, "message": (
+                    f"refused by the live gate: {pending.method} for a body the gate cannot read "
+                    "while it holds the QA target's sign-in")}}
         reply: dict[str, Any] = {"id": pending.agent_id}
         if "error" in message:
             reply["error"] = message["error"]
@@ -1052,6 +1109,80 @@ class CdpProxy:
         await self.watch_page(target)
         return target
 
+    # ------------------------------------------------------- the QA target
+
+    async def start_qa_target(self) -> None:
+        """The target was handed over (`qatarget.handle_ctl`): its guard runs on
+        this Chromium from now, and a queued sign-in starts, held (module docstring)."""
+        target = self._qa_target
+        if target is None or self._gone or not target.armed:
+            return
+        if self._qa_guard is not None:
+            await self._qa_guard.start()
+        if target.wants_sign_in:
+            target.signing_in = True
+            task = asyncio.get_running_loop().create_task(self._run_qa_sign_in())
+            self._qa_tasks.add(task)
+            task.add_done_callback(self._qa_tasks.discard)
+
+    async def _run_qa_sign_in(self) -> None:
+        target = self._qa_target
+        assert target is not None
+        try:
+            state, cause = await self.qa_sign_in()
+        except asyncio.CancelledError:
+            target.finished(STATE_FAILED, BROWSER_GONE)
+            raise
+        except Exception as exc:  # noqa: BLE001 -- the sign-in fails; the gate does not
+            log.warning("live gate: the QA sign-in failed (%s)", type(exc).__name__)
+            state, cause = STATE_FAILED, SIGN_IN_FAILED
+        target.finished(state, cause)
+
+    async def qa_sign_in(self) -> tuple[str, str | None]:
+        """THE HELD SIGN-IN (module docstring): (state, cause). The agent is
+        released, in §2.2 step 4's order, whatever happened."""
+        target = self._qa_target
+        if target is None:
+            return STATE_FAILED, SIGN_IN_FAILED
+        if self._mode != _OPEN or self._controlled is not None:
+            target.signing_in = False
+            return STATE_FAILED, BUSY
+        target.signing_in = True
+        self._qa_signing = True
+        await self.pause()
+        sign_in = SignIn(self, target, clock=self._wall, sleep=self._qa_sleep)
+        outcome: tuple[str, str | None] = (STATE_FAILED, SIGN_IN_FAILED)
+        try:
+            outcome = await sign_in.run()
+        finally:
+            # 1. The gate's tab: its password inputs cleared, then closed.
+            await sign_in.close()
+            # From here the login's other origin is no top-frame destination.
+            target.signing_in = False
+            # 2. The agent's tab goes to the target's base URL.
+            if target.base_url and not self._gone:
+                await self._qa_land(target.base_url)
+            self._qa_signing = False
+            # 3. `resume`: every password input on the gate's sessions cleared,
+            #    the held responses delivered, then the held commands released.
+            await self.resume()
+        return outcome
+
+    async def _qa_land(self, url: str) -> None:
+        """Send the agent's tab (the first page that is not the gate's) to `url`. Never raises."""
+        listed = await self._call_quietly("Target.getTargets", {}, None) or {}
+        page = next((t for t in listed.get("targetInfos") or []
+                     if isinstance(t, Mapping) and t.get("type") == "page" and isinstance(t.get("targetId"), str)),
+                    None)
+        if page is None:
+            return
+        try:
+            session = await self.watch_page(page["targetId"])
+        except Exception as exc:  # noqa: BLE001 -- the agent finds its tab where it was
+            log.debug("live gate: the agent's tab was not reached (%s)", type(exc).__name__)
+            return
+        await self._call_quietly("Page.navigate", {"url": url}, session)
+
     def _refuse(self, cause: str) -> ControlDecision:
         self._record("control_refused", {"cause": cause})
         return ControlDecision(False, cause)
@@ -1060,6 +1191,8 @@ class CdpProxy:
         """A person takes control of `target_id`, if its connection is secure."""
         if self._mode != _PAUSED:
             return self._refuse("not_paused")
+        if self._qa_signing:
+            return self._refuse("qa_sign_in_in_progress")
         await self.watch_page(target_id)
         if _is_blank(await self._url(target_id)):
             # No origin yet: nothing to call insecure (LB-R4). The first
@@ -1248,10 +1381,14 @@ class CdpProxy:
 _BODY_METHODS = frozenset({"Network.getResponseBody", "Fetch.getResponseBody"})
 
 
-class _ScrubbedLink:
-    """An agent's link, every message through `QaIdentity.scrub` (module docstring)."""
+class _Scrubber(Protocol):
+    def scrub(self, message: dict[str, Any]) -> dict[str, Any]: ...
 
-    def __init__(self, link: AgentLink, qa: QaIdentity) -> None:
+
+class _ScrubbedLink:
+    """An agent's link, every message through `QaIdentity.scrub` or `QaTarget.scrub` (module docstring)."""
+
+    def __init__(self, link: AgentLink, qa: _Scrubber) -> None:
         self._link = link
         self._qa = qa
 

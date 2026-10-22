@@ -52,6 +52,14 @@ then leaves them out too: a person's own console session, carried from an
 earlier hand-off, would otherwise sign the agent in as that person beside the
 QA identity.
 
+THE QA TARGET'S ORIGINS ARE NEVER CARRIED EITHER (VQ-4;
+docs/design/visual-qa-any-app.md §2.3, part of #1933). `excluded_origins` is
+the attempt's QA target's approved origins (`QaTarget.excluded_origins`), and
+every export and import leaves out the cookies their hosts would be sent and
+their origins' storage, exactly as for the console host: the test account's
+session stays in this Chromium for this attempt and never enters LB-7's saved
+logins, where a later step or another task would carry it.
+
 NOTHING HERE IS LOGGED OR RECORDED WITH A VALUE. Records carry counts; a cookie
 value, a storage value, a domain or a cookie name never appears in one.
 """
@@ -60,7 +68,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -179,9 +187,11 @@ class SessionCarry:
         agent_connected: Callable[[], bool],
         now: Callable[[], float] = time.time,
         excluded_host: Callable[[], str | None] = lambda: None,
+        excluded_origins: Callable[[], Iterable[str]] = tuple,
     ) -> None:
         self._call = call
         self._excluded_host = excluded_host
+        self._excluded_origins = excluded_origins
         self._record = record
         self._agent_connected = agent_connected
         self._now = now
@@ -248,13 +258,32 @@ class SessionCarry:
         self._record("browser_session_exported", {"cookies": len(cookies), "origins": len(jar["origins"])})
         return jar
 
-    def _excluded(self, cookie: Mapping[str, Any]) -> bool:
+    def _excluded_hosts(self) -> set[str]:
+        """The console host and every QA target origin's host, lower case."""
+        hosts = set()
         host = self._excluded_host()
-        return host is not None and sent_to(cookie, host)
+        if host is not None:
+            hosts.add(host)
+        for origin in self._excluded_origins() or ():
+            try:
+                name = urlsplit(origin).hostname if isinstance(origin, str) else None
+            except ValueError:
+                name = None
+            if name:
+                hosts.add(name)
+        return hosts
+
+    def _excluded(self, cookie: Mapping[str, Any]) -> bool:
+        return any(sent_to(cookie, host) for host in self._excluded_hosts())
 
     def _excluded_origin(self, origin: str | None) -> bool:
-        host = self._excluded_host()
-        return host is not None and origin is not None and urlsplit(origin).hostname == host
+        if origin is None:
+            return False
+        try:
+            name = urlsplit(origin).hostname
+        except ValueError:
+            return bool(self._excluded_hosts())
+        return name in self._excluded_hosts()
 
     async def _pages(self) -> list[Mapping[str, Any]]:
         result = await self._call("Target.getTargets", {}, None)
