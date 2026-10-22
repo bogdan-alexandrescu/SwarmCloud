@@ -434,7 +434,8 @@ CREDENTIAL_SERVING_ROUTES = {
 }
 
 #: Every module that reads a Secret Manager PAYLOAD, and what it does with it.
-#: Only the release's serves one; the others use the value inside swarm-api.
+#: The release serves one, and so does the QA target issue below, to its
+#: fenced attempt only; the others use the value inside swarm-api.
 SECRET_PAYLOAD_READERS = {
     # The release: the carve-out above, and the only reader that answers with it.
     "routes/attempts_secrets.py",
@@ -444,6 +445,11 @@ SECRET_PAYLOAD_READERS = {
     "forgeapp.py",
     # A tenant's forge token, sent to GitHub for issue previews and writes.
     "forge.py",
+    # A QA target's test credential (docs/design/visual-qa-any-app.md §2.1,
+    # §2.2): read to merge a new one in or drop a deleted target's, and served
+    # only to the worker of a proven, fenced attempt whose run names the target,
+    # at qatargets.ISSUE_ROUTE, which main.UNCAPTURED_ROUTES keeps out of capture.
+    "qatargets.py",
 }
 
 

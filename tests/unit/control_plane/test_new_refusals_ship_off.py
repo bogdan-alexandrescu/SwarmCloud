@@ -436,6 +436,18 @@ NOT_SWITCHABLE_CODES = frozenset({
     "stale_base_version",
     "size_out_of_bounds",
     "below_recent_peak",
+    # QA targets (VQ2-TARGETS, docs/design/visual-qa-any-app.md §1, §2, §6,
+    # part of #1933): raised only by the /v1/qa-targets routes and POST
+    # /v1/attempts/{id}/qa-target, which that change introduces, so no
+    # existing caller can be refused by them. Continuing past any of them is
+    # the breach itself: a run, or a worker's read of its target, against a
+    # host no platform admin approved (§1); a run filing issues in a
+    # repository whose agents may not file them; or a test credential stored
+    # through a link that is unknown, used, expired, or minted for another
+    # person, workspace or target (§2.1).
+    "qa_target_host_pending",
+    "issue_writes_off",
+    "qa_credential_link_invalid",
 })
 
 #: What the guard lets through without a switch.
