@@ -166,7 +166,7 @@ describe('box comment 6298216578 (run-2 work-a-011): at 390 the state filter is 
       for (const c of CORNERS) {
         // A cell's corner is square: an inner one meets a neighbour, and an
         // outer one is drawn by the control, which clips the cell to it.
-        // MUTATION: drop `.rn-filters > .c-seg > button { border-radius: 0 }`
+        // MUTATION: drop `.c-seg > button { border-radius: 0 }` (components.css)
         // and every cell takes `:where(.app button)`'s radius: the hairlines
         // curve off at their ends and each join is notched.
         expect(px(corner(b, c)), `${b.textContent} ${c}`).toBe(0)
