@@ -202,8 +202,19 @@ const SHORT_VIEW: Readonly<Record<LogView, string>> = {
   runner: 'Runner',
 }
 
-function attemptEnd(a: AttemptRow): string {
-  if (a.completed_at === null) return 'running'
+/**
+ * HOW AN ATTEMPT ENDED, for the picker. An attempt with no `completed_at` is
+ * `running` only while it can be: its task has not ended and no later
+ * generation replaced it (visual QA run 5b, ff-desktop-08: a task that failed
+ * after three attempts listed `gen 1 · … · running`, its first attempt
+ * refused at dispatch). Otherwise its end was not recorded, and an attempt
+ * that never started says so.
+ */
+function attemptEnd(a: AttemptRow, open: boolean): string {
+  if (a.completed_at === null) {
+    if (open) return 'running'
+    return a.started_at === null ? 'never started' : 'end not recorded'
+  }
   return a.exit_code === null ? 'ended' : `exit ${a.exit_code}`
 }
 
@@ -292,6 +303,10 @@ export function AgentLogs({ task }: { task: Task }) {
   const readId = attemptId ?? currentRow?.attempt_id ?? null
   const picked = attemptRows?.find((a) => a.attempt_id === readId) ?? null
   const latestRunning = attemptId === null && !finished
+  // Whether an attempt with no end can still be running: not once its task
+  // has ended, nor once a later generation replaced it (`attemptEnd`).
+  const newestGeneration = Math.max(task.current_generation, ...(attemptRows ?? []).map((a) => a.generation))
+  const attemptOpen = (a: AttemptRow) => !finished && a.generation >= newestGeneration
 
   // THE READ. One transcript read and one polled-streams read per tick, for
   // the picked attempt. Each keeps its own answer.
@@ -401,7 +416,7 @@ export function AgentLogs({ task }: { task: Task }) {
 
   // THE TARGETS ARE READ OFF THE DOM (logMarks.tsx): what is drawn as a hit
   // or an error is exactly what is counted and walked.
-  useLayoutEffect(() => {
+  const recount = useCallback(() => {
     const el = body.current
     if (el === null) return
     const keys = (sel: string) => [...el.querySelectorAll<HTMLElement>(sel)].map((n) => n.dataset.logKey ?? '').filter(Boolean)
@@ -410,7 +425,22 @@ export function AgentLogs({ task }: { task: Task }) {
     setTargets((cur) =>
       cur.hits.join('|') === hits.join('|') && cur.errors.join('|') === errors.join('|') ? cur : { hits, errors },
     )
-  })
+  }, [])
+  useLayoutEffect(recount)
+  // AND WHENEVER THE LOG REDRAWS ITSELF (visual QA run 5b, ff-desktop-07): a
+  // view draws lines from its own state too -- the transcript's next window,
+  // its records -- and that redraws the view alone, not this bar. The count
+  // stayed the last one the bar saw: Error drew `Error –/1` in one frame and
+  // was named `No error matched` and disabled in another. Any change under
+  // the log's body counts again, so what the control shows, its name and
+  // whether it can be pressed all come from the lines on the glass.
+  useEffect(() => {
+    const el = body.current
+    if (el === null || typeof MutationObserver === 'undefined') return
+    const seen = new MutationObserver(recount)
+    seen.observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'data-log-key'] })
+    return () => seen.disconnect()
+  }, [recount])
 
   // FOLLOWING: keep the newest line in view after each read. Only the log's
   // own body scrolls: the page and the column never move.
@@ -546,6 +576,8 @@ export function AgentLogs({ task }: { task: Task }) {
   // alone left a reader on a failed agent asking what it meant. The short
   // label holds to eight characters, as the bar's others do, so the chip
   // never pushes Error under More at the 380px split (qa.u11a.logs).
+  // `Log done`, NOT `Complete` (visual QA run 5b, r4 D6 still seen): alone on
+  // the narrow bar `Complete` did not say what was complete. It is the log.
   const followControl = finished ? (
     <span
       className="ag-logs-final"
@@ -553,7 +585,7 @@ export function AgentLogs({ task }: { task: Task }) {
       aria-label="Agent ended: this is its complete log, so there is nothing to follow"
       title="This agent has finished: its log is the final record, and nothing more will arrive to follow."
     >
-      <LogWords long="Ended · complete log" short="Complete" />
+      <LogWords long="Ended · complete log" short="Log done" />
     </span>
   ) : (
     <Button size="sm" aria-pressed={follow} aria-keyshortcuts="F" onClick={toggleFollow}>
@@ -597,14 +629,14 @@ export function AgentLogs({ task }: { task: Task }) {
         }}
         aria-label="Attempt, by generation"
       >
-        <option value="">{currentRow === null ? 'latest' : `current · gen ${currentRow.generation} · ${currentRow.attempt_id} · ${attemptEnd(currentRow)}`}</option>
+        <option value="">{currentRow === null ? 'latest' : `current · gen ${currentRow.generation} · ${currentRow.attempt_id} · ${attemptEnd(currentRow, attemptOpen(currentRow))}`}</option>
         {(attemptRows ?? [])
           .slice()
           .sort((a, b) => b.generation - a.generation)
           .filter((a) => a !== currentRow)
           .map((a) => (
             <option key={a.attempt_id} value={a.attempt_id}>
-              gen {a.generation} · {a.attempt_id} · {attemptEnd(a)}
+              gen {a.generation} · {a.attempt_id} · {attemptEnd(a, attemptOpen(a))}
             </option>
           ))}
       </select>

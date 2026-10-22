@@ -1969,7 +1969,8 @@ function CompactRow({
             at 390 a dispatched row read `claude-code · alex · dispatched ·
             attempt …` with `of 3` cut. The state word and the try are what
             a Live row is watched for; the profile and owner are the agent's
-            constant facts, so they are what gives way. */}
+            constant facts, so they come after. At 390 the line now wraps
+            between its facts (agents.css, run 5b QA-040), so none is cut. */}
         {live && wordOnly && (
           <>
             <span className="cr-state">{el.text}</span>
