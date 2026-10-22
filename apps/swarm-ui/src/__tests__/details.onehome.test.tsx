@@ -130,7 +130,7 @@ function nowText(el: HTMLElement): string {
 
 /** Every card heading on the tab. */
 function cardHeads(el: HTMLElement): string[] {
-  return [...el.querySelectorAll('.dt-card-head > b, section > h2')].map((h) => h.textContent?.trim() ?? '')
+  return [...el.querySelectorAll('.dt-card-head > h2, .dt-card-head > b, section > h2')].map((h) => h.textContent?.trim() ?? '')
 }
 
 // ---------------------------------------------------------------------------

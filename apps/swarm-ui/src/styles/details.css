@@ -35,7 +35,12 @@
   background: var(--surface);
 }
 .dt-card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; min-height: 24px; }
-.dt-card-head > b { font-size: var(--t-body); line-height: var(--lh-body); font-weight: 650; }
+/* A Details card's title is an `h2` (N12, visual QA run 4) drawn as the bold
+   `<b>` it was, so nothing moves: no browser margin, the body size and line
+   height, 650. The `b` stays for the cards drawn outside AgentDetail.tsx
+   (Decision, Why it's waiting, Questions for you). */
+.dt-card-head > h2,
+.dt-card-head > b { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 650; }
 .dt-card-r { display: inline-flex; align-items: center; gap: 10px; margin-inline-start: auto; }
 .dt-more {
   text-decoration: none;
@@ -66,6 +71,7 @@
 .dt-now.is-ok { border-left-color: var(--s-live); }
 .dt-now.is-neu { border-left-color: var(--s-neu); }
 .dt-now.is-bad { border-left-color: var(--s-bad); background: linear-gradient(90deg, var(--s-badb), var(--surface) 70%); }
+.dt-now.is-bad > .dt-card-head > h2,
 .dt-now.is-bad > .dt-card-head > b { color: var(--s-bad); }
 .dt-phases { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .dt-phase-step { display: inline-flex; align-items: center; gap: 4px; }

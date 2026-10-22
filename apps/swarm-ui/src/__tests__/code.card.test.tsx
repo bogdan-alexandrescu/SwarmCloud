@@ -100,7 +100,7 @@ describe('the card opens with one sentence, then the base pin, then the diff', (
     )
     // A FINISHED agent's code card LEADS the tab, headed Outcome
     // (agent-details-v3.html A3): one heading over the result, still.
-    expect(code().querySelector('.dt-card-head > b')?.textContent).toBe('Outcome')
+    expect(code().querySelector('.dt-card-head > h2')?.textContent).toBe('Outcome')
     expect(code().dataset.lead).toBe('outcome')
     const first = lead()
     expect(first.textContent).toBe('Pull request #512 opened from swarm/task_x: review it on the forge.')
@@ -193,7 +193,7 @@ describe('PUBLISH_REFUSED', () => {
       result_summary: { git: { base: '9c4e0b2', patch: 'change.diff' }, artifacts: [PATCH] },
     })
     render(<Run run={run(t, attempts)} />)
-    expect(code().querySelector('.dt-card-head > b')?.textContent).toBe('Code')
+    expect(code().querySelector('.dt-card-head > h2')?.textContent).toBe('Code')
     const first = lead()
     expect(first.textContent).toMatch(/Publish refused 2 times\. Nothing was pushed\./)
     const items = [...first.querySelectorAll('.ag-refusal')].map((li) => li.textContent ?? '')
