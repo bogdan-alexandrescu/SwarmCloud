@@ -708,16 +708,17 @@ swarm_api_url = "https://swarm-api-tonstldhta-uc.a.run.app"
 # Its one IAM row, roles/compute.networkUser for swarm-scheduler on the swarm
 # subnet only (owner: keep it), holds at dev-iam for the owner.
 tenant_job_vpc_egress = true
-# ISOLATION CUTOVER STEP a1 (#1457, docs/runbooks/isolation-cutover.md), ROLLED
-# BACK 2026-10-21. With u-bogdan listed, its Cloud Run workers could not reach
-# swarm-api: the Jobs the scheduler creates for a tenant terraform does not know
-# (every self-service u-<email> tenant, scheduler/dispatch.py) carry no
-# vpc_access, so state/open left over the public internet and swarm-api's
-# ingress (internal-and-cloud-load-balancing) answered 404 before the app saw
-# it. All three evidence agents exited 1 at state/open (21:20-21:24Z). Its GKE
-# workers (the indexer) passed every state route, 196 calls, all 200. The
-# entry comes back once those Jobs are created on the swarm VPC.
-state_via_api_tenants = []
+# ISOLATION CUTOVER STEP a1 (#1457, docs/runbooks/isolation-cutover.md), AGAIN.
+# The first try (2026-10-21) was rolled back: the Jobs the scheduler creates for
+# a tenant terraform does not know (every self-service u-<email> tenant,
+# scheduler/dispatch.py) carried no vpc_access, so state/open left over the
+# public internet and swarm-api's ingress (internal-and-cloud-load-balancing)
+# answered 404. tenant_job_vpc_egress above fixed that (#1893): on 2026-10-22 at
+# 01:47Z a mock dispatch rebuilt swarm-job-u-bogdan-mock with
+# vpc-access-egress all-traffic on swarm-subnet-us-central1 and the swarm-worker
+# tag, as the runbook's switch-on check requires. Its GKE workers already passed
+# every state route on the first try (196 calls, all 200).
+state_via_api_tenants = ["u-bogdan"]
 # THE FORGE BROKER STAYS OFF HERE (#1041, terraform/infra/child_tasks.tf
 # `forge_broker`), although child tasks are on: workers keep reading a
 # person's git-u- slot with their own account through forge_slot_reader.
