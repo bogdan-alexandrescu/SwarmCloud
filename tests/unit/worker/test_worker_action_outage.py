@@ -20,8 +20,8 @@ Every worker here is the production worker over in-memory Firestore, as in
 test_worker_action_starts_no_runner.py. The slot test runs the REAL
 `merge.run_merge` over `MergeWorld`'s green pull request, with the worker's
 own `FirestoreMergeSlots` in its context and that class's `transact` raising
-the ABORTED the issue quotes: the merge reaches `slot.acquire` exactly as in
-production.
+the ABORTED the issue quotes: the merge reaches the slot's first write, its
+`slot.renew` (merge.py), exactly as in production.
 
 MUTATIONS: remove the classification in `_run_worker_action` -- the aborted,
 post-verdict and chain tests read exit 1 and a FAILED task. Classify every
@@ -119,8 +119,9 @@ def _assert_attempt_recorded(db, cause: str) -> None:
 def test_an_aborted_merge_slot_transaction_exits_69_and_writes_nothing_terminal(
     db, worker_factory, monkeypatch, no_runner, log_stream, tmp_path
 ):
-    """The issue's reproduction: the real merge reaches `slot.acquire`, and the
-    slot's fenced transaction raises the ABORTED Firestore gave up with."""
+    """The issue's reproduction: the real merge reaches the slot (`slot.renew`,
+    its first slot write), and the slot's fenced transaction raises the ABORTED
+    Firestore gave up with."""
     _seed(db, "merge")
     world = MergeWorld(tmp_path)
     transacted: list[str] = []
@@ -155,7 +156,9 @@ def test_an_aborted_merge_slot_transaction_exits_69_and_writes_nothing_terminal(
     assert line["exit_code"] == 69
     assert line["unavailable"].startswith("Aborted: ")
     # Which write it was: the frames of the action the error came up through.
-    assert "acquire" in line["raised_in"] and "transact" in line["raised_in"]
+    assert line["raised_in"].startswith("merge.run_merge:")
+    innermost = line["raised_in"].rsplit(" > ", 1)[-1].split(":")[0]
+    assert innermost in ("mergeslot.renew", "mergeslot.acquire")
 
 
 def test_an_aborted_merge_action_exits_69_never_failed(

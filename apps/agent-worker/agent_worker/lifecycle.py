@@ -1410,6 +1410,8 @@ class Worker:
             # The startup window is over: no probe thread runs past it.
             self._stop_egress_probe()
         if callable(prepared):
+            # A worker action, run after the startup window: it classifies its
+            # own outages as exit 69 (`_exit_action_unavailable`, #2000).
             return prepared()
         child_env = prepared
         cfg = self.cfg
@@ -2209,9 +2211,90 @@ class Worker:
         run = merge_mod.run_merge if action is WorkerAction.MERGE else (
             post_verdict_mod.run_post_verdict
         )
-        with self._heartbeat_meanwhile(f"worker_action:{action.value}"):
-            outcome = run(ctx)
+        try:
+            # The heartbeat thread is joined before the outage exit below
+            # writes this attempt's document: the `with` ends first.
+            with self._heartbeat_meanwhile(f"worker_action:{action.value}"):
+                outcome = run(ctx)
+        except WorkerError:
+            # Fenced, tenant mismatch, a missing credential and the other
+            # deliberate exits keep their own handlers in `run`, even with an
+            # outage further down their chain.
+            raise
+        except Exception as exc:
+            # An outage the action did not answer for itself (#2000). Anything
+            # else still reaches `run`'s crash handler and fails the task.
+            unavailable = _unavailable_cause(exc)
+            if unavailable is None:
+                raise
+            return Outcome(exit_code=self._exit_action_unavailable(action, exc, unavailable))
         return self._end_worker_action(action, outcome)
+
+    def _exit_action_unavailable(
+        self, action: WorkerAction, exc: Exception, cause: BaseException
+    ) -> int:
+        """A dependency was unavailable inside a worker action: leave the task, exit 69.
+
+        #2000. The action runs as the callable `_prepare` returns, after the
+        startup window, so `_execute`'s classification never saw its errors:
+        a Firestore ABORTED that outlasted `firestore.transactional`'s own
+        retries in the merge slot's fenced transaction (the heartbeat thread
+        writes the same task and lease documents meanwhile) reached `run`'s
+        crash handler, and the task was FAILED for good as runner_error with
+        9 of its 10 attempts unused. An outage is the one thing here the next
+        attempt may not meet, so it gets the startup window's exit
+        (`_exit_unavailable_before_runner`): 69, which the reconciler reads as
+        "requeue", or "fail" once the attempts are spent.
+
+        WHY A REPEAT IS SAFE. A worker action is repeatable: the pinned head
+        makes a repeated merge either a no-op or a refusal (merge-step.md §6
+        row 39), and the merge slot is held by the TASK, renewed by every
+        attempt of its holder (mergeslot.py), so a requeued attempt re-enters
+        its own slot. No checkpoint is written: an action has no workspace
+        work to keep.
+
+        WHAT IS WRITTEN: only this attempt's own document, best effort. Not
+        the task, the lease or an event -- a requeue made from here would be a
+        fenced transition, the retry cap and a lease release against the
+        service that just failed, and the reconciler already does all three.
+
+        `raised_in` names the action's frames the error came up through
+        (`slot.renew` or `slot.acquire`, a train entry, a control-plane read), so
+        which write aborted is in the log without a traceback reader.
+        """
+        phase = self.phases.current
+        self.log.error(
+            f"{type(cause).__name__} inside the worker action; exiting 69 without "
+            "writing the task, the lease or an event",
+            action=action.value,
+            phase=phase,
+            seconds_in_phase=self.phases.seconds_in_phase(),
+            error_type=type(exc).__name__,
+            error=self._scrub(_one_line(exc)),
+            unavailable=self._scrub(f"{type(cause).__name__}: {_one_line(cause, 300)}"),
+            raised_in=_action_frames(exc),
+            exit_code=ExitCode.UNAVAILABLE,
+            then=(
+                "the reconciler reads this execution's exit code and requeues the "
+                "task, or fails it when its attempts are spent"
+            ),
+        )
+        if not self._writes_forbidden:
+            try:
+                self.control.record_attempt_end(
+                    exit_code=ExitCode.UNAVAILABLE,
+                    error=self._scrub(
+                        f"{type(cause).__name__} inside the {action.value} worker action "
+                        f"(phase {phase}): {_one_line(cause, 300)}; the attempt exited "
+                        "for a requeue"
+                    ),
+                )
+            except Exception as write_exc:
+                self.log.warning(
+                    "could not record the outage on this attempt's own document",
+                    error=f"{type(write_exc).__name__}: {write_exc}",
+                )
+        return ExitCode.UNAVAILABLE
 
     def _read_action_app_key(self) -> forge_mod.AppKey:
         """This action's App key, from `swarm-tenant-<tenant>-<provider>`.
@@ -16339,6 +16422,25 @@ def _unreachable_hint(exc: BaseException) -> str:
             "worker does not need it."
         )
     return hint
+
+
+def _action_frames(exc: BaseException, limit: int = 6) -> str:
+    """The worker's own frames `exc` came up through, innermost last, as one line.
+
+    `merge.run_merge:1168 > merge._with_forge:1404 > mergeslot.renew:628`:
+    names which write a worker action's outage came from (#2000). Only this
+    package's modules, past `lifecycle`, and only function names and line
+    numbers -- never a local or an argument, so nothing secret.
+    """
+    frames: list[str] = []
+    tb = exc.__traceback__
+    while tb is not None:
+        code = tb.tb_frame.f_code
+        module = tb.tb_frame.f_globals.get("__name__", "")
+        if module.startswith("agent_worker.") and module != __name__:
+            frames.append(f"{module.rsplit('.', 1)[-1]}.{code.co_name}:{tb.tb_lineno}")
+        tb = tb.tb_next
+    return " > ".join(frames[-limit:])
 
 
 def _error_chain(exc: BaseException) -> list[BaseException]:
