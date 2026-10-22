@@ -336,6 +336,9 @@ def test_every_service_written_key_is_reserved_in_one_place():
         # The pull requests a workflow waits for, and the tick's reading of
         # them (`after`, SPEED-D3).
         "after_prs",
+        # A QA run's mark on its browser steps, written by `:run` (VQ2-RESERVE).
+        # MUTATION: drop it from RESERVED_METADATA_KEYS and this tuple is red.
+        "qa_target",
     )
 
 

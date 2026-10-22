@@ -56,6 +56,7 @@ from ..qatargets import (
     to_api,
 )
 from ..schemas import StrictModel, WorkflowCreate
+from ..validation import qa_target_mark_allowed
 from ..workspace_secrets import workspace_admin
 from .children import child_service
 from .tasks import require_member
@@ -239,7 +240,10 @@ def run_target(
     targets = _targets(request, ctx)
     target = targets.runnable(tenant_id, target_id, file=body.file)
     workflow, mark, browser = render_run(target, screens=body.screens, file=body.file)
-    submission = ctx.submissions.submit_workflow(auth, WorkflowCreate.model_validate(workflow))
+    # The mark is reserved (`validation.QA_TARGET_METADATA_KEY`): only this
+    # exact value, only for this submission, gets past the refusal.
+    with qa_target_mark_allowed(mark):
+        submission = ctx.submissions.submit_workflow(auth, WorkflowCreate.model_validate(workflow))
     workflow_id = submission.workflow.workflow_id
     task_ids = [t.id for t in submission.tasks if t.step_id in set(browser)]
     targets.record_run(tenant_id=tenant_id, target=target, workflow_id=workflow_id,
