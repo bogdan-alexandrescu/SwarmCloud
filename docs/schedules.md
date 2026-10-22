@@ -1357,11 +1357,12 @@ on-demand one is `POST /v1/qa-targets/{id}:run`.
   application.
 * **Gate.** Run and plan auto, merge **off**, and the floor is the same. It
   files issues and changes no code, so there is no merge gate to set.
-* **Budget.** `BUDGET_CAPS` in the executor: `per_run_usd` 25, `per_day_usd`
-  50, `max_concurrent` 1. These are **provisional and the owner's to set**
-  (VQ7-Q1): no QA run has been measured. $25 is a run at the design's bounds
-  (8 haiku captures, 8 opus reviews, the flows, an opus report and a sonnet
-  filing step). $50 a day is the daily firing plus one run-now.
+* **Budget.** `BUDGET_CAPS` in the executor: `per_run_usd` 40, `per_day_usd`
+  80, `max_concurrent` 1, set by BGD on 2026-10-22 (VQ7-CAPS, #1933) from the
+  first measured run: the full-console QA run 5b (`wf_025ae735511546d99eff`,
+  17 steps, 362 screenshots) cost $23.62, 94% of the $25 per run the type
+  first shipped with. $40 leaves headroom over that run; $80 a day is the
+  daily firing plus one run-now.
 * **Produces.** One QA workflow per firing. Its findings are filed as issues
   in the target's repository by the workflow's `file` step, through the
   brokered issue tools (design §5).
