@@ -277,6 +277,21 @@ describe('the Now card leads, and becomes the outcome or the failure', () => {
     expect(kids.indexOf(lead)).toBeLessThan(kids.indexOf(el.querySelector('.dt-strip')!))
   })
 
+  it.each([
+    ['OOMKilled, exit 137', 'reconciled: ran out of memory: the 8 GiB limit was reached (OOMKilled, exit 137); lease silent for 132s'],
+    ['stalled', 'reconciled: ran out of memory: the 8 GiB limit was reached (stalled at the limit; its lease went silent); lease silent for 102s'],
+  ])('a worker lost to its memory limit says it ran out of memory, not that it stopped answering (#1926, %s)', (_, error) => {
+    const t = running({ state: 'FAILED', completed_at: ago(1), end_cause: 'lost_worker', last_error: error, attempt_count: 1 })
+    const el = host(runOf({ task: t, attempts: [attempt(1, { created_at: ago(15), started_at: ago(14), completed_at: null, exit_code: null })] }))
+    const lead = el.querySelector<HTMLElement>('.dt > .dt-now')!
+    // MUTATION: drop the out-of-memory reading in `failureSay` -> the heading
+    // reads "Failed: the worker stopped answering", which is what hid #1926.
+    expect(lead.querySelector('.dt-card-head > h2')?.textContent).toBe('Failed: it ran out of memory at its limit')
+    // The frozen end cause is still shown verbatim beside it.
+    expect(lead.querySelector('.dt-chip')?.textContent).toBe('lost_worker')
+    expect(lead.querySelector('pre')?.textContent).toBe(error)
+  })
+
   it('a cancelled agent with no error leads with the neutral Cancelled card, not an Outcome', () => {
     const t = running({ state: 'CANCELLED', completed_at: ago(1), started_at: null, end_cause: null, last_error: null, attempt_count: 0 })
     const el = host(runOf({ task: t, attempts: [] }))

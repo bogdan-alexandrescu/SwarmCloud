@@ -15,7 +15,7 @@ WHAT EACH TEST PINS:
     message reads as OOMKilled too;
   * an execution that ended OOMKilled leaves "OOMKilled" and the limit in the
     attempt's `error` and the task's `last_error`, on a stale-lease reclaim
-    and on an ended-at-startup requeue;
+    and on an ended-at-startup end (which, since #1926, fails the task);
   * an evicted execution carries kubelet's message, even when the eviction
     rule's grace has not run and the stale-lease rule reclaims it first;
   * an execution with no reason keeps today's words;
@@ -236,8 +236,12 @@ def test_an_oom_killed_reclaim_names_the_kill_and_its_limit(db, reconciler_confi
     assert task["end_cause"] == EndCause.LOST_WORKER.value, task
 
 
-def test_an_oom_kill_before_the_runner_started_is_named_on_the_requeue(db, reconciler_config):
-    """The ended-at-startup rule said only "exited 137 before its runner started"."""
+def test_an_oom_kill_before_the_runner_started_is_named_and_not_requeued(db, reconciler_config):
+    """The ended-at-startup rule said only "exited 137 before its runner started".
+
+    Since #1926 an OOM kill is not retried at the same size, at startup or
+    later: the task FAILS, with the kill and its limit in its words.
+    """
     seed_a_running_attempt(db, heartbeat_seconds_ago=30)
     db.doc(f"tasks/{TASK}")["state"] = TaskState.STARTING.value
     db.doc(f"leases/{LEASE}")["state"] = TaskState.STARTING.value
@@ -250,7 +254,9 @@ def test_an_oom_kill_before_the_runner_started_is_named_on_the_requeue(db, recon
     # task reads "exited 137 before its runner started" alone.
     assert "OOMKilled: the container passed its 8 GiB memory limit" in task["last_error"], task
     assert "OOMKilled" in _attempt_error(db), _attempt_error(db)
-    assert task["state"] == TaskState.READY.value, task
+    # MUTATION: leave the ended-at-startup rule out of the OOM fail (#1926) ->
+    # the task is refunded and requeued READY.
+    assert task["state"] == TaskState.FAILED.value, task
 
 
 def test_an_eviction_reclaimed_before_its_grace_carries_kubelets_message(db, reconciler_config):
@@ -307,7 +313,9 @@ def _slots_and_fence(db: FakeFirestore) -> dict[str, Any]:
         "pools": {pool: db.doc(f"pools/{pool}")["active"] for pool in POOLS},
         "generation": task["current_generation"],
         "lease_id": task.get("current_lease_id"),
-        "state": task["state"],
+        # Not the state: an OOM kill FAILS the task where the reclaim with no
+        # reason requeues it (#1926, `test_out_of_memory_named`). What it
+        # holds and what fences it are the same either way.
         "attempt_count": task["attempt_count"],
     }
 

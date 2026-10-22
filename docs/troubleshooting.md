@@ -162,6 +162,33 @@ GET must answer 404 (#450). On 2026-10-03 task_8fce64316ad14fc981fb was held
 for five hours because its failed execution counted only as "not active". The
 lease then waited on a GET that never answered.
 
+**A worker lost to its own memory limit fails its agent the first time** (#1926).
+If an attempt's execution ended `OOMKilled` (GKE's reason, or Cloud Run's
+"Memory limit of ... exceeded"), or the attempt was reclaimed as silent or dead
+while its last heartbeats sat at its memory limit, the reconciler fails the agent
+instead of requeueing it, whatever `max_attempts` says. A retry is the same step
+at the same size, and it hits the same limit. On 2026-10-21/22,
+task_021ff60c26f5440eb9c8 (claude-code, 8 GiB) spent about two hours on three
+such attempts: two OOM kills retried at the same size, then a stall at
+8.58-8.59 GB of 8,589,934,592 that was reclaimed as "lease silent for 102s".
+None of them mentioned memory. The rule follows the disk-eviction precedent
+(`count_disk_eviction`), without the one retry.
+The `last_error` starts with `reconciled: ran out of memory: the 8 GiB limit
+was reached (OOMKilled, exit 137)`, or `... (stalled at the limit; its lease went
+silent)`. The `failed` event's `reason` carries the same words, and the
+console's failure card reads "Failed: it ran out of memory at its limit". The
+end cause stays the frozen `lost_worker`.
+"At the limit" means the newest **6** heartbeat samples (30 s of 5-second
+points) **all** read at least **98%** of the heartbeat's `memory_limit_bytes`
+(`reconciler/memory.py`, `OOM_STALL_SAMPLES`, `OOM_STALL_SHARE`). A container
+held at cgroup `memory.max` reads just under the limit, not on it, because the
+kernel reclaims page cache to stay below it. A missing sample is not at the
+limit. If a heartbeat has no samples (a worker older than #1689), it counts
+only when its `peak_rss_bytes` reaches the limit.
+**A node-pressure eviction, or any other lost worker, is still requeued.** Only
+the agent's own limit counts. The fix for the agent is a smaller workload (the
+issue's workaround was `pytest -n 2`) or a larger runner size, not a retry.
+
 **A worker that never started is evidence too, after a wait.** If the lease
 never heartbeated and the attempt never recorded a start, the reconciler repairs
 it once the lease is `NEVER_STARTED_RELEASE_SECONDS` (20 minutes) old. It does

@@ -533,6 +533,20 @@ const END_CAUSE_SAY: Readonly<Record<EndCause, string>> = {
   child_cascade: 'a child agent ended it',
 }
 
+/**
+ * THE WORKER WAS LOST TO ITS OWN MEMORY LIMIT (#1926). The end cause stays the
+ * frozen `lost_worker`, and "the worker stopped answering" is how an
+ * out-of-memory step hid for two hours across three attempts. The reconciler
+ * leads such a `last_error` with these words (`reconciler/memory.py`
+ * `OUT_OF_MEMORY`), after its `reconciled: ` prefix, so the heading says them.
+ */
+const OUT_OF_MEMORY = /^reconciled: ran out of memory\b/
+
+function failureSay(task: Task, cause: EndCause): string {
+  if (cause === 'lost_worker' && OUT_OF_MEMORY.test(task.last_error ?? '')) return 'it ran out of memory at its limit'
+  return END_CAUSE_SAY[cause]
+}
+
 function endCauseOf(task: Task): EndCause | null {
   const c = task.end_cause
   return typeof c === 'string' && (END_CAUSES as readonly string[]).includes(c) ? (c as EndCause) : null
@@ -847,7 +861,7 @@ function DtFailure({ run, lastLine }: { run: AgentRun; lastLine: ReactNode }) {
   const heading = nothing
     ? 'Failed: nothing to publish'
     : cause !== null
-      ? `${task.state === 'CANCELLED' ? 'Cancelled' : 'Failed'}: ${END_CAUSE_SAY[cause]}`
+      ? `${task.state === 'CANCELLED' ? 'Cancelled' : 'Failed'}: ${failureSay(task, cause)}`
       : task.state === 'CANCELLED'
         ? 'Cancelled'
         : 'Failed'
