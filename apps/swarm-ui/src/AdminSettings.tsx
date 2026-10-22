@@ -1603,7 +1603,10 @@ function isEditable(pool: Pool): boolean {
  *
  * ITS WORDS SIT BEHIND `?`. Pool limits is held to a prose budget
  * (`prose.operator.test.tsx`), so the fields are named by `aria-label` and a
- * placeholder, and what the token is for opens on demand.
+ * placeholder, and what the token is for is the `github-fallback-token` topic
+ * (help.ts), behind the same `HelpCard` badge as the page's other two (visual
+ * QA run 4, admin-009: a ghost `?` toggling an inline paragraph read as a
+ * bare grey glyph beside them).
  */
 export function FallbackTokenCard() {
   const id = useId()
@@ -1614,7 +1617,6 @@ export function FallbackTokenCard() {
   const [missing, setMissing] = useState<string | null>(null)
   const [refused, setRefused] = useState<ApiError | null>(null)
   const [stored, setStored] = useState<OwnerTokenResponse | null>(null)
-  const [about, setAbout] = useState(false)
 
   async function submit(e: FormEvent) {
     e.preventDefault()
@@ -1644,20 +1646,8 @@ export function FallbackTokenCard() {
       className="adm-fallback-token"
       title="GitHub fallback token"
       level={2}
-      action={
-        <Button kind="ghost" size="sm" aria-label="About the fallback token" aria-expanded={about} aria-controls={`${id}-about`} onClick={() => setAbout((a) => !a)}>
-          ?
-        </Button>
-      }
+      action={<HelpCard topic="github-fallback-token" />}
     >
-      {about && (
-        <p className="ur-small" id={`${id}-about`}>
-          For an org that will not install the SwarmCloud App: a personal access token of <b>yours</b>, for one owner.
-          SwarmCloud reaches that owner with it, as you, for the repositories you choose on Access; removing the owner
-          there revokes it. Make a fine-grained token whose resource owner is the org. The same as{' '}
-          <code>uv run sc setup token --owner &lt;org&gt;</code>.
-        </p>
-      )}
       {/* ITS OWN FORM ROW, NOT THE CEILING EDITOR'S (VQA V023). It reused
           `.adm-side-field`, whose 96px input is sized for a six-digit
           ceiling, so `owner, e.g. example-org` and a pasted token were cut

@@ -99,6 +99,7 @@ export type TopicId =
   | 'dispatch-strategies'
   | 'event-paging'
   | 'failure-classes'
+  | 'github-fallback-token'
   | 'input-as-submitted'
   | 'input-is-opaque'
   | 'integrate-needs-final-step'
@@ -1648,6 +1649,24 @@ const SPECS: Record<TopicId, TopicSpec> = {
     ],
   },
 
+  // QAFIX4-ADMIN (visual QA run 4, admin-009): the GitHub fallback token
+  // card on Pool limits explained itself with a ghost `?` toggling an inline
+  // paragraph, beside the page's two `HelpCard` badges. The paragraph's words
+  // are this topic now; the terminal command is a value, so it is drawn as
+  // code (mono) and not as a clause of the sentence.
+  'github-fallback-token': {
+    group: 'the-platform',
+    title: 'A fallback token is your own access, for one owner',
+    short:
+      'For an org that will not install the SwarmCloud App: a personal access token of yours, for one owner. SwarmCloud reaches that owner with it, as you, for the repositories you choose on Access; removing the owner there revokes it. Make a fine-grained token whose resource owner is the org. The same from a terminal:',
+    long: [
+      'The SwarmCloud GitHub App is the first choice wherever the org allows it. The fallback token is for an org that will not install it, and it reaches GitHub as the person who stored it rather than as the platform.',
+      'A classic personal access token is refused, as is a token the org has not authorised for single sign-on; the refusal says which, in GitHub’s own terms. Make a fine-grained token whose resource owner is the org.',
+      'The token’s value goes to Secret Manager and is never shown again; the console prints the owner and the GitHub login it acts as, never the value. Which repositories it may reach is chosen on Access, and removing the owner there revokes it.',
+    ],
+    values: () => [{ term: 'uv run sc setup token --owner <org>', note: 'the same as the Store token form, from a terminal' }],
+  },
+
   'ceiling-change-evicts-nothing': {
     group: 'the-platform',
     title: 'Lowering a ceiling evicts nothing',
@@ -1908,6 +1927,10 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'quota-document-absent': {
     subject: 'A provider with no document',
     act: { say: 'Nothing to fix: the provider has not been driven yet.', at: 'capacity/quota' },
+  },
+  'github-fallback-token': {
+    subject: 'The GitHub fallback token',
+    act: { say: 'Install the SwarmCloud App where the org allows it; store a token only for an org that will not.', at: 'admin/limits' },
   },
   'ceiling-change-evicts-nothing': {
     subject: 'Lowering a ceiling',

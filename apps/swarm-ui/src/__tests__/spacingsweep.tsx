@@ -380,7 +380,16 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/quota', 'capacity/api-reads'], floor: 160 },
   // Workspaces you admin (NAV-ADMIN-ROLE; part of #1633) is Admin's last tab;
   // Runner sizes (SIZES-UI; part of #1689) sits beside Pool limits, as in the rail.
-  { name: 'admin', routes: ['admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/people', 'admin/workspaces'], floor: 120 },
+  // THE FALLBACK TOKEN CARD'S `?` (QAFIX4-ADMIN, visual QA run 4 admin-009).
+  // Pool limits' GitHub fallback token card draws HelpCard's 14px disc after
+  // its <h2> in the card head, where a ghost Button with a bordered box used
+  // to sit -- the submit slice's case exactly: the "?" is centred in a fixed
+  // 14px with no border of its own, so there is no edge for that ink to
+  // crowd, and the card's inset is measured off the heading beside it.
+  {
+    name: 'admin', routes: ['admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/people', 'admin/workspaces'], floor: 120,
+    centred: ['button.help-glyph [left] width 14px, centred', 'button.help-glyph [right] width 14px, centred'],
+  },
 ]
 
 /** The old single sweep's floor, which the slices' floors must add up to. */

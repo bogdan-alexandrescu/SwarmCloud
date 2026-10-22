@@ -850,9 +850,18 @@ function glyphAnchors(): Map<string, number> {
  * and capped it at 20. RAISED BY THE DETAILS TAB, BY NAME: five for its
  * cards beyond the one `?` the file already drew (`PER_CARD_SCREENS`), and
  * one for the split header's dispatch chips (AgentSplit.tsx), which the same
- * pick draws with a plain-language `?`. Everything else is still held to 20.
+ * pick draws with a plain-language `?`. RAISED BY ONE MORE, BY NAME, for
+ * Pool limits' GitHub fallback token card (QAFIX4-ADMIN, visual QA run 4
+ * admin-009): that card already drew a `?`, a ghost Button toggling an inline
+ * paragraph that this count could not see, so the screen draws no more glyphs
+ * than it did -- the existing one is now spelled the way the count reads. The
+ * other routes were weighed: the label and the column head cannot hold a
+ * paragraph about a credential, a footer index link sends the reader off a
+ * form they are filling in, and a `<HelpNote>` draws nothing to open. The
+ * owner asked for the same badge as the page's other two. Everything else is
+ * still held to 20.
  */
-const GLYPH_CEILING = 20 + 5 + 1
+const GLYPH_CEILING = 20 + 5 + 1 + 1
 
 /** Per screen. Two is one always-drawn glyph plus one that only a branch draws. */
 const GLYPH_CEILING_PER_FILE = 2
@@ -869,7 +878,7 @@ const GLYPH_CEILING_PER_FILE = 2
  */
 const PER_CARD_SCREENS: ReadonlyMap<string, number> = new Map([['AgentDetail.tsx', 6]])
 
-test('the console draws no more help glyphs in total than its ceiling of twenty-six', () => {
+test('the console draws no more help glyphs in total than its ceiling of twenty-seven', () => {
   const counts = glyphAnchors()
   const total = [...counts.values()].reduce((a, b) => a + b, 0)
   const breakdown = [...counts.entries()]

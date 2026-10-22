@@ -183,13 +183,18 @@
   color: var(--text-faint);
 }
 /* The filter over the pool names (a phone, or more pools than a screen
-   holds, VQA V077): the full width of the column. */
+   holds, VQA V077): the full width of the column.
+   THE CONTROL EDGE, `--ctl-bd`, NOT THE HAIRLINE (visual QA run 4, admin-008):
+   on `--line` the phone's 'filter pools' box measured 1.2-1.5:1 against the
+   page, its `--bg` fill the page's own, so in dark it read as a hole with no
+   edge. `--ctl-bd` is 3.77:1 on `--bg` in dark and 3.09:1 in light (WCAG 2.1
+   SC 1.4.11), the edge every other field draws (styles.css `:root`). */
 .adm-filter > input {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 44px;
   padding: 3px 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-bd);
   border-radius: 6px;
   background: var(--bg);
   color: var(--text);
@@ -299,12 +304,16 @@
 .adm-prices,
 .adm-fallback-token { margin-top: var(--ctl-s5); }
 .adm-token-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* THE SAME CONTROL EDGE (visual QA run 4, admin-008): on `--line` the
+   fallback token's owner and token fields measured 1.37:1 on the dark card
+   and 1.34:1 on the white one, their `--bg` fill 1.08-1.09:1 off it.
+   `--ctl-bd` is 3.45:1 on `--surface` in dark and 3.35:1 in light. */
 .adm-token-form > input {
   flex: 1 1 24ch;
   min-width: 24ch;
   min-height: 36px;
   padding: 3px 8px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-bd);
   border-radius: 6px;
   background: var(--bg);
   color: var(--text);
