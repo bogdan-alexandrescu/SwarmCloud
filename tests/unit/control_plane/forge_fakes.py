@@ -154,6 +154,10 @@ class GitHubWrites:
         #: changed since the branch left it (`compare/<head>...<base>`).
         self.pull_file_names: dict[int, list[str]] = {}
         self.base_changed: list[str] = []
+        #: The repository's labels (`GET labels`), and each `POST
+        #: issues/<n>/labels` in order as `(number, labels)` (FR3-HOLDLABEL).
+        self.labels: list[str] = ["bug", "enhancement", "needs-owner"]
+        self.labelled: list[tuple[int, list[str]]] = []
 
     def writes(self) -> list[tuple[str, str]]:
         return [(m, urlparse(u).path) for m, u, _, _ in self.calls if m != "GET"]
@@ -201,6 +205,19 @@ class GitHubWrites:
             listed = sorted((i for i in self.issues.values() if i.get("repository") == repository),
                             key=lambda i: -i["number"])
             return 200, json.dumps(listed[(page - 1) * per_page: page * per_page]).encode()
+        if rest == ["labels"] and method == "GET":
+            query = parse_qs(parsed.query)
+            page = int(query.get("page", ["1"])[0])
+            per_page = int(query.get("per_page", ["30"])[0])
+            chunk = self.labels[(page - 1) * per_page: page * per_page]
+            return 200, json.dumps([{"name": name} for name in chunk]).encode()
+        if rest[:1] == ["issues"] and len(rest) == 3 and rest[2] == "labels" and method == "POST":
+            number = int(rest[1])
+            self.labelled.append((number, list(payload["labels"])))
+            issue = self.issues.setdefault(number, {"number": number, "state": "open", "labels": []})
+            have = [entry["name"] for entry in issue.setdefault("labels", [])]
+            issue["labels"] += [{"name": n} for n in payload["labels"] if n not in have]
+            return 200, json.dumps(issue["labels"]).encode()
         if rest[:1] == ["issues"] and len(rest) == 3 and rest[2] == "comments":
             number = int(rest[1])
             if method == "POST":
