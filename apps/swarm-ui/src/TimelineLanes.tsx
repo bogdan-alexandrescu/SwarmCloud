@@ -1255,6 +1255,8 @@ export function TimelineLanesScreen({
                   name={b.kind === 'workflow' ? (wfNames.get(b.key) ?? null) : null}
                   workflow={b.kind === 'workflow' ? (workflows.get(b.key) ?? null) : null}
                   onRetry={() => retryWorkflow(b.key)}
+                  ran={b.kind === 'workflow' ? allLanes.filter((l) => !l.neverRan && l.task?.workflow_id === b.key) : []}
+                  empty={b.kind === 'workflow' ? allLanes.filter((l) => l.neverRan && l.task?.workflow_id === b.key) : []}
                 />
                 {b.lanes.map((l) => [
                   <LaneRow
@@ -1593,15 +1595,22 @@ function GroupHead({
   workflow,
   onRetry,
   name = null,
+  ran = [],
+  empty = [],
 }: {
   block: LaneBlock
   workflow: WorkflowState | null
   onRetry: () => void
   /** The workflow's label, when its steps carry one (RT-25); the id is then its title. */
   name?: string | null
+  /** Its lanes with an attempt in this span, before the filters. */
+  ran?: readonly Lane[]
+  /** Its steps drawn as an empty lane (a task with no attempt yet), before the filters. */
+  empty?: readonly Lane[]
 }) {
   let title: string
   let note: ReactNode
+  let gap: string | null = null
   if (block.kind === 'workflow') {
     title = name ?? block.key
     // A FAILED WORKFLOW READ IS SAID IN WORDS, with the route in the title
@@ -1618,8 +1627,9 @@ function GroupHead({
           </button>
         </span>
       ) : (
-        `${workflow.read.workflow.steps.length} ${workflow.read.workflow.steps.length === 1 ? 'step' : 'steps'} · ${workflow.read.workflow.state.toLowerCase().replace('_', '-')}`
+        stepsNote(workflow.read, ran)
       )
+    if (workflow?.status === 'ok') gap = stepsGap(workflow.read, ran, empty)
   } else if (block.kind === 'standalone') {
     title = 'Standalone'
     note = `${block.lanes.length} ${block.lanes.length === 1 ? 'agent' : 'agents'} in this span`
@@ -1654,10 +1664,52 @@ function GroupHead({
           )}
         </b>
         <small>{note}</small>
+        {gap !== null && <small className="tl-wf-gap">{gap}</small>}
       </div>
       <div className="tl-trk" />
     </div>
   )
+}
+
+/**
+ * A WORKFLOW'S HEADER COUNTS THE STEPS ITS LANES DRAW (visual QA run 4,
+ * work-a-008, 2026-10-22): wf_audit_01 said '5 steps' over four lanes, its
+ * fifth step not started, and nothing said which was missing. A step draws a
+ * lane here only with an attempt in the span, so the header says how many
+ * do -- which stays true for a step not started, one never admitted, and one
+ * whose only attempt is outside the span, none of which an empty lane can
+ * place under every filter -- and `stepsGap` names the others.
+ */
+function stepRan(step: { step_id: string; task_id?: string | null }, ran: readonly Lane[]): boolean {
+  return ran.some(
+    (l) => (step.task_id != null && l.taskId === step.task_id) || (typeof step.step_id === 'string' && l.task?.step_id === step.step_id),
+  )
+}
+
+export function stepsNote(read: WorkflowRead, ran: readonly Lane[]): string {
+  const steps = read.workflow.steps
+  const n = steps.length
+  const state = read.workflow.state.toLowerCase().replace('_', '-')
+  // A lane of this workflow is a step that ran, even where the read's step
+  // list does not name its task.
+  const k = Math.min(n, Math.max(steps.filter((s) => stepRan(s, ran)).length, new Set(ran.map((l) => l.taskId)).size))
+  if (k >= n) return `${n} ${n === 1 ? 'step' : 'steps'} · ${state}`
+  return `${k} of ${n} ${n === 1 ? 'step has' : 'steps have'} attempts in this span · ${state}`
+}
+
+// A step whose task has no attempt yet is drawn as its own empty lane
+// ('never ran yet · no attempt', from the workflow read), so it is not one
+// the header names as having no lane: that would deny the lane under it.
+export function stepsGap(read: WorkflowRead, ran: readonly Lane[], empty: readonly Lane[] = []): string | null {
+  const why = (s: { task_id?: string | null }): string => {
+    if (s.task_id === null) return 'not started'
+    const t = read.tasks.find((x) => x.id === s.task_id)
+    return t !== undefined && t.attempt_count === 0 ? 'no attempt yet' : 'no attempt in this span'
+  }
+  const out = read.workflow.steps
+    .filter((s) => typeof s.step_id === 'string' && !stepRan(s, ran) && !stepRan(s, empty))
+    .map((s) => `${s.step_id} (${why(s)})`)
+  return out.length === 0 ? null : `no lane: ${out.join(', ')}`
 }
 
 function laneNote(lane: Lane, events: EventsRead | null, single: Task | string | null, taskPageFailed: boolean): string {
@@ -1749,11 +1801,16 @@ function LaneRow({
   // stays; the label says the agent did not run and which verdict kept it.
   const skipped = t !== null && t.state === 'SUCCEEDED' && skippedByVerdict(t)
   const wide = until - since > 36 * 3_600_000
-  const segs = lane.segs.filter((s) => s.to > since && s.from < until)
+  // A current state that began at the window's end is still drawn: its
+  // floor is what says, at 'now', that the lane is parked or waiting.
+  const segs = lane.segs.filter((s) => s.to > since && (s.from < until || (s.current && s.from <= until)))
   const marks = lane.marks.filter((m) => m.at >= since && m.at <= until)
   // The bars a floor widens (not a wait's 2 px line) are laid out with the
   // marks, so none is drawn past the track's edge or over another (V039).
-  const barAt = segs.map((s, i) => (s.kind === 'wait' ? -1 : i)).filter((i) => i >= 0)
+  // The lane's current state is not among them: it is drawn on its own rail
+  // beneath the bars, to now (work-a-005), so it moves no pill -- how pills
+  // pile up at 'now' waits on the owner (box comment 6314122402).
+  const barAt = segs.map((s, i) => (s.kind === 'wait' || s.current ? -1 : i)).filter((i) => i >= 0)
   const layout = laneLayout(
     barAt.map((i) => ({ from: pct(segs[i]!.from, since, until), to: pct(segs[i]!.to, since, until) })),
     marks.map((m) => ({ pct: pct(m.at, since, until), end: m.kind !== 'cancel_requested' })),
@@ -1875,9 +1932,14 @@ function Seg({
 }) {
   const left = box?.left ?? pct(s.from, since, until)
   const width = box?.width ?? Math.max(pct(s.to, since, until) - left, s.kind === 'wait' ? 0 : 0.4)
+  // THE CURRENT STATE IS HELD TO ITS END, 'now' (work-a-005): anchored at
+  // its right edge, so the CSS floor widens it leftward from now, never past
+  // the track's edge.
+  const right = s.current ? 100 - pct(s.to, since, until) : null
   const cls = [
     'tl-seg',
     `is-${s.kind}`,
+    s.current ? 'is-now' : '',
     s.open ? 'is-open' : '',
     s.future ? 'is-future' : '',
     s.endKnown ? '' : 'is-unknown-end',
@@ -1894,12 +1956,18 @@ function Seg({
           ? s.future
             ? `expected to resume by ${clock(s.to, wide)}; nothing held`
             : `parked ${span}${s.reason ? ` · ${s.reason}` : ''}; nothing held`
-          : `waiting ${span}; nothing held`
+          : `${s.current && s.label !== null ? `${s.label}, ` : ''}waiting ${span}; nothing held`
+  const fromTask = s.kind === 'park' && s.current && s.label !== null ? ` (${s.label})` : ''
   return (
-    <span className={cls} data-seg={s.kind} style={{ left: `${left}%`, width: `${width}%` }} title={title}>
+    <span
+      className={cls}
+      data-seg={s.kind}
+      style={right !== null ? { right: `${right}%`, width: `${width}%` } : { left: `${left}%`, width: `${width}%` }}
+      title={`${title}${fromTask}`}
+    >
       {words && s.kind === 'cut' && <span className="tl-seg-t">{s.label}</span>}
       {words && s.kind === 'hold' && multi && <span className="tl-seg-t">{s.label}</span>}
-      {words && s.kind === 'park' && !s.future && <span className="tl-seg-t">parked</span>}
+      {words && s.kind === 'park' && !s.future && !s.current && <span className="tl-seg-t">parked</span>}
     </span>
   )
 }

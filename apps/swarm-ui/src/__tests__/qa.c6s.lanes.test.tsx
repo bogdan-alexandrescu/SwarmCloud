@@ -140,10 +140,13 @@ describe('G3-02: a verdict-skipped step reads `not run (verdict MERGE)` in Lanes
 })
 
 describe('G3-23: one step is a step', () => {
-  it('reads `1 step · succeeded` and `3 steps · succeeded`', async () => {
+  it('reads `1 step · succeeded` and `2 of 3 steps have attempts…`', async () => {
     await drawn()
     expect(document.querySelector('.tl-row.is-group[data-group="wf_one"] small')!.textContent).toBe('1 step · succeeded')
-    expect(document.querySelector('.tl-row.is-group[data-group="wf_three"] small')!.textContent).toBe('3 steps · succeeded')
+    // Two of its three steps have a lane: the header says so (QAFIX4 work-a-008).
+    expect(document.querySelector('.tl-row.is-group[data-group="wf_three"] small')!.textContent).toBe(
+      '2 of 3 steps have attempts in this span · succeeded',
+    )
   })
 })
 

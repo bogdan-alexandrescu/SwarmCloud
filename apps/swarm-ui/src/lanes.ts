@@ -15,6 +15,15 @@
  *   wait   the task's whole life, as a thin line under everything else.
  *          Queued and ready hold nothing either.
  *
+ * THE LANE'S STATE NOW IS ITS OWN MARK (visual QA run 4, work-a-005,
+ * 2026-10-22). A PARKED, QUEUED or READY lane drew three solid held-capacity
+ * pills and nothing else: a park came only from a `parked` event, so a task
+ * whose event was not (yet) read drew none, and the whole-life wait line ran
+ * under the pills piled at 'now'. A free lane's present is now a `current`
+ * segment to now -- the park (from the event, or else from the task), or the
+ * wait since the last thing drawn -- which the row draws on a rail beneath
+ * the pills, so free work never reads as held capacity (invariant 1).
+ *
  * Marks: a cancel REQUEST is a mark, never an end (`cancel_requested`, and
  * the legacy flag-only `cancelled` read through `eventKind`); a terminal task
  * ends in its state's mark.
@@ -210,6 +219,11 @@ export interface LaneSeg {
   attemptId: string | null
   /** A park's reason, as the event or the task wrote it. */
   reason: string | null
+  /**
+   * The lane's state at now, while it holds nothing: a park still parked, or
+   * a queued or ready wait. Runs to now; drawn beneath the bars (work-a-005).
+   */
+  current: boolean
 }
 
 export type LaneMarkKind = 'cancel_requested' | 'succeeded' | 'failed' | 'dead_lettered' | 'cancelled'
@@ -256,7 +270,7 @@ const ms = (s: string | null | undefined): number | null => {
 }
 
 function seg(kind: SegKind, from: number, to: number, extra: Partial<LaneSeg> = {}): LaneSeg {
-  return { kind, from, to, gen: null, open: false, endKnown: true, future: false, label: null, attemptId: null, reason: null, ...extra }
+  return { kind, from, to, gen: null, open: false, endKnown: true, future: false, label: null, attemptId: null, reason: null, current: false, ...extra }
 }
 
 /** The generations a `generation_fenced` event names as stale. */
@@ -331,7 +345,7 @@ export function buildLane(
     if (ends.length > 0) {
       parks.push(seg('park', from, Math.min(...ends), { reason, gen: p.generation }))
     } else if (task?.state === 'PARKED') {
-      parks.push(seg('park', from, now, { reason, gen: p.generation, open: true }))
+      parks.push(seg('park', from, now, { reason, gen: p.generation, open: true, current: true }))
       const resume = ms(task.next_eligible_at)
       if (resume !== null && resume > now) parks.push(seg('park', now, resume, { reason, future: true }))
     } else {
@@ -343,11 +357,33 @@ export function buildLane(
   const firstDrawn = sorted[0] ? ms(sorted[0].created_at)! : null
   const born = ms(task?.created_at) ?? firstDrawn
   const lastBar = bars.length > 0 ? Math.max(...bars.map((b) => b.to)) : null
+
+  // PARKED WITH NO PARKED EVENT READ: the task document says it is parked
+  // now, so the park is drawn from it. It began no earlier than the last
+  // thing drawn ended, and its `updated_at` is the park's write when that is
+  // later; its title says it came from the task.
+  if (task !== null && task.state === 'PARKED' && !parks.some((p) => p.current)) {
+    const after = Math.max(lastBar ?? -Infinity, ...parks.map((p) => p.to), born ?? -Infinity)
+    const wrote = ms(task.updated_at)
+    const from = Math.min(now, Math.max(after, wrote ?? after))
+    if (Number.isFinite(from)) {
+      const reason = task.park_reason ?? null
+      parks.push(seg('park', from, now, { reason, open: true, current: true, label: 'from the task: its parked event was not read' }))
+      const resume = ms(task.next_eligible_at)
+      if (resume !== null && resume > now) parks.push(seg('park', now, resume, { reason, future: true }))
+    }
+  }
   const ended = terminal ? ms(task.completed_at) ?? ms(task.updated_at) ?? lastBar : null
   const waits: LaneSeg[] = []
   if (born !== null) {
     const to = task === null ? lastBar ?? born : terminal ? ended ?? born : now
     if (to > born) waits.push(seg('wait', born, to))
+  }
+  // QUEUED, READY (or SUBMITTED): waiting now, since the last thing drawn
+  // ended -- its last attempt, its last park -- or since it was submitted.
+  if (task !== null && born !== null && !live && !terminal && task.state !== 'PARKED') {
+    const from = Math.min(now, Math.max(born, lastBar ?? born, ...parks.filter((p) => !p.future).map((p) => p.to)))
+    waits.push(seg('wait', from, now, { open: true, current: true, label: task.state.toLowerCase() }))
   }
 
   const marks: LaneMark[] = []

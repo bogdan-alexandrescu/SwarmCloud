@@ -71,6 +71,10 @@ function attempt(taskId: string, i: number): AttemptRow {
 const WFS = Array.from({ length: 10 }, (_, i) => `wf_${String(i).padStart(4, '0')}`)
 const TASKS = WFS.map((wf, i) => task(`task_${i}`, wf))
 
+// Three steps over the one lane each workflow draws: since QAFIX4 work-a-008
+// the header counts the steps with an attempt in the span, not the step list.
+const HEAD = '1 of 3 steps have attempts in this span · succeeded'
+
 function workflowRead(wf: string): WorkflowRead {
   return { workflow: { workflow_id: wf, state: 'SUCCEEDED', steps: [{}, {}, {}] }, tasks: [] } as unknown as WorkflowRead
 }
@@ -185,7 +189,7 @@ describe('G3-07: workflow reads, at most four at once, a 429 asked again', () =>
     await waitFor(() => expect(document.querySelectorAll('.tl-row.is-group a').length).toBe(WFS.length))
     await waitFor(() => expect(api.loadWorkflow).toHaveBeenCalledTimes(WFS.length))
     await waitFor(() =>
-      expect(document.querySelector(`.tl-row.is-group[data-group="${WFS[0]}"] small`)!.textContent).toBe('3 steps · succeeded'),
+      expect(document.querySelector(`.tl-row.is-group[data-group="${WFS[0]}"] small`)!.textContent).toBe(HEAD),
     )
   })
 
@@ -213,7 +217,7 @@ describe('G3-07: workflow reads, at most four at once, a 429 asked again', () =>
     api.loadWorkflowsById.mockImplementation(byIdVia(api.loadWorkflow))
     fireEvent.click(head.querySelector('button')!)
     await waitFor(() =>
-      expect(document.querySelector(`.tl-row.is-group[data-group="${WFS[0]}"] small`)!.textContent).toBe('3 steps · succeeded'),
+      expect(document.querySelector(`.tl-row.is-group[data-group="${WFS[0]}"] small`)!.textContent).toBe(HEAD),
     )
     expect(api.loadWorkflowsById.mock.calls.at(-1)![0]).toEqual([WFS[0]])
   })
