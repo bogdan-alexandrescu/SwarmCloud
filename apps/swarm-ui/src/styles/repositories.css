@@ -19,6 +19,18 @@
 .ur-crumb a { color: var(--sk-ac); text-decoration: none; }
 .ur-crumb a:hover { text-decoration: underline; }
 .ur-acts { display: inline-flex; flex-wrap: wrap; gap: var(--ctl-s2); align-items: center; margin-left: auto; }
+/* SETUP'S GITHUB HEAD KEEPS ITS ACTIONS RIGHT (visual QA run 4, work-b-002,
+   part of #1680). The section head (`GitHubPermissions`, a bare `.c-card-h`
+   over the cards) ends on the edge the page head's Access button and the
+   cards end on. The phone rule below drops `.ur-acts`'s auto margin, which
+   put Re-check beside the "GitHub" heading at 390 while the page head's
+   actions stayed right; this head keeps it at every width. Re-check is a
+   ghost: no ground or edge shows its box, so what a reader sees end is its
+   words, 11px inside the box (the 10px `.is-sm` padding and the 1px
+   transparent border). The margin pulls the words onto the edge; the box,
+   and the hover ground, keep their size. */
+.fp-head > .ur-acts { margin-left: auto; }
+.fp-head > .ur-acts > .c-btn.is-ghost { margin-right: -11px; }
 .ur-mu { color: var(--text-dim); font-size: var(--t-micro); }
 .ur-bad { color: var(--s-bad); }
 .ur-small { font-size: var(--t-micro); margin: 0; }
