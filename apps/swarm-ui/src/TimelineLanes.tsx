@@ -54,14 +54,18 @@ import {
   LANE_GROUPS,
   LANE_KINDS,
   LANE_SPANS,
+  PILL_MIN_PX,
+  attemptWord,
   axisTicks,
   buildLane,
   filterLanes,
   groupLanes,
+  lanePills,
   lanesWindow,
   madeOnOutcomes,
   outcomesQueryFor,
   parseLanesView,
+  pillName,
   serializeLanesView,
   spanDays,
   zoomedTo,
@@ -71,6 +75,7 @@ import {
   type LaneMark,
   type LaneSeg,
   type LanesView,
+  type Pill,
 } from './lanes'
 import { STATE_MARK, type MarkName } from './marks'
 import { Button, ButtonLink, Chip, MarkIcon, Segmented, StateMark } from './components'
@@ -273,7 +278,12 @@ export function markLefts(marks: readonly { pct: number; end: boolean }[], track
  * and 1.5 px borders painted it 12-13 px whatever its width said, so a layout
  * that took 8 px as the floor still drew bars past the track's edge.
  */
-export const BAR_MIN_PX = 14
+export const BAR_MIN_PX = PILL_MIN_PX
+/**
+ * A merged pill's floor (`.tl-seg.is-merged`'s `min-width`; c00): at a lone
+ * pill's 14 px the padding and borders left 1 px for its count.
+ */
+export const PILL_COUNT_MIN_PX = 24
 /**
  * The narrowest bar that prints its words (`gen 2`, `parked`). Below it the
  * 5 px padding left a 1-4 px window, and the clipped first letter read as a
@@ -290,8 +300,9 @@ export const BAR_WORDS_MIN_PX = 36
  * and past the track's right edge, under the end mark. Measured, every item
  * is laid out from the right, in one pass, by where it starts:
  *
- * - a bar starts at its instant and is at least `BAR_MIN_PX` wide, as the
- *   CSS floor drew it, but ends before the next item's start less a gap; a
+ * - a bar starts at its instant and is at least `BAR_MIN_PX` wide (or the
+ *   `min` it is given: a merged pill's `PILL_COUNT_MIN_PX`), as the CSS
+ *   floor drew it, but ends before the next item's start less a gap; a
  *   bar that then has no room is moved left, a long one is trimmed at its
  *   end, so its start stays its instant;
  * - an end mark ends before the next bar or mark;
@@ -302,7 +313,7 @@ export const BAR_WORDS_MIN_PX = 36
  * give the instants. Unmeasured, the instants and the bars' old floor.
  */
 export function laneLayout(
-  bars: readonly { from: number; to: number }[],
+  bars: readonly { from: number; to: number; min?: number }[],
   marks: readonly { pct: number; end: boolean }[],
   trackPx: number | null,
 ): { bars: { left: number; width: number }[]; marks: number[] } {
@@ -331,10 +342,11 @@ export function laneLayout(
   for (const it of items) {
     if (it.kind === 'bar') {
       const b = bars[it.i]!
-      const natural = Math.max(px(b.to), px(b.from) + BAR_MIN_PX)
+      const floor = b.min ?? BAR_MIN_PX
+      const natural = Math.max(px(b.to), px(b.from) + floor)
       const right = Math.min(natural, edge.bar - MARK_GAP_PX, edge.end - MARK_GAP_PX)
-      const left = Math.max(0, Math.min(px(b.from), right - BAR_MIN_PX))
-      const width = Math.max(right - left, Math.min(BAR_MIN_PX, trackPx))
+      const left = Math.max(0, Math.min(px(b.from), right - floor))
+      const width = Math.max(right - left, Math.min(floor, trackPx))
       out.bars[it.i] = { left: back(left), width: back(width) }
       edge.bar = Math.min(edge.bar, left)
       continue
@@ -1804,20 +1816,30 @@ function LaneRow({
   // A current state that began at the window's end is still drawn: its
   // floor is what says, at 'now', that the lane is parked or waiting.
   const segs = lane.segs.filter((s) => s.to > since && (s.from < until || (s.current && s.from <= until)))
-  const marks = lane.marks.filter((m) => m.at >= since && m.at <= until)
-  // The bars a floor widens (not a wait's 2 px line) are laid out with the
+  // CROWDED ATTEMPTS ARE ONE COUNTED PILL (owner, c00, 2026-10-22; box
+  // comment 6314122402): `lanePills` merges the attempts closer than a pill
+  // at this span's scale, and puts the end mark after the last pill. The
+  // pills a floor widens (not a wait's 2 px line) are laid out with the
   // marks, so none is drawn past the track's edge or over another (V039).
   // The lane's current state is not among them: it is drawn on its own rail
-  // beneath the bars, to now (work-a-005), so it moves no pill -- how pills
-  // pile up at 'now' waits on the owner (box comment 6314122402).
-  const barAt = segs.map((s, i) => (s.kind === 'wait' || s.current ? -1 : i)).filter((i) => i >= 0)
+  // beneath the pills, to now (work-a-005), so it moves no pill.
+  const written = lane.marks.filter((m) => m.at >= since && m.at <= until)
+  const { pills, marks } = lanePills(segs, written, since, until)
   const layout = laneLayout(
-    barAt.map((i) => ({ from: pct(segs[i]!.from, since, until), to: pct(segs[i]!.to, since, until) })),
+    pills.map((p) => ({ from: pct(p.from, since, until), to: pct(p.to, since, until), min: p.segs.length > 1 ? PILL_COUNT_MIN_PX : undefined })),
     marks.map((m) => ({ pct: pct(m.at, since, until), end: m.kind !== 'cancel_requested' })),
     trackPx,
   )
   const lefts = layout.marks
-  const boxOf = new Map(barAt.map((segAt, j) => [segAt, layout.bars[j]!]))
+  // Each seg's pill; a seg in none (a wait, the current state, a park under
+  // a merged pill) is drawn at its instants or not at all.
+  const pillOf = new Map(pills.flatMap((p, j) => p.segs.map((s) => [s, j] as const)))
+  const boxOf = new Map(segs.flatMap((s, i) => (pillOf.has(s) ? [[i, layout.bars[pillOf.get(s)!]!] as const] : [])))
+  // The open merged pill's attempt list, and what opened it: a tap holds it
+  // open past the pointer leaving; a blur or Escape closes it either way.
+  const [shown, setShown] = useState<{ at: number; how: 'hover' | 'focus' | 'tap' } | null>(null)
+  const open = shown !== null && pills[shown.at] !== undefined && pills[shown.at]!.segs.length > 1 ? pills[shown.at]! : null
+  const listId = (j: number) => `tl-pill-${lane.taskId}-${j}`
   // A LONE AGENT'S ID IS WHAT TELLS ITS LANE FROM THE NEXT (VQA2 V212): the
   // name `claude-code task · a073aff5` was ellipsized from its end, so the
   // id went first and every standalone lane read `claude-code task · a0…`.
@@ -1870,18 +1892,41 @@ function LaneRow({
         )}
       </div>
       <div className="tl-trk">
-        {segs.map((s, i) => (
-          <Seg
-            key={i}
-            s={s}
-            since={since}
-            until={until}
-            box={boxOf.get(i)}
-            words={trackPx === null || !boxOf.has(i) || (boxOf.get(i)!.width / 100) * trackPx >= BAR_WORDS_MIN_PX}
-            wide={wide}
-            multi={lane.attempts.length > 1}
-          />
-        ))}
+        {segs.map((s, i) => {
+          const j = pillOf.get(s)
+          const p = j === undefined ? null : pills[j]!
+          // A park under a merged pill is not drawn apart from it.
+          if (p === null && s.kind === 'park' && !s.current) return null
+          if (p !== null && p.segs.length > 1) {
+            // A merged pill is drawn once, where its oldest attempt was.
+            if (p.segs[0] !== s) return null
+            return (
+              <MergedPill
+                key={i}
+                p={p}
+                attempts={lane.attempts}
+                box={boxOf.get(i)!}
+                wide={wide}
+                listId={listId(j!)}
+                expanded={open === p}
+                onShow={(how) => setShown((was) => showPill(was, j!, how))}
+                onHide={(how) => setShown((was) => hidePill(was, j!, how))}
+              />
+            )
+          }
+          return (
+            <Seg
+              key={i}
+              s={s}
+              since={since}
+              until={until}
+              box={boxOf.get(i)}
+              words={trackPx === null || !boxOf.has(i) || (boxOf.get(i)!.width / 100) * trackPx >= BAR_WORDS_MIN_PX}
+              wide={wide}
+              multi={lane.attempts.length > 1}
+            />
+          )
+        })}
         {/* A MARK IS REACHABLE (live QA RT-24, 2026-10-11): `title`-only spans
             took no focus and did nothing on a click. Each is a control now,
             named by its words, that opens the lane's inspector. */}
@@ -1891,10 +1936,10 @@ function LaneRow({
             className={`tl-mkr is-${MARK_HUE[m.kind]}${m.kind === 'cancel_requested' ? '' : ' is-end'}`}
             data-mark={m.kind}
             style={{ left: `${lefts[i]!}%` }}
-            title={`${MARK_WORD[m.kind]} ${clock(m.at, wide)}`}
+            title={`${MARK_WORD[m.kind]} ${clock(written[i]!.at, wide)}`}
             role="button"
             tabIndex={0}
-            aria-label={`${name}: ${MARK_WORD[m.kind]} ${clock(m.at, wide)}`}
+            aria-label={`${name}: ${MARK_WORD[m.kind]} ${clock(written[i]!.at, wide)}`}
             onClick={onSelect}
             onKeyDown={(e) => {
               if (e.key !== 'Enter' && e.key !== ' ') return
@@ -1907,7 +1952,99 @@ function LaneRow({
           </span>
         ))}
       </div>
+      {/* THE MERGED PILL'S ATTEMPTS, UNDER THE TRACK (c00): the track and the
+          chart clip, so a list inside the track would be cut at its edge. */}
+      {open !== null && (
+        <ul id={listId(shown!.at)} className="tl-pill-list" aria-label={`${name}: ${pillName(open, lane.attempts)}`}>
+          {open.segs.map((s) => (
+            <li key={s.attemptId ?? `${s.from}`}>{attemptLine(s, lane.attempts, wide)}</li>
+          ))}
+        </ul>
+      )}
     </div>
+  )
+}
+
+type PillShown = { at: number; how: 'hover' | 'focus' | 'tap' } | null
+
+/** A merged pill asked to open: a tap on a tapped pill closes it, and a tap holds it past hover and focus. */
+function showPill(was: PillShown, at: number, how: 'hover' | 'focus' | 'tap'): PillShown {
+  if (was !== null && was.at === at && was.how === 'tap') return how === 'tap' ? null : was
+  return { at, how }
+}
+
+/** A merged pill let go of: the pointer leaving closes only what hovering opened; a blur or Escape closes it. */
+function hidePill(was: PillShown, at: number, how: 'hover' | 'focus' | 'escape'): PillShown {
+  if (was === null || was.at !== at) return was
+  if (how === 'hover' && was.how !== 'hover') return was
+  return null
+}
+
+/** One attempt in a merged pill's list: `gen 2 · failed · 14:02 → 14:07`. */
+function attemptLine(s: LaneSeg, attempts: readonly AttemptRow[], wide: boolean): string {
+  const word = attemptWord(s, attempts.find((a) => a.attempt_id === s.attemptId))
+  return `gen ${s.gen ?? '—'} · ${word} · ${clock(s.from, wide)} → ${s.open ? 'now' : clock(s.to, wide)}`
+}
+
+/**
+ * CROWDED ATTEMPTS AS ONE PILL (owner, c00, 2026-10-22): the count inside, in
+ * the newest attempt's style, named `3 attempts, newest failed`. Hovering,
+ * focusing or tapping it lists each attempt under the track (`LaneRow`).
+ */
+function MergedPill({
+  p,
+  attempts,
+  box,
+  wide,
+  listId,
+  expanded,
+  onShow,
+  onHide,
+}: {
+  p: Pill
+  attempts: readonly AttemptRow[]
+  box: { left: number; width: number }
+  wide: boolean
+  listId: string
+  expanded: boolean
+  onShow: (how: 'hover' | 'focus' | 'tap') => void
+  onHide: (how: 'hover' | 'focus' | 'escape') => void
+}) {
+  const newest = p.segs[p.segs.length - 1]!
+  const cls = [
+    'tl-seg',
+    `is-${newest.kind}`,
+    'is-merged',
+    newest.open ? 'is-open' : '',
+    newest.endKnown ? '' : 'is-unknown-end',
+  ]
+    .filter((c) => c !== '')
+    .join(' ')
+  return (
+    <button
+      type="button"
+      className={cls}
+      data-seg={newest.kind}
+      style={{ left: `${box.left}%`, width: `${box.width}%` }}
+      title={`${p.segs.length} attempts: ${p.segs.map((s) => attemptLine(s, attempts, wide)).join('; ')}`}
+      aria-label={pillName(p, attempts)}
+      aria-expanded={expanded}
+      aria-controls={expanded ? listId : undefined}
+      onMouseEnter={() => onShow('hover')}
+      onMouseLeave={() => onHide('hover')}
+      onFocus={() => onShow('focus')}
+      onBlur={() => onHide('focus')}
+      onClick={() => onShow('tap')}
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape' || !expanded) return
+        e.stopPropagation()
+        onHide('escape')
+      }}
+    >
+      <span className="tl-seg-n" aria-hidden="true">
+        {p.segs.length}
+      </span>
+    </button>
   )
 }
 
