@@ -30,6 +30,10 @@ WHAT IS RELATED:
     the stylesheet guards (STYLESHEET_GUARDS), which read every sheet from
     disk and so are reached by no import. changed-guards.sh reads the same
     list (`--stylesheet-guards`) and runs them before a lane finishes.
+  * a change to a swarm-ui stylesheet also selects every vitest file that
+    names that sheet in a quoted string -- reads it from disk by its path
+    relative to src or by its file name -- since no import reaches those
+    either (the named-sheet readers, beside STYLESHEET_GUARDS).
 
 OUTPUT, one line each, tab-separated:
 
@@ -93,6 +97,22 @@ STYLESHEET_GUARDS = (
     "src/__tests__/typescale.test.ts",            # no raw font sizes or all-caps in any sheet
 )
 
+# THE NAMED-SHEET READERS (NAMED-SHEETS, part of #1914, owner decision
+# 2026-10-22: "Yes, a name-keyed rule"). Beside the guards above, which read
+# every sheet, some tests read ONE sheet from disk by name --
+# `readFileSync(resolve(__dirname, '../styles/repograph.css'))`,
+# `join(__dirname, '..', 'styles', 'theater.css')`, a helper's
+# `css('theater.css')` -- and no import connects them to a change of that
+# sheet either (found by RELATED-CSS-GUARDS, PR 1921: browser.badges,
+# repograph.vqa-l08, repositories.c6j, repositories.graph, theater.followup,
+# theater.v2, theater.take). So a changed swarm-ui sheet also selects every
+# vitest file holding a quoted string that IS the sheet: its file name alone
+# (`'theater.css'`), or a path ending in `/` + its path relative to src
+# (`'../styles/theater.css'`). A bare word is not a name: `theater` in a test
+# title, or `'styles/'` for a change to styles.css, selects nothing. Only
+# quoted strings count, so a sheet named in a comment's backticks does not.
+_QUOTED_SHEET = re.compile(r"""(['"])([^'"\n]*?\.css)(?:\?[^'"\n]*)?\1""")
+
 UI_SOURCE_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs")
 UI_RESOLVE_EXTS = ("", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".d.ts")
 UI_SKIP = {"node_modules", "dist", "build", "coverage"}
@@ -142,10 +162,13 @@ def ui_related(ui_root: Path, changed_ui: list[str]) -> list[str]:
     files = _ui_files(ui_root)
     known = set(files)
     importers: dict[str, set[str]] = {}
+    sheets_named: dict[str, set[str]] = {}
     for rel in files:
         if not rel.endswith(UI_SOURCE_EXTS):
             continue
         text = (ui_root / rel).read_text(errors="replace")
+        if is_vitest_file(rel):
+            sheets_named[rel] = {m.group(2) for m in _QUOTED_SHEET.finditer(text)}
         for pattern in _IMPORT_PATTERNS:
             for spec in pattern.findall(text):
                 target = _resolve(rel, spec, known)
@@ -159,9 +182,19 @@ def ui_related(ui_root: Path, changed_ui: list[str]) -> list[str]:
             continue
         reached.add(rel)
         todo.extend(importers.get(rel, ()))
-    if any(c.endswith(".css") for c in changed_ui):
+    changed_sheets = [c for c in changed_ui if c.endswith(".css")]
+    if changed_sheets:
         reached.update(stylesheet_guards(known))
+        reached.update(t for t, names in sheets_named.items()
+                       if any(names_sheet(n, s) for n in names for s in changed_sheets))
     return sorted(r for r in reached if is_vitest_file(r))
+
+
+def names_sheet(literal: str, sheet: str) -> bool:
+    """Whether a quoted string in a test names `sheet` (relative to ui_root):
+    its file name alone, or a path ending in its path relative to src."""
+    rel = sheet[len("src/"):] if sheet.startswith("src/") else sheet
+    return literal == posixpath.basename(sheet) or literal == rel or literal.endswith("/" + rel)
 
 
 def stylesheet_guards(known: set[str]) -> list[str]:
