@@ -279,10 +279,16 @@ def ran_step(tmp_path: Path) -> Iterator[tuple[Path, subprocess.CompletedProcess
     body = _warm_step().shell
     assert body.startswith(UI_MOUNT + " ")
     body = body[len(UI_MOUNT):]
-    body = body.replace("/tmp/swarm-ui/", f"{REPO}/apps/swarm-ui/")
-    body = body.replace(BUILTIN_NPMRC, str(npmrc))
-    body = body.replace("/tmp/npm-warm", str(root / "warm"))
-    body = body.replace("/opt/", f"{root}/opt/")
+    # One pass over the step's own text: a later replace must never rewrite a
+    # path an earlier one inserted (a checkout or tmp_path under /opt/ would
+    # have its /opt/ moved under root, and the cp would find no lockfile).
+    moves = {
+        "/tmp/swarm-ui/": f"{REPO}/apps/swarm-ui/",
+        BUILTIN_NPMRC: str(npmrc),
+        "/tmp/npm-warm": str(root / "warm"),
+        "/opt/": f"{root}/opt/",
+    }
+    body = re.sub("|".join(map(re.escape, moves)), lambda m: moves[m.group(0)], body)
     env = {
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "FAKE_NPMRC": str(npmrc),
