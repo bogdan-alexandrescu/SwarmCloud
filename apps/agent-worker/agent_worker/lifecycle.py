@@ -525,6 +525,19 @@ PUBLISH_UNREACHABLE_FIELD = "forge_unreachable"
 #: task_6a0c9afdbaea449eb53d: "push failed with exit 1", state SUCCEEDED, the
 #: workflow green, and the work found in `swarm-work.patch` six hours later.
 PUBLISH_FAILED_FIELD = "publish_failed"
+#: The paths a push may touch only with the `workflow` scope (AU-3,
+#: docs/design/agent-autonomy.md §3.3): `_publish_git` hands a branch whose
+#: new commits touch either to swarm-api's `git_push_branch`. Restated from
+#: `swarm_api.gittools.WORKFLOW_PATHSPECS`, which this worker cannot import.
+WORKFLOW_PATHSPECS = (".github/workflows", ".github/actions")
+#: The artifact a refused workflow publish leaves: the workflow and action
+#: lines it did not push, as a unified diff the operator applies by hand.
+WORKFLOW_PATCH_FILE = "workflow-lines.patch"
+#: How many workflow paths the publish names, as swarm-api's refusal does.
+WORKFLOW_PATHS_NAMED = 20
+#: The most of `workflow-lines.patch` read from git; a longer diff is cut and
+#: says so. Workflow files are YAML, so this is far past any real one.
+WORKFLOW_PATCH_MAX_BYTES = 8 * 1024 * 1024
 #: The dispatch block's mark of a merge step's conflict fix round (#1321):
 #: swarm-api copies it from the `metadata.merge_conflict_round` record
 #: `mergewake._on_conflict` submits the round with, INTO the signed block,
@@ -12021,24 +12034,47 @@ class Worker:
                 logger=self.log,
             )
 
-            try:
-                pushed = push_branch(
-                    repo=publish_repo,
-                    url=url,
-                    branch=branch,
-                    token=token,
-                    private_dir=ws.private,
-                    logs_dir=ws.logs,
-                    timeout_seconds=cfg.git_clone_timeout_seconds,
-                    logger=self.log,
-                    branch_prefix=cfg.git_branch_prefix,
-                    protected=protected,
+            # A WORKFLOW FILE IS PUSHED BY THE BROKER, NEVER BY THIS TOKEN (AU-3,
+            # docs/design/agent-autonomy.md §3.3, owner decision Q3). The tenant
+            # slot has no `workflow` scope, so GitHub refuses the push, and lanes
+            # ended SUCCEEDED with their workflow change unpushed. A branch whose
+            # new commits touch `.github/workflows/` or `.github/actions/` goes
+            # to swarm-api's `git_push_branch`, the one reader of the `-git-wf`
+            # slot, read with the same `git log` it reads the bundle with; a
+            # refusal publishes nothing, fails the step and leaves the change as
+            # `workflow-lines.patch`. Every check above has already run here.
+            workflow_paths = self._workflow_paths(publish_repo, floor=scan_floor)
+            if workflow_paths:
+                out["workflow_paths"] = workflow_paths[:WORKFLOW_PATHS_NAMED]
+                pushed, refused = self._push_through_broker(
+                    publish_repo, branch=branch, floor=scan_floor
                 )
-            except PushRejected as rejected:
-                pushed = self._push_over_own_earlier_attempt(
-                    publish_repo, rejected, url=url, token=token, branch=branch,
-                    protected=protected, author_name=author_name, author_email=author_email,
-                )
+                if refused is not None:
+                    return self._workflow_push_refused(
+                        out, publish_repo, refused, floor=scan_floor,
+                        auto_committed=auto_committed,
+                    )
+                out["workflow_publish"] = "broker"
+            else:
+                try:
+                    pushed = push_branch(
+                        repo=publish_repo,
+                        url=url,
+                        branch=branch,
+                        token=token,
+                        private_dir=ws.private,
+                        logs_dir=ws.logs,
+                        timeout_seconds=cfg.git_clone_timeout_seconds,
+                        logger=self.log,
+                        branch_prefix=cfg.git_branch_prefix,
+                        protected=protected,
+                    )
+                except PushRejected as rejected:
+                    pushed = self._push_over_own_earlier_attempt(
+                        publish_repo, rejected, url=url, token=token, branch=branch,
+                        protected=protected, author_name=author_name,
+                        author_email=author_email,
+                    )
         except GitError as exc:
             out["published"] = False
             out["auto_committed"] = auto_committed
@@ -12297,6 +12333,254 @@ class Worker:
         )
         self.log.info("pull request ready", number=pr.number, url=pr.url, created=pr.created)
         return out
+
+    # -- the publish's workflow route (AU-3, agent-autonomy.md §3.3) -----------
+
+    def _workflow_broker(self) -> Any:
+        """The attempt's git tools relay (`gittools.GitTools`), or None.
+
+        The broker the publish hands a workflow-touching branch to: the same
+        signed `git_push_branch` call the agent's own mid-run push makes, with
+        the attempt key and the fence (invariant 5). None when this attempt
+        is not offered the git tools (`ChildPath.git_offered`)."""
+        return getattr(self.children, "_git", None) if self.children.git_offered else None
+
+    def _workflow_negatives(self, floor: str | None) -> list[str]:
+        """The commits origin has that the publish's range starts from: the
+        clone base and the default branch's commit the lane merged."""
+        out: list[str] = []
+        for sha in (self._publish_base, floor):
+            if sha and _FULL_SHA_RE.fullmatch(sha) and sha not in out:
+                out.append(sha)
+        return out
+
+    def _workflow_paths(self, publish_repo: Path, *, floor: str | None) -> list[str]:
+        """The workflow and action files the branch's new commits touch, sorted.
+
+        The command swarm-api reads the pushed bundle with
+        (`swarm_api.gittools._workflow_paths`): `--name-only --no-renames -m`
+        over exactly the new commits, so a rename away from a workflow path
+        counts, and the two never disagree about which route a branch takes.
+
+        A listing git could not make is no workflow paths, logged: the
+        worker's own push then runs, as before AU-3, and GitHub refuses a
+        workflow file from a token without the `workflow` scope, which fails
+        the publish (`PUBLISH_FAILED_FIELD`) the way any refused push does.
+        Either way the step does not end SUCCEEDED with the file unpushed.
+        """
+        ws = self.ws
+        assert ws is not None
+        negatives = self._workflow_negatives(floor)
+        code, text = _git_text(
+            ["git", *_NO_HOOKS, "log", "--format=", "--name-only", "--no-renames", "-m",
+             "HEAD", *(["--not", *negatives] if negatives else []),
+             "--", *WORKFLOW_PATHSPECS],
+            repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs,
+            slug="publish-workflow-paths",
+            timeout_seconds=self.cfg.git_harvest_timeout_seconds, logger=self.log,
+        )
+        if code != 0:
+            self.log.warning("could not list the workflow files the branch touches; "
+                             "publishing with the worker's own push")
+            return []
+        prefixes = tuple(f"{spec}/" for spec in WORKFLOW_PATHSPECS)
+        return sorted({line.strip() for line in text.splitlines()
+                       if line.strip().startswith(prefixes)})
+
+    def _push_through_broker(
+        self, publish_repo: Path, *, branch: str, floor: str | None
+    ) -> tuple[str | None, dict[str, str] | None]:
+        """Push the publish repository's HEAD to `branch` through swarm-api's
+        `git_push_branch`. Returns (the pushed sha, None) or (None, the refusal
+        as `{"code", "message"}`).
+
+        The bundle is built here, in the worker-owned publish repository, from
+        exactly the commits the token push would have sent -- HEAD not
+        reachable from the clone base or the merged default-branch commit --
+        so swarm-api reads the same range and decides the credential: the
+        `-git-wf` slot for a `platform: true` registration whose slot holds a
+        version, `workflow_scope_missing` otherwise. A fence (409) is a
+        refusal too: nothing is pushed, and this worker touches no lease.
+        """
+        from . import gittools as gittools_mod  # lazy: gittools imports this module
+
+        relay = self._workflow_broker()
+        if relay is None:
+            return None, {
+                "code": "git_tools_unavailable",
+                "message": (
+                    "this attempt is not offered the git tools, and a workflow file is "
+                    "pushed only by swarm-api's git_push_branch, never with the tenant token"
+                ),
+            }
+        ws = self.ws
+        assert ws is not None
+        cfg = self.cfg
+        repo = Path(publish_repo)
+        negatives = self._workflow_negatives(floor)
+        local = "refs/heads/swarm-workflow-publish"
+        bundle = repo / ".git" / "swarm-workflow-push.bundle"
+        timeout = cfg.git_harvest_timeout_seconds
+
+        def git(argv: list[str], slug: str) -> str:
+            code, text = _git_text(
+                ["git", *_NO_HOOKS, *argv], repo=repo, private_dir=ws.private,
+                logs_dir=ws.logs, slug=slug, timeout_seconds=timeout, logger=self.log,
+            )
+            if code != 0:
+                raise GitError(f"could not prepare the broker's bundle ({slug}); nothing "
+                               "was pushed")
+            return text.strip()
+
+        head = git(["rev-parse", "--verify", "HEAD^{commit}"], "publish-broker-head")
+        commits = git(["rev-list", "--count", "HEAD", *(f"^{sha}" for sha in negatives)],
+                      "publish-broker-count")
+        git(["update-ref", local, head], "publish-broker-ref")
+        try:
+            git(["bundle", "create", str(bundle), local, *(f"^{sha}" for sha in negatives)],
+                "publish-broker-bundle")
+            raw = bundle.read_bytes()
+        finally:
+            bundle.unlink(missing_ok=True)
+        if len(raw) > gittools_mod.MAX_BUNDLE_BYTES:
+            return None, {"code": "too_large", "message": (
+                f"the bundle is {len(raw)} bytes; at most {gittools_mod.MAX_BUNDLE_BYTES}")}
+        request_id = f"publish-{os.urandom(6).hex()}"
+        fields: dict[str, Any] = {
+            "branch": branch,
+            "old_sha": None,
+            "new_sha": head,
+            "haves": negatives,
+            "commits": int(commits or 0),
+            "bundle_bytes": len(raw),
+            "bundle_sha256": hashlib.sha256(raw).hexdigest(),
+        }
+        inline = int(getattr(relay.cfg, "inline_bundle_bytes", gittools_mod.INLINE_BUNDLE_BYTES))
+        try:
+            if len(raw) <= inline:
+                fields["bundle"] = base64.b64encode(raw).decode("ascii")
+            else:
+                key = gittools_mod.BUNDLE_OBJECT.format(
+                    tenant=cfg.tenant_id, attempt=cfg.attempt_id, call=request_id)
+                self.store.upload_bytes(key, raw, "application/x-git-bundle")
+                fields["bundle_object"] = key
+            payload = relay.call("git_push_branch", fields, request_id=request_id)
+        except gittools_mod.GitToolFenced:
+            self.log.warning("the broker fenced the workflow publish; nothing was pushed")
+            return None, {"code": "fenced", "message": (
+                "this attempt no longer holds the task (409); nothing was pushed")}
+        except gittools_mod.GitToolRefused as refusal:
+            self.log.warning("the broker refused the workflow publish", code=refusal.code)
+            return None, {"code": refusal.code, "message": str(self._scrub(refusal.message))}
+        except Exception as exc:
+            self.log.warning("the broker's workflow publish failed", error=type(exc).__name__)
+            return None, {"code": "api_unavailable", "message": (
+                f"the workflow publish did not reach swarm-api ({type(exc).__name__})")}
+        new_sha = payload.get("new_sha") if isinstance(payload, dict) else None
+        if not isinstance(new_sha, str) or not _FULL_SHA_RE.fullmatch(new_sha):
+            return None, {"code": "api_unavailable",
+                          "message": "swarm-api answered the workflow publish without a sha"}
+        self.log.info("the broker pushed the workflow-touching branch", branch=branch,
+                      new_sha=new_sha, request_id=request_id)
+        return new_sha, None
+
+    def _workflow_push_refused(
+        self,
+        out: dict[str, Any],
+        publish_repo: Path,
+        refused: dict[str, str],
+        *,
+        floor: str | None,
+        auto_committed: bool,
+    ) -> dict[str, Any]:
+        """The publish's result for a workflow push the broker did not make.
+
+        Nothing was pushed. `PUBLISH_FAILED_FIELD` is set, so `_publish_failed`
+        ends a step whose branch is its deliverable FAILED, never SUCCEEDED,
+        and the workflow and action lines are left as `workflow-lines.patch`
+        in the attempt's artifacts -- written by the worker, from the publish
+        repository, against the commit the branch starts from, and uploaded
+        here because the artifacts left before this publish ran.
+        """
+        paths = ", ".join(out.get("workflow_paths") or [])
+        out["published"] = False
+        out["auto_committed"] = auto_committed
+        out[PUBLISH_FAILED_FIELD] = True
+        out["workflow_refused"] = dict(refused)
+        patch = self._write_workflow_patch(publish_repo, floor=floor)
+        if patch is not None:
+            out["workflow_patch"] = patch
+            where = f"the workflow change is in {WORKFLOW_PATCH_FILE} ({patch['uri']})"
+            if patch.get("truncated"):
+                where += f", cut at {WORKFLOW_PATCH_MAX_BYTES} bytes"
+        else:
+            where = f"{WORKFLOW_PATCH_FILE} could not be written; the work is in the patch"
+        out["publish_reason"] = str(self._scrub(
+            f"refusing to publish: the branch touches {paths}, which only swarm-api's "
+            f"git_push_branch may push (agent-autonomy.md §3.3), and it answered "
+            f"{refused['code']}: {refused['message'][:300]}. Nothing was pushed; {where}"
+        ))
+        self.log.error("not publishing: the broker did not push the workflow change",
+                       code=refused["code"])
+        return out
+
+    def _write_workflow_patch(
+        self, publish_repo: Path, *, floor: str | None
+    ) -> dict[str, Any] | None:
+        """Write and upload `workflow-lines.patch`: `git diff --binary` from the
+        branch's start to HEAD over the workflow and action paths only.
+
+        Never follows a link: whatever stands at the name in the artifacts
+        folder (the agent may have written its own) is unlinked and the file
+        is created `O_EXCL | O_NOFOLLOW`, then uploaded through `_upload_copy`.
+        Returns `{"name", "uri", "bytes", "truncated"}`, or None."""
+        ws = self.ws
+        assert ws is not None
+        repo = Path(publish_repo)
+        timeout = self.cfg.git_harvest_timeout_seconds
+        try:
+            start = floor if floor and _FULL_SHA_RE.fullmatch(floor) else self._publish_base
+            if not start or not _FULL_SHA_RE.fullmatch(start):
+                code, start = _git_text(
+                    ["git", *_NO_HOOKS, "hash-object", "-t", "tree", "/dev/null"],
+                    repo=repo, private_dir=ws.private, logs_dir=ws.logs,
+                    slug="publish-workflow-empty-tree", timeout_seconds=timeout,
+                    logger=self.log,
+                )
+                start = start.strip()
+                if code != 0 or not start:
+                    raise GitError("could not name the empty tree")
+            code, text, truncated = _git_text_full(
+                ["git", *_NO_HOOKS, "diff", "--binary", "--no-color", "--no-ext-diff",
+                 start, "HEAD", "--", *WORKFLOW_PATHSPECS],
+                repo=repo, private_dir=ws.private, logs_dir=ws.logs,
+                slug="publish-workflow-patch", timeout_seconds=timeout, logger=self.log,
+                max_bytes=WORKFLOW_PATCH_MAX_BYTES,
+            )
+            if code != 0:
+                raise GitError("git diff failed")
+            target = ws.artifacts / WORKFLOW_PATCH_FILE
+            if target.is_symlink() or target.exists():
+                target.unlink()
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                         | getattr(os, "O_NOFOLLOW", 0), 0o644)
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                handle.write(text)
+        except (GitError, OSError) as exc:
+            self.log.warning(f"could not write {WORKFLOW_PATCH_FILE}", error=str(exc)[:200])
+            return None
+        key = f"{self.cfg.artifact_prefix}/{WORKFLOW_PATCH_FILE}"
+        sent = self._upload_copy(
+            ws.artifacts, WORKFLOW_PATCH_FILE, key=key,
+            label=f"artifacts/{WORKFLOW_PATCH_FILE}", limit=self.cfg.max_artifact_bytes,
+            content_type="text/x-diff; charset=utf-8",
+        )
+        if sent.bytes is None:
+            self.log.warning(f"{WORKFLOW_PATCH_FILE} was written but not uploaded",
+                             skipped=sent.skipped)
+            return None
+        return {"name": WORKFLOW_PATCH_FILE, "uri": self.store.uri(key), "bytes": sent.bytes,
+                "truncated": bool(truncated)}
 
     def _territory_warning(
         self, publish_repo: Path | None, *, head: str, out: dict[str, Any]
