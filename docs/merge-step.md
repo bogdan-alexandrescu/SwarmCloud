@@ -2667,19 +2667,19 @@ checkpoint. The pin makes a repeated merge either a no-op (row 34) or a refusal
 #2000 the classification that turns an outage there into exit 69 never saw
 its errors: a Firestore `ABORTED` that outlasted the transaction's own
 retries in the merge slot's fenced transaction (the heartbeat thread writes
-the same task and lease documents meanwhile) reached the worker's crash
-handler and ended the task `FAILED`/`runner_error` with nine of its ten
+the agent's task document and its lease meanwhile) reached the worker's crash
+handler and ended the agent `FAILED`/`runner_error` with nine of its ten
 attempts unused. Now `lifecycle.py::Worker._run_worker_action` asks
 `lifecycle.py::_unavailable_cause` of whatever the action raises: an outage
 (`ABORTED`, every server error, a spent retry budget, through the whole
 exception chain) exits 69 through `lifecycle.py::Worker._exit_action_unavailable`,
-writing only the attempt's own document and leaving the task and the lease
-to the reconciler, which requeues the task while attempts remain. That is
+writing only the attempt's own document and leaving the agent's task document
+and its lease to the reconciler, which requeues the agent while attempts remain. That is
 safe for the reason row 39 is: the repeat is a no-op or a refusal, and the
-merge slot is held by the task and renewed by each attempt of its holder, so
+merge slot is held by the agent and renewed by each attempt of its holder, so
 the requeued attempt re-enters its own slot. A fenced attempt, a missing
 credential and every other deliberate worker error keep their own exits, and
-any other exception still fails the task. The exit's log line names the
+any other exception still fails the agent. The exit's log line names the
 action, the phase and the action's frames the error came up through, so
 which write aborted (slot renew, slot acquire, train entry) is readable
 without the traceback.
