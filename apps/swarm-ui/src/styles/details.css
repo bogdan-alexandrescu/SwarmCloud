@@ -119,6 +119,14 @@
 /* The last log line, inside the leading card (AgentLogs.tsx `LogLastLine`). */
 .dt-card > .ag-loglast { margin: 0; border: 0; background: var(--surface-2); border-radius: 8px; }
 .dt-card > .ag-loglast:hover { background: color-mix(in srgb, var(--surface-2) 70%, var(--line)); }
+/* UNDER A FAILURE THE LINE IS READ WHOLE (QA-115, #1680 comment 6283738952).
+   agents.css cuts the strip's line to one row with an ellipsis, which suits
+   the Now card's live line; under the Failed card's error at 390 it left
+   `resul…` -- the one line a reader opened the card to compare with the
+   error. Here the strip wraps: the line takes its own row when it has less
+   than 12em beside its label, and breaks anywhere rather than running out. */
+.dt-fail > .ag-loglast { flex-wrap: wrap; padding-block: 6px; }
+.dt-fail > .ag-loglast > .ag-loglast-line { flex: 1 1 12em; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 /* The leading Outcome card keeps the code panel's own blocks flush. */
 .dt-card.run-output > .section,
 .dt-card.run-output > .git-outcome { margin: 0; }
@@ -251,10 +259,18 @@
 .dt-ev-k { font-weight: 550; }
 .dt-ev small { color: var(--text-dim); font-size: var(--t-micro); }
 .dt-ev.is-bad .dt-ev-k { color: var(--s-bad); }
-.dt-rr { display: grid; grid-template-columns: 76px minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; font-size: var(--t-micro); line-height: var(--lh-micro); }
+/* EVERY ROW KEEPS ITS BAR, AND THE VALUE WRAPS INSIDE THE CARD (5b:QA-008,
+   #1680 comment 6343756607). The value's track was `auto` and the value
+   `nowrap`, so at 390 `1.72 GiB 21% of 8 GiB · so far · 22s ago · worst 7.20
+   GiB, attempt 2` took the whole row: the bar's `minmax(0, 1fr)` was left 0 px
+   and the card clipped the rest. The bar now keeps 48px -- enough to read a
+   fill against its track -- and the value takes what is left up to its own
+   width, wrapping below that. At 1440 a value that fits is one line, as it
+   was. */
+.dt-rr { display: grid; grid-template-columns: 76px minmax(48px, 1fr) minmax(0, max-content); gap: 4px 10px; align-items: center; font-size: var(--t-micro); line-height: var(--lh-micro); }
 .dt-rr > .dt-bar { margin-top: 0; }
 .dt-rr-n { color: var(--text-dim); }
-.dt-rr-v { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dt-rr-v { min-width: 0; text-align: right; white-space: normal; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .dt-rr-v > b { font-weight: 600; }
 .dt-rr-v > small { color: var(--text-dim); font-size: var(--t-micro); }
 .dt-empty { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 10px; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
@@ -473,4 +489,33 @@
 .wp-hist-t { min-width: 0; overflow-wrap: anywhere; }
 @container ag-pane (min-width: 480px) {
   .wp-fact { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 12px; align-items: baseline; }
+}
+
+/* --- the Attempts tab (AttemptTimeline.tsx) -------------------------------
+   Its `.att-*` and `.ctl-*` rules are in styles.css; these are the ones QA
+   run 5b needed (QAFIX5-TASK-DETAIL, QA-113, #1680 comment 6283738266),
+   scoped to `.att-pane` so no other screen's toolbar or card moves. */
+
+/* THE TALLY WRAPS, IT IS NOT CLIPPED. `.ctl-card-note` is `flex: none` and
+   `nowrap` (styles.css), right for a two-word qualifier; the Attempts
+   toolbar's runs `8 events · first page · partial 2 attempts without events ·
+   partial ends at …`, and in a 480-700px pane it ran past the edge and cut
+   its own `partial` mark. Here it shrinks and wraps, still right-aligned. */
+.att-pane .ctl-toolbar > .ctl-card-note { flex: 1 1 auto; min-width: 0; white-space: normal; }
+/* The card's own note (`no events on this page · Cloud Run`) goes under the
+   title when the two do not fit, rather than squeezing the title. */
+.att-pane .att-card > .ctl-card-head { flex-wrap: wrap; }
+/* `Attempt 2 · gen 2` is one name: it never breaks between `gen` and `2`. */
+.att-pane .att-card .ctl-card-title > .att-label { white-space: nowrap; }
+/* Why no model is recorded, in words beside the mark (`AttemptModel`). */
+.att-model-why { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+
+/* AT 390, THREE SHORT FIGURES TO A ROW. styles.css stacks every fact on its
+   own line on a phone, so a card was eight lines of key and value before its
+   events. The ids and the long figures (peak memory, model) keep a whole row;
+   `ran`, `exit` and `checkpoints` share one, each its key over its value. */
+@media (max-width: 560px) {
+  .att-pane .att-card .ctl-card-body > .ctl-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .att-pane .att-card .ctl-card-body > .ctl-facts > .ctl-fact { grid-column: 1 / -1; }
+  .att-pane .att-card .ctl-card-body > .ctl-facts > .ctl-fact.att-fact-short { grid-column: auto; flex-direction: column; gap: 0; }
 }
