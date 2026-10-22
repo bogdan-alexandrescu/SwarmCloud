@@ -161,7 +161,18 @@
   background: var(--sk-ac) radial-gradient(circle at calc(100% - 8px) 50%, var(--surface) 0 5px, transparent 5.5px) no-repeat;
 }
 .in-switch > input:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
-.in-switch > input:disabled { opacity: .45; cursor: not-allowed; }
+/* DISABLED IS DRAWN, NOT FADED (visual QA run 4, N25 / work-b-005), as
+   `.c-btn:disabled` is (components.css, V256). `opacity: .45` took the
+   `--line` edge and the `--surface-2` track down to about 1.05:1 on the dark
+   card, so the switch was a 2.1:1 grey knob beside "off" -- a stray dot. The
+   edge is the control boundary, `--ctl-bd` (3:1 or more on `--surface` in
+   both themes), DASHED, which is what says this one cannot be moved; the
+   track has no fill and the knob keeps the faint ink. */
+.in-switch > input:disabled {
+  opacity: 1; cursor: not-allowed;
+  border: 1px dashed var(--ctl-bd);
+  background: transparent radial-gradient(circle at 8px 50%, var(--text-faint) 0 5px, transparent 5.5px) no-repeat;
+}
 .in-switch-w { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
 /* THE CONTROL EDGE, `--ctl-bd`, AS EVERY OTHER FIELD (visual QA QA-072):
