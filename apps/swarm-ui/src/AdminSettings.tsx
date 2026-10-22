@@ -3,7 +3,7 @@ import {
   loadAdminPools, loadCapacity, loadMe, loadModelClasses, loadModelPrices, loadPlatformSettings, priceRefusals, saveModelPrices, setPoolLimit, storeOwnerToken,
 } from './api'
 import { Button, Card } from './components'
-import { errorHeading, isPaused, read, route, write, type ApiError, type Result } from './fetch'
+import { errorHeading, isPaused, route, write, type ApiError, type Result } from './fetch'
 import { Refusal } from './GitHubConnect'
 import { ACCESS } from './Onboarding'
 import { addressToPath } from './paths'
