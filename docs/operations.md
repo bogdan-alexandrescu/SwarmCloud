@@ -438,7 +438,7 @@ start-up latency. It does not count the `smoke` and `u-sw-c90291`
 fence at startup by design, and they were 215 of the 270 fences in the seven
 days #1817 measured. The `generation_fenced` metric still counts them.
 
-Nor does it count fences of tasks submitted by the service accounts in
+Nor does it count fences of agents submitted by the service accounts in
 `fencing_alert_excluded_submitters` (default `swarm-verify`). A tenant filter
 was not enough. verify-remote's race and concurrency tests fence on purpose,
 but verify-remote submits as `eng`. Over the seven days measured on
@@ -450,7 +450,7 @@ extracts as a label. It holds the submitting service account's short name
 `person` for anyone else. **It never holds a person's email:** logs and metric
 labels are read widely, and an address there is personal data
 (`agent_worker.logs.submitter_service`). The worker takes the submitter from
-the task document it already read, and a fence line with no submitter is
+the document it already read for the agent, and a fence line with no submitter is
 still counted.
 
 `pr-stranded` notifies once a pull request has been reported stranded for an
