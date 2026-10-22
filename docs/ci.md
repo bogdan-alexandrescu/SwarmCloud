@@ -4757,6 +4757,21 @@ list: the ~170 screen tests that glob the sheets to compute the cascade
 (through `marks.ts`, `spacingsweep.tsx`, `phone.chrome.test.tsx`) are behaviour
 tests, and CI runs them.
 
+**A changed sheet also selects the tests that read it by name** (NAMED-SHEETS,
+part of #1914, owner decision 2026-10-22: "Yes, a name-keyed rule"). Some tests
+read ONE sheet from disk -- `readFileSync(resolve(__dirname,
+'../styles/repograph.css'))`, `join(__dirname, '..', 'styles', 'theater.css')`,
+a helper's `css('theater.css')` -- and no import reaches them either; PR 1921
+found seven (`browser.badges`, `repograph.vqa-l08`, `repositories.c6j`,
+`repositories.graph`, `theater.followup`, `theater.v2`, `theater.take`). So a
+`.css` change under `apps/swarm-ui/` also selects every vitest file holding a
+quoted string that is the sheet: its file name alone, or a path ending in its
+path relative to `src` (`styles/theater.css`). A bare word is not a name: a test
+titled "the theater", or one that says `'styles/'`, is not selected for
+`theater.css` or `styles.css`. Each file is selected once however many of its
+sheets changed, and every file is read once per run. This is a related-test
+rule, not a guard: `changed-guards.sh` does not run these files.
+
 **It never prints an unfiltered command.** Every line names files. A selection
 too big for one run comes back as a few runs: pytest cut by
 `unit_test_durations.json` weight into parts of at most ~540 CI-seconds

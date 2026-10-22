@@ -409,3 +409,135 @@ def test_the_script_selects_the_stylesheet_guards_for_intake_css_once(tmp_path):
     assert sum(c.count(f" {GATE}") for c in commands) == 1, commands
     assert sum(c.count(f" {SECTIONS}") for c in commands) == 1, commands
     _assert_every_command_names_files(commands)
+
+
+# --- the named-sheet readers (NAMED-SHEETS, part of #1914) -------------------
+#
+# Found by RELATED-CSS-GUARDS (PR 1921): some vitest files read ONE named
+# sheet from disk with readFileSync -- `'../styles/repograph.css'`,
+# `join(__dirname, '..', 'styles', 'theater.css')`, `css('theater.css')` --
+# so no import connects them to a change of that sheet. Owner decision
+# 2026-10-22: "Yes, a name-keyed rule".
+
+THEATER = f"{UI}/src/styles/theater.css"
+LIVE = f"{UI}/src/styles/live.css"
+STYLES = f"{UI}/src/styles.css"
+READS_THEATER = "src/__tests__/theater.reads.test.tsx"
+READS_BY_NAME = "src/__tests__/theater.byname.test.tsx"
+IMPORTS_PANEL = "src/__tests__/theater.panel.test.tsx"
+READS_WIDGET = "src/__tests__/widget.text.test.ts"
+MENTIONS = "src/__tests__/theater.mentions.test.tsx"
+READS_STYLES = "src/__tests__/styles.reads.test.tsx"
+READS_LIVE = "src/__tests__/live.reads.test.tsx"
+READS_BOTH = "src/__tests__/both.reads.test.tsx"
+
+# The seven files PR 1921 found reading one named sheet from disk.
+NAMED_READERS = {
+    "src/__tests__/browser.badges.test.tsx": "styles/live.css",
+    "src/__tests__/repograph.vqa-l08.test.ts": "styles/repograph.css",
+    "src/__tests__/repositories.c6j.test.tsx": "styles/repositories.css",
+    "src/__tests__/repositories.graph.test.tsx": "styles/repograph.css",
+    "src/__tests__/theater.followup.test.tsx": "styles/theater.css",
+    "src/__tests__/theater.v2.test.tsx": "styles/theater.css",
+    "src/__tests__/theater.take.test.tsx": "styles/theater.css",
+}
+
+
+def _with_named_sheets(root: Path) -> None:
+    """The synthetic tree, plus sheets and tests that read one of them by
+    name, import a component, or only say the word."""
+    _tree(root)
+    for sheet in (THEATER, LIVE, STYLES):
+        _write(root, sheet, ".x { gap: 4px }\n")
+    _write(root, f"{UI}/{READS_THEATER}",
+           "import { readFileSync } from 'node:fs'\n"
+           "const CSS = readFileSync(resolve(__dirname, '../styles/theater.css'), 'utf8')\n")
+    _write(root, f"{UI}/{READS_BY_NAME}",
+           "const css = (f: string) => readFileSync(join(STYLES, f), 'utf8')\n"
+           "const sheet = css('theater.css')\n")
+    _write(root, f"{UI}/{IMPORTS_PANEL}", "import { o } from '../other'\n")
+    _write(root, f"{UI}/{READS_WIDGET}", "const W = readFileSync(join(__dirname, '../widget.ts'), 'utf8')\n")
+    _write(root, f"{UI}/{MENTIONS}", "describe('the theater', () => { it('opens theater', () => {}) })\n")
+    _write(root, f"{UI}/{READS_STYLES}",
+           "const S = readFileSync(join(__dirname, '..', 'styles.css'), 'utf8')\n")
+    _write(root, f"{UI}/{READS_LIVE}",
+           "const S = readFileSync(join(__dirname, '..', 'styles', 'live.css'), 'utf8')\n"
+           "const DIR = 'styles/'\n")
+    _write(root, f"{UI}/{READS_BOTH}",
+           "const A = readFileSync(join(__dirname, '../styles/theater.css'), 'utf8')\n"
+           "const B = readFileSync(join(__dirname, '../styles/live.css'), 'utf8')\n")
+
+
+def test_a_sheet_change_selects_the_tests_that_read_it_by_path_or_name(tmp_path):
+    _with_named_sheets(tmp_path)
+    vitest = _files(_select(tmp_path, THEATER)["vitest"])
+    # MUTATION: drop the named-sheet rule from ui_related (leave the import
+    # graph and STYLESHEET_GUARDS alone) -> neither reader is selected.
+    assert READS_THEATER in vitest, vitest
+    # MUTATION: match only the path relative to src (`styles/theater.css`),
+    # never the file name read alone -> css('theater.css') is missed.
+    assert READS_BY_NAME in vitest, vitest
+    assert READS_BOTH in vitest, vitest
+
+
+def test_a_sheet_change_does_not_select_an_importer_or_a_bare_word(tmp_path):
+    _with_named_sheets(tmp_path)
+    vitest = _files(_select(tmp_path, THEATER)["vitest"])
+    # MUTATION: match the sheet's stem (`theater`) as a bare word instead of
+    # the quoted path or file name -> theater.mentions is selected.
+    assert MENTIONS not in vitest, vitest
+    # MUTATION: select every vitest file on a .css change -> the component
+    # importer (and every other test) is selected.
+    assert IMPORTS_PANEL not in vitest, vitest
+    assert READS_LIVE not in vitest and READS_STYLES not in vitest, vitest
+
+
+def test_styles_css_selects_its_reader_and_not_a_reader_of_styles_dir(tmp_path):
+    _with_named_sheets(tmp_path)
+    vitest = _files(_select(tmp_path, STYLES)["vitest"])
+    # MUTATION: drop the named-sheet rule -> the reader of styles.css is missed.
+    assert READS_STYLES in vitest, vitest
+    # MUTATION: match `styles.css` as a substring, or `styles` as a word ->
+    # the reader of styles/live.css (which says 'styles/') is selected.
+    assert READS_LIVE not in vitest, vitest
+    assert READS_THEATER not in vitest and READS_BOTH not in vitest, vitest
+
+
+def test_two_changed_sheets_named_by_one_test_select_it_once(tmp_path):
+    _with_named_sheets(tmp_path)
+    got = _select(tmp_path, THEATER, LIVE)
+    flat = [f for run in got["vitest"] for f in run.split()]
+    # MUTATION: append the readers once per changed sheet (a list, not a
+    # set) -> both.reads appears twice and this is red.
+    assert flat.count(READS_BOTH) == 1, flat
+    assert flat.count(READS_LIVE) == 1 and flat.count(READS_THEATER) == 1, flat
+
+
+def test_a_change_with_no_stylesheet_adds_no_named_sheet_reader(tmp_path):
+    _with_named_sheets(tmp_path)
+    vitest = _files(_select(tmp_path, f"{UI}/src/widget.ts", "apps/foo/foo/core.py")["vitest"])
+    # MUTATION: run the named-path rule for every changed UI file (drop the
+    # `.css` test) -> widget.text, which reads '../widget.ts' as text, is
+    # selected and this is red.
+    assert READS_WIDGET not in vitest, vitest
+    # MUTATION: add any reader for a non-sheet change -> the answer is more
+    # than the import graph's three files.
+    assert vitest == sorted(["src/__tests__/mocked.test.ts", "src/__tests__/panel.test.tsx",
+                             "test/Live.test.tsx"]), vitest
+
+
+def test_the_script_selects_the_seven_named_sheet_readers_once(tmp_path):
+    sheets = sorted({f"{UI}/src/{s}" for s in NAMED_READERS.values()})
+    diff = tmp_path / "diff.txt"
+    diff.write_text("".join(f"{s}\n" for s in sheets))
+    result = _run("--files", str(diff))
+    assert result.returncode == 0, result.stderr
+    listed = _listed(result.stdout)
+    commands = _commands(result.stdout)
+    for reader in NAMED_READERS:
+        # MUTATION: leave the selection to the import graph and the
+        # stylesheet guards -> none of the seven is listed (PR 1921's gap).
+        assert listed.count(f"{UI}/{reader}") == 1, (reader, listed)
+        # MUTATION: list the readers but leave them out of the runs -> red.
+        assert sum(c.count(f" {reader}") for c in commands) == 1, (reader, commands)
+    _assert_every_command_names_files(commands)
