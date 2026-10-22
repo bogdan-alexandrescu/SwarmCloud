@@ -33,8 +33,10 @@ THE MERGE SWITCH (SD3) is an audited edit of `gate.merge`, the one way to
 `merge: auto`, which `PATCH /v1/schedules/{id}` refuses with 422
 `use_merge_switch`. To `auto`: a platform admin (PR 860's admin roles,
 PLATFORM_OWNER included) when the scope names a `platform: true`
-repository; elsewhere any member but the last editor of the gate, scope or
-spec (SD5), and in a one-person tenant the person, after typing the
+repository or on a platform-scope schedule of an owner-only type (today
+`failure-review`, whose only creator is the owner: decided 2026-10-22, "The
+owner may switch an owner-only platform type"); elsewhere any member but
+the last editor of the gate, scope or spec (SD5), and in a one-person tenant the person, after typing the
 schedule's name. To `approve`: any member, at once. Both write a
 `schedule_audit` entry (`gate_merge_auto`, `gate_merge_approve`) with the
 before and after of `gate`, in the transaction that changes it. The switch
@@ -314,6 +316,16 @@ def reject(
 # --------------------------------------------------------------------------
 
 
+def _owner_only_platform(entry: scheduletypes.ScheduleType, scope: Mapping[str, Any]) -> bool:
+    """A platform-scope schedule of a type only the owner may create there.
+
+    Read from the type's own `creators` declaration (today `failure-review`),
+    never from a list of names, so a type declared that way later is switched
+    the same way and one declared admin-creatable keeps the two-person rule.
+    """
+    return scope.get("mode") == "platform" and entry.creators.get("platform") == "owner"
+
+
 @router.post("/v1/schedules/{schedule_id}:merge-mode")
 def merge_mode(
     schedule_id: str,
@@ -335,7 +347,19 @@ def merge_mode(
         if entry.floor_gate.merge != "auto":
             raise ScheduleInvalid("merge_auto_not_allowed", f"{entry.name} never merges unattended")
         _, platform = schedule_routes._registrations(ctx, tenant_id, schedules.ScopeIn(**stored["scope"]))
-        if platform:
+        if _owner_only_platform(entry, stored["scope"]):
+            # Decided 2026-10-22 (FR3-TYPE, part of #1933): "The owner may
+            # switch an owner-only platform type" -- Q8's "set once by you
+            # through the audited merge switch at creation". The owner is its
+            # only possible creator, so the two-person rule would refuse the
+            # one person the switch is for.
+            if not (auth.is_admin or auth.is_owner):
+                raise ScheduleForbidden(
+                    "platform_admin_required",
+                    f"only the platform owner or a platform admin may switch a {entry.name} schedule's "
+                    "merging to automatic",
+                )
+        elif platform:
             # Owner decision 2026-10-08: "only admins in the platform repos".
             if not (auth.is_admin or auth.is_owner):
                 raise ScheduleForbidden(
