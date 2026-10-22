@@ -8,7 +8,9 @@ writer that runs on a clock and can query Firestore:
   * the AWAIT SWEEP: a parent PARKED on CHILDREN_INCOMPLETE is promoted once
     every child is terminal and every SUCCEEDED child's manifest is written,
     and past `child_await_max_seconds` its outstanding children are cancelled
-    so that it can be (§3.3 step 6, §5 F7);
+    so that it can be (§3.3 step 6, §5 F7). Its child issue runs and child
+    workflows (swarm-api's `child_runs` ledger, agent-autonomy.md §3.6) count
+    too, until each has ended;
   * the CASCADE SWEEP: a non-terminal child whose parent is terminal or
     carries `cancel_requested` is cancelled (§3.4 step 2). The API cascades at
     once for responsiveness; this makes it certain.
@@ -49,6 +51,23 @@ log = logging.getLogger(__name__)
 
 TASKS = "tasks"
 EVENTS = "events"
+
+#: swarm-api's children ledger for the run kinds (`swarm_api.children`), and
+#: the documents its rows point at (`swarm_api.issueruns.RUNS_COLLECTION`,
+#: `swarm_api.store.WORKFLOWS`), restated: this image does not carry
+#: swarm-api. tests/unit/scheduler/test_await_counts_run_children.py holds
+#: every name below equal to its original.
+CHILD_RUNS = "child_runs"
+ISSUE_RUNS = "issue_runs"
+WORKFLOWS = "workflows"
+#: A ledger row whose run or workflow exists; only then is there a state to read.
+STARTED = "STARTED"
+#: A ledger row that will never start anything more. HELD and STARTING rows
+#: have not ended: a held `after_merged` run is waiting for its predecessor.
+LEDGER_ENDED = frozenset({"FAILED", "CANCELLED"})
+#: `swarm_api.issueruns.TERMINAL_RUN_STATES`, by value: for an issue run
+#: "ended" is one of these (§3.6).
+TERMINAL_RUN_STATES = frozenset({"DONE", "FAILED", "REJECTED", "CANCELLED", "NOT_READY"})
 
 #: `swarm_api.childkey.NONCE_PURPOSE`, restated: this image does not carry
 #: swarm-api. tests/unit/control_plane/test_child_tasks_scheduler.py holds the
@@ -113,9 +132,23 @@ class AwaitDecision:
         return not self.outstanding and not self.unstaged
 
 
-def children_of(db: Any, tenant_id: str, parent_task_id: str) -> list[Task]:
-    """A parent's children, in its tenant only. Served by the
-    `tasks-tenant-parent-created` index."""
+class ChildList(list):
+    """A parent's agent children, as `list[Task]`, carrying `runs`: the ids of
+    its child runs (the `child_runs` ledger) that have not ended.
+
+    One value rather than a second argument so the await sweep's one call,
+    `decide_await(children_of(...))`, reads both kinds; a plain list is still
+    a valid answer and means "no run children read"."""
+
+    def __init__(self, tasks: Any = (), *, runs: tuple[str, ...] = ()) -> None:
+        super().__init__(tasks)
+        self.runs = runs
+
+
+def children_of(db: Any, tenant_id: str, parent_task_id: str) -> ChildList:
+    """A parent's children, in its tenant only: its agent children (served by
+    the `tasks-tenant-parent-created` index) and, as `runs`, its run children
+    that have not ended (`run_children_outstanding`)."""
     query = (
         db.collection(TASKS)
         .where(filter=FieldFilter("tenant_id", "==", tenant_id))
@@ -127,14 +160,70 @@ def children_of(db: Any, tenant_id: str, parent_task_id: str) -> list[Task]:
         data = snap.to_dict() or {}
         if data.get("tenant_id") == tenant_id and data.get("parent_task_id") == parent_task_id:
             out.append(task_from_dict(data))
-    return out
+    return ChildList(out, runs=run_children_outstanding(db, tenant_id, parent_task_id))
+
+
+def run_children_outstanding(db: Any, tenant_id: str, parent_task_id: str) -> tuple[str, ...]:
+    """The parent's child issue runs and child workflows that have not ended.
+
+    A ledger row is outstanding while it is HELD or STARTING, or STARTED with
+    its run (or workflow) not terminal -- the rule `swarm_api.children`'s
+    listing applies, so the parent the worker resumes and the sweep that
+    resumes it agree on "ended". The query is the ledger's own
+    `(tenant_id, parent_task_id)` read, and every row, run and workflow is
+    compared to the parent's tenant before it counts (invariant 9): another
+    tenant's row never holds this parent, and a run or workflow of another
+    tenant, or one that is gone, reads as ended, as the listing's `missing`.
+    """
+    query = (
+        db.collection(CHILD_RUNS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("parent_task_id", "==", parent_task_id))
+        .limit(_CHILD_CAP)
+    )
+    out = []
+    for snap in query.stream():
+        row = snap.to_dict() or {}
+        if row.get("tenant_id") != tenant_id or row.get("parent_task_id") != parent_task_id:
+            continue
+        if _run_child_live(db, tenant_id, row):
+            out.append(str(row.get("child_id") or snap.id))
+    return tuple(out)
+
+
+def _run_child_live(db: Any, tenant_id: str, row: dict[str, Any]) -> bool:
+    state = row.get("state")
+    if state in LEDGER_ENDED:
+        return False
+    if state != STARTED:
+        return True  # HELD or STARTING: it has not run yet
+    if row.get("run_id"):
+        collection, key, terminal = ISSUE_RUNS, row["run_id"], TERMINAL_RUN_STATES
+    elif row.get("workflow_id"):
+        collection, key = WORKFLOWS, row["workflow_id"]
+        terminal = frozenset(s.value for s in TERMINAL_STATES)
+    else:
+        return False  # STARTED with nothing started: nothing to wait for
+    snap = db.collection(collection).document(key).get()
+    data = snap.to_dict() if snap.exists else None
+    if data is None or data.get("tenant_id") != tenant_id:
+        return False
+    return data.get("state") not in terminal
 
 
 def decide_await(children: list[Task]) -> AwaitDecision:
     """"Terminal with their outputs staged" (OD-B15-3): every child terminal,
     and every SUCCEEDED child's manifest written (`result_summary` set, the
-    same test `swarm_api.store.Store.artifact_manifest` calls `complete`)."""
+    same test `swarm_api.store.Store.artifact_manifest` calls `complete`).
+
+    A `ChildList`'s `runs` -- the child runs that have not ended -- are
+    outstanding exactly as an unfinished agent child is (§3.6), so a parent
+    waiting on run children alone is not promoted early. Past the deadline
+    the sweep's cascade finds no task by a run child's id and leaves it be:
+    the scheduler does not cancel runs, and the parent waits for them to end.
+    """
     outstanding = tuple(c.id for c in children if c.state not in TERMINAL_STATES)
+    outstanding += tuple(getattr(children, "runs", ()))
     unstaged = tuple(
         c.id for c in children if c.state is TaskState.SUCCEEDED and not c.result_summary
     )
