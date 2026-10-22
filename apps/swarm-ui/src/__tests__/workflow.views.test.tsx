@@ -980,14 +980,15 @@ describe('U5: scrubbing', () => {
     expect(i.querySelector('a[href="/agents/recent/t_plan"]'), 'a finished step opens over Recent (WF-21)').toBeTruthy()
     // Newest attempt first, because that is the one a reader asked about.
     await within(i).findByText('attempt 3 of 3')
-    expect(fact(i, 'generation')).toBe('3')
+    // 'lease generation', the figure, then what it is for (QAFIX5, run 5b L4).
+    expect(fact(i, 'lease generation')).toMatch(/^3 · raised by every new lease/)
     // AT ITS END, NOT DISABLED: `aria-disabled`, so the control keeps focus and
     // the arrow keys keep working (see the next test).
     expect(within(i).getByRole('button', { name: 'Next attempt' }).getAttribute('aria-disabled')).toBe('true')
 
     fireEvent.click(within(i).getByRole('button', { name: 'Previous attempt' }))
     expect(within(i).getByText('attempt 2 of 3')).toBeTruthy()
-    expect(fact(i, 'generation')).toBe('2')
+    expect(fact(i, 'lease generation')).toMatch(/^2 · /)
     expect(fact(i, 'exit code')).toBe('137')
 
     const group = i.querySelector<HTMLElement>('[data-scrub="attempt"]')
@@ -999,7 +1000,7 @@ describe('U5: scrubbing', () => {
     fireEvent.click(within(i).getByRole('button', { name: 'Previous attempt' }))
     expect(within(i).getByText('attempt 1 of 3')).toBeTruthy()
     // And the unmeasured cost of attempt 1 is a word, not $0.00.
-    expect(fact(i, 'cost')).toBe('not reported')
+    expect(fact(i, 'this attempt’s cost')).toBe('not reported')
     fireEvent.keyDown(group!, { key: 'ArrowRight' })
     expect(within(i).getByText('attempt 2 of 3')).toBeTruthy()
   })
@@ -1017,7 +1018,8 @@ describe('U5: scrubbing', () => {
     const c = await openPage('wf_new', 'table')
     pick(c, 'plan')
     const alone = inspector(cardOf('wf_new'))
-    expect(within(alone).getByText('workflow 1 of 1')).toBeTruthy()
+    // A list of one says so, not `workflow 1 of 1` (QAFIX5, run 5b L4).
+    expect(within(alone).getByText('no other workflow of this shape')).toBeTruthy()
     expect(alone.querySelector('.wf-scrub-shape')!.textContent).toBe('shape: 4 steps in 3 stages (1 → 2 → 1)')
     fireEvent.click(within(alone).getByRole('button', { name: 'Stop inspecting this step' }))
 
@@ -1202,7 +1204,7 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     const i = inspector(container as HTMLElement)
     const link = i.querySelector<HTMLAnchorElement>('a.wf-inspect-changes')!
     expect(link.getAttribute('href')).toBe('/workflows/wf_one/changes?step=work')
-    expect(link.textContent).toBe('This step’s changes · 2 files ›')
+    expect(link.textContent).toBe('This step’s changes in this workflow · 2 files ›')
     const scrub = i.querySelector<HTMLElement>('[data-scrub="attempt"]')!
     await waitFor(() => expect(scrub.textContent).not.toContain('reading'))
   })
@@ -1213,7 +1215,7 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     pick(container as HTMLElement, 'work')
     const i = inspector(container as HTMLElement)
     const link = i.querySelector<HTMLAnchorElement>('a.wf-inspect-changes')!
-    expect(link.textContent).toBe('This step’s changes ›')
+    expect(link.textContent).toBe('This step’s changes in this workflow ›')
     expect(link.textContent).not.toMatch(/[—\d]/)
     expect(link.getAttribute('title')).toMatch(/written nothing yet/)
     const scrub = i.querySelector<HTMLElement>('[data-scrub="attempt"]')!
@@ -1405,7 +1407,7 @@ describe('the owner’s decisions: where a figure came from (WF-5)', () => {
     pick(root, 'work')
     const i = inspector(root)
     await within(i).findByText('attempt 1 of 1')
-    const costFact = factLi(i, 'cost')
+    const costFact = factLi(i, 'this attempt’s cost')
     expect(costFact.classList.contains('is-absent'), 'the inspector calls a reported cost absent').toBe(false)
     expect(costFact.textContent).toContain('$0.42')
     expect(costFact.querySelector('.wf-src')?.textContent).toBe('from result')
@@ -1604,7 +1606,7 @@ describe('the owner’s decisions: where a figure came from (WF-5)', () => {
     pick(root, 'work')
     const i = inspector(root)
     await within(i).findByText('attempt 1 of 1')
-    expect(factLi(i, 'cost').getAttribute('title')).toContain('own document carries no typed figure')
+    expect(factLi(i, 'this attempt’s cost').getAttribute('title')).toContain('own document carries no typed figure')
   })
 
   it('borrows a result only for a step that has finished -- in the table, on the node and in the total -- as the inspector does', () => {

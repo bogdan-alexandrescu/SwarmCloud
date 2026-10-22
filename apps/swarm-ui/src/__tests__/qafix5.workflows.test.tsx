@@ -199,8 +199,8 @@ describe('QA-120: from 1280 the page docks the step card beside the graph, heade
     const head = panel()!.querySelector<HTMLElement>('.wf-inspect-head')!
     // MUTATION: drop the `stepHeading` branch in `StepInspector` -- the head
     // leads with the workflow's id again and has no heading at all.
-    const h = within(head).getByRole('heading', { level: 3 })
-    expect(h.textContent).toMatch(/^checkpoints/)
+    // Named by the step, then its state: the mark before it is decoration.
+    expect(within(head).getByRole('heading', { level: 3, name: 'checkpoints failed' })).toBeTruthy()
     expect(head.textContent, 'the card repeats the workflow the page is titled by').not.toContain('wf_fan')
   })
 

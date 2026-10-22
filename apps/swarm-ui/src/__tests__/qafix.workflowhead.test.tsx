@@ -302,7 +302,8 @@ describe('QA-120 (run 2): the failed step’s reason leads the graph, above the 
     const region = await waitFor(() => screen.getByRole('region', { name: 'Why step test failed' }))
     // MUTATION: drop the lead's button and nothing on screen points to the card below.
     act(() => {
-      fireEvent.click(within(region).getByRole('button', { name: /details below/ }))
+      // 'Open the step’s card' since QAFIX5: from 1280 the card is beside the graph, not below it.
+      fireEvent.click(within(region).getByRole('button', { name: /step’s card/ }))
     })
     // MUTATION: make the button toggle the pick and it CLOSES the card it points to.
     expect(panel(), 'the lead’s button closed the card').not.toBeNull()

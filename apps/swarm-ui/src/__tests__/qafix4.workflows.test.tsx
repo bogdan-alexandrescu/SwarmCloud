@@ -3,7 +3,8 @@
 //
 //   c28 (owner decision, 2026-10-22, box comment 6314117148)  at 1440 the
 //          Workflows list's Cost cell read three lines, '$0.426' / '3 of 4' /
-//          'reported'. From 1280 the column is 128px and the coverage is one
+//          'reported'. From 1280 the column is 136px (128 until QAFIX5
+//          work-a-010) and the coverage is one
 //          line under the figure; below 1280 it keeps 100px and V163's wrap.
 //   N17 (task-009)  the Changes empty state's heading was announced as the
 //          chip's whole sentence: `Mark` is `role="img"` named by `say`, and
@@ -73,15 +74,16 @@ function list(): HTMLElement {
 const listAt = (viewport: number) => viewport - 84 - 236 - 64
 
 describe('c28: from 1280 the Cost column holds "3 of 4 reported" on one line', () => {
-  it('is 128px at 1440 and the coverage line does not wrap, and that is room enough for it', () => {
+  it('is 136px at 1440 and the coverage line does not wrap, and that is room enough for it', () => {
     const host = list()
     const env: CascadeEnv = { width: 1440 }
     const th = host.querySelector('th[data-col="cost"]')!
     const td = host.querySelector('td[data-col="cost"]')!
     const cov = host.querySelector('.wf-spend-cov')!
-    // MUTATION: drop the 1280 block's `th[data-col="cost"] { width: 128px }`
-    // and the head is 100px again.
-    expect(painted(th, 'width', env)).toBe('128px')
+    // MUTATION: drop the 1280 block's `th[data-col="cost"] { width: 136px }`
+    // and the head is 100px again. (128px until QAFIX5 work-a-010: see the
+    // measurement below.)
+    expect(painted(th, 'width', env)).toBe('136px')
     // Still its own line under the figure.
     expect(painted(cov, 'display', env)).toBe('block')
     // One line through width, not through nowrap: the coverage still wraps at
@@ -89,9 +91,12 @@ describe('c28: from 1280 the Cost column holds "3 of 4 reported" on one line', (
     // MUTATION: set the width under 128px (or the cell's padding over 10px):
     // the 15 characters of 12px mono no longer fit the content box, and the
     // coverage wraps to '3 of 4' / 'reported' again.
+    // MEASURED ON THE COVERAGE, in the DM Mono `.wf-spend` draws it in: on the
+    // cell it was measured in the sans face, 100.8px, and 128px passed with
+    // no slack at all (QAFIX5 work-a-010, qafix5.workflows.test.tsx).
     const st = cellStyle(td, env)
     const room = (lengthPx(painted(th, 'width', env), 0) ?? 0) - st.pl - st.pr
-    expect(room).toBeGreaterThanOrEqual(textPx('3 of 4 reported', td, env))
+    expect(room).toBeGreaterThanOrEqual(textPx('3 of 4 reported', cov, env))
   })
 
   it('never clips a longer coverage at 1440: "10 of 12 reported" wraps instead', () => {
@@ -104,25 +109,25 @@ describe('c28: from 1280 the Cost column holds "3 of 4 reported" on one line', (
     const room = (lengthPx(painted(th, 'width', env), 0) ?? 0) - st.pl - st.pr
     // The premise: a 12-step workflow's coverage (R10) is wider than the box,
     // and the cell clips what overflows it.
-    expect(textPx('10 of 12 reported', td, env)).toBeGreaterThan(room)
+    expect(textPx('10 of 12 reported', cov, env)).toBeGreaterThan(room)
     expect(painted(td, 'text-overflow', env)).toBe('clip')
     // MUTATION: put `.wf-spend-cov { white-space: nowrap }` in the 1280 block:
-    // the coverage stays one 122px line in a 108px box and the clip takes
+    // the coverage stays one 122px line in a 116px box and the clip takes
     // "reported", the word V163 and Q9 say is never cut.
     expect(painted(cov, 'white-space', env)).toBe('normal')
     // Wrapped at its spaces, every word fits: nothing of it is cut.
     // MUTATION: narrow the 1280 head under the widest word ('reported', 58px,
     // plus the cell's 20px of padding) and a word itself is clipped.
     for (const word of '10 of 12 reported'.split(' ')) {
-      expect(textPx(word, td, env)).toBeLessThanOrEqual(room)
+      expect(textPx(word, cov, env)).toBeLessThanOrEqual(room)
     }
   })
 
   it('keeps 100px and V163’s wrap at 1100', () => {
     const host = list()
     const env: CascadeEnv = { width: 1100 }
-    // MUTATION: put the 128px outside the 1280 query (in the 900 block) and
-    // the narrow layout loses 28px it does not have.
+    // MUTATION: put the 136px outside the 1280 query (in the 900 block) and
+    // the narrow layout loses 36px it does not have.
     expect(painted(host.querySelector('th[data-col="cost"]')!, 'width', env)).toBe('100px')
     // MUTATION: put a nowrap on the coverage in the 900 block: '3 of 4
     // reported' is 108px in a 80px content box, and the cell's clip takes
@@ -135,10 +140,10 @@ describe('c28: from 1280 the Cost column holds "3 of 4 reported" on one line', (
     const env: CascadeEnv = { width: 1280 }
     const { cols } = fixedColumns(host.querySelector('table')!, listAt(1280), env)
     const name = cols.find((c) => c.col === 'workflow')!
-    // MUTATION: widen Cost (or any fixed column) by more than the 36px the
-    // name has over its floor here: 896px less 692px of fixed columns is 204.
+    // MUTATION: widen Cost (or any fixed column) by more than the 28px the
+    // name has over its floor here: 896px less 700px of fixed columns is 196.
     expect(name.end - name.start).toBeGreaterThanOrEqual(168)
-    expect(cols.find((c) => c.col === 'cost')!.end - cols.find((c) => c.col === 'cost')!.start).toBe(128)
+    expect(cols.find((c) => c.col === 'cost')!.end - cols.find((c) => c.col === 'cost')!.start).toBe(136)
   })
 })
 

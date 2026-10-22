@@ -83,18 +83,26 @@
   .wfl .wfl-table td[data-col="cost"] .wf-spend-cov { display: block; margin-left: 0; white-space: normal; }
   /* FROM 1280 THE COVERAGE IS ONE LINE (owner decision c28, 2026-10-22, box
      comment 6314117148 on #1680). At 1440 the cell read three lines, '$0.426'
-     / '3 of 4' / 'reported'. 128px is the smallest that holds it: '3 of 4
-     reported' is 15 characters of 12px mono (108px) inside the cell's 10px a
-     side. The name pays the 28px: at 1280 with the nav open the list is
-     896px and the name keeps 204px, over the 168px D8 and R10 hold. Below
-     1280 the column stays 100px and V163's wrap stands.
+     / '3 of 4' / 'reported'. '3 of 4 reported' is 15 characters of 12px
+     mono (108px) inside the cell's 10px a side; the width that holds it is
+     below. The name pays for it: at 1280 with the nav open the list is 896px
+     and the name keeps 196px, over the 168px D8 and R10 hold. Below 1280 the
+     column stays 100px and V163's wrap stands.
      The width alone makes it one line: the coverage keeps V163's
      `white-space: normal` here too. A nowrap would hand a longer coverage to
      the cell's clip -- '10 of 12 reported' is 122px, and R10 sizes this
      column for 12 steps -- and the clip takes "reported" again; with normal
      it wraps at its spaces instead. */
+  /* 136px, NOT 128 (visual QA r3:work-a-010, run 5b, #1680 comment
+     6314117148): c28's 128px still wrapped at 1440. The coverage is drawn in
+     `.wf-spend`'s DM Mono, whose advance is exactly 600/1000 em, so '3 of 4
+     reported' is 108.0px -- and 128px left a content box of exactly 108px.
+     c28 measured the text in the cell's sans face (100.8px) and saw slack
+     that was not there; a browser rounding one glyph advance up wraps
+     'reported'. 136px leaves one character's advance (7.2px) to spare, and
+     the name still keeps 196px at 1280 with the nav open, over D8's 168. */
   @media (min-width: 1280px) {
-    .wfl .wfl-table th[data-col="cost"] { width: 128px; }
+    .wfl .wfl-table th[data-col="cost"] { width: 136px; }
   }
   .wfl .wfl-table td[data-col="owner"] { white-space: nowrap; }
   /* At the micro size, as the row's other secondary facts are: it is what
@@ -319,6 +327,17 @@
    workflow and the × share the line and nothing else fits beside them. */
 .wf-inspect-head > .wf-inspect-wf { flex: 1 1 calc(100% - 28px - var(--ctl-s2)); }
 .wf-inspect-head > .wf-inspect-close { flex: none; align-self: flex-start; }
+/* ON A WORKFLOW'S PAGE THE STEP IS THAT LINE (QA-120, run 5b): an h3 of the
+   step's mark, id and state, in a row, where the workflow's name and id stood
+   in a column. Its own font, not the heading's: the id and the state keep the
+   sizes styles.css gives them. */
+.wf-inspect-head > .wf-inspect-steph {
+  flex-direction: row; align-items: center; gap: var(--ctl-s2);
+  margin: 0; font: inherit;
+}
+.wf-inspect-steph > .wf-inspect-steph-mk { display: inline-flex; }
+/* What a fact's figure is for (`FACT_HINT`, run 5b L4), after the figure. */
+.wf-inspect-facts .wf-fact-hint { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-faint); }
 /* The step's Logs link (QA-121) is drawn as its neighbours, Open agent and
    Changes, are: the head's meta size in the body face. */
 .wf-inspect-head > .wf-inspect-logs { font: var(--t-meta)/var(--lh-meta) var(--font); }
@@ -331,21 +350,37 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* THE PICKED STEP'S CARD UNDER THE GRAPH (workflows.html B). Beside it, the
-   card's same-step strip ran past its right edge and the graph lost a third
-   of its width; stacked, both have the column. */
-.wf-card .wf-split.is-stack.has-panel { display: block; }
-.wf-split.is-stack > .wf-panel {
-  position: static; max-height: none; overflow: visible;
-  margin-top: var(--ctl-s3);
+/* THE PICKED STEP'S CARD UNDER THE GRAPH BELOW 1280 (workflows.html B).
+   Beside it, the card's same-step strip ran past its right edge and the graph
+   lost a third of its width; stacked, both have the column.
+   FROM 1280 IT IS BESIDE THE GRAPH (visual QA QA-120, run 5b, 2026-10-22,
+   #1680 comment 6283740207). Under the graph it was off screen at 1440x900 on
+   arrival, and a click on a node scrolled the page down to it, taking the
+   clicked node out of view: three runs reported it. The strip is fifteen
+   marks at most now (`STRIP_MAX`) and the graph pans inside its own wrapper,
+   so from 1280 the page uses the board's split (styles.css `.wf-split.
+   has-panel`): the card is a column on the right that sticks in view. */
+@media (max-width: 1279px) {
+  .wf-card .wf-split.is-stack.has-panel { display: block; }
+  .wf-split.is-stack > .wf-panel {
+    position: static; max-height: none; overflow: visible;
+    margin-top: var(--ctl-s3);
+  }
 }
 .wf-inspect-acts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
 /* WHY A FAILED STEP FAILED, WHOLE (visual QA QA-120). The node's note is one
    ellipsed line because the layout measured one; the card is where the text
    is read in full, so it wraps -- every line of the error, breaking even a
    path with no spaces -- and is never cut. */
-.wf-inspect-cause { display: grid; gap: var(--ctl-s1); }
-.wf-inspect-cause > b { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+/* ITS LABEL IS A HEADING IN THE BODY INK, the block marked by the failure's
+   left rule as the lead above the graph is (visual QA run 2 WG-4, run 5b
+   L4): 'why it failed' was a grey micro caption, the quietest words on the
+   card for the one thing a failed step's card is opened to read. */
+.wf-inspect-cause {
+  display: grid; gap: var(--ctl-s1);
+  padding-left: var(--ctl-s2); border-left: 2px solid var(--bad);
+}
+.wf-inspect-cause > .wf-inspect-cause-h { margin: 0; font: 600 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
 .wf-inspect-cause-text {
   font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text);
   white-space: pre-wrap; overflow-wrap: anywhere;
@@ -998,3 +1033,10 @@
    would run that past a 390px column; the note shrinks to the row and wraps.
    One class deeper than that rule, which comes after this sheet. */
 .wf-zoom > .wf-caveat.wf-zoom-note { flex: 0 1 auto; min-width: 0; }
+
+/* A WORKFLOW COST STILL BEING READ (visual QA 5b:wg-dark-D2, #1680 comment
+   6343767840). The head read 'cost not reported' and the list '—' while the
+   attempt read was in flight, then '$1.21': an absence claimed by a request
+   that had not answered. Reading is upright and faint -- not the absence's
+   italic, and not `.wf-spend`'s dim ink, one step from a figure. */
+.wf-spend.is-reading { color: var(--text-faint); font-style: normal; }

@@ -137,21 +137,28 @@ describe('WG-4, WG-6: the step card says each figure in words', () => {
     const keys = [...scrub.querySelectorAll('.ctl-fact > b')].map((b) => b.textContent)
     // MUTATION: print `f.key` as the label again (FactList) and this reads
     // ['gen', 'took', 'exit', 'cost', 'tokens', 'ckpts', 'error'].
-    expect(keys).toEqual(['generation', 'took', 'exit code', 'cost', 'tokens', 'checkpoints', 'error'])
+    // 'lease generation' and 'this attempt’s cost' since QAFIX5 (run 5b L4, D2).
+    expect(keys).toEqual(['lease generation', 'took', 'exit code', 'this attempt’s cost', 'tokens', 'checkpoints', 'error'])
     const fact = (k: string) => [...scrub.querySelectorAll<HTMLElement>('.ctl-fact')].find((li) => li.querySelector('b')?.textContent === k)
     // The figures are the attempt's own; only their labels changed.
     // MUTATION: map a label onto the wrong fact and one of these is red.
-    expect(fact('generation')?.textContent).toBe('generation1')
+    // The generation's figure, then what it is for (`FACT_HINT`, QAFIX5).
+    expect(fact('lease generation')?.textContent).toMatch(/^lease generation1 · raised by every new lease/)
     expect(fact('exit code')?.textContent).toBe('exit code1')
     expect(fact('checkpoints')?.textContent).toBe('checkpoints1')
   })
 
-  it('says submitted, not sub, in the head', async () => {
+  it('says submitted, not sub, in the head -- and on the workflow’s own page leaves the times to the page head', async () => {
     const card = await openCard()
-    const times = card.querySelector<HTMLElement>('.wf-inspect-times')!
-    // MUTATION: print `· sub ${submitted}` again and this is red.
-    expect(times.textContent).toMatch(/ · submitted /)
-    expect(times.textContent).not.toMatch(/\bsub\b/)
+    // QAFIX5 (QA-120, run 5b): on the workflow's page the card is headed by
+    // the step, and the workflow's start and submit are the page head's
+    // count note (#138), not repeated in the card.
+    // MUTATION: draw `.wf-inspect-times` under the step heading again.
+    expect(card.querySelector('.wf-inspect-times')).toBeNull()
+    const note = (document.querySelector<HTMLElement>('.c-count-note')?.textContent ?? '').replace(/\s+/g, ' ')
+    expect(note).toMatch(/started/)
+    // MUTATION: print `· sub ${submitted}` again (StepInspector's times line).
+    expect(note).not.toMatch(/\bsub\b/)
   })
 
   it("words the same-step row's shape as the page head does: its steps, its stages, then the widths", async () => {
