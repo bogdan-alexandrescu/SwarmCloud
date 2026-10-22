@@ -309,10 +309,19 @@ cmd_wait() {
   trap "rm -rf '${work}'" EXIT
 
   # Which files changed. Unknown (a push with no `before`) leaves CHANGED empty.
+  # So does a push whose `before` is not in the full clone: a force-push to a
+  # swarm/** branch leaves `before` reachable from nothing GitHub serves, and
+  # no fetch depth brings it back (PR #1948, 2026-10-22). Unknown expects every
+  # path-filtered workflow, so it only ever waits for more, never less. A pull
+  # request's or queue entry's base is always fetchable, so its absence there
+  # is still a broken checkout and still fails below.
   local changed_file=""
   if [[ -n "${changed}" ]]; then
     [[ -f "${changed}" ]] || die "--changed ${changed}: no such file"
     changed_file="${changed}"
+  elif [[ "${event}" == push && -n "${base}" ]] \
+      && ! git -C "${REPO_ROOT}" cat-file -e "${base}^{commit}" 2>/dev/null; then
+    warn "the push's before ${base} is not in this clone (a force-push?); judging the changed files unknown"
   elif [[ -n "${base}" && ! "${base}" =~ ^0+$ ]]; then
     require_cmd git
     changed_file="${work}/changed.txt"

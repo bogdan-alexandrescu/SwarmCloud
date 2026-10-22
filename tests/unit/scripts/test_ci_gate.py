@@ -231,7 +231,7 @@ def test_a_trigger_shape_the_script_does_not_model_is_refused_not_guessed(tmp_pa
 )
 def test_the_changed_paths_decide_which_workflows_are_expected(tmp_path, changed, expected):
     listing = tmp_path / "changed.txt"
-    listing.write_text("".join(f"{p}\n" for p in changed))
+    listing.write_text("".join(f"{p}\n" for p in changed or []))
     proc = gate(tmp_path, "expected", "--event", "pull_request", "--changed", str(listing))
     assert proc.returncode == 0, proc.stderr
     assert set(proc.stdout.split()) == expected, proc.stdout
@@ -351,7 +351,8 @@ def run(run_id: int, workflow: str = "terraform.yml", **extra) -> dict:
             "jobs": tf_jobs() if workflow == "terraform.yml" else [{"name": "x"}], **extra}
 
 
-def wait(tmp_path: Path, world: dict, changed: list[str], *, event: str = "pull_request", **knobs: str):
+def wait(tmp_path: Path, world: dict, changed: list[str] | None, *, event: str = "pull_request",
+         base: str | None = None, **knobs: str):
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     fake = bindir / "gh"
@@ -359,7 +360,7 @@ def wait(tmp_path: Path, world: dict, changed: list[str], *, event: str = "pull_
     fake.chmod(0o755)
     (tmp_path / "world.json").write_text(json.dumps(world))
     listing = tmp_path / "changed.txt"
-    listing.write_text("".join(f"{p}\n" for p in changed))
+    listing.write_text("".join(f"{p}\n" for p in changed or []))
     env = _base_env(tmp_path)
     env.update({
         "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
@@ -373,7 +374,8 @@ def wait(tmp_path: Path, world: dict, changed: list[str], *, event: str = "pull_
         "CI_GATE_API_TRIES": "3",
         **knobs,
     })
-    proc = gate(tmp_path, "wait", "--event", event, "--sha", SHA, "--changed", str(listing), env=env)
+    where = ["--changed", str(listing)] if changed is not None else ["--base", base or ""]
+    proc = gate(tmp_path, "wait", "--event", event, "--sha", SHA, *where, env=env)
     events_file = tmp_path / "events.jsonl"
     events = [json.loads(l) for l in events_file.read_text().splitlines() if l] if events_file.exists() else []
     return proc, events
@@ -393,6 +395,29 @@ def test_every_expected_workflow_passing_with_if_skipped_jobs_passes(tmp_path):
     assert looked and all(e["query"].get("head_sha") == SHA and e["query"].get("event") == "pull_request"
                           for e in looked), looked
     assert {e["run"] for e in events if e["event"] == "jobs"} == {2}, "every run's jobs are judged"
+
+
+#: A commit id no clone has: a push's `before` after a force-push (PR #1948).
+GONE = "c3427310d7670168b23bf2b01578cccc729f10cd"
+
+
+def test_a_push_whose_before_is_gone_expects_every_workflow_rather_than_failing(tmp_path):
+    """A force-push to a swarm/** branch leaves `before` fetchable from nowhere,
+    so no fetch depth can diff it. The changed files are unknown, which expects
+    terraform.yml: its passing run passes, and its absence fails by name."""
+    proc, _ = wait(tmp_path, {"runs": [run(2, event="push")]}, None, event="push", base=GONE)
+    assert proc.returncode == 0, proc.stderr
+    assert "changed files unknown" in proc.stderr, proc.stderr
+    proc, _ = wait(tmp_path, {"runs": []}, None, event="push", base=GONE, CI_GATE_APPEAR="1")
+    assert proc.returncode != 0, proc.stderr
+    assert "terraform.yml" in _last_line(proc), proc.stderr
+
+
+def test_a_pull_requests_base_missing_from_the_clone_still_fails(tmp_path):
+    """A pull request's base is always fetchable, so missing it is a broken checkout."""
+    proc, _ = wait(tmp_path, {"runs": [run(2)]}, None, event="pull_request", base=GONE)
+    assert proc.returncode != 0, proc.stderr
+    assert "fetch-depth: 0" in proc.stderr, proc.stderr
 
 
 def test_a_workflow_the_paths_did_not_trigger_counts_as_passed(tmp_path):
