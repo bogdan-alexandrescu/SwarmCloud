@@ -7,6 +7,7 @@ import { RegisterRepository } from './RepositoriesRegister'
 import { RepositoryDetail } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
 import { RepoDot, useRepoStatuses } from './PermissionCards'
+import { QA_TARGETS_PAGE, QaTargetsScreen } from './QaTargets'
 import type { ForgeRepoStatus } from './api'
 import { useRoleGate } from './Profile'
 import { CountNote, PageHead } from './Shell'
@@ -46,6 +47,8 @@ export function RepositoriesScreen({ view, go }: { view: string | null; go: (to:
   if (page === 'register') return <RegisterRepository go={go} />
   if (page === 'tokens') return <GitTokensPage go={go} />
   if (page === 'permissions') return <PermissionsPage go={go} />
+  // QA targets (VQ-6, docs/design/visual-qa-any-app.md §6): Repositories → QA targets → Run.
+  if (page === 'qa-targets') return <QaTargetsScreen go={go} />
   if (repo !== null && repo !== '') return <RepositoryDetail key={repo} repoId={repo} tab={q.get('tab')} go={go} pr={q.get('pr')} graph={{ view: q.get('view'), q: q.get('q') }} />
   // The list's heading is written HERE, as a literal, because
   // tests/unit/control_plane/test_nav_headings_agree.py reads the tab's
@@ -186,6 +189,9 @@ function RepositoryList({
           <UrRefresh reads={[{ state, reload }]} />
           <UrNavButton to={GT_PAGE} go={go} size="sm">
             Git tokens
+          </UrNavButton>
+          <UrNavButton to={QA_TARGETS_PAGE} go={go} size="sm">
+            QA targets
           </UrNavButton>
           {roleGate === null ? (
             <UrNavButton to={REGISTER} go={go} kind="primary" size="sm">

@@ -45,7 +45,7 @@ from urllib.parse import urlsplit
 
 from swarm_common.profiles import MODEL_CLASSES, RESOURCE_CLASSES
 
-from . import checkout, compact, config, keys, progress
+from . import checkout, compact, config, keys, progress, qatargets
 from . import profiles as catalogue
 from . import workflows
 from .client import (
@@ -2240,6 +2240,69 @@ TOOLS: list[dict[str, Any]] = [
                 "scope": {"type": "string", "enum": list(keys.SCOPES), "default": "user"},
             },
             "required": ["provider"],
+        },
+    },
+    # -- QA targets (VQ-6, docs/design/visual-qa-any-app.md §2.1, §6) --------
+    #
+    # A target's test credential never passes through Claude: no schema below
+    # has a field a username or a password fits in, and `qatargets` copies
+    # every answer field by field.
+    {
+        "name": "swarm_qa_targets",
+        "description": (
+            "The QA targets your selected workspace registered: the web apps its "
+            "visual-QA runs test, each with its base URL, the repository its findings "
+            "are filed in, its host's approval (`pending` until a platform admin "
+            "approves it), whether it signs in with its own login and whether that "
+            "test credential is set (status only: never a username or password), and "
+            "`can_run` with `cannot_run_because`. Optional `repository` (owner/repo or "
+            "a repo_ id) narrows it to one. Read-only; `text` is what to show."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"repository": {"type": "string", "maxLength": 200}},
+        },
+    },
+    {
+        "name": "swarm_qa_run",
+        "description": (
+            "Start a visual-QA run of one QA target, by its id (qat_...) or name, as "
+            "your submission in the selected workspace (a member may run; only a "
+            "workspace admin registers or changes a target, in the console). The "
+            "platform renders the workflow from the registration: you choose only "
+            "`file` (`issues`, the default, files findings in the target's "
+            "repository; `none` reports only) and optionally a subset of its "
+            "`screens` ids. A pending host is refused (`qa_target_host_pending`). "
+            "Answers the `workflow_id`; follow it with swarm_workflow_status."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "target": {"type": "string", "maxLength": 100},
+                "file": {"type": "string", "enum": list(qatargets.FILES), "default": "issues"},
+                "screens": {"type": "array", "maxItems": qatargets.MAX_SCREENS,
+                            "items": {"type": "string", "maxLength": 100}},
+            },
+            "required": ["target"],
+        },
+    },
+    {
+        "name": "swarm_qa_target_credential_link",
+        "description": (
+            "A one-time console link where a workspace admin types a QA target's "
+            "test-account username and password themselves: answers ONLY `url` and "
+            "`expires_at` (fifteen minutes, one use, bound to the admin's own "
+            "console session and this target). There is deliberately no argument for "
+            "the credential: never ask for it, never accept it in chat. Give the "
+            "person the url and tell them to open it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"target": {"type": "string", "maxLength": 100}},
+            "required": ["target"],
         },
     },
     # -- cluster state -----------------------------------------------------
@@ -4745,6 +4808,23 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         return json.dumps(
             keys.key_set_link(client, args.get("provider"), args.get("scope", "user")), indent=2
         )
+
+    if name == "swarm_qa_targets":
+        view = qatargets.qa_targets(client, args.get("repository"))
+        return json.dumps({**view, "text": qatargets.targets_text(view)}, indent=2)
+
+    if name == "swarm_qa_run":
+        return json.dumps(
+            qatargets.qa_run(client, args.get("target"), screens=args.get("screens"),
+                             file=args.get("file", "issues")),
+            indent=2,
+        )
+
+    if name == "swarm_qa_target_credential_link":
+        # The url and its expiry, nothing else: `qatargets.credential_link`
+        # copies those two fields, so not even the API's `path` (which holds
+        # the link's token) reaches a transcript.
+        return json.dumps(qatargets.credential_link(client, args.get("target")), indent=2)
 
     if name == "swarm_roles":
         # One GET. A refusal (a deployment predating roles, a 403 for a tenant
