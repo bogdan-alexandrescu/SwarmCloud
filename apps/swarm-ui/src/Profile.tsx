@@ -7,6 +7,7 @@ import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { noteOwnName } from './Spine'
 import { humaniseUntil, timeAgo } from './types'
+import { accountName } from './accountName'
 import './styles/keys.css'
 import type {
   Me,
@@ -675,7 +676,7 @@ function AccountRow({ a }: { a: ProfileClaudeAccount }) {
   ]
   return (
     <li>
-      <b>{a.label ?? a.account_id ?? 'an account'}</b>
+      <b>{accountName({ label: a.label ?? '', display_name: a.display_name }) || a.account_id || 'an account'}</b>
       {' · '}
       {facts.filter((f): f is string => f !== null).join(' · ')}
     </li>

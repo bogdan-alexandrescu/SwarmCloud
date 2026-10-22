@@ -23,6 +23,7 @@ import { tableMode, usePhoneTables } from './capacityPoll'
 import { PersonWorkspaceRoles, WorkspaceRolesCard } from './WorkspaceRolesAdmin'
 import type { AdminAuditEntry, AdminHolder, LendableAccount, PeopleDoc, PersonClaudeAccount, PersonRow, WorkspaceState } from './types'
 import { timeAgo } from './types'
+import { accountName } from './accountName'
 import './styles/repositories.css'
 import './styles/onboarding.css'
 import './styles/people.css'
@@ -157,9 +158,19 @@ export function waitingRequests(rows: readonly PersonRow[]): WaitingRequest[] {
   return out.sort((a, b) => when(a) - when(b))
 }
 
-/** An account as the console says it: its id, then its label when it has another one. */
-function accountName(a: { account_id: string; label: string | null }): string {
-  return a.label !== null && a.label !== '' && a.label !== a.account_id ? `${a.account_id} (${a.label})` : a.account_id
+/**
+ * An account as the console names it (`accountName`: its Name, else its
+ * label), or its id when it has neither. The id is not the Name: a lent
+ * account without a label is served `label: null`.
+ */
+function named(a: { account_id: string; label: string | null; display_name?: string | null }): string {
+  return accountName({ label: a.label ?? '', display_name: a.display_name }) || a.account_id
+}
+
+/** An account with its id: the id, then how the console names it when that is something else. */
+function accountWithId(a: { account_id: string; label: string | null; display_name?: string | null }): string {
+  const name = named(a)
+  return name !== a.account_id ? `${a.account_id} (${name})` : a.account_id
 }
 
 /**
@@ -170,7 +181,7 @@ function accountName(a: { account_id: string; label: string | null }): string {
 function claudeText(c: PersonClaudeAccount): ReactNode {
   if (c.source === 'own') return `own (${c.own})`
   if (c.source === 'lent' && c.lent_accounts !== undefined && c.lent_accounts.length > 0) {
-    return c.lent_accounts.map((a) => `${accountName(a)}, lent by ${a.owner_name ?? a.owner_tenant}`).join('; ')
+    return c.lent_accounts.map((a) => `${accountWithId(a)}, lent by ${a.owner_name ?? a.owner_tenant}`).join('; ')
   }
   if (c.source === 'lent') return c.lent_by.length > 0 ? `lent by ${c.lent_by.join(', ')}` : `lent (${c.lent})`
   if (c.source === 'provider_key') return 'provider key'
@@ -546,7 +557,7 @@ function LoanPicker({
     )
     reload()
   }
-  const name = chosen === null ? '' : `${chosen.label ?? chosen.account_id} (${chosen.owner_tenant})`
+  const name = chosen === null ? '' : `${named(chosen)} (${chosen.owner_tenant})`
   const idle = chosen !== null && chosen.state !== null && NOT_ASSIGNING.has(chosen.state)
   const verb = lend ? 'Lend' : 'Reclaim'
   const one = !lend && accounts.length === 1 ? accounts[0]! : null
@@ -554,7 +565,7 @@ function LoanPicker({
     <div className="pp-loan">
       {one !== null ? (
         <span className="pp-loan-one" data-testid="pp-loan-one">
-          Lent to them: <strong>{accountName(one)}</strong> · {one.owner_tenant}
+          Lent to them: <strong>{accountWithId(one)}</strong> · {one.owner_tenant}
           {one.state !== null ? ` · ${one.state}` : ''}
         </span>
       ) : (
@@ -569,7 +580,7 @@ function LoanPicker({
             <option value="">choose…</option>
             {accounts.map((a) => (
               <option key={a.account_id} value={a.account_id}>
-                {a.label ?? a.account_id} · {a.owner_tenant}
+                {named(a)} · {a.owner_tenant}
                 {a.state !== null ? ` · ${a.state}` : ''}
                 {a.state !== null && NOT_ASSIGNING.has(a.state) ? ' (starts no new agent)' : ''}
               </option>

@@ -5845,6 +5845,8 @@ export interface PersonLentAccount {
   /** The owner tenant's display name, or its id when it has none. */
   owner_name: string | null
   state: string | null
+  /** The account's Name (#1913), null or absent when it has none; display text only, the id stays the account. */
+  display_name?: string | null
 }
 
 /** One row of `GET /v1/admin/people` (`people._row`). */
@@ -5889,6 +5891,8 @@ export interface LendableAccount {
   label: string | null
   state: string | null
   lend_to: string[]
+  /** The account's Name (#1913), null or absent when it has none; display text only, the id stays the account. */
+  display_name?: string | null
 }
 
 /** `GET /v1/admin/people`. `lendable_accounts` is null, with `lendable_error`, when the broker did not answer. */
@@ -6448,6 +6452,8 @@ export interface ProfileClaudeAccount {
   /** How many workspaces you lend it to; null on a borrowed account. */
   lent_to_count: number | null
   stale: boolean
+  /** The account's Name (#1913), null or absent when it has none; display text only, the id stays the account. */
+  display_name?: string | null
 }
 
 export interface ProfileClaudeAccounts {

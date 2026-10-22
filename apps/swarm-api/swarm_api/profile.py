@@ -350,6 +350,8 @@ def claude_accounts(pool: AccountPool, auth: AuthContext) -> dict[str, Any]:
         accounts.append({
             "account_id": _text(account.get("account_id")),
             "label": _text(account.get("label")),
+            # The account's Name (#1913), None when it has none: never the label.
+            "display_name": _text(account.get("display_name")),
             "relation": relation,
             "state": _text(account.get("state")),
             "windows": _windows(account.get("windows")),
