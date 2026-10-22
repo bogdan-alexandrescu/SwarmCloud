@@ -605,10 +605,13 @@ function NotificationsCard({ p, stored, disabled, save }: { p: Profile; stored: 
   return (
     <Card title="Notifications">
       <form className="pk-form" aria-label="Change your notifications" onSubmit={(e) => submit(e)}>
-        <fieldset disabled={disabled}>
+        {/* One topic per row, box first (visual QA 5b:QA-011, #1680): the
+            labels were bare inline text, so each box sat straight after the
+            previous topic's words. The rows are MCP servers' option rows. */}
+        <fieldset className="jb-options" disabled={disabled}>
           <legend>What reaches your bell</legend>
           {topics.map((t) => (
-            <label key={t} className="pf-topic">
+            <label key={t} className="jb-option pf-topic">
               <input
                 type="checkbox"
                 checked={!muted.includes(t)}
@@ -617,8 +620,8 @@ function NotificationsCard({ p, stored, disabled, save }: { p: Profile; stored: 
                   setSaved(false)
                   setMuted((was) => (e.target.checked ? was.filter((x) => x !== t) : [...was, t]))
                 }}
-              />{' '}
-              {TOPIC_WORDS[t]}
+              />
+              <span className="jb-text">{TOPIC_WORDS[t]}</span>
             </label>
           ))}
           <p className="ur-small">

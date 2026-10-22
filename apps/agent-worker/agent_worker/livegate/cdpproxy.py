@@ -60,6 +60,19 @@ page is `secure`, served over https, and not at an IP literal; and control
 ENDS if the state leaves `secure` while held. An unknown state is not secure:
 the check fails closed.
 
+LOOPBACK IS SECURE (GATE-LOOPBACK, part of #1333). BGD decided on 2026-10-22
+that a page whose origin is exactly loopback -- scheme `http`, host
+`127.0.0.1`, `::1` or `localhost`, any port, no userinfo -- counts as secure,
+as Chromium counts it a secure context; the live-browser acceptance fixture
+is served there. Chromium rates such a page `neutral`, never `secure`, so for
+it the state is not consulted. Nothing else is loosened: every other http
+host (private ranges, 0.0.0.0, other 127/8 addresses, `*.localhost`,
+IPv4-mapped IPv6), userinfo, and every other scheme stay refused, and https
+is judged as above. `_secure_origin` is the one rule every
+`insecure_connection` site applies. A state that is not `secure` while held
+on a loopback page reads the URL again, as on about:blank below, so a page
+that has left loopback for a broken certificate still ends control.
+
 ABOUT:BLANK HAS NO SCHEME TO JUDGE (lane LB-R4). A page that has not made its
 first navigation is `about:blank`: no origin, nothing from any network, and a
 security state Chromium never reports as `secure`. MEASURED 2026-10-12: a
@@ -574,6 +587,9 @@ class CdpProxy:
         # Control was granted on about:blank and the page has not navigated
         # since: a state that is not `secure` is checked against the URL.
         self._granted_blank = False
+        # The controlled page's top-frame URL as last granted or committed:
+        # what a state that is not `secure` is judged against (`_secure_origin`).
+        self._controlled_url = ""
         self._checks: set[asyncio.Task[None]] = set()
         #: Chromium's pipe closed (`chromium_closed`): nothing written is answered.
         self._gone = False
@@ -1071,8 +1087,10 @@ class CdpProxy:
             self._security[target] = state if isinstance(state, str) else "unknown"
             self._security_seen.setdefault(target, asyncio.Event()).set()
             if self._controlled == target and self._security[target] != "secure":
-                if self._granted_blank:
-                    self._check_blank(target)
+                if self._granted_blank or _secure_origin(self._controlled_url, self._security[target]):
+                    # about:blank, or loopback, which is never rated `secure`:
+                    # the page may have navigated on, so read its URL again.
+                    self._check_page(target, blank=self._granted_blank)
                 else:
                     self._end_control("insecure_connection")
         elif method == "Page.frameNavigated" and session in self._gate_sessions:
@@ -1081,10 +1099,11 @@ class CdpProxy:
             if self._controlled != target or not isinstance(frame, dict) or frame.get("parentId"):
                 return
             url = str(frame.get("url", ""))
+            self._controlled_url = url
             if _is_blank(url):
                 return
             self._granted_blank = False
-            if not _https_host(url):
+            if not _secure_origin(url, None):
                 self._end_control("insecure_connection")
             elif self._on_qa_host(url):
                 self._end_control("qa_identity_host")
@@ -1243,6 +1262,7 @@ class CdpProxy:
             self._controlled = target_id
             self._controlled_at = self._wall()
             self._granted_blank = True
+            self._controlled_url = "about:blank"
             return ControlDecision(True)
         if target_id not in self._security:
             seen = self._security_seen.setdefault(target_id, asyncio.Event())
@@ -1250,10 +1270,8 @@ class CdpProxy:
                 await asyncio.wait_for(seen.wait(), self._security_wait)
             except asyncio.TimeoutError:
                 return self._refuse("security_state_unknown")
-        if self._security.get(target_id) != "secure":
-            return self._refuse("insecure_connection")
         url = await self._url(target_id)
-        if not _https_host(url):
+        if not _secure_origin(url, self._security.get(target_id, "unknown")):
             return self._refuse("insecure_connection")
         if self._on_qa_host(url):
             return self._refuse("qa_identity_host")
@@ -1262,6 +1280,7 @@ class CdpProxy:
         self._controlled = target_id
         self._controlled_at = self._wall()
         self._granted_blank = False
+        self._controlled_url = url
         return ControlDecision(True)
 
     def _on_qa_host(self, url: str) -> bool:
@@ -1277,25 +1296,28 @@ class CdpProxy:
         info = (await self.call("Target.getTargetInfo", {"targetId": target_id})).get("targetInfo") or {}
         return str(info.get("url", ""))
 
-    def _check_blank(self, target_id: str) -> None:
-        """A state that is not `secure` on a page granted blank: read its URL
-        again, off the pipe reader (this runs inside `on_chromium_message`)."""
-        task = asyncio.get_running_loop().create_task(self._recheck_blank(target_id))
+    def _check_page(self, target_id: str, *, blank: bool) -> None:
+        """A state that is not `secure` on a page granted blank, or held at
+        loopback: read its URL again, off the pipe reader (this runs inside
+        `on_chromium_message`)."""
+        task = asyncio.get_running_loop().create_task(self._recheck_page(target_id, blank))
         self._checks.add(task)
         task.add_done_callback(self._checks.discard)
 
-    async def _recheck_blank(self, target_id: str) -> None:
+    async def _recheck_page(self, target_id: str, blank: bool) -> None:
         try:
             url = await self._url(target_id)
         except Exception:  # noqa: BLE001 -- unreadable is not blank: fail closed
             url = ""
-        if self._controlled != target_id or not self._granted_blank:
+        if self._controlled != target_id or (blank and not self._granted_blank):
             return
-        if _is_blank(url):
+        if blank and _is_blank(url):
             return
-        if _https_host(url) and self._security.get(target_id) == "secure":
-            # Navigated on, and the secure state arrived before this read.
+        if _secure_origin(url, self._security.get(target_id, "unknown")):
+            # Still at loopback, or navigated on and the secure state arrived
+            # before this read.
             self._granted_blank = False
+            self._controlled_url = url
             return
         self._end_control("insecure_connection")
 
@@ -1453,6 +1475,35 @@ def _https_host(url: str) -> bool:
     """https, at a host name rather than an IP literal (section 5.4.4)."""
     parts = urlsplit(url)
     return parts.scheme == "https" and bool(parts.hostname) and not _is_address(parts.hostname or "")
+
+
+#: Exactly the loopback hosts BGD decided on 2026-10-22, as `urlsplit` gives
+#: `.hostname` (lower-cased, brackets stripped). Not 127/8, not `*.localhost`.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _secure_origin(url: str, state: str | None) -> bool:
+    """The https rule, the one every `insecure_connection` site applies.
+
+    Secure is either a loopback origin (`_loopback_origin`), whatever
+    Chromium's `state` -- it rates loopback `neutral`, never `secure` -- or
+    https at a host name whose `state` is `secure`. `state` None judges the URL
+    alone: at a commit, before Chromium rates the new document, whose own
+    state event follows and is judged in turn.
+    """
+    if _loopback_origin(url):
+        return True
+    return _https_host(url) and state in (None, "secure")
+
+
+def _loopback_origin(url: str) -> bool:
+    """Exactly http at 127.0.0.1, ::1 or localhost, any port, no userinfo."""
+    try:
+        parts = urlsplit(url)
+        parts.port  # noqa: B018 -- a malformed port raises: fail closed
+    except ValueError:
+        return False
+    return parts.scheme == "http" and "@" not in parts.netloc and parts.hostname in _LOOPBACK_HOSTS
 
 
 def _is_address(host: str) -> bool:

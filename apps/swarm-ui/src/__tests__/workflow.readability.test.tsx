@@ -287,7 +287,9 @@ describe('#110: the workflow step inspector opens next to the picked step', () =
     expect(main.querySelector('.wf-inspect'), 'the inspector is still under the table').toBeNull()
     const inspect = panel.querySelector<HTMLElement>('.wf-inspect')!
     expect(inspect.getAttribute('aria-label')).toBe('Step fix of wf_one')
-    expect(inspect.querySelector('.wf-inspect-wf')!.textContent).toContain('wf_one')
+    // On the workflow's own page the card is headed by its step (QAFIX5,
+    // QA-120): the page is titled by the workflow, which the label names.
+    expect(inspect.querySelector('.wf-inspect-steph .wf-inspect-id')!.textContent).toBe('fix')
     // And the shipped sheet docks it at 1100 and up.
     expect(at(split, 'display', 1440)).toBe('grid')
     expect(at(split, 'display', 1100)).toBe('grid')

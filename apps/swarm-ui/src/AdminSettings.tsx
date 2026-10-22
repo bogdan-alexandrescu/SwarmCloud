@@ -2041,7 +2041,10 @@ export function ModelPricesCard({ admin }: { admin: boolean | null }) {
     const msg = said(`${m}/${field}`)
     return (
       <>
-        <input id={`${id}-${m}-${field}`} type="text" inputMode={field === 'as_of' ? 'numeric' : 'decimal'} className="mono"
+        {/* Sized to its figure (`.adm-price-in`, admin.css), or each field is
+            the browser's 20 characters and the table outgrows its card. */}
+        <input id={`${id}-${m}-${field}`} type="text" inputMode={field === 'as_of' ? 'numeric' : 'decimal'}
+          className={field === 'as_of' ? 'mono adm-price-in is-day' : 'mono adm-price-in'}
           aria-label={`${label}, ${m}`} value={typed[m]?.[field] ?? ''} disabled={busy}
           placeholder={field === 'as_of' ? 'YYYY-MM-DD' : undefined}
           aria-invalid={msg !== undefined || undefined}

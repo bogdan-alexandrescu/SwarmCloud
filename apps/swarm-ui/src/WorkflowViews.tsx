@@ -1144,9 +1144,24 @@ export type ScrubFocus = 'newer' | 'older' | null
  * verdict beside `why it failed` (WG-4). A key with no entry is its own word.
  */
 const FACT_LABEL: Readonly<Record<string, string>> = {
-  gen: 'generation',
+  // THE LEASE'S, AND THE ATTEMPT'S (visual QA run 5b, L4 and D2): a bare
+  // `generation 3` said nothing of what it numbers, and `cost $0.253` beside
+  // the head's workflow total read as a second figure for the same thing.
+  gen: 'lease generation',
   exit: 'exit code',
   ckpts: 'checkpoints',
+  cost: 'this attempt’s cost',
+}
+
+/**
+ * WHAT A FACT'S FIGURE IS FOR, where its label cannot say it (visual QA run
+ * 5b, L4): printed after the figure, in the faint meta register. The fencing
+ * generation is the one: a number that only means something to a reader told
+ * that a stale worker with an older one exits without running (CONTRACT
+ * invariant 5).
+ */
+const FACT_HINT: Readonly<Record<string, string>> = {
+  gen: 'raised by every new lease; a worker holding an older one exits without running',
 }
 
 /**
@@ -1173,6 +1188,7 @@ function FactList({ facts }: { facts: readonly Fact[] }) {
           <li key={f.key} className="ctl-fact" title={f.cell.note || undefined}>
             <b>{FACT_LABEL[f.key] ?? f.key}</b>
             {f.cell.text}
+            {FACT_HINT[f.key] !== undefined && <span className="wf-fact-hint"> · {FACT_HINT[f.key]}</span>}
             {/* THE SAME NOTE THE TABLE PRINTS for the same figure (WF-5), so
                 the inspector and the table word one source one way. */}
             {f.from === 'result' && (
@@ -1282,6 +1298,7 @@ export function StepInspector({
   load = loadAttempts,
   children = null,
   changes = null,
+  stepHeading = false,
 }: {
   workflowId: string
   /**
@@ -1332,6 +1349,14 @@ export function StepInspector({
    * reason as the title, where nobody counted (`changesCount`). Null: no link.
    */
   changes?: { href: string; count: number | string | null; say: string | null } | null
+  /**
+   * THE STEP IS THE CARD'S HEADING (visual QA QA-120, run 5b, #1680 comment
+   * 6283740207). On a workflow's own page the page is already titled by the
+   * workflow, and the card led with that title again, the step a small line
+   * under it. True there: the head's first line is the step, as a heading,
+   * and the workflow's name and times (the page head's) are not repeated.
+   */
+  stepHeading?: boolean
 }) {
   const taskId = row.taskId
   const [read, setRead] = useState<AttemptsRead>({ kind: 'reading' })
@@ -1407,15 +1432,33 @@ export function StepInspector({
     <section className="wf-inspect" aria-label={`Step ${row.step.step_id} of ${workflowId}`}>
       <div className="wf-inspect-head">
         {/* WHICH WORKFLOW, BY NAME (#330): the label the row leads with, and
-            the id one line down; the id alone when the spec gave no label. */}
-        <span className={`wf-inspect-wf${workflowLabel !== null ? ' has-label' : ''}`}>
-          {workflowLabel !== null && (
-            <span className="wf-inspect-label" title={workflowLabel}>
-              {workflowLabel}
+            the id one line down; the id alone when the spec gave no label.
+            ON THE WORKFLOW'S OWN PAGE THE STEP LEADS INSTEAD (QA-120): the
+            page is titled by the workflow, so the card's heading is the step
+            -- its mark, its id and its state -- on the line the × ends. */}
+        {stepHeading ? (
+          <h3 className="wf-inspect-wf wf-inspect-steph">
+            {/* Hidden from the heading's name, which the state word after
+                the id already ends: 'checkpoints failed', not 'failed
+                checkpoints failed'. */}
+            <span className="wf-inspect-steph-mk" aria-hidden>
+              <WfStepMark look={row.look} />
             </span>
-          )}
-          <Id title={workflowId}>{workflowId}</Id>
-        </span>
+            <span className="wf-inspect-id">{row.step.step_id}</span>
+            <span className="wf-inspect-state" title={row.look.title}>
+              {row.look.word}
+            </span>
+          </h3>
+        ) : (
+          <span className={`wf-inspect-wf${workflowLabel !== null ? ' has-label' : ''}`}>
+            {workflowLabel !== null && (
+              <span className="wf-inspect-label" title={workflowLabel}>
+                {workflowLabel}
+              </span>
+            )}
+            <Id title={workflowId}>{workflowId}</Id>
+          </span>
+        )}
         {/* THE CLOSE BUTTON ENDS THE HEAD'S FIRST LINE (V100, #1038). It was
             the head's last item, after Open agent and Changes, so in a panel
             or a narrow pane the row wrapped and the × sat alone on a line of
@@ -1428,16 +1471,20 @@ export function StepInspector({
             its name: derived from the earliest step, as the row prints it.
             `submitted`, not `sub` (visual QA run 2, WG-6): the short form
             said nothing a reader could expand. */}
-        {workflowStarted !== null && (
+        {!stepHeading && workflowStarted !== null && (
           <span className="wf-inspect-times" title={workflowStarted.title}>
             started {workflowStarted.text} · submitted {workflowStarted.submitted}
           </span>
         )}
-        <WfStepMark look={row.look} />
-        <span className="wf-inspect-id">{row.step.step_id}</span>
-        <span className="wf-inspect-state" title={row.look.title}>
-          {row.look.word}
-        </span>
+        {!stepHeading && (
+          <>
+            <WfStepMark look={row.look} />
+            <span className="wf-inspect-id">{row.step.step_id}</span>
+            <span className="wf-inspect-state" title={row.look.title}>
+              {row.look.word}
+            </span>
+          </>
+        )}
         {/* `.ctl-link`: ink plus an underline, the accent only on hover and
             focus. Unclassed, this anchor fell back to the browser's own blue --
             and to visited purple once the run had been opened.
@@ -1482,15 +1529,24 @@ export function StepInspector({
           </a>
         )}
         {changes !== null && (
-          <a className="ctl-link wf-inspect-changes" href={changes.href} title={changes.say ?? undefined}>
+          <a
+            className="ctl-link wf-inspect-changes"
+            href={changes.href}
+            title={changes.say ?? 'This workflow’s Changes tab, showing this step’s column only. Its agent’s own Changes tab holds the whole patch.'}
+          >
             {/* UNCOUNTED, THE LINK SAYS NO COUNT AT ALL (V111, #1038). It
                 printed `Changes · — ›`, a dash where a figure goes, which read
                 as a broken number; and a 0 would claim a count nobody took.
                 The reason nothing was counted is the link's title. */}
             {/* THE LINK NAMES ITS SCOPE (visual QA run 2, WG-7, 2026-10-20): it
                 read `Changes ›`, the page's own tab's name, for that tab
-                filtered to this one step. */}
-            {changes.count === null ? 'This step’s changes ›' : `This step’s changes · ${changes.count} ${changes.count === 1 ? 'file' : 'files'} ›`}
+                filtered to this one step. AND WHERE IT OPENS (run 5b, L5):
+                beside the Changes page's `Agent’s changes ›`, which is the
+                agent's own patch, 'This step’s changes' did not say it is the
+                workflow's tab, one column of it. */}
+            {changes.count === null
+              ? 'This step’s changes in this workflow ›'
+              : `This step’s changes in this workflow · ${changes.count} ${changes.count === 1 ? 'file' : 'files'} ›`}
           </a>
         )}
       </div>
@@ -1584,7 +1640,10 @@ export function StepInspector({
         data-scrub="workflow"
         onKeyDown={scrubKeys(hasNewer ? () => onSibling(-1) : null, hasOlder ? () => onSibling(1) : null)}
       >
-        <span className="ctl-eyebrow wf-scrub-key">same step</span>
+        {/* WHAT IT COMPARES, IN WORDS (visual QA run 2 WG-6, run 5b L4):
+            `same step` over `workflow 1 of 1` did not say it walks this step
+            across the other workflows of this shape. */}
+        <span className="ctl-eyebrow wf-scrub-key">same step in other workflows</span>
         {/* ◀ POSITION ▶ ARE ONE UNIT THAT NEVER WRAPS (browser QA D30,
             2026-10-04): the shape sat between the position and ▶, and a long
             shape pushed the arrow onto a line of its own. The shape follows
@@ -1596,8 +1655,10 @@ export function StepInspector({
             glyph="◀"
             onPress={hasNewer ? () => onSibling(-1) : null}
           />
+          {/* A LIST OF ONE SAYS SO: `workflow 1 of 1` was a position with
+              nowhere to go, the arrows both at their ends. */}
           <span className="wf-scrub-pos">
-            workflow {siblingIndex + 1} of {siblings.length}
+            {siblings.length <= 1 ? 'no other workflow of this shape' : `workflow ${siblingIndex + 1} of ${siblings.length}`}
           </span>
           <ScrubButton
             buttonRef={olderRef}

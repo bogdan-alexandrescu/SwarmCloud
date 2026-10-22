@@ -53,7 +53,6 @@ import pytest
 import yaml
 
 from .test_build_images_pr_check import _env, _sandbox
-from .test_build_mirror import FAKE_CURL, _fake_manifest
 from .test_ci_gate import judge
 
 REPO = Path(__file__).resolve().parents[3]
@@ -107,16 +106,43 @@ sys.exit(2)
 '''
 
 
+# curl for the tool mirror's upstream staging (lib/build-mirror.sh): a unit
+# test reads no network. On 2026-10-22 a pull request touching only the UI
+# went red here on a real github.com download of trivy (connection reset).
+# Each object's body is fixed by its URL, and _local pins the sandbox's
+# manifest to those bodies, so the download, the sha256 check and the move
+# into build/tool-mirror all still run.
+FAKE_CURL = r'''#!{python}
+import os, sys
+args = sys.argv[1:]
+url = [a for a in args if a.startswith("https://")][-1]
+out = args[args.index("-o") + 1]
+os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+with open(out, "wb") as fh:
+    fh.write(("fake " + url + "\n").encode())
+'''
+
+
+def _pin_fake_tool_mirror(root: Path) -> None:
+    manifest = root / "images" / "agent-runtime-base" / "tool-mirror.sha256"
+    rows = []
+    for line in manifest.read_text().splitlines():
+        if not line.strip() or line.startswith("#"):
+            rows.append(line)
+            continue
+        obj = line.split()[1]
+        body = ("fake https://" + obj + "\n").encode()
+        rows.append(f"{hashlib.sha256(body).hexdigest()}  {obj}")
+    manifest.write_text("\n".join(rows) + "\n")
+
+
 def _digest(target: str) -> str:
     return "sha256:" + hashlib.sha256(target.encode()).hexdigest()
 
 
 def _local(tmp_path: Path, *args: str, fail: str = "", root: Path | None = None):
     root = root or _sandbox(tmp_path)
-    # The tool mirror is staged from upstream before a base is built: a fake
-    # curl serves each object, and the sandbox's manifest pins what it serves,
-    # so no unit test downloads from GitHub (a reset connection failed one).
-    _fake_manifest(root)
+    _pin_fake_tool_mirror(root)
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     for name, body in (("docker", FAKE_DOCKER), ("gcloud", FAKE_GCLOUD), ("curl", FAKE_CURL)):
@@ -128,7 +154,6 @@ def _local(tmp_path: Path, *args: str, fail: str = "", root: Path | None = None)
         tmp_path,
         PATH=f"{bindir}{os.pathsep}{os.environ['PATH']}",
         FAKE_EVENTS=str(events_file),
-        FAKE_CURL_LOG=str(tmp_path / "curl.jsonl"),
         FAKE_BUILDER=str(tmp_path / "builder-exists"),
         FAKE_FAIL=fail,
         SWARM_PYTHON=sys.executable,

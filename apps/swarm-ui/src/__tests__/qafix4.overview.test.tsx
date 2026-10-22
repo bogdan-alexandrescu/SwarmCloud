@@ -158,7 +158,9 @@ describe('N11: the failed-agents card links each workflow it names', () => {
     const p = failuresProblem(FAILED)
     const { container } = render(<CheckCard problem={p} />)
     for (const id of [WF_A, WF_B]) {
-      const links = [...container.querySelectorAll(`a[href="/workflows/${id}"]`)]
+      // The id in the ids line, and (5b:wg-dark-D1, qafix5.overview-timeline)
+      // a `Workflow <id> →` link beside the card's own.
+      const links = [...container.querySelectorAll(`.ov-att-ids a[href="/workflows/${id}"]`)]
       // MUTATION: draw the ids line as plain text again.
       expect(links, id).toHaveLength(1)
       expect(text(links[0])).toBe(id)
@@ -172,7 +174,8 @@ describe('N11: the failed-agents card links each workflow it names', () => {
     // MUTATION: change the main link's words.
     expect(text(main[0])).toContain('Agents · FAILED')
     // MUTATION: move the card's accessible name off its main link.
-    expect(main[0]!.getAttribute('aria-label')).toBe(`${p.headline}. ${p.detail}`)
+    // Its destination first (5b:wg-dark-D1), then the card's words.
+    expect(main[0]!.getAttribute('aria-label')).toBe(`Agents · FAILED: ${p.headline}. ${p.detail}`)
     // The rest of the card still opens the list: the main link covers it.
     // MUTATION: drop the stretched cover from the main link.
     expect(painted(main[0]!, 'position', WIDE)).not.toBe('relative')

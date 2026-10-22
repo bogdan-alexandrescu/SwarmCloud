@@ -21,6 +21,12 @@
    scrolls on its own both ways; the open file's hunks by step under it, the
    viewer at a height of its own, since the page, not a pane, scrolls here. */
 .chg-note { margin: 0 0 10px; color: var(--text-dim); max-width: 72ch; }
+/* WHAT THE PAGE SHOWS (visual QA run 2 WG-7, run 5b L5): one line under the
+   bar, in the note's register, saying this is every step's files (or one
+   step's) and that a step's whole patch is its agent's own Changes tab. */
+.chg-mx > .chg-scope { margin: 0 0 var(--ctl-s2); color: var(--text-dim); font: var(--t-meta)/var(--lh-meta) var(--font); max-width: 72ch; }
+/* How many steps' file lists are in hand, beside '0+ files' (run 5b L6). */
+.chg-sum > .chg-known { color: var(--text-faint); }
 .chg-mx { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .chg-mx-bar { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
 .chg-mx-bar > .chg-sum { margin: 0 0 0 auto; }

@@ -295,7 +295,9 @@ describe('the matrix: which step changed which file', () => {
     await waitFor(() => expect([...table().querySelectorAll('tbody tr')].map((r) => r.getAttribute('data-file'))).toEqual(['src/app/one.ts']))
     await waitFor(() => expect(sources()).toEqual(['fix']))
     expect(within(chips).getByRole('button', { name: 'fix' }).getAttribute('aria-pressed')).toBe('true')
-    expect(head('implement').classList.contains('is-dim')).toBe(true)
+    // The other steps' columns are not drawn (QAFIX5 L6: dimmed, they left
+    // every column on screen and the selection read as doing nothing).
+    await waitFor(() => expect(table().querySelector('th[data-step="implement"]')).toBeNull())
   })
 
   it('says a filtered step that changed nothing changed no files: a measured zero', async () => {
@@ -482,9 +484,11 @@ describe("WG-7: a step column's link names its scope, and a filtered page carrie
     }
   })
 
-  it('carries the link only on the step the page is filtered to, not once per dimmed column', async () => {
+  it('carries the link only on the step the page is filtered to, not once per other column', async () => {
     render(<Tab steps={THREE} tasks={THREE_TASKS} start={{ step: 'fix', file: null }} />)
-    await waitFor(() => expect(head('implement').classList.contains('is-dim')).toBe(true))
+    // The other columns are not drawn at all since QAFIX5 (L6).
+    await waitFor(() => expect(head('fix')).toBeTruthy())
+    expect(table().querySelector('th[data-step="implement"]')).toBeNull()
     // MUTATION: draw the link on every column whatever the filter and the
     // filtered page repeats it three times, two of them on dimmed steps.
     expect(within(table()).getAllByRole('link', { name: 'Agent’s changes ›' })).toHaveLength(1)

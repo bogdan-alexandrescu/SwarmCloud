@@ -203,7 +203,8 @@ describe('D39: the phone frame', () => {
     // D39 hid the route count and the p95 on a phone to hold one line; the
     // visual QA run (wf_9e9bf74834634db7bcc3, 2026-10-20) found the strip
     // still wrapping at 390 px, with a `·` hanging at the end of line 1 and
-    // the two facts gone. The facts are spaced, not dotted, on a phone.
+    // the two facts gone. On a phone each fact carries its own mark, never a
+    // trailing text ` · `.
     const { Dock } = await import('../Dock')
     const { noteFixtureProbe, route } = await import('../fetch')
     noteFixtureProbe(route('/v1/capacity'), 120, true)
@@ -227,10 +228,11 @@ describe('D39: the phone frame', () => {
     // MUTATION: drop the phone flex-wrap -- the facts would run together with no separator.
     expect(painted(strip, 'display', PHONE)).toBe('flex')
     expect(painted(strip, 'flex-wrap', PHONE)).toBe('wrap')
-    // The 10px between facts is each fact's 5px either side of its hairline
-    // now (visual QA run 3, work-a-008; shell.qafix3.test.tsx holds the rule).
+    // The space between facts is each fact's own padding around its dot now
+    // (visual QA run 3, work-a-008, and run 5b; qafix5.shell-admin.test.tsx
+    // holds the rule).
     expect(painted(strip, 'column-gap', PHONE)).toBe('0')
-    expect(painted(facts[1]!, 'padding', PHONE)).toBe('0 5px')
+    expect(painted(facts[1]!, 'padding', PHONE)).toBe('0 3ch 0 2ch')
     // Wider, the line is as it was: dotted, on one line.
     expect(painted(seps[0]!, 'display', WIDE)).not.toBe('none')
     expect(painted(strip, 'display', WIDE)).not.toBe('flex')

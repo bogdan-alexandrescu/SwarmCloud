@@ -1106,6 +1106,183 @@ def test_a_subframe_navigation_does_not_end_control_on_about_blank(tmp_path):
     run(body)
 
 
+# GATE-LOOPBACK (part of #1333). BGD decided on 2026-10-22 that the gate treats
+# a loopback origin as secure, as Chromium does for a secure context: the
+# live-browser acceptance fixture is served at http://127.0.0.1, and the https
+# rule refused control of it. Exactly http at 127.0.0.1, ::1 or localhost, on
+# any port, with no userinfo; nothing else is loosened. Chromium rates such a
+# page `neutral`, never `secure`, so the tests report `neutral` as it would.
+
+LOOPBACK_ALLOWED = [
+    # MUTATION: drop "127.0.0.1" from the loopback hosts.
+    "http://127.0.0.1:8123/",
+    # MUTATION: drop "localhost" from the loopback hosts.
+    "http://localhost/",
+    # MUTATION: compare the bracketed netloc instead of the parsed hostname, so "[::1]" misses.
+    "http://[::1]:9000/x",
+]
+
+
+def _loopback_refused() -> list[Any]:
+    user = "u" + secrets.token_hex(3)
+    word = "p" + secrets.token_hex(3)
+    return [
+        # MUTATION: allow any private (RFC 1918) address, e.g. `ipaddress.ip_address(host).is_private`.
+        pytest.param("http://10.0.0.5:8765/", id="private-10"),
+        # MUTATION: allow any private (RFC 1918) address.
+        pytest.param("http://192.168.1.10/", id="private-192.168"),
+        # MUTATION: allow any private (RFC 1918) address.
+        pytest.param("http://172.16.0.1/", id="private-172.16"),
+        # MUTATION: allow any private (RFC 1918) address.
+        pytest.param("http://172.31.255.254/", id="private-172.31"),
+        # MUTATION: add "0.0.0.0" to the loopback hosts (or allow `ip.is_unspecified`).
+        pytest.param("http://0.0.0.0:8765/", id="unspecified"),
+        # MUTATION: allow `host.endswith(".localhost")` subdomains.
+        pytest.param("http://app.localhost/", id="localhost-subdomain"),
+        # MUTATION: drop the exact-host check and allow any 127/8 (`ip.is_loopback`).
+        pytest.param("http://127.0.0.2/", id="127.0.0.2"),
+        # MUTATION: drop the exact-host check and allow any 127/8 (`host.startswith("127.")`).
+        pytest.param("http://127.1.2.3:8765/", id="127/8"),
+        # MUTATION: unwrap IPv4-mapped IPv6 (`ip.ipv4_mapped`) before comparing hosts.
+        pytest.param("http://[::ffff:127.0.0.1]/", id="ipv4-mapped"),
+        # MUTATION: match the host with `startswith("localhost")` instead of equality.
+        pytest.param("http://localhost.example.com/", id="localhost-prefix-domain"),
+        # MUTATION: match the host with `startswith("localhost")` instead of equality.
+        pytest.param("http://localhostx:8765/", id="localhost-prefix"),
+        # MUTATION: drop the userinfo check.
+        pytest.param(f"http://{user}@127.0.0.1:8765/", id="userinfo-user"),
+        # MUTATION: drop the userinfo check.
+        pytest.param(f"http://{user}:{word}@localhost/", id="userinfo-user-password"),
+        # MUTATION: test userinfo with `parts.username` truthiness, which an empty "@" passes.
+        pytest.param("http://@127.0.0.1/", id="userinfo-empty"),
+        # MUTATION: allow any scheme at a loopback host (drop `scheme == "http"`).
+        pytest.param("file://localhost/etc/hosts", id="file-localhost"),
+        # MUTATION: treat a URL with no host as local (`not parts.hostname` passes).
+        pytest.param("file:///tmp/fixture.html", id="file"),
+        # MUTATION: treat a URL with no host as local.
+        pytest.param("data:text/html,hello", id="data"),
+        # MUTATION: allow any scheme at a loopback host.
+        pytest.param("ftp://127.0.0.1/", id="ftp"),
+        # MUTATION: allow ws alongside http at a loopback host.
+        pytest.param("ws://127.0.0.1:9000/", id="ws"),
+        # MUTATION: exempt https at a loopback address from the IP-literal rule (https is unchanged).
+        pytest.param("https://127.0.0.1:8443/", id="https-loopback-literal"),
+    ]
+
+
+async def _held_page(w: World, url: str, state: str) -> tuple[str, str]:
+    target = f"T-{secrets.token_hex(2)}"
+    w.chromium.urls[target] = url
+    w.chromium.targets[target] = "DEFAULT"
+    await w.proxy.watch_page(target)
+    gate_session = next(s for s, t in w.proxy._gate_sessions.items() if t == target)
+    w.chromium.emit("Security.visibleSecurityStateChanged", _security(state), gate_session)
+    await settle()
+    return target, gate_session
+
+
+@pytest.mark.parametrize("url", LOOPBACK_ALLOWED)
+def test_control_is_granted_and_held_on_a_loopback_http_page(tmp_path, url):
+    async def body():
+        w = World(tmp_path)
+        await w.connect()
+        await w.proxy.pause()
+        target, gate_session = await _held_page(w, url, "neutral")
+        decision = await w.proxy.take_control(target)
+        assert decision.granted and decision.cause is None, url
+        # Chromium reporting `neutral` again while it is held does not end it.
+        w.chromium.emit("Security.visibleSecurityStateChanged", _security("neutral"), gate_session)
+        await settle()
+        assert w.proxy.in_control and w.ended == [], url
+        await w.chromium.stop()
+
+    run(body)
+
+
+@pytest.mark.parametrize("url", _loopback_refused())
+def test_control_is_refused_on_everything_but_exact_loopback_http(tmp_path, url):
+    async def body():
+        w = World(tmp_path)
+        await w.connect()
+        await w.proxy.pause()
+        target, _ = await _held_page(w, url, "neutral")
+        decision = await w.proxy.take_control(target)
+        assert not decision.granted and decision.cause == "insecure_connection", url
+        await w.chromium.stop()
+
+    run(body)
+
+
+@pytest.mark.parametrize("url", _loopback_refused())
+def test_control_on_a_loopback_page_ends_when_it_navigates_to_anything_else(tmp_path, url):
+    async def body():
+        w = World(tmp_path)
+        await w.connect()
+        await w.proxy.pause()
+        target, gate_session = await _held_page(w, "http://127.0.0.1:8765/login.html", "neutral")
+        assert (await w.proxy.take_control(target)).granted
+        w.chromium.urls[target] = url
+        w.chromium.emit("Page.frameNavigated", _navigated(url), gate_session)
+        await settle()
+        assert not w.proxy.in_control, url
+        assert w.ended == ["insecure_connection"]
+        await w.chromium.stop()
+
+    run(body)
+
+
+@pytest.mark.parametrize("order", ["navigated_first", "security_first", "security_only"])
+def test_control_on_a_loopback_page_ends_when_it_leaves_for_a_certificate_error(tmp_path, order):
+    """The loopback exception is not a hole in the certificate rule: a named
+    https host that reports a broken certificate still ends control, whichever
+    of Chromium's signals arrives first."""
+
+    async def body():
+        w = World(tmp_path)
+        await w.connect()
+        await w.proxy.pause()
+        target, gate_session = await _held_page(w, "http://localhost:8765/login.html", "neutral")
+        assert (await w.proxy.take_control(target)).granted
+        url = "https://github.com/login"
+        w.chromium.urls[target] = url
+        if order == "navigated_first":
+            w.chromium.emit("Page.frameNavigated", _navigated(url), gate_session)
+        # MUTATION: ignore every non-secure state on a page granted at loopback.
+        w.chromium.emit("Security.visibleSecurityStateChanged", _security("insecure-broken"), gate_session)
+        if order == "security_first":
+            w.chromium.emit("Page.frameNavigated", _navigated(url), gate_session)
+        await settle()
+        await settle()
+        assert not w.proxy.in_control, order
+        assert w.ended == ["insecure_connection"]
+        await w.chromium.stop()
+
+    run(body)
+
+
+def test_control_on_a_loopback_page_holds_onto_a_secure_https_page(tmp_path):
+    async def body():
+        w = World(tmp_path)
+        await w.connect()
+        await w.proxy.pause()
+        target, gate_session = await _held_page(w, "http://[::1]:8765/", "neutral")
+        assert (await w.proxy.take_control(target)).granted
+        url = "https://github.com/login"
+        w.chromium.urls[target] = url
+        w.chromium.emit("Page.frameNavigated", _navigated(url), gate_session)
+        w.chromium.emit("Security.visibleSecurityStateChanged", _security("secure"), gate_session)
+        await settle()
+        assert w.proxy.in_control and w.ended == []
+        # From here the page is held to the certificate rule as any other.
+        w.chromium.emit("Security.visibleSecurityStateChanged", _security("insecure"), gate_session)
+        await settle()
+        assert not w.proxy.in_control
+        assert w.ended == ["insecure_connection"]
+        await w.chromium.stop()
+
+    run(body)
+
+
 def test_control_needs_the_agent_paused_first(tmp_path):
     async def body():
         w = World(tmp_path)

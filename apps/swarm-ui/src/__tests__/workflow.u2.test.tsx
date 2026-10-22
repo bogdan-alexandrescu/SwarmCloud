@@ -245,7 +245,7 @@ describe('the list table fits 1440 with no sideways scroll (#503)', () => {
     const named = heads.map((h, i) => [h.getAttribute('data-col'), widths[i]!] as const).filter(([c]) => c !== 'workflow')
     for (const [c, w] of named) expect(w, `${c} has no width: ${widths.join(', ')}`).toMatch(/(%|px)$/)
     // A head the cascade hides (Shape and Runners below 1680, G3-09) draws no
-    // column, so it takes nothing from the name (from 1280 Cost is 128px, c28).
+    // column, so it takes nothing from the name (from 1280 Cost is 136px, c28 and QAFIX5 work-a-010).
     const hidden = heads.filter((h) => at(h, 'display') === 'none').map((h) => h.getAttribute('data-col'))
     expect(hidden).toEqual(['shape', 'runners'])
     const used = named.filter(([c]) => !hidden.includes(c)).reduce((t, [, w]) => t + (w.endsWith('%') ? (Number.parseFloat(w) / 100) * 1056 : Number.parseFloat(w)), 0)
@@ -472,8 +472,8 @@ describe('Cancel workflow asks for the id to be typed while a step runs (states.
   })
 })
 
-describe('the picked step card sits under the graph (#503)', () => {
-  it('stacks the card under the canvas on the page, with Open agent → and Stop step', async () => {
+describe('the picked step card sits under the graph below 1280 (#503), beside it from 1280 (QAFIX5 QA-120)', () => {
+  it('stacks the card under the canvas on the page below 1280, docks it beside from 1280, with Open agent → and Stop step', async () => {
     await page()
     const split = await waitFor(() => {
       const s = document.querySelector<HTMLElement>('.wf-split.has-panel')
@@ -481,9 +481,11 @@ describe('the picked step card sits under the graph (#503)', () => {
       return s!
     })
     expect(split.className).toContain('is-stack')
-    expect(at(split, 'display')).toBe('block')
+    expect(at(split, 'display', 1100)).toBe('block')
+    expect(at(split, 'display', 1440)).toBe('grid')
     const panel = split.querySelector<HTMLElement>(':scope > .wf-panel')!
-    expect(at(panel, 'position')).toBe('static')
+    expect(at(panel, 'position', 1100)).toBe('static')
+    expect(at(panel, 'position', 1440)).toBe('sticky')
     expect(within(panel).getByText('Open agent →')).toBeTruthy()
     // StopRun's own control, in a group named for what it stops (StopRun.tsx is shared; its word is `stop`).
     expect(within(within(panel).getByRole('group', { name: 'Stop step' })).getByRole('button', { name: 'stop' })).toBeTruthy()

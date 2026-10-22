@@ -1,14 +1,14 @@
 import { useCallback } from 'react'
 import { AttemptModel, Em, Mark, attemptLabel, isParked, parkedOutcome, type ChipTone } from './AgentDetail'
-import { Count, ToneMark } from './components'
+import { ToneMark } from './components'
 import { loadAgentDetail, loadAttempts } from './api'
-import { instant, spanText } from './duration'
+import { attemptEnd, instant, spanText } from './duration'
 import { isTerminalEvent } from './events'
 import { backendWord, eventWord, stateWord } from './words'
 import { num, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { Screen, timeAgo } from './Shell'
-import { REASON_COPY, TERMINAL_STATES, bytesLabel, pluralise, type AttemptRow, type Task, type TaskEvent } from './types'
+import { REASON_COPY, TERMINAL_STATES, bytesLabel, newestHeartbeat, pluralise, type AttemptRow, type Task, type TaskEvent } from './types'
 
 /**
  * One task, attempt by attempt. Replaces the flat event list in the drawer, which
@@ -268,11 +268,16 @@ function Body({ t }: { t: AttemptTimeline }) {
             its far end, after the event counts -- `12 ev · first page · 1
             blind ?` -- and read as a footnote on the last figure. It follows
             the toolbar's label now. Why it is here is the note at the end. */}
+        {/* ONE COUNT OF ATTEMPTS, THE SUMMARY'S (QA-113, run 5b, box
+            comment 6283738266). The eyebrow said `attempts`, its `?` and a
+            bare `3` under a summary already reading `3 attempts · 8 events`,
+            so the toolbar read `attempts ? 3`. What this toolbar is about
+            is the page of events -- its `?` opens event paging -- so that
+            is its label, and the attempts are counted once, above it. */}
         <span className="ctl-eyebrow">
-          attempts
+          event history
           <HelpCard topic="event-paging" />
         </span>
-        <Count n={t.attempts.length} label="attempts" bare />
         {t.events === null ? (
           <span className="is-end ctl-card-note">
             <Mark
@@ -384,6 +389,7 @@ function AttemptCard({
   const a = g.attempt
   const out = a === null ? null : outcome(a)
   const ranText = a === null ? null : ran(a)
+  const reading = a === null ? null : heartbeatMemory(a, g.events, task, isLatest)
   return (
     <section className="ctl-card att-card">
       <div className="ctl-card-head">
@@ -395,7 +401,8 @@ function AttemptCard({
             mark and a lowercase word, in the same vocabulary as the run's own
             state two panes away. */}
         <h2 className="ctl-card-title">
-          {g.label}
+          {/* One name, kept whole: at 390 it broke `gen` / `2` (QA-113). */}
+          <span className={a === null ? undefined : 'att-label'}>{g.label}</span>
           {out && <ToneMark tone={out.tone}>{out.label}</ToneMark>}
           {a?.oom_near_miss && <ToneMark tone="bad">OOM near miss</ToneMark>}
         </h2>
@@ -449,7 +456,9 @@ function AttemptCard({
                 <span className="mono">{a.execution_name}</span>
               )}
             </li>
-            <li className={`ctl-fact${ranText === null ? ' is-absent' : ''}`}>
+            {/* `att-fact-short`: at 390 the three short figures share a row
+                (details.css, QA-113 run 5b). */}
+            <li className={`ctl-fact att-fact-short${ranText === null ? ' is-absent' : ''}`}>
               <b>ran</b>
               {ranText ?? (
                 <Mark
@@ -465,16 +474,24 @@ function AttemptCard({
             {/* A null exit code means still running or never finished. It is
                 NOT a zero, and the chip in the heading says which of the
                 two -- so the cell carries the em dash and nothing else. */}
-            <li className={`ctl-fact${a.exit_code === null ? ' is-absent' : ''}`}>
+            <li className={`ctl-fact att-fact-short${a.exit_code === null ? ' is-absent' : ''}`}>
               <b>exit</b>
               {a.exit_code === null ? <Em /> : num(a.exit_code)}
             </li>
             {/* `peak memory` (G2-11, QA-113): the figure is the sampled
                 high-water mark of the resident set, written at exit -- `rss`
                 alone read as the value at exit, and `peak rss` as jargon. */}
-            <li className={`ctl-fact${a.peak_rss_bytes === null ? ' is-absent' : ''}`}>
+            <li className={`ctl-fact${a.peak_rss_bytes === null && reading === null ? ' is-absent' : ''}`}>
               <b>peak memory</b>
-              {a.peak_rss_bytes === null ? (
+              {a.peak_rss_bytes === null && reading !== null ? (
+                // THE FIGURE DETAILS READS (r3:task-007, c06, box comment
+                // 6314119814). With no peak written, Details' Peak memory and
+                // its Resources row read the attempt's newest heartbeat -- its
+                // high-water mark so far, or its last reading once it is over
+                // -- and this card said `not measured` beside them. It reads
+                // the same heartbeat, in the same words, never as a peak.
+                `${bytesLabel(reading.bytes)} · ${reading.ended ? 'last reading' : 'so far'} · heartbeat ${timeAgo(reading.at)}`
+              ) : a.peak_rss_bytes === null ? (
                 <Mark
                   kind="absent"
                   say="Peak memory (RSS) is written at the end of an attempt. This attempt has none recorded, so what it used is unknown — it is a missing record, never a zero."
@@ -488,7 +505,7 @@ function AttemptCard({
                 bytesLabel(a.peak_rss_bytes)
               )}
             </li>
-            <li className="ctl-fact">
+            <li className="ctl-fact att-fact-short">
               <b>checkpoints</b>
               {a.checkpoints.length}
             </li>
@@ -561,6 +578,26 @@ function AttemptCard({
       </div>
     </section>
   )
+}
+
+/**
+ * An attempt's memory from its newest heartbeat, when it wrote no peak: what
+ * Details' `memoryOf` and its attempt cards read for the same attempt.
+ * `ended` is `attemptEnd`'s answer -- a running attempt's figure is `so far`,
+ * an ended one's its `last reading`. Without the task (its read failed) a
+ * finish time or a later attempt still ends it, and nothing else is claimed.
+ */
+function heartbeatMemory(
+  a: AttemptRow,
+  events: TaskEvent[],
+  task: Task | null,
+  isLatest: boolean,
+): { bytes: number; at: string; ended: boolean } | null {
+  if (a.peak_rss_bytes !== null) return null
+  const hb = newestHeartbeat(a, events)
+  if (hb === null || hb.peakRssBytes === null) return null
+  const ended = task === null ? a.completed_at !== null || !isLatest : attemptEnd(a, task, isLatest).over
+  return { bytes: hb.peakRssBytes, at: hb.at, ended }
 }
 
 /**

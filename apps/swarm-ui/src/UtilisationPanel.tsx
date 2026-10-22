@@ -28,8 +28,20 @@ import { cpuSummary, type UtilisationAttempt, type UtilisationRead } from './uti
  * route served a limit: `limit not reported` already says there is none.
  */
 function namedLimit(attempt: UtilisationAttempt | null, text: string): string {
-  if (attempt === null || cpuSummary(attempt).limit === null) return text
-  return text.replace(/^(CPU: mean \S+ of \S+ cores)/, '$1 (cgroup limit)')
+  const sampled = namedMean(text)
+  if (attempt === null || cpuSummary(attempt).limit === null) return sampled
+  return sampled.replace(/^(CPU, 5 s samples: mean \S+ of \S+ cores)/, '$1 (cgroup limit)')
+}
+
+/**
+ * AND WHICH MEAN IT IS (FF-D5a, the same c05 box). Resources, above this
+ * line, prints the attempt's own mean -- its CPU-seconds over the time its
+ * runners ran -- and this one is the mean of the series' 5 s samples, setup
+ * and waits included. Two means on one pane, each named where it is printed,
+ * so a reader does not take the difference for an error.
+ */
+function namedMean(text: string): string {
+  return text.replace(/^CPU: mean (?=\d)/, 'CPU, 5 s samples: mean ')
 }
 
 /**

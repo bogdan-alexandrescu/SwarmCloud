@@ -206,7 +206,7 @@ describe('R10: one money format, and Cost and Owner hold what they show', () => 
     expect(room('owner')).toBeGreaterThanOrEqual(textPx('swarm-pipeline', row.querySelector('td[data-col="owner"]')!, WIDE))
     // A head the cascade hides (Shape and Runners below 1680, G3-09) draws
     // no column; `fixedColumns` counts every head, so its width goes back to
-    // the name, the one column with no width (from 1280 Cost is 128px, c28).
+    // the name, the one column with no width (from 1280 Cost is 136px, c28 and QAFIX5 work-a-010).
     const hidden = cols.filter((c) => painted(t.querySelector(`thead th[data-col="${c.col}"]`)!, 'display', WIDE) === 'none')
     expect(hidden.map((c) => c.col)).toEqual(['shape', 'runners'])
     expect(room('workflow') + hidden.reduce((a, c) => a + c.end - c.start, 0), 'the name').toBeGreaterThanOrEqual(128)
