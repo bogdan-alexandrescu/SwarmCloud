@@ -49,6 +49,28 @@ def _commits_carry_the_tests_identity(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_agent_tool_spools_from_the_environment(monkeypatch):
+    """No worker test inherits an agent tool's spool from its environment.
+
+    The claude-code runner registers the git, search and state MCP servers
+    whenever their spool variables (`SWARM_GIT`, `SWARM_SEARCH`,
+    `SWARM_STATE`: each server's `SPOOL_ENV`) are set, and a SwarmCloud
+    container exports them for its own agent. There, 17 tests that compare the
+    runner's MCP servers or argv exactly (test_browser_tool_status.py,
+    test_runners.py, test_search_tool_wiring.py,
+    test_runner_graph_shim_config.py) saw extra servers and failed, on main
+    too, while passing in CI, which exports none (measured 2026-10-22,
+    VQ4-WIRE). A test of one of those tools sets its own, after this.
+    """
+    from agent_worker.gitmcp.server import SPOOL_ENV as GIT_SPOOL_ENV
+    from agent_worker.searchmcp.server import SPOOL_ENV as SEARCH_SPOOL_ENV
+    from agent_worker.statemcp.server import SPOOL_ENV as STATE_SPOOL_ENV
+
+    for name in (GIT_SPOOL_ENV, SEARCH_SPOOL_ENV, STATE_SPOOL_ENV):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def db() -> FakeFirestore:
     return FakeFirestore()
