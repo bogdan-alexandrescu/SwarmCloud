@@ -57,6 +57,7 @@ from ..waker import TASK_FINISHED
 from ..repoindex import RepoIndex
 from ..repositories import RepositoryPush
 from ..brokerclient import AccountPool
+from ..children import release_held_runs
 from ..schemas import (
     AdaptiveTargetRequest,
     DrainRequest,
@@ -1097,8 +1098,19 @@ def advance_runs(
     approval submits in the run's own tenant as the run's creator
     (`routes.runs.run_owner_auth`), never as the caller. Bounded by the page
     size per tick, oldest first; truncation is reported, as the rollup does.
+
+    HELD CHILD RUNS ARE RELEASED ON THE SAME TICK (agent-autonomy.md §3.6,
+    decided 2026-10-22 under BGD's overnight rule): after the runs move, each
+    `after_merged` child run of THIS tenant whose predecessor is now DONE with
+    its pull request merged is started, and one whose predecessor ended
+    unmerged is cancelled (`children.release_held_runs`). After, not before:
+    the tick that moves a predecessor to DONE starts its successor in the same
+    response rather than one tick later. A held row holds no run, planner or
+    workflow (invariant 1), and the release reads only `tenant_id`'s ledger
+    (invariant 9). `held` is its counts.
     """
     report = advance_tenant_runs(ctx, tenant_id, limit=paged_limit(ctx, limit))
+    held = release_held_runs(ctx, tenant_id)
     ctx.metrics.admin_actions.labels(action="run_advance").inc()
     return {
         "tenant_id": tenant_id,
@@ -1106,6 +1118,7 @@ def advance_runs(
         # Only the runs that could not be advanced, by id and error code. A
         # healthy tick returns an empty list, which is an answer.
         "failures": report.failures,
+        "held": held,
     }
 
 
