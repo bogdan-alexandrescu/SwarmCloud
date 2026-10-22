@@ -455,7 +455,7 @@
    attempts' solid pills at 'now', so free work read as held capacity. Its
    current park (hatched) or wait (the line) now runs to 'now' in the room
    below the centred pills: clear of them at both widths, and laid out apart
-   from them, so no pill moves (box comment 6314122402 waits on the owner).
+   from them, so no pill moves (crowded pills merge: `.tl-seg.is-merged`).
    The floor is the bars' own, widened leftward from 'now'. */
 .tl-seg.is-now {
   top: auto;

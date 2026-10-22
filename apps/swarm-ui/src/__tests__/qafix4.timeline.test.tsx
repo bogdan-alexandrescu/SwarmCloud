@@ -10,7 +10,7 @@
 //          drew none; and the whole-life wait line ran through the middle of
 //          the track, under the pills piled at 'now'. The lane's current state
 //          is now drawn to 'now' on a rail beneath the pills, which keep their
-//          layout (box comment 6314122402 waits on the owner).
+//          layout (crowded ones merge into one counted pill: qafix4.timeline2).
 //   N19 work-a-008  wf_audit_01 said '5 steps' over four step lanes: its
 //          fifth step has no task yet. The header now says how many of its
 //          steps have attempts in this span, and names the others.
