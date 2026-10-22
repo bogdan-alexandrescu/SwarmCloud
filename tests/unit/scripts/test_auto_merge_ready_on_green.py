@@ -46,6 +46,7 @@ LABEL = "ready-on-green"
 GREEN_HEAD = "ab" * 20
 RED_HEAD = "cd" * 20
 PENDING_HEAD = "ef" * 20
+RERUN_HEAD = "12" * 20
 REQUIRED = ["shellcheck", "trivy"]
 
 
@@ -152,12 +153,15 @@ def test_the_label_is_added_with_the_merge_apps_token(job: dict):
 
 
 def test_the_github_token_asks_for_the_least_it_needs(job: dict):
-    """Reads (branches, check runs, statuses), and pull-requests: write for
-    the one comment. MUTATION: widen it, or add actions/contents write."""
+    """Reads (branches, check runs, statuses, and the Actions runs at a head
+    whose check ran more than once: CHECK-RULE-2), and pull-requests: write
+    for the one comment. MUTATION: widen it, add actions/contents write, or
+    drop `actions: read` -> the event read 403s."""
     assert job.get("permissions") == {
         "contents": "read",
         "checks": "read",
         "statuses": "read",
+        "actions": "read",
         "pull-requests": "write",
     }, job.get("permissions")
     assert (_step(job, "judge").get("env") or {}).get("GH_TOKEN") == "${{ github.token }}"
@@ -193,6 +197,9 @@ case "${args}" in
   "api repos/${GH_REPO}/commits/"*"/status"*)
     sha="${args#api repos/${GH_REPO}/commits/}"; sha="${sha%%/*}"
     cat "${FAKE_DIR}/status-${sha}.json" ;;
+  "api repos/${GH_REPO}/actions/runs?head_sha="*)
+    sha="${args#*head_sha=}"; sha="${sha%%&*}"
+    cat "${FAKE_DIR}/actions-runs-${sha}.json" ;;
   "api --paginate repos/${GH_REPO}/issues/"*"/comments"*)
     number="${args#api --paginate repos/${GH_REPO}/issues/}"; number="${number%%/*}"
     jq -r '.[].body' "${FAKE_DIR}/comments-${number}.json" 2>/dev/null || true ;;
@@ -260,7 +267,15 @@ def fake(tmp_path: Path):
         RED_HEAD: [_check_run("shellcheck"), _check_run("trivy", conclusion="failure"),
                    _check_run("python (unit)", conclusion="failure")],
         PENDING_HEAD: [_check_run("shellcheck"), _check_run("trivy", "in_progress", None)],
+        # CHECK-RULE-2: shellcheck failed in its push suite, then a re-run of
+        # the same event, in a new suite, passed.
+        RERUN_HEAD: [{**_check_run("shellcheck", conclusion="failure"), "id": 1, "check_suite": {"id": 101}},
+                     {**_check_run("shellcheck"), "id": 2, "check_suite": {"id": 103}},
+                     {**_check_run("trivy"), "id": 3, "check_suite": {"id": 101}}],
     }
+    (data / f"actions-runs-{RERUN_HEAD}.json").write_text(json.dumps({"workflow_runs": [
+        {"id": 901, "check_suite_id": 101, "event": "push"},
+        {"id": 903, "check_suite_id": 103, "event": "push"}]}))
     for sha, runs in heads.items():
         (data / f"check-runs-{sha}.json").write_text(json.dumps({"total_count": len(runs), "check_runs": runs}))
         (data / f"status-{sha}.json").write_text(json.dumps({"state": "pending", "statuses": []}))
@@ -310,6 +325,24 @@ def test_a_green_head_is_promoted_and_judged_at_that_head(job: dict, fake: Path)
     assert f"commits/{GREEN_HEAD}/check-runs" in calls, calls
     assert f"commits/{GREEN_HEAD}/status" in calls, calls
     assert "judged 1 ready-on-green pull request(s); 1 green" in summary, summary
+
+
+def test_a_head_whose_check_re_ran_green_in_its_event_is_promoted(job: dict, fake: Path):
+    """CHECK-RULE-2: the judge decides each check by the latest run of each
+    event, the event read from the Actions runs at the head. MUTATION: call
+    `merge-train.sh judge` without `--workflow-runs` -> the two push suites
+    are judged apart and the head reads red. MUTATION: judge every run ->
+    red."""
+    outputs, calls, summary = run_judge(job, fake, [_pr(1503, RERUN_HEAD)])
+    assert f"actions/runs?head_sha={RERUN_HEAD}" in calls, calls
+    assert outputs.get("promote") == f"1503 {RERUN_HEAD}", (outputs, summary)
+
+
+def test_a_head_whose_checks_each_ran_once_reads_no_actions_runs(job: dict, fake: Path):
+    """Gate 5's shape: the event is read only when some check ran twice.
+    MUTATION: read actions/runs at every head -> one more request each."""
+    _, calls, _ = run_judge(job, fake, [_pr(1500, GREEN_HEAD)])
+    assert "actions/runs" not in calls, calls
 
 
 def test_a_pending_head_is_left_alone_and_said_nothing_about(job: dict, fake: Path):
