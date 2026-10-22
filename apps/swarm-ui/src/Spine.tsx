@@ -2443,9 +2443,18 @@ function PhoneJumps({ onJump }: { onJump: (id: string) => void }) {
   useEffect(() => {
     const row = rowRef.current
     if (row === null) return
+    // THE GUTTER IS NOT A CHIP PAST THE EDGE (visual QA run 4, N2,
+    // overview-automate-005, part of #1680). The row starts at the page's
+    // 16px gutter as its padding (`.sk-otp`), so the first chip lines up with
+    // the cards and the row still scrolls out to the glass edge. A chip is
+    // past an edge only once the scroll has gone through that side's padding:
+    // a row nudged inside its gutter is still at its start, and fades nothing.
     const read = () => {
-      const start = row.scrollLeft > 1
-      const end = row.scrollLeft + row.clientWidth < row.scrollWidth - 1
+      const pad = getComputedStyle(row)
+      const inStart = parseFloat(pad.paddingLeft) || 0
+      const inEnd = parseFloat(pad.paddingRight) || 0
+      const start = row.scrollLeft > inStart + 1
+      const end = row.scrollLeft + row.clientWidth < row.scrollWidth - inEnd - 1
       setMore((m) => (m.start === start && m.end === end ? m : { start, end }))
     }
     read()

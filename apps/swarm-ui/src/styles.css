@@ -10713,7 +10713,21 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
    44px tall: a fingertip's target. Spine.tsx `PhoneJumps` draws it below
    760px only. They are page links, so they keep the page's own focus ring
    (`:where(a:focus-visible)`), not the chrome's sky one. */
-.sk-otp { display: flex; flex-wrap: nowrap; gap: 6px; overflow-x: auto; margin: 0 0 12px; padding: 0 2px 4px; scrollbar-width: none; }
+/* THE ROW STARTS AT THE PAGE'S GUTTER, WITH ONE STEP UNDER IT (visual QA
+   run 4, N2, overview-automate-005, part of #1680). It is a child of the
+   scroller beside `.app`, not inside it, so it had none of the page's
+   `--app-pad`: the first chip touched the glass edge while the cards sat 16px
+   in. The gutter is its PADDING, not a margin, so the row still scrolls out
+   to the glass edge and comes to rest with Pools at the gutter
+   (`scroll-padding-inline` keeps a jump to a chip there too); `PhoneJumps`
+   does not count the padding as chips past an edge. The band under it was
+   two steps stacked: the row's own `12px` margin and `4px` padding, then the
+   page's `16px` top padding (`.sk-main > .ctl-scroll > .app`). Now there is
+   one: the 4px under the chips is their focus ring's room (outline 2px,
+   offset 2px, which `overflow` would clip), and the page under the row takes
+   the rest of the 16px the cards are apart (`.ov-page` gap). */
+.sk-otp { display: flex; flex-wrap: nowrap; gap: 6px; overflow-x: auto; margin: 0; padding: 0 var(--app-pad) 4px; scroll-padding-inline: var(--app-pad); scrollbar-width: none; }
+.sk-main > .ctl-scroll > .sk-otp + .app { padding-top: 12px; }
 /* THE ROW SAYS IT SCROLLS (visual QA run 3, ffp-001, part of #1680). Its
    scrollbar is hidden, so a row cut at the glass edge read as complete, and
    Recent failures -- fifth of eight -- was never found. The side with more
