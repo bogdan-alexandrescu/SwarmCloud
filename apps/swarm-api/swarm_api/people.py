@@ -406,6 +406,17 @@ def _iso(value: Any) -> Any:
     return value.isoformat() if isinstance(value, datetime) else value
 
 
+def _account_name(value: Any) -> str | None:
+    """An account's Name (#1913) as the broker stored it, or None for none.
+
+    The broker is its one writer and validates it (`validate_display_name`);
+    the lent rows read the account document straight from Firestore, so a
+    value that is not text is no Name rather than whatever it holds. Never
+    the label in its place: the console tells a named account from an
+    unnamed one by this being None."""
+    return value if isinstance(value, str) else None
+
+
 def _later(*values: Any) -> datetime | None:
     seen = [v for v in values if isinstance(v, datetime)]
     return max(seen) if seen else None
@@ -1161,6 +1172,7 @@ class People:
                     "label": account.get("label"),
                     "state": account.get("state"),
                     "lend_to": list(account.get("lend_to") or []),
+                    "display_name": _account_name(account.get("display_name")),
                 })
         return out
 
@@ -1581,8 +1593,9 @@ class People:
         `lent_accounts` names WHICH accounts are lent (PEOPLE-LOAN-VIEW, owner
         2026-10-13): `lent_by` is only the owner tenants, so the console said
         "lent by eng" and an admin could not see what they had lent. Each is
-        the account's id, label, owner and state, and the owner's display
-        name; never the document as it is, which names its secret."""
+        the account's id, label, owner and state, its Name (#1913), and the
+        owner's display name; never the document as it is, which names its
+        secret."""
         counts = ws.Workspaces(self._db, now=self._now, gate=False).claude_accounts(
             tenant_id, tenant)
         lent: list[dict[str, Any]] = []
@@ -1602,7 +1615,8 @@ class People:
                     names[owner] = getattr(owner_tenant, "display_name", None) or owner
                 lent.append({"account_id": str(data.get("account_id") or snap.id),
                              "label": data.get("label"), "owner_tenant": owner,
-                             "owner_name": names[owner], "state": data.get("state")})
+                             "owner_name": names[owner], "state": data.get("state"),
+                             "display_name": _account_name(data.get("display_name"))})
             lent.sort(key=lambda a: (a["owner_tenant"], a["account_id"]))
         lenders = sorted({a["owner_tenant"] for a in lent})
         source = "own" if counts["own"] else "lent" if counts["lent"] else \
