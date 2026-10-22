@@ -2695,7 +2695,14 @@ def create_app(
         no document is invisible and harmless; a document with no secret is a
         live trap.
         """
-        base = secret_name(owner_tenant, label)
+        # A LABEL THE RULE REFUSES IS THE CALLER'S MISTAKE, answered 422 with
+        # the rule's own sentence (#1912). Unhandled, `AccountError` was a 500,
+        # and swarm-api reads every status but 409/422 as the pool being down.
+        # Named before anything is created, so a refusal leaves no secret.
+        try:
+            base = secret_name(owner_tenant, label)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
         labels = {
             "managed-by": "swarm-secrets",
             "component": "swarm-account",
@@ -2828,7 +2835,13 @@ def create_app(
     ) -> dict[str, Any]:
         _authorize(request, authorization, body.owner_tenant)
         _accounts(request)  # refuse early if the pool is not configured
-        validate_label(body.label)
+        # Before the pending record is written, so a refused label leaves no
+        # sign-in that could never finish. A 422 with the rule's sentence, not
+        # the 500 that read as "the account pool is down" (#1912).
+        try:
+            validate_label(body.label)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
 
         verifier = new_verifier()
         state = new_state()

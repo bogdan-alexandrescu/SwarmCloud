@@ -18,6 +18,7 @@ to us. One short code replaces a keychain item, which is the whole point.
 from __future__ import annotations
 
 import json
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -353,3 +354,127 @@ def test_expires_in_is_read_as_seconds_from_now_not_as_a_timestamp(client):
 
     expires = datetime.fromisoformat(r.json()["expires_at"])
     assert expires > datetime.now(timezone.utc) + timedelta(hours=7)
+
+
+# -- a label the broker refuses is a refusal, not an outage (#1912) ----------
+#
+# `validate_label` raised `AccountError` out of the authorize route with no
+# handler, so FastAPI answered 500 and swarm-api, which reads every broker
+# status but 409/422 as the pool being down, told the person "a service the API
+# depends on did not answer" about a label with capitals in it.
+
+#: The sentence `validate_label` refuses with, in words a person can act on.
+LABEL_RULE = "must be lowercase letters, digits and dashes"
+
+REFUSED_LABELS = ("AI-ENG-2", "a_b", "a" * 41)
+
+
+@pytest.mark.parametrize("label", REFUSED_LABELS)
+def test_a_label_the_rule_refuses_is_a_422_carrying_the_rule(client, label):
+    r = _begin(client, label=label)
+
+    # MUTATION: drop the `except AccountError` around `validate_label` in
+    # `begin_account_authorization` and this answers 500.
+    assert r.status_code == 422, r.text
+    assert r.json()["code"] == "validation_failed"
+    # MUTATION: raise `BrokerValidationError("bad label")` instead of
+    # `str(exc)` and the person loses the rule they have to follow.
+    assert LABEL_RULE in r.json()["message"]
+    assert "at most 40 characters" in r.json()["message"]
+
+
+@pytest.mark.parametrize("label", REFUSED_LABELS)
+def test_a_refused_label_leaves_no_pending_sign_in(client, label):
+    _begin(client, label=label)
+
+    pending = list(client.app_ref.state.broker.db.collection("account_auth").stream())
+    # MUTATION: move `validate_label` below the pending-document `set` and a
+    # sign-in that can never finish is left behind for every refusal.
+    assert pending == []
+
+
+def test_a_label_that_fits_still_starts_a_sign_in(client):
+    r = _begin(client, label="ai-eng-2")
+
+    # MUTATION: refuse every label (`raise BrokerValidationError(...)`
+    # unconditionally) and this answers 422.
+    assert r.status_code == 200, r.text
+    assert r.json()["state"]
+
+
+def _pasted_credential() -> str:
+    """Claude Code's keychain shape, built at runtime so no literal in this
+    file looks like a token."""
+    expires = datetime.now(timezone.utc) + timedelta(hours=8)
+    return json.dumps(
+        {
+            "claudeAiOauth": {
+                "accessToken": "at-" + secrets.token_hex(12),
+                "refreshToken": "rt-" + secrets.token_hex(12),
+                "expiresAt": int(expires.timestamp() * 1000),
+            }
+        }
+    )
+
+
+def test_a_pasted_credential_under_a_refused_label_is_a_422_and_files_nothing(client):
+    """The paste path reaches the same rule through `secret_name` in
+    `_provision_and_register`, which the exchange path shares."""
+    r = client.post(
+        "/v1/accounts",
+        json={"owner_tenant": TENANT, "label": "AI-ENG-2", "credential": _pasted_credential()},
+    )
+
+    # MUTATION: drop the `except AccountError` around `secret_name` in
+    # `_provision_and_register` and this answers 500.
+    assert r.status_code == 422, r.text
+    assert LABEL_RULE in r.json()["message"]
+    # MUTATION: create the secrets before naming them and a refused label
+    # leaves a secret behind.
+    assert client.app_ref.state.secret_store.created == {}
+    assert client.get("/v1/accounts").json()["accounts"] == []
+
+
+def test_swarm_api_hands_the_brokers_label_refusal_to_the_caller_whole(client, api_context):
+    """End to end through the shipped client: swarm-api's `BrokerClient`, its
+    transport bridged into the broker app above, and swarm-api's route. A 500
+    from the broker became 503 `account_pool_unavailable` here."""
+    from fastapi.testclient import TestClient as ApiTestClient
+
+    from swarm_api.brokerclient import BrokerClient, StaticIdToken
+    from swarm_api.main import create_app as create_api
+
+    from .conftest import auth_header
+
+    def bridge(method, url, *, headers, body=None, timeout=15.0):
+        path = url.split("broker.example", 1)[1]
+        answer = client.request(
+            method, path, content=body, headers={"Content-Type": "application/json"}
+        )
+        # As `urllib_transport` reads it: JSON when it is JSON, else the text.
+        try:
+            return answer.status_code, answer.json()
+        except ValueError:
+            return answer.status_code, answer.text
+
+    api = create_api(api_context)
+    api.state.account_pool = BrokerClient(
+        base_url="https://broker.example",
+        tokens=StaticIdToken("id-" + secrets.token_hex(4)),
+        transport=bridge,
+    )
+    caller = ApiTestClient(api, raise_server_exceptions=False)
+
+    r = caller.post(
+        "/v1/accounts/authorize",
+        headers=auth_header("alice"),
+        json={"label": "AI-ENG-2", "lend_to": []},
+    )
+
+    # MUTATION: leave `begin_account_authorization` without its
+    # `except AccountError` and this is 503 `account_pool_unavailable`.
+    assert r.status_code == 422, r.text
+    assert r.json()["code"] == "validation_failed"
+    # MUTATION: have `BrokerClient._result` drop `message` on a 422 and
+    # the broker's sentence never reaches the person.
+    assert LABEL_RULE in r.json()["message"]
