@@ -3268,6 +3268,26 @@ export function eligibleAgain(iso: string | null | undefined, now: number = Date
   return left > 0 ? `Eligible again at ${at.text} (in ${humaniseUntil(left)}).` : `Eligible again since ${at.text}.`
 }
 
+/** The cascade's "did not succeed" -- scheduler/loop.py `_FAILED_PARENT_STATES`. */
+const CASCADE_PARENT_STATES: ReadonlySet<TaskState> = new Set<TaskState>(['FAILED', 'CANCELLED', 'DEAD_LETTERED'])
+
+/** The first parent, in `depends_on` order, that is in hand and did not succeed. */
+function failedParentTask(dependsOn: readonly string[], taskById: ReadonlyMap<string, Task> | null): Task | null {
+  if (taskById === null) return null
+  for (const id of dependsOn) {
+    const parent = taskById.get(id)
+    if (parent !== undefined && CASCADE_PARENT_STATES.has(parent.state)) return parent
+  }
+  return null
+}
+
+/** What a cascade line calls a parent: its step id, its title, its id. */
+function taskName(t: Task): string {
+  if (t.step_id) return t.step_id
+  const title = t.metadata?.title
+  return typeof title === 'string' && title.trim() !== '' ? title.trim() : t.id
+}
+
 /**
  * Column 3, "Why". First match wins.
  *
@@ -3287,8 +3307,20 @@ export function eligibleAgain(iso: string | null | undefined, now: number = Date
  * pool whose limit is positive but below it is told apart from a genuinely
  * full one. Null (the default, and what an unread catalogue gives) keeps the
  * pre-#66 reading exactly.
+ *
+ * `taskById` (visual QA run 4, N23) is the rows the caller read, by id. A
+ * cascade cancel names the parent that did not succeed -- the first in
+ * `depends_on` order whose row is in hand and FAILED, CANCELLED or
+ * DEAD_LETTERED, the scheduler's `_FAILED_PARENT_STATES` -- by its step id,
+ * then its title, then its id. With no such parent in hand (or no map, the
+ * default) it keeps "An upstream step did not succeed.": the parent was not
+ * read, and naming nothing is the honest answer. No read is added for it.
  */
-export function whyAgent(task: Task, units: number | null = null): string {
+export function whyAgent(
+  task: Task,
+  units: number | null = null,
+  taskById: ReadonlyMap<string, Task> | null = null,
+): string {
   if (task.state === 'PARKED') {
     const base = task.park_reason ? reasonCopy(task.park_reason) : 'Parked.'
     const again = eligibleAgain(task.next_eligible_at)
@@ -3317,7 +3349,8 @@ export function whyAgent(task: Task, units: number | null = null): string {
   if (task.state === 'FAILED') return task.last_error ?? 'Failed.'
   if (task.state === 'CANCELLED') {
     if (!task.cancel_requested && task.depends_on?.length) {
-      return 'An upstream step did not succeed.'
+      const parent = failedParentTask(task.depends_on, taskById)
+      return parent === null ? 'An upstream step did not succeed.' : `Cancelled: ${taskName(parent)} failed.`
     }
     return 'Cancelled by request.'
   }

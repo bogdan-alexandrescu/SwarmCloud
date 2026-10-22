@@ -1580,9 +1580,16 @@ export function stepWhy(
 }
 
 /**
- * The line a GRAPH NODE draws: a failure's cause (#105) or why a waiting step
- * is not running (#106). A cancelled step draws none -- it is over, and its
- * why is the table's column -- so only a failed or a waiting node grows.
+ * The line a GRAPH NODE draws: a failure's cause (#105), why a waiting step
+ * is not running (#106), or the step whose failure cancelled this one.
+ *
+ * A CASCADE CANCEL NAMES ITS CAUSE (visual QA run 4, N23): the node said only
+ * "cancelled" and listed its inputs, so which of them failed was a hunt,
+ * while the table's Why column beside it said "blocked: checkpoints failed".
+ * It now draws the table's line. A cancel by request, or a cascade whose
+ * failed parent is not in hand, still draws none: it is over, and there is
+ * no step to name. `layoutOf` reads the noted set, so the node is measured
+ * with its line and grows its level rather than overlapping the next.
  */
 export function nodeNote(
   step: WorkflowStep,
@@ -1591,7 +1598,9 @@ export function nodeNote(
   taskById: ReadonlyMap<string, Task> | null,
   units: number | null,
 ): StepWhy | null {
-  if (state.kind === 'state' && state.state === 'CANCELLED') return null
+  if (state.kind === 'state' && state.state === 'CANCELLED') {
+    if (state.task.cancel_requested || failedParentOf(step, steps, taskById) === null) return null
+  }
   return stepWhy(step, state, steps, taskById, units)
 }
 
