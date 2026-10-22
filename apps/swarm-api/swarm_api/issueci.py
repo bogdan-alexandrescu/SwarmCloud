@@ -55,8 +55,8 @@ redaction as a known literal, and dropped. Nothing a caller sent selects it.
 The reads: the pull request (its head sha and base branch), the base
 branch's rules (the required checks), the check runs (`filter=latest`) and
 commit statuses at the head, then for a red reading each failing check
-run's annotations and, when the credential can read Actions, the tail of
-its job log -- fetched from GitHub's log storage WITHOUT the credential
+run's annotations and, when the credential can read Actions, the lines of
+its job log that name the failure (`_log_failures`) -- fetched from GitHub's log storage WITHOUT the credential
 (`forgewrite.GitHubWriter.job_log_tail`). Reading CI is at most once per
 `CI_READ_SECONDS` per run, so a console polling a CHECKING run does not
 read GitHub on every poll.
@@ -154,6 +154,7 @@ is an ordinary task admitted like any other.
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
@@ -176,6 +177,7 @@ from .forgechecks import (
 from .forge import NoForgeCredential
 from .forge_installation import read_token
 from .forgewrite import (
+    MAX_LOG_TAIL_BYTES as LOG_READ_BYTES,
     ForgeWriteNotFound,
     GitHubWriter,
     PullSnapshot,
@@ -224,13 +226,25 @@ CI_FIX_STEP = "ci-fix"
 
 #: The most of the red checks' output kept on the run and given to a round.
 MAX_EXCERPT_BYTES = 8 * 1024
-#: Failing check runs whose output goes in the excerpt, in GitHub's order.
+#: Failing check runs whose output goes in the excerpt: each name once, in
+#: GitHub's order, except that a gate over `needs` comes last (`_excerpt_order`).
 MAX_EXCERPT_CHECKS = 5
-#: Per check run: each output field, the annotations, the log's tail.
+#: Per check run: each output field, the annotations, the log's failure lines.
 MAX_FIELD_CHARS = 1_500
 MAX_TITLE_CHARS = 300
 MAX_ANNOTATION_LINES = 20
 MAX_LOG_TAIL_BYTES = 3_000
+# READ 16 KiB, KEEP 3,000 (CIFIX-EXCERPT, part of #1914). Of each failing
+# Actions job, `LOG_READ_BYTES` (forgewrite's own cap) of the log's END is
+# read, and what is kept of it is cut at the step that failed and narrowed to
+# the lines that name the failure (`_log_failures`). Measured on PR 1905: the
+# last 3,000 bytes of "swarm-ui component tests (2/4)" were half post-job
+# cleanup, and the `FAIL <file> > <test>` line and the Received value sat
+# about 3,500 bytes from the end -- so the round was told "1 failed" and
+# spent nine minutes finding which test.
+#: Lines a failure block keeps under its `FAIL` line (the assertion, the
+#: Expected/Received diff and the code frame) unless a separator ends it first.
+FAILURE_BLOCK_LINES = 30
 
 #: CI is read at most this often per run. A console polls every 15 s; CI
 #: moves in minutes.
@@ -704,10 +718,117 @@ def _check_section(writer: GitHubWriter, ref: IssueRef, label: str, check: Mappi
         app = check.get("app") if isinstance(check.get("app"), Mapping) else {}
         if app.get("slug") == "github-actions":
             # An Actions check run's id is its job's id.
-            tail = writer.job_log_tail(ref, check_id, token, limit=MAX_LOG_TAIL_BYTES)
-            if tail and tail.strip():
-                out += ["log tail:", tail.rstrip()]
+            tail = writer.job_log_tail(ref, check_id, token, limit=LOG_READ_BYTES)
+            heading, kept = _log_failures(tail or "")
+            if kept:
+                out += [heading, kept]
     return "\n".join(out)
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+#: The timestamp column of a raw Actions job log.
+_STAMP = re.compile(r"^\d{4}-\d\d-\d\dT[\d:.]+Z ?")
+#: The end of the step that failed: what follows is the runner's own cleanup.
+_STEP_FAILED = re.compile(r"##\[error\]Process completed with exit code")
+_CLEANUP = re.compile(r"^Post job cleanup")
+#: A vitest failure: `FAIL <file> > <test>`, the block under it kept too.
+_FAIL_BLOCK = re.compile(r"^\s*FAIL\s+\S")
+#: Where a vitest failure block ends before FAILURE_BLOCK_LINES.
+_BLOCK_END = re.compile(r"⎯{3}")
+#: Single lines that name a failure: pytest's `FAILED`/`ERROR` node ids, its
+#: `E` assertion lines, `path.py:N: Error`, the short summary and the count
+#: line; vitest's failed-count summary; every `##[error]`.
+_FAILURE_LINE = re.compile(
+    r"^(?:FAILED |ERROR |E {2,}|\S+\.py:\d+: \w|=+ short test summary info"
+    r"|=* ?\d+ (?:failed|error)|\s*(?:Test Files|Tests)\s+\d+ failed)"
+    r"|##\[error\]"
+)
+
+
+def _bound_lines(lines: list[str], limit: int, *, from_end: bool) -> str:
+    """Whole lines, from the start or the end, adding up to at most `limit` bytes."""
+    kept: list[str] = []
+    size = 0
+    for line in reversed(lines) if from_end else lines:
+        cost = len(line.encode("utf-8")) + 1
+        if size + cost > limit:
+            if not kept:
+                raw = line.encode("utf-8")
+                piece = raw[-(limit - 1):] if from_end else raw[: limit - 1]
+                kept.append(piece.decode("utf-8", errors="ignore"))
+            break
+        kept.append(line)
+        size += cost
+    return "\n".join(reversed(kept) if from_end else kept)
+
+
+def _log_failures(log: str, limit: int = MAX_LOG_TAIL_BYTES) -> tuple[str, str]:
+    """(heading, text): the lines of a job log that name its failure, or its tail.
+
+    The log is cut where the failed step ended (the first `##[error]Process
+    completed with exit code`, else the line before `Post job cleanup`), so
+    the runner's cleanup never takes the room. Then the lines that name a
+    failure are kept, in order, a vitest `FAIL` line with its block; with
+    none but the step's exit line, the plain tail of what is left. At most `limit` bytes either way.
+    """
+    lines = [_STAMP.sub("", _ANSI.sub("", line)).rstrip() for line in log.splitlines()]
+    end = len(lines)
+    for n, line in enumerate(lines):
+        if _STEP_FAILED.search(line):
+            end = n + 1
+            break
+        if _CLEANUP.match(line):
+            end = n
+            break
+    lines = lines[:end]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    keep: list[bool] = [False] * len(lines)
+    n = 0
+    while n < len(lines):
+        if _FAIL_BLOCK.match(lines[n]):
+            keep[n] = True
+            stop = min(len(lines), n + 1 + FAILURE_BLOCK_LINES)
+            m = n + 1
+            while m < stop and not _BLOCK_END.search(lines[m]) and not _FAIL_BLOCK.match(lines[m]):
+                keep[m] = True
+                m += 1
+            n = m
+            continue
+        if _FAILURE_LINE.search(lines[n]):
+            keep[n] = True
+        n += 1
+    # The step's own exit line names no test: alone, it is the plain tail.
+    if not any(k and not _STEP_FAILED.search(line) for k, line in zip(keep, lines)):
+        return "log tail:", _bound_lines(lines, limit, from_end=True)
+    picked: list[str] = []
+    for n, line in enumerate(lines):
+        if keep[n]:
+            if picked and not keep[n - 1]:
+                picked.append("[...]")
+            picked.append(line)
+    return "failures in the log:", _bound_lines(picked, limit, from_end=False)
+
+
+def _is_gate(name: str) -> bool:
+    """A roll-up over `needs` (`ci-gate`): its log only restates other jobs."""
+    return re.search(r"(?:^|[\s_/-])gate$", name.strip(), re.IGNORECASE) is not None
+
+
+def _excerpt_order(checks: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Each check name once (two runs of one workflow report it twice), gates last.
+
+    Measured on PR 1905: `ci-gate` came first in GitHub's order and took a
+    slot and bytes from the shard jobs that actually failed.
+    """
+    seen: set[str] = set()
+    distinct = []
+    for check in checks:
+        name = str(check.get("name") or "check")
+        if name not in seen:
+            seen.add(name)
+            distinct.append(check)
+    return sorted(distinct, key=lambda check: _is_gate(str(check.get("name") or "")))
 
 
 def _bound(text: str, limit: int = MAX_EXCERPT_BYTES) -> str:
@@ -738,10 +859,11 @@ def excerpt_at(
     """
     names = reading.failing_names()
     parts = [f"CI is red at {sha[:12]}: {', '.join(names) or 'a required check'}"]
-    for check in reading.failing_runs[:MAX_EXCERPT_CHECKS]:
+    checks = _excerpt_order(list(reading.failing_runs))
+    for check in checks[:MAX_EXCERPT_CHECKS]:
         parts.append(_check_section(writer, ref, label, check, token))
-    if len(reading.failing_runs) > MAX_EXCERPT_CHECKS:
-        parts.append(f"[{len(reading.failing_runs) - MAX_EXCERPT_CHECKS} more failing checks not shown]")
+    if len(checks) > MAX_EXCERPT_CHECKS:
+        parts.append(f"[{len(checks) - MAX_EXCERPT_CHECKS} more failing checks not shown]")
     for status in reading.failing_statuses[:MAX_EXCERPT_CHECKS]:
         context = _clip(status.get("context"), MAX_TITLE_CHARS) or "status"
         description = _clip(status.get("description"), MAX_FIELD_CHARS)

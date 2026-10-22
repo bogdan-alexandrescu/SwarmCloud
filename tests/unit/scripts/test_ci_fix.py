@@ -78,6 +78,25 @@ def _log(lines_per_job: int = 5) -> str:
     return "\n".join(out) + "\n"
 
 
+def _jobs(log: str) -> tuple[list[dict], dict[int, str]]:
+    """`_log()` as the Actions API serves it: the run's jobs, and each job's raw log."""
+    ids: dict[str, int] = {}
+    logs: dict[int, list[str]] = {}
+    for line in log.splitlines():
+        job, _step, text = line.split("\t", 2)
+        job_id = ids.setdefault(job, 101 + len(ids))
+        logs.setdefault(job_id, []).append(text)
+    jobs = [{"id": job_id, "name": job, "conclusion": "failure"} for job, job_id in ids.items()]
+    jobs.append({"id": 199, "name": "build images", "conclusion": "success"})
+    return jobs, {job_id: "\n".join(lines) + "\n" for job_id, lines in logs.items()}
+
+
+def _serve_jobs(state: Path, jobs: list[dict], logs: dict[int, str]) -> None:
+    (state / "jobs.json").write_text(json.dumps({"total_count": len(jobs), "jobs": jobs}))
+    for job_id, text in logs.items():
+        (state / f"job-{job_id}.log").write_text(text)
+
+
 def _write_exe(path: Path, text: str) -> None:
     path.write_text(text)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -127,7 +146,19 @@ case "$1 $2" in
       shift
     done
     ;;
-  api\ *)       cat "${FAKE_DIR}/comments.json" ;;
+  api\ *)
+    # The run's jobs and each job's log by path (CIFIX-EXCERPT); anything
+    # else under `gh api` is the pull request's comments.
+    path=""
+    for a in "$@"; do case "$a" in repos/*) path="$a" ;; esac; done
+    case "${path}" in
+      */actions/runs/*/jobs*) cat "${FAKE_DIR}/jobs.json" ;;
+      */actions/jobs/*/logs)
+        id="${path%/logs}"; id="${id##*/}"
+        cat "${FAKE_DIR}/job-${id}.log" ;;
+      *) cat "${FAKE_DIR}/comments.json" ;;
+    esac
+    ;;
   *) echo "fake gh: unexpected: $*" >&2; exit 3 ;;
 esac
 """
@@ -188,6 +219,7 @@ def fake(tmp_path: Path):
     (state / "pr_view.json").write_text(_pr_view())
     (state / "comments.json").write_text(_comments_json([]))
     (state / "log").write_text(_log())
+    _serve_jobs(state, *_jobs(_log()))
     (state / "api_status").write_text("201")
     (state / "api_response").write_text(
         json.dumps(
@@ -279,6 +311,129 @@ def test_the_excerpt_is_capped_and_keeps_every_failed_jobs_tail(fake):
     # the fixer one failure and leave the PR red on the other.
     assert "assert 1 == 2" in out.stdout
     assert "SC2086" in out.stdout
+
+
+# --------------------------------------------------------------------------
+# The fixer sees the failing test (CIFIX-EXCERPT, part of #1914)
+# --------------------------------------------------------------------------
+#
+# Measured 2026-10-22 on run 39703499595 (PR 1905): `gh run view
+# --log-failed` returned 106 lines, all from `ci-gate`, and none from the three
+# failed jobs whose names contain `/`. The jobs are now read through the API.
+
+VITEST_FAIL = (
+    " FAIL  src/__tests__/sections.stylesheet.test.ts > the section stylesheets "
+    "> styles/intake.css > declares no selector twice"
+)
+SELECTOR = ".rn-filters > .c-seg > button"
+CLEANUP = "[command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader"
+
+
+def _stamped(lines: list[str]) -> str:
+    return "\n".join(f"2026-10-22T01:21:{i % 60:02d}.{i:07d}Z {line}" for i, line in enumerate(lines)) + "\n"
+
+
+def _vitest_log() -> str:
+    """A shard's raw job log: the failure, ~4,500 bytes of output under it,
+    the step's error, then ~2,000 bytes of post-job cleanup."""
+    lines = [f" ✓ src/__tests__/passing.test.ts > renders {i:04d}" for i in range(80)]
+    lines += [
+        "⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯",
+        VITEST_FAIL,
+        "AssertionError: expected [ …(1) ] to deeply equal []",
+        "- Expected",
+        "+ Received",
+        "+ [",
+        f'+   {{ "lines": [ 506, 515 ], "selector": "{SELECTOR}" }},',
+        "+ ]",
+        " ❯ src/__tests__/sections.stylesheet.test.ts:41:28",
+        "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯",
+    ]
+    lines += [f"stdout | src/__tests__/other.test.ts > logs {i:04d} " + "." * 40 for i in range(60)]
+    lines += [" Test Files  1 failed | 128 passed (129)", "##[error]Process completed with exit code 1."]
+    lines += ["Post job cleanup."] + [CLEANUP] * 20
+    return _stamped(lines)
+
+
+def _gate_log() -> str:
+    lines = [f'  "job-{i}": {{ "result": "success" }},' for i in range(60)]
+    return _stamped(lines + ["##[error]a needed job did not succeed",
+                             "##[error]Process completed with exit code 1."])
+
+
+def _shard_run(state: Path) -> None:
+    jobs = [
+        {"id": 1, "name": "ci-gate", "conclusion": "failure"},
+        {"id": 2, "name": "swarm-ui component tests (2/4)", "conclusion": "failure"},
+        {"id": 3, "name": "swarm-ui typecheck / component tests", "conclusion": "failure"},
+        {"id": 4, "name": "python", "conclusion": "success"},
+    ]
+    logs = {1: _gate_log(), 2: _vitest_log(), 3: _vitest_log(), 4: "PASSED-JOB-LOG\n"}
+    _serve_jobs(state, jobs, logs)
+    # What `gh run view --log-failed` answered on run 39703499595: ci-gate only.
+    (state / "log").write_text("ci-gate\tgate\t2026-10-22T01:25:50.0000000Z ##[error]a needed job did not succeed\n")
+
+
+def _prompt(state: Path) -> str:
+    return json.loads((state / "request.json").read_text())["steps"][0]["input"]["prompt"]
+
+
+def test_the_fixture_puts_the_failure_beyond_a_plain_tail():
+    # The control: a plain tail of each job's equal share would miss the
+    # failure, so the next test can come out either way.
+    cap = _constant("LOG_EXCERPT_MAX_BYTES")
+    raw = _vitest_log().encode()
+    assert len(raw) - raw.index(VITEST_FAIL.encode()) > cap // 3
+
+
+def test_every_failed_job_is_read_through_the_api_including_a_name_with_a_slash(fake):
+    _, state = fake
+    _shard_run(state)
+    out = _run(fake, "run")
+    assert out.returncode == 0, out.stderr
+    prompt = _prompt(state)
+
+    # MUTATION: read the log with `gh run view --log-failed` again in `run` -> red.
+    assert "=== failed job: swarm-ui component tests (2/4) ===" in prompt
+    assert "=== failed job: swarm-ui typecheck / component tests ===" in prompt
+    assert not any(call.startswith("run view") for call in _calls(state, "gh"))
+    # MUTATION: read every job, not only `conclusion == "failure"` ones, in `failed_jobs` -> red.
+    assert "PASSED-JOB-LOG" not in prompt
+    assert not any(call.endswith("/actions/jobs/4/logs") for call in _calls(state, "gh"))
+
+
+def test_the_excerpt_holds_the_failing_test_not_the_post_job_cleanup(fake):
+    _, state = fake
+    _shard_run(state)
+    out = _run(fake, "run")
+    assert out.returncode == 0, out.stderr
+    prompt = _prompt(state)
+
+    # MUTATION: keep each job's plain tail in `excerpt` (no failure-line selection) -> red.
+    assert VITEST_FAIL.strip() in prompt
+    assert SELECTOR in prompt and "+ Received" in prompt
+    # MUTATION: drop the cut at `##[error]Process completed with exit code` in `excerpt` -> red.
+    assert CLEANUP not in prompt and "Post job cleanup" not in prompt
+    # MUTATION: keep the jobs in the API's order (no gate-last sort) in `excerpt` -> red.
+    assert prompt.index("=== failed job: ci-gate ===") > prompt.index(
+        "=== failed job: swarm-ui typecheck / component tests ==="
+    )
+
+
+def test_the_excerpt_from_the_api_is_redacted_and_capped(fake):
+    _, state = fake
+    jobs, logs = _jobs(_log(lines_per_job=5000))
+    _serve_jobs(state, jobs, logs)
+    out = _run(fake, "run")
+    assert out.returncode == 0, out.stderr
+    excerpt = _prompt(state).split("----- failed jobs, log excerpt -----\n", 1)[1].split(
+        "----- end of excerpt -----", 1)[0]
+
+    # MUTATION: skip `redact` on the logs read through the API -> red.
+    assert GH_TOKEN_VALUE not in excerpt and PASSWORD_VALUE not in excerpt
+    # MUTATION: drop the byte cap in `excerpt` -> red.
+    assert len(excerpt.encode()) <= _constant("LOG_EXCERPT_MAX_BYTES")
+    assert "assert 1 == 2" in excerpt and "SC2086" in excerpt
 
 
 # --------------------------------------------------------------------------
