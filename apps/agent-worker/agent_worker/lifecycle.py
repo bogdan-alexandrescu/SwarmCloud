@@ -200,6 +200,7 @@ from .config import WorkerConfig
 from .control import (
     ARCHIVE_DIGEST_RE,
     CHILD_AWAIT_RESUMES_METADATA_KEY,
+    RELEASE_WAIT_MAX_RESUMES,
     ControlPlane,
     ControlSignals,
     recorded_checkpoint_digests,
@@ -2541,6 +2542,13 @@ class Worker:
 
         §3.8. swarm-api's merge-wake tick reads the release of `sha` and
         returns the task to READY once it is terminal; nothing here waits.
+
+        THE WAIT REFUNDS ITS ATTEMPT, WITHIN A BOUND (AU7-REFUND, decided
+        2026-10-22): `ControlPlane.park_release_wait`, one fenced
+        transaction like the CI wait's park. A plain `park` spent one of
+        `max_attempts` on every wait, and a wait on the last attempt was
+        never woken. A superseded attempt raises `FencedWriteRefused` there
+        with nothing written, which `run` stands down on (invariant 5).
         """
         cfg = self.cfg
         self._checkpoint("release-wait")
@@ -2548,16 +2556,17 @@ class Worker:
         now = utcnow()
         self.log.info("the agent asked to wait for a release; parking", sha=sha)
         with self._metrics_after_the_record():
-            self.control.park(
-                reason=ParkReason.DEPENDENCY_INCOMPLETE,
-                next_eligible_at=now,
+            refunded = self.control.park_release_wait(
                 detail={
                     "park_phase": "release_wait",
                     questions_mod.RELEASE_WAIT_KEY: {
                         "sha": sha, "attempt_id": cfg.attempt_id, "asked_at": now.isoformat()},
                     **({"artifacts": uploaded} if isinstance(uploaded, list) else {}),
                 },
+                max_resumes=RELEASE_WAIT_MAX_RESUMES,
+                uploads=uploaded if isinstance(uploaded, list) else None,
             )
+        self.log.info("parked until the release settles", sha=sha, attempt_refunded=refunded)
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _verify_spec(self, task: dict[str, Any], create_time: Any) -> None:
