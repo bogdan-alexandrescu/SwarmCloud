@@ -17,8 +17,9 @@
 // MUTATION: draw Agents' Waiting tab as one list, or decide Capacity's top
 // group by `needsALook` again, and the tests below go red.
 
+import { useEffect } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 
 import type { ResourceClasses } from '../api'
 import type { Result } from '../fetch'
@@ -32,6 +33,7 @@ const api = vi.hoisted(() => ({
   loadCheckpoints: vi.fn(),
   loadTaskLogs: vi.fn(),
   loadCapacity: vi.fn(),
+  loadLeases: vi.fn(),
 }))
 
 vi.mock('../api', async (importOriginal) => {
@@ -41,6 +43,7 @@ vi.mock('../api', async (importOriginal) => {
 
 const { AgentsScreen } = await import('../Agents')
 const { CapacityScreen } = await import('../Capacity')
+const { useResourceClasses } = await import('../Blockers')
 
 const CLASSES: ResourceClasses = {
   standard: { name: 'standard', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
@@ -64,6 +67,49 @@ const CATALOGUE_LATE_MS = 2500
 
 function lateCatalogue(): Promise<Result<{ resource_classes: ResourceClasses }>> {
   return new Promise((resolve) => setTimeout(() => resolve(ok({ resource_classes: CLASSES })), CATALOGUE_LATE_MS))
+}
+
+/**
+ * THE CATALOGUE IN HAND BEFORE THE SCREEN MOUNTS (FLAKE-UI-2). Both screens
+ * read it through `useResourceClasses`, which starts from the tab's shared
+ * read (`readResourceClasses.peek()`, Blockers.tsx) and otherwise asks from a
+ * passive effect -- one React runs only after the screen's own commit. The
+ * assertions below are about the split the catalogue decides, not about how
+ * soon it lands, so it is read first, through the same shared read the
+ * screens use, and awaited with no clock: the screen's first render then
+ * already has it, and the one async state left is the screen's own read.
+ * `setup.ts`'s `forgetProbes` drops the shared read between tests, so this
+ * runs in every test that renders a screen.
+ */
+async function primeCatalogue(): Promise<void> {
+  let landed = (): void => {}
+  const held = new Promise<void>((resolve) => {
+    landed = resolve
+  })
+  function Prime() {
+    const classes = useResourceClasses()
+    useEffect(() => {
+      if (classes !== null) landed()
+    }, [classes])
+    return null
+  }
+  const { unmount } = render(<Prime />)
+  await held
+  unmount()
+}
+
+/**
+ * EVERY STUBBED READ ANSWERED, AND WHAT IT CAUSED DRAWN (FLAKE-UI-2). The
+ * stubs answer from already-settled promises, so one macrotask drains every
+ * chain they start; inside `act`, React then renders and runs the effects
+ * those answers cause before this returns. Order decides it, not a clock: it
+ * was `waitFor`'s 2 s budget, which a loaded runner spent on the commit
+ * alone and failed with the rows half drawn.
+ */
+async function settle(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
 }
 
 function waiting(over: Partial<Task>): Task {
@@ -129,11 +175,17 @@ describe('the Agents list splits Waiting into Needs action and No room', () => {
     api.loadTasks.mockResolvedValue(ok({ tasks: [FULL, TOO_SMALL, UNSET_TASK], tenant_id: 'acme' }))
     api.loadResourceClasses.mockImplementation(lateCatalogue)
 
+    await primeCatalogue()
     render(<AgentsScreen onOpen={() => {}} />)
+    await settle()
 
-    await waitFor(() => {
-      expect(taskIds(section(/^Needs action/))).toEqual(['tsk_toosmall0', 'tsk_unsetpool'])
-    })
+    // MUTATION: drop `primeCatalogue()` above and, with the catalogue answering
+    // after the list's read (`lateCatalogue`), this reads ['tsk_unsetpool'] --
+    // the push run 39719361013 failure, every run.
+    expect(taskIds(section(/^Needs action/))).toEqual(['tsk_toosmall0', 'tsk_unsetpool'])
+    // MUTATION: prime through anything but the shared read the list uses and
+    // the list asks the catalogue a second time.
+    expect(api.loadResourceClasses).toHaveBeenCalledTimes(1)
     expect(taskIds(section(/^No room/))).toEqual(['tsk_fullpool0'])
     // Needs action comes first: it is the group somebody has to act on.
     const heads = screen.getAllByRole('heading').map((h) => h.textContent ?? '')
@@ -193,15 +245,23 @@ describe('Capacity puts the pools that need a person under "Needs action" at the
   it('holds exactly the blockerGroup needs-action pools, and leaves a full pool in its family', async () => {
     const data: Capacity = { pools: POOLS, runner_profiles: {}, tenant_id: 'eng', generated_at: '2026-10-01T10:00:00Z' }
     api.loadCapacity.mockResolvedValue(ok(data))
+    // The board reads leases beside capacity (`loadPoolsBoard`). Unstubbed it
+    // was the fixture, behind a real 180 ms timer, so the board waited on a
+    // clock (FLAKE-UI-2). No lease decides the group under test.
+    api.loadLeases.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     api.loadResourceClasses.mockImplementation(lateCatalogue)
 
+    await primeCatalogue()
     render(<CapacityScreen />)
+    await settle()
 
     const names = (el: Element) => [...el.querySelectorAll('tbody .ctl-sub')].map((s) => s.textContent ?? '').sort()
-    await waitFor(() => {
-      const top = section(/^Needs action/)
-      expect(names(top)).toEqual(['resource:large', 'resource:standard', 'runner:codex', 'tenant:eng'])
-    })
+    // MUTATION: drop `primeCatalogue()` above and `resource:large` -- too small
+    // only once the catalogue says a large task weighs 4 -- is missing here.
+    expect(names(section(/^Needs action/))).toEqual(['resource:large', 'resource:standard', 'runner:codex', 'tenant:eng'])
+    // MUTATION: as above, a second catalogue read means the board did not
+    // draw from the primed shared read.
+    expect(api.loadResourceClasses).toHaveBeenCalledTimes(1)
     const top = section(/^Needs action/)
     // It is the first group on the board.
     expect(document.querySelector('.cap-families > section')).toBe(top)

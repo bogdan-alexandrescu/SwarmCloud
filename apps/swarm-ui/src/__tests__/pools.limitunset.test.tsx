@@ -19,15 +19,16 @@
 // same facts now.
 
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 
 import type { Result } from '../fetch'
-import type { Capacity, Pool, RunnerProfile } from '../types'
+import type { Capacity, Me, Pool, RunnerProfile } from '../types'
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
   loadAdminPools: vi.fn(),
   setPoolLimit: vi.fn(),
+  loadMe: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
@@ -62,6 +63,28 @@ function pool(name: string, over: Partial<Pool> = {}): Pool {
 
 /** `tenant:eng` exactly as `pool_to_api` serves a document with no `hard_limit`. */
 const UNSET = pool('tenant:eng', { hard_limit: null, effective_limit: null, available: null })
+
+/**
+ * WHO THE EDITOR TEST RUNS AS: A PLATFORM ADMIN (FLAKE-UI-2, part of #1680).
+ * Unstubbed, `loadMe` is the fixture, which since QAFIX4-FIXTURE-A answers as
+ * the `member` persona -- not an admin -- after a 150 ms timer. Whether the
+ * editor opened then depended on whether the click beat that timer: on the
+ * `push` run 39719361013 of PR 1924 it did not, `edit` was refused, and the
+ * field was never found. The editor is an admin's control, so the caller is
+ * pinned as one.
+ */
+function adminMe(): Me {
+  return {
+    tenant: {
+      tenant_id: 'eng', kind: 'group', principal: 'eng@example.com', display_name: null,
+      created_at: '2026-09-01T00:00:00Z', max_active: 10, capacity_units: 20, monthly_budget_usd: null,
+      enabled: true, credentials: [], service_account: null, gcs_prefix: null, namespace: null,
+    },
+    principal: { email: 'a@example.com', domain: 'example.com', groups: [], is_admin: true },
+    environment: 'dev',
+    environment_declared: true,
+  }
+}
 
 function profile(pools: string[]): RunnerProfile {
   return { resource_class: 'standard', backend: 'cloudrun', provider: 'anthropic', units: 1, pools }
@@ -111,12 +134,16 @@ describe('Capacity draws a pool with no limit set as that, not as ok or limit 0'
 describe('Pool limits draws a pool with no limit set as that, not as 0 agents', () => {
   it('opens the editor on an empty field, not "null", and will not save an empty field as 0', async () => {
     api.loadCapacity.mockResolvedValue(ok(capacity()))
+    api.loadMe.mockResolvedValue(ok(adminMe()))
     render(<AdminSettingsScreen />)
-    const row = await waitFor(() => {
-      const el = document.getElementById('limit-tenant:eng')
-      expect(el).not.toBeNull()
-      return el as HTMLElement
-    }, WAIT)
+    // Every stubbed read answered -- capacity, admin pools and who-am-I -- and
+    // what they caused drawn, by order rather than a clock: they answer from
+    // settled promises, so one macrotask inside `act` drains them all.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    const row = document.getElementById('limit-tenant:eng')
+    if (row === null) throw new Error('no Pool limits row for tenant:eng')
     // The figure's slot holds a dash with its reason, and the words follow
     // `edit` so they cannot widen the slot and move it (#503). Never a 0.
     const slot = row.querySelector('.adm-ceiling')!
@@ -131,7 +158,13 @@ describe('Pool limits draws a pool with no limit set as that, not as 0 agents', 
     // landed, `edit` was refused, and the editor never opened. Waiting past
     // the timer forces that order on every run.
     await new Promise((resolve) => setTimeout(resolve, ME_FIXTURE_MS + 50))
-    fireEvent.click(row.querySelector('button[aria-label^="Edit ceiling for tenant:eng"]') as HTMLElement)
+    // The who-am-I read has landed before the click, on every run: the order
+    // that failed in CI, now with an admin answering it.
+    expect(api.loadMe).toHaveBeenCalledTimes(1)
+    // MUTATION: drop the `loadMe` stub (the member fixture answers) and `edit`
+    // is refused -- this name and the field below are never found.
+    const edit = screen.getByRole('button', { name: 'Edit ceiling for tenant:eng' })
+    fireEvent.click(edit)
     const field = (await screen.findByLabelText('Hard limit for tenant:eng', { exact: false })) as HTMLInputElement
     expect(field.value).toBe('')
     expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true)
