@@ -295,13 +295,23 @@ def evaluate(
     else:
         if not runs and not statuses:
             return CiReading(state=NONE)
+        # One rule for every check (BGD, 2026-10-22, CHECK-RULE-2, part of
+        # #1999): each check -- its name and App -- is judged by the latest
+        # run of each event, as the worker's `judge_other_checks` judges it,
+        # and only those deciding runs are counted and excerpted: a
+        # superseded failure, or a superseded run still in progress, is
+        # neither. Held equal by tests/unit/scripts/test_auto_merge_workflow.py.
+        by_check: dict[tuple[Any, Any], list[Mapping[str, Any]]] = {}
         for run in runs:
-            reading.checks.append(run_entry(run))
-            state = other_check_state(run)
-            if state == RED:
-                reading.failing_runs.append(run)
-            elif state == PENDING:
-                reading.pending.append(str(run.get("name") or "check"))
+            by_check.setdefault((run.get("name"), _app_id(run)), []).append(run)
+        for mine in by_check.values():
+            for run in latest_per_event(mine):
+                reading.checks.append(run_entry(run))
+                state = other_check_state(run)
+                if state == RED:
+                    reading.failing_runs.append(run)
+                elif state == PENDING:
+                    reading.pending.append(str(run.get("name") or "check"))
         for status in statuses:
             reading.checks.append(status_entry(status))
             state = status_state(status)

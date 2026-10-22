@@ -71,8 +71,9 @@
 #   select --prs <gh pr list json> --required <names file> [--allow-unknown-mergeable]
 #       Who may board. Prints `<N>\t<head sha>\t<title>` per pull request,
 #       oldest first.
-#   judge --check-runs <json> --statuses <json> --required <names file>
-#       A head's checks: `verdict\t<green|red|pending>`, then
+#   judge --check-runs <json> --statuses <json> --required <names file> [--workflow-runs <json>]
+#       A head's checks, each by the latest run of each event (the Actions
+#       runs give each check suite's event): `verdict\t<green|red|pending>`, then
 #       `failed\t<name>\t<url>` per failed check.
 #   plan --verdict <green|red> --train "<N...>" --suspects "<N...>"
 #       What follows a judged train: `eject=`, `next=`, `suspects=`.
@@ -187,26 +188,54 @@ cmd_select() {
 # ---------------------------------------------------------------------------
 
 cmd_judge() {
-  local check_runs="" statuses="" required=""
+  local check_runs="" statuses="" required="" workflow_runs=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --check-runs) [[ $# -ge 2 ]] || die "--check-runs needs a value"; check_runs="$2"; shift 2 ;;
+      --workflow-runs) [[ $# -ge 2 ]] || die "--workflow-runs needs a value"; workflow_runs="$2"; shift 2 ;;
       --statuses) [[ $# -ge 2 ]] || die "--statuses needs a value"; statuses="$2"; shift 2 ;;
       --required) [[ $# -ge 2 ]] || die "--required needs a value"; required="$2"; shift 2 ;;
       *) die "judge: unknown argument: $1" ;;
     esac
   done
   [[ -f "${check_runs}" && -f "${statuses}" ]] || die "judge: needs --check-runs and --statuses files"
+  if [[ -n "${workflow_runs}" && ! -f "${workflow_runs}" ]]; then
+    die "judge: no --workflow-runs file: ${workflow_runs}"
+  fi
   local req
   req="$(required_json "${required}")"
-  # REST spells conclusions in lower case. The check-runs listing is the
-  # latest run per name (filter=latest, the default), the combined status the
-  # latest state per context, so a re-run that passed replaces its failure.
-  jq -rn --slurpfile cr "${check_runs}" --slurpfile st "${statuses}" --argjson required "${req}" '
+  # REST spells conclusions in lower case. The combined status is the latest
+  # state per context. The check-runs listing is NOT one run per name:
+  # GitHub's REST docs say only that `filter=latest`, the default, "returns
+  # the most recent check runs", filtering "by their completed_at timestamp"
+  # (https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference),
+  # and a check that ran in two check suites at one head -- a push and a
+  # pull_request run, or a workflow run started again -- is listed once per
+  # suite: PR 1966 listed ci-gate twice at 5b25774, (failure, success) (#1999).
+  # So a check is decided here by the latest run (highest id) of EACH event
+  # that ran it (BGD 2026-10-22, CHECK-RULE-2, part of #1999), as the worker's
+  # merge step, swarm-api and auto-merge.yml's gate 5 decide it: a re-run
+  # replaces the earlier runs of its own event, never another's. The event is
+  # the one that made the run's check suite, from --workflow-runs (GET
+  # actions/runs?head_sha=, optional); a suite no Actions run names is its own
+  # group, so without the file each check suite is judged on its own.
+  jq -rn --slurpfile cr "${check_runs}" --slurpfile st "${statuses}" \
+    --slurpfile wf "${workflow_runs:-/dev/null}" --argjson required "${req}" '
     def good: . as $c | ["success", "skipped", "neutral"] | index($c) != null;
     def bad: . as $c | ["failure", "timed_out", "cancelled", "action_required",
                         "startup_failure", "stale", "error"] | index($c) != null;
-    ( [ ($cr[0].check_runs // [])[]
+    ( [ ($wf[0].workflow_runs // [])[]
+        | select(.check_suite_id != null and (.event // "") != "")
+        | {key: (.check_suite_id | tostring), value: .event} ]
+      | from_entries ) as $events
+    | ( [ ($cr[0].check_runs // []) | to_entries[]
+          | .value + {position: .key,
+                      group: ($events[(.value.check_suite.id // "" | tostring)]
+                              // "check suite \(.value.check_suite.id // "")")} ]
+        | group_by([.name, .group])
+        | map(max_by([(.id // 0), .position]))
+        | sort_by(.position) ) as $latest
+    | ( [ $latest[]
         | {name, done: (.status == "completed"), result: (.conclusion // ""),
            url: (.html_url // .details_url // "")} ]
     + [ ($st[0].statuses // [])[]
@@ -697,7 +726,18 @@ handle_train() {
   local cr="${WORK}/check-runs.json" st="${WORK}/status.json" verdict_file="${WORK}/verdict.tsv"
   gh api "repos/${GH_REPO}/commits/${head}/check-runs?per_page=100" >"${cr}"
   gh api "repos/${GH_REPO}/commits/${head}/status?per_page=100" >"${st}"
-  cmd_judge --check-runs "${cr}" --statuses "${st}" --required "${WORK}/required.txt" >"${verdict_file}"
+  # The event of each check suite, read only when some check ran more than
+  # once at the head, as auto-merge.yml's gate 5 reads it (CHECK-RULE-2). A
+  # read GitHub refuses (no `actions: read`) leaves no events, and each
+  # check suite is then judged on its own: never looser.
+  local wf="${WORK}/workflow-runs.json"
+  printf '{"workflow_runs": []}\n' >"${wf}"
+  if jq -e '[(.check_runs // [])[].name] | group_by(.) | any(length > 1)' "${cr}" >/dev/null; then
+    gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100" >"${wf}" 2>/dev/null \
+      || printf '{"workflow_runs": []}\n' >"${wf}"
+  fi
+  cmd_judge --check-runs "${cr}" --statuses "${st}" --workflow-runs "${wf}" \
+    --required "${WORK}/required.txt" >"${verdict_file}"
   local verdict failed
   verdict="$(awk -F'\t' '$1 == "verdict" { print $2 }' "${verdict_file}")"
   failed="$(awk -F'\t' '$1 == "failed" { printf "- [%s](%s)\n", $2, $3 }' "${verdict_file}")"

@@ -449,6 +449,37 @@ def required_check_label(runs: list[Mapping[str, Any]]) -> str:
     )
 
 
+def judge_other_checks(checks: list[CheckFacts]) -> tuple[list[str], list[str]]:
+    """The no-required path's decision over every check at the head: the
+    labels of the checks pending and of the checks failed.
+
+    One rule for every check (BGD, 2026-10-22, CHECK-RULE-2, part of #1999):
+    each check -- its name and App, so one App's run never supersedes
+    another's -- is judged by the latest run of each event that ran it
+    (`latest_per_event`), and only those deciding runs by
+    `other_check_blocks`. A superseded failure, or a superseded run still in
+    progress, no longer holds the merge. A check with an event's latest run
+    failed is failed even beside one still running: waiting cannot make it
+    green, and the merge refused on it before this rule too. The label names
+    the deciding run of each event, as `required_check_label` does.
+    """
+    by_check: dict[tuple[str, int | None], list[dict[str, Any]]] = {}
+    for check in checks:
+        by_check.setdefault((check.name, check.app_id), []).append(check.as_run())
+    pending: list[str] = []
+    failed: list[str] = []
+    for (name, _app_id), runs in by_check.items():
+        blocking = [run for _event, run in latest_per_event(runs) if other_check_blocks(run)]
+        if not blocking:
+            continue
+        label = f"{name} ({required_check_label(runs)})"
+        if any(run.get("status") == "completed" for run in blocking):
+            failed.append(label)
+        else:
+            pending.append(label)
+    return pending, failed
+
+
 def latest_reading(runs_by_check: Mapping[str, list[CheckFacts]],
                    green: frozenset[str] | set[str]) -> tuple[list[str], list[str]]:
     """What a CI park RECORDS (WAIT-RECORD, part of #1782): the checks pending
@@ -462,7 +493,7 @@ def latest_reading(runs_by_check: Mapping[str, list[CheckFacts]],
     not in `green` is failed.
 
     A RECORD, NOT THE DECISION: the merge decides on `required_check_state`
-    and `other_check_blocks`. The record is what the "Why it's waiting"
+    and `judge_other_checks`. The record is what the "Why it's waiting"
     panel names; it never decides anything, and for a required check it
     reads exactly what the decision reads (CHECK-RULE, part of #1999).
     """
@@ -1551,10 +1582,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
             return wait("no_checks",
                         f"{pr.base_ref} requires no check and none has reported at "
                         f"{head}; the merge needs at least one green check", [])
-        for check in checks:
-            if other_check_blocks(check.as_run()):
-                label = f"{check.name} ({check.conclusion or check.status})"
-                (pending if check.status != "completed" else failed).append(label)
+        pending, failed = judge_other_checks(checks)
     if failed:
         return _red(run, own, head=head, failed=failed, wait=wait)
     if pending:
