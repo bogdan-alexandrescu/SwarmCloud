@@ -281,6 +281,18 @@ resources, viewAccessor on the view only".** Row L-1 is decided as written;
 its apply is still the owner's, at `dev-iam`, when lane AU-5's release
 reaches it.
 
+**Built, then found impossible on `_Default`.** AU5-LOG-VIEW built the view
+(`terraform/infra/log_view.tf`), and release run 39742374084 (2026-10-22)
+failed creating it: `Error creating LogView: googleapi: Error 400: Filter
+exceeds the view filter nesting depth limit of 1.` Google's LogView reference
+allows a view filter only a logical AND of `=`/`!=` checks on the originating
+project, folder, organization or billing account, the resource type and the
+log id, so no view on `_Default` can select by cluster or namespace, and the
+other team's `agents-staging` cluster writes to that bucket. The view and the
+L-1 binding are therefore off (`swarm_workers_log_view_enabled`, default
+`false`, lane AU5-VIEWOFF), and `logs_query` answers `logs_unavailable`, its
+documented refusal, until the owner decides the redesign (#1933).
+
 Until the view exists, `logs_query` answers `logs_unavailable`, a real refusal
 that says what is missing. Platform components' logs (scheduler, reconciler,
 swarm-api) are **not** in a tenant agent's reach under invariant 9: they mix

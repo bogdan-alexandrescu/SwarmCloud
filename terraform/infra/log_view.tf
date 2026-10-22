@@ -45,6 +45,27 @@
 # logs out of everything swarm-api can read.
 #
 # ---------------------------------------------------------------------------
+# OFF BY DEFAULT (lane AU5-VIEWOFF, part of #1933)
+# ---------------------------------------------------------------------------
+#
+# Release run 39742374084 (2026-10-22) failed creating the view:
+#
+#   Error creating LogView: googleapi: Error 400: Filter exceeds the view
+#   filter nesting depth limit of 1.
+#
+# Google's LogView reference allows a view filter only a logical AND of
+# `=`/`!=` checks on the source (project, folder, organization, billing
+# account), the resource type and the log id. No view on _Default can select
+# by cluster or namespace, and the other team's cluster writes to that bucket,
+# so this view cannot be built as designed. (verify_logs.tf records the
+# guide's newer "flexible filter" text admitting labels; what the 400 measured
+# is the nesting, and the reference text above is the restriction quoted.) Both resources below therefore
+# carry count = var.swarm_workers_log_view_enabled (default false, variables.tf
+# says why) and the output is null; logs_query answers logs_unavailable. The
+# redesign is the owner's (#1933). Nothing existed to remove: the view's
+# create failed and the binding was never attempted.
+#
+# ---------------------------------------------------------------------------
 # WHAT IS NOT VERIFIED. Nothing here has been applied.
 # ---------------------------------------------------------------------------
 #
@@ -77,6 +98,12 @@ locals {
   # (entries.list resourceNames).
   swarm_workers_log_view = "${local.swarm_workers_log_bucket}/views/${local.swarm_workers_log_view_id}"
 
+  # These branches are a SINK filter's shape, not a view's: Cloud Logging
+  # refused their OR of AND branches in a view filter (nesting depth limit of
+  # 1; see OFF BY DEFAULT above).
+  # They are kept, with the tftest that parses and evaluates them, for the
+  # redesign to reuse.
+  #
   # THE BRANCHES. The filter is these, each parenthesised, joined by OR -- and
   # nothing else; log_view.tftest.hcl holds it to that, parses every clause,
   # and evaluates the result against entries that must and must not be read.
@@ -111,6 +138,8 @@ locals {
 # `bucket` is the bucket's full name, as verify_logs.tf writes it; the provider
 # derives `parent` and `location` from it.
 resource "google_logging_log_view" "swarm_workers" {
+  count = var.swarm_workers_log_view_enabled ? 1 : 0
+
   name        = local.swarm_workers_log_view_id
   bucket      = local.swarm_workers_log_bucket
   filter      = join(" OR ", [for b in local.swarm_workers_log_branches : "(${b})"])
@@ -121,15 +150,17 @@ resource "google_logging_log_view" "swarm_workers" {
 
 # IAM row L-1 (owner decision Q4, applied by the owner at dev-iam).
 resource "google_logging_log_view_iam_member" "swarm_api_reads_swarm_workers" {
+  count = var.swarm_workers_log_view_enabled ? 1 : 0
+
   parent   = "projects/${var.project_id}"
   location = local.swarm_workers_log_location
-  bucket   = google_logging_log_view.swarm_workers.bucket
-  name     = google_logging_log_view.swarm_workers.name
+  bucket   = google_logging_log_view.swarm_workers[0].bucket
+  name     = google_logging_log_view.swarm_workers[0].name
   role     = "roles/logging.viewAccessor"
   member   = module.iam.service_account_members["swarm-api"]
 }
 
 output "swarm_workers_log_view" {
-  description = "The full resource name of the swarm-workers log view, the one view swarm-api may read entries through (agent-autonomy.md §3.5)."
-  value       = local.swarm_workers_log_view
+  description = "The full resource name of the swarm-workers log view, the one view swarm-api may read entries through (agent-autonomy.md §3.5); null while swarm_workers_log_view_enabled is false."
+  value       = var.swarm_workers_log_view_enabled ? local.swarm_workers_log_view : null
 }
