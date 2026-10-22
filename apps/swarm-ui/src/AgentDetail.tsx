@@ -878,7 +878,7 @@ function DtFailure({ run, lastLine }: { run: AgentRun; lastLine: ReactNode }) {
   return (
     // A CANCEL IS NOT A FAILURE: it leads the same way, on the neutral rule,
     // so an operator's own Stop does not read as the platform's fault.
-    <section className={`dt-card dt-now ${task.state === 'CANCELLED' ? 'is-neu' : 'is-bad'}`} data-lead={requested ? 'cancelled' : 'failed'}>
+    <section className={`dt-card dt-now dt-fail ${task.state === 'CANCELLED' ? 'is-neu' : 'is-bad'}`} data-lead={requested ? 'cancelled' : 'failed'}>
       {/* NO `Attempts ›` HERE (QA-115). The Progress card under the strip
           links the same tab, so the page offered two links to one place. */}
       <DtCardHead title={heading}>
@@ -891,11 +891,16 @@ function DtFailure({ run, lastLine }: { run: AgentRun; lastLine: ReactNode }) {
           // THE ABSENCE SAYS WHERE TO LOOK (QA-115). `end cause — not
           // recorded` named the gap and stopped; what the task did write
           // is the reason below it, when there is one.
-          <span className="dt-nf is-absent" title="This API wrote no end cause on the agent, so why it ended is only what the text below says.">
+          //
+          // AND IT SAYS WHERE FIRST (QA-115, run 5b, box comment
+          // 6283738952). `no end cause recorded · the error below is what it
+          // wrote` opened on "no cause", and that is what was read: the
+          // cause is the text below, and only its machine code is missing.
+          <span className="dt-nf is-absent" title="This API wrote no end-cause code on the agent, so why it ended is what the text below says.">
             {requested
-              ? 'no end cause recorded · the stop request below is why'
+              ? 'why it ended: the stop request below · no end-cause code was written'
               : text
-                ? 'no end cause recorded · the error below is what it wrote'
+                ? 'why it ended: the error below · no end-cause code was written'
                 : 'no end cause recorded'}
           </span>
         )}
@@ -1746,9 +1751,16 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
           : {
               name,
               value: cores(v),
+              // WHICH MEAN THIS IS (FF-D5a, c05 "Name every count where it
+              // is printed", box comment 6298220484). The over-time summary
+              // under these rows prints a second mean, of its 5 s samples;
+              // this one is the attempt's CPU-seconds over the time its
+              // runners ran (help `cpu-figures`), so setup and retry waits
+              // are not in it and the two differ by design.
               note:
                 (limit === null ? unknownLimit : `of ${cores(limit)} cores${name === 'CPU peak' && whose !== null ? ` · ${whose}` : ''}`) +
-                (name === 'CPU peak' && sized !== null ? ` · ${sized}` : ''),
+                (name === 'CPU peak' && sized !== null ? ` · ${sized}` : '') +
+                (name === 'CPU mean' ? ' · CPU-seconds over runner time' : ''),
               pct: limit === null ? null : pctOf(v, limit),
             },
       )
@@ -2768,10 +2780,22 @@ export function AttemptModel({ a, task, isLatest }: { a: AttemptRow; task: Task 
       <li className={`ctl-fact${model === null ? ' is-absent' : ''}`}>
         <b>model</b>
         {model === null ? (
-          <Mark
-            kind="absent"
-            say="No model is recorded for this attempt: it ran before attempts recorded their model, or its runner starts no model."
-          />
+          // NOT `not measured` (QA-113, run 5b, box comment 6283738266). A
+          // model is a record, not a measurement, and the mark's word -- the
+          // one `Mark kind="absent"` draws -- said nothing of why. The mark's
+          // shape stays, with the word that is true, and the reason is on
+          // the glass beside it rather than in an accessible name only --
+          // five words, since it repeats on every attempt card (prose budget,
+          // prose.runs.test.tsx); the whole sentence is its title.
+          <>
+            <span className="ctl-mark is-absent">not recorded</span>
+            <small
+              className="att-model-why"
+              title="No model is recorded for this attempt: it ran before attempts recorded their model, or its runner starts no model."
+            >
+              older attempt, or no-model runner
+            </small>
+          </>
         ) : (
           <span className="mono">{model}</span>
         )}

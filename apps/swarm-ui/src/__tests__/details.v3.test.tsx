@@ -387,7 +387,8 @@ describe('one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost', () 
     // MUTATION: leave the Resources row's note at `of 2 cores`.
     expect(note('CPU peak')).toBe('1.6 80% of 2 cores · cgroup limit (class 4 vCPU)')
     // MUTATION: repeat the limit's words on the mean row too; once per card is enough.
-    expect(note('CPU mean')).toBe('0.7 35% of 2 cores')
+    // The mean row names its own source instead (FF-D5a, QAFIX5-TASK-DETAIL).
+    expect(note('CPU mean')).toBe('0.7 35% of 2 cores · CPU-seconds over runner time')
   })
 
   it('a failed attempt read leaves the task’s own figures and dashes the rest', () => {
