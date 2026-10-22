@@ -587,7 +587,7 @@ and it ends with `scripts/changed-guards.sh` and `scripts/publish-scan.sh`.
 |---|---|---|---|---|---|---|
 | **VQ-1 SPEC** | its §4: the renderer and the findings validator | new `apps/swarm-api/swarm_api/qaspec.py`, new `tests/unit/control_plane/test_qaspec.py`, new `docs/qa/any-app-qa.md` | none | a rendered spec passes `swarm_mcp.workflows.read_spec`; it names no console path, `localhost` or `npm`; groups are at most 8 by 8; an `own_login` target's captures carry `--keep-storage`; a `mutating` flow on a `production` target is refused; every step has `allow_empty_diff` and the workflow `merge: off`; no step's input carries a target field (§1.1); a finding without evidence fails validation | none | no |
 | **VQ-2 TARGETS** | its §1, §2.1, §2.2's route, §6's `:run` | new `apps/swarm-api/swarm_api/qatargets.py`, new `apps/swarm-api/swarm_api/routes/qatargets.py`, `apps/swarm-api/swarm_api/main.py` (one `include_router`), new `tests/unit/control_plane/test_qa_targets.py`, `test_qa_target_credential.py`, `test_qa_target_attempt_route.py` | VQ-1, AU-0 (the flag `:run` reads), AU-4 (`main.py`) | a member cannot register; `http`, an IP literal, userinfo or an internal host is refused; a run on a `pending` host is `qa_target_host_pending`; changing the host resets approval; the credential value (built with `secrets.token_hex`) appears in no response, log line or Firestore write; a link is single-use, bound to its email, and expires; the attempt route takes the tenant from the lease, answers 204 with no target and as missing for another tenant's; `:run` with the registration's flag off is `issue_writes_off` unless `file: "none"` | none (reads V-2's secret; `qa_credential_unavailable` until VQ-3 is applied) | no |
-| **VQ-3 QA-SECRET** | its §7 secret and IAM (open question VQ-Q2) | new `terraform/infra/qa_targets.tf`, new `tests/terraform/qa_secret.tftest.hcl` | VQ-Q2 answered | `terraform test`: one `swarm-tenant-<t>-qa` per tenant, empty, `managed-by=swarm-terraform`; swarm-api's account is adder and accessor on each one only; no worker account is bound | **V-1, V-2**, the secrets | **yes** |
+| **VQ-3 QA-SECRET** | its §7 secret and IAM (VQ-Q2, answered 2026-10-22) | new `terraform/infra/qa_targets.tf`, new `tests/terraform/qa_secret.tftest.hcl` | VQ-Q2 answered | `terraform test`: one `swarm-tenant-<t>-qa` per tenant, empty, `managed-by=swarm-terraform`; swarm-api's account is adder and accessor on each one only; no worker account is bound | **V-1, V-2**, the secrets | **yes** |
 | **VQ-4 GATE-SIGNIN** | its §2.2 to §2.4 and §3 | new `apps/agent-worker/agent_worker/qa_target.py`, `apps/agent-worker/agent_worker/handoff.py` (`HandoffPath.prepare`, one call), new `apps/agent-worker/agent_worker/livegate/qatarget.py`, `livegate/ctl.py` (verb `qa_sign_in`), `livegate/cdpproxy.py` (the held sign-in and the value scrub), `livegate/session.py` (export exclusion), `images/agent-runtime-browser/swarm-handoff` (`sign-in`), new `tests/unit/worker/test_qa_target_signin.py`, new `tests/unit/worker/test_qa_target_gate_policy.py` | VQ-2 | the password's bytes, URL-encoded and base64 forms reach no agent-bound frame, including a base64 response body; the agent's commands are held during the sign-in and every password input is cleared before release; an MFA or CAPTCHA page answers `qa_sign_in_challenge` and offers no hand-off; a `POST` to the target is refused, one to a `read_posts` path is not, a non-GET off-origin is refused even in a mutating flow; a top-frame navigation off the approved origins gets the gate page; navigations are spaced by `navigation_ms`; `session_export` excludes the target's origins; `wipe` clears the credential; the worker logs only the target id | none | no |
 | **VQ-5 CAPTURE-GENERIC** | its §4.1 discover and §4.2's capture flags | `images/agent-runtime-browser/swarm_qa.py`, `tests/unit/worker/test_swarm_qa.py` | none | `--keep-storage` never runs `RESET_STATE_JS`; `--settle generic` never evaluates `PENDING_JS`; the clock is not frozen unless asked; `discover` stays same-origin, skips exclusions and `robots.txt` `Disallow`, stops at its page and depth caps and writes a valid route list; the console template's captures are unchanged | none | no |
 | **VQ-6 CONSOLE-PLUGIN** | its §1 registration screen, §2.1's link form, §6's on-demand run | new `apps/swarm-ui/src/QaTargets.tsx`, new `apps/swarm-ui/src/qaTargetsApi.ts`, `apps/swarm-ui/src/Repositories.tsx` (one mount), new `apps/swarm-mcp/swarm_mcp/qatargets.py`, `apps/swarm-mcp/swarm_mcp/server.py` (three tools), new `apps/swarm-ui/src/__tests__/qatargets.test.tsx`, new `tests/unit/mcp/test_qa_targets_tools.py` | VQ-2, AU-0 (`Repositories.tsx`) | the credential form reads its link token from the URL and removes it from the address bar, as `ProviderKeys.tsx` does; no plugin tool takes or returns a credential; `swarm_qa_target_credential_link` returns only a URL and an expiry; a member sees Run and not Edit; a pending host shows why it cannot run | none | no |
@@ -605,7 +605,7 @@ and it ends with `scripts/changed-guards.sh` and `scripts/publish-scan.sh`.
 * **Wave 4:** AU-7 (after AU-1, AU-3).
 * **Wave 5:** FR-3 (after FR-1, FR-2, AU-1, AU-6).
 * **Wave 6:** FR-4 (after FR-3, AU-7, VQ-2), VQ-7 (after FR-3, VQ-2).
-* **VQ-3** starts when VQ-Q2 is answered; nothing else waits on its lane,
+* **VQ-3** can start: VQ-Q2 was answered on 2026-10-22. Nothing else waits on its lane,
   only own-login sign-in waits on its apply.
 
 **Lanes that need the owner at `dev-iam`:** AU-2 (L-2 and the `-git-wf`
@@ -613,8 +613,8 @@ secret), AU-5 (L-1), VQ-3 (V-1, V-2 and the per-tenant QA secrets). AU-9
 edits the frozen contract under the owner's acceptance of request 113 (Q6).
 After the merges the owner also: creates the `-git-wf` token
 (`create-secrets.sh --stdin`), creates the `failure-review` schedule and
-switches its merge gate to `auto` through the audited switch (Q8), and
-approves each QA target's host (VQ-Q1).
+switches its merge gate to `auto` through the audited switch (Q8). Any
+platform admin approves each QA target's host, audited (VQ-Q1).
 
 ---
 
@@ -649,11 +649,14 @@ Each is also written where its question was asked.
   per_run_usd 200, per_day_usd 1000, max_concurrent 1" (failure-review.md
   §7).
 
-### 7.2 Still open (visual QA of any app)
+### 7.2 Answered, 2026-10-22 (~06:40Z, recorded on task_1eefab7ffc1941d58986): visual QA of any app
 
-In this lane's `questions.json`, recommended option first;
-[visual-qa-any-app.md](visual-qa-any-app.md) §9 gives each in full.
+[visual-qa-any-app.md](visual-qa-any-app.md) §9 gives each with its options.
 
-* **VQ-Q1 — who approves a QA target's host.**
+* **VQ-Q1 — who approves a QA target's host.** Owner decision, 2026-10-22:
+  "Any platform admin, audited".
 * **VQ-Q2 — where the test credential lives** (a secret, rows V-1 and V-2).
-* **VQ-Q3 — how a filed issue shows its screenshot.**
+  Owner decision, 2026-10-22: "One secret per tenant, swarm-tenant-<t>-qa".
+* **VQ-Q3 — how a filed issue shows its screenshot.** Owner decision,
+  2026-10-22: "Console link by default; evidence branch as a per-target
+  opt-in for private repositories".
