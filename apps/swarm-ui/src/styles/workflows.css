@@ -87,10 +87,14 @@
      reported' is 15 characters of 12px mono (108px) inside the cell's 10px a
      side. The name pays the 28px: at 1280 with the nav open the list is
      896px and the name keeps 204px, over the 168px D8 and R10 hold. Below
-     1280 the column stays 100px and V163's wrap stands. */
+     1280 the column stays 100px and V163's wrap stands.
+     The width alone makes it one line: the coverage keeps V163's
+     `white-space: normal` here too. A nowrap would hand a longer coverage to
+     the cell's clip -- '10 of 12 reported' is 122px, and R10 sizes this
+     column for 12 steps -- and the clip takes "reported" again; with normal
+     it wraps at its spaces instead. */
   @media (min-width: 1280px) {
     .wfl .wfl-table th[data-col="cost"] { width: 128px; }
-    .wfl .wfl-table td[data-col="cost"] .wf-spend-cov { white-space: nowrap; }
   }
   .wfl .wfl-table td[data-col="owner"] { white-space: nowrap; }
   /* At the micro size, as the row's other secondary facts are: it is what
