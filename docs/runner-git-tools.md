@@ -80,8 +80,9 @@ What else exists and is reused here, not rebuilt:
 
 ### 1.1 The tools
 
-The runner sees **five tools** in one MCP server named `swarm-git`. All five
-take only what the agent legitimately chooses. None of them takes a
+The runner sees **five tools** in one MCP server named `swarm-git`, and the
+eight GitHub tools of §1.5 beside them (lane AU-1). All take only what the
+agent legitimately chooses. None of them takes a
 repository URL for the agent's own repository, a token, a remote or a refspec.
 
 | tool | arguments | returns |
@@ -272,6 +273,101 @@ separate service: [Q4](#q4-which-service-executes).
   unchanged).
 
 ---
+
+### 1.5 The GitHub reads, the issue writes and the `-git-wf` slot (lane AU-1)
+
+[docs/design/agent-autonomy.md](design/agent-autonomy.md) §3.1, §3.2, §3.3's
+broker half and §3.7 add eight tools to the same server, on the same route
+(`POST /v1/attempts/{attempt_id}/git/{tool}`), with the same proof, fence,
+audit row and 60-calls-an-hour budget as the five above
+(`swarm_api.gittools`, `agent_worker.gittools.RELAYED_TOOLS`). Every one acts on
+the task's **own** repository: a `repository` naming any other is
+`other_repository`, and so is a run GitHub reports for another repository.
+The worker validates only the arguments' shape and relays them; swarm-api
+reads the forge with the task's own slot.
+
+| tool | arguments | returns |
+|---|---|---|
+| `pr_view` | `number` | title, body, state, head and base, labels, files with additions and deletions, last 50 reviews and comments |
+| `run_list` | `workflow` (a file name under `.github/workflows/`), optional `branch`, `head_sha`, `status`, `limit` ≤ 20 | runs: id, head sha and branch, event, status, conclusion, times |
+| `run_view` | `run_id`, `failed_only` (default true) | the run, its jobs and steps; each failed job's log tail (8 KiB, at most 5 jobs) |
+| `issue_view` | `number` | title, body, state, labels, last 50 comments |
+| `issue_list` | `labels`, `state` (`open`, `closed`, `all`), `query`, `limit` ≤ 30 | number, title, labels, state, updated |
+| `release_status` | `sha` | the newest `release.yml` run on the default branch whose head contains `sha`: `state` (`not_released`, `running`, `waiting` with `waiting_at`, `deployed`, `failed` with `failed_jobs`, `completed`), its jobs, `deployed` (the `deploy` job succeeded: the deployed-digest check), and swarm-api's own `GIT_SHA` beside it |
+| `issue_create` | `form`, `title`, `sections`, optional `labels`, `dedupe_key` | `{filed: true, number, url, labels, labels_dropped}`, or `{filed: false, existing: N}` |
+| `issue_comment` | `number`, `body`, optional `reopen` | `{number, comment_id, url}` |
+
+**Text from GitHub is data.** Every string a third party wrote (a title, a
+body, a comment, a review, a log tail) is redacted with
+`swarm_redaction.redact`, scrubbed of the call's credentials, bounded, and
+returned between two lines reading `=== GITHUB DATA <nonce> ===`, with
+`data_marker` and `data_note` saying so. The nonce is fresh per call
+(`issueci.ci_fix_continuation`'s pattern), so no line inside, and no earlier
+answer, can end it. Names (branches, jobs, labels, logins) are bounded and
+stripped of control characters, not fenced.
+
+**`issue_list` stays in the repository.** The search is
+`repo:<own> is:issue`, plus `state:` and `label:` from the arguments, plus the
+query `in:title,body`. A query containing `:` is `bad_query`: GitHub ORs two
+`repo:` qualifiers, so a qualifier is the one way a query could widen the
+search. Results from any other repository are dropped all the same.
+
+**Who may write** (owner decision Q2): only when the tenant's registration
+of the repository says `agents_may_file_issues`
+(`repositories.agents_may_file_issues_of`: off unless stored true, the
+platform's own registration on). Without one, or with it off, both writes
+are `issue_writes_off`. Reads need no flag.
+
+**The form.** `form` is a file name in the default branch's
+`.github/ISSUE_TEMPLATE/` (`bug_report`, `feature_request`, `epic` here) and
+`sections` maps its field ids to text. swarm-api reads the form, refuses an
+unknown field (`issue_form_unknown_field`), a missing or blank required one
+(`issue_form_incomplete`, naming its id and label, so "What you expected
+instead" cannot be skipped) and a dropdown answer that is no option
+(`issue_form_invalid`; an answer may be the one option it starts, `S2` for
+`S2 — ...`), renders `### <label>` per field in the **form's** order with
+`_No response_` for an empty optional one, prefixes the form's `[bug] ` title,
+and applies the form's labels. `form: "plain"` renders `### <name>` per
+section in the order given -- send `sections` as a list of `{name, text}`,
+because the worker signs its body with sorted keys -- and is
+`issue_form_required` in a repository that has forms.
+
+**Labels: existing only.** The repository's labels are read once per call;
+the form's and the requested ones it lacks are dropped and named in
+`labels_dropped`. No label is ever created.
+
+**Retries and `dedupe_key`.** The body opens with
+`<!-- swarm-agent-issue attempt=<attempt> key=<hash of form, title, sections> -->`,
+so the same attempt asking again finds the issue it filed (any state). With a
+`dedupe_key`, a second line `<!-- swarm-dedupe <hash of repository and key> -->`
+makes any later call, from any attempt or run, answer `existing` while that
+issue is **open**, and file nothing. Only a marker in a body's first three
+lines matches (`GitHubWriter.find_marked_issue`): an issue that quotes one
+further down is not a match.
+
+**Bounds.** At most 10 issue writes per attempt and 30 per agent across its
+attempts (`issue_write_limit`), counted in one transaction with the fence
+just before the write reaches GitHub, so a refused write spends nothing. A
+title, section, label or comment that matches a redaction rule is
+`leak_found`, naming where and never what, and nothing is written: an issue
+is public. `issue_comment` is `not_an_issue` on a pull request (the merge
+step's and the review's channel) and `issue_closed` on a closed issue unless
+`reopen: false` is stated; an agent never reopens one.
+
+**The `-git-wf` slot** (owner decision Q3). Before every `git_push_branch`
+swarm-api lists the paths the bundle's new commits touch, in a scratch
+repository holding the forge's prerequisite commits at depth 1 and the
+bundle's objects (`git log --name-only -m --no-renames`), never from a list
+the request carries. When any is under `.github/workflows/` or
+`.github/actions/`, the push is made with `swarm-tenant-<tenant>-git-wf`
+(declared by `terraform/infra/git_tools.tf`, readable by swarm-api alone,
+IAM row L-2) -- but only for the tenant's `platform: true` registration
+and only when the slot holds a version. Otherwise it is refused
+`workflow_scope_missing`, naming the files, before anything reaches the
+forge, instead of GitHub's generic `remote_rejected`. A push that touches no
+workflow file never reads the slot. The audit row names the slot `git-wf`
+and the `workflow_paths`. Merging such a change stays the owner's
+(`NEEDS_OWNER`, lane FR-1).
 
 ## 2. The credential
 

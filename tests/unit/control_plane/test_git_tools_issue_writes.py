@@ -206,8 +206,10 @@ def test_plain_in_a_repository_with_no_forms_renders_headings_in_the_order_given
     attempt, _ = running_task(client, db)
     response = call(client, attempt, "issue_create", {
         "form": "plain", "title": "Button overlaps the footer",
-        "sections": {"What happened": "It overlaps.", "Expected": "It does not.",
-                     "Evidence": "console link"}})
+        # A list keeps the order: the worker signs its body with sorted keys.
+        "sections": [{"name": "What happened", "text": "It overlaps."},
+                     {"name": "Expected", "text": "It does not."},
+                     {"name": "Evidence", "text": "console link"}]})
     assert response.status_code == 200, response.text
     [payload] = filed_payloads(forge)
     headings = [line[4:] for line in payload["body"].split("\n") if line.startswith("### ")]

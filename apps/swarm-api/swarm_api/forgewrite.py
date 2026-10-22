@@ -188,6 +188,13 @@ ACTIONS_WRITE = "actions: write"
 #: A pull request's file list, and a comparison of two commits.
 PULLS_READ = "pull_requests: read"
 CONTENTS_READ = "contents: read"
+#: The agent's GitHub reads (lane AU-1, docs/design/agent-autonomy.md §3.1):
+#: an issue and its comments, and an Actions run, its jobs and its waits.
+ISSUES_READ = "issues: read"
+ACTIONS_READ = "actions: read"
+#: The most of an issue's comments, a pull request's reviews or a run's jobs
+#: an agent's read asks for, newest kept: what one answer has room for.
+MAX_JOB_PAGES = 3
 #: Pages of a pull request's files read: GitHub serves at most 3000, and a
 #: conflict round's prompt names far fewer than the 300 these hold.
 MAX_FILE_PAGES = 3
@@ -949,3 +956,172 @@ class GitHubWriter:
             # A whole-file answer (no range support), cut mid-line: drop the partial line.
             text = text.split("\n", 1)[1]
         return text
+
+    # -- the agent's GitHub reads (lane AU-1, docs/design/agent-autonomy.md §3.1) --
+    #
+    # Raw GitHub documents, each checked for its shape and nothing more:
+    # `swarm_api.gittools` picks the fields it serves, bounds and redacts
+    # them, and fences every string a third party wrote. Each is a GET on
+    # api.github.com through `_call`, so every rule above holds for it.
+
+    def _list(self, url: str, token: str, what: str, *, needs: str,
+              key: str | None = None) -> list[dict[str, Any]]:
+        data = self._call("GET", url, token, what, needs=needs)
+        entries = data.get(key) if key is not None and isinstance(data, dict) else data
+        if not isinstance(entries, list):
+            raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
+        return [entry for entry in entries if isinstance(entry, dict)]
+
+    def read_issue(self, ref: IssueRef, number: int, token: str) -> dict[str, Any]:
+        """Issue `number` as GitHub answers it (a pull request carries `pull_request`)."""
+        what = f"{ref.repository}#{int(number)}"
+        data = self._call("GET", self._url(ref, f"issues/{int(number)}"), token, what,
+                          needs=ISSUES_READ)
+        if not isinstance(data, dict) or _int(data.get("number")) is None:
+            raise ForgeWriteError(f"GitHub's answer for {what} is not an issue")
+        return data
+
+    def issue_comments_tail(self, ref: IssueRef, number: int, token: str, *,
+                            keep: int = 50) -> list[dict[str, Any]]:
+        """The last `keep` comments on issue (or pull request) `number`, oldest first.
+
+        GitHub lists them oldest first, so every page up to MAX_COMMENT_PAGES
+        is read and the tail kept."""
+        what = f"the comments on {ref.repository}#{int(number)}"
+        url = self._url(ref, f"issues/{int(number)}/comments")
+        comments: list[dict[str, Any]] = []
+        for page in range(1, MAX_COMMENT_PAGES + 1):
+            entries = self._list(f"{url}?per_page={PAGE_SIZE}&page={page}", token, what,
+                                 needs=ISSUES_READ)
+            comments += entries
+            if len(entries) < PAGE_SIZE:
+                break
+        return comments[-keep:] if keep > 0 else []
+
+    def pull_reviews(self, ref: IssueRef, number: int, token: str, *,
+                     keep: int = 50) -> list[dict[str, Any]]:
+        """The last `keep` reviews of pull request `number`, oldest first."""
+        what = f"the reviews of {ref.repository}#{int(number)}"
+        url = self._url(ref, f"pulls/{int(number)}/reviews")
+        reviews: list[dict[str, Any]] = []
+        for page in range(1, MAX_FILE_PAGES + 1):
+            entries = self._list(f"{url}?per_page={PAGE_SIZE}&page={page}", token, what,
+                                 needs=PULLS_READ)
+            reviews += entries
+            if len(entries) < PAGE_SIZE:
+                break
+        return reviews[-keep:] if keep > 0 else []
+
+    def pull_file_stats(self, ref: IssueRef, number: int, token: str) -> list[dict[str, Any]]:
+        """The files pull request `number` changes, with GitHub's counts, up to
+        MAX_FILE_PAGES pages (`pull_files` is the names alone)."""
+        what = f"the files of {ref.repository}#{int(number)}"
+        files: list[dict[str, Any]] = []
+        for page in range(1, MAX_FILE_PAGES + 1):
+            entries = self._list(
+                self._url(ref, f"pulls/{int(number)}/files?per_page={PAGE_SIZE}&page={page}"),
+                token, what, needs=PULLS_READ)
+            files += entries
+            if len(entries) < PAGE_SIZE:
+                break
+        return files
+
+    def workflow_runs(self, ref: IssueRef, workflow: str, token: str, *,
+                      branch: str | None = None, head_sha: str | None = None,
+                      status: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        """The newest runs of `.github/workflows/<workflow>`, filtered as GitHub filters."""
+        what = f"the runs of {workflow} in {ref.repository}"
+        query = [f"per_page={max(1, min(int(limit), PAGE_SIZE))}"]
+        for name, value in (("branch", branch), ("head_sha", head_sha), ("status", status)):
+            if value:
+                query.append(f"{name}={quote(value, safe='')}")
+        url = self._url(ref, f"actions/workflows/{quote(workflow, safe='')}/runs?{'&'.join(query)}")
+        return self._list(url, token, what, needs=ACTIONS_READ, key="workflow_runs")
+
+    def read_run(self, ref: IssueRef, run_id: int, token: str) -> dict[str, Any]:
+        what = f"Actions run {int(run_id)} of {ref.repository}"
+        data = self._call("GET", self._url(ref, f"actions/runs/{int(run_id)}"), token, what,
+                          needs=ACTIONS_READ)
+        if not isinstance(data, dict) or _int(data.get("id")) is None:
+            raise ForgeWriteError(f"GitHub's answer for {what} is not a run")
+        return data
+
+    def run_jobs(self, ref: IssueRef, run_id: int, token: str) -> list[dict[str, Any]]:
+        """The jobs of run `run_id`'s latest attempt, up to MAX_JOB_PAGES pages."""
+        what = f"the jobs of Actions run {int(run_id)}"
+        jobs: list[dict[str, Any]] = []
+        for page in range(1, MAX_JOB_PAGES + 1):
+            entries = self._list(
+                self._url(ref, f"actions/runs/{int(run_id)}/jobs?per_page={PAGE_SIZE}&page={page}"),
+                token, what, needs=ACTIONS_READ, key="jobs")
+            jobs += entries
+            if len(entries) < PAGE_SIZE:
+                break
+        return jobs
+
+    def pending_deployments(self, ref: IssueRef, run_id: int, token: str) -> list[dict[str, Any]]:
+        """The environments run `run_id` is waiting at for a reviewer."""
+        return self._list(self._url(ref, f"actions/runs/{int(run_id)}/pending_deployments"),
+                          token, f"the pending deployments of Actions run {int(run_id)}",
+                          needs=ACTIONS_READ)
+
+    def compare_status(self, ref: IssueRef, base: str, head: str, token: str) -> str:
+        """GitHub's `status` of `base...head`: `ahead` or `identical` when `head`
+        contains `base`, `behind` or `diverged` when it does not."""
+        what = f"the comparison {base[:40]}...{head[:40]} of {ref.repository}"
+        data = self._call(
+            "GET", self._url(ref, f"compare/{quote(base, safe='')}...{quote(head, safe='')}"
+                                  "?per_page=1"),
+            token, what, needs=CONTENTS_READ)
+        status = data.get("status") if isinstance(data, dict) else None
+        if not isinstance(status, str):
+            raise ForgeWriteError(f"GitHub's answer for {what} names no status")
+        return status
+
+    def label_names(self, ref: IssueRef, token: str) -> set[str]:
+        """Every label the repository has, up to MAX_FILE_PAGES pages."""
+        what = f"the labels of {ref.repository}"
+        names: set[str] = set()
+        for page in range(1, MAX_FILE_PAGES + 1):
+            entries = self._list(self._url(ref, f"labels?per_page={PAGE_SIZE}&page={page}"),
+                                 token, what, needs=ISSUES_READ)
+            names |= {str(e["name"]) for e in entries if isinstance(e.get("name"), str)}
+            if len(entries) < PAGE_SIZE:
+                break
+        return names
+
+    def search_issues(self, ref: IssueRef, query: str, token: str, *,
+                      limit: int = 30) -> list[dict[str, Any]]:
+        """GitHub's issue search. `query` is the caller's whole `q`, its
+        `repo:` qualifier included: this method adds and removes nothing."""
+        what = f"an issue search in {ref.repository}"
+        url = (f"https://{GITHUB_API_HOST}/search/issues?q={quote(query, safe='')}"
+               f"&per_page={max(1, min(int(limit), PAGE_SIZE))}&sort=updated&order=desc")
+        return self._list(url, token, what, needs=ISSUES_READ, key="items")
+
+    def find_marked_issue(self, ref: IssueRef, marker: str, token: str, *,
+                          state: str = "all", pages: int = MAX_COMMENT_PAGES) -> IssueCreated | None:
+        """The OLDEST issue whose body's first three lines include `marker` as a line.
+
+        `find_issue`'s rule widened from the first line to the first three, so
+        a body may open with more than one marker (an agent's issue carries
+        its attempt's and, optionally, its dedupe key's). A body that QUOTES
+        a marker further down is not a match. Pull requests are skipped."""
+        what = f"the issues of {ref.repository}"
+        url = self._url(ref, "issues")
+        found: IssueCreated | None = None
+        for page in range(1, max(1, min(pages, MAX_COMMENT_PAGES)) + 1):
+            entries = self._list(
+                f"{url}?state={quote(state, safe='')}&sort=created&direction=desc"
+                f"&per_page={PAGE_SIZE}&page={page}", token, what, needs=ISSUES_READ)
+            for entry in entries:
+                body = entry.get("body")
+                if "pull_request" in entry or not isinstance(body, str):
+                    continue
+                if state != "all" and entry.get("state") != state:
+                    continue  # GitHub filtered already; held here all the same
+                if marker in body.split("\n", 3)[:3]:
+                    found = _issue(ref, entry, what)  # newest first: the last match is the oldest
+            if len(entries) < PAGE_SIZE:
+                break
+        return found
