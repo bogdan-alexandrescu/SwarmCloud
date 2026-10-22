@@ -5,11 +5,15 @@ cleanup policies, declared in
 [`terraform/modules/artifact_registry/main.tf`](../../terraform/modules/artifact_registry/main.tf)
 and held by
 [`tests/terraform/registry_cleanup.tftest.hcl`](../../tests/terraform/registry_cleanup.tftest.hcl).
-dev runs them in **dry run** (`cleanup_dry_run = true` in
-[`terraform/environments/dev/dev.tfvars`](../../terraform/environments/dev/dev.tfvars)):
-Artifact Registry evaluates them and logs what it would delete, and deletes
-nothing. **Nothing is deleted until the owner has read the would-delete list
-and approved turning dry run off** (owner, 2026-10-21, #1886).
+dev ran them in **dry run** from 2026-10-21 (owner, #1886): Artifact Registry
+evaluated them and deleted nothing. **Since 2026-10-22 dev deletes for real**
+(`cleanup_dry_run = false` in
+[`terraform/environments/dev/dev.tfvars`](../../terraform/environments/dev/dev.tfvars);
+owner, "Go live via a PR", PR 1932). Data Access audit logs were off, so the
+dry run wrote no list (§1); the owner approved the list computed by §2 from every
+version's tags and age against the live policies instead. At 06:50Z it held 4,233
+of 13,568 versions (about 1.2 TB) and none of the 11 images then deployed on
+Cloud Run. Going back to a dry run is that one line set to true.
 
 ## Why
 

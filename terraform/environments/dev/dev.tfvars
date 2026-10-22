@@ -75,11 +75,15 @@ firestore_bench_database = "swarm-bench"
 # updates.
 immutable_image_tags = false
 
-# swarm-images cleanup in DRY RUN (owner 2026-10-21, #1886): the policies are
-# evaluated and logged, nothing is deleted. The would-delete list goes to the
-# owner first (docs/runbooks/registry-cleanup.md); turning deletion on is the
-# owner's call and is this one line set to false.
-cleanup_dry_run = true
+# swarm-images cleanup is LIVE (owner 2026-10-22, #1886: "Go live via a PR").
+# It ran as a dry run from 2026-10-21, but its results were never logged:
+# Artifact Registry's Data Access audit logs are off in this project, so the
+# would-delete list was computed from the five policies over every version
+# instead (2026-10-22 04:40Z): 4,130 of 13,568 versions, about 1.2 TB, none of
+# the 11 images then deployed on Cloud Run. Deletion cannot be undone; a
+# rollback to a build older than 14 days that was never promoted needs a
+# rebuild. Back to true stops deleting at the next release.
+cleanup_dry_run = false
 
 # --- capacity --------------------------------------------------------------
 # DOUBLED by owner decision 2026-10-02 ("double the capacity settings across all
