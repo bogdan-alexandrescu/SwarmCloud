@@ -73,7 +73,7 @@ import logging
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import quote, urlparse
 
 from . import forge_limits
@@ -648,6 +648,31 @@ class GitHubWriter:
             payload={"title": title, "body": body, "labels": list(labels)}, ok=(201,),
         )
         return _issue(ref, data, what)
+
+    def add_labels(
+        self, ref: IssueRef, number: int, labels: Sequence[str], token: str
+    ) -> tuple[str, ...]:
+        """Add `labels` to issue `number`; return the ones dropped (FR3-HOLDLABEL).
+
+        GitHub's `POST issues/{n}/labels` CREATES a label the repository does
+        not have, so a misspelt or deleted label would appear on it unasked.
+        The repository's labels are read once and only those it already has
+        are posted; the rest come back, as `issue_create` reports
+        `labels_dropped`. Nothing left to add is no write. Adding is additive
+        on GitHub's side, so a retry that adds the same label again is
+        harmless.
+        """
+        wanted = list(dict.fromkeys(str(label) for label in labels))
+        existing = self.label_names(ref, token) if wanted else set()
+        kept = [label for label in wanted if label in existing]
+        dropped = tuple(label for label in wanted if label not in existing)
+        if kept:
+            self._call(
+                "POST", self._url(ref, f"issues/{int(number)}/labels"), token,
+                f"labelling {ref.repository}#{int(number)}", needs=ISSUES_WRITE,
+                payload={"labels": kept},
+            )
+        return dropped
 
     def find_issue(self, ref: IssueRef, marker: str, token: str) -> IssueCreated | None:
         """The OLDEST issue in `ref`'s repository whose body BEGINS with `marker`.

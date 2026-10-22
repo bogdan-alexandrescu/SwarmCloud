@@ -372,6 +372,69 @@ def test_an_iam_change_in_the_proposed_fix_is_held_even_when_the_investigator_sa
     assert records(db)[0]["hold"] == "iam"
 
 
+def held_later(db, ctx, writes, monkeypatch) -> tuple[dict[str, Any], int]:
+    """A cause filed clean and given a fix run that ended without a merge, then
+    found again by a later firing with a new failure in a hold category: the
+    HOLD action (§5), on an issue that already exists. Returns the schedule and
+    the issue's number; the third firing, which takes the HOLD in, is the
+    caller's."""
+    schedule, first, firing1 = first_firing(db, ctx)
+    end(db, first)
+    files = {first["id"]: rca(firing1.firing["firing_id"], cause())}
+    _artifacts(monkeypatch, ctx, files)
+    second_at = NOW + timedelta(hours=6)
+    seed_failure(db, "task_mock2", ended=second_at - timedelta(minutes=30))
+    failure_review.create(fire(ctx, schedule, second_at))
+    (issue,) = filed(writes)
+    (run,) = issue_runs(db)
+    db.docs[f"issue_runs/{run['id']}"]["state"] = "FAILED"   # the fix run did not hold
+    second = [t for t in investigators(db) if t["id"] != first["id"]][0]
+    firing2_id = second["metadata"]["schedule"]["firing_id"]
+    refs = reviews(db)[firing2_id]["refs"]
+    assert sorted(where["id"] for where in refs.values()) == ["task_mock1", "task_mock2"]
+    end(db, second, at=second_at + timedelta(hours=1))
+    # Every ref is accounted for; task_mock1 is counted already, task_mock2 is new.
+    files[second["id"]] = rca(firing2_id, cause(tuple(refs), hold="iam",
+                                                files=("terraform/infra/iam_worker.tf",)))
+    return schedule, int(issue["number"])
+
+
+def test_a_cause_held_later_is_labelled_needs_owner_and_still_commented(db, ctx, writes, monkeypatch) -> None:
+    schedule, number = held_later(db, ctx, writes, monkeypatch)
+    assert writes.labelled == []
+
+    failure_review.create(fire(ctx, schedule, NOW + timedelta(hours=12)))
+
+    (record,) = records(db)
+    assert record["state"] == "held"
+    # MUTATION: drop the add_labels call from the HOLD action and the issue is never labelled.
+    assert writes.labelled == [(number, ["needs-owner"])]
+    assert {"name": "needs-owner"} in writes.issues[number]["labels"]
+    # MUTATION: replace the comment with the label and the issue says nothing of why it is held.
+    assert len([c for c in writes.on_issue(number) if "Held for the owner" in c["body"]]) == 1
+    # MUTATION: run a fix for HOLD and a second run is started.
+    assert len(issue_runs(db)) == 1
+
+
+def test_a_label_github_refuses_leaves_the_cause_held(db, ctx, writes, monkeypatch) -> None:
+    schedule, number = held_later(db, ctx, writes, monkeypatch)
+    writes.refuse[("POST", f"/repos/{SWARM}/issues/{number}/labels")] = 403
+
+    failure_review.create(fire(ctx, schedule, NOW + timedelta(hours=12)))
+
+    # The label was asked for and refused.
+    assert [w for w in writes.writes() if w[1].endswith(f"/issues/{number}/labels")]
+    # MUTATION: label before set_state and let the refusal propagate, and the cause is not held.
+    (record,) = records(db)
+    assert record["state"] == "held"
+    assert [c for c in writes.on_issue(number) if "Held for the owner" in c["body"]]
+    (review,) = [r for r in reviews(db).values() if r["progress"].get(record["fingerprint"], {}).get("action")
+                 == "hold"]
+    # MUTATION: let the label's refusal propagate and the review stops in `filing`, its cause not done.
+    assert review["state"] == failure_review.FILED
+    assert review["progress"][record["fingerprint"]]["done"] is True
+
+
 def test_the_reviewers_own_failure_is_not_in_the_next_digest_and_files_nothing(db, ctx, writes,
                                                                                 monkeypatch) -> None:
     schedule, investigator, firing = first_firing(db, ctx)

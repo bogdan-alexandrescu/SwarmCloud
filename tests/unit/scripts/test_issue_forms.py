@@ -342,6 +342,27 @@ def _labels_the_worker_applies() -> set[str]:
     return {OUT_OF_TERRITORY_LABEL}
 
 
+def _labels_the_platform_applies() -> set[str]:
+    """Every label swarm-api adds to an issue it files or holds: failure-review's
+    `needs-owner` (docs/design/failure-review.md §6; FR3-HOLDLABEL)."""
+    from swarm_api.schedtypes.failure_review import HOLD_LABEL
+
+    return {HOLD_LABEL}
+
+
+def test_the_hold_label_the_platform_applies_is_declared() -> None:
+    """failure-review files and holds a cause `needs-owner`, and issue-sweep's
+    default `labels_exclude` skips it; a label nobody declared is one a
+    repository can lose without any test noticing."""
+    from swarm_api.scheduletypes import IssueSweepParams
+
+    declared = {e.get("name") for e in _declared_labels() if isinstance(e, dict)}
+    # MUTATION: drop the `needs-owner` entry from .github/labels.yml and this fails.
+    assert _labels_the_platform_applies() <= declared
+    # MUTATION: drop `needs-owner` from issue-sweep's default labels_exclude and the description lies.
+    assert _labels_the_platform_applies() <= set(IssueSweepParams().labels_exclude)
+
+
 def test_the_hotfix_label_is_declared_and_gated_on() -> None:
     """hotfix.yml proceeds only on a merged pull request carrying `hotfix`; a
     label the repository does not declare is one nobody can apply."""
@@ -382,6 +403,7 @@ def test_the_label_declaration_is_one_gh_label_create_accepts() -> None:
     applied = {label for p in FORMS for label in (_load(p).get("labels") or [])}
     applied |= _labels_workflows_gate_on()
     applied |= _labels_the_worker_applies()
+    applied |= _labels_the_platform_applies()
     unused = sorted(set(names) - applied, key=str)
     if unused:
         problems.append(f"declared but applied by no form: {unused}")
