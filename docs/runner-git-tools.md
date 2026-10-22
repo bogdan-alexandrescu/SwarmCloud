@@ -281,10 +281,10 @@ broker half and §3.7 add eight tools to the same server, on the same route
 (`POST /v1/attempts/{attempt_id}/git/{tool}`), with the same proof, fence,
 audit row and 60-calls-an-hour budget as the five above
 (`swarm_api.gittools`, `agent_worker.gittools.RELAYED_TOOLS`). Every one acts on
-the task's **own** repository: a `repository` naming any other is
+the agent's **own** repository: a `repository` naming any other is
 `other_repository`, and so is a run GitHub reports for another repository.
 The worker validates only the arguments' shape and relays them; swarm-api
-reads the forge with the task's own slot.
+reads the forge with the agent's own slot.
 
 | tool | arguments | returns |
 |---|---|---|
