@@ -1271,6 +1271,28 @@ RESERVED_METADATA_KEYS = (
 #: Until then nothing a caller sends can reach the store under it.
 REFUSED_UNWRITTEN_METADATA_KEYS = (AWAIT_INPUT_METADATA_KEY,)
 
+#: An agent's blocking question (lane AU-7, docs/design/agent-autonomy.md
+#: §3.9): the wait swarm-api adopts from the worker's park into
+#: `metadata.question_wait`, and the earlier waits with the answers each was
+#: given, written only by `agent_questions.adopt_wait` while the task is
+#: parked. The worker hands the first to the resumed agent, and neither is in
+#: the step-spec signature (written after submission by design), so refusing
+#: them here is what proves swarm-api wrote them: a caller who set them would
+#: hand the resumed agent a wait, and answers, nobody asked or gave.
+#: Refused by the same function in the same 422 as `RESERVED_METADATA_KEYS`,
+#: but NOT IN that tuple, which `task_input.PLATFORM_METADATA_KEYS` serves as
+#: stored: the wait is the agent's text, stored unredacted (swarm-api redacts
+#: it when `/questions` serves it), so it must keep going through the masker
+#: as caller metadata does. Moving them into the tuple also needs them in
+#: `task_input.COLLECTED_METADATA_KEYS` and in the spec-signature parity
+#: test's `UNSIGNED_PLATFORM_KEYS` (tests/unit/common/test_specsign_covers.py).
+QUESTION_WAIT_METADATA_KEY = "question_wait"
+QUESTION_WAITS_EARLIER_METADATA_KEY = "question_waits_earlier"
+REFUSED_AGENT_TEXT_METADATA_KEYS = (
+    QUESTION_WAIT_METADATA_KEY,
+    QUESTION_WAITS_EARLIER_METADATA_KEY,
+)
+
 #: Strategies and carriers that cannot work without somewhere to push to.
 _NEEDS_REPOSITORY_STRATEGIES = ("direct-pr", "integrate", "single-pr")
 
@@ -1999,6 +2021,16 @@ _RESERVED_BECAUSE = {
         "answers to the agent's questions, written only by "
         "POST /v1/tasks/{task_id}/answers. Drop the key from metadata."
     ),
+    QUESTION_WAIT_METADATA_KEY: (
+        f"metadata.{QUESTION_WAIT_METADATA_KEY} is reserved: it records the "
+        "blocking questions an agent parked on, written only by the platform "
+        "while the task waits for its owner. Drop the key from metadata."
+    ),
+    QUESTION_WAITS_EARLIER_METADATA_KEY: (
+        f"metadata.{QUESTION_WAITS_EARLIER_METADATA_KEY} is reserved: it keeps "
+        "an agent's earlier question waits with the answers each was given, "
+        "written only by the platform. Drop the key from metadata."
+    ),
     FORGE_SOURCE_METADATA_KEY: (
         f"metadata.{FORGE_SOURCE_METADATA_KEY} is reserved: it says whose GitHub "
         "credential a service submission runs with, written only by submission. "
@@ -2084,7 +2116,11 @@ def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
     refusal.
     """
     present = [
-        key for key in RESERVED_METADATA_KEYS + REFUSED_UNWRITTEN_METADATA_KEYS
+        key for key in (
+            RESERVED_METADATA_KEYS
+            + REFUSED_UNWRITTEN_METADATA_KEYS
+            + REFUSED_AGENT_TEXT_METADATA_KEYS
+        )
         if key in metadata
     ]
     allowed = _SCHEDULE_MARK.get()

@@ -132,7 +132,11 @@ from .handoff import ready_writes
 from .redaction import redact
 from .store import EVENTS, TASKS, Store
 from .task_input import masking_for
-from .validation import OWNER_ANSWERS_METADATA_KEY
+from .validation import (
+    OWNER_ANSWERS_METADATA_KEY,
+    QUESTION_WAIT_METADATA_KEY,
+    QUESTION_WAITS_EARLIER_METADATA_KEY,
+)
 
 log = logging.getLogger(__name__)
 
@@ -174,9 +178,11 @@ QUESTIONS_MAX_BYTES = 64 * 1024
 #: The park's record of a blocking question wait (`agent_worker.questions.
 #: QUESTION_WAIT_KEY`), in the park's `blocked_by` entry and, once adopted,
 #: in `metadata`. Spelled again: the worker is not installed in this image.
-QUESTION_WAIT_KEY = "question_wait"
+#: Both metadata keys are refused at submission (`validation.
+#: REFUSED_AGENT_TEXT_METADATA_KEYS`), so only this module writes them.
+QUESTION_WAIT_KEY = QUESTION_WAIT_METADATA_KEY
 #: Earlier waits of the same task, each with the answers it was given.
-EARLIER_WAITS_KEY = "question_waits_earlier"
+EARLIER_WAITS_KEY = QUESTION_WAITS_EARLIER_METADATA_KEY
 #: How many earlier waits are kept. A task that waits more often than this
 #: is asking one question at a time; the newest are the ones still relevant.
 MAX_EARLIER_WAITS = 5
