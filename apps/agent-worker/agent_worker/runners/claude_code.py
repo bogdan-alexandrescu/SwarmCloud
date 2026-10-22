@@ -268,6 +268,9 @@ from ..gitmcp.server import SERVER_NAME as GIT_MCP_SERVER_NAME
 from ..gitmcp.server import SPOOL_ENV as GIT_SPOOL_ENV
 from ..searchmcp.server import SERVER_NAME as SEARCH_MCP_SERVER_NAME
 from ..searchmcp.server import SPOOL_ENV as SEARCH_SPOOL_ENV
+from ..statemcp.server import SERVER_NAME as STATE_MCP_SERVER_NAME
+from ..statemcp.server import SPOOL_ENV as STATE_SPOOL_ENV
+from ..statemcp.server import shim_argv as state_shim_argv
 from ..handoff import AGENT_PASSTHROUGH_ENV, EGRESS_NOTICE_NAME, HANDOFF_ENV, RESUME_NAME
 from ..jevkey import BACKEND_ENV as JEV_BACKEND_ENV
 from ..jevkey import INTERNAL_BACKENDS as JEV_INTERNAL_BACKENDS
@@ -802,6 +805,7 @@ def write_mcp_config(
     *,
     git_spool: str | None = None,
     search_spool: str | None = None,
+    state_spool: str | None = None,
     jev: bool = False,
     jev_key_file: str | None = None,
     graph_snapshot: str | None = None,
@@ -816,7 +820,8 @@ def write_mcp_config(
     (BSTATUS-API; with `jev_key_file`, the TypeSafe backend's key file PATH, never
     the key: `jev_launch.py` reads it into the server's own environment; without
     it, an internal backend: the wrapper started directly, no key), the `swarm-git` shim when `git_spool` is, the
-    `swarm-search` shim when `search_spool` is, `swarm-graph` when
+    `swarm-search` shim when `search_spool` is, the `swarm-state` shim when
+    `state_spool` is (docs/design/agent-autonomy.md §3.4), `swarm-graph` when
     `graph_snapshot` (the staged directory) is, or the graph shim when
     `graph_served` (`graphstage.served_env`: pin, ticket file, URL) is, and
     each of the caller's registered servers when `relay` (`relay_servers`) is:
@@ -863,6 +868,9 @@ def write_mcp_config(
     if search_spool:
         command, *args = search_shim_argv(search_spool)
         servers[SEARCH_MCP_SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
+    if state_spool:
+        command, *args = state_shim_argv(state_spool)
+        servers[STATE_MCP_SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
     if graph_served:
         pin, ticket_file, url = graph_served
         command, *args = graphstage.shim_argv(pin, ticket_file, graph_workdir)
@@ -1094,6 +1102,10 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     search_spool = os.environ.get(SEARCH_SPOOL_ENV, "").strip()
     if search_spool:
         env[SEARCH_SPOOL_ENV] = search_spool
+    # The state reads' spool (AU-4), likewise: set only for an attempt offered them.
+    state_spool = os.environ.get(STATE_SPOOL_ENV, "").strip()
+    if state_spool:
+        env[STATE_SPOOL_ENV] = state_spool
     # The staged graph (`graphstage.prepare`): its directory goes to the agent
     # for CONTEXT.md, the snapshot only to the server's argv.
     graph_snapshot = os.environ.get(graphstage.SNAPSHOT_ENV, "").strip()
@@ -1183,10 +1195,12 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         if isinstance(prompt, str) and prompt.strip():
             ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{note}"}
     # ONE `--mcp-config` for every server this attempt has (module docstring).
-    if live_endpoint or git_spool or search_spool or graph_snapshot or graph_served or relay[1]:
+    if (live_endpoint or git_spool or search_spool or state_spool or graph_snapshot
+            or graph_served or relay[1]):
         mcp = write_mcp_config(
             Path(ctx.work_dir) / SETTINGS_DIR_NAME, live_endpoint or None,
             git_spool=git_spool or None, search_spool=search_spool or None,
+            state_spool=state_spool or None,
             jev=jev, jev_key_file=jev_key_file or None,
             graph_snapshot=graph_snapshot or None,
             graph_workdir=(str(ctx.repo_dir) if (graph_snapshot or graph_served) and ctx.repo_dir

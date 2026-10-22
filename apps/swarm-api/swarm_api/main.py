@@ -38,6 +38,7 @@ from .routes import (
     admin,
     approvals,
     attemptcontext,
+    attemptreads,
     attempts,
     attemptstate,
     attempts_mcp,
@@ -431,6 +432,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # key for the worker, fenced in one transaction. Mounted and unused until a
     # tenant's SWARM_STATE_VIA_API is on (lane ISO-WORKER-CORE).
     app.include_router(attemptstate.router)
+    # The agent's reads of its own tenant's state (docs/design/agent-autonomy.md
+    # §3.4, lane AU-4 STATE-READS, part of #1933): worker-relayed, proven as the
+    # state routes are, fenced, scoped to the lease's tenant, read-only.
+    app.include_router(attemptreads.router)
     # The workspace secrets release (docs/design/workspace-secrets.md §3.3,
     # lane SEC-RELEASE, part of #1347): worker-only, signed under its own
     # purpose and fenced; the one route that serves credential material, and
