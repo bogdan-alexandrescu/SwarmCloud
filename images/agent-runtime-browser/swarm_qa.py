@@ -5,7 +5,11 @@
         --base http://localhost:5173 \\
         --presets desktop,phone-390 --themes light,dark \\
         --out "$SWARM_ARTIFACTS_DIR/capture-work-a" \\
-        --bundle "$SWARM_ARTIFACTS_DIR/capture-work-a.tar" [--axe]
+        --bundle "$SWARM_ARTIFACTS_DIR/capture-work-a.tar" [--axe] \\
+        [--keep-storage] [--settle console|generic] [--clock INSTANT]
+
+    python -m swarm_qa discover --base https://app.example \\
+        --max-pages 60 --max-depth 3 [--exclude GLOB ...] --out screens.json
 
     python -m swarm_qa diff A.tar B.tar --out DIR [--threshold 0.001]
 
@@ -56,7 +60,7 @@ What `capture` does, and why each:
    it stands, `unsettled` in its entry and listed in `failed` with what it
    still showed and where its text was still changing (never the text). The
    clock is frozen at the route list's
-   instant (`page.clock.set_fixed_time`, before the first navigation; timers
+   instant when it carries one, or at `--clock` (FOR ANY APP, below) (`page.clock.set_fixed_time`, before the first navigation; timers
    still run) so "3 minutes ago" reads the same every run. Viewport-sized
    SEGMENTS, scrolling the page's own scroller (MEASURE_JS: the nearest one
    holding the route's ready element, the document, or the largest on the
@@ -87,6 +91,37 @@ What `capture` does, and why each:
 File names: `<group>/<route>--<preset>--<theme>--s<N>.png`, so a review and a
 report can name every image without opening the manifest.
 
+FOR ANY APP (VQ5-CAPTURE-GENERIC, docs/design/visual-qa-any-app.md §4.2;
+part of #1933). Three parts of the above are the console's, and each is a
+default only the console's route list and template rely on:
+
+* `--keep-storage` adds no RESET_STATE_JS: an own-login target keeps its
+  session in its storage, and emptying it on every load signs the capture out
+  after its first route.
+* `--settle generic` never evaluates PENDING_JS (or TEXT_JS): someone else's
+  app draws none of the console's markers, and its own "reading…" is content.
+  It waits for network idle, as every capture does, and then until the DOM
+  has not changed (DOM_CHANGES_JS, a MutationObserver's count) for
+  GENERIC_QUIET_MS, bounded by SETTLE_TIMEOUT_MS as the console's settle is.
+* The clock is frozen only when asked: by the route list's `clock` (the
+  console's routes.json carries one, so its captures are unchanged) or by
+  `--clock`. Freezing `Date` can expire an app's own session token, so a
+  route list with neither runs on the page's real clock.
+
+`discover` writes a route list for an app nobody listed (§4.1): from `--base`
+it loads each page through the live browser, reads its links (LINKS_JS, the
+rendered `a[href]`s), and keeps the same-origin ones (scheme, host and port;
+the path only: a query or fragment can carry a token), breadth first. It
+never lists or loads a path matching an exclusion (DEFAULT_EXCLUDE, always,
+plus each `--exclude` glob) or a `robots.txt` `Disallow` line of the `*`
+group; it lists at most `--max-pages` (DISCOVER_MAX_PAGES at most) paths at
+most `--max-depth` (DISCOVER_MAX_DEPTH at most) links from the start, and
+loads only the pages whose links could still be listed, so a page at the
+depth cap is listed and never loaded. The route list it writes has no
+`clock`, `ready` "body" on every route, and groups of at most
+DISCOVER_GROUP_SIZE routes, and `load_routes` accepts it. It sets no persona
+cookie and no storage reset, and switches no device or theme.
+
 `diff` compares two tarballs image by image: a changed-pixel ratio per image
 present in both, a `<name>.diff.png` where the ratio is over the threshold
 (the changed pixels in DIFF_MARK over a faded copy of A), and the names only
@@ -101,6 +136,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fnmatch
 import json
 import os
 import re
@@ -109,6 +145,8 @@ import struct
 import subprocess
 import sys
 import tarfile
+import urllib.error
+import urllib.request
 import zlib
 from pathlib import Path
 from typing import Any
@@ -176,6 +214,13 @@ SETTLE_POLL_MS = 150
 #: long at least. The page clock is frozen (`set_fixed_time`), so a relative
 #: time ("3 minutes ago") does not keep the text moving.
 TEXT_QUIET_MS = 1_500
+#: `--settle generic` (VQ5-CAPTURE-GENERIC, visual-qa-any-app.md §4.2): how
+#: long the DOM must go unchanged (DOM_CHANGES_JS) before the page counts as
+#: settled. The design's figure: the bound is SETTLE_TIMEOUT_MS, as today.
+GENERIC_QUIET_MS = 500
+#: The settle each capture may use: the console's (PENDING_JS and TEXT_JS,
+#: the default, which the console template relies on) or any app's.
+SETTLES = ("console", "generic")
 #: Polls in a row with nothing pending before the page counts as settled:
 #: one read landing and the next starting can leave a frame with no marker.
 SETTLE_QUIET_POLLS = 2
@@ -184,6 +229,27 @@ MAX_ERROR_CHARS = 300
 #: Each console or page error kept beside a route's images.
 MAX_MESSAGES = 50
 MAX_MESSAGE_CHARS = 500
+
+#: `discover`'s caps (visual-qa-any-app.md §1 `screens.discover`): 60 pages
+#: is a run's screen cap (8 groups of at most 8), 3 links deep is as far as a
+#: bounded crawl of someone else's app goes.
+DISCOVER_MAX_PAGES = 60
+DISCOVER_MAX_DEPTH = 3
+#: A capture step's screens (§4.1: groups of at most 8).
+DISCOVER_GROUP_SIZE = 8
+#: Every discovered route's ready selector: nothing about an unknown page is
+#: known but that it has a body.
+DISCOVER_READY = "body"
+#: Never listed or loaded, whatever the target says (§1 `exclusions`): a
+#: capture that signs itself out captures the login page everywhere after.
+DEFAULT_EXCLUDE = ("/logout", "/logout/*", "/signout", "/signout/*")
+ROBOTS_TIMEOUT_SECONDS = 10
+ROBOTS_MAX_BYTES = 512 * 1024
+#: What an unreachable robots.txt (a 5xx, or no answer) means: everything is
+#: disallowed (RFC 9309 §2.3.1.4). A 4xx means there is none: nothing is.
+ROBOTS_UNREACHABLE = "User-agent: *\nDisallow: /\n"
+#: A page's links are read up to this many.
+MAX_LINKS = 2000
 
 DIFF_THRESHOLD = 0.001
 #: The colour a changed pixel is painted in a diff image (magenta: a console
@@ -361,6 +427,27 @@ RESET_STATE_JS = """(() => {
   try { localStorage.clear(); } catch (e) {}
   try { sessionStorage.clear(); } catch (e) {}
 })();"""
+#: `--settle generic`: how many DOM changes this page has made since the
+#: first call installed its MutationObserver, and the element the last one
+#: landed in (null before any), so a page still changing can say where. No
+#: text leaves the page. A page without MutationObserver answers 0 forever.
+DOM_CHANGES_JS = """() => {
+  const name = (el) => el.localName + (el.id ? '#' + el.id : '') + Array.from(el.classList, (c) => '.' + c).join('');
+  if (!window.__swarmQaDom) {
+    window.__swarmQaDom = {count: 0, where: null};
+    if (typeof MutationObserver === 'function') {
+      new MutationObserver((changes) => {
+        window.__swarmQaDom.count += changes.length;
+        const target = changes[changes.length - 1].target;
+        const el = target.nodeType === 1 ? target : target.parentElement;
+        if (el) window.__swarmQaDom.where = name(el);
+      }).observe(document.documentElement, {childList: true, characterData: true, attributes: true, subtree: true});
+    }
+  }
+  return [window.__swarmQaDom.count, window.__swarmQaDom.where];
+}"""
+#: `discover`: the page's rendered links, resolved by the browser.
+LINKS_JS = "() => Array.from(document.querySelectorAll('a[href]'), (a) => a.href).slice(0, %d)" % MAX_LINKS
 AXE_INJECT_JS = "(source) => { (0, eval)(source); return typeof axe !== 'undefined'; }"
 AXE_RUN_JS = "() => axe.run(document, {resultTypes: ['violations']})"
 
@@ -381,7 +468,10 @@ def load_routes(path: str | os.PathLike) -> dict:
         raise UsageError(f"cannot read the route list {path}: {exc}") from exc
     if not isinstance(document, dict) or document.get("format") != ROUTES_FORMAT:
         raise UsageError(f"the route list is not format {ROUTES_FORMAT}")
-    clock_at(document)
+    # Optional (VQ5-CAPTURE-GENERIC): a route list with a clock asks for it
+    # frozen; one without (a discovered one) runs on the real clock.
+    if document.get("clock") is not None:
+        clock_at(document)
     groups = document.get("groups")
     if not isinstance(groups, dict) or not groups:
         raise UsageError("the route list has no groups")
@@ -603,8 +693,33 @@ def persona_of(route: dict) -> str:
     return route.get("persona", DEFAULT_PERSONA)
 
 
+def _settle_generic(page) -> list[str]:
+    """`--settle generic`: wait until the DOM has not changed
+    (DOM_CHANGES_JS) for GENERIC_QUIET_MS, for up to SETTLE_TIMEOUT_MS.
+    Never evaluates PENDING_JS or TEXT_JS. Returns [] when it settled, else
+    one line saying how much and where the DOM was still changing."""
+    waited, last, since, changes, where = 0, None, 0, 0, None
+    while True:
+        answer = page.evaluate(DOM_CHANGES_JS)
+        count = answer[0] if isinstance(answer, (list, tuple)) and answer else None
+        if isinstance(answer, (list, tuple)) and len(answer) > 1 and isinstance(answer[1], str):
+            where = answer[1]
+        if count != last:
+            if last is not None:
+                changes += 1
+            last, since = count, waited
+        if waited - since >= GENERIC_QUIET_MS:
+            return []
+        if waited >= SETTLE_TIMEOUT_MS:
+            return [_one_line(
+                f"DOM still changing: {changes} change{'' if changes == 1 else 's'} in {waited} ms, "
+                f"the last {waited - since} ms before the shot" + (f", last in {where}" if where else ""))]
+        page.wait_for_timeout(SETTLE_POLL_MS)
+        waited += SETTLE_POLL_MS
+
+
 def _capture_route(page, errors: _Errors, *, context, base: str, group: str, route: dict, preset: str, theme: str,
-                   out: Path, axe_source: str | None) -> dict:
+                   out: Path, axe_source: str | None, settle: str = "console") -> dict:
     """One route at one preset and theme. Raises with the step that failed."""
     rid, ready = route["id"], route["ready"]
     stem = _stem(group, rid, preset, theme)
@@ -628,7 +743,7 @@ def _capture_route(page, errors: _Errors, *, context, base: str, group: str, rou
         step = "ready"
         page.wait_for_selector(ready, state="visible", timeout=READY_TIMEOUT_MS)
         step = "settle"
-        pending = _settle(page)
+        pending = _settle_generic(page) if settle == "generic" else _settle(page)
         step = "measure"
         measured = page.evaluate(MEASURE_JS, ready)
         total, view = measured[0], max(1, measured[1])
@@ -722,14 +837,18 @@ def _bundle(out: Path, bundle: Path) -> None:
 
 
 def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: list[str],
-            out: Path, bundle: Path, axe_source: str | None = None) -> dict:
+            out: Path, bundle: Path, axe_source: str | None = None, keep_storage: bool = False,
+            settle: str = "console", clock: str | None = None) -> dict:
     """Capture `group` at every preset and theme; write the manifest and the
-    tarball, whatever failed. Returns the manifest."""
+    tarball, whatever failed. Returns the manifest. `clock` (else the route
+    list's) freezes the page clock; neither leaves it running."""
+    frozen = clock if clock is not None else routes.get("clock")
     playwright, browser, context = _connect()
     manifest: dict = {
         "format": MANIFEST_FORMAT, "group": group, "commit": _git_head(),
         "browser": getattr(browser, "version", None), "playwright": _playwright_version(),
-        "clock": routes["clock"], "base": base, "presets": presets, "themes": themes,
+        "clock": frozen, "settle": settle, "keep_storage": keep_storage,
+        "base": base, "presets": presets, "themes": themes,
         "routes": [], "failed": [],
     }
     group_routes = routes["groups"][group]
@@ -742,9 +861,11 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
     try:
         page = context.new_page()
         parts = urlsplit(base)
-        page.add_init_script(script=reset_state_script(f"{parts.scheme}://{parts.netloc}".lower()))
+        if not keep_storage:
+            page.add_init_script(script=reset_state_script(f"{parts.scheme}://{parts.netloc}".lower()))
         errors = _Errors(page)
-        page.clock.set_fixed_time(clock_at(routes))
+        if frozen is not None:
+            page.clock.set_fixed_time(clock_at({"clock": frozen}))
         for preset in presets:
             why = _handoff("device", preset)
             if why is not None:
@@ -760,7 +881,8 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                 for route in group_routes:
                     try:
                         entry = _capture_route(page, errors, context=context, base=base, group=group, route=route,
-                                               preset=preset, theme=theme, out=out, axe_source=axe_source)
+                                               preset=preset, theme=theme, out=out, axe_source=axe_source,
+                                               settle=settle)
                         manifest["routes"].append(entry)
                         why = []
                         if entry["pending"]:
@@ -788,6 +910,184 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
         _write(out / "manifest.json", json.dumps(manifest, indent=1))
         _bundle(out, bundle)
     return manifest
+
+
+# -- discover ------------------------------------------------------------------
+
+
+def _origin(url: str) -> tuple[str, str, int] | None:
+    """(scheme, host, port) of an http(s) address, the port made explicit;
+    None for anything else."""
+    try:
+        parts = urlsplit(str(url))
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+    if scheme not in ("http", "https") or not parts.hostname:
+        return None
+    return scheme, parts.hostname.lower(), port or (443 if scheme == "https" else 80)
+
+
+def same_origin_path(href: Any, origin: tuple[str, str, int]) -> str | None:
+    """The path of `href` when it is on `origin`, else None. The path only:
+    a query or a fragment can carry a token, and is no route."""
+    if _origin(href) != origin:
+        return None
+    return urlsplit(str(href)).path or "/"
+
+
+def excluded(path: str, globs: list[str] | tuple[str, ...]) -> bool:
+    """Whether `path` matches an exclusion glob, case-insensitively."""
+    return any(fnmatch.fnmatchcase(path.lower(), g.lower()) for g in globs)
+
+
+def robots_disallow(text: str | None) -> list[str]:
+    """The `Disallow` values of robots.txt's group(s) for user agent `*`
+    (consecutive `User-agent` lines are one group). An empty `Disallow`
+    disallows nothing; no robots.txt disallows nothing. `Allow` is not read:
+    the design honours `Disallow` (visual-qa-any-app.md §3), so an `Allow`
+    inside a disallowed prefix stays unvisited, the cautious side."""
+    rules: list[str] = []
+    agents: list[str] = []
+    in_agents = False
+    for raw in (text or "").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if ":" not in line:
+            continue
+        key, value = (part.strip() for part in line.split(":", 1))
+        key = key.lower()
+        if key == "user-agent":
+            if not in_agents:
+                agents = []
+            agents.append(value)
+            in_agents = True
+            continue
+        in_agents = False
+        if key == "disallow" and value and "*" in agents:
+            rules.append(value)
+    return rules
+
+
+def disallowed(path: str, rules: list[str]) -> bool:
+    """Whether a `Disallow` rule matches `path`: a prefix, `*` any run of
+    characters, a trailing `$` the end of the path (RFC 9309 §2.2.3)."""
+    for rule in rules:
+        anchored = rule.endswith("$")
+        body = rule[:-1] if anchored else rule
+        pattern = ".*".join(re.escape(piece) for piece in body.split("*")) + ("$" if anchored else "")
+        if re.match(pattern, path):
+            return True
+    return False
+
+
+def _fetch_robots(url: str) -> str | None:
+    """robots.txt's text; None when there is none (a 4xx);
+    ROBOTS_UNREACHABLE when the site did not answer (a 5xx, or no answer)."""
+    request = urllib.request.Request(url, headers={"User-Agent": "swarm-qa"})
+    try:
+        with urllib.request.urlopen(request, timeout=ROBOTS_TIMEOUT_SECONDS) as answer:  # noqa: S310 -- http(s) only, checked
+            return answer.read(ROBOTS_MAX_BYTES).decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        return None if 400 <= exc.code < 500 else ROBOTS_UNREACHABLE
+    except (OSError, ValueError):
+        return ROBOTS_UNREACHABLE
+
+
+def route_id(path: str, taken: set[str]) -> str:
+    """A file-name-safe route id for `path`, unique in `taken` (and added to it)."""
+    slug = re.sub(r"[^a-z0-9]+", "-", path.lower()).strip("-")[:40].rstrip("-") or "home"
+    rid, n = slug, 2
+    while rid in taken:
+        rid = f"{slug}-{n}"
+        n += 1
+    taken.add(rid)
+    return rid
+
+
+def discover(*, base: str, max_pages: int, max_depth: int, exclude: list[str]) -> dict:
+    """The route list of what `base` links to, breadth first (module
+    docstring). Returns `{"document": route list or None, "why": str}`:
+    None when nothing could be listed (the start page excluded or
+    disallowed), and why."""
+    globs = list(DEFAULT_EXCLUDE) + [g for g in exclude if g not in DEFAULT_EXCLUDE]
+    robots = _fetch_robots(base + "/robots.txt")
+    rules = robots_disallow(robots)
+    origin = _origin(base)
+    if origin is None:
+        raise UsageError("--base must be an http(s) origin")
+    skipped = {"off_origin": 0, "excluded": 0, "robots": 0, "failed": 0}
+    off: set[str] = set()
+    seen: set[str] = set()
+    listed: list[tuple[str, int]] = []
+    failed: list[str] = []
+
+    def admit(path: str, depth: int) -> None:
+        if path in seen:
+            return
+        seen.add(path)
+        if excluded(path, globs):
+            skipped["excluded"] += 1
+        elif disallowed(path, rules):
+            skipped["robots"] += 1
+        elif len(listed) < max_pages and depth <= max_depth:
+            listed.append((path, depth))
+
+    admit("/", 0)
+    if not listed:
+        why = "excluded" if skipped["excluded"] else "disallowed by robots.txt"
+        return {"document": None, "why": f"the start page / is {why}: nothing to discover"}
+    playwright, _browser, context = _connect()
+    page = None
+    try:
+        page = context.new_page()
+        at = 0
+        # Load a page only while its links could still be listed: under the
+        # depth cap, and before the page cap is reached.
+        while at < len(listed) and len(listed) < max_pages:
+            path, depth = listed[at]
+            at += 1
+            if depth >= max_depth:
+                continue
+            try:
+                page.goto(base + path, wait_until="load", timeout=NAV_TIMEOUT_MS)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_MS)
+                except Exception:  # noqa: BLE001 -- an app that polls may never be idle
+                    pass
+                hrefs = page.evaluate(LINKS_JS) or []
+            except Exception:  # noqa: BLE001 -- a page that failed is listed; its capture says so
+                skipped["failed"] += 1
+                failed.append(path)
+                continue
+            for href in list(hrefs)[:MAX_LINKS]:
+                found = same_origin_path(href, origin)
+                if found is None:
+                    if str(href) not in off:
+                        off.add(str(href))
+                        skipped["off_origin"] += 1
+                    continue
+                admit(found, depth + 1)
+    finally:
+        if page is not None:
+            try:
+                page.close()
+            except Exception:  # noqa: BLE001
+                pass
+        playwright.stop()
+    taken: set[str] = set()
+    routes = [{"id": route_id(path, taken), "path": path, "ready": DISCOVER_READY} for path, _depth in listed]
+    groups = {f"pages-{n + 1}": routes[i:i + DISCOVER_GROUP_SIZE]
+              for n, i in enumerate(range(0, len(routes), DISCOVER_GROUP_SIZE))}
+    document = {
+        "format": ROUTES_FORMAT, "groups": groups, "mockups": [],
+        "discovered": {
+            "base": base, "max_pages": max_pages, "max_depth": max_depth, "exclude": globs,
+            "robots": "absent" if robots is None else ("unreachable" if robots == ROBOTS_UNREACHABLE else "read"),
+            "depths": {path: depth for path, depth in listed}, "skipped": skipped, "failed": failed,
+        },
+    }
+    return {"document": document, "why": ""}
 
 
 # -- PNG, standard library -----------------------------------------------------
@@ -962,6 +1262,20 @@ def _parser() -> argparse.ArgumentParser:
     cap.add_argument("--out", required=True)
     cap.add_argument("--bundle", required=True)
     cap.add_argument("--axe", action="store_true", help=f"run axe-core ({AXE_SCRIPT}) on every route")
+    cap.add_argument("--keep-storage", action="store_true",
+                     help="never empty the app's local and session storage between loads (an own-login target)")
+    cap.add_argument("--settle", choices=SETTLES, default="console",
+                     help="console: the console's pending reads; generic: no DOM change for "
+                          f"{GENERIC_QUIET_MS} ms")
+    cap.add_argument("--clock", default=None,
+                     help="freeze the page clock at this ISO 8601 instant (else the route list's clock, if any)")
+    dis = sub.add_parser("discover", help="write a route list of the same-origin pages an app links to")
+    dis.add_argument("--base", required=True, help="the app's origin, e.g. https://app.example")
+    dis.add_argument("--max-pages", type=int, default=DISCOVER_MAX_PAGES)
+    dis.add_argument("--max-depth", type=int, default=DISCOVER_MAX_DEPTH)
+    dis.add_argument("--exclude", action="append", default=[],
+                     help=f"a path glob never listed or loaded (repeatable; {', '.join(DEFAULT_EXCLUDE)} always)")
+    dis.add_argument("--out", required=True, help="the route list to write, e.g. screens.json")
     dif = sub.add_parser("diff", help="compare two capture tarballs image by image")
     dif.add_argument("a")
     dif.add_argument("b")
@@ -985,6 +1299,8 @@ def _capture_command(args) -> int:
             raise UsageError(f"--themes takes {' and '.join(THEMES)}")
         if not args.base.startswith(("http://", "https://")):
             raise UsageError("--base must be an http(s) origin")
+        if args.clock is not None:
+            clock_at({"clock": args.clock})
         axe_source = None
         if args.axe:
             try:
@@ -997,7 +1313,8 @@ def _capture_command(args) -> int:
     out, bundle = Path(args.out), Path(args.bundle)
     out.mkdir(parents=True, exist_ok=True)
     manifest = capture(routes=routes, group=args.group, base=args.base.rstrip("/"), presets=presets,
-                       themes=themes, out=out, bundle=bundle, axe_source=axe_source)
+                       themes=themes, out=out, bundle=bundle, axe_source=axe_source,
+                       keep_storage=args.keep_storage, settle=args.settle, clock=args.clock)
     images = sum(len(r["images"]) for r in manifest["routes"])
     sys.stdout.write(json.dumps({"group": args.group, "images": images, "captured": len(manifest["routes"]),
                                  "failed": len(manifest["failed"]),
@@ -1006,10 +1323,46 @@ def _capture_command(args) -> int:
     return EXIT_OK if images else EXIT_NOTHING_CAPTURED
 
 
+def _discover_command(args) -> int:
+    if not os.environ.get(ENDPOINT_ENV, "").strip():
+        sys.stderr.write(f"swarm_qa: no live browser ({ENDPOINT_ENV} is not set): "
+                         "discover reads the rendered pages, so it did not run\n")
+        return EXIT_NO_LIVE_BROWSER
+    base = args.base.rstrip("/")
+    try:
+        parts = urlsplit(base)
+        if _origin(base) is None or parts.path or parts.query or parts.fragment:
+            raise UsageError("--base must be an http(s) origin, with no path")
+        if not 1 <= args.max_pages <= DISCOVER_MAX_PAGES:
+            raise UsageError(f"--max-pages must be 1..{DISCOVER_MAX_PAGES}")
+        if not 0 <= args.max_depth <= DISCOVER_MAX_DEPTH:
+            raise UsageError(f"--max-depth must be 0..{DISCOVER_MAX_DEPTH}")
+        if not all(isinstance(g, str) and g.startswith("/") for g in args.exclude):
+            raise UsageError("--exclude takes path globs starting with /")
+    except (UsageError, ValueError) as exc:
+        sys.stderr.write(f"swarm_qa: {exc}\n")
+        return EXIT_USAGE
+    found = discover(base=base, max_pages=args.max_pages, max_depth=args.max_depth, exclude=args.exclude)
+    document = found["document"]
+    if document is None:
+        sys.stderr.write(f"swarm_qa: {found['why']}\n")
+        return EXIT_NOTHING_CAPTURED
+    out = Path(args.out)
+    tmp = out.with_name(out.name + ".tmp")
+    _write(tmp, json.dumps(document, indent=1))
+    os.replace(tmp, out)
+    routes = sum(len(r) for r in document["groups"].values())
+    sys.stdout.write(json.dumps({"routes": routes, "groups": len(document["groups"]),
+                                 "skipped": document["discovered"]["skipped"], "out": str(out)}) + "\n")
+    return EXIT_OK
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "capture":
         return _capture_command(args)
+    if args.command == "discover":
+        return _discover_command(args)
     out = Path(args.out)
     report = diff(Path(args.a), Path(args.b), out, args.threshold)
     sys.stdout.write(json.dumps({"compared": len(report["images"]), "over_threshold": report["over_threshold"],
