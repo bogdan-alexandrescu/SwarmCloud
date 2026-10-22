@@ -546,3 +546,118 @@ def test_gcloud_environment_that_changes_identity_or_project_is_refused(
     assert _guard("check", "--", *allowed, env=ready).returncode == 0
     out = _guard("check", "--", *allowed, env={**ready, variable: value})
     assert out.returncode == REFUSED and variable in out.stderr
+
+
+# --------------------------------------------------------------------------
+# the QA target credential secret, personal workspaces only (VQ3-DEPLOYER-QA)
+# --------------------------------------------------------------------------
+
+QA_SECRET = "swarm-tenant-u-alice-qa"
+API_EMAIL = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+
+
+def _kind_expectation(tmp: Path, kind: str) -> dict:
+    env = _env(tmp)
+    assert _guard("init", "--workspace-id", WORKSPACE, env=env).returncode == 0
+    record = tmp / f"record-{kind}.json"
+    record.write_text(json.dumps(CASE_DOC["kind_records"][kind]))
+    done = _guard("expect", "--record", str(record), env=env)
+    assert done.returncode == 0, done.stderr
+    return json.loads(Path(env["SWARM_CALL_GUARD"]).read_text())
+
+
+def test_a_personal_expectation_names_its_qa_secret_and_swarm_api(ready: dict[str, str]) -> None:
+    exp = json.loads(Path(ready["SWARM_CALL_GUARD"]).read_text())
+    # MUTATION: derive qa_secret from anything but the record's tenant and this fails.
+    assert exp["qa_secret"] == QA_SECRET
+    # MUTATION: name the worker (or any account but swarm-api) as api_email and this fails.
+    assert exp["api_email"] == API_EMAIL
+
+
+@pytest.mark.parametrize("kind", ["group", "service"])
+def test_a_group_or_service_expectation_names_no_qa_secret(tmp_path: Path, kind: str) -> None:
+    # The deployer's secret binder stops at swarm-tenant-u-: a team tenant's QA
+    # secret is not one it may bind, so the guard admits no call about it.
+    exp = _kind_expectation(tmp_path, kind)
+    # MUTATION: write qa_secret / api_email for every kind and this fails.
+    assert "qa_secret" not in exp and "api_email" not in exp, sorted(exp)
+
+
+def _qa_bind(name: str, member: str, role: str) -> list[str]:
+    return ["gcloud", "secrets", "add-iam-policy-binding", name, "--project", "saga-agents-staging",
+            "--member", member, "--role", role]
+
+
+def _qa_create(name: str, *extra: str) -> list[str]:
+    return ["gcloud", "secrets", "create", name, "--project", "saga-agents-staging", *extra]
+
+
+_LABELS = "managed-by=swarm-register-tenant,component=qa-target-credential,tenant=u-alice,swarm-tenant=u-alice"
+_WORKER_MEMBER = "serviceAccount:swarm-agent-worker-u-alice@saga-agents-staging.iam.gserviceaccount.com"
+
+QA_CALLS = [
+    # (why, argv, the verdict's rule or None for a refusal)
+    ("A6 reads the QA secret", ["gcloud", "secrets", "describe", QA_SECRET, "--project", "saga-agents-staging",
+                                "--format=json"], "C1"),
+    ("A6 reads its policy", ["gcloud", "secrets", "get-iam-policy", QA_SECRET, "--project", "saga-agents-staging",
+                             "--format=json"], "C1"),
+    ("another person's QA secret is not read", ["gcloud", "secrets", "describe", "swarm-tenant-u-bob-qa",
+                                                "--project", "saga-agents-staging"], None),
+    ("A6 creates it, empty and pinned", _qa_create(QA_SECRET, "--replication-policy", "user-managed",
+                                                   "--locations", "us-central1", "--labels", _LABELS), "C6"),
+    ("not replicated automatically", _qa_create(QA_SECRET, "--replication-policy", "automatic",
+                                                "--locations", "us-central1", "--labels", _LABELS), None),
+    ("not without its region", _qa_create(QA_SECRET, "--replication-policy", "user-managed",
+                                          "--labels", _LABELS), None),
+    ("not without its labels", _qa_create(QA_SECRET, "--replication-policy", "user-managed",
+                                          "--locations", "us-central1"), None),
+    ("not created for another person", _qa_create("swarm-tenant-u-bob-qa", "--replication-policy", "user-managed",
+                                                  "--locations", "us-central1", "--labels", _LABELS), None),
+    ("V-1 for swarm-api", _qa_bind(QA_SECRET, f"serviceAccount:{API_EMAIL}",
+                                   "roles/secretmanager.secretVersionAdder"), "C6"),
+    ("V-2 for swarm-api", _qa_bind(QA_SECRET, f"serviceAccount:{API_EMAIL}",
+                                   "roles/secretmanager.secretAccessor"), "C6"),
+    ("never the worker", _qa_bind(QA_SECRET, _WORKER_MEMBER, "roles/secretmanager.secretAccessor"), None),
+    ("never another role", _qa_bind(QA_SECRET, f"serviceAccount:{API_EMAIL}",
+                                    "roles/secretmanager.admin"), None),
+    ("never a version manager", _qa_bind(QA_SECRET, f"serviceAccount:{API_EMAIL}",
+                                         "roles/secretmanager.secretVersionManager"), None),
+    ("never a look-alike account", _qa_bind(QA_SECRET, "serviceAccount:swarm-api@other-project.iam.gserviceaccount.com",
+                                            "roles/secretmanager.secretAccessor"), None),
+    ("never a person", _qa_bind(QA_SECRET, "user:alice@example.com", "roles/secretmanager.secretAccessor"), None),
+    ("never on another person's", _qa_bind("swarm-tenant-u-bob-qa", f"serviceAccount:{API_EMAIL}",
+                                           "roles/secretmanager.secretAccessor"), None),
+    ("never swarm-api on the forge slot", _qa_bind("{forge_slot}", f"serviceAccount:{API_EMAIL}",
+                                                   "roles/secretmanager.secretAccessor"), None),
+]
+
+
+@pytest.mark.parametrize(("why", "argv", "rule"), QA_CALLS, ids=[c[0] for c in QA_CALLS])
+def test_the_qa_secret_shapes_admit_only_the_expectations_own_names(
+        ready: dict[str, str], why: str, argv: list[str], rule: str | None) -> None:
+    exp = json.loads(Path(ready["SWARM_CALL_GUARD"]).read_text())
+    argv = [a.replace("{forge_slot}", exp["forge_slot"]) for a in argv]
+    out = _guard("check", "--", *argv, env=ready)
+    if rule is None:
+        # MUTATION: widen C6's QA binding to "--member": "*" or "--role": "*" and a refusal here allows.
+        assert out.returncode == REFUSED, f"{why}: {out.stdout}{out.stderr}"
+    else:
+        # MUTATION: drop the {qa_secret} shapes from C1/C6 and an allowance here refuses.
+        assert out.returncode == 0 and out.stdout.strip() == f"allow {rule}", f"{why}: {out.stdout}{out.stderr}"
+
+
+@pytest.mark.parametrize("kind", ["group", "service"])
+def test_a_team_workspace_may_not_create_or_bind_a_qa_secret(tmp_path: Path, kind: str) -> None:
+    exp = _kind_expectation(tmp_path, kind)
+    env = _env(tmp_path)
+    name = f"swarm-tenant-{exp['tenant_id']}-qa"
+    for argv in (
+        _qa_create(name, "--replication-policy", "user-managed", "--locations", "us-central1", "--labels", "x=y"),
+        _qa_bind(name, f"serviceAccount:{API_EMAIL}", "roles/secretmanager.secretAccessor"),
+        ["gcloud", "secrets", "describe", name, "--project", "saga-agents-staging"],
+    ):
+        # A refusal latches every later call; each is judged on its own.
+        Path(env["SWARM_CALL_GUARD"] + ".stop").unlink(missing_ok=True)
+        out = _guard("check", "--", *argv, env=env)
+        # MUTATION: give a team expectation a qa_secret and these are allowed.
+        assert out.returncode == REFUSED, f"{kind} {argv}: {out.stdout}{out.stderr}"
