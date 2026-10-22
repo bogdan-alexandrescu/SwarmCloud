@@ -70,6 +70,7 @@ from . import forge as _forge
 from .errors import Conflict, NotFound, ValidationFailed
 from .forge import GIT_PROVIDER
 from .forge_limits import rate_limit, spent
+from .forgewrite import rules_unavailable_on_plan
 from .redaction import redact, redact_detail
 
 log = logging.getLogger(__name__)
@@ -1547,10 +1548,17 @@ def read_merge(r: _Repository, push: Check) -> Check:
     if carried:
         return carried
     branch = r.default_branch
+    label = f"/repos/{r.repository}/rules/branches/{branch}"
     answer = r.forge.get(
-        _api(r.owner, r.name, f"rules/branches/{_quote(branch, safe='')}"),
-        f"/repos/{r.repository}/rules/branches/{branch}",
+        _api(r.owner, r.name, f"rules/branches/{_quote(branch, safe='')}"), label,
     )
+    # GITTOOLS-PLAN403 (#1188): the plan answer is "no ruleset can exist here",
+    # read by the writer's recogniser from the message `_Forge.get` kept.
+    message = answer.evidence.removeprefix(f"GET {label} -> HTTP {answer.status}: ")
+    if rules_unavailable_on_plan(answer.status, message):
+        return Check(OK, f"the token may push, and no ruleset can exist on {branch} on this "
+                     "repository's plan (GitHub keeps rulesets for paid plans or public "
+                     "repositories)", answer.evidence)
     if answer.status != 200:
         return Check(UNKNOWN, f"the branch rules on {branch} could not be read "
                      f"(HTTP {answer.status})", answer.evidence)
