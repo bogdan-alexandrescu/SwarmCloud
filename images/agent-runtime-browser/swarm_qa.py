@@ -86,7 +86,8 @@ What `capture` does, and why each:
    image downscaled until its text is unreadable, and whether a full-page
    capture through the gate needs a metrics override is unverified.
    `animations="disabled"`, `caret="hide"`. A shot whose size is not the
-   viewport's (VIEWPORT_JS, read after it) is taken again, up to
+   page's layout viewport (innerWidth and innerHeight over the visual
+   viewport's scale, VIEWPORT_JS, read after it) is taken again, up to
    SHOT_RETRIES times, each in the entry's `reshot`; one still off is kept and
    listed in `failed` (`_shot` says what was measured at phone-390, #1981).
 6. Records what the page said, beside the PNGs: console and page errors,
@@ -487,9 +488,11 @@ DOM_CHANGES_JS = """() => {
   return [window.__swarmQaDom.count, window.__swarmQaDom.where];
 }"""
 #: `discover`: the page's rendered links, resolved by the browser.
-#: The window's size and device pixel ratio, read after each screenshot to
-#: check the shot is the viewport's size (`_shot`).
-VIEWPORT_JS = "() => [window.innerWidth, window.innerHeight, window.devicePixelRatio || 1]"
+#: The window's size, device pixel ratio and visual viewport scale, read
+#: after each screenshot to check the shot is the layout viewport's size
+#: (`_shot`). A browser with no `visualViewport` answers scale 1.
+VIEWPORT_JS = ("() => [window.innerWidth, window.innerHeight, window.devicePixelRatio || 1, "
+               "(window.visualViewport && window.visualViewport.scale) || 1]")
 #: How many times `_shot` takes a screenshot again when it is not the size
 #: of the viewport, before it keeps it and lists it in `failed`.
 SHOT_RETRIES = 2
@@ -794,45 +797,59 @@ def png_size(data: bytes) -> tuple[int, int] | None:
     return None
 
 
-def _viewport_sizes(answer: Any) -> list[tuple[int, int]]:
-    """VIEWPORT_JS's answer as the sizes a shot of the viewport may have: its
-    CSS size (the gate's headed Chromium draws one screen pixel per CSS
-    pixel) and that times the device pixel ratio. [] when it is not one."""
+def _viewport_sizes(answer: Any) -> list[tuple[float, float]]:
+    """VIEWPORT_JS's answer as the sizes a faithful shot of the viewport may
+    have: the page's layout viewport, innerWidth / scale by innerHeight /
+    scale (what Playwright clips a viewport shot to), at one screen pixel per
+    CSS pixel (the gate's headed Chromium) or times the device pixel ratio.
+    [] when it is not one."""
     if not isinstance(answer, (list, tuple)) or len(answer) < 2:
         return []
     width, height = answer[0], answer[1]
     ratio = answer[2] if len(answer) > 2 else 1
-    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in (width, height, ratio)):
+    scale = answer[3] if len(answer) > 3 else 1
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+               for v in (width, height, ratio, scale)):
         return []
-    return [(round(width), round(height)), (round(width * ratio), round(height * ratio))]
+    width, height = width / scale, height / scale
+    return [(width, height), (width * ratio, height * ratio)]
+
+
+def _faithful(size: tuple[int, int], sizes: list[tuple[float, float]]) -> bool:
+    """`size` is one of `sizes` to the pixel: Playwright rounds the clip out
+    to whole CSS pixels (980 for 390 / 0.398 = 979.9)."""
+    return any(abs(size[0] - w) < 1 and abs(size[1] - h) < 1 for w, h in sizes)
 
 
 def _shot(page, segment: int) -> tuple[bytes, list[dict], str | None]:
     """One screenshot of the viewport, taken again (up to SHOT_RETRIES times)
-    while its size is not the viewport's. Returns the PNG, a record of each
-    shot taken again, and a line for `failed` when the last one is still off.
+    while its size disagrees with the page's layout viewport read just after
+    it. Returns the PNG, a record of each shot taken again, and a line for
+    `failed` when the last one is still off.
 
     MEASURED (#1981, task_aa240c7a75894ff9852b): at phone-390 the first
     screenshot after every full document load came out 980x2121 with the
-    page drawn small, while the page reported innerWidth 390; every later
-    shot in the same document was 390x844. Playwright 1.63 sizes a viewport
-    shot from `innerWidth`/`innerHeight` read at the shot, over the visual
-    viewport's scale (crPage `takeScreenshot`), so a 980-wide shot is one taken
-    before the page's layout had taken the preset's 390 px viewport (Chromium's
-    980 px default). The device is set before the first navigation
-    (`capture`), so the order here is not the cause; the shot is checked
-    against the viewport read just after it, and taken again."""
+    page drawn small; every later shot in the same document was 390x844.
+    Lane QA-DEVICE (task_b3f3786bde2144389073, Chrome 153, Playwright 1.63)
+    found the FIRST one faithful: a page with no viewport meta tag is laid
+    out at 980 px on a phone, Playwright clips a viewport shot to
+    innerWidth / visualViewport.scale (390 / 0.398) by innerHeight / scale,
+    and that is 980x2121. The later ones were the unfaithful shots: every
+    clipped capture lifted the gate's device (dpr 1, a desktop scrollbar),
+    which the gate now puts back after each (livegate/device.py, QA-REASSERT).
+    So a shot is checked against that layout viewport, never the preset's
+    nominal size or innerWidth alone, and one that disagrees is taken again."""
     reshot: list[dict] = []
     attempt = 0
     while True:
         png = page.screenshot(type="png", animations="disabled", caret="hide", timeout=SHOT_TIMEOUT_MS)
         size = png_size(png)
         sizes = _viewport_sizes(page.evaluate(VIEWPORT_JS))
-        if size is None or not sizes or size in sizes:
+        if size is None or not sizes or _faithful(size, sizes):
             return png, reshot, None
-        view = sizes[0]
+        view = (round(sizes[0][0]), round(sizes[0][1]))
         if attempt >= SHOT_RETRIES:
-            return png, reshot, (f"segment {segment} was {size[0]}x{size[1]}, not the page's viewport "
+            return png, reshot, (f"segment {segment} was {size[0]}x{size[1]}, not the page's layout viewport "
                                  f"{view[0]}x{view[1]}, after {attempt + 1} shots (kept as it came)")
         reshot.append({"segment": segment, "size": list(size), "viewport": list(view)})
         attempt += 1

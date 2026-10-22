@@ -111,6 +111,21 @@ The value is the one the agent asked the gate for by name. An agent that
 also calls `page.emulate_media` with the same scheme, as swarm_qa.py does, is
 not contradicted. At `system` none of this sends anything.
 
+THE DEVICE AGAIN AFTER A CLIPPED CAPTURE (QA-REASSERT, decided 2026-10-22;
+part of #1981). MEASURED by lane QA-DEVICE (task_b3f3786bde2144389073,
+Chrome 153.0.8010.12, Playwright 1.63.0): the device IS in force before an
+agent's first screenshot, but every Playwright screenshot sends a clipped
+`Page.captureScreenshot` from the agent's own session, and that lifts this
+module's `Emulation.setDeviceMetricsOverride` for the rest of the document:
+every later shot was dpr 1 with a desktop scrollbar. Sending the same
+parameters again does nothing (Chromium skips an override identical to the
+one it last applied), so `reassert` clears and then sets the active preset
+on the gate's session for that page. The proxy calls it after relaying the
+reply to such a capture (cdpproxy.py); a `DeviceController` registers it
+with the proxy it is built on (`after_clipped_capture`). A page the gate
+holds no session on gets nothing: there is no device of the gate's on it to
+put back.
+
 NOTHING HERE IS LOGGED BUT NAMES. A device change records the preset name and
 orientation; a page's URL, a session id or a coordinate is never a log
 argument.
@@ -435,6 +450,11 @@ class DeviceController:
         self._browser: tuple[str, str] | None = None  # (user agent, version)
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
+        # The proxy puts the device back after an agent's clipped capture
+        # (module docstring); a test's scripted CDP has no such hook.
+        watch = getattr(cdp, "after_clipped_capture", None)
+        if callable(watch):
+            watch(self.reassert)
 
     @property
     def device(self) -> Device:
@@ -521,6 +541,18 @@ class DeviceController:
         self._record("theme_set", {"theme": theme})
         log.info("live theme: %s", theme)
         return {"theme": theme}
+
+    async def reassert(self, target_id: str) -> None:
+        """The active preset's metrics again on the gate's session on
+        `target_id`: cleared first, because Chromium skips parameters
+        identical to the last it applied (module docstring, THE DEVICE AGAIN
+        AFTER A CLIPPED CAPTURE). Nothing when the gate holds no session on it."""
+        async with self._lock:
+            session = self._pages.get(target_id)
+            if session is None:
+                return
+            await self._cdp.call("Emulation.clearDeviceMetricsOverride", {}, session)
+            await self._cdp.call("Emulation.setDeviceMetricsOverride", _metrics(self._device), session)
 
     async def attach_page(self, target_id: str) -> None:
         """Apply the current device to a page (the fresh page, or one just discovered)."""
@@ -676,18 +708,7 @@ class DeviceController:
 
     async def _apply_page(self, device: Device, target_id: str, session: str) -> None:
         user_agent, version = await self._browser_version()
-        await self._cdp.call("Emulation.setDeviceMetricsOverride", {
-            "width": device.width,
-            "height": device.height,
-            "deviceScaleFactor": device.scale,
-            "mobile": device.mobile,
-            # No `scale`: it magnifies the page inside a view Chromium still
-            # clips at the CSS size (module docstring). The page fills the
-            # display because the display IS the CSS size.
-            "screenWidth": device.width,
-            "screenHeight": device.height,
-            "screenOrientation": device.screen_orientation(),
-        }, session)
+        await self._cdp.call("Emulation.setDeviceMetricsOverride", _metrics(device), session)
         await self._cdp.call("Emulation.setUserAgentOverride", {
             "userAgent": device.user_agent(user_agent, version),
             "platform": device.preset.platform,
@@ -712,3 +733,19 @@ class DeviceController:
             # The page's navigations, so the theme is sent again after each.
             await self._cdp.call("Page.enable", {}, session)
             self._page_events.add(session)
+
+
+def _metrics(device: Device) -> dict[str, Any]:
+    """`Emulation.setDeviceMetricsOverride`'s parameters for `device`."""
+    return {
+        "width": device.width,
+        "height": device.height,
+        "deviceScaleFactor": device.scale,
+        "mobile": device.mobile,
+        # No `scale`: it magnifies the page inside a view Chromium still
+        # clips at the CSS size (module docstring). The page fills the
+        # display because the display IS the CSS size.
+        "screenWidth": device.width,
+        "screenHeight": device.height,
+        "screenOrientation": device.screen_orientation(),
+    }
