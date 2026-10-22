@@ -91,6 +91,7 @@ from .model import (
     Termination,
     as_datetime,
 )
+from .memory import OutOfMemory, out_of_memory_killed, stalled_at_memory_limit
 from .progress import assess
 from .startproblem import START_PROBLEM_STATES
 from .startsteps import POD_STARTUP_STEPS, RUNNING_STEPS_WINDOW_SECONDS, StartRead
@@ -196,6 +197,22 @@ LOST_AFTER_FINISH_CAUSE = FindingKind.LOST_AFTER_FINISH.value
 #: Findings repaired by fencing alone in the pass that finds them. See
 #: `_repair_stuck` for why the kill waits for the next pass.
 _FENCE_ONLY = (FindingKind.STUCK_NO_PROGRESS,)
+
+#: Findings whose attempt FAILS its task when its execution ended OOM-killed
+#: (#1926, `memory.out_of_memory_killed`): every finding that would otherwise
+#: requeue it on the evidence of how its worker ended. Not the cannot-start
+#: rule (it fails anyway, with the worker's cause), not the eviction rule (a
+#: node's pressure), not a leaseless or orphaned lease (no attempt of its own).
+_OUT_OF_MEMORY_KINDS = (
+    FindingKind.STALE_LEASE,
+    FindingKind.DEAD_WORKER,
+    FindingKind.MISSING_EXECUTION,
+    FindingKind.WORKER_ENDED_AT_STARTUP,
+)
+#: Of those, the ones whose attempt is also judged by its last heartbeats
+#: sitting at its memory limit (`memory.stalled_at_memory_limit`): a worker
+#: reclaimed for going silent or dead, which is what a stall at the limit does.
+_STALL_KINDS = (FindingKind.STALE_LEASE, FindingKind.DEAD_WORKER)
 
 #: The states a leaseless-task finding is about. Its fence and its requeue are
 #: each refused for a task that has left them since the snapshot -- parked,
@@ -1998,11 +2015,20 @@ class Reconciler:
         if ended_why:
             finding = replace(finding, reason=f"{finding.reason}; {ended_why}")
             outcome.reason = finding.reason
+        # An attempt that ran out of memory at its own limit FAILS its task
+        # the first time (#1926): the retry is the same step at the same
+        # size. Its words lead the reason, so the attempt, the task and the
+        # events all say it. A decision on the state only: the fence, the
+        # release and the kill below are the reclaim's, unchanged.
+        out_of_memory = self._out_of_memory(finding, snapshot)
+        if out_of_memory is not None:
+            finding = replace(finding, reason=f"{out_of_memory.words}; {finding.reason}")
+            outcome.reason = finding.reason
         if self._config.dry_run:
             outcome.skipped = "dry_run"
             outcome.actions.append(
                 f"would invalidate, release and fail the task: {finding.reason}"
-                if cannot_start
+                if cannot_start or out_of_memory is not None
                 else f"would invalidate, release and requeue the task: {finding.reason}"
                 if ended_at_startup or finding.kind is FindingKind.WORKER_EVICTED
                 else f"would invalidate and requeue the task, releasing nothing: {finding.reason}"
@@ -2090,6 +2116,10 @@ class Reconciler:
                 )
             elif cannot_start:
                 to_state, error = TaskState.FAILED, finding.reason
+            elif out_of_memory is not None:
+                # No refund, no eviction count, no retry: FAILED, whatever
+                # attempts remain. A cancel still wins, above.
+                to_state, error = TaskState.FAILED, f"reconciled: {finding.reason}"
             else:
                 to_state, error = TaskState.READY, f"reconciled: {finding.reason}"
             # An attempt that ended before its runner started is refunded,
@@ -2100,7 +2130,7 @@ class Reconciler:
             # transaction's own fence: when somebody else fenced first,
             # nothing is refunded (invariant 5).
             refund_limit: int | None = None
-            if ended_at_startup and to_state is TaskState.READY:
+            if ended_at_startup and to_state is TaskState.READY and out_of_memory is None:
                 what = finding.detail.get("what_ended") or finding.reason
                 error = f"reconciled: {what}" + (f"; {ended_why}" if ended_why else "")
                 refund_limit = self._config.startup_refund_limit
@@ -2123,7 +2153,7 @@ class Reconciler:
                 # every attempt back to back (#1822). The wait creates no
                 # demand: a READY task holds nothing (invariant 1).
                 next_eligible_at=None
-                if cannot_start
+                if cannot_start or out_of_memory is not None
                 else utcnow() + timedelta(seconds=requeue_backoff_seconds(task.attempt_count)),
                 # Why it ends if it ends FAILED: the worker could not start,
                 # or (spent attempts on a requeue) its worker was lost.
@@ -2220,6 +2250,15 @@ class Reconciler:
                     execution=finding.detail.get("execution"),
                     task_state=finding.detail.get("task_state"),
                 )
+            if out_of_memory is not None and repaired is TaskState.FAILED:
+                # The reason in words, as the owner asked (#1926); the finding
+                # that reclaimed it is kept beside them, not lost.
+                detail.update(
+                    reason=out_of_memory.words,
+                    finding=finding.kind.value,
+                    out_of_memory=out_of_memory.how,
+                    memory_limit_bytes=out_of_memory.limit_bytes,
+                )
             if repaired is TaskState.CANCELLED:
                 # The API's flag-only cancel wrote `cancel_requested`
                 # (before 2026-09-24: a `cancelled` with
@@ -2238,6 +2277,41 @@ class Reconciler:
             if repaired in TERMINAL_STATES:
                 self._announce_finished(finding.task_id, task.tenant_id, repaired, outcome)
         return outcome
+
+    def _out_of_memory(self, finding: Finding, snapshot: ControlSnapshot) -> OutOfMemory | None:
+        """Whether this finding's attempt ran out of memory at its own limit (#1926), or None.
+
+        An OOM kill, from the termination this pass already read, on any
+        finding that would otherwise requeue the attempt's task. A stall at
+        the limit, from the attempt's heartbeat events, only on a silent or
+        dead worker -- the rule is about a worker that stopped answering --
+        and never on an evicted one: a node's pressure is not this step's
+        size. A read that fails is no evidence, and keeps today's retry.
+        """
+        if finding.kind not in _OUT_OF_MEMORY_KINDS or not finding.attempt_id:
+            return None
+        task = snapshot.tasks.get(finding.task_id or "") if finding.task_id else None
+        if task is None or task.is_terminal:
+            return None
+        ended = (getattr(snapshot, "terminations", None) or {}).get(finding.attempt_id)
+        killed = out_of_memory_killed(ended)
+        if killed is not None or finding.kind not in _STALL_KINDS:
+            return killed
+        if ended is not None and getattr(ended, "eviction", None):
+            return None
+        try:
+            events = self._store.attempt_events(task.task_id, finding.attempt_id)
+        except Exception as exc:
+            self._log.warning(
+                "could not read an attempt's heartbeats; not judging its memory",
+                task_id=task.task_id,
+                attempt_id=finding.attempt_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+        return stalled_at_memory_limit(
+            events, attempt_id=finding.attempt_id, generation=finding.generation
+        )
 
     @staticmethod
     def _how_it_ended(finding: Finding, snapshot: ControlSnapshot) -> str | None:
