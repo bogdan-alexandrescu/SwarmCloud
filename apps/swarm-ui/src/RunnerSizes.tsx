@@ -34,6 +34,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import { loadRunnerSizes, loadRunnerSizeVersions, previewRunnerSizes, restoreRunnerSizes, saveRunnerSizes } from './api'
+import { usePhoneTables } from './capacityPoll'
 import { Banner, Button, Card, Dialog, TypedConfirm } from './components'
 import type { ApiError, Result } from './fetch'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
@@ -685,32 +686,44 @@ function RecentUse({ use, size, ratio }: { use: RunnerRecentUse | null; size: Ru
   )
 }
 
-function PoolsTable({ pools }: { pools: RunnerSizesPreview['pools'] | null }) {
+/**
+ * WHAT THE POOLS ADMIT, A RECORD PER POOL AND CLASS ON A PHONE (visual QA run
+ * 5b, QA-019, part of #1680). Four columns at 390 overflowed the card: the
+ * last head was cut and `20 → 20` wrapped. Below 560px it is the console's
+ * stacked record (styles.css `.is-stacked`): the pool at lead rank, its three
+ * fields keyed by `data-label`. The roles are written out because a table
+ * drawn as blocks loses its implicit ones. Wider, it is the table it was, in a
+ * wrapper that scrolls inside the card rather than cutting a head.
+ */
+export function PoolsTable({ pools }: { pools: RunnerSizesPreview['pools'] | null }) {
+  const phone = usePhoneTables()
   if (pools === null) return <p className="rs-note">Reading what the platform-wide pools admit…</p>
   if (pools.length === 0) return <p className="rs-note">No platform-wide pool has a ceiling set, so a resize moves no ceiling.</p>
   return (
-    <table className="rs-pools">
-      <thead>
-        <tr>
-          <th scope="col">Pool</th>
-          <th scope="col">Ceiling (units)</th>
-          <th scope="col">Class</th>
-          <th scope="col">Agents admitted, before → after</th>
-        </tr>
-      </thead>
-      <tbody>
-        {pools.flatMap((p) =>
-          Object.entries(p.admits_before).map(([cls, before]) => (
-            <tr key={`${p.pool}/${cls}`} data-pool={p.pool} data-class={cls}>
-              <td>{p.pool}</td>
-              <td>{p.hard_limit}</td>
-              <td>{cls}</td>
-              <td>{`${before} → ${p.admits_after[cls] ?? '—'}`}</td>
-            </tr>
-          )),
-        )}
-      </tbody>
-    </table>
+    <div className={phone ? 'rs-pools-wrap is-stacked' : 'rs-pools-wrap'}>
+      <table className="rs-pools" role="table" aria-label="What the pools admit">
+        <thead role="rowgroup">
+          <tr role="row">
+            <th role="columnheader" scope="col">Pool</th>
+            <th role="columnheader" scope="col">Ceiling (units)</th>
+            <th role="columnheader" scope="col">Class</th>
+            <th role="columnheader" scope="col">Agents admitted, before → after</th>
+          </tr>
+        </thead>
+        <tbody role="rowgroup">
+          {pools.flatMap((p) =>
+            Object.entries(p.admits_before).map(([cls, before]) => (
+              <tr key={`${p.pool}/${cls}`} role="row" data-pool={p.pool} data-class={cls}>
+                <th role="rowheader" scope="row">{p.pool}</th>
+                <td role="cell" data-label="Ceiling (units)">{p.hard_limit}</td>
+                <td role="cell" data-label="Class">{cls}</td>
+                <td role="cell" data-label="Agents admitted, before → after">{`${before} → ${p.admits_after[cls] ?? '—'}`}</td>
+              </tr>
+            )),
+          )}
+        </tbody>
+      </table>
+    </div>
   )
 }
 

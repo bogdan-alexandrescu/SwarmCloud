@@ -323,6 +323,20 @@
 .adm-repo-limits,
 .adm-prices,
 .adm-fallback-token { margin-top: var(--ctl-s5); }
+/* MODEL PRICES FITS ITS CARD AT 1440 (visual QA run 5b, QA-018, part of
+   #1680). Its five fields had no width, so each was the browser's default 20
+   characters, about 190px: nine columns came to some 1,560px in a card of
+   about 1,020, `Cache write /M` was cut to `C` and Currency, Source, As of and
+   Set by sat behind the table's scrollbar. A figure is a handful of digits
+   (`6.25`, `0.125`) and a day is ten characters, so each field is that many
+   mono characters plus its 9px padding and 1px border either side. A long
+   head wraps rather than holding its column wider than the field under it,
+   and a tiered model's lines lose the list's 40px indent. The table still
+   scrolls inside `.ctl-table` where a card is narrower than this. */
+.adm-price-in { width: calc(7ch + 20px); }
+.adm-price-in.is-day { width: calc(10ch + 20px); }
+.adm-price-table thead th { white-space: normal; }
+.adm-price-tiers { margin: 0; padding: 0; list-style: none; }
 .adm-token-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 /* THE SAME CONTROL EDGE (visual QA run 4, admin-008): on `--line` the
    fallback token's owner and token fields measured 1.37:1 on the dark card
@@ -708,6 +722,22 @@ table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg {
 .rs-pools { width: 100%; border-collapse: collapse; font-size: var(--t-meta); }
 .rs-pools th, .rs-pools td { padding: 4px 8px; border-bottom: 1px solid var(--line-soft); text-align: left; }
 .rs-pools td { font-family: var(--mono); }
+/* WHAT THE POOLS ADMIT FITS A PHONE CARD (visual QA run 5b, QA-019, part of
+   #1680). At 390 its four columns overflowed the card, the last head cut and
+   `20 → 20` wrapped. Below 560px `PoolsTable` (RunnerSizes.tsx) opts into the
+   console's stacked record (`.is-stacked`, styles.css), with the pool as the
+   record's name; here its row rule leaves the fields, which a record does not
+   rule (§13.3), and the record sits on the card's own padding. Wider, the
+   table scrolls inside its wrapper, never past the card. The pool name is a
+   row header now, drawn as the mono value it was. */
+.rs-pools tbody th { font-family: var(--mono); font-weight: 400; }
+.rs-pools-wrap { overflow-x: auto; }
+@media (max-width: 899px) {
+  .rs-pools-wrap.is-stacked { overflow-x: visible; }
+  .is-stacked > .rs-pools > tbody > tr { padding-inline: 0; }
+  .is-stacked > .rs-pools > tbody > tr > th,
+  .is-stacked > .rs-pools > tbody > tr > td { border-bottom: 0; }
+}
 .rs-save { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; margin: var(--ctl-s2) 0; }
 .rs-save .c-field { width: 100%; max-width: 40rem; }
 .rs-saved, .rs-error { margin: 0; font-size: var(--t-meta); }
