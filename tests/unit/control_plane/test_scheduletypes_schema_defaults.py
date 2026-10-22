@@ -26,11 +26,21 @@ def test_issue_sweep_serves_its_default_exclusions() -> None:
     assert props["labels_include"]["default"] == []
 
 
+#: The types whose params have a required field, so no all-default model:
+#: named, so a new one cannot weaken the defaults check by having one.
+REQUIRED_PARAM_TYPES = frozenset({"custom-prompt", "visual-qa"})
+
+
 def test_every_served_default_is_what_create_stores() -> None:
     for entry in TYPES:
         schema = params_schema(entry.params_model)
-        if "spec" in (schema.get("required") or []):
-            continue  # custom-prompt: no create without a spec, so no all-default model.
+        if entry.name in REQUIRED_PARAM_TYPES:
+            # custom-prompt's spec, visual-qa's target: no create without
+            # them, so no all-default model.
+            assert schema.get("required"), f"{entry.name} no longer requires a param: drop it from the skip"
+            continue
+        # A new type with a required param must be named in the skip, not skipped silently.
+        assert not schema.get("required"), f"{entry.name} requires {schema['required']}: name it in the skip"
         stored = entry.params_model().model_dump(mode="json")
         for name, prop in schema.get("properties", {}).items():
             assert "default" in prop, f"{entry.name}.{name} serves no default"

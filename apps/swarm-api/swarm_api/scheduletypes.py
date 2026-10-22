@@ -1,4 +1,4 @@
-"""The schedule job-type catalogue: fifteen types, picked BY NAME (docs/schedules.md §3).
+"""The schedule job-type catalogue: sixteen types, picked BY NAME (docs/schedules.md §3).
 
 A schedule names a type from this catalogue and nothing else: no image, no
 command, no profile, no resource class, no backend parameter (invariant 10).
@@ -290,6 +290,18 @@ class FailureReviewParams(Params):
     summary_issue: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]{0,9}$")
     #: Each fix run's CI fix rounds (§6 step 3: 3, at most 5, §7).
     fix_rounds: int = Field(default=3, ge=1, le=5)
+
+
+class VisualQaParams(Params):
+    """§3.17 (docs/design/visual-qa-any-app.md §6). The target and nothing
+    else: its URL, sign-in, screens, flows and filing are the target's, set by
+    a workspace admin on `qa_targets/{id}` (§1.1), so a schedule can point a
+    run at nothing a person could not start by hand with `:run`."""
+
+    #: A QA target of the schedule's own tenant (`qatargets._TARGET_ID`'s
+    #: shape). Checked against the tenant at create and edit
+    #: (`schedtypes.visual_qa.check_target`) and again at every firing.
+    target: str = Field(pattern=r"^qat_[0-9a-f]{16}$")
 
 
 class CustomPromptParams(Params):
@@ -665,6 +677,33 @@ TYPES: tuple[ScheduleType, ...] = (
         phase=3,
         forge_permissions=("issues:write", *_PR_PUSH, "checks:read"),
         gate_notes="merge: auto only through the audited switch, made once by the owner (Q8); every hold category stops a merge whatever the gate",
+    ),
+    # §3.17, #1933 (docs/design/visual-qa-any-app.md §6): a firing is the
+    # target's `:run`, so every refusal of that route (a pending host, the
+    # registration's issue flag off) is the firing's refusal. Tenant-scoped
+    # (`all`: the target names its one repository). The creator is a
+    # workspace admin of the tenant, which `creators` cannot say (its roles
+    # are platform roles), so `schedtypes.visual_qa.check_target` holds it.
+    ScheduleType(
+        name="visual-qa",
+        description="Run a registered QA target's visual QA and file its findings as issues in the target's repository.",
+        executor="workflow",
+        params_model=VisualQaParams,
+        # §6: a QA run of someone else's application is at most daily.
+        min_interval=timedelta(hours=24),
+        # No merge gate to set: it files issues and changes no code (§6).
+        default_gate=GateSpec(run="auto", plan="auto", merge="off"),
+        floor_gate=GateSpec(run="auto", plan="auto", merge="off"),
+        budget=None,
+        catch_up="skip",
+        risk=_fixed("R1"),
+        pushes=_never,
+        creators={"all": "member"},
+        profile="claude-code-browser",
+        lane="VQ-7",
+        phase=3,
+        forge_permissions=("contents:read", "issues:write"),
+        gate_notes="created by a workspace admin of the tenant; a pending host refuses the firing",
     ),
 )
 

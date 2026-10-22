@@ -375,6 +375,17 @@ def _check_file_issues(ctx: AppContext, doc: Mapping[str, Any], owner: str) -> N
     observer.check_file_issues(ctx, {**doc, "owner": owner})
 
 
+def _check_qa_target(ctx: AppContext, doc: Mapping[str, Any], auth: AuthContext) -> None:
+    """§3.17: a visual-qa schedule names a QA target of its own tenant, and its
+    creator or editor administers that tenant. The firing reads the target again."""
+    if doc.get("type") != "visual-qa":
+        return
+    # Imported here, as `_check_file_issues` imports its type's executor.
+    from ..schedtypes import visual_qa
+
+    visual_qa.check_target(ctx, doc, auth)
+
+
 def _words(cron: str | None) -> str | None:
     try:
         return cronexpr.words(cronexpr.parse(cron or ""))
@@ -619,6 +630,7 @@ def create_schedule(
     _check_approvers(ctx, tenant, draft["gate"])
     _check_grants(ctx, draft, auth.email)
     _check_file_issues(ctx, draft, auth.email)
+    _check_qa_target(ctx, draft, auth)
 
     tenant_ref = _tenant_ref(ctx, tenant_id)
     key = _request_key(request.client_request_id) if request.client_request_id else None
@@ -705,6 +717,7 @@ def patch_schedule(
     if draft["scope"] != stored["scope"] or draft["params"] != stored["params"]:
         _check_grants(ctx, draft, str(stored.get("owner") or ""))
         _check_file_issues(ctx, draft, str(stored.get("owner") or ""))
+        _check_qa_target(ctx, draft, auth)
 
     ref = _schedule_ref(ctx, schedule_id)
     tenant_ref = _tenant_ref(ctx, tenant_id)
