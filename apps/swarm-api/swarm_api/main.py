@@ -50,6 +50,7 @@ from .routes import (
     children,
     credentials,
     codeintel,
+    failurefindings,
     forgeapp,
     forgeperms,
     gittokens,
@@ -487,6 +488,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # registration, host approval, the credential link, `:run`, and the
     # worker's read of its attempt's target, in UNCAPTURED_ROUTES.
     app.include_router(qatargets.router)
+    # Failure findings (docs/design/failure-review.md §1, lane FR-4): the
+    # caller's tenant's findings from the failure review, read only, through
+    # an allow-list that keeps the platform tenant's fields out.
+    app.include_router(failurefindings.router)
 
     # Inner to `observe`, so a request it refuses is still counted.
     app.add_middleware(FrontDoor, owner=app)

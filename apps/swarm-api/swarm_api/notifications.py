@@ -57,6 +57,13 @@ GitHub environment approval; the platform keeps no record of it in Firestore,
 so there is nothing to derive one from. An issue run's IAM hard stop is a hold
 on the run (`issueruns.STOP_IAM`), and it is here, as an approval item.
 
+A FAILURE FINDING RINGS ITS AGENT'S SUBMITTER (docs/design/failure-review.md
+§1, lane FR-4 FINDINGS). The `failure-review` schedule writes a finding into
+the tenant whose own repository caused a failure; the source `failure_review`
+derives a "needs you" item from it for the person who submitted the agent,
+through the one tenant projection in `routes.failurefindings`, under the
+existing topic `failed` (`preferences.TOPICS` is not this lane's to widen).
+
 NOTHING HERE CREATES DEMAND (invariants 1-3): it reads documents and writes one
 document of its own; no task, lease or slot is touched.
 """
@@ -679,6 +686,48 @@ def finished_items(reading: Reading) -> list[dict[str, Any]]:
     return items
 
 
+# --------------------------------------------------------------------------
+# failure_review: a cause the failure review found in the tenant's own code
+# --------------------------------------------------------------------------
+
+#: The bell's title for a finding; the detail is the cause sentence.
+FINDING_TITLE = "Your agent failed for a cause in your own repository"
+
+
+def failure_findings(reading: Reading) -> list[dict[str, Any]]:
+    """The caller's tenant's open failure findings about agents the caller
+    submitted (docs/design/failure-review.md §1; lane FR-4 FINDINGS).
+
+    The `failure-review` schedule found the cause of this agent's failure in
+    the tenant's OWN repository, which this platform does not fix, so it is
+    the submitter's to act on: a "needs you" item naming the agent -- its
+    step, or its runner profile, and its id -- with the cause sentence as its
+    detail, linked to the agent's Details where the finding's card is. Read
+    through `routes.failurefindings`, the one tenant projection, so the
+    platform tenant's fields (`fingerprint`, `firing_id`, the proposed fix)
+    never reach this item. The topic is `failed`: muting failures mutes these.
+    A finding no later state resolves stays for `WINDOW`, as a question does."""
+    from .routes.failurefindings import tenant_findings, tenant_view
+
+    tenant_id = reading.viewer.tenant_id
+    docs = [d for d in tenant_findings(reading.db, tenant_id, limit=SCAN)
+            if d.get("state") == "open" and d.get("task_id") and _recent(reading, d.get("created_at"))]
+    tasks = reading.store.tasks_by_id(tenant_id, [str(d["task_id"]) for d in docs])
+    items = []
+    for doc in docs:
+        task = tasks.get(str(doc["task_id"]))
+        if task is None or task.tenant_id != tenant_id \
+                or (task.submitted_by or "").strip().lower() != reading.email:
+            continue
+        view = tenant_view(doc)
+        items.append(_item(
+            f"failure_review:{view['finding_id']}", TASK, True,
+            f"{FINDING_TITLE}: {task.step_id or task.runner_profile} · Task {task.id}",
+            view["cause"], f"/agents/recent/{task.id}#failure-findings",
+            doc.get("created_at"), topic=T_FAILED))
+    return items
+
+
 #: Every source, by the name a failure is logged under.
 SOURCES: tuple[tuple[str, Source], ...] = (
     ("admin", admin_requests),
@@ -690,6 +739,7 @@ SOURCES: tuple[tuple[str, Source], ...] = (
     ("workspace", workspace_items),
     ("loan", loan_items),
     ("finished", finished_items),
+    ("failure_review", failure_findings),
 )
 
 
