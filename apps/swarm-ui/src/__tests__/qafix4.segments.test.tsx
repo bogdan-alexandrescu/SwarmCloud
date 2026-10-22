@@ -33,7 +33,7 @@ afterEach(() => {
 const px = (v: string | null) => lengthPx(v, 0)
 
 /** A cell's four corner radii, as the cascade paints them. */
-function corners(cell: Element, env: CascadeEnv): number[] {
+function corners(cell: Element, env: CascadeEnv): (number | null)[] {
   return CORNERS.map((c) => px(painted(cell, ['border-radius', `border-${c}-radius`], env)))
 }
 
