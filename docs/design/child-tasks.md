@@ -862,13 +862,15 @@ records how they are built and why each rule is where it is.
   CANCELLED. The worker's implicit await parks over a live one exactly as
   over a live agent child.
 
-**What this lane did not wire, and why.** Two call sites sit outside lane
-AU-6's territory and are the owner's questions in its pull request: the
-tick that calls `release_held_runs` (`POST /v1/admin/runs/advance`,
-`routes/admin.py`, beside `advance_tenant_runs`), and the scheduler's await
-sweep (`apps/scheduler/scheduler/children.py`), which reads only agent
-children, so a parent waiting on run children alone is promoted early: its
-agent is started again, reads in `results/children.json` that they have not
-ended, and has to await again -- each round an attempt's cost, bounded by
-`max_child_await_resumes`. Until both land, an `after_merged` run stays HELD
--- holding nothing -- and is never started by itself.
+**Wired by AU6-WIRE.** The per-tenant `issue_run_advance` tick
+(`POST /v1/admin/runs/advance`) calls `release_held_runs` after advancing the
+tenant's runs and returns its counts as `held`, so the tick that moves a
+predecessor to DONE starts or cancels its successor in the same response.
+The scheduler's await sweep (`scheduler.children.children_of` /
+`decide_await`) counts a ledger row that is HELD, STARTING, or STARTED with
+its run or workflow not terminal as outstanding, read in the parent's tenant
+only. Past `child_await_max_seconds` the sweep does not cancel run children,
+so a parent stays awaiting while a run child is live; a HELD run whose
+predecessor ends unmerged is cancelled by the release, so a HELD row never
+blocks its parent for ever (recorded under BGD's overnight rule, 2026-10-22, as
+built).
