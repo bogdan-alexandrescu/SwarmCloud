@@ -819,7 +819,10 @@ The **floor** column is the lowest gate the type allows. Between the floor and
 the default, only a platform admin may set the gate (§4.2), with one
 exception: the merge switch of SD3, which in a repository that is not
 `platform: true` any member may use under the two-person rule of §4.6, and in a
-`platform: true` repository only a platform admin may (Owner decision 2026-10-08). A floor of "auto"
+`platform: true` repository only a platform admin may (Owner decision 2026-10-08). A schedule at
+platform scope of a type whose `creators` make it owner-only there (today `failure-review`) is
+switched by the owner or a platform admin alone, without the two-person rule, audited as
+`gate_merge_auto` (`routes/approvals.py` `merge_mode`; decided 2026-10-22, Q8). A floor of "auto"
 still leaves every hard stop of §4.4 in force.
 
 **Platform-wide (admin) types** run with `scope: {mode: "platform"}`: the
