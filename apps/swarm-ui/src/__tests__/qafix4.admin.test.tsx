@@ -15,7 +15,7 @@
 // at 390 or only in light is measured where it wins.
 
 import { afterEach, describe, expect, it } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 
 import { FallbackTokenCard } from '../AdminSettings'
 import { HELP } from '../help'
@@ -30,8 +30,10 @@ const COMMAND = 'uv run sc setup token --owner <org>'
 const hosts: HTMLElement[] = []
 
 afterEach(() => {
+  // Unmount first: the opened card is portalled to <body>, and React must
+  // remove it before anything else touches the document.
+  cleanup()
   for (const h of hosts.splice(0)) h.remove()
-  document.body.innerHTML = ''
 })
 
 /** The colour a `border`/`background` value paints: its token, or its literal. */
