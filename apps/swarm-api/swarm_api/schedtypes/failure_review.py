@@ -668,6 +668,22 @@ class _Filing:
             self.writer.create_comment(ref, render_comment(self.review, cause, new_failures, action=action,
                                                            record=record, literals=(token,)), token)
 
+    def hold_label(self, number: int) -> None:
+        """§6 step 2 for a cause held LATER (`HOLD`): its issue already exists, so
+        `needs-owner` is added to it beside the comment, and issue-sweep's
+        default `labels_exclude` keeps the sweep off it. A label that fails is
+        logged: the cause stays held, and the comment already says why."""
+        ref = _ref(self.registration, number)
+        try:
+            dropped = self.writer.add_labels(ref, number, [HOLD_LABEL], self.token())
+        except ForgeWriteError as exc:
+            log.warning("failure-review %s: #%s held but not labelled %s (%s)",
+                        self.review["firing_id"], number, HOLD_LABEL, exc.code)
+            return
+        if dropped:
+            log.warning("failure-review %s: #%s held but not labelled %s: the repository has no such label",
+                        self.review["firing_id"], number, HOLD_LABEL)
+
     def start(self, cause: Cause, number: int) -> str | None:
         """One fix run on the issue (§6 step 3), unless one of this schedule's is already live."""
         tenant_id = str(self.review["tenant_id"])
@@ -778,6 +794,9 @@ class _Filing:
             self.comment(cause, number, len(progress["new"]), action, record)
         if action in (Action.FILE_HELD, Action.HOLD):
             self.causes.set_state(cause.fingerprint, failurecauses.HELD)
+        if action == Action.HOLD:
+            # After the hold is recorded, so a label GitHub refuses cannot undo it.
+            self.hold_label(number)
         if action in (Action.FILE_AND_RUN, Action.COMMENT_AND_RUN):
             started = self.start(cause, number)
             progress["run_id"] = started

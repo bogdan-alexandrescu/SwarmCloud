@@ -33,6 +33,15 @@
 # GitHub creates it on first use; declaring it keeps its colour and wording ours.
 # test_issue_forms.py accepts it as `agent_worker.territory.OUT_OF_TERRITORY_LABEL`.
 #
+# One is applied by SWARM-API: `needs-owner`, which the `failure-review`
+# schedule puts on an issue whose cause is in a hold category (IAM, the frozen
+# contract, secrets, tenancy, the shared project, cost), both when it files it
+# and when it holds it later (docs/design/failure-review.md §6; lanes FR3-TYPE
+# and FR3-HOLDLABEL, part of #1933). issue-sweep's default `labels_exclude`
+# skips it, so no fix run picks a held issue up. The label already existed on
+# the repository; declaring it keeps this file and the code in agreement.
+# test_issue_forms.py accepts it as `failure_review.HOLD_LABEL`.
+#
 # Colours are QUOTED: an all-digit colour left unquoted is a YAML integer and
 # loses its leading zeros.
 - name: bug
@@ -53,3 +62,6 @@
 - name: out-of-territory
   color: "fbca04"
   description: "The diff touches paths outside the step's declared territory; listed first in the body"
+- name: needs-owner
+  color: "d93f0b"
+  description: "Held for the owner: no fix run starts; issue-sweep's default labels_exclude skips it"

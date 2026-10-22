@@ -411,8 +411,7 @@ def test_a_cause_held_later_is_labelled_needs_owner_and_still_commented(db, ctx,
     assert writes.labelled == [(number, ["needs-owner"])]
     assert {"name": "needs-owner"} in writes.issues[number]["labels"]
     # MUTATION: replace the comment with the label and the issue says nothing of why it is held.
-    (comment,) = writes.on_issue(number)
-    assert "Held for the owner" in comment["body"]
+    assert len([c for c in writes.on_issue(number) if "Held for the owner" in c["body"]]) == 1
     # MUTATION: run a fix for HOLD and a second run is started.
     assert len(issue_runs(db)) == 1
 
@@ -425,13 +424,13 @@ def test_a_label_github_refuses_leaves_the_cause_held(db, ctx, writes, monkeypat
 
     # The label was asked for and refused.
     assert [w for w in writes.writes() if w[1].endswith(f"/issues/{number}/labels")]
-    # MUTATION: let the label's refusal propagate and the review fails before the cause is held.
+    # MUTATION: label before set_state and let the refusal propagate, and the cause is not held.
     (record,) = records(db)
     assert record["state"] == "held"
-    assert "Held for the owner" in writes.on_issue(number)[0]["body"]
+    assert [c for c in writes.on_issue(number) if "Held for the owner" in c["body"]]
     (review,) = [r for r in reviews(db).values() if r["progress"].get(record["fingerprint"], {}).get("action")
                  == "hold"]
-    # MUTATION: undo the hold on a label failure and this progress is not done.
+    # MUTATION: let the label's refusal propagate and the review stops in `filing`, its cause not done.
     assert review["state"] == failure_review.FILED
     assert review["progress"][record["fingerprint"]]["done"] is True
 
