@@ -265,6 +265,15 @@ class FakePage:
         self.storage = {}
         self.init_scripts = []
         self.loaded_with = {}
+        # Every script the capture evaluated, in order (VQ5-CAPTURE-GENERIC:
+        # `--settle generic` must never ask the console's PENDING_JS).
+        self.evaluated = []
+        # path -> how long, in ms after the load, the DOM goes on changing
+        # (DOM_CHANGES_JS answers a new count each poll until then); None
+        # for a page that never stops changing.
+        self.mutations = {}
+        # path -> the hrefs LINKS_JS answers with on that page (discover).
+        self.links = {}
 
     def set_viewport_size(self, *_a, **_kw):
         raise AssertionError("swarm_qa resized the page; the gate owns the size")
@@ -302,6 +311,14 @@ class FakePage:
             raise TimeoutError(f"Timeout {kw.get('timeout')}ms exceeded waiting for {selector}")
 
     def evaluate(self, expression, arg=None):
+        self.evaluated.append(expression)
+        if expression == getattr(self.qa, "DOM_CHANGES_JS", None):
+            stops = self.mutations.get(self._path(), 0)
+            if stops is None or self.elapsed < stops:
+                return [self.elapsed // 10 + 1, "div.feed"]
+            return [stops // 10 + 1 if stops else 0, "div.feed" if stops else None]
+        if expression == getattr(self.qa, "LINKS_JS", None):
+            return list(self.links.get(self._path(), []))
         if expression == self.qa.FONTS_READY_JS:
             return True
         if expression == self.qa.MEASURE_JS:
@@ -1121,3 +1138,288 @@ def test_each_route_is_loaded_under_its_own_persona_cookie_member_included(qa, w
     assert seen == [("http://localhost:5173/runs", "platform-admin"), ("http://localhost:5173/timeline", "member")]
     # MUTATION: leave the persona out of the manifest entry and this fails.
     assert [(r["id"], r["persona"]) for r in _manifest(bundle)["routes"]] == [("runs", "platform-admin"), ("timeline", "member")]
+
+
+# --------------------------------------------------------------------------
+# VQ5-CAPTURE-GENERIC (docs/design/visual-qa-any-app.md §4.1, §4.2; part of
+# #1933): the capture flags for any app, and `discover`
+# --------------------------------------------------------------------------
+
+
+def _no_clock(world):
+    document = json.loads(world.routes.read_text(encoding="utf-8"))
+    document.pop("clock")
+    world.routes.write_text(json.dumps(document), encoding="utf-8")
+
+
+def test_keep_storage_never_runs_reset_state_js(qa, world):
+    """An own-login target's session lives in its storage: emptying it on
+    every load signs the capture out after the first route."""
+    code, out, _bundle = _capture(qa, world, "--keep-storage", presets="desktop", themes="light")
+    assert code == 0
+    # MUTATION: add RESET_STATE_JS whatever --keep-storage says and this list
+    # holds the reset script.
+    assert not any("localStorage.clear" in (s or "") for s in world.page.init_scripts), world.page.init_scripts
+    # MUTATION: the same, seen from the page: the second route loads with what
+    # the first left in storage only when nothing emptied it.
+    timeline = (out / "work-a" / "timeline--desktop--light.txt").read_text(encoding="utf-8")
+    assert timeline.endswith("storage at load ['visited:/runs']"), timeline
+
+
+def test_without_keep_storage_every_load_still_runs_reset_state_js(qa, world):
+    code, _out, _bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    # MUTATION: make --keep-storage the default and the console's captures
+    # lose QA-077's clean state.
+    assert world.page.init_scripts == [qa.reset_state_script("http://localhost:5173")]
+
+
+def test_settle_generic_never_evaluates_pending_js_and_waits_for_the_dom_to_go_quiet(qa, world):
+    """Someone else's app draws none of the console's markers, and a word
+    like "reading…" in its text is its content, not a pending read."""
+    world.page.pending = {"/runs": None, "/timeline": None}
+    world.page.mutations = {"/runs": 1200}
+    code, _out, bundle = _capture(qa, world, "--settle", "generic", presets="desktop", themes="light")
+    assert code == 0
+    # MUTATION: settle every page with the console's _settle and PENDING_JS is evaluated.
+    assert qa.PENDING_JS not in world.page.evaluated
+    # MUTATION: the console's settle also reads TEXT_JS; generic needs only the DOM's changes.
+    assert qa.TEXT_JS not in world.page.evaluated
+    shots = [e for e in world.page.log if e[0] == "shot" and e[1].endswith("/runs")]
+    # MUTATION: return as soon as the DOM is quiet once (no 500 ms window) and
+    # the first /runs shot is taken before 1200 + 500 ms.
+    assert shots and all(s[4] >= 1200 + qa.GENERIC_QUIET_MS for s in shots), [s[4] for s in shots]
+    manifest = _manifest(bundle)
+    assert manifest["settle"] == "generic"
+    runs = next(r for r in manifest["routes"] if r["id"] == "runs")
+    # MUTATION: report a never-clearing PENDING_JS marker under generic and /runs is unsettled.
+    assert runs["status"] == "captured" and runs["settled"] is True, runs
+
+
+def test_settle_generic_on_a_dom_that_never_stops_is_bounded_and_says_where(qa, world):
+    world.page.mutations = {"/timeline": None}
+    code, _out, bundle = _capture(qa, world, "--settle", "generic", presets="desktop", themes="light")
+    assert code == 0
+    manifest = _manifest(bundle)
+    (timeline,) = [r for r in manifest["routes"] if r["id"] == "timeline"]
+    # MUTATION: wait for quiet forever, or call a moving page settled, and this fails.
+    assert timeline["status"] == "unsettled" and timeline["settled"] is False, timeline
+    assert any("DOM still changing" in p and "div.feed" in p for p in timeline["pending"]), timeline
+    last_load = max(i for i, e in enumerate(world.page.log) if e[0] == "goto")
+    waited = sum(e[1] for e in world.page.log[last_load:] if e[0] == "wait")
+    # MUTATION: drop the SETTLE_TIMEOUT_MS bound and the wait never ends.
+    assert qa.SETTLE_TIMEOUT_MS <= waited <= qa.SETTLE_TIMEOUT_MS + qa.SETTLE_POLL_MS, waited
+    assert any(f["id"] == "timeline" and "DOM still changing" in f["error"] for f in manifest["failed"])
+
+
+def test_the_dom_change_counter_runs_in_a_page(qa):
+    # MUTATION: a syntax error in DOM_CHANGES_JS and node refuses it; a page
+    # with no observer yet answers no change and nowhere.
+    dom = {"inner_height": 900, "nodes": [{"tag": "html"}, {"tag": "body", "parent": 0}]}
+    assert _run_js(qa.DOM_CHANGES_JS, dom, None) == [0, None]
+
+
+def test_the_clock_is_not_frozen_unless_asked(qa, world):
+    """Freezing `Date` can expire an app's own session token: a route list
+    with no `clock` and no `--clock` runs on the real clock."""
+    _no_clock(world)
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    # MUTATION: freeze the clock whatever the route list says and a clock entry is logged.
+    assert [e for e in world.page.log if e[0] == "clock"] == []
+    # MUTATION: keep requiring `clock` in load_routes and this route list is refused (exit 64).
+    assert _manifest(bundle)["clock"] is None
+    code, _out, bundle = _capture(qa, world, "--clock", "2026-10-21T08:30:00Z", presets="desktop", themes="light")
+    assert code == 0
+    clocks = [e for e in world.page.log if e[0] == "clock"]
+    # MUTATION: ignore --clock and nothing is frozen.
+    assert len(clocks) == 1 and clocks[0][1].isoformat().startswith("2026-10-21T08:30:00"), clocks
+    assert _manifest(bundle)["clock"] == "2026-10-21T08:30:00Z"
+    # MUTATION: accept a clock with no time zone and the frozen instant depends on the machine.
+    code, _out, _bundle = _capture(qa, world, "--clock", "2026-10-21T08:30:00", presets="desktop", themes="light")
+    assert code == qa.EXIT_USAGE
+
+
+def test_the_console_templates_captures_are_unchanged():
+    """The console's steps pass none of the generic flags, and its route list
+    carries the clock it is frozen at, so every console capture takes the
+    defaults: storage emptied, the console's settle, the frozen clock."""
+    template = (REPO / "docs" / "qa" / "console-qa.workflow.json").read_text(encoding="utf-8")
+    commands = re.findall(r"swarm_qa capture [^`]*", template)
+    assert len(commands) >= 6, commands
+    for command in commands:
+        # MUTATION: a console step that passes a generic flag captures differently.
+        assert "--keep-storage" not in command and "--settle" not in command and "--clock" not in command, command
+    routes = json.loads((REPO / "apps" / "swarm-ui" / "qa" / "routes.json").read_text(encoding="utf-8"))
+    # MUTATION: drop the console route list's clock and its captures stop being frozen.
+    assert isinstance(routes.get("clock"), str)
+
+
+def test_the_default_capture_is_the_consoles(qa, world):
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    # MUTATION: default --settle to generic and PENDING_JS is never asked.
+    assert qa.PENDING_JS in world.page.evaluated and qa.TEXT_JS in world.page.evaluated
+    # MUTATION: default to generic and the console's capture waits on DOM changes instead.
+    assert qa.DOM_CHANGES_JS not in world.page.evaluated
+    # MUTATION: stop freezing at the route list's clock and this is empty.
+    assert [e[1].isoformat()[:19] for e in world.page.log if e[0] == "clock"] == ["2026-10-19T12:00:00"]
+    manifest = _manifest(bundle)
+    assert manifest["settle"] == "console" and manifest["clock"] == "2026-10-19T12:00:00Z"
+    assert manifest["keep_storage"] is False
+
+
+# -- discover ----------------------------------------------------------------
+
+APP = "https://app.example.test"
+
+
+@pytest.fixture
+def site(world, qa, monkeypatch):
+    """A site for `discover`: links per path, and its robots.txt."""
+    world.robots = None
+    world.robots_asked = []
+
+    def fetch(url):
+        world.robots_asked.append(url)
+        return world.robots
+
+    monkeypatch.setattr(qa, "_fetch_robots", fetch)
+    return world
+
+
+def _discover(qa, world, *extra, max_pages="60", max_depth="3"):
+    out = world.tmp / "screens.json"
+    if out.exists():
+        out.unlink()
+    code = qa.main(["discover", "--base", APP, "--max-pages", max_pages, "--max-depth", max_depth,
+                    "--out", str(out), *extra])
+    return code, out
+
+
+def _paths(out: Path) -> list[str]:
+    document = json.loads(out.read_text(encoding="utf-8"))
+    return [r["path"] for routes in document["groups"].values() for r in routes]
+
+
+def _gotos(world) -> list[str]:
+    return [e[1][len(APP):] or "/" for e in world.page.log if e[0] == "goto"]
+
+
+def test_discover_stays_same_origin_and_writes_a_valid_route_list(qa, site):
+    site.page.links = {
+        "/": [APP + "/", APP + "/pricing?ref=nav#top", APP + "/docs/", "https://other.example.test/x",
+              "http://app.example.test/insecure", "https://app.example.test:8443/port", "mailto:a@example.test",
+              "javascript:void(0)", APP + "/Docs/Intro"],
+        "/pricing": [APP + "/docs/", APP + "/"],
+    }
+    code, out = _discover(qa, site)
+    assert code == 0
+    paths = _paths(out)
+    # MUTATION: follow any http(s) link and the other host, the other scheme
+    # and the other port are listed.
+    assert sorted(paths) == ["/", "/Docs/Intro", "/docs/", "/pricing"], paths
+    # MUTATION: keep the query or fragment and a token in one is in the route list.
+    assert not any("?" in p or "#" in p for p in paths)
+    # MUTATION: write anything load_routes refuses and this raises.
+    document = qa.load_routes(out)
+    ids = [r["id"] for routes in document["groups"].values() for r in routes]
+    assert len(set(ids)) == len(ids) == 4
+    # MUTATION: write a clock and every capture of a discovered list is frozen.
+    assert "clock" not in document
+    assert all(r["ready"] == "body" for routes in document["groups"].values() for r in routes)
+    # MUTATION: never navigate off the origin: no visit outside APP.
+    assert all(e[1].startswith(APP + "/") for e in site.page.log if e[0] == "goto")
+
+
+def test_discover_skips_exclusions_and_robots_disallow(qa, site):
+    site.robots = ("User-agent: somebot\nDisallow: /\n\n"
+                   "User-agent: *\nDisallow: /private\nDisallow: /*.pdf$\nDisallow:\n")
+    site.page.links = {"/": [APP + p for p in ("/logout", "/signout/now", "/account", "/admin/users",
+                                               "/private/x", "/report.pdf", "/report.pdf.html", "/ok")]}
+    code, out = _discover(qa, site, "--exclude", "/admin/*")
+    assert code == 0
+    paths = _paths(out)
+    # MUTATION: drop the default exclusions and /logout and /signout/now are listed.
+    assert "/logout" not in paths and "/signout/now" not in paths
+    # MUTATION: ignore --exclude and /admin/users is listed.
+    assert "/admin/users" not in paths
+    # MUTATION: ignore robots.txt, or read somebot's group, and the result differs.
+    assert sorted(paths) == ["/", "/account", "/ok", "/report.pdf.html"], paths
+    # MUTATION: visit an excluded or disallowed page and it is in the navigations.
+    assert set(_gotos(site)) <= {"/", "/account", "/ok", "/report.pdf.html"}, _gotos(site)
+    assert site.robots_asked == [APP + "/robots.txt"]
+    document = json.loads(out.read_text(encoding="utf-8"))
+    assert document["discovered"]["skipped"]["robots"] == 2 and document["discovered"]["skipped"]["excluded"] == 3
+
+
+def test_discover_stops_at_its_page_cap(qa, site):
+    site.page.links = {"/": [APP + f"/p{i}" for i in range(30)]}
+    for i in range(30):
+        site.page.links[f"/p{i}"] = [APP + f"/p{i}/q{j}" for j in range(5)]
+    code, out = _discover(qa, site, max_pages="5")
+    assert code == 0
+    # MUTATION: no page cap and all 181 paths are listed.
+    assert len(_paths(out)) == 5
+    # MUTATION: keep loading pages after the cap and there are more navigations than pages.
+    assert len(_gotos(site)) <= 5
+
+
+def test_discover_stops_at_its_depth_cap(qa, site):
+    chain = ["/", "/a", "/a/b", "/a/b/c", "/a/b/c/d"]
+    site.page.links = {p: [APP + n] for p, n in zip(chain, chain[1:])}
+    code, out = _discover(qa, site, max_depth="2")
+    assert code == 0
+    # MUTATION: no depth cap and /a/b/c and /a/b/c/d are listed.
+    assert _paths(out) == ["/", "/a", "/a/b"]
+    # MUTATION: load a page at the depth cap (its links are past it) and /a/b is navigated.
+    assert _gotos(site) == ["/", "/a"]
+    code, out = _discover(qa, site, max_depth="0")
+    assert code == 0 and _paths(out) == ["/"]
+
+
+def test_discover_groups_a_long_list_into_groups_of_at_most_eight(qa, site):
+    site.page.links = {"/": [APP + f"/p{i}" for i in range(20)]}
+    code, out = _discover(qa, site, max_depth="1")
+    assert code == 0
+    document = qa.load_routes(out)
+    sizes = [len(routes) for routes in document["groups"].values()]
+    # MUTATION: one group of 21 and a capture step holds more screens than §4.1 allows.
+    assert sizes == [8, 8, 5], sizes
+
+
+def test_discover_refuses_caps_above_the_designs(qa, site, capsys):
+    # MUTATION: accept any cap and 61 pages or depth 4 run.
+    assert _discover(qa, site, max_pages="61")[0] == qa.EXIT_USAGE
+    assert _discover(qa, site, max_depth="4")[0] == qa.EXIT_USAGE
+    assert _discover(qa, site, max_pages="0")[0] == qa.EXIT_USAGE
+    assert [e for e in site.page.log if e[0] == "goto"] == []
+
+
+def test_discover_refuses_without_the_live_browser(qa, site, monkeypatch):
+    monkeypatch.delenv(qa.ENDPOINT_ENV)
+    # MUTATION: discover with no live browser and it connects (the fake raises here).
+    monkeypatch.setattr(qa, "_connect", lambda: (_ for _ in ()).throw(AssertionError("connected")))
+    code, out = _discover(qa, site)
+    assert code == qa.EXIT_NO_LIVE_BROWSER and not out.exists()
+
+
+def test_discover_with_its_start_page_disallowed_lists_nothing_and_says_so(qa, site, capsys):
+    site.robots = "User-agent: *\nDisallow: /\n"
+    code, out = _discover(qa, site)
+    # MUTATION: write an empty route list and capture is handed a list load_routes refuses.
+    assert code == qa.EXIT_NOTHING_CAPTURED and not out.exists()
+    assert _gotos(site) == []
+    assert "robots" in capsys.readouterr().err
+
+
+def test_robots_rules_are_the_star_groups_disallow_lines(qa):
+    text = ("# comment\nUser-agent: a\nUser-agent: *\nDisallow: /x # why\nAllow: /x/y\n"
+            "\nUser-agent: b\nDisallow: /b\n")
+    rules = qa.robots_disallow(text)
+    # MUTATION: read every group's Disallow and /b is in the rules.
+    assert rules == ["/x"], rules
+    assert qa.disallowed("/x/1", rules) and qa.disallowed("/x", rules) and not qa.disallowed("/y", rules)
+    assert qa.robots_disallow(None) == [] and qa.robots_disallow("User-agent: *\nDisallow:\n") == []
+    # MUTATION: treat `*` and `$` literally and these miss.
+    assert qa.disallowed("/a/file.pdf", ["/*.pdf$"]) and not qa.disallowed("/a/file.pdf.html", ["/*.pdf$"])
