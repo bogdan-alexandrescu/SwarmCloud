@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { loadRepositories, loadRepositoryIndex, runRepositoryIndex } from './api'
+import { USE_FIXTURES, loadRepositories, loadRepositoryIndex, runRepositoryIndex } from './api'
 import { Banner, Button, Card, Dash, EmptyState, NamedMark } from './components'
-import { HEAD_UNREAD, freshness, indexCredentialWords, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
+import { HEAD_UNREAD, freshness, indexCredentialWords, normRepoList, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
 import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrLink, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { RegisterRepository } from './RepositoriesRegister'
 import { RepositoryDetail } from './RepositoriesDetail'
@@ -11,6 +11,7 @@ import type { ForgeRepoStatus } from './api'
 import { useRoleGate } from './Profile'
 import { CountNote, PageHead } from './Shell'
 import { timeAgo } from './types'
+import { read, route, write, type Result } from './fetch'
 import './styles/repositories.css'
 
 /**
@@ -64,6 +65,55 @@ export function RepositoriesScreen({ view, go }: { view: string | null; go: (to:
   )
 }
 
+/**
+ * WHETHER THE TENANT'S AGENTS MAY FILE ISSUES ON THIS REPOSITORY (AU-0
+ * REG-FLAG, docs/design/agent-autonomy.md §3.2, owner decision Q2). The API
+ * serves `agents_may_file_issues` with the platform default applied (off
+ * unless set, on for a `platform: true` registration), so the card draws the
+ * served value and never re-derives it. Null: the API did not serve it.
+ *
+ * Read off the list's own `GET /v1/repositories` body, in one read, rather
+ * than through `normRepo`, which keeps only the fields `RepoRecord` names
+ * (RepositoriesData.ts, outside this lane's territory).
+ */
+type ListedRepo = RepoRecord & { agents_may_file_issues: boolean | null }
+
+function listed(raw: unknown): ListedRepo[] {
+  const served = new Map<string, boolean>()
+  const recs = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>).repositories : null
+  for (const rec of Array.isArray(recs) ? recs : []) {
+    if (typeof rec !== 'object' || rec === null) continue
+    const { repo_id: id, agents_may_file_issues: on } = rec as Record<string, unknown>
+    if (typeof id === 'string' && typeof on === 'boolean') served.set(id, on)
+  }
+  return normRepoList(raw).map((r) => ({ ...r, agents_may_file_issues: served.get(r.repo_id) ?? null }))
+}
+
+/** `GET /v1/repositories`, as `loadRepositories` reads it, keeping the flag. */
+async function loadListed(): Promise<Result<ListedRepo[]>> {
+  if (USE_FIXTURES) {
+    const r = await loadRepositories()
+    if (r.status === 'ok' || r.status === 'stale') return { ...r, data: r.data.map((x) => ({ ...x, agents_may_file_issues: null })) }
+    return r
+  }
+  const r = await read<unknown>(route('/v1/repositories'), () => false)
+  if (r.status === 'ok') {
+    const data = listed(r.data)
+    return data.length === 0 ? { status: 'empty', fetchedAt: r.fetchedAt, serverAt: r.serverAt } : { ...r, data }
+  }
+  if (r.status === 'stale') return { ...r, data: listed(r.data) }
+  return r
+}
+
+/**
+ * `PATCH /v1/repositories/{repo_id}` with `agents_may_file_issues` alone. Only
+ * the workspace's admin may send it (routes/repositories.py `_context_by`);
+ * the API writes the `agents_may_file_issues_set` audit entry with the change.
+ */
+function patchFileIssues(repoId: string, on: boolean): Promise<Result<unknown>> {
+  return write(route('/v1/repositories/{repo_id}', { repo_id: repoId }), 'PATCH', { agents_may_file_issues: on })
+}
+
 function RepositoryList({
   go,
   children,
@@ -71,7 +121,7 @@ function RepositoryList({
   go: (to: string) => void
   children: (meta: ReactNode, actions: ReactNode) => ReactNode
 }) {
-  const { state, reload } = useUrRead(loadRepositories, 'list')
+  const { state, reload } = useUrRead(loadListed, 'list')
   // GitHub permissions per repository (#1086): one dot each, absent until read.
   const perms = useRepoStatuses()
   const [failed, setFailed] = useState<string | null>(null)
@@ -81,6 +131,11 @@ function RepositoryList({
   // A VIEWER REGISTERS AND INDEXES NOTHING (docs/design/workspace-roles.md
   // §4.8): register and index:run need `member`. The server still decides.
   const roleGate = useRoleGate('member', 'register and index repositories')
+  // ONLY THE WORKSPACE'S ADMIN TURNS AGENTS' ISSUE FILING ON OR OFF (§3.2, Q2):
+  // below admin the card shows the setting with no control. The server decides.
+  const fileGate = useRoleGate('admin', 'set whether agents may file issues')
+  const [filing, setFiling] = useState<string | null>(null)
+  const [fileFailed, setFileFailed] = useState<string | null>(null)
   const count = state.status === 'ok' || state.status === 'stale' ? state.data.length : state.status === 'empty' ? 0 : null
 
   async function indexNow(r: RepoRecord) {
@@ -91,6 +146,18 @@ function RepositoryList({
     setConfirm(null)
     if (res.status === 'error') {
       setFailed(`${repoName(r)}: ${writeFailure(res.error)}`)
+      return
+    }
+    reload()
+  }
+
+  async function setFileIssues(r: ListedRepo, on: boolean) {
+    setFiling(r.repo_id)
+    setFileFailed(null)
+    const res = await patchFileIssues(r.repo_id, on)
+    setFiling(null)
+    if (res.status === 'error') {
+      setFileFailed(`${repoName(r)}: ${writeFailure(res.error)}`)
       return
     }
     reload()
@@ -141,6 +208,11 @@ function RepositoryList({
           {failed}
         </Banner>
       )}
+      {fileFailed !== null && (
+        <Banner tone="bad" title="Agents may file issues was not changed">
+          {fileFailed}
+        </Banner>
+      )}
       <UrRegion
         state={state}
         route="GET /v1/repositories"
@@ -182,6 +254,14 @@ function RepositoryList({
                 onIndex={() => void indexNow(r)}
                 perm={perms.get(r.repo_id)}
                 viewerOnly={roleGate !== null}
+                fileIssues={
+                  <FileIssues
+                    on={r.agents_may_file_issues}
+                    admin={fileGate === null}
+                    busy={filing === r.repo_id}
+                    onSet={(on) => void setFileIssues(r, on)}
+                  />
+                }
               />
             ))}
           </div>
@@ -318,6 +398,28 @@ function IndexingUses({ r, go }: { r: RepoRecord; go: (to: string) => void }) {
   )
 }
 
+/** The card's line for `agents_may_file_issues`, with a control for an admin only. */
+function FileIssues({ on, admin, busy, onSet }: { on: boolean | null; admin: boolean; busy: boolean; onSet: (on: boolean) => void }) {
+  return (
+    <div className="ur-cmeta ur-file-issues" data-file-issues={on === null ? undefined : String(on)}>
+      <span>
+        Agents may file issues{' '}
+        {on === null ? <Dash why="Whether agents may file issues was not served" /> : <b>{on ? 'on' : 'off'}</b>}
+      </span>
+      {on !== null &&
+        (admin ? (
+          <Button size="sm" busy={busy} onClick={() => onSet(!on)} data-file-issues-set={String(!on)}>
+            {on ? 'Turn off' : 'Turn on'}
+          </Button>
+        ) : (
+          <span className="ur-small" data-role-gate="admin">
+            set by a workspace admin
+          </span>
+        ))}
+    </div>
+  )
+}
+
 function RepoCard({
   r,
   go,
@@ -328,6 +430,7 @@ function RepoCard({
   onIndex,
   perm,
   viewerOnly = false,
+  fileIssues,
 }: {
   r: RepoRecord
   go: (to: string) => void
@@ -340,6 +443,8 @@ function RepoCard({
   perm?: ForgeRepoStatus
   /** The caller's role is below `member`: Index now is drawn disabled, the list says why. */
   viewerOnly?: boolean
+  /** The `agents_may_file_issues` line (AU-0 REG-FLAG). */
+  fileIssues?: ReactNode
 }) {
   const f = freshness(r.index)
   const head = r.index.head_sha
@@ -386,6 +491,7 @@ function RepoCard({
         <span>Schedule {sched === null ? <Dash why="The schedule was not served" /> : <b>{sched}</b>}</span>
       </div>
       <IndexingUses r={r} go={go} />
+      {fileIssues}
       <FailureLine r={r} go={go} />
       <div className="ur-cacts" ref={acts}>
         <UrNavButton to={repoAddress(r.repo_id)} go={go} size="sm">

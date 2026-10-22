@@ -207,7 +207,9 @@ def _context_by(ctx: AppContext, auth: AuthContext, tenant_id: str) -> str:
     platform admin. Below `admin` is `role_admin_required` through its
     switch; with the switch off (or the role unreadable) the caller is held
     to today's rule, `codeintel.require_owner_or_admin`, so nobody it refuses
-    today is let through."""
+    today is let through. It also gates `agents_may_file_issues` (AU-0
+    REG-FLAG, §3.2's "workspace admin"), so a change to this rule changes
+    who may set that flag too."""
     if ctx.roles is not None:
         me = ctx.roles.require(auth, roles.ADMIN)
         if me is not None and roles.at_least(me.role, roles.ADMIN):
