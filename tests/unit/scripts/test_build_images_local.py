@@ -53,6 +53,7 @@ import pytest
 import yaml
 
 from .test_build_images_pr_check import _env, _sandbox
+from .test_build_mirror import FAKE_CURL, _fake_manifest
 from .test_ci_gate import judge
 
 REPO = Path(__file__).resolve().parents[3]
@@ -112,9 +113,13 @@ def _digest(target: str) -> str:
 
 def _local(tmp_path: Path, *args: str, fail: str = "", root: Path | None = None):
     root = root or _sandbox(tmp_path)
+    # The tool mirror is staged from upstream before a base is built: a fake
+    # curl serves each object, and the sandbox's manifest pins what it serves,
+    # so no unit test downloads from GitHub (a reset connection failed one).
+    _fake_manifest(root)
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
-    for name, body in (("docker", FAKE_DOCKER), ("gcloud", FAKE_GCLOUD)):
+    for name, body in (("docker", FAKE_DOCKER), ("gcloud", FAKE_GCLOUD), ("curl", FAKE_CURL)):
         tool = bindir / name
         tool.write_text(body.replace("{python}", sys.executable))
         tool.chmod(0o755)
@@ -123,6 +128,7 @@ def _local(tmp_path: Path, *args: str, fail: str = "", root: Path | None = None)
         tmp_path,
         PATH=f"{bindir}{os.pathsep}{os.environ['PATH']}",
         FAKE_EVENTS=str(events_file),
+        FAKE_CURL_LOG=str(tmp_path / "curl.jsonl"),
         FAKE_BUILDER=str(tmp_path / "builder-exists"),
         FAKE_FAIL=fail,
         SWARM_PYTHON=sys.executable,
