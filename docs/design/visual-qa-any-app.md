@@ -4,7 +4,7 @@
 #1933. Built by lanes VQ-1 to VQ-7 of [agent-autonomy.md](agent-autonomy.md)
 §6, on that document's capabilities (above all the brokered issue writes of
 its §3.2). Nothing here changes behaviour until those lanes merge. The
-questions still open are §9 and the lane's `questions.json`.
+owner answered §9's three questions on 2026-10-22 (~06:40Z).
 
 **The request (BGD, 2026-10-22):** "with the features we have today, can we
 dispatch a lane to use our browser agents and do a visual qa of our product
@@ -113,8 +113,8 @@ is the allowlist, made where it can be enforced:
   with the host and the registrant. The approval is per host, and covers the
   declared `extra_origin` of a login (§2.3) only when it is named in the same
   approval. Changing `base_url`'s host or `extra_origin` sets it back to
-  `pending`. Whether the approver is any platform admin or the owner alone is
-  open question VQ-Q1 (§9).
+  `pending`. The approver is any platform admin, audited (VQ-Q1, answered,
+  §9).
 * **The live gate enforces it** (§3): the attempt's top frame never commits a
   document outside the approved origins, and nothing but a `GET` leaves for
   any other origin.
@@ -148,8 +148,7 @@ the console's form checks the link token):
    through Claude Code, a chat, a prompt or a plugin argument.
 3. swarm-api adds a version to the tenant's QA secret
    `swarm-tenant-<tenant>-qa` (§7: one Terraform-declared secret per tenant,
-   its value a JSON map keyed by target id; recommended over a secret per
-   target in VQ-Q2), disables the previous version, and records on the target
+   its value a JSON map keyed by target id; VQ-Q2, answered, §9), disables the previous version, and records on the target
    only `credential: {set: true, set_at, set_by, version}`.
 4. The value is never returned by any route, never logged, never written to
    Firestore. "Is it set?" is the only question the API answers.
@@ -396,8 +395,8 @@ holds unchanged:
   The opt-in (`evidence: "branch"`, a private repository only): the step
   pushes the evidence PNGs to its own `swarm/<id>` branch through
   `git_push_branch` (its existing push rule) and embeds them by blob URL, so
-  everyone who can read the repository sees them. Which is the default is
-  open question VQ-Q3.
+  everyone who can read the repository sees them. The console link is the
+  default and the branch the per-target opt-in (VQ-Q3, answered, §9).
 * **Labels**: `bug` (or the form's), the target's `labels` (default
   `visual-qa`), and `severity:<s>` when the repository has such a label;
   only labels that already exist are applied (§3.2's rule), never created.
@@ -435,8 +434,9 @@ holds unchanged:
 | **IAM V-2** | swarm-api's account: `roles/secretmanager.secretAccessor` on each `swarm-tenant-<t>-qa`; no worker account gets it | **yes** (VQ-Q2) |
 | frozen contract | **none**: the target travels as swarm-api-written task metadata, not an input (§1.1) | no |
 
-**What stays the owner's**: approving a host (VQ-Q1), the IAM apply and the
-secret, and any change to the safety rules of §3.
+**What stays the owner's**: the IAM apply and the secret, and any change to
+the safety rules of §3. Approving a host is any platform admin's, audited
+(VQ-Q1).
 
 ---
 
@@ -456,18 +456,24 @@ secret, and any change to the safety rules of §3.
 
 ---
 
-## 9. Questions for the owner
+## 9. Questions for the owner: answered
 
-In the lane's `questions.json`, recommended option first.
+Owner decisions, 2026-10-22 ~06:40Z (BGD, recorded on
+task_1eefab7ffc1941d58986). Each was asked with the options below,
+recommended first; the answer is built, not reopened.
 
-* **VQ-Q1, who approves a QA target's host** (§1.2): (a) any platform admin,
-  audited; (b) the owner alone; (c) no approval, any public https host a
-  workspace admin registers.
-* **VQ-Q2, where the test credential lives** (§2.1, §7): (a) one secret per
-  tenant, `swarm-tenant-<t>-qa`, a map by target, with V-1 and V-2 per secret;
-  (b) a secret per target, created by swarm-api, which needs a
+* **VQ-Q1, who approves a QA target's host** (§1.2). Owner decision,
+  2026-10-22: **"Any platform admin, audited"**. The options were (a) any
+  platform admin, audited; (b) the owner alone; (c) no approval, any public
+  https host a workspace admin registers.
+* **VQ-Q2, where the test credential lives** (§2.1, §7). Owner decision,
+  2026-10-22: **"One secret per tenant, swarm-tenant-<t>-qa"**, a map by
+  target, with V-1 and V-2 per secret (lane VQ-3, at dev-iam). The options
+  were (a) that; (b) a secret per target, created by swarm-api, which needs a
   name-prefix-conditioned `secrets.create` on the project; (c) no own-login in
   version 1.
-* **VQ-Q3, how an issue shows its screenshot** (§5): (a) a console link by
-  default, an evidence branch as a per-target opt-in for private
-  repositories; (b) a console link only; (c) the evidence branch by default.
+* **VQ-Q3, how an issue shows its screenshot** (§5). Owner decision,
+  2026-10-22: **"Console link by default; evidence branch as a per-target
+  opt-in for private repositories"** (`file.evidence`, default
+  `console_link`). The options were (a) that; (b) a console link only; (c)
+  the evidence branch by default.
