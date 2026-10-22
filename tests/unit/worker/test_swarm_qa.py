@@ -1219,6 +1219,66 @@ def test_the_dom_change_counter_runs_in_a_page(qa):
     assert _run_js(qa.DOM_CHANGES_JS, dom, None) == [0, None]
 
 
+# VQ5-PERSONA (part of #1933; BGD, 2026-10-22 07:07Z: "Skip it when no route
+# names a persona and --settle generic"): PERSONA_COOKIE is the console
+# fixture's, so someone else's app is not handed it.
+
+
+def _persona_cookies(world):
+    return [c for e in world.page.log if e[0] == "cookies" for c in e[1] if c["name"] == "swarm_qa_persona"]
+
+
+def test_a_generic_capture_with_no_persona_route_sets_no_persona_cookie(qa, world):
+    code, _out, bundle = _capture(qa, world, "--settle", "generic", presets="desktop", themes="light")
+    assert code == 0
+    # MUTATION: set the cookie whatever the settle and the route list say and
+    # someone else's app is handed swarm_qa_persona on every route.
+    assert _persona_cookies(world) == [], world.page.log
+    routes = _manifest(bundle)["routes"]
+    assert [r["id"] for r in routes] == ["runs", "timeline"]
+    # MUTATION: keep recording the member in the entry and the manifest claims
+    # an identity no cookie carried.
+    assert all(r["persona"] is None for r in routes), routes
+
+
+def test_a_console_capture_still_sets_the_persona_cookie_on_every_route(qa, world):
+    """No route here names a persona either: the console's settle alone keeps
+    the cookie, `member` on each navigation."""
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    log = world.page.log
+    gotos = [i for i, e in enumerate(log) if e[0] == "goto"]
+    assert len(gotos) == 2, log
+    for i in gotos:
+        before = [e for e in log[:i] if e[0] == "cookies"]
+        # MUTATION: skip the cookie whenever no route names a persona (forget
+        # the settle) and the console's routes load with no cookie of their own.
+        assert before, f"no persona cookie before {log[i]}"
+        (cookie,) = before[-1][1]
+        assert (cookie["name"], cookie["value"], cookie["url"]) == ("swarm_qa_persona", "member", "http://localhost:5173")
+    # MUTATION: skip the cookie on every route after the first and there is one.
+    assert len(_persona_cookies(world)) == 2
+    assert [r["persona"] for r in _manifest(bundle)["routes"]] == ["member", "member"]
+
+
+def test_a_generic_capture_whose_route_names_a_persona_keeps_the_cookie(qa, world):
+    _persona_routes(world, [
+        {"id": "runs", "address": "work/runs", "path": "/runs", "ready": "main h1", "persona": "platform-admin"},
+        {"id": "timeline", "address": "work/timeline", "path": "/timeline", "ready": "main h1"},
+    ])
+    code, _out, bundle = _capture(qa, world, "--settle", "generic", presets="desktop", themes="light")
+    assert code == 0
+    # MUTATION: skip the cookie on every generic capture and a route list that
+    # asks for a persona is captured as no one.
+    assert [c["value"] for c in _persona_cookies(world)] == ["platform-admin", "member"], world.page.log
+    assert [r["persona"] for r in _manifest(bundle)["routes"]] == ["platform-admin", "member"]
+    # MUTATION: skip the persona check under generic and an unknown one is
+    # accepted.
+    _persona_routes(world, [{"id": "runs", "address": "work/runs", "path": "/runs", "ready": "main h1", "persona": "admin"}])
+    code, _out, _bundle = _capture(qa, world, "--settle", "generic", presets="desktop", themes="light")
+    assert code == 64
+
+
 def test_the_clock_is_not_frozen_unless_asked(qa, world):
     """Freezing `Date` can expire an app's own session token: a route list
     with no `clock` and no `--clock` runs on the real clock."""

@@ -312,6 +312,7 @@ failed flow never costs the screen findings.
 | `apps/swarm-ui/qa/routes.json` and its six named groups | the target's `screens` or `discovered`, grouped by `qaspec` |
 | every load empties storage (`RESET_STATE_JS`) | `--keep-storage` for `own_login` targets |
 | the settle waits on the console's pending reads (`PENDING_JS`) | `--settle generic`: network idle, then no DOM mutation for 500 ms, bounded as today |
+| the console fixture's `swarm_qa_persona` cookie (`PERSONA_COOKIE`) on every route | not set under `--settle generic` when no route names a `persona` (BGD, 2026-10-22); a generic route list that names one keeps it, and `PERSONAS` still refuses an unknown one |
 | the clock frozen at the route list's instant | off by default (`--clock` only when the target sets one): freezing `Date` can expire an app's own session token |
 | the three console flows | the target's `flows` |
 | the console's review list | §4.3's checklist plus the app's `design_docs` |
