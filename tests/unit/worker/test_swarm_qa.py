@@ -358,6 +358,11 @@ class FakeContext:
         self.page = page
         self.pages = []
 
+    def add_cookies(self, cookies):
+        # Logged on the page, so a test reads the cookie set beside the
+        # navigation it came before.
+        self.page.log.append(("cookies", [dict(c) for c in cookies]))
+
     def new_page(self):
         self.pages.append(self.page)
         return self.page
@@ -1056,3 +1061,63 @@ def test_the_image_installs_swarm_qa_beside_swarm_browser_with_axe_and_pillow_pi
     # after the self-test (test_browser_enforce holds the order).
     qa = _module()
     assert any(qa.AXE_SCRIPT in s for s in runs), (qa.AXE_SCRIPT, runs)
+
+
+# --------------------------------------------------------------------------
+# QAFIX4-FIXTURE-A (part of #1680): the capture persona (F4, F5)
+# --------------------------------------------------------------------------
+
+
+def _persona_routes(world, routes):
+    document = json.loads(world.routes.read_text(encoding="utf-8"))
+    document["groups"]["work-a"] = routes
+    world.routes.write_text(json.dumps(document), encoding="utf-8")
+
+
+def test_load_routes_accepts_the_two_personas_and_refuses_any_other(qa, world):
+    _persona_routes(world, [
+        {"id": "runs", "address": "work/runs", "path": "/runs", "ready": "main h1", "persona": "platform-admin"},
+        {"id": "timeline", "address": "work/timeline", "path": "/timeline", "ready": "main h1", "persona": "member"},
+    ])
+    document = qa.load_routes(world.routes)
+    assert [r.get("persona") for r in document["groups"]["work-a"]] == ["platform-admin", "member"]
+    # MUTATION: drop the persona check from load_routes and this does not raise.
+    for bad in ("admin", "Platform-Admin", "", 1, None):
+        _persona_routes(world, [{"id": "runs", "address": "work/runs", "path": "/runs", "ready": "main h1", "persona": bad}])
+        with pytest.raises(qa.UsageError, match="persona"):
+            qa.load_routes(world.routes)
+    # MUTATION: rename either value in PERSONAS and the console's cookie reader
+    # (api.ts) no longer understands what the capture sets.
+    assert qa.PERSONAS == ("member", "platform-admin")
+    assert qa.PERSONA_COOKIE == "swarm_qa_persona"
+
+
+def test_each_route_is_loaded_under_its_own_persona_cookie_member_included(qa, world):
+    """The cookie is set before EVERY navigation, `member` included, so a
+    route with no persona never inherits the admin cookie the route before it
+    set. A cookie and not storage: RESET_STATE_JS empties local and session
+    storage on every load."""
+    _persona_routes(world, [
+        {"id": "runs", "address": "work/runs", "path": "/runs", "ready": "main h1", "persona": "platform-admin"},
+        {"id": "timeline", "address": "work/timeline", "path": "/timeline", "ready": "main h1"},
+    ])
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    log = world.page.log
+    gotos = [i for i, e in enumerate(log) if e[0] == "goto"]
+    assert len(gotos) == 2, log
+    seen = []
+    for i in gotos:
+        before = [e for e in log[:i] if e[0] == "cookies"]
+        # MUTATION: set the cookie only for a route that names a persona and
+        # the second route has no cookie of its own before its navigation.
+        assert before, f"no persona cookie before {log[i]}"
+        (cookie,) = before[-1][1]
+        assert cookie["name"] == "swarm_qa_persona"
+        # MUTATION: point the cookie at another origin and the console never reads it.
+        assert cookie["url"] == "http://localhost:5173", cookie
+        seen.append((log[i][1], cookie["value"]))
+    # MUTATION: skip the cookie for `member` and the second value stays platform-admin.
+    assert seen == [("http://localhost:5173/runs", "platform-admin"), ("http://localhost:5173/timeline", "member")]
+    # MUTATION: leave the persona out of the manifest entry and this fails.
+    assert [(r["id"], r["persona"]) for r in _manifest(bundle)["routes"]] == [("runs", "platform-admin"), ("timeline", "member")]
