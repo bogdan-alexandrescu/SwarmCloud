@@ -120,6 +120,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 110 | `profiles.py`: `ResourceSize`, `LiveShare`, `default_sizes` and `effective_size`, the one shape a runner-size version is read in, and the rule that only a GKE profile follows it (SIZES-CONTRACT-2, runner sizes request RS-3, part of #1689) | ACCEPTED by the owner 2026-10-20 (design `docs/design/runner-sizes.md` §5, §7 Q3 A) and APPLIED by the pull request that adds this line. No pod changes size until SIZES-SCHED-2 renders from it |
 | 111 | `models.py`: `Attempt.size_version` and the `sized_*` fields, the size the scheduler rendered an attempt at (SIZES-CONTRACT-2, runner sizes request RS-4, part of #1689) | ACCEPTED by the owner 2026-10-20 (design `docs/design/runner-sizes.md` §5, §7) and APPLIED by the pull request that adds this line. No writer yet: the scheduler's `create_attempt` writes them in SIZES-SCHED-2 |
 | 112 | `CONTRACT.md`: "Primary backend Cloud Run Jobs" no longer says where agents run; every agent profile but `mock` is on GKE Autopilot (DOCS-TRUTH, part of #1822) | open, REQUESTED 2026-10-21 by lane DOCS-TRUTH. Not applied: `CONTRACT.md` is not edited by a lane |
+| 113 | `profiles.py`: a `claude-code-large` runner profile on the `large` class with a 14,400 s timeout, picked by name for heavy lanes (AUTONOMY-DESIGN, part of #1933) | ACCEPTED by the owner 2026-10-22 (Q6 of `docs/design/agent-autonomy.md` §7: "Accept contract request 113: a claude-code-large profile"). Not yet applied: lane AU-9 applies it |
 
 ---
 
@@ -14212,3 +14213,48 @@ The contract keeps a backend split that has not been true since 2026-10-10,
 next to the invariants, which is how the decisions it records get argued
 from a false premise. Every doc that restates the split would then be the
 better source than the contract it defers to.
+
+---
+
+## 113. `profiles.py`: a `claude-code-large` runner profile (AUTONOMY-DESIGN, part of #1933)
+
+**Status:** ACCEPTED by the owner 2026-10-22, requested the same day by lane
+AUTONOMY-DESIGN (`docs/design/agent-autonomy.md` §3.11, question Q6). Owner
+decision, 2026-10-22: "Accept contract request 113: a claude-code-large
+profile". Not yet applied: the catalogue is frozen, so lane AU-9 of
+`docs/design/agent-autonomy.md` §6.1 applies it in its own pull request.
+
+### What is true today
+
+Every code profile in `apps/common/swarm_common/profiles.py::RUNNER_PROFILES`
+names the `standard` class, 8 GiB with requests equal to limits, and
+`claude-code` has `timeout_seconds=7200`. The `large` class (8 CPU requested,
+32 GiB) exists and "is reached by no profile today"
+(`docs/design/runner-sizes.md` §4.1), and a step can only shrink its class,
+never grow it. On 2026-10-22, #1926 measured 8 GiB out-of-memory kills on
+`claude-code`, and three agents were killed at the 7,200 s timeout ("runner
+exceeded its 7200s timeout and was killed", `agent_worker/lifecycle.py`). An
+agent that needs more memory or time has no profile to be given by name.
+
+### The requested change
+
+Add one entry, `claude-code-large`: `claude-code`'s fields unchanged except
+`resource_class="large"` and `timeout_seconds=14400`. GKE Autopilot,
+on-demand only (invariant 6), memory request equal to limit (invariant 7),
+the checkpoint interval of the catalogue's default (invariant 8). Callers
+pick it by name (invariant 10); a planner or `failure-review`'s fix run names
+it for a lane whose cause was an out-of-memory kill or a timeout.
+
+### What it would break if accepted
+
+Nothing that exists: a new key in the catalogue. The tenants' admission
+ceilings count `large` at its 4 units (`runner-sizes.md` §4.1), so a tenant
+with a small `large` ceiling queues these agents rather than running them.
+Docs that list the profiles (`docs/design/runner-sizes.md` §1a.3, the runner
+input tables) follow it.
+
+### If it is declined
+
+Heavy lanes keep dying at 8 GiB and 7,200 s, and the alternative is raising
+`standard` itself through a runner-size version (`runner-sizes.md` §4.5),
+which every standard agent pays for.
