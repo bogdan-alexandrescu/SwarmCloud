@@ -26,7 +26,13 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 
 import type { Result } from '../fetch'
 
-const mocks = vi.hoisted(() => ({ loadModelClasses: vi.fn() }))
+// The LIVE read path: the fixture build serves its own price table since
+// QAFIX4-FIXTURE-A, and these tests serve theirs through fetch. USE_FIXTURES
+// is decided when api.ts loads, so the switch is flipped before any import.
+const mocks = vi.hoisted(() => {
+  vi.stubEnv('VITE_LIVE', '1')
+  return { loadModelClasses: vi.fn() }
+})
 
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()

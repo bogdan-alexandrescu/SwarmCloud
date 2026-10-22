@@ -42,7 +42,10 @@ What `capture` does, and why each:
    whichever session wins, the page sees the scheme asked for. emulate_media
    also sets `reduced_motion="reduce"`, which the gate's command does not
    carry. When the capture ends the gate's theme goes back to `system`.
-5. Per route: navigates and waits for `load`, then up to NETWORK_IDLE_MS for
+5. Per route: sets the route's PERSONA (`persona` in the route list:
+   `member`, today's fixture identity, when absent, or `platform-admin`) as
+   the cookie PERSONA_COOKIE on the console's origin, on EVERY route, so no
+   route inherits the one before it's, then navigates and waits for `load`, then up to NETWORK_IDLE_MS for
    the network to go quiet (the console polls, so it may never be quiet for
    long: not reaching it is recorded, not fatal), then `document.fonts.ready`,
    then the route's `ready` selector, then until the page shows no pending
@@ -137,6 +140,16 @@ MAX_SEGMENTS = 12
 TO_THE_END_PRESETS = frozenset({"phone-390"})
 THEMES = ("light", "dark")
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
+#: Who the fixture build answers as, per route (QAFIX4-FIXTURE-A, run-4
+#: admin-004 and admin-005): `member` is alice@example.com in u-bogdan, not a
+#: platform admin and administering no group workspace, and is every route
+#: that names none; `platform-admin` is a platform admin who also administers
+#: one group workspace. The console reads PERSONA_COOKIE once when api.ts
+#: loads, in the fixture build only. A cookie and not storage, because
+#: RESET_STATE_JS empties local and session storage on every load.
+PERSONAS = ("member", "platform-admin")
+DEFAULT_PERSONA = PERSONAS[0]
+PERSONA_COOKIE = "swarm_qa_persona"
 
 #: `swarm-handoff device` waits up to 30 s for the worker (DEVICE_WAIT_SECONDS
 #: there); this is that plus room for the process itself.
@@ -385,6 +398,8 @@ def load_routes(path: str | os.PathLike) -> dict:
                 raise UsageError(f"route {rid}: path must start with /")
             if not isinstance(route.get("ready"), str) or not route["ready"].strip():
                 raise UsageError(f"route {rid}: no ready selector")
+            if "persona" in route and route["persona"] not in PERSONAS:
+                raise UsageError(f"route {rid}: persona must be one of {', '.join(PERSONAS)} (absent is {DEFAULT_PERSONA})")
             segments = route.get("segments", DEFAULT_SEGMENTS)
             if not isinstance(segments, int) or isinstance(segments, bool) or not 1 <= segments <= MAX_SEGMENTS:
                 raise UsageError(f"route {rid}: segments must be 1..{MAX_SEGMENTS}")
@@ -583,14 +598,25 @@ def segment_budget(route: dict, preset: str) -> int:
     return max(1, int(route.get("segments", DEFAULT_SEGMENTS)))
 
 
-def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict, preset: str, theme: str,
+def persona_of(route: dict) -> str:
+    """The persona a route is captured as: its `persona`, or the member."""
+    return route.get("persona", DEFAULT_PERSONA)
+
+
+def _capture_route(page, errors: _Errors, *, context, base: str, group: str, route: dict, preset: str, theme: str,
                    out: Path, axe_source: str | None) -> dict:
     """One route at one preset and theme. Raises with the step that failed."""
     rid, ready = route["id"], route["ready"]
     stem = _stem(group, rid, preset, theme)
+    persona = persona_of(route)
     errors.reset()
-    step = "navigate"
+    step = "persona"
     try:
+        # Set for the member too: a cookie is not storage, RESET_STATE_JS
+        # leaves it, and the route before may have been the admin.
+        parts = urlsplit(base)
+        context.add_cookies([{"name": PERSONA_COOKIE, "value": persona, "url": f"{parts.scheme}://{parts.netloc}"}])
+        step = "navigate"
         page.goto(base + route["path"], wait_until="load", timeout=NAV_TIMEOUT_MS)
         idle = True
         try:
@@ -641,7 +667,8 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
         snapshot = page.locator("body").aria_snapshot()
         _write(out / f"{stem}.a11y.json", json.dumps({"format": "aria-snapshot", "snapshot": snapshot}, indent=1))
         entry = {
-            "id": rid, "preset": preset, "theme": theme, "status": "unsettled" if pending else "captured",
+            "id": rid, "preset": preset, "theme": theme, "persona": persona,
+            "status": "unsettled" if pending else "captured",
             "path": route["path"], "images": images, "network_idle": idle,
             "settled": not pending, "pending": pending, "scroller": measured[2] if len(measured) > 2 else None,
             "overlaps": overlaps, "covers": covers,
@@ -732,7 +759,7 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                 page.emulate_media(color_scheme=theme, reduced_motion="reduce")
                 for route in group_routes:
                     try:
-                        entry = _capture_route(page, errors, base=base, group=group, route=route,
+                        entry = _capture_route(page, errors, context=context, base=base, group=group, route=route,
                                                preset=preset, theme=theme, out=out, axe_source=axe_source)
                         manifest["routes"].append(entry)
                         why = []

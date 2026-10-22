@@ -217,3 +217,42 @@ def test_a_phone_capture_runs_to_the_end_and_segments_governs_the_desktop():
         assert module.segment_budget(route, "phone-390") == module.MAX_SEGMENTS, rid
         # MUTATION: give the desktop MAX_SEGMENTS too and this fails.
         assert module.segment_budget(route, "desktop") == route.get("segments", module.DEFAULT_SEGMENTS), rid
+
+
+#: The admin group's routes, captured as a platform admin who also administers
+#: one group workspace (QAFIX4-FIXTURE-A, run-4 admin-004 and admin-005).
+ADMIN_ROUTES = ("limits", "runner-sizes", "tenants", "counts", "people", "workspaces")
+
+
+def test_the_admin_group_is_captured_as_a_platform_admin_and_pool_limits_once_as_the_member():
+    groups = _routes()["groups"]
+    admin = {route["id"]: route for route in groups["admin"]}
+    for rid in ADMIN_ROUTES:
+        assert rid in admin, f"the admin group has no {rid!r} route"
+        # MUTATION: drop `"persona": "platform-admin"` from any admin route -> fails.
+        assert admin[rid].get("persona") == "platform-admin", f"admin/{rid} is not captured as a platform admin"
+    # Pool limits' locked view (owner decision c45) stays captured, as the member.
+    locked = admin.get("limits-locked")
+    # MUTATION: delete the limits-locked route -> fails.
+    assert locked is not None, "the admin group has no limits-locked route"
+    assert (locked["address"], locked["path"]) == (admin["limits"]["address"], admin["limits"]["path"])
+    # MUTATION: give limits-locked a persona -> fails; absent is the member.
+    assert "persona" not in locked, "limits-locked must be the member: no persona key"
+    # Every other route is today's identity: absent means member.
+    others = [f"{g}/{r['id']}" for g, routes in groups.items() for r in routes
+              if r.get("persona") is not None and not (g == "admin" and r["id"] in ADMIN_ROUTES)]
+    # MUTATION: give a Settings route the admin persona -> fails.
+    assert not others, f"routes outside the admin group carry a persona: {others}"
+
+
+def test_the_console_reads_the_cookie_the_capture_sets():
+    spec = importlib.util.spec_from_file_location("swarm_qa_persona_check", SWARM_QA)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    text = _read(API_TS)
+    # MUTATION: rename the cookie on either side -> fails.
+    assert f"'{module.PERSONA_COOKIE}'" in text, f"api.ts never reads the {module.PERSONA_COOKIE} cookie"
+    for persona in module.PERSONAS:
+        # MUTATION: rename a persona in api.ts -> fails.
+        assert f"'{persona}'" in text, f"api.ts has no persona {persona!r}"
