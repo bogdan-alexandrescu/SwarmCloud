@@ -8151,8 +8151,9 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
      column out of line. Stacked, the first cell is the full-width name line,
      so a 3px rule at its left edge lands under the first letters of the name.
      On the record it sits in the padding the record already has, and the three
-     FORMS -- full rule / half rule / hatch -- are unchanged, which is what
-     keeps the three states apart in greyscale. */
+     FORMS stay three -- full rule / dashed full rule / hatch (warn's half rule
+     becomes a dashed full one, below) -- which is what keeps the three states
+     apart in greyscale. */
   .is-stacked > table > tbody > tr.is-bad > :first-child,
   .is-stacked > table > tbody > tr.is-warn > :first-child,
   .is-stacked > table > tbody > tr.is-paused > :first-child {
@@ -8168,9 +8169,18 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     background-image: linear-gradient(var(--bad), var(--bad));
     background-size: 3px 100%;
   }
+  /* A WARN RECORD'S RULE RUNS THE WHOLE RECORD, DASHED (owner decision
+     2026-10-22, "Every table"; part of #1680). The table's half rule
+     (`3px 46%`, centred) marks one 30px row, but a record is one `tr` holding
+     the name and every field, so on a multi-field record it marked the middle
+     rows only: it began under the name and stopped above the last fields
+     (first seen on Provider quota, capacity-009, PR 1918). Full height alone
+     would make it the bad tone's solid rule, so it is DASHED -- warn, bad and
+     paused stay three forms in greyscale, and the record's state word says
+     which tone it is. */
   .is-stacked > table > tbody > tr.is-warn {
-    background-image: linear-gradient(var(--warn), var(--warn));
-    background-size: 3px 46%;
+    background-image: repeating-linear-gradient(to bottom, var(--warn) 0 6px, transparent 6px 9px);
+    background-size: 3px 100%;
   }
   .is-stacked > table > tbody > tr.is-paused {
     background-image: repeating-linear-gradient(
@@ -8375,8 +8385,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     background-size: 3px 100%;
   }
   .is-stacked > table > tbody > tr.is-warn {
-    background-image: linear-gradient(var(--warn), var(--warn));
-    background-size: 3px 46%;
+    background-image: repeating-linear-gradient(to bottom, var(--warn) 0 6px, transparent 6px 9px);
+    background-size: 3px 100%;
   }
   .is-stacked > table > tbody > tr.is-paused {
     background-image: repeating-linear-gradient(
