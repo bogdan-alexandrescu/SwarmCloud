@@ -114,7 +114,10 @@ is the allowlist, made where it can be enforced:
   declared `extra_origin` of a login (§2.3) only when it is named in the same
   approval. Changing `base_url`'s host or `extra_origin` sets it back to
   `pending`. The approver is any platform admin, audited (VQ-Q1, answered,
-  §9).
+  §9). In the console the control is **Approve host** on the target's card
+  on Repositories › QA targets (`apps/swarm-ui/src/QaTargets.tsx`), drawn to
+  a platform admin only, which sends the route above once the admin has
+  typed the host, and the login's `extra_origin` when one is declared.
 * **The live gate enforces it** (§3): the attempt's top frame never commits a
   document outside the approved origins, and nothing but a `GET` leaves for
   any other origin.
