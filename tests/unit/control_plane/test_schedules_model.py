@@ -48,6 +48,9 @@ CATALOGUE = [
     # §3.16, #1933: the platform's own failure review, every 6 hours over 7.
     # MUTATION: drop the entry, or give it a 1 h minimum, and this list differs.
     ("failure-review", timedelta(hours=6)),
+    # §3.17, #1933: a tenant's own QA target, at most daily (visual-qa-any-app.md §6).
+    # MUTATION: drop the entry, or give it a 6 h minimum, and this list differs.
+    ("visual-qa", timedelta(hours=24)),
 ]
 
 
@@ -56,7 +59,9 @@ def _spec(steps: int = 1) -> dict:
 
 
 def _required(name: str) -> dict:
-    """The parameters a type cannot default: only custom-prompt's spec."""
+    """The parameters a type cannot default: custom-prompt's spec and visual-qa's target."""
+    if name == "visual-qa":
+        return {"target": "qat_" + "0" * 16}
     return {"spec": _spec()} if name == "custom-prompt" else {}
 
 
@@ -193,8 +198,10 @@ def test_risk_tiers_follow_section_4_1():
     assert tier("docs-drift") == "R1" and tier("docs-drift", fix=True) == "R2"
     assert [tier(n) for n in ("repo-index-refresh", "observer", "cost-report",
                               "model-prices-refresh")] == ["R0"] * 4
+    # visual-qa files issues and changes no code (visual-qa-any-app.md §6).
+    # MUTATION: give visual-qa `_fixed("R0")` and this list differs.
     assert [tier(n) for n in ("issue-plan-only", "epic-triage", "release-health", "ci-flake-hunter",
-                              "model-prices-check")] == ["R1"] * 5
+                              "model-prices-check", "visual-qa")] == ["R1"] * 6
     assert tier("dependency-cve-refresh") == "R2" and tier("custom-prompt") == "R3"
     # failure-review pushes fix runs: R2 behind `merge: approve`, R3 once the
     # owner's audited switch makes it `auto` (failure-review.md §6, Q8).
