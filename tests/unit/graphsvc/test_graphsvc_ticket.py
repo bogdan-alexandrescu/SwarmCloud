@@ -28,6 +28,25 @@ from swarm_graph import ticket as svc
 RAW = b'{"a manifest": 1}'
 
 
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _unb64(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def _flip_mac(ticket: str) -> str:
+    """The ticket with one bit of its decoded MAC flipped, split and re-encoded
+    as `swarm_api.graph_ticket` does. Replacing the last base64url characters
+    is not a forgery: the last one carries only 4 significant bits, so about
+    once in 1,024 mints the replacement decodes to the genuine MAC (#1972)."""
+    payload, mac = ticket.split(".")
+    raw = bytearray(_unb64(mac))
+    raw[0] ^= 0x01
+    return f"{payload}.{_b64(bytes(raw))}"
+
+
 def test_the_wire_constants_are_the_references():
     assert svc.TICKET_DOMAIN == reference.TICKET_DOMAIN
     assert svc.TICKET_FIELDS == reference.TICKET_FIELDS
@@ -59,7 +78,7 @@ def test_what_the_reference_refuses_is_refused_here(case):
     key = new_key()
     now = time.time()
     ticket = {
-        "forged": mint(key, raw=RAW)[:-2] + "AA",
+        "forged": _flip_mac(mint(key, raw=RAW)),
         "other_key": mint(new_key(), raw=RAW),
         "expired": mint(key, raw=RAW, exp=int(now) - 1),
         "too_long": mint(key, raw=RAW, exp=int(now) + 3600),
@@ -71,6 +90,21 @@ def test_what_the_reference_refuses_is_refused_here(case):
         svc.verify_graph_ticket([key.encode()], ticket, now=now)
     assert refused.value.reason == ("expired" if case == "expired" else "invalid")
     assert ticket not in str(refused.value)
+
+
+def test_the_forged_case_always_alters_the_mac():
+    # A minted ticket whose MAC already ends in what "AA" decodes to: the old
+    # `[:-2] + "AA"` construction hands back the genuine ticket for this one.
+    payload, mac = mint(new_key(), raw=RAW).split(".")
+    tickets = [f"{payload}.{mac[:-2]}AA"] + [mint(new_key(), raw=RAW) for _ in range(300)]
+    for ticket in tickets:
+        original = _unb64(ticket.split(".")[1])
+        forged = _flip_mac(ticket)
+        # MUTATION: building the forgery as `ticket[:-2] + "AA"` (the old
+        # construction) turns this red on the first ticket above.
+        assert _unb64(forged.split(".")[1]) != original
+        assert forged.split(".")[0] == ticket.split(".")[0]
+    assert len(tickets) == 301
 
 
 def _forge(key: str, claims: dict) -> str:
