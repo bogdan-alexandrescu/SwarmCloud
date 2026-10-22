@@ -248,9 +248,13 @@ jobs:
       #   6): a check that ran and is failing holds the merge whether or not
       #   it is required; one still running holds it only when it is
       #   required (#815).
+      # actions: read -- the Actions runs at the head commit (item 5): the
+      #   event that made each check suite, which a check's runs are grouped
+      #   by (CHECK-RULE). Read only when a check has more than one run.
       # pull-requests: write -- the comment that explains a refusal.
       contents: read
       checks: read
+      actions: read
       pull-requests: write
     env:
       GH_REPO: ${{ github.repository }}
@@ -582,17 +586,40 @@ jobs:
           #    once, even beside running ones: waiting cannot make it green.
           #    Excludes this very job's own check run ("queue for
           #    auto-merge"), which is always still `in_progress` here.
+          #    A check is judged by the LATEST run of EACH event that ran it
+          #    (BGD 2026-10-22, CHECK-RULE, part of #1999 and #1778), as the
+          #    merge step's `latest_per_event` judges it: a re-run replaces
+          #    the earlier runs of its own event, never another's, so a red
+          #    push run is not outvoted by a green pull_request run
+          #    (CI-EARLY). The event is the one that made the run's check
+          #    suite, read from the Actions runs at the head only when some
+          #    check has more than one run; a suite with no known event is
+          #    its own group, so one suite never outvotes another.
           runs="$(mktemp)"
-          gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" >"${runs}"
-          failing="$(jq -r '
-              [ .check_runs[]
-                | select(.name != "queue for auto-merge")
-                | select(.status == "completed")
-                | select((.conclusion // "") as $c |
-                         $c == "failure" or $c == "timed_out" or
-                         $c == "action_required" or $c == "cancelled")
-                | .name
-              ] | unique | join(", ")' "${runs}")"
+          gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" >"${runs}"
+          wf_runs="$(mktemp)"
+          printf '{"workflow_runs": []}\n' >"${wf_runs}"
+          if jq -e '[.check_runs[].name] | group_by(.) | any(length > 1)' "${runs}" >/dev/null; then
+            gh api "repos/${GH_REPO}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" >"${wf_runs}"
+          fi
+          failing="$(jq -r --slurpfile wf "${wf_runs}" '
+              ([ $wf[0].workflow_runs[]?
+                 | select(.check_suite_id != null and (.event // "") != "")
+                 | {key: (.check_suite_id | tostring), value: .event} ]
+               | from_entries) as $events
+              | [ .check_runs[]
+                  | select(.name != "queue for auto-merge")
+                  | . + {group: ($events[(.check_suite.id // "" | tostring)]
+                                // "check suite \(.check_suite.id // "")")} ]
+              | group_by([.name, .group])
+              | map(max_by(.id))
+              | [ .[]
+                  | select(.status == "completed")
+                  | select((.conclusion // "") as $c |
+                           $c == "failure" or $c == "timed_out" or
+                           $c == "action_required" or $c == "cancelled")
+                  | .name
+                ] | unique | join(", ")' "${runs}")"
           if [[ -n "${failing}" ]]; then
             refuse "This check already ran on the head commit and is failing: ${failing}. A failed check holds the merge, required or not."
           fi
