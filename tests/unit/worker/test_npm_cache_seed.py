@@ -243,3 +243,67 @@ def test_a_copy_error_leaves_an_empty_writable_cache(tmp_path, image_cache, monk
     # MUTATION: swallow the error without a log line -> no WARNING record.
     assert len(failed) == 1 and failed[0]["severity"] == "WARNING"
     assert failed[0]["error_type"] == "OSError"
+
+
+# ---------------------------------------------------------------------------
+# 6. the worker's own prepare step seeds it, before the agent starts
+# ---------------------------------------------------------------------------
+
+#: A stand-in for `claude --print`: reports what it finds in its npm cache,
+#: and whether it can write there, before doing anything else.
+FAKE_AGENT = r"""#!/usr/bin/env python3
+import json, os, pathlib, stat, sys
+sys.stdin.read()
+npm = pathlib.Path(os.environ["npm_config_cache"])
+files = {}
+for dirpath, dirnames, filenames in os.walk(npm):
+    for name in filenames:
+        path = pathlib.Path(dirpath) / name
+        files[str(path.relative_to(npm))] = path.read_bytes().decode()
+writable = all(
+    os.stat(dirpath).st_mode & stat.S_IWUSR for dirpath, _d, _f in os.walk(npm)
+)
+artifacts = pathlib.Path(os.environ["SWARM_ARTIFACTS_DIR"])
+(artifacts / "npm-seen.json").write_text(json.dumps(
+    {"npm_config_cache": str(npm), "files": files, "writable": bool(writable)}
+))
+print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "ok"}))
+"""
+
+
+@pytest.mark.parametrize("backend", ["gke", "cloud-run"])
+def test_the_worker_seeds_the_npm_cache_before_the_agent_starts(
+    db, store, worker_factory, tmp_path, image_cache, monkeypatch, backend
+):
+    """End to end: the real lifecycle, not a direct call. The agent finds the
+    image's entries in its own, writable npm cache the moment it starts."""
+    from agent_worker.errors import ExitCode
+    from worker_seeds import TENANT, seed_attempt
+
+    binary = tmp_path / "fake-claude"
+    binary.write_text(FAKE_AGENT)
+    binary.chmod(0o755)
+    monkeypatch.setenv("CLAUDE_CODE_BIN", str(binary))
+    monkeypatch.delenv("CLAUDE_CODE_ARGS", raising=False)
+    monkeypatch.setattr(cachedirs, "IMAGE_NPM_CACHE", image_cache)
+    seed_attempt(db, runner_profile="claude-code", task_input={"prompt": "go"})
+    db.doc(f"tenants/{TENANT}")["credentials"] = ["anthropic"]
+    kwargs = {}
+    if backend == "gke":
+        kwargs["cache_root"] = tmp_path / "cache-volume"
+        kwargs["cache_root"].mkdir()
+
+    worker, _config, _exporter = worker_factory(runner_profile="claude-code", **kwargs)
+    assert worker.run() == ExitCode.OK
+
+    seen = json.loads(store.download_bytes(
+        f"tenants/{TENANT}/tasks/task_1/attempts/att_1/artifacts/npm-seen.json"
+    ))
+    # MUTATION: remove the seed call from lifecycle STEP 3 -> the agent's npm cache is empty.
+    assert seen["files"] == {rel: data.decode() for rel, data in IMAGE_FILES.items()}
+    # MUTATION: point npm_config_cache at cachedirs.IMAGE_NPM_CACHE -> the agent sees the image path.
+    assert seen["npm_config_cache"] != str(image_cache)
+    # MUTATION: copy with shutil.copytree (keeps 0o555) -> the agent's cache is read-only.
+    assert seen["writable"] is True
+    # The image copy is left read-only.
+    assert not _writable(image_cache / "_cacache")
