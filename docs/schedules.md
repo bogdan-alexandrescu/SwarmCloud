@@ -1298,7 +1298,9 @@ on lanes FR-1 (the hold categories in `issueruns.hard_stop_hold`) and FR-2
   once the owner has made the switch.
 * **Creates.** The owner, `scope: {mode: "platform"}` only. The schedule's
   tenant must hold the `platform: true` registration; without one a firing
-  is refused `failure_review_no_platform_repository`.
+  is refused `failure_review_no_platform_repository` -- a new refusal, so
+  it ships report-only (`swarm_api.refusals`): off, the firing goes through
+  with nothing reviewed and the log names it.
 * **Not built here.** Adding the `needs-owner` label to an issue that was
   already filed (the `HOLD` case) needs a label call that `forgewrite` does
   not have, so for now the comment says the cause is held. Lane FR-4 builds

@@ -232,13 +232,19 @@ def test_a_firing_hands_the_digest_to_one_investigator_on_the_platform_repositor
     assert '"fail": true' not in text
 
 
-def test_a_schedule_whose_tenant_has_no_platform_registration_is_refused(db, ctx) -> None:
+def test_a_schedule_whose_tenant_has_no_platform_registration_is_refused(db, ctx, monkeypatch) -> None:
     register(db)  # an ordinary registration, not `platform: true`
     schedule = review_schedule(db)
+    monkeypatch.setenv("REFUSAL_FAILURE_REVIEW_NO_PLATFORM_REPOSITORY", "on")
     with pytest.raises(ValidationFailed) as caught:
         failure_review.create(fire(ctx, schedule, NOW))
     assert caught.value.code == "failure_review_no_platform_repository"
     assert investigators(db) == []
+
+    # A new refusal ships off (refusals.py): through, with nothing reviewed or submitted.
+    monkeypatch.setenv("REFUSAL_FAILURE_REVIEW_NO_PLATFORM_REPOSITORY", "off")
+    assert failure_review.create(fire(ctx, schedule, NOW)) == []
+    assert investigators(db) == [] and reviews(db) == {}
 
 
 # ---------------------------------------------------------------------------

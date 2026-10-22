@@ -398,6 +398,16 @@ SWITCHES: dict[str, Switch] = {
         "member relying on POST /v1/tenants/me/credentials and every group workspace that "
         "manages secrets has a named admin",
     ),
+    # Lane FR-3 (docs/schedules.md, failure-review): a firing whose tenant
+    # holds no `platform: true` registration. Off, the firing is let through
+    # with nothing reviewed, written or submitted, and the log names it.
+    "failure_review_no_platform_repository": Switch(
+        code="failure_review_no_platform_repository",
+        why="a failure-review firing whose schedule's tenant has no `platform: true` "
+        "registration is refused instead of succeeding empty. On once the platform's own "
+        "registration carries `platform: true` in every environment that has a "
+        "failure-review schedule",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "

@@ -87,7 +87,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from .. import failurecauses, failuredigest
+from .. import failurecauses, failuredigest, refusals
 from ..attemptreads import WORKER_LOG_VIEW_ENV
 from ..errors import ApiError, ValidationFailed
 from ..failurecauses import Action, Cause, FailureCauses, Facts
@@ -227,15 +227,20 @@ def platform_registration(ctx: Any, tenant_id: str) -> dict[str, Any] | None:
             return None
 
 
-def _require_platform(firing: Any) -> dict[str, Any]:
+def _require_platform(firing: Any) -> dict[str, Any] | None:
+    """The platform registration; None when there is none and the refusal is off.
+
+    A new refusal ships report-only (refusals.py): off, the firing is let
+    through with nothing reviewed and the log names the refusal.
+    """
     tenant_id = str(firing.schedule["tenant_id"])
     registration = platform_registration(firing.ctx, tenant_id)
     if registration is None:
-        raise FailureReviewNoPlatformRepository(
+        refusals.refuse(FailureReviewNoPlatformRepository(
             "failure-review runs in the tenant that registered the SwarmCloud repository with "
             "platform: true, and this schedule's tenant has no such registration",
             detail={"tenant_id": tenant_id},
-        )
+        ))
     return registration
 
 
@@ -1002,6 +1007,9 @@ def _review_doc(firing: Any, digest: failuredigest.Digest, docs: failuredigest.D
 
 def create(firing: Any) -> list[dict[str, Any]]:
     registration = _require_platform(firing)
+    if registration is None:
+        firing.explain({"reason": FailureReviewNoPlatformRepository.code})
+        return []
     ctx = firing.ctx
     taken = take_in(firing, registration)
     digest, docs, known = digest_for(firing, registration,
@@ -1037,6 +1045,9 @@ def dry_run(firing: Any) -> dict[str, Any]:
     Reads only: no content (no log or forge read), nothing written, no agent.
     """
     registration = _require_platform(firing)
+    if registration is None:
+        return {"profile": PROFILE, "repository": None, "reason": FailureReviewNoPlatformRepository.code,
+                "would_investigate": False, "to_take_in": []}
     digest, _docs, _known = digest_for(firing, registration)
     text, dropped = failuredigest.bounded(digest.doc)
     pending = []
