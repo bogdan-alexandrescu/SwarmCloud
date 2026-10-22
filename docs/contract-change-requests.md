@@ -120,7 +120,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 110 | `profiles.py`: `ResourceSize`, `LiveShare`, `default_sizes` and `effective_size`, the one shape a runner-size version is read in, and the rule that only a GKE profile follows it (SIZES-CONTRACT-2, runner sizes request RS-3, part of #1689) | ACCEPTED by the owner 2026-10-20 (design `docs/design/runner-sizes.md` §5, §7 Q3 A) and APPLIED by the pull request that adds this line. No pod changes size until SIZES-SCHED-2 renders from it |
 | 111 | `models.py`: `Attempt.size_version` and the `sized_*` fields, the size the scheduler rendered an attempt at (SIZES-CONTRACT-2, runner sizes request RS-4, part of #1689) | ACCEPTED by the owner 2026-10-20 (design `docs/design/runner-sizes.md` §5, §7) and APPLIED by the pull request that adds this line. No writer yet: the scheduler's `create_attempt` writes them in SIZES-SCHED-2 |
 | 112 | `CONTRACT.md`: "Primary backend Cloud Run Jobs" no longer says where agents run; every agent profile but `mock` is on GKE Autopilot (DOCS-TRUTH, part of #1822) | open, REQUESTED 2026-10-21 by lane DOCS-TRUTH. Not applied: `CONTRACT.md` is not edited by a lane |
-| 113 | `profiles.py`: a `claude-code-large` runner profile on the `large` class with a 14,400 s timeout, picked by name for heavy lanes (AUTONOMY-DESIGN, part of #1933) | ACCEPTED by the owner 2026-10-22 (Q6 of `docs/design/agent-autonomy.md` §7: "Accept contract request 113: a claude-code-large profile"). Not yet applied: lane AU-9 applies it |
+| 113 | `profiles.py`: a `claude-code-large` runner profile on the `large` class with a 14,400 s timeout, picked by name for heavy lanes (AUTONOMY-DESIGN, part of #1933) | ACCEPTED by the owner 2026-10-22 and APPLIED by the pull request that adds this line (lane AU9-PROFILE-LARGE, part of #1933; Q6 of `docs/design/agent-autonomy.md` §7: "Accept contract request 113: a claude-code-large profile") |
 
 ---
 
@@ -14221,8 +14221,12 @@ better source than the contract it defers to.
 **Status:** ACCEPTED by the owner 2026-10-22, requested the same day by lane
 AUTONOMY-DESIGN (`docs/design/agent-autonomy.md` §3.11, question Q6). Owner
 decision, 2026-10-22: "Accept contract request 113: a claude-code-large
-profile". Not yet applied: the catalogue is frozen, so lane AU-9 of
-`docs/design/agent-autonomy.md` §6.1 applies it in its own pull request.
+profile". APPLIED by lane AU9-PROFILE-LARGE (part of #1933), in the pull
+request that rewrote row 113 of the index above: one entry in
+`RUNNER_PROFILES`, a literal `RunnerProfile(...)` beside `claude-code`
+(the Terraform catalogue mirror reads the file as text), held equal to
+`claude-code` in every other field by
+`tests/unit/common/test_claude_code_large.py`.
 
 ### What is true today
 
