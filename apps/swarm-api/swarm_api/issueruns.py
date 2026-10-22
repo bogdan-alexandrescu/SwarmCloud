@@ -1007,13 +1007,34 @@ STOP_IAM = "iam"
 STOP_CONTRACT = "contract"
 STOP_PROTECTED_PATH = "protected_path"
 STOP_SECURITY = "security"
-ENFORCED_STOPS = frozenset({STOP_SECURITY})
+#: A change under `.github/workflows/` or `.github/actions/` in a
+#: `platform: true` repository, which only the `-git-wf` slot can push
+#: (docs/design/agent-autonomy.md §3.3). Enforced from its first day, like
+#: `security`: owner decision 2026-10-22 (Q3), "merge held NEEDS_OWNER",
+#: whatever the run's merge gate says. A workflow can reach CI's secrets and
+#: the deployer's identity.
+STOP_WORKFLOWS = "workflows"
+#: The four categories owner decision Q7 (2026-10-22) adds for EVERY issue
+#: run in a `platform: true` repository (docs/design/failure-review.md §6).
+#: They follow the `hold_approver_required` switch, as `iam` does: Q7 adds
+#: stops, it did not say they skip the switch.
+STOP_SECRETS = "secrets"
+STOP_TENANCY = "tenancy"
+STOP_SHARED = "shared"
+STOP_COST = "cost"
+ENFORCED_STOPS = frozenset({STOP_SECURITY, STOP_WORKFLOWS})
 
-#: The `.github/workflows/` refusal's code. Refused, never held: the forge
-#: credential cannot push those files (§0), so the step would fail after
-#: spending. The run moves PLANNING -> FAILED with this code in `error`.
+#: The `.github/workflows/` refusal's code. Refused at plan unless the
+#: repository is `platform: true` AND the platform tenant's `-git-wf` slot
+#: holds a version (`workflow_paths`): without it the forge credential cannot
+#: push those files (§0), so the step would fail after spending. The run
+#: moves PLANNING -> FAILED with this code in `error`. With it, the plan is
+#: held STOP_WORKFLOWS instead (agent-autonomy.md §3.3, owner decision Q3).
 WORKFLOWS_PATH = "WORKFLOWS_PATH"
 WORKFLOWS_PATTERN = ".github/workflows/**"
+#: What STOP_WORKFLOWS holds: the refusal's pattern and the composite
+#: actions a workflow runs, which reach the same secrets.
+WORKFLOW_HOLD_PATTERNS: tuple[str, ...] = (WORKFLOWS_PATTERN, ".github/actions/**")
 
 #: The codes a run FAILS AT PLANNING with because of what the issue asks for,
 #: not because anything broke: planning it again answers the same until the
@@ -1070,6 +1091,171 @@ def iam_patch_hits(patches: Mapping[str, str | None] | None) -> list[str]:
 
 #: The frozen contract, held only where the registration is `platform: true`.
 CONTRACT_PATTERNS: tuple[str, ...] = ("apps/common/swarm_common/**",)
+
+#: Owner decision Q7's categories (failure-review.md §6), held only where the
+#: registration is `platform: true`: they name this platform's own files.
+#: Each category holds on a path, and on a changed line of the pull
+#: request's patches at merge or a step's prompt at plan.
+SECRETS_PATTERNS: tuple[str, ...] = (
+    "scripts/create-secrets.sh",
+    "terraform/modules/secret_manager/**",
+    "apps/redaction/**",
+    # The forge-slot reader: which token a tenant's git work runs with.
+    "apps/swarm-api/swarm_api/forge.py",
+)
+_SECRETS_LINE = re.compile(r"\bgoogle_secret_manager_[a-z0-9_]+")
+TENANCY_PATTERNS: tuple[str, ...] = (
+    "apps/swarm-api/swarm_api/auth.py",
+    "terraform/modules/tenancy/**",
+    "kubernetes/network-policies/**",
+)
+#: The tenant-scope functions, held by name: a hunk inside one (git names
+#: the enclosing function on the `@@` line), a changed line naming one, or a
+#: prompt naming one. `GkeJobDispatcher.namespace_for` is the scheduler's.
+TENANCY_FUNCTIONS: tuple[str, ...] = ("tenant_scope", "submission_scope", "namespace_for")
+_TENANCY_NAME = re.compile(r"\b(?:" + "|".join(TENANCY_FUNCTIONS) + r")\b")
+#: The deny-list itself.
+SHARED_PATTERNS: tuple[str, ...] = ("scripts/lib/common.sh",)
+#: `SHARED_DENY_LIST` of scripts/lib/common.sh, where it lives once (CLAUDE.md
+#: rule 2). Restated here because swarm-api's image carries no scripts/;
+#: tests/unit/control_plane/test_hold_categories.py fails the day the two
+#: differ. Keep the order of common.sh.
+SHARED_DENY_LIST: tuple[str, ...] = (
+    "agents-staging",
+    "agents-staging-vpc",
+    "agents-staging-subnet",
+    "gke-agents-staging-88280d02-pe-subnet",
+    "default",
+    "saga-agents-crawled-media-staging",
+    "saga-agents-files-staging",
+    "saga-agents-terraform-state-staging",
+    "ai-studio-avatars-staging",
+    "promptlab-avatars-staging",
+    "saga-agents-staging_cloudbuild",
+    "api-service@saga-agents-staging.iam.gserviceaccount.com",
+    "publisher@saga-agents-staging.iam.gserviceaccount.com",
+    "209012342332-compute@developer.gserviceaccount.com",
+    "promptlab-deployer@saga-agents-staging.iam.gserviceaccount.com",
+    "promptlab-runner@saga-agents-staging.iam.gserviceaccount.com",
+    "aipipeline@saga-agents-staging.iam.gserviceaccount.com",
+    "saga-storage-ro@saga-agents-staging.iam.gserviceaccount.com",
+    "saga-storage-rw@saga-agents-staging.iam.gserviceaccount.com",
+    "external-secrets@saga-agents-staging.iam.gserviceaccount.com",
+    "staging-gke-nodes@saga-agents-staging.iam.gserviceaccount.com",
+    "crawler@saga-agents-staging.iam.gserviceaccount.com",
+    "tournament-digest@saga-agents-staging.iam.gserviceaccount.com",
+    "ai-studio-api@saga-agents-staging.iam.gserviceaccount.com",
+    "ai-studio-deployer@saga-agents-staging.iam.gserviceaccount.com",
+    "ai-studio-runner@saga-agents-staging.iam.gserviceaccount.com",
+    "oracle-api@saga-agents-staging.iam.gserviceaccount.com",
+    "oracle-ticker@saga-agents-staging.iam.gserviceaccount.com",
+    "oracle-web@saga-agents-staging.iam.gserviceaccount.com",
+    "promptlab-api@saga-agents-staging.iam.gserviceaccount.com",
+    "oracle-api",
+    "oracle-web",
+)
+#: A deny-list name, whole: not inside a longer name (`swarm-agents-staging-x`
+#: is not `agents-staging`). "default" (the shared project's default network)
+#: is also an ordinary word, so it is matched only quoted, as a resource name
+#: is written; every other entry anywhere.
+_NAME_CHAR = r"A-Za-z0-9_@"
+_SHARED_NAME = re.compile(
+    "|".join(
+        rf"""(?<=["'`]){re.escape(name)}(?=["'`])""" if name.isalpha()
+        else rf"(?<![{_NAME_CHAR}.-]){re.escape(name)}(?![{_NAME_CHAR}-])"
+        for name in sorted(SHARED_DENY_LIST, key=len, reverse=True)
+    )
+)
+#: Runner sizes and classes: what one agent's cpu and memory cost.
+COST_PATTERNS: tuple[str, ...] = (
+    "terraform/environments/**/*.tfvars",
+    "apps/swarm-api/swarm_api/runnersizes.py",
+    "apps/scheduler/scheduler/sizes.py",
+)
+#: Budget caps, pool ceilings and concurrency limits, replica and instance
+#: counts, and a step's resource class, on a changed line or in a prompt.
+_COST_LINE = re.compile(
+    r"\bBudgetCaps\(|\b(?:per_run_usd|per_day_usd|max_concurrent|hard_limit|"
+    r"min_instance_count|max_instance_count|min_instances|max_instances|replicas|resource_class)\b"
+)
+
+
+def _changed_lines(patch: str, *, removed: bool = True) -> list[str]:
+    """The added (and, with `removed`, removed) lines of a unified diff."""
+    marks = ("+", "-") if removed else ("+",)
+    return [
+        line[1:] for line in patch.splitlines()
+        if line[:1] in marks and not line.startswith(("+++", "---"))
+    ]
+
+
+def _hunk_context(patch: str) -> list[str]:
+    """What git prints after a hunk's second `@@`: its enclosing function."""
+    return [line.split("@@", 2)[2] for line in patch.splitlines() if line.startswith("@@") and line.count("@@") >= 2]
+
+
+#: A tenant-scope function's own `def` line, as a hunk's context line shows it.
+_TENANCY_DEF = re.compile(r"^\s*(?:async\s+)?def\s+(?:" + "|".join(TENANCY_FUNCTIONS) + r")\s*\(")
+
+
+def _changed_after_tenancy_def(patch: str) -> bool:
+    """A hunk whose unchanged context shows a tenant-scope `def` before a
+    changed line. Within git's three context lines of the `def`, the `@@`
+    header names the function BEFORE it, so the header alone misses the edit."""
+    seen_def = False
+    for line in patch.splitlines():
+        if line.startswith("@@"):
+            seen_def = False
+        elif line.startswith(("+++", "---")):
+            continue
+        elif line[:1] == " " and _TENANCY_DEF.match(line[1:]):
+            seen_def = True
+        elif line[:1] in ("+", "-") and seen_def:
+            return True
+    return False
+
+
+def _category_hits(
+    paths: list[str], patches: Mapping[str, str | None] | None, prompt_text: str,
+) -> list[tuple[str, list[str]]]:
+    """Q7's categories over a change, in their order, each with what matched:
+    paths for a path or a patch, the named term for a prompt.
+
+    A file whose patch the forge omitted (None) is scanned by path only:
+    holding every large diff would hold every lockfile.
+    """
+    patches = patches or {}
+    found: list[tuple[str, list[str]]] = []
+
+    def scan(stop: str, patterns: tuple[str, ...], line_hit: Any, prompt_hit: Any) -> None:
+        hits = _matching(paths, patterns)
+        hits += [p for p, patch in sorted(patches.items()) if patch and p not in hits and line_hit(patch)]
+        hits += sorted({m for m in prompt_hit(prompt_text)} - set(hits))
+        if hits:
+            found.append((stop, hits))
+
+    def changed(regex: re.Pattern[str], *, removed: bool = True) -> Any:
+        return lambda patch: any(regex.search(line) for line in _changed_lines(patch, removed=removed))
+
+    def terms(regex: re.Pattern[str]) -> Any:
+        return lambda text: [m.group(0) for m in regex.finditer(text)]
+
+    scan(STOP_SECRETS, SECRETS_PATTERNS, changed(_SECRETS_LINE), terms(_SECRETS_LINE))
+    scan(
+        STOP_TENANCY, TENANCY_PATTERNS,
+        lambda patch: (
+            changed(_TENANCY_NAME)(patch)
+            or any(_TENANCY_NAME.search(c) for c in _hunk_context(patch))
+            or _changed_after_tenancy_def(patch)
+        ),
+        terms(_TENANCY_NAME),
+    )
+    # An ADDED line: removing a reference to the other team's resources is
+    # the direction CLAUDE.md rule 2 wants.
+    scan(STOP_SHARED, SHARED_PATTERNS, changed(_SHARED_NAME, removed=False), terms(_SHARED_NAME))
+    scan(STOP_COST, COST_PATTERNS, changed(_COST_LINE), terms(_COST_LINE))
+    return found
+
 
 #: A security-class issue: the label, or the bug form's severity S0
 #: (`.github/ISSUE_TEMPLATE/bug_report.yml`, rendered `### Severity` then
@@ -1138,12 +1324,24 @@ def prompt_paths(plan: Mapping[str, Any] | None) -> set[str]:
     texts += [str(s.get("prompt") or "") for s in (plan or {}).get("steps") or [] if isinstance(s, Mapping)]
     for text in texts:
         for token in _PROMPT_PATH.findall(text):
-            found.add(token.strip("/.") if token.endswith(".") else token.strip("/"))
+            # A sentence's full stop goes; a leading dot stays (`.github/...`).
+            found.add(token.rstrip("/.").lstrip("/") if token.endswith(".") else token.strip("/"))
     return {p for p in found if p}
 
 
-def workflow_paths(plan: Mapping[str, Any] | None) -> list[str]:
-    """The `.github/workflows/` files a plan's steps NAME in `files`: refused at plan."""
+def workflow_paths(
+    plan: Mapping[str, Any] | None, *, platform: bool = False, workflow_slot: bool = False,
+) -> list[str]:
+    """The `.github/workflows/` files a plan's steps NAME in `files`: refused at plan.
+
+    None are refused where the `-git-wf` slot can push them: a `platform:
+    true` repository (`platform`) while the platform tenant's slot holds a
+    version (`workflow_slot`, read by the caller). There `plan_hold` holds
+    them NEEDS_OWNER instead (STOP_WORKFLOWS). Both default False, so a
+    caller that says nothing refuses exactly as before.
+    """
+    if platform and workflow_slot:
+        return []
     return _matching(plan_files(plan), (WORKFLOWS_PATTERN,))
 
 
@@ -1168,6 +1366,7 @@ def hard_stop_hold(
     issue_read: Mapping[str, Any] | None = None,
     prompt_text: str = "",
     iam_files: Any = (),
+    patches: Mapping[str, str | None] | None = None,
     at: datetime | None = None,
 ) -> dict[str, Any] | None:
     """The hold §4.4's stops put on a run whose work touches `paths`, or None.
@@ -1176,7 +1375,15 @@ def hard_stop_hold(
     plan, or the pull request's changed files at merge, and the
     registration's `platform` and `hard_stop_paths` (`repositories.
     hard_stop_paths_of`, the four defaults included). The workflow pattern
-    is left out of the protected paths: those files are refused, not held.
+    is left out of the protected paths: outside a `platform: true`
+    repository those files are refused, not held.
+
+    In a `platform: true` repository three more kinds of stop apply
+    (failure-review.md §6): STOP_WORKFLOWS on `.github/workflows/` and
+    `.github/actions/` (owner decision Q3), and owner decision Q7's four
+    categories, `secrets`, `tenancy`, `shared` and `cost`, read from the
+    paths, from `patches` (path to unified diff; the pull request's at
+    merge) and from `prompt_text` (the steps' prompts at plan).
     """
     paths = sorted({str(p) for p in paths if str(p).strip()})
     reasons: list[str] = []
@@ -1191,6 +1398,13 @@ def hard_stop_hold(
         if contract:
             reasons.append(STOP_CONTRACT)
             matched += contract
+        workflows = _matching(paths, WORKFLOW_HOLD_PATTERNS)
+        if workflows:
+            reasons.append(STOP_WORKFLOWS)
+            matched += workflows
+        for stop, hits in _category_hits(paths, patches, prompt_text):
+            reasons.append(stop)
+            matched += hits
     protected = [p for p in hard_stop_paths or () if p != WORKFLOWS_PATTERN]
     protected_hits = [p for p in _matching(paths, protected) if p not in matched]
     if protected_hits:

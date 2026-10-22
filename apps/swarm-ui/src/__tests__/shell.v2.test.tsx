@@ -80,15 +80,16 @@ describe('#503: the panel draws an icon per page and a count beside Live and Wai
   })
 
   it('counts Live and Waiting from /v1/stats, LEASED through RUNNING and QUEUED through PARKED', async () => {
-    // The fixture: LEASED 1, DISPATCHED 1, STARTING 1, RUNNING 2 -> 5 live;
-    // QUEUED 0, READY 1, PARKED 1 -> 2 waiting. MUTATION: count RUNNING only.
+    // The fixture, counted from its task list (QAFIX4-FIXTURE-B F9): LEASED 1,
+    // DISPATCHED 1, STARTING 1, RUNNING 4 -> 7 live; QUEUED 1, READY 1,
+    // PARKED 1 -> 3 waiting. MUTATION: count RUNNING only.
     // Asked of `panelCounts` with no list on screen: on the Agents page the
     // panel counts the list's own read instead (U10a D27,
     // qa.u10a.shell.test.tsx).
     const { loadStats } = await import('../api')
     const stats = await loadStats({ frame: true })
     const counts = panelCounts(stats, { status: 'loading', since: Date.now() })
-    expect([counts.live?.n, counts.waiting?.n]).toEqual([5, 2])
+    expect([counts.live?.n, counts.waiting?.n]).toEqual([7, 3])
   })
 
   it('draws no mark beside a row nobody counts: Workflows and Recent alike', async () => {

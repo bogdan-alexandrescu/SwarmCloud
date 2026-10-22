@@ -448,6 +448,19 @@ NOT_SWITCHABLE_CODES = frozenset({
     "qa_target_host_pending",
     "issue_writes_off",
     "qa_credential_link_invalid",
+    # Child issue runs and child workflows (AU-6, docs/design/child-tasks.md
+    # §10): on the existing child route, but raised only for a request naming
+    # `kind: "issue_run"`, `kind: "workflow"` or `after_merged`, which that
+    # change introduces -- a request with no `kind` is an agent child, as it
+    # always was -- so no existing caller can be refused by them. Continuing
+    # past any of them is the breach itself: an agent starting a run on
+    # another repository's issue, or on no repository at all, a workflow from
+    # a spec no platform admin approved at its current digest (invariant 10),
+    # or a run HELD behind a predecessor this parent never started.
+    "child_run_other_repository",
+    "child_run_no_repository",
+    "child_workflow_unapproved",
+    "child_after_merged_unknown",
 })
 
 #: What the guard lets through without a switch.

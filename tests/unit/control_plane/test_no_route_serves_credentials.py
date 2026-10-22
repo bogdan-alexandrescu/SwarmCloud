@@ -450,6 +450,9 @@ SECRET_PAYLOAD_READERS = {
     # only to the worker of a proven, fenced attempt whose run names the target,
     # at qatargets.ISSUE_ROUTE, which main.UNCAPTURED_ROUTES keeps out of capture.
     "qatargets.py",
+    # The tenant's `-git-wf` slot, the credential for a workflow-touching push
+    # on its platform: true registration only, scrubbed from every answer.
+    "gittools.py",
 }
 
 

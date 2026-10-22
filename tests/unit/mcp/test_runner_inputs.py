@@ -321,7 +321,7 @@ def test_the_declaring_profiles_and_no_declaration_names_execution_detail():
     Every other profile declaring `command` is still flagged here."""
     declaring = sorted(name for name in RUNNER_PROFILES if _declared(name))
     assert declaring == [
-        "browser", "claude-code", "claude-code-browser", "claude-code-review",
+        "browser", "claude-code", "claude-code-browser", "claude-code-large", "claude-code-review",
         "codex", "generic", "indexer", "mock",
     ], declaring
     # claude-code-review is claude-code under its own Job (contract request 36);
@@ -333,7 +333,8 @@ def test_the_declaring_profiles_and_no_declaration_names_execution_detail():
     # Contract request 106 gave claude-code-browser alone its QA identity, by name.
     for name in ("claude-code-review", "indexer"):
         assert set(_declared(name)) == {"issue"}, (name, _declared(name))
-    for name in ("claude-code", "codex"):
+    # Contract request 113: claude-code-large declares exactly what claude-code does.
+    for name in ("claude-code", "claude-code-large", "codex"):
         assert set(_declared(name)) == {"issue", "mcp_servers"}, (name, _declared(name))
     assert set(_declared("claude-code-browser")) == {"issue", "browser_tool", "mcp_servers", "qa_identity"}
     for name in RUNNER_PROFILES:

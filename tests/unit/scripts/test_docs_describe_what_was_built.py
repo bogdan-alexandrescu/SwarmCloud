@@ -884,7 +884,7 @@ def test_workflows_model_class_section_states_what_the_code_holds():
     default = RUNNER_PROFILES["claude-code"].default_model_class
     assert f"`{default}` is the default" in body
     every = [p.name for p in RUNNER_PROFILES.values() if p.model_classes == tuple(MODEL_CLASSES)]
-    assert sorted(every) == ["claude-code", "claude-code-browser", "indexer"], every
+    assert sorted(every) == ["claude-code", "claude-code-browser", "claude-code-large", "indexer"], every
     for name in every:
         assert f"`{name}`" in body, name
     for error in (UnknownModelClass, ModelClassNotAccepted, ModelClassNotYetAvailable,

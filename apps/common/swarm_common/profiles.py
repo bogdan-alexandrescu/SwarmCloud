@@ -1866,6 +1866,35 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
     ),
+    # CONTRACT REQUEST 113, accepted by the owner 2026-10-22 (Q6 of
+    # docs/design/agent-autonomy.md §7, applied by lane AU-9): claude-code made
+    # bigger, picked by name (invariant 10) for a lane whose cause was an
+    # out-of-memory kill or a timeout. #1926 measured 8 GiB OOM kills on
+    # claude-code and three agents killed at its 7,200 s. The `large` class
+    # (8 CPU requested, 32 GiB, memory request == limit, 4 units against the
+    # tenant's ceiling) and 14,400 s; every other field is claude-code's, held
+    # equal by tests/unit/common/test_claude_code_large.py. A literal rather
+    # than `replace()`, because tests/terraform/catalogue_mirror reads the
+    # catalogue as text and sees only literal constructor calls (and splits on
+    # the constructor's name followed by a parenthesis, so this comment must
+    # not spell that). GKE Autopilot,
+    # on-demand only (invariant 6); the catalogue's default checkpoint
+    # interval (invariant 8), which matters more over four hours.
+    "claude-code-large": RunnerProfile(
+        name="claude-code-large",
+        image="agent-runtime-base",
+        resource_class="large",
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=14400,
+        inputs=_CLI_AGENT_MCP_INPUTS,
+        secret_slots={"files": _FILES_SLOT},
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
+    ),
     "codex": RunnerProfile(
         name="codex",
         image="agent-runtime-base",

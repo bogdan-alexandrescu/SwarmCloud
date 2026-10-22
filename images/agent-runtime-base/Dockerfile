@@ -849,6 +849,63 @@ RUN if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
       && npm cache clean --force ; \
     fi
 
+# A warmed npm cache for this repository's UI (docs/design/agent-autonomy.md
+# §3.10, lane AU-8). Built from apps/swarm-ui's lockfile with `npm ci --cache
+# /opt/npm-cache`; the node_modules that install wrote is then thrown away and
+# only the cache is kept. A copied node_modules is NOT baked in: it would be
+# wrong for every other repository, and for this one the day the lockfile
+# changes. The cache is content-addressed by each package's integrity hash, so
+# a cache built from an older lockfile still serves every package the new one
+# kept.
+#
+# A bind mount, not a COPY. BuildKit keys this RUN's cache on the mounted
+# files, so a lockfile change rebuilds the layer, and every main build and
+# release rebuilds this image anyway (APT_REFRESH above). A COPY would also make
+# apps/swarm-ui/package-lock.json an image_inputs source in
+# scripts/build-images.sh, so every pull request that touches the UI lockfile
+# would build the four worker images too. The two files are kept at
+# /opt/npm-cache-lockfile as the record of what the cache was built from.
+# `--ignore-scripts`: nothing the lockfile names runs as root in this build,
+# and no install script adds to the cache.
+#
+# `npm clean-install` is npm's own long name for `npm ci`, the same command.
+# It is spelled out because `npm ci` in this file is what
+# tests/unit/scripts/test_indexer_image_split.py reads as the repository
+# index's language-server install (images/agent-runtime-indexer) leaking back
+# into the base.
+#
+# READ-ONLY: root-owned, every write bit cleared, so no agent can plant a
+# tarball in it for the next npm to install. npm's builtin config
+# (/usr/local/lib/node_modules/npm/npmrc, read by every npm whatever HOME and
+# the environment are) names it as the cache, with prefer-offline. Placed
+# after the CLI install above, whose `npm cache clean` must not meet it.
+#
+# MEASURED 2026-10-22 with npm 11.19.0, this image's: an install whose every
+# package is in a read-only cache succeeds offline (235 packages in 4 s); one
+# that needs a package the cache does not hold fails with EACCES on
+# _cacache/tmp rather than falling over to the network. And the worker sets
+# npm_config_cache to the attempt's own writable cache (agent_worker.cachedirs),
+# which overrides any npmrc, so an agent's npm reads this cache only once the
+# worker points it here. Both are questions to the owner in lane AU-8's PR;
+# nothing here changes what an agent's npm does today.
+RUN --mount=type=bind,source=apps/swarm-ui,target=/tmp/swarm-ui \
+    mkdir -p /tmp/npm-warm /opt/npm-cache-lockfile \
+ && cp /tmp/swarm-ui/package.json /tmp/swarm-ui/package-lock.json /opt/npm-cache-lockfile/ \
+ && cp /opt/npm-cache-lockfile/package.json /opt/npm-cache-lockfile/package-lock.json /tmp/npm-warm/ \
+ && cd /tmp/npm-warm \
+ && npm clean-install --cache /opt/npm-cache --ignore-scripts --no-audit --no-fund \
+ && cd / \
+ && rm -rf /tmp/npm-warm \
+ && test -d /opt/npm-cache/_cacache \
+ && printf '%s\n' 'cache=/opt/npm-cache' 'prefer-offline=true' \
+      > /usr/local/lib/node_modules/npm/npmrc \
+ && test "$(npm config get cache --logs-max=0)" = /opt/npm-cache \
+ && test "$(npm config get prefer-offline --logs-max=0)" = true \
+ && rm -rf /opt/npm-cache/_logs \
+ && chown -R root:root /opt/npm-cache /opt/npm-cache-lockfile /usr/local/lib/node_modules/npm/npmrc \
+ && chmod -R a-w /opt/npm-cache /opt/npm-cache-lockfile /usr/local/lib/node_modules/npm/npmrc \
+ && echo "npm cache warmed from apps/swarm-ui/package-lock.json: $(du -sh /opt/npm-cache | cut -f1)"
+
 # Non-root, with a fixed uid so the GKE pod spec and the Cloud Run Job agree.
 # ABSOLUTE PATHS ON PURPOSE: the runtime PATH above deliberately omits
 # /usr/sbin so the unprivileged agent cannot reach admin tooling, and

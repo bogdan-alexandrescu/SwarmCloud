@@ -32,11 +32,17 @@ def test_the_tool_schemas_and_instructions_fit_graphmcps_two_thousand_token_budg
     assert spent <= SCHEMA_TOKEN_BUDGET * BYTES_PER_TOKEN, spent
 
 
-def test_there_are_exactly_the_designs_five_tools_and_none_takes_a_token_or_remote():
+def test_there_are_exactly_the_designs_tools_and_none_takes_a_token_or_remote():
+    # The five of runner-git-tools.md §1.1, then lane AU-1's eight
+    # (docs/design/agent-autonomy.md §3.12).
     assert server.TOOL_NAMES == ("git_fetch", "git_rebase_onto", "git_push_branch",
-                                 "read_private", "pr_checks")
+                                 "read_private", "pr_checks", "pr_view", "run_list", "run_view",
+                                 "issue_view", "issue_list", "release_status", "issue_create",
+                                 "issue_comment")
     every = set().union(*server.ARGUMENTS.values())
-    assert every == {"ref", "branch", "repo", "path", "pr"}
+    assert every == {"ref", "branch", "repo", "path", "pr", "number", "workflow", "head_sha",
+                     "status", "limit", "run_id", "failed_only", "labels", "state", "query",
+                     "sha", "form", "title", "sections", "dedupe_key", "body", "reopen"}
     # Only read_private names a repository (§1.2 other_repository).
     assert [name for name, args in server.ARGUMENTS.items() if "repo" in args] == ["read_private"]
 

@@ -1,5 +1,9 @@
 """The worker-only child routes (docs/design/child-tasks.md §6.1, §6.1a, §6.2).
 
+`POST /v1/tasks/{id}/children` also takes the run kinds of
+docs/design/agent-autonomy.md §3.6: a child `issue_run` or `workflow` is
+answered `{"child": <ledger row>, "created": ...}` instead of `{"task": ...}`.
+
 None of these declares `current_auth` or `tenant_scope`: no person may call
 them, and the tenant is taken from the worker's ID token checked against the
 body's tenant, then from the attested registration -- never from a group
@@ -59,6 +63,9 @@ def child_service(ctx: AppContext = Depends(get_context)) -> ChildService:
         limiter=ctx.limiter,
         metrics=ctx.metrics,
         now=ctx.now,
+        # The run kinds start an issue run or a workflow through the app
+        # context (docs/design/agent-autonomy.md §3.6).
+        ctx=ctx,
     )
 
 
@@ -114,8 +121,13 @@ async def submit_child(
     )
     if not answer.created:
         response.status_code = status.HTTP_200_OK
-    else:
+    elif answer.task is not None:
         ctx.submissions._wake("child_submitted", tenant_id=answer.task.tenant_id, count="1")
+    if answer.task is None:
+        # A child issue run or workflow (§3.6): its ledger row, by id and
+        # state. A started run's planner, or a workflow's steps, rang the
+        # wake when `submit_tasks` made them; a HELD run made nothing.
+        return {"child": answer.child, "created": answer.created}
     return {
         "task": task_to_api(answer.task, console_url=ctx.settings.console_url),
         "created": answer.created,

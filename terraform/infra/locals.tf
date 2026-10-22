@@ -110,6 +110,23 @@ locals {
       model_classes       = ["opus", "fable", "sonnet", "haiku"]
       default_model_class = "opus"
     }
+    # Contract request 113, accepted by the owner 2026-10-22 (Q6 of
+    # docs/design/agent-autonomy.md): claude-code on the `large` class with a
+    # 14,400 s timeout, for a lane whose cause was an out-of-memory kill or a
+    # timeout. A GKE profile, not in `cloud_run_fallback_profiles`, so no Cloud
+    # Run Job is made for it; mirrored so the catalogue comparison holds and so
+    # its `runner:claude-code-large` pool exists.
+    "claude-code-large" = {
+      image           = "agent-runtime-base"
+      resource_class  = "large"
+      backend         = "GKE_AUTOPILOT"
+      provider        = "anthropic"
+      secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
+      timeout_seconds = 14400
+
+      model_classes       = ["opus", "fable", "sonnet", "haiku"]
+      default_model_class = "opus"
+    }
     # GKE Autopilot since contract request 65 (owner, 2026-10-10, option A of
     # #939); its Cloud Run Jobs stay as the rollback, as generic's do.
     "codex" = {
@@ -328,8 +345,8 @@ locals {
   }
 
   # Profile -> the pin of its `default_model_class` (the mirror above), for
-  # every profile that has one: claude-code, claude-code-review, indexer and
-  # claude-code-browser, all opus, so exactly the map #226 wrote by hand.
+  # every profile that has one: claude-code, claude-code-large,
+  # claude-code-review, indexer and claude-code-browser, all opus, so exactly the map #226 wrote by hand.
   # codex is an OpenAI CLI, where a Claude name would fail every run, and
   # mock, generic, browser, merge, post-verdict and await-input start no
   # model, so none of them has a default and none is listed.

@@ -157,8 +157,8 @@ run "runner_backends_match_resolve_backend" {
   }
 
   assert {
-    condition     = length(output.runner_backends) == 11
-    error_message = "eleven runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, contract request 48's indexer, contract request 67's claude-code-browser and contract request 94's await-input"
+    condition     = length(output.runner_backends) == 12
+    error_message = "twelve runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, contract request 48's indexer, contract request 67's claude-code-browser, contract request 94's await-input and contract request 113's claude-code-large"
   }
 
   # Contract request 94: await-input is a control_plane profile (request 93)
@@ -423,8 +423,8 @@ run "the_python_catalogue_is_readable" {
   }
 
   assert {
-    condition     = length(output.runner_profiles) == 11
-    error_message = "expected 11 runner profiles in profiles.py (mock, generic, claude-code, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser, await-input); the parser read a different number"
+    condition     = length(output.runner_profiles) == 12
+    error_message = "expected 12 runner profiles in profiles.py (mock, generic, claude-code, claude-code-large, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser, await-input); the parser read a different number"
   }
 
   # claude-code's and indexer's entries carry a comment above their backend;

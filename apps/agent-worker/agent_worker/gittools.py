@@ -71,7 +71,7 @@ from . import gitops
 from .children import AttemptKey, ChildApi, ChildApiError, ChildSubmitFenced
 from .gitmcp.server import (
     ARGUMENTS,
-    MAX_REQUEST_BYTES,
+    MAX_GIT_REQUEST_BYTES,
     REQUEST_ID,
     REQUIRED,
     SPOOL_DIR_NAME,
@@ -103,8 +103,22 @@ _HOUR = 3600.0
 
 #: The route's fenced answer (§1.4). Any 409 from the route is read as this.
 GIT_FENCED = "git_fenced"
-#: The four tools that act on the task's own repository only.
-OWN_REPOSITORY_TOOLS = frozenset({"git_fetch", "git_rebase_onto", "git_push_branch", "pr_checks"})
+#: Lane AU-1's tools (docs/design/agent-autonomy.md §3.1, §3.2, §3.7): swarm-api
+#: reads and writes GitHub for them, so the worker validates their shape and
+#: relays them. Every one acts on the task's own repository only.
+RELAYED_TOOLS = frozenset({"pr_view", "run_list", "run_view", "issue_view", "issue_list",
+                           "release_status", "issue_create", "issue_comment"})
+#: The tools that act on the task's own repository only.
+OWN_REPOSITORY_TOOLS = frozenset({"git_fetch", "git_rebase_onto", "git_push_branch",
+                                  "pr_checks"}) | RELAYED_TOOLS
+#: Each relayed argument's JSON type, checked before anything leaves.
+_RELAYED_TYPES: dict[str, tuple[type, ...]] = {
+    "number": (int,), "run_id": (int,), "limit": (int,), "failed_only": (bool,),
+    "reopen": (bool,), "workflow": (str,), "branch": (str,), "head_sha": (str,),
+    "status": (str,), "state": (str,), "query": (str,), "sha": (str,), "form": (str,),
+    "title": (str,), "body": (str,), "dedupe_key": (str,), "labels": (list,),
+    "sections": (dict, list),
+}
 #: What an agent might pass to aim one of those four elsewhere.
 _REPOSITORY_KEYS = frozenset({"repo", "repository", "url", "remote"})
 
@@ -250,6 +264,13 @@ def validate_request(tool: Any, arguments: Any) -> tuple[str, dict[str, Any]]:
     if "pr" in args and (isinstance(args["pr"], bool) or not isinstance(args["pr"], int)
                          or args["pr"] < 1):
         raise GitToolRefused("request_invalid", "pr must be a pull request number")
+    if tool in RELAYED_TOOLS:
+        for name, value in args.items():
+            wanted = _RELAYED_TYPES.get(name, ())
+            if not isinstance(value, wanted) or (isinstance(value, bool) and bool not in wanted):
+                raise GitToolRefused("request_invalid", f"{tool}'s {name} has the wrong type")
+            if name in ("number", "run_id") and value < 1:
+                raise GitToolRefused("request_invalid", f"{name} must be at least 1")
     return tool, dict(args)
 
 
@@ -409,11 +430,11 @@ class GitTools:
         return answered
 
     def answer_file(self, path: Path, request_id: str) -> dict[str, Any]:
-        data = _read_small_json(path, MAX_REQUEST_BYTES)
+        data = _read_small_json(path, MAX_GIT_REQUEST_BYTES)
         if not isinstance(data, dict):
             return GitToolRefused("request_invalid",
                                   f"a request is one JSON object of at most "
-                                  f"{MAX_REQUEST_BYTES} bytes").as_dict()
+                                  f"{MAX_GIT_REQUEST_BYTES} bytes").as_dict()
         return self.answer(data.get("tool"), data.get("arguments"), request_id=request_id)
 
     def answer(self, tool: Any, arguments: Any, *, request_id: str) -> dict[str, Any]:
@@ -431,6 +452,8 @@ class GitTools:
                 "read_private": lambda: self.read_private(args["repo"], args["path"],
                                                           args["ref"], request_id=request_id),
                 "pr_checks": lambda: self.pr_checks(args.get("pr"), request_id=request_id),
+                **{relayed: (lambda tool=relayed: self.relay(tool, args, request_id=request_id))
+                   for relayed in RELAYED_TOOLS},
             }[name]
             result = handler()
         except GitError as exc:
@@ -873,6 +896,13 @@ class GitTools:
     def pr_checks(self, pr: int | None, *, request_id: str) -> dict[str, Any]:
         payload = self.call("pr_checks", {"pr": pr}, request_id=request_id)
         return {k: payload[k] for k in ("pr", "head_sha", "state", "rows") if k in payload}
+
+    def relay(self, tool: str, args: dict[str, Any], *, request_id: str) -> dict[str, Any]:
+        """An AU-1 tool: swarm-api reads or writes GitHub and answers; the
+        worker passes the answer on as it came. Its text from GitHub is
+        already redacted and between the call's nonce lines (`data_marker`)."""
+        payload = self.call(tool, dict(args), request_id=request_id)
+        return payload if isinstance(payload, dict) else {}
 
     # -- git, the worker's way ----------------------------------------------------------
 

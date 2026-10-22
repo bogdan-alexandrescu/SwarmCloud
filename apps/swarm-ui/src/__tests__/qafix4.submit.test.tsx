@@ -21,9 +21,30 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SubmitScreen } from '../Submit'
+import type { Capacity } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { build, painted, resolveColour, THEMES } from './marks'
 import { contrast, over } from './spaceprobe'
+
+// THE UNREAD ROOM IS BUILT HERE, not found in the fixture. Since
+// QAFIX4-FIXTURE-B F10 the fixture serves `claude-code-browser` the admission
+// row the analyser produces (a measured room of 0), so no fixture profile is
+// left unread. Every other read stays the development fixture's.
+vi.mock('../api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api')>()
+  return {
+    ...actual,
+    loadCapacity: async (...a: Parameters<typeof actual.loadCapacity>) => {
+      const r = await actual.loadCapacity(...a)
+      if (r.status !== 'ok') return r
+      const profiles: Capacity['runner_profiles'] = {
+        ...r.data.runner_profiles,
+        'claude-code-browser': { ...r.data.runner_profiles['claude-code-browser']!, admission: undefined },
+      }
+      return { ...r, data: { ...r.data, runner_profiles: profiles } }
+    },
+  }
+})
 
 const WAIT = { timeout: 4000 }
 const WIDE: CascadeEnv = { width: 1440 }
