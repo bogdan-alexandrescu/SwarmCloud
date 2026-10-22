@@ -1457,6 +1457,14 @@ ws_a5() {
 # service's the team slot alone, since an App refresh token is a person's
 # (docs/design/workspace-kinds.md §4.6). Empty, filled later by an admin with
 # create-secrets.sh --stdin or the git-token route: never from here.
+#
+# A PERSON'S workspace also gets its QA target credential secret
+# swarm-tenant-<t>-qa (docs/design/visual-qa-any-app.md §2.1, §7 V-1/V-2; BGD
+# 2026-10-22: the deployer job creates it), through the same qa_secret_ensure
+# the operator path's section 4b runs: empty, swarm-api alone as version adder
+# and accessor, never the worker. A group or a service gets none here: the
+# deployer's secret binder stops at swarm-tenant-u-. No value is ever read or
+# printed; the console's one-time form stores it through swarm-api.
 ws_a6() {
   local rc=0
   if [[ "${WS_KIND}" == "service" ]]; then
@@ -1473,6 +1481,19 @@ ws_a6() {
     3) ws_hold SLOT_NOT_OURS "the forge slot already exists labelled for '${FORGE_SLOT_LABELLED:-nobody}', not this tenant"
        return 1 ;;
     4) ws_hold TWIN_BOUND "the worker is bound to the forge slot's refresh twin, which no worker may read"
+       return 1 ;;
+    *) return 1 ;;
+  esac
+  [[ "${WS_KIND}" == "personal" ]] || return 0
+  rc=0
+  FORGE_SLOT_CALL=ws_call FORGE_SLOT_PROBE=ws_probe FORGE_SLOT_SHOW_ERR=ws_show_err \
+    FORGE_SLOT_WORK="${WS_WORK}" FORGE_SLOT_DRY_RUN=0 \
+    qa_secret_ensure "${WS_TENANT}" "$(ws_expect api_email)" || rc=$?
+  case "${rc}" in
+    0) ok "qa secret: bound to swarm-api alone" ;;
+    3) ws_hold SLOT_NOT_OURS "swarm-tenant-${WS_TENANT}-qa already exists labelled for '${FORGE_SLOT_LABELLED:-nobody}', not this tenant's QA target credential secret; it is not adopted"
+       return 1 ;;
+    4) ws_hold SLOT_NOT_OURS "swarm-tenant-${WS_TENANT}-qa grants ${QA_SECRET_FOREIGN}; swarm-api is the only account that may hold a role on a QA secret, and removing a member is the owner's call"
        return 1 ;;
     *) return 1 ;;
   esac

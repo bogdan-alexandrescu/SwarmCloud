@@ -107,6 +107,17 @@ locals {
   workspace_project_re = replace(var.project_id, ".", "[.]")
   personal_worker_re   = "swarm-agent-worker-u-[a-z0-9-]+@${local.workspace_project_re}[.]iam[.]gserviceaccount[.]com"
 
+  # A person's QA target credential secret, swarm-tenant-u-<id>-qa (the id as
+  # scripts/lib/workspace-guard.sh GUARD_TENANT_RE spells it), by the tail of
+  # its resourceName; and the one member and two roles the workspace job binds
+  # on it (docs/design/visual-qa-any-app.md §2.1, §7 V-1/V-2; BGD 2026-10-22:
+  # the deployer job creates it, guard rule C6). outside_personal_workers
+  # exempts exactly that binding and nothing wider: a group's QA secret, a
+  # forge slot, another member or another role on it all still page.
+  qa_secret_resource_re = "/secrets/swarm-tenant-u-[a-z0-9]([a-z0-9-]*[a-z0-9])?-qa$"
+  qa_api_member_re      = "^serviceAccount:swarm-api@${local.workspace_project_re}[.]iam[.]gserviceaccount[.]com$"
+  qa_roles_re           = "^roles/secretmanager[.](secretVersionAdder|secretAccessor)$"
+
   workspace_audit_log       = "logName=\"projects/${var.project_id}/logs/cloudaudit.googleapis.com%2Factivity\""
   workspace_data_access_log = "logName=\"projects/${var.project_id}/logs/cloudaudit.googleapis.com%2Fdata_access\""
 
@@ -141,8 +152,13 @@ locals {
         "(resource.type=\"service_account\" AND NOT resource.labels.email_id=~\"^${local.personal_worker_re}$\")",
         # Any other policy -- the bucket, the project, a secret -- given a
         # member who is not a personal worker. On a repeated field, `!~` is
-        # true when ANY element fails to match.
-        "(resource.type!=\"service_account\" AND protoPayload.methodName=~\"(?i)setiam(policy|permissions)$\" AND protoPayload.serviceData.policyDelta.bindingDeltas.member!~\"^serviceAccount:${local.personal_worker_re}$\")",
+        # true when ANY element fails to match. A person's QA secret is judged
+        # by the next clause instead, so a worker on it is not let through here.
+        "(resource.type!=\"service_account\" AND protoPayload.methodName=~\"(?i)setiam(policy|permissions)$\" AND NOT protoPayload.resourceName=~\"${local.qa_secret_resource_re}\" AND protoPayload.serviceData.policyDelta.bindingDeltas.member!~\"^serviceAccount:${local.personal_worker_re}$\")",
+        # A person's QA secret given any member but swarm-api, or any role but
+        # V-1/V-2. Each `!~` is true when ANY delta fails it, so one entry that
+        # adds swarm-api and anyone else, or swarm-api with a third role, pages.
+        "(protoPayload.methodName=~\"(?i)setiam(policy|permissions)$\" AND protoPayload.resourceName=~\"${local.qa_secret_resource_re}\" AND (protoPayload.serviceData.policyDelta.bindingDeltas.member!~\"${local.qa_api_member_re}\" OR protoPayload.serviceData.policyDelta.bindingDeltas.role!~\"${local.qa_roles_re}\"))",
         # Any removal at all: the job only ever adds (rule C9).
         "(protoPayload.serviceData.policyDelta.bindingDeltas.action=\"REMOVE\")",
       ]),
@@ -216,7 +232,11 @@ locals {
         one, or removed a binding. The workspace job's call guard refuses every
         one of those (docs/workspaces.md §2.5, rules C2-C6 and C9), so either
         the guard let a call through, or the identity's token was used outside
-        an execution (§2.4 R2).
+        an execution (§2.4 R2). One binding is expected and does not page:
+        `serviceAccount:swarm-api@` as `secretVersionAdder` or
+        `secretAccessor` on a person's `swarm-tenant-u-<id>-qa`, which the job
+        makes (docs/design/visual-qa-any-app.md §2.1, §7 V-1/V-2). Anyone
+        else on that secret, the person's own worker included, does.
 
         1. Open the matching entry: who called (`authenticationInfo`), from
            where (`requestMetadata`), on what (`resourceName`), and the
