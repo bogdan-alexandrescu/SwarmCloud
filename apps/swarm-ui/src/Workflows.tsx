@@ -1405,7 +1405,9 @@ export function WorkflowCard({
         <b className="wfp-fail-lead-head">{arrivalStep.step_id} failed</b>
         <span className="wfp-fail-lead-text">{arrivalWhy.full}</span>
         <button type="button" className="ctl-link wfp-fail-lead-go" onClick={() => pickStep(arrivalStep.step_id)}>
-          Step details below: agent, logs, changes ↓
+          {/* NOT "BELOW" (QA-120, run 5b): from 1280 the card is beside the
+              graph, and below that under it; the control brings it either way. */}
+          Open the step’s card: agent, logs, changes
         </button>
       </section>
     ) : null
@@ -1820,7 +1822,22 @@ function Mix({ steps }: { steps: WorkflowStep[] }) {
  * dollars for the same reason Overview uses them: a single attempt is routinely
  * worth $0.0312, and $0.03 loses a third of the figures on this board.
  */
-function Spend({ spend, short = false }: { spend: WorkflowSpend; short?: boolean }) {
+function Spend({ spend, short = false, reading = false }: { spend: WorkflowSpend; short?: boolean; reading?: boolean }) {
+  // STILL BEING READ IS NEITHER A FIGURE NOR AN ABSENCE (visual QA
+  // 5b:wg-dark-D2, #1680 comment 6343767840). While the attempt read -- or
+  // the row's own step read -- is in flight, the total is the results' alone
+  // and about to move: the head said 'cost not reported' and the list '—'
+  // on first view, then '$1.21' seconds later, and nothing told the one from
+  // the other. One word until the reads land, so each surface shows one
+  // figure, once.
+  if (reading) {
+    const why = 'The cost is still being read: the attempt read is in flight. This is not an absence and not $0.00.'
+    return (
+      <span className="wf-spend is-reading" title={why} aria-label={why} role="img">
+        {short ? 'reading' : 'cost: reading…'}
+      </span>
+    )
+  }
   if (spend.usd === null) {
     // `title` AND `aria-label`. The title was already here and was never the
     // only route -- the word `not reported` is on the surface, in the absent
@@ -2282,7 +2299,7 @@ function WorkflowSteps({
           head={usage.kind === 'ready' && usage.usage !== null ? SampleNote(usage.usage, workflow) : null}
         />
         <p className="wf-table-total">
-          <span>Total</span> <Spend spend={spend} />
+          <span>Total</span> <Spend spend={spend} reading={usage.kind === 'reading'} />
         </p>
       </>
     )
@@ -2388,6 +2405,7 @@ function InspectorSlot({
       onClose={onClose}
       now={now}
       load={loadAttempts}
+      stepHeading={page}
     >
       {/* WHY IT FAILED, WHOLE, ON THE CARD (visual QA QA-120, 2026-10-20).
           The node's note is one ellipsed line ('exit status 1: pytest
@@ -2398,7 +2416,9 @@ function InspectorSlot({
           click on the failed node now opens. */}
       {row.why !== null && row.why.kind === 'cause' && (
         <div className="wf-inspect-cause">
-          <b>why it failed</b>
+          {/* A HEADING, NOT A CAPTION (visual QA run 2 WG-4, run 5b L4): it
+              was a grey micro `<b>`, the quietest words on the card. */}
+          <h4 className="wf-inspect-cause-h">Why it failed</h4>
           <span className="wf-inspect-cause-text">{row.why.full}</span>
         </div>
       )}
@@ -5382,7 +5402,8 @@ function WorkflowList({
   // read carried a cost, the step's result where it did not. Read for the rows
   // drawn, in their order, so the cap covers the top of the list; a step
   // outside the cap totals from its result and its row says how many did.
-  const telemetry = telemetryOf(useWorkflowUsage(rows, null))
+  const listUsage = useWorkflowUsage(rows, null)
+  const telemetry = telemetryOf(listUsage)
   // One clock for every running row's `so far`, on the shared age tick: the
   // started and duration columns move on the same beat as every other age on
   // the screen, and a running row's duration advances between polls. The
@@ -5458,6 +5479,7 @@ function WorkflowList({
                   label={labels.get(w.workflow_id) ?? null}
                   taskById={taskById}
                   telemetry={telemetry}
+                  usageReading={listUsage.kind === 'reading'}
                   query={query}
                   now={now}
                   pending={!stepsRead(w, taskById) && !reads.failed.has(w.workflow_id)}
@@ -5656,6 +5678,7 @@ function WorkflowListRow({
   label,
   taskById,
   telemetry,
+  usageReading,
   query,
   now,
   pending,
@@ -5666,6 +5689,8 @@ function WorkflowListRow({
   taskById: ReadonlyMap<string, Task> | null
   /** The list's attempt read (`useWorkflowUsage`): the row totals by the table's rule (WF-5). */
   telemetry: ReadonlyMap<string, StepUsage> | null
+  /** The list's attempt read is still in flight: the cost cell says `reading` rather than a total that is about to move (D2). */
+  usageReading: boolean
   query: WorkflowQuery
   now: number
   /** The row's steps are not read yet and their read has not failed: it is queued, or waits to scroll in (WF-11). */
@@ -5738,7 +5763,7 @@ function WorkflowListRow({
         <Mix steps={workflow.steps} />
       </td>
       <td className="num" data-col="cost">
-        <Spend spend={spend} short />
+        <Spend spend={spend} short reading={usageReading || pending} />
       </td>
       <td className="wfl-owner" data-col="owner" title={workflow.submitted_by ?? undefined}>
         {ownerShort(workflow.submitted_by)}
@@ -6181,7 +6206,15 @@ function WorkflowHead({
         {pr !== null && <PullRequestLink pr={pr} className="c-chip is-link" />}
         <Chip>on failure: {workflow.on_step_failure.toLowerCase() === 'continue' ? 'continue' : 'fail the workflow'}</Chip>
         <span className="wfp-cost">
-          <Chip>{spend.usd === null ? <span className="wf-cell is-absent">cost not reported</span> : <Spend spend={spend} />}</Chip>
+          <Chip>
+            {usage.kind === 'reading' ? (
+              <Spend spend={spend} reading />
+            ) : spend.usd === null ? (
+              <span className="wf-cell is-absent">cost not reported</span>
+            ) : (
+              <Spend spend={spend} />
+            )}
+          </Chip>
         </span>
         {label !== null && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
         <PullRequestWaitTag workflow={workflow} />

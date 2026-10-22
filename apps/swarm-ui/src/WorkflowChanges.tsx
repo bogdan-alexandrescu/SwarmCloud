@@ -888,12 +888,20 @@ function ColumnSay({ facts, onRetry }: { facts: ColumnFacts; onRetry: () => void
     case 'not-started':
       return <span className="ctl-sub">not started</span>
     case 'not-in-read':
-      return <Mark kind="absent" say={UNKNOWN_WHY['not-in-read']} />
+      return (
+        <>
+          <Mark kind="absent" say={UNKNOWN_WHY['not-in-read']} /> not in this read
+        </>
+      )
     case 'unsummarised':
       return (
         <>
           <Mark kind="absent" say={facts.done ? 'This step ended without a git summary.' : 'This step has written nothing yet.'} />{' '}
-          {facts.done ? 'no summary' : 'nothing yet'}
+          {/* NOT COLLECTED, NOT "no summary" (visual QA run 5b, L6): beside
+              the chip's 'not measured' the column said what was missing, not
+              what it means -- that nothing was collected, which is not the
+              same as nothing changed. */}
+          {facts.done ? 'not collected' : 'nothing yet'}
         </>
       )
     case 'omitted':
@@ -1038,7 +1046,14 @@ export function ChangesMatrix({
   }
 
   const shown = cols.map((_, i) => filterAt === -1 || filterAt === i)
-  const anyUnknown = facts.some((f) => !(f.kind === 'zero' || ((f.kind === 'patch' || f.kind === 'omitted') && f.files !== null && f.complete)))
+  // A SELECTED STEP NARROWS THE TABLE TO ITS COLUMN (visual QA run 5b, L6,
+  // #1680 comment 6343766227). The others were drawn dimmed, so picking
+  // `checkpoints` left six columns on screen and read as doing nothing. The
+  // chips keep every step, and All steps puts the columns back.
+  const drawn = cols.flatMap((c, i) => (shown[i] ? [{ c, i }] : []))
+  const knownAt = facts.map(knownList)
+  const anyUnknown = knownAt.some((k) => !k)
+  const known = knownAt.filter((k) => k).length
   const masked = facts.reduce((n, f) => n + (f.kind === 'patch' && f.read?.kind === 'ok' ? f.read.masked : 0), 0)
 
   return (
@@ -1059,6 +1074,14 @@ export function ChangesMatrix({
             {all.length}
             {anyUnknown ? '+' : ''} {all.length === 1 && !anyUnknown ? 'file' : 'files'} across {cols.length} {cols.length === 1 ? 'step' : 'steps'}
           </span>
+          {/* HOW INCOMPLETE THE `+` IS (run 5b, L6). '0+ files' is the kept
+              notation (run-1 QA-118: '+' is a list still incomplete), and it
+              read as zero: this says how many steps' lists are in hand. */}
+          {anyUnknown && (
+            <span className="chg-known">
+              file lists known for {known} of {cols.length} {cols.length === 1 ? 'step' : 'steps'}
+            </span>
+          )}
           {masked > 0 && (
             <span className="chg-masked">
               masked <span className="art-masked is-warn">{masked}</span>
@@ -1071,6 +1094,18 @@ export function ChangesMatrix({
           )}
         </p>
       </div>
+      {/* WHAT THIS PAGE SHOWS, AND WHAT IT DOES NOT (visual QA run 2 WG-7, run
+          5b L5, #1680 comment 6298221770). The tab, the step card's 'This
+          step’s changes' and the columns' 'Agent’s changes' were three
+          scopes with one word between them. */}
+      {cols.length > 0 && (
+        <p className="chg-scope" role="note" aria-label="What this page shows">
+          {filterAt === -1
+            ? 'Every step’s files, side by side: a column per step, its +/− on each file. '
+            : `Only ${cols[filterAt]!.label}’s files, one column of this page; All steps shows every column. `}
+          A step’s whole patch, to read or download, is its agent’s own Changes tab: Agent’s changes ›.
+        </p>
+      )}
       {findings.length > 0 && (
         <ReviewFindings
           findings={findings}
@@ -1087,8 +1122,8 @@ export function ChangesMatrix({
             <thead>
               <tr>
                 <th scope="col">File</th>
-                {cols.map((c, i) => (
-                  <th key={c.key} scope="col" className={shown[i] ? 'chg-mx-step' : 'chg-mx-step is-dim'} data-step={c.key}>
+                {drawn.map(({ c, i }) => (
+                  <th key={c.key} scope="col" className="chg-mx-step" data-step={c.key}>
                     <span className="mono">{c.integrator ? `integrate · ${c.label}` : c.label}</span>
                     <span className="chg-mx-say">
                       <ColumnSay facts={facts[i]!} onRetry={retryOf(i)} />
@@ -1098,7 +1133,7 @@ export function ChangesMatrix({
                         this tab's own name, for the step agent's Changes tab, and
                         a page filtered to one step repeated it once per column,
                         dimmed ones included. */}
-                    {c.taskId !== null && shown[i] && (
+                    {c.taskId !== null && (
                       <a className="ctl-link chg-mx-agent" href={agentChangesHref(c.taskId, c.task ?? undefined)} title={`${c.label}'s own Changes tab, on its agent`}>
                         Agent’s changes ›
                       </a>
@@ -1116,8 +1151,8 @@ export function ChangesMatrix({
                     </button>
                     {named.has(path) && <span className="chg-fd-named">named by the review</span>}
                   </th>
-                  {cols.map((c, i) => (
-                    <td key={c.key} className={shown[i] ? undefined : 'is-dim'}>
+                  {drawn.map(({ c, i }) => (
+                    <td key={c.key}>
                       <Cell cell={cellOf(facts[i]!, path)} />
                     </td>
                   ))}
@@ -1247,7 +1282,7 @@ function placementWords(p: Exclude<Placement, { kind: 'pinned' }>): string {
 /** Why the matrix has no row: a measured zero, or not known yet -- never one dressed as the other. */
 function EmptyRows({ cols, facts, filterAt }: { cols: readonly StepColumn[]; facts: readonly ColumnFacts[]; filterAt: number }) {
   const scope = filterAt === -1 ? facts : [facts[filterAt]!]
-  const known = scope.every((f) => f.kind === 'zero' || ((f.kind === 'patch' || f.kind === 'omitted') && f.files !== null && f.complete))
+  const known = scope.every(knownList)
   if (known) {
     const who = filterAt === -1 ? 'No step' : cols[filterAt]!.label
     return (
@@ -1267,13 +1302,65 @@ function EmptyRows({ cols, facts, filterAt }: { cols: readonly StepColumn[]; fac
       />
     )
   }
+  // BY COUNT, NOT A LIST OF WHAT IT MIGHT BE (visual QA run 5b, L6): the
+  // sentence named four possible causes for six steps and said which applied
+  // to none, so 'nothing changed' and 'nothing was collected' read alike.
+  const tasks = filterAt === -1 ? cols.map((c) => c.task) : [cols[filterAt]!.task]
   return (
     <State
       mark="absent"
       heading="no file known yet"
-      say="No step's changes are known yet: not started, nothing written, still reading, or not read. That is not the same as no changes."
+      say={`${unknownCauses(scope, tasks)}. That is not the same as no changes.`}
     />
   )
+}
+
+/** A column whose file list is in hand and whole: a measured zero, or a complete list. */
+function knownList(f: ColumnFacts): boolean {
+  return f.kind === 'zero' || ((f.kind === 'patch' || f.kind === 'omitted') && f.files !== null && f.complete)
+}
+
+/**
+ * WHY NO FILE IS KNOWN, COUNTED BY CAUSE: '5 steps ended without a git
+ * summary, so nothing was collected; 1 step never started'. In column order
+ * of first appearance, so the sentence reads as the table does.
+ */
+function unknownCauses(facts: readonly ColumnFacts[], tasks: readonly (Task | null)[]): string {
+  const counts = new Map<string, number>()
+  facts.forEach((f, i) => {
+    const cause = unknownCause(f, tasks[i] ?? null)
+    if (cause !== null) counts.set(cause, (counts.get(cause) ?? 0) + 1)
+  })
+  if (counts.size === 0) return 'Every step’s file list is known'
+  const parts = [...counts].map(([cause, n]) => `${n} ${n === 1 ? 'step' : 'steps'} ${cause}`)
+  const sentence = parts.join('; ')
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1)
+}
+
+/** One column's cause, in words that follow a step count; null for a list in hand. */
+function unknownCause(f: ColumnFacts, task: Task | null): string | null {
+  switch (f.kind) {
+    case 'zero':
+      return 'changed nothing'
+    case 'withheld':
+      return 'withheld for a credential'
+    case 'not-started':
+      return 'never started'
+    case 'not-in-read':
+      return 'not in this read'
+    case 'checking':
+      return 'still being checked for a publish refusal'
+    case 'unsummarised':
+      if (!f.done) return 'wrote nothing yet'
+      // A task that ended before it started (cancelled while queued) ran nothing.
+      return task !== null && task.started_at === null ? 'never started' : 'ended without a git summary, so nothing was collected'
+    case 'omitted':
+    case 'patch':
+      if (f.files !== null) return f.complete ? null : 'listed in part'
+      if (f.kind === 'omitted') return 'had a patch discarded over the size cap'
+      if (f.read?.kind === 'failed') return 'had a patch that could not be read'
+      return 'still being read'
+  }
 }
 
 /**
