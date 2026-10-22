@@ -31,7 +31,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { TimelineLanesScreen, STRIP_DEADLINE_MS, MARK_GAP_PX, MARK_PX, SPAN_PAGES_READ, BAR_MIN_PX, BAR_WORDS_MIN_PX, laneLayout, markLefts } = await import('../TimelineLanes')
+const { TimelineLanesScreen, STRIP_DEADLINE_MS, MARK_GAP_PX, MARK_PX, SPAN_PAGES_READ, BAR_MIN_PX, BAR_WORDS_MIN_PX, PILL_COUNT_MIN_PX, laneLayout, markLefts } = await import('../TimelineLanes')
 
 // jsdom has no PointerEvent, and without one a pointer event carries no
 // clientX: a MouseEvent with a pointerId is what a browser hands the axis.
@@ -598,23 +598,29 @@ describe('VQA2-R9: the bars at now and the standalone lane names', () => {
       render(<TimelineLanesScreen view={null} onView={() => {}} />)
       const row = await waitFor(() => {
         const r = lane('task_solo')
-        expect(r?.querySelectorAll('.tl-seg.is-hold')).toHaveLength(3)
+        // QAFIX4-TIMELINE-2 (c00): three attempts this close at 24 h are ONE
+        // counted pill now, not three floor-width pills packed at 'now'.
+        // MUTATION: draw one pill per attempt again and this is 3.
+        expect(r?.querySelectorAll('.tl-seg.is-hold')).toHaveLength(1)
         expect(r?.querySelector('.tl-mkr.is-end')).not.toBeNull()
         return r!
       })
-      // The floor the layout takes is the floor that is painted.
+      // The floor the layout takes is the floor that is painted: a merged
+      // pill's, which is wider than a lone pill's to hold its count.
+      // MUTATION: lay a merged pill out at `BAR_MIN_PX` while it paints wider.
       const bar = row.querySelector('.tl-seg.is-hold')!
-      expect(painted(bar, 'min-width', { width: 1440 }), 'the CSS floor is not the layout’s').toBe(`${BAR_MIN_PX}px`)
+      expect(painted(bar, 'min-width', { width: 1440 }), 'the CSS floor is not the layout’s').toBe(`${PILL_COUNT_MIN_PX}px`)
       const pctOf = (v: string) => Number(/^(-?[\d.e+-]+)%$/.exec(v)![1])
       const boxes: { what: string; from: number; to: number }[] = []
       for (const seg of row.querySelectorAll<HTMLElement>('.tl-seg.is-hold')) {
         const from = (pctOf(seg.style.left) / 100) * px
-        const width = Math.max((pctOf(seg.style.width) / 100) * px, BAR_MIN_PX)
+        const width = Math.max((pctOf(seg.style.width) / 100) * px, PILL_COUNT_MIN_PX)
         boxes.push({ what: seg.title, from, to: from + width })
         // A floor-width bar has no room for `gen 2`: its clipped first letter
         // read as a glyph. Its title says it.
         if (width < BAR_WORDS_MIN_PX) expect(seg.querySelector('.tl-seg-t'), `${seg.title} prints a clipped word`).toBeNull()
-        expect(seg.title).toMatch(/^gen \d: held capacity/)
+        // MUTATION: title the merged pill by its newest attempt alone.
+        expect(seg.title).toMatch(/^3 attempts: gen 1 /)
       }
       const mark = row.querySelector<HTMLElement>('.tl-mkr.is-end')!
       const markFrom = (pctOf(mark.style.left) / 100) * px + 2

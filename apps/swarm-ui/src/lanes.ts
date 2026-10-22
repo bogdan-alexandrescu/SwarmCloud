@@ -412,6 +412,96 @@ export function buildLane(
 }
 
 // ---------------------------------------------------------------------------
+// Crowded attempts, as one counted pill
+// ---------------------------------------------------------------------------
+
+/** A pill's painted floor in pixels (`.tl-seg.is-hold`'s `min-width`; `BAR_MIN_PX`). */
+export const PILL_MIN_PX = 14
+/**
+ * The track a pill's floor is measured against when deciding what merges: a
+ * 390 px phone's (QA G3-15 measured 358 px), the narrowest the page draws.
+ * Fixed, so the same span merges the same attempts at 1440 and at 390.
+ */
+export const MERGE_TRACK_PX = 358
+
+/** One pill on a lane: one attempt or park, or several attempts merged. */
+export interface Pill {
+  /** Oldest first; more than one only for attempts merged. The last is the newest, whose style the pill takes. */
+  segs: LaneSeg[]
+  from: number
+  to: number
+}
+
+/**
+ * WHICH ATTEMPTS DRAW AS ONE PILL (owner decision 2026-10-22, Console Design
+ * Calls 2, c00; box comment 6314122402). Each attempt was its own floor-width
+ * pill, packed right to left from 'now': over 24 h three 5-minute attempts
+ * were three pills and a mark in the last ~60 px, the right-most cut at 'now'
+ * (run 4 work-a-004), and the end mark landed among them, in a different
+ * place at 1440 and at 390 (work-a-006).
+ *
+ * An attempt that starts before the pill before it ends, at the floor's width
+ * on `MERGE_TRACK_PX` at this span's scale, joins it: one pill, counted, in
+ * its newest attempt's style. A span zoomed in (an hour) shrinks the floor in
+ * time, and the attempts split again. A finished park wholly inside a merged
+ * pill is under it, so it is not drawn apart; any other park is its own pill.
+ * A current park or wait is not a pill at all: the row draws it on its rail.
+ *
+ * An END mark is then moved to the last pill's end when it would fall inside
+ * or before it, so it always sits right after the pill; its title keeps the
+ * instant it was written. Pure, and no width in: the same at every width.
+ */
+export function lanePills(
+  segs: readonly LaneSeg[],
+  marks: readonly LaneMark[],
+  since: number,
+  until: number,
+): { pills: Pill[]; marks: LaneMark[] } {
+  const floor = ((until - since) * PILL_MIN_PX) / MERGE_TRACK_PX
+  const attempts = segs.filter((s) => s.kind === 'hold' || s.kind === 'cut').sort((a, b) => a.from - b.from)
+  const groups: Pill[] = []
+  let reach = -Infinity
+  for (const s of attempts) {
+    const start = Math.max(s.from, since)
+    const last = groups[groups.length - 1]
+    if (last !== undefined && start < reach) {
+      last.segs.push(s)
+      last.to = Math.max(last.to, s.to)
+    } else {
+      groups.push({ segs: [s], from: s.from, to: s.to })
+    }
+    reach = Math.max(reach, s.to, start + floor)
+  }
+  const merged = groups.filter((g) => g.segs.length > 1)
+  const parks: Pill[] = segs
+    .filter((s) => s.kind === 'park' && !s.current)
+    .filter((s) => s.future || !merged.some((g) => s.from >= g.from && s.to <= g.to))
+    .map((s) => ({ segs: [s], from: s.from, to: s.to }))
+  const pills = [...groups, ...parks].sort((a, b) => a.from - b.from)
+  const lastTo = groups.length > 0 ? Math.max(...groups.map((g) => g.to)) : null
+  const placed = marks.map((m) =>
+    m.kind === 'cancel_requested' || lastTo === null || m.at >= lastTo ? m : { ...m, at: lastTo },
+  )
+  return { pills, marks: placed }
+}
+
+/** One attempt's state in a word, as a merged pill lists it. */
+export function attemptWord(s: LaneSeg, a: AttemptRow | undefined): string {
+  if (s.kind === 'cut') return 'fenced'
+  if (s.open) return 'running'
+  if (!s.endKnown) return 'end not written'
+  if (a?.exit_code === 0) return 'succeeded'
+  if (a !== undefined && a.exit_code !== null) return 'failed'
+  return 'ended'
+}
+
+/** A merged pill's accessible name: `3 attempts, newest failed`. */
+export function pillName(p: Pill, attempts: readonly AttemptRow[]): string {
+  const newest = p.segs[p.segs.length - 1]!
+  return `${p.segs.length} attempts, newest ${attemptWord(newest, attempts.find((a) => a.attempt_id === newest.attemptId))}`
+}
+
+// ---------------------------------------------------------------------------
 // Filters and grouping, in the browser, over the rows read
 // ---------------------------------------------------------------------------
 

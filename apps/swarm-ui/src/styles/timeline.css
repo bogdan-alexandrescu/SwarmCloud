@@ -455,7 +455,7 @@
    attempts' solid pills at 'now', so free work read as held capacity. Its
    current park (hatched) or wait (the line) now runs to 'now' in the room
    below the centred pills: clear of them at both widths, and laid out apart
-   from them, so no pill moves (box comment 6314122402 waits on the owner).
+   from them, so no pill moves (crowded pills merge: `.tl-seg.is-merged`).
    The floor is the bars' own, widened leftward from 'now'. */
 .tl-seg.is-now {
   top: auto;
@@ -466,6 +466,31 @@
 .tl-seg.is-park.is-now { height: 8px; padding: 0; border-radius: 2px; border-width: 1px; }
 .tl-seg.is-wait.is-now { opacity: 1; }
 .tl-seg-t { overflow: hidden; text-overflow: ellipsis; }
+/* CROWDED ATTEMPTS ARE ONE COUNTED PILL (owner decision 2026-10-22, Console
+   Design Calls 2, c00; box comment 6314122402). Attempts closer than a pill
+   at the span's scale are one pill, in the newest attempt's style, with the
+   count inside. A button: hovering, focusing or tapping it lists each attempt
+   under the track. Its floor is wider than a lone pill's, since at 14px the
+   padding and borders left 1px for '3'; equal to `PILL_COUNT_MIN_PX`. */
+.tl-seg.is-merged {
+  min-width: 24px;
+  padding: 0 4px;
+  justify-content: center;
+  appearance: none;
+  cursor: pointer;
+}
+.tl-seg-n { font-weight: 650; font-variant-numeric: tabular-nums; }
+/* The list sits under the track, in the row: the track and the chart clip,
+   so a popover inside them would be cut at the lane's edge. */
+.tl-pill-list {
+  grid-column: -2 / -1;
+  margin: 0;
+  padding: 2px 12px 6px;
+  list-style: none;
+  font: var(--t-micro) / var(--lh-micro) var(--mono);
+  color: var(--text-dim);
+}
+.tl-pill-list li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tl-mkr {
   position: absolute;
   top: 50%;
