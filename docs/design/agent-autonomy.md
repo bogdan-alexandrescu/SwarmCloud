@@ -226,14 +226,39 @@ whatever the run's merge gate says.
 ### 3.4 Reading its own tenant's SwarmCloud state (row 10)
 
 A new MCP server in the worker, **`swarm-state`**, with the same shim-and-spool
-shape as `swarm-git` (spool `work/.swarm-state/`), relayed by the worker with
-the `swarm-state-req/v1` proof the attempt already registers
-(`agent_worker/statecall.py`). swarm-api serves it on new attempt-scoped
-routes, `GET /v1/attempts/{attempt_id}/reads/{tool}`, each of which:
+shape as `swarm-git` (spool `work/.swarm-state/`), relayed by the worker
+(`ChildPath`, beside the git and search relays, so its fenced exit is
+theirs) and signed with the attempt key under **either of two proofs**:
+
+* **`swarm-state-req/v1`** (`agent_worker/statecall.py`), when `state/open`
+  registered the key for the `state` purpose -- a tenant switched to the state
+  routes;
+* **`swarm-child-req/v1`** (`children.request_message`), when the key carries
+  only the `child` purpose -- registered at `/child-key`, as every tenant not
+  switched to the state routes does.
+
+**Owner decision, 2026-10-22 08:54Z (BGD): "Also accept the child-purpose
+proof (swarm-child-req/v1) on the read route".** Accepting only the state
+proof would have offered the reads to `u-bogdan` alone, and a failure-review
+agent in `eng` could not read the failures it reviews. The wider proof widens
+nothing else: either proof is verified against **this attempt's**
+registration for **its** purpose, over the path **with** its query, and every
+check below is the same for both. A failure of both is one 403
+(`attempt_unproven`), so the answer says nothing about which purposes a key
+carries. A key from an unprotected heap (registered for `state` only) still
+cannot sign under the child purpose, and a `/child-key` key still cannot
+sign the state WRITE routes: the acceptance is the read route's alone. The
+worker offers the reads to every attempt whose worker holds a key, and
+answers `no_attempt_key` only when it holds none (lane AU4-WIRE).
+
+swarm-api serves it on new attempt-scoped routes,
+`GET /v1/attempts/{attempt_id}/reads/{tool}`, each of which:
 
 1. authenticates the worker and verifies the proof (`authenticate_worker`,
-   `verify_proof`), and checks in one read that the lease is live for this
-   attempt and generation (stale: `attempt_fenced`);
+   then the state proof, else the child proof), and checks in one read that
+   the lease is live for this attempt and generation (stale:
+   `attempt_fenced`, which ends the attempt through the worker's fenced exit
+   without touching the lease, invariant 5);
 2. resolves the **tenant from the lease**, never from the request, and reads
    only that tenant's documents. A document of another tenant answers exactly
    as a missing one does (404 `not_found`), as every tenant-scoped route does.

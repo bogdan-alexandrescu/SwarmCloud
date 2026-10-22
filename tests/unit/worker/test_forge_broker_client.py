@@ -553,5 +553,7 @@ def test_a_child_registers_its_key_and_is_offered_no_child_path(db, worker_facto
     worker, _ = broker_worker(worker_factory, routes, child_path=False)
     assert routes.public_key, "the child's key was not registered"
     assert not worker.children.offered
-    assert worker.children.prepare(tmp_path) == {}
+    # No child path and no git tools; the key still earns the state reads,
+    # which every keyed attempt is offered (children.py `_prepare_state_reads`).
+    assert set(worker.children.prepare(tmp_path)) == {"SWARM_STATE"}
     assert worker._git_token() == user_token(), "a child could not prove itself to the broker"
