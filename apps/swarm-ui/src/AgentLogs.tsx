@@ -263,6 +263,7 @@ export function AgentLogs({ task }: { task: Task }) {
   const [wrap, setWrap] = useState(false)
   const [current, setCurrent] = useState<string | null>(null)
   const [targets, setTargets] = useState<{ hits: string[]; errors: string[] }>({ hits: [], errors: [] })
+  const drawnTargets = useRef(targets)
   const [tick, setTick] = useState(0)
   const body = useRef<HTMLDivElement | null>(null)
   const search = useRef<HTMLInputElement | null>(null)
@@ -422,9 +423,14 @@ export function AgentLogs({ task }: { task: Task }) {
     const keys = (sel: string) => [...el.querySelectorAll<HTMLElement>(sel)].map((n) => n.dataset.logKey ?? '').filter(Boolean)
     const hits = keys('[data-log-key].is-hit')
     const errors = keys('[data-log-key].is-err')
-    setTargets((cur) =>
-      cur.hits.join('|') === hits.join('|') && cur.errors.join('|') === errors.join('|') ? cur : { hits, errors },
-    )
+    // COMPARED AGAINST A REF, NOT IN A STATE UPDATER: an updater that hands
+    // back `cur` still queues a render, and this runs after every render and
+    // on every class change under the body, so a recount that changed nothing
+    // re-rendered forever (`Maximum update depth exceeded`, PR #2010 CI).
+    const cur = drawnTargets.current
+    if (cur.hits.join('|') === hits.join('|') && cur.errors.join('|') === errors.join('|')) return
+    drawnTargets.current = { hits, errors }
+    setTargets(drawnTargets.current)
   }, [])
   useLayoutEffect(recount)
   // AND WHENEVER THE LOG REDRAWS ITSELF (visual QA run 5b, ff-desktop-07): a
