@@ -606,14 +606,15 @@ function PoolRow({
       {/* NEVER A BLANK CELL (browser QA D32, 2026-10-04), AND NEVER THE WORD
           IN INK ON EVERY ROW (QA G5-19; capacity.html §G). 28 of 29 rows said
           `configured` and drowned the one that said `provider quota`, so the
-          configured case became a faint `·`. A sighted reader took that for
-          an empty cell (QA-099), and Pool limits prints the word in the dim
-          ink since run 2 (AdmSetBy); run 3 found Pools still drawing the dot.
-          The same word here, in `--text-dim` (`.cap-setby-cfg`), so AIMD and
-          quota in ink still stand out from it, which is G5-19's point. */}
+          configured case is a faint `·`, an image named `configured`, with
+          the cell's title saying where it was set. THE DOT HERE, THE WORD ON
+          POOL LIMITS ONLY: owner decision 2026-10-22 (Console Design Calls,
+          c14), reversing PR 1853, which had printed the word here too after
+          QA-099. Pool limits keeps `configured` in the dim ink (AdmSetBy);
+          do not flip this one back to match it. */}
       <td role="cell" data-label="Set by" title={by.detail}>
         {by.term === 'configured' ? (
-          <span className="cap-setby-cfg" title={`configured. ${by.detail}`}>configured</span>
+          <span className="cap-setby-cfg" role="img" aria-label="configured">·</span>
         ) : (
           by.term
         )}

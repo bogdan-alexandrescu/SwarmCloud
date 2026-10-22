@@ -731,12 +731,12 @@
    card with room. The name now wraps, but only at the `<wbr>` Runtimes.tsx
    puts after each underscore: never inside a word, and whole on screen. */
 .rt-cred code { display: inline; vertical-align: baseline; white-space: normal; overflow-wrap: normal; word-break: normal; }
-/* `configured` IS THE WORD, IN THE DIM INK, AS ON POOL LIMITS (QA-099 there,
-   run 2; here, run 3). It was a `·` in `--text-faint`, which a sighted reader
-   took for an empty cell. `--text-dim` is quieter than the overrides in ink
-   (G5-19's reason for not printing the word in ink on every row) and still
-   reads; `.adm-setby-cfg` (styles/admin.css) is the same treatment. */
-.cap-setby-cfg { color: var(--text-dim); cursor: help; }
+/* `configured` IS A FAINT DOT ON POOLS (owner decision 2026-10-22, Console
+   Design Calls c14, reversing PR 1853's word). The word is Pool limits' alone,
+   in the dim ink (`.adm-setby-cfg`, styles/admin.css, QA-099); here the dot in
+   `--text-faint` keeps 28 configured rows quieter than the overrides in ink
+   (G5-19), and its `aria-label` names it. */
+.cap-setby-cfg { color: var(--text-faint); }
 /* capacity-008 (visual QA run 2): `AIMD back-off` WAS THE ROW'S BIGGEST WORDS.
    The cell took the table's body size, ~15px, beside a 12px `paused` mark and
    `0 holders · limit`. Set by is a qualifier of the ceiling, like the marks and
@@ -856,14 +856,16 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
    one fill (WF-21) moves with it, and the head is one layer, not one per cell.
    z-index 1 is under the inspector's band (shell.test.tsx). */
 @media (min-width: 900px) {
-  .cap-families .ctl-table.is-scroll { overflow: clip; }
+  .cap-families .ctl-table.is-scroll,
+  .hold-drift .ctl-table.is-stacked { overflow: clip; }
   .cap-mx > .ctl-table.is-scroll {
     max-height: calc(100vh - 180px); overflow: auto;
     /* Its own scroller, so its rows clear its head here (capacity-007, below). */
     scroll-padding-top: var(--row-h);
   }
   .cap-families .ctl-table.is-scroll > table > thead,
-  .cap-mx > .ctl-table.is-scroll > table > thead {
+  .cap-mx > .ctl-table.is-scroll > table > thead,
+  .hold-drift .ctl-table.is-stacked > table > thead {
     position: sticky; top: 0; z-index: 1;
   }
   /* A SCROLL STOPS A ROW BELOW THE HEAD, NOT UNDER IT (visual QA run 3,
@@ -879,12 +881,18 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
      apart. The families scroll in the page's scroller; the matrix in its
      own, padded above. Pool limits reuses `.cap-families` under a sticky
      filter whose height this sheet cannot see (admin.css), so the page
-     padding leaves its scroller alone. Holders,
+     padding leaves its scroller alone. Holders' Accounting drift table
+     sticks its head too (visual QA run 4, N9, capacity-010: at 1440 its
+     second screenful was 19 rows of unlabelled numbers), on the same terms --
+     four columns at 100% that never overflow above 900px, so its wrapper
+     clips -- and the page padding counts it. Holders' Every holder table,
      Provider quota and Accounts draw no sticky head: nothing to clear. A
      wheel or a drag can still stop anywhere, as on any sticky table. */
   .cap-families .ctl-table.is-scroll > table > thead > tr,
-  .cap-mx > .ctl-table.is-scroll > table > thead > tr { height: var(--row-h); }
-  .ctl-scroll:has(.cap-families .ctl-table.is-scroll > table > thead):not(:has(.adm-ceilings)) {
+  .cap-mx > .ctl-table.is-scroll > table > thead > tr,
+  .hold-drift .ctl-table.is-stacked > table > thead > tr { height: var(--row-h); }
+  .ctl-scroll:has(.cap-families .ctl-table.is-scroll > table > thead):not(:has(.adm-ceilings)),
+  .ctl-scroll:has(.hold-drift .ctl-table.is-stacked > table > thead) {
     scroll-padding-top: calc(var(--ctl-bar-h, 0px) + var(--row-h));
   }
 }
