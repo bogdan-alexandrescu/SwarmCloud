@@ -314,6 +314,69 @@ def test_a_page_created_later_is_given_the_current_device(tmp_path):
     asyncio.run(main())
 
 
+# ------------------------------------- the device again after a clipped capture
+
+
+def test_reassert_clears_and_sets_the_active_presets_metrics_on_the_gates_own_session(tmp_path):
+    """QA-REASSERT (part of #1981): an agent's clipped `Page.captureScreenshot`
+    lifts the gate's metrics override (QA-DEVICE, Chrome 153), and Chromium
+    skips a `setDeviceMetricsOverride` identical to the one it last applied,
+    so the gate clears first and then sets the active preset again."""
+    async def main() -> None:
+        proxy, chromium = _proxy(tmp_path, [])
+        device = DeviceController(proxy, FakeDisplay(), FakeScale(), record=lambda k, f: None)
+        target = chromium.page()
+        await device.attach_page(target)
+        await device.select("phone-390")
+        session = device.session_for(target)
+        assert session is not None
+        applied = chromium.calls("Emulation.setDeviceMetricsOverride")[-1]["params"]
+        before = len(chromium.received)
+
+        await device.reassert(target)
+
+        sent = [(m["method"], m.get("params"), m.get("sessionId")) for m in chromium.received[before:]]
+        # MUTATION: send only the set and Chromium skips it as identical:
+        # the clear must come first, on the same session.
+        # MUTATION: send them on the root session (None), or on a session
+        # that is not the gate's, and the override is not the gate's.
+        # MUTATION: set the desktop (or any preset but the active one) and
+        # the params differ from what `select` applied.
+        assert sent == [("Emulation.clearDeviceMetricsOverride", {}, session),
+                        ("Emulation.setDeviceMetricsOverride", applied, session)], sent
+        assert applied["width"] == 390 and applied["deviceScaleFactor"] == 3.0 and applied["mobile"] is True
+
+    asyncio.run(main())
+
+
+def test_reassert_on_a_target_the_gate_holds_no_session_on_sends_nothing(tmp_path):
+    async def main() -> None:
+        proxy, chromium = _proxy(tmp_path, [])
+        device = DeviceController(proxy, FakeDisplay(), FakeScale(), record=lambda k, f: None)
+        held = chromium.page()
+        await device.attach_page(held)
+        await device.select("phone-390")
+        before = len(chromium.received)
+        # MUTATION: reassert whatever session `_pages` holds (or attach to
+        # the target) and a page the gate never set a device on gets one.
+        await device.reassert(chromium.page())
+        assert chromium.received[before:] == []
+
+    asyncio.run(main())
+
+
+def test_a_device_controller_on_the_gates_proxy_is_what_a_clipped_capture_reasserts(tmp_path):
+    """The wiring: a `DeviceController` built on the proxy registers its
+    `reassert` with it, so __main__.py needs no line of its own."""
+    async def main() -> None:
+        proxy, _chromium = _proxy(tmp_path, [])
+        device = DeviceController(proxy, FakeDisplay(), FakeScale(), record=lambda k, f: None)
+        # MUTATION: never register, and the proxy has nothing to call.
+        assert proxy._after_clipped_capture == device.reassert
+
+    asyncio.run(main())
+
+
 # ------------------------------------------------------- unknown is refused
 
 

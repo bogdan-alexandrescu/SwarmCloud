@@ -26,6 +26,7 @@ import pytest
 from agent_worker.livegate import cdppolicy
 from agent_worker.livegate.cdppolicy import PolicyPaths
 from agent_worker.livegate.cdpproxy import CdpProxy, PipeTransport, serve_agents
+from agent_worker.livegate.device import DeviceController
 from agent_worker.livegate.scripts import ScriptRegistry
 
 DEFER = object()
@@ -136,6 +137,10 @@ class FakeChromium:
             result = {"identifier": self._next("")}
         elif method == "Runtime.evaluate":
             result = {"result": {"type": "number", "value": 0}}
+        elif method == "Browser.getWindowForTarget":
+            result = {"windowId": 1}
+        elif method == "Page.captureScreenshot":
+            result = {"data": base64.b64encode(b"png of " + json.dumps(params).encode()).decode()}
         self.queue.put_nowait({"id": message["id"], "result": result})
 
     def from_agent(self, method: str) -> list[dict[str, Any]]:
@@ -714,6 +719,114 @@ def test_an_agent_cannot_address_a_session_it_does_not_own(tmp_path):
         request = await w.send("Runtime.evaluate", {"expression": "document.cookie"}, gate_session)
         assert "error" in w.agent.response(request)
         assert w.chromium.received[before:] == []
+        await w.chromium.stop()
+
+    run(body)
+
+
+class _Display:
+    async def resize(self, width: int, height: int) -> None:
+        pass
+
+
+class _Scale:
+    def set_scale(self, scale: float) -> None:
+        pass
+
+
+async def _phone_page(w: World) -> tuple[str, str]:
+    """The agent's page at phone-390, the device on the gate's own session
+    on it: (the agent's session, the gate's)."""
+    await w.connect()
+    devices = DeviceController(w.proxy, _Display(), _Scale(), record=lambda k, f: None)
+    page = await w.attach_page("T-phone")
+    await devices.attach_page("T-phone")
+    await devices.select("phone-390")
+    await settle()
+    gate = devices.session_for("T-phone")
+    assert gate is not None and gate != page
+    return page, gate
+
+
+def _device_calls(w: World, start: int) -> list[tuple[str, Any, Any]]:
+    return [(m["method"], m.get("params"), m.get("sessionId")) for m in w.chromium.received[start:]
+            if m["method"] in ("Emulation.clearDeviceMetricsOverride", "Emulation.setDeviceMetricsOverride")]
+
+
+def test_a_clipped_capture_reply_is_followed_by_the_device_again_on_the_gates_session(tmp_path):
+    """QA-REASSERT (part of #1981). QA-DEVICE measured (Chrome 153, Playwright
+    1.63) that a clipped `Page.captureScreenshot` from the agent's session
+    lifts the gate's `setDeviceMetricsOverride` for the rest of the document,
+    so every shot after the first was dpr 1 with a desktop scrollbar. After
+    relaying the reply, the gate clears and sets the active preset again on
+    its own session; the agent's command and reply pass through unchanged."""
+    async def body():
+        w = World(tmp_path)
+        page, gate = await _phone_page(w)
+        applied = [m for m in w.chromium.received if m["method"] == "Emulation.setDeviceMetricsOverride"][-1]
+        start = len(w.chromium.received)
+        clip = {"x": 0, "y": 0, "width": 980, "height": 2121, "scale": 0.398}
+        shot = await w.send("Page.captureScreenshot", {"format": "png", "clip": clip}, page)
+        await settle()
+
+        # The agent's command reached Chromium as it sent it, on its session.
+        sent = w.chromium.from_agent("Page.captureScreenshot")
+        assert [(m["params"], m.get("sessionId")) for m in sent] == [({"format": "png", "clip": clip}, page)]
+        # And its reply came back unchanged.
+        reply = w.agent.response(shot)
+        assert reply is not None and "error" not in reply and reply["sessionId"] == page
+        assert base64.b64decode(reply["result"]["data"]).startswith(b"png of ")
+        # MUTATION: never reassert after a clipped capture (the QA-DEVICE
+        # defect) and this list is empty.
+        # MUTATION: send the set without the clear and Chromium skips it.
+        # MUTATION: reassert on the agent's session and the override is the
+        # agent's, lifted when Playwright detaches.
+        assert _device_calls(w, start) == [
+            ("Emulation.clearDeviceMetricsOverride", {}, gate),
+            ("Emulation.setDeviceMetricsOverride", applied["params"], gate),
+        ]
+        # After the reply was relayed, not before it: the capture is what lifts it.
+        clear_at = next(i for i, m in enumerate(w.chromium.received)
+                        if m["method"] == "Emulation.clearDeviceMetricsOverride")
+        capture_at = next(i for i, m in enumerate(w.chromium.received) if m["method"] == "Page.captureScreenshot")
+        # MUTATION: reassert when the command is forwarded and the capture lifts it again.
+        assert capture_at < clear_at
+        await w.chromium.stop()
+
+    run(body)
+
+
+def test_an_unclipped_capture_sends_no_device(tmp_path):
+    async def body():
+        w = World(tmp_path)
+        page, _gate = await _phone_page(w)
+        start = len(w.chromium.received)
+        shot = await w.send("Page.captureScreenshot", {"format": "png"}, page)
+        await settle()
+        assert "error" not in w.agent.response(shot)
+        # MUTATION: reassert after every capture, clipped or not, and the
+        # gate clears the device under every unclipped shot too.
+        assert _device_calls(w, start) == []
+        await w.chromium.stop()
+
+    run(body)
+
+
+def test_a_clipped_capture_on_a_page_without_a_device_session_sends_no_device(tmp_path):
+    async def body():
+        w = World(tmp_path)
+        await w.connect()
+        DeviceController(w.proxy, _Display(), _Scale(), record=lambda k, f: None)
+        page = await w.attach_page("T-unset")
+        start = len(w.chromium.received)
+        clip = {"x": 0, "y": 0, "width": 390, "height": 844, "scale": 1}
+        shot = await w.send("Page.captureScreenshot", {"format": "png", "clip": clip}, page)
+        await settle()
+        assert "error" not in w.agent.response(shot)
+        # MUTATION: reassert on the target without a gate session (attach,
+        # or send on the agent's own) and a device appears nobody set there.
+        assert _device_calls(w, start) == []
+        assert not [m for m in w.chromium.received[start:] if m["method"] == "Target.attachToTarget"]
         await w.chromium.stop()
 
     run(body)

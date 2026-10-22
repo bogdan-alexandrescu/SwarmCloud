@@ -150,6 +150,7 @@ els.forEach((el) => {
 });
 globalThis.window = globalThis;
 globalThis.innerHeight = spec.inner_height;
+if (spec.visual_scale) globalThis.visualViewport = { scale: spec.visual_scale };
 globalThis.document = {
   documentElement: els[0], scrollingElement: els[0], body: els[1],
   querySelectorAll: all, querySelector: (s) => all(s)[0] || null,
@@ -1795,4 +1796,84 @@ def test_the_viewport_probe_runs_in_a_page(qa):
     answer = _run_js(qa.VIEWPORT_JS, dom, None)
     # MUTATION: read another height than the window's and the shot is
     # compared with something else.
-    assert isinstance(answer, list) and len(answer) == 3 and answer[1] == dom["inner_height"], answer
+    assert isinstance(answer, list) and len(answer) == 4 and answer[1] == dom["inner_height"], answer
+    # No visual viewport to read: its scale is taken as 1.
+    assert answer[3] == 1, answer
+    dom["visual_scale"] = 0.398
+    # MUTATION: read the device pixel ratio, or no scale, in its place and a
+    # page laid out at 980 px on a phone is compared with 390.
+    assert _run_js(qa.VIEWPORT_JS, dom, None)[3] == 0.398
+
+
+class _ShotPage:
+    """A page as `_shot` sees it: each screenshot the next size in `shots`
+    (a PNG header is all `png_size` reads), VIEWPORT_JS answering `reading`."""
+
+    def __init__(self, qa, shots, reading):
+        self.qa = qa
+        self.shots = list(shots)
+        self.reading = reading
+        self.taken = 0
+        self.log = []
+
+    def screenshot(self, **_kw):
+        self.taken += 1
+        width, height = self.shots.pop(0) if len(self.shots) > 1 else self.shots[0]
+        return _PNG_HEADER + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", width, height) + bytes(5)
+
+    def evaluate(self, expression, arg=None):
+        assert expression == self.qa.VIEWPORT_JS, expression
+        return list(self.reading)
+
+    def wait_for_timeout(self, ms):
+        self.log.append(("wait", ms))
+
+
+_PNG_HEADER = b"\x89PNG\r\n\x1a\n"
+
+#: QA-DEVICE's reading at phone-390 on a page with no viewport meta tag
+#: (task_b3f3786bde2144389073, Chrome 153, Playwright 1.63): innerWidth 390
+#: and innerHeight 844 over a visual viewport scale of 0.398, a layout
+#: viewport of 980 x 2121 -- the size Playwright's clip arithmetic gives the
+#: shot (innerWidth / visualViewport.scale), and the correct phone layout.
+_NO_META_PHONE = (390, 844, 3, 0.398)
+
+
+def test_a_faithful_980_wide_first_shot_of_a_page_without_a_viewport_meta_is_kept(qa):
+    """QA-REASSERT (part of #1981): the first shot at phone-390 of a page
+    with no viewport meta tag is 980x2121 and faithful. The check before
+    this lane compared it with innerWidth x innerHeight (390x844), retook
+    it, and kept the unfaithful dpr-1 shot that followed."""
+    page = _ShotPage(qa, [(980, 2121), (390, 844)], _NO_META_PHONE)
+    png, reshot, off = qa._shot(page, 1)
+    # MUTATION: compare with innerWidth x innerHeight (no scale) and the
+    # 980x2121 shot is retaken and the 390x844 one kept.
+    assert qa.png_size(png) == (980, 2121)
+    assert reshot == [] and off is None
+    assert page.taken == 1
+
+
+def test_a_shot_that_disagrees_with_the_layout_viewport_reading_is_retaken(qa):
+    # The unfaithful later shot QA-DEVICE measured before the gate
+    # reasserted the device: 390x844 at dpr 1, while the page still reads
+    # 980 x 2121 as its layout viewport.
+    page = _ShotPage(qa, [(390, 844), (980, 2121)], _NO_META_PHONE)
+    png, reshot, off = qa._shot(page, 2)
+    # MUTATION: accept any shot (drop the check) and the 390x844 one is kept.
+    assert qa.png_size(png) == (980, 2121)
+    assert reshot == [{"segment": 2, "size": [390, 844], "viewport": [980, 2121]}]
+    assert off is None and page.taken == 2
+
+
+def test_a_shot_at_a_scale_of_one_is_still_checked_against_the_viewport(qa):
+    # A page with a viewport meta tag: scale 1, the layout viewport is the
+    # window's own size, at one screen pixel per CSS pixel or at the dpr.
+    for size in ((390, 844), (1170, 2532)):
+        page = _ShotPage(qa, [size], (390, 844, 3, 1))
+        _, reshot, off = qa._shot(page, 1)
+        assert reshot == [] and off is None, size
+    page = _ShotPage(qa, [(980, 2121)], (390, 844, 3, 1))
+    _, reshot, off = qa._shot(page, 1)
+    # MUTATION: keep a shot that matches neither size of the reading and
+    # this 980x2121 one at scale 1 is neither retaken nor listed.
+    assert len(reshot) == qa.SHOT_RETRIES and off is not None and "980x2121" in off and "390x844" in off
