@@ -274,6 +274,9 @@ class FakePage:
         self.mutations = {}
         # path -> the hrefs LINKS_JS answers with on that page (discover).
         self.links = {}
+        # True: a `document.cookie` write raises (QA-PERSONA-COOKIE: the
+        # persona step's own failure is reported as that step).
+        self.cookie_fails = False
 
     def set_viewport_size(self, *_a, **_kw):
         raise AssertionError("swarm_qa resized the page; the gate owns the size")
@@ -312,6 +315,14 @@ class FakePage:
 
     def evaluate(self, expression, arg=None):
         self.evaluated.append(expression)
+        if "document.cookie" in expression:
+            # The page's own write, on whatever document it shows now: the
+            # gate allows it, as it allows every other page.evaluate. The
+            # cookie text is the argument when there is one, else the script.
+            self.log.append(("document.cookie", self.url, arg if isinstance(arg, str) else expression))
+            if self.cookie_fails:
+                raise RuntimeError("Execution context was destroyed, most likely because of a navigation")
+            return None
         if expression == getattr(self.qa, "DOM_CHANGES_JS", None):
             stops = self.mutations.get(self._path(), 0)
             if stops is None or self.elapsed < stops:
@@ -376,9 +387,12 @@ class FakeContext:
         self.pages = []
 
     def add_cookies(self, cookies):
-        # Logged on the page, so a test reads the cookie set beside the
-        # navigation it came before.
+        # Refused, as the live gate refuses it: Playwright sends this over CDP
+        # as Storage.setCookies and the gate never exposes the cookie APIs
+        # (#1980: console QA run 5 failed every route here). Logged first, so
+        # a test can also say no call was made.
         self.page.log.append(("cookies", [dict(c) for c in cookies]))
+        raise RuntimeError("Protocol error (Storage.setCookies): the live gate refuses the cookie APIs")
 
     def new_page(self):
         self.pages.append(self.page)
@@ -1109,35 +1123,89 @@ def test_load_routes_accepts_the_two_personas_and_refuses_any_other(qa, world):
     assert qa.PERSONA_COOKIE == "swarm_qa_persona"
 
 
+CONSOLE = "http://localhost:5173"
+
+
+def _origin(url):
+    return "/".join(url.split("/")[:3])
+
+
+def _persona_writes(world):
+    """(log index, the page's URL, the cookie text) of every page write of
+    PERSONA_COOKIE (QA-PERSONA-COOKIE, #1980)."""
+    return [(i, e[1], e[2]) for i, e in enumerate(world.page.log)
+            if e[0] == "document.cookie" and e[2].split("=", 1)[0].strip() == "swarm_qa_persona"]
+
+
+def _route_loads(world):
+    """The log index of every navigation to a route (not to the bare origin)."""
+    return [i for i, e in enumerate(world.page.log) if e[0] == "goto" and e[1].rstrip("/") != CONSOLE]
+
+
+def _personas_before_each_load(world):
+    """[(route URL, persona)] for every route navigation: the persona the last
+    page write between the navigation before it and this one set. Fails when a
+    navigation has no write of its own, or the write was not on the console's
+    origin or not for every path."""
+    log, seen, previous = world.page.log, [], -1
+    for i in _route_loads(world):
+        writes = [w for w in _persona_writes(world) if previous < w[0] < i]
+        # MUTATION: set the cookie only for a route that names a persona (or
+        # only when it changes) and a route has no write of its own before
+        # its navigation.
+        assert writes, f"no persona cookie written before {log[i]}: {log}"
+        _j, url, text = writes[-1]
+        # MUTATION: skip the navigation to the console's origin before the
+        # first write and the cookie is written on about:blank, which no
+        # console load ever reads.
+        assert _origin(url) == CONSOLE, (url, log)
+        parts = [part.strip() for part in text.split(";")]
+        # MUTATION: drop `path=/` and the cookie belongs to the path it was
+        # written from, not to every route the console loads.
+        assert "path=/" in parts, text
+        seen.append((log[i][1], parts[0].split("=", 1)[1]))
+        previous = i
+    return seen
+
+
 def test_each_route_is_loaded_under_its_own_persona_cookie_member_included(qa, world):
     """The cookie is set before EVERY navigation, `member` included, so a
     route with no persona never inherits the admin cookie the route before it
     set. A cookie and not storage: RESET_STATE_JS empties local and session
-    storage on every load."""
+    storage on every load. Written by the page on the console's origin, never
+    with context.add_cookies: that is Storage.setCookies, which the live gate
+    refuses (#1980)."""
     _persona_routes(world, [
         {"id": "runs", "address": "work/runs", "path": "/runs", "ready": "main h1", "persona": "platform-admin"},
         {"id": "timeline", "address": "work/timeline", "path": "/timeline", "ready": "main h1"},
     ])
     code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
-    assert code == 0
-    log = world.page.log
-    gotos = [i for i, e in enumerate(log) if e[0] == "goto"]
-    assert len(gotos) == 2, log
-    seen = []
-    for i in gotos:
-        before = [e for e in log[:i] if e[0] == "cookies"]
-        # MUTATION: set the cookie only for a route that names a persona and
-        # the second route has no cookie of its own before its navigation.
-        assert before, f"no persona cookie before {log[i]}"
-        (cookie,) = before[-1][1]
-        assert cookie["name"] == "swarm_qa_persona"
-        # MUTATION: point the cookie at another origin and the console never reads it.
-        assert cookie["url"] == "http://localhost:5173", cookie
-        seen.append((log[i][1], cookie["value"]))
+    # MUTATION: set the persona with context.add_cookies again and the fake
+    # refuses it as the gate does: every route fails at "persona", code 1.
+    assert code == 0, _manifest(bundle)["failed"]
+    # MUTATION: the same, seen from the context: any add_cookies call is here.
+    assert [e for e in world.page.log if e[0] == "cookies"] == [], world.page.log
     # MUTATION: skip the cookie for `member` and the second value stays platform-admin.
-    assert seen == [("http://localhost:5173/runs", "platform-admin"), ("http://localhost:5173/timeline", "member")]
+    assert _personas_before_each_load(world) == [
+        ("http://localhost:5173/runs", "platform-admin"), ("http://localhost:5173/timeline", "member")]
     # MUTATION: leave the persona out of the manifest entry and this fails.
     assert [(r["id"], r["persona"]) for r in _manifest(bundle)["routes"]] == [("runs", "platform-admin"), ("timeline", "member")]
+
+
+def test_a_failed_persona_write_fails_the_route_at_the_persona_step(qa, world):
+    """The page write is the persona step: when it throws, the route is
+    reported as failed at `persona`, and it is never loaded as someone else."""
+    world.page.cookie_fails = True
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 1
+    failed = _manifest(bundle)["failed"]
+    assert [f["id"] for f in failed] == ["runs", "timeline"], failed
+    # MUTATION: set step = "navigate" before the write and the failure names
+    # the wrong step.
+    assert all(f["error"].startswith("persona: RuntimeError") for f in failed), failed
+    # MUTATION: swallow the write's failure and the route loads under
+    # whichever persona the cookie last held.
+    assert _route_loads(world) == [], world.page.log
 
 
 # --------------------------------------------------------------------------
@@ -1162,8 +1230,10 @@ def test_keep_storage_never_runs_reset_state_js(qa, world):
     assert not any("localStorage.clear" in (s or "") for s in world.page.init_scripts), world.page.init_scripts
     # MUTATION: the same, seen from the page: the second route loads with what
     # the first left in storage only when nothing emptied it.
+    # (Not the whole list: a console capture loads the bare origin once
+    # first, to write the persona cookie on it, and that load keeps its own.)
     timeline = (out / "work-a" / "timeline--desktop--light.txt").read_text(encoding="utf-8")
-    assert timeline.endswith("storage at load ['visited:/runs']"), timeline
+    assert "'visited:/runs'" in timeline.rsplit("storage at load ", 1)[1], timeline
 
 
 def test_without_keep_storage_every_load_still_runs_reset_state_js(qa, world):
@@ -1224,16 +1294,15 @@ def test_the_dom_change_counter_runs_in_a_page(qa):
 # fixture's, so someone else's app is not handed it.
 
 
-def _persona_cookies(world):
-    return [c for e in world.page.log if e[0] == "cookies" for c in e[1] if c["name"] == "swarm_qa_persona"]
-
-
 def test_a_generic_capture_with_no_persona_route_sets_no_persona_cookie(qa, world):
     code, _out, bundle = _capture(qa, world, "--settle", "generic", presets="desktop", themes="light")
     assert code == 0
     # MUTATION: set the cookie whatever the settle and the route list say and
     # someone else's app is handed swarm_qa_persona on every route.
-    assert _persona_cookies(world) == [], world.page.log
+    assert [e for e in world.page.log if e[0] in ("document.cookie", "cookies")] == [], world.page.log
+    # MUTATION: load the origin to write a cookie that is never written and
+    # someone else's app is loaded once more than its routes ask.
+    assert [e[1] for e in world.page.log if e[0] == "goto"] == [CONSOLE + "/runs", CONSOLE + "/timeline"]
     routes = _manifest(bundle)["routes"]
     assert [r["id"] for r in routes] == ["runs", "timeline"]
     # MUTATION: keep recording the member in the entry and the manifest claims
@@ -1245,19 +1314,14 @@ def test_a_console_capture_still_sets_the_persona_cookie_on_every_route(qa, worl
     """No route here names a persona either: the console's settle alone keeps
     the cookie, `member` on each navigation."""
     code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
-    assert code == 0
-    log = world.page.log
-    gotos = [i for i, e in enumerate(log) if e[0] == "goto"]
-    assert len(gotos) == 2, log
-    for i in gotos:
-        before = [e for e in log[:i] if e[0] == "cookies"]
-        # MUTATION: skip the cookie whenever no route names a persona (forget
-        # the settle) and the console's routes load with no cookie of their own.
-        assert before, f"no persona cookie before {log[i]}"
-        (cookie,) = before[-1][1]
-        assert (cookie["name"], cookie["value"], cookie["url"]) == ("swarm_qa_persona", "member", "http://localhost:5173")
-    # MUTATION: skip the cookie on every route after the first and there is one.
-    assert len(_persona_cookies(world)) == 2
+    assert code == 0, _manifest(bundle)["failed"]
+    assert [e for e in world.page.log if e[0] == "cookies"] == [], world.page.log
+    # MUTATION: skip the cookie whenever no route names a persona (forget
+    # the settle) and the console's routes load with no cookie of their own.
+    assert _personas_before_each_load(world) == [
+        ("http://localhost:5173/runs", "member"), ("http://localhost:5173/timeline", "member")]
+    # MUTATION: skip the write on every route after the first and there is one.
+    assert len(_persona_writes(world)) == 2
     assert [r["persona"] for r in _manifest(bundle)["routes"]] == ["member", "member"]
 
 
@@ -1267,10 +1331,11 @@ def test_a_generic_capture_whose_route_names_a_persona_keeps_the_cookie(qa, worl
         {"id": "timeline", "address": "work/timeline", "path": "/timeline", "ready": "main h1"},
     ])
     code, _out, bundle = _capture(qa, world, "--settle", "generic", presets="desktop", themes="light")
-    assert code == 0
+    assert code == 0, _manifest(bundle)["failed"]
+    assert [e for e in world.page.log if e[0] == "cookies"] == [], world.page.log
     # MUTATION: skip the cookie on every generic capture and a route list that
     # asks for a persona is captured as no one.
-    assert [c["value"] for c in _persona_cookies(world)] == ["platform-admin", "member"], world.page.log
+    assert [v for _url, v in _personas_before_each_load(world)] == ["platform-admin", "member"], world.page.log
     assert [r["persona"] for r in _manifest(bundle)["routes"]] == ["platform-admin", "member"]
     # MUTATION: skip the persona check under generic and an unknown one is
     # accepted.
