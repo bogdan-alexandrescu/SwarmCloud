@@ -80,7 +80,7 @@ from swarm_common.models import EndCause
 from swarm_common.profiles import RESOURCE_CLASSES
 from swarm_common.states import EventType, ParkReason, TaskState
 
-from .attemptreads import agent_row, attempt_row
+from .attemptreads import CloudLogsReader, agent_row, attempt_row, log_rows
 from .codec import attempt_from_dict, task_from_dict
 from .redaction import redact
 from .task_input import masking_for
@@ -398,6 +398,93 @@ class NoContent:
     def platform_logs(self, task: Mapping[str, Any],
                       attempts: Sequence[Mapping[str, Any]]) -> str | None:
         return None
+
+
+#: §3: the platform components whose lines name an attempt id, by Cloud Run
+#: service name. Every one starts `swarm-`, so the L-1 view admits it.
+PLATFORM_SERVICES = ("swarm-api", "swarm-scheduler", "swarm-reconciler")
+#: Platform log lines asked of the view per agent, and the slack either side of its life.
+PLATFORM_LOG_ENTRIES = 100
+PLATFORM_LOG_SLACK = timedelta(minutes=5)
+_ATTEMPT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def platform_logs_filter(attempt_ids: Iterable[Any], *, since: datetime, until: datetime) -> str:
+    """The Logging filter for the platform components' lines naming these attempts.
+
+    Fixed services, ids checked against `_ATTEMPT_ID` before they reach the
+    text, so no stored value can widen what is read. "" when no id passes.
+    """
+    ids = [str(a) for a in attempt_ids if isinstance(a, str) and _ATTEMPT_ID.fullmatch(a)]
+    if not ids:
+        return ""
+    services = " OR ".join(f'"{name}"' for name in PLATFORM_SERVICES)
+    terms = " OR ".join(f'"{attempt_id}"' for attempt_id in ids)
+    return " AND ".join([
+        'resource.type="cloud_run_revision"',
+        f"resource.labels.service_name=({services})",
+        f"({terms})",
+        f'timestamp>="{since.astimezone(timezone.utc).isoformat()}"',
+        f'timestamp<="{until.astimezone(timezone.utc).isoformat()}"',
+    ])
+
+
+class ApiContent:
+    """`Content` over swarm-api's own readers, for the platform's own agents only.
+
+    * a log tail: `InspectionService.read_logs` in the task's OWN tenant, the
+      last `LOG_TAIL_BYTES` (redacted at read time there, and again by `build`);
+    * platform log lines: `attemptreads.CloudLogsReader` over the one view
+      (`WORKER_LOG_VIEW`, lane AU-5, IAM row L-1). No view, no read: None;
+    * a CI excerpt: whatever `ci_excerpt` the caller names (the type holds the
+      forge credential `issueci.excerpt_at` needs); None without one.
+    """
+
+    def __init__(self, *, inspection: Any, log_view: str | None, logs: Any = None,
+                 ci_excerpt: Any = None) -> None:
+        self._inspection = inspection
+        self._log_view = (log_view or "").strip() or None
+        self._logs = logs
+        self._ci_excerpt = ci_excerpt
+
+    def log_tail(self, task: Mapping[str, Any], stream: str) -> str | None:
+        def read(offset: int) -> Mapping[str, Any]:
+            answer = self._inspection.read_logs(
+                str(task.get("tenant_id")), str(task.get("id")), submitted_by=None,
+                attempt_id=None, stream=[stream], source="auto", offset=offset,
+                limit_bytes=LOG_TAIL_BYTES)
+            return (_mapping(answer).get("streams") or [{}])[0]
+
+        entry = read(0)
+        total = entry.get("total_bytes")
+        if entry.get("status") == "ok" and isinstance(total, int) and total > LOG_TAIL_BYTES:
+            entry = read(total - LOG_TAIL_BYTES)
+        content = entry.get("content") if entry.get("status") == "ok" else None
+        return content if isinstance(content, str) and content else None
+
+    def ci_excerpt(self, task: Mapping[str, Any]) -> str | None:
+        return self._ci_excerpt(task) if self._ci_excerpt is not None else None
+
+    def platform_logs(self, task: Mapping[str, Any],
+                      attempts: Sequence[Mapping[str, Any]]) -> str | None:
+        if self._log_view is None:
+            return None
+        born = _aware(task.get("created_at")) or _aware(task.get("completed_at"))
+        ended = _aware(task.get("completed_at"))
+        if born is None or ended is None:
+            return None
+        filter_text = platform_logs_filter((a.get("attempt_id") for a in attempts),
+                                           since=born - PLATFORM_LOG_SLACK,
+                                           until=ended + PLATFORM_LOG_SLACK)
+        if not filter_text:
+            return None
+        if self._logs is None:
+            self._logs = CloudLogsReader()
+        rows, _ = log_rows(self._logs.entries(self._log_view, filter_text,
+                                              limit=PLATFORM_LOG_ENTRIES),
+                           max_bytes=PLATFORM_LOG_BYTES)
+        lines = [f"{r.get('timestamp')} {r.get('severity')} {r.get('text')}" for r in reversed(rows)]
+        return "\n".join(lines) or None
 
 
 # --------------------------------------------------------------------------
