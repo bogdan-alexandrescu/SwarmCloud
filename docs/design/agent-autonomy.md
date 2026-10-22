@@ -105,7 +105,7 @@ path.
 | 19 | toolchain: uv, gh, gcloud, git, node/npm, ripgrep | **exists** | `images/agent-runtime-base/Dockerfile`: uv 0.12.15 (:53), Node 24 with npm 11 (:47, :261-273), gcloud 587.0.0 (:582), gh 2.102.0 (:638), git and ripgrep (:243-257), terraform, checkov, shellcheck (:899) |
 | 20 | toolchain: `apps/swarm-ui` node_modules | **missing** | no image installs them; every UI agent runs `npm ci` itself, from the network, inside its own time limit |
 | 21 | toolchain: Playwright and browsers | **partial** | only `agent-runtime-browser` (Playwright 1.63.0, Chromium only, `images/agent-runtime-browser/Dockerfile` :43, :71-76), reached by `browser` and `claude-code-browser`; `claude-code` has none |
-| 22 | memory | **partial** | every code profile is `standard`, 8 GiB, request = limit (`swarm_common/profiles.py`); `large` (32 GiB) "is reached by no profile today" ([runner-sizes.md](runner-sizes.md) §4.1); #1926 made an OOM fail the agent at once and say so (`reconciler/memory.py`), it did not add memory |
+| 22 | memory | **partial** | every code profile is `standard`, 8 GiB, request = limit (`swarm_common/profiles.py`); `large` (32 GiB) was reached by no profile until `claude-code-large` (the `large` class, 14,400 s, contract request 113, 2026-10-22) ([runner-sizes.md](runner-sizes.md) §4.1); #1926 made an OOM fail the agent at once and say so (`reconciler/memory.py`), it did not add memory |
 | 23 | time | **partial** | `claude-code` is 7,200 s (`profiles.py`, `timeout_seconds=7200`), killed by the worker as "runner exceeded its 7200s timeout and was killed" (`lifecycle.py`, :3899, `EndCause.TIMEOUT`); three agents died there on 2026-10-22 |
 
 **What the operator's laptop does that no agent can (measured 2026-10-22).**

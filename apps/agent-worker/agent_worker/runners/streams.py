@@ -68,8 +68,10 @@ def cli_agent_spec(profile: str) -> Any | None:
     # claude-code-review (contract request 36) runs the claude_code runner
     # under its own Job and service account, and indexer (contract request 48)
     # runs it on agent-runtime-indexer, and claude-code-browser (contract
-    # request 67) on agent-runtime-browser, so their child is the same CLI.
-    if profile in ("claude-code", "claude-code-review", "indexer", "claude-code-browser"):
+    # request 67) on agent-runtime-browser, and claude-code-large (contract
+    # request 113) on the large class, so their child is the same CLI.
+    if profile in ("claude-code", "claude-code-review", "indexer", "claude-code-browser",
+                   "claude-code-large"):
         from .claude_code import SPEC as claude_spec
 
         return claude_spec

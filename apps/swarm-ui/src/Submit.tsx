@@ -333,6 +333,10 @@ const SUGGESTED: Record<string, Suggestion[]> = {
   'claude-code-browser': [
     { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
   ],
+  // claude-code on the large class, 14,400 s (contract request 113).
+  'claude-code-large': [
+    { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
+  ],
   // The two worker actions (contract requests 33 and 35, #295) start no
   // runner and take `input: {}`, so they are offered nothing. Listed, empty,
   // so check-contract-parity.sh sees every catalogue profile here.

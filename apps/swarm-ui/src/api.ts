@@ -3991,6 +3991,7 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
   "claude-code-review": {"required_keys": ["prompt"]},
   "indexer": {"required_keys": ["prompt"]},
   "claude-code-browser": {"required_keys": ["prompt"]},
+  "claude-code-large": {"required_keys": ["prompt"]},
   "await-input": {"required_keys": []}
 }
 
@@ -4025,6 +4026,7 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "claude-code-review": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
   "indexer": {"available": true, "disabled_reason": ""},
   "claude-code-browser": {"available": true, "disabled_reason": ""},
+  "claude-code-large": {"available": true, "disabled_reason": ""},
   "await-input": {"available": true, "disabled_reason": ""}
 }
 

@@ -631,6 +631,20 @@ class and runs on GKE Autopilot; it declares what `claude-code` does:
 | `qa_identity` | string, one of console | sign the live browser in to this deployment's console as its QA identity, a service account with its own workspace; the platform adds the credential, the agent never holds it, and a tenant may name it only when a platform admin has granted it |
 <!-- /runner-inputs:claude-code-browser -->
 
+`claude-code-large` is `claude-code` exactly (same image, runner, inputs,
+secret slots and model classes) on the `large` resource class, 8 CPU and
+32 GiB requested (4 units), with a 14,400 s timeout, on GKE Autopilot
+on-demand (contract request 113). A heavy lane picks it by name when
+`claude-code` was OOM-killed or ran out of time; it declares what
+`claude-code` does:
+
+<!-- runner-inputs:claude-code-large generated from RUNNER_PROFILES["claude-code-large"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code-large runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+<!-- /runner-inputs:claude-code-large -->
+
 `--input issue=<number>` on `swarm dispatch`, or `"inputs": {"issue": <number>}`
 on a step, points a `claude-code` step at an issue of its repository. The
 issue's text is data for the agent: the worker scrubs it of every secret the
