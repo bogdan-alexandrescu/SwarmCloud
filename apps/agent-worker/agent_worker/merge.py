@@ -384,46 +384,95 @@ def other_check_blocks(run: Mapping[str, Any]) -> bool:
     return (run.get("conclusion") or "") not in OTHER_TOLERATED
 
 
-def required_check_state(runs: list[Mapping[str, Any]]) -> str:
-    """The runs of ONE required check: "green", "pending" (none, or not
-    completed) or "failed"."""
-    if not runs:
+def _event_group(run: Mapping[str, Any]) -> str | None:
+    """What a run is grouped by: the event that triggered its check suite;
+    without one, its check suite (a credential that cannot read Actions runs
+    still never lets one suite outvote another); without either, None."""
+    event = run.get("event")
+    if isinstance(event, str) and event:
+        return event
+    suite = run.get("check_suite_id")
+    return f"check suite {suite}" if suite is not None else None
+
+
+def latest_per_event(runs: list[Mapping[str, Any]]) -> list[tuple[str | None, Mapping[str, Any]]]:
+    """The latest run of each event among the runs of ONE check, as (event, run).
+
+    BGD's decision of 2026-10-22 (CHECK-RULE, part of #1999 and #1778): a
+    re-run replaces the earlier runs of ITS OWN event, never another's. Runs
+    are ordered as `latest_reading` orders them: by GitHub's run id, which a
+    re-run increases, then by position; runs with no id (commit statuses)
+    first. Groups come oldest latest run first, which is the label's order.
+    """
+    ordered = sorted(enumerate(runs), key=lambda item: (
+        item[1].get("run_id") is not None, item[1].get("run_id") or 0, item[0]))
+    latest: dict[str | None, tuple[int, Mapping[str, Any]]] = {}
+    for rank, (_position, run) in enumerate(ordered):
+        latest[_event_group(run)] = (rank, run)
+    return [(event, run) for event, (_rank, run)
+            in sorted(latest.items(), key=lambda item: item[1][0])]
+
+
+def _judge_latest(runs: list[Mapping[str, Any]], green: frozenset[str] | set[str]) -> str:
+    latest = [run for _event, run in latest_per_event(runs)]
+    if not latest:
         return "pending"
-    if any(run.get("status") != "completed" for run in runs):
+    if any(run.get("status") != "completed" for run in latest):
         return "pending"
-    if all((run.get("conclusion") or "") in REQUIRED_GREEN for run in runs):
+    if all((run.get("conclusion") or "") in green for run in latest):
         return "green"
     return "failed"
+
+
+def required_check_state(runs: list[Mapping[str, Any]]) -> str:
+    """The runs of ONE required check: "green", "pending" or "failed".
+
+    Decided by the LATEST run of EACH event that ran it (BGD, 2026-10-22):
+    green only when every event's latest run is green, pending when any is
+    not completed (or there is none), failed otherwise. A red push run is
+    never outvoted by a green pull_request run (CI-EARLY, #1694); a flake
+    re-run green no longer holds the check (#1999, #1778). swarm-api's
+    `forgechecks.required_check_state` is the same rule, held equal by
+    tests/unit/control_plane/test_forgechecks_per_event.py.
+    """
+    return _judge_latest(runs, REQUIRED_GREEN)
+
+
+def required_check_label(runs: list[Mapping[str, Any]]) -> str:
+    """What a failed check's label says in brackets: the latest run's
+    conclusion per event, `push: success, pull_request: failure`; one
+    conclusion alone when no run carries an event."""
+    return ", ".join(
+        str(run.get("conclusion") or run.get("status")) if event is None
+        else f"{event}: {run.get('conclusion') or run.get('status')}"
+        for event, run in latest_per_event(runs)
+    )
 
 
 def latest_reading(runs_by_check: Mapping[str, list[CheckFacts]],
                    green: frozenset[str] | set[str]) -> tuple[list[str], list[str]]:
     """What a CI park RECORDS (WAIT-RECORD, part of #1782): the checks pending
-    and the checks failed, by name, each judged by its LATEST run.
+    and the checks failed, by name, each judged by its LATEST run of each
+    event (`latest_per_event`), as the decision is.
 
     A check's runs are ordered by GitHub's run id, which a re-run increases,
-    so a run cancelled and then superseded by a success is green here. No
-    run is pending. A run not completed is pending; a completed one whose
-    conclusion is not in `green` is failed. Runs with no id (commit
-    statuses) come before those with one, in GitHub's order.
+    so a run cancelled and then superseded by a success of the same event is
+    green here. No run is pending; so is any event's latest run not
+    completed. Otherwise a check with any event's latest run's conclusion
+    not in `green` is failed.
 
     A RECORD, NOT THE DECISION: the merge decides on `required_check_state`
-    and `other_check_blocks`, which still read every run (#1778 is the same
-    latest-run rule for the decision). The record is what the "Why it's
-    waiting" panel names; it never decides anything.
+    and `other_check_blocks`. The record is what the "Why it's waiting"
+    panel names; it never decides anything, and for a required check it
+    reads exactly what the decision reads (CHECK-RULE, part of #1999).
     """
     pending: list[str] = []
     failed: list[str] = []
     for name, runs in runs_by_check.items():
-        ordered = sorted(enumerate(runs), key=lambda item: (
-            item[1].run_id is not None, item[1].run_id or 0, item[0]))
-        if not ordered:
+        state = _judge_latest([run.as_run() for run in runs], green)
+        if state == "pending":
             pending.append(name)
-            continue
-        latest = ordered[-1][1]
-        if latest.status != "completed":
-            pending.append(name)
-        elif (latest.conclusion or "") not in green:
+        elif state == "failed":
             failed.append(name)
     return sorted(pending), sorted(failed)
 
@@ -467,9 +516,18 @@ class CheckFacts:
     #: included: what orders a check's runs (`latest_reading`). None for a
     #: commit status, of which GitHub serves only the newest per context.
     run_id: int | None = None
+    #: The event that triggered the run's check suite (push, pull_request,
+    #: ...), read from the suite's Actions run: what a check's runs are
+    #: grouped by (`latest_per_event`). None for a commit status, another
+    #: App's suite, or when it was not read.
+    event: str | None = None
+    #: GitHub's id for the run's check suite: the group when no event is known.
+    check_suite_id: int | None = None
 
     def as_run(self) -> dict[str, Any]:
-        return {"name": self.name, "status": self.status, "conclusion": self.conclusion}
+        return {"name": self.name, "status": self.status, "conclusion": self.conclusion,
+                "run_id": self.run_id, "event": self.event,
+                "check_suite_id": self.check_suite_id}
 
 
 @dataclass(frozen=True)
@@ -730,7 +788,13 @@ class GitHubMerger:
         return RequiredChecks(checks=tuple(found.values()), protected=protected, source=source)
 
     def checks_at(self, sha: str) -> list[CheckFacts]:
-        """Every check run, and every commit status, reported at `sha`."""
+        """Every check run, and every commit status, reported at `sha`.
+
+        A check run carries the event that triggered its check suite, read
+        from the Actions runs at `sha` -- ONE more read, made only when some
+        check has more than one run there, since only then does the event
+        decide anything (`latest_per_event`).
+        """
         out: list[CheckFacts] = []
         for run in self._client.paginate(f"{self._base}/commits/{sha}/check-runs",
                                          key="check_runs"):
@@ -744,7 +808,12 @@ class GitHubMerger:
                 conclusion=_str(run.get("conclusion")),
                 app_id=_int(_mapping(run.get("app")).get("id")),
                 run_id=_int(run.get("id")),
+                check_suite_id=_int(_mapping(run.get("check_suite")).get("id")),
             ))
+        names = [check.name for check in out]
+        if len(names) != len(set(names)):
+            events = self._suite_events(sha)
+            out = [replace(check, event=events.get(check.check_suite_id)) for check in out]
         combined = _mapping(self._client.get_ok(f"{self._base}/commits/{sha}/status"))
         for status in combined.get("statuses") or []:
             status = _mapping(status)
@@ -756,6 +825,28 @@ class GitHubMerger:
             )
             out.append(CheckFacts(name=name, status=state, conclusion=conclusion))
         return out
+
+    def _suite_events(self, sha: str) -> dict[int | None, str]:
+        """The event of each Actions check suite at `sha`, by suite id.
+
+        A credential without `actions: read` (403), or a repository with
+        Actions off (404), reads as no event: each check suite is then its
+        own group, so a green suite still never outvotes a red one.
+        """
+        try:
+            runs = self._client.paginate(f"{self._base}/actions/runs",
+                                         query={"head_sha": sha}, key="workflow_runs")
+        except forge_mod.ForgeAnswered as exc:
+            if exc.status in (403, 404):
+                return {}
+            raise
+        events: dict[int | None, str] = {}
+        for run in runs:
+            run = _mapping(run)
+            suite, event = _int(run.get("check_suite_id")), _str(run.get("event"))
+            if suite is not None and event:
+                events[suite] = event
+        return events
 
     def commit(self, sha: str) -> CommitFacts:
         data = _mapping(self._client.get_ok(f"{self._base}/commits/{quote(sha, safe='')}"))
@@ -1446,8 +1537,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
             if state == "pending":
                 pending.append(check.context)
             elif state == "failed":
-                failed.append(f"{check.context} ("
-                              + ", ".join(sorted({str(r['conclusion']) for r in mine})) + ")")
+                failed.append(f"{check.context} ({required_check_label(mine)})")
     else:
         # No protection, or protection that requires no check, or a plan that
         # has neither rulesets nor protection to read (`required.source`

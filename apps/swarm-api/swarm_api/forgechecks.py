@@ -20,8 +20,17 @@ are restated here and held to the same rules:
   * a required check's runs are the LATEST of that name (`filter=latest`)
     by its pinned App, when it has one -- a check of the same name from
     another App does not satisfy it;
+  * a required check is decided by the LATEST run of EACH event that ran
+    it (BGD, 2026-10-22; CHECK-RULE, part of #1999 and #1778): a re-run
+    replaces the earlier runs of its own event, and every event's latest
+    run must be green, so a red push run is never outvoted by a green
+    pull_request run (CI-EARLY, #1694). The event is what
+    `forgewrite.GitHubWriter.check_runs` adds to each run; without one a
+    run's check suite is its group. tests/unit/control_plane/
+    test_forgechecks_per_event.py runs this rule and the merge step's over
+    one table;
   * green is `success` or `skipped`, nothing else, `neutral` included;
-  * no runs, or one not completed, is pending.
+  * no runs, or an event's latest run not completed, is pending.
 
 WHERE THIS IS DELIBERATELY WIDER than the merge step:
 
@@ -102,13 +111,46 @@ def required_status_checks(rules: Sequence[Mapping[str, Any]]) -> list[RequiredC
     return list(seen.values())
 
 
+def _event_group(run: Mapping[str, Any]) -> str | None:
+    """The event that triggered the run's check suite; without one its check
+    suite, so one suite never outvotes another; without either, None."""
+    event = run.get("event")
+    if isinstance(event, str) and event:
+        return event
+    suite = run.get("check_suite")
+    suite_id = suite.get("id") if isinstance(suite, Mapping) else None
+    return f"check suite {suite_id}" if suite_id is not None else None
+
+
+def _run_id(run: Mapping[str, Any]) -> int | None:
+    value = run.get("id")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def latest_per_event(runs: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """The latest run of each event among the runs of ONE check.
+
+    Ordered as the merge step's `latest_reading` orders them: by GitHub's run
+    id, which a re-run increases, then by position; runs with no id first.
+    The result is oldest latest run first.
+    """
+    ordered = sorted(enumerate(runs), key=lambda item: (
+        _run_id(item[1]) is not None, _run_id(item[1]) or 0, item[0]))
+    latest: dict[str | None, tuple[int, Mapping[str, Any]]] = {}
+    for rank, (_position, run) in enumerate(ordered):
+        latest[_event_group(run)] = (rank, run)
+    return [run for _rank, run in sorted(latest.values(), key=lambda item: item[0])]
+
+
 def required_check_state(runs: Sequence[Mapping[str, Any]]) -> str:
-    """The runs of ONE required check by its pinned App: green, pending or red."""
-    if not runs:
+    """The runs of ONE required check by its pinned App: green, pending or red,
+    decided by the latest run of each event (`latest_per_event`)."""
+    latest = latest_per_event(runs)
+    if not latest:
         return PENDING
-    if any(run.get("status") != "completed" for run in runs):
+    if any(run.get("status") != "completed" for run in latest):
         return PENDING
-    if all((run.get("conclusion") or "") in REQUIRED_GREEN for run in runs):
+    if all((run.get("conclusion") or "") in REQUIRED_GREEN for run in latest):
         return GREEN
     return RED
 
@@ -220,12 +262,16 @@ def evaluate(
                 and (check.app_id is None or _app_id(run) == check.app_id)
             ]
             if mine:
-                reading.checks += [run_entry(run) for run in mine]
+                # What decides it, the latest run of each event, is what is
+                # counted and excerpted: a flake re-run green is neither.
+                deciding = latest_per_event(mine)
+                reading.checks += [run_entry(run) for run in deciding]
                 state = required_check_state(mine)
                 if state == RED:
                     reading.failing_runs += [
-                        run for run in mine
-                        if (run.get("conclusion") or "") not in REQUIRED_GREEN
+                        run for run in deciding
+                        if run.get("status") == "completed"
+                        and (run.get("conclusion") or "") not in REQUIRED_GREEN
                     ]
                 elif state == PENDING:
                     reading.pending.append(check.context)
