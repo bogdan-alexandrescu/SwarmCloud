@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import { loadArtifactContent, loadAttempts, artifactRawUrl } from './api'
 import { patchWindow } from './ArtifactViewer'
@@ -422,7 +422,27 @@ export function PatchChanges({
   )
 }
 
-/** One of the tab's states: a mark, a heading, at most one sentence, and a way on (`action`) on its own line. */
+/**
+ * The words `Mark` draws for the four kinds a state uses. `Mark` names its chip
+ * by the whole sentence, which inside a heading made the sentence the
+ * heading's name and left the visible "not measured" in none (N17, visual QA
+ * run 4, task-009, #1680). Mark's own map is not exported and about thirty
+ * screens draw it, so the state draws its chip itself; a test holds these
+ * words to what `Mark` renders.
+ */
+const STATE_WORD: Readonly<Record<'zero' | 'absent' | 'unread' | 'partial', string>> = {
+  zero: 'none',
+  absent: 'not measured',
+  unread: 'not read',
+  partial: 'partial',
+}
+
+/**
+ * One of the tab's states: a mark, a heading, at most one sentence, and a way
+ * on (`action`) on its own line. The heading is named by what it shows (the
+ * chip's word, then the heading); `say` is its description and the chip's
+ * tooltip.
+ */
 function State({
   mark,
   heading,
@@ -436,10 +456,17 @@ function State({
   children?: ReactNode
   action?: ReactNode
 }) {
+  const sayId = useId()
   return (
     <div className={`ctl-empty chg-state${mark === 'zero' ? '' : ` is-${mark === 'unread' ? 'failed' : mark}`}`} role={mark === 'zero' ? undefined : 'status'}>
-      <h3>
-        <Mark kind={mark} say={say} /> {heading}
+      <span id={sayId} hidden>
+        {say}
+      </span>
+      <h3 aria-describedby={sayId}>
+        <i className={`ctl-mark is-${mark}`} role="img" aria-label={STATE_WORD[mark]} title={say}>
+          {STATE_WORD[mark]}
+        </i>{' '}
+        {heading}
       </h3>
       {children !== undefined && children !== null ? <p>{children}</p> : null}
       {action !== undefined ? <p>{action}</p> : null}

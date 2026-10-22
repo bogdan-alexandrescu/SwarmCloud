@@ -2749,6 +2749,11 @@ const TIER_TITLE: Readonly<Record<ZoomTier, string>> = {
  * whenever the drawn tier drops fields, under Auto as well as under a chosen
  * tier. A note saying "nothing is hidden" on every canvas that fits would be
  * noise of the kind §8.4 removed from this screen twice already.
+ *
+ * ITS WORDS SAY WHY AND HOW TO GET THEM BACK (N22, visual QA run 4, #1680).
+ * '<fields> not drawn' read as a fact about the steps: the reader could not
+ * tell the zoom had hidden them, or how to see them. The note now says it is
+ * the zoom and names the two ways back; the sentence stays its name and title.
  */
 function ZoomNotice({ tier, choice }: { tier: ZoomTier; choice: ZoomChoice }) {
   const dropped = TIER_DROPS[tier]
@@ -2766,7 +2771,7 @@ function ZoomNotice({ tier, choice }: { tier: ZoomTier; choice: ZoomChoice }) {
     `, so no step is drawing its ${list}. That is a decision about the zoom and not a fact about the steps: every one of those fields still exists and is still measured or still absent exactly as it was. Choose Figures above, or open a step, to see them.`
   return (
     <span className="wf-caveat wf-zoom-note" role="status" aria-label={sentence} title={sentence}>
-      {list} not drawn
+      {list} hidden at this zoom. Choose {TIER_LABEL.figures}, or open a step, to see them.
     </span>
   )
 }
@@ -4538,17 +4543,23 @@ function StepNode({
   )
 }
 
-/** The key's three entries, in the order an edge gains weight: its word and its sentence. */
+/**
+ * The key's three entries, in the order an edge gains weight: its words and
+ * its sentence. THE WORDS SAY WHAT THE EDGE MEANS, NOT WHAT THE CODE CALLS IT
+ * (N22, visual QA run 4, #1680): 'order / staged / declared' left a reader
+ * unable to tell a staged edge from a declared one, because the difference was
+ * only in the hover. The kind's own name stays in the title.
+ */
 const EDGE_KEY: readonly { kind: EdgeKind; word: string; title: string }[] = [
-  { kind: 'order', word: 'order', title: 'Thin: an order dependency. The lower step waits for the upper one; no file passes.' },
+  { kind: 'order', word: 'runs after', title: 'Thin: an order dependency. The lower step waits for the upper one; no file passes.' },
   {
     kind: 'staged',
-    word: 'staged',
+    word: 'file passed on',
     title: "Heavy, solid: a file staged. The upper step's file was reported staged into the lower step's workspace.",
   },
   {
     kind: 'declared',
-    word: 'declared',
+    word: 'file expected, not arrived',
     title: 'Heavy, dashed: a file declared and not yet reported staged. The dash means not a measurement.',
   },
 ]
@@ -4562,7 +4573,7 @@ const EDGE_KEY: readonly { kind: EdgeKind; word: string; title: string }[] = [
  *
  * It sits at the end of the zoom strip, which is drawn whenever the graph has
  * an edge even when there is nothing to zoom: a chain needs its key as much
- * as a fan-out does. Chrome, not prose (§6.11): three words.
+ * as a fan-out does. Chrome, not prose (§6.11): a few plain words each.
  */
 function EdgeKey() {
   return (
