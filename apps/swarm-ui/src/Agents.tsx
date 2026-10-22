@@ -643,6 +643,11 @@ function AgentsBody({
     [page.tasks, shown, stateFilter, profile, needle, failFirst, startedSort, browsers],
   )
 
+  // EVERY ROW READ, BY ID, not only the ones this tab and its filters keep
+  // (visual QA run 4, N23): a cascade-cancelled row names the step that failed
+  // when that step's row is in the page, filtered out or not.
+  const taskById = useMemo(() => new Map<string, Task>(page.tasks.map((t) => [t.id, t] as const)), [page.tasks])
+
   // The segment's counts, from the loaded Recent rows, like the tab badges --
   // UNDER THE PROFILE FILTER (live QA WA-9): with `indexer` chosen and 15 rows
   // on screen the segment read `all 181+`, the count of every profile's rows.
@@ -1063,9 +1068,9 @@ function AgentsBody({
       ) : shown === 'waiting' ? (
         <WaitingGroups rows={rows} now={now} vouched={vouched} onOpen={openRow} openTaskId={openTaskId} classes={classes} grouped={grouped} bounded={bounded} />
       ) : grouped && shown !== 'live' ? (
-        <GroupedRows rows={rows} now={now} vouched={vouched} onOpen={openRow} openTaskId={openTaskId} classes={classes} />
+        <GroupedRows rows={rows} now={now} vouched={vouched} onOpen={openRow} openTaskId={openTaskId} classes={classes} taskById={taskById} />
       ) : (
-        <FlatRows rows={rows} now={now} vouched={vouched} onOpen={openRow} openTaskId={openTaskId} classes={classes} />
+        <FlatRows rows={rows} now={now} vouched={vouched} onOpen={openRow} openTaskId={openTaskId} classes={classes} taskById={taskById} />
       )}
 
       {/* LOAD MORE (live QA WA-2): the list stopped at its first page and
@@ -1220,6 +1225,7 @@ function FlatRows({
   onOpen,
   openTaskId,
   classes,
+  taskById = null,
 }: {
   rows: Task[]
   /** The clock the row's elapsed and waiting ages run on. */
@@ -1229,8 +1235,10 @@ function FlatRows({
   onOpen: (taskId: string) => void
   openTaskId: string | null
   classes: ResourceClasses | null
+  /** Every row the list read, by id: what a cascade cancel names its failed parent from (N23). */
+  taskById?: ReadonlyMap<string, Task> | null
 }) {
-  const shared = flatShared(rows, rows.map((t) => rowReason(t, classes, vouched)))
+  const shared = flatShared(rows, rows.map((t) => rowReason(t, classes, vouched, taskById)))
   return (
     <div className="rows">
       {rows.map((t, i) => (
@@ -1242,6 +1250,7 @@ function FlatRows({
           onOpen={onOpen}
           open={t.id === openTaskId}
           classes={classes}
+          taskById={taskById}
           whyShared={shared[i]}
         />
       ))}
@@ -1363,7 +1372,12 @@ export function failedRow(task: Pick<Task, 'state'>): boolean {
   return task.state === 'FAILED' || task.state === 'DEAD_LETTERED'
 }
 
-function rowReason(task: Task, classes: ResourceClasses | null, now: number): RowReason {
+function rowReason(
+  task: Task,
+  classes: ResourceClasses | null,
+  now: number,
+  taskById: ReadonlyMap<string, Task> | null = null,
+): RowReason {
   // A SILENT WORKER FIRST (#179, AG-14's fourth kind): `whyAgent` writes
   // nothing for a task that holds a slot, and this is the one thing about one
   // that needs a person.
@@ -1385,7 +1399,10 @@ function rowReason(task: Task, classes: ResourceClasses | null, now: number): Ro
   // line.
   const short = tabOf(task) === 'waiting' && task.waiting ? waitingShort(task.waiting) : null
   if (short !== null) return { text: short, warn, full: task.waiting!.summary.trim() }
-  return { text: whyAgent(task, units), warn }
+  // A CASCADE CANCEL NAMES THE STEP THAT FAILED (visual QA run 4, N23) when
+  // that step is among the rows the list read; the meta line keeps its
+  // `to cancel` span note (U10a D20) and the cause is said here.
+  return { text: whyAgent(task, units, taskById), warn }
 }
 
 /**
@@ -1491,6 +1508,7 @@ function GroupedRows({
   onOpen,
   openTaskId,
   classes,
+  taskById = null,
 }: {
   rows: Task[]
   now: number
@@ -1498,6 +1516,8 @@ function GroupedRows({
   onOpen: (taskId: string) => void
   openTaskId: string | null
   classes: ResourceClasses | null
+  /** Every row the list read, by id: what a cascade cancel names its failed parent from (N23). */
+  taskById?: ReadonlyMap<string, Task> | null
 }) {
   const groups = useMemo(() => {
     const m = new Map<string, Task[]>()
@@ -1517,7 +1537,7 @@ function GroupedRows({
     <>
       {groups.map(([wf, tasks]) => {
         const roll = rollupState(tasks.map((t) => t.state))
-        const said = groupReasons(tasks.map((t) => rowReason(t, classes, vouched)))
+        const said = groupReasons(tasks.map((t) => rowReason(t, classes, vouched, taskById)))
         return (
           <section className="section group" key={wf || 'standalone'}>
             <h2>
@@ -1575,6 +1595,7 @@ function GroupedRows({
                   onOpen={onOpen}
                   open={t.id === openTaskId}
                   classes={classes}
+                  taskById={taskById}
                   whyShared={said.shared[i]}
                 />
               ))}
@@ -1697,6 +1718,7 @@ export function TaskRow({
   open = false,
   classes,
   whyShared = false,
+  taskById = null,
 }: {
   task: Task
   /** The clock the elapsed figure runs on. */
@@ -1710,8 +1732,10 @@ export function TaskRow({
   classes: ResourceClasses | null
   /** The reason is said once for this row and its neighbours (#100); keep it for a screen reader only. */
   whyShared?: boolean
+  /** Every row the list read, by id: what a cascade cancel names its failed parent from (N23). */
+  taskById?: ReadonlyMap<string, Task> | null
 }) {
-  const why = rowReason(task, classes, vouched)
+  const why = rowReason(task, classes, vouched, taskById)
   const whyHidden = whyShared && !why.warn
   return <CompactRow task={task} now={now} onOpen={onOpen} open={open} why={why} whyHidden={whyHidden} />
 }

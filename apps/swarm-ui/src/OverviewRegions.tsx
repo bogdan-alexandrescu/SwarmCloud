@@ -544,16 +544,22 @@ export function RecentFailures({ tasks }: { tasks: Result<OverviewTaskPage> }) {
     return <NoneAmong heading={`None among the ${all.length} newest`} n={all.length} />
   }
   const shown = failed.slice(0, FAILURE_ROWS)
+  // THE ROWS READ, BY ID (visual QA run 4, N23): a step the cascade cancelled
+  // names the parent that failed when that parent is among them -- the page
+  // and the per-state reads `stateView` merged, which is where a failed
+  // parent older than the page is.
+  const byId = new Map<string, Task>(all.map((t) => [t.id, t] as const))
+  for (const t of view?.rows ?? []) byId.set(t.id, t)
   return (
     <>
-    {failureTable(shown, titleOf, now, 'Recent failures')}
+    {failureTable(shown, titleOf, now, 'Recent failures', byId)}
     {/* THE REST, COUNTED AND IN PLACE (visual QA V144, 2026-10-11): the card
         stopped at six rows and said nothing about a seventh, while Running
         now beside it says "N more". The same disclosure, the same words. */}
     {failed.length > shown.length && (
       <details className="ov-more ov-failures-more">
         <summary>{failed.length - shown.length} more</summary>
-        {failureTable(failed.slice(FAILURE_ROWS), titleOf, now, 'Recent failures, the rest')}
+        {failureTable(failed.slice(FAILURE_ROWS), titleOf, now, 'Recent failures, the rest', byId)}
       </details>
     )}
     </>
@@ -586,7 +592,13 @@ const FAILURE_ROWS = 6
  * rows from the "N more" under them. `name` is the card's title, and the
  * disclosure's table says it is the rest.
  */
-function failureTable(failed: Task[], titleOf: (t: Task) => string | null, now: number, name: string) {
+function failureTable(
+  failed: Task[],
+  titleOf: (t: Task) => string | null,
+  now: number,
+  name: string,
+  taskById: ReadonlyMap<string, Task>,
+) {
   return (
     // FIXED COLUMNS (browser QA D2, 2026-10-04): the row head inherited the
     // head row's `nowrap`, so one long error drew a 1532px table in a 1056px
@@ -602,7 +614,7 @@ function failureTable(failed: Task[], titleOf: (t: Task) => string | null, now: 
       <tbody>
         {failed.map((t) => {
           const href = agentPath(t)
-          const why = whyAgent(t) || (t.state === 'DEAD_LETTERED' ? 'Retry budget spent.' : '')
+          const why = whyAgent(t, null, taskById) || (t.state === 'DEAD_LETTERED' ? 'Retry budget spent.' : '')
           // AN UNTITLED STEP SAYS WHOSE IT IS (live QA OV-16, 2026-10-11):
           // five of eleven rows read "merge" and nothing else. With no title
           // read, the row names its workflow by its short id.
