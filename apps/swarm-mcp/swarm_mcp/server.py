@@ -2268,12 +2268,14 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_qa_targets",
         "description": (
             "The QA targets your selected workspace registered: the web apps its "
-            "visual-QA runs test, each with its base URL, the repository its findings "
-            "are filed in, its host's approval (`pending` until a platform admin "
-            "approves it), whether it signs in with its own login and whether that "
-            "test credential is set (status only: never a username or password), and "
-            "`can_run` with `cannot_run_because`. Optional `repository` (owner/repo or "
-            "a repo_ id) narrows it to one. Read-only; `text` is what to show."
+            "visual-QA runs test, each with the repository its findings are filed in "
+            "and its `environments` (one app's legs, e.g. staging and production), each "
+            "entry with its name, its mark (`production` or `non_production`), its base "
+            "URL, its host's approval (`pending` until a platform admin approves it), "
+            "whether it signs in with its own login, `credential_set` (yes or no: never "
+            "a username, a password or a bypass value), and `can_run` with "
+            "`cannot_run_because`. Optional `repository` (owner/repo or a repo_ id) "
+            "narrows it to one. Read-only; `text` is what to show."
         ),
         "inputSchema": {
             "type": "object",
@@ -2292,9 +2294,13 @@ TOOLS: list[dict[str, Any]] = [
             "repository; `none` reports only) and optionally a subset of its "
             "`screens` ids, and optionally `browser_tool` (`playwright` or `jev`), "
             "the browser tool this one run's flows use. Left out, the target's own "
-            "`flows_browser_tool` decides, and that defaults to `playwright`. A "
-            "pending host is refused (`qa_target_host_pending`). "
-            "Answers the `workflow_id`; follow it with swarm_workflow_status."
+            "`flows_browser_tool` decides, and that defaults to `playwright`. "
+            "`environments` names the legs to run, by the entry names swarm_qa_targets "
+            "lists (default: every entry); never a URL, a sign-in or a credential. Each "
+            "leg is its own workflow; if any named leg cannot run (a pending host is "
+            "`qa_target_host_pending`) nothing starts. Answers the run's `group_id` and "
+            "`legs`, each with its `environment` and `workflow_id`; follow each with "
+            "swarm_workflow_status."
         ),
         "inputSchema": {
             "type": "object",
@@ -2305,6 +2311,10 @@ TOOLS: list[dict[str, Any]] = [
                 "screens": {"type": "array", "maxItems": qatargets.MAX_SCREENS,
                             "items": {"type": "string", "maxLength": 100}},
                 "browser_tool": {"type": "string", "enum": list(qatargets.BROWSER_TOOLS)},
+                "environments": {"type": "array", "minItems": 1,
+                                 "maxItems": qatargets.MAX_ENVIRONMENTS, "uniqueItems": True,
+                                 "items": {"type": "string",
+                                           "pattern": qatargets.ENVIRONMENT_NAME.pattern}},
             },
             "required": ["target"],
         },
@@ -2317,12 +2327,17 @@ TOOLS: list[dict[str, Any]] = [
             "`expires_at` (fifteen minutes, one use, bound to the admin's own "
             "console session and this target). There is deliberately no argument for "
             "the credential: never ask for it, never accept it in chat. Give the "
-            "person the url and tell them to open it."
+            "person the url and tell them to open it. Each environment has its own "
+            "test account, so `environment` names the entry the link is for (required "
+            "when the target has several)."
         ),
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
-            "properties": {"target": {"type": "string", "maxLength": 100}},
+            "properties": {
+                "target": {"type": "string", "maxLength": 100},
+                "environment": {"type": "string", "pattern": qatargets.ENVIRONMENT_NAME.pattern},
+            },
             "required": ["target"],
         },
     },
@@ -4838,7 +4853,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         return json.dumps(
             qatargets.qa_run(client, args.get("target"), screens=args.get("screens"),
                              file=args.get("file", "issues"),
-                             browser_tool=args.get("browser_tool")),
+                             browser_tool=args.get("browser_tool"),
+                             environments=args.get("environments")),
             indent=2,
         )
 
@@ -4846,7 +4862,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # The url and its expiry, nothing else: `qatargets.credential_link`
         # copies those two fields, so not even the API's `path` (which holds
         # the link's token) reaches a transcript.
-        return json.dumps(qatargets.credential_link(client, args.get("target")), indent=2)
+        return json.dumps(qatargets.credential_link(client, args.get("target"),
+                                                    args.get("environment")), indent=2)
 
     if name == "swarm_roles":
         # One GET. A refusal (a deployment predating roles, a 403 for a tenant
