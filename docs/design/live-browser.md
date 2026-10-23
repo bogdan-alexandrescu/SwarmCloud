@@ -1042,11 +1042,30 @@ person on the agent's behalf:
 Solving or evading a challenge stays out of scope: a CAPTCHA is a site owner
 saying no to automated access, and a person answers it or nobody does.
 
-Not yet done: claude-code tells the agent nothing between its tool calls, so
-an agent whose browser call simply blocks on the pause learns of the hand-off
-only from `swarm-handoff wait` or `status`. A PostToolUse hook that reads the
-open answer from the spool would put `GATE_WAITING` in the next tool result;
-it is outside lane CAPTCHA-HANDOFF's files and is asked in its PR.
+**The agent's next tool result says so (CAPTCHA-HANDOFF-2, CLD 2026-10-23 on
+lane CAPTCHA-HANDOFF's question; part of #2058).** claude-code tells an agent
+nothing between its tool calls except through a hook, so an agent whose
+browser call simply blocked on the pause would otherwise learn of the
+hand-off only from `swarm-handoff wait` or `status`. On a live-browser
+attempt -- the one kind the lifecycle sets `SWARM_HANDOFF` for, which is how
+the runner tells a browser profile from any other claude-code agent -- the
+runner's headless settings (`write_headless_settings`,
+`apps/agent-worker/agent_worker/runners/claude_code.py`) register a
+`PostToolUse` hook on every tool,
+`apps/agent-worker/agent_worker/runners/gate_wait_hook.py`, run as `python -I
+<hook> $SWARM_HANDOFF` from the package (named by absolute path, so the agent
+cannot edit the copy that runs). After each call it reads `.last` and the
+answer it names, `responses/<id>.json`; while that answer is `origin: "gate"`
+and `outcome: "waiting"` -- the gate's own request, or an agent's that joined
+it -- it returns the answer's `message`, the `GATE_WAITING` sentence, as
+`hookSpecificOutput.additionalContext`, which the CLI adds to that tool's
+result. Any other answer prints nothing, so the note stops on the call after
+the person returns control. It is standard library only and **fails open**,
+as the stdin hook does: no spool, a missing or symlinked file, a `.last` that
+is not a request id, an answer over 64 KiB or not JSON, or any error, and it
+prints nothing and exits 0. Two bounded reads inside `$SWARM_HANDOFF` and no
+wait; its timeout is 10 seconds. Only the claude-code runner registers it:
+an agent under any other runner learns of it from `swarm-handoff wait`.
 
 ### 4.2 Take control, sign in, return control
 
