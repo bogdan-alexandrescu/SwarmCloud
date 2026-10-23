@@ -361,6 +361,7 @@ def test_a_resumed_start_passes_resume_and_logs_the_session_masked(
 ):
     from agent_worker.runners.base import RunnerContext
     from agent_worker.runners.cliagent import RESUME_PROMPT, CliAgentSpec, run_cli_agent
+    from time_limit_helper import without_limit_line
 
     sid = str(uuid.uuid4())
     monkeypatch.setenv("FAKE_BIN", str(_fake_cli(tmp_path)))
@@ -381,7 +382,9 @@ def test_a_resumed_start_passes_resume_and_logs_the_session_masked(
     # The fake appends what it read on stdin after its argv: the message is
     # the resume prompt, delivered on stdin after `--resume <id>`.
     received = json.loads(out["summary"].split("argv=", 1)[1])
-    assert received[-3:] == ["--resume", sid, RESUME_PROMPT]
+    assert received[-3:-1] == ["--resume", sid]
+    # The message, then this run's own time-limit line (#2139).
+    assert without_limit_line(received[-1]) == RESUME_PROMPT
     assert "the original prompt" not in json.dumps(received), "the session already holds it"
     err = capsys.readouterr().err
     assert sid not in err and "<session>" in err

@@ -153,7 +153,7 @@ PR rather than done.
 
 | Plug point | Symbol | What it does today |
 |---|---|---|
-| Prompt chain for every CLI agent | `agent_worker.runners.cliagent.run_cli_agent` | Appends the issue-file line (`issue.prompt_line`), the child-agents line (`children.prompt_line`), deliverables and `PUBLISH_PARAGRAPH`. There is no system prompt: stdin is "the one instruction channel every CLI runner shares" |
+| Prompt chain for every CLI agent | `agent_worker.runners.cliagent.run_cli_agent` | Appends the issue-file line (`issue.prompt_line`), the child-agents line (`children.prompt_line`), deliverables, the step's time-limit line (`time_limit_line`, #2139) and `PUBLISH_PARAGRAPH`. There is no system prompt: stdin is "the one instruction channel every CLI runner shares" |
 | claude-code body | `agent_worker.runners.claude_code.body` | Adds resume, egress and browser notes; passes `--mcp-config` |
 | Workspace files before the agent starts | `children.prepare` pattern | Writes `work/.swarm-children/README.md` and `work/issue.md` **outside the checkout**, so the worker's publish never commits them |
 | Pre-publish gate (SPEED-D1, merged 2026-10-14) | `agent_worker.prepublish.select_checks`, `Gate.run` | Rebases onto the base (one conflict turn). Runs `scripts/changed-guards.sh --base`, checkov, tflint, shellcheck, ruff and the build-mirror pytest. Gives one fix turn (`FIX_TURNS = 1`). Publishes anyway, with `prepublish-checks.md` appended to the PR body (`Worker._prepublish_section`) |
