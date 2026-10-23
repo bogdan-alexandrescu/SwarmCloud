@@ -274,7 +274,7 @@ separate service: [Q4](#q4-which-service-executes).
 
 ---
 
-### 1.5 The GitHub reads, the issue writes and the `-git-wf` slot (lane AU-1)
+### 1.5 The GitHub reads, the issue writes and workflow-file pushes (lane AU-1)
 
 [docs/design/agent-autonomy.md](design/agent-autonomy.md) §3.1, §3.2, §3.3's
 broker half and §3.7 add eight tools to the same server, on the same route
@@ -354,20 +354,31 @@ is public. `issue_comment` is `not_an_issue` on a pull request (the merge
 step's and the review's channel) and `issue_closed` on a closed issue unless
 `reopen: false` is stated; an agent never reopens one.
 
-**The `-git-wf` slot** (owner decision Q3). Before every `git_push_branch`
-swarm-api lists the paths the bundle's new commits touch, in a scratch
-repository holding the forge's prerequisite commits at depth 1 and the
-bundle's objects (`git log --name-only -m --no-renames`), never from a list
-the request carries. When any is under `.github/workflows/` or
-`.github/actions/`, the push is made with `swarm-tenant-<tenant>-git-wf`
-(declared by `terraform/infra/git_tools.tf`, readable by swarm-api alone,
-IAM row L-2) -- but only for the tenant's `platform: true` registration
-and only when the slot holds a version. Otherwise it is refused
-`workflow_scope_missing`, naming the files, before anything reaches the
-forge, instead of GitHub's generic `remote_rejected`. A push that touches no
-workflow file never reads the slot. The audit row names the slot `git-wf`
-and the `workflow_paths`. Merging such a change stays the owner's
-(`NEEDS_OWNER`, lane FR-1).
+**Workflow-file pushes** (#2029, lane WF-APP-TOKEN, superseding the
+`-git-wf` slot of owner decision Q3, which is removed with IAM row L-2).
+Before every `git_push_branch` swarm-api lists the paths the bundle's new
+commits touch, in a scratch repository holding the forge's prerequisite
+commits at depth 1 and the bundle's objects (`git log --name-only -m
+--no-renames`), never from a list the request carries. When any is under
+`.github/workflows/` or `.github/actions/` and the agent's own repository's
+registration has its `workflow_files` switch on (off by default; only a
+stored `true` is on, `platform: true` alone is not), swarm-api mints a
+SwarmCloud GitHub App installation token for that ONE repository
+(`repositories=[<repo>]`) with exactly `contents: write` and
+`workflows: write`, from the workspace's own installation, and pushes with
+it (`forge_installation.InstallationTokens.workflow_push_token`). It is
+minted for that push alone: never cached, stored, logged or handed to a
+worker. With the switch off -- or when the mint fails because the
+installation has not granted Workflows, does not cover the repository, or
+does not exist -- the push is refused `workflow_scope_missing`, naming the
+files and ending "Push without those files and write them as
+workflow-lines.patch", before anything reaches the forge, instead of
+GitHub's generic `remote_rejected`; the end-of-agent publish then leaves the
+diff as `workflow-lines.patch` in the agent's artifacts. A push that touches
+no workflow file mints nothing. The audit row names `credential:
+app_installation` and the `workflow_paths`, never the token. Merging such a
+change stays the owner's (`NEEDS_OWNER`, `STOP_WORKFLOWS`, lane FR-1)
+whatever the run's merge gate says ([design/agent-autonomy.md](design/agent-autonomy.md) §3.3).
 
 ## 2. The credential
 

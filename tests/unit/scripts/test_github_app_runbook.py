@@ -15,7 +15,8 @@ names, so these tests hold them together:
     should have made;
   * the registration settings the design fixes are in the runbook: the callback
     URL on the console host, user authorisation during installation, expiring
-    user tokens, the D8 permission set with no workflows write, no webhook;
+    user tokens, the D8 permission set plus Workflows and Actions write, no
+    webhook at registration;
   * the non-secret settings land in tfvars variables that exist.
 
 The script is run for real with a fake `gcloud` on PATH that records what it
@@ -143,7 +144,12 @@ def test_every_store_command_in_the_runbook_reads_stdin() -> None:
         "Issues: Read and write",
         "Checks: Read-only",
         "Metadata: Read-only",
-        "Workflows: No access",
+        # Added to the App on 2026-10-23 (#2029): the per-repository
+        # workflow-file push token. The old "No access" is not kept.
+        "Workflows: Read and write",
+        # mergewake.py re-runs a failed CI job (GitHubWriter.rerun_job,
+        # forgewrite.ACTIONS_WRITE); held since before 2026-10-23.
+        "Actions: Read and write",
         "Webhook",
         "github_app_client_id",
         "enable_forge_user_slots",
@@ -156,6 +162,14 @@ def test_every_store_command_in_the_runbook_reads_stdin() -> None:
 )
 def test_the_runbook_states_each_fixed_setting(phrase: str) -> None:
     assert phrase in _runbook(), f"runbook does not say {phrase!r}"
+
+
+def test_the_runbook_no_longer_says_workflows_no_access() -> None:
+    # The control for "Workflows: Read and write" above: a runbook that still
+    # carried the pre-2026-10-23 setting would tell the owner both.
+    assert "Workflows: No access" not in _runbook(), (
+        "runbook still says Workflows: No access; the App holds Read and write since 2026-10-23 (#2029)"
+    )
 
 
 def test_the_runbook_turns_the_webhook_off() -> None:
