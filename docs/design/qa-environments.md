@@ -733,3 +733,41 @@ schedule naming two legs refused until then.
 **F-1, F-2 (facts, not choices).** AI Studio's production sign-in host,
 `login_path`, IdP origin and whether it is the chooser's Production toggle on
 `https://studio.saga.xyz`; and whether its production account has MFA.
+
+---
+
+## 10. Owner decisions (2026-10-23, ~12:00 PDT / 19:00Z)
+
+BGD answered every question in §9 in the console session that dispatched this
+lane. Each answer is recorded on the design task (`task_182e885f55a44323940e`,
+`owner_answers`). The build lanes of §8 follow these:
+
+| question | BGD's answer |
+|---|---|
+| Q1, one app, several environments | **(a) one target with an `environments[]` list** (§1) |
+| Q2, one dispatch, both legs | **(a) one workflow per leg, linked by a run group** (§2) |
+| Q3, discovery during QA | **(a) every capture step crawls the same graph and captures the new routes it owns by a hash of the path** (§3.1) |
+| Q4, discovery reach | **(a) more link sources plus disclosure-only clicks, on every leg**, the gate's write refusal as the backstop (§4) |
+| Q5, where found routes go | **(c) both: merged into the leg's `discovered` after every run, and shown for an admin to promote into `screens`** (§5) |
+| Q6, production writes | **(a) no: production legs read only; §3 of visual-qa-any-app.md unchanged** (§6) |
+| Q7, production MFA | **(a) an MFA-free, least-privilege QA account in production** (§6) |
+| Q8, filing | **(a) one issue per finding per environment**, the leg in the dedupe key and the title (§7) |
+| Q9, schedule caps | **(a) $40 a leg, `max_concurrent` 2, $160 a day** (§2.2) |
+| new routes per capture step (from CLD's review) | **8 by default** (`discover.found_per_step: 8`, not 4). Stored plus new routes stay at most 60 per leg (§3.1). |
+
+**F-1, read by CLD from the ai-studio repository** (checkout `7b4d28dd0`,
+2026-10-19; see the PR comment):
+- AI Studio's production leg is the chooser's **Production** toggle on the same
+  origin, `https://studio.saga.xyz`. `DEPLOY.md` calls it "the single canonical origin".
+- Its identity provider is `https://sso.galatia.saga.xyz/realms/sagents` (client
+  `ai-studio-web`), so that is the production entry's `extra_origin`.
+- Production writes travel through the shared origin: `routes/ship.py` forwards
+  the browser's production token to `https://api.galatia.saga.xyz`. §1.5's
+  shared-origin rule is therefore required for AI Studio, not optional. Both of its
+  legs run read-only.
+- The production sign-in's token exchange needs the IdP token path that
+  QA-IDP-POST (#2067) allows.
+
+**F-2** stays open: whether production Galatia's `sagents` realm requires a
+second factor for a QA account. Under Q7 the answer is to create an MFA-free QA
+account there; BGD or the app's owner does that.
