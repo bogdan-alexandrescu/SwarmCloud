@@ -44,19 +44,21 @@ SESSION = "sess-" + "c3d4e5f60718293a"
 LIMIT = 6.0
 GRACE = 1.0
 
-#: One start of the fake CLI. Every start appends its argv, stdin and start
-#: time to `$HOME/runs.jsonl`. A resumed start (`--resume`) answers at once --
-#: the second start with `FAKE_WRAP_ANSWER`, or, under `FAKE_WRAP_LOOPS`, by
-#: running turns until it is killed; a later one with "All done.". A fresh
-#: start does what `FAKE_MODE` says: `turns` emits a turn boundary every 0.2 s
-#: and never ends by itself; `silent` sits in one long call with no boundary;
-#: `short` emits turns for `FAKE_SECONDS` and then succeeds.
+#: One start of the fake CLI, told what to do by `key=value` arguments (the
+#: runner hands the child no variable of the test's own). Every start appends
+#: its argv, stdin and start time to `$HOME/runs.jsonl`. A resumed start
+#: (`--resume`) answers at once -- the second start with `wrap=` (or, given
+#: `loops`, by running turns until it is killed); a later one with "All
+#: done.". A fresh start does what `mode=` says: `turns` emits a turn boundary
+#: every 0.2 s and never ends by itself; `silent` sits in one long call with no
+#: boundary; `short` emits turns for `seconds=` and then succeeds.
 FAKE_CLI = r'''#!PYTHON
 import json, os, pathlib, sys, time
 home = pathlib.Path(os.environ["HOME"])
 runs = home / "runs.jsonl"
 index = len(runs.read_text().splitlines()) if runs.exists() else 0
 stdin = sys.stdin.read()
+opts = dict(arg.split("=", 1) for arg in sys.argv[1:] if "=" in arg)
 with runs.open("a") as f:
     f.write(json.dumps({"argv": sys.argv[1:], "stdin": stdin, "at": time.time()}) + "\n")
 
@@ -74,14 +76,14 @@ def done(answer):
 
 emit({"type": "system", "subtype": "init", "session_id": "SESSION"})
 if "--resume" in sys.argv:
-    if index == 1 and os.environ.get("FAKE_WRAP_LOOPS"):
+    if index == 1 and opts.get("wrap") == "loops":
         while True:
             turn()
             time.sleep(0.2)
     if index == 1:
-        done(os.environ.get("FAKE_WRAP_ANSWER", "Committed; the pull request files are written."))
+        done(opts.get("wrap", "Committed; the pull request files are written."))
     done("All done.")
-mode = os.environ["FAKE_MODE"]
+mode = opts["mode"]
 if mode == "turns":
     while True:
         turn()
@@ -89,7 +91,7 @@ if mode == "turns":
 elif mode == "silent":
     time.sleep(120)
 else:
-    end = time.time() + float(os.environ["FAKE_SECONDS"])
+    end = time.time() + float(opts["seconds"])
     while time.time() < end:
         turn()
         time.sleep(0.2)
@@ -142,17 +144,19 @@ class _Spy:
         monkeypatch.setattr(cliagent, "_run_watched", spy_watched)
 
 
-def _install(tmp_path: Path, monkeypatch, mode: str, *, finish_min: float = 1.0) -> _Spy:
+def _install(
+    tmp_path: Path, monkeypatch, *args: str, finish_min: float = 1.0
+) -> _Spy:
     cli = tmp_path / "fake-cli"
     cli.write_text(FAKE_CLI)
     cli.chmod(0o755)
-    for name in ("FAKE_ARGS", "MODEL", "SWARM_CHILDREN", cliagent.ACCOUNT_MOVE_ENV,
+    for name in ("MODEL", "SWARM_CHILDREN", cliagent.ACCOUNT_MOVE_ENV,
                  cliagent.RESUME_SESSION_ENV, cliagent.RESUME_REASON_ENV,
                  cliagent.SESSION_FILE_ENV):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("FAKE_BIN", str(cli))
     monkeypatch.setenv("FAKE_KEY", "k-" + pysecrets.token_hex(8))
-    monkeypatch.setenv("FAKE_MODE", mode)
+    monkeypatch.setenv("FAKE_ARGS", json.dumps(list(args)))
     # On a pool account: the stream is watched, so turn boundaries are seen.
     monkeypatch.setenv(cliagent.ACCOUNT_STREAM_ENV, str(tmp_path / "stream.json"))
     monkeypatch.setenv(TIMEOUT_ENV, str(LIMIT))
@@ -177,7 +181,7 @@ def test_stops_at_a_turn_boundary_before_the_deadline_and_resumes_to_wrap_up(
     tmp_path, monkeypatch
 ):
     ctx = _ctx(tmp_path)
-    spy = _install(tmp_path, monkeypatch, "turns")
+    spy = _install(tmp_path, monkeypatch, "mode=turns")
     began = time.time()
 
     run_cli_agent(ctx, _spec())
@@ -195,11 +199,15 @@ def test_stops_at_a_turn_boundary_before_the_deadline_and_resumes_to_wrap_up(
     assert spy.budgets[0] == LIMIT
     assert spy.budgets[1] <= LIMIT - 3.0, spy.budgets
     assert ctx.report.get("resumed_to_wrap_up") is True
+    # A CLI that echoes the message is not misread as a 429 or a dead credential.
+    said = cliagent.WRAP_UP_PROMPT.lower()
+    markers = (*cliagent._RATE_LIMIT_MARKERS, *cliagent._CREDENTIAL_MARKERS)
+    assert [m for m in markers if m in said] == []
 
 
 def test_successful_wrap_up_is_not_a_timeout(tmp_path, monkeypatch):
     ctx = _ctx(tmp_path)
-    _install(tmp_path, monkeypatch, "turns")
+    _install(tmp_path, monkeypatch, "mode=turns")
 
     out = run_cli_agent(ctx, _spec())
 
@@ -211,7 +219,7 @@ def test_successful_wrap_up_is_not_a_timeout(tmp_path, monkeypatch):
 
 def test_no_turn_boundary_is_still_killed_at_the_hard_deadline(tmp_path, monkeypatch):
     ctx = _ctx(tmp_path)
-    spy = _install(tmp_path, monkeypatch, "silent")
+    spy = _install(tmp_path, monkeypatch, "mode=silent")
 
     with pytest.raises(RunnerFailure) as caught:
         run_cli_agent(ctx, _spec())
@@ -226,8 +234,7 @@ def test_too_little_budget_skips_the_wrap_up(tmp_path, monkeypatch):
     # A 3 s margin is less than a 60 s finish floor: the soft deadline is
     # never armed, and the run goes on to end by itself as before.
     ctx = _ctx(tmp_path)
-    monkeypatch.setenv("FAKE_SECONDS", "4")
-    spy = _install(tmp_path, monkeypatch, "short", finish_min=60.0)
+    spy = _install(tmp_path, monkeypatch, "mode=short", "seconds=4", finish_min=60.0)
 
     out = run_cli_agent(ctx, _spec())
 
@@ -241,8 +248,8 @@ def test_wrap_up_runs_once_and_never_past_the_budget(tmp_path, monkeypatch):
     # A wrap-up answer that announces pending work gets the finish pass --
     # inside what the first start AND the wrap-up pass left, not more.
     ctx = _ctx(tmp_path)
-    monkeypatch.setenv("FAKE_WRAP_ANSWER", "The suite is still running in the background.")
-    spy = _install(tmp_path, monkeypatch, "turns")
+    spy = _install(tmp_path, monkeypatch, "mode=turns",
+                   "wrap=The suite is still running in the background.")
     began = time.time()
 
     out = run_cli_agent(ctx, _spec(finish_on_pending=True))
@@ -258,8 +265,7 @@ def test_wrap_up_runs_once_and_never_past_the_budget(tmp_path, monkeypatch):
     # And a wrap-up pass that keeps running turns is never stopped a second
     # time: it is killed at what is left of the hard deadline.
     ctx = _ctx(tmp_path / "again")
-    monkeypatch.setenv("FAKE_WRAP_LOOPS", "1")
-    spy = _install(tmp_path, monkeypatch, "turns")
+    spy = _install(tmp_path, monkeypatch, "mode=turns", "wrap=loops")
     began = time.time()
 
     with pytest.raises(RunnerFailure) as caught:
