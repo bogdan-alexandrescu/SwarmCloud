@@ -20,15 +20,29 @@ THE RULE IS THE WORKER'S, WRITTEN TWICE: the two images copy only their own
 app and `apps/common/`, and `apps/common/swarm_common/` is frozen.
 tests/unit/worker/test_territory_warn.py holds the two to the same answers.
 What an entry means is documented in `agent_worker.territory`.
+
+A CI-FIX ROUND RUNS WITH ITS LANE'S TERRITORY (CIFIX-TERRITORY, part of
+#1499). On PR 1485 (2026-10-17) a PR-side fix round edited
+`apps/swarm-mcp/swarm_mcp/sc.py` on a worker-core lane and turned a key
+refusal into exit 0; its task declared no territory, so nothing warned.
+`cifix.stamp` now copies the lane's declaration onto the round's step and
+appends `round_brief` to its prompt. Still a warning, never a refusal: the
+owner's #1468 decision covers a round as it covers a lane.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Sequence
 
 #: The key of `input` a step declares its territory under.
 TERRITORY_INPUT_KEY = "territory"
+
+#: The label the worker puts on a pull request whose diff leaves the
+#: territory (`agent_worker.territory.OUT_OF_TERRITORY_LABEL`), named here
+#: for `round_brief`. tests/unit/worker/test_territory_warn.py holds the two
+#: equal.
+OUT_OF_TERRITORY_LABEL = "out-of-territory"
 
 #: Bounds on a declaration; `agent_worker.territory` says why.
 MAX_ENTRIES = 200
@@ -148,3 +162,30 @@ def parse(raw: Any) -> list[re.Pattern[str]]:
     if len(raw) > MAX_ENTRIES:
         raise TerritoryError(f"territory has {len(raw)} entries; at most {MAX_ENTRIES}")
     return [compile_entry(entry, index) for index, entry in enumerate(raw)]
+
+
+def round_brief(entries: Sequence[str]) -> str:
+    """The paragraph a CI-fix round's prompt gains when its lane declares
+    `entries` (CIFIX-TERRITORY, part of #1499).
+
+    An entry holds no control character (`compile_entry`), so one per line
+    cannot end the list early; each is a code span, so a `*` in a glob is not
+    read as emphasis.
+    """
+    lines = [
+        "THIS PULL REQUEST'S TERRITORY. The lane whose branch this is declared the only "
+        f"files it may edit (`inputs.{TERRITORY_INPUT_KEY}`), and this round runs with the "
+        "same territory:",
+        "",
+    ]
+    lines += ["- `" + entry.replace("`", "'") + "`" for entry in entries]
+    lines += [
+        "",
+        "Edit only files inside it. When a failure's cause lies outside it, do not edit "
+        "that file: write a question to $SWARM_ARTIFACTS_DIR/questions.json (a JSON list of "
+        "{question, options: [{label, description}], recommended, context}) naming the file "
+        "and the failure, and leave that failure unfixed. A push that touches a path outside "
+        "the territory still publishes, but its pull request is labelled "
+        f"`{OUT_OF_TERRITORY_LABEL}` and the paths are listed on it.",
+    ]
+    return "\n".join(lines)
