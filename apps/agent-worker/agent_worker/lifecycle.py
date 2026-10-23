@@ -12747,9 +12747,10 @@ class Worker:
         # pull request still opens, its body STARTING with the paths and
         # carrying the label (owner decision, 2026-10-19). The territory is
         # the task's stored input, never anything the agent wrote.
-        outside_header, labels = self._territory_warning(
+        outside, labels = self._territory_warning(
             publish_repo, head=str(pushed or work_head or ""), out=out
         )
+        outside_header = territory_mod.warning_header(outside) if outside else ""
         if outside_header:
             body = f"{outside_header}\n\n---\n\n{body}"
         # The generated block quotes the step's prompt, which is anyone's
@@ -12779,7 +12780,11 @@ class Worker:
                     agent_body=agent_body, branch=branch, head=str(pushed or work_head or "")
                 )
                 + (f"\n\n{prepublish}" if prepublish else "")
-                + (f"\n\n{outside_header}" if outside_header else "")
+                # A push onto an open pull request says WHERE its warning is,
+                # not the warning: that is one comment, posted below once the
+                # pull request is adopted, since a section at the bottom of a
+                # long body is easy to miss (CIFIX-TERRITORY-2, part of #1499).
+                + (f"\n\n{territory_mod.COMMENTED_NOTE}" if outside else "")
             ),
             origin=cfg.console_url,
             task_id=cfg.task_id,
@@ -12807,7 +12812,13 @@ class Worker:
             )
             self.log.warning("no pull request opened: no usable agent title", refused=refused)
             return out
+        # The token the pull request was last asked with: after a 401 re-read
+        # (`_open_pull_request_reading_again`) the first one is dead, and the
+        # territory comment below goes with the one that worked.
+        asked_with = [token]
+
         def open_with(with_token: str) -> PullRequest:
+            asked_with[0] = with_token
             # Retried on an outage: a POST that timed out after GitHub made
             # the pull request is answered 422 on the next try, which
             # `open_pull_request` resolves by adopting the open one.
@@ -12877,6 +12888,11 @@ class Worker:
             if label_error:
                 out["out_of_territory"]["label_error"] = str(self._scrub(label_error[:300]))
                 self.log.warning("the out-of-territory label was not set", error=label_error[:300])
+            if pr.number and not pr.created:
+                self._post_territory_comment(
+                    access=access, token=asked_with[0], number=pr.number,
+                    outside=outside, out=out,
+                )
         updated = bool(getattr(pr, "updated", False))
         retitled = bool(getattr(pr, "retitled", False))
         appended = bool(getattr(pr, "appended", False))
@@ -13172,14 +13188,15 @@ class Worker:
 
     def _territory_warning(
         self, publish_repo: Path | None, *, head: str, out: dict[str, Any]
-    ) -> tuple[str, list[str]]:
-        """`(header, labels)` for a pull request whose diff leaves the step's
-        declared territory, or `("", [])` (TERRITORY-WARN, part of #1468).
+    ) -> tuple[list[str], list[str]]:
+        """`(paths, labels)` for a pull request whose diff leaves the step's
+        declared territory -- the paths outside it, sorted -- or `([], [])`
+        (TERRITORY-WARN, part of #1468).
 
         The territory is `inputs.territory` in the task document as stored:
         submitted by the caller, refused at submit when malformed, and covered
         by the spec signature -- never a file in the workspace. A step that
-        declares none returns `("", [])` before git is asked anything, so its
+        declares none returns `([], [])` before git is asked anything, so its
         publish is exactly what it was.
 
         Records `out["out_of_territory"]` (the paths) when there are any, and
@@ -13193,9 +13210,9 @@ class Worker:
         except territory_mod.TerritoryError as exc:
             out["territory_unchecked"] = f"the declared territory is malformed: {exc}"[:400]
             self.log.warning("the declared territory could not be read", error=str(exc)[:300])
-            return "", []
+            return [], []
         if territory is None:
-            return "", []
+            return [], []
         ws = self.ws
         paths = None
         if publish_repo is not None and ws is not None:
@@ -13217,14 +13234,67 @@ class Worker:
                 "compared with the declared territory"
             )
             self.log.warning("the declared territory was not compared")
-            return "", []
+            return [], []
         outside = territory_mod.outside(paths, territory)
         if not outside:
-            return "", []
+            return [], []
         out["out_of_territory"] = {"paths": outside[: territory_mod.MAX_LISTED],
                                    "count": len(outside)}
         self.log.warning("the diff leaves the declared territory", paths=len(outside))
-        return territory_mod.warning_header(outside), [territory_mod.OUT_OF_TERRITORY_LABEL]
+        return outside, [territory_mod.OUT_OF_TERRITORY_LABEL]
+
+    def _post_territory_comment(
+        self, *, access: RepoAccess, token: str, number: int, outside: list[str],
+        out: dict[str, Any],
+    ) -> None:
+        """ONE comment on the adopted pull request `number` saying which of this
+        push's paths left the territory (CIFIX-TERRITORY-2, part of #1499).
+
+        CLD, 2026-10-23: the label alone, plus a section appended at the bottom
+        of a long body, is easy to miss. The comment starts with the header in
+        its continuation form and ends with a hidden marker naming this task
+        and attempt, so a publish of the same attempt again finds it and posts
+        nothing. Still a warning, never a refusal (#1468): a comment the forge
+        refuses is recorded in `out["out_of_territory"]` and logged, as a
+        refused label is, and the publish stands.
+
+        Reached only from `_publish_git`, after the push: a fenced attempt
+        never gets here (invariant 5), so a stale worker posts nothing.
+        """
+        record = out.setdefault("out_of_territory", {})
+        marker = (
+            f"<!-- swarm:out-of-territory task={self.cfg.task_id} "
+            f"attempt={self.cfg.attempt_id} -->"
+        )
+        ref = access.ref
+        try:
+            # A read is retried on an outage; the POST is not, since one whose
+            # answer was lost may have made the comment (the marker finds it).
+            existing = forge_mod.retry_transient(
+                lambda: forge_mod.list_issue_comments(ref=ref, token=token, number=number),
+                policy=self._forge_retry(),
+                what="the pull request's comments",
+            )
+        except ForgeError as exc:
+            # Unread is not "none there": posting anyway risks a second copy of
+            # a warning, which is better than the warning not being made.
+            existing = []
+            self.log.warning("the pull request's comments could not be read",
+                             error=str(self._scrub(str(exc)[:300])))
+        if any(marker in body for body in existing):
+            record["comment"] = "already posted"
+            return
+        body = _neutralise_mentions(
+            territory_mod.warning_header(outside, continuation=True)
+        ) + f"\n\n{marker}"
+        try:
+            record["comment"] = forge_mod.create_issue_comment(
+                ref=ref, token=token, number=number, body=body
+            )
+        except ForgeError as exc:
+            error = str(self._scrub(str(exc)[:300]))
+            record["comment_error"] = error
+            self.log.warning("the out-of-territory comment was not posted", error=error)
 
     def _pull_request_body(
         self,

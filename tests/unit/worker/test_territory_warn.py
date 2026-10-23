@@ -348,3 +348,201 @@ def test_a_push_onto_an_open_pull_request_labels_it_and_appends_the_paths(monkey
     # and nothing on the pull request says which path.
     assert header in patch["body"]
     assert "- `apps/swarm-mcp/swarm_mcp/sc.py`" in patch["body"]
+
+
+# ---------------------------------------------------------------------------
+# A push onto an open pull request that leaves the territory is said in ONE
+# comment (CIFIX-TERRITORY-2, part of #1499). CLD, 2026-10-23: a section at
+# the bottom of a long body is easy to miss. Still a warning, never a refusal
+# (#1468): the label goes on as before and the publish succeeds.
+# ---------------------------------------------------------------------------
+
+CONTINUATION_SAYS = "This push onto an open pull request was published anyway"
+OPENED_SAYS = "The pull request opened anyway"
+MARKER = "<!-- swarm:out-of-territory"
+
+
+class _OpenPullRequest:
+    """The lane's pull request, already open: every publish adopts it. Its
+    comments live here, read and posted through `forge`'s two calls."""
+
+    def __init__(self, *, post_fails: bool = False) -> None:
+        self.pulls: list[dict] = []
+        self.comments: list[str] = []
+        self.posts = 0
+        self.post_fails = post_fails
+
+    def open_pull_request(self, **kwargs):
+        self.pulls.append(kwargs)
+        labels = tuple(kwargs.get("labels") or ())
+        return lifecycle.PullRequest(
+            number=7, url="https://github.com/acme/widgets/pull/7", state="open",
+            created=False, updated=True, appended=True, labelled=labels,
+        )
+
+    def list_comments(self, *, ref, token, number):
+        assert number == 7
+        return list(self.comments)
+
+    def post_comment(self, *, ref, token, number, body):
+        assert number == 7
+        self.posts += 1
+        if self.post_fails:
+            raise lifecycle.ForgeError("could not comment on issue #7 (403): Forbidden")
+        self.comments.append(body)
+        return 1000 + len(self.comments)
+
+
+def _continue(worker_factory, monkeypatch, origin, forge, *, files, territory,
+              post_fails=False, publishes=1):
+    """A round that writes `files` and publishes onto the lane's open pull
+    request `publishes` times, as one attempt; what it asked of the forge."""
+    from agent_worker import forge as forge_mod
+
+    lane = _OpenPullRequest(post_fails=post_fails)
+    monkeypatch.setattr(lifecycle, "open_pull_request", lane.open_pull_request)
+    monkeypatch.setattr(forge_mod, "list_issue_comments", lane.list_comments)
+    monkeypatch.setattr(forge_mod, "create_issue_comment", lane.post_comment)
+    task_id = "task_round"
+    worker, config, _ = worker_factory(
+        task_id=task_id, attempt_id=f"att-{task_id}", lease_id=f"lease-{task_id}",
+        repository_url=f"file://{origin}",
+    )
+    warned: list[tuple[str, dict]] = []
+    real_warning = worker.log.warning
+
+    def warning(message, **fields):
+        warned.append((message, fields))
+        return real_warning(message, **fields)
+
+    monkeypatch.setattr(worker.log, "warning", warning)
+    worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
+    task = {"task_id": task_id, "metadata": {"dispatch": {"strategy": "direct-pr"}},
+            "input": {"prompt": "fix CI", "territory": territory}}
+    worker._task = task
+    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    assert worker._maybe_clone(task) is not None, "the clone did not land"
+    repo = worker.ws.work / lifecycle.REPO_DIR_NAME
+    for name in files:
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"the round's {name}\n")
+    (worker.ws.artifacts / "pr-title.txt").write_bytes(b"CI is green again\n")
+    outs = []
+    for _ in range(publishes):
+        out = worker._harvest_git(publish=True)
+        # MUTATION: let a comment the forge refused fail the publish -- a
+        # warning becomes a refusal, against #1468.
+        assert out["published"] is True, out.get("publish_reason")
+        outs.append(out)
+    return outs, lane, warned
+
+
+@_needs_git
+def test_a_continuation_outside_the_territory_posts_one_comment_and_labels_it(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    from agent_worker import territory as worker_rule
+
+    (out,), lane, _ = _continue(
+        worker_factory, monkeypatch, origin, forge,
+        files=["a.py", "b.py"], territory=["a.py"],
+    )
+    # MUTATION: post nothing -- the warning is only the section at the bottom
+    # of a long body, which is what CLD found easy to miss.
+    assert len(lane.comments) == 1, lane.comments
+    (comment,) = lane.comments
+    # MUTATION: post the opened-PR wording -- a round's push did not open it.
+    assert comment.startswith(worker_rule.warning_header(["b.py"], continuation=True)), comment
+    assert comment.startswith(HEADER + "\n"), comment
+    assert CONTINUATION_SAYS in comment and OPENED_SAYS not in comment, comment
+    # MUTATION: drop the path list -- the comment says "outside" and not where.
+    assert [ln for ln in comment.splitlines() if ln.startswith("- ")] == ["- `b.py`"], comment
+    # MUTATION: drop the marker -- a retry of the attempt cannot find its comment.
+    assert MARKER in comment and "att-task_round" in comment, comment
+    (pull,) = lane.pulls
+    # MUTATION: stop asking for the label once the comment is posted.
+    assert list(pull.get("labels") or []) == [LABEL], pull.get("labels")
+    amendment = pull["amendment"]
+    # MUTATION: keep the header in the appended section -- the warning is said twice.
+    assert HEADER not in amendment and "- `b.py`" not in amendment, amendment
+    # MUTATION: drop the pointer line -- the body no longer says where the warning went.
+    assert "out-of-territory warning was posted as a comment" in amendment, amendment
+    assert out["out_of_territory"]["comment"] == 1001, out["out_of_territory"]
+
+
+@_needs_git
+def test_the_same_attempt_publishing_twice_comments_once(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    outs, lane, _ = _continue(
+        worker_factory, monkeypatch, origin, forge,
+        files=["b.py"], territory=["a.py"], publishes=2,
+    )
+    # MUTATION: skip the marker lookup -- every retry of the attempt posts again.
+    assert len(lane.comments) == 1, lane.comments
+    assert lane.posts == 1
+    assert outs[1]["out_of_territory"]["comment"] == "already posted", outs[1]["out_of_territory"]
+
+
+@_needs_git
+def test_a_continuation_inside_the_territory_posts_no_comment_and_no_label(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    (out,), lane, _ = _continue(
+        worker_factory, monkeypatch, origin, forge,
+        files=["a.py", "apps/widget/size.py"], territory=["a.py", "apps/widget/"],
+    )
+    # MUTATION: comment on every continuation -- a round inside its territory is warned.
+    assert lane.comments == [] and lane.posts == 0, lane.comments
+    (pull,) = lane.pulls
+    # MUTATION: label every continuation.
+    assert not pull.get("labels"), pull.get("labels")
+    assert "out-of-territory" not in pull["amendment"]
+    assert "out_of_territory" not in out
+
+
+@_needs_git
+def test_a_newly_opened_pull_request_keeps_the_opened_wording(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    from agent_worker import territory as worker_rule
+
+    _, pull = _publish(
+        worker_factory, monkeypatch, origin, forge,
+        files=["a.py", "b.py"],
+        task_input={"prompt": "fix it", "territory": ["a.py"]},
+    )
+    # MUTATION: give a new pull request the continuation wording.
+    assert pull["body"].startswith(worker_rule.warning_header(["b.py"])), pull["body"]
+    assert OPENED_SAYS in pull["body"].split("\n---\n", 1)[0]
+    assert CONTINUATION_SAYS not in pull["body"]
+
+
+def test_the_opened_wording_is_unchanged():
+    """Pinned verbatim: a newly opened pull request says what it said before."""
+    from agent_worker import territory as worker_rule
+
+    # MUTATION: reword the default form while adding the continuation one.
+    assert worker_rule.warning_header(["b.py"]) == (
+        HEADER + "\n\n- `b.py`\n\nThis step declared its territory in "
+        "`inputs.territory`, and the path above matches none of its entries. "
+        "The pull request opened anyway (owner decision, 2026-10-19); merging "
+        "still needs the review verdict and green CI."
+    )
+
+
+@_needs_git
+def test_a_comment_the_forge_refuses_leaves_the_publish_successful_and_is_logged(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    (out,), lane, warned = _continue(
+        worker_factory, monkeypatch, origin, forge,
+        files=["b.py"], territory=["a.py"], post_fails=True,
+    )
+    assert lane.posts == 1
+    # MUTATION: swallow the failure silently -- nobody learns the warning is missing.
+    assert any(m == "the out-of-territory comment was not posted" for m, _ in warned), warned
+    assert "403" in out["out_of_territory"]["comment_error"], out["out_of_territory"]
+    # MUTATION: drop the label when the comment fails.
+    assert list(lane.pulls[0].get("labels") or []) == [LABEL]
