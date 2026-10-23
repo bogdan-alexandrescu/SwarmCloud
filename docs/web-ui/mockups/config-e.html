@@ -70,9 +70,11 @@ table.doct tr:last-child td{border-bottom:0}
 .ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
 .F{font:14px/1.45 var(--font);color:var(--text);text-align:left}
 .F a{color:var(--info);text-decoration:none}
-.app{display:flex;width:1440px;min-height:760px;background:var(--bg)}
+/* 1440 wide, or the page's own width when the window is narrower, so no frame is cut at its right edge */
+.app{display:flex;width:clamp(1180px,100%,1440px);min-height:760px;background:var(--bg)}
 .app.crop{width:320px;min-height:640px}
 .app.crop .ct{display:none}
+.scroller:has(>.crop){width:max-content;max-width:100%}
 
 /* spine: deep blue in both themes, like the built Spine.tsx */
 .sp{width:84px;flex:none;background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:14px 0 12px;gap:2px;color:#bcd6ee}
@@ -112,8 +114,8 @@ table.doct tr:last-child td{border-bottom:0}
 .pgrow{flex:1}
 .pf{border-top:1px solid var(--line);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px}
 .pf .who{display:flex;gap:9px;align-items:center}
-.pf .who span{display:flex;flex-direction:column;line-height:1.25}.pf .who b{font-size:13px}.pf .who small{font-size:12px;color:var(--text-dim)}
-.pf .tseg button{padding:3px 8px;font-size:12px}
+.pf .who span:not(.av){display:flex;flex-direction:column;line-height:1.25}.pf .who b{font-size:13px}.pf .who small{font-size:12px;color:var(--text-dim)}
+.pf .tseg button{padding:3px 8px;font-size:12px;flex:1;justify-content:center}
 
 /* content */
 .ct{flex:1;min-width:0;padding:18px 28px 32px;display:flex;flex-direction:column;gap:14px}
@@ -278,13 +280,16 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 .ph .rs thead{display:none}
 .ph .rs,.ph .rs tbody,.ph .rs tr,.ph .rs td{display:block;width:100%}
 .ph .rs tr{border:1px solid var(--line);border-radius:10px;background:var(--surface);margin-bottom:8px;padding:6px 0}
-.ph .rs td{display:flex;justify-content:space-between;gap:12px;border:0;padding:4px 12px;text-align:right;align-items:flex-start;flex-wrap:wrap}
+/* label left, everything else grouped right; a cell's small second line gets its own line, right-aligned */
+.ph .rs td{display:flex;justify-content:flex-end;gap:4px 12px;border:0;padding:4px 12px;text-align:right;align-items:flex-start;flex-wrap:wrap}
 .ph .rs td>*{text-align:right}
-.ph .rs td::before{content:attr(data-l);color:var(--text-dim);font-size:12px;text-align:left;flex:none}
+.ph .rs td::before{content:attr(data-l);color:var(--text-dim);font-size:12px;text-align:left;flex:none;margin-right:auto}
 .ph .rs td:first-child{font-weight:600;justify-content:flex-start;text-align:left}
 .ph .rs td:first-child::before{display:none}
 .ph .rs td:empty{display:none}
-.ph .rs td small{text-align:right}
+.ph .rs td small{text-align:right;flex-basis:100%}
+.ph .rs td:first-child small{flex-basis:auto;text-align:left}
+.ph .hd:has(.acts) .tl{flex-basis:100%}
 .ph .tabs{flex-wrap:nowrap;overflow:hidden}
 .ph .tabs span{padding:7px 9px;font-size:13px;white-space:nowrap}
 .ph .sg{flex-wrap:wrap}
@@ -354,7 +359,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <main class="doc">
 <p class="kick">CONFIG-MOCKUPS-E · part of #2157 · drawn 2026-10-23 · not picked</p>
 <h1>Config, Secrets, Admin counts and QA environments: proposal E, Guided setup</h1>
-<p class="lede">One of five competing proposals (A to E) for BGD's new Config section, the Secrets scopes, Admin's role-gated pages, Platform counts over time and QA targets with environments. BGD picks one. Every frame below is drawn at 1440 wide and at 390 wide, and the theme control at the top repaints all of them light, dark or as the system says.</p>
+<p class="lede">One of five competing proposals (A to E) for BGD's new Config section, the Secrets scopes, Admin's role-gated pages, Platform counts over time and QA targets with environments. BGD picks one. Every frame below is drawn at desktop width (1440, or this page's width when the window is narrower) and at 390 wide, and the theme control at the top repaints all of them light, dark or as the system says.</p>
 
 <div class="rules">
   <b>What every frame obeys</b>
@@ -389,10 +394,10 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <h2 id="s1"><span class="n">S1</span>Navigation: Config in the spine, the panel and the phone menu</h2>
 <p>Config sits between Capacity and Admin. While setup is unfinished the spine item carries an amber dot and the panel carries the setup meter; each page in the panel shows its own state (done, a count, or what is missing). Settings is reached from the avatar at the spine's foot and now holds only Profile.</p>
 <div class="pair">
-  <figure class="fr"><div class="scroller" data-f="nav-platform"></div><figcaption><b>S1a · Platform admin, group workspace.</b> Config open. All six pages; Secrets shows "2 to set". Admin is in the spine.</figcaption></figure>
+  <figure class="fr"><div class="scroller" data-f="nav-platform"></div><figcaption><b>S1a · Platform admin, group workspace.</b> Config open. All six pages; Secrets shows "3 to set". Admin is in the spine.</figcaption></figure>
   <figure class="fr"><div class="scroller" data-f="nav-admin-platform"></div><figcaption><b>S1b · Platform admin, Admin open.</b> Two groups: the workspaces they administer, then the platform's own pages.</figcaption></figure>
   <figure class="fr"><div class="scroller" data-f="nav-admin-ws"></div><figcaption><b>S1c · Workspace admin, Admin open.</b> Only People and roles and Workspaces you admin, scoped to the workspaces they admin. No platform page, no lock, no disabled row.</figcaption></figure>
-  <figure class="fr"><div class="scroller" data-f="nav-member"></div><figcaption><b>S1d · Member.</b> No Admin in the spine. Config has no People and roles (that page is for the workspace's admins), and the panel says so. S4h shows how a member meets an admin's step.</figcaption></figure>
+  <figure class="fr"><div class="scroller" data-f="nav-member"></div><figcaption><b>S1d · Member.</b> No Admin in the spine. Config has no People and roles (that page is for the workspace's admins), and the panel says so. Here someone else holds admin, so the strip's step 4, People invited, is done: 3 of 4, where S1a's lone admin reads 2 of 4. S4h shows how a member meets an admin's step.</figcaption></figure>
   <figure class="fr"><div class="scroller" data-f="nav-personal"></div><figcaption><b>S1e · Personal workspace.</b> No People and roles, and the strip has three steps: there is nobody to invite.</figcaption></figure>
 </div>
 <div class="pair">
@@ -405,7 +410,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <p>The page from Work › Access, moved. Not connected is the page's first state, not an error: the lead is the one button that starts setup.</p>
 <figure class="fr"><div class="scroller" data-f="gh-none-d"></div><figcaption><b>S2a · Not connected, desktop.</b> Step 1 of the strip is the next step; steps 2 to 4 wait for it, and say so rather than looking broken.</figcaption></figure>
 <figure class="fr"><div class="scroller" data-f="gh-conn-d"></div><figcaption><b>S2b · Connected, desktop.</b> The connection (from Access.tsx: "@operator · GitHub App · user token · active", renewal line, Disconnect GitHub), where the App is installed, and the three rules of what SwarmCloud may do as you. The lead moves on to step 2.</figcaption></figure>
-<figure class="fr"><div class="scroller" data-f="gh-choose-d"></div><figcaption><b>S2c · Choose repositories, desktop.</b> Owners on the left, the selected owner's repositories on the right with Not chosen / Read / Write and push ability shown before Write (the onboarding pick 3A). A foot bar counts what changed and offers the next page.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="gh-choose-d"></div><figcaption><b>S2c · Choose repositories, desktop.</b> Owners on the left, the selected owner's repositories on the right with Not chosen / Read / Write and push ability shown before Write (the onboarding pick 3A). A foot bar counts what changed; the lead offers the next page.</figcaption></figure>
 <div class="pair">
   <figure class="fr"><div data-f="gh-none-p"></div><figcaption><b>S2d · Not connected, phone.</b></figcaption></figure>
   <figure class="fr"><div data-f="gh-conn-p"></div><figcaption><b>S2e · Connected, phone.</b></figcaption></figure>
@@ -418,19 +423,25 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <figure class="fr"><div class="scroller" data-f="repos-d"></div><figcaption><b>S3a · Repositories, desktop.</b> A chosen repository that is not registered yet is a dashed card with Register: a half-done state drawn in place.</figcaption></figure>
 <div class="pair">
   <figure class="fr"><div data-f="repos-p"></div><figcaption><b>S3b · Repositories, phone.</b> Rows become cards.</figcaption></figure>
-  <figure class="fr"><div data-f="repos-empty-p"></div><figcaption><b>S3c · No repository yet, phone.</b> The empty state names the step it waits for.</figcaption></figure>
+  <figure class="fr"><div data-f="repos-empty-p"></div><figcaption><b>S3c · No repository yet, phone.</b> The empty state names the step it waits for. Its lead carries Add new repository, so the header does not repeat it.</figcaption></figure>
 </div>
 
 <!-- ==================== S4 ==================== -->
 <h2 id="s4"><span class="n">S4</span>Config › Secrets</h2>
 <p>The scope picker is <b>Workspace · Yours · Repository</b>. When one name exists in several scopes, yours wins, then the repository's, then the workspace's, and the row shows the override. Each list carries "needed, not set" rows for secrets something registered names, which is what the strip's step 3 counts. Every Set opens a one-time form; no value is ever shown again.</p>
-<figure class="fr"><div class="scroller" data-f="sec-ws-d"></div><figcaption><b>S4a · Workspace scope, desktop.</b> For agents (the store and who it is granted to, with an override shown), Keys for agents and MCP, and GitHub token status, top to bottom. Two rows are needed and not set.</figcaption></figure>
-<figure class="fr"><div class="scroller" data-f="sec-repo-d"></div><figcaption><b>S4b · One repository, Agents and GitHub Actions, desktop.</b> The Repository scope with its destination switch. Left, Agents: secrets released only to agents that clone it, Sign-in for QA, its GitHub token. Right, GitHub Actions: repository secrets and the <code>repo-secrets</code> environment (main only), "Create on GitHub ↗" and Check rule. Who may set each is shown where the button would be.</figcaption></figure>
-<figure class="fr"><div class="scroller" data-f="sec-wiz-d"></div><figcaption><b>S4c · Add a secret, the wizard, desktop.</b> Four steps in a side sheet, drawn as the four states of one sheet: scope → destination (with environment) → consumer or grant → one-time form. A choice the person may not make is drawn with its reason.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="sec-ws-d"></div><figcaption><b>S4a · Workspace scope, desktop.</b> For agents (the store and who it is granted to, with an override shown), Keys for agents and MCP, and GitHub token status, top to bottom. Two rows are needed and not set here; the strip's third is a repository's QA sign-in (S4b).</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="sec-repo-d"></div><figcaption><b>S4b · One repository, Agents, desktop.</b> The Repository scope with its destination switch on Agents: secrets released only to agents that clone it, Sign-in for QA, its GitHub token. Who may set each is shown where the button would be.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="sec-repo-actions-d"></div><figcaption><b>S4b2 · The same repository, GitHub Actions, desktop.</b> The switch on GitHub Actions: repository secrets and the <code>repo-secrets</code> environment (main only), "Create on GitHub ↗" and Check rule.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="sec-wiz-d"></div><figcaption><b>S4c · Add a secret, desktop.</b> The wizard opens as one side sheet over the page: scope → destination (with environment) → consumer or grant → one-time form. Drawn at step 2, the destination; its other three steps follow on their own.</figcaption></figure>
+<div class="pair">
+  <figure class="fr"><div data-f="sec-wiz-1"></div><figcaption><b>S4c1 · Step 1, scope.</b></figcaption></figure>
+  <figure class="fr"><div data-f="sec-wiz-3"></div><figcaption><b>S4c3 · Step 3, who reads it.</b> A choice the person may not make is drawn with its reason.</figcaption></figure>
+  <figure class="fr"><div data-f="sec-wiz-4"></div><figcaption><b>S4c4 · Step 4, the one-time form.</b></figcaption></figure>
+</div>
 <figure class="fr"><div class="scroller" data-f="sec-form-d"></div><figcaption><b>S4d · The one-time set form, desktop.</b> Opened from a link a tool minted (or the wizard's last step). Ten minutes, one use, the token already out of the address bar, never prefilled.</figcaption></figure>
 <div class="pair">
   <figure class="fr"><div data-f="sec-yours-p"></div><figcaption><b>S4e · Yours, phone.</b> Personal secrets and browser sessions; the override reads "overrides the workspace's".</figcaption></figure>
-  <figure class="fr"><div data-f="sec-actions-p"></div><figcaption><b>S4f · A repository's GitHub Actions secrets, phone.</b></figcaption></figure>
+  <figure class="fr"><div data-f="sec-actions-p"></div><figcaption><b>S4f · A repository's GitHub Actions secrets, phone.</b> The same switch as S4b2.</figcaption></figure>
   <figure class="fr"><div data-f="sec-form-p"></div><figcaption><b>S4g · One-time form, phone.</b></figcaption></figure>
   <figure class="fr"><div data-f="sec-member-p"></div><figcaption><b>S4h · A member's Secrets, phone.</b> The strip's step 3 is an admin's: the lead says so and points to what the member can do, rather than drawing disabled buttons.</figcaption></figure>
   <figure class="fr"><div data-f="sec-empty-p"></div><figcaption><b>S4i · Empty state, phone.</b> A new workspace: nothing stored, nothing needed yet, and the three things people usually set first.</figcaption></figure>
@@ -472,12 +483,12 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <p>The count stays a priced button that never refreshes itself. Over time opens on one sentence, then the chart, then the table. Agents are counted by submission day, retries apart; cost is "Estimated cost (list price, not a bill)", an "at least" figure with how many agents reported.</p>
 <figure class="fr"><div class="scroller" data-f="counts-d"></div><figcaption><b>S8a · Platform counts, desktop.</b> Today's per-state count on top (unchanged), Over time below. The chart uses the console's series colours with a legend, direct labels and the table under it, so no series is told by colour alone; retries are a chart of their own, not a stack segment.</figcaption></figure>
 <div class="pair"><figure class="fr"><div data-f="counts-p"></div><figcaption><b>S8b · Platform counts, phone.</b> The sentence leads; the table's rows become cards.</figcaption></figure>
-<figure class="fr"><div data-f="counts-unread-p"></div><figcaption><b>S8c · Over time, not read yet, phone.</b> Nothing is counted until the button is pressed, and the page says what pressing it costs.</figcaption></figure></div>
+<figure class="fr"><div data-f="counts-unread-p"></div><figcaption><b>S8c · Not counted yet, phone.</b> Nothing is counted until a button is pressed, and each says what pressing it costs: the per-state count and Over time are read apart.</figcaption></figure></div>
 
 <!-- ==================== S9 ==================== -->
 <h2 id="s9"><span class="n">S9</span>QA targets with environments (Config › Repositories › QA targets)</h2>
 <figure class="fr"><div class="scroller" data-f="qa-d"></div><figcaption><b>S9a · A target with environments, desktop.</b> Each environment has its host, host approval and credential state, ticked for the run unless it cannot run, in which case it says why. Run sends the ticked names and nothing else. The lead is the environment that still needs something.</figcaption></figure>
-<figure class="fr"><div class="scroller" data-f="qarun-d"></div><figcaption><b>S9b · A QA run group, desktop.</b> One column per environment: workflow state, coverage, new routes found this run, findings, issues filed and gate refusals. Above them, routes seen on one environment only; below, "new since last run" with Promote for an admin.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="qarun-d"></div><figcaption><b>S9b · A QA run group, desktop.</b> One column per environment: workflow state, coverage, new routes found this run, findings, issues filed and gate refusals. Above them, routes seen on one environment only; below, "new since last run" with Promote for an admin. Drawn after S9a's lead is done (Studio production's credential set), so both environments ran and the strip counts two secrets still needed.</figcaption></figure>
 <div class="pair">
   <figure class="fr"><div data-f="qa-p"></div><figcaption><b>S9c · Target card, phone.</b></figcaption></figure>
   <figure class="fr"><div data-f="qarun-p"></div><figcaption><b>S9d · Run group, phone.</b> The environments become a switch instead of columns; the one-environment-only routes stay above it.</figcaption></figure>
@@ -512,7 +523,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   <figure class="fr"><div data-f="sched-p"></div><figcaption><b>S10j · Schedules and approvals, phone.</b></figcaption></figure>
 </div>
 
-<h2 id="notes"><span class="n">·</span>What this proposal decides that the brief left open</h2>
+<h2 id="notes">What this proposal decides that the brief left open</h2>
 <ul>
   <li><b>Settings › API keys</b> moves into Config › Secrets › Keys for agents and MCP (it holds the TypeSafe keys, which secrets-scopes.md lists there); Settings keeps Profile alone, as BGD said. Its two addresses would redirect.</li>
   <li><b>"Needed, not set"</b> is a new read: a secret that something registered names and that is not stored. Until it exists, the strip's step 3 would read "—, not measured yet" rather than a count.</li>
@@ -541,7 +552,14 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 .stp .tx{flex:1;display:flex;flex-direction:column}
 .stp .tx small{font-size:12.5px;color:var(--text-dim)}
 .fold{display:flex;gap:10px;align-items:center;padding:10px 14px;border:1px solid var(--line);border-radius:10px;background:var(--surface);font-size:13.5px}
-.fold b{flex:1}
+.fold b{flex:1 0 auto}
+.fold>.dim{text-align:right;min-width:0}
+/* a filter's label travels with its control when the row wraps */
+.fgrp{display:flex;gap:6px 8px;align-items:center;flex-wrap:wrap}
+/* the wizard: one side sheet over the page, and its other steps drawn on their own */
+.wzwrap{position:relative}
+.wzwrap>.wzsheet{position:absolute;top:0;right:0;width:500px;z-index:2}
+.sheetfig{width:440px;max-width:100%}
 .envh{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 8px}
 .envh b{font-size:14px}
 .repc{display:flex;flex-direction:column;gap:6px;font-size:13px}
@@ -563,6 +581,7 @@ const strip=s=>s.replace(/<[^>]+>/g,'');
 const SG=(opts,on,x)=>`<span class="sg">${opts.map((o,i)=>`<span class="${i===on?'on':''}${x&&x.includes(i)?' x':''}">${o}</span>`).join('')}</span>`;
 const CHK=(t,y,x)=>`<span class="chk${x?' x':''}"><i class="${y?'y':''}">${y?I('check'):''}</i>${t}</span>`;
 const F=(l,v,cls)=>`<label class="fld"><span>${l}</span><span class="inp ${cls||''}">${v}</span></label>`;
+const FG=(l,ctl)=>`<span class="fgrp"><span class="lbl">${l}</span>${ctl}</span>`;
 function T(cols,rows){
   const h=cols.map(c=>{const n=c.startsWith('#');return `<th class="${n?'n':''}">${n?c.slice(1):c}</th>`}).join('');
   const b=rows.map(r=>{const cells=Array.isArray(r)?r:r.c;const cls=Array.isArray(r)?'':(r.cls||'');
@@ -577,9 +596,10 @@ const segs=(arr)=>`<span class="segs">${arr.map(m=>`<i class="${m==='d'?'d':m===
 const SETUP={
   none:[['n','GitHub connected','Next: connect GitHub'],['t','Repositories chosen','waits for GitHub'],['t','Secrets set','waits for repositories'],['t','People invited','any time after GitHub']],
   repos:[['d','GitHub connected','@operator · checked 2 min ago'],['n','Repositories chosen','Next: choose at least one'],['t','Secrets set','none needed yet'],['t','People invited','only you so far']],
-  part:[['d','GitHub connected','@operator · checked 2 min ago'],['d','Repositories chosen','4 chosen · 3 registered'],['n','Secrets set','Next: 2 needed, not set'],['t','People invited','only you so far']],
+  part:[['d','GitHub connected','@operator · checked 2 min ago'],['d','Repositories chosen','4 chosen · 3 registered'],['n','Secrets set','Next: 3 needed, not set'],['t','People invited','only you so far']],
+  part2:[['d','GitHub connected','@operator · checked 2 min ago'],['d','Repositories chosen','4 chosen · 3 registered'],['n','Secrets set','Next: 2 needed, not set'],['t','People invited','only you so far']],
   fresh:[['d','GitHub connected','@operator · checked 2 min ago'],['d','Repositories chosen','2 chosen · 2 registered'],['n','Secrets set','Next: add the first one'],['t','People invited','only you so far']],
-  member:[['d','GitHub connected','@operator · checked 2 min ago'],['d','Repositories chosen','4 chosen · 3 registered'],['n','Secrets set','2 needed: an admin’s step'],['d','People invited','6 people hold a role']],
+  member:[['d','GitHub connected','@operator · checked 2 min ago'],['d','Repositories chosen','4 chosen · 3 registered'],['n','Secrets set','3 needed: 2 are an admin’s step'],['d','People invited','6 people hold a role']],
   personal:[['d','GitHub connected','@operator · checked 2 min ago'],['d','Repositories chosen','2 chosen · 2 registered'],['n','Secrets set','Next: 1 needed, not set']],
   done:[['d','GitHub connected','@operator'],['d','Repositories chosen','4 chosen'],['d','Secrets set','nothing missing'],['d','People invited','6 people']]
 };
@@ -618,7 +638,7 @@ function badges(k){
   if(k==='repos') return {gh:tick,repos:C('Next','in'),sto:'',mcp:'<span class="sm12 dim">0</span>',people:'<span class="sm12 dim">1</span>'};
   if(k==='fresh') return {gh:tick,repos:'<span class="sm12 dim">2</span>',sto:C('Next','in'),mcp:'<span class="sm12 dim">0</span>',people:'<span class="sm12 dim">1</span>'};
   if(k==='personal') return {gh:tick,repos:'<span class="sm12 dim">2</span>',sto:C('1 to set','wn'),mcp:'<span class="sm12 dim">1</span>',people:''};
-  return {gh:tick,repos:'<span class="sm12 dim">4</span>',sto:C('2 to set','wn'),mcp:C('1 to set','wn'),people:'<span class="sm12 dim">'+(k==='member'?'6':'1')+'</span>'};
+  return {gh:tick,repos:'<span class="sm12 dim">4</span>',sto:C(k==='part2'?'2 to set':'3 to set','wn'),mcp:C('1 to set','wn'),people:'<span class="sm12 dim">'+(k==='member'?'6':'1')+'</span>'};
 }
 function panel(x){
   let h=`<aside class="pn" aria-label="Pages"><div class="wm"><span style="color:var(--text)">Swarm</span><span>Cloud</span><span class="pill">dev</span></div>`;
@@ -628,10 +648,8 @@ function panel(x){
     h+=`<div class="pmeter"><div class="row"><span>Setup</span><b>${d} of ${s.length}</b></div>${segs(s.map(q=>q[0]))}</div>`;
     h+=PI(x.page==='gh','github','GitHub access',bd.gh)+PI(x.page==='repos','repo','Repositories',bd.repos)+PI(x.page==='secrets','key','Secrets',bd.sto)+PI(x.page==='mcp','plug','MCP servers',bd.mcp);
     if(x.ws!=='personal'&&x.role!=='member') h+=PI(x.page==='people','people','People and roles',bd.people);
-    h+=PI(false,'gear','Workspace Settings','');
-    if(String(x.page).startsWith('ws')){
-      h+=PI(x.page==='wss','','Settings','','kid')+PI(x.page==='wsetup','','Workspace setup','','kid')+(x.role==='platform'?PI(x.page==='wsnew','','Add a new workspace','','kid'):'');
-    }
+    /* Workspace Settings' three parts are the page's tabs; the panel does not list them a second time */
+    h+=PI(String(x.page).startsWith('ws'),'gear','Workspace Settings','');
     if(x.role==='member') h+=`<p class="pnote">People and roles is shown to this workspace’s admins.</p>`;
     if(x.ws==='personal') h+=`<p class="pnote">A personal workspace has no People and roles: nobody else is in it.</p>`;
   } else if(x.sec==='admin'){
@@ -668,7 +686,7 @@ const RULES=CARD('What SwarmCloud may do as you','',`<div class="stp">${I('check
 const GHHD=(on)=>({cr:'Config',h:'GitHub access',age:'read 2 min ago',tabs:['Connection','Choose repositories'],on});
 function ghNone(ph){
   return LEAD('Step 1 of 4 · start here','Connect GitHub to start','SwarmCloud lists the orgs and repositories you reach, and clones, pushes and opens pull requests as you. Repositories, Secrets and People wait for this one step.',B('Connect GitHub','p','github'))+
-  `<div class="g21"><div class="col">`+CARD('GitHub',C('acts as you','ln'),`<p>No GitHub account is connected. Connect yours so SwarmCloud lists the orgs and repositories you reach, and clones, pushes and opens pull requests as you.</p><div class="acts">${B('Connect GitHub','p','github')}</div>`)+
+  `<div class="g21"><div class="col">`+CARD('GitHub',C('acts as you','ln'),`<p>${S('nu','not connected')}</p><p>Once connected, this card shows the GitHub login, the token’s renewal and Disconnect GitHub.</p>`)+
   CARD('What comes after','',`<div class="stp"><span class="sm"></span><span class="tx"><b>2. Choose repositories</b><small>Waits for GitHub: there is nothing to list until you connect and install the App.</small></span></div><div class="stp"><span class="sm"></span><span class="tx"><b>3. Set secrets</b><small>Waits for repositories: what is needed depends on what you register.</small></span></div><div class="stp"><span class="sm"></span><span class="tx"><b>4. Invite people</b><small>Any time after GitHub.</small></span></div>`,'dash')+
   `</div>${RULES}</div>`;
 }
@@ -690,21 +708,23 @@ function ghChoose(ph){
   const body=ph?`<label class="fld"><span>Owner</span><span class="inp v" style="justify-content:space-between">example-org · selected repositories ${I('chevd')}</span></label>${repos}`
     :`<p class="hint" style="margin:0">Connecting and installing are two steps. Connect lets SwarmCloud act as you (GitHub › Authorized GitHub Apps); installing it on an account or org lets it reach that owner’s repositories (Installed GitHub Apps).</p><div style="display:grid;grid-template-columns:280px minmax(0,1fr);gap:14px">${owners}${repos}</div>`;
   return LEAD('Step 2 of 4 · in progress','3 chosen under example-org; nothing chosen under operator yet','Choices save as you make them. When you are done, Repositories registers them for indexing.',B('Next: Repositories','p'))+body+
-  `<div class="foot"><span class="dim">2 changes saved · 1 min ago</span>${B('Refresh','s')}${B('Next: Repositories','p s')}</div>`;
+  `<div class="foot"><span class="dim">2 changes saved · 1 min ago</span>${B('Refresh','s')}</div>`;
 }
 
 /* ================= S3 Repositories ================= */
 const REPHD={cr:'Config',h:'Repositories',age:'read 3 min ago',tabs:['Repositories','QA targets'],on:0,right:B('Add new repository','p','plus')};
+/* the empty state's lead carries Add new repository, so its header does not draw it again */
+const REPHD0=Object.assign({},REPHD,{right:''});
 function reachTable(){
   return T(['Repository','Access','Clone','Push','Pull request','Push test','Registered'],[
     ['example-org/example-api',SG(['Read','Write'],1),S('ok','ok'),S('ok','ok'),S('ok','ok'),'<span class="dim">Not run: it is opt-in</span>',S('ok','yes')],
     ['example-org/example-web',SG(['Read','Write'],0,[1]),S('ok','ok'),DASH('read grant'),DASH('read grant'),DASH('read grant'),S('ok','yes')],
     ['example-org/docs-site',SG(['Read','Write'],1),S('ok','ok'),S('ok','ok'),S('ok','ok'),S('ok','passed 2 d ago'),S('ok','yes')],
-    {cls:'need',c:['example-labs/console',SG(['Read','Write'],0),S('ok','ok'),DASH('read grant'),DASH('read grant'),DASH('read grant'),`${C('not registered','wn')} ${B('Register','s')}`]}]);
+    {cls:'need',c:['example-labs/console',SG(['Read','Write'],0),S('ok','ok'),DASH('read grant'),DASH('read grant'),DASH('read grant'),C('not registered','wn')]}]);
 }
 function repCard(n,pill,lines,acts,dash){return `<section class="cd ${dash?'dash':''}"><div class="repc"><div class="top"><b>${n}</b>${pill}</div>${lines.map(l=>`<span class="dim">${l}</span>`).join('')}<div class="acts" style="margin-top:6px">${acts}</div></div></section>`}
 function repos(ph){
-  return LEAD('Repositories · one thing left','example-labs/console is chosen but not registered','Register it so it is indexed on a schedule and agents start from its map.',B('Register','p')+B('Add new repository','','plus'))+
+  return LEAD('Repositories · one thing left','example-labs/console is chosen but not registered','Register it so it is indexed on a schedule and agents start from its map.',B('Register','p'))+
   CARD('Repositories SwarmCloud may reach as you',B('Re-check all','s'),reachTable()+`<p class="hint" style="margin:8px 0 0">Last verified 3 min ago. An agent for a repository not on this list is refused at submission. Add new repository opens GitHub access › Choose repositories.</p>`)+
   `<div class="g3">`+
   repCard('example-org/example-api',C('fresh','ok'),['Default branch <b>main</b> · head <span class="mn">4f2c1a9</span>','Tests mapped 412 · indexed 2 h ago','Schedule <b>nightly</b>','Secrets: 2 for agents · 2 for Actions','QA targets: 1'],B('Open','s')+B('Index now','s'))+
@@ -720,11 +740,13 @@ function reposEmpty(ph){
 
 /* ================= S4 Secrets ================= */
 const SECHD={cr:'Config',h:'Secrets',age:'read 1 min ago',right:B('Add a secret','p','plus')};
+/* the empty state's lead carries Add a secret, so its header does not draw it again */
+const SECHD0=Object.assign({},SECHD,{right:''});
 const PREC=`<span class="hint">Same name in several scopes: yours wins, then the repository’s, then the workspace’s.</span>`;
 function scopeBar(on,extra,ph){return `<div class="scope"><span class="lbl">Scope</span>${SG([ph?'Workspace':'Workspace · Example Team','Yours','Repository'],on)}${extra||''}</div>${PREC}`}
 function secWs(ph){
   return scopeBar(0,'',ph)+
-  LEAD('Step 3 of 4 · next','2 secrets are needed and not set','kb-token: MCP server kb sends it on every call. TypeSafe key for the workspace: Jev and browser agents read it.',B('Set kb-token','p')+B('Set TypeSafe key'),'wn')+
+  LEAD('Step 3 of 4 · next','2 workspace secrets are needed and not set','kb-token: MCP server kb sends it on every call. TypeSafe key for the workspace: Jev and browser agents read it. The strip’s third is a QA sign-in on example-org/example-api.',B('Set kb-token','p')+B('Set TypeSafe key'),'wn')+
   CARD('For agents',`<a class="sm12">Open the grant matrix</a>`,`<p>Released to the profiles, tools and components in Granted to. A value is stored write-only: no page and no API route shows it, its length or any of its characters again.</p>`+
    T(['Name','Kind','Provider','Set','#Version','Last used','Granted to',''],[
     ['search-api<small>'+C('shadowed on agents of Operator: Yours › search-api','pa')+'</small>','API key','brave','12 d ago','2','1 h ago','claude-code, codex',B('Rotate','s')+' '+B('Delete','s d')],
@@ -740,44 +762,49 @@ function secWs(ph){
     ['MCP server docs-search','claude-code','per-run credential, not stored','']]))+
   CARD('GitHub token','',`<dl class="kv"><dt>Kind</dt><dd>Workspace token (GitHub App user token)</dd><dt>State</dt><dd>${S('ok','active')}</dd><dt>GitHub login</dt><dd>@operator</dd><dt>Verified</dt><dd>3 min ago</dd><dt>Expires</dt><dd>in 7 h · renewed automatically</dd></dl><p class="hint" style="margin-top:8px">Status only: no part of a token is ever shown. Connect or disconnect on <a>GitHub access</a>.</p>`)+`</div>`;
 }
-function secRepo(ph){
-  const agents=`<div class="col">`+`<div class="envh">${SG(['Agents','GitHub Actions'],0)}<span class="hint">Released only to agents that clone example-org/example-api.</span></div>`+
+/* one destination switch; each destination is its own state of the page (S4b, S4b2) */
+function secRepo(ph,dest){
+  const sw=`<div class="envh">${SG(['Agents','GitHub Actions'],dest)}<span class="hint">${dest?'Written into the repository on GitHub. SwarmCloud reads names and update times, never values.':'Released only to agents that clone example-org/example-api.'}</span></div>`;
+  const agents=`<div class="col">`+
    CARD('For agents','',T(['Name','Kind','Set','Granted to',''],[
      ['test-db-password','Opaque','5 d ago','claude-code',B('Rotate','s')],
      ['search-api<small>'+C('overrides the workspace’s','in')+' '+C('Yours wins for Operator','pa')+'</small>','API key','1 d ago','claude-code, codex',B('Rotate','s')]])+`<p class="hint" style="margin:8px 0 0">You may set these as a workspace admin. A member whom GitHub calls admin of this repository may too.</p>`)+
-   CARD('Sign-in for QA','',T(['Target · environment','Credential',''],[
+   `<div class="g2">`+CARD('Sign-in for QA','',T(['Target · environment','Credential',''],[
      ['Studio · staging',S('ok','test credential set 2 d ago'),B('Replace','s')],
      {cls:'need',c:['Studio · production',C('needed, not set','wn'),B('Set','p s')]},
      ['Studio · staging<small>challenge bypass</small>',S('ok','set 2 d ago'),B('Replace','s')]]))+
-   CARD('GitHub token','',`<p>No repository token. Agents for this repository use the workspace’s token (repository first, then workspace).</p>`)+`</div>`;
-  const actions=`<div class="col">`+`<div class="envh">${SG(['Agents','GitHub Actions'],1)}<span class="hint">Written into the repository on GitHub. SwarmCloud reads names and update times, never values.</span></div>`+
+   CARD('GitHub token','',`<p>No repository token. Agents for this repository use the workspace’s token (repository first, then workspace).</p>`)+`</div></div>`;
+  const actions=`<div class="col">`+
    `<div class="bn in">${I('info')}<span>You may write here: workspace admin, and GitHub calls you admin of example-org/example-api (checked 1 min ago).</span></div>`+
-   CARD('Repository secrets',B('Set a secret','p s'),T(['Name','Updated','Set by',''],[
+   `<div class="g2">`+CARD('Repository secrets',B('Set a secret','p s'),T(['Name','Updated','Set by',''],[
      ['TEST_DB_PASSWORD','5 d ago','SwarmCloud',B('Set','s')+' '+B('Delete','s d')],
      ['SENTRY_DSN','40 d ago','on GitHub',B('Set','s')+' '+B('Delete','s d')]]))+
    CARD('Environments',B('Create on GitHub','s','ext')+B('Check rule','s'),
      `<div class="envh">${I('env')}<b>repo-secrets</b>${C('main only','ok')}<span class="r acts" style="margin-left:auto">${B('Set a secret here','s')}</span></div>`+
      T(['Name','Updated','Set by',''],[['MERGE_APP_PRIVATE_KEY','2 d ago','SwarmCloud',B('Set','s')+' '+B('Delete','s d')]])+
      `<div class="envh" style="margin-top:12px">${I('env')}<b>staging</b>${C('any branch','wn')}<span class="r acts" style="margin-left:auto">${B('Set a secret here','s')}</span></div><p>No secret in staging yet. Writing here asks you to type <b>staging</b>: a workflow on any branch can read it.</p>`+
-     `<p class="hint" style="margin:0">SwarmCloud does not create environments yet: create one on GitHub, then Check rule reads its branch rule.</p>`)+`</div>`;
+     `<p class="hint" style="margin:0">SwarmCloud does not create environments yet: create one on GitHub, then Check rule reads its branch rule.</p>`)+`</div></div>`;
   return scopeBar(2,`<span class="inp v">${I('repo')}example-org/example-api ${I('chevd')}</span>`,ph)+
    LEAD('This repository · 1 missing','The QA sign-in for Studio production is not set','QA runs on production stay off until it is. Everything else this repository uses is set.',B('Set it','p'),'wn')+
-   (ph?actions:`<div class="g2">${agents}${actions}</div>`);
+   sw+(dest?actions:agents);
 }
 function sheet(n,title,body,foot){
   const names=['Scope','Destination','Who reads it','One-time form'];
   return `<div class="sheet"><div class="sh"><b>Add a secret</b>${I('x')}</div><div class="wz">${names.map((s,i)=>`<span class="${i+1<n?'d':i+1===n?'on':''}"><i>${i+1<n?'✓':i+1}</i>${s}</span>`).join('')}</div><div style="font-size:15px;font-weight:600">${title}</div>${body}<div class="acts" style="justify-content:flex-end">${foot}</div></div>`;
 }
 const OPT=(t,s,on,x)=>`<div class="opt ${on?'on':''} ${x?'x':''}"><span class="rd"></span><span><b>${t}</b><small>${s}</small></span></div>`;
-function secWiz(ph){
+function wizSheets(){
   const s1=sheet(1,'Where does it live?',OPT('Workspace · Example Team','Any member’s agents may be granted it. Set by a workspace admin.')+OPT('Yours','Only your own submissions read it, and it wins over the others.')+OPT('Repository','Only for one repository, and released only to agents that clone it.',true)+F('Repository',`example-org/example-api ${I('chevd')}`,'v'),B('Cancel','q')+B('Next','p'));
   const s2=sheet(2,'Who is it for?',`<div class="g2">${OPT('Agents','Agents that clone example-org/example-api.')}${OPT('GitHub Actions','Workflows in the repository, on GitHub.',true)}</div><span class="hint">GitHub Actions needs GitHub admin of the repository: checked, you are.</span>`+
      `<div class="fld"><span>Environment</span>${OPT('Repository level','Every workflow in the repository can read it.')}${OPT('repo-secrets · main only','Only workflows on main.',true)}${OPT('staging · any branch','You will type staging to confirm.')}<div class="acts">${B('Create on GitHub','s','ext')}${B('Check rule','s')}</div></div>`,B('Back','q')+B('Next','p'));
   const s3=sheet(3,'Who reads it, and its name',`<p class="hint" style="margin:0">Read by workflows that run in <b>repo-secrets</b>, on main only. SwarmCloud grants nothing further.</p>`+F('Name','MERGE_APP_PRIVATE_KEY','v')+`<span class="hint">Letters, digits and _; not starting with a digit or GITHUB_.</span>`+
      `<div class="cd dash"><p style="margin:0 0 6px"><b style="color:var(--text)">On the Agents path</b> this step is the grant:</p><div class="acts">${CHK('claude-code',true)}${CHK('codex')}${CHK('playwright')}${CHK('MCP server kb')}${CHK('git',false,true)}</div><span class="hint">git reads forge tokens only.</span></div>`,B('Back','q')+B('Next','p'));
   const s4=sheet(4,'Set the value in a one-time form',`<p class="hint" style="margin:0">Opens a form for <b>MERGE_APP_PRIVATE_KEY</b> in example-org/example-api › repo-secrets. It works once, for ten minutes. The value is sealed in SwarmCloud, written to GitHub and never shown again.</p><div class="bn">${I('info')}<span>From a terminal instead:<br><span class="mn">/sc secrets link repository MERGE_APP_PRIVATE_KEY --repo example-org/example-api --actions --env repo-secrets</span></span></div>`,B('Back','q')+B('Open the one-time form','p'));
-  return scopeBar(0,'',ph)+`<div class="g2">${s1}${s2}${s3}${s4}</div>`;
+  return [s1,s2,s3,s4];
 }
+/* the page behind, dimmed, with one sheet open at step 2 */
+function secWiz(ph){return `<div class="wzwrap"><div class="dimbox">${secWs(ph)}</div><div class="wzsheet">${wizSheets()[1]}</div></div>`}
+const wizStep=n=>`<div class="F sheetfig">${wizSheets()[n-1]}</div>`;
 const SFHD={cr:'Config › Secrets',h:'Set a secret',ph:'Set a secret'};
 function secForm(ph){
   const form=CARD('MERGE_APP_PRIVATE_KEY','',`<dl class="kv"><dt>Where</dt><dd>example-org/example-api › GitHub Actions › environment <b>repo-secrets</b> ${C('main only','ok')}</dd><dt>Name</dt><dd>MERGE_APP_PRIVATE_KEY <span class="hint">(fixed by the link)</span></dd></dl><div style="margin:12px 0 6px">${F('Value',`Paste the value <span style="margin-left:auto">${I('eye-off')}</span>`)}</div><p class="hint">8 bytes to 8 KiB. The form is cleared whatever the answer.</p><div class="acts">${B('Set secret','p')}${B('Cancel','q')}</div>`);
@@ -794,7 +821,7 @@ function secYours(ph){
   CARD('Browser sessions','',T(['Session','Saved','Expires',''],[['studio-staging','by a browser agent, 2 d ago','in 5 d',B('Remove','s d')]])+`<p class="hint" style="margin:8px 0 0">Saved when a browser agent asks you to sign in. Only your agents reuse it.</p>`)+
   CARD('Keys','',T(['Key','State',''],[['TypeSafe key',S('ok','set 6 d ago'),B('Replace','s')]]));
 }
-function secActions(ph){return secRepo(true)}
+function secActions(ph){return secRepo(true,1)}
 function secMember(ph){
   return scopeBar(0,'',ph)+LEAD('Step 3 of 4 · an admin\u2019s step','2 workspace secrets are needed: a workspace admin sets them','kb-token (MCP server kb) and the workspace TypeSafe key. You can set your own under Yours; yours win for your agents.',B('Go to Yours','p')+B('Copy a note for an admin'))+
   CARD('For agents',C('read only for members','ln'),T(['Name','Kind','Set','Granted to'],[
@@ -809,7 +836,7 @@ function secEmpty(ph){
 
 /* ================= S5 MCP and People ================= */
 function mcp(ph){
-  return LEAD('Secrets set · 1 of the 2 missing is here','MCP server kb has no credential stored','It is registered to read workspace secret kb-token, which is not set, so every call to kb fails until it is.',B('Set kb-token','p'),'wn')+
+  return LEAD('Secrets set · 1 of the 3 missing is here','MCP server kb has no credential stored','It is registered to read workspace secret kb-token, which is not set, so every call to kb fails until it is.',B('Set kb-token','p'),'wn')+
   CARD('Registered MCP servers',B('Register an MCP server','s','plus'),T(['Name','URL','Credential','Profiles','Tools','State','Last used',''],[
     {cls:'need',c:['kb','https://kb.app.example.com/mcp','Workspace secret kb-token<small>'+C('needed, not set','wn')+'</small>','every profile that takes MCP servers','every tool it lists',S('ok','enabled'),'never',B('Edit','s')]},
     ['docs-search','https://docs.app.example.com/mcp','Per-run credential','claude-code','search, fetch',S('ok','enabled'),'2 h ago',B('Edit','s')]]))+
@@ -832,7 +859,7 @@ function apeople(ph,ws){
   const rows=PEOPLE.map(r=>ws?[r[0],r[2],r[3],r[6]]:r).filter(r=>!ws||r[1]!=='—'||r[2]!=='—');
   return LEAD(ws?'Your workspaces':'Needs an admin',ws?'Nothing waiting in your workspaces':'2 people are waiting for a workspace',ws?'Showing Example Team and Example Labs, the workspaces you administer.':'Approve or deny each; a denial says why to the person.',ws?'':B('Review the 2','p'),ws?'ok':'wn')+
   `<div class="scope"><span class="lbl">Workspace</span>${ws?SG(['Both','Example Team','Example Labs'],0):SG(['Every workspace','Example Team','Example Labs','Research Pod'],0)}<span class="inp" style="min-width:200px">${I('search')}Find a person</span></div>`+
-  (ws?'':CARD('Waiting for you','',T(['Person','Asked for','When',''],[['jo@example.com','a personal workspace','40 min ago',B('Approve','p s')+' '+B('Deny','s')],['lee@example.com','to join Example Labs','2 h ago',B('Approve','p s')+' '+B('Decline','s')]])))+
+  (ws?'':CARD('Waiting for you','',T(['Person','Asked for','When',''],[['jo@example.com','a personal workspace','40 min ago',B('Approve','p s')+' '+B('Deny','s')],['lee@example.com','to join Example Labs','2 h ago',B('Approve','p s')+' '+B('Deny','s')]])))+
   CARD('People and their roles',ws?'':B('Grant admin','s'),T(cols,rows))+
   (ws?'':`<div class="fold">${I('chev')}<b>Recent admin actions</b><span class="dim sm12">12 this week</span></div>`);
 }
@@ -846,11 +873,11 @@ function wss(ph){
 }
 function wsetup(ph){
   const st=(m,t,s,w)=>`<div class="stp"><span class="sm ${m}">${m==='d'?I('check'):''}</span><span class="tx"><b>${t}</b><small>${s}</small></span>${w||''}</div>`;
-  return LEAD('Step 3 of 4 · next','Set the 2 secrets that are needed','The strip above is this checklist, summarised. Each step is checked again on every read; nothing here is marked done by hand.',B('Open Secrets','p'))+
+  return LEAD('Step 3 of 4 · next','Set the 3 secrets that are needed','The strip above is this checklist, summarised. Each step is checked again on every read; nothing here is marked done by hand.',B('Open Secrets','p'))+
   `<div class="g2">`+CARD('Set up SwarmCloud',C('7 of 8 required done','in'),
    st('d','Sign in','done')+st('d','Request your workspace','done')+st('d','Add a Claude account','done')+st('d','Connect GitHub','done · @operator')+st('d','Install the App','done · 2 owners')+st('d','Enable orgs','done')+st('d','Choose repositories','done · 4 chosen')+
    st('',`Verify access ${C('stale','wn')}`,'checked 3 d ago; example-labs/console was chosen since',B('Re-check','s'))+`<p class="hint" style="margin:8px 0 0">Derived 2 min ago for Operator in tenant example-team.</p>`)+
-  `<div class="col">`+CARD('After the checklist','',st('n','Secrets set','2 needed, not set: kb-token, the workspace TypeSafe key',B('Set','p s'))+st('','People invited','only you hold a role so far',B('Invite','s')))+
+  `<div class="col">`+CARD('After the checklist','',st('n','Secrets set','3 needed, not set: kb-token, the workspace TypeSafe key, Studio production’s QA sign-in',B('Set','p s'))+st('','People invited','only you hold a role so far',B('Invite','s')))+
   CARD('On Overview','',`<p>The setup card is hidden on Overview for you.</p><div class="acts">${B('Show on Overview','s')}</div>`)+`</div></div>`;
 }
 function wsnew(ph){
@@ -906,7 +933,7 @@ function counts(ph){
     ['indexer','85','6','2.5','41 M','0.6 M',DASH('not reported by indexer'),DASH('not reported by indexer'),'at least $15','53 of 85'],
     {cls:'tot',c:['All types','1,064','87','41.0','1,743 M','30.0 M','at least 9,030 M','at least 609 M','at least $512','982 of 1,064']}]);
   const over=CARD('Over time',`<span class="age mn sm12">read 4 min ago · never refreshed on its own</span>${B('Read again · 7 reads','s')}`,
-    `<div class="scope" style="margin-bottom:12px"><span class="lbl">Range</span>${SG(['This week','4 weeks','12 months'],0)}<span class="lbl">Per</span>${SG(['Day','Week','Month'],0)}<span class="lbl">Group by</span>${SG(['Agent type','Model','Workspace','Pool account'],0)}</div>`+
+    `<div class="scope" style="margin-bottom:12px">${FG('Range',SG(['This week','4 weeks','12 months'],0))}${FG('Per',SG(['Day','Week','Month'],0))}${FG('Group by',SG(['Agent type','Model','Workspace','Pool account'],0))}</div>`+
     `<div class="sent">This week <em>1,064 agents</em>, <em>41 h</em> of run time, <em>at least $512</em> estimated.</div>`+
     `<p style="margin:4px 0 14px">17 to 23 October, by submission day. 87 retries are counted apart, not in the 1,064. Estimated cost (list price, not a bill): at least $512, from 982 of 1,064 agents that reported tokens.</p>`+
     `<div class="lg">${TYPES.map(t=>`<span><i style="background:var(${t[2]})"></i>${t[0]}</span>`).join('')}</div><div class="chart" style="margin-top:6px">${chart(ph)}</div>`+
@@ -915,7 +942,8 @@ function counts(ph){
   `<div class="fold">${I('chev')}<b>Platform ticks</b><span class="dim sm12">the Cloud Scheduler jobs the platform runs on its own</span></div>`;
 }
 function countsUnread(ph){
-  return CARD('Over time','',`<div class="scope" style="margin-bottom:12px"><span class="lbl">Range</span>${SG(['This week','4 weeks','12 months'],0)}<span class="lbl">Per</span>${SG(['Day','Week','Month'],0)}</div><div class="sent dim">—, not read yet</div><p>Not counted until you ask. This week costs one read a day: 7 reads.</p><div class="acts">${B('Read over time · 7 reads','p')}</div>`,'dash');
+  return LEAD('Counts are run by hand','Not counted yet','Each count costs reads, and the button prints how many before you press it.',B('Count now · 24 reads','p'))+
+  CARD('Over time','',`<div class="scope" style="margin-bottom:12px">${FG('Range',SG(['This week','4 weeks','12 months'],0))}${FG('Per',SG(['Day','Week','Month'],0))}</div><div class="sent dim">—, not read yet</div><p>Not counted until you ask. This week costs one read a day: 7 reads.</p><div class="acts">${B('Read over time · 7 reads','p')}</div>`,'dash');
 }
 
 /* ================= S9 QA ================= */
@@ -924,7 +952,7 @@ function qa(ph){
   const envs=T(['','Environment','Host','Host approval','Credential','Screens'],[
     [CHK('',true),'staging','https://staging.app.example.com',S('ok','approved 3 d ago'),S('ok','own login · test credential set'),'18'],
     {cls:'need',c:[CHK('',false,true),'production<small>Cannot run: no test credential</small>','https://app.example.com',S('ok','approved 3 d ago'),C('not set','wn'),'18']}]);
-  return LEAD('QA targets · 1 missing','Studio production has no test credential','Its leg cannot run until it is set. Staging runs now.',B('Set credential','p'),'wn')+
+  return LEAD('QA targets · 1 missing','Studio production has no test credential','Its leg cannot run until it is set. Staging runs now.',B('Set production’s credential','p'),'wn')+
   CARD('Studio',B('Edit','s')+B('Set credential','s')+B('Approve host','s'),`<dl class="kv"><dt>Files in</dt><dd>example-org/example-web</dd><dt>Sign-in</dt><dd>The app’s own login</dd></dl><div style="margin:12px 0">${envs}</div>`+
    `<div class="acts">${B('Run 1 environment','p','play')}${CHK('report only, file no issues')}<span class="sm12 dim">Flows with</span>${SG(['the target’s (Playwright)','Jev, this run'],0)}${B('Run discovery','s')}</div>`)+
   CARD('Docs site',B('Edit','s'),`<dl class="kv"><dt>Files in</dt><dd>example-org/docs-site</dd><dt>Sign-in</dt><dd>Public pages, no sign-in</dd></dl><div style="margin:12px 0">`+T(['','Environment','Host','Host approval','Credential','Screens'],[[CHK('',true),'production','https://docs.app.example.com',S('ok','approved 9 d ago'),'none needed','Discovers its screens']])+`</div><div class="acts">${B('Run 1 environment','p','play')}</div>`);
@@ -949,7 +977,7 @@ function wya(ph){
 }
 function limits(ph){
   return LEAD('Needs a look','Pool global is at 92% of its ceiling','46 of 50 units in use. A cut of half or more, or a ceiling of 0, asks you to type its name.',B('Open global','p'),'wn')+
-  CARD('Pools',`<span class="sm12 dim">9 pools · 6 profiles</span>`,T(['Pool','#In use (units)','#Ceiling (units)','Set by','Last changed'],[
+  CARD('Pools',`<span class="sm12 dim">5 of 9 pools shown · 6 profiles</span>`,T(['Pool','#In use (units)','#Ceiling (units)','Set by','Last changed'],[
     {cls:'need',c:['global<small>Global</small>','46','50','Operator','4 d ago']},
     ['tenant:example-team<small>Tenants</small>','18','30','Operator','9 d ago'],
     ['tenant:example-labs<small>Tenants</small>','3','20','Operator','9 d ago'],
@@ -964,7 +992,7 @@ function sizes(ph){
   `<div class="scope">${F('Reason','why this change','')}${B('Save','p')}${B('Restore the code defaults','s')}</div>`;
 }
 function tenants(ph){
-  return LEAD('Needs an admin','Example Research is being created: step 6 of 11','Storage prefix is next. Nothing needs you unless a step fails.',B('Open its progress','p'),'')+
+  return LEAD('Being created','Example Research is being created: step 6 of 11','Storage prefix is next. Nothing needs you unless a step fails.',B('Open its progress','p'),'')+
   CARD('Being created',B('New workspace','p s','plus'),T(['Workspace','Kind','Asked by','Step'],[['Example Research','group','Operator','6 of 11 · Storage prefix']]))+
   CARD('Tenants','',T(['Tenant','Status','Kind','Principal','Enforced','Configured','Credentials','Identity'],[
     ['example-team','enabled','group','group@your-domain',S('ok','yes'),S('ok','yes'),S('ok','2 accounts'),S('ok','own GSA')],
@@ -1001,16 +1029,20 @@ const FR={
   'gh-choose-p':()=>phone(X({setup:'repos',page:'gh'}),GHHD(1),ghChoose),
   'repos-d':()=>desk(X({page:'repos'}),REPHD,repos),
   'repos-p':()=>phone(X({page:'repos'}),REPHD,repos),
-  'repos-empty-p':()=>phone(X({setup:'repos',page:'repos'}),REPHD,reposEmpty),
+  'repos-empty-p':()=>phone(X({setup:'repos',page:'repos'}),REPHD0,reposEmpty),
   'sec-ws-d':()=>desk(X({page:'secrets'}),SECHD,secWs),
-  'sec-repo-d':()=>desk(X({page:'secrets'}),SECHD,secRepo),
+  'sec-repo-d':()=>desk(X({page:'secrets'}),SECHD,ph=>secRepo(ph,0)),
+  'sec-repo-actions-d':()=>desk(X({page:'secrets'}),SECHD,ph=>secRepo(ph,1)),
   'sec-wiz-d':()=>desk(X({page:'secrets'}),SECHD,secWiz),
+  'sec-wiz-1':()=>wizStep(1),
+  'sec-wiz-3':()=>wizStep(3),
+  'sec-wiz-4':()=>wizStep(4),
   'sec-form-d':()=>desk(X({page:'secrets'}),SFHD,secForm),
   'sec-yours-p':()=>phone(X({page:'secrets'}),SECHD,secYours),
   'sec-actions-p':()=>phone(X({page:'secrets'}),SECHD,secActions),
   'sec-form-p':()=>phone(X({page:'secrets'}),SFHD,secForm),
   'sec-member-p':()=>phone(X({role:'member',setup:'member',page:'secrets'}),SECHD,secMember),
-  'sec-empty-p':()=>phone(X({setup:'fresh',page:'secrets'}),SECHD,secEmpty),
+  'sec-empty-p':()=>phone(X({setup:'fresh',page:'secrets'}),SECHD0,secEmpty),
   'mcp-d':()=>desk(X({page:'mcp'}),{cr:'Config',h:'MCP servers',age:'read 2 min ago'},mcp),
   'mcp-p':()=>phone(X({page:'mcp'}),{cr:'Config',h:'MCP servers',age:'read 2 min ago'},mcp),
   'cpeople-d':()=>desk(X({page:'people'}),{cr:'Config',h:'People and roles',age:'read 2 min ago'},cpeople),
@@ -1030,8 +1062,8 @@ const FR={
   'counts-unread-p':()=>phone(X({sec:'admin',page:'counts'}),{cr:'Admin',h:'Platform counts',age:'not counted yet'},countsUnread),
   'qa-d':()=>desk(X({page:'repos'}),QAHD,qa),
   'qa-p':()=>phone(X({page:'repos'}),QAHD,qa),
-  'qarun-d':()=>desk(X({page:'repos'}),QRHD,qarun),
-  'qarun-p':()=>phone(X({page:'repos'}),QRHD,qarun),
+  'qarun-d':()=>desk(X({page:'repos',setup:'part2'}),QRHD,qarun),
+  'qarun-p':()=>phone(X({page:'repos',setup:'part2'}),QRHD,qarun),
   'wya-d':()=>desk(X({sec:'admin',role:'wsadmin',page:'wya'}),{cr:'Admin',h:'Workspaces you admin',age:'read 1 min ago'},wya),
   'wya-p':()=>phone(X({sec:'admin',role:'wsadmin',page:'wya'}),{cr:'Admin',h:'Workspaces you admin',age:'read 1 min ago'},wya),
   'limits-d':()=>desk(X({sec:'admin',page:'limits'}),{cr:'Admin',h:'Pool limits',age:'read 20 s ago'},limits),
