@@ -64,12 +64,13 @@ This rule runs through the whole response:
 This is the shape the owner chose for workflow state (`rollup.py`), for the same
 reason: a written value and a derived value are two records of one fact.
 
-* **DERIVE.** `derive_day(tenant, utc_day)` does four reads, and each one leads
+* **DERIVE.** `derive_day(tenant, utc_day)` does five reads, and each one leads
   with `tenant_id == T`:
   * the tenant's agents that ended that day;
   * the agents that arrived that day;
   * their attempts;
-  * their workflow parents, read with `get_all` and checked against the tenant.
+  * their workflow parents, read with `get_all` and checked against the tenant;
+  * the ended agents' account events, for the pool account (#2149, below).
 
   It turns each agent into a small tuple. A parent that is missing or belongs to
   another tenant counts as **unread**. That agent's wait is excluded
@@ -110,6 +111,53 @@ reason: a written value and a derived value are two records of one fact.
   would not assign; it is derived again on the next read that needs it. (Until
   2026-09-25 only `derive_version` was read, so the classifier's version was
   written and never acted on.)
+
+### The nightly seal: the workflow-rollup job (COUNTS-SEAL, #2149)
+
+BGD's decision, 2026-10-23: `outcome_days` is "sealed nightly by the existing
+rollup job", so a 12-month view on Admin › Platform counts reads sealed days
+instead of spending a reader's derive budget on them. Before this, a day was
+sealed only when somebody happened to read it after its grace.
+
+* **Which job.** The existing `workflow-rollup-<tenant>` Cloud Scheduler job
+  (`terraform/modules/scheduler/jobs.tf`, every 15 minutes) calls
+  `POST /v1/admin/workflows/rollup?tenant_id=T&seal_outcomes=true`. The flag
+  makes the route call `Outcomes.seal_recent` before its workflow sweep.
+* **Why that job and not a new tick.** It already calls swarm-api as the
+  `swarm-rollup-sweeper` identity, which swarm-api admits to that route
+  (`auth.ROLLUP_SWEEPER_ROUTES`), and which already holds its one grant,
+  `run.invoker` on swarm-api. So the seal needs no new job, no new route on
+  the allow-list and **no new IAM binding**. A new tick on
+  `POST /v1/admin/outcomes/rollup` would have needed that route added to the
+  sweeper's allow-list, which widens what a leaked sweeper token reaches.
+* **What one call does.** It looks at yesterday and the two days before it
+  (`OUTCOMES_SEAL_LOOKBACK_DAYS = 3`), newest first. A day still inside its
+  15-minute grace is `not_yet`. A day already sealed at this module's versions
+  is `already_sealed` and costs its one stored-doc read. Any other day is
+  sealed by a full derive, exactly what the next read would do. The two older
+  days are there so a night the job missed is sealed by the next tick.
+* **Never today.** The live day is not in the window, so it is never written
+  or rewritten by the seal.
+* **Idempotent.** A second call writes nothing: every day it looks at is
+  `already_sealed`. Unlike the drift check, the seal never re-derives a sealed
+  day, so a tick does not re-read history.
+* **Bounded.** At most 3 days per call, inside the backfill's 31-day cap. No
+  derive starts once the call has spent the derive budget (5,000 reads or
+  20 s). A day it did not reach is `deferred` and is sealed by the next tick.
+  It is never written as a zero.
+* **Logged.** One line per tenant per call: `outcome seal tenant=T sealed=..
+  already_sealed=.. not_yet=.. deferred=.. unknown=.. reads=..`. The route
+  returns the same report under `outcomes`.
+* **It never fails the sweep.** The seal runs first and never raises. A
+  failure is `outcomes.error` in the response, and the workflow sweep still
+  runs. An unregistered tenant is `skipped: unknown_tenant`, not sealed.
+* **What it does not reach.**
+  * A personal `u-*` tenant is not in `var.rollup_tenant_ids`, so no job
+    seals its days. They seal on the next read past their grace, as before.
+  * Days older than three days are not sealed by the job. A cold 12-month
+    view still needs the admin backfill (`POST /v1/admin/outcomes/rollup`,
+    31 days per call) once, after which the job keeps it sealed. That
+    includes the one-off re-derive of every v8 day to v9 (below).
 
 ### The read budget
 
@@ -157,6 +205,94 @@ a small `count()` costs 1. It is not a Cloud Billing figure.
   day, plus their attempts. A cold 14-day platform view spent 2,250 of its
   5,000 budget.
 
+## Agents over time: the `usage` block (#2149)
+
+Admin › Platform counts asks "how many agents ran per day, week or month, of
+which type, for how long, on how many tokens, at what estimated cost". BGD's
+decisions, 2026-10-23 (~19:30Z), and how the route keeps them:
+
+* **The unit is agents, retries shown apart.** `usage=submitted` places each
+  agent in the bucket of the day it was **submitted** (`created_at`) and
+  counts it once (`agents`). Its attempts beyond the first are `retries` in
+  the same bucket. `usage=ended` places agents by `completed_at` instead, the
+  basis of every outcome figure. `usage.basis` names the one used.
+* **Breakdowns** are `group`: `runner_profile` (agent type), `model`,
+  `model_class`, `tenant_id` (workspace), and two the Timeline does not offer
+  yet, `pool_account` and `provider` (`COUNT_GROUPS`). They are kept out of
+  `GROUPS` because `test_outcomes_ui_field_contract.py` holds `GROUPS` to the
+  Timeline's own picker; they move in when the Timeline draws them.
+* **Each bucket, each group row and the totals carry:** `agents`,
+  `agents_ended`, `retries`, `attempts`; `run_s {sum, measured, attempts}`;
+  the four token counts, each `{sum, reporting, attempts}`; and `cost {sum_usd,
+  estimated_usd, agents, reporting}` under `cost_label`, "Estimated cost (list
+  price, not a bill)".
+* **Without `usage` the response is unchanged**, byte for byte. The Timeline
+  does not send it, and `test_outcomes_counts_rollup.py` holds that. `usage`
+  is not a section. It is a projection of the same fold, so it costs no read
+  of its own and is not part of the cache key.
+
+### Why null is not 0, again
+
+* A token sum is null when no started attempt reported that count. 0 is a
+  report: `mock` spends nothing on purpose. `reporting` of `attempts` is
+  "1 of 2 attempts reported", which is what a reader needs in order to
+  write "at least".
+* An attempt with no `completed_at` is **not measured**, never 0 s. Its run
+  time is not known (a worker that died mid-run never wrote one), and a zero
+  would pull every average down. `run_s.measured` of `run_s.attempts` says
+  how many attempts were measured.
+* Cost is `sum_usd` over the agents that reported one, and `reporting` of
+  `agents` is "k of n agents reported". When k < n, the UI writes "at least
+  $X". An agent that reported nothing is never $0.
+* `estimated_usd` is the part of the sum that came from the worker's
+  list-price estimate for a run stopped before it reported (#627,
+  `result_summary.cost_estimated`). It is **included** in `sum_usd` and also
+  shown on its own, so a reader can see how much of the figure is an estimate.
+* Under `usage=submitted`, an agent whose ended tuple is not in the span's
+  read days counts in `agents` and in no measured figure. That agent is still
+  open, or it ended after an explicit `until`. `agents_ended` says how many
+  were measured. Its `model` and `pool_account` key is "not ended".
+
+### The pool account comes from the agent's own events
+
+The worker records the account it leased as an event on the agent
+(`account_assigned`), never as a field of the agent's document. So the
+derive reads it the way `task_accounts.py` reads it for the agent pages: the
+same collection-group query over `events`, one per 30 ended agents, on the existing
+`events-tenant-task-cause` index, with the tenant checked on every row. No
+change to the frozen contract was needed.
+
+* **The label** is the account the agent's final attempt held, or, when that
+  attempt held none, the latest earlier attempt that held one
+  (`task_accounts.last_account_id`). An agent whose events name no account
+  is "not recorded".
+* **An agent that cannot hold an account costs no read.** That is a profile
+  with no provider, one that takes no subscription token, or an agent never
+  admitted (`task_accounts.could_hold_account`, `_static`'s rule).
+* **A failed events read fails the derive.** The day is then `read_failed`
+  and is derived again on the next read. A list page shows such an account as
+  `unread` and moves on, but a sealed day is never read again, so an account
+  it missed would be missing for good. An agent past the reader's cap of 64
+  events per agent is "unread", never a guess.
+* **A sealed day never re-reads events.** The label is stored in the tuple.
+
+### What v9 costs to re-derive
+
+Every stored day was derived under `DERIVE_VERSION` 8, which has no usage
+columns, so each one is derived again once: by the next read that needs it,
+by the admin backfill, or, for the last three days, by the workflow-rollup
+job's nightly seal. A re-derive costs what a first build costs (see the
+measured table above): every agent that ended or arrived that day, their
+attempts and their parents. On top of that come the events: one query per 30
+pooled ended agents, billed per account event returned, about one or two per
+attempt. On the 2026-09-25 snapshot (740 agents, 481 attempts), a cold 14-day
+platform view was 2,250 reads. v9 adds one event query per tenant-day that
+ended a pooled agent (one more per 30 such agents), each billed by the account
+events it returns, about one per pooled attempt. So the estimate is at most
+56 queries (14 days times 4 tenants) plus at most about 481 event rows, which
+is under 550 more reads. That is an estimate, not a measurement. The platform
+has grown since that snapshot, and today's figure was not measured.
+
 ## Bucket boundaries are wall-clock instants in the viewer's zone
 
 The server owns alignment and echoes the result. The UI never re-derives a
@@ -197,7 +333,8 @@ decision 9) and applied in PR #217.
   profile whose `RunnerProfile.cost_declared` is set (request 24); the module
   names none.
 * `DERIVE_VERSION` and `CLASSIFIER_VERSION` went 1 -> 2 with this, so every
-  stored day is derived again under the new rules.
+  stored day is derived again under the new rules. (`DERIVE_VERSION` is 9
+  today; each step is recorded beside the constant in `outcomes.py`.)
 
 ### A cancel's cascade is not a failure's (decision 2)
 
@@ -285,6 +422,8 @@ Both are in `terraform/modules/firestore/indexes.tf` and asserted in
 
 Arrivals use the existing `tasks-tenant-created`. Attempts use `tenant_id ==`
 plus `task_id in`, with no ordering, which merged single-field indexes serve.
+The pool account's events read (#2149) uses the existing
+`events-tenant-task-cause`, the index `task_accounts.py` already needed.
 
 ## Measured against real Firestore
 
@@ -368,7 +507,8 @@ places work by **completed_at**. Both give the same headline on dev:
 
 ## Offboarding
 
-`outcome_days` holds a tenant's task ids, profiles and submitter emails. So
+`outcome_days` holds a tenant's task ids, profiles, submitter emails and, since
+v9, the pool account ids its agents ran on. So
 `scripts/offboard-tenant.sh` counts it, deletes it by `tenant_id` (never by the
 document-id prefix, which `eng` and `eng-x` share), and counts it again in the
 proof. That follows the owner's 2026-09-24 decision that offboarding deletes

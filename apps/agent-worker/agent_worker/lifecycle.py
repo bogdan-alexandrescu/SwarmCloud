@@ -5724,15 +5724,23 @@ class Worker:
 
         * it is on another branch than the one the clone left it on
           (`_start_branch`, read before any agent process existed, or read
-          back from the checkpoint manifest on a resume; detached counts as a
-          branch of its own) AND that branch is one the agent FETCHED rather
-          than made (`_fetched_line`) -- the branch's name is returned, or the
-          head's short sha for a detached one; or
+          back from the checkpoint manifest on a resume) AND that branch is
+          one the agent FETCHED rather than made (`_fetched_line`) -- the
+          branch's name is returned; or
+        * it is DETACHED exactly on a `refs/remotes/origin/*` tip, whatever
+          the start was -- a branch, or detached itself (a by-sha
+          `repository_ref`, a resumed index run) -- unless that commit is
+          `floor` itself or the tip of this step's own branch -- the head's
+          short sha is returned (BGD, 2026-10-23 ~18:39Z, recorded on
+          task_bf208a4d46f04764869d q1: "Yes, close it." A review cloned by
+          sha that ran `git checkout --detach origin/<reviewed>` changed no
+          branch, and its line descends from the start); or
         * it does not descend from `floor`, the commit the step started on
           (the start sha, or where the runner's pre-publish rebase landed,
           `_adopt_rebase_base`), nor from the tip this attempt's own
           `git_push_branch` left on the task's branch (`_adopt_tool_pushed_tip`,
-          #1188) -- the branch's name is returned when HEAD changed branch,
+          #1188) -- the branch's name is returned when HEAD changed branch
+          (detached counts as a branch of its own),
           the head's short sha otherwise.
 
         RELAXED FOR A NEW LOCAL BRANCH (BGD, 2026-10-23 16:47Z, recorded on
@@ -5742,18 +5750,21 @@ class Worker:
         branch change is therefore NOT a move when the end branch has no
         `refs/remotes/origin/<name>` in the clone (the clone tracks every
         branch, `gitops.TRACK_EVERY_BRANCH`, so a branch fetched by name has
-        one) and HEAD descends from the start, the second rule above. A
-        detached HEAD reached from a branch is not a move when it descends
-        from the start and equals no `refs/remotes/origin/*` tip.
+        one) and HEAD descends from the start, the last rule above. A
+        detached HEAD, from any start, therefore publishes in exactly two
+        cases: it is the start sha (`floor`) itself, whether or not an origin
+        tip sits on that commit; or it descends from the start and equals no
+        `refs/remotes/origin/*` tip but this step's own branch's -- a by-sha
+        step's own commits on top of its start.
 
         THE KNOWN LIMIT BGD ACCEPTED. A line fetched without a tracking ref
         reads as the agent's own: a reviewed pull request fetched BY SHA (or
-        into FETCH_HEAD) and checked out onto a fresh local branch, a branch
-        made with `checkout -b mine origin/<reviewed>`, a detached HEAD with a
-        commit on top of a fetched tip, or a tracking ref the agent deleted.
-        Each descends from the start sha, so each publishes the reviewed
-        commits as this step's. Nothing in the clone tells those apart from an
-        agent's own work, and the clone is the agent's to write.
+        into FETCH_HEAD) and checked out, detached or onto a fresh local
+        branch, a branch made with `checkout -b mine origin/<reviewed>`, a
+        detached HEAD with a commit on top of a fetched tip, or a tracking ref
+        the agent deleted. Each descends from the start sha, so each publishes
+        the reviewed commits as this step's. Nothing in the clone tells those
+        apart from an agent's own work, and the clone is the agent's to write.
 
         Every fact about the clone is read from its files as data
         (`read_head_branch_as_data`, `read_origin_ref_as_data`,
@@ -5784,9 +5795,22 @@ class Worker:
         end = read_head_branch_as_data(repo)
         start = self._start_branch
         left_branch = start is not None and end != start
-        if left_branch and self._fetched_line(repo, end):
+        if end == DETACHED_HEAD:
+            # Whatever the start was: a clone by sha starts detached, so
+            # detaching onto a fetched tip changes no branch (BGD, 2026-10-23).
+            head = read_head_as_data(repo)
+            own = self._publish_branch_name()
+            fetched = (
+                head is not None
+                and head != floor
+                and not (own and read_origin_ref_as_data(repo, f"refs/heads/{own}") == head)
+                and self._fetched_line(repo, end)
+            )
+        else:
+            fetched = left_branch and self._fetched_line(repo, end)
+        if fetched:
             self.log.warning(
-                "HEAD left the branch this step was given for one it fetched; nothing "
+                "HEAD left the line this step was given for one it fetched; nothing "
                 "of it is harvested", start=start, end=end,
             )
             return where()

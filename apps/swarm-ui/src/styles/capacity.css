@@ -858,17 +858,16 @@ p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
 /* V088: AN IMAGE OR A CREDENTIAL TAKES THE WHOLE ROW of the facts grid. The
    `.rt-fact-wide` rule in styles.css says `flex-basis: 100%`, which a grid
    item ignores, so the image sat in one ~220px track and a digest wrapped to
-   nine lines. And a card is as tall as what is in it: the catalogue grid's
-   default `stretch` grew a short card to its neighbour's digest. The digest
-   no longer wraps, and each card now stretches to its row (below). */
+   nine lines. */
 .ctl-facts.is-rows > .rt-fact-wide { grid-column: 1 / -1; }
-.rt-cards > .ctl-cards { align-items: start; }
 /* THE CARDS OF ONE ROW SHARE ITS HEIGHT (visual QA runs 3 and 6, capacity-011
-   and 6:capacity-010, box 6314114353, part of #1680). With the digest on its
-   own full line (above), what `start` left was a row of ragged bottoms, three
-   card edges at three heights. Each card stretches to its row; the grid's
-   `start` no longer reaches a card. */
-.rt-cards > .ctl-cards > .ctl-card { align-self: stretch; height: 100%; }
+   and 6:capacity-010, box 6314114353, part of #1680). V088 once held each card
+   to its own facts with `align-items: start`, because an unwrapped digest grew
+   a short card to its neighbour's height. With the digest on its own full
+   line (above), what `start` left was a row of ragged bottoms, three card
+   edges at three heights. Stated on the grid, not left to its `normal`
+   default, so the next screen-private rule meets it here. */
+.rt-cards > .ctl-cards { align-items: stretch; }
 
 /* V032: Sizing's keys are the longest any stacked record draws (`Workspace (of
    memory)`, 21 characters), so its record says so rather than every record

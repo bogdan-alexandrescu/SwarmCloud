@@ -207,15 +207,16 @@ async function renderRuntimes(): Promise<void> {
 describe('d. 6:capacity-010 (box 6314114353): runtime cards in a row share its height', () => {
   it('stretches every card to its grid row', async () => {
     await renderRuntimes()
-    const cards = [...document.querySelectorAll('.rt-cards > .ctl-cards > .ctl-card')]
+    const grid = document.querySelector('.rt-cards > .ctl-cards')!
+    const cards = [...grid.querySelectorAll(':scope > .ctl-card')]
     expect(cards.length).toBe(2)
-    // MUTATION: drop `align-self: stretch` from `.rt-cards > .ctl-cards >
-    // .ctl-card` and V088's `align-items: start` on the grid makes each card
-    // as tall as its own facts again -- the ragged row.
-    for (const card of cards) {
-      expect(painted(card, 'align-self', WIDE)).toBe('stretch')
-      expect(painted(card, 'height', WIDE)).toBe('100%')
-    }
+    // MUTATION: put `align-items: start` on `.rt-cards > .ctl-cards` (the rule
+    // QAFIX6-CAPACITY-2 retired) and each card is as tall as its own facts
+    // again -- the ragged row.
+    expect(painted(grid, 'align-items', WIDE)).toBe('stretch')
+    // MUTATION: give a card an `align-self` of its own (`start`, `center`) and
+    // that card stops at its facts while its neighbour fills the row.
+    for (const card of cards) expect(painted(card, 'align-self', WIDE) ?? 'auto').toMatch(/^(auto|stretch)$/)
   })
 })
 

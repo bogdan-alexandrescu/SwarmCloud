@@ -1032,6 +1032,7 @@ def list_tenants(
 def rollup_workflows(
     tenant_id: str = Query(..., min_length=1),
     limit: int | None = Query(default=None, ge=1),
+    seal_outcomes: bool = Query(default=False),
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
@@ -1052,10 +1053,33 @@ def rollup_workflows(
     Terminal workflows are skipped and truncation is reported rather than hidden;
     see `WorkflowRollups.sweep`. A caller that reads `truncated: true` has not
     been given a complete census, and the response says so.
+
+    `seal_outcomes=true` ALSO SEALS the tenant's ended `outcome_days`
+    (COUNTS-SEAL, #2149; `Outcomes.seal_recent`): BGD's decision is that the
+    existing rollup job seals each day overnight, and this is the route that
+    job already calls, as the identity it already presents, so the seal needs
+    no new job, no new route on `auth.ROLLUP_SWEEPER_ROUTES` and no IAM row.
+    It never touches today's live day, is idempotent and is bounded by the
+    derive budget. It runs FIRST and never raises: a failed seal is reported
+    under `outcomes` and the workflow sweep still runs, and a failing workflow
+    sweep cannot starve the seal. An unregistered tenant is not sealed, for
+    `rollup_outcomes`' reason: a misspelt id would build a rollup for a tenant
+    nobody has. Without the flag the response is what it always was.
     """
+    sealed: dict | None = None
+    if seal_outcomes:
+        if ctx.store.get_tenant(tenant_id) is None:
+            sealed = {"tenant_id": tenant_id, "skipped": "unknown_tenant"}
+        else:
+            try:
+                sealed = ctx.outcomes.seal_recent(tenant_id=tenant_id)
+            except Exception:  # noqa: BLE001 -- the next tick seals what this one did not
+                log.exception("outcome seal failed tenant=%s", tenant_id)
+                sealed = {"tenant_id": tenant_id, "error": "seal_failed"}
+        ctx.metrics.admin_actions.labels(action="outcomes_seal").inc()
     results, report = ctx.rollups.sweep(tenant_id, limit=paged_limit(ctx, limit))
     ctx.metrics.admin_actions.labels(action="workflow_rollup").inc()
-    return {
+    body: dict = {
         "tenant_id": tenant_id,
         "report": report.to_api(),
         # Only the ones that did not agree. A sweep over a healthy tenant returns
@@ -1073,6 +1097,9 @@ def rollup_workflows(
             if r.drift["agrees"] is not True
         ],
     }
+    if sealed is not None:
+        body["outcomes"] = sealed
+    return body
 
 
 @router.post("/runs/advance")
