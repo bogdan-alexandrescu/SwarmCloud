@@ -1128,7 +1128,12 @@ function TargetForm({
             <textarea id={`${fid}-screens`} name="screens" value={d.screens} onChange={set('screens')} rows={6} placeholder={'home /\npricing /pricing'} />
           </div>
           <label className="ur-fl" htmlFor={`${fid}-more`}>
-            More settings<small>JSON: {MORE_FIELDS.join(', ')}</small>
+            More settings
+            <small>
+              JSON: {MORE_FIELDS.join(', ')}. <code>file.label_rules</code>, e.g.{' '}
+              <code>{'[{"paths": ["/agents/"], "labels": ["agent-page-rework"]}]'}</code>, adds a rule&rsquo;s labels to the
+              findings on routes starting with one of its paths
+            </small>
           </label>
           <div>
             <textarea id={`${fid}-more`} name="more" value={d.more} onChange={set('more')} rows={6} placeholder={'{"widths": ["desktop", "phone-390"]}'} />

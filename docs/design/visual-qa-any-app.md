@@ -71,7 +71,7 @@ not one):
 | `credential` | `{set: bool, set_at, set_by, version}`, never a value | a **reference**: the value is in Secret Manager (§2.1) |
 | `challenge_bypass` | `{kind: "header" \| "cookie", name}`, optional; its value served only as `challenge_bypass_value: {set, set_at, set_by, version}` | §2.5: the app owner's own way past their CAPTCHA, added by the gate on the approved origins only |
 | `screens` | a list `{id, path, ready?, segments?}`, or `discover: {max_pages ≤ 60, max_depth ≤ 3}` | the capture's route list; discovery is bounded and same-origin (§4.1) |
-| `flows` | `{id, goal, start_path, mutating: false}` each | goal-driven flows; `mutating: true` is refused unless `environment` is `non_production` (§3) |
+| `flows` | `{id, goal, start_path, mutating: false}` each | goal-driven flows; `mutating: true` is refused unless `environment` is `non_production` (§3). `start_path` is relative to **`base_url`**, path included: under `https://h/app/`, `/` opens `https://h/app/` and `/settings` opens `https://h/app/settings`. Screen paths, exclusions and `login_path` are origin-relative instead, because discovery writes routes as the origin's paths (QA-ORIGIN); a flow says where it starts in the app, so it is read from the app's base, through the one join `qaspec.screen_url`, and its start is refused when either reading is excluded (QA-TARGET-FILE, #2062) |
 | `flows_browser_tool` | `playwright` (default, when unset) or `jev` | the tool the flows drive the live browser with (§4.1, step 4); anything else is refused at registration |
 | `widths` | presets by name, default `["desktop", "phone-390"]` (1440 and 390) | the gate's presets, never a viewport override (the gate refuses one) |
 | `themes` | default `["light", "dark"]`, through emulated media | as the console's capture sets them |
@@ -79,7 +79,7 @@ not one):
 | `environment` | `production` (default) or `non_production` | §3: only a non-production target can run a mutating flow |
 | `read_posts` | target-origin paths whose `POST` is a read (a GraphQL endpoint) | §3's method rule would otherwise refuse them |
 | `design_docs` | path globs in the repository, default `DESIGN.md`, `docs/design*/**`, `**/style-guide*` | §4.3: the review reads the app's own design where it has one |
-| `file` | `{min_severity: "minor", max_issues: 20, labels: ["visual-qa"], evidence: "console_link"}` | §5 |
+| `file` | `{min_severity: "minor", max_issues: 20, labels: ["visual-qa"], label_rules: [], evidence: "console_link"}` | §5 |
 | `rate` | `{navigation_ms: 2000, requests_per_s: 10}` | §3; a registrant may make it slower, never faster than 1 navigation a second |
 | `authorized_by`, `attested_at` | the registrant's statement that the tenant may test this application | someone else's app: the platform does not decide whose it is, but it records who said it may be tested |
 | `host_state` | `pending`, `approved` (with `approved_by`, `approved_at`) or `revoked` | §1.2 |
@@ -663,6 +663,24 @@ holds unchanged:
 * **Labels**: `bug` (or the form's), the target's `labels` (default
   `visual-qa`), and `severity:<s>` when the repository has such a label;
   only labels that already exist are applied (§3.2's rule), never created.
+* **Labels by route** (`file.label_rules`, #2062): `[{paths: ["/agents/"],
+  labels: ["agent-page-rework"]}]`. A finding whose `path`, without its
+  query, starts with one of a rule's prefixes also gets that rule's labels,
+  on top of `labels`; every matching rule adds its own, and a finding no rule
+  matches is filed with `labels` alone. AI Studio asked for it on 2026-10-23:
+  their `/agents/{id}` page was being replaced, and they re-check those
+  findings against the new build instead of fixing the old one, which until
+  then meant labelling them by hand after the file step. The prefixes are
+  origin-relative like the finding's `path`, and each is refused at
+  registration, with the field named (`file.label_rules[i].paths`), unless it
+  starts with one `/` and carries no scheme, host or query, because a
+  prefix that can never equal a route's start is a rule that silently never
+  fires. At most 20 rules, 1..10 prefixes and 1..10 labels each, the labels
+  held to `labels`' own name rule. The file step's prompt states each rule,
+  numbered, and `filed.json` records for each issue the rules that labelled
+  it, so the run's report shows which rule labelled which issue. The step is
+  an agent, so `qaspec.finding_labels` is the rule written once in code, the
+  one its tests hold.
 
 ---
 
