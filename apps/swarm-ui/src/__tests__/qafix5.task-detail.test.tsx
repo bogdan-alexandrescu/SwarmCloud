@@ -316,7 +316,8 @@ describe('QA-113: the Attempts tab counts once, wraps rather than clips, and exp
     expect(f.textContent).not.toMatch(/not measured/)
     expect(f.querySelector('.ctl-mark.is-absent')?.textContent).toBe('not recorded')
     // MUTATION: leave the reason in the mark's accessible name only -- the glass shows two words and no why.
-    expect(f.querySelector('.att-model-why')?.textContent).toBe('older attempt, or no-model runner')
+    // The reason that fits attempt 3, the newest of a claude-code task (6:task-003, qafix6.taskdetail).
+    expect(f.querySelector('.att-model-why')?.textContent).toBe('the worker did not write it')
     expect(f.classList.contains('is-absent')).toBe(true)
   })
 
