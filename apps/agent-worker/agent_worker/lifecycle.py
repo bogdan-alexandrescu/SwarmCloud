@@ -3944,6 +3944,11 @@ class Worker:
             LEASE_RELEASED each follow the write they record, which this
             attempt made while it still owned the task.
         """
+        own = self._own_end_exit(where=where)
+        if own is not None:
+            # Not superseded: the fence is this attempt's OWN committed end.
+            self._stop_runner(reason="attempt ended")
+            return own
         self._fenced_exit = True
         self.mcp.mark_fenced()
         self.log.error(
@@ -3961,6 +3966,48 @@ class Worker:
         self._stop_runner(reason="generation fenced")
         self._record_fenced_end(str(exc))
         return ExitCode.GENERATION_FENCED
+
+    def _own_end_exit(self, *, where: str) -> int | None:
+        """The exit of an attempt whose OWN end has committed, or None (#2064).
+
+        A park, a finish or a retry writes the task's new state, the attempt's
+        end and the lease release in ONE commit (`ControlPlane._end_in_transaction`),
+        and the control plane records which state that commit wrote
+        (`committed_end`). A crash after it, or a later write it fences, used
+        to read the task's PARKED as "superseded" and stand down (2026-10-23
+        09:05:41Z, task_7782dd6c7a9e4cb3ade0): the exit said fenced and the
+        attempt's park record was overwritten. It is this attempt's own end.
+        Same attempt, same generation, and its lease was released in that
+        commit, so there is nothing left to release and nothing to write: the
+        exit is the one the end means.
+
+        The release in the same commit is checked, not assumed. A control
+        plane that reports an end without the release is a broken invariant
+        1, and it is logged as one; the reconciler's stale-lease rule is the
+        only thing that would return that slot.
+        """
+        ended = getattr(self.control, "committed_end", None)
+        if ended is None:
+            return None
+        if getattr(self.control, "lease_released", False) is not True:
+            self.log.error(
+                "this attempt's own end committed but its lease was not released "
+                "with it: invariant 1 is broken, the reconciler must reclaim it",
+                where=where,
+                state=ended.value,
+            )
+        else:
+            self.log.warning(
+                "this attempt's own end had already committed, its lease released "
+                "in the same commit; nothing is left to write or release",
+                where=where,
+                state=ended.value,
+            )
+        return {
+            TaskState.PARKED: ExitCode.PARKED,
+            TaskState.SUCCEEDED: ExitCode.OK,
+            TaskState.CANCELLED: ExitCode.CANCELLED,
+        }.get(ended, ExitCode.FAILED)
 
     def _default_reap(self) -> tuple[int, ...]:
         """The production pre-publish reap. See `reap_foreign_processes`."""
@@ -14171,7 +14218,14 @@ class Worker:
         refused because this attempt is fenced. The old version wrote FAILED
         over whatever the task was by then, including a newer attempt the
         scheduler had already admitted.
+
+        Or the exit of this attempt's OWN end, when a park, a finish or a
+        retry had committed before the crash (`_own_end_exit`, #2064): its
+        lease went back in that commit, and nothing is written over it.
         """
+        own = self._own_end_exit(where="crash")
+        if own is not None:
+            return own
         try:
             summary = self._upload_outputs()
             self._add_runner_block(summary)
