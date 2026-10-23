@@ -58,11 +58,15 @@ from pathlib import Path
 # setup), so a shard of a selection and a shard of a full run take about the
 # same wall time.
 SHARD_TARGET_SECONDS = 600
-# A full run (~7,000 s on 2026-10-20) gets eight: ~875 s a shard, at most
-# ~1.5x the target, which is the tail the owner asked for. More would add a
-# runner apiece to the queue when a dozen pull requests arrive together;
-# fewer puts a full run's shard back near 1,750 s.
-MAX_SHARDS = 8
+# A full run (~7,000 s on 2026-10-20) got eight: ~875 s a shard, at most
+# ~1.5x the target, which is the tail the owner asked for. On 2026-10-23 the
+# night's new test files pushed a full run's shard just past 1.5x (900.1-900.2 s
+# against a 900 s bound), and test_unit_shards.py went red on every pull
+# request. Nine keeps the owner's 1.5x tail (~800 s a shard) for one more
+# runner a full run; relaxing the 1.5x instead would drop the owner's rule.
+# More would add a runner apiece to the queue when a dozen pull requests
+# arrive together; fewer puts a full run's shard back over the bound.
+MAX_SHARDS = 9
 
 MODES = ("all", "selected", "subset")
 
