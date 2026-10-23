@@ -29,6 +29,7 @@ from agent_worker.errors import ExitCode
 from agent_worker.runners.cliagent import RELOAD_RESUME_PROMPT
 from swarm_common.states import TaskState
 
+from time_limit_helper import without_limit_line
 from worker_seeds import seed_attempt, seed_tenant
 
 #: Records each start in PLAN_DIR/runs.jsonl and behaves per `plan.json`:
@@ -119,7 +120,8 @@ def test_a_reload_on_the_tenant_credential_resumes_the_session(
     assert code == ExitCode.OK, log_stream.getvalue()[-3000:]
     assert worker._account is None, "this test is about a run on no pool account"
     assert [r["resume"] for r in runs] == [None, session]
-    assert runs[1]["stdin"] == RELOAD_RESUME_PROMPT
+    # The message, then this run's own time-limit line (#2139).
+    assert without_limit_line(runs[1]["stdin"]) == RELOAD_RESUME_PROMPT
     reloads = _reloads(db)
     assert len(reloads) == 1
     assert reloads[0]["resumed"] is True

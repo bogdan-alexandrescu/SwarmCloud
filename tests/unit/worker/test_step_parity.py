@@ -59,6 +59,7 @@ from agent_worker.objectstore import LocalObjectStore
 from agent_worker.runners.base import RunnerContext, RunnerFailure
 from swarm_common.states import TaskState
 
+from time_limit_helper import without_limit_line
 from worker_seeds import TENANT, seed_attempt
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
@@ -283,7 +284,10 @@ def test_a_task_with_no_repository_gets_the_prompt_it_got_before(tmp_path, recor
 
     _out, record = _run(ctx)
 
-    assert record["prompt"] == f"merge the scans\n\n{_deliverables_line(ctx.artifacts_dir)}"
+    # Unchanged but for the step's time-limit line, last (#2139).
+    assert without_limit_line(record["prompt"]) == (
+        f"merge the scans\n\n{_deliverables_line(ctx.artifacts_dir)}"
+    )
 
 
 def test_an_unusable_staged_path_is_never_put_in_the_prompt(tmp_path, recording_cli):

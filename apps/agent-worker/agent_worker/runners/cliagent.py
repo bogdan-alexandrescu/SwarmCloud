@@ -45,7 +45,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
@@ -1065,6 +1065,34 @@ PUBLISH_PARAGRAPH = (
 )
 
 
+#: THE STEP'S WALL CLOCK, TOLD TO THE AGENT (#2139). Measured 2026-10-23 by the
+#: failure-review schedule: three claude-code agents (f-003, f-007, f-015)
+#: started the tenant's whole pytest suite in the background, polled it with
+#: ~600 s `sleep` calls, and were killed mid-sleep at the step's 7200 s limit
+#: (exit 137) -- one with a `timeout 7000` longer than its own step -- and a
+#: dependant review was cancelled `failed_parent` (f-004). Nothing told them
+#: the limit: at the deadline `_run_watched` terminates the CLI without a word,
+#: and FINISH_PROMPT runs only after the CLI exits by itself. Fixed wording, so
+#: a test can hold it; minutes rounded down and the end time in UTC, so it is
+#: never later than the deadline it names. It carries no rate-limit or
+#: credential marker for a CLI that echoes it -- the minutes are the one number
+#: in it, and only a 429-minute limit would spell one.
+def time_limit_line(timeout_seconds: float, now: datetime | None = None) -> str:
+    """The one platform line naming this run's limit and when it ends."""
+    start = now if now is not None else datetime.now(timezone.utc)
+    end = start.astimezone(timezone.utc) + timedelta(seconds=timeout_seconds)
+    minutes = int(timeout_seconds // 60)
+    return (
+        f"This step has a wall-clock limit of {minutes} minute{'' if minutes == 1 else 's'} "
+        f"and is stopped at "
+        f"{end.strftime('%Y-%m-%dT%H:%M:%SZ')} (UTC), whatever it is doing; work "
+        "that is not committed by then is lost. Commit your work and write the "
+        "pull request's title and body well before that time. Do not run the "
+        "whole test suite in the background and poll it with sleep: run the "
+        "tests related to your change, in the foreground."
+    )
+
+
 def _with_reason(entry: str) -> str:
     """A `credential_lines` entry (`path:line rule`) with why the rule's match
     looked like a credential (`lifecycle.credential_reason`, #2030); the entry
@@ -1314,11 +1342,21 @@ def run_cli_agent(
     # and the agent killed its own CLI (exit 143). Every process listing shows
     # the argv; nothing caller-written is in it now. One argv string is also
     # capped at 128 KiB (MAX_ARG_STRLEN), which a long brief could pass.
+    # Resolved before the prompt, which names the limit (#2139).
+    limits = resolve_limits(payload, platform_ceilings())
     if resume:
         argv += [spec.resume_flag, resume]
-        stdin_prompt = resume_prompt(os.environ.get(RESUME_REASON_ENV, "").strip())
+        # A resumed session is a new run with its own limit (#2139): the end
+        # time the session was told at its first start is not this run's.
+        stdin_prompt = (
+            f"{resume_prompt(os.environ.get(RESUME_REASON_ENV, '').strip())}\n\n"
+            f"{time_limit_line(limits.timeout_seconds)}"
+        )
     else:
         stdin_prompt = expected_mod.with_instructions(prompt, told, ctx.artifacts_dir, staged)
+        # The step's wall clock (#2139): last for a task with no repository,
+        # just before the platform paragraph for one with a repository.
+        stdin_prompt = f"{stdin_prompt}\n\n{time_limit_line(limits.timeout_seconds)}"
         if cwd != ctx.work_dir:
             # A task with a repository (Proposal A, owner decision 2026-10-08):
             # the platform paragraph, last. Not on a resume: the session
@@ -1330,7 +1368,6 @@ def run_cli_agent(
     # A resumed session's id is masked: it never reaches a log line.
     log_argv = [("<session>" if resume and arg == resume else arg) for arg in argv]
 
-    limits = resolve_limits(payload, platform_ceilings())
     log = StructuredLogger(stream=sys.stderr, component=f"{spec.name}-runner")
     log.info(
         "the agent starts in the repository checkout"
