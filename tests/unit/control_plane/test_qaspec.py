@@ -744,3 +744,114 @@ def test_the_capture_flow_and_discovery_prompts_name_the_start_clicks_in_order_o
     # MUTATION: write the chooser sentence for every own-login target and this fails.
     assert all("chooser" not in s["prompt"] for s in plain["steps"])
     assert all("chooser" not in s["prompt"] for s in qaspec.render(_target())["steps"])
+
+
+# --------------------------------------------------------------------------
+# Route-based label rules (QA-TARGET-FILE, #2062; AI Studio, 2026-10-23)
+# --------------------------------------------------------------------------
+
+_AGENT_RULE = {"paths": ["/agents/"], "labels": ["agent-page-rework"]}
+
+
+def test_a_label_rule_labels_a_finding_on_its_route_and_not_one_elsewhere() -> None:
+    settings = qaspec._file_settings(_target(file={"labels": ["visual-qa"], "label_rules": [_AGENT_RULE]}))
+    # MUTATION: drop the rule's labels from `finding_labels` and the /agents/ finding is filed plainly.
+    assert qaspec.finding_labels(settings, "/agents/x") == (["visual-qa", "agent-page-rework"], [0])
+    # MUTATION: match a rule anywhere in the path (`in`, not `startswith`) or always, and /ship is labelled.
+    assert qaspec.finding_labels(settings, "/ship") == (["visual-qa"], [])
+    assert qaspec.finding_labels(settings, "/ship/agents/x") == (["visual-qa"], [])
+    # A query never decides the route.
+    assert qaspec.finding_labels(settings, "/ship?next=/agents/x") == (["visual-qa"], [])
+    # MUTATION: repeat a label two rules share and it is listed twice.
+    twice = qaspec._file_settings(_target(file={"label_rules": [
+        _AGENT_RULE, {"paths": ["/agents/x"], "labels": ["agent-page-rework", "tab"]}]}))
+    assert qaspec.finding_labels(twice, "/agents/x/tab") == (["visual-qa", "agent-page-rework", "tab"], [0, 1])
+
+
+def test_a_target_without_label_rules_files_every_finding_with_its_labels() -> None:
+    settings = qaspec._file_settings(_target())
+    # MUTATION: default `label_rules` to anything but empty and this changes.
+    assert settings["label_rules"] == []
+    assert qaspec.finding_labels(settings, "/agents/x") == (["visual-qa"], [])
+
+
+def test_the_file_step_states_each_label_rule_and_reports_which_labelled_what() -> None:
+    spec = qaspec.render(_target(file={"label_rules": [_AGENT_RULE, {"paths": ["/ship", "/dock/"],
+                                                                     "labels": ["ship"]}]}))
+    prompt = _steps(spec)["file"]["prompt"]
+    # MUTATION: leave the rules out of `_file_prompt` and the step files every finding alike.
+    assert 'rule 1: a finding whose `path` starts with "/agents/" also gets ["agent-page-rework"]' in prompt
+    assert 'rule 2: a finding whose `path` starts with "/ship" or "/dock/" also gets ["ship"]' in prompt
+    # MUTATION: drop the report line and filed.json no longer says which rule labelled which issue.
+    assert "`label_rules`" in prompt and "filed.json" in prompt
+    plain = _steps(qaspec.render(_target()))["file"]["prompt"]
+    assert "rule 1" not in plain
+
+
+@pytest.mark.parametrize(
+    ("rules", "field"),
+    [
+        # MUTATION: drop the per-rule 10-label bound and an 11-label rule is stored.
+        ([{"paths": ["/agents/"], "labels": [f"l{i}" for i in range(11)]}], "file.label_rules[0].labels"),
+        # MUTATION: accept any string as a prefix and a host-qualified one is stored.
+        ([{"paths": ["https://h.example.com/agents/"], "labels": ["a"]}], "file.label_rules[0].paths"),
+        ([_AGENT_RULE, {"paths": ["//h.example.com/agents/"], "labels": ["a"]}], "file.label_rules[1].paths"),
+        ([{"paths": ["/agents/?tab=1"], "labels": ["a"]}], "file.label_rules[0].paths"),
+        ([{"paths": ["agents/"], "labels": ["a"]}], "file.label_rules[0].paths"),
+        ([{"paths": [], "labels": ["a"]}], "file.label_rules[0].paths"),
+        ([{"paths": ["/agents/"], "labels": []}], "file.label_rules[0].labels"),
+        ([{"paths": ["/agents/"], "labels": ["-bad"]}], "file.label_rules[0].labels"),
+        ([{"paths": ["/agents/"], "labels": ["a"], "image": "x"}], "file.label_rules[0]"),
+        # MUTATION: drop the 20-rule bound and a 21-rule list is stored.
+        ([_AGENT_RULE] * 21, "file.label_rules"),
+        ({"paths": ["/agents/"]}, "file.label_rules"),
+    ],
+)
+def test_an_ill_formed_label_rule_is_refused_with_the_field_named(rules: Any, field: str) -> None:
+    with pytest.raises(qaspec.QaSpecError) as refused:
+        qaspec._file_settings(_target(file={"label_rules": rules}))
+    assert refused.value.code == "qa_target_invalid"
+    assert refused.value.message.startswith(field + " ")
+
+
+def test_twenty_rules_of_ten_labels_are_accepted() -> None:
+    rules = [{"paths": [f"/r{i}/"], "labels": [f"l{j}" for j in range(10)]} for i in range(20)]
+    assert len(qaspec._file_settings(_target(file={"label_rules": rules}))["label_rules"]) == 20
+
+
+# --------------------------------------------------------------------------
+# A flow's start_path is relative to the base (QA-TARGET-FILE, §1)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("base", "start", "opens"),
+    [
+        ("https://h.example.com/app/", "/", "https://h.example.com/app/"),
+        ("https://h.example.com/app/", "/settings", "https://h.example.com/app/settings"),
+        ("https://h.example.com/app", "/settings?tab=2", "https://h.example.com/app/settings?tab=2"),
+        ("https://h.example.com", "/", "https://h.example.com/"),
+        ("https://h.example.com/", "/pricing", "https://h.example.com/pricing"),
+    ],
+)
+def test_a_flow_opens_its_start_path_under_the_base(base: str, start: str, opens: str) -> None:
+    spec = qaspec.render(_target(base_url=base, flows=[{"id": "f", "goal": "g", "start_path": start}]))
+    prompt = _steps(spec)["flow-f"]["prompt"]
+    # MUTATION: join as f"{base}{start_path}" without one shared helper and a trailing-slash base opens `//`.
+    assert f"Open {opens} in the live browser" in prompt
+    # MUTATION: join the start_path to the base's path twice and `/app/app/` is opened.
+    assert "/app/app" not in prompt
+    assert "//" not in prompt.split("Open https://", 1)[1].split(" ", 1)[0]
+    # MUTATION: make `screen_url` anything but the one join `_flow_prompt` uses and this differs.
+    assert qaspec.screen_url(qaspec.base_url({"base_url": base}), start) == opens
+
+
+def test_a_flow_starting_on_an_excluded_path_under_the_base_is_refused() -> None:
+    # The start path is base-relative and exclusions are origin-relative, so
+    # `/logout` under `/app` is `/app/logout`, which the exclusion names.
+    target = _target(base_url="https://h.example.com/app", exclusions={"paths": ["/app/logout"]},
+                     flows=[{"id": "f", "goal": "g", "start_path": "/logout"}])
+    # MUTATION: check exclusions against the bare start_path only and this renders.
+    with pytest.raises(qaspec.QaSpecError) as refused:
+        qaspec.render(target)
+    assert refused.value.code == "qa_screen_excluded"

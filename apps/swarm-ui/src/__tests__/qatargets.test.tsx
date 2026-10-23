@@ -437,6 +437,36 @@ describe('QA targets: registration', () => {
     expect(body.rate).toEqual({ navigation_ms: 3000 })
     expect(body.file).toEqual({ max_issues: 5 })
   })
+  it('More settings help names file.label_rules, and a rule reaches the API as written (QA-TARGET-FILE, #2062)', async () => {
+    const calls = live('admin')
+    await mountPage()
+    await waitFor(() => expect(button(document, 'Register QA target')).not.toBeNull(), WAIT)
+    fireEvent.click(button(document, 'Register QA target')!)
+    const form = await waitFor(() => {
+      const f = document.querySelector<HTMLFormElement>('form.qa-edit')
+      if (f === null) throw new Error('no registration form')
+      return f
+    }, WAIT)
+    const help = form.querySelector<HTMLLabelElement>('label[for$="-more"]')!
+    // MUTATION: leave the field out of the More settings help and nobody finds it.
+    expect(help.textContent).toContain('file.label_rules')
+    expect(help.textContent).toContain('"paths"')
+    await waitFor(() => expect(form.querySelectorAll('select[name="repository"] option').length).toBeGreaterThan(1), WAIT)
+    const set = (name: string, value: string) => {
+      const el = form.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`[name="${name}"]`)!
+      fireEvent.change(el, { target: { value } })
+    }
+    set('name', 'new')
+    set('base_url', 'https://new.example.test/')
+    set('repository', 'example-org/example-api')
+    set('authorized_by', "the app's owner")
+    set('screens', 'home /')
+    set('more', '{"file": {"label_rules": [{"paths": ["/agents/"], "labels": ["agent-page-rework"]}]}}')
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST').length).toBe(1), WAIT)
+    const body = calls.find((c) => c.method === 'POST')!.body as Json
+    expect(body.file).toEqual({ label_rules: [{ paths: ['/agents/'], labels: ['agent-page-rework'] }] })
+  })
 
   it('an edit sends only what changed, and clears a More setting that was removed', async () => {
     const calls = live('admin')
