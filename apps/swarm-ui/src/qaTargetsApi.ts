@@ -42,6 +42,14 @@ export interface QaScreen {
   path: string
 }
 
+/** A click the gate makes on the login page before the form (§2.2): the
+ *  control's exact visible text, and optionally a CSS selector narrowing which
+ *  elements are candidates. Up to three, in order. */
+export interface QaStartClick {
+  text: string
+  css?: string
+}
+
 export interface QaSignIn {
   kind: 'none' | 'own_login'
   login_path: string | null
@@ -50,6 +58,7 @@ export interface QaSignIn {
   password_selector: string | null
   submit_selector: string | null
   extra_origin: string | null
+  start_clicks: QaStartClick[]
 }
 
 export interface QaCredentialStatus {
@@ -86,7 +95,7 @@ export interface QaTargetBody {
   base_url?: string
   repository?: string
   authorized_by?: string
-  sign_in?: Record<string, string>
+  sign_in?: Record<string, unknown>
   screens?: QaScreen[]
   environment?: 'production' | 'non_production'
 }
@@ -117,7 +126,21 @@ function normSignIn(raw: unknown): QaSignIn {
     password_selector: str(s.password_selector),
     submit_selector: str(s.submit_selector),
     extra_origin: str(s.extra_origin),
+    start_clicks: normStartClicks(s.start_clicks),
   }
+}
+
+function normStartClicks(raw: unknown): QaStartClick[] {
+  if (!Array.isArray(raw)) return []
+  const out: QaStartClick[] = []
+  for (const item of raw) {
+    const c = rec(item)
+    const text = str(c.text)
+    if (text === null) continue
+    const css = str(c.css)
+    out.push(css === null ? { text } : { text, css })
+  }
+  return out
 }
 
 /** `credential_status`: never a value, a length or any part of one. */

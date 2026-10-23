@@ -32,8 +32,9 @@ does not fight its own gate. What is decidable here is refused here, before
 anything spends: a mutating flow on a production target, a screen on an
 excluded path, a path that is not origin-relative, a base URL that is not a
 plain https origin. No value from the target's `sign_in` or `credential` is
-ever rendered: the sign-in is the gate's, and the agent is told only what to
-run when it sees the login page again.
+ever rendered but its start clicks' visible text, public by nature (§2.2):
+the sign-in is the gate's, and the agent is told only what to click on the
+chooser and what to run when it sees the login form again.
 """
 
 from __future__ import annotations
@@ -90,6 +91,20 @@ DEFAULT_EXCLUDED_CONTROLS = (
     "delete", "remove", "pay", "buy", "purchase", "send", "invite",
     "unsubscribe", "cancel subscription",
 )
+#: A sign-in's start clicks (§2.2; BGD, 2026-10-23): what the gate clicks on
+#: the login page before the form, a chooser or a "Sign in" button before an
+#: identity provider. Three covers a toggle, a button and one interstitial.
+MAX_START_CLICKS = 3
+START_CLICK_TEXT_MAX = 60
+START_CLICK_CSS_MAX = 200
+#: Words no start click's text may contain, besides the excluded controls:
+#: the gate clicks before it has signed in, and an exit is never a way in.
+START_CLICK_REFUSED = ("logout", "log out", "sign out")
+#: Playwright's own selector syntax, which `querySelectorAll` does not take:
+#: the gate clicks over CDP, in the page, not through Playwright.
+_PLAYWRIGHT_SELECTOR = re.compile(
+    r":(?:has-text|text|text-is|text-matches|nth-match|left-of|right-of|above|below|near)\(|:visible\b|>>"
+    r"|^\s*(?:text|css|xpath|id|role|data-testid|internal:[a-z-]+)=")
 DEFAULT_DESIGN_DOCS = ("DESIGN.md", "docs/design*/**", "**/style-guide*")
 DEFAULT_READY = "body"
 DEFAULT_FILE: Mapping[str, Any] = {
@@ -338,6 +353,41 @@ def _own_login(target: Mapping[str, Any]) -> bool:
     return kind == "own_login"
 
 
+def start_clicks(target: Mapping[str, Any]) -> list[dict[str, str]]:
+    """The target's `sign_in.start_clicks`, checked (§2.2): what the gate
+    clicks, in order, on the login page before the form, and what the capture
+    agent is told to click when its tab shows that page again. [] when none."""
+    sign_in = target.get("sign_in") or {"kind": "none"}
+    raw = sign_in.get("start_clicks") if isinstance(sign_in, Mapping) else None
+    if raw is None:
+        return []
+    if not _own_login(target):
+        raise _invalid("sign_in.start_clicks is allowed only with kind own_login: they are clicks the "
+                       "gate makes on the login page before it signs in")
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_START_CLICKS:
+        raise _invalid(f"sign_in.start_clicks must list 1 to {MAX_START_CLICKS} clicks, each {{text, css?}}")
+    _, controls = _exclusions(target)
+    refused = [w.lower() for w in (*controls, *START_CLICK_REFUSED)]
+    out: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, Mapping) or set(item) - {"text", "css"}:
+            raise _invalid(f"sign_in.start_clicks must list 1 to {MAX_START_CLICKS} clicks, each {{text, css?}}")
+        text = _text(item.get("text"), "a start click's text", limit=START_CLICK_TEXT_MAX)
+        if any(word in text.lower() for word in refused):
+            raise _invalid("a start click's text names an excluded control (the defaults, logout and the "
+                           "target's own): the gate never clicks one, before a sign-in least of all")
+        click = {"text": text}
+        if item.get("css") is not None:
+            css = _text(item["css"], "a start click's css", limit=START_CLICK_CSS_MAX)
+            if _PLAYWRIGHT_SELECTOR.search(css):
+                raise _invalid("a start click's css is a CSS selector the page itself takes; Playwright "
+                               "syntax such as :has-text() is refused because the gate clicks over CDP, "
+                               "not through Playwright. Put the control's visible text in text")
+            click["css"] = css
+        out.append(click)
+    return out
+
+
 def _repository(target: Mapping[str, Any]) -> str:
     repo = target.get("repository")
     if not isinstance(repo, str) or not re.fullmatch(r"https://[A-Za-z0-9.-]+/[A-Za-z0-9._/-]+", repo):
@@ -447,14 +497,24 @@ def _safety(target: Mapping[str, Any], origin: str, *, mutating: bool = False) -
     )
 
 
-def _sign_in_note(own_login: bool) -> str:
+def _sign_in_note(own_login: bool, clicks: Sequence[Mapping[str, str]] = ()) -> str:
     if not own_login:
         return ""
-    return (
+    note = (
         " The platform signs this browser in before you start; you never see or type a credential. If a "
         "page shows the login form again, run `swarm-handoff sign-in` once and continue; if it still shows "
         "it, say so in your answer and go on with the screens that need no sign-in."
     )
+    if clicks:
+        # An app that keeps its token in page memory lands the agent's own tab
+        # on its chooser again; one click there completes through the identity
+        # provider's session, with no form (§2.2, BGD 2026-10-23).
+        named = " then ".join(f"'{c['text']}'" for c in clicks)
+        note += (
+            f" If your tab shows the sign-in chooser, click {named}; the sign-in completes without a form. "
+            "Never type into a login form; if one appears, run `swarm-handoff sign-in` once."
+        )
+    return note
 
 
 def _capture_prompt(target: Mapping[str, Any], base: str, group: str, routes: Mapping[str, Any], *,
@@ -470,7 +530,7 @@ def _capture_prompt(target: Mapping[str, Any], base: str, group: str, routes: Ma
     # with its path would load `/todomvc/todomvc/`. Discovery keeps the full
     # base, path included, to know where to start (decided 2026-10-22, QA-ORIGIN).
     return (
-        f"Capture, do not review. Visual QA of {target['name']} at {base}.{_sign_in_note(own_login)} "
+        f"Capture, do not review. Visual QA of {target['name']} at {base}.{_sign_in_note(own_login, start_clicks(target))} "
         f"Write this route list, exactly as given, to /tmp/swarm-qa/routes-{group}.json with the Write "
         f"tool:\n\n```json\n{json.dumps(routes, indent=2, sort_keys=True)}\n```\n\n"
         f"Then run `python -m swarm_qa capture --routes /tmp/swarm-qa/routes-{group}.json --group {group} "
@@ -511,7 +571,7 @@ def _flow_prompt(target: Mapping[str, Any], base: str, flow: Mapping[str, Any], 
         )
     return (
         f"Goal-driven flow test of {target['name']}. Open {base}{flow['start_path']} in the live "
-        f"browser.{_sign_in_note(own_login)} Using the jev browser tools, reach this goal as a person "
+        f"browser.{_sign_in_note(own_login, start_clicks(target))} Using the jev browser tools, reach this goal as a person "
         f"would, without typing addresses: {flow['goal']}. Do it once per width, recorded: "
         f"{'; '.join(runs)}. For each run write in flow-{fid}.json whether the goal was reached, the steps "
         f"taken, and every point where a label was missing, ambiguous or misleading, each with a "
@@ -700,7 +760,7 @@ def render_discovery(target: Mapping[str, Any]) -> dict[str, Any]:
     paths, _ = _exclusions(target)
     excludes = " ".join(f"--exclude '{p}'" for p in paths)
     prompt = (
-        f"Discover the screens of {target['name']}, do not review them.{_sign_in_note(own_login)} Run "
+        f"Discover the screens of {target['name']}, do not review them.{_sign_in_note(own_login, start_clicks(target))} Run "
         f"`python -m swarm_qa discover --base {base} --max-pages {pages} --max-depth {depth} {excludes} "
         f"--out $SWARM_ARTIFACTS_DIR/screens.json`. It stays on the target's origin and honours its "
         f"robots.txt. If it exits non-zero, put its last 40 lines in your answer. "
