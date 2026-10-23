@@ -1,13 +1,17 @@
-import { useId, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode, type RefObject } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode, type RefObject } from 'react'
 import {
   createWorkspaceSecret,
   deleteWorkspaceSecret,
   loadWorkspaceSecretCatalogue,
   loadWorkspaceSecrets,
+  rotateWorkspaceSecret,
+  setWorkspaceSecretGrant,
   type WorkspaceSecret,
   type WorkspaceSecretCatalogue,
+  type WorkspaceSecretConsumer,
   type WorkspaceSecretCreate,
   type WorkspaceSecretList,
+  type WorkspaceSecretRotate,
 } from './api'
 import { Banner, Button, Card, TypedConfirm, routedClick } from './components'
 import type { ApiError } from './fetch'
@@ -20,9 +24,8 @@ import './styles/keys.css'
 /**
  * SETTINGS › WORKSPACE › SECRETS (lane SEC-UI-LIST over SEC-STORE-API, part
  * of #1347; docs/design/workspace-secrets.md §5). The selected workspace's
- * secrets store: the list, Add and a typed Delete. The grant matrix and
- * Rotate are SEC-UI-GRANTS, the lane after this one; the list names each
- * secret's enabled consumers read-only until then.
+ * secrets store: the list, Add and a typed Delete; then SEC-UI-GRANTS's
+ * grant matrix and Rotate (`GrantMatrix`, `RotateSecret`).
  *
  * A VALUE IS NEVER HELD BY THIS PAGE. Its fields are uncontrolled: the value
  * lives in the DOM input and nowhere else -- not in React state (a controlled
@@ -43,9 +46,23 @@ import './styles/keys.css'
  * the API consumes it before the write, so a retry goes without it. It is
  * held in a ref, never drawn.
  *
+ * A rotate link (`?action=rotate&name=..&t=..`) opens Rotate for that name, and
+ * its token goes back once, with that rotate only.
+ *
+ * ROTATE KEEPS ADD'S RULES: uncontrolled fields, read once and emptied before
+ * the request leaves, the value in that one `PUT .../value` body and nowhere
+ * else. The row then shows the version the list serves.
+ *
+ * THE GRANT MATRIX writes ONE grant per tick: `PUT .../{name}/grants/{consumer}`
+ * with `{enabled}`, for exactly the box ticked (`use-in` is §9 Q3's list of
+ * workspaces, not a cell). The box moves at once and goes back if the API
+ * refuses; a running attempt keeps what it was released (§4.3), so the page
+ * says the change takes effect at the next attempt.
+ *
  * WHO MAY MANAGE is the API's `can_manage` (`workspace_secrets.require_manager`:
  * a personal workspace's person; a group workspace's admin or a platform
- * admin). Only an explicit true offers Add or Delete; the API is still the gate.
+ * admin). Only an explicit true offers Add, Rotate, Delete or a live box; the
+ * API is still the gate.
  */
 
 const LIST_ROUTE = 'GET /v1/workspace/secrets'
@@ -148,18 +165,23 @@ export function WorkspaceSecretsScreen({ link }: { link: SecretsLink | null }) {
   // state or a prop of anything drawn: nothing renders it.
   const token = useRef<string | null | undefined>(undefined)
   if (token.current === undefined) {
-    token.current = link === null || link.action !== 'add'
+    token.current = link === null || link.action === null
       ? null
       : link.token !== undefined ? link.token : secretsLinkToken(window.location.pathname, window.location.search)
   }
   useLayoutEffect(() => {
     if (link !== null) dropLinkToken()
   }, [link])
-  const takeToken = () => {
+  // The token goes with the write its link was minted for, once: an add link
+  // with the first add, a rotate link with the rotate of the name it names.
+  const takeToken = (action: 'add' | 'rotate', name: string | null = null) => {
+    if (link === null || link.action !== action || (action === 'rotate' && link.name !== name)) return null
     const t = token.current ?? null
     token.current = null
     return t
   }
+  const manages = (list.state.status === 'ok' || list.state.status === 'stale') && list.state.data.can_manage
+  const rotateFirst = link !== null && link.action === 'rotate' ? link.name : null
 
   return (
     <div className="pk-page">
@@ -174,8 +196,8 @@ export function WorkspaceSecretsScreen({ link }: { link: SecretsLink | null }) {
       )}
       {link !== null && link.action === 'rotate' && (
         <Banner tone="info" title={`Opened from a one-time rotate link${link.name === null ? '' : ` for ${link.name}`}`}>
-          This page lists, adds and deletes; Rotate is not on it yet, so the link was not used and nothing was
-          changed. Ask /sc for a new link once Rotate is here.
+          Paste the new value into the Rotate form below: the /sc command and this page&rsquo;s address never see it.
+          The link works once, for ten minutes, and only for the secret it names.
         </Banner>
       )}
       <Card title="Secrets">
@@ -185,13 +207,20 @@ export function WorkspaceSecretsScreen({ link }: { link: SecretsLink | null }) {
           characters again. Back to <SettingsLink address="settings/workspace">Settings › Workspace</SettingsLink>.
         </p>
         <UrRegion state={list.state} route={LIST_ROUTE} what="The workspace's secrets" plural onRetry={list.reload}>
-          {(d) => <SecretList data={d} onChange={list.reload} />}
+          {(d) => <SecretList data={d} onChange={list.reload} rotateFirst={rotateFirst} takeToken={takeToken} />}
         </UrRegion>
       </Card>
-      {(list.state.status === 'ok' || list.state.status === 'stale') && list.state.data.can_manage && (
+      {(list.state.status === 'ok' || list.state.status === 'stale') && (
+        <Card title="Grants">
+          <UrRegion state={catalogue.state} route={CATALOGUE_ROUTE} what="The consumers a secret may be granted to" plural onRetry={catalogue.reload}>
+            {(c) => <GrantMatrix data={list.state.status === 'ok' || list.state.status === 'stale' ? list.state.data : null} catalogue={c} onChange={list.reload} />}
+          </UrRegion>
+        </Card>
+      )}
+      {manages && (
         <Card title="Add a secret">
           <UrRegion state={catalogue.state} route={CATALOGUE_ROUTE} what="The kinds and providers a secret is stored as" plural onRetry={catalogue.reload}>
-            {(c) => <AddSecret catalogue={c} takeToken={takeToken} onAdded={list.reload} />}
+            {(c) => <AddSecret catalogue={c} takeToken={() => takeToken('add')} onAdded={list.reload} />}
           </UrRegion>
         </Card>
       )}
@@ -211,21 +240,40 @@ function LastUsed({ at }: { at: string | null | undefined }) {
   return at === null ? <td data-label="Last used">never</td> : <td data-label="Last used" title={at}>{timeAgo(at)}</td>
 }
 
-function SecretList({ data, onChange }: { data: WorkspaceSecretList; onChange: () => void }) {
+function SecretList({
+  data,
+  onChange,
+  rotateFirst,
+  takeToken,
+}: {
+  data: WorkspaceSecretList
+  onChange: () => void
+  /** A rotate link's name: its Rotate form opens on load. */
+  rotateFirst: string | null
+  takeToken: (action: 'rotate', name: string) => string | null
+}) {
   const [deleting, setDeleting] = useState<string | null>(null)
   const [deleted, setDeleted] = useState<string | null>(null)
+  const [rotating, setRotating] = useState<string | null>(rotateFirst)
+  const [rotated, setRotated] = useState<string | null>(null)
   const target = deleting === null ? undefined : data.secrets.find((s) => s.name === deleting)
+  const turning = rotating === null || !data.can_manage ? undefined : data.secrets.find((s) => s.name === rotating && !isForge(s))
   return (
     <>
       {!data.can_manage && (
         <p className="ur-small">
-          Only this workspace&rsquo;s admin or a platform admin can add or delete its secrets (in a personal workspace,
-          its person). You can read them here.
+          Only this workspace&rsquo;s admin or a platform admin can add, rotate, grant or delete its secrets (in a
+          personal workspace, its person). You can read them here.
         </p>
       )}
       {deleted !== null && (
         <p className="pk-saved" role="status">
           {deleted} was deleted. Running attempts keep the copy they were given.
+        </p>
+      )}
+      {rotated !== null && (
+        <p className="pk-saved" role="status">
+          {rotated}
         </p>
       )}
       {data.secrets.length === 0 ? (
@@ -261,13 +309,26 @@ function SecretList({ data, onChange }: { data: WorkspaceSecretList; onChange: (
                     {on.length === 0 ? 'nothing yet' : on.map((c, i) => <span key={c}>{i > 0 && ', '}<code>{c}</code></span>)}
                   </td>
                   {data.can_manage && (
+                    // §6.2: a forge row is written by its own path, so it offers neither.
                     <td data-label="Actions">
-                      <Button kind="danger" size="sm" aria-label={`Delete ${s.name}`} onClick={() => {
-                        setDeleted(null)
-                        setDeleting(s.name)
-                      }}>
-                        Delete
-                      </Button>
+                      {isForge(s) ? (
+                        <span className="jb-note">Set under Access and Git tokens</span>
+                      ) : (
+                        <span className="pk-form-row">
+                          <Button kind="secondary" size="sm" aria-label={`Rotate ${s.name}`} onClick={() => {
+                            setRotated(null)
+                            setRotating(s.name)
+                          }}>
+                            Rotate
+                          </Button>
+                          <Button kind="danger" size="sm" aria-label={`Delete ${s.name}`} onClick={() => {
+                            setDeleted(null)
+                            setDeleting(s.name)
+                          }}>
+                            Delete
+                          </Button>
+                        </span>
+                      )}
                     </td>
                   )}
                 </tr>
@@ -275,6 +336,19 @@ function SecretList({ data, onChange }: { data: WorkspaceSecretList; onChange: (
             })}
           </tbody>
         </table>
+      )}
+      {turning !== undefined && (
+        <RotateSecret
+          key={turning.name}
+          secret={turning}
+          takeToken={() => takeToken('rotate', turning.name)}
+          onCancel={() => setRotating(null)}
+          onDone={(words) => {
+            setRotating(null)
+            setRotated(words)
+            onChange()
+          }}
+        />
       )}
       {target !== undefined && (
         <DeleteSecret
@@ -343,6 +417,260 @@ function DeleteSecret({ secret, onKeep, onDone }: { secret: WorkspaceSecret; onK
       )}
       <p>Running attempts keep the copy they were already given; the next attempt gets nothing.</p>
     </TypedConfirm>
+  )
+}
+
+/** A forge token's kind (§6.2): listed, written by its own path, granted only to `component:git`. */
+const FORGE_KIND = 'forge_token'
+
+function isForge(s: WorkspaceSecret): boolean {
+  return s.kind === FORGE_KIND
+}
+
+/** A kind as the object of "reads": "jev-browser reads an API key". Pairs, as KIND_WORDS. */
+const KIND_PHRASE: Readonly<Record<string, string>> = Object.fromEntries([
+  ['api_key', 'an API key'],
+  ['bearer_token', 'a bearer token'],
+  ['basic_auth', 'a username and password'],
+  ['oauth_client', 'an OAuth client'],
+  ['opaque', 'an opaque value'],
+  [FORGE_KIND, 'a forge token'],
+])
+
+/** The matrix's column groups, in §5's order. A consumer of another kind is not a column. */
+const GROUPS: readonly (readonly [string, string])[] = [
+  ['profile', 'Profiles'],
+  ['tool', 'Tools'],
+  ['component', 'Components'],
+]
+
+/**
+ * ONE CELL OF THE MATRIX, decided from the catalogue alone, as the API's
+ * `check_grant` decides a write: `null` is no cell at all (`component:git`
+ * off a forge row, §6.2); otherwise a box, `open` when a tick could be
+ * written, with the reason it cannot when it is not, and the slot to name
+ * only when the consumer reads more than one.
+ */
+interface Cell {
+  open: boolean
+  /** The forge row's git cell: shown ticked whatever its grant says (§6.2). */
+  locked: boolean
+  reason: string | null
+  title: string | undefined
+  slot: string | null
+}
+
+function cellOf(secret: WorkspaceSecret, c: WorkspaceSecretConsumer): Cell | null {
+  const forgeOnly = c.slots.length > 0 && c.slots.every((sl) => sl.kinds.length > 0 && sl.kinds.every((k) => k === FORGE_KIND))
+  if (isForge(secret)) {
+    if (forgeOnly) return { open: false, locked: true, reason: 'the worker’s git credentials; locked', title: c.note || undefined, slot: null }
+    return { open: false, locked: false, reason: 'a forge token is never granted here', title: 'A forge token is never readable by an agent (design §6.2).', slot: null }
+  }
+  if (forgeOnly) return null
+  if (c.slots.length === 0) return { open: false, locked: false, reason: `${c.name} reads no secret yet`, title: c.note || undefined, slot: null }
+  if (!c.grantable) return { open: false, locked: false, reason: c.note || `${c.name} is not grantable here`, title: undefined, slot: null }
+  const fits = c.slots.filter((sl) => sl.kinds.includes(secret.kind))
+  if (fits.length === 0) {
+    const kinds = Array.from(new Set(c.slots.flatMap((sl) => sl.kinds)))
+    return { open: false, locked: false, reason: `${c.name} reads ${kinds.map((k) => KIND_PHRASE[k] ?? k).join(' or ')}`, title: undefined, slot: null }
+  }
+  return { open: true, locked: false, reason: null, title: undefined, slot: c.slots.length > 1 ? fits[0]!.slot : null }
+}
+
+const cellKey = (name: string, consumer: string) => `${name}\u0000${consumer}`
+
+/**
+ * THE GRANT MATRIX (§5): a row per secret, a column per catalogue consumer,
+ * grouped Profiles · Tools · Components, a box per cell. A tick moves the
+ * box at once and writes ONE grant; a refusal puts it back and says why.
+ * A wide matrix scrolls inside its own `.table-wrap`, so the page does not.
+ */
+function GrantMatrix({ data, catalogue, onChange }: { data: WorkspaceSecretList | null; catalogue: WorkspaceSecretCatalogue; onChange: () => void }) {
+  const id = useId()
+  // The boxes moved since the list was last read: what was ticked, or what
+  // the API answered. Cleared when the list is read again, which then says.
+  const [moved, setMoved] = useState<Readonly<Record<string, boolean>>>({})
+  const [busy, setBusy] = useState<Readonly<Record<string, true>>>({})
+  const [said, setSaid] = useState<{ ok: boolean; words: string } | null>(null)
+  useEffect(() => {
+    setMoved({})
+  }, [data])
+  if (data === null) return null
+  const groups = GROUPS.map(([kind, label]) => ({ label, cols: catalogue.consumers.filter((c) => c.kind === kind) }))
+    .filter((g) => g.cols.length > 0)
+  const cols = groups.flatMap((g) => g.cols)
+  if (cols.length === 0) return <p className="ur-small">The catalogue names no consumer, so there is nothing to grant to.</p>
+  if (data.secrets.length === 0) return <p className="ur-small">No secret is stored yet, so there is nothing to grant.</p>
+
+  async function tick(secret: WorkspaceSecret, c: WorkspaceSecretConsumer, cell: Cell, next: boolean) {
+    const key = cellKey(secret.name, c.consumer)
+    if (!data?.can_manage || !cell.open || busy[key]) return
+    setMoved((m) => ({ ...m, [key]: next }))
+    setBusy((b) => ({ ...b, [key]: true }))
+    setSaid(null)
+    const r = await setWorkspaceSecretGrant(secret.name, c.consumer, next, cell.slot)
+    setBusy((b) => {
+      const { [key]: _done, ...rest } = b
+      return rest
+    })
+    if (r.status === 'error') {
+      setMoved((m) => {
+        const { [key]: _back, ...rest } = m
+        return rest
+      })
+      setSaid({ ok: false, words: `${c.consumer} on ${secret.name} was not changed: ${r.error.message}` })
+      return
+    }
+    const served = r.status === 'ok' ? r.data : null
+    const now = served?.grants.find((g) => g.consumer === c.consumer)?.enabled ?? next
+    setMoved((m) => ({ ...m, [key]: now }))
+    setSaid({
+      ok: true,
+      words: `${c.consumer} ${now ? 'may now read' : 'may no longer read'} ${secret.name}. This takes effect at the next attempt; an attempt already running keeps what it was given.`,
+    })
+    onChange()
+  }
+
+  return (
+    <>
+      <p className="pk-lead">
+        Tick a box to let that runner profile, tool or platform component read the secret. A box that cannot be
+        ticked says why: the consumer reads another kind, or reads no secret yet.
+      </p>
+      {!data.can_manage && <p className="ur-small">You can read the grants here; only someone who manages this workspace&rsquo;s secrets can change them.</p>}
+      <div className="table-wrap" role="region" aria-label="Grant matrix" tabIndex={0}>
+        <table className="pools" aria-label="Secret grants">
+          <thead>
+            <tr>
+              <th scope="col" rowSpan={2}>Secret</th>
+              {groups.map((g) => <th key={g.label} scope="colgroup" colSpan={g.cols.length}>{g.label}</th>)}
+            </tr>
+            <tr>
+              {cols.map((c) => <th key={c.consumer} scope="col" title={c.consumer}><code>{c.name}</code></th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {data.secrets.map((s) => (
+              <tr key={s.name}>
+                <th scope="row"><code>{s.name}</code></th>
+                {cols.map((c) => {
+                  const cell = cellOf(s, c)
+                  if (cell === null) return <td key={c.consumer} />
+                  const key = cellKey(s.name, c.consumer)
+                  const served = s.grants.some((g) => g.consumer === c.consumer && g.enabled)
+                  const checked = cell.locked || (moved[key] ?? served)
+                  const why = cell.reason === null ? undefined : `${id}-${s.name}-${c.consumer}`
+                  return (
+                    <td key={c.consumer} title={cell.title}>
+                      <input
+                        type="checkbox"
+                        aria-label={`Grant ${s.name} to ${c.consumer}`}
+                        aria-describedby={why}
+                        checked={checked}
+                        disabled={!data.can_manage || !cell.open || busy[key] === true}
+                        onChange={(e) => void tick(s, c, cell, e.target.checked)}
+                      />
+                      {cell.reason !== null && <span id={why} className="jb-note"> {cell.reason}</span>}
+                    </td>
+                  )
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {said !== null && (said.ok
+        ? <p className="pk-saved" role="status">{said.words}</p>
+        : <Banner tone="bad" title={said.words} role="alert" />)}
+    </>
+  )
+}
+
+/**
+ * ROTATE (§5, Q5): a new value, in a password field, posted once to
+ * `PUT .../{name}/value`. The previous version stays enabled for 24 hours,
+ * then the rotation sweep disables it. The fields are uncontrolled and
+ * emptied before the request leaves, as Add's are; what the page says after
+ * is the version, never anything of the value.
+ */
+function RotateSecret({
+  secret,
+  takeToken,
+  onCancel,
+  onDone,
+}: {
+  secret: WorkspaceSecret
+  takeToken: () => string | null
+  onCancel: () => void
+  onDone: (words: string) => void
+}) {
+  const id = useId()
+  const [filled, setFilled] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState<string | null>(null)
+  const value = useRef<HTMLInputElement>(null)
+  const first = useRef<HTMLInputElement>(null)
+  const second = useRef<HTMLInputElement>(null)
+  const structured = STRUCTURED[secret.kind]
+  const fields = (): RefObject<HTMLInputElement>[] => (structured === undefined ? [value] : [first, second])
+  const recheck = () => setFilled(fields().every((f) => (f.current?.value ?? '') !== ''))
+
+  async function save(e: FormEvent) {
+    e.preventDefault()
+    if (busy) return
+    // Read once, and emptied before the request leaves, whatever it answers.
+    const read = fields().map((f) => {
+      const v = f.current?.value ?? ''
+      if (f.current !== null) f.current.value = ''
+      return v
+    })
+    setFilled(false)
+    if (read.some((v) => v === '')) return
+    const body: WorkspaceSecretRotate = structured === undefined
+      ? { value: read[0]! }
+      : { fields: { [structured[0].key]: read[0]!, [structured[1].key]: read[1]! } }
+    setBusy(true)
+    setFailed(null)
+    const r = await rotateWorkspaceSecret(secret.name, body, takeToken())
+    setBusy(false)
+    if (r.status === 'error') {
+      setFailed(r.error.code === 'SECRET_LINK_INVALID'
+        ? `${secret.name} was not rotated: the one-time link is used, expired or not yours. Rotate it again here without it, or ask /sc for a new link.`
+        : `${secret.name} was not rotated: ${r.error.message}`)
+      return
+    }
+    const version = r.status === 'ok' ? r.data?.current_version ?? null : null
+    onDone(`${secret.name} was rotated${version === null ? '' : `: version ${version} is current`}. The previous version stays enabled for 24 hours, then is disabled.`)
+  }
+
+  return (
+    <>
+      <form className="pk-form" autoComplete="off" aria-label={`Rotate ${secret.name}`} onSubmit={(e) => void save(e)}>
+        <p className="pk-lead">
+          A new version of <code>{secret.name}</code>. Attempts that start after this read the new value; the
+          previous one stays enabled for 24 hours, for attempts already running.
+        </p>
+        {structured === undefined ? (
+          <SecretField id={`${id}-value`} label="New value" masked input={value} onInput={recheck} />
+        ) : (
+          <>
+            <SecretField id={`${id}-${structured[0].key}`} label={`New ${structured[0].label.toLowerCase()}`}
+              masked={structured[0].masked} input={first} onInput={recheck} />
+            <SecretField id={`${id}-${structured[1].key}`} label={`New ${structured[1].label.toLowerCase()}`}
+              masked={structured[1].masked} input={second} onInput={recheck} />
+          </>
+        )}
+        <div className="pk-form-row">
+          <Button kind="primary" size="sm" type="submit" busy={busy ? 'Rotating…' : false} disabled={!filled}>
+            Rotate
+          </Button>
+          <Button kind="ghost" size="sm" onClick={onCancel}>
+            Cancel
+          </Button>
+        </div>
+      </form>
+      {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
+    </>
   )
 }
 
