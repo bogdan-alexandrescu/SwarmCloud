@@ -87,9 +87,8 @@
 # Cloud Logging's own error.
 
 locals {
-  swarm_workers_log_location = local.swarm_worker_logs_location
-  swarm_workers_log_bucket   = local.swarm_worker_logs_bucket
-  swarm_workers_log_view_id  = "swarm-workers"
+  swarm_workers_log_bucket  = local.swarm_worker_logs_bucket
+  swarm_workers_log_view_id = "swarm-workers"
 
   # The full resource name swarm-api reads entries through
   # (entries.list resourceNames).
