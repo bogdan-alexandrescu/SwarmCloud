@@ -380,7 +380,7 @@ finding) carries over.
    host, a registered repository, an own login's credential set. One at a
    time per target: the target's `discovering` is claimed in a transaction
    before the submission, and a second call while one runs answers 409
-   `qa_discovery_running` naming the workflow. The console says
+   (`detail.reason` `qa_discovery_running`) naming the workflow. The console says
    **Discovering…** with a link to it, and reads the list again until it
    ends.
 
@@ -398,9 +398,9 @@ finding) carries over.
    screens discovered, <time ago>" and enables Run. A failed step, a missing
    or refused file, or nothing left stores only `discovery_error`, the
    sentence the console shows, and keeps the previous `discovered` list:
-   only a successful discovery replaces it. A wake can be lost, and a task
+   only a successful discovery replaces it. A wake can be lost, and an agent
    the scheduler or reconciler ends rings none, so every read of the target
-   settles a discovery whose task has ended too. Storing the list never
+   settles a discovery whose agent has ended too. Storing the list never
    bumps the target's `revision`, so a run already started keeps its mark.
    `:run` on a target with `discover` and nothing discovered is refused
    (`qa_target_no_screens`) with "press Run discovery on the QA targets page

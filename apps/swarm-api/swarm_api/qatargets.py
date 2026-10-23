@@ -76,7 +76,7 @@ one browser step, submitted and marked exactly as `:run`'s are, and recorded
 in `qa_target_runs` so the gate signs it in (start clicks included). One at a
 time per target: the target's `discovering` holds the running one, claimed in
 a transaction before the submission, so a second call is 409
-`qa_discovery_running` naming the workflow. When the step ends, the
+(`detail.reason` `qa_discovery_running`) naming the workflow. When the step ends, the
 `task_finished` push (`routes/admin.py` `task_finished_push`, the hook
 `verdictpublish` already answers) calls `QaTargets.settle_discovery`: a
 SUCCEEDED step's `screens.json` is read through the API's own tenant-checked,
@@ -238,10 +238,6 @@ class QaCredentialLinkInvalid(Forbidden):
     code = "qa_credential_link_invalid"
 
 
-class QaDiscoveryRunning(Conflict):
-    code = "qa_discovery_running"
-
-
 class QaCredentialUnavailable(ApiError):
     """503: the tenant's QA secret cannot be read or written by swarm-api --
     until lane VQ-3 declares it and binds IAM V-1 and V-2, every time."""
@@ -276,6 +272,8 @@ NO_SCREENS_MESSAGE = (
     "the target lists no screens and none were discovered; press Run discovery on the QA "
     "targets page (or call POST /v1/qa-targets/{id}:discover), then run it"
 )
+#: The 409's `detail.reason` while a discovery holds the target.
+DISCOVERY_RUNNING = "qa_discovery_running"
 NOT_DISCOVERING_MESSAGE = "this QA target lists its screens and does not ask to discover them"
 
 
@@ -1075,7 +1073,7 @@ class QaTargets:
 
     def claim_discovery(self, tenant_id: str, target: Mapping[str, Any], *, by: str) -> str:
         """Hold the target for one discovery, in a transaction: two calls at
-        once cannot both pass. 409 `qa_discovery_running` when one holds it."""
+        once cannot both pass. 409 (`qa_discovery_running`) when one holds it."""
         target_id = str(target.get("id"))
         ref = self._ref(target_id)
         now = self._now()
@@ -1091,12 +1089,14 @@ class QaTargets:
             running = self._running(doc, now)
             if running is not None:
                 workflow_id = running.get("workflow_id")
+                # `conflict`, an established code, with the reason as the
+                # detail (as `_spec_refusal` does): a new code ships behind a
+                # refusal switch, and this one guards a route that is new.
+                detail = {"reason": DISCOVERY_RUNNING, "workflow_id": workflow_id or None}
                 if workflow_id:
-                    raise QaDiscoveryRunning(
-                        f"a discovery of this QA target is running (workflow {workflow_id}); "
-                        "wait for it to end", detail={"workflow_id": workflow_id})
-                raise QaDiscoveryRunning("a discovery of this QA target is starting; wait for it",
-                                         detail={"workflow_id": None})
+                    raise Conflict(f"a discovery of this QA target is running (workflow {workflow_id}); "
+                                   "wait for it to end", detail=detail)
+                raise Conflict("a discovery of this QA target is starting; wait for it", detail=detail)
             txn.update(ref, {"discovering": {"claim": claim, "workflow_id": None, "task_id": None,
                                              "by": by, "at": now}})
 

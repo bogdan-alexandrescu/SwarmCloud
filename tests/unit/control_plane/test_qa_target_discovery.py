@@ -201,7 +201,7 @@ def test_a_second_discovery_while_one_runs_is_409_naming_it(client, db, seeded):
     response = discover(client, target["id"])
     # MUTATION: skip the running check and a second workflow is submitted.
     assert response.status_code == 409, response.text
-    assert response.json()["code"] == "qa_discovery_running"
+    assert response.json()["detail"]["reason"] == "qa_discovery_running"
     assert first in response.json()["message"]
     assert response.json()["detail"]["workflow_id"] == first
     assert workflows(db) == [f"workflows/{first}"]

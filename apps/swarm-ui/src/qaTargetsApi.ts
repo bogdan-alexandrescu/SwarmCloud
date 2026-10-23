@@ -318,7 +318,7 @@ export async function runQaTarget(id: string, file: 'issues' | 'none'): Promise<
 /**
  * `:discover`, with nothing the caller picks: the API renders the discovery
  * from the stored target (invariant 10). A second press while one runs is the
- * API's 409 `qa_discovery_running`, said in its own words.
+ * API's 409 (`detail.reason` `qa_discovery_running`), said in its own words.
  */
 export async function discoverQaTarget(id: string): Promise<Result<QaRun>> {
   const r = await write(route('/v1/qa-targets/{target_id}:discover', { target_id: id }), 'POST', {})

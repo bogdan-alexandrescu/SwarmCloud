@@ -269,7 +269,7 @@ def discover_target(
 ) -> dict:
     """The target's discovery (§4.1), as this member's submission, marked as
     `:run`'s browser steps are. One at a time per target: a second call while
-    one runs is 409 `qa_discovery_running`, naming it. The result is stored
+    one runs is 409 (`detail.reason` `qa_discovery_running`), naming it. The result is stored
     on the target when the step ends (`QaTargets.settle_discovery`)."""
     require_member(ctx, auth)
     targets = _targets(request, ctx)
