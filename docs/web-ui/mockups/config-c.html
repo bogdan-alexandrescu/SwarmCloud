@@ -437,7 +437,7 @@ function panel(o){
   return '<nav class="panel" aria-label="Pages"><div class="ph"><span class="wm">Swarm<span>Cloud</span></span><span class="env">dev</span></div>'+
     '<div class="wsb"><span class="tg">'+ws.g+'</span><span class="tt"><b>'+ws.n+'</b><small>'+ws.s+'</small></span>'+I('swap')+'</div>'+
     '<div class="pscroll">'+pages+'</div>'+
-    '<div class="pf"><span class="pfr"><b>Operator</b><span class="rb">'+ROLE_WORD[o.role||'padmin']+'</span></span><small>operator@example.com</small>'+themeTog()+'<span class="links"><a>Settings › Profile</a><a>Sign out</a></span><span class="stamp">ui '+sha(7)+' · api '+sha(7)+'</span></div></nav>';
+    '<div class="pf"><span class="pfr"><b>Operator</b><span class="rb">'+ROLE_WORD[o.role||'padmin']+'</span></span><small>operator@example.com</small>'+themeTog()+'<span class="links"><a>Settings › Profile</a><a>Sign out</a></span><span class="stamp">ui '+sha(7)+' · api '+sha(11)+'</span></div></nav>';
 }
 function desk(o,body){return '<div class="scroller"><div class="app'+(o.short?' short':'')+'">'+spine(o)+panel(o)+'<main class="mn">'+body+'</main>'+(o.over||'')+'</div></div>';}
 function phone(o,body){var ws=o.ws==='personal'?'Operator':o.ws==='design'?'design':'eng';
@@ -693,7 +693,7 @@ function wsSettings(){
   '<div class="side"><div class="stack">'+
   card('Settings',
    '<div class="g2"><label class="fld"><span>Display name</span><span class="in val">Engineering</span></label><label class="fld"><span>Workspace id</span><span class="in val mono">eng</span><small>Fixed at creation.</small></label>'+
-   '<label class="fld"><span>Default runner profile</span><span class="in val">claude-code <span style="margin-left:auto">'+I('chev')+'</span></span></label><label class="fld"><span>Concurrency ceiling</span><span class="in val">12 agents</span><small>Set by a platform admin on Admin › People and roles.</small></label></div>'+
+   '<label class="fld"><span>Default runner profile</span><span class="in val">claude-code <span style="margin-left:auto">'+I('chev')+'</span></span></label><label class="fld"><span>Concurrency ceiling</span><span class="in val">12 agents</span><small>Set by a platform admin on Admin › Pool limits, as pool tenant:eng.</small></label></div>'+
    '<div class="row" style="margin-top:12px">'+btn('Save','p')+'<span class="mu sm">Workspace key, GitHub tokens and secrets are on <a>Config › Secrets</a>.</span></div>')+
   card('Workspace setup',
    '<ol class="steps">'+[['ok','Sign in','done'],['ok','Request your workspace','approved 90d ago'],['ok','Add a Claude account','2 accounts'],['ok','Connect GitHub','as @operator'],['ok','Install the App','on example-org, operator'],['ok','Enable orgs','2 enabled'],['ok','Choose repositories','4 chosen'],['warn','Verify access','example-org/api: Push missing'],['','Ready','after Verify access']].map(function(s,i){
@@ -713,16 +713,22 @@ function platformSecrets(){
    ['swarm-github-app-private-key','Terraform declares','create-secrets.sh --github-app private-key',st('ok','set'),'1','80d','swarm-api'],
    ['swarm-github-app-client-secret','Terraform declares','create-secrets.sh --github-app client-secret',st('ok','set'),'1','80d','swarm-api'],
    ['swarm-github-app-webhook-secret','Terraform declares','create-secrets.sh --github-app-webhook-secret',st('ok','set'),'2','3d · rotation in grace','swarm-api'],
+   ['swarm-github-secrets-app-private-key','Terraform declares','create-secrets.sh --github-secrets-app private-key',st('ok','set'),'1','2d','swarm-api'],
    ['swarm-search-api-key','Terraform declares','create-secrets.sh --search-api-key',st('ok','set'),'1','41d','workers'],
    ['swarm-egress-credential','Terraform declares','create-secrets.sh --egress-credential',st('ok','set'),'1','60d','egress proxy'],
+   ['swarm-egress-key','Terraform declares','create-secrets.sh --egress-key',st('ok','set'),'1','60d','egress proxy'],
+   ['swarm-live-key','Terraform declares','create-secrets.sh --live-key',st('ok','set'),'1','33d','swarm-api'],
+   ['swarm-child-key','Terraform declares','create-secrets.sh --child-key',st('ok','set'),'1','33d','swarm-api'],
+   ['swarm-graph-ticket-key','Terraform declares','create-secrets.sh --graph-ticket-key',st('ok','set'),'1','21d','swarm-api'],
+   ['swarm-settings-key','Terraform declares','create-secrets.sh --settings-mac-key',st('ok','set'),'1','21d','swarm-api'],
    ['swarm-workspace-grant-key','Terraform declares','create-secrets.sh --workspace-grant-key',st('ok','set'),'1','9d','swarm-api'],
-   ['swarm-typesafe-fwd-key','Terraform declares','create-secrets.sh --typesafe-fwd-key',st('neu','not declared'),'<span class="dash">–</span>','<span class="dash">–</span> <span class="why">this deployment does not enable the forwarder</span>','–'],
+   ['swarm-typesafe-fwd-key','Terraform declares','create-secrets.sh --typesafe-fwd-key',st('neu','not declared'),'<span class="dash">–</span> <span class="why">not declared</span>','<span class="dash">–</span> <span class="why">this deployment does not enable the forwarder</span>','<span class="dash">–</span> <span class="why">nothing reads it here</span>'],
    ['swarm-tailscale-oauth','Terraform declares','create-secrets.sh --tailscale-oauth',st('bad','no enabled version'),'0','<span class="dash">–</span> <span class="why">declared, never written</span>','workers'],
-   ['swarm-account-* (6)','the quota broker','the broker','6 of 6 set','–','newest 2h','pools · <a>Capacity › Accounts</a>']
+   ['swarm-account-* (6)','the quota broker','the broker','6 of 6 set','<span class="dash">–</span> <span class="why">one row per account there</span>','newest 2h','pools · <a>Capacity › Accounts</a>']
   ];
   return head('Admin / <b>Platform secrets</b>','Platform secrets',{chips:chip('platform admins only','info'),age:'read live 20s ago · metadata only',acts:btn('Read again','sm'),
    intro:'Status only: set or not, versions, age and what manages each. No value, no length and no last characters; there is no form here. A value is written only by its manager, on the operator&rsquo;s machine.'})+
-  tbl([['Secret','nm'],['Managed by'],['Value written by'],['Set'],['Versions','r'],['Age'],['Read by']],R.map(function(r,i){var c=r.slice();c[0]='<code>'+c[0]+'</code>';c[2]='<code>'+c[2]+'</code>';return i===7?{cls:'hi',c:c}:c;}))+
+  tbl([['Secret','nm'],['Managed by'],['Value written by'],['Set'],['Versions','r'],['Age'],['Read by']],R.map(function(r,i){var c=r.slice();c[0]='<code>'+c[0]+'</code>';c[2]='<code>'+c[2]+'</code>';return r[0]==='swarm-tailscale-oauth'?{cls:'hi',c:c}:c;}))+
   '<p class="exd">Two enabled versions means a rotation is in its grace. "Not declared" means Secret Manager has no such secret in this deployment.</p>';
 }
 
@@ -741,15 +747,15 @@ function countsOverTime(){
   '<p class="cs">By submission day, UTC. Counted once when you press the button, never refreshed on its own; last counted 4m ago. A retry is a second or later attempt of the same agent, shown apart.</p>'+
   '<div class="g4" style="margin-bottom:14px">'+
    '<div class="tile"><span class="tl">Agents submitted</span><span class="tv">'+fmt(tot)+'</span><span class="ts">plus '+fmt(ret)+' retries, counted apart</span></div>'+
-   '<div class="tile"><span class="tl">Run hours</span><span class="tv">'+fmt(Math.round(tot*2.6))+' h</span><span class="ts">summed over every attempt, retries included</span></div>'+
-   '<div class="tile"><span class="tl">Tokens</span><span class="tv">'+(tot*0.31).toFixed(0)+'M in · '+(tot*0.029).toFixed(1)+'M out</span><span class="ts">cache read '+(tot*2.2/1000).toFixed(2)+'B · cache write '+(tot*0.14).toFixed(0)+'M</span></div>'+
+   '<div class="tile"><span class="tl">Run hours</span><span class="tv">'+fmt(Math.round(tot*2.6))+' h</span><span class="ts">measured by the platform for every attempt, retries included; not from usage reports</span></div>'+
+   '<div class="tile"><span class="tl">Tokens</span><span class="tv">at least '+(reported*0.31).toFixed(0)+'M in · '+(reported*0.029).toFixed(1)+'M out</span><span class="ts">cache read '+(reported*2.2/1000).toFixed(2)+'B · cache write '+(reported*0.14).toFixed(0)+'M; '+fmt(reported)+' of '+fmt(tot)+' agents reported their usage</span></div>'+
    '<div class="tile"><span class="tl">Estimated cost (list price, not a bill)</span><span class="tv">at least $'+fmt(cost)+'</span><span class="ts">'+fmt(reported)+' of '+fmt(tot)+' agents reported their usage</span></div></div>'+
   '<div class="lg" style="margin-bottom:8px"><span><i></i>Agents, first attempt</span><span><i class="rt"></i>Retries</span><span>Today is part of a day and drawn lighter.</span></div>'+
   '<div class="chart"><div class="yax"><span>'+top+'</span><span>'+top/2+'</span><span>0</span></div><div class="plot"><i class="gl" style="top:0"></i><i class="gl" style="top:50%"></i><div class="bars">'+bars+'</div></div><div class="xax"><span>Sep 24</span><span>Oct 1</span><span>Oct 8</span><span>Oct 15</span><span>Oct 23</span></div></div>'+
   '<p class="exd" style="margin:8px 0 0">Hover a day for its figures. <a>Show as a table</a></p></section>'+
   '<div class="g2">'+
    brk('By agent type',[['claude-code',share(.62),fmt(Math.round(tot*1.7))+' h'],['codex',share(.21),fmt(Math.round(tot*.5))+' h'],['browser',share(.12),fmt(Math.round(tot*.3))+' h'],['visual-qa',share(.05),fmt(Math.round(tot*.1))+' h']])+
-   brk('By model',[['claude-opus-5-5',share(.48),fmt(Math.round(tot*1.4))+' h'],['claude-sonnet-5',share(.27),fmt(Math.round(tot*.7))+' h'],['claude-haiku-4-5',share(.04),'–'],['not reported',share(.21),'–']],'Codex agents do not report their model yet, so they are "not reported", not a model of their own.')+
+   brk('By model',[['claude-opus-5-5',share(.48),fmt(Math.round(tot*1.4))+' h'],['claude-sonnet-5',share(.27),fmt(Math.round(tot*.7))+' h'],['claude-haiku-4-5',share(.04),'<span class="dash">–</span> <span class="why">ran only as a sub-model; its hours count under the agent&rsquo;s main model</span>'],['not reported',share(.21),fmt(Math.round(tot*.5))+' h']],'Codex agents do not report their model yet, so they are "not reported", not a model of their own.')+
    brk('By workspace',[['eng',share(.58),fmt(Math.round(tot*1.5))+' h'],['design',share(.22),fmt(Math.round(tot*.6))+' h'],['ops',share(.14),fmt(Math.round(tot*.4))+' h'],['personal workspaces (4)',share(.06),fmt(Math.round(tot*.1))+' h']])+
    brk('By pool account',[['claude-pool-a',share(.41),fmt(Math.round(tot*1.1))+' h'],['claude-pool-b',share(.38),fmt(Math.round(tot*1.0))+' h'],['openai-pool-a',share(.21),fmt(Math.round(tot*.5))+' h']])+
   '</div>'+
@@ -854,9 +860,11 @@ var S=[
    {k:'d',o:o({sec:'config',page:'secrets',short:1}),b:function(){return secKeys()+secGit();},c:'<b>The same page, scrolled:</b> Keys for agents and MCP, then GitHub token status. Status only; no character of any token.'},
    {k:'p',o:o({title:'Secrets'}),b:function(){return secKeys()+secGit();},c:'Phone: keys and tokens.'},
    {k:'d',o:o({sec:'config',page:'secrets',short:1}),b:secYours,c:'<b>Yours.</b> Your secrets with "Used in eng", and Browser sessions saved from a live browser.'},
+   {k:'p',o:o({title:'Secrets'}),b:secYours,c:'Phone: Yours, your secrets and browser sessions as records.'},
    {k:'d',o:o({sec:'config',page:'secrets',short:1}),b:secRepoIndex,c:'<b>Repository scope: the cross-repository index.</b> Counts and states per repository; each row opens that repository&rsquo;s Secrets section. Nothing is set from the index.'},
    {k:'p',o:o({title:'Secrets'}),b:secRepoIndex,c:'Phone: the index.'},
    {k:'d',o:o({sec:'config',page:'repos',repo:'example-org/web-app',kid:'Secrets'}),b:repoSecAgents,c:'<b>One repository&rsquo;s secrets, Agents.</b> Its own secrets with the override, Sign-in for QA per target and environment, and its GitHub token.'},
+   {k:'p',o:o({title:'example-org/web-app'}),b:repoSecAgents,c:'Phone: one repository&rsquo;s secrets, Agents.'},
    {k:'d',o:o({sec:'config',page:'repos',repo:'example-org/web-app',kid:'Secrets'}),b:repoSecActions,c:'<b>GitHub Actions</b>, with environment <code>repo-secrets</code> (main only) and <code>preview</code> (any branch, typed confirmation). Create environment is "Create on GitHub ↗" plus Check rule.'},
    {k:'p',o:o({title:'example-org/web-app'}),b:repoSecActions,c:'Phone: GitHub Actions.'},
    {k:'d',o:o({sec:'config',page:'repos',repo:'example-org/web-app',kid:'Secrets',over:setForm('agents')}),b:repoSecAgents,c:'<b>The one-time set form</b>, opened by Set: the destination recapped, a 10-minute single use, never prefilled.'},
@@ -866,9 +874,12 @@ var S=[
  ]},
  {id:'s5',n:'S5',t:'Config › MCP servers, Config › People and roles, and Admin › People and roles',lede:'The two Config pages keep today&rsquo;s bodies and move from Settings. Admin › People and roles is the cross-workspace view.',f:[
    {k:'d',o:o({sec:'config',page:'mcp',short:1}),b:mcpPage,c:'<b>Config › MCP servers</b>, as today.'},
+   {k:'p',o:o({title:'MCP servers'}),b:mcpPage,c:'Phone: Config › MCP servers.'},
    {k:'d',o:o({sec:'config',page:'people',short:1}),b:wsPeople,c:'<b>Config › People and roles</b>, this workspace only; absent in a personal workspace and for members.'},
+   {k:'p',o:o({title:'People and roles'}),b:wsPeople,c:'Phone: Config › People and roles.'},
    {k:'d',o:o({sec:'admin',page:'apeople'}),b:function(){return adminPeople('padmin');},c:'<b>Admin › People and roles, platform admin</b>: every person and every workspace, requests waiting, the audit.'},
    {k:'d',o:o({sec:'admin',page:'apeople',role:'wadmin',short:1}),b:function(){return adminPeople('wadmin');},c:'<b>Admin › People and roles, workspace admin</b>: only eng and design, roles only.'},
+   {k:'p',o:o({title:'People and roles',role:'wadmin'}),b:function(){return adminPeople('wadmin');},c:'Phone, workspace admin.'},
    {k:'p',o:o({title:'People and roles'}),b:function(){return adminPeople('padmin');},c:'Phone, platform admin.'}
  ]},
  {id:'s6',n:'S6',t:'Config › Workspace settings',lede:'The workspace&rsquo;s settings, Workspace setup (today&rsquo;s Work › Setup checklist) as a part of it, and Add a new workspace for an admin. A failing setup step links into the repository that fails.',f:[
@@ -891,10 +902,14 @@ var S=[
  ]},
  {id:'s10',n:'S10',t:'Every Admin page, in this proposal&rsquo;s style',lede:'The Admin tabs <code>SECTIONS</code> lists today (Pool limits, Runner sizes, Tenants, Platform counts, People, Workspaces you admin) plus Platform secrets, and the schedules and approvals an admin sees. People and roles is S5, Platform counts S8, Platform secrets S7. Which tabs each role sees:',pre:visTable,f:[
    {k:'d',o:o({sec:'admin',page:'wya',role:'wadmin',short:1}),b:wya,c:'<b>Workspaces you admin</b> (workspace admin shown): each opens that workspace&rsquo;s Config pages.'},
+   {k:'p',o:o({title:'Workspaces you admin',role:'wadmin'}),b:wya,c:'Phone: Workspaces you admin, one card each.'},
    {k:'d',o:o({sec:'admin',page:'limits',short:1}),b:poolLimits,c:'<b>Pool limits</b>, as picked (admin-help.html L2).'},
    {k:'d',o:o({sec:'admin',page:'sizes',short:1}),b:runnerSizes,c:'<b>Runner sizes.</b>'},
+   {k:'p',o:o({title:'Runner sizes'}),b:runnerSizes,c:'Phone: Runner sizes.'},
    {k:'d',o:o({sec:'admin',page:'tenants',short:1}),b:tenants,c:'<b>Tenants.</b>'},
+   {k:'p',o:o({title:'Tenants'}),b:tenants,c:'Phone: Tenants.'},
    {k:'d',o:o({sec:'automate',page:'sched',short:1}),b:schedAdmin,c:'<b>Schedules and approvals for an admin</b>: the All workspaces switch in Automate, reached from Admin&rsquo;s panel.'},
+   {k:'p',o:o({title:'Schedules'}),b:schedAdmin,c:'Phone: an admin&rsquo;s schedules and approvals, every workspace.'},
    {k:'p',o:o({title:'Pool limits'}),b:poolLimits,c:'Phone: Pool limits; the side editor follows the table.'}
  ]}
 ];
