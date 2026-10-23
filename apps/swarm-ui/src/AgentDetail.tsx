@@ -1833,7 +1833,7 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
           newest attempt, against its limits, with the throttled windows
           shaded. It reads its own route, on its own clock while the task
           runs, and stops once it is finished. */}
-      <UtilisationPanel taskId={task.id} live={!TERMINAL_STATES.has(task.state)} />
+      <UtilisationPanel taskId={task.id} live={!TERMINAL_STATES.has(task.state)} limitCores={latest?.cpu_limit_cores ?? null} />
       <details className="dt-disc">
         <summary>Details: memory, spend and each attempt over time</summary>
         <Attempts run={run} now={now} />

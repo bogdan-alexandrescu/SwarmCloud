@@ -246,6 +246,41 @@ describe('a: every `cgroup limit` figure on Details divides by one limit', () =>
     expect(new Set(limits)).toEqual(new Set(['2']))
   })
 
+  it('names the series’ own 4 cores by its source when the attempt record’s limit is 2, and says the two shares measure different things', async () => {
+    // The fixture build's case (api.ts): the 5 s samples carry 4 cores, the
+    // attempt record 2. Each figure is named by where it came from.
+    const el = host(runOf(running(), threeAttempts(false), [beat()]))
+    const p = (i: number, cpu: number) => ({ at: at(30 + i / 12), cpu_cores: cpu, memory_bytes: 2 * GIB, throttled_share: 0.06 })
+    const data: UtilisationRead = {
+      task_id: ID,
+      read_at: at(36),
+      attempts: [
+        {
+          attempt_id: 'att_3',
+          generation: 3,
+          cpu_limit_cores: 4,
+          memory_limit_bytes: 8 * GIB,
+          throttled_seconds: 41.2,
+          peak_throttled_share: 0.35,
+          mean_throttled_share: 0.06,
+          points: [p(0, 2.8), p(1, 2.8), p(2, 2.8)],
+        },
+      ],
+    }
+    api.loadUtilisation.mockResolvedValue(ok(data))
+    const { container } = render(<UtilisationPanel taskId={ID} live={false} limitCores={2} />)
+    await act(async () => {})
+    const head = container.querySelector('[data-testid="util-headline"]')?.textContent ?? ''
+    const pane = `${el.querySelector('.dt-strip')?.textContent ?? ''} ${el.querySelector('.dt-resources')?.textContent ?? ''} ${head}`
+    // Every core count called the cgroup's, wherever it is printed, is one number.
+    const called = [...pane.matchAll(/(\d+(?:\.\d+)?) cores?\)?[^·]{0,24}?cgroup limit|cgroup limit is (\d+(?:\.\d+)?) cores/g)].map((m) => m[1] ?? m[2])
+    // MUTATION: call every series limit `(cgroup limit)` -- `mean 2.8 of 4 cores (cgroup limit)` beside `/ 2 cores`.
+    expect(head).not.toMatch(/of 4 cores \(cgroup limit\)/)
+    expect(head).toMatch(/of 4 cores \(the limit the 5 s samples carry; the attempt's cgroup limit is 2 cores\)/)
+    expect(new Set(called.filter((n) => n !== undefined))).toEqual(new Set(['2']))
+    // MUTATION: drop the measures note -- `at the limit 0%` sits beside `throttled 6%` as if one figure.
+    expect(head).toMatch(/at the limit 0% of the time · throttled 6% \(near-limit samples vs throttled CFS periods\)/)
+  })
 })
 
 // ---------------------------------------------------------------------------
