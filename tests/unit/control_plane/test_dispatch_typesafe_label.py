@@ -25,7 +25,10 @@ environment (agent_worker.typesafe_shim.SWITCH_ENV / SWITCH_ON). The same one
 decision that labels the pod puts that variable in the worker container's env,
 and nothing else does: a labelled pod whose worker still read the key file, or
 a switched worker on a pod the policies do not open, is each half a migration.
-test_typesafe_switch_parity.py holds the name and value to the worker's.
+`SWITCH` below is the worker's own pair, imported from typesafe_shim rather
+than restated, so these tests compare the scheduler to the worker and not to a
+third copy; test_typesafe_switch_parity.py also compares the two source files'
+literals and runs the worker's real predicate.
 
 MUTATION: drop any one condition from `typesafe_forwarder_on`, label a pod of
 another backend, or match the tenant by prefix, and the named case fails.
@@ -38,6 +41,7 @@ from typing import Any
 
 import pytest
 
+from agent_worker import typesafe_shim
 from swarm_common.models import Tenant
 from swarm_common.profiles import RUNNER_PROFILES
 
@@ -57,8 +61,8 @@ from .test_dispatch_manifests import NOW, FakeJobsClient, make_lease, make_task
 
 LIVE = "claude-code-browser"
 LABEL = {"swarm-typesafe": "inject"}
-#: What the worker reads (typesafe_shim.SWITCH_ENV, SWITCH_ON).
-SWITCH = ("SWARM_TYPESAFE_INJECT", "on")
+#: What the worker reads: its own constants, not a copy of them.
+SWITCH = (typesafe_shim.SWITCH_ENV, typesafe_shim.SWITCH_ON)
 
 #: Every condition on. Each case below turns exactly one off.
 ON: dict[str, Any] = dict(
@@ -136,7 +140,10 @@ def test_any_condition_off_leaves_the_pod_unlabelled(tenant, off):
 
 
 def test_the_switch_is_the_name_and_value_the_worker_reads():
-    assert TYPESAFE_INJECT_ENV == SWITCH
+    # MUTATION: set `SWITCH_ON = "yes"` in agent_worker/typesafe_shim.py (or
+    # rename SWITCH_ENV) and this fails. Against the third copy it replaced,
+    # `("SWARM_TYPESAFE_INJECT", "on")` written here, it passed.
+    assert TYPESAFE_INJECT_ENV == (typesafe_shim.SWITCH_ENV, typesafe_shim.SWITCH_ON)
 
 
 def test_every_condition_on_switches_the_worker(tenant):
