@@ -602,7 +602,10 @@ jobs:
           if jq -e '[.check_runs[].name] | group_by(.) | any(length > 1)' "${runs}" >/dev/null; then
             gh api "repos/${GH_REPO}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" >"${wf_runs}"
           fi
-          failing="$(jq -r --slurpfile wf "${wf_runs}" '
+          # Each check's deciding runs, written once: gate 5 reads them
+          # here and gate 6 below (CHECK-RULE-2, part of #1999).
+          latest="$(mktemp)"
+          jq --slurpfile wf "${wf_runs}" '
               ([ $wf[0].workflow_runs[]?
                  | select(.check_suite_id != null and (.event // "") != "")
                  | {key: (.check_suite_id | tostring), value: .event} ]
@@ -612,14 +615,15 @@ jobs:
                   | . + {group: ($events[(.check_suite.id // "" | tostring)]
                                 // "check suite \(.check_suite.id // "")")} ]
               | group_by([.name, .group])
-              | map(max_by(.id))
-              | [ .[]
-                  | select(.status == "completed")
-                  | select((.conclusion // "") as $c |
-                           $c == "failure" or $c == "timed_out" or
-                           $c == "action_required" or $c == "cancelled")
-                  | .name
-                ] | unique | join(", ")' "${runs}")"
+              | map(max_by(.id))' "${runs}" >"${latest}"
+          failing="$(jq -r '
+              [ .[]
+                | select(.status == "completed")
+                | select((.conclusion // "") as $c |
+                         $c == "failure" or $c == "timed_out" or
+                         $c == "action_required" or $c == "cancelled")
+                | .name
+              ] | unique | join(", ")' "${latest}")"
           if [[ -n "${failing}" ]]; then
             refuse "This check already ran on the head commit and is failing: ${failing}. A failed check holds the merge, required or not."
           fi
@@ -662,15 +666,18 @@ jobs:
           #    merge either. Required means item 3's names, the ruleset's and
           #    classic protection's. Native auto-merge, armed below, still
           #    waits for every required check, so one not yet reported at all
-          #    holds the merge there.
+          #    holds the merge there. A required check is read by its
+          #    latest run of each event, gate 5's deciding runs (BGD
+          #    2026-10-22, "one rule for every check", CHECK-RULE-2, part of
+          #    #1999): a run still in progress that a later run of its own
+          #    event replaced does not hold the merge.
           required_json="$(jq -Rs 'split("\n") | map(select(length > 0)) | unique' "${required_names}")"
           unfinished="$(jq -r --argjson required "${required_json}" '
-              [ .check_runs[]
-                | select(.name != "queue for auto-merge")
+              [ .[]
                 | select(.status != "completed")
                 | .name
                 | select(. as $name | $required | index($name))
-              ] | unique | join(", ")' "${runs}")"
+              ] | unique | join(", ")' "${latest}")"
           if [[ -n "${unfinished}" ]]; then
             echo "decision=wait" >>"${GITHUB_OUTPUT}"
             body="$(mktemp)"
@@ -1352,11 +1359,15 @@ jobs:
       #   checks), and the checkout of the default branch's scripts/.
       # checks: read -- the head commit's check runs.
       # statuses: read -- the head commit's combined status.
+      # actions: read -- the Actions runs at a head where some check ran
+      #   more than once: the event each check suite was made by, which the
+      #   judge groups a check's runs by (CHECK-RULE-2, part of #1999).
       # pull-requests: write -- list the pull requests, and the one comment
       #   on a red head. The labels are the App token's, never this one's.
       contents: read
       checks: read
       statuses: read
+      actions: read
       pull-requests: write
     env:
       GH_REPO: ${{ github.repository }}
@@ -1443,8 +1454,16 @@ jobs:
             jq '.check_runs = [(.check_runs // [])[] | select(.name != "queue for auto-merge")]' \
               "${work}/check-runs-raw.json" >"${work}/check-runs.json"
             gh api "repos/${GH_REPO}/commits/${head}/status?per_page=100" >"${work}/status.json"
+            # The event of each check suite, read only when some check ran
+            # more than once at this head (gate 5's shape): the judge decides
+            # a check by the latest run of each event (CHECK-RULE-2).
+            printf '{"workflow_runs": []}\n' >"${work}/workflow-runs.json"
+            if jq -e '[.check_runs[].name] | group_by(.) | any(length > 1)' "${work}/check-runs.json" >/dev/null; then
+              gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100" >"${work}/workflow-runs.json"
+            fi
             scripts/merge-train.sh judge --check-runs "${work}/check-runs.json" \
-              --statuses "${work}/status.json" --required "${required}" >"${work}/verdict.tsv"
+              --statuses "${work}/status.json" --workflow-runs "${work}/workflow-runs.json" \
+              --required "${required}" >"${work}/verdict.tsv"
             verdict="$(awk -F'\t' '$1 == "verdict" { print $2 }' "${work}/verdict.tsv")"
             case "${verdict}" in
               green)
