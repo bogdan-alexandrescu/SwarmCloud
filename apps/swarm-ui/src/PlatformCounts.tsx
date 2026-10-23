@@ -160,7 +160,8 @@ export function PlatformCountsScreen() {
     if (counting.current) return
     counting.current = true
     setBusy(true)
-    loadStats().then((r) => {
+    // The platform half is asked for here and nowhere on a timer (#2149).
+    loadStats({ platform: true }).then((r) => {
       counting.current = false
       setRun(r)
       setBusy(false)
