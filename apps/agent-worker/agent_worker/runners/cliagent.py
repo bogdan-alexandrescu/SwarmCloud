@@ -1055,13 +1055,22 @@ def credential_lines(repo: Path) -> tuple[list[str], str | None]:
 #: agent exits. Fixed text, so it is the same in every prompt and a test can
 #: hold it; it carries no rate-limit or credential marker
 #: (`_RATE_LIMIT_MARKERS`, `_CREDENTIAL_MARKERS`) for a CLI that echoes it.
+#: The no-change sentence is #2140: build-170 found its issue already built,
+#: wrote pr-body.md and no verification.md, and failed `published_nothing`,
+#: cancelling its dependant -- the worker reads "no change plus
+#: `lifecycle.VERIFICATION_FILE`" as SUCCEEDED no_change (Proposal J), but no
+#: prompt said so. It asks only "what you checked", so a brief that wants a
+#: stricter verification.md (an issue run's table) still governs its format.
 PUBLISH_PARAGRAPH = (
     "You do not push or open a pull request; the worker publishes your committed "
     "branch. Commit your work. Write the pull request's title (one line) to "
     "$SWARM_ARTIFACTS_DIR/pr-title.txt and its body to "
     "$SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull "
     "request exists because you lack GitHub credentials: the worker opens it "
-    "after you finish."
+    "after you finish. If the work is already done and nothing needs changing, "
+    "commit nothing and write $SWARM_ARTIFACTS_DIR/verification.md saying what "
+    "you checked and what showed it is done; that ends the step as no change "
+    "instead of a failure."
 )
 
 

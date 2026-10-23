@@ -367,7 +367,7 @@ claude-code or codex agent whose agent starts in a checkout gets, after the
 deliverables line and the questions sentence:
 
 ```
-You do not push or open a pull request; the worker publishes your committed branch. Commit your work. Write the pull request's title (one line) to $SWARM_ARTIFACTS_DIR/pr-title.txt and its body to $SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull request exists because you lack GitHub credentials: the worker opens it after you finish.
+You do not push or open a pull request; the worker publishes your committed branch. Commit your work. Write the pull request's title (one line) to $SWARM_ARTIFACTS_DIR/pr-title.txt and its body to $SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull request exists because you lack GitHub credentials: the worker opens it after you finish. If the work is already done and nothing needs changing, commit nothing and write $SWARM_ARTIFACTS_DIR/verification.md saying what you checked and what showed it is done; that ends the step as no change instead of a failure.
 ```
 
 It is `cliagent.PUBLISH_PARAGRAPH`, appended once in `run_cli_agent` for both
@@ -376,6 +376,11 @@ or credential markers a CLI that echoes its prompt would trip. An agent with no
 repository does not get it, and neither does a resumed session, which already
 holds it. It goes to every step with a repository, a review included: the
 worker's strategy, not the agent, decides whether anything is pushed.
+The last sentence (#2140) names the file the worker reads as "nothing to
+change, and here is why": an agent that finds its work already done and writes
+only `pr-body.md` fails `published_nothing` and cancels its dependants, as
+build-170 did. See "Or the agent says why: `verification.md` (Proposal J)"
+under [An empty diff can succeed](workflows.md#an-empty-diff-can-succeed-allow_empty_diff).
 
 **Proposal B: an issue step is asked for its title, and a missing one is
 visible.** `pr-title.txt` is now an expected output of every step that opens a
