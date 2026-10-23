@@ -225,6 +225,34 @@ def plan(
     )
 
 
+def add_late_entry(artifacts: list[dict[str, Any]], entry: Mapping[str, Any]) -> int:
+    """Put a file the worker uploaded AFTER the folder upload into the manifest
+    `artifacts`, in place, and return how many bytes the manifest's total grew by.
+
+    Found on task_58815d231b2146689808 (#2023): a refused workflow publish runs
+    after the folder upload has built the manifest, so the `workflow-lines.patch`
+    it stores was in the bucket and in the step's error, and in no listing a
+    following step reads. The manifest is still written once, by the finish;
+    this only adds to the list the finish writes.
+
+    `entry` is `{"name", "bytes", "uri"}`. An entry of the same name -- the
+    agent's own file, uploaded under the same key and since overwritten -- is
+    replaced, not listed twice. The list stays in PATH ORDER, the order the
+    folder upload sorts it in. One entry the worker writes is not held to
+    `MAX_FILES`, which bounds what an agent leaves: it is a short name well
+    inside the document budget worked out at `MAX_NAME_BYTES`.
+    """
+    late = {"name": str(entry["name"]), "bytes": int(entry["bytes"]), "uri": str(entry["uri"])}
+    replaced = 0
+    for index in range(len(artifacts) - 1, -1, -1):
+        if artifacts[index].get("name") == late["name"]:
+            replaced += int(artifacts[index].get("bytes") or 0)
+            del artifacts[index]
+    artifacts.append(late)
+    artifacts.sort(key=lambda item: str(item.get("name", "")).split("/"))
+    return late["bytes"] - replaced
+
+
 # ---------------------------------------------------------------------------
 # A browser session copied into the workspace (LB-L4b, part of #1030)
 # ---------------------------------------------------------------------------
