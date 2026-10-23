@@ -265,8 +265,8 @@ describe('f: the disabled radio has an edge, and hints are in the sans face', ()
       // MUTATION: drop `.sbf .dsp-fixed` -> "checkpoints (fixed)" is in the code face.
       expect(painted(fixed, 'font-family', env)).toBe(SANS)
       // MUTATION: drop the `::placeholder` rule -> "setting name" and "one entry" are in the code face.
-      expect(painted(input, 'font-family', env, '::placeholder')).toBe(SANS)
-      expect(painted(area, 'font-family', env, '::placeholder')).toBe(SANS)
+      expect(painted(input, 'font-family', env, 'placeholder')).toBe(SANS)
+      expect(painted(area, 'font-family', env, 'placeholder')).toBe(SANS)
     }
     const { container } = render(
       <div className="app"><div className="sbf"><RunnerSelect id="s" label="runner" profiles={[]} chosen="" onPick={() => {}} /></div></div>,
