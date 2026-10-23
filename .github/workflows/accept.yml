@@ -376,6 +376,18 @@ jobs:
   sandbox:
     name: put the deployed commit's fixtures on the sandbox
     runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # The sandbox token (SWARM_SANDBOX_GITHUB_TOKEN) lives in environment
+    # `repo-secrets`, whose deployment branches are `main` only (BGD,
+    # 2026-10-23, REPO-SECRETS-ENV; docs/ci.md): a repository secret is read
+    # by a workflow on ANY pushed branch, before any review or hold.
+    # Every trigger here runs on main's ref -- workflow_run after release,
+    # schedule, workflow_dispatch from main (`target` already requires it) --
+    # so the rule admits them; a dispatch from another branch is refused, and
+    # that is the point. `deployment: false`: no deployment record.
+    # test_repo_secrets_environment.py.
+    environment:
+      name: repo-secrets
+      deployment: false
     needs: [target, quiesce]
     if: needs.target.outputs.accept == 'true'
     concurrency:
@@ -607,6 +619,11 @@ jobs:
   sandbox-results:
     name: read back and sweep the sandbox
     runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # The main-only environment that holds the secret: see the comment on
+    # `sandbox` above (REPO-SECRETS-ENV).
+    environment:
+      name: repo-secrets
+      deployment: false
     needs: [target, sandbox, acceptance, acceptance-2]
     if: ${{ !cancelled() && needs.sandbox.result == 'success' }}
     concurrency:
