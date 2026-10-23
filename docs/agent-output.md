@@ -390,8 +390,10 @@ before then and not to run the whole suite in the background polled with
 sleep. It sits just before the paragraph above, which still ends the prompt,
 and is the last paragraph of a prompt with no repository. A resumed session (an
 account move, a credential reload) is a new run with its own limit, so its
-message is followed by the line too; a finish or repair pass inside the same
-run is not, because the end time the session was told still holds.
+message is followed by the line too, and so are the wrap-up pass and the
+finish pass, each naming what is left of the step's budget, so the session
+that is resumed to finish is told the limit of the run it is in. A repair pass
+is not, because the end time the session was last told still holds.
 
 **Proposal B: an issue step is asked for its title, and a missing one is
 visible.** `pr-title.txt` is now an expected output of every step that opens a

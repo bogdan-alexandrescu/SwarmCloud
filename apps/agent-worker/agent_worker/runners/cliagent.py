@@ -1845,7 +1845,11 @@ def run_cli_agent(
             # still reports that it was resumed (`write_result` merges it).
             resumed_to_finish = True
             ctx.report["resumed_to_finish"] = True
-            finish_parsed = resume_pass(session, FINISH_PROMPT, remaining)
+            # Told the limit it runs under, like the wrap-up pass: what is
+            # left of the step, not the first start's end time (#2139).
+            finish_parsed = resume_pass(
+                session, f"{FINISH_PROMPT}\n\n{time_limit_line(remaining)}", remaining
+            )
             still = pending_work(finish_parsed)
             if still is not None:
                 log.warning(

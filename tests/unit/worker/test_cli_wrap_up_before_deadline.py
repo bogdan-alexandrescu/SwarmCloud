@@ -38,7 +38,7 @@ from agent_worker.runners import cliagent
 from agent_worker.runners.base import RunnerContext, RunnerFailure
 from agent_worker.runners.cliagent import CliAgentSpec, run_cli_agent
 from agent_worker.runners.limits import GRACE_ENV, TIMEOUT_ENV
-from time_limit_helper import is_limit_line
+from time_limit_helper import is_limit_line, without_limit_line
 
 SESSION = "sess-" + "c3d4e5f60718293a"
 LIMIT = 6.0
@@ -256,7 +256,8 @@ def test_wrap_up_runs_once_and_never_past_the_budget(tmp_path, monkeypatch):
 
     runs = _runs(ctx)
     assert [_is_wrap_up(run["stdin"]) for run in runs] == [False, True, False]
-    assert runs[2]["stdin"] == cliagent.FINISH_PROMPT
+    # The finish pass is told the limit too: what both starts left (#2139).
+    assert without_limit_line(runs[2]["stdin"]) == cliagent.FINISH_PROMPT
     assert out["resumed_to_wrap_up"] is True and out["resumed_to_finish"] is True
     first_and_wrap = runs[2]["at"] - began
     assert spy.budgets[2] <= LIMIT - first_and_wrap + 0.5, (spy.budgets, first_and_wrap)

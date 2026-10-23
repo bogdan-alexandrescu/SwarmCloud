@@ -176,7 +176,7 @@ def test_a_finish_pass_gets_its_prompt_on_stdin(tmp_path, monkeypatch):
     first, finish = _runs(ctx)
     assert out.get("resumed_to_finish") is True, out
     assert first["stdin"].startswith(PROMPT)
-    assert finish["stdin"] == cliagent.FINISH_PROMPT
+    assert without_limit_line(finish["stdin"]) == cliagent.FINISH_PROMPT
     argv = finish["argv"]
     assert argv[argv.index("--resume") + 1] == SESSION
     assert argv[-1] == SESSION
