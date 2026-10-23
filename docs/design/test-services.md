@@ -612,3 +612,23 @@ variable-name surface to validate);
 (a) **no: add one when the skipped-address count (TS-SIGNAL) shows it
 recurring** (recommended: no repository has been recorded needing one);
 (b) Redis 7 now (*est.* +5 MB; a catalogue row and one more lane).
+
+---
+
+## 10. Owner decisions (2026-10-23, ~09:47 PDT)
+
+BGD answered all six questions in Claude Code with the recommended option.
+Each answer is recorded on the design task (task_2d20d9db23d941459f06,
+questions 0-5), so the console shows them as answered.
+
+| question | decision |
+|---|---|
+| Q1 where the service runs | **A**: the binaries in `agent-runtime-base`, started as a child of the worker. No contract change; §8 is not filed. |
+| Q2 the declaration's format | **TOML**, `.swarm/test-services.toml` |
+| Q3 Postgres versions in v1 | **16 only** |
+| Q4 when the service is up | **for the whole attempt**, started after the clone, so the agent's own test runs reach it |
+| Q5 extra URL variables | **no in v1**: `DATABASE_URL`, `PG*` and the default address only |
+| Q6 Redis or another service | **no**: one is added when TS-SIGNAL's skipped-address count shows it recurring |
+
+The build follows §7's table as written: TS-IMAGE and TS-CATALOGUE, then
+TS-RUN, then TS-GATE, then TS-ACCEPT and TS-DOCS. TS-SIGNAL comes later.
