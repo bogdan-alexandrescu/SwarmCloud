@@ -7583,6 +7583,8 @@ export interface ForgePending {
 export interface ForgeAppCard {
   configured: boolean
   slug: string | null
+  /** What the App requests (`GET /app`'s permissions); null when it was not read. */
+  granted: Record<string, string> | null
   /** Null when `GET /app` was not read; then `error` says why. */
   missing: ForgeGap[] | null
   /** Served to platform admins only; null for everyone else. */
@@ -7624,6 +7626,13 @@ export interface ForgeRepoStatus {
 export interface ForgePermissionsDoc {
   checked_at: string | null
   required: ForgeGap[]
+  /**
+   * What a registration with `workflow_files` on needs besides `required`
+   * (#2029, forgeperms.py's `WORKFLOW_FILES_REQUIREMENT`: workflows: write);
+   * null from an API that does not serve it. Never in `missing`: a switched-on
+   * repository's row carries `capabilities.workflow_files` and its gap instead.
+   */
+  workflow_files_required: ForgeGap | null
   app: ForgeAppCard
   orgs: ForgeOrgCard[]
   repositories: ForgeRepoStatus[]
@@ -7715,12 +7724,15 @@ export function normForgePermissions(raw: unknown): ForgePermissionsDoc {
       error: fpStr(r.error),
     })
   }
+  const wf = fpObj(doc.workflow_files_required)
   return {
     checked_at: fpStr(doc.checked_at),
     required: fpGaps(doc.required) ?? [],
+    workflow_files_required: wf === null ? null : fpGap(wf),
     app: {
       configured: app.configured === true,
       slug: fpStr(app.slug),
+      granted: fpPermMap(app.granted),
       missing: fpGaps(app.missing),
       settings_url: fpGitHubUrl(app.settings_url),
       error: fpStr(app.error),
