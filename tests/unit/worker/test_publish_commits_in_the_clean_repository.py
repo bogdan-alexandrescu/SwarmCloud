@@ -540,20 +540,17 @@ def tree_at_refs(bare: Path) -> set[str]:
 def test_head_is_resolved_from_the_files_the_way_git_would_or_refused(
     worker_factory, monkeypatch, origin, local_urls, forge, how
 ):
-    """A branch that lives only in `packed-refs` publishes the agent's commit
-    as before. A detached HEAD is read from the files too, and since #2094 a
-    step given a branch whose HEAD ends detached has moved off it: nothing is
-    pushed, and the reason names the commit the files resolve to. A HEAD that
+    """A detached HEAD and a branch that lives only in `packed-refs` publish
+    the agent's commit as before. The detached one descends from the start
+    sha and stands on no `refs/remotes/origin/*` tip, so #2094's rule, as BGD
+    relaxed it on 2026-10-23, does not call it a move. A HEAD that
     is a symbolic ref to anything outside `refs/heads/` is refused, with a
     reason naming HEAD, and nothing is pushed: the worker reads the ref files
     itself now, and it follows no ref it would have to trust the agent about."""
-    heads: list[str] = []
-
     def edit(repo: Path) -> None:
         (repo / "committed.txt").write_text("the agent's commit\n")
         _commit(repo, "Add committed")
         head = _git(repo, "rev-parse", "HEAD")
-        heads.append(head)
         if how == "detached":
             (repo / ".git" / "HEAD").write_text(f"{head}\n")
         elif how == "packed-ref":
@@ -576,11 +573,11 @@ def test_head_is_resolved_from_the_files_the_way_git_would_or_refused(
         assert "HEAD" in reason and "refs/heads/" in reason, out
         assert branch not in tree_at_refs(origin), "a branch was pushed"
     elif how == "detached":
-        # MUTATION: resolve a detached HEAD to anything but the commit its
-        # file names and the moved head names another commit, or none.
-        assert out.get("published") is False, out
-        assert out["head_moved"] == heads[0][:12], out
-        assert branch not in tree_at_refs(origin), "a branch was pushed"
+        # MUTATION: call every detached HEAD a move (PR 2107's strict rule)
+        # and the agent's own commit on its start is not published.
+        assert "head_moved" not in out, out.get("publish_reason")
+        assert out["published"] is True, out.get("publish_reason")
+        assert {"committed.txt", "uncommitted.txt"} <= tree_at(origin, branch)
     else:
         assert out["published"] is True, out.get("publish_reason")
         assert {"committed.txt", "uncommitted.txt"} <= tree_at(origin, branch)

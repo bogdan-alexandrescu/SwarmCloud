@@ -23,6 +23,20 @@ is faked, as in test_strategy_end_to_end.py):
     commits, and a step allowed an empty diff that did nothing opens no pull
     request (the controls).
 
+RELAXED FOR A NEW LOCAL BRANCH (BGD, 2026-10-23 16:47Z, task_306e3aa8dee141a5a390
+q0). All five implement agents sampled that day ran `git checkout -b <name>`
+from their start and committed there; the strict rule above refused every one.
+A branch the agent CREATED -- one with no `refs/remotes/origin/<name>` in the
+clone -- whose HEAD descends from the start sha is not a move:
+
+  * an implement agent on its own new branch publishes exactly its commits;
+  * a new local branch that does not descend from the start publishes nothing;
+  * a detached HEAD standing on an origin tip (the reviewed branch fetched and
+    detached onto) publishes nothing;
+  * a resumed attempt reads the start branch back from the manifest the
+    worker wrote; a manifest without it skips the branch check only;
+  * a `carrier: branches` checkpoint push obeys the same rule.
+
 The PR 2078 tool-pushed-tip case is pinned in test_publish_after_tool_push.py.
 """
 
@@ -36,7 +50,9 @@ import pytest
 
 from agent_worker import lifecycle
 
+from test_carrier_branches import BRANCHES, _worker as _carrier_worker
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
+    _attempt,
     _the_agent_titles_its_pull_request,
     agent_does_nothing,
     assert_only_the_worker_wrote,
@@ -47,6 +63,7 @@ from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
     refs,
     run_attempt,
 )
+from worker_seeds import record_as_earlier_attempt
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
@@ -210,3 +227,226 @@ def test_a_step_allowed_an_empty_diff_that_did_nothing_opens_no_pull_request(
     assert out["publish_reason"] == "the agent changed nothing in the repository"
     assert worker._no_change({"git": out}) is True
     assert f"swarm/{config.task_id}" not in refs(origin)
+
+
+# -- a branch the agent created from its start is its own (BGD, 2026-10-23) --
+
+
+def _commits(repo: Path, *names: str) -> None:
+    for name in names:
+        (repo / f"{name}.py").write_text(f"{name}\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "--quiet", "-m", f"Add the {name}")
+
+
+def test_an_implement_agent_on_its_own_new_branch_publishes_exactly_its_commits(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """What all five implement agents sampled on 2026-10-23 did."""
+    def edit(repo: Path) -> None:
+        _git(repo, "checkout", "--quiet", "-b", "feature")
+        _commits(repo, "tests", "fix")
+
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin, task_id="t-own-new-branch",
+        dispatch=IMPLEMENT, edit=edit,
+    )
+
+    branch = f"swarm/{config.task_id}"
+    # MUTATION: call every branch change a move (PR 2107's strict rule) and
+    # this publishes nothing, "HEAD moved off this task's branch (to feature)".
+    assert out["published"] is True, out.get("publish_reason")
+    assert "head_moved" not in out, out
+    # MUTATION: count anything but the agent's own line and this is not 2.
+    assert out["commit_count"] == 2 and out.get("agent_commits_kept") == 2, out
+    commits = pushed_commits(origin, branch)
+    assert [c["message"].strip() for c in commits] == ["Add the fix", "Add the tests"]
+    assert_only_the_worker_wrote(commits, config)
+    assert [pull["head"] for pull in forge.pulls] == [branch]
+    assert "feature" not in refs(origin), "the agent's local name was pushed"
+
+
+def test_a_review_that_fetches_a_branch_with_an_origin_counterpart_still_publishes_nothing(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    """The relaxation does not reach a branch the agent fetched: the clone
+    tracks every branch, so the fetch wrote `refs/remotes/origin/<name>`."""
+    _reviewed_branch(origin, tmp_path)
+
+    def edit(repo: Path) -> None:
+        _checks_out_the_reviewed_branch(repo)
+        assert (repo / ".git" / "refs" / "remotes" / "origin" / REVIEWED).is_file() or (
+            REVIEWED in (repo / ".git" / "packed-refs").read_text()
+        ), "the scenario needs an origin counterpart"
+
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin, task_id="t-review-counterpart",
+        dispatch=REVIEW, edit=edit,
+    )
+
+    # MUTATION: skip the origin-counterpart check (descent alone) and the
+    # reviewed branch, which descends from main, is published again: #456.
+    assert out["published"] is False and forge.pulls == [], out
+    assert out["head_moved"] == REVIEWED
+    assert "HEAD moved off this task's branch" in out["publish_reason"]
+    assert f"swarm/{config.task_id}" not in refs(origin)
+
+
+def test_a_new_local_branch_that_does_not_descend_from_the_start_publishes_nothing(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    def edit(repo: Path) -> None:
+        _git(repo, "checkout", "--quiet", "--orphan", "elsewhere")
+        _git(repo, "rm", "-rf", "--quiet", ".")
+        _commits(repo, "unrelated")
+
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin, task_id="t-new-branch-unrelated",
+        dispatch=IMPLEMENT, edit=edit,
+    )
+
+    # MUTATION: relax on "no origin counterpart" alone, without the descent
+    # check, and this unrelated line is published as the step's work.
+    assert out["published"] is False, out
+    assert out["head_moved"] == "elsewhere", out
+    assert out["publish_reason"] == (
+        "HEAD moved off this task's branch (to elsewhere); nothing of this task's was published"
+    )
+    assert forge.pulls == [] and f"swarm/{config.task_id}" not in refs(origin)
+
+
+def test_a_head_detached_onto_an_origin_tip_publishes_nothing(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    """Detached on the fetched reviewed branch: it descends from the start,
+    and it is exactly a tip of `refs/remotes/origin/*`, so it is a move."""
+    reviewed_tip = _reviewed_branch(origin, tmp_path)
+
+    def edit(repo: Path) -> None:
+        _git(repo, "fetch", "--quiet", "origin", REVIEWED)
+        _git(repo, "checkout", "--quiet", "--detach", f"origin/{REVIEWED}")
+
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin, task_id="t-detached-on-origin",
+        dispatch=REVIEW, edit=edit,
+    )
+
+    # MUTATION: let every descending detached HEAD publish and this republishes
+    # the reviewed branch's two commits.
+    assert out["published"] is False and forge.pulls == [], out
+    assert out["head_moved"] == reviewed_tip[:12], out
+    assert f"swarm/{config.task_id}" not in refs(origin)
+
+
+def _resumed(db, worker_factory, monkeypatch, origin, *, task_id: str, keep_start_branch: bool):
+    """Attempt 1 clones and checkpoints; attempt 2 restores that checkpoint.
+    `keep_start_branch=False` writes the manifest an older worker wrote."""
+    first, _, task = _attempt(
+        worker_factory, monkeypatch, origin, task_id=task_id, attempt=1, dispatch=IMPLEMENT
+    )
+    assert first._maybe_clone(task)["commit"], "the clone did not land"
+    if not keep_start_branch:
+        first.checkpoints.start_branch = None
+    record = first.checkpoints.create(first.ws, label="park")
+    second, config, _ = _attempt(
+        worker_factory, monkeypatch, origin, task_id=task_id, attempt=2, dispatch=IMPLEMENT
+    )
+    record_as_earlier_attempt(db, record)
+    second._restore_checkpoint({"attempt_count": 2, "latest_checkpoint": record.uri})
+    assert second._maybe_clone(task)["from_checkpoint"] is True
+    return second, config, second.ws.work / lifecycle.REPO_DIR_NAME
+
+
+def test_a_resumed_attempt_reads_its_start_branch_from_the_manifest_and_refuses_a_move(
+    db, worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    _reviewed_branch(origin, tmp_path)
+    worker, config, repo = _resumed(
+        db, worker_factory, monkeypatch, origin, task_id="t-resumed-moved", keep_start_branch=True
+    )
+    # MUTATION: leave `start_branch` out of the manifest, or do not read it back,
+    # and the resumed attempt knows no start branch: the reviewed branch
+    # descends from the start sha, so it is published as this step's work.
+    assert worker._start_branch == "refs/heads/main"
+    _checks_out_the_reviewed_branch(repo)
+
+    out = worker._harvest_git(publish=True)
+
+    assert out["published"] is False, out
+    assert out["head_moved"] == REVIEWED
+    assert forge.pulls == [] and f"swarm/{config.task_id}" not in refs(origin)
+
+
+def test_a_resumed_attempt_whose_manifest_has_no_start_branch_keeps_the_descent_check_only(
+    db, worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    """An older checkpoint: the branch check is skipped, as before this
+    change, and the descent check still refuses an unrelated line."""
+    worker, config, repo = _resumed(
+        db, worker_factory, monkeypatch, origin, task_id="t-resumed-legacy", keep_start_branch=False
+    )
+    # MUTATION: invent a start branch for a manifest that recorded none and
+    # this reads "refs/heads/main" or "HEAD".
+    assert worker._start_branch is None
+    _git(repo, "checkout", "--quiet", "--orphan", "elsewhere")
+    _git(repo, "rm", "-rf", "--quiet", ".")
+    _commits(repo, "unrelated")
+
+    out = worker._harvest_git(publish=True)
+
+    # MUTATION: skip the descent check too when the start branch is unknown
+    # and this unrelated line is published.
+    assert out["published"] is False, out
+    assert len(out["head_moved"]) == 12, out
+    assert forge.pulls == [] and f"swarm/{config.task_id}" not in refs(origin)
+
+
+def test_a_carrier_checkpoint_push_after_a_move_is_skipped_with_the_reason(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    worker, repo, _ = _carrier_worker(
+        worker_factory, monkeypatch, origin, task_id="t-carrier-moved", dispatch=BRANCHES
+    )
+    reviewed_tip = _reviewed_branch(origin, tmp_path)
+    _checks_out_the_reviewed_branch(repo)
+    said: list[tuple[str, dict]] = []
+    real_info = worker.log.info
+
+    def info(event: str, **fields: object) -> None:
+        said.append((event, fields))
+        real_info(event, **fields)
+
+    monkeypatch.setattr(worker.log, "info", info)
+
+    worker._push_carrier_branch("final")
+
+    # MUTATION: fold onto the tip without asking `_head_moved` and the
+    # reviewed branch's tree is pushed to swarm/t-carrier-moved.
+    assert "swarm/t-carrier-moved" not in refs(origin), "a moved HEAD was carried"
+    assert refs(origin)[REVIEWED] == reviewed_tip
+    assert worker._carrier_pushed is None
+    # MUTATION: skip silently and nothing says why the branch was not pushed.
+    reasons = [f.get("reason") for e, f in said if e == "carrier: the step's branch was not pushed"]
+    assert reasons == [
+        f"HEAD moved off this task's branch (to {REVIEWED}); nothing of this task's was published"
+    ], said
+
+
+def test_a_carrier_checkpoint_push_from_a_new_local_branch_still_pushes(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """The control for the carrier: the agent's own new branch is carried."""
+    worker, repo, _ = _carrier_worker(
+        worker_factory, monkeypatch, origin, task_id="t-carrier-own", dispatch=BRANCHES
+    )
+    _git(repo, "checkout", "--quiet", "-b", "feature")
+    _commits(repo, "tests")
+
+    worker._push_carrier_branch("final")
+
+    # MUTATION: treat a new local branch as moved in the carrier and nothing is pushed.
+    assert "tests.py" in _tree(origin, "swarm/t-carrier-own")
+
+
+def _tree(bare: Path, ref: str) -> set[str]:
+    return set(_git(bare, "ls-tree", "--name-only", ref).split())
