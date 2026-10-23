@@ -4239,77 +4239,6 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "await-input": {"available": true, "disabled_reason": ""}
 }
 
-/**
- * THE POOL DOCUMENTS `/v1/capacity` serves, and `feeds_pool` names.
- *
- * TWO RULES THEY WERE TYPED APART FROM (QAFIX6-FIXTURE c and i, part of
- * #1680). `global` and `tenant:u-bogdan` count the leases the task list holds,
- * one unit each, because every lease is a unit of every pool on its profile's
- * list (invariant 2): typed as 5, they sat under Overview's 7 holding
- * capacity (run 6 task-007, box 6343775508). And each provider-tenant pool
- * carries what its quota document's broker writes -- `quota_derived_limit`,
- * the document's cap, and its `adaptive_target` -- so its ceiling is the
- * least of those and its hard limit, as `SlotPool.effective_limit` computes,
- * and `available` is that ceiling less its leases (box 6343783860).
- */
-function fixturePools(): Capacity['pools'] {
-  const quota = new Map(fixtureQuotaRows().map((q) => [`provider:${q.provider}:tenant:${q.tenant_id}`, q]))
-  const pool = (
-    name: string,
-    hard: number,
-    active: number,
-    extra: Partial<Capacity['pools'][number]> = {},
-  ) => {
-    const fed = quota.get(name)
-    const adaptive = extra.adaptive_target ?? fed?.adaptive_target ?? null
-    const derived = fed === undefined ? null : fed.effective_limit
-    const effective = Math.max(0, Math.min(hard, adaptive ?? hard, derived ?? hard))
-    return {
-      name,
-      hard_limit: hard,
-      quota_derived_limit: derived,
-      active,
-      enabled: true,
-      updated_at: new Date(FIXTURE_NOW).toISOString(),
-      ...extra,
-      adaptive_target: adaptive,
-      effective_limit: effective,
-      available: Math.max(0, effective - active),
-    }
-  }
-  const holding = fixtureTaskRows().filter((t) => CONCURRENCY_STATES.has(t.state) && t.tenant_id === 'u-bogdan').length
-
-  return [
-    pool('global', 20, holding),
-    pool('tenant:u-bogdan', 40, holding),
-    pool('provider:anthropic', 10, 5),
-    pool('provider:anthropic:tenant:u-bogdan', 5, 5),
-    pool('provider:anthropic:tenant:eng', 5, 0),
-    pool('provider:openai', 10, 0),
-    pool('provider:openai:tenant:eng', 5, 0),
-    // THE POOL openai u-bogdan's QUOTA ROW FEEDS (QAFIX4-FIXTURE-B F11, run 4
-    // capacity-009): `pool_names_for` gives every provider its per-tenant
-    // slice, so codex's list carries it and Provider quota's row links a
-    // pool the board and Holders' accounting both list. At 10, so codex
-    // stays tied, now across three ceilings (FIXTURE_ADMISSION's note).
-    pool('provider:openai:tenant:u-bogdan', 10, 0),
-    pool('runner:claude-code', 10, 5),
-    pool('runner:mock', 20, 0),
-    pool('runner:browser', 4, 0),
-    pool('runner:codex', 10, 0),
-    pool('runner:generic', 10, 0),
-    pool('resource:standard', 20, 5),
-    pool('resource:browser', 4, 0),
-    pool('resource:large', 2, 0),
-    pool('backend:CLOUD_RUN_JOB', 20, 5),
-    pool('backend:GKE_AUTOPILOT', 4, 0),
-    pool('tenant:smoke', 2, 0),
-    // Paused, and at a reduced ceiling: the two states this screen must
-    // make obvious at a glance.
-    pool('tenant:eng', 10, 0, { enabled: false, adaptive_target: 6 }),
-  ]
-}
-
 async function fixtureCapacity(): Promise<Result<Capacity>> {
   await new Promise((r) => setTimeout(r, 400))
   noteFixtureProbe(route('/v1/capacity'), 400, true)
@@ -4393,6 +4322,83 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
       pools: fixturePools(),
     },
   }
+}
+
+/**
+ * THE POOL DOCUMENTS `/v1/capacity` serves, and `feeds_pool` names.
+ *
+ * TWO RULES THEY WERE TYPED APART FROM (QAFIX6-FIXTURE c and i, part of
+ * #1680). `global` and `tenant:u-bogdan` count the leases the task list holds,
+ * one unit each, because every lease is a unit of every pool on its profile's
+ * list (invariant 2): typed as 5, they sat under Overview's 7 holding
+ * capacity (run 6 task-007, box 6343775508). The 7 is a LITERAL because
+ * tests/unit/control_plane/test_blocker_ui_surface.py reads these rows out of
+ * this file, between `fixtureCapacity` and `fixtureTasks`, to regenerate
+ * FIXTURE_ADMISSION; qafix6.fixture.test.tsx holds it to the task list, so a
+ * live task added or removed fails there by name. And each provider-tenant pool
+ * carries what its quota document's broker writes -- `quota_derived_limit`,
+ * the document's cap, and its `adaptive_target` -- so its ceiling is the
+ * least of those and its hard limit, as `SlotPool.effective_limit` computes,
+ * and `available` is that ceiling less its leases (box 6343783860).
+ */
+function fixturePools(): Capacity['pools'] {
+  const quota = new Map(fixtureQuotaRows().map((q) => [`provider:${q.provider}:tenant:${q.tenant_id}`, q]))
+  const pool = (
+    name: string,
+    hard: number,
+    active: number,
+    extra: Partial<Capacity['pools'][number]> = {},
+  ) => {
+    const fed = quota.get(name)
+    const adaptive = extra.adaptive_target ?? fed?.adaptive_target ?? null
+    const derived = fed === undefined ? null : fed.effective_limit
+    const effective = Math.max(0, Math.min(hard, adaptive ?? hard, derived ?? hard))
+    return {
+      name,
+      hard_limit: hard,
+      quota_derived_limit: derived,
+      active,
+      enabled: true,
+      updated_at: new Date(FIXTURE_NOW).toISOString(),
+      ...extra,
+      adaptive_target: adaptive,
+      effective_limit: effective,
+      available: Math.max(0, effective - active),
+    }
+  }
+  return [
+    // 22, not 20, since it counts the seven leases: 22 - 7 = 15 keeps
+    // FIXTURE_ADMISSION's `mock` capped by THREE pools tied at 15 (global,
+    // resource:standard, backend:CLOUD_RUN_JOB), the shape that literal's note
+    // says it exists to teach. At 20 global bound alone at 13.
+    pool('global', 22, 7),
+    pool('tenant:u-bogdan', 40, 7),
+    pool('provider:anthropic', 10, 5),
+    pool('provider:anthropic:tenant:u-bogdan', 5, 5),
+    pool('provider:anthropic:tenant:eng', 5, 0),
+    pool('provider:openai', 10, 0),
+    pool('provider:openai:tenant:eng', 5, 0),
+    // THE POOL openai u-bogdan's QUOTA ROW FEEDS (QAFIX4-FIXTURE-B F11, run 4
+    // capacity-009): `pool_names_for` gives every provider its per-tenant
+    // slice, so codex's list carries it and Provider quota's row links a
+    // pool the board and Holders' accounting both list. At 10, so codex
+    // stays tied, now across three ceilings (FIXTURE_ADMISSION's note).
+    pool('provider:openai:tenant:u-bogdan', 10, 0),
+    pool('runner:claude-code', 10, 5),
+    pool('runner:mock', 20, 0),
+    pool('runner:browser', 4, 0),
+    pool('runner:codex', 10, 0),
+    pool('runner:generic', 10, 0),
+    pool('resource:standard', 20, 5),
+    pool('resource:browser', 4, 0),
+    pool('resource:large', 2, 0),
+    pool('backend:CLOUD_RUN_JOB', 20, 5),
+    pool('backend:GKE_AUTOPILOT', 4, 0),
+    pool('tenant:smoke', 2, 0),
+    // Paused, and at a reduced ceiling: the two states this screen must
+    // make obvious at a glance.
+    pool('tenant:eng', 10, 0, { enabled: false, adaptive_target: 6 }),
+  ]
 }
 
 /**
