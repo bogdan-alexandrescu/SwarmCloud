@@ -814,7 +814,7 @@ repository filter);
 
 ## 11. Owner decisions (2026-10-23, ~14:57-15:17 PDT / 21:57-22:17Z)
 
-BGD answered §10. Each answer is recorded on the design task (`task_dffdc81d0b8944d8a499`, `owner_answers`). Where BGD's answer differs from the recommendation, the build follows BGD:
+BGD answered §10. Each answer is recorded on the design agent (`task_dffdc81d0b8944d8a499`, `owner_answers`). Where BGD's answer differs from the recommendation, the build follows BGD:
 
 | question | BGD's answer |
 |---|---|
