@@ -512,7 +512,10 @@ def test_a_run_body_is_logged_nowhere_as_a_prompt(client, db, seeded):
     approve(client, target["id"])
     answer = run(client, target["id"], file="none").json()
     # The answer names the run, the mark and the steps: not the rendered spec.
-    assert set(answer) == {"workflow_id", "qa_target", "file", "browser_steps"}
+    # QAENV-RUN adds the run group and its legs, each as names and ids too.
+    assert set(answer) == {"workflow_id", "qa_target", "file", "browser_steps", "group_id", "legs"}
+    (leg,) = answer["legs"]
+    assert set(leg) == {"environment", "state", "workflow_id", "qa_target", "browser_steps", "reason"}
     assert "shop.example.com" not in json.dumps(answer)
 
 

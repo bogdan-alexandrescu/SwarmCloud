@@ -369,9 +369,12 @@ def test_a_run_of_a_two_entry_target_marks_its_leg(client, db, seeded, store):
     approve(client, target["id"], host="app.example.com", environment="staging")
     allow_issues(db)
     nameless = client.post(f"{TARGETS}/{target['id']}:run", json={"file": "none"}, headers=auth_header("carol"))
+    # A nameless run is every entry (QAENV-RUN, qa-environments.md §2.1), each checked
+    # before any is submitted: production's pending host refuses the whole dispatch.
     # MUTATION: run the first entry when no environment is named and this is 201.
-    assert nameless.status_code == 422, nameless.text
-    assert nameless.json()["detail"]["reason"] == "qa_target_environment_required"
+    assert nameless.status_code == 409, nameless.text
+    assert nameless.json()["detail"]["environment"] == "production"
+    assert not [p for p in db.docs if p.startswith("workflows/")]
     # Production's host is pending: its run is refused, staging's starts.
     pending = client.post(f"{TARGETS}/{target['id']}:run", json={"file": "none", "environment": "production"},
                           headers=auth_header("carol"))

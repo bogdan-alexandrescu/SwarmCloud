@@ -320,6 +320,21 @@ class VisualQaParams(Params):
     #: shape). Checked against the tenant at create and edit
     #: (`schedtypes.visual_qa.check_target`) and again at every firing.
     target: str = Field(pattern=r"^qat_[0-9a-f]{16}$")
+    #: The target's legs to run, by name (docs/design/qa-environments.md §7;
+    #: lane QAENV-RUN): `qaspec.ENVIRONMENT_NAME`'s shape, at most
+    #: `qaspec.MAX_ENVIRONMENTS`, each once; unset is every entry. A name, never
+    #: an entry: the URL, sign-in and credential are the target's. Checked
+    #: against the target at create, edit and every firing (`visual_qa`).
+    environments: list[str] | None = Field(default=None, min_length=1, max_length=8)
+
+    @field_validator("environments")
+    @classmethod
+    def _environment_names(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        if not all(re.fullmatch(r"[a-z0-9-]{1,20}", name) for name in value):
+            raise ValueError("an environment's name is 1 to 20 lower-case letters, digits or hyphens")
+        return _unique(value, "environments")
 
 
 class CustomPromptParams(Params):

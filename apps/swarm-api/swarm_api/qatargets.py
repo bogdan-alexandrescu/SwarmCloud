@@ -154,6 +154,23 @@ a new entry that may hold values, counted at its maxima, or a value, that
 would pass it is refused with a sentence before anything is written.
 Deleting a target removes every `<target_id>/` key and the legacy one.
 
+ONE DISPATCH, SEVERAL LEGS (qa-environments.md §2.1; lane QAENV-RUN, BGD's
+Q2 (a), 2026-10-23). `:run` names legs (`environments`, every entry when
+unset). Every named leg is checked (`runnable_legs`: `runnable` and the
+render, per leg) BEFORE ANY submission, so a pending host or a missing
+credential on one leg refuses the whole dispatch, naming the leg in
+`detail.environment`, and nothing spends. Then the run group,
+`qa_run_groups/{group_id}` (`qrg_` + 16 hex), is written with every leg
+`pending`, and one workflow per leg is submitted, each inside its own
+`qa_target_mark_allowed` with that leg's one mark, each recorded in
+`qa_target_runs` with `environment` and `group_id`. The single-mark rule, the
+worker's route and the gate are unchanged: each leg is a run as a one-leg run
+always was. A submission refused after an earlier one started leaves that
+leg `not_started` with its code and sentence, and the route answers 207; a
+leg still `pending` after its neighbour started is the crash window between
+two submissions, which the run page says. `GET /v1/qa-runs/{group_id}` reads
+the group in its own tenant only (`run_group`).
+
 TWO LEGS ON ONE ORIGIN (§1.5). When a `non_production` entry shares any
 origin with a `production` entry (AI Studio's case: both legs on
 `https://studio.saga.xyz`, a page toggle choosing the backend, F-1), the
@@ -175,6 +192,7 @@ import re
 import secrets
 import socket
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping, Protocol, Sequence
 from urllib.parse import urlsplit
@@ -203,7 +221,7 @@ from .repositories import (
     repo_id_for,
     repository_url,
 )
-from .store import LEASES, TASKS
+from .store import LEASES, TASKS, WORKFLOWS
 
 log = logging.getLogger(__name__)
 
@@ -211,6 +229,18 @@ COLLECTION = "qa_targets"
 #: One document per QA run, keyed by its workflow id: which step tasks this
 #: module stamped with which target. The worker's route reads it.
 RUNS_COLLECTION = "qa_target_runs"
+#: One dispatch over a target's legs (qa-environments.md §2.1, QAENV-RUN).
+GROUPS_COLLECTION = "qa_run_groups"
+_GROUP_ID = re.compile(r"^qrg_[0-9a-f]{16}$")
+#: A leg of a group: written `pending` before any submission, `submitted`
+#: with its workflow once it is, `not_started` with why when it was refused.
+LEG_PENDING = "pending"
+LEG_SUBMITTED = "submitted"
+LEG_NOT_STARTED = "not_started"
+GROUP_NOT_FOUND_MESSAGE = "no such QA run"
+ENVIRONMENTS_RUN_MESSAGE = (
+    f"environments names 1 to {qaspec.MAX_ENVIRONMENTS} of the target's entries, each once"
+)
 #: One document per minted credential link, keyed by sha256(token). Never the token.
 LINKS_COLLECTION = "qa_target_credential_links"
 
@@ -392,8 +422,8 @@ BYPASS_VALUE_MESSAGE = (
     "cookie can both carry: no space, quote, comma, semicolon, backslash or line break"
 )
 NO_SCREENS_MESSAGE = (
-    "the target lists no screens and none were discovered; press Run discovery on the QA "
-    "targets page (or call POST /v1/qa-targets/{id}:discover), then run it"
+    "the target lists no screens and does not ask to discover them; a workspace admin sets "
+    "`discover` on it (its run then crawls from the base) or lists its screens, then run it"
 )
 #: The 409's `detail.reason` while a discovery holds the target.
 DISCOVERY_RUNNING = "qa_discovery_running"
@@ -1629,13 +1659,46 @@ class QaTargets:
         """The leg `environment` names (`qaspec.leg`; the only one when it
         names none), when a run may start against it now; the refusal
         otherwise, before anything spends."""
-        target = self._startable(_view(self.get(tenant_id, target_id), environment), tenant_id, file=file)
-        if target.get("screens") is None and not target.get("discovered"):
-            # The discovery is the console's button (lane QA-DISCOVER); the
-            # code is the renderer's, which said "run its discovery first"
-            # when nothing could.
+        return self._runnable_view(self.get(tenant_id, target_id), tenant_id, file=file, environment=environment)
+
+    def _runnable_view(self, normal: Mapping[str, Any], tenant_id: str, *, file: str,
+                       environment: Any) -> dict[str, Any]:
+        target = self._startable(_view(normal, environment), tenant_id, file=file)
+        if target.get("screens") is None and not target.get("discovered") and target.get("discover") is None:
+            # A target that asks to discover runs from its base alone, its
+            # capture steps crawling (qa-environments.md §3.1, QAENV-RUN).
+            # The code is the renderer's.
             raise ValidationFailed(NO_SCREENS_MESSAGE, detail={"reason": "qa_target_no_screens"})
         return target
+
+    def runnable_legs(self, tenant_id: str, target_id: str, *, file: str, environments: Any,
+                      screens: Sequence[str] | None = None,
+                      browser_tool: str | None = None) -> list[LegRun]:
+        """Every leg `environments` names (every entry when None), each
+        runnable now and rendered, BEFORE anything is submitted (§2.1): the
+        first refusal is raised with the leg's name in `detail.environment`,
+        so one leg that cannot run refuses the dispatch and nothing spends."""
+        normal = self.get(tenant_id, target_id)
+        if environments is None:
+            names = [str(e.get("name")) for e in normal["environments"]]
+        elif (not isinstance(environments, list) or not 1 <= len(environments) <= qaspec.MAX_ENVIRONMENTS
+              or len(set(environments)) != len(environments)
+              or not all(isinstance(n, str) and qaspec.ENVIRONMENT_NAME.fullmatch(n) for n in environments)):
+            raise _invalid(ENVIRONMENTS_RUN_MESSAGE, field="environments")
+        else:
+            names = list(environments)
+        legs: list[LegRun] = []
+        for name in names:
+            try:
+                view = self._runnable_view(normal, tenant_id, file=file, environment=name)
+                workflow, mark, browser = render_run(view, screens=screens, file=file, browser_tool=browser_tool)
+            except ApiError as exc:
+                # The name is the target's own or a checked `[a-z0-9-]` one,
+                # carried beside the fixed sentence, never inside it.
+                exc.detail = {**exc.detail, "environment": name}
+                raise
+            legs.append(LegRun(name=name, target=view, workflow=workflow, mark=mark, browser=browser))
+        return legs
 
     def _startable(self, target: dict[str, Any], tenant_id: str, *, file: str) -> dict[str, Any]:
         """`target`, one leg's view, when anything may browse it now: its host
@@ -1656,7 +1719,7 @@ class QaTargets:
 
     def record_run(self, *, tenant_id: str, target: Mapping[str, Any], workflow_id: str,
                    task_ids: Sequence[str], file: str, by: str, kind: str = "run",
-                   browser_tool: str | None = None) -> None:
+                   browser_tool: str | None = None, group_id: str | None = None) -> None:
         """The run's record, of one leg (`target` is its view): the worker's
         route serves a task only the leg the record names. `browser_tool` is
         the run's own override, None when it named none; `flows_browser_tool`
@@ -1672,9 +1735,71 @@ class QaTargets:
             "kind": kind,
             "browser_tool": browser_tool,
             "flows_browser_tool": qaspec.flows_browser_tool(target, browser_tool),
+            # The dispatch this leg is one of (§2.1); None for a discovery.
+            "group_id": group_id,
             "by": by,
             "at": self._now(),
         })
+
+    # -- the run group (qa-environments.md §2.1, QAENV-RUN) -----------------------
+
+    def open_group(self, *, tenant_id: str, legs: Sequence[LegRun], file: str, by: str,
+                   browser_tool: str | None = None, schedule_id: str | None = None) -> str:
+        """`qa_run_groups/{group_id}`, written BEFORE the first submission with
+        every leg `pending`, so a crash between two submissions leaves a group
+        that says which leg never started."""
+        group_id = "qrg_" + secrets.token_hex(8)
+        first = legs[0].target
+        self._db.collection(GROUPS_COLLECTION).document(group_id).set({
+            "group_id": group_id,
+            "tenant_id": tenant_id,
+            "target_id": first.get("id"),
+            "revision": first.get("revision"),
+            "file": file,
+            "browser_tool": browser_tool,
+            "schedule_id": schedule_id,
+            "by": by,
+            "at": self._now(),
+            "legs": [{"environment": leg.name, "state": LEG_PENDING, "workflow_id": None,
+                      "browser_steps": list(leg.browser), "reason": None} for leg in legs],
+        })
+        return group_id
+
+    def _set_leg(self, group_id: str, name: str, change: Mapping[str, Any]) -> None:
+        ref = self._db.collection(GROUPS_COLLECTION).document(group_id)
+        doc = ref.get().to_dict() or {}
+        doc["legs"] = [({**leg, **change} if leg.get("environment") == name else leg)
+                       for leg in doc.get("legs") or []]
+        ref.set(doc)
+
+    def leg_submitted(self, group_id: str, name: str, *, workflow_id: str) -> None:
+        self._set_leg(group_id, name, {"state": LEG_SUBMITTED, "workflow_id": workflow_id})
+
+    def leg_not_started(self, group_id: str, name: str, *, code: str, message: str) -> None:
+        """The leg was never submitted, and why: a refusal's own code and
+        sentence, or the caller's fixed one."""
+        self._set_leg(group_id, name, {"state": LEG_NOT_STARTED, "reason": {"code": code, "message": message}})
+
+    def group(self, tenant_id: str, group_id: str) -> dict[str, Any]:
+        """The group, in its own tenant; another tenant's answers exactly as a
+        missing one (404). Each leg carries its workflow's state, read in the
+        same tenant."""
+        if not isinstance(group_id, str) or not _GROUP_ID.fullmatch(group_id):
+            raise NotFound(GROUP_NOT_FOUND_MESSAGE)
+        snap = self._db.collection(GROUPS_COLLECTION).document(group_id).get()
+        doc = snap.to_dict() if snap.exists else None
+        if not doc or doc.get("tenant_id") != tenant_id:
+            raise NotFound(GROUP_NOT_FOUND_MESSAGE)
+        legs = []
+        for leg in doc.get("legs") or []:
+            state = None
+            if leg.get("workflow_id"):
+                wf = self._db.collection(WORKFLOWS).document(str(leg["workflow_id"])).get()
+                wf_doc = wf.to_dict() if wf.exists else None
+                if wf_doc and wf_doc.get("tenant_id") == tenant_id:
+                    state = wf_doc.get("state")
+            legs.append({**leg, "workflow_state": state})
+        return {**{k: v for k, v in doc.items() if k != "legs"}, "at": _iso(doc.get("at")), "legs": legs}
 
     # -- discovery (§4.1, lane QA-DISCOVER; per entry, qa-environments.md §1.1) -------
 
@@ -1885,6 +2010,19 @@ class QaTargets:
             return json.loads(row.get("content") or "")
         except ValueError:
             raise refused("it is not JSON") from None
+
+
+@dataclass(frozen=True)
+class LegRun:
+    """One leg of a dispatch, checked and rendered (`runnable_legs`): its
+    name, its view (`qaspec.leg`), the `WorkflowCreate` body, its one mark
+    and its browser step ids."""
+
+    name: str
+    target: dict[str, Any]
+    workflow: dict[str, Any]
+    mark: dict[str, Any]
+    browser: list[str]
 
 
 def render_run(target: Mapping[str, Any], *, screens: Sequence[str] | None,

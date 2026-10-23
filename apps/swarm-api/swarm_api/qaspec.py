@@ -45,6 +45,20 @@ clicks only. A target with no `environments` is its own one leg and renders
 byte for byte as before. Of a target with several, a `production` leg, and a
 `non_production` leg sharing an origin with a `production` one, render no
 mutating flow: a production leg reads only.
+
+EVERY CAPTURE STEP DISCOVERS WHILE IT CAPTURES (docs/design/qa-environments.md
+§3.1, §3.5; lane QAENV-RUN; BGD's Q3 (a), 2026-10-23). A capture step runs
+`swarm_qa capture --crawl` (lane QAENV-CRAWL): its prompt carries the WHOLE
+run's stored list, the same in every step, and its share is `--group`,
+`--step` and `--steps`; after its own routes the tool walks the leg from its
+base path and every stored route, and captures the new routes it owns by a
+hash of the path, at most `found_per_step` (8, BGD's §10 answer), cut so the
+leg's stored plus `G x found_per_step` stays within `MAX_SCREENS`. No path a
+crawl found ever reaches a prompt: what a step finds goes to its own capture
+and its `found.json`. A target that asks to `discover` and has nothing stored
+renders `discover.slots` crawling steps (4 by default, at most 8) from the
+base alone, instead of being refused; one with neither is still refused. The
+report gains the leg's Coverage section (§3.5).
 """
 
 from __future__ import annotations
@@ -53,6 +67,7 @@ import fnmatch
 import ipaddress
 import json
 import re
+import shlex
 from dataclasses import dataclass, field
 from typing import Any, Collection, Mapping, Sequence
 from urllib.parse import urlsplit
@@ -72,6 +87,20 @@ MAX_GROUPS = 8
 MAX_SCREENS = 60
 MAX_DISCOVER_PAGES = 60
 MAX_DISCOVER_DEPTH = 3
+#: A crawling capture step (§3.1; QAENV-RUN). New routes a step captures by
+#: default: BGD answered 8 on 2026-10-23 (qa-environments.md §10), not the
+#: design's 4, and 8 is also the ceiling (`swarm_qa.FOUND_PER_STEP`,
+#: `MAX_FOUND_PER_STEP`). A target may set fewer in `discover.found_per_step`.
+FOUND_PER_STEP = 8
+MAX_FOUND_PER_STEP = 8
+#: The crawling steps of a run with nothing stored (`discover.slots`, §3.1):
+#: 4 by default, at most `MAX_GROUPS`, one capture agent each.
+DEFAULT_SLOTS = 4
+#: The crawl's own bound (`swarm_qa --crawl-seconds`, its default), and the
+#: crawling step's timeout: 1,800 s grows to 2,700 s (§3.1), which holds the
+#: tool's 900 s crawl ceiling beside the step's own captures.
+CRAWL_SECONDS = 600
+CRAWL_CAPTURE_TIMEOUT = 2700
 #: `swarm_qa`'s own bounds (`MAX_SEGMENTS`, `NAME`), which the capture tool
 #: refuses past; restated so a target is refused at registration, not at run.
 MAX_SEGMENTS = 12
@@ -307,12 +336,19 @@ def _screen(raw: Any, excluded: Sequence[str]) -> dict[str, Any]:
 
 
 def _screens(target: Mapping[str, Any], subset: Sequence[str] | None) -> list[dict[str, Any]]:
+    """The run's stored routes: the target's `screens`, else its stored
+    `discovered`. [] for a target that asks to `discover` and has neither
+    (§3.1, a run from nothing but the base): its steps crawl from the base."""
     raw = target.get("screens")
     if raw is None:
         raw = target.get("discovered")
+    if (raw is None or raw == []) and target.get("discover") is not None:
+        if subset is not None:
+            raise _invalid("a run's screens must name screens the target lists")
+        return []
     if not isinstance(raw, list) or not raw:
         raise QaSpecError("qa_target_no_screens",
-                          "the target lists no screens and none were discovered; run its discovery first")
+                          "the target lists no screens and does not ask to discover them")
     excluded, _ = _exclusions(target)
     screens = [_screen(s, excluded) for s in raw]
     ids = [s["id"] for s in screens]
@@ -337,6 +373,33 @@ def _names(value: Any, allowed: Sequence[str], default: Sequence[str], what: str
     ):
         raise _invalid(f"{what} must be a non-empty list of {', '.join(allowed)}")
     return list(value)
+
+
+def _bounded(raw: Mapping[str, Any], key: str, low: int, high: int, default: int | None) -> int:
+    """`raw[key]`, an int in low..high; `default` when absent, required when None."""
+    value = raw.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+        raise _invalid(f"discover.{key} must be {low}..{high}")
+    return value
+
+
+def _discover(target: Mapping[str, Any]) -> dict[str, int]:
+    """The target's `discover`, checked: `{max_pages, max_depth}` (both
+    required when it is set, §4.1), `slots` (1..8, 4) and `found_per_step`
+    (0..8, 8; §3.1, §10). A target that does not ask to discover crawls at
+    the tool's bounds, its found routes at the default cap."""
+    raw = target.get("discover")
+    if raw is None:
+        return {"max_pages": MAX_DISCOVER_PAGES, "max_depth": MAX_DISCOVER_DEPTH, "slots": DEFAULT_SLOTS,
+                "found_per_step": FOUND_PER_STEP}
+    if not isinstance(raw, Mapping):
+        raise _invalid("discover must be {max_pages, max_depth, slots?, found_per_step?}")
+    return {
+        "max_pages": _bounded(raw, "max_pages", 1, MAX_DISCOVER_PAGES, None),
+        "max_depth": _bounded(raw, "max_depth", 0, MAX_DISCOVER_DEPTH, None),
+        "slots": _bounded(raw, "slots", 1, MAX_GROUPS, DEFAULT_SLOTS),
+        "found_per_step": _bounded(raw, "found_per_step", 0, MAX_FOUND_PER_STEP, FOUND_PER_STEP),
+    }
 
 
 def _environment(target: Mapping[str, Any]) -> str:
@@ -826,8 +889,40 @@ def _sign_in_note(own_login: bool, clicks: Sequence[Mapping[str, str]] = ()) -> 
     return note
 
 
+def _leg_name(target: Mapping[str, Any]) -> str:
+    """The leg a prompt reports on: the view's name (`leg`), else the name
+    §1.2 gives a target of one origin."""
+    name = target.get(LEG_NAME)
+    if isinstance(name, str) and ENVIRONMENT_NAME.fullmatch(name):
+        return name
+    return legacy_environment_name(target)
+
+
+def _crawl_flags(target: Mapping[str, Any], base: str, *, step: int, steps: int, found_per_step: int,
+                 bounds: Mapping[str, int]) -> str:
+    """`capture --crawl`'s arguments (§3.1, swarm_qa's QAENV-CRAWL): this
+    step's number of the leg's `steps`, its cap of new routes, the walk's
+    start (the base's path) and bounds, the target's exclusions, and the
+    leg's navigation spacing when it sets one. Every value is the target's
+    or this module's, each shell-quoted."""
+    paths, controls = _exclusions(target)
+    flags = [
+        "--crawl", f"--step {step}", f"--steps {steps}", f"--found-per-step {found_per_step}",
+        f"--crawl-seconds {CRAWL_SECONDS}", f"--start-path {shlex.quote(urlsplit(base).path + '/')}",
+        f"--max-pages {bounds['max_pages']}", f"--max-depth {bounds['max_depth']}",
+        *(f"--exclude {shlex.quote(glob)}" for glob in paths),
+        *(f"--exclude-control {shlex.quote(word)}" for word in controls),
+    ]
+    rate = target.get("rate")
+    navigation = rate.get("navigation_ms") if isinstance(rate, Mapping) else None
+    if isinstance(navigation, int) and not isinstance(navigation, bool):
+        flags.append(f"--navigation-ms {navigation}")
+    return " ".join(flags)
+
+
 def _capture_prompt(target: Mapping[str, Any], base: str, group: str, routes: Mapping[str, Any], *,
-                    widths: Sequence[str], themes: Sequence[str], own_login: bool) -> str:
+                    crawl: str, found_per_step: int, widths: Sequence[str], themes: Sequence[str],
+                    own_login: bool) -> str:
     flags = ["--settle generic", "--axe"]
     if own_login:
         flags.append("--keep-storage")
@@ -842,9 +937,13 @@ def _capture_prompt(target: Mapping[str, Any], base: str, group: str, routes: Ma
         f"Capture, do not review. Visual QA of {target['name']} at {base}.{_sign_in_note(own_login, start_clicks(target))} "
         f"Write this route list, exactly as given, to /tmp/swarm-qa/routes-{group}.json with the Write "
         f"tool:\n\n```json\n{json.dumps(routes, indent=2, sort_keys=True)}\n```\n\n"
+        f"It is the whole run's stored list, the same in every capture step; `--group {group}` is this "
+        f"step's share of it. Never add a route to it yourself: after this step's routes the tool walks the "
+        f"app from the base and every stored route, and captures at most {found_per_step} new routes this "
+        f"step owns, writing what it found to found.json in the tarball. "
         f"Then run `python -m swarm_qa capture --routes /tmp/swarm-qa/routes-{group}.json --group {group} "
         f"--base {_origin(base)} --presets {','.join(widths)} --themes {','.join(themes)} {' '.join(flags)} "
-        f"--out {out} --bundle {out}.tar`. It writes the tarball whatever happens: a route that failed is "
+        f"{crawl} --out {out} --bundle {out}.tar`. It writes the tarball whatever happens: a route that failed is "
         f"listed in its manifest's `failed`, not a reason to stop. If it exits non-zero, put its last 40 "
         f"lines in your answer and still make sure capture-{group}.tar exists under $SWARM_ARTIFACTS_DIR. "
         f"{GATE_CAPTURE} {_safety(target, _origin(base))} {NO_CHANGE}"
@@ -901,8 +1000,9 @@ def _report_prompt(target: Mapping[str, Any], groups: Sequence[tuple[str, Sequen
         f"{', '.join(names)}. For each group, count the images its capture's manifest.json lists and check "
         f"the review's `reviewed` against that number; a shortfall is a finding about the run, naming both "
         f"numbers. A staged tar that is missing is a finding about the run, naming the tar; when a capture "
-        f"tar is missing, the group's expected count is its routes x {len(widths)} widths x {len(themes)} "
-        f"themes x each route's segments (4 when unset), and say which count you used. Merge every finding "
+        f"tar is missing, the group's expected count is its stored routes x {len(widths)} widths x "
+        f"{len(themes)} themes x each route's segments (4 when unset), and say which count you used and that "
+        f"the found routes' count is unknown. Merge every finding "
         f"into findings.json, {{\"format\": 1, \"findings\": [...], \"about_run\": [...]}}, de-duplicating the "
         f"same defect seen at several widths or themes into one finding whose `also_seen` lists the others. "
         f"A finding is kept only when every file its `evidence` names is in a staged tar; one that names "
@@ -911,7 +1011,20 @@ def _report_prompt(target: Mapping[str, Any], groups: Sequence[tuple[str, Sequen
         f"file to $SWARM_ARTIFACTS_DIR next to findings.json, keeping its path, so the console shows it. "
         f"{_gate_report_line()} Then, in report.md, one line saying the flows are reported apart, in "
         f"flow-report's flows.md; then a table of findings by severity and by screen, then each finding, severity first, with its "
-        f"crop embedded by relative link. {NO_CHANGE}"
+        f"crop embedded by relative link. {_coverage_line(_leg_name(target))} {NO_CHANGE}"
+    )
+
+
+def _coverage_line(leg_name: str) -> str:
+    """§3.5: the leg's Coverage section, from every capture's found.json."""
+    return (
+        f"End report.md with a section headed \"Coverage ({leg_name})\", read from every capture tar's "
+        f"found.json: the stored routes captured; the new routes captured, with their paths "
+        f"(`captured_new`); the routes found but over the cap (`over_cap`); the routes found but not reached "
+        f"by their owner (in a step's `not_owned` and in no step's `captured_new` or `over_cap`); and for "
+        f"each step why its crawl stopped (`crawl.stopped_by`). When a crawl stopped by `time` or `pages`, "
+        f"say so plainly: a route missing then is no evidence that it is gone. A capture tar with no "
+        f"found.json is said so, by name."
     )
 
 
@@ -1036,7 +1149,14 @@ def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
     own_login = _own_login(target)
     widths = _names(target.get("widths"), PRESETS, DEFAULT_WIDTHS, "widths")
     themes = _names(target.get("themes"), THEMES, DEFAULT_THEMES, "themes")
-    groups = group_screens(_screens(target, screens))
+    stored = _screens(target, screens)
+    bounds = _discover(target)
+    # §3.1: the stored routes grouped as before, or, from nothing but the
+    # base, `discover.slots` steps with no stored route of their own.
+    groups = group_screens(stored) if stored else [(f"g{k}", []) for k in range(1, bounds["slots"] + 1)]
+    # Cut so that stored plus every step at its cap stays within MAX_SCREENS
+    # (swarm_qa cuts the same way; the prompt says the figure it will use).
+    found_per_step = min(bounds["found_per_step"], max(0, (MAX_SCREENS - len(stored)) // len(groups)))
     flows = _flows(target)
     flow_tool = flows_browser_tool(target, browser_tool)
     design_docs = _design_docs(target)
@@ -1047,12 +1167,17 @@ def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
         _target_id(target)
 
     steps: list[dict[str, Any]] = []
-    for group, members in groups:
+    # The whole run's stored list, the same in every step (§3.1): an empty
+    # group is no group, so a run from the base writes `groups: {}`.
+    run_routes = route_list([(g, m) for g, m in groups if m], clock=clock)
+    for k, (group, _members) in enumerate(groups, 1):
+        crawl = _crawl_flags(target, base, step=k, steps=len(groups), found_per_step=found_per_step,
+                             bounds=bounds)
         steps.append(_step(
             f"capture-{group}", CAPTURE_PROFILE, CAPTURE_MODEL,
-            _capture_prompt(target, base, group, route_list([(group, members)], clock=clock),
+            _capture_prompt(target, base, group, run_routes, crawl=crawl, found_per_step=found_per_step,
                             widths=widths, themes=themes, own_login=own_login),
-            timeout=1800, browser_tool="playwright"))
+            timeout=CRAWL_CAPTURE_TIMEOUT, browser_tool="playwright"))
     for group, _members in groups:
         steps.append(_step(
             f"review-{group}", REVIEW_PROFILE, REVIEW_MODEL, _review_prompt(target, base, group, design_docs),
@@ -1085,14 +1210,10 @@ def render_discovery(target: Mapping[str, Any]) -> dict[str, Any]:
     target = {**target, "name": name}
     base = base_url(target)
     own_login = _own_login(target)
-    raw = target.get("discover")
-    if not isinstance(raw, Mapping):
-        raise _invalid("discover must be {max_pages, max_depth}")
-    pages, depth = raw.get("max_pages"), raw.get("max_depth")
-    if not isinstance(pages, int) or isinstance(pages, bool) or not 1 <= pages <= MAX_DISCOVER_PAGES:
-        raise _invalid(f"discover.max_pages must be 1..{MAX_DISCOVER_PAGES}")
-    if not isinstance(depth, int) or isinstance(depth, bool) or not 0 <= depth <= MAX_DISCOVER_DEPTH:
-        raise _invalid(f"discover.max_depth must be 0..{MAX_DISCOVER_DEPTH}")
+    if not isinstance(target.get("discover"), Mapping):
+        raise _invalid("discover must be {max_pages, max_depth, slots?, found_per_step?}")
+    bounds = _discover(target)
+    pages, depth = bounds["max_pages"], bounds["max_depth"]
     paths, _ = _exclusions(target)
     excludes = " ".join(f"--exclude '{p}'" for p in paths)
     prompt = (
