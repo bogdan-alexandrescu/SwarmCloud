@@ -148,9 +148,13 @@ the workspace. A run's name is fixed when it is launched, so `run` and `attach`
 first call `swarm_workflow_launch`, which writes a copy of the
 `/sc:swarmcloud` script with that name and returns its `script_path`, and
 then launch THAT copy with the Workflow tool, `{scriptPath: <script_path>,
-args: ...}`. If `swarm_workflow_launch` answers an error, say so in one line
-and run the `/sc:swarmcloud` workflow by name with the same args: the rows are
-the same, only the run's title is the generic one.
+args: <the reply's `args`, as given>}`, `spec_handle` included: the session
+never builds those args itself. If `swarm_workflow_launch` answers an error,
+say so in one line and run the `/sc:swarmcloud` workflow by name with
+`{attach: <wf_id>}` for an attach or `{spec: <the spec object>}` for a run (no
+handle exists then, so the spec goes by value and the digest check still
+refuses one that changed): the rows are the same, only the run's title is the
+generic one.
 
 ### `attach <wf_id>`
 
@@ -566,22 +570,18 @@ The one verb that writes: it spends the shared pool, a step at a time.
    file outside it; pass such a file's parsed object as `spec` instead), or
    `{spec: <the spec object>}` given JSON text, and launch
    the `script_path` it returns (see "Every run is titled after its
-   workflow"). Run that script with the spec OBJECT as its args — never
-   a bare path, and never the JSON as a string: a path makes a haiku agent
-   retype the spec, which is how long specs came back altered and were
-   refused. Given a file under the checkout, the args are `{spec: <the spec
-   object>, spec_path: "<its absolute path>"}`; given JSON text, or a file
-   outside the checkout, `{spec: <the spec object>}`. Either way add
-   `details: <the reply's row_details>` beside them, so each step's row
-   shows its own details when expanded, and `rows: <the reply's rows>`:
-   `summary` (the default) follows the submitted workflow with ONE summary
-   row, `per-step` with a row per step in this one run (Claude Code queues
-   the rows past its per-run limit; `/sc attach <wf_id> --per-step` after the
-   run would duplicate them, so prefer `summary` for a large spec).
-   `spec_path` beside the object is a reference, not the spec: the bridge
-   reads those exact bytes for the submission and checks them against the
-   digest of the object, so nothing is retyped and a spec that changed on the
-   way is refused, not submitted.
+   workflow"). Run that script with the reply's `args` AS GIVEN: `{spec,
+   spec_handle, details, rows, titled_copy}`. `spec_handle` is the file the
+   bridge wrote the spec to, `{path, digest}`; the run's submit row hands
+   `swarm_workflow` that handle and never the spec text, so nothing is
+   retyped (SC-LAUNCH-SPEC, #2034: a brief holding backticks around `${...}`
+   came back altered and was refused). Never drop `spec_handle`, never pass a
+   bare path, and never the JSON as a string. `rows` is `summary` (the
+   default), which follows the submitted workflow with ONE summary row, or
+   `per-step`, a row per step in this one run (Claude Code queues the rows
+   past its per-run limit; `/sc attach <wf_id> --per-step` after the run
+   would duplicate them, so prefer `summary` for a large spec). A spec that
+   changed on the way is refused, not submitted.
 4. Report what the workflow returned: its `workflow_id`, its state, and any
    `error` verbatim — `NOT_SUBMITTED`, `SUBMISSION_UNKNOWN`,
    `SUBMITTED_UNVERIFIED` and `FOLLOW_REFUSED` each say what to do next.
