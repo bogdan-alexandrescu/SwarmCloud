@@ -14,18 +14,23 @@ credential):
   time, method, origin, path and the gate's code, and none of the request's
   query or body;
 * a top-frame navigation off the target leaves a `qa_target_left` record;
-* a path carrying the held password is scrubbed in the record.
+* a path carrying the held password is scrubbed in the record;
+* the gate's agent endpoint serves that record at `REFUSALS_PATH`, where the
+  capture reads it, and answers 404 when it holds no QA target.
 
 The refusal RULES are not changed here: what is refused is test_qa_target_gate_policy's.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 from typing import Any
 
 from agent_worker.livegate import qatarget as gate_qt
+from agent_worker.livegate.cdpproxy import CdpProxy, serve_agents
+from agent_worker.livegate.cdppolicy import PolicyPaths
 
 import test_qa_target_signin as signin
 from test_qa_target_gate_policy import _fulfilled, _pause, _rig, _sent
@@ -116,3 +121,58 @@ def test_the_record_is_bounded_and_says_how_many_it_dropped():
     assert document["dropped"] == 3
     # Numbered, so a reader can tell the newest and drop what it has already read.
     assert document["refusals"][-1]["n"] == gate_qt.MAX_REFUSALS + 3
+
+
+async def _get(port: int, path: str) -> tuple[bytes, bytes]:
+    """One GET to the gate's agent endpoint, as the capture's urllib sends it."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAccept-Encoding: identity\r\n\r\n".encode())
+    await writer.drain()
+    answer = await reader.read()
+    writer.close()
+    head, _, payload = answer.partition(b"\r\n\r\n")
+    return head, payload
+
+
+def test_the_gate_serves_the_record_where_the_capture_reads_it(tmp):
+    async def body() -> None:
+        rig, session = await _rig(tmp)
+        _post(rig, session, f"{IDP}{TOKEN_PATH}?session_state=x", "grant_type=authorization_code")
+        await rig.settle()
+        server = await serve_agents(rig.proxy, host="127.0.0.1", port=0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            # The capture keeps its client tag on the URL (swarm_qa._gate_url); the gate strips it.
+            head, payload = await _get(port, gate_qt.REFUSALS_PATH + "?client=swarm-qa")
+            # MUTATION: drop the REFUSALS_PATH route from cdpproxy._serve_one and this is a 404 on every run.
+            assert head.startswith(b"HTTP/1.1 200"), head
+            document = json.loads(payload)
+            # MUTATION: serve anything but QaTarget.refusals() and the capture reads no record.
+            assert document == rig.target.refusals()
+            assert [(r["method"], r["origin"], r["path"], r["code"]) for r in document["refusals"]] == [
+                ("POST", IDP, TOKEN_PATH, "qa_write_refused")]
+        finally:
+            server.close()
+            await server.wait_closed()
+            await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_gate_holding_no_qa_target_serves_no_record(tmp):
+    async def body() -> None:
+        async def send(message: dict[str, Any]) -> None:
+            return None
+
+        proxy = CdpProxy(send, paths=PolicyPaths(downloads_dir=tmp, uploads_dir=tmp), record=lambda e, f: None)
+        server = await serve_agents(proxy, host="127.0.0.1", port=0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            head, _ = await _get(port, gate_qt.REFUSALS_PATH)
+            # MUTATION: serve an empty record with no target and an unread gate reads as one that refused nothing.
+            assert head.startswith(b"HTTP/1.1 404"), head
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    run(body)
