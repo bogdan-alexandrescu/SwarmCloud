@@ -229,6 +229,7 @@ from . import specverify
 from .forge import ForgeError, PullRequest, RepoAccess, probe_repository, open_pull_request
 from .gitops import (
     ATTRIBUTION_MARKERS,
+    DETACHED_HEAD,
     EMPTY_CLONE_BASE,
     CloneResult,
     GitError,
@@ -249,6 +250,7 @@ from .gitops import (
     prepare_publish_repo,
     push_branch,
     read_agent_excludes,
+    read_head_branch_as_data,
     retry_clone,
     shallow_clone,
     summarize_work,
@@ -929,6 +931,13 @@ class Worker:
         # in this process, or the base a previous attempt's worker recorded in
         # the checkpoint manifest. `EMPTY_CLONE_BASE` for an empty repository.
         self._publish_base: str | None = None
+        # The branch this attempt's clone left HEAD on (`refs/heads/<name>`, or
+        # `DETACHED_HEAD` for a clone at a commit), read by the worker before
+        # any agent process existed: the branch the step was given (#2094).
+        # None when it is not known in this process -- a resume from a
+        # checkpoint, whose manifest does not record it -- and then only the
+        # start sha decides whether HEAD moved (`_head_moved`).
+        self._start_branch: str | None = None
         # The base BRANCH the runner rebases the lane onto before it publishes
         # (SPEED-D1, `agent_worker.prepublish`), when that is safe for this
         # step (`_prepublish_rebase_ref`); None, and no rebase, otherwise.
@@ -5512,6 +5521,11 @@ class Worker:
         # manifest from here on, so a resumed attempt can trust it too.
         self._publish_base = clone.commit or (EMPTY_CLONE_BASE if clone.empty else None)
         self.checkpoints.clone_base = self._publish_base
+        try:
+            self._start_branch = read_head_branch_as_data(Path(destination))
+        except GitError as exc:
+            # Unknown, not refused: the start sha still decides (`_head_moved`).
+            self.log.warning("could not read the branch the clone landed on", error=str(exc))
         self._prepublish_rebase = self._prepublish_rebase_ref(
             ref=ref,
             checkout=Path(destination),
@@ -5631,6 +5645,116 @@ class Worker:
         self.log.info("the lane was rebased before publishing; the publish diffs from "
                       "where it landed", onto=onto, base=base)
         return onto
+
+    def _head_moved(self, repo: Path, publish_repo: Path, floor: str | None) -> str | None:
+        """Where HEAD went when it left this step's work, or None when it did not (#2094).
+
+        MEASURED 2026-10-23 (product-oracle PRs #456 and #465): two review
+        steps checked out the branch they reviewed and committed nothing; the
+        harvest counted that branch's commits since the clone base as theirs
+        and published them. HEAD has moved when, at the end:
+
+        * it is on another branch than the one the clone left it on
+          (`_start_branch`, read before any agent process existed; detached
+          counts as a branch of its own) -- the branch's name is returned, or
+          the head's short sha for a detached one; or
+        * it does not descend from `floor`, the commit the step started on
+          (the start sha, or where the runner's pre-publish rebase landed,
+          `_adopt_rebase_base`), nor from the tip this attempt's own
+          `git_push_branch` left on the task's branch (`_adopt_tool_pushed_tip`,
+          #1188) -- the head's short sha is returned.
+
+        The end branch is read from the clone's `.git/HEAD` as data
+        (`read_head_branch_as_data`); the ancestry is asked in the worker's
+        own `publish_repo`, never in the clone. An empty repository's clone
+        has no start sha, and a resumed attempt does not know its start
+        branch: each check runs only where its fact is known. Raises
+        `GitError` when the ancestry cannot be read, and the harvest then
+        publishes nothing.
+        """
+        ws = self.ws
+        assert ws is not None
+
+        def git(argv: list[str], slug: str) -> tuple[int, str]:
+            return _git_text(
+                ["git", *_NO_HOOKS, *argv], repo=Path(publish_repo), private_dir=ws.private,
+                logs_dir=ws.logs, slug=slug,
+                timeout_seconds=self.cfg.git_harvest_timeout_seconds, logger=self.log,
+            )
+
+        def short_head() -> str:
+            code, head = git(["rev-parse", "--verify", "--quiet", "HEAD"], "harvest-moved-head")
+            return head.strip()[:12] if code == 0 and head.strip() else "an unborn HEAD"
+
+        end = read_head_branch_as_data(repo)
+        start = self._start_branch
+        if start is not None and end != start:
+            self.log.warning(
+                "HEAD left the branch this step was given; nothing of it is harvested",
+                start=start, end=end,
+            )
+            return short_head() if end == DETACHED_HEAD else end.removeprefix("refs/heads/")
+        if not floor or not _FULL_SHA_RE.fullmatch(floor):
+            return None
+        code, _ = git(["merge-base", "--is-ancestor", floor, "HEAD"], "harvest-moved-start")
+        if code == 0:
+            return None
+        if code != 1:
+            raise GitError("could not tell whether HEAD descends from the commit the step started on")
+        branch = self._publish_branch_name()
+        read = getattr(self.children, "pushed_tip", None)
+        tip = read(branch) if branch and callable(read) else None
+        if isinstance(tip, str) and _FULL_SHA_RE.fullmatch(tip):
+            code, _ = git(["merge-base", "--is-ancestor", tip, "HEAD"], "harvest-moved-tip")
+            if code == 0:
+                return None
+        moved = short_head()
+        self.log.warning(
+            "HEAD does not descend from the commit this step started on; nothing of "
+            "it is harvested", start=floor, head=moved,
+        )
+        return moved
+
+    def _moved_head_result(self, out: dict[str, Any], moved: str) -> dict[str, Any]:
+        """The harvest's record of a HEAD that left this step's work (#2094).
+
+        Nothing on it is this step's, so it counts no commit and no
+        uncommitted path, writes no patch and publishes nothing; and it is not
+        a publish failure. A step allowed an empty diff therefore ends exactly
+        as if its agent had stayed put (`expected_mod.changed_nothing`), a
+        review's verdict standing, and one owed a pull request is told why it
+        has none (`_published_nothing`).
+        """
+        moved = str(self._scrub(moved))
+        out.update(
+            {
+                "head_moved": moved,
+                "commits": [],
+                "commit_count": 0,
+                "insertions": 0,
+                "deletions": 0,
+                "dirty": [],
+                "dirty_count": 0,
+                "published": False,
+                "publish_reason": (
+                    f"HEAD moved off this task's branch (to {moved}); "
+                    "nothing of this task's was published"
+                ),
+            }
+        )
+        return out
+
+    def _publish_branch_name(self) -> str | None:
+        """The branch `_publish_git` would push, or None when it would refuse to
+        name one. Read only to ask for this attempt's own tool-pushed tip."""
+        try:
+            if self._pr_role() == "amender":
+                return self._pr_author_branch()
+            return continuation_mod.publish_branch(
+                (self._task or {}).get("metadata"), self.cfg.git_branch_prefix, self.cfg.task_id
+            )
+        except WorkerError:
+            return None
 
     def _adopt_tool_pushed_tip(self, publish_repo: Path, branch: str) -> str | None:
         """The tip this attempt's own `git_push_branch` left on `branch`, when
@@ -7523,6 +7647,10 @@ class Worker:
         refused = git.get("pull_request_refused")
         if refused:
             return f"published_nothing: {refused}"
+        if git.get("head_moved"):
+            # Its own words (#2094): the step's agent left its branch, which
+            # is not "no commits beyond the base".
+            return f"published_nothing: {git.get('publish_reason')}"
         unopened = git.get(PULL_REQUEST_NOT_OPENED_FIELD)
         if unopened:
             # Its own words, not "published_nothing": the branch IS pushed,
@@ -11557,6 +11685,15 @@ class Worker:
                 self._publish_base = rebased
                 self.checkpoints.clone_base = rebased
                 fetched_base = rebased
+            # ONLY WHAT THIS STEP MADE ON TOP OF ITS START IS ITS WORK (#2094).
+            # A review that checked out the branch it reviewed used to have
+            # that branch's commits counted here and published as its own
+            # pull request (product-oracle #456, #465). A HEAD that left the
+            # step's branch, or no longer descends from where it started, is
+            # described as moved and nothing on it is harvested or published.
+            moved = self._head_moved(repo, publish_repo, fetched_base)
+            if moved is not None:
+                return self._moved_head_result(out, moved)
             work = summarize_work(
                 repo=publish_repo,
                 base=fetched_base,
@@ -16395,7 +16532,9 @@ def replay_agent_commits(
     folds it as before (`gitops.fold_agent_commits`):
 
     * HEAD does not descend from `base` (the agent reset or checked out
-      another line): nothing tells its commits from the repository's;
+      another line): nothing tells its commits from the repository's. Since
+      #2094 the harvest publishes nothing for such a HEAD before this runs
+      (`Worker._head_moved`), so this is the fold's last line of defence;
     * more than `MAX_KEPT_COMMITS` of them;
     * `leaks` finds a credential in the text any agent commit ADDS to a file
       (#259 review), read whole in windows overlapping by `overlap`. A kept commit keeps its TREE, so a key the agent added

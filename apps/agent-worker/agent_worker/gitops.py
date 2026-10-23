@@ -3356,6 +3356,35 @@ def read_head_as_data(clone: Path) -> str | None:
         os.close(fd)
 
 
+#: `read_head_branch_as_data`'s answer for a HEAD that names a commit, not a branch.
+DETACHED_HEAD = "HEAD"
+
+
+def read_head_branch_as_data(clone: Path) -> str:
+    """The branch the clone's HEAD is on (`refs/heads/<name>`), or
+    `DETACHED_HEAD`, read from `.git/HEAD` as `read_head_as_data` reads it:
+    one regular file, opened component by component with O_NOFOLLOW, never
+    by git (#2094).
+
+    The worker reads it twice: right after its own clone, before any agent
+    process exists, for the branch the step was given; and after the reap,
+    for the branch the agent left HEAD on. A HEAD naming anything outside
+    `refs/heads/`, or one that cannot be read, raises `GitError`.
+    """
+    raw = _read_in_git_dir(clone, "HEAD", cap=_REF_FILE_MAX_BYTES)
+    if raw is None:
+        raise GitError("the clone's .git/HEAD could not be read as a regular file")
+    head = raw.decode("ascii", "replace").strip()
+    if _OBJECT_ID.match(head):
+        return DETACHED_HEAD
+    if not head.startswith("ref:"):
+        raise GitError("the clone's HEAD is neither an object id nor a symbolic ref")
+    name = head[4:].strip()
+    if not _branch_ref_name_ok(name):
+        raise GitError("the clone's HEAD is a symbolic ref outside refs/heads/")
+    return name
+
+
 def _open_ref_file(clone: Path, *names: str, what: str) -> int | None:
     """`<clone>/.git/<names...>` open for reading, None when it does not exist.
 
