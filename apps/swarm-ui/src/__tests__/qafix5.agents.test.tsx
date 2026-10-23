@@ -173,7 +173,7 @@ describe('5b:QA-007: each pane tab’s accessible name holds its visible text, i
   it('in More: an item’s text is in its name too', () => {
     room = 358
     bar(failed())
-    fireEvent.click(screen.getByRole('button', { name: /^\d+ more tabs:/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^\d+ more: / }))
     const menu = screen.getByRole('group', { name: 'More agent panes' })
     const items = within(menu)
       .getAllByRole('button')
@@ -331,10 +331,10 @@ describe('Logs toolbar', () => {
       // next window drew is on the glass while the control still says `No error matched` and is disabled.
       await waitFor(() => expect(err().disabled).toBe(false))
       const b = err()
-      expect(b.querySelector('.ag-logs-long')?.textContent).toBe('Error – of 1')
-      expect(b.querySelector('.ag-logs-short')?.textContent).toBe('Error –/1')
+      expect(b.querySelector('.ag-logs-long')?.textContent).toBe('Error 1 of 1')
+      expect(b.querySelector('.ag-logs-short')?.textContent).toBe('Error 1/1')
       // MUTATION: name the control from a different count than it draws -- the name says `No error matched`.
-      expect(screen.getByRole('button', { name: /^Error – of 1/ })).toBe(b)
+      expect(screen.getByRole('button', { name: /^Error 1 of 1/ })).toBe(b)
     })
 
     it('keeps the owner’s `0 err ln`, disabled, while nothing matched', async () => {

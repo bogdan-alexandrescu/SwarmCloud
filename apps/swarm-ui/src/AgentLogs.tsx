@@ -603,6 +603,14 @@ export function AgentLogs({ task }: { task: Task }) {
       <LogWords long={follow ? 'Following' : 'Paused · Follow'} short={follow ? 'Follow' : 'Paused'} /> <kbd>F</kbd>
     </Button>
   )
+  const errN = targets.errors.length
+  const errK = errAt >= 0 ? errAt + 1 : errN === 1 ? 1 : null
+  const errWords =
+    errN === 0
+      ? { long: 'No error matched', short: '0 err ln' }
+      : errK === null
+        ? { long: `${errN} error lines`, short: `${errN} err ln` }
+        : { long: `Error ${errK} of ${errN}`, short: `Error ${errK}/${errN}` }
   const errorButton = (
     <Button
       size="sm"
@@ -623,8 +631,14 @@ export function AgentLogs({ task }: { task: Task }) {
         // anything was searched. The narrow label says what it counts --
         // error lines -- and that the count is zero, in the eight characters
         // `No match` had: a ninth spills Error under More at the 380px split.
-        long={targets.errors.length === 0 ? 'No error matched' : `Error ${errAt < 0 ? '–' : errAt + 1} of ${targets.errors.length}`}
-        short={targets.errors.length === 0 ? '0 err ln' : `Error ${errAt < 0 ? '–' : errAt + 1}/${targets.errors.length}`}
+        //
+        // NO DASH (visual QA run 6, flow-find-failure-desktop-04, box
+        // 6343764730): `Error –/1` read as a figure missing. With one line
+        // there is only one to be at, so it reads `Error 1 of 1`; with several
+        // and none jumped to, it says how many, in the zero count's shape
+        // (`N err ln`, N13); after a jump it says which.
+        long={errWords.long}
+        short={errWords.short}
       />{' '}
       <kbd>E</kbd>
     </Button>
