@@ -377,6 +377,22 @@ repository does not get it, and neither does a resumed session, which already
 holds it. It goes to every step with a repository, a review included: the
 worker's strategy, not the agent, decides whether anything is pushed.
 
+**The step's wall clock comes just before it (#2139).** On 2026-10-23 three
+claude-code agents started their tenant's whole pytest suite in the background,
+polled it with ~600 s `sleep` calls, and were killed mid-sleep at their 7200 s
+limit (exit 137); one had given its suite a `timeout 7000`, longer than its own
+step. Nothing had told them the limit: at the deadline the runner terminates
+the CLI without a word, and the finish pass only follows a CLI that ended by
+itself. So every claude-code and codex prompt carries one line from
+`cliagent.time_limit_line`, naming the limit in whole minutes and the UTC time
+it ends, and saying to commit and write the pull request's title and body well
+before then and not to run the whole suite in the background polled with
+sleep. It sits just before the paragraph above, which still ends the prompt,
+and is the last paragraph of a prompt with no repository. A resumed session (an
+account move, a credential reload) is a new run with its own limit, so its
+message is followed by the line too; a finish or repair pass inside the same
+run is not, because the end time the session was told still holds.
+
 **Proposal B: an issue step is asked for its title, and a missing one is
 visible.** `pr-title.txt` is now an expected output of every step that opens a
 pull request (`_title_requested`: `direct-pr`, the `integrate` integrator, a
