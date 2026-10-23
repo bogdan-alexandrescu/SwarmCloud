@@ -112,3 +112,11 @@ def test_a_gate_whose_record_cannot_be_read_leaves_gate_refused_null(qa, world, 
     manifest = _manifest(bundle)
     assert manifest["gate_refusals"]["read"] is False
     assert "connection refused" in manifest["gate_refusals"]["why"]
+
+
+def test_the_capture_reads_the_path_the_gate_serves_the_record_at(qa):
+    from agent_worker.livegate import qatarget
+
+    # MUTATION: rename either constant and the capture reads a 404 on every run.
+    assert qa.GATE_REFUSALS_PATH == qatarget.REFUSALS_PATH
+    assert qa._gate_url("http://127.0.0.1:9222") == "http://127.0.0.1:9222" + qatarget.REFUSALS_PATH

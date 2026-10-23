@@ -534,6 +534,40 @@ CHECKLIST = (
 
 NO_CHANGE = "Change no file in the repository."
 
+#: QA-GATE-REFUSALS (part of #2067). The live gate answers some requests
+#: itself (a write, anything but GET and HEAD to another origin), and its 403
+#: to another origin carries no CORS header, so Chrome logs a CORS block: on
+#: 2026-10-23 a run filed exactly that, an app's OIDC token exchange the gate
+#: refused, into the app's repository as a blocker. The capture writes each
+#: screen's refusals into its errors file as `gate_refused`, and these
+#: sentences keep them the run's, from the review to the filing.
+GATE_CAPTURE = (
+    "The tool also writes, into each screen's errors file as `gate_refused`, the requests the live browser "
+    "refused itself while that screen loaded: those are the run's limits, not the app's defects, so do not "
+    "retry or work around them."
+)
+GATE_REVIEW = (
+    "The live browser refuses some requests itself (a write, or anything but GET to another origin), and "
+    "each screen's errors file lists them as `gate_refused`, with a failed request it refused marked as the "
+    "gate's. A screen whose `gate_refused` is non-empty, together with a console error naming the same URL "
+    "(a CORS block, net::ERR_FAILED or a 403), or a loading or error state such a refused request explains, "
+    "is a finding about the run: put it in `about_run` ({id, title, actual}, naming the method, origin and "
+    "code the gate refused), never in `findings`, and never call it the app's defect. A `gate_refused` of "
+    "null means the gate's record could not be read: say so in `about_run`."
+)
+
+
+def _gate_report_line() -> str:
+    return (
+        "Open report.md with the gate's refusals: add up `gate_refusals` across the capture manifests and "
+        "write first \"the gate refused N requests (<count> <method> to <origin>, ...), so these screens "
+        "show the app without them:\", by method and origin, then list every screen whose errors file has "
+        "a non-empty `gate_refused`; when N is 0 say the gate refused none, and when a manifest's "
+        "`gate_refusals` was not read say so. Carry every review's `about_run` into findings.json's "
+        "`about_run`, and move there any finding whose evidence is a request in a screen's `gate_refused` "
+        "or a console error naming one of its URLs: a gate refusal is never the app's defect."
+    )
+
 
 def _safety(target: Mapping[str, Any], origin: str, *, mutating: bool = False) -> str:
     paths, controls = _exclusions(target)
@@ -593,7 +627,7 @@ def _capture_prompt(target: Mapping[str, Any], base: str, group: str, routes: Ma
         f"--out {out} --bundle {out}.tar`. It writes the tarball whatever happens: a route that failed is "
         f"listed in its manifest's `failed`, not a reason to stop. If it exits non-zero, put its last 40 "
         f"lines in your answer and still make sure capture-{group}.tar exists under $SWARM_ARTIFACTS_DIR. "
-        f"{_safety(target, _origin(base))} {NO_CHANGE}"
+        f"{GATE_CAPTURE} {_safety(target, _origin(base))} {NO_CHANGE}"
     )
 
 
@@ -604,13 +638,13 @@ def _review_prompt(target: Mapping[str, Any], base: str, group: str, design_docs
         f"capture-{group}.tar. For every PNG its manifest.json lists, open the image with the Read tool and "
         f"look at it, against this checklist: {CHECKLIST}. One finding per defect. For each, write a crop "
         f"PNG named <id>.png showing it (ids start `{group}-`), and an entry in findings-{group}.json, an "
-        f'object {{"format": 1, "group": "{group}", "findings": [...], "reviewed": <the number of images '
-        f"you opened>}}, each finding in exactly this shape:\n\n```json\n"
+        f'object {{"format": 1, "group": "{group}", "findings": [...], "about_run": [...], "reviewed": <the '
+        f"number of images you opened>}}, each finding in exactly this shape:\n\n```json\n"
         f"{json.dumps(FINDING_EXAMPLE, indent=2)}\n```\n\n"
         f"`severity` is one of {', '.join(SEVERITIES)}; `width` is a preset name; `evidence` lists the "
         f"crop and the capture image it came from, by their paths in the tars, and a finding without "
         f"evidence is refused. Quote no more of the page's text than the few words that name the defect. "
-        f"Bundle findings-{group}.json and the crops into review-{group}.tar under $SWARM_ARTIFACTS_DIR. "
+        f"{GATE_REVIEW} Bundle findings-{group}.json and the crops into review-{group}.tar under $SWARM_ARTIFACTS_DIR. "
         f"{NO_CHANGE}"
     )
 
@@ -655,8 +689,8 @@ def _report_prompt(target: Mapping[str, Any], groups: Sequence[tuple[str, Sequen
         f"none, or one no tar holds, moves to `about_run` with what was missing. `about_run` entries are "
         f"{{id, title, actual}} and are never filed in the application's repository. Copy every evidence "
         f"file to $SWARM_ARTIFACTS_DIR next to findings.json, keeping its path, so the console shows it. "
-        f"Write report.md: one line first saying the flows are reported apart, in flow-report's flows.md; "
-        f"then a table of findings by severity and by screen, then each finding, severity first, with its "
+        f"{_gate_report_line()} Then, in report.md, one line saying the flows are reported apart, in "
+        f"flow-report's flows.md; then a table of findings by severity and by screen, then each finding, severity first, with its "
         f"crop embedded by relative link. {NO_CHANGE}"
     )
 
@@ -692,7 +726,10 @@ def _file_prompt(target: Mapping[str, Any], settings: Mapping[str, Any]) -> str:
         f"findings whose severity is one of {', '.join(order)}, most severe first, at most "
         f"{settings['max_issues']} issues; list the rest, one line each, in one roll-up issue titled "
         f"\"Visual QA of {target['name']}, <today's date>: <n> further findings\", so nothing is silently "
-        f"dropped. Never file `about_run`. For each finding, first call `issue_list` for an open issue on "
+        f"dropped. Never file `about_run`. Never file a finding whose evidence is a gate refusal: one whose "
+        f"evidence or text names a request a screen's `gate_refused` lists, a request the live gate refused, "
+        f"or a CORS block or failed request to such a URL is the run's limit, not the app's defect; list it "
+        f"in filed.json as not filed, with that reason. For each finding, first call `issue_list` for an open issue on "
         f"the same path naming the same defect; if one exists, comment on it with `issue_comment` instead "
         f"and say so in your answer. Otherwise call `issue_create` with `dedupe_key` "
         f"\"visual-qa:{tid}:<screen>:<the title, lower-cased, spaces collapsed>\"; an answer "

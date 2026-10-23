@@ -66,4 +66,4 @@ def test_the_file_prompt_never_files_a_finding_whose_evidence_is_a_gate_refusal(
     # MUTATION: drop the sentence from _file_prompt and a gate refusal is filed into the app's repository.
     assert "gate_refused" in filed
     tail = filed.split("gate_refused", 1)[1]
-    assert "never" in filed.split("gate_refused", 1)[0][-200:] + tail[:200]
+    assert "never file" in (filed.split("gate_refused", 1)[0][-200:] + tail[:200]).lower()

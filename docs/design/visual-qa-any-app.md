@@ -539,6 +539,27 @@ size, because a page with no viewport meta tag is correctly laid out at
 clipped capture lifted the gate's device, which the gate now puts back
 (`DeviceController.reassert`, QA-REASSERT).
 
+The gate's refusals are the run's, never the app's (QA-GATE-REFUSALS, part
+of #2067). A 403 the gate makes for a request to another origin carries no
+`Access-Control-Allow-Origin`, so Chrome reports it as a CORS block and a
+failed request, exactly as if the app's own server had misconfigured CORS. On
+2026-10-23 the AI Studio run met that on every route (its OIDC token
+exchange, a `POST` to its identity provider) and filed the gate's refusal into
+the app's repository as a blocker. So the gate keeps a record of every
+request it answered itself (`QaTarget.refusals`: time, method, origin, path
+and code, never a query or a body), the capture writes the refusals made while
+each screen loaded into that screen's `errors.json` as `gate_refused`, marks
+the failed request they caused as the gate's, and counts them in the
+manifest's `gate_refusals`; the review puts such a screen in `about_run`, the
+report opens with "the gate refused N requests, so these screens show the app
+without them", and the file step never files a finding whose evidence is a
+refusal. The rules of §3 do not change for this: whether a target may let its
+identity provider's token endpoint through is the owner's decision, held. The
+capture reads the record at `GET /json/swarm/qa-refusals` on the gate's CDP
+endpoint, which it already connects to; until that route is served, the
+capture writes `gate_refused: null` and the manifest says the record was not
+read.
+
 ### 4.3 The review checklist
 
 Stated in the rendered prompt, one finding per defect: layout overflow and

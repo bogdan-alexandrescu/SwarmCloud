@@ -102,7 +102,8 @@ What `capture` does, and why each:
    their status (`bad_responses`: an HTTP error is no failed request, so a
    "Failed to load resource" otherwise has no URL), each address as origin
    and path only (a query can carry a token), the body text, and the ARIA snapshot (`locator.aria_snapshot()`;
-   Playwright deprecated `page.accessibility` in its favour).
+   Playwright deprecated `page.accessibility` in its favour). And what the
+   LIVE GATE answered itself while the route loaded (`gate_refused`, below).
 7. `--axe` runs axe-core from the image (AXE_SCRIPT, pinned in the
    Dockerfile) and writes `<route>--<preset>--<theme>.axe.json`.
 8. `manifest.json` and then the tarball, ALWAYS. A route that failed is a
@@ -130,6 +131,24 @@ default only the console's route list and template rely on:
   console's routes.json carries one, so its captures are unchanged) or by
   `--clock`. Freezing `Date` can expire an app's own session token, so a
   route list with neither runs on the page's real clock.
+
+THE GATE'S REFUSALS ARE THE RUN'S, NOT THE APP'S (QA-GATE-REFUSALS, part of
+#2067). The live gate answers some requests itself: a write, or anything but
+GET and HEAD to another origin, gets its 403 (`qa_write_refused`), and a top
+frame sent off the target gets its page (`qa_target_left`). A 403 to another
+origin carries no CORS header, so Chrome logs a CORS block and a failed
+request, and on 2026-10-23 a run filed exactly that (an app's OIDC token
+exchange) as the app's blocker. So after each route the capture reads the
+gate's refusal record (`_gate_document`: GET GATE_REFUSALS_PATH on
+$SWARM_CDP_ENDPOINT, the endpoint it already connects to; method, origin,
+path and code, never a query or a body) and writes the refusals made while
+that route loaded into its `errors.json` as `gate_refused`, each refusal to
+one route only; a failed request or a 4xx the gate made is marked as the
+gate's (`GATE_MARK`, `bad_responses`' `gate`). The manifest's
+`gate_refusals` counts the run's refusals by method and origin. A record
+that cannot be read leaves `gate_refused` null, never `[]`, and is not read
+again in that capture (`why` says what failed), so an unreadable gate costs
+one timeout, not one a route.
 
 `discover` writes a route list for an app nobody listed (§4.1): from `--base`
 (an http(s) address at a public host name, its path where the app starts:
@@ -176,6 +195,7 @@ import struct
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.error
 import urllib.request
 import zlib
@@ -187,6 +207,14 @@ from urllib.parse import urlsplit
 ENDPOINT_ENV = "SWARM_CDP_ENDPOINT"
 #: The agent's hand-off command, on PATH in the browser image.
 HANDOFF = "swarm-handoff"
+#: The live gate's refusal record on its CDP endpoint (livegate/qatarget.py
+#: `REFUSALS_PATH`, restated: this image does not carry agent_worker; the
+#: refusal tests hold them equal). Loopback only, as every path there is.
+GATE_REFUSALS_PATH = "/json/swarm/qa-refusals"
+GATE_TIMEOUT_SECONDS = 5
+MAX_GATE_BYTES = 1 << 20
+#: What a failed request the gate refused is marked with in `failed_requests`.
+GATE_MARK = "refused by the live gate ({code}): the gate's answer, not the app's"
 #: Where the Dockerfile puts axe-core's browser bundle.
 AXE_SCRIPT = "/opt/swarm/axe-core/axe.min.js"
 
@@ -673,6 +701,91 @@ def _where(url: Any) -> str:
     return f"{parts.scheme}://{parts.netloc}{parts.path}" if parts.scheme else "?"
 
 
+def _gate_url(endpoint: str) -> str:
+    """GATE_REFUSALS_PATH on the gate's CDP endpoint, its client tag kept."""
+    parts = urlsplit(endpoint)
+    return f"{parts.scheme}://{parts.netloc}{parts.path.rstrip('/')}{GATE_REFUSALS_PATH}" + (
+        f"?{parts.query}" if parts.query else "")
+
+
+def _gate_document() -> dict:
+    """The live gate's refusal record (module docstring). Raises when it cannot be read."""
+    url = _gate_url(os.environ.get(ENDPOINT_ENV, "").strip())
+    # No proxy: the gate is on loopback, and an egress proxy must not see this.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(url, timeout=GATE_TIMEOUT_SECONDS) as answer:
+        document = json.loads(answer.read(MAX_GATE_BYTES))
+    if not isinstance(document, dict) or not isinstance(document.get("refusals"), list):
+        raise ValueError("the gate's answer is not a refusal record")
+    return document
+
+
+def _refusal(raw: Any) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    n, at = raw.get("n"), raw.get("at")
+    fields = {k: raw.get(k) for k in ("method", "origin", "path", "code")}
+    if not isinstance(n, int) or not isinstance(at, (int, float)) or not all(isinstance(v, str) for v in fields.values()):
+        return None
+    return {"n": n, "at": float(at), **{k: v[:MAX_ERROR_CHARS] for k, v in fields.items()}}
+
+
+def _gate_key(origin: str, path: str) -> str:
+    return f"{origin.lower()}{path}"
+
+
+class _GateRefusals:
+    """The gate's refusals in this capture, each given to the one route that
+    was loading when the gate made it (module docstring)."""
+
+    def __init__(self, started: float) -> None:
+        self.started = started
+        self.why: str | None = None
+        self.armed: bool | None = None
+        self.seen: dict[int, dict] = {}
+        self.given: set[int] = set()
+
+    def _read(self) -> bool:
+        if self.why is not None:
+            return False
+        try:
+            document = _gate_document()
+        except Exception as exc:  # noqa: BLE001 -- an unread record is said, never a failed capture
+            self.why = f"{type(exc).__name__}: {_one_line(exc)}"
+            return False
+        self.armed = document.get("armed") is True
+        for raw in document["refusals"]:
+            record = _refusal(raw)
+            if record is not None and record["at"] >= self.started:
+                self.seen[record["n"]] = record
+        return True
+
+    def during(self, start: float, end: float) -> list[dict] | None:
+        """`gate_refused` for a route loaded from `start` to `end`; None when unread."""
+        if not self._read():
+            return None
+        out = []
+        for n in sorted(self.seen):
+            record = self.seen[n]
+            if n not in self.given and start <= record["at"] <= end:
+                self.given.add(n)
+                out.append({k: record[k] for k in ("method", "origin", "path", "code")})
+        return out
+
+    def summary(self) -> dict:
+        """The manifest's `gate_refusals`: the run's refusals by method and origin."""
+        self._read()
+        counts: dict[tuple[str, str], int] = {}
+        for record in self.seen.values():
+            key = (record["method"], record["origin"])
+            counts[key] = counts.get(key, 0) + 1
+        out: dict = {"read": self.why is None, "armed": self.armed, "count": len(self.seen),
+                     "by": [{"method": m, "origin": o, "count": c} for (m, o), c in sorted(counts.items())]}
+        if self.why is not None:
+            out["why"] = self.why
+        return out
+
+
 class _Errors:
     """What the page reported while one route was on screen."""
 
@@ -684,6 +797,8 @@ class _Errors:
         page.on("response", self._response)
 
     def reset(self):
+        #: When this route began, for the gate's refusals (`_GateRefusals.during`).
+        self.since = time.time()
         self.console: list[str] = []
         self.page: list[str] = []
         self.requests: list[str] = []
@@ -716,9 +831,28 @@ class _Errors:
         except Exception:  # noqa: BLE001
             pass
 
-    def document(self) -> dict:
+    def document(self, gate_refused: list[dict] | None = None) -> dict:
+        """The route's errors.json; a request the gate refused is marked as the gate's."""
+        codes = {_gate_key(r["origin"], r["path"]): r["code"] for r in gate_refused or []}
+        requests = []
+        for where in self.requests[:MAX_MESSAGES]:
+            code = codes.get(_gate_key(*_split_where(where)))
+            requests.append(f"{where} ({GATE_MARK.format(code=code)})" if code else where)
+        responses = []
+        for response in self.responses[:MAX_MESSAGES]:
+            code = codes.get(_gate_key(*_split_where(response["url"])))
+            responses.append({**response, "gate": code} if code else response)
         return {"console_errors": self.console[:MAX_MESSAGES], "page_errors": self.page[:MAX_MESSAGES],
-                "failed_requests": self.requests[:MAX_MESSAGES], "bad_responses": self.responses[:MAX_MESSAGES]}
+                "failed_requests": requests, "bad_responses": responses, "gate_refused": gate_refused}
+
+
+def _split_where(where: str) -> tuple[str, str]:
+    """`_where`'s origin-and-path back into (origin, path)."""
+    try:
+        parts = urlsplit(where)
+    except ValueError:
+        return where, ""
+    return f"{parts.scheme}://{parts.netloc}", parts.path or "/"
 
 
 def _write(path: Path, data: bytes | str) -> None:
@@ -943,9 +1077,10 @@ def _shot(page, segment: int, preset: str | None = None) -> tuple[bytes, list[di
 
 def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict, preset: str, theme: str,
                    out: Path, axe_source: str | None, settle: str = "console",
-                   persona_cookie: bool = True) -> dict:
+                   persona_cookie: bool = True, gate: _GateRefusals | None = None) -> dict:
     """One route at one preset and theme. Raises with the step that failed.
-    `persona_cookie` False (sets_persona) sets no PERSONA_COOKIE."""
+    `persona_cookie` False (sets_persona) sets no PERSONA_COOKIE. `gate`
+    gives the route the refusals the live gate made while it loaded."""
     rid, ready = route["id"], route["ready"]
     stem = _stem(group, rid, preset, theme)
     persona = persona_of(route) if persona_cookie else None
@@ -1056,9 +1191,11 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
     except Exception as exc:  # noqa: BLE001 -- a failed route is a finding
         where = f"ready selector {ready!r} not found" if step == "ready" else step
         raise _RouteFailed(f"{where}: {type(exc).__name__}: {_one_line(exc)}") from exc
-    _write(out / f"{stem}.errors.json", json.dumps(errors.document(), indent=1))
+    refused = gate.during(errors.since, time.time()) if gate is not None else None
+    _write(out / f"{stem}.errors.json", json.dumps(errors.document(refused), indent=1))
     entry.update({"console_errors": len(errors.console), "page_errors": len(errors.page),
-                  "failed_requests": len(errors.requests), "bad_responses": len(errors.responses)})
+                  "failed_requests": len(errors.requests), "bad_responses": len(errors.responses),
+                  "gate_refused": len(refused) if refused is not None else None})
     return entry
 
 
@@ -1100,6 +1237,7 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
     tarball, whatever failed. Returns the manifest. `clock` (else the route
     list's) freezes the page clock; neither leaves it running."""
     frozen = clock if clock is not None else routes.get("clock")
+    gate = _GateRefusals(time.time())
     playwright, browser, context = _connect()
     manifest: dict = {
         "format": MANIFEST_FORMAT, "group": group, "commit": _git_head(),
@@ -1140,7 +1278,7 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                     try:
                         entry = _capture_route(page, errors, base=base, group=group, route=route,
                                                preset=preset, theme=theme, out=out, axe_source=axe_source,
-                                               settle=settle, persona_cookie=persona_cookie)
+                                               settle=settle, persona_cookie=persona_cookie, gate=gate)
                         manifest["routes"].append(entry)
                         why = []
                         if entry["pending"]:
@@ -1160,7 +1298,8 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                                                        "error": "; ".join(why)})
                     except _RouteFailed as exc:
                         manifest["failed"].append({"id": route["id"], "preset": preset, "theme": theme,
-                                                   "error": str(exc)})
+                                                   "error": str(exc),
+                                                   "gate_refused": gate.during(errors.since, time.time())})
     except Exception as exc:  # noqa: BLE001 -- the browser went away: record it, still bundle
         manifest["aborted"] = f"{type(exc).__name__}: {_one_line(exc)}"
     finally:
@@ -1171,6 +1310,7 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
             except Exception:  # noqa: BLE001
                 pass
         playwright.stop()
+        manifest["gate_refusals"] = gate.summary()
         _write(out / "manifest.json", json.dumps(manifest, indent=1))
         _bundle(out, bundle)
     return manifest
