@@ -970,6 +970,82 @@ def test_verify_finds_a_quota_whose_cpu_limit_cannot_hold_its_pods(job: Job, rea
             _field(record, "failure", "object")) == ("A9", "VERIFY_FAILED", "ResourceQuota")
 
 
+def _hand_applied_quota(world: dict) -> None:
+    """kubernetes/render.py's flat defaults, as `kubernetes/apply.sh --tenant`
+    applied them by hand to u-bogdan's namespace (#2039)."""
+    hard = world["k8s"][f"ResourceQuota/{NAMESPACE}/swarm-tenant-quota"]["spec"]["hard"]
+    hard.update({"pods": "100", "requests.cpu": "400", "limits.cpu": "800"})
+
+
+def _failed_at(step: str, code: str, obj: str | None) -> dict:
+    fields = {"step": _s(step), "code": _s(code), "retryable": {"booleanValue": True},
+              "at": {"timestampValue": "2026-10-23T02:30:00Z"}}
+    if obj is not None:
+        fields["object"] = _s(obj)
+    return {"state": _s("failed"), "failure": {"mapValue": {"fields": fields}}}
+
+
+def test_verify_names_the_quota_s_numbers_not_a_missing_object(job: Job, ready_world: dict) -> None:
+    """QUOTA-ONE (#2039): the quota exists with other numbers, so A9 says
+    which numbers, never that an object is missing."""
+    _from_ready(job, ready_world)
+    job.edit(_hand_applied_quota)
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    out = _out(proc)
+    assert proc.returncode == 1, out
+    # MUTATION: report the quota through ws_object and this reads "a
+    # ResourceQuota is missing or not as specified".
+    assert ("the namespace quota is pods 100, cpu 400 (limit 800); "
+            "the record wants pods 16, cpu 64 (limit 128)") in proc.stderr, out
+    assert "ResourceQuota is missing" not in proc.stderr, out
+    record = job.record()
+    # The record keeps its shape: the step, the code and the object's type.
+    assert (_field(record, "failure", "step"), _field(record, "failure", "code"),
+            _field(record, "failure", "object")) == ("A9", "VERIFY_FAILED", "ResourceQuota")
+
+
+def test_limits_repairs_a_workspace_failed_on_its_quota_alone(job: Job, ready_world: dict) -> None:
+    """A failed A9 on ResourceQuota is the one failure `--mode limits` may
+    run on: it re-applies the quota and the documents, runs A9 again, and
+    the workspace is ready."""
+    _from_ready(job, ready_world)
+    job.edit(_hand_applied_quota)
+    job.edit(lambda w: w["firestore"][f"workspaces/{TENANT}"]["fields"].update(
+        _failed_at("A9", "VERIFY_FAILED", "ResourceQuota")))
+    proc = job.run("--workspace", WORKSPACE, "--mode", "limits")
+    out = _out(proc)
+    # MUTATION: keep refusing every workspace that is not ready, and this
+    # exits 1 with NOT_READY.
+    assert proc.returncode == 0, out
+    hard = job.read()["k8s"][f"ResourceQuota/{NAMESPACE}/swarm-tenant-quota"]["spec"]["hard"]
+    assert (hard["pods"], hard["requests.cpu"], hard["limits.cpu"]) == ("16", "64", "128"), hard
+    record = job.record()
+    # MUTATION: skip A9 on the repair, and the record is ready on A7's word.
+    assert _steps(record).get("A9") == "done", _steps(record)
+    # MUTATION: close a repair as a ceiling change (run.finished_at alone)
+    # and the workspace stays failed.
+    assert _field(record, "state") == "ready"
+    assert _field(record, "failure") is None
+    assert _changes(job.calls("gcloud")) == [], "a repair makes no IAM change"
+
+
+@pytest.mark.parametrize("failure", [
+    _failed_at("A9", "VERIFY_FAILED", "NetworkPolicy"),
+    _failed_at("A9", "NAMESPACE_LABEL_MISSING", "ResourceQuota"),
+    _failed_at("A7", "NAMESPACE_APPLY_FAILED", "ResourceQuota"),
+    _failed_at("A9", "VERIFY_FAILED", None),
+    {"state": _s("failed")},
+], ids=["other-object", "other-code", "other-step", "no-object", "no-failure"])
+def test_limits_refuses_any_other_failed_workspace(job: Job, ready_world: dict, failure: dict) -> None:
+    _from_ready(job, ready_world)
+    job.edit(lambda w: w["firestore"][f"workspaces/{TENANT}"]["fields"].update(failure))
+    proc = job.run("--workspace", WORKSPACE, "--mode", "limits")
+    # MUTATION: admit every failed A9, or every failure naming ResourceQuota,
+    # and one of these runs.
+    assert proc.returncode == 1 and "NOT_READY" in proc.stderr, _out(proc)
+    assert job.read().get("writes", []) == []
+
+
 def test_verify_finds_a_lost_act_as_grant(job: Job, ready_world: dict) -> None:
     _from_ready(job, ready_world)
 
