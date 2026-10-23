@@ -136,8 +136,8 @@ const cell = (re: RegExp) => [...document.querySelectorAll('.tl-strip1 > .tl-x')
 
 describe('6:work-a-001: the fenced and parks cells are busy exactly while an events read is out', () => {
   it('is busy while pending, not busy with figures once read, not busy with “not read” once failed', async () => {
-    let answer: (r: unknown) => void = () => {}
-    api.loadTaskEventsPage.mockImplementation(() => new Promise((res) => (answer = res)))
+    const answers: ((r: unknown) => void)[] = []
+    api.loadTaskEventsPage.mockImplementation(() => new Promise((res) => answers.push(res)))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     // Pending: the cells say 'events not read' and are marked busy.
     await waitFor(() => {
@@ -147,7 +147,8 @@ describe('6:work-a-001: the fenced and parks cells are busy exactly while an eve
     expect(cell(/park/)?.getAttribute('aria-busy')).toBe('true')
     // Resolved: every lane's read answers, the figures are shown, nothing is busy.
     api.loadTaskEventsPage.mockResolvedValue(ok({ events: [], next_page_token: null }))
-    answer(ok({ events: [], next_page_token: null }))
+    expect(answers.length).toBeGreaterThan(0)
+    for (const answer of answers) answer(ok({ events: [], next_page_token: null }))
     await waitFor(() => {
       expect(text(cell(/fenced/))).toMatch(/^0 generations fenced$/)
     })
