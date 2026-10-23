@@ -51,6 +51,11 @@
 .chg-mx-table thead th.chg-mx-step { white-space: normal; }
 .chg-mx-step > .mono { overflow-wrap: anywhere; }
 .chg-mx-say { font-weight: 400; color: var(--text-dim); }
+/* TWO LABELLED FACTS, NOT ONE RUN-ON LABEL (visual QA run 6, F5): 'patch
+   not measured', 'file list not collected', each kept whole on its line and
+   its label in the faint ink a label takes beside its value. */
+.chg-col-fact { display: inline-block; white-space: nowrap; }
+.chg-col-fact > b { font-weight: 400; color: var(--text-faint); }
 .chg-mx-agent { font-weight: 400; }
 /* A COLUMN THE FILTER LEAVES OUT RECEDES BY ITS NAME AND ITS CELLS, NOT ITS
    BADGES (visual QA run 3, dark-004, 2026-10-21). `.is-dim` faded the whole

@@ -131,6 +131,17 @@
   .wfl .wfl-name > .wfl-mix { display: block; overflow: hidden; white-space: nowrap; }
 }
 .wfl .wfl-owner { overflow: hidden; text-overflow: ellipsis; }
+/* WHAT BECAME OF THE OTHER STEPS, UNDER THE FRACTION (visual QA run 6, F3,
+   #1680). '4/6' keeps its line and the column its 92px; '1 failed · 1
+   cancelled' is a line of its own that wraps at its spaces rather than being
+   clipped with the cell. The separator that joins the two in the cell's text
+   is not drawn: the line break is the separation. */
+.wfl .wfl-table td[data-col="done"] > .wfl-done-ends,
+.wfl-done-ends {
+  display: block; white-space: normal;
+  font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim);
+}
+.wfl-done-ends > .wfl-done-sep { display: none; }
 
 /* AT 640 AND BELOW, A CARD PER ROW (live QA WF-8, 2026-10-11). The phone drew
    the 1086px desktop table in a sideways scroller: the held State column took
@@ -243,6 +254,15 @@
   gap: var(--ctl-s2) var(--ctl-s3);
 }
 .wfp > .wfp-head > .wfp-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
+/* THE FAILURE POLICY IS CONFIGURATION (box 6343794378): its own group, a
+   'Policy' label before the chip and a rule between it and the state, so
+   'on failure: fail the workflow' does not read as the outcome beside it. */
+.wfp-head .wfp-policy {
+  display: inline-flex; align-items: center; gap: var(--ctl-s1);
+  margin-left: var(--ctl-s1); padding-left: var(--ctl-s3);
+  border-left: 1px solid var(--line);
+}
+.wfp-head .wfp-policy-k { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 
 /* THE BODY CARD KEEPS ALL FOUR EDGES on the page. `styles.css` took its
    border away (`.wf-card.is-page`), which left a card with no top edge under
@@ -385,6 +405,9 @@
   font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text);
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
+/* WHILE THE BANNER SAYS IT (visual QA run 6, F2): the card points at the
+   banner in the body face, faint, so the sentence is read once. */
+.wf-inspect-cause-ref { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 /* WHY THE STEP FAILED, LEADING THE GRAPH (visual QA QA-120, run 2). On a
    failed workflow's page the step's card is under the graph, below the fold;
    this strip is above it, in view on arrival at 1440x900 and at 390. The
@@ -707,6 +730,20 @@
 .wf-filter-n { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 
 
+
+/* A NODE'S REASON IS CUT AT A WORD (visual QA QA-120, #1680 comment
+   6283740207). styles.css's `.node-note` is `nowrap` with an ellipsis, which
+   cut 'exit status 1: pytest coll…' inside a word. Clamped to one line and
+   wrapping at its spaces, the line ends on the last whole word that fits and
+   the ellipsis follows it; a single word wider than the card still breaks
+   (`anywhere`) rather than run past the edge. Still one line, so `layoutOf`'s
+   `NOTE_H` holds; the whole reason is the line's title and the focused card's
+   `.node-note-full`, as before. */
+.wf-canvas .node-note {
+  display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1; line-clamp: 1;
+  white-space: normal; overflow-wrap: anywhere;
+}
 
 /* ---- A wide stage's band (wide-workflows.html A) ------------------------- */
 

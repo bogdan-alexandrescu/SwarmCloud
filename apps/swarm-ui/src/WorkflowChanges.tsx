@@ -896,12 +896,18 @@ function ColumnSay({ facts, onRetry }: { facts: ColumnFacts; onRetry: () => void
     case 'unsummarised':
       return (
         <>
-          <Mark kind="absent" say={facts.done ? 'This step ended without a git summary.' : 'This step has written nothing yet.'} />{' '}
-          {/* NOT COLLECTED, NOT "no summary" (visual QA run 5b, L6): beside
-              the chip's 'not measured' the column said what was missing, not
-              what it means -- that nothing was collected, which is not the
-              same as nothing changed. */}
-          {facts.done ? 'not collected' : 'nothing yet'}
+          {/* TWO FACTS, EACH NAMED (visual QA run 6, F5, #1680 box
+              6343766227): the chip's 'not measured' and the word 'not
+              collected' ran together as one near-repeated label. Each says
+              what it is about -- the patch was not measured, the file list was
+              not collected. NOT COLLECTED, NOT "no summary" (run 5b, L6):
+              nothing collected is not the same as nothing changed. */}
+          <span className="chg-col-fact">
+            <b>patch</b> <Mark kind="absent" say={facts.done ? 'This step ended without a git summary.' : 'This step has written nothing yet.'} />
+          </span>{' '}
+          <span className="chg-col-fact">
+            <b>file list</b> {facts.done ? 'not collected' : 'nothing yet'}
+          </span>
         </>
       )
     case 'omitted':
@@ -914,7 +920,9 @@ function ColumnSay({ facts, onRetry }: { facts: ColumnFacts; onRetry: () => void
             <Mark kind="partial" say={`This step's patch was discarded${facts.bytes === null ? '' : ` at ${num(facts.bytes)} bytes`} for exceeding the size cap. It was not truncated, so no hunk of it can be drawn.`} />
           )}
           {facts.kind === 'patch' && facts.handed && <Mark kind="partial" say="This step changed nothing in its clone and handed this diff on to a dependant." />}
-          {n !== null ? ` ${n}${facts.complete ? '' : '+'} ${n === 1 ? 'file' : 'files'}` : failed !== null ? null : <Mark kind="pending" say="Reading this step's patch for the files it changed." />}
+          {/* `+` IS A PARTIAL COUNT (run-1 QA-118, kept); a '0+' counted
+              nothing, so it is '0' and the column's chip says the rest (F5). */}
+          {n !== null ? ` ${n}${facts.complete || n === 0 ? '' : '+'} ${n === 1 ? 'file' : 'files'}` : failed !== null ? null : <Mark kind="pending" say="Reading this step's patch for the files it changed." />}
           {failed !== null && (
             <>
               <Mark kind="unread" say={`This step's patch was not read: ${failed.heading}. ${failed.detail}`} />{' '}
@@ -1072,7 +1080,11 @@ export function ChangesMatrix({
         <p className="chg-sum">
           <span>
             {all.length}
-            {anyUnknown ? '+' : ''} {all.length === 1 && !anyUnknown ? 'file' : 'files'} across {cols.length} {cols.length === 1 ? 'step' : 'steps'}
+            {/* '0', NOT '0+' (visual QA run 6, F5): '+' is a partial count
+                (run-1 QA-118, kept), and with no file known there is nothing
+                for it to be partial of. 'file lists known for 0 of 6 steps'
+                beside it says how much is missing. */}
+            {anyUnknown && all.length > 0 ? '+' : ''} {all.length === 1 && !anyUnknown ? 'file' : 'files'} across {cols.length} {cols.length === 1 ? 'step' : 'steps'}
           </span>
           {/* HOW INCOMPLETE THE `+` IS (run 5b, L6). '0+ files' is the kept
               notation (run-1 QA-118: '+' is a list still incomplete), and it
@@ -1102,7 +1114,7 @@ export function ChangesMatrix({
         <p className="chg-scope" role="note" aria-label="What this page shows">
           {filterAt === -1
             ? 'Every step’s files, side by side: a column per step, its +/− on each file. '
-            : `Only ${cols[filterAt]!.label}’s files, one column of this page; All steps shows every column. `}
+            : `Only the files of ${cols[filterAt]!.label}, one column of this page; All steps shows every column. `}
           A step’s whole patch, to read or download, is its agent’s own Changes tab: Agent’s changes ›.
         </p>
       )}
@@ -1306,10 +1318,21 @@ function EmptyRows({ cols, facts, filterAt }: { cols: readonly StepColumn[]; fac
   // sentence named four possible causes for six steps and said which applied
   // to none, so 'nothing changed' and 'nothing was collected' read alike.
   const tasks = filterAt === -1 ? cols.map((c) => c.task) : [cols[filterAt]!.task]
+  // NEVER "YET" FOR A STEP THAT HAS ENDED (visual QA run 6, F5, #1680 box
+  // 6343766227): 'no file known yet' on a step that failed after its third
+  // attempt said the list was still coming. Ended, its list either says it
+  // changed nothing (a step that never started ran nothing) or was not
+  // recorded; only while a step can still write, or a read is still coming
+  // back (its attempts, or its patch), is it 'not known yet'.
+  const coming = scope.some((f) => f.kind === 'checking' || (f.kind === 'patch' && f.files === null && f.read?.kind !== 'failed'))
+  const ended = !coming && tasks.every((t) => t !== null && TERMINAL_STATES.has(t.state))
+  if (ended && tasks.every((t) => t!.started_at === null)) {
+    return <State mark="zero" heading="no files changed" say={`${unknownCauses(scope, tasks)}, so nothing ran to change a file.`} />
+  }
   return (
     <State
       mark="absent"
-      heading="no file known yet"
+      heading={ended ? 'file list not recorded' : 'no file known yet'}
       say={`${unknownCauses(scope, tasks)}. That is not the same as no changes.`}
     />
   )
