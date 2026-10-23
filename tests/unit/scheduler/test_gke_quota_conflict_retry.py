@@ -223,6 +223,9 @@ def test_a_quota_conflict_that_outlasts_the_bound_is_a_dispatch_error_after_four
     # MUTATION: give up with a new code -- the loop, the runbook and the UI
     # know gke_create_job_failed; a new code is a contract request first.
     assert raised.value.code == "gke_create_job_failed"
+    # MUTATION: drop the race note -- the operator's log line reads like any
+    # other create failure.
+    assert "ResourceQuota update race on all 4 tries" in str(raised.value)
     # MUTATION: a longer backoff (or a fixed one over 2 s in total) -- the
     # drain that runs this dispatch inline stalls every other tenant behind it.
     assert len(sleeps) == 3 and 0 < sum(sleeps) < 2.0
