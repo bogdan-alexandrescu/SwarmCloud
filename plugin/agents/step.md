@@ -209,7 +209,12 @@ Call `StructuredOutput` with `{state, result}`:
   your result exactly as given, every one: they are decisions the owner has
   to make, and the agent stopped to ask rather than guess. You never answer
   or act on them yourself. When there are any, the final `progress` line
-  says `? N question(s) for the owner`
+  says `? N question(s) for the owner`; and `owner_answers`: the answers the
+  owner recorded on the task to those questions, each `{question_index,
+  choice, text}` (the index into `questions`, the option picked, any text
+  given), absent when nothing is answered. Copy it as given, every one: it
+  tells an answered question from an open one, and you never write or choose
+  an answer yourself
 * `result` — the reply's `result` object, copied AS GIVEN, every field and
   every character. Never retype, reformat, summarise, escape or "fix" any of
   it. Its `answer_excerpt` is copied VERBATIM, character for character: the
