@@ -69,6 +69,7 @@ const { UtilisationPanel } = await import('../UtilisationPanel')
 const { DecisionCard } = await import('../DecisionCard')
 const { WaitPanel } = await import('../WaitPanel')
 const { QuestionsCard } = await import('../QuestionsCard')
+const { useNow } = await import('../useNow')
 
 const ID = 'task_0123456789abcdef0124'
 const GIB = 1024 ** 3
@@ -238,12 +239,30 @@ describe('c06: Peak memory is the newest attempt’s figure, with the worst name
 
 describe('c07: the two clocks are named', () => {
   it('labels the Elapsed tile `Run · attempt 3` while it runs, over `since …`', () => {
-    const el = host(runOf(running(), threeAttempts(false)))
+    // A static render reads the shared 1s clock's snapshot without subscribing,
+    // so it holds the instant of this file's first render, not this test's: on
+    // a slow CI runner (2026-10-23, PR #2163) that was seconds behind a fixture
+    // built from `Date.now()` and the tile read `2m 58s`. Build the fixture AT
+    // the clock's instant, so `three minutes ago` is three minutes on it.
+    const clockAt = { now: 0 }
+    function Probe() {
+      clockAt.now = useNow(1000)
+      return null
+    }
+    renderToStaticMarkup(<Probe />)
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(clockAt.now)
+    let el: HTMLElement
+    try {
+      el = host(runOf(running(), threeAttempts(false)))
+    } finally {
+      vi.useRealTimers()
+    }
     const t = tile(el, /^Run/)
     // MUTATION: leave the label `Elapsed` while the task runs.
     expect(t.querySelector('.dt-sc-l')?.textContent).toBe('Run · attempt 3')
-    // Started three minutes before the fixture was built; a slow run reads `2m 59s`.
-    expect(t.querySelector('.dt-sc-v')?.textContent).toMatch(/^(2m 59s|3m 0s)$/)
+    // Started three minutes before the clock's instant.
+    expect(t.querySelector('.dt-sc-v')?.textContent).toBe('3m 0s')
     expect(t.querySelector('.dt-sc-s')?.textContent).toMatch(/^since /)
   })
 
