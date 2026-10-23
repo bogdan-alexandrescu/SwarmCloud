@@ -17,9 +17,10 @@
  *   r3:work-a-008 At 390 the Reads facts were parted by hairlines set flush
  *                against the text, unlike the spaced dots at 1440.
  *
- * QA-044 (the stacked keys in mono) is the key face of every stacked record
- * in the console (styles.css `td[data-label]::before`, §13.3's "mono key
- * column") and is asked in the PR rather than changed here.
+ * QA-044 (the stacked keys in mono) was the key face of every stacked record
+ * in the console (styles.css `td[data-label]::before`). BGD decided on
+ * 2026-10-23 (task_7f0095fb2fd9481790cc q0) to set it sans console-wide;
+ * qa044.sanskeys.test.tsx holds it.
  */
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
