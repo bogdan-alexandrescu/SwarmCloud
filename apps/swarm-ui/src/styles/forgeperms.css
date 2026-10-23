@@ -40,6 +40,7 @@ table.fp-grants th { font-weight: 600; color: var(--text-dim); text-align: left;
 table.fp-grants td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 table.fp-grants tr:last-child td { border-bottom: 0; }
 table.fp-grants tr.is-short td { color: var(--text); font-weight: 600; }
+table.fp-grants tr.is-optional td { color: var(--text-dim); }  /* WF-APP-PERMS: not granted, and nothing here needs it yet */
 .fp-perm { white-space: nowrap; }
 .fp-mark { white-space: nowrap; }
 .fp-for { display: flex; flex-direction: column; gap: 2px; min-width: 14em; }

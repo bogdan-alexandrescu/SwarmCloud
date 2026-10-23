@@ -39,6 +39,24 @@ import './styles/forgeperms.css'
  * with "Manage on GitHub", and when it was read. All of it is the one read
  * the card already makes; nothing new is fetched.
  *
+ * WORKFLOWS (WF-APP-PERMS, #2029; BGD 2026-10-23: "this should be reflected
+ * also in the repository section where the other permissions are listed as
+ * green checks"). The App asks for Workflows: write since 2026-10-23, served
+ * as `workflow_files_required` beside `required` and never in `missing`: only
+ * a repository whose Workflow files switch is on needs it. So the App card and
+ * every org card draw it as a row of the same table, in one of three states:
+ *   * granted -- a green row, counted in "7 of 7 needed", its capability
+ *     "Workflow files" in the header;
+ *   * a gap -- not granted, and a registered repository this card covers has
+ *     the switch on (its row carries `capabilities.workflow_files`, which
+ *     forgeperms.py sets for a switched-on registration only): red, counted,
+ *     a line with the fix link, like any other missing permission;
+ *   * neutral -- not granted, and nothing here has the switch on: drawn, so
+ *     the person sees it, but not counted and not a line, and the App's
+ *     request for it pending on an org does not turn that org's card red.
+ * For an org, "covers" is the repositories whose `installation_id` is its own;
+ * for the App, every registered repository.
+ *
  * RE-CHECK. "↻ Re-check" reads with `refresh=true`, past the server's 60 s
  * cache. A fix button arms a re-check that runs when the person comes back to
  * this tab (window focus, or the page becoming visible again): that is the
@@ -56,6 +74,7 @@ export const CAPABILITY_WORD: Readonly<Record<string, string>> = {
   ci: 'CI',
   issues: 'Issues',
   actions: 'Actions',
+  workflow_files: 'Workflow files',
 }
 
 const CAPABILITY_ORDER = Object.keys(CAPABILITY_WORD)
@@ -178,19 +197,21 @@ function gapJargon(g: { permission: string | null; access: string | null; grante
  * request is one the App itself does not ask for -- accepting on the org's
  * side cannot fix it, and the line says so.
  */
-function orgLines(org: ForgeOrgCard, required: readonly ForgeGap[]): Line[] {
-  const pending = org.pending ?? []
+function orgLines(org: ForgeOrgCard, required: readonly ForgeGap[], wf: GrantRow | null): Line[] {
+  const gaps = [...(org.missing ?? []), ...(wf !== null && isGap(wf) ? [gapOf(wf)] : [])]
+  // A neutral Workflows row is not needed here, so the App's request for it is not either.
+  const pending = (org.pending ?? []).filter((p) => !(wf !== null && wf.optional && p.permission === wf.permission))
   const pendingNames = new Set(pending.map((p) => p.permission))
-  const lines: Line[] = (org.missing ?? []).map((g, n) => ({
+  const lines: Line[] = gaps.map((g, n) => ({
     key: `m:${g.permission ?? n}`,
     words: g.needed_for,
     jargon: gapJargon(g),
     note: org.pending !== null && g.permission !== null && !pendingNames.has(g.permission) ? 'The App itself does not ask for this yet: an admin adds it to the App first.' : undefined,
   }))
-  const named = new Set((org.missing ?? []).map((g) => g.permission))
+  const named = new Set(gaps.map((g) => g.permission))
   for (const p of pending) {
     if (named.has(p.permission)) continue
-    const req = required.find((r) => r.permission === p.permission)
+    const req = required.find((r) => r.permission === p.permission) ?? (wf?.permission === p.permission ? wf.req : undefined)
     lines.push({
       key: `p:${p.permission}`,
       words: req?.needed_for ?? 'The App was updated to ask for more access, and this org has not accepted it yet',
@@ -315,25 +336,64 @@ interface GrantRow {
   needs: string | null
   has: string | null
   ok: boolean
+  /** Not granted, and nothing this card covers needs it: drawn, never counted (the neutral Workflows row). */
+  optional: boolean
   neededFor: string
   capabilities: string[]
+  /** The requirement the row is drawn from. */
+  req: ForgeGap
+}
+
+/** The neutral Workflows row's words. */
+const WORKFLOWS_NOT_NEEDED = 'Not granted, needed only for repositories with Workflow files on'
+
+function isGap(r: GrantRow): boolean {
+  return !r.ok && !r.optional
+}
+
+function gapOf(r: GrantRow): ForgeGap {
+  return { ...r.req, granted: r.has }
+}
+
+/** The rows a card counts: every one but a neutral row. */
+function counted(rows: readonly GrantRow[]): GrantRow[] {
+  return rows.filter((r) => !r.optional)
 }
 
 /**
- * The table's rows, in `required`'s order, or null when the installation's
- * grants were not read. Met-or-not is the server's `missing` where it was
+ * The Workflows row (`workflow_files_required`), or null when the API does
+ * not serve it or the grants were not read. `needed` is whether a repository
+ * the card covers has Workflow files on: then an ungranted row is a gap, and
+ * otherwise neutral.
+ */
+function workflowsRow(req: ForgeGap | null | undefined, granted: Record<string, string> | null, needed: boolean): GrantRow | null {
+  if (req == null || req.permission === null || granted === null) return null
+  const has = granted[req.permission] ?? null
+  const ok = levelRank(has) >= Math.max(1, levelRank(req.access))
+  const optional = !ok && !needed
+  return { permission: req.permission, needs: req.access, has, ok, optional, neededFor: optional ? WORKFLOWS_NOT_NEEDED : req.needed_for, capabilities: req.capabilities, req }
+}
+
+/** Whether a registered repository has Workflow files on: its row carries the `workflow_files` capability. */
+function needsWorkflows(repositories: readonly ForgeRepoStatus[] | undefined, installationId?: number): boolean {
+  return (repositories ?? []).some((r) => (installationId === undefined || r.installation_id === installationId) && 'workflow_files' in r.capabilities)
+}
+
+/**
+ * The table's rows, in `required`'s order and then Workflows, or null when
+ * the grants were not read. Met-or-not is the server's `missing` where it was
  * read (so the table, the chip and the dot agree) and the level rank otherwise.
  */
-function grantRows(org: ForgeOrgCard, required: readonly ForgeGap[]): GrantRow[] | null {
-  const granted = org.granted
+function grantRows(granted: Record<string, string> | null, missing: readonly ForgeGap[] | null, required: readonly ForgeGap[], wf: GrantRow | null): GrantRow[] | null {
   if (granted === null) return null
-  const short = org.missing === null ? null : new Set(org.missing.map((g) => g.permission))
-  return required.flatMap((r) => {
+  const short = missing === null ? null : new Set(missing.map((g) => g.permission))
+  const rows = required.flatMap((r) => {
     if (r.permission === null) return []
     const has = granted[r.permission] ?? null
     const ok = short !== null ? !short.has(r.permission) : levelRank(has) >= Math.max(1, levelRank(r.access))
-    return [{ permission: r.permission, needs: r.access, has, ok, neededFor: r.needed_for, capabilities: r.capabilities }]
+    return [{ permission: r.permission, needs: r.access, has, ok, optional: false, neededFor: r.needed_for, capabilities: r.capabilities, req: r }]
   })
+  return wf === null ? rows : [...rows, wf]
 }
 
 /** The capabilities, in `CAPABILITY_WORD` order, that the rows grant and that they block. */
@@ -369,6 +429,50 @@ function checkedWords(checkedAt: string | null): string {
   return `Checked ${checkedAt === null ? 'at an unknown time' : timeAgo(checkedAt)}`
 }
 
+/** The needed-permissions table: a green check, a gap, or the neutral mark. */
+function GrantsTable({ rows }: { rows: readonly GrantRow[] }) {
+  if (rows.length === 0) return null
+  return (
+    <div className="fp-grants-wrap">
+      <table className="fp-grants">
+        <thead>
+          <tr>
+            <th scope="col">GitHub permission</th>
+            <th scope="col">Needs</th>
+            <th scope="col">Granted</th>
+            <th scope="col" aria-label="Enough" />
+            <th scope="col">For</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr
+              key={r.permission}
+              data-permission={r.permission}
+              data-ok={r.ok ? 'true' : r.optional ? 'neutral' : 'false'}
+              className={r.ok ? undefined : r.optional ? 'is-optional' : 'is-short'}
+            >
+              <td>
+                <span className="fp-perm">{permissionWord(r.permission)}</span> <code className="fp-jargon">{r.permission}</code>
+              </td>
+              <td>{r.needs ?? '?'}</td>
+              <td>{r.has ?? 'none'}</td>
+              <td className="fp-mark">
+                <ToneMark tone={r.ok ? 'ok' : r.optional ? 'info' : 'bad'} hidden />
+                <span className="fp-sr">{r.ok ? 'enough' : r.optional ? 'not needed yet' : 'not enough'}</span>
+              </td>
+              <td className="fp-for">
+                <span className="fp-words">{r.neededFor}</span>
+                {r.capabilities.length > 0 && <small className="fp-caps">{r.capabilities.map((c) => CAPABILITY_WORD[c] ?? c).join(', ')}</small>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 /** The grants table, then the extras, then what the installation covers and where it came from. */
 function OrgDetail({
   org,
@@ -391,42 +495,7 @@ function OrgDetail({
   const manage = installationUrl(org)
   return (
     <div className="fp-detail">
-      {rows !== null && rows.length > 0 && (
-        <div className="fp-grants-wrap">
-          <table className="fp-grants">
-            <thead>
-              <tr>
-                <th scope="col">GitHub permission</th>
-                <th scope="col">Needs</th>
-                <th scope="col">Granted</th>
-                <th scope="col" aria-label="Enough" />
-                <th scope="col">For</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.permission} data-permission={r.permission} data-ok={r.ok ? 'true' : 'false'} className={r.ok ? undefined : 'is-short'}>
-                  <td>
-                    <span className="fp-perm">{permissionWord(r.permission)}</span> <code className="fp-jargon">{r.permission}</code>
-                  </td>
-                  <td>{r.needs ?? '?'}</td>
-                  <td>{r.has ?? 'none'}</td>
-                  <td className="fp-mark">
-                    <ToneMark tone={r.ok ? 'ok' : 'bad'} hidden />
-                    <span className="fp-sr">{r.ok ? 'enough' : 'not enough'}</span>
-                  </td>
-                  <td className="fp-for">
-                    <span className="fp-words">{r.neededFor}</span>
-                    {r.capabilities.length > 0 && (
-                      <small className="fp-caps">{r.capabilities.map((c) => CAPABILITY_WORD[c] ?? c).join(', ')}</small>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {rows !== null && <GrantsTable rows={rows} />}
       {extra.length > 0 && (
         <details className="fp-extra">
           <summary>Also granted (not used by SwarmCloud): {extra.length}</summary>
@@ -465,6 +534,7 @@ export function OrgCard({
   onFix,
   repositories,
   checkedAt,
+  workflows,
 }: {
   org: ForgeOrgCard
   required: readonly ForgeGap[]
@@ -473,18 +543,22 @@ export function OrgCard({
   repositories?: readonly ForgeRepoStatus[]
   /** The read's `checked_at`, for "Checked 3m ago". */
   checkedAt?: string | null
+  /** The read's `workflow_files_required`: the Workflows row. */
+  workflows?: ForgeGap | null
 }) {
-  const lines = orgLines(org, required)
-  const missing = org.missing?.length ?? 0
-  const pending = lines.length - missing
   const unread = org.error !== null || org.missing === null
+  const wf = unread ? null : workflowsRow(workflows, org.granted, needsWorkflows(repositories, org.installation_id))
+  const lines = orgLines(org, required, wf)
+  const missing = (org.missing?.length ?? 0) + (wf !== null && isGap(wf) ? 1 : 0)
+  const pending = lines.length - missing
   const tone = lines.length > 0 ? 'bad' : unread ? 'unknown' : 'ok'
-  const rows = unread ? null : grantRows(org, required)
+  const rows = unread ? null : grantRows(org.granted, org.missing, required, wf)
+  const needed = rows === null ? [] : counted(rows)
   const chip =
     unread && lines.length === 0
       ? 'not read'
-      : tone === 'ok' && rows !== null && rows.length > 0
-        ? `${rows.filter((r) => r.ok).length}/${rows.length} granted`
+      : tone === 'ok' && needed.length > 0
+        ? `${needed.filter((r) => r.ok).length}/${needed.length} granted`
         : countWords(missing, pending)
   return (
     <PermCard
@@ -495,7 +569,7 @@ export function OrgCard({
       lines={lines}
       error={org.error ?? (org.missing === null ? 'The installation was not read.' : null)}
       sig={`${tone}:${lines.map((l) => l.key).join(',')}:${org.error ?? ''}`}
-      summary={rows !== null && rows.length > 0 ? grantSummary(rows) : undefined}
+      summary={needed.length > 0 ? grantSummary(needed) : undefined}
       detail={unread ? undefined : <OrgDetail org={org} rows={rows} repositories={repositories} checkedAt={checkedAt} onFix={onFix} />}
       hint={lines.length > 0 ? `Only an owner of ${org.org} can accept on GitHub.` : undefined}
       fix={lines.length > 0 && org.review_url !== null ? <FixLink href={org.review_url} label="Review on GitHub" onFix={onFix} /> : undefined}
@@ -503,10 +577,30 @@ export function OrgCard({
   )
 }
 
-export function AppCard({ app, admin, onFix }: { app: ForgeAppCard; admin: boolean | null; onFix: () => void }) {
-  const gaps = app.missing ?? []
-  const lines: Line[] = gaps.map((g, n) => ({ key: `m:${g.permission ?? n}`, words: g.needed_for, jargon: gapJargon(g) }))
+export function AppCard({
+  app,
+  admin,
+  onFix,
+  required = [],
+  workflows,
+  repositories,
+}: {
+  app: ForgeAppCard
+  admin: boolean | null
+  onFix: () => void
+  /** The read's `required`, for the table of what the App asks for. */
+  required?: readonly ForgeGap[]
+  /** The read's `workflow_files_required`: the Workflows row. */
+  workflows?: ForgeGap | null
+  /** The read's repositories: any with Workflow files on makes an unrequested Workflows a gap. */
+  repositories?: readonly ForgeRepoStatus[]
+}) {
   const unread = app.error !== null || app.missing === null
+  const wf = unread ? null : workflowsRow(workflows, app.granted, needsWorkflows(repositories))
+  const gaps = [...(app.missing ?? []), ...(wf !== null && isGap(wf) ? [gapOf(wf)] : [])]
+  const lines: Line[] = gaps.map((g, n) => ({ key: `m:${g.permission ?? n}`, words: g.needed_for, jargon: gapJargon(g) }))
+  const rows = unread || required.length === 0 ? null : grantRows(app.granted, app.missing, required, wf)
+  const needed = rows === null ? [] : counted(rows)
   const tone = lines.length > 0 ? 'bad' : unread ? 'unknown' : 'ok'
   // Both must say admin: the session (`admin`) and the server (`settings_url`, withheld from members).
   const canFix = admin === true && app.settings_url !== null
@@ -519,6 +613,8 @@ export function AppCard({ app, admin, onFix }: { app: ForgeAppCard; admin: boole
       lines={lines}
       error={app.error ?? (app.missing === null ? 'The App was not read.' : null)}
       sig={`${tone}:${lines.map((l) => l.key).join(',')}:${app.error ?? ''}`}
+      summary={needed.length > 0 ? grantSummary(needed) : undefined}
+      detail={rows !== null && rows.length > 0 ? <div className="fp-detail"><GrantsTable rows={rows} /></div> : undefined}
       hint={lines.length > 0 && !canFix ? 'A platform admin adds these to the App; then each org accepts the update.' : undefined}
       fix={lines.length > 0 && canFix && app.settings_url !== null ? <FixLink href={app.settings_url} label="Add to App" onFix={onFix} /> : undefined}
     />
@@ -642,7 +738,7 @@ export function GitHubPermissions() {
         {(doc) => (
           <div className="fp-cards">
             <p className="ur-hint fp-checked">{checkedLine(doc, false)}</p>
-            <AppCard app={doc.app} admin={admin} onFix={perms.armRecheck} />
+            <AppCard app={doc.app} admin={admin} onFix={perms.armRecheck} required={doc.required} workflows={doc.workflow_files_required} repositories={doc.repositories} />
             {doc.orgs.length === 0 ? (
               <EmptyState kind="empty" heading="No connected org">
                 No registered repository is reached through the App yet, so there is no org to check. Install the App
@@ -650,7 +746,15 @@ export function GitHubPermissions() {
               </EmptyState>
             ) : (
               doc.orgs.map((o) => (
-                <OrgCard key={o.installation_id} org={o} required={doc.required} onFix={perms.armRecheck} repositories={doc.repositories} checkedAt={doc.checked_at} />
+                <OrgCard
+                  key={o.installation_id}
+                  org={o}
+                  required={doc.required}
+                  workflows={doc.workflow_files_required}
+                  onFix={perms.armRecheck}
+                  repositories={doc.repositories}
+                  checkedAt={doc.checked_at}
+                />
               ))
             )}
           </div>
@@ -679,7 +783,7 @@ export function RepoPermissions({ repoId }: { repoId: string }) {
               {row === undefined ? (
                 <p className="ur-hint">This repository is not in the permissions read yet; re-check once it is registered.</p>
               ) : org !== undefined ? (
-                <OrgCard org={org} required={doc.required} onFix={perms.armRecheck} repositories={doc.repositories} />
+                <OrgCard org={org} required={doc.required} workflows={doc.workflow_files_required} onFix={perms.armRecheck} repositories={doc.repositories} />
               ) : row.credential === 'token' ? (
                 <TokenCard row={row} />
               ) : (
