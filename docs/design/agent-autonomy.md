@@ -194,34 +194,75 @@ creates a label, and the ones it dropped are named in the answer.
 
 Today the tenant slot cannot, and [schedules.md](../schedules.md) §4.4 refuses
 such a plan outright (`WORKFLOWS_PATH`). The design keeps the agent
-credential-free and makes the push the broker's:
+credential-free and makes the push the broker's.
 
-* **A separate slot**, `swarm-tenant-<tenant>-git-wf`, holding a token with
-  the `workflow` scope (a classic PAT) or `workflows: write` (a fine-grained PAT
-  or App), stored only by `scripts/create-secrets.sh --stdin` and readable by
-  **swarm-api alone**, not by the tenant worker. Declared empty by Terraform;
-  the value is the owner's to create.
+**As decided by BGD on 2026-10-22 (#2029, lane WF-APP-TOKEN), superseding the
+`-git-wf` slot of Q3's first answer:**
+
+1. **The SwarmCloud GitHub App mints the token at push time.** swarm-api
+   (`forge_installation.InstallationTokens.workflow_push_token`) mints an
+   installation token for ONE repository (`repositories=[<repo>]`) with
+   exactly `contents: write` and `workflows: write`, from the workspace's
+   OWN installation (its `forge_orgs` documents, never another tenant's and
+   never an owner reached through a person's `method: pat`; invariant 9). It
+   is minted fresh for each push and never cached, stored, logged or handed
+   to a worker, and lives at most an hour. BGD: "can we use the github app
+   creds for this? This way we can point a similar job in the future at
+   another project or repo."
+2. **Self-serve, per-repo opt-in.** A `workflow_files` switch on each
+   repository registration, off by default (only a stored `true` is on;
+   `platform: true` alone is not), set by the workspace's admin when the
+   repository is added or later, each change an `admin_audit` entry
+   (`repository_workflow_files_set`) in the same transaction, as for
+   `agents_may_file_issues`. BGD: "when adding a new repo to SwarmCloud, the
+   per-repo token is created for the new repo as well, self serve".
+3. **The `-git-wf` slot and IAM row L-2 are removed in the same lane**
+   (BGD chose this over removing them after a live proof). The release holds
+   at `dev-iam` for the L-2 removal.
+4. **The App asks for "Workflows: Read and write".** CLD changes the App's
+   settings at GitHub and each installation's owner accepts. An installation
+   that has not accepted reads as "Workflows: not granted" in the console
+   (forgeperms, on a switched-on repository only), and its pushes fall back
+   to the patch.
+
+**The risk, and why the switch is per repository and off by default:** a
+workflow on a pushed branch runs with that repository's secrets BEFORE any
+merge hold. A hold on the merge does not stop a `push`- or
+`pull_request`-triggered workflow on the branch itself, so opting a
+repository in is a decision about that repository's secrets, made by its
+workspace's admin, one repository at a time.
+
+How it works:
+
 * **Used only by `git_push_branch`**, and only when the pushed range touches
-  `.github/workflows/**` or `.github/actions/**`, the repository is
-  `platform: true`, and the slot holds a version. Otherwise the push is
-  refused with a code of its own, `workflow_scope_missing`, naming the files,
-  instead of GitHub's generic `remote_rejected`.
+  `.github/workflows/**` or `.github/actions/**` and the agent's own
+  repository's registration (its tenant's, never another's) has
+  `workflow_files` on. Otherwise -- or when the mint fails -- the push is
+  refused with a code of its own, `workflow_scope_missing`,
+  naming the files (`detail.paths`) and ending "Push without those files and
+  write them as workflow-lines.patch", instead of GitHub's generic
+  `remote_rejected`. Each mint failure is its own reason inside it: the
+  installation has not granted Workflows, does not cover the repository, or
+  there is no installation. The audit row names `credential:
+  app_installation`, never the token.
 * **The end-of-agent publish** routes a workflow-touching branch through the
   same broker instead of the worker's own push (`lifecycle.py` `_publish_git`),
   and a refusal fails the agent with `PUBLISH_FAILED_FIELD`, writing the diff
   as `workflow-lines.patch` in its artifacts. A lane can no longer end
   SUCCEEDED with its workflow change unpushed.
-* **The plan refusal becomes a hold.** With the slot present, a plan naming
-  a workflow file is held `NEEDS_OWNER` instead of refused: a workflow can
-  reach CI's secrets and the deployer's identity, so merging one stays the
-  owner's. With the slot absent, `WORKFLOWS_PATH` stays exactly as it is.
+* **The plan refusal becomes a hold where the switch is on.** A plan naming a
+  workflow file is held `STOP_WORKFLOWS`, `NEEDS_OWNER`, instead of refused: a
+  workflow can reach CI's secrets and the deployer's identity, so merging one
+  stays the owner's. With the switch off, `WORKFLOWS_PATH` stays exactly as
+  it is.
 
-**Owner decision, 2026-10-22 (Q3): "A -git-wf slot read only by swarm-api,
-platform repo only, merge held NEEDS_OWNER".** All three parts above are
-decided: the slot exists for the platform tenant alone, only swarm-api reads
-it, only a `platform: true` repository's push uses it, and every merge of a
-change under `.github/workflows/` or `.github/actions/` is `NEEDS_OWNER`,
-whatever the run's merge gate says.
+**Owner decision, 2026-10-22 (Q3), the part that stands: "merge held
+NEEDS_OWNER".** Every merge of a change under `.github/workflows/` or
+`.github/actions/` in a repository whose switch is on -- and, as before, in a
+`platform: true` repository, where a person may still push a patch by hand --
+is `NEEDS_OWNER` (`STOP_WORKFLOWS` stays in `ENFORCED_STOPS`), whatever the
+run's merge gate says. Q3's "a -git-wf slot read only by swarm-api, platform
+repo only" was replaced by the four decisions above.
 
 ### 3.4 Reading its own tenant's SwarmCloud state (row 10)
 
@@ -475,11 +516,12 @@ acted on. `<option>` must be one of the question's option labels.
 | child kinds | `issue_run` (with `after_merged`), `workflow` (saved spec by name) | no |
 | park uses | `DEPENDENCY_INCOMPLETE` + `metadata.release_wait`; `HUMAN_REQUIRED` + `metadata.question_wait` | no |
 | registration field | `agents_may_file_issues` (admin-set, off by default; owner decision Q2) | no |
+| registration field | `workflow_files` (workspace-admin-set, off by default, audited; BGD 2026-10-22, #2029) | no |
 | runner profile | `claude-code-large` (contract request 113, accepted by the owner, Q6) | no IAM; the contract change is accepted, lane AU-9 applies it |
 | Terraform | log view `swarm-workers` on `_Default` | **yes**, with L-1 |
 | **IAM L-1** | swarm-api's account: `roles/logging.viewAccessor` on the view `swarm-workers` only | **yes** (decided, Q4; applied by the owner) |
-| **IAM L-2** | swarm-api's account: `secretmanager.secretAccessor` on `swarm-tenant-<platform tenant>-git-wf` only; no worker account gets it | **yes** (decided, Q3; applied by the owner) |
-| **secret** | `swarm-tenant-<platform tenant>-git-wf`, declared empty, value by `create-secrets.sh --stdin` | **yes**, the owner creates the token |
+| ~~**IAM L-2**~~ | **Removed** (BGD, 2026-10-22, #2029): swarm-api's `secretmanager.secretAccessor` on `swarm-tenant-<platform tenant>-git-wf`. A workflow-file push uses an App installation token minted per push; no IAM row replaces it | **yes**, the removal holds at `dev-iam` |
+| ~~**secret**~~ | **Removed** (#2029): `swarm-tenant-<platform tenant>-git-wf` and `create-secrets.sh --git-wf` | no |
 
 Visual QA of any app adds its own rows (a QA target's credential secret and
 its IAM, V-1 and V-2): [visual-qa-any-app.md](visual-qa-any-app.md) §7, and
@@ -646,10 +688,12 @@ and it ends with `scripts/changed-guards.sh` and `scripts/publish-scan.sh`.
   only own-login sign-in waits on its apply.
 
 **Lanes that need the owner at `dev-iam`:** AU-2 (L-2 and the `-git-wf`
-secret), AU-5 (L-1), VQ-3 (V-1, V-2 and the per-tenant QA secrets). AU-9
+secret; both removed again by WF-APP-TOKEN, #2029, whose release holds at
+`dev-iam` for the removal), AU-5 (L-1), VQ-3 (V-1, V-2 and the per-tenant QA secrets). AU-9
 edits the frozen contract under the owner's acceptance of request 113 (Q6).
-After the merges the owner also: creates the `-git-wf` token
-(`create-secrets.sh --stdin`), creates the `failure-review` schedule and
+After the merges the owner also: (no `-git-wf` token any more, #2029;
+instead each App installation's owner accepts "Workflows: Read and write" and
+the workspace's admin switches `workflow_files` on where wanted), creates the `failure-review` schedule and
 switches its merge gate to `auto` through the audited switch (Q8). Any
 platform admin approves each QA target's host, audited (VQ-Q1).
 
@@ -669,6 +713,14 @@ Each is also written where its question was asked.
   `agents_may_file_issues`, the platform's own repository on).
 * **Q3 — workflow files.** Owner decision, 2026-10-22: "A -git-wf slot read
   only by swarm-api, platform repo only, merge held NEEDS_OWNER" (§3.3).
+  **Superseded later on 2026-10-22 by BGD (#2029):** the GitHub App mints a
+  per-push token for one repository with `contents` and `workflows` write,
+  from the workspace's own installation; a per-repository `workflow_files`
+  switch, off by default, set by the workspace's admin; the `-git-wf` slot
+  and IAM row L-2 removed in the same lane; the App requests "Workflows: Read
+  and write". "Merge held NEEDS_OWNER" stands. A workflow on a pushed branch
+  runs with that repository's secrets before any merge hold, which is why the
+  switch is per repository and off by default.
 * **Q4 — Cloud Logging.** Owner decision, 2026-10-22: "A log view filtered to
   SwarmCloud resources, viewAccessor on the view only" (§3.5; row L-1, at
   dev-iam).

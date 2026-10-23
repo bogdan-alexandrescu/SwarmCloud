@@ -12233,8 +12233,10 @@ class Worker:
             # slot has no `workflow` scope, so GitHub refuses the push, and lanes
             # ended SUCCEEDED with their workflow change unpushed. A branch whose
             # new commits touch `.github/workflows/` or `.github/actions/` goes
-            # to swarm-api's `git_push_branch`, the one reader of the `-git-wf`
-            # slot, read with the same `git log` it reads the bundle with; a
+            # to swarm-api's `git_push_branch`, which pushes it with a GitHub App
+            # token minted for that one repository, only where the registration's
+            # `workflow_files` switch is on (#2029), deciding from the same
+            # `git log` it reads the bundle with; a
             # refusal publishes nothing, fails the step and leaves the change as
             # `workflow-lines.patch`. Every check above has already run here.
             workflow_paths = self._workflow_paths(publish_repo, floor=scan_floor)
@@ -12591,9 +12593,10 @@ class Worker:
         The bundle is built here, in the worker-owned publish repository, from
         exactly the commits the token push would have sent -- HEAD not
         reachable from the clone base or the merged default-branch commit --
-        so swarm-api reads the same range and decides the credential: the
-        `-git-wf` slot for a `platform: true` registration whose slot holds a
-        version, `workflow_scope_missing` otherwise. A fence (409) is a
+        so swarm-api reads the same range and decides the credential: a
+        GitHub App token it mints for that one repository when the
+        registration's `workflow_files` switch is on (#2029),
+        `workflow_scope_missing` otherwise. A fence (409) is a
         refusal too: nothing is pushed, and this worker touches no lease.
         """
         from . import gittools as gittools_mod  # lazy: gittools imports this module

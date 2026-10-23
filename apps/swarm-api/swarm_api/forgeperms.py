@@ -27,6 +27,17 @@ This read says it before a run fails, in four parts:
     two read-only GETs on the tenant's own `-git` token: the repository (its
     role) and one combined-status read on the default branch's head.
 
+WORKFLOW FILES (#2029, WF-APP-TOKEN). A repository whose registration has
+`workflow_files` switched on is pushed to with an App token that needs
+`workflows: write` (BGD's decision 4: the App requests "Workflows: Read and
+write", each installation's owner accepts it). That requirement,
+`WORKFLOW_FILES_REQUIREMENT`, is checked for a switched-on registration ONLY,
+and its row carries the capability `workflow_files`: false with the gap in
+`blocked_by` when the installation has not granted it (the console's
+"Workflows: not granted"), or when no installation covers the repository at
+all. Every other repository reads exactly as before: `REQUIRED`, the App's
+and the orgs' `missing`, unchanged.
+
 TRUE / FALSE / NULL. A capability is null when it was not measured -- GitHub
 did not answer, or no cheap read can tell (a fine-grained token's
 `pull_requests: write` is not readable without writing) -- and never false
@@ -81,7 +92,7 @@ from .forge import NoForgeCredential
 from . import forge_limits
 from .forgeapp import APP_URL, AppNotConfigured, ForgeApp, HttpAnswer, HttpSend
 from .gittokens import redaction_literal, token_kind
-from .repositories import Repositories
+from .repositories import Repositories, workflow_files_of
 
 log = logging.getLogger(__name__)
 
@@ -137,6 +148,14 @@ REQUIRED: tuple[Requirement, ...] = (
     Requirement("actions", "read", "ci-flake-hunter and release-health can't read workflow runs",
                 ("actions",)),
 )
+
+#: What a registration with `workflow_files` on needs besides `REQUIRED`
+#: (#2029): GitHub refuses a push touching .github/workflows/ from a token
+#: without it. Never part of `REQUIRED`, so no other repository reports it.
+WORKFLOW_FILES_REQUIREMENT = Requirement(
+    "workflows", "write",
+    "workflow-file pushes fall back to workflow-lines.patch (Workflows: not granted)",
+    ("workflow_files",))
 
 #: GitHub's access levels, least first. Anything else (absent) is none.
 _RANK = {"read": 1, "write": 2, "admin": 3}
@@ -247,16 +266,24 @@ class Registered:
     owner: str
     repo: str
     default_branch: str | None = None
+    #: The registration's `workflow_files` switch (#2029).
+    workflow_files: bool = False
 
     @property
     def full_name(self) -> str:
         return f"{self.owner}/{self.repo}"
 
 
-def _capabilities_from(granted: Mapping[str, Any]) -> tuple[dict[str, bool], list[dict[str, Any]]]:
+def _capabilities_from(granted: Mapping[str, Any], *, workflow_files: bool = False,
+                       ) -> tuple[dict[str, bool], list[dict[str, Any]]]:
     gaps = missing(granted)
+    capabilities = CAPABILITIES
+    if workflow_files:
+        # #2029: checked only where the switch is on.
+        gaps += missing(granted, (WORKFLOW_FILES_REQUIREMENT,))
+        capabilities = (*CAPABILITIES, *WORKFLOW_FILES_REQUIREMENT.capabilities)
     blocked = {cap for gap in gaps for cap in gap["capabilities"]}
-    return {cap: cap not in blocked for cap in CAPABILITIES}, gaps
+    return {cap: cap not in blocked for cap in capabilities}, gaps
 
 
 def _none() -> dict[str, None]:
@@ -406,6 +433,8 @@ class ForgePermissions:
             "tenant_id": tenant_id,
             "checked_at": now.isoformat(),
             "required": [req.to_api() for req in REQUIRED],
+            # #2029: what a `workflow_files` registration needs besides.
+            "workflow_files_required": WORKFLOW_FILES_REQUIREMENT.to_api(),
             "app": app,
             "orgs": list(orgs.values()),
             "repositories": rows,
@@ -534,7 +563,8 @@ class ForgePermissions:
                 if org.get("granted") is None:
                     row["error"] = org.get("error") or "the installation was not read"
                     continue
-                row["capabilities"], row["blocked_by"] = _capabilities_from(org["granted"])
+                row["capabilities"], row["blocked_by"] = _capabilities_from(
+                    org["granted"], workflow_files=r.workflow_files)
                 continue
             row["credential"] = "token"
             if deferral is not None:
@@ -555,7 +585,19 @@ class ForgePermissions:
                 row["error"] = token_error or "the tenant token is empty"
                 continue
             row.update(probe_token(self._reader, value, r, credential))
+            if r.workflow_files:
+                _no_app_for_workflows(row)
         return rows
+
+
+def _no_app_for_workflows(row: dict[str, Any]) -> None:
+    """A switched-on registration no installation covers (#2029): its
+    workflow-file pushes have no App token to mint, a measured refusal."""
+    row["capabilities"] = {**(row.get("capabilities") or {}), "workflow_files": False}
+    row["blocked_by"] = [*(row.get("blocked_by") or []), _token_gap(
+        list(WORKFLOW_FILES_REQUIREMENT.capabilities),
+        "the GitHub App is not installed on the repository, so workflow-file pushes fall "
+        "back to workflow-lines.patch")]
 
 
 def serve(answer: Mapping[str, Any], *, is_admin: bool, cached: bool) -> dict[str, Any]:
@@ -594,7 +636,8 @@ def _registered(ctx: AppContext, tenant_id: str) -> list[Registered]:
             if isinstance(row.get("owner"), str) and isinstance(row.get("repo"), str):
                 found.append(Registered(repo_id=str(row.get("repo_id")), owner=row["owner"],
                                         repo=row["repo"],
-                                        default_branch=row.get("default_branch")))
+                                        default_branch=row.get("default_branch"),
+                                        workflow_files=workflow_files_of(row)))
         if not page:
             return found
 

@@ -38,10 +38,23 @@ WHAT NEVER LEAVES. The JWT and the minted token are registered with the
 redaction filter while in hand; neither is logged, persisted, put in an
 exception's text or returned anywhere but to the caller that reads with it.
 
-WRITES STAY THE PERSON'S. Nothing here is used to open a pull request,
-comment, re-run a job, merge, or read as the person: only the background
-reads that switched (mergewake `_read`, issueci's CI read, the stranded-PR
-sweep, the repository index's head poll) ask for one.
+WRITES STAY THE PERSON'S, with ONE exception. Nothing here is used to open a
+pull request, comment, re-run a job, merge, or read as the person: only the
+background reads that switched (mergewake `_read`, issueci's CI read, the
+stranded-PR sweep, the repository index's head poll) ask for one.
+
+THE EXCEPTION: A WORKFLOW-FILE PUSH (#2029, WF-APP-TOKEN; BGD, 2026-10-22).
+`workflow_push_token(tenant, owner, repo)` mints the token gittools'
+`git_push_branch` pushes a range touching `.github/workflows/**` or
+`.github/actions/**` with, and only for a registration whose `workflow_files`
+switch is on (the caller checks). The same installation lookup
+(`installation_for`, the tenant's OWN `forge_orgs`, never a `method: pat`
+owner), ONE repository, and exactly `WORKFLOW_PUSH_PERMISSIONS` --
+`contents: write` and `workflows: write`, nothing else. It is minted fresh
+for every push and NEVER held: it does not enter `_held`, so the read cache
+can never hand it out, and the read mint asks for `READ_PERMISSIONS` only.
+A failure is a typed `WorkflowMintRefused` (`MINT_*`), constant text, never
+GitHub's message or the transport's.
 
 WHOSE QUOTA (QUOTA-THROTTLE). `read_credential` answers the token AND the
 identity its quota is kept under in `forge_limits.QUOTAS`,
@@ -73,8 +86,10 @@ from .gittokens import redaction_literal
 log = logging.getLogger(__name__)
 
 __all__ = [
-    "FAILURE_HOLD", "InstallationSource", "InstallationTokens", "READ_PERMISSIONS",
-    "REFRESH_BEFORE", "build_installation_tokens", "read_credential", "read_token",
+    "FAILURE_HOLD", "InstallationSource", "InstallationTokens", "MINT_FAILED",
+    "MINT_NO_INSTALLATION", "MINT_NOT_COVERED", "MINT_NOT_GRANTED", "READ_PERMISSIONS",
+    "REFRESH_BEFORE", "WORKFLOW_PUSH_PERMISSIONS", "WorkflowMintRefused",
+    "build_installation_tokens", "read_credential", "read_token",
 ]
 
 #: The collection access.py writes an enabled owner to (forgeapp.ORGS).
@@ -98,6 +113,24 @@ READ_PERMISSIONS: Mapping[str, str] = {
     "checks": "read",
     "statuses": "read",
 }
+#: What a workflow-file push needs and nothing more (#2029): the push itself
+#: (contents) and GitHub's extra demand on a range that touches a workflow
+#: file (workflows). Never held, never served to a read.
+WORKFLOW_PUSH_PERMISSIONS: Mapping[str, str] = {
+    "contents": "write",
+    "workflows": "write",
+}
+#: Why a workflow push token was not minted (`WorkflowMintRefused.reason`).
+#: The tenant has no App installation of the owner (or reaches it only
+#: through a person's token).
+MINT_NO_INSTALLATION = "no_installation"
+#: GitHub refused the permissions: the installation has not accepted
+#: "Workflows: Read and write" (BGD's decision 4, accepted per installation).
+MINT_NOT_GRANTED = "workflows_not_granted"
+#: GitHub refused the repository: the installation does not cover it.
+MINT_NOT_COVERED = "repository_not_covered"
+#: Anything else: no JWT, no answer, another status, an unreadable answer.
+MINT_FAILED = "mint_failed"
 #: A token is used until this long before GitHub's `expires_at` (tokens
 #: live an hour), so none is sent that could expire mid-read.
 REFRESH_BEFORE = 300.0
@@ -118,12 +151,40 @@ class _Held:
 
 
 class _MintFailed(Exception):
-    """A mint that produced no token. Constant text: a kind and a status."""
+    """A mint that produced no token. Constant text: a kind and a status.
+    `refused` is what a 403/422 refused (`MINT_NOT_GRANTED`,
+    `MINT_NOT_COVERED`), read from GitHub's message and never quoting it."""
 
-    def __init__(self, kind: str, status: int | None = None) -> None:
+    def __init__(self, kind: str, status: int | None = None,
+                 refused: str | None = None) -> None:
         super().__init__(kind)
         self.kind = kind
         self.status = status
+        self.refused = refused
+
+
+class WorkflowMintRefused(Exception):
+    """No workflow push token. `reason` is one of the `MINT_*` words; the
+    text is the reason and a status, never a value or GitHub's message."""
+
+    def __init__(self, reason: str, status: int | None = None) -> None:
+        super().__init__(reason if status is None else f"{reason} (HTTP {status})")
+        self.reason = reason
+        self.status = status
+
+
+def _refusal_kind(answer: Any) -> str | None:
+    """What a 403/422 mint answer refused, from GitHub's message: the
+    repositories (`MINT_NOT_COVERED`) or the permissions (`MINT_NOT_GRANTED`,
+    also the answer when the message names neither)."""
+    try:
+        data = answer.json()
+    except Exception:
+        data = None
+    message = str(data.get("message") or "").lower() if isinstance(data, dict) else ""
+    if "repositor" in message and "permission" not in message:
+        return MINT_NOT_COVERED
+    return MINT_NOT_GRANTED
 
 
 def _expiry(value: Any) -> float | None:
@@ -224,6 +285,37 @@ class InstallationTokens:
                      key[0], key[1], installation)
         return token, installation
 
+    def workflow_push_token(self, tenant_id: str, owner: str, repo: str) -> str:
+        """A token for ONE push to `owner/repo` that may touch workflow files,
+        minted now from THIS tenant's installation of `owner` with exactly
+        `WORKFLOW_PUSH_PERMISSIONS`. Never held: every call mints, and nothing
+        here keeps the value once it is returned. Raises `WorkflowMintRefused`."""
+        try:
+            installation = self.installation_for(tenant_id, owner)
+        except Exception as exc:
+            log.warning("workflow push token not minted owner=%s repo=%s (installation lookup %s)",
+                        owner.lower(), repo.lower(), type(exc).__name__)
+            raise WorkflowMintRefused(MINT_FAILED) from None
+        if installation is None:
+            log.info("workflow push token not minted owner=%s repo=%s (%s)",
+                     owner.lower(), repo.lower(), MINT_NO_INSTALLATION)
+            raise WorkflowMintRefused(MINT_NO_INSTALLATION)
+        try:
+            token, _expires = self._mint(installation, repo, WORKFLOW_PUSH_PERMISSIONS)
+        except _MintFailed as failed:
+            reason = failed.refused or MINT_FAILED
+            log.warning("workflow push token not minted owner=%s repo=%s installation=%s (%s%s)",
+                        owner.lower(), repo.lower(), installation, reason,
+                        "" if failed.status is None else f" HTTP {failed.status}")
+            raise WorkflowMintRefused(reason, failed.status) from None
+        except Exception as exc:
+            log.warning("workflow push token not minted owner=%s repo=%s installation=%s (%s)",
+                        owner.lower(), repo.lower(), installation, type(exc).__name__)
+            raise WorkflowMintRefused(MINT_FAILED) from None
+        log.info("workflow push token minted owner=%s repo=%s installation=%s",
+                 owner.lower(), repo.lower(), installation)
+        return token
+
     def _failed(self, key: tuple[str, str], failed: _MintFailed, now: float) -> None:
         with self._lock:
             self._failed_until[key] = now + FAILURE_HOLD
@@ -234,7 +326,8 @@ class InstallationTokens:
                         "reading with the tenant's token", key[0], key[1], failed.kind,
                         "" if failed.status is None else f" HTTP {failed.status}")
 
-    def _mint(self, installation: int, repo: str) -> tuple[str, float]:
+    def _mint(self, installation: int, repo: str,
+              permissions: Mapping[str, str] = READ_PERMISSIONS) -> tuple[str, float]:
         try:
             jwt = self._app_jwt()
         except Exception as exc:
@@ -246,7 +339,7 @@ class InstallationTokens:
                        "User-Agent": "swarmcloud-swarm-api",
                        "X-GitHub-Api-Version": "2022-11-28"}
             body = json.dumps({"repositories": [repo],
-                               "permissions": dict(READ_PERMISSIONS)}).encode("utf-8")
+                               "permissions": dict(permissions)}).encode("utf-8")
             try:
                 answer = self._send("POST", f"{API}/app/installations/{int(installation)}"
                                     "/access_tokens", headers, body, self._timeout)
@@ -260,7 +353,8 @@ class InstallationTokens:
         forge_limits.QUOTAS.observe_answer(answer, credential=forge_limits.APP_CREDENTIAL)
         status = getattr(answer, "status", None)
         if status != 201:
-            raise _MintFailed("refused", status if isinstance(status, int) else None)
+            raise _MintFailed("refused", status if isinstance(status, int) else None,
+                              _refusal_kind(answer) if status in (403, 422) else None)
         try:
             data = answer.json()
         except Exception:

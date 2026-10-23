@@ -77,6 +77,18 @@ WHAT A REGISTRATION IS, AND WHY EACH RULE:
     workspace's admin (as for `context`; the route checks), and each change
     is an `admin_audit` entry (`agents_may_file_issues_set`) in the same
     transaction.
+  * `workflow_files` (#2029, WF-APP-TOKEN; BGD's decision 2, 2026-10-22:
+    "self-serve, per-repo opt-in"): whether swarm-api may push a branch whose
+    new commits touch `.github/workflows/**` or `.github/actions/**`, with a
+    token the GitHub App mints for this one repository
+    (`gittools._workflow_token`), and whether a plan naming workflow files is
+    held for the owner rather than refused (`issueruns.workflow_paths`). A
+    workflow on a pushed branch runs with the repository's secrets BEFORE any
+    merge hold, so it is off unless stored as a real `true`
+    (`workflow_files_of`) -- `platform: true` does not turn it on. Set by the
+    workspace's admin on create or PATCH (as for `agents_may_file_issues`;
+    the route checks), and each change is an `admin_audit` entry
+    (`repository_workflow_files_set`) in the same transaction.
   * `context` (CTXQ-SET, docs/design/context-quality.md §4.7): `on` or
     `off`, whether a step on this repository is staged with graph context,
     over the workspace's code-intelligence default (`swarm_api.codeintel`).
@@ -226,6 +238,10 @@ AUDIT_READABLE_BY_TASKS_SET = "repository_readable_by_tasks_set"
 #: action for a change of it, either way (agent-autonomy.md §3.2 names it).
 AGENTS_MAY_FILE_ISSUES_FIELD = "agents_may_file_issues"
 AUDIT_AGENTS_MAY_FILE_ISSUES_SET = "agents_may_file_issues_set"
+#: The switch a workflow-file push and a workflow plan read (#2029), and the
+#: `admin_audit` action for a change of it, either way.
+WORKFLOW_FILES_FIELD = "workflow_files"
+AUDIT_WORKFLOW_FILES_SET = "repository_workflow_files_set"
 #: What a PATCH sends to clear a repository's `merge_policy` back to the
 #: platform default. Never stored: the stored value is null, which every
 #: reader already takes as "no override" (`merge_policy_of`). A word rather
@@ -431,6 +447,14 @@ def agents_may_file_issues_of(data: Mapping[str, Any]) -> bool:
     return platform_of(data)
 
 
+def workflow_files_of(data: Mapping[str, Any]) -> bool:
+    """Whether the registration's `workflow_files` switch is on (#2029). Only
+    a stored `True` is: missing, malformed or `platform: true` alone is off,
+    because a workflow on a pushed branch runs with the repository's secrets
+    before any merge hold."""
+    return data.get(WORKFLOW_FILES_FIELD) is True
+
+
 def merge_policy_of(data: Mapping[str, Any]) -> str | None:
     """A registration's `merge_policy`, or None when it set none. A stored
     value that is not one of `MERGE_POLICIES` reads as none: the platform
@@ -532,6 +556,26 @@ def _file_issues_audit(
     })
 
 
+def _workflow_files_audit(
+    txn: Any, db: Any, data: Mapping[str, Any], *, to: bool, by: str, at: datetime,
+) -> None:
+    """One `admin_audit` entry for a change of `workflow_files`, inside `txn`,
+    so the change and its audit commit together or not at all. Created, never
+    updated (the audit is append-only)."""
+    ref = db.collection(AUDIT_COLLECTION).document()
+    txn.set(ref, {
+        "action": AUDIT_WORKFLOW_FILES_SET,
+        "target_repo_id": data.get("repo_id"),
+        "by": by,
+        "at": at,
+        "detail": {
+            "tenant_id": data.get("tenant_id"),
+            "repository": f"{data.get('owner')}/{data.get('repo')}",
+            WORKFLOW_FILES_FIELD: {"from": workflow_files_of(data), "to": to},
+        },
+    })
+
+
 def _platform_audit(
     txn: Any, db: Any, data: Mapping[str, Any], *, to: bool, by: str, at: datetime,
 ) -> None:
@@ -605,6 +649,8 @@ class RepositoryCreate(_Body):
     hard_stop_paths: list[str] | None = Field(default=None, max_length=HARD_STOP_PATHS_MAX)
     #: A platform admin's only, as `platform` is. Absent: the platform default.
     merge_policy: Literal["off", "on_merge_verdict"] | None = None
+    #: The workspace admin's only (#2029): workflow-file pushes. Absent: off.
+    workflow_files: StrictBool | None = None
 
     @field_validator("repository")
     @classmethod
@@ -635,7 +681,8 @@ class RepositoryPatch(_Body):
     `platform` (a platform admin's only) and `hard_stop_paths`
     (docs/schedules.md §4.4); `merge_policy` (a platform admin's only); and
     `context` (the workspace owner's or a platform admin's, CTXQ-SET); and
-    `agents_may_file_issues` (the workspace admin's, AU-0 REG-FLAG).
+    `agents_may_file_issues` (the workspace admin's, AU-0 REG-FLAG); and
+    `workflow_files` (the workspace admin's, #2029).
     Never the repository, the tenant or anything an index run writes."""
 
     default_branch: str | None = Field(default=None, min_length=1, max_length=255)
@@ -653,6 +700,8 @@ class RepositoryPatch(_Body):
     context: Literal["on", "off", "inherit"] | None = None
     #: The workspace admin's only, as `context` is: §3.2's issue writes.
     agents_may_file_issues: StrictBool | None = None
+    #: The workspace admin's only, as `agents_may_file_issues` is (#2029).
+    workflow_files: StrictBool | None = None
 
     @field_validator("default_branch")
     @classmethod
@@ -673,7 +722,7 @@ class RepositoryPatch(_Body):
     def _changes_something(self) -> "RepositoryPatch":
         top = (self.default_branch, self.allowed_profiles, self.paused, self.platform,
                self.hard_stop_paths, self.merge_policy, self.readable_by_tasks, self.context,
-               self.agents_may_file_issues)
+               self.agents_may_file_issues, self.workflow_files)
         if all(value is None for value in top) and (
             self.index is None or not self.index.changes()
         ):
@@ -827,6 +876,8 @@ def to_api(data: Mapping[str, Any]) -> dict[str, Any]:
         "context": context_of(data) or CONTEXT_INHERIT,
         # What §3.2's issue tools read: the platform default applied.
         AGENTS_MAY_FILE_ISSUES_FIELD: agents_may_file_issues_of(data),
+        # What a workflow-file push and a workflow plan read (#2029).
+        WORKFLOW_FILES_FIELD: workflow_files_of(data),
         "created_by": data.get("created_by"),
         "created_at": _iso(data.get("created_at")),
         "updated_at": _iso(data.get("updated_at")),
@@ -896,18 +947,22 @@ class Repositories:
 
     def create(
         self, record: dict[str, Any], *, platform_by: str | None = None,
-        merge_policy_by: str | None = None,
+        merge_policy_by: str | None = None, workflow_files_by: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Store `record` unless its id exists. (stored, created) -- in one
         transaction, so two registrations racing store one document.
 
         A record marked `platform` is stored only with the admin who marked
         it (`platform_by`, the route has checked the role), and its
-        `admin_audit` entry is written in the same transaction."""
+        `admin_audit` entry is written in the same transaction; a record with
+        `workflow_files` on likewise with `workflow_files_by`, the workspace
+        admin the route checked."""
         if platform_of(record) and not platform_by:
             raise ValueError("a platform registration needs the admin who marked it, for the audit")
         if merge_policy_of(record) is not None and not merge_policy_by:
             raise ValueError("a registration with a merge_policy needs the admin who set it, for the audit")
+        if workflow_files_of(record) and not workflow_files_by:
+            raise ValueError("a registration with workflow_files on needs the admin who set it, for the audit")
         ref = self._ref(record["repo_id"])
         transaction = self._db.transaction()
 
@@ -929,6 +984,9 @@ class Repositories:
             if policy is not None and merge_policy_by:
                 _merge_policy_audit(txn, self._db, {**record, "merge_policy": None}, to=policy,
                                     by=merge_policy_by, at=self._now())
+            if workflow_files_of(record) and workflow_files_by:
+                _workflow_files_audit(txn, self._db, {**record, WORKFLOW_FILES_FIELD: False},
+                                      to=True, by=workflow_files_by, at=self._now())
             return record, True
 
         return _apply(transaction)
@@ -1009,7 +1067,7 @@ class Repositories:
         self, tenant_id: str, repo_id: str, body: RepositoryPatch, *,
         platform_by: str | None = None, merge_policy_by: str | None = None,
         readable_by: str | None = None, context_by: str | None = None,
-        file_issues_by: str | None = None,
+        file_issues_by: str | None = None, workflow_files_by: str | None = None,
     ) -> dict[str, Any]:
         """The settings a PATCH may change, in one transaction, tenant re-checked.
 
@@ -1017,7 +1075,8 @@ class Repositories:
         checked, and its `admin_audit` entry is written in this transaction;
         `readable_by_tasks` likewise with `readable_by`, and `context` with
         `context_by`, the workspace owner or admin the route checked, and
-        `agents_may_file_issues` with `file_issues_by`, checked the same way."""
+        `agents_may_file_issues` with `file_issues_by`, checked the same way,
+        and `workflow_files` with `workflow_files_by` (#2029)."""
         if body.platform is not None and not platform_by:
             raise Forbidden("only a platform admin may set or clear platform")
         if body.readable_by_tasks is not None and not readable_by:
@@ -1028,6 +1087,8 @@ class Repositories:
             raise Forbidden("only the workspace's owner or a platform admin may set context")
         if body.agents_may_file_issues is not None and not file_issues_by:
             raise Forbidden("only the workspace's admin may set agents_may_file_issues")
+        if body.workflow_files is not None and not workflow_files_by:
+            raise Forbidden("only the workspace's admin may set workflow_files")
         if not _REPO_ID.match(repo_id or ""):
             raise self.not_found((repo_id or "")[:64])
         ref = self._ref(repo_id)
@@ -1078,6 +1139,11 @@ class Repositories:
                 changes[AGENTS_MAY_FILE_ISSUES_FIELD] = files
                 _file_issues_audit(txn, self._db, data, to=files,
                                    by=str(file_issues_by), at=changes["updated_at"])
+            workflows = body.workflow_files
+            if workflows is not None and workflows != workflow_files_of(data):
+                changes[WORKFLOW_FILES_FIELD] = workflows
+                _workflow_files_audit(txn, self._db, data, to=workflows,
+                                      by=str(workflow_files_by), at=changes["updated_at"])
             txn.update(ref, changes)
             merged = dict(data)
             merged.update(changes)
@@ -1209,6 +1275,7 @@ def register(
     credential: CredentialSource | None = None,
     platform_by: str | None = None,
     merge_policy_by: str | None = None,
+    workflow_files_by: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Register `body.repository` for `tenant`. (record, created).
 
@@ -1227,7 +1294,8 @@ def register(
         evidence=lambda: store.token_evidence(tenant.tenant_id))
     record = registration_record(body, tenant, read, repo_id=repo_id, created_by=created_by,
                                  at=now(), token_scope=scope, secret_name=secret_name)
-    return store.create(record, platform_by=platform_by, merge_policy_by=merge_policy_by)
+    return store.create(record, platform_by=platform_by, merge_policy_by=merge_policy_by,
+                        workflow_files_by=workflow_files_by)
 
 
 def registration_record(
@@ -1293,6 +1361,10 @@ def registration_record(
         "created_at": at,
         "updated_at": at,
     }
+    if body.workflow_files is True:
+        # #2029: stored only as a real true, and only when the workspace's
+        # admin's request said so (the route checked, `create` audits).
+        record[WORKFLOW_FILES_FIELD] = True
     if registered_via is not None:
         # `grant`: made by a person's first grant, so the last grant's
         # removal may unregister it (§2.4). A registration made any other
