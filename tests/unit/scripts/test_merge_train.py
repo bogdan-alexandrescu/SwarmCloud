@@ -181,13 +181,18 @@ def test_select_refuses_an_empty_required_list(tmp_path):
 
 
 def _judge(tmp_path: Path, check_runs: list[dict], statuses: list[dict] | None = None,
-           required: list[str] = REQUIRED):
+           required: list[str] = REQUIRED, workflow_runs: list[dict] | None = None):
     cr = tmp_path / "check-runs.json"
     cr.write_text(json.dumps({"total_count": len(check_runs), "check_runs": check_runs}))
     st = tmp_path / "status.json"
     st.write_text(json.dumps({"state": "pending", "statuses": statuses or []}))
+    extra: list[str] = []
+    if workflow_runs is not None:
+        wf = tmp_path / "workflow-runs.json"
+        wf.write_text(json.dumps({"total_count": len(workflow_runs), "workflow_runs": workflow_runs}))
+        extra = ["--workflow-runs", str(wf)]
     proc = _run("judge", "--check-runs", str(cr), "--statuses", str(st),
-                "--required", str(_required_file(tmp_path, required)))
+                "--required", str(_required_file(tmp_path, required)), *extra)
     assert proc.returncode == 0, proc.stderr
     lines = [line.split("\t") for line in proc.stdout.splitlines() if line]
     verdict = [line[1] for line in lines if line[0] == "verdict"]
@@ -240,6 +245,75 @@ def test_judge_red_on_a_failed_commit_status(tmp_path):
                              statuses=[{"context": "secret scan", "state": "error", "target_url": "https://x/y"}])
     assert verdict == "red"
     assert failed == [("secret scan", "https://x/y")]
+
+
+# CHECK-RULE-2 (BGD, 2026-10-22, both answers): the judge decides a check by
+# the latest run (highest id) of EACH event that ran it, as the worker's
+# merge step, swarm-api and auto-merge.yml's gate 5 do. The event is the one
+# that made the run's check suite, from `--workflow-runs` (the Actions runs at
+# the head); without it each check suite is its own group, as gate 5 groups.
+
+
+def _run_of(run_id: int, name: str, suite: int, conclusion: str | None = "success",
+            status: str = "completed") -> dict:
+    return {"id": run_id, "name": name, "status": status, "conclusion": conclusion,
+            "check_suite": {"id": suite},
+            "html_url": f"https://github.com/o/r/actions/runs/{run_id}/job/{run_id}"}
+
+
+def _events(**suites: str) -> list[dict]:
+    return [{"id": 900 + int(suite), "check_suite_id": int(suite), "event": event}
+            for suite, event in suites.items()]
+
+
+def test_judge_a_required_check_re_run_green_in_its_event_is_green(tmp_path):
+    runs = [_run_of(1, "ci-gate", 101, "failure"), _run_of(2, "ci-gate", 103), _run_of(3, "secret scan", 101)]
+    verdict, failed = _judge(tmp_path, runs, workflow_runs=_events(**{"101": "push", "103": "push"}))
+    # MUTATION: judge every run instead of each event's latest -> "red".
+    assert (verdict, failed) == ("green", [])
+
+
+def test_judge_without_workflow_runs_judges_each_check_suite_on_its_own(tmp_path):
+    runs = [_run_of(1, "ci-gate", 101, "failure"), _run_of(2, "ci-gate", 102), _run_of(3, "secret scan", 101)]
+    verdict, failed = _judge(tmp_path, runs)
+    # MUTATION: group by name alone when no event is known -> "green".
+    assert verdict == "red"
+    assert failed == [("ci-gate", runs[0]["html_url"])]
+    # The control: the same suites, told they are one event, go green.
+    assert _judge(tmp_path, runs, workflow_runs=_events(**{"101": "push", "102": "push"}))[0] == "green"
+
+
+#: A check nothing requires, by (run id, suite, status, conclusion); suites
+#: 101 and 103 are push, 102 pull_request. (case, runs, verdict)
+JUDGE_OTHER = [
+    ("push failure then success", [(1, 101, "completed", "failure"), (2, 103, "completed", "success")], "green"),
+    ("push in_progress then success", [(1, 101, "in_progress", None), (2, 103, "completed", "success")], "green"),
+    ("push success, pull_request failure", [(1, 101, "completed", "success"), (2, 102, "completed", "failure")], "red"),
+    ("push success then failure", [(1, 101, "completed", "success"), (2, 103, "completed", "failure")], "red"),
+]
+
+
+@pytest.mark.parametrize(("case", "runs", "verdict"), JUDGE_OTHER, ids=[c[0] for c in JUDGE_OTHER])
+def test_judge_a_check_nothing_requires_by_the_latest_run_of_each_event(tmp_path, case, runs, verdict):
+    checks = [_run_of(9, "ci-gate", 101), _run_of(8, "secret scan", 101)]
+    checks += [_run_of(i, "terraform", suite, conclusion, status) for i, suite, status, conclusion in runs]
+    got, _failed = _judge(tmp_path, checks, workflow_runs=_events(
+        **{"101": "push", "102": "pull_request", "103": "push"}))
+    # MUTATION: judge every run instead of each event's latest -> the first
+    # case is "red". MUTATION: take the newest run whatever its event -> the
+    # pull_request case's push run could outvote it.
+    assert got == verdict, case
+
+
+def test_the_tick_passes_the_actions_runs_when_a_check_ran_twice():
+    """MUTATION: keep calling the judge with --check-runs alone -> a train's
+    head is judged each check suite on its own, and a push re-run green in a
+    new suite still reads red."""
+    text = SCRIPT.read_text()
+    start = text.index("\nhandle_train() {")
+    tick = text[start:text.index("\n}\n", start)]
+    assert "actions/runs?head_sha=${head}" in tick
+    assert re.search(r"cmd_judge --check-runs \"\$\{cr\}\".*--workflow-runs", tick, re.S), tick[:200]
 
 
 # --------------------------------------------------------------------------
@@ -530,9 +604,13 @@ def test_the_train_runs_main_s_scripts_and_no_pull_request_s_code(train_workflow
 
 def test_the_github_token_asks_only_for_what_the_train_does_with_it(train_workflow):
     assert train_workflow["permissions"] == {}
+    # actions: read -- the Actions runs at a train's head, whose events the
+    # judge groups a check's runs by (CHECK-RULE-2). MUTATION: drop it -> the
+    # read 403s and the tick judges each check suite on its own.
     assert train_workflow["jobs"]["tick"]["permissions"] == {
         "contents": "read",
         "checks": "read",
+        "actions": "read",
         "statuses": "write",
         "pull-requests": "write",
     }

@@ -93,6 +93,9 @@ jobs:
     # The workflow's own token:
     #   contents: read        fetch main and the pull requests' heads;
     #   checks: read          a train head's check runs;
+    #   actions: read         the Actions runs at a train head where some
+    #                         check ran twice: each check suite's event,
+    #                         which the judge groups runs by (CHECK-RULE-2);
     #   statuses: write       the `merge-train` status on each head it lands
     #                         (and read: the combined status of a train head);
     #   pull-requests: write  the comments, closing the train's pull request,
@@ -100,6 +103,7 @@ jobs:
     permissions:
       contents: read
       checks: read
+      actions: read
       statuses: write
       pull-requests: write
     steps:

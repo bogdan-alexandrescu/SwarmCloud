@@ -177,3 +177,63 @@ def test_without_actions_read_runs_are_grouped_by_check_suite(status):
     assert all("event" not in r for r in runs), runs
     # MUTATION: read every event-less run as one group -> "green".
     assert forgechecks.required_check_state(runs) == forgechecks.RED
+
+
+# ---------------------------------------------------------------------------
+# No required check: every check, by the same rule (CHECK-RULE-2)
+# ---------------------------------------------------------------------------
+# BGD, 2026-10-22: "Yes, one rule for every check." `evaluate` with no
+# required set judged EVERY run, so a superseded failure, or a superseded run
+# still in progress, held the reading. Now each check (name and App) is judged
+# by the latest run of each event, with `other_check_state`; what it lists
+# and fails are those deciding runs only, as the required branch does.
+
+
+def _other(run_id: int, status: str, conclusion: str | None, event: str) -> dict[str, Any]:
+    return {**_github_run(run_id, status, conclusion, event), "name": "lint"}
+
+
+def test_no_required_a_failure_re_run_green_is_green():
+    flaky, rerun = _other(1, "completed", "failure", "push"), _other(2, "completed", "success", "push")
+    reading = forgechecks.evaluate([], [flaky, rerun], [])
+    # MUTATION: judge every run instead of each event's latest -> "red".
+    assert reading.state == forgechecks.GREEN, reading
+    assert reading.failing_runs == []
+    # MUTATION: list every run, not the deciding ones -> two checks counted.
+    assert reading.checks == [forgechecks.run_entry(rerun)]
+
+
+def test_no_required_a_run_in_progress_superseded_by_a_green_one_is_green():
+    reading = forgechecks.evaluate(
+        [], [_other(1, "in_progress", None, "push"), _other(2, "completed", "success", "push")], [])
+    # MUTATION: judge every run instead of each event's latest -> "pending".
+    assert reading.state == forgechecks.GREEN, reading
+    assert reading.pending == []
+
+
+def test_no_required_a_red_pull_request_run_beside_a_green_push_run_is_red():
+    push, red_pr = _other(1, "completed", "success", "push"), _other(2, "completed", "failure", "pull_request")
+    reading = forgechecks.evaluate([], [push, red_pr], [])
+    # MUTATION: take the newest run of the check whatever its event -> still
+    # red here, but "push red, pull_request green" goes green; judging only
+    # the first event -> "green".
+    assert reading.state == forgechecks.RED, reading
+    assert reading.failing_runs == [red_pr]
+
+
+def test_no_required_green_then_red_in_one_event_is_red():
+    green, red = _other(1, "completed", "success", "push"), _other(2, "completed", "failure", "push")
+    reading = forgechecks.evaluate([], [green, red], [])
+    # MUTATION: take the OLDEST run of each event -> "green".
+    assert reading.state == forgechecks.RED, reading
+    assert reading.failing_runs == [red]
+
+
+def test_no_required_checks_of_two_apps_with_one_name_are_judged_apart():
+    """The control on the grouping: one App's green run never supersedes
+    another App's red one."""
+    red = {**_other(1, "completed", "failure", "push"), "app": {"id": 1}}
+    green = {**_other(2, "completed", "success", "push"), "app": {"id": 2}}
+    reading = forgechecks.evaluate([], [red, green], [])
+    # MUTATION: group by name alone -> "green".
+    assert reading.state == forgechecks.RED, reading

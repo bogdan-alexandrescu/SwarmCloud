@@ -194,3 +194,92 @@ def test_a_single_run_per_check_reads_no_workflow_runs(tmp_path):
     assert outcome.state is TaskState.SUCCEEDED, outcome.message
     # MUTATION: read `actions/runs` on every head -> fails.
     assert world.github.calls("GET", f"{API}/actions/runs") == []
+
+
+# ---------------------------------------------------------------------------
+# No required check: every check, by the same rule (CHECK-RULE-2)
+# ---------------------------------------------------------------------------
+#
+# BGD, 2026-10-22, answering CHECK-RULE's second question: "Yes, one rule for
+# every check." With no required check the step holds on every check at the
+# head, and judged EVERY run of it, so a superseded failure, or a superseded
+# run still in progress, held the merge. Now each check is judged by the
+# latest run of each event, with `other_check_blocks` (the tolerated set is
+# unchanged, stricter than gate 5).
+
+OTHER = "lint"
+
+
+def _other_run(run_id: int, suite: int, *, conclusion: str | None = "success",
+               status: str = "completed") -> dict[str, Any]:
+    return {"id": run_id, "name": OTHER, "status": status, "conclusion": conclusion,
+            "app": {"id": ACTIONS_APP}, "check_suite": {"id": suite}}
+
+
+def _unprotected(world: MergeWorld, runs: list[dict[str, Any]], **events: int) -> None:
+    world.rules = []
+    world.branch = {"name": "main", "protected": False}
+    world.runs = runs
+    world.workflow_runs = [{"id": 900 + int(suite), "check_suite_id": int(suite), "event": event,
+                            "head_sha": PINNED} for suite, event in events.items()]
+
+
+def test_no_required_check_a_failure_re_run_green_merges(tmp_path):
+    world = MergeWorld(tmp_path)
+    _unprotected(world, [_other_run(1, PUSH_SUITE, conclusion="failure"),
+                         _other_run(2, RERUN_SUITE)],
+                 **{str(PUSH_SUITE): "push", str(RERUN_SUITE): "push"})
+    outcome = merge.run_merge(world.context())
+    # MUTATION: judge every run instead of each event's latest -> checks_failed.
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert len(world.merge_calls()) == 1
+
+
+def test_no_required_check_a_run_in_progress_superseded_by_a_green_one_merges(tmp_path):
+    world = MergeWorld(tmp_path)
+    _unprotected(world, [_other_run(1, PUSH_SUITE, conclusion=None, status="in_progress"),
+                         _other_run(2, RERUN_SUITE)],
+                 **{str(PUSH_SUITE): "push", str(RERUN_SUITE): "push"})
+    outcome = merge.run_merge(world.context())
+    # MUTATION: judge every run instead of each event's latest -> checks_pending.
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert len(world.merge_calls()) == 1
+
+
+def test_no_required_check_a_red_pull_request_run_beside_a_green_push_run_refuses(tmp_path):
+    world = MergeWorld(tmp_path)
+    _unprotected(world, [_other_run(1, PUSH_SUITE), _other_run(2, PR_SUITE, conclusion="failure")],
+                 **{str(PUSH_SUITE): "push", str(PR_SUITE): "pull_request"})
+    outcome = merge.run_merge(world.context())
+    # MUTATION: take the newest run of the check whatever its event, or judge
+    # only the first event -> one of the two cases merges.
+    assert outcome.end_cause is EndCause.MERGE_REFUSED, outcome.message
+    assert outcome.summary["refusal"]["code"] == "checks_failed"
+    # MUTATION: label each run, not the deciding run per event -> fails.
+    assert f"{OTHER} (push: success, pull_request: failure)" in outcome.summary["refusal"]["message"]
+    assert world.merge_calls() == []
+
+
+def test_no_required_check_green_then_red_in_one_event_refuses(tmp_path):
+    world = MergeWorld(tmp_path)
+    _unprotected(world, [_other_run(1, PUSH_SUITE), _other_run(2, RERUN_SUITE, conclusion="failure")],
+                 **{str(PUSH_SUITE): "push", str(RERUN_SUITE): "push"})
+    outcome = merge.run_merge(world.context())
+    # MUTATION: take the OLDEST run of each event -> merged.
+    assert outcome.end_cause is EndCause.MERGE_REFUSED, outcome.message
+    assert f"{OTHER} (push: failure)" in outcome.summary["refusal"]["message"]
+    assert world.merge_calls() == []
+
+
+def test_no_required_check_still_waits_on_an_events_latest_run_in_progress(tmp_path):
+    """The control: a run in progress that nothing superseded still holds."""
+    world = MergeWorld(tmp_path)
+    _unprotected(world, [_other_run(1, PUSH_SUITE),
+                         _other_run(2, RERUN_SUITE, conclusion=None, status="in_progress")],
+                 **{str(PUSH_SUITE): "push", str(RERUN_SUITE): "push"})
+    outcome = merge.run_merge(world.context())
+    # MUTATION: drop the not-completed rule from the no-required path -> merged.
+    assert outcome.summary["wait"]["code"] == "checks_pending", outcome.summary
+    # MUTATION: label each run, not the deciding run per event -> fails.
+    assert outcome.ci_wait["pending"] == [f"{OTHER} (push: in_progress)"], outcome.ci_wait
+    assert world.merge_calls() == []

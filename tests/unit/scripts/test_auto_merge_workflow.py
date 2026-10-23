@@ -1314,6 +1314,139 @@ def test_gate_5_and_the_merge_step_judge_the_latest_run_of_each_event(
         assert merge_state == "failed", case
 
 
+api_forgechecks: Any = _Imported("swarm_api.forgechecks")
+MERGE_TRAIN = REPO / "scripts" / "merge-train.sh"
+
+#: CHECK-RULE-2 (BGD, 2026-10-22, answering CHECK-RULE's two questions):
+#: "Yes, a follow-up lane" -- the merge train's judge decides a check by the
+#: latest run of each event too -- and "Yes, one rule for every check" -- a
+#: check nothing requires follows the same rule. One table, through every
+#: implementation: the worker's no-required path (`judge_other_checks`) or,
+#: for a required check, `required_check_state`; swarm-api's
+#: `forgechecks.evaluate` with and without a required set; `merge-train.sh
+#: judge`; and gate 5 plus gate 6, run as the gate step's real shell.
+#:
+#: THE GATE IS READ FROM THE TREE'S auto-merge.yml, the one place the jq lives
+#: (gate 5 writes each check's deciding runs once and gate 6 reads them). The
+#: rows marked "gate 6" are red until the operator applies this lane's
+#: workflow-lines.patch, which is the change they hold.
+#:
+#: A check's runs are (run id, event or None, status, conclusion); each run is
+#: in its own check suite, 100 + its id, and the Actions runs say which event
+#: made each suite. An event of None means no Actions run names the suite, so
+#: each suite is its own group. (case, required, runs, holds)
+EVERY_CHECK_PARITY = [
+    ("not required, push failure then success",
+     False, [(1, "push", "completed", "failure"), (2, "push", "completed", "success")], False),
+    ("not required, push in_progress then success",
+     False, [(1, "push", "in_progress", None), (2, "push", "completed", "success")], False),
+    ("not required, push success, pull_request failure",
+     False, [(1, "push", "completed", "success"), (2, "pull_request", "completed", "failure")], True),
+    ("not required, push success then failure",
+     False, [(1, "push", "completed", "success"), (2, "push", "completed", "failure")], True),
+    ("not required, no event known, two suites",
+     False, [(1, None, "completed", "failure"), (2, None, "completed", "success")], True),
+    ("required ci-gate, push failure then success",
+     True, [(1, "push", "completed", "failure"), (2, "push", "completed", "success")], False),
+    ("required ci-gate, no event known, two suites",
+     True, [(1, None, "completed", "failure"), (2, None, "completed", "success")], True),
+    ("gate 6: required ci-gate, push in_progress then success",
+     True, [(1, "push", "in_progress", None), (2, "push", "completed", "success")], False),
+    ("gate 6 control: required ci-gate, push success then in_progress",
+     True, [(1, "push", "completed", "success"), (2, "push", "in_progress", None)], True),
+]
+
+
+def _parity_runs(name: str, runs: list) -> tuple[list[dict], list[dict]]:
+    """GitHub's check runs and the Actions runs at the head, for one row."""
+    check_runs = [{"id": run_id, "name": name, "status": status, "conclusion": conclusion,
+                   "app": {"id": 15368}, "check_suite": {"id": 100 + run_id},
+                   "html_url": f"https://github.com/o/r/actions/runs/{run_id}"}
+                  for run_id, _event, status, conclusion in runs]
+    workflow_runs = [{"id": 900 + run_id, "check_suite_id": 100 + run_id, "event": event}
+                     for run_id, event, _status, _conclusion in runs if event is not None]
+    return check_runs, workflow_runs
+
+
+def _train_judge(tmp_path: Path, check_runs: list[dict], workflow_runs: list[dict],
+                 required: list[str]) -> str:
+    if shutil.which("bash") is None or shutil.which("jq") is None:
+        pytest.skip("bash and jq are required")
+    cr, st, req = tmp_path / "judge-cr.json", tmp_path / "judge-st.json", tmp_path / "judge-required.txt"
+    cr.write_text(json.dumps({"total_count": len(check_runs), "check_runs": check_runs}))
+    st.write_text(json.dumps({"state": "pending", "statuses": []}))
+    req.write_text("".join(f"{name}\n" for name in required))
+    args = ["judge", "--check-runs", str(cr), "--statuses", str(st), "--required", str(req)]
+    if workflow_runs:
+        # As the callers pass it: the Actions runs at the head, read only
+        # when some check ran more than once; no Actions run, no file.
+        wf = tmp_path / "judge-wf.json"
+        wf.write_text(json.dumps({"total_count": len(workflow_runs), "workflow_runs": workflow_runs}))
+        args += ["--workflow-runs", str(wf)]
+    proc = subprocess.run(["bash", str(MERGE_TRAIN), *args], capture_output=True, text=True,
+                          timeout=60, check=False)
+    assert proc.returncode == 0, proc.stderr
+    (verdict,) = [line.split("\t")[1] for line in proc.stdout.splitlines() if line.startswith("verdict\t")]
+    return verdict
+
+
+@pytest.mark.parametrize(("case", "required", "runs", "holds"), EVERY_CHECK_PARITY,
+                         ids=[c[0] for c in EVERY_CHECK_PARITY])
+def test_every_implementation_judges_every_check_by_the_latest_run_of_each_event(
+    run_gate, tmp_path, case, required, runs, holds
+):
+    name = "ci-gate" if required else "terraform"
+    check_runs, workflow_runs = _parity_runs(name, runs)
+
+    # Gate 5 and gate 6, the gate step's shell. A required row runs against
+    # main-protection's ruleset (ci-gate is one of its five); a row nothing
+    # requires against classic protection, which names no `terraform`.
+    rules, branch = (RULESET_RULES, RULESET_ONLY_BRANCH) if required else (None, PROTECTED)
+    proc, _calls, comments = run_gate("A fact-style headline", branch, rules=rules,
+                                      check_runs=check_runs, workflow_runs=workflow_runs)
+    decision = _outputs(tmp_path / "output.txt").get("decision")
+    # MUTATION (auto-merge.yml gate 5): judge every run instead of each
+    # event's latest -> the "failure then success" rows refuse.
+    # MUTATION (auto-merge.yml gate 6): read `unfinished` over every run ->
+    # "gate 6: ... in_progress then success" waits.
+    assert (proc.returncode != 0 or decision != "merge") is holds, (case, decision, proc.stderr, comments)
+
+    # The worker's merge step.
+    facts = [worker_merge.CheckFacts(name=name, status=status, conclusion=conclusion, app_id=15368,
+                                     run_id=run_id, event=event, check_suite_id=100 + run_id)
+             for run_id, event, status, conclusion in runs]
+    if required:
+        worker_holds = worker_merge.required_check_state([f.as_run() for f in facts]) != "green"
+    else:
+        pending, failed = worker_merge.judge_other_checks(facts)
+        worker_holds = bool(pending or failed)
+    # MUTATION (merge.py, no-required path): judge every run instead of each
+    # event's latest -> the "failure then success" and "in_progress then
+    # success" rows hold.
+    assert worker_holds is holds, case
+
+    # swarm-api's reading.
+    api_runs = [{**run, **({"event": event} if event is not None else {})}
+                for run, (_id, event, _status, _conclusion) in zip(check_runs, runs)]
+    required_set = [api_forgechecks.RequiredCheck(name, None)] if required else []
+    reading = api_forgechecks.evaluate(required_set, api_runs, [])
+    # MUTATION (forgechecks.py, `evaluate`'s no-required branch): judge every
+    # run instead of each event's latest -> those rows read red or pending.
+    assert (reading.state != api_forgechecks.GREEN) is holds, (case, reading)
+
+    # The merge train's judge. A row nothing requires is judged beside one
+    # green required check, so the verdict turns on the row's check alone.
+    judged = check_runs if required else check_runs + [
+        {"id": 50, "name": "ci-gate", "status": "completed", "conclusion": "success",
+         "check_suite": {"id": 150}}]
+    verdict = _train_judge(tmp_path, judged, workflow_runs, ["ci-gate"])
+    # MUTATION (merge-train.sh `cmd_judge`): judge every run instead of each
+    # event's latest -> the "failure then success" rows read red. MUTATION:
+    # group by name alone when no Actions run is passed -> "no event known,
+    # two suites" reads green.
+    assert (verdict != "green") is holds, (case, verdict)
+
+
 @pytest.mark.parametrize(
     ("rules", "branch", "gate_refuses"),
     [([], UNPROTECTED, True), (RULESET_RULES, RULESET_ONLY_BRANCH, False)],
