@@ -494,7 +494,9 @@ def test_the_live_day_folds_in_a_delta_queried_from_a_stored_cut(api, db, clock)
 def test_a_large_day_is_sharded_in_one_batch_and_read_back_whole(ctx, db, clock):
     ctx.outcomes = Outcomes(
         store=ctx.store, rollups=ctx.rollups, metrics=ctx.metrics, now=clock,
-        shard_bytes=900, max_shards=11,
+        # Every part repeats the 626-byte column headers (DERIVE_VERSION 9;
+        # this was 900 under 8), so 1300 leaves room for a row or two per part.
+        shard_bytes=1300, max_shards=11,
     )
     client = TestClient(create_app(ctx), raise_server_exceptions=False)
     first = ok(client, "alice", **WEEK)
