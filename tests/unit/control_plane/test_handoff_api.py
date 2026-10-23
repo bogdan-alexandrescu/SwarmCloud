@@ -739,3 +739,72 @@ def test_human_ready_forgets_a_recorded_return(live_client, db):
     assert live_client.post(f"/v1/tasks/{TASK}/human-ready",
                             headers=auth_header("alice")).status_code == 200
     assert HUMAN_RETURNED_METADATA_KEY not in doc["metadata"]
+
+
+# --------------------------------------------------------------------------
+# CAPTCHA-HANDOFF (part of #2058): the gate raises the hand-off itself
+# --------------------------------------------------------------------------
+
+
+def test_a_gate_raised_request_is_recorded_with_its_origin(live_client, db):
+    """BGD, 2026-10-23: the gate raises the hand-off when it sees a CAPTCHA, and
+    the event log and the console tell it from an agent's own request."""
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    doc = running(live_client, db, attempt)
+    response = request_handoff(live_client, attempt, reason="CAPTCHA on shop.example.com",
+                               expect="shop.example.com", fields={**attempt.fields(), "origin": "gate"})
+    # MUTATION: drop `origin` from HandoffRequest and the strict body refuses it (422).
+    assert response.status_code == 201, response.text
+    # MUTATION: leave `origin` off the stored wait and the console cannot tell the two apart.
+    assert doc["human_wait"]["origin"] == "gate"
+    (event,) = _events(db)
+    # MUTATION: leave `origin` off the event's detail and the event log cannot either.
+    assert event["type"] == "human_handoff_requested" and event["detail"]["origin"] == "gate"
+    assert event["detail"]["reason"] == "CAPTCHA on shop.example.com"
+
+
+def test_an_agents_request_is_origin_agent_and_no_other_origin_is_accepted(live_client, db):
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    doc = running(live_client, db, attempt)
+    refused = request_handoff(live_client, attempt, fields={**attempt.fields(), "origin": "person"})
+    # MUTATION: accept any string as `origin` and this fails.
+    assert refused.status_code == 422, refused.text
+    assert doc.get("human_wait") is None
+    assert request_handoff(live_client, attempt).status_code == 201
+    # MUTATION: default `origin` to "gate" and every agent's request reads as the gate's.
+    assert doc["human_wait"]["origin"] == "agent"
+    assert _events(db)[0]["detail"]["origin"] == "agent"
+
+
+def _needs_you(client, user: str) -> list[dict[str, Any]]:
+    feed = client.get("/v1/notifications", headers=auth_header(user))
+    assert feed.status_code == 200, feed.text
+    return [i for i in feed.json()["items"] if i["id"].startswith("task:handoff:")]
+
+
+def test_a_gate_raised_hand_off_is_agent_needs_you_with_the_captcha_reason_to_the_same_people(
+    live_client, db
+):
+    """Console bell only (BGD, 2026-10-23): no other channel, and the same
+    audience as an agent's own request (`handoff.may_control`)."""
+    seed_tenant(db, "eng")
+    seed_tenant(db, "research")
+    attempt = Attempt()
+    running(live_client, db, attempt)
+    people = ("alice", "root", "bob")
+    assert request_handoff(live_client, attempt, request_id="mine").status_code == 201
+    told_for_agent = {p for p in people if _needs_you(live_client, p)}
+    assert resolve_handoff(live_client, attempt, request_id="mine", outcome="returned").status_code == 200
+    assert request_handoff(live_client, attempt, request_id="gate-1", reason="CAPTCHA on shop.example.com",
+                           expect="shop.example.com",
+                           fields={**attempt.fields(), "origin": "gate"}).status_code == 201
+    (item,) = _needs_you(live_client, "alice")
+    assert item["title"] == "Agent needs you"
+    # MUTATION: show a fixed text instead of the stored reason and this fails.
+    assert item["detail"] == "CAPTCHA on shop.example.com"
+    assert item["href"] == f"/agents/live/{TASK}/browser" and item["id"].endswith(":gate-1")
+    # MUTATION: tell the tenant's other members of a gate-raised hand-off and this fails.
+    assert {p for p in people if _needs_you(live_client, p)} == told_for_agent
+    assert "alice" in told_for_agent and "bob" not in told_for_agent
