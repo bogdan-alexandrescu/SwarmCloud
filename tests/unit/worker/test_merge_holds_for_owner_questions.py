@@ -17,6 +17,7 @@ each unanswered one that should hold the merge; the rest go in
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from agent_worker import merge
@@ -25,7 +26,7 @@ from swarm_common.states import EventType, ParkReason, TaskState
 
 from worker_seeds import seed_attempt
 
-from merge_world import API, NUMBER, OPENER, WORKFLOW, MergeWorld
+from merge_world import API, NUMBER, OPENER, TENANT, WORKFLOW, MergeWorld
 
 IMPLEMENT = "task_impl"
 
@@ -136,6 +137,34 @@ def test_open_non_blocking_questions_merge_and_are_listed_on_the_pull_request(tm
     assert listed, _comments(world)
     assert "implement" in listed[0]
     assert outcome.summary["open_questions"][0]["question_index"] == 0
+
+
+def test_the_listing_quotes_the_asking_task_not_the_reviews_paraphrase(tmp_path):
+    world = MergeWorld(tmp_path)
+    asked = [{"question": "Per task or per workflow?",
+              "options": [{"label": "per task", "description": "one each"},
+                          {"label": "per workflow", "description": "one shared"}],
+              "recommended": "per task", "context": "the API counts both"}]
+    key = f"tenants/{TENANT}/tasks/{IMPLEMENT}/attempts/att_i/artifacts/questions.json"
+    data = json.dumps(asked).encode("utf-8")
+    world.store.upload_bytes(key, data)
+    world.docs[IMPLEMENT] = {
+        "tenant_id": TENANT, "workflow_id": WORKFLOW, "step_id": "implement",
+        "state": TaskState.SUCCEEDED.value,
+        "result_summary": {"questions": 1, "artifacts": [
+            {"name": "questions.json", "uri": world.store.uri(key), "bytes": len(data)}]},
+        "metadata": {"owner_answers": []},
+    }
+    world.verdict = {"verdict": "MERGE", "findings": [],
+                     "open_questions": [_ref(0, "Shall we count once?")]}
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    # MUTATION: render the review's copy of the question and the paraphrase is listed.
+    assert any("Per task or per workflow?" in body for body in _comments(world)), \
+        _comments(world)
+    assert not any("Shall we count once?" in body for body in _comments(world))
 
 
 def test_an_open_question_answered_before_the_merge_is_not_listed(tmp_path):

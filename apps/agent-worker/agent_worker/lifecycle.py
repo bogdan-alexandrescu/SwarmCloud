@@ -2418,7 +2418,9 @@ class Worker:
         `_park_for_answers`): one fenced transaction, no lease, the attempt
         refunded within `max_human_resumes`, and only a person's
         `human-ready` returns it to READY -- whereupon the merge reads every
-        answer again. The questions ride in the park's `blocked_by` entry
+        answer again. An answer alone does not wake it, nor does a review
+        re-running, and the scheduler's human-wait expiry applies to it (it
+        spares only `question_wait` / `release_wait` parks): see `merge`. The questions ride in the park's `blocked_by` entry
         under `owner_questions`, NOT `question_wait`: they are not this
         task's own, and swarm-api's answer route reads `question_wait` as
         questions asked by the parked task. No checkpoint: a worker action

@@ -93,11 +93,19 @@ tenant-gated upstream read -- and counts it answered when that task's
 review counts as answered. While any is still open, or an entry cannot be
 read, it parks for a person (`owner_wait`, `handoff.park_human_required`),
 naming each question's step and index: no lease, nothing counted, the
-attempt refunded within the hand-off's bound. A person's `human-ready` (or the review re-running) brings it back,
-and it reads every answer again. The review's `open_questions`, the ones it
+attempt refunded within the hand-off's bound. ONLY a person's `human-ready`
+brings it back, and it reads every answer again: answering through
+`swarm_task_answer` writes `owner_answers` on the ASKING task and wakes
+nothing here, a review re-running wakes nothing either, and the scheduler's
+human-wait expiry (`_expire_human_waits`, which spares only a
+`question_wait` or `release_wait` park) dead-letters this park after
+`human_park_max_seconds`. Whether to wake it on the last answer and spare it
+that expiry is an open owner question (swarm-api's answer route and the
+scheduler, outside this lane). The review's `open_questions`, the ones it
 judged need not hold, never stop the merge; those still unanswered are
-listed in the comment that records the merge, so nothing asked is
-invisible.
+listed, in the asking task's own words, in the comment that records the
+merge -- so a merge made by `auto-merge.yml` rather than this step lists
+none.
 
 THE RULES `auto-merge.yml` ALSO STATES are the module-level functions
 `title_is_placeholder`, `other_check_blocks` and `required_check_state`, so
@@ -119,6 +127,7 @@ from swarm_common.states import TERMINAL_STATES, TaskState
 from . import forge as forge_mod
 from . import mergeslot
 from . import mergetrain
+from . import owner_questions as owner_questions_mod
 from . import questions as questions_mod
 from . import verdict as verdict_mod
 from .errors import ExitCode, FencedError, InputUnavailable
@@ -1346,7 +1355,7 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         held = _unanswered(ctx, verdict.needs_owner)
         if held or verdict.needs_owner_unreadable:
             return run.wait_for_owner(held, unreadable=verdict.needs_owner_unreadable)
-        still_open = _unanswered(ctx, verdict.open_questions)
+        still_open = _unanswered(ctx, verdict.open_questions, asked_text=True)
         if still_open:
             summary["open_questions"] = still_open
 
@@ -1383,16 +1392,25 @@ def _answered(doc: Mapping[str, Any], index: int) -> bool:
 
 
 def _unanswered(ctx: ActionContext,
-                refs: tuple[verdict_mod.OwnerQuestionRef, ...]) -> list[dict[str, Any]]:
+                refs: tuple[verdict_mod.OwnerQuestionRef, ...], *,
+                asked_text: bool = False) -> list[dict[str, Any]]:
     """The `refs` still unanswered, read again from each one's task now.
 
     FAIL CLOSED: a task that cannot be read, or is not a step of this
     workflow, answers nothing -- an answer on another workflow's task is not
     an answer to this one's question. The step id is the task's own when it
     records one, not the verdict's word for it.
+
+    `asked_text` (the listing on the pull request) puts the question's text
+    as the asking task's own validated `questions.json` holds it
+    (`owner_questions.questions_of`) in place of the review's copy, so a
+    review that paraphrased a question does not put the paraphrase on the
+    pull request. Where that file cannot be read, or holds no such index, the
+    review's copy stays: the listing informs, it gates nothing.
     """
     out: list[dict[str, Any]] = []
     docs: dict[str, Mapping[str, Any] | None] = {}
+    asked: dict[str, dict[int, Any]] = {}
     for ref in refs:
         if ref.task_id not in docs:
             try:
@@ -1407,8 +1425,25 @@ def _unanswered(ctx: ActionContext,
         row = ref.as_dict()
         if ours and doc is not None and isinstance(doc.get("step_id"), str) and doc["step_id"]:
             row["step_id"] = doc["step_id"]
+        if asked_text and ours and doc is not None:
+            if ref.task_id not in asked:
+                asked[ref.task_id] = _asked_questions(ctx, ref.task_id, doc)
+            text = asked[ref.task_id].get(ref.question_index)
+            if isinstance(text, str) and text.strip():
+                row["question"] = text
         out.append(row)
     return out
+
+
+def _asked_questions(ctx: ActionContext, task_id: str,
+                     doc: Mapping[str, Any]) -> dict[int, Any]:
+    """`{question_index: question text}` as task `task_id` asked them; {} unreadable."""
+    try:
+        rows = owner_questions_mod.questions_of(
+            task_id, doc, store=ctx.store, tenant_id=ctx.tenant_id)
+    except InputUnavailable:
+        return {}
+    return {row["question_index"]: row.get("question") for row in rows}
 
 
 def open_questions_lines(rows: list[Mapping[str, Any]]) -> list[str]:
