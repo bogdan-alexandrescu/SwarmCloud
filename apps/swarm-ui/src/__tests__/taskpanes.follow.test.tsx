@@ -29,6 +29,8 @@ const api = vi.hoisted(() => ({
   loadTranscript: vi.fn(),
   loadTaskLogs: vi.fn(),
   loadChildren: vi.fn(),
+  loadTask: vi.fn(),
+  loadAgentRun: vi.fn(),
 }))
 
 vi.mock('../api', async (importOriginal) => {
@@ -39,6 +41,7 @@ vi.mock('../api', async (importOriginal) => {
 const { AgTabsEdge, paneTabs } = await import('../agent-split/tabs')
 const { AgentLogs } = await import('../AgentLogs')
 const { useChildCount } = await import('../AgentChildren')
+const { AgentSplit } = await import('../AgentSplit')
 
 const ID = 'task_0123456789abcdef0f01'
 const PARENT = 'task_0123456789abcdef0f00'
@@ -337,5 +340,29 @@ describe('3 (6:task-002): the Children tab and pane count the same read', () => 
     // MUTATION: read for every agent on every pane -- a child's every pane costs a list read.
     expect(api.loadChildren).not.toHaveBeenCalled()
     expect(result.current).toBeNull()
+  })
+})
+
+describe('3 (6:task-002): the split hands the count its pane', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    api.loadChildren.mockReset()
+    api.loadAgentRun.mockReturnValue(new Promise(() => {}))
+    api.loadAttempts.mockResolvedValue(ok({ attempts: [] }))
+    api.loadTranscript.mockReturnValue(new Promise(() => {}))
+    api.loadTaskLogs.mockReturnValue(new Promise(() => {}))
+  })
+
+  it('<AgentSplit pane="children"> on a child counts the row its read returns', async () => {
+    const child = row({ parent_task_id: PARENT } as Partial<Task>)
+    const grandchild = row({ id: 'task_0123456789abcdef0f02', parent_task_id: child.id } as Partial<Task>)
+    api.loadTask.mockResolvedValue(ok(child))
+    api.loadChildren.mockResolvedValue(ok(page([grandchild])))
+    render(<AgentSplit taskId={child.id} pane="children" artifact={null} closeTo="work/running/live" go={() => {}} base={`work/task/${child.id}`} />)
+    await waitFor(() => expect(api.loadChildren).toHaveBeenCalledWith(child.id))
+    // MUTATION: drop `pane` from AgentSplit's `useChildCount(task, \`${reads}\`, pane)` -- the child is never
+    // counted, paneTabs falls back to 0, and the tab reads `Children, 0` over the pane's one row.
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Children, 1' })).toBeTruthy())
+    expect(screen.queryByRole('tab', { name: 'Children, 0' })).toBeNull()
   })
 })
