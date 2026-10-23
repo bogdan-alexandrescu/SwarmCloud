@@ -196,7 +196,7 @@ describe('f: every failure row carries a task id (box 6343791868)', () => {
     ]
     const { container } = render(<RecentFailures tasks={page(rows)} />)
     const heads = [...container.querySelectorAll('#ov-failures tbody th, table.ov-fails tbody th')].map(text)
-    // MUTATION: drop the `.ov-tid` line from a step's row.
+    // MUTATION: drop the short task id from a step's row link in RecentFailures.
     expect(heads.map((h) => /8e33a3de|c4f9b2a0/.exec(h)?.[0] ?? `no id in "${h}"`).sort()).toEqual(['8e33a3de', 'c4f9b2a0'])
   })
 

@@ -690,23 +690,25 @@ function failureTable(
                       <WfId id={wf} />
                     </>
                   )}
+                  {/* EVERY ROW ENDS IN ITS TASK ID (visual QA 5b:ff-desktop-02,
+                      #1680 box 6343791868; BGD's decision of 2026-10-23): a
+                      lone agent's name ends in its short id, `agentName`'s,
+                      but a workflow step's read 'title · checkpoints' and
+                      could not be matched to its row on Agents without
+                      opening it. The step's link ends in the same short id,
+                      `<title> · <step> · <id>`, in an element of its own:
+                      drawn as an id, it is the user's data, not a code
+                      identifier (walk.copy E). */}
+                  {(t.step_id ?? null) !== null && (
+                    <>
+                      {' · '}
+                      <span className="mono">{shortTaskId(t.id)}</span>
+                    </>
+                  )}
                 </a>
                 {why !== '' && (
                   <span className="ov-sub ov-why" title={why}>
                     {why}
-                  </span>
-                )}
-                {/* EVERY ROW CARRIES ITS TASK ID (visual QA 5b:ff-desktop-02,
-                    #1680 box 6343791868): a lone agent's name ends in its
-                    short id, `agentName`'s, but a workflow step's read
-                    'title · checkpoints' and nothing else, so it could not
-                    be matched to its row on Agents without opening it. The
-                    step's row says the same short id under its name, the id
-                    in an element of its own: drawn as an id, it is the
-                    user's data, not a code identifier (walk.copy E). */}
-                {(t.step_id ?? null) !== null && (
-                  <span className="ov-tid" title={t.id}>
-                    task <span className="mono">{shortTaskId(t.id)}</span>
                   </span>
                 )}
               </th>
