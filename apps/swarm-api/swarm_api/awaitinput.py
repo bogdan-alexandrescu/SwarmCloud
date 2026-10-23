@@ -147,6 +147,12 @@ MAX_JSON_BODY_BYTES = MAX_FORM_BYTES + 4 * 1024
 MAX_CONCURRENT_MULTIPART = 4
 #: Steps the expiry sweep ends per tick; the next tick takes the rest.
 EXPIRE_LIMIT = 200
+#: How `expire_due` begins the `last_error` of a step it dead-letters. Named
+#: once, because failure-review reads them (`failuredigest`): an expiry is a
+#: person's silence and is skipped, a refused declaration is a defect and is
+#: reviewed. Rewording one here without the other side is what these prevent.
+AWAIT_INPUT_EXPIRED_ERROR = "await_input_expired:"
+AWAIT_INPUT_SPEC_REFUSED_ERROR = "await_input_spec_refused:"
 #: Waiting steps one list read returns at most.
 LIST_MAX = 200
 
@@ -1270,7 +1276,7 @@ def expire_due(ctx: Any, writer: InputWriter | None, *, limit: int = EXPIRE_LIMI
         seconds = block.get("expires_after_seconds")
         try:
             if refusal is not None:
-                ended = _dead_letter(ctx, doc, now, f"await_input_spec_refused: {refusal}")
+                ended = _dead_letter(ctx, doc, now, f"{AWAIT_INPUT_SPEC_REFUSED_ERROR} {refusal}")
                 report.refused += int(ended)
             elif block.get("on_expire") == "default" and isinstance(block.get("default"), dict):
                 ended = _default(ctx, writer, doc, block, now)
@@ -1278,7 +1284,7 @@ def expire_due(ctx: Any, writer: InputWriter | None, *, limit: int = EXPIRE_LIMI
             else:
                 ended = _dead_letter(
                     ctx, doc, now,
-                    f"await_input_expired: nobody answered within {seconds} seconds",
+                    f"{AWAIT_INPUT_EXPIRED_ERROR} nobody answered within {seconds} seconds",
                 )
                 report.failed += int(ended)
         except StoreUnavailable:
