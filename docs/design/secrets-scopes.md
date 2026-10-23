@@ -809,3 +809,25 @@ needs a consumer ticked; cost: the release and admission each gain a
 repository filter);
 (b) a `repo:<repo_id>` consumer kind (cost: frozen-contract request 114,
 §8, and two grants per secret that the console must show as one).
+
+---
+
+## 11. Owner decisions (2026-10-23, ~14:57-15:17 PDT / 21:57-22:17Z)
+
+BGD answered §10. Each answer is recorded on the design task (`task_dffdc81d0b8944d8a499`, `owner_answers`). Where BGD's answer differs from the recommendation, the build follows BGD:
+
+| question | BGD's answer |
+|---|---|
+| Q1, one name in several scopes | **person, then repository, then workspace** (recommended) |
+| Q2, who sets a repository's secrets for agents | **workspace admin or platform admin, and also a member whom GitHub calls admin of that repository** (not the recommendation). The write checks GitHub's admin rule live with the person's own token. |
+| Q3, which credential writes Actions secrets | **the existing SwarmCloud App gains the permissions** (not the recommendation). §3.5's second App is not built. |
+| Q4, environments | **Administration: write only after user-scoped-secrets step 5.** Until step 5 removes workers' read of the `-git-u-` user-token slots, the existing App gains **Secrets and Environments read/write only**. A person creates each environment on GitHub, following the console's steps, and SwarmCloud checks its branch rule before writing into it. After step 5, the App gains Administration: write and the console's **Create environment** turns on. CLD raised the combination with BGD: Administration: write on the existing App would reach every person's user token while workers can still read them. |
+| Q5, where the value is sealed | **in swarm-api, with PyNaCl** (not the recommendation). The value passes through swarm-api's memory and is dropped after the PUT. |
+| Q6, who may cause an Actions write | **a workspace manager whom GitHub calls admin of the repository**, checked live (recommended) |
+| Q7, Admin › Platform secrets status source | **Secret Manager metadata, under a new metadata-only role** (recommended). The bootstrap grant holds at `dev-iam` for BGD. |
+| Q8, value entry | **console form by its link, plus terminal `--stdin`; no tool takes a value** (recommended) |
+| Q9, repository binding | **a field of the record and of its attested grant (grant form v2)**; no contract change (recommended) |
+
+**Residual risk BGD accepted (Q3, until user-scoped-secrets step 5).** A repository admin's App user token sits in a `-git-u-` slot that tenant workers can read. With Secrets: write on the App, such a token can overwrite that repository's Actions secrets. Step 5 closes this; the build plan names it as a dependency of the Administration step.
+
+**The console** (§6.1) follows Q4: under GitHub Actions › Environments, **Create environment** is shown as "Create on GitHub ↗" plus **Check rule** until step 5 ships.
