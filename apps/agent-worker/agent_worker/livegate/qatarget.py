@@ -116,7 +116,9 @@ reads it at `REFUSALS_PATH` on the gate's CDP endpoint and writes each
 screen's share into that screen's `errors.json` as `gate_refused`: a 403 the
 gate sends to another origin carries no CORS header, so Chrome logs it as a
 CORS block, and on 2026-10-23 a run filed exactly that against the app. This
-records refusals; it changes none of the rules above.
+records refusals; it changes none of the rules above. `undecodable_body` is
+not among them: it withholds a CDP response from the agent, and the page's
+own request went through, so the app saw nothing the gate answered.
 
 NOTHING HERE LOGS OR RECORDS A CREDENTIAL, A USERNAME OR A SELECTOR'S MATCH.
 Records carry the target id, causes, origins, methods and counts.

@@ -547,7 +547,8 @@ GATE_CAPTURE = (
     "retry or work around them."
 )
 GATE_REVIEW = (
-    "The live browser refuses some requests itself (a write, or anything but GET to another origin), and "
+    "The live browser refuses some requests itself (a write, or anything but GET and HEAD to another "
+    "origin), and "
     "each screen's errors file lists them as `gate_refused`, with a failed request it refused marked as the "
     "gate's. A screen whose `gate_refused` is non-empty, together with a console error naming the same URL "
     "(a CORS block, net::ERR_FAILED or a 403), or a loading or error state such a refused request explains, "

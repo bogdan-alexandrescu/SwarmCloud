@@ -556,9 +556,10 @@ without them", and the file step never files a finding whose evidence is a
 refusal. The rules of §3 do not change for this: whether a target may let its
 identity provider's token endpoint through is the owner's decision, held. The
 capture reads the record at `GET /json/swarm/qa-refusals` on the gate's CDP
-endpoint, which it already connects to; until that route is served, the
-capture writes `gate_refused: null` and the manifest says the record was not
-read.
+endpoint, which it already connects to (the gate's agent endpoint answers it
+from `CdpProxy.qa_refusals`); a gate holding no QA target answers 404, and
+whenever the record cannot be read the capture writes `gate_refused: null` and
+the manifest says so, never an empty list.
 
 ### 4.3 The review checklist
 
