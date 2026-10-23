@@ -851,6 +851,22 @@ and "rebase its PR branch onto main … push".
 * **C. Refuse.** A rebase can be pushed only to a new branch, and the PR is
   retargeted by hand.
 
+**What the end-of-agent publish does after a tool push.** Once the agent has
+pushed its branch through `git_push_branch`, the publish diffs from the tip
+that push answered with (`ChildPath.pushed_tip`, the `new_sha` swarm-api
+recorded for this agent and branch; `Worker._adopt_tool_pushed_tip`), not from
+the clone base, and pushes with `--force-with-lease` to exactly that tip. A
+head equal to it adds nothing and the step counts as published; commits the
+agent made after the push land over it. A branch someone else moved since is
+refused by the lease, and nothing is pushed. This is what the 2026-10-23
+acceptance failure needed (#1188, run 39926360548, agent
+`task_32f2c6b021444aa6a495`): a continuation rebased the lane's branch onto
+main and pushed it through the tools, then the publish diffed from the clone
+base (the old tip the rebased head no longer stood on), pushed a never-forced
+fold onto it, was refused as behind its remote, and ended `publish_failed`
+with its work already on the branch. The head must descend from the tool's
+tip; an agent that reset away from its own push publishes as before.
+
 ### Q2. The fallback token
 
 * **A. Do not build it (recommended).** Ship the tools. Every operation
