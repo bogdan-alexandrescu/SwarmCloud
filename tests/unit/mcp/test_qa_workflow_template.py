@@ -438,12 +438,123 @@ def test_a_malformed_call_of_the_agents_own_is_retried_once_and_a_browser_failur
     validation and per-runner steps never ran (QA-102, QA-104, QA-107). A
     refusal of the agent's own malformed call is corrected and retried once;
     a page or browser failure still ends the run and is recorded."""
-    prompt = _steps()["flow-submit-form"]["prompt"]
-    # MUTATION: delete the malformed-call sentence and this fails.
-    assert "refuses your own call as malformed" in prompt
-    assert "correct the call and retry it once" in prompt
-    assert "a second refusal ends the run" in prompt, "the retry is once, not a loop"
-    # MUTATION: widen the retry to any error ("retry any failed call once")
-    # and the timeout rule below goes, which this catches.
-    assert "If the page or the browser fails (a timeout, a navigation error, a closed page)" in prompt
-    assert "do not call it or any other browser tool again" in prompt
+    steps = _steps()
+    for step_id in _flows(steps):
+        prompt = steps[step_id]["prompt"]
+        # MUTATION: delete the malformed-call sentence from any flow and this fails.
+        assert "refuses your own call as malformed" in prompt, step_id
+        assert "correct the call and retry it once" in prompt, step_id
+        assert "a second refusal ends the run" in prompt, f"{step_id}: the retry is once, not a loop"
+        # MUTATION: widen the retry to any error ("retry any failed call once")
+        # and the timeout rule below goes, which this catches.
+        assert "If the page or the browser fails (a timeout, a navigation error, a closed page)" in prompt, step_id
+        assert "do not call it or any other browser tool again" in prompt, step_id
+        # Visual QA run 6, 6:flow-submit-form-run-01 (box 6343802930 in run
+        # 5b): Playwright MCP's 'Ref ... not found in the current page
+        # snapshot' was read as a refusal, and two stale refs ended the
+        # submit-form flow before three runner profiles and the submit.
+        # MUTATION: drop "neither a malformed call nor a page failure" (the
+        # stale ref then falls under the refusal rule again) and this fails.
+        assert "not found in the current page snapshot' is a stale ref" in prompt, step_id
+        assert "neither a malformed call nor a page failure" in prompt, step_id
+        assert "take a new browser_snapshot and use its ref" in prompt, step_id
+        assert "After three in a row on one step, it counts as a refusal" in prompt, (
+            f"{step_id}: a stale ref is retried against a fresh snapshot, not forever"
+        )
+
+
+def test_a_stop_of_the_agents_own_making_ends_its_preset_and_a_page_failure_ends_the_step():
+    """Visual QA run 6, 6:flow-submit-form-run-02: the desktop preset's stop
+    ended the whole step, so the phone preset never ran and nothing was
+    recorded at 390. A stop the agent's own calls caused ends that preset (or
+    theme), and the next still runs; a page or browser failure ends the step."""
+    steps = _steps()
+    for step_id in _flows(steps):
+        prompt = steps[step_id]["prompt"]
+        # MUTATION: put back "a second refusal ends the run like a failure"
+        # (which ended the step) and this fails.
+        assert ("A stop your own calls caused ends only that run (its preset or theme), "
+                "and the next run still runs") in prompt, step_id
+        assert "A page or browser failure ends the whole step" in prompt, step_id
+        assert "ends the run like a failure" not in prompt, step_id
+
+
+def test_a_flow_cites_only_what_it_bundles_and_flow_report_checks_it():
+    """Visual QA run 6, 6:flow-submit-form-run-03 and -04: the json cited a
+    console log its tar did not hold and claimed 'the prompt was filled' over
+    a screenshot that showed it empty. Run 5b (box 6343799030): ff-desktop-08
+    was read from a page snapshot and had no screenshot."""
+    steps = _steps()
+    for step_id in _flows(steps):
+        # MUTATION: drop the sentence from any flow and this fails.
+        assert ("Cite only files you bundle; every state you report as reached has a screenshot you list"
+                in steps[step_id]["prompt"]), step_id
+    # MUTATION: drop the citation check from flow-report and this fails.
+    assert ("Check every file a flow's json cites against its tar, and every state it reports as reached "
+            "against a screenshot it lists") in steps[FLOW_REPORT]["prompt"]
+
+
+def test_every_flow_reads_its_console_log_and_gives_it_a_time_base():
+    """Visual QA run 6, 6:flow-workflow-graph-run-01: the console log recorded
+    '[vite] server connection lost' at +67.7 s and 31 refused loads, the json
+    never mentioned it, and the log had no time base to place the loss
+    against the screenshots."""
+    steps = _steps()
+    for step_id in _flows(steps):
+        prompt = steps[step_id]["prompt"]
+        # MUTATION: drop the time base or the read-before-writing sentence and this fails.
+        assert "write the output of `date +%s` into it as its time base" in prompt, step_id
+        assert (f"Read every console log before you write {step_id}.json and report any loss of the dev server "
+                "with when it happened relative to your screenshots") in prompt, step_id
+
+
+def test_run_5b_flow_boxes_are_answered_in_the_briefs():
+    """Visual QA run 5b (wf_025ae735511546d99eff) flow-run boxes, one
+    sentence each (QAFIX6-QATEMPLATE)."""
+    steps = _steps()
+    find_failure = steps["flow-find-failure"]["prompt"]
+    graph = steps["flow-workflow-graph"]["prompt"]
+    submit = steps["flow-submit-form"]["prompt"]
+    # MUTATION (box 6343798221, run-ff-1): drop the tie rule and this fails;
+    # the run picked task_fan_3 by list order when both read '34m ago'.
+    assert ("If two failures read the same time, break the tie by the end time the task itself shows, "
+            "and say in the json which you chose and why") in find_failure
+    # MUTATION (box 6343799797, run-ff-3): drop the path rule and this fails;
+    # the phone went straight from Overview's Recent failures.
+    assert "Both runs, desktop and phone, reach the task through Agents › Recent" in find_failure
+    # MUTATION (box 6343800557, run-wg-3): drop the two links and this fails;
+    # both runs called the goal reached on a Changes page with no change.
+    assert "then open its Agent’s changes › and its Logs ›" in graph
+    # MUTATION (box 6343801319, run-wg-4): drop the sentence and this fails;
+    # 'System' in the dark run is how the dark scheme is set, not a defect.
+    assert ("the console's own theme switch reads 'System' in every dark screenshot, "
+            "because dark is set through prefers-color-scheme: that is expected, not a finding") in graph
+    # MUTATION (box 6343802091, run-sf-1): drop the goal sentence or the
+    # per-preset steps and this fails.
+    assert "state the goal in one sentence and, for each preset, the steps taken" in submit
+    # MUTATION (box 6343803693, run-sf-3): let the elapsed minutes come from
+    # another clock and this fails; 162 s did not match 2.9 min.
+    assert ("start_epoch and end_epoch from `date +%s`, and elapsed minutes computed from those two numbers"
+            in submit)
+    for step_id in _flows(steps):
+        prompt = steps[step_id]["prompt"]
+        # MUTATION (box 6343804546, run-sf-4): drop the segment rule and this fails.
+        assert ("When the page scrolls inside its main region, a fullPage screenshot shows only the viewport: "
+                "scroll it and take one screenshot per segment instead") in prompt, step_id
+        # MUTATION (box 6343805389, run-sf-5): drop "per run" and this fails.
+        assert "File every finding under the run (preset or theme) it was seen in" in prompt, step_id
+
+
+def test_claude_md_states_invariant_7_as_contract_md_amended_it():
+    """Visual QA run 6's eviction box (review-task, GKE node memory pressure):
+    CLAUDE.md's checklist still said "7. `requests == limits`. No bursting.",
+    which CONTRACT.md's invariant 7 stopped saying on 2026-10-20 (contract
+    request 108, #1689): CPU may burst on GKE, and the pod is Burstable."""
+    contract = (REPO / "CONTRACT.md").read_text(encoding="utf-8")
+    assert "The pod's QoS class is\n   Burstable" in contract, "CONTRACT.md's invariant 7 moved: follow it here"
+    claude = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
+    # MUTATION: put "7. `requests == limits`. No bursting." back and this fails.
+    assert "No bursting" not in claude
+    line = next(raw for raw in claude.splitlines() if raw.startswith("7. "))
+    for part in ("Memory and ephemeral storage", "`CPU_BURST_MAX_RATIO`", "GKE", "Burstable"):
+        assert part in line, f"CLAUDE.md's invariant 7 does not say {part!r}: {line!r}"
