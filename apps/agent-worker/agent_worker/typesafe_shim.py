@@ -82,7 +82,7 @@ from urllib.parse import quote
 #: The worker's switch, set by the scheduler with the pod's
 #: `swarm-typesafe: inject` label (TS-MIGRATE-POD). Exactly `on` turns it on.
 SWITCH_ENV = "SWARM_TYPESAFE_INJECT"
-SWITCH_ON = "yes"
+SWITCH_ON = "on"
 #: `swarm_common.profiles.Backend.GKE_AUTOPILOT`: the only backend that can
 #: reach the forwarder's cluster Service.
 GKE_BACKEND = "GKE_AUTOPILOT"
