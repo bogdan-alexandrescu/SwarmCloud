@@ -57,7 +57,7 @@ p,li{max-width:84ch}
 .prow .fr{margin:0;flex:0 1 410px;max-width:100%}
 .pscr{overflow-x:auto;max-width:100%;padding-bottom:4px}
 .navrow{display:flex;flex-wrap:wrap;gap:18px;margin-top:18px}
-.navrow .fr{margin:0;flex:0 1 auto;max-width:100%}
+.navrow .fr{margin:0;flex:0 0 322px;width:322px;max-width:100%}
 .tw{overflow-x:auto;border:1px solid var(--ln);border-radius:12px;background:var(--sf);margin-top:14px}
 table.doc{border-collapse:collapse;width:100%;font-size:13.5px;min-width:720px;color:inherit}
 table.doc th,table.doc td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--ln);vertical-align:top}
@@ -139,22 +139,22 @@ table.doc tr:last-child td{border-bottom:0}
 .mfoot{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;padding:8px 12px;border-top:1px solid var(--ln);font-size:12px;color:var(--dim)}
 .mfoot span{display:inline-flex;gap:4px;align-items:center}
 /* the Secrets list is a grid of columns */
-.sg{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1.05fr) minmax(0,.9fr) minmax(0,1.05fr) minmax(0,.8fr);gap:10px;align-items:center}
+.sg{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(0,1.05fr) minmax(0,.9fr) minmax(0,1.05fr) minmax(0,.8fr);gap:10px;align-items:center}
 .sgh{padding:6px 14px;font-size:12px;font-weight:600;color:var(--dim);border-bottom:1px solid var(--ln);background:var(--sf2)}
 .sgr{padding:7px 14px;border-bottom:1px solid var(--lns);position:relative;min-height:42px}
-.sgr>div{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
-.sgr .nm{font:500 13px var(--mono)}
-.sgr .sm{display:block;font:12px var(--f);color:var(--dim);overflow:hidden;text-overflow:ellipsis}
+.sgr>div{min-width:0;overflow-wrap:break-word;font-size:12.5px}
+.sgr .nm{font:500 13px var(--mono);overflow-wrap:anywhere}
+.sgr .sm{display:block;font:12px var(--f);color:var(--dim)}
 .sgr.on{background:var(--acs)}
 .sgr.on::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:3px;border-radius:2px;background:var(--ac)}
 /* inspector */
-.ih{display:flex;align-items:flex-start;gap:12px;padding:16px 22px 12px;border-bottom:1px solid var(--ln);background:var(--sf)}
-.ihl{flex:1;min-width:0}
+.ih{display:flex;flex-wrap:wrap;align-items:flex-start;gap:12px;padding:16px 22px 12px;border-bottom:1px solid var(--ln);background:var(--sf)}
+.ihl{flex:1 1 240px;min-width:0}
 .ihk{font-size:12px;color:var(--dim)}
 .ih h4{margin:2px 0 4px;font-size:18px;font-weight:650;overflow-wrap:anywhere}
 .ih h4.mono{font:500 17px var(--mono);background:none;padding:0}
 .ihc{display:flex;flex-wrap:wrap;gap:6px}
-.iha{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;align-items:center}
+.iha{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;align-items:center;margin-left:auto}
 .itabs{display:flex;gap:2px;padding:0 18px;border-bottom:1px solid var(--ln);background:var(--sf)}
 .itabs span{padding:8px 10px;font-size:13px;color:var(--dim);border-bottom:2px solid transparent}
 .itabs span.on{color:var(--ac-ink);border-bottom-color:var(--ac);font-weight:600}
@@ -166,6 +166,7 @@ table.doc tr:last-child td{border-bottom:0}
 .kv{display:grid;grid-template-columns:150px minmax(0,1fr);gap:6px 14px;font-size:13px;margin:0}
 .kv dt{color:var(--dim)}.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
 .cols2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
+.cols2 .kv{grid-template-columns:110px minmax(0,1fr)}
 .note{font-size:12.5px;color:var(--dim);margin:0}
 .ifoot{margin-top:auto;display:flex;flex-wrap:wrap;gap:6px 12px;padding:8px 22px;border-top:1px solid var(--ln);font-size:12px;color:var(--dim);background:var(--sf)}
 .ifoot span{display:inline-flex;gap:4px;align-items:center}
@@ -184,7 +185,7 @@ table.doc tr:last-child td{border-bottom:0}
 .chip.pa{background:color-mix(in srgb,var(--pa) 13%,var(--sf));color:var(--pa-ink);border-color:transparent}
 .chip.on{background:var(--acs);color:var(--ac-ink);border-color:var(--ac);font-weight:600}
 .dot{width:8px;height:8px;border-radius:50%;background:currentColor;flex:none}
-.seg{display:inline-flex;border:1px solid var(--ctl);border-radius:8px;overflow:hidden;background:var(--sf);flex:none}
+.seg{display:inline-flex;border:1px solid var(--ctl);border-radius:8px;overflow:hidden;background:var(--sf);flex:none;width:max-content;max-width:100%}
 .seg span{padding:4px 10px;font-size:12.5px;color:var(--dim);border-right:1px solid var(--ln);white-space:nowrap;display:inline-flex;gap:5px;align-items:center}
 .seg span:last-child{border-right:0}
 .seg span.on{background:var(--acs);color:var(--ac-ink);font-weight:600}
@@ -211,7 +212,9 @@ table.doc tr:last-child td{border-bottom:0}
 .tbl td{padding:7px 10px;border-bottom:1px solid var(--lns);vertical-align:middle}
 .tbl tr:last-child td{border-bottom:0}
 .tbl .num{text-align:right}
+.tbl code{white-space:nowrap;overflow-wrap:normal}
 .tbl .sm{display:block;font-size:12px;color:var(--dim)}
+.tbl .btn.sm{display:inline-flex;font-size:12.5px}.tbl .btn.sm:not(.pri):not(.dg){color:var(--tx)}
 .st{display:inline-flex;gap:6px;align-items:center;white-space:nowrap}
 .st.ok{color:var(--ok-ink)}.st.warn{color:var(--warn-ink)}.st.bad{color:var(--bad-ink)}.st.neu{color:var(--dim)}.st.pa{color:var(--pa-ink)}.st.ac{color:var(--ac-ink)}
 .ord{display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12.5px}
@@ -320,7 +323,7 @@ table.doc tr:last-child td{border-bottom:0}
 <div class="wrap">
 <p class="kicker">SwarmCloud · Config, Secrets, Admin counts and QA environments · 2026-10-23 · proposal D of five (part of #2157)</p>
 <h1>Proposal D: every Config and Admin page is a list with an inspector beside it</h1>
-<p class="lede">BGD asked on 2026-10-23 for four or five complete, competing designs of every new and changed page before anything is built. This is proposal D, the Split-pane inspector. Every Config and Admin page is a master list on the left and an inspector on the right, the shape the console's Agent inspector already has (agents.html V1, picked 2026-10-01). Actions sit in the inspector, the list is keyboard driven, and on a phone the inspector is a pushed page. The frames are 1440 wide on a desktop and 390 on a phone. They follow the page's theme toggle, at the top here or in any frame's panel foot, so each one is drawn once and read in light and dark. The user is "Operator", the hosts are <code>swarm.example.com</code> and <code>app.example.com</code>, and every name and figure is example data.</p>
+<p class="lede">BGD asked on 2026-10-23 for four or five complete, competing designs of every new and changed page before anything is built. This is proposal D, the Split-pane inspector. Every Config and Admin page is a master list on the left and an inspector on the right, the shape the console's Agent inspector already has (agents.html V1, picked 2026-10-01). Actions sit in the inspector, the list is keyboard driven, and on a phone the inspector is a pushed page. The frames are drawn 1440 wide on a desktop and 390 on a phone. A desktop frame is scaled down to fit a narrower window, and below about 900px it scrolls sideways instead. They follow the page's theme toggle, at the top here or in any frame's panel foot, so each one is drawn once and read in light and dark. The user is "Operator", the hosts are <code>swarm.example.com</code> and <code>app.example.com</code>, and every name and figure is example data.</p>
 <ul class="toc"><li><a href="#idea">Idea</a></li><li><a href="#s1">S1 Navigation</a></li><li><a href="#s2">S2 GitHub access</a></li><li><a href="#s3">S3 Repositories</a></li><li><a href="#s4">S4 Secrets</a></li><li><a href="#s5">S5 MCP servers, People and roles</a></li><li><a href="#s6">S6 Workspace Settings</a></li><li><a href="#s7">S7 Platform secrets</a></li><li><a href="#s8">S8 Platform counts</a></li><li><a href="#s9">S9 QA environments</a></li><li><a href="#s10">S10 Every Admin page</a></li></ul>
 
 <h2 id="idea"><span class="n">D</span>Idea, pros and risks</h2>
@@ -437,7 +440,7 @@ function rail(sec,role){
 function pages(sec,role,ws){
   if(sec==='config'){
     const p=[{k:'github',l:'GitHub access',i:'github'},{k:'repos',l:'Repositories',i:'repo',kids:['Registered','QA targets','Git tokens']},{k:'secrets',l:'Secrets',i:'key'},{k:'mcp',l:'MCP servers',i:'plug'}];
-    if(ws==='group'&&role!=='member')p.push({k:'people',l:'People and roles',i:'people'});
+    if(ws!=='personal'&&role!=='member')p.push({k:'people',l:'People and roles',i:'people'});
     p.push({k:'ws',l:'Workspace Settings',i:'tenants',kids:role!=='member'?['Settings','Workspace setup','Add a workspace']:['Settings','Workspace setup']});
     return p;
   }
@@ -449,7 +452,7 @@ function pages(sec,role,ws){
 }
 const SECNAME={config:'Config',admin:'Admin',work:'Work'};
 function panel(sec,page,kid,role,ws){
-  const t=ws==='personal'?{g:'O',n:'Operator',s:'personal workspace · 1 of 3'}:ws==='design'?{g:'D',n:'design',s:'group workspace · 3 of 3'}:{g:'E',n:'eng',s:'group workspace · 2 of 3'};
+  const t=ws==='personal'?{g:'O',n:'Operator',s:'personal · 1 of 3'}:ws==='design'?{g:'D',n:'design',s:'group workspace · 3 of 3'}:{g:'E',n:'eng',s:'group workspace · 2 of 3'};
   const list=pages(sec,role,ws).map(p=>`<a class="pk${p.k===page&&!kid?' on':''}">${ic(p.i)}<span class="l">${p.l}</span>${p.tag?`<span class="tag">${p.tag}</span>`:''}</a>${p.kids&&p.k===page?`<div class="kids">${p.kids.map(k=>`<a class="kid${k===kid?' on':''}"><span>${k}</span></a>`).join('')}</div>`:''}`).join('');
   let note='';
   if(sec==='admin'&&role==='wsadmin')note=`<p class="pnote">You admin eng and design. The other Admin pages are for platform admins and are not listed.</p>`;
@@ -459,7 +462,7 @@ function panel(sec,page,kid,role,ws){
 }
 function desk(o){
   const role=o.role||'platform',ws=o.ws||'group';
-  return `<div class="app">${rail(o.sec,role)}${panel(o.sec,o.page,o.kid,role,ws)}<main class="ct"><div class="phead"><div class="crumb">${o.crumb}</div><h3>${o.title}</h3>${o.hchips||''}<span class="grow"></span>${o.hact||''}</div>${o.body}</main></div>`;
+  return `<div class="app"${o.h?` style="height:${o.h}px"`:''}>${rail(o.sec,role)}${panel(o.sec,o.page,o.kid,role,ws)}<main class="ct"><div class="phead"><div class="crumb">${o.crumb}</div><h3>${o.title}</h3>${o.hchips||''}<span class="grow"></span>${o.hact||''}</div>${o.body}</main></div>`;
 }
 const split=(mw,master,insp)=>`<div class="split"><section class="master" style="width:${mw}px" aria-label="List">${master}</section><section class="insp" aria-label="Inspector">${insp}</section></div>`;
 const tool=(ph,extra='')=>`<div class="mt"><span class="srch">${ic('search','ic s')}<span>${ph}</span>${kbd('/')}</span>${extra}</div>`;
@@ -514,7 +517,7 @@ const ownerRows=(sel,narrow)=>[
   row({on:sel==='labs',t:'example-labs',s:'organisation · install requested by you 2 days ago',r:narrow?'':chip('waiting for an org owner','warn'),lead:ic('tenants')}),
   row({t:'example-archive',s:'organisation · no installation',r:narrow?'':chip('not installed'),lead:ic('tenants'),dim:1}),
 ].join('');
-const s2a=desk({sec:'config',page:'github',crumb:'Config / <b>GitHub access</b>',title:'GitHub access',hchips:chip('connected as operator-gh','ok'),body:split(460,master(tool('Filter owners'),ownerRows('org')),insp({k:'GitHub owner · organisation',h:'example-org',chips:chip('App installed','ok')+chip('selected repositories')+chip('Write for 2 · Read for 4','ac'),act:btn('Choose repositories','pri','repo')+btn('Installation settings ↗'),body:
+const s2a=desk({h:900,sec:'config',page:'github',crumb:'Config / <b>GitHub access</b>',title:'GitHub access',hchips:chip('connected as operator-gh','ok'),body:split(460,master(tool('Filter owners'),ownerRows('org')),insp({k:'GitHub owner · organisation',h:'example-org',chips:chip('App installed','ok')+chip('selected repositories')+chip('Write for 2 · Read for 4','ac'),act:btn('Choose repositories','pri','repo')+btn('Installation settings ↗'),body:
   card('The installation',kv([['Installed by','an org owner of example-org, 2026-10-07'],['GitHub lets the App see','14 selected repositories (set on GitHub, not here)'],['You chose','6 of them: Write for 2, Read for 4'],['Last checked','3 min ago · '+'<a>Re-check</a>']]))+
   card('What SwarmCloud may do as you',`<p>SwarmCloud enforces a read grant: an agent on a Read repository cannot push, whatever GitHub would allow (D9). It never asks for a workflows write (D8).</p><p class="note">Push ability is shown before you pick Write, in Choose repositories.</p>`)+
   card('Chosen repositories',tbl(['Repository','Your choice','Push on GitHub','Registered in eng'],[['example-org/example-api',chip('Write','ac'),st('yes','ok','check'),'yes'],['example-org/example-web',chip('Write','ac'),st('yes','ok','check'),'yes'],['example-org/example-docs',chip('Read'),st('yes','ok','check'),'yes'],['example-org/infra-modules',chip('Read'),st('no','neu','x'),'no · <a>Register</a>']])+'<p class="note" style="margin-top:8px">2 more Read · <a>show all 6</a></p>'),
@@ -525,7 +528,7 @@ const s2b=desk({sec:'config',page:'github',crumb:'Config / <b>GitHub access</b>'
   foot:`<span>${kbd('Enter')} connect</span>`}))});
 const repoChoice=(n,c,push,regd)=>`<div class="mr"><div class="mrm"><div class="mrt mono">${n}</div><div class="mrs">${push?'you can push on GitHub':'GitHub gives you read only'}${regd?' · registered in eng':''}</div></div><span class="seg"><span${c==='n'?' class="on"':''}>Not chosen</span><span${c==='r'?' class="on"':''}>Read</span><span${c==='w'?' class="on"':''}${push?'':' style="opacity:.5" title="You cannot push to this repository on GitHub"'}>Write</span></span></div>`;
 const s2c=desk({sec:'config',page:'github',crumb:'Config / GitHub access / <b>Choose repositories</b>',title:'Choose repositories',hchips:chip('example-org','ac'),hact:btn('Back to GitHub access','gh','back'),body:split(320,master(tool('Owners'),ownerRows('org',1)),insp({k:'Choose repositories · example-org',h:'14 repositories the App can see',chips:chip('3 changes not saved','warn'),act:btn('Discard')+btn('Save 3 changes','pri'),body:
-  `<div class="mt" style="padding:0;border:0"><span class="srch">${ic('search','ic s')}<span>Search example-org (searched on the server)</span>${kbd('/')}</span><span class="seg"><span class="on">All <em>14</em></span><span>Chosen <em>6</em></span><span>Not chosen <em>8</em></span></span></div>`+
+  `<div class="mt" style="padding:0;border:0"><span class="srch">${ic('search','ic s')}<span>Search example-org on the server</span>${kbd('/')}</span><span class="seg"><span class="on">All <em>14</em></span><span>Chosen <em>6</em></span><span>Not chosen <em>8</em></span></span></div>`+
   `<div class="card" style="padding:0;overflow:hidden">${repoChoice('example-api','w',1,1)}${repoChoice('example-web','w',1,1)}${repoChoice('example-docs','r',1,1)}${repoChoice('infra-modules','r',0,0)}${repoChoice('mobile-app','w',1,0).replace('<div class="mr">','<div class="mr focus">')}${repoChoice('data-pipeline','n',1,0)}${repoChoice('design-tokens','n',0,0)}${repoChoice('example-site','r',1,0)}</div>`+
   `<p class="note">1 to 8 of 14 · <a>next page</a>. Not listed? Type it as owner/repo, for example example-org/example-api. If GitHub does not let the App see it, an org owner adds it to the installation on GitHub first.</p>`,
   foot:`<span>${kbd('n')} not chosen</span><span>${kbd('r')} read</span><span>${kbd('w')} write</span><span>${kbd('⌘','Enter')} save</span>`}))});
@@ -595,7 +598,7 @@ const wsdbInsp=insp({k:'Workspace secret · for agents · eng',h:'STAGING_DB_URL
  card('Grants',`<div class="ckl"><label>${chk(1)}claude-code <span class="exd">profile</span></label><label>${chk(1)}codex <span class="exd">profile</span></label><label>${chk(0)}browser <span class="exd">profile</span></label><label>${chk(0)}mcp:tracker <span class="exd">MCP server</span></label></div><p class="note" style="margin-top:8px">A ticked consumer gets it as the file private/secrets/&lt;slot&gt;/STAGING_DB_URL when it runs in eng.</p>`)+
  card('Facts',kv([['Set','2026-10-20 14:02 by Operator'],['Last released',dash('the release does not record this per secret yet')],['Who may change it','workspace admins of eng, platform admins']])),
  foot:`<span>${kbd('s')} set a new value</span><span>${kbd('g')} grants</span><span>${kbd('Del')} delete</span><span>${kbd('Esc')} close</span>`});
-const s4a=desk({sec:'config',page:'secrets',crumb:'Config / <b>Secrets</b>',title:'Secrets',hchips:chip('eng')+chip('18 secrets in 3 scopes'),hact:btn('New secret','pri','submit'),body:split(660,master(scopeBar(),SG+S_AGENTS('wsdb')+S_KEYS()+S_SESS()+S_GH(),secFoot),wsdbInsp)});
+const s4a=desk({h:920,sec:'config',page:'secrets',crumb:'Config / <b>Secrets</b>',title:'Secrets',hchips:chip('eng')+chip('18 secrets in 3 scopes'),hact:btn('New secret','pri','submit'),body:split(660,master(scopeBar(),SG+S_AGENTS('wsdb')+S_KEYS()+S_SESS()+S_GH(),secFoot),wsdbInsp)});
 
 const envInsp=insp({k:'GitHub Actions environment · example-org/example-api',h:'repo-secrets',mono:1,chips:chip('main only','ok')+chip('2 secrets'),act:btn('Set a secret here','pri','key')+btn('Check rule','','refresh')+btn('Open on GitHub ↗'),body:
  card('Branch rule',`${kv([['Rule','main only: a custom branch policy naming main'],['Checked','2 min ago, on GitHub'],['Default branch','main, read from GitHub']])}<p class="note" style="margin-top:8px">SwarmCloud checks this rule before every write. Writing into an environment that any branch can deploy asks you to type its name first.</p>`)+
@@ -603,7 +606,7 @@ const envInsp=insp({k:'GitHub Actions environment · example-org/example-api',h:
  card('Create environment',`<p>SwarmCloud does not create environments yet. Create it on GitHub with a branch rule of main only, then press Check rule here.</p>${btn('Create on GitHub ↗','sm')} ${btn('Check rule','sm','refresh')}`)+
  card('Who may write here',`<p>A manager of eng whom GitHub calls admin of example-org/example-api, checked live with your own GitHub token when you write. You are admin of example-api on GitHub, so you may.</p>`),
  foot:`<span>${kbd('s')} set a secret</span><span>${kbd('k')} check rule</span><span>${kbd('Esc')} close</span>`});
-const s4b=desk({sec:'config',page:'secrets',crumb:'Config / Secrets / <b>example-org/example-api</b>',title:'Secrets',hchips:chip('Repository: example-api','ac'),hact:btn('New secret','pri','submit'),body:split(600,master(scopeBar({ws:0,me:0,repon:'example-org/example-api',dest:'actions'}),
+const s4b=desk({h:1090,sec:'config',page:'secrets',crumb:'Config / Secrets / <b>example-org/example-api</b>',title:'Secrets',hchips:chip('Repository: example-api','ac'),hact:btn('New secret','pri','submit'),body:split(620,master(scopeBar({ws:0,me:0,repon:'example-org/example-api',dest:'actions'}),
  `<div class="sg sgh"><div>Name</div><div>Where</div><div>Branch rule</div><div>Written by</div><div>Updated</div></div>`+gh('Repository secrets','1')+
  sr({n:'E2E_BASE_URL',sc:'repository',d:'every branch',c:'SwarmCloud · Operator',l:'4 d'})+
  gh('Environment repo-secrets','2')+
@@ -660,16 +663,16 @@ const s5a=desk({sec:'config',page:'mcp',crumb:'Config / <b>MCP servers</b>',titl
  card('Server',kv([['Address','https://swarm.example.com/mcp/tracker'],['Description','Issue tracker for eng. Shown to the agent beside the name, so it knows what the server is for.'],['Allowed tools','list_issues, get_issue, comment, search, link, label'],['Profiles that may use it','claude-code, codex'],['Last used',dash('this API does not say when a server was last used')]]))+
  card('Credential',`<p>Uses the workspace secret granted to mcp:tracker, slot auth.</p>${btn('Open in Config › Secrets','sm','key')}`)+
  card('Addresses to allowlist',`<p class="note">The platform\'s outbound addresses, for the server\'s own firewall: read from the API on open.</p>`)}))});
-const s5b=desk({sec:'config',page:'people',crumb:'Config / <b>People and roles</b>',title:'People and roles',hchips:chip('eng · group workspace'),hact:btn('Give a role','pri','submit'),body:split(440,master(tool('Filter people'),[gh('Default role for eng@example.com','member'),gh('People with a role of their own','4'),row({t:'Operator',s:'operator@example.com · you',r:chip('admin','ac'),lead:'<span class="av" style="width:26px;height:26px;line-height:26px">OP</span>'}),row({on:1,t:'Avery',s:'avery@example.com · last active 2 h ago',r:chip('admin','ac'),lead:'<span class="av" style="width:26px;height:26px;line-height:26px">AV</span>'}),row({t:'Sam',s:'sam@example.com · last active 1 d ago',r:chip('viewer'),lead:'<span class="av" style="width:26px;height:26px;line-height:26px">SA</span>'}),row({t:'Kai',s:'kai@example.com · not in the group yet',r:chip('member'),lead:'<span class="av" style="width:26px;height:26px;line-height:26px">KA</span>'}),gh('Everyone else in the group','9 · default role')].join('')),insp({k:'Person · in eng through eng@example.com',h:'Avery',chips:chip('admin','ac'),act:btn('Remove role','dg'),body:
+const s5b=desk({sec:'config',page:'people',crumb:'Config / <b>People and roles</b>',title:'People and roles',hchips:chip('eng · group workspace'),hact:btn('Give a role','pri','submit'),body:split(440,master(tool('Filter people'),[gh('Default role for eng@example.com','member'),gh('People with a role of their own','4'),row({t:'Operator',s:'operator@example.com · you',r:chip('admin','ac'),lead:'<span class="av" style="width:26px;height:26px;line-height:26px">OP</span>'}),row({on:1,t:'Avery',s:'avery@example.com · last active 2 h ago',r:chip('admin','ac'),lead:'<span class="av" style="width:26px;height:26px;line-height:26px">AV</span>'}),row({t:'Sam',s:'sam@example.com · last active 1 d ago',r:chip('viewer'),lead:'<span class="av" style="width:26px;height:26px;line-height:26px">SA</span>'}),row({t:'Kai',s:'kai@example.com · not in the group yet',r:chip('member'),lead:'<span class="av" style="width:26px;height:26px;line-height:26px">KA</span>'}),gh('Everyone else in the group','10 · default role')].join('')),insp({k:'Person · in eng through eng@example.com',h:'Avery',chips:chip('admin','ac'),act:btn('Remove role','dg'),body:
  card('Role in eng',`<span class="seg"><span>viewer</span><span>member</span><span class="on">admin</span></span><p class="note" style="margin-top:8px">An admin of eng manages its secrets, MCP servers, people and settings, and sees Admin with eng\'s pages. Changing a role is recorded in Recent admin actions.</p>`)+
  card('Facts',kv([['Email','avery@example.com'],['Given','admin by Operator, 2026-10-09'],['Last active','2 h ago']]))}))});
 const peopleRows=(all)=>[
- gh(all?'Everyone who has signed in':'People in eng and design',all?'27':'15'),
+ gh(all?'Everyone who has signed in':'People in eng and design',all?'27':'14'),
  ...(all?[row({t:'Waiting for you',s:'2 workspace requests to approve or deny',r:chip('2','warn'),lead:ic('warn')})]:[]),
- row({on:1,t:'Avery',s:'avery@example.com · eng admin, design member',r:chip('2 workspaces')}),
- row({t:'Operator',s:'operator@example.com · platform admin',r:chip('4 workspaces')}),
+ row({on:1,t:'Avery',s:all?'avery@example.com · eng admin, design member, personal':'avery@example.com · eng admin, design member',r:chip(all?'3 workspaces':'2 workspaces')}),
+ (all?row({t:'Operator',s:'operator@example.com · platform admin',r:chip('4 workspaces')}):row({t:'Operator',s:'operator@example.com · you · eng admin, design admin',r:chip('2 workspaces')})),
  row({t:'Sam',s:'sam@example.com · eng viewer',r:chip('1 workspace')}),
- ...(all?[row({t:'Riley',s:'riley@example.com · research member, personal',r:chip('2 workspaces')}),row({t:'Jordan',s:'jordan@example.com · no workspace yet',r:chip('requested','warn')})]:[row({t:'Kai',s:'kai@example.com · design admin',r:chip('1 workspace')})]),
+ ...(all?[row({t:'Riley',s:'riley@example.com · research member',r:chip('1 workspace')}),row({t:'Jordan',s:'jordan@example.com · no workspace yet',r:chip('requested','warn')})]:[row({t:'Kai',s:'kai@example.com · eng member, design admin',r:chip('2 workspaces')})]),
 ].join('');
 const s5c=desk({sec:'admin',page:'people',crumb:'Admin / <b>People and roles</b>',title:'People and roles',hchips:chip('every workspace · 27 people'),body:split(460,master(`<div class="mt"><span class="exd">Workspace</span><span class="chip on">All 6</span><span class="chip">eng</span><span class="chip">design</span><span class="chip">research</span><span class="chip">personal</span></div>`+tool('Filter people'),peopleRows(1)),insp({k:'Person · signed in since 2026-10-02',h:'Avery',chips:chip('platform role: none'),act:btn('Grant platform admin')+btn('Change ceiling'),body:
  card('Workspaces and roles',tbl(['Workspace','Kind','Role','Through'],[['eng','group',chip('admin','ac'),'own role, given by Operator'],['design','group',chip('member'),'group default'],['u-avery','personal','owner','—']]))+
@@ -741,7 +744,7 @@ function chart(){
   return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Agents per day by submission day, first attempts and retries">${g}</svg></div>`;
 }
 const countRows=(sel)=>[gh('Counts'),row({t:'Now, by state',s:'last run 14:02 · 24 reads'}),row({on:sel==='time',t:'Over time',s:'last run 14:06 · 38 reads'}),row({t:'Platform ticks',s:'Cloud Scheduler jobs · last run 14:02'}),gh('Breakdowns of Over time'),row({t:'By agent type',s:'in the chart\'s table'}),row({t:'By model',s:'in the chart\'s table'}),row({t:'By workspace',s:'in the chart\'s table'}),row({t:'By pool account',s:'in the chart\'s table'})].join('');
-const s8a=desk({sec:'admin',page:'counts',crumb:'Admin / Platform counts / <b>Over time</b>',title:'Platform counts',hchips:chip('every tenant'),body:split(300,master('',countRows('time'),mfoot()),insp({k:'Over time · by submission day · 2026-10-10 to 2026-10-23',h:'Agents per day',chips:chip('last run 14:06, 3 min ago')+chip('not refreshed by itself'),act:`<span class="seg"><span class="on">Day</span><span>Week</span><span>Month</span></span>`+btn('Run it again <span class="cost">· 38 reads</span>','pri','play'),body:
+const s8a=desk({h:1010,sec:'admin',page:'counts',crumb:'Admin / Platform counts / <b>Over time</b>',title:'Platform counts',hchips:chip('every tenant'),body:split(300,master('',countRows('time'),mfoot()),insp({k:'Over time · by submission day · 2026-10-10 to 2026-10-23',h:'Agents per day',chips:chip('last run 14:06, 3 min ago')+chip('not refreshed by itself'),act:`<span class="seg"><span class="on">Day</span><span>Week</span><span>Month</span></span>`+btn('Run it again <span class="cost">· 38 reads</span>','pri','play'),body:
  `<div class="stats"><div class="stat"><small>Agents</small><b>524</b><span>by submission day</span></div><div class="stat"><small>Retries, apart</small><b>61</b><span>10% of 585 attempts</span></div><div class="stat"><small>Run hours</small><b>1,412 h</b><span>held capacity, LEASED to exit</span></div><div class="stat"><small>Estimated cost (list price, not a bill)</small><b>at least $3,180</b><span>488 of 524 agents reported</span></div></div>`+
  `<div class="card"><h5>Agents per day<span class="r"><span class="seg"><span class="on">Chart</span><span>Table</span></span></span></h5><div class="lg"><span><i style="background:var(--c1)"></i>First attempts · 524</span><span><i style="background:var(--c2)"></i>Retries · 61</span><span class="exd">hover a bar for its day</span></div>${chart()}</div>`+
  `<div class="card"><h5>Breakdown<span class="r"><span class="seg"><span class="on">Agent type</span><span>Model</span><span>Workspace</span><span>Pool account</span></span></span></h5>${tbl(['Agent type','#Agents','#Retries','#Run hours','#Tokens in','#Tokens out','#Cache read','#Cache write','#Est. cost'],[['claude-code','346','41','930 h','1.84 B','61.2 M','9.90 B','412 M','≥ $2,240 <span class="sm">331 of 346</span>'],['codex','111','12','318 h','0.52 B','18.4 M','—','—','≥ $610 <span class="sm">108 of 111</span>'],['browser','67','8','164 h','0.11 B','4.0 M','0.38 B','22 M','≥ $330 <span class="sm">49 of 67</span>']])}<p class="note" style="margin-top:8px">codex reports no cache figures, so those cells are a dash, not 0. Cost is at list price for the agents that reported tokens, so it is a floor: "at least", with how many reported.</p></div>`,
@@ -755,23 +758,23 @@ F['f-s8p']=[
 /* =========================== S9 =========================== */
 const envRow=(n,host,mode,cred,ok,on,why)=>`<div class="mr" style="align-items:flex-start${ok?'':';opacity:.75'}">${chk(on,!ok)}<div class="mrm"><div class="mrt">${n} <span class="chip">${mode}</span></div><div class="mrs" style="white-space:normal">${host}</div><div class="mrs" style="white-space:normal">${cred}</div>${why?`<div class="mrs" style="white-space:normal;color:var(--warn-ink)">${why}</div>`:''}</div></div>`;
 const qaTargets=(sel)=>[gh('QA targets in eng','3'),row({on:sel==='app',t:'Example app',s:'example-org/example-web · staging, production',r:chip('2 of 3 runnable','ok')}),row({t:'Docs site',s:'example-org/example-docs · production',r:chip('1 of 1 runnable','ok')}),row({t:'Admin console',s:'example-org/example-api · staging',r:chip('host not approved','warn')})].join('');
-const s9a=desk({sec:'config',page:'repos',kid:'QA targets',crumb:'Config / Repositories / <b>QA targets</b>',title:'QA targets',hchips:chip('eng'),hact:btn('Register a target','','submit'),body:split(420,master(tool('Filter targets'),qaTargets('app')+gh('Recent run groups')+row({t:'qa-run 2026-10-22 18:04',s:'Example app · staging, production · 2 findings',r:chip('done','ok')})),insp({k:'QA target · example-org/example-web',h:'Example app',chips:chip('3 environments')+chip('Flows with Playwright'),act:btn('Edit')+btn('Run 2 environments','pri','play'),body:
- `<div class="card" style="padding:0;overflow:hidden"><h5 style="padding:12px 14px 0">Environments<span class="r">tick what Run takes</span></h5>${envRow('staging','https://app.example.com · environment chooser: Staging','reads and writes','Sign-in set 2 d ago by Operator · challenge bypass not needed',1,1)}${envRow('production','https://app.example.com · environment chooser: Production','read-only flows','Sign-in set 2 d ago by Operator (an MFA-free, least-privilege QA account)',1,1)}${envRow('preview','https://app.example.com · environment chooser: Preview','reads and writes',dash('no sign-in set'),0,0,'Cannot run: this environment\'s host approval is pending for eng, and no sign-in is set. Set the sign-in in Config › Secrets.')}</div>`+
+const s9a=desk({h:930,sec:'config',page:'repos',kid:'QA targets',crumb:'Config / Repositories / <b>QA targets</b>',title:'QA targets',hchips:chip('eng'),hact:btn('Register a target','','submit'),body:split(420,master(tool('Filter targets'),qaTargets('app')+gh('Recent run groups')+row({t:'qa-run 2026-10-22 18:04',s:'Example app · staging, production · 2 findings',r:chip('done','ok')})),insp({k:'QA target · example-org/example-web',h:'Example app',chips:chip('3 environments')+chip('Flows with Playwright'),act:btn('Edit')+btn('Run 2 environments','pri','play'),body:
+ `<div class="card" style="padding:0;overflow:hidden"><h5 style="padding:12px 14px 0">Environments<span class="r">tick what Run takes</span></h5>${envRow('staging','https://app.example.com · environment chooser: Staging','read-only · shared origin','Sign-in set 2 d ago by Operator · challenge bypass not needed',1,1)}${envRow('production','https://app.example.com · environment chooser: Production','read-only','Sign-in set 2 d ago by Operator (an MFA-free, least-privilege QA account)',1,1)}${envRow('preview','https://app.example.com · environment chooser: Preview','read-only · shared origin',dash('no sign-in set'),0,0,'Cannot run: no sign-in is set for preview. Set it in Config › Secrets.')}<p class="note" style="padding:8px 14px 12px">All three share https://app.example.com and differ only by the chooser, so every leg runs read-only: the shared-origin rule (qa-environments §1.5).</p></div>`+
  card('This run',`<div class="ckl"><label>${chk(0)}Report only, file no issues</label><label>${chk(1)}Flows with Playwright (the default)</label></div><p class="note" style="margin-top:8px">One workflow per ticked environment, linked as one run group. Capped at $40 an environment. Up to 8 new routes per capture step; stored plus new stay at most 60 per environment.</p>`)+
  card('Routes',kv([['staging','34 stored · 9 discovered'],['production','31 stored · 6 discovered'],['New since last run','5, waiting for an admin to promote']])),
  foot:`<span>${kbd('Space')} tick an environment</span><span>${kbd('R')} run</span>`}))});
 const ecol=(n,mode,st_,steps,shots,cov,pct,newr,findings,issues,refused)=>`<div class="ecol"><div class="eh"><b>${n}</b>${chip(mode)}<span style="flex:1"></span>${st_}</div><div class="eb">${kv([['Workflow',`<a>wf_qa-${n}-2210</a> · ${steps}`],['Screens',shots],['Coverage',`${cov}<div class="bar" style="margin-top:4px"><i style="width:${pct}%"></i></div>`],['New routes found',newr],['Findings',findings],['Issues filed',issues],['Gate refusals',refused]])}</div></div>`;
-const s9b=desk({sec:'config',page:'repos',kid:'QA targets',crumb:'Config / Repositories / QA targets / <b>qa-run 2026-10-22 18:04</b>',title:'QA run group',hchips:chip('Example app')+chip('done','ok'),body:split(300,master('',qaTargets('none')+gh('Run groups of Example app')+row({on:1,t:'2026-10-22 18:04',s:'staging, production',r:chip('done','ok')})+row({t:'2026-10-19 09:30',s:'staging',r:chip('done','ok')}),mfoot()),insp({k:'Run group · started by Operator · 2026-10-22 18:04 · 41 min',h:'Example app, staging and production',chips:chip('2 workflows')+chip('$31.40 of $80 cap'),act:btn('Run again','','play'),body:
- `<div class="envcols">${ecol('staging','reads and writes',st('succeeded','ok','check'),'7 of 7 steps','40 captured · 34 stored, 6 new','40 of 43 known routes, 93%',93,'6: /settings/billing, /reports/export, …','<span class="chip bad">1 high</span> <span class="chip warn">1 medium</span>','2 · [staging] titles','0')}${ecol('production','read-only',st('succeeded','ok','check'),'6 of 6 steps','33 captured · 31 stored, 2 new','33 of 37 known routes, 89%',89,'2: /status, /changelog','<span class="chip">none</span>','0','3 · writes refused, as designed')}</div>`+
+const s9b=desk({h:1020,sec:'config',page:'repos',kid:'QA targets',crumb:'Config / Repositories / QA targets / <b>qa-run 2026-10-22 18:04</b>',title:'QA run group',hchips:chip('Example app')+chip('done','ok'),body:split(300,master('',qaTargets('none')+gh('Run groups of Example app')+row({on:1,t:'2026-10-22 18:04',s:'staging, production',r:chip('done','ok')})+row({t:'2026-10-19 09:30',s:'staging',r:chip('done','ok')}),mfoot()),insp({k:'Run group · started by Operator · 2026-10-22 18:04 · 41 min',h:'Example app, staging and production',chips:chip('2 workflows')+chip('$31.40 of $80 cap'),act:btn('Run again','','play'),body:
+ `<div class="envcols">${ecol('staging','read-only · shared origin',st('succeeded','ok','check'),'7 of 7 steps','40 captured · 34 stored, 6 new','40 of 43 known routes, 93%',93,'6: /settings/billing, /reports/export, …','<span class="chip bad">1 high</span> <span class="chip warn">1 medium</span>','2 · [staging] titles','0')}${ecol('production','read-only',st('succeeded','ok','check'),'6 of 6 steps','33 captured · 31 stored, 2 new','33 of 37 known routes, 89%',89,'2: /status, /changelog','<span class="chip">none</span>','0','3 · writes refused, as designed')}</div>`+
  card('Routes seen on one environment only',tbl(['Route','Seen on','Why it might be'],[['<code>/settings/billing</code>','staging','new on staging, not deployed to production yet'],['<code>/reports/export</code>','staging','new on staging'],['<code>/status</code>','production','not linked from staging\'s menus']]))+
  card('New since last run',tbl(['Route','Environment','Found by',''],[['<code>/settings/billing</code>','staging','capture step 3',btn('Promote','sm')],['<code>/reports/export</code>','staging','capture step 5',btn('Promote','sm')],['<code>/status</code>','production','capture step 2',btn('Promote','sm')]])+'<p class="note" style="margin-top:8px">Promote adds a route to the environment\'s stored screens. Promote is an admin\'s action; a member sees the list without the buttons.</p>')}))});
 F['f-s9']=[
- fig(s9a,'<b>S9a · A QA target with environments, and Run.</b> The target\'s inspector lists its environments, each with its host and credential state, and a checkbox. An environment that cannot run is drawn disabled with its reason, and the others stay runnable. <b>Run</b> takes the ticked names and nothing else (invariant 10). Production is read-only. Run counts the ticked environments in its label.'),
+ fig(s9a,'<b>S9a · A QA target with environments, and Run.</b> The target\'s inspector lists its environments, each with its host and credential state, and a checkbox. An environment that cannot run is drawn disabled with its reason, and the others stay runnable. <b>Run</b> takes the ticked names and nothing else (invariant 10). The three legs share one origin, so every leg is read-only (qa-environments §1.5), as AI Studio\'s are. Run counts the ticked environments in its label.'),
  fig(s9b,'<b>S9b · The QA run group.</b> One column per environment: the workflow and its steps, screens, coverage, new routes found this run, findings, issues filed and gate refusals. Below them: routes seen on one environment only, and "new since last run" with Promote for an admin. The list folds to a 300px index of targets and their run groups.'),
 ].join('');
 F['f-s9p']=[
- fig(phone({title:'Example app',back:'QA targets',body:`<div class="pin"><div class="ihc">${chip('example-web')}${chip('Playwright')}</div></div><div class="mlist">${gh('Environments')}${envRow('staging','app.example.com · Staging','reads and writes','sign-in set 2 d ago',1,1)}${envRow('production','app.example.com · Production','read-only','sign-in set 2 d ago',1,1)}${envRow('preview','app.example.com · Preview','reads and writes',dash('no sign-in'),0,0,'Cannot run: host approval pending, no sign-in.')}</div><div class="pin"><label style="display:flex;gap:8px;align-items:center;font-size:13px">${chk(0)}Report only, file no issues</label><p class="note">$40 cap per environment.</p></div>`,act:btn('Run 2 environments','pri','play')}),'<b>S9c · Phone, a target pushed.</b> The environments are checkbox rows with Run pinned to the foot.','phone'),
- fig(phone({title:'Run group',back:'Example app',body:`<div class="pchips"><span class="chip on">staging</span><span class="chip">production</span><span class="chip">Both, routes</span></div><div class="pin">${ecol('staging','reads and writes',st('succeeded','ok','check'),'7 of 7','40 · 6 new','40 of 43, 93%',93,'6','1 high, 1 medium','2','0')}<div class="card"><h5>New since last run</h5><div class="mr" style="padding:6px 0"><div class="mrm"><div class="mrt mono">/settings/billing</div></div>${btn('Promote','sm')}</div><div class="mr" style="padding:6px 0;border:0"><div class="mrm"><div class="mrt mono">/reports/export</div></div>${btn('Promote','sm')}</div></div></div>`}),'<b>S9d · Phone, the run group.</b> One environment at a time on a chip row. "Both, routes" shows the routes seen on one environment only.','phone'),
+ fig(phone({title:'Example app',back:'QA targets',body:`<div class="pin"><div class="ihc">${chip('example-web')}${chip('Playwright')}</div></div><div class="mlist">${gh('Environments')}${envRow('staging','app.example.com · Staging','read-only','sign-in set 2 d ago',1,1)}${envRow('production','app.example.com · Production','read-only','sign-in set 2 d ago',1,1)}${envRow('preview','app.example.com · Preview','read-only',dash('no sign-in'),0,0,'Cannot run: no sign-in set.')}</div><div class="pin"><label style="display:flex;gap:8px;align-items:center;font-size:13px">${chk(0)}Report only, file no issues</label><p class="note">$40 cap per environment.</p></div>`,act:btn('Run 2 environments','pri','play')}),'<b>S9c · Phone, a target pushed.</b> The environments are checkbox rows with Run pinned to the foot.','phone'),
+ fig(phone({title:'Run group',back:'Example app',body:`<div class="pchips"><span class="chip on">staging</span><span class="chip">production</span><span class="chip">Both, routes</span></div><div class="pin">${ecol('staging','read-only',st('succeeded','ok','check'),'7 of 7','40 · 6 new','40 of 43, 93%',93,'6','1 high, 1 medium','2','0')}<div class="card"><h5>New since last run</h5><div class="mr" style="padding:6px 0"><div class="mrm"><div class="mrt mono">/settings/billing</div></div>${btn('Promote','sm')}</div><div class="mr" style="padding:6px 0;border:0"><div class="mrm"><div class="mrt mono">/reports/export</div></div>${btn('Promote','sm')}</div></div></div>`}),'<b>S9d · Phone, the run group.</b> One environment at a time on a chip row. "Both, routes" shows the routes seen on one environment only.','phone'),
 ].join('');
 
 /* =========================== S10 =========================== */
@@ -810,6 +813,8 @@ function setTheme(t){const r=document.documentElement;if(t==='system')r.removeAt
   document.querySelectorAll('[data-set-theme]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.setTheme===t)));}
 document.addEventListener('click',e=>{const b=e.target.closest('[data-set-theme]');if(b)setTheme(b.dataset.setTheme);});
 setTheme('system');
+function fitFrames(){document.querySelectorAll('.scroller').forEach(sc=>{const a=sc.firstElementChild;if(!a||!a.classList.contains('app')||a.classList.contains('navonly'))return;a.style.zoom='';const z=sc.clientWidth/1440;if(z<1&&z>=0.62)a.style.zoom=String(z);});}
+fitFrames();addEventListener('resize',fitFrames);
 </script>
 </body>
 </html>
