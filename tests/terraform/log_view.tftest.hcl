@@ -26,8 +26,9 @@
 #     worker Cloud Run jobs swarm-job-*, and nothing else: not the other
 #     team's cluster, not kube-system or swarm-system, not the platform's
 #     services, not a name that only CONTAINS a prefix;
-#   * the sink's writer identity holds exactly one grant: bucketWriter,
-#     conditioned to this bucket's own resource name;
+#   * nothing grants roles/logging.bucketWriter -- not the sink's writer, not
+#     a platform account: a sink writing a log bucket in its own project needs
+#     no grant (BGD, 2026-10-22, #1960);
 #   * the view swarm-workers lives on the new bucket, never _Default;
 #   * swarm-api's grant (row L-1) is unchanged: a
 #     google_logging_log_view_iam_member -- a binding on the view's own
@@ -37,9 +38,9 @@
 #     (terraform/bootstrap/log-reading-roles.json, read, not restated).
 #
 # WHAT A MOCK PROVIDER CANNOT SHOW. That Cloud Logging accepts the sink's
-# filter and the view's, that it populates the writer identity for a
-# same-project bucket, and that the view-level binding lets swarm-api's
-# entries.list through. log_bucket.tf and log_view.tf, "WHAT IS NOT
+# filter and the view's, that it authorizes the sink to write its
+# same-project bucket with no grant, and that the view-level binding lets
+# swarm-api's entries.list through. log_bucket.tf and log_view.tf, "WHAT IS NOT
 # VERIFIED", say what would show each.
 
 mock_provider "google" {}
@@ -166,9 +167,9 @@ variables {
 }
 
 # OFF BY DEFAULT. The switch (swarm_workers_log_view_enabled) is on in dev's
-# tfvars only; a root without it plans no bucket, no sink, no writer grant, no
-# view, no L-1 binding and no view name for swarm-api to read. Prod stays off
-# until the owner turns it on there.
+# tfvars only; a root without it plans no bucket, no sink, no view, no L-1
+# binding and no view name for swarm-api to read. Prod stays off until the
+# owner turns it on there.
 run "the_swarm_workers_log_path_is_off_by_default" {
   command = plan
 
@@ -188,14 +189,13 @@ run "the_swarm_workers_log_path_is_off_by_default" {
     error_message = "with the view off, row L-1's binding is not planned either"
   }
 
-  # MUTATION: dropping the count from the bucket, the sink or the writer's grant in log_bucket.tf turns this red.
+  # MUTATION: dropping the count from the bucket or the sink in log_bucket.tf turns this red.
   assert {
     condition = (
       length(google_logging_project_bucket_config.swarm_worker_logs) == 0
       && length(google_logging_project_sink.swarm_worker_logs) == 0
-      && length(google_project_iam_member.swarm_worker_logs_writer) == 0
     )
-    error_message = "with the switch off, no worker-log bucket, sink or writer grant is planned"
+    error_message = "with the switch off, no worker-log bucket or sink is planned"
   }
 
   # MUTATION: value = local.swarm_workers_log_view unconditionally turns this red.
@@ -262,12 +262,6 @@ run "the_sink_routes_swarmcloud_workers_and_nothing_else" {
       && google_logging_project_sink.swarm_worker_logs[0].destination == "logging.googleapis.com/projects/saga-agents-staging/locations/us-central1/buckets/swarm-worker-logs"
     )
     error_message = "exactly one sink, in this project, and its destination is the swarm-worker-logs bucket"
-  }
-
-  # MUTATION: unique_writer_identity = false turns this red.
-  assert {
-    condition     = google_logging_project_sink.swarm_worker_logs[0].unique_writer_identity == true
-    error_message = "the sink writes as its own unique writer identity, never the project's shared logging identity"
   }
 
   # The filter is the branches and nothing else: no trailing OR, no NOT
@@ -362,7 +356,19 @@ run "the_sink_routes_swarmcloud_workers_and_nothing_else" {
   }
 }
 
-run "the_sink_writer_may_write_this_bucket_and_nothing_else" {
+# NO GRANT TO THE SINK'S WRITER (BGD, 2026-10-22, #1960). The sink writes a
+# log bucket in its own project, which Google authorizes automatically ("Route
+# logs to supported destinations", Set destination permissions), so the
+# release adds no IAM row for it. Nothing anywhere grants
+# roles/logging.bucketWriter:
+#
+#   * by text: no `role = "roles/logging.bucketWriter"` in any .tf file under
+#     terraform/infra or terraform/modules, so a grant of any resource name
+#     -- google_project_iam_member, a binding, a bucket-scoped member -- is
+#     caught, not only the one this run once named;
+#   * in the plan: none of the root's own google_project_iam_member grants,
+#     and no module.iam account, carries it.
+run "nothing_grants_bucket_writer_to_the_sink_or_anyone" {
   command = plan
 
   module {
@@ -371,51 +377,42 @@ run "the_sink_writer_may_write_this_bucket_and_nothing_else" {
 
   variables {
     swarm_workers_log_view_enabled = true
+    # Relative to tests/terraform, where `terraform test` runs (make tf-test).
+    granting_dirs = ["../../terraform/infra", "../../terraform/modules"]
   }
 
-  # The writer identity is computed by Cloud Logging; the mock is told one so
-  # the grant's member is known at plan.
-  override_resource {
-    target          = google_logging_project_sink.swarm_worker_logs
-    override_during = plan
-    values = {
-      writer_identity = "serviceAccount:service-209012342332@gcp-sa-logging.iam.gserviceaccount.com"
-    }
-  }
-
-  # MUTATION: count = 0 on google_project_iam_member.swarm_worker_logs_writer (or member = module.iam.service_account_members["swarm-api"]) turns this red.
+  # The control: the scan below read real files, so an empty match is a
+  # finding and not a wrong path.
   assert {
     condition = (
-      length(google_project_iam_member.swarm_worker_logs_writer) == 1
-      && google_project_iam_member.swarm_worker_logs_writer[0].project == "saga-agents-staging"
-      && google_project_iam_member.swarm_worker_logs_writer[0].member == google_logging_project_sink.swarm_worker_logs[0].writer_identity
-      && google_project_iam_member.swarm_worker_logs_writer[0].member == "serviceAccount:service-209012342332@gcp-sa-logging.iam.gserviceaccount.com"
+      alltrue([for d in var.granting_dirs : length(fileset(d, "**/*.tf")) > 0])
+      && length(regexall("(?m)^\\s*role\\s*=", file("${var.granting_dirs[0]}/verify.tf"))) > 0
     )
-    error_message = "exactly one grant, in this project, to the sink's own writer identity"
+    error_message = "the scan read no file under terraform/infra or terraform/modules, or its role pattern matches nothing in verify.tf; the assertion below would pass on nothing"
   }
 
-  # MUTATION: role = "roles/logging.logWriter" (or roles/logging.admin) turns this red.
+  # MUTATION: re-adding the writer grant turns this red.
   assert {
-    condition     = google_project_iam_member.swarm_worker_logs_writer[0].role == "roles/logging.bucketWriter"
-    error_message = "the writer identity's role is roles/logging.bucketWriter and nothing wider"
+    condition = alltrue([
+      for f in flatten([for d in var.granting_dirs : [for p in fileset(d, "**/*.tf") : "${d}/${p}"]]) : length(regexall("(?m)^\\s*role\\s*=\\s*\"roles/logging\\.bucketWriter\"", file(f))) == 0
+    ])
+    error_message = "a .tf file under terraform/infra or terraform/modules grants roles/logging.bucketWriter; the sink writes a bucket in its own project and needs no grant (BGD, 2026-10-22, #1960)"
   }
 
-  # The grant reaches THIS bucket only: a project binding conditioned on the
-  # bucket's exact resource name. Log buckets have no IAM policy of their own.
-  # MUTATION: dropping the condition, or `resource.name.startsWith("projects/saga-agents-staging/")`, turns this red.
+  # MUTATION: role = "roles/logging.bucketWriter" on google_project_iam_member.verify_reads_run turns this red.
   assert {
-    condition = (
-      length(google_project_iam_member.swarm_worker_logs_writer[0].condition) == 1
-      && google_project_iam_member.swarm_worker_logs_writer[0].condition[0].expression == "resource.name == \"projects/saga-agents-staging/locations/us-central1/buckets/swarm-worker-logs\""
-    )
-    error_message = "the bucketWriter grant must carry exactly the condition resource.name == \"projects/saga-agents-staging/locations/us-central1/buckets/swarm-worker-logs\""
+    condition = !contains(concat(
+      [google_project_iam_member.verify_reads_firestore.role, google_project_iam_member.verify_reads_run.role],
+      [for g in google_project_iam_member.github_hooks_firestore : g.role],
+    ), "roles/logging.bucketWriter")
+    error_message = "a google_project_iam_member in terraform/infra grants roles/logging.bucketWriter"
   }
 
   # Not a module.iam account: no platform account gains bucketWriter.
   # MUTATION: adding "roles/logging.bucketWriter" to any account's plain roles in modules/iam turns this red.
   assert {
     condition     = !contains(flatten(values(module.iam.granted_roles)), "roles/logging.bucketWriter")
-    error_message = "bucketWriter is the sink writer's grant alone; no platform account holds it"
+    error_message = "no platform account holds roles/logging.bucketWriter"
   }
 }
 
