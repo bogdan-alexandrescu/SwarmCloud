@@ -1626,11 +1626,28 @@ export function PoolRow({ pool: p }: { pool: Pool }) {
   // own tone and is not warned about.
   const near = !full && !paused && known && ratio >= 0.8
   const say = `${poolLabel(p.name)}: ${p.active} of ${limit === null ? 'no limit set' : `${limit}`} units in use${full ? ', full' : near ? ', nearly full' : ''}${paused ? ', paused' : ''}`
+  const name = (
+    <span className="ov-idc" title={p.name}>
+      {p.name}
+    </span>
+  )
   return (
     <div className="ov-pl" title={say}>
-      <span className="ov-idc" title={p.name}>
-        {p.name}
-      </span>
+      {/* A PAUSED POOL IS MARKED IN THE GRID (visual QA run 6,
+          overview-automate-013, 2026-10-23): Needs a look said "1 pool paused
+          by an operator" while every bar in this grid was a plain empty one,
+          so the claim could not be found on the page. The pool carries the
+          `paused` mark Capacity › Pools draws, as a full pool carries its hatch. */}
+      {paused ? (
+        <span className="ov-pl-n">
+          {name}
+          <ToneMark tone="is-paused" title="An operator paused this pool. It admits nothing until resumed.">
+            paused
+          </ToneMark>
+        </span>
+      ) : (
+        name
+      )}
       <UsageTrack
         pct={known ? ratio * 100 : null}
         tone={tone}

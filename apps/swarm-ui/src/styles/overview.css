@@ -100,12 +100,21 @@
    cover rather than carrying one, so a click elsewhere still opens the list.
    The id gives way with an ellipsis, the arrow never; its title is whole. */
 .ov-att-acts { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; max-width: 45%; min-width: 0; }
-.ov-att.is-split .ov-att-wf { position: relative; z-index: 1; display: inline-flex; gap: 0.3em; max-width: 100%; min-width: 0; }
+.ov-att.is-split .ov-att-wf { position: relative; z-index: 1; display: inline-flex; gap: 0.3em; max-width: 100%; min-width: 0; font-weight: 600; }
 .ov-att.is-split .ov-att-wf::after { content: none; }
 .ov-att.is-split .ov-att-wf:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
 .ov-att-wf:hover .ov-att-wf-t { text-decoration: underline; text-underline-offset: 2px; }
 .ov-att-wf-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ov-att-ids a { position: relative; z-index: 1; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+/* THE WORKFLOW IS THE PROMINENT WAY OUT, THE LIST THE SECONDARY (#1680 box
+   6343766999, 5b:wg-dark-D1, routed to a fix lane 2026-10-23). Drawn alike,
+   `Agents · FAILED →` still read as the card's link: the failed workflow is
+   where a reader goes to see what broke, the list is where they go next. The
+   workflow links take the accent at the card title's weight (`font-weight`
+   in `.ov-att-wf`'s rule above); the list link steps down to the sentence's
+   dim ink at the regular weight. Which link the card's cover opens is
+   unchanged here: it is still the list's. */
+.ov-att.is-split .ov-att-go:not(.ov-att-wf) { color: var(--text-dim); font-weight: 400; }
 .ov-att-ids a:hover { color: var(--sk-ac); }
 /* The skeleton of a check card, while the checks read: the card's own box
    and rhythm, its lines as the canonical skeleton bars (walkthrough F). */
@@ -203,6 +212,9 @@
 .ov-fails .ov-why { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .ov-tbl td:last-child, .ov-tbl th:last-child { padding-right: 0; }
 .ov-sub { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+/* A workflow step's short task id, under its failure row's name (box
+   6343791868): the id Agents names the agent by, in the ids' mono face. */
+.ov-tid { display: block; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 /* A ROW LINK LOOKS LIKE ONE (QA G1-09, 2026-10-07): with no underline the
    name read as a label while the workflow id beside it was underlined. A
    hairline in the line token at rest, the text colour on hover. */
@@ -308,6 +320,11 @@
    2026-10-16): the hidden track turns warn at 80%, so the figure does too, at
    every width -- the warn ink, as the full figure takes the bad. */
 .ov-pl b.is-near { color: var(--warn); }
+/* A paused pool's name and its `paused` mark share the name's cell; the name
+   still gives way first, cut with its title (run 6, overview-automate-013). */
+.ov-pl-n { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ov-pl-n > .ov-idc { flex: 0 1 auto; }
+.ov-pl-n > :not(.ov-idc) { flex: none; }
 .ov-acc { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: var(--t-micro); }
 .ov-acc .sk-st-w { font-size: var(--t-micro); }
 .ov-acc-proj { color: var(--text-dim); }
@@ -422,6 +439,12 @@
   .ov-fails td:first-child { grid-row: 1; }
   .ov-fails td.is-num { grid-row: 2; grid-column: 2; text-align: left; }
   .ov-prun, .ov-prun-more { display: block; }
+  /* RUNNING NOW'S ROWS ARE RULED APART (visual QA run 6, overview-automate-012,
+     2026-10-23): with no separator, each title sat about 4px under the
+     previous row's state line and two rows read as one. The rule and padding
+     Recent failures' phone rows use, so the two lists on the page agree. */
+  .ov-prun li { padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+  .ov-prun li:last-child { border-bottom: 0; }
   /* A DISABLED REASON WHOLE ON A PHONE (live QA OV-13, 2026-10-11): past two
      lines the reason was only in the tile's `title`, which a touch screen
      cannot open. Whole, the sentence costs the tile a line or two of
