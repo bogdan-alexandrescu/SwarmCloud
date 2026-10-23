@@ -23,7 +23,13 @@
 //     the installation it came through with "Manage on GitHub", and when it
 //     was checked; a User installation is an "account", not an "org"; a
 //     missing card still opens with its fix link and shows the same table;
-//   * loading and the empty state (no connected org).
+//   * loading and the empty state (no connected org);
+//   * WF-APP-PERMS (#2029): Workflows (write), `workflow_files_required`, is
+//     a row of every needed-permissions table, the App card's included. Granted,
+//     it is green and counted ("7 of 7 needed"); not granted, it is a counted
+//     gap only when a repository that installation covers has Workflow files
+//     on, and otherwise a neutral row that leaves the card green; it is never
+//     under "Also granted".
 //
 // Fixtures only; no network. Nothing here is token-shaped.
 
@@ -44,7 +50,14 @@ const CHECKS = { permission: 'checks', access: 'read', needed_for: "merges and C
 const ISSUES = { permission: 'issues', access: 'write', needed_for: "issue runs and the observer can't read or comment on issues", capabilities: ['issues'] }
 const ACTIONS = { permission: 'actions', access: 'read', needed_for: "ci-flake-hunter and release-health can't read workflow runs", capabilities: ['actions'] }
 const REQUIRED = [CONTENTS, PULLS, STATUSES, CHECKS, ISSUES, ACTIONS]
-// What GitHub answered for a fully granted installation: the six, plus two SwarmCloud does not use.
+// forgeperms.py's WORKFLOW_FILES_REQUIREMENT, served beside `required` as `workflow_files_required` (#2029).
+const WORKFLOWS = {
+  permission: 'workflows',
+  access: 'write',
+  needed_for: 'workflow-file pushes fall back to workflow-lines.patch (Workflows: not granted)',
+  capabilities: ['workflow_files'],
+}
+// What GitHub answered for a fully granted installation: the six and Workflows, plus Metadata, which SwarmCloud does not use.
 const GRANTED = { contents: 'write', pull_requests: 'write', statuses: 'read', checks: 'read', issues: 'write', actions: 'read', metadata: 'read', workflows: 'write' }
 const ALL_TRUE = { push: true, pull_request: true, merge: true, ci: true, issues: true, actions: true }
 
@@ -63,7 +76,13 @@ function org(over: Record<string, unknown> = {}) {
   }
 }
 
-function answer({ gap = false, settingsUrl = null as string | null, orgs = null as unknown[] | null, appMissing = [] as unknown[] } = {}) {
+function answer({
+  gap = false,
+  settingsUrl = null as string | null,
+  orgs = null as unknown[] | null,
+  appMissing = [] as unknown[],
+  appGranted = GRANTED as Record<string, string>,
+} = {}) {
   const theOrg = gap
     ? org({
         granted: Object.fromEntries(Object.entries(GRANTED).filter(([k]) => k !== 'statuses')),
@@ -76,7 +95,8 @@ function answer({ gap = false, settingsUrl = null as string | null, orgs = null 
     tenant_id: 'eng',
     checked_at: new Date().toISOString(),
     required: REQUIRED,
-    app: { configured: true, slug: 'swarmcloud-example', granted: {}, requested: {}, missing: appMissing, settings_url: settingsUrl, error: null },
+    workflow_files_required: WORKFLOWS,
+    app: { configured: true, slug: 'swarmcloud-example', granted: appGranted, requested: appGranted, missing: appMissing, settings_url: settingsUrl, error: null },
     orgs: orgs ?? [theOrg],
     repositories: [
       {
@@ -84,8 +104,8 @@ function answer({ gap = false, settingsUrl = null as string | null, orgs = null 
         repo: 'example-org/example-api',
         credential: 'app',
         installation_id: 42,
-        capabilities: gap ? { ...ALL_TRUE, merge: false, ci: false } : ALL_TRUE,
-        blocked_by: gap ? [{ ...STATUSES, granted: null }] : [],
+        capabilities: (gap ? { ...ALL_TRUE, merge: false, ci: false } : ALL_TRUE) as Record<string, boolean>,
+        blocked_by: (gap ? [{ ...STATUSES, granted: null }] : []) as Record<string, unknown>[],
         error: null,
       },
     ],
@@ -133,8 +153,8 @@ describe('Setup › GitHub: one card for the App and one per org', () => {
     await waitFor(() => expect(cardNamed('example-org')).toBeDefined(), WAIT)
     const card = cardNamed('example-org')!
     expect(card.classList.contains('is-ok')).toBe(true)
-    expect(visible(card.querySelector('.c-chip'))).toBe('6/6 granted')
-    expect(visible(card.querySelector('.fp-summary'))).toBe('6 of 6 needed · Push, Pull requests, Merge, CI, Issues, Actions')
+    expect(visible(card.querySelector('.c-chip'))).toBe('7/7 granted')
+    expect(visible(card.querySelector('.fp-summary'))).toBe('7 of 7 needed · Push, Pull requests, Merge, CI, Issues, Actions, Workflow files')
     expect(visible(card.querySelector('h3 small'))).toBe('org')
     expect(card.querySelector('.fp-body')).toBeNull()
     expect(card.querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false')
@@ -177,7 +197,7 @@ describe('Setup › GitHub: one card for the App and one per org', () => {
     const heads = Array.from(card.querySelectorAll('.fp-grants thead th')).map(visible)
     expect(heads).toEqual(['GitHub permission', 'Needs', 'Granted', '', 'For'])
     const rows = Array.from(card.querySelectorAll<HTMLElement>('.fp-grants tbody tr'))
-    expect(rows.map((r) => r.getAttribute('data-permission'))).toEqual(['contents', 'pull_requests', 'statuses', 'checks', 'issues', 'actions'])
+    expect(rows.map((r) => r.getAttribute('data-permission'))).toEqual(['contents', 'pull_requests', 'statuses', 'checks', 'issues', 'actions', 'workflows'])
     const statuses = rows[2]!
     const cells = Array.from(statuses.querySelectorAll('td')).map(visible)
     expect(cells[0]).toBe('Commit statuses statuses')
@@ -198,9 +218,8 @@ describe('Setup › GitHub: one card for the App and one per org', () => {
     const extra = card.querySelector<HTMLElement>('.fp-extra')!
     expect(extra.tagName).toBe('DETAILS')
     expect(extra.hasAttribute('open')).toBe(false)
-    expect(visible(extra.querySelector('summary'))).toBe('Also granted (not used by SwarmCloud): 2')
+    expect(visible(extra.querySelector('summary'))).toBe('Also granted (not used by SwarmCloud): 1')
     expect(visible(extra)).toContain('metadata: read')
-    expect(visible(extra)).toContain('workflows: write')
     // A grant SwarmCloud needs is in the table, not among the extras.
     expect(visible(extra)).not.toContain('contents')
   })
@@ -243,7 +262,7 @@ describe('Setup › GitHub: one card for the App and one per org', () => {
     await mountSection()
     await waitFor(() => expect(cardNamed('example-org')?.querySelector('.fp-body')).not.toBeNull(), WAIT)
     const card = cardNamed('example-org')!
-    expect(visible(card.querySelector('.fp-summary'))).toBe('5 of 6 needed · Push, Pull requests, Issues, Actions · blocked: Merge, CI')
+    expect(visible(card.querySelector('.fp-summary'))).toBe('6 of 7 needed · Push, Pull requests, Issues, Actions, Workflow files · blocked: Merge, CI')
     const row = card.querySelector<HTMLElement>('.fp-grants tr[data-permission="statuses"]')!
     expect(row.getAttribute('data-ok')).toBe('false')
     expect(visible(row.querySelectorAll('td')[2] ?? null)).toBe('none')
@@ -338,6 +357,160 @@ describe('Setup › GitHub: one card for the App and one per org', () => {
     await mountSection()
     await waitFor(() => expect(visible(document.querySelector('.fp-section'))).toMatch(/Could not|failed|Retry/i), WAIT)
     expect(orgCard()).toBeNull()
+  })
+})
+
+describe('Workflows (write): a needed row, a gap only where a covered repository has Workflow files on (#2029)', () => {
+  const NO_WF = Object.fromEntries(Object.entries(GRANTED).filter(([k]) => k !== 'workflows'))
+  const NEUTRAL = 'Not granted, needed only for repositories with Workflow files on'
+
+  /** An org that has not accepted Workflows: the App asks for it, so it is pending, and `missing` (REQUIRED only) is empty. */
+  function unaccepted() {
+    return org({ granted: NO_WF, pending: [{ permission: 'workflows', requested: 'write', granted: null }] })
+  }
+
+  /** The covered repository with its switch on: forgeperms.py's row carries `workflow_files` and its gap. */
+  function switchedOn(body: Answer, granted: boolean) {
+    const row = body.repositories[0]!
+    row.capabilities = { ...ALL_TRUE, workflow_files: granted }
+    row.blocked_by = granted ? [] : [{ ...WORKFLOWS, granted: null }]
+    return body
+  }
+
+  const open = (card: HTMLElement) => {
+    if (card.querySelector('.fp-body') === null) fireEvent.click(card.querySelector('button[aria-expanded]')!)
+  }
+  const wfRow = (card: HTMLElement) => card.querySelector<HTMLElement>('.fp-grants tr[data-permission="workflows"]')
+
+  it('a granted Workflows is a green row on the org card, counted in "7 of 7 needed"', async () => {
+    routes(() => switchedOn(answer(), true))
+    await mountSection()
+    await waitFor(() => expect(cardNamed('example-org')).toBeDefined(), WAIT)
+    const card = cardNamed('example-org')!
+    // MUTATION: build the table from `required` alone and the header says "6 of 6 needed" without Workflow files.
+    expect(visible(card.querySelector('.fp-summary'))).toBe('7 of 7 needed · Push, Pull requests, Merge, CI, Issues, Actions, Workflow files')
+    // MUTATION: leave the Workflows row out of the chip's count and this reads "6/6 granted".
+    expect(visible(card.querySelector('.c-chip'))).toBe('7/7 granted')
+    expect(card.classList.contains('is-ok')).toBe(true)
+    open(card)
+    const row = wfRow(card)!
+    // MUTATION: drop `workflow_files_required` from the rows and there is no Workflows row.
+    expect(row).not.toBeNull()
+    // MUTATION: mark the row by `missing` alone (REQUIRED only) without its own grant check and a granted row could read short.
+    expect(row.getAttribute('data-ok')).toBe('true')
+    const cells = Array.from(row.querySelectorAll('td')).map(visible)
+    expect(cells[0]).toBe('Workflows workflows')
+    expect(cells[1]).toBe('write')
+    expect(cells[2]).toBe('write')
+    // MUTATION: draw the neutral words on a granted row and the server's `needed_for` is gone.
+    expect(cells[4]).toContain(WORKFLOWS.needed_for)
+    // MUTATION: drop `workflow_files` from CAPABILITY_WORD and this reads "workflow_files".
+    expect(cells[4]).toContain('Workflow files')
+  })
+
+  it('the App card lists Workflows as a needed row too, green when the App asks for it', async () => {
+    routes(() => answer())
+    await mountSection()
+    await waitFor(() => expect(cardNamed('swarmcloud-example')).toBeDefined(), WAIT)
+    const app = cardNamed('swarmcloud-example')!
+    // MUTATION: give the App card no summary and this is empty.
+    expect(visible(app.querySelector('.fp-summary'))).toBe('7 of 7 needed · Push, Pull requests, Merge, CI, Issues, Actions, Workflow files')
+    open(app)
+    // MUTATION: give the App card no needed-permissions table and there is no row.
+    expect(wfRow(app)?.getAttribute('data-ok')).toBe('true')
+  })
+
+  it('an ungranted Workflows is a counted gap when a repository the installation covers has the switch on', async () => {
+    routes(() => switchedOn(answer({ orgs: [unaccepted()] }), false))
+    await mountSection()
+    await waitFor(() => expect(cardNamed('example-org')?.querySelector('.fp-body')).not.toBeNull(), WAIT)
+    const card = cardNamed('example-org')!
+    // MUTATION: never count the Workflows row as a gap and the card stays green and folded.
+    expect(card.classList.contains('is-bad')).toBe(true)
+    // MUTATION: count the gap and its pending request both and this reads "1 missing · 1 pending".
+    expect(visible(card.querySelector('.c-chip'))).toBe('1 missing')
+    expect(visible(card.querySelector('.fp-summary'))).toBe('6 of 7 needed · Push, Pull requests, Merge, CI, Issues, Actions · blocked: Workflow files')
+    // MUTATION: use the pending line's generic words and the server's `needed_for` is not the gap's words.
+    expect(visible(card.querySelector('.fp-line .fp-words'))).toBe(WORKFLOWS.needed_for)
+    expect(visible(card.querySelector('.fp-line .fp-jargon'))).toBe('workflows: needs write, has none')
+    // The App asks for it, so the org can accept it: no "the App does not ask" note.
+    expect(card.querySelector('.fp-note')).toBeNull()
+    // MUTATION: draw the gap as neutral and the row is not short.
+    expect(wfRow(card)?.getAttribute('data-ok')).toBe('false')
+    expect(Array.from(card.querySelectorAll('a')).find((a) => visible(a) === 'Review on GitHub')?.getAttribute('href')).toBe(REVIEW)
+  })
+
+  it('the App card counts an unrequested Workflows as a gap, with Add to App, when any repository has the switch on', async () => {
+    // The App does not ask for Workflows, so no org has a request pending for it.
+    routes(() => switchedOn(answer({ orgs: [org({ granted: NO_WF })], appGranted: NO_WF, settingsUrl: SETTINGS }), false), true)
+    await mountSection()
+    await waitFor(() => expect(cardNamed('swarmcloud-example')?.querySelector('.fp-body')).not.toBeNull(), WAIT)
+    const app = cardNamed('swarmcloud-example')!
+    // MUTATION: leave the App card's lines at `app.missing` alone and it stays green.
+    expect(app.classList.contains('is-bad')).toBe(true)
+    expect(visible(app.querySelector('.c-chip'))).toBe('1 missing')
+    expect(visible(app.querySelector('.fp-line .fp-words'))).toBe(WORKFLOWS.needed_for)
+    expect(wfRow(app)?.getAttribute('data-ok')).toBe('false')
+    const link = await screen.findByText('Add to App', undefined, WAIT)
+    expect(link.closest('a')?.getAttribute('href')).toBe(SETTINGS)
+    // The org has not been asked for it: accepting there cannot fix it, and its card says so.
+    const card = cardNamed('example-org')!
+    expect(visible(card.querySelector('.fp-note'))).toBe('The App itself does not ask for this yet: an admin adds it to the App first.')
+  })
+
+  it('the same row is neutral, and the cards stay green, when no covered repository has the switch on', async () => {
+    const body = answer({ orgs: [unaccepted()] })
+    // Another installation's repository with the switch on does not make this org's row a gap.
+    body.repositories.push({ ...body.repositories[0]!, repo_id: 'repo_3333333333333333', repo: 'other-org/elsewhere', installation_id: 99, capabilities: { ...ALL_TRUE, workflow_files: false }, blocked_by: [{ ...WORKFLOWS, granted: null }] })
+    routes(() => body)
+    await mountSection()
+    await waitFor(() => expect(cardNamed('example-org')).toBeDefined(), WAIT)
+    const card = cardNamed('example-org')!
+    // MUTATION: count the Workflows row (or its pending request) whenever it is not granted and the card turns red.
+    expect(card.classList.contains('is-ok')).toBe(true)
+    // MUTATION: count the neutral row in the denominator and this reads "6/7 granted".
+    expect(visible(card.querySelector('.c-chip'))).toBe('6/6 granted')
+    expect(visible(card.querySelector('.fp-summary'))).toBe('6 of 6 needed · Push, Pull requests, Merge, CI, Issues, Actions')
+    expect(card.querySelector('.fp-body')).toBeNull()
+    open(card)
+    const row = wfRow(card)!
+    // MUTATION: leave a neutral row out of the table and the person cannot see Workflows is not granted.
+    expect(row).not.toBeNull()
+    // MUTATION: draw the neutral row as a gap and this reads "false".
+    expect(row.getAttribute('data-ok')).toBe('neutral')
+    expect(visible(row.querySelectorAll('td')[2] ?? null)).toBe('none')
+    // MUTATION: keep the server's `needed_for` on a neutral row and these words are missing.
+    expect(visible(row.querySelector('.fp-for'))).toContain(NEUTRAL)
+    expect(card.querySelector('.fp-lines')).toBeNull()
+    expect(Array.from(card.querySelectorAll('a')).find((a) => visible(a) === 'Review on GitHub')).toBeUndefined()
+  })
+
+  it('the App card is neutral on an unrequested Workflows when no repository has the switch on', async () => {
+    routes(() => answer({ appGranted: NO_WF }))
+    await mountSection()
+    await waitFor(() => expect(cardNamed('swarmcloud-example')).toBeDefined(), WAIT)
+    const app = cardNamed('swarmcloud-example')!
+    // MUTATION: count the App's unrequested Workflows whenever it is not asked for and the App card turns red.
+    expect(app.classList.contains('is-ok')).toBe(true)
+    expect(visible(app.querySelector('.fp-summary'))).toBe('6 of 6 needed · Push, Pull requests, Merge, CI, Issues, Actions')
+    open(app)
+    expect(wfRow(app)?.getAttribute('data-ok')).toBe('neutral')
+    expect(visible(wfRow(app)!.querySelector('.fp-for'))).toContain(NEUTRAL)
+  })
+
+  it('workflows never appears under "Also granted"', async () => {
+    for (const body of [answer(), switchedOn(answer(), true)]) {
+      routes(() => body)
+      const { unmount } = await mountSection()
+      await waitFor(() => expect(cardNamed('example-org')).toBeDefined(), WAIT)
+      const card = cardNamed('example-org')!
+      open(card)
+      const extra = card.querySelector<HTMLElement>('.fp-extra')!
+      // MUTATION: leave `workflows` out of the needed set and it is folded among the extras again.
+      expect(visible(extra)).not.toContain('workflows')
+      expect(visible(extra.querySelector('summary'))).toBe('Also granted (not used by SwarmCloud): 1')
+      unmount()
+    }
   })
 })
 
