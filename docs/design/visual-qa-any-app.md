@@ -71,7 +71,8 @@ not one):
 | `credential` | `{set: bool, set_at, set_by, version}`, never a value | a **reference**: the value is in Secret Manager (§2.1) |
 | `challenge_bypass` | `{kind: "header" \| "cookie", name}`, optional; its value served only as `challenge_bypass_value: {set, set_at, set_by, version}` | §2.5: the app owner's own way past their CAPTCHA, added by the gate on the approved origins only |
 | `screens` | a list `{id, path, ready?, segments?}`, or `discover: {max_pages ≤ 60, max_depth ≤ 3}` | the capture's route list; discovery is bounded and same-origin (§4.1) |
-| `flows` | `{id, goal, start_path, mutating: false}` each | goal-driven flows for jev or Playwright; `mutating: true` is refused unless `environment` is `non_production` (§3) |
+| `flows` | `{id, goal, start_path, mutating: false}` each | goal-driven flows; `mutating: true` is refused unless `environment` is `non_production` (§3) |
+| `flows_browser_tool` | `playwright` (default, when unset) or `jev` | the tool the flows drive the live browser with (§4.1, step 4); anything else is refused at registration |
 | `widths` | presets by name, default `["desktop", "phone-390"]` (1440 and 390) | the gate's presets, never a viewport override (the gate refuses one) |
 | `themes` | default `["light", "dark"]`, through emulated media | as the console's capture sets them |
 | `exclusions` | path globs never visited, element texts or selectors never clicked | always merged with the defaults: `/logout`, `/signout`, and controls whose text names delete, remove, pay, buy, purchase, send, invite, unsubscribe or cancel subscription |
@@ -496,12 +497,33 @@ finding) carries over.
    at most 8 groups (60 screens a run, the discovery cap).
 3. **review-<group>**: `claude-code`, opus, `input_from` its capture tar,
    against the checklist (§4.3).
-4. **flow-<id>**: `claude-code-browser`, sonnet, jev for goals or Playwright,
-   recorded with `swarm-handoff record`, one per declared flow, at each width.
+4. **flow-<id>**: `claude-code-browser`, sonnet, with the target's
+   `flows_browser_tool` (Playwright unless it says `jev`), or the one run's
+   `browser_tool` when `:run` names one; recorded with `swarm-handoff record`,
+   one per declared flow, at each width. The prompt names the tool's own
+   tools: Playwright MCP's `browser_*`, or the jev tools.
 5. **report**: `claude-code`, opus, every capture and review tar staged; the
    console report's checks (reviewed against listed; a missing tar is a
    finding about the run), writing `report.md` and `findings.json` (§4.4).
 6. **file**: `claude-code`, sonnet, `input_from` the report; §5.
+
+**Why flows default to Playwright, not Jev** (lane VQ9-TOOL; BGD,
+2026-10-23). Flows were first rendered with Jev on every target. The
+browser benchmark's batch `bench3-2026-10-23` ([browser-bench.md](../browser-bench.md):
+10 prompts x 3 tools x 3 repeats, 83 runs measured) passed Playwright MCP on
+8 of 10 prompts at a median $0.14 and 44.5 s a run, dev-browser on 7, and Jev
+on 6 at $0.17 and 51.3 s: Playwright was the more reliable, the cheaper and
+the faster. So a target's `flows_browser_tool` defaults to `playwright`; a
+target may set `jev`, and one run may choose either with `:run`'s
+`browser_tool`, which applies to that run alone and is recorded on its
+`qa_target_runs` row (`browser_tool`, the override or null, and
+`flows_browser_tool`, the tool its flows ran with); it never changes the
+target. Choosing Jev keeps Jev's requirements: where the workspace's
+judgment backend is TypeSafe, a flow step is refused at submission
+(`browser_tool_unavailable`, reason `no_key`) unless the submitter or the
+tenant has a TypeSafe key, exactly as any `browser_tool: jev` task is. The
+capture and discovery steps are not affected: they run the fixed capture
+tool (`swarm_qa capture` and `discover` on Playwright) whatever the flows use.
 
 Workflow-level: `repository_url` the target's repository at its default
 branch (read for `design_docs`; `allow_empty_diff` on every step, nothing is
@@ -647,8 +669,10 @@ holds unchanged:
 ## 6. Triggers
 
 * **On demand**: the console (Repositories → a repository's QA targets →
-  Run), the API `POST /v1/qa-targets/{id}:run` (body: optional `screens`
-  subset, `file: "issues" | "none"`), and the plugin's `swarm_qa_run`. A
+  Run, with "Flows with" for one run's flow browser), the API
+  `POST /v1/qa-targets/{id}:run` (body: optional `screens` subset,
+  `file: "issues" | "none"`, optional `browser_tool: "playwright" | "jev"`
+  for this run's flows, §4.1), and the plugin's `swarm_qa_run`. A
   member may run; the run is that member's submission in the tenant.
 * **A schedule type `visual-qa`** (optional): tenant-scoped, created by a
   workspace admin, parameter `target` (a target of the same tenant), minimum

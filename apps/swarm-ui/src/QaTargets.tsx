@@ -24,6 +24,7 @@ import {
   qaCredentialLinkFrom,
   repoSlug,
   runQaTarget,
+  type FlowBrowserTool,
   type QaCredentialStatus,
   type QaLink,
   type QaScreen,
@@ -92,6 +93,16 @@ import './styles/repositories.css'
  * only in the PUT to `/challenge-bypass` once the target is saved. No link:
  * the admin is signed in here, and the value is a key the owner made for
  * these runs rather than a person's own password.
+ *
+ * THE FLOW BROWSER (lane VQ9-TOOL; BGD, 2026-10-23: "flows default to
+ * Playwright; a target, or one run, may choose Jev", after batch
+ * bench3-2026-10-23, docs/browser-bench.md). The form's Flow browser is the
+ * target's `flows_browser_tool`, Playwright unless Jev is chosen, sent on a
+ * registration and on an edit that changes it, and never dropped by an edit
+ * of anything else: an edit sends only what changed, and the API keeps the
+ * rest. Beside Run, "Flows with" picks the tool for that one run alone
+ * (`browser_tool`); left on the target's, nothing is sent and the target's
+ * applies. Capture stays the fixed capture tool either way.
  */
 
 /** This page's address under Repositories (`RepositoriesScreen` mounts it on `page`). */
@@ -258,6 +269,10 @@ export function QaTargetsScreen({ go, link }: { go: (to: string) => void; link?:
   )
 }
 
+function toolName(tool: FlowBrowserTool): string {
+  return tool === 'jev' ? 'Jev' : 'Playwright'
+}
+
 function hostWords(t: QaTarget): string {
   if (t.host_state === 'approved') {
     return t.approved_by === null ? 'approved' : `approved by ${t.approved_by}${t.approved_at === null ? '' : ` ${timeAgo(t.approved_at)}`}`
@@ -319,6 +334,8 @@ function TargetCard({
 }) {
   const why = cannotRunBecause(t)
   const [reportOnly, setReportOnly] = useState(false)
+  /** This one run's flow browser; null runs the target's own. */
+  const [runTool, setRunTool] = useState<FlowBrowserTool | null>(null)
   const [busy, setBusy] = useState(false)
   const [started, setStarted] = useState<string | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
@@ -343,7 +360,7 @@ function TargetCard({
     setBusy(true)
     setFailed(null)
     setStarted(null)
-    const r = await runQaTarget(t.id, reportOnly ? 'none' : 'issues')
+    const r = await runQaTarget(t.id, reportOnly ? 'none' : 'issues', runTool)
     setBusy(false)
     if (r.status === 'error') setFailed(writeFailure(r.error))
     else if (r.status === 'ok') setStarted(r.data.workflow_id)
@@ -414,6 +431,18 @@ function TargetCard({
         <label className="ur-small">
           <input type="checkbox" checked={reportOnly} onChange={(e) => setReportOnly(e.target.checked)} data-report-only="" /> report
           only, file no issues
+        </label>
+        <label className="ur-small">
+          Flows with{' '}
+          <select
+            data-run-browser=""
+            value={runTool ?? ''}
+            onChange={(e) => setRunTool(e.target.value === 'playwright' || e.target.value === 'jev' ? e.target.value : null)}
+          >
+            <option value="">the target&rsquo;s ({toolName(t.flows_browser_tool)})</option>
+            <option value="playwright">Playwright, this run</option>
+            <option value="jev">Jev, this run</option>
+          </select>
         </label>
         {admin && (
           <>
@@ -684,6 +713,7 @@ interface Draft {
   repository: string
   authorized_by: string
   environment: 'production' | 'non_production'
+  flows_browser_tool: FlowBrowserTool
   kind: 'none' | 'own_login'
   login_path: string
   signed_in_selector: string
@@ -712,6 +742,7 @@ function draftOf(t: QaTarget | null): Draft {
     repository: repoSlug(t?.repository ?? null) ?? '',
     authorized_by: t?.authorized_by ?? '',
     environment: t?.environment ?? 'production',
+    flows_browser_tool: t?.flows_browser_tool ?? 'playwright',
     kind: t?.sign_in.kind ?? 'none',
     login_path: t?.sign_in.login_path ?? '',
     signed_in_selector: t?.sign_in.signed_in_selector ?? '',
@@ -771,6 +802,7 @@ function bodyOf(d: Draft, was: Draft | null): QaTargetSend | string {
     screens,
     environment: d.environment,
     ...more,
+    flows_browser_tool: d.flows_browser_tool,
   }
   if (d.bypass_kind !== 'none') full.challenge_bypass = { kind: d.bypass_kind, name: d.bypass_name.trim() }
   if (was === null) return full
@@ -877,6 +909,13 @@ function TargetForm({
           <select name="environment" value={d.environment} onChange={set('environment')}>
             <option value="production">Production (read-only flows)</option>
             <option value="non_production">Non-production</option>
+          </select>
+        </label>
+        <label>
+          Flow browser{' '}
+          <select name="flows_browser_tool" value={d.flows_browser_tool} onChange={set('flows_browser_tool')}>
+            <option value="playwright">Playwright (the default)</option>
+            <option value="jev">Jev</option>
           </select>
         </label>
         <label>

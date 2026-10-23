@@ -10,7 +10,7 @@ import { read, route, write, type Result } from './fetch'
  *   POST   /v1/qa-targets                        register (a workspace admin)
  *   PATCH  /v1/qa-targets/{id}                   change (a workspace admin); a new host is pending
  *   DELETE /v1/qa-targets/{id}                   delete, with its credential (a workspace admin)
- *   POST   /v1/qa-targets/{id}:run               a member starts a run: {screens?, file}
+ *   POST   /v1/qa-targets/{id}:run               a member starts a run: {screens?, file, browser_tool?}
  *   POST   /v1/qa-targets/{id}:discover          a member starts its discovery (§4.1, lane QA-DISCOVER)
  *   POST   /v1/qa-targets/{id}:approve-host      a PLATFORM admin approves the host: {host, extra_origin?} (VQ-Q1, audited)
  *   POST   /v1/qa-targets/{id}/credential-links  a one-time link to the credential form (an admin)
@@ -27,6 +27,12 @@ import { read, route, write, type Result } from './fetch'
  * Its kind and name are registration fields; its value is status only here,
  * exactly as the credential's (`challenge_bypass_value`), and is taken by
  * `putQaChallengeBypass` alone.
+ *
+ * THE FLOW BROWSER (lane VQ9-TOOL; BGD, 2026-10-23) is the tool a target's
+ * goal-driven flows drive the live browser with: Playwright MCP unless the
+ * target, or one run, chooses Jev. Batch bench3-2026-10-23 passed Playwright
+ * on 8 of 10 prompts at $0.14 and 44.5 s a run, Jev on 6 of 10 at $0.17 and
+ * 51.3 s (docs/browser-bench.md). Capture stays the fixed capture tool.
  */
 
 /** `swarm_api.qatargets._TARGET_ID`. */
@@ -36,6 +42,10 @@ export const QA_TARGET_ID = /^qat_[0-9a-f]{16}$/
 const LINK_PATH = /^\/qa-targets\/(qat_[0-9a-f]{16})\/credential\/?$/
 
 export type HostState = 'pending' | 'approved' | 'revoked'
+
+/** `swarm_api.qaspec.FLOW_BROWSER_TOOLS`, the default first. */
+export const FLOW_BROWSER_TOOLS = ['playwright', 'jev'] as const
+export type FlowBrowserTool = (typeof FLOW_BROWSER_TOOLS)[number]
 
 /**
  * The registration's other §1 fields (`swarm_api.qatargets.SPEC_FIELDS` less
@@ -107,6 +117,8 @@ export interface QaTarget {
   challenge_bypass_value: QaCredentialStatus
   screens: QaScreen[]
   environment: 'production' | 'non_production'
+  /** The tool its flows run with; an unset field is Playwright, `qaspec`'s default. */
+  flows_browser_tool: FlowBrowserTool
   authorized_by: string | null
   revision: number | null
   /** The `MORE_FIELDS` the target holds, as served. */
@@ -131,6 +143,7 @@ export interface QaTargetBody {
   sign_in?: Record<string, unknown>
   screens?: QaScreen[]
   environment?: 'production' | 'non_production'
+  flows_browser_tool?: FlowBrowserTool
   /** `{kind, name}`; null on a change removes it (and the API removes its value). */
   challenge_bypass?: QaChallengeBypass | null
 }
@@ -236,6 +249,7 @@ export function normQaTarget(raw: unknown): QaTarget | null {
     challenge_bypass_value: normCredential(t.challenge_bypass_value),
     screens,
     environment: t.environment === 'non_production' ? 'non_production' : 'production',
+    flows_browser_tool: t.flows_browser_tool === 'jev' ? 'jev' : 'playwright',
     authorized_by: str(t.authorized_by),
     revision: typeof t.revision === 'number' ? t.revision : null,
     more: Object.fromEntries(MORE_FIELDS.flatMap((k) => (t[k] === undefined || t[k] === null ? [] : [[k, t[k]]]))),
@@ -336,9 +350,14 @@ export function deleteQaTarget(id: string): Promise<Result<unknown>> {
   return write(route('/v1/qa-targets/{target_id}', { target_id: id }), 'DELETE')
 }
 
-/** `:run` with `file` and nothing else the caller picks (invariant 10). */
-export async function runQaTarget(id: string, file: 'issues' | 'none'): Promise<Result<QaRun>> {
-  const r = await write(route('/v1/qa-targets/{target_id}:run', { target_id: id }), 'POST', { file })
+/**
+ * `:run` with `file`, and the flows' tool for this one run when one is
+ * chosen (`browser_tool`, by name), and nothing else the caller picks
+ * (invariant 10). Null sends no `browser_tool`: the target's own applies.
+ */
+export async function runQaTarget(id: string, file: 'issues' | 'none', browserTool: FlowBrowserTool | null = null): Promise<Result<QaRun>> {
+  const body: Record<string, unknown> = browserTool === null ? { file } : { file, browser_tool: browserTool }
+  const r = await write(route('/v1/qa-targets/{target_id}:run', { target_id: id }), 'POST', body)
   if (r.status !== 'ok') return r.status === 'error' ? r : { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The run was not answered.' } }
   return { ...r, data: { workflow_id: str(rec(r.data).workflow_id) } }
 }

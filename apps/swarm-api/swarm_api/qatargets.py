@@ -238,7 +238,7 @@ BYPASS_KEY = "challenge_bypass"
 SPEC_FIELDS = (
     "name", "base_url", "repository", "sign_in", "screens", "discover", "flows",
     "widths", "themes", "exclusions", "environment", "read_posts", "design_docs",
-    "file", "rate", "clock", "challenge_bypass",
+    "file", "rate", "clock", "challenge_bypass", "flows_browser_tool",
 )
 REQUIRED_FIELDS = ("name", "base_url", "repository", "authorized_by")
 
@@ -483,6 +483,7 @@ def check_spec(doc: Mapping[str, Any]) -> None:
         qaspec._names(doc.get("widths"), qaspec.PRESETS, qaspec.DEFAULT_WIDTHS, "widths")
         qaspec._names(doc.get("themes"), qaspec.THEMES, qaspec.DEFAULT_THEMES, "themes")
         qaspec._flows(doc)
+        qaspec.flows_browser_tool(doc)
         qaspec._file_settings(doc)
         qaspec._design_docs(doc)
         qaspec._clock(doc)
@@ -1155,7 +1156,11 @@ class QaTargets:
         return target
 
     def record_run(self, *, tenant_id: str, target: Mapping[str, Any], workflow_id: str,
-                   task_ids: Sequence[str], file: str, by: str, kind: str = "run") -> None:
+                   task_ids: Sequence[str], file: str, by: str, kind: str = "run",
+                   browser_tool: str | None = None) -> None:
+        """The run's record. `browser_tool` is the run's own override, None
+        when it named none; `flows_browser_tool` is the tool its flows ran
+        with, the override's or the target's (lane VQ9-TOOL)."""
         self._db.collection(RUNS_COLLECTION).document(workflow_id).set({
             "workflow_id": workflow_id,
             "tenant_id": tenant_id,
@@ -1164,6 +1169,8 @@ class QaTargets:
             "task_ids": list(task_ids),
             "file": file,
             "kind": kind,
+            "browser_tool": browser_tool,
+            "flows_browser_tool": qaspec.flows_browser_tool(target, browser_tool),
             "by": by,
             "at": self._now(),
         })
@@ -1352,13 +1359,14 @@ class QaTargets:
 
 
 def render_run(target: Mapping[str, Any], *, screens: Sequence[str] | None,
-               file: str) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+               file: str, browser_tool: str | None = None) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     """(the `WorkflowCreate` body, the mark, the browser step ids) for a run
     of `target`. The body is `qaspec.render`'s spec in the API's shape, with
     `metadata.qa_target` on each browser step: written here, never accepted
-    from a caller (§1.1). Raises 422 for anything the spec cannot hold."""
+    from a caller (§1.1). `browser_tool` is the run's own choice of the flows'
+    tool, by name (lane VQ9-TOOL). Raises 422 for anything the spec cannot hold."""
     try:
-        spec = qaspec.render(target, screens=screens, file=file)
+        spec = qaspec.render(target, screens=screens, file=file, browser_tool=browser_tool)
         mark = qaspec.qa_target_metadata(target)
     except qaspec.QaSpecError as exc:
         raise _spec_refusal(exc) from None

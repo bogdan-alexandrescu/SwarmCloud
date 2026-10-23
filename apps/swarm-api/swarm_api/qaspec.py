@@ -83,6 +83,22 @@ ENVIRONMENTS = ("production", "non_production")
 #: private is the target registration's check (lane VQ-2), not this module's.
 EVIDENCE_MODES = ("console_link", "branch")
 FILE_MODES = ("issues", "none")
+#: The browser tool a goal-driven flow drives the live browser with
+#: (`flows_browser_tool`, or one run's `browser_tool`; lane VQ9-TOOL). BGD,
+#: 2026-10-23, after batch bench3-2026-10-23 (docs/browser-bench.md): Playwright
+#: MCP passed 8 of 10 prompts at $0.14 and 44.5 s a run (medians), Jev 6 of 10
+#: at $0.17 and 51.3 s, so flows default to Playwright and a target, or one
+#: run, may choose Jev. Capture and discovery stay on Playwright whatever this
+#: says: they run the fixed capture tool. Both are `claude-code-browser`'s
+#: `browser_tool` choices; a jev flow without the TypeSafe key its workspace
+#: needs is refused at submission (`_refuse_unavailable_browser_tool`).
+FLOW_BROWSER_TOOLS = ("playwright", "jev")
+DEFAULT_FLOW_BROWSER_TOOL = "playwright"
+#: What each tool's flow prompt says to drive the browser with.
+_FLOW_TOOL_SENTENCE = {
+    "playwright": "Using the Playwright MCP browser_* tools (browser_navigate, browser_snapshot, browser_click)",
+    "jev": "Using the jev browser tools",
+}
 
 #: Never visited, never clicked, whatever the target says (§1): the target's
 #: own lists are MERGED with these, never replace them.
@@ -335,6 +351,18 @@ def _flows(target: Mapping[str, Any]) -> list[dict[str, Any]]:
     if len({f["id"] for f in flows}) != len(flows):
         raise _invalid("two flows share an id")
     return flows
+
+
+def flows_browser_tool(target: Mapping[str, Any], override: Any = None) -> str:
+    """The tool this render's flows run with: one run's `override` when it
+    names one, else the target's `flows_browser_tool`, else Playwright."""
+    for value, what in ((override, "browser_tool"), (target.get("flows_browser_tool"), "flows_browser_tool")):
+        if value is None:
+            continue
+        if not isinstance(value, str) or value not in FLOW_BROWSER_TOOLS:
+            raise _invalid(f"{what} must be one of {', '.join(FLOW_BROWSER_TOOLS)}")
+        return value
+    return DEFAULT_FLOW_BROWSER_TOOL
 
 
 def _file_settings(target: Mapping[str, Any]) -> dict[str, Any]:
@@ -651,7 +679,7 @@ def _review_prompt(target: Mapping[str, Any], base: str, group: str, design_docs
 
 
 def _flow_prompt(target: Mapping[str, Any], base: str, flow: Mapping[str, Any], widths: Sequence[str],
-                 own_login: bool) -> str:
+                 own_login: bool, tool: str) -> str:
     fid = flow["id"]
     runs = []
     for width in widths:
@@ -661,7 +689,7 @@ def _flow_prompt(target: Mapping[str, Any], base: str, flow: Mapping[str, Any], 
         )
     return (
         f"Goal-driven flow test of {target['name']}. Open {base}{flow['start_path']} in the live "
-        f"browser.{_sign_in_note(own_login, start_clicks(target))} Using the jev browser tools, reach this goal as a person "
+        f"browser.{_sign_in_note(own_login, start_clicks(target))} {_FLOW_TOOL_SENTENCE[tool]}, reach this goal as a person "
         f"would, without typing addresses: {flow['goal']}. Do it once per width, recorded: "
         f"{'; '.join(runs)}. For each run write in flow-{fid}.json whether the goal was reached, the steps "
         f"taken, and every point where a label was missing, ambiguous or misleading, each with a "
@@ -781,11 +809,12 @@ def _workflow(target: Mapping[str, Any], title: str, steps: list[dict[str, Any]]
 
 
 def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
-           file: str = "issues") -> dict[str, Any]:
+           file: str = "issues", browser_tool: str | None = None) -> dict[str, Any]:
     """The QA run's workflow spec for `target`, as `read_spec` reads it.
 
     `screens` narrows the run to those screen ids; `file="none"` renders the
-    report without the filing step (§6). Raises `QaSpecError` for anything
+    report without the filing step (§6); `browser_tool` runs this render's
+    flows with that tool instead of the target's (`flows_browser_tool`). Raises `QaSpecError` for anything
     the spec cannot hold; never returns a partial spec."""
     if file not in FILE_MODES:
         raise _invalid(f"file must be one of {', '.join(FILE_MODES)}")
@@ -797,6 +826,7 @@ def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
     themes = _names(target.get("themes"), THEMES, DEFAULT_THEMES, "themes")
     groups = group_screens(_screens(target, screens))
     flows = _flows(target)
+    flow_tool = flows_browser_tool(target, browser_tool)
     design_docs = _design_docs(target)
     settings = _file_settings(target)
     clock = _clock(target)
@@ -819,7 +849,8 @@ def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
     for flow in flows:
         steps.append(_step(
             f"flow-{flow['id']}", CAPTURE_PROFILE, FLOW_MODEL,
-            _flow_prompt(target, base, flow, widths, own_login), timeout=2700, browser_tool="jev"))
+            _flow_prompt(target, base, flow, widths, own_login, flow_tool), timeout=2700,
+            browser_tool=flow_tool))
     staged = {f"{kind}-{g}": f"{kind}-{g}.tar" for kind in ("capture", "review") for g, _ in groups}
     steps.append(_step("report", REVIEW_PROFILE, REPORT_MODEL, _report_prompt(target, groups, widths, themes),
                        timeout=3600, depends_on=list(staged), input_from=staged))
