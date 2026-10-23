@@ -400,6 +400,20 @@ export interface NamedTenantChoice extends TenantChoice {
 export const OWN_WORKSPACE_LABEL = 'Your workspace'
 
 /**
+ * THE ONE NAME THE SHELL DRAWS FOR THE WORKSPACE IN FORCE, at every width
+ * (visual QA 5b:QA-059 and run 6's 6:admin-015, box 6343790327, part of
+ * #1680). The panel's switcher said `Your workspace` while the phone header's
+ * pill said `Bogdan`, the personal tenant document's own name: one workspace,
+ * two names, depending on the window. The caller's own personal workspace
+ * (`kind: user` in `/v1/tenants/mine`) is `OWN_WORKSPACE_LABEL` everywhere;
+ * any other is its `/v1/tenants/me` name, or its id.
+ */
+export function workspaceName(tenant: { tenant_id: string; display_name?: string | null }, choices: readonly TenantChoice[]): string {
+  const own = choices.some((c) => c.kind === 'user' && c.tenant_id === tenant.tenant_id)
+  return own ? OWN_WORKSPACE_LABEL : (tenant.display_name ?? tenant.tenant_id)
+}
+
+/**
  * Settings › Profile (#1505, user-profile.md §4.7): the spine's last item and
  * the signed-in name's link (NAV-FOOT, #1672). The path is written out because
  * `paths.ts` gained the address in its own lane (PROFILE-NAV).
@@ -1737,7 +1751,9 @@ export function SkyShell({
       </a>
       {/* THE COLLAPSED SPINE KEEPS THE TENANT IN SIGHT (2A): a tile under the
           Hive, which opens the same list beside the spine. */}
-      {collapsed && !drawer && <TenantTile me={me} switchable={switchable} open={picker === 'tile'} onOpen={() => setPicker(picker === 'tile' ? null : 'tile')} />}
+      {collapsed && !drawer && (
+        <TenantTile me={me} choices={dataOf(mine) ?? []} switchable={switchable} open={picker === 'tile'} onOpen={() => setPicker(picker === 'tile' ? null : 'tile')} />
+      )}
       <a className="sk-ri sk-cta" title="Submit (N)" aria-current={section === null ? 'page' : undefined} {...routed('submit', () => nav('submit'))}>
         <Icon name="submit" />
         <small>Submit</small>
@@ -1906,7 +1922,10 @@ export function SkyShell({
         Skip to the page
       </a>
       {t.bar && <div className="sk-prodbar" aria-hidden />}
-      <header className="sk-pbar">
+      {/* `has-chip` WHEN THE WORKSPACE IS A SWITCHABLE CHIP (visual QA run 6,
+          6:admin-007): the title then gives way before the chip does
+          (styles.css), so the pill keeps the workspace's name. */}
+      <header className={switchable ? 'sk-pbar has-chip' : 'sk-pbar'}>
         {/* APPROVALS WAITING SHOW ON THE MENU BUTTON (visual QA V237,
             2026-10-16): the spine's Automate badge is inside the drawer, so
             on a phone nothing said they waited until the drawer was open.
@@ -1940,13 +1959,13 @@ export function SkyShell({
         {who !== null &&
           (switchable ? (
             <button type="button" className="sk-tchip" aria-haspopup="dialog" aria-expanded={picker === 'sheet'} onClick={() => setPicker('sheet')}>
-              <span className="sk-tcn">{who.tenant.display_name ?? who.tenant.tenant_id}</span>
+              <span className="sk-tcn">{workspaceName(who.tenant, dataOf(mine) ?? [])}</span>
               <Icon name="swap" />
             </button>
           ) : (
             // Cut with an ellipsis on a narrow phone (styles.css), so the whole name is its title.
-            <span className="sk-tn" title={who.tenant.display_name ?? who.tenant.tenant_id}>
-              {who.tenant.display_name ?? who.tenant.tenant_id}
+            <span className="sk-tn" title={workspaceName(who.tenant, dataOf(mine) ?? [])}>
+              {workspaceName(who.tenant, dataOf(mine) ?? [])}
             </span>
           ))}
         <EnvPill label={t.label} prod={t.bar} title={t.explain} mini />
@@ -2163,8 +2182,7 @@ function TenantBlock({
     )
   }
   const choices = dataOf(mine) ?? []
-  const own = choices.some((c) => c.kind === 'user' && c.tenant_id === id)
-  const name = own ? OWN_WORKSPACE_LABEL : (who.tenant.display_name ?? id)
+  const name = workspaceName(who.tenant, choices)
   // THE DEFAULT (§4.5): the workspace a request naming none acts in, the
   // stored one or else today's rule, as `/v1/tenants/mine` marks it.
   const isDefault = choices.some((c) => c.tenant_id === id && defaultChoice(c))
@@ -2271,9 +2289,21 @@ function withPrefs(block: ReactNode, prefsDown: string | null) {
  * name, and a cut one reads as a different tenant). It opens the list beside
  * the spine for someone who can switch.
  */
-function TenantTile({ me, switchable, open, onOpen }: { me: Result<Me>; switchable: boolean; open: boolean; onOpen: () => void }) {
+function TenantTile({
+  me,
+  choices,
+  switchable,
+  open,
+  onOpen,
+}: {
+  me: Result<Me>
+  choices: readonly TenantChoice[]
+  switchable: boolean
+  open: boolean
+  onOpen: () => void
+}) {
   const who = dataOf(me)
-  const name = who === null ? (me.status === 'loading' ? 'reading…' : 'not read') : (who.tenant.display_name ?? who.tenant.tenant_id)
+  const name = who === null ? (me.status === 'loading' ? 'reading…' : 'not read') : workspaceName(who.tenant, choices)
   const say = who === null ? `Tenant ${name}` : `Tenant ${name} (${who.tenant.tenant_id})`
   const body = (
     <>
