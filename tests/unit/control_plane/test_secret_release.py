@@ -522,26 +522,58 @@ def test_another_members_submission_is_not_released_a_personal_secret(client, db
     assert names(release(client, attempt)) == []
 
 
+class _Records(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.fixture
+def release_log():
+    """The route logger's own records, whatever configured logging before.
+
+    `caplog` reads a handler on the ROOT logger, so it sees a record only if
+    the route's logger is enabled and every logger up to the root propagates
+    and the root still holds caplog's handler. Another test on the same xdist
+    worker can undo any of the three (`dictConfig`, `configure_logging`
+    replacing the root's handlers); this test then went red with the warning
+    in captured stdout (run 39578760162, shard 5/8). A handler on the logger
+    itself, with the logger enabled and at DEBUG, needs none of them."""
+    logger = logging.getLogger(release_mod.__name__)
+    saved = (logger.disabled, logger.level)
+    handler = _Records()
+    logger.disabled = False
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(handler)
+    try:
+        yield handler.records
+    finally:
+        logger.removeHandler(handler)
+        logger.disabled, logger.level = saved
+
+
 def _a_lapsed_membership_releases_nothing_and_says_why(
-        db, worker_tokens, group_map, objects, sm, caplog) -> None:  # noqa: F811
+        db, worker_tokens, group_map, objects, sm, records) -> None:  # noqa: F811
     seed_tenant(db, "eng")
     _personal(db, "u-alice", ALICE)
     value = _personal_secret(db, sm)
     lapsed = {**group_map, ALICE: ()}
     client = _client(db, worker_tokens, lapsed, objects, sm)
     attempt = running(client, db, submitted_by=ALICE)
-    caplog.set_level(logging.DEBUG)
     answer = release(client, attempt)
     assert names(answer) == []
     assert answer.json()["withheld"] == [{"name": "alice-key", "reason": "membership_lapsed"}]
     assert sm.reads == []
-    assert any("no longer a member" in r.getMessage() for r in caplog.records)
-    assert all(value not in r.getMessage() for r in caplog.records)
+    assert any("no longer a member" in r.getMessage() for r in records)
+    assert all(value not in r.getMessage() for r in records)
 
 
 def test_a_lapsed_membership_releases_nothing_and_says_why_by_name(
-        db, worker_tokens, group_map, objects, sm, caplog):  # noqa: F811
-    _a_lapsed_membership_releases_nothing_and_says_why(db, worker_tokens, group_map, objects, sm, caplog)
+        db, worker_tokens, group_map, objects, sm, release_log):  # noqa: F811
+    _a_lapsed_membership_releases_nothing_and_says_why(db, worker_tokens, group_map, objects, sm, release_log)
 
 
 @pytest.fixture
@@ -572,10 +604,14 @@ def logging_reconfigured_by_an_earlier_test():
 
 def test_the_lapsed_membership_warning_is_seen_whatever_reconfigured_logging_first(
         logging_reconfigured_by_an_earlier_test, db, worker_tokens, group_map, objects, sm,
-        caplog):  # noqa: F811
-    # MUTATION: assert on caplog.records again -- the root's handler is gone and
-    # propagation stops at swarm_api, so the warning is never seen and this fails.
-    _a_lapsed_membership_releases_nothing_and_says_why(db, worker_tokens, group_map, objects, sm, caplog)
+        release_log):  # noqa: F811
+    # The fixture order matters: logging is reconfigured BEFORE release_log
+    # attaches, as an earlier test would have done it.
+    # MUTATION: pass caplog.records instead of release_log -- the root's handler is
+    # gone and propagation stops at swarm_api, so the warning is never seen.
+    # MUTATION: drop `logger.disabled = False` from release_log -- dictConfig
+    # disabled the logger, nothing is emitted, and this fails.
+    _a_lapsed_membership_releases_nothing_and_says_why(db, worker_tokens, group_map, objects, sm, release_log)
 
 
 def test_a_rewritten_submitter_fails_the_signature(client, db, sm):

@@ -327,6 +327,57 @@ report() {
 }
 
 # ---------------------------------------------------------------------------
+# A log-based metric is never REPLACED by an apply.
+# ---------------------------------------------------------------------------
+#
+# Measured 2026-10-22 on release 39712409927 (02:37Z): PR 1911 added a label to
+# `metric_descriptor.labels` of google_logging_metric.events["generation_fenced"].
+# A new label forces replacement, so the plan was delete-then-create, and GCP
+# refused the delete: "Error 400: Cannot delete metric swarm/generation-fenced.
+# That metric is still used in an alerting policy." Every release from main
+# failed until a hand `gcloud logging metrics update` added the label in place,
+# which GCP allows, so the next plan had no replace (#1822).
+#
+# EVERY metric replace is refused, not only one an alert policy names: whether
+# an alert uses a metric is a fact about the live project (a policy filter is a
+# string, and one may be created outside this plan), and a replaced metric
+# also loses its history. The way through is the live update first, in the same
+# PR's runbook step; this refusal says so.
+
+# metric_replacements PLAN_JSON OUT -- every google_logging_metric the plan
+# replaces (delete and create, in either order Terraform writes them), as a JSON
+# array into OUT. `-n` and `input`: an empty or non-object plan is an error on
+# every jq, never an empty array (see require_valid_verdict).
+metric_replacements() {
+  jq -n -e 'input
+    | if type == "object" then . else error("not a terraform plan") end
+    | [(.resource_changes // [])[]
+       | select(.type == "google_logging_metric")
+       | select(any(.change.actions[]?; . == "delete") and any(.change.actions[]?; . == "create"))
+       | {address, name: (.change.before.name // .change.after.name // "?")}]' "$1" >"$2"
+}
+
+# report_metric_replacements REPLACEMENTS_JSON -> 0 none, 2 refused
+report_metric_replacements() {
+  local replacements="$1" n
+  n="$(jq -r 'if type == "array" then length else error("unusable") end' "${replacements}")" \
+    || die "the log-based metric check of this plan is unreadable -- refusing a plan this guard was unable to evaluate"
+  if [[ "${n}" -eq 0 ]]; then
+    ok "no log-based metric is replaced"
+    return 0
+  fi
+  hr
+  err "STOP. ${n} log-based metric(s) this plan REPLACES (delete, then create):"
+  jq -r '.[] | "    \(.address)  (metric \(.name))"' "${replacements}" >&2
+  err "GCP refuses to delete a metric an alerting policy uses (Error 400, release 39712409927), so the apply"
+  err "would fail half-way. A label added to metric_descriptor.labels forces this replace."
+  err "Add the label live first, as this PR's runbook step -- GCP updates a metric's labels in place:"
+  err "    gcloud logging metrics update <metric> --project=${PROJECT_ID} --config-from-file=<metric with the new label and its extractor>"
+  err "Then this plan reads 'update' (or nothing) for the metric and applies."
+  return 2
+}
+
+# ---------------------------------------------------------------------------
 # Self-test. The guard decides whether a plan may touch a shared project, so it
 # is verified from fixtures rather than trusted -- and the fixtures are the cases
 # that were actually got wrong before.
@@ -463,6 +514,52 @@ FIXTURE_JSON
   iam_case "a change with no actions is refused" refused \
     '{"format_version":"1.2","resource_changes":[{"address":"x","type":"google_project_iam_member"}]}'
 
+  # ---------------------------------------------------------------------
+  # A replaced log-based metric (release 39712409927). Refused in both orders
+  # Terraform writes a replace, and an unreadable plan is refused too; an
+  # in-place update, a destroy's deletion and another type's replace are not
+  # this rule's business.
+  # ---------------------------------------------------------------------
+  metric_case() {
+    local label="$1" want="$2" content="$3" rc=0
+    printf '%s' "${content}" >"${WORK}/metric-plan.json"
+    # Subshell and `|| rc=$?`: a refusal (die, or return 2) must not end the self-test.
+    ( metric_replacements "${WORK}/metric-plan.json" "${WORK}/metric.json" \
+        && report_metric_replacements "${WORK}/metric.json" ) >"${WORK}/metric.out" 2>&1 || rc=$?
+    case "${want}" in
+      allowed)
+        if [[ "${rc}" -eq 0 ]]; then ok "${label}"; else err "${label}: refused (exit ${rc})"; FAILED=1; fi ;;
+      refused)
+        if [[ "${rc}" -eq 2 ]] && grep -qF 'events["generation_fenced"]' "${WORK}/metric.out" \
+             && grep -qF 'gcloud logging metrics update' "${WORK}/metric.out"; then
+          ok "${label}"
+        else
+          err "${label}: expected exit 2 naming the metric and the live update, got exit ${rc}"; FAILED=1
+        fi ;;
+      unreadable)
+        if [[ "${rc}" -ne 0 ]]; then ok "${label}"; else err "${label} -- THE GUARD APPROVED IT"; FAILED=1; fi ;;
+    esac
+  }
+
+  metric_change() {
+    printf '{"format_version":"1.2","resource_changes":[{"address":"%s","type":"%s","change":{"actions":%s,"before":{"name":"swarm/generation-fenced"},"after":{"name":"swarm/generation-fenced"}}}]}' \
+      "$1" "$2" "$3"
+  }
+  fenced='module.monitoring.google_logging_metric.events[\"generation_fenced\"]'
+  metric_case "a replaced log-based metric is refused (delete, create)" refused \
+    "$(metric_change "${fenced}" google_logging_metric '["delete","create"]')"
+  metric_case "a replaced log-based metric is refused (create, delete)" refused \
+    "$(metric_change "${fenced}" google_logging_metric '["create","delete"]')"
+  metric_case "an in-place log-based metric update is allowed" allowed \
+    "$(metric_change "${fenced}" google_logging_metric '["update"]')"
+  metric_case "a destroy's log-based metric deletion is not a replace" allowed \
+    "$(metric_change "${fenced}" google_logging_metric '["delete"]')"
+  metric_case "a replaced alert policy is not this rule's" allowed \
+    "$(metric_change module.monitoring.google_monitoring_alert_policy.x google_monitoring_alert_policy '["delete","create"]')"
+  metric_case "a plan with no changes replaces no metric" allowed '{"format_version":"1.2"}'
+  metric_case "an empty plan is refused, not read as no replace" unreadable ""
+  metric_case "a plan that is not an object is refused" unreadable '"nope"'
+
   hr
   [[ "${FAILED}" -eq 0 ]] || die "PLAN-GUARD SELF-TEST FAILED -- do not trust the workflow gates until this passes"
   ok "plan-guard self-test passed"
@@ -509,11 +606,19 @@ esac
 
 VERDICT="${BUILD_DIR}/plan-guard-verdict.json"
 judge "${PLAN}" "${VERDICT}"
+METRIC_REPLACEMENTS="${BUILD_DIR}/plan-guard-metric-replacements.json"
+metric_replacements "${PLAN}" "${METRIC_REPLACEMENTS}" \
+  || die "could not read ${PLAN}'s log-based metric changes -- refusing a plan this guard was unable to evaluate"
 
 step "Shared-project guard (${MODE})"
 info "$(jq -r '"\(.total_changes) change(s), \(.deletions) deletion(s)"' "${VERDICT}")"
 
-if report "${VERDICT}" "${MODE}"; then
+# Both checks always run, so one refusal never hides the other's findings.
+REFUSED=0
+report "${VERDICT}" "${MODE}" || REFUSED=1
+report_metric_replacements "${METRIC_REPLACEMENTS}" || REFUSED=1
+
+if [[ "${REFUSED}" -eq 0 ]]; then
   ok "no deny-listed resource is touched"
   # Says only what aborted on: `offenders` and `unlabelled_creations` skip
   # the unlabelable types, and `foreign_touches` only warns (see its comment
