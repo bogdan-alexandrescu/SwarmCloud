@@ -6,7 +6,10 @@ PARKED(HUMAN_REQUIRED) with a `question_wait` record. Both are swarm-api's to
 end: the merge-wake tick returns a release wait on a terminal release, and the
 question sweep holds a blocking question for 72 hours. The scheduler's own
 sweeps would otherwise promote the first at once (it has no `depends_on`) and
-dead-letter the second at the 24-hour hand-off maximum.
+dead-letter the second at the 24-hour hand-off maximum. A merge held by its
+review's blocking owner questions (`owner_questions`, QUESTION-WAKE, part of
+#2070) is woken by the answer that leaves none open, and never expires (owner
+decision 2026-10-23, "Resume on answer, no expiry").
 
 Each test carries its control: the same park without the record is ended or
 promoted by the same drain, so the survival is the record's doing.
@@ -67,3 +70,24 @@ def test_a_blocking_question_outlives_the_hand_off_maximum(db, make_scheduler):
     # `Scheduler._expire_human_waits` dead-letters the question at 24 hours.
     assert asking["state"] == "PARKED" and asking["park_reason"] == "HUMAN_REQUIRED"
     assert handoff["state"] == "DEAD_LETTERED"
+
+
+def test_an_owner_questions_park_outlives_the_hand_off_maximum(db, make_scheduler):
+    seed_tenant(db, "eng")
+    held = _park(
+        db, "task-merge-held", "HUMAN_REQUIRED", hours_ago=25,
+        block={"reason": "HUMAN_REQUIRED", "park_phase": "owner_questions",
+               "owner_questions": {"code": "owner_questions_open",
+                                   "questions": [{"task_id": "task-implement", "step_id": "implement",
+                                                  "question_index": 0, "question": "Join the list?"}],
+                                   "unreadable": 0}},
+    )
+    # The control: an ordinary 25-hour human park, past its 24-hour maximum.
+    ordinary = _park(db, "task-ordinary", "HUMAN_REQUIRED", hours_ago=25,
+                     block={"reason": "HUMAN_REQUIRED", "park_phase": "handoff"})
+    make_scheduler().drain()
+    # MUTATION: removing the `owner_wait(task, "owner_questions")` check in
+    # `Scheduler._expire_human_waits` dead-letters the held merge at 24 hours,
+    # although only an answer can wake it.
+    assert held["state"] == "PARKED" and held["park_reason"] == "HUMAN_REQUIRED"
+    assert ordinary["state"] == "DEAD_LETTERED"

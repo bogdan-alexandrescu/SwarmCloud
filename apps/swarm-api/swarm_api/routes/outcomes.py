@@ -32,6 +32,12 @@ existed; `Outcomes.read` says what a single section still reads.
 bucket (`rows_at`) and one group row (`rows_key`) -- as `ended_rows`, from the
 same fold the figures came from. It is validated with the rest, after the gate,
 and reaches no tenant the gate did not already allow.
+
+`usage` (#2149) adds the agents' usage -- agents with retries apart, run time,
+tokens and estimated cost, each with its coverage -- placed by submission
+(`submitted`) or by end (`ended`), per bucket and per `group` row. Without it
+the response is exactly what it was before the parameter existed. It reads
+nothing the figures did not already read, so it changes no one's access.
 """
 
 from __future__ import annotations
@@ -62,7 +68,7 @@ def get_outcomes(
     profile: list[str] = Query(default=[]),
     submitted_by: list[str] = Query(default=[]),
     kind: str | None = Query(default=None, description="all | standalone | steps"),
-    group: str | None = Query(default=None, description="runner_profile | submitted_by | tenant_id | model | model_class"),
+    group: str | None = Query(default=None, description="runner_profile | submitted_by | tenant_id | model | model_class | pool_account | provider"),
     compare: str | None = Query(default=None, description="none | previous"),
     section: list[str] = Query(
         default=[],
@@ -72,6 +78,8 @@ def get_outcomes(
     rows: str | None = Query(default=None, description="failed | cancelled | succeeded"),
     rows_at: str | None = Query(default=None, description="one bucket, by its start as served"),
     rows_key: str | None = Query(default=None, description="one row of `group`, by its key"),
+    # Agents, retries, run time, tokens and estimated cost (#2149), as `usage`.
+    usage: str | None = Query(default=None, description="submitted | ended"),
     auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
@@ -94,6 +102,7 @@ def get_outcomes(
         "rows": rows,
         "rows_at": rows_at,
         "rows_key": rows_key,
+        "usage": usage,
     }
     if platform_requested(raw):
         require_admin(auth, PLATFORM_ROUTE)

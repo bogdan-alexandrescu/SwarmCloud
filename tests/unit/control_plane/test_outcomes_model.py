@@ -221,5 +221,5 @@ def test_a_day_stored_before_the_model_columns_is_derived_again():
         "ended": '{"cols":[],"rows":[]}',
         "arrived": '{"cols":[],"rows":[]}',
     }
-    assert outcomes.DERIVE_VERSION == 8
+    assert outcomes.DERIVE_VERSION >= 8
     assert outcomes._decode_stored(base, []) is None

@@ -104,6 +104,26 @@ with `last_error: "owner question unanswered"` (`expire_question_waits`),
 which failure-review skips by rule. Only HUMAN_REQUIRED is read as a
 question wait: an AWAITING_INPUT park is a workflow's await-input step,
 answered and expired by `awaitinput` alone, and never promoted or ended here.
+
+AN ANSWER ALSO WAKES THE MERGE ITS QUESTION HELD (owner decision 2026-10-23
+~19:23Z, "Resume on answer, no expiry"; lane QUESTION-WAKE, part of #2070).
+A merge step whose review named blocking owner questions (`needs_owner`)
+parks PARKED(HUMAN_REQUIRED) with an `owner_questions` record in its park's
+`blocked_by` entry, naming each question by its asking task and index
+(`agent_worker.lifecycle._park_for_owner_questions`). Those questions are
+not the merge's own, so its park is not a `question_wait`. In the answer's
+transaction, every such merge in the answered task's workflow whose record
+names that task is read, and every task the record names is read with it;
+when none of the named questions is still unanswered, the merge returns to
+READY through `handoff.ready_writes`, as the question wait does, and its
+next attempt reads every answer again before it merges. A merge still
+waiting on another question stays parked, and so does one whose record
+cannot be read whole -- an entry the worker could not read, a task outside
+the workflow or the tenant: FAIL CLOSED, it waits for a person's
+`human-ready`. The scheduler never expires such a park
+(`Scheduler._expire_human_waits`). A parked merge holds no lease and no
+capacity (invariant 1); nothing is leased here, and its next attempt is
+admitted all-or-nothing under a new generation (invariants 2, 5).
 """
 
 from __future__ import annotations
@@ -194,6 +214,20 @@ QUESTION_WAIT_MAX_SECONDS = 72 * 3600
 UNANSWERED = "owner question unanswered"
 #: The READY event's reason when the last blocking answer resumes the agent.
 OWNER_ANSWERED = "owner_answered"
+#: The key of a merge's owner-question hold in its park's `blocked_by` entry
+#: (`agent_worker.lifecycle._park_for_owner_questions`). Spelled again: the
+#: worker is not installed in this image.
+OWNER_QUESTIONS_PARK_KEY = "owner_questions"
+#: The READY event's reason when an answer wakes a merge its questions held.
+OWNER_QUESTIONS_ANSWERED = "owner_questions_answered"
+#: The most parked merges one answer reads in its workflow. A workflow has
+#: one merge step, and a merge-only continuation another; past this the rest
+#: wait for a person's `human-ready`, never for a read nobody bounded.
+MAX_HELD_MERGES = 10
+#: The most distinct asking tasks one hold may name before it is read as
+#: unreadable (it waits for a person): every one is read in the answer's
+#: transaction, and the document is tenant-writable.
+MAX_HOLD_TASKS = 25
 #: Parks read per page by `parked_human_snapshots`: the sweep pages through
 #: every PARKED(HUMAN_REQUIRED) task, so this bounds one read, not the sweep.
 EXPIRY_SCAN = 200
@@ -281,6 +315,105 @@ def adopt_wait(metadata: dict[str, Any], wait: dict[str, Any]) -> bool:
         metadata[EARLIER_WAITS_KEY] = earlier[-MAX_EARLIER_WAITS:]
     metadata[QUESTION_WAIT_KEY] = {k: v for k, v in wait.items()}
     metadata[OWNER_ANSWERS_METADATA_KEY] = []
+    return True
+
+
+def owner_questions_hold(data: dict[str, Any]) -> list[tuple[str, int]] | None:
+    """The `(task_id, question_index)` pairs a merge's owner-question park names, else None.
+
+    None for a task not PARKED(HUMAN_REQUIRED) on such a record, and for a
+    record that is not readable whole: no questions, an entry that is not a
+    task id and a non-negative integer index, an `unreadable` count the
+    worker recorded, or more asking tasks than `MAX_HOLD_TASKS`. The
+    document is tenant-writable, so nothing in it is guessed at, and a hold
+    read as None is never woken by an answer.
+    """
+    if (data.get("state") != TaskState.PARKED.value
+            or data.get("park_reason") != ParkReason.HUMAN_REQUIRED.value):
+        return None
+    for entry in data.get("blocked_by") or ():
+        if not isinstance(entry, dict) or entry.get("reason") != ParkReason.HUMAN_REQUIRED.value:
+            continue
+        hold = entry.get(OWNER_QUESTIONS_PARK_KEY)
+        if not isinstance(hold, dict):
+            continue
+        unreadable = hold.get("unreadable", 0)
+        if isinstance(unreadable, bool) or not isinstance(unreadable, int) or unreadable != 0:
+            return None
+        questions = hold.get("questions")
+        if not isinstance(questions, list) or not questions:
+            return None
+        named: list[tuple[str, int]] = []
+        for question in questions:
+            task = question.get("task_id") if isinstance(question, dict) else None
+            index = question.get("question_index") if isinstance(question, dict) else None
+            if (not isinstance(task, str) or not task or isinstance(index, bool)
+                    or not isinstance(index, int) or index < 0):
+                return None
+            named.append((task, index))
+        if len({task for task, _ in named}) > MAX_HOLD_TASKS:
+            return None
+        return named
+    return None
+
+
+def _held_merges(txn: Any, db: Any, data: dict[str, Any]) -> list[dict[str, Any]]:
+    """The parked merges in the answered task's workflow whose owner-question hold names it.
+
+    Read in the answer's transaction, before any write. Each one's
+    workflow and tenant are checked again on the document, as the query
+    alone is not trusted to say them.
+    """
+    workflow_id, tenant_id, task_id = data.get("workflow_id"), data.get("tenant_id"), data.get("id")
+    if not isinstance(workflow_id, str) or not workflow_id:
+        return []
+    query = (
+        db.collection(TASKS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("workflow_id", "==", workflow_id))
+        .where(filter=FieldFilter("state", "==", TaskState.PARKED.value))
+        .where(filter=FieldFilter("park_reason", "==", ParkReason.HUMAN_REQUIRED.value))
+        .limit(MAX_HELD_MERGES)
+    )
+    held: list[dict[str, Any]] = []
+    for snap in txn.get(query):
+        doc = {"id": snap.id, **(snap.to_dict() or {})}
+        if (doc.get("tenant_id") != tenant_id or doc.get("workflow_id") != workflow_id
+                or doc.get("id") == task_id):
+            continue
+        named = owner_questions_hold(doc)
+        if named is not None and any(task == task_id for task, _ in named):
+            held.append(doc)
+    return held
+
+
+def _hold_cleared(txn: Any, db: Any, merge: dict[str, Any], answered: dict[str, Any],
+                  docs: dict[str, dict[str, Any] | None]) -> bool:
+    """Whether every question `merge`'s hold names now has an answer.
+
+    `answered` is the task just answered, with the answer it is being
+    given; every other named task is read in the transaction (`docs`
+    caches the reads, and every read precedes the transaction's writes).
+    FAIL CLOSED: a named task that cannot be read, or is not a step of the
+    merge's own workflow and tenant, answers nothing -- as the merge's own
+    re-read (`agent_worker.merge._unanswered`) holds it.
+    """
+    named = owner_questions_hold(merge) or []
+    if not named:
+        return False
+    for task_id, index in named:
+        if task_id == answered.get("id"):
+            doc: dict[str, Any] | None = answered
+        else:
+            if task_id not in docs:
+                snap = _snapshot(txn.get(db.collection(TASKS).document(task_id)))
+                docs[task_id] = snap.to_dict() if snap.exists else None
+            doc = docs[task_id]
+        if (doc is None or doc.get("tenant_id") != merge.get("tenant_id")
+                or doc.get("workflow_id") != merge.get("workflow_id")):
+            return False
+        if index not in owner_answers_by_index(doc.get("metadata")):
+            return False
     return True
 
 
@@ -656,17 +789,29 @@ def answer_question(
             })
         current[index] = {**entry, "history": history}
         metadata[OWNER_ANSWERS_METADATA_KEY] = [current[i] for i in sorted(current)]
+        moved = {**data, "metadata": metadata}
+        # Every read before the first write, as a Firestore transaction
+        # requires: the merges this task's answers hold, and every other
+        # task their holds name.
+        docs: dict[str, dict[str, Any] | None] = {}
+        woken = [merge for merge in _held_merges(txn, db, moved)
+                 if _hold_cleared(txn, db, merge, moved, docs) and _resumable(merge)]
         if wait is not None and not blocking_unanswered(wait, metadata) and _resumable(data):
             # The last blocking answer: PARKED(HUMAN_REQUIRED) -> READY in
             # this same transaction, as `human-ready` makes it. Nothing is
             # leased here (invariants 1, 2, 5).
-            moved = {**data, "metadata": metadata}
             ready_writes(txn, db, moved, email=email, now=now, reason=OWNER_ANSWERED)
             promoted["by"] = email
-            return previous is not None
-        # `metadata` alone: `updated_at` is the task's own lifecycle clock,
-        # and an answer on an ended task is not a change to the task.
-        txn.update(ref, {"metadata": metadata})
+        else:
+            # `metadata` alone: `updated_at` is the task's own lifecycle clock,
+            # and an answer on an ended task is not a change to the task.
+            txn.update(ref, {"metadata": metadata})
+        for merge in woken:
+            # No question its review held it on is open: the merge returns
+            # to READY in this same transaction and reads every answer again
+            # before it merges. Nothing is leased here (invariants 1, 2, 5).
+            ready_writes(txn, db, merge, email=email, now=now, reason=OWNER_QUESTIONS_ANSWERED)
+            promoted.setdefault("merges", []).append(merge["id"])
         return previous is not None
 
     replaced = _apply(db.transaction())
@@ -682,7 +827,8 @@ def answer_question(
             "with_choice": choice is not None,
             "with_text": text is not None,
             "via": body.via,
-            "resumed": bool(promoted),
+            "resumed": "by" in promoted,
+            "merges_resumed": promoted.get("merges", []),
         },
     )
     return read_questions(
