@@ -81,10 +81,18 @@ resource "google_cloud_run_v2_service" "this" {
 
       resources {
         # requests == limits, no bursting (CONTRACT.md invariant 7). Both flags
-        # below are the ways Cloud Run breaks that equality, and both are off:
+        # below are the ways Cloud Run breaks that equality:
         #
         #   startup_cpu_boost allocates MORE CPU than the declared limit while an
-        #   instance starts. That is bursting by definition.
+        #   instance starts. That is bursting by definition, so it is off for
+        #   every service that does not set it. swarm-api sets it, by BGD's
+        #   decision of 2026-10-23 (#1816 option (a)): its Python start on
+        #   1 vCPU sometimes outlasted the startup probe, and four instances
+        #   killed at 96 s on 2026-10-21 left callers with Cloud Run's 429 "no
+        #   available instance". About $1 a month (35-80 starts a day, ~30
+        #   boosted vCPU-seconds each). This is the ONE exception to invariant
+        #   7 among the Cloud Run services; tests/terraform/cloud_run.tftest.hcl
+        #   fails if any other service turns it on.
         #
         #   cpu_idle = true throttles CPU to near zero between requests, so the
         #   guaranteed allocation is not the limit -- it is the limit only while
@@ -101,8 +109,10 @@ resource "google_cloud_run_v2_service" "this" {
           memory = each.value.memory
         }
 
+        # Off everywhere, swarm-api included: the boost exception does not
+        # extend to it.
         cpu_idle          = false
-        startup_cpu_boost = false
+        startup_cpu_boost = each.value.startup_cpu_boost
       }
 
       dynamic "env" {
