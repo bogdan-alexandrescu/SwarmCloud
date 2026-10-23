@@ -21,6 +21,11 @@ as the password, for a public target too. It goes to the gate in the same
 is dropped once the gate has answered: only the gate adds it, and only on
 the target's approved origins.
 
+A target whose platform admin approved an `idp_token_path` with its extra
+origin is answered with it, and it goes to the gate in the same args
+(QA-IDP-POST, part of #2067): the gate lets exactly that POST through once
+its own sign-in has completed.
+
 THE WORKER HANDS IT TO THE GATE AND FORGETS IT. ctl.sock `qa_sign_in`
 (`livegate/qatarget.py`): the gate holds the agent, signs in on a tab of its
 own, and scrubs the password from everything bound for the agent. The worker
@@ -237,6 +242,9 @@ def handoff_args(answer: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(username, str) or not isinstance(password, str) or not password:
             raise ValueError("an own login with no credential")
         args["credential"] = {"username": username, "password": password}
+    if answer.get("idp_token_path") is not None:
+        # QA-IDP-POST: a platform admin's approval; the gate checks it again.
+        args["idp_token_path"] = answer["idp_token_path"]
     bypass = answer.get("challenge_bypass")
     if bypass is not None:
         # §2.5: the gate checks its kind, name and value again; here only its shape.

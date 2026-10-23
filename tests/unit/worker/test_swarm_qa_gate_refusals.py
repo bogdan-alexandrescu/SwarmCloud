@@ -130,7 +130,8 @@ def test_the_manifest_names_the_idp_token_refreshes_the_gate_let_through(qa, wor
     through after its sign-in, and its record lists those apart from the
     refusals. The manifest names them separately, so a run shows what was let
     through and never counts it as refused."""
-    allowed = [{"n": i + 1, "at": time.time(), "method": "POST", "origin": IDP, "path": TOKEN_PATH,
+    # Dated inside the capture: the record is read for what the gate did after it began.
+    allowed = [{"n": i + 1, "at": time.time() + 60, "method": "POST", "origin": IDP, "path": TOKEN_PATH,
                 "code": "idp_token_refresh", "label": "allowed: IdP token refresh"} for i in range(2)]
     monkeypatch.setattr(qa, "_gate_document", lambda: {"format": 1, "armed": True, "refusals": [],
                                                        "dropped": 0, "allowed": allowed,
