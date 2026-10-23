@@ -7,7 +7,10 @@
 //   * a workspace admin sees Register, Edit and Set credential; a member sees
 //     Run and not Edit;
 //   * a pending host shows why it cannot run, and Run sends nothing;
-//   * Run POSTs `{file}` alone to the target's own `:run`;
+//   * Run POSTs `{file}` alone to the target's own `:run`, and the flow
+//     browser chosen for that one run beside it (lane VQ9-TOOL);
+//   * the form shows "Flow browser", Playwright by default or Jev, sends it,
+//     and an edit never drops it (lane VQ9-TOOL; BGD, 2026-10-23);
 //   * the credential form reads its link token from the URL and removes it
 //     from the address bar, as ProviderKeys.tsx does, and sends it once as
 //     `link_token` with the username and password, which never stay in the DOM;
@@ -75,10 +78,14 @@ function target(id: string, name: string, over: Json = {}): Json {
   }
 }
 
-function targets(pendingOver: Json = {}, loginSignIn: Json = { kind: 'own_login', login_path: '/login', signed_in_selector: '#me' }): Json {
+function targets(
+  pendingOver: Json = {},
+  loginSignIn: Json = { kind: 'own_login', login_path: '/login', signed_in_selector: '#me' },
+  shopOver: Json = {},
+): Json {
   return {
     qa_targets: [
-      target(APPROVED, 'shop', { themes: ['light'] }),
+      target(APPROVED, 'shop', { themes: ['light'], ...shopOver }),
       target(PENDING, 'blog', { host_state: 'pending', ...pendingOver }),
       target(LOGIN, 'portal', { sign_in: loginSignIn }),
     ],
@@ -87,12 +94,12 @@ function targets(pendingOver: Json = {}, loginSignIn: Json = { kind: 'own_login'
 
 function live(
   role: string,
-  opts: { run?: Reply; link?: Reply; put?: Reply; create?: Reply; platformAdmin?: boolean; approve?: Reply; pending?: Json; login?: Json } = {},
+  opts: { run?: Reply; link?: Reply; put?: Reply; create?: Reply; platformAdmin?: boolean; approve?: Reply; pending?: Json; login?: Json; shop?: Json } = {},
 ) {
   const calls = serve((m, url) => {
     const path = url.split('?')[0] ?? ''
     if (m === 'GET' && path === '/v1/tenants/me') return { status: 200, body: me(role, opts.platformAdmin === true) }
-    if (m === 'GET' && path === '/v1/qa-targets') return { status: 200, body: targets(opts.pending, opts.login) }
+    if (m === 'GET' && path === '/v1/qa-targets') return { status: 200, body: targets(opts.pending, opts.login, opts.shop) }
     if (m === 'POST' && path.endsWith(':approve-host')) {
       return opts.approve ?? { status: 200, body: { qa_target: target(PENDING, 'blog', { approved_by: 'root@example.com', ...opts.pending, host_state: 'approved' }) } }
     }
@@ -205,6 +212,21 @@ describe('QA targets: the page and who sees what', () => {
     // MUTATION: send anything besides `file` (an image, a command, the target's spec).
     expect(sent.body).toEqual({ file: 'issues' })
     await waitFor(() => expect(visible(card(APPROVED))).toContain('wf_' + 'd4'.repeat(8)), WAIT)
+  })
+
+  it('Run sends the flow browser chosen for that one run, and nothing when none is chosen', async () => {
+    const calls = live('member')
+    await mountPage()
+    const choice = card(APPROVED).querySelector<HTMLSelectElement>('select[data-run-browser]')
+    // MUTATION: draw no per-run choice beside Run and this is null.
+    expect(choice).not.toBeNull()
+    expect(choice!.value).toBe('')
+    expect(Array.from(choice!.options).map((o) => o.value)).toEqual(['', 'playwright', 'jev'])
+    fireEvent.change(choice!, { target: { value: 'jev' } })
+    fireEvent.click(button(card(APPROVED), 'Run')!)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST').length).toBe(1), WAIT)
+    // MUTATION: drop `browser_tool` from `runQaTarget`'s body and the run uses the target's tool.
+    expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ file: 'issues', browser_tool: 'jev' })
   })
 
   it('a refused run is said with the API’s own words', async () => {
@@ -369,6 +391,8 @@ describe('QA targets: registration', () => {
         { id: 'pricing', path: '/pricing' },
       ],
       environment: 'production',
+      // MUTATION: leave the Flow browser out of `bodyOf` and a registration never says it.
+      flows_browser_tool: 'playwright',
     })
     // MUTATION: never say a new host waits for approval.
     await waitFor(() => expect(visible(document.body)).toContain('waits for a platform admin'), WAIT)
@@ -430,6 +454,70 @@ describe('QA targets: registration', () => {
     expect(sent.url).toBe(`/v1/qa-targets/${APPROVED}`)
     // MUTATION: send the whole form on an edit, or leave a removed setting out instead of null.
     expect(sent.body).toEqual({ name: 'shop-2', themes: null })
+  })
+})
+
+describe('QA targets: the flow browser (VQ9-TOOL; BGD, 2026-10-23)', () => {
+  async function openForm(label: string, root: ParentNode = document): Promise<HTMLFormElement> {
+    await waitFor(() => expect(button(root, label)).not.toBeNull(), WAIT)
+    fireEvent.click(button(root, label)!)
+    return waitFor(() => {
+      const f = document.querySelector<HTMLFormElement>('form.qa-edit')
+      if (f === null) throw new Error('no form')
+      return f
+    }, WAIT)
+  }
+
+  it('the form shows Flow browser, Playwright by default, and a registration choosing Jev sends it', async () => {
+    const calls = live('admin')
+    await mountPage()
+    const form = await openForm('Register QA target')
+    await waitFor(() => expect(form.querySelectorAll('select[name="repository"] option').length).toBeGreaterThan(1), WAIT)
+    const tool = form.querySelector<HTMLSelectElement>('select[name="flows_browser_tool"]')
+    // MUTATION: draw no Flow browser select and this is null.
+    expect(tool).not.toBeNull()
+    expect(visible(tool!.closest('label')!)).toContain('Flow browser')
+    // MUTATION: default the select to Jev and this fails.
+    expect(tool!.value).toBe('playwright')
+    expect(Array.from(tool!.options).map((o) => o.value)).toEqual(['playwright', 'jev'])
+    const set = (name: string, value: string) => {
+      fireEvent.change(form.querySelector(`[name="${name}"]`)!, { target: { value } })
+    }
+    set('name', 'new')
+    set('base_url', 'https://new.example.test/')
+    set('repository', 'example-org/example-api')
+    set('authorized_by', "the app's owner")
+    set('screens', 'home /')
+    set('flows_browser_tool', 'jev')
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST').length).toBe(1), WAIT)
+    // MUTATION: send the draft's default instead of the choice and this is playwright.
+    expect((calls.find((c) => c.method === 'POST')!.body as Json).flows_browser_tool).toBe('jev')
+  })
+
+  it('an edit opens on the target’s tool and a save of anything else never drops it', async () => {
+    const calls = live('admin', { shop: { flows_browser_tool: 'jev' } })
+    await mountPage()
+    const form = await openForm('Edit', card(APPROVED))
+    // MUTATION: leave `flows_browser_tool` out of `normQaTarget` and this opens on playwright.
+    expect(form.querySelector<HTMLSelectElement>('select[name="flows_browser_tool"]')!.value).toBe('jev')
+    fireEvent.change(form.querySelector('[name="name"]')!, { target: { value: 'shop-2' } })
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PATCH').length).toBe(1), WAIT)
+    // MUTATION: draft every target as playwright and the save sends `flows_browser_tool: "playwright"`.
+    expect(calls.find((c) => c.method === 'PATCH')!.body).toEqual({ name: 'shop-2' })
+  })
+
+  it('an edit that changes the tool sends it', async () => {
+    const calls = live('admin')
+    await mountPage()
+    const form = await openForm('Edit', card(APPROVED))
+    expect(form.querySelector<HTMLSelectElement>('select[name="flows_browser_tool"]')!.value).toBe('playwright')
+    fireEvent.change(form.querySelector('[name="flows_browser_tool"]')!, { target: { value: 'jev' } })
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PATCH').length).toBe(1), WAIT)
+    // MUTATION: leave the field out of the edit's diff and the change is never sent.
+    expect(calls.find((c) => c.method === 'PATCH')!.body).toEqual({ flows_browser_tool: 'jev' })
   })
 })
 

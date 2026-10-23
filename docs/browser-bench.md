@@ -117,6 +117,13 @@ The same bar holds `jev` against Playwright MCP, with its own verdict line.
 needs was not measured on both arms. The verdict is the data's; flipping the
 default is the owner's decision.
 
+Its first consequence (batch `bench3-2026-10-23`, 10 prompts x 3 tools x 3
+repeats, 83 runs measured: Playwright MCP 8/10 at a median $0.14 and 44.5 s a
+run, dev-browser 7/10, Jev 6/10 at $0.17 and 51.3 s): BGD decided on
+2026-10-23 that Visual QA's goal-driven flows default to Playwright, and a
+target or one run may choose Jev
+([visual-qa-any-app.md §4.1](design/visual-qa-any-app.md#41-the-steps)).
+
 ## What is measured, and where it comes from
 
 | column | source |

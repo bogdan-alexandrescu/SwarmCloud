@@ -108,6 +108,8 @@ class TargetBody(StrictModel):
     clock: Any = None
     #: `{kind: header | cookie, name}` (§2.5); its value is the bypass PUT's.
     challenge_bypass: Any = None
+    #: The tool its flows run with, `playwright` (unset) or `jev` (lane VQ9-TOOL).
+    flows_browser_tool: Any = None
     #: The registrant's statement of who said this application may be tested.
     authorized_by: Any = None
 
@@ -122,6 +124,10 @@ class ApproveBody(StrictModel):
 class RunBody(StrictModel):
     screens: list[str] | None = Field(default=None, max_length=60)
     file: Literal["issues", "none"] = "issues"
+    #: The flows' tool for this one run, by name, over the target's
+    #: `flows_browser_tool` (lane VQ9-TOOL; `qaspec.FLOW_BROWSER_TOOLS`).
+    #: Recorded on the run's record; never stored on the target.
+    browser_tool: Literal["playwright", "jev"] | None = None
 
 
 class CredentialWrite(BaseModel):
@@ -272,7 +278,8 @@ def run_target(
     require_member(ctx, auth)
     targets = _targets(request, ctx)
     target = targets.runnable(tenant_id, target_id, file=body.file)
-    workflow, mark, browser = render_run(target, screens=body.screens, file=body.file)
+    workflow, mark, browser = render_run(target, screens=body.screens, file=body.file,
+                                         browser_tool=body.browser_tool)
     # The mark is reserved (`validation.QA_TARGET_METADATA_KEY`): only this
     # exact value, only for this submission, gets past the refusal.
     with qa_target_mark_allowed(mark):
@@ -280,7 +287,7 @@ def run_target(
     workflow_id = submission.workflow.workflow_id
     task_ids = [t.id for t in submission.tasks if t.step_id in set(browser)]
     targets.record_run(tenant_id=tenant_id, target=target, workflow_id=workflow_id,
-                       task_ids=task_ids, file=body.file, by=_email(auth))
+                       task_ids=task_ids, file=body.file, by=_email(auth), browser_tool=body.browser_tool)
     return {"workflow_id": workflow_id, "qa_target": mark, "file": body.file,
             "browser_steps": browser}
 
