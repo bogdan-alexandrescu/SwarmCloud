@@ -630,3 +630,29 @@ def test_no_failure_copy_names_a_command_or_shows_its_output(code: str) -> None:
     assert not _COMMANDISH.search(template), template
     copy = ws.failure_copy({"step": "S2", "code": code}, "req-9")
     assert copy.endswith(".") and "{" not in copy, copy
+
+
+# --- a quota of other numbers is not a missing object (QUOTA-ONE, #2039) ------
+
+
+def test_a_final_check_failed_on_the_quota_says_so_plainly() -> None:
+    """A9 records the object's type, never its numbers (§4.2): a failure on
+    `ResourceQuota` is the namespace quota not matching the workspace's
+    limits, which `--mode limits` repairs. The console says that, and never
+    that an object could not be found."""
+    failure = {"step": "A9", "code": "VERIFY_FAILED", "object": "ResourceQuota", "retryable": True}
+    copy = ws.failure_copy(failure, "req-9")
+    # MUTATION: serve VERIFY_FAILED's sentence for every object and this
+    # says "could not find one of your workspace's objects".
+    assert "could not find" not in copy, copy
+    assert "quota" in copy and "limits" in copy, copy
+    assert copy.endswith(".") and "{" not in copy and not _COMMANDISH.search(copy), copy
+    # The person's view serves the same sentence from the record.
+    record = {"state": "failed", "request_id": "req-9", "failure": failure}
+    assert ws.view(record)["failure"]["copy"] == copy
+    # MUTATION: key the quota copy on the object alone and another code
+    # naming ResourceQuota loses its own sentence.
+    other = ws.failure_copy({**failure, "code": "NAMESPACE_LABEL_MISSING"}, "req-9")
+    assert other == ws.FAILURE_COPY["NAMESPACE_LABEL_MISSING"].format(step="Final check", request_id="req-9")
+    missing = ws.failure_copy({**failure, "object": "NetworkPolicy"}, "req-9")
+    assert missing == ws.FAILURE_COPY["VERIFY_FAILED"].format(step="Final check", request_id="req-9")

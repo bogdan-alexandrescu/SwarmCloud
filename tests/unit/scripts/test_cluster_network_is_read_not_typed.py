@@ -1078,9 +1078,17 @@ def test_apply_without_swarm_verify_renders_nothing(tmp_path):
     assert not (cluster.dir / "applied-dry-run.yaml").exists()
 
 
+#: The five quota flags the workspace deployer's A7 passes (register-tenant.sh
+#: ws_quota_args): with all five, apply.sh reads no workspace record (QUOTA-ONE,
+#: #2039), as the deployer -- whose call guard admits no swarm-api call -- needs.
+A7_QUOTA = ["--quota-pods", "16", "--quota-cpu", "64", "--quota-memory", "128Gi",
+            "--quota-jobs", "64", "--quota-ephemeral", "160Gi"]
+
+
 @pytest.mark.parametrize(
     "args",
-    [["--tenant", "research"], ["--tenant", "u-alice"], ["--tenant", "eng", "--workspace-id", "w-000000"]],
+    [["--tenant", "research", *A7_QUOTA], ["--tenant", "u-alice", *A7_QUOTA],
+     ["--tenant", "eng", "--workspace-id", "w-000000"]],
     ids=["other-tenant", "personal", "group-workspace"],
 )
 def test_apply_elsewhere_never_looks_swarm_verify_up(tmp_path, args):

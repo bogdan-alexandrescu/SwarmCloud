@@ -885,6 +885,78 @@ elif [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
 else
   [[ -n "${TENANT}" ]] || die "--tenant is required (or pass --policies, --swarm-system, --swarm-graph or --swarm-typesafe-fwd)"
 
+  # A WORKSPACE TENANT'S QUOTA IS ITS RECORD'S (QUOTA-ONE, #2039; BGD's
+  # decision, 2026-10-23). The workspace job's A7 renders the namespace with
+  # five --quota-* flags from the record's limits, and its A9 fails the
+  # workspace when the live quota has other numbers. This script, run by hand
+  # with no quota flag, used to render render.py's flat defaults (pods 100,
+  # cpu 400) for every tenant, and on 2026-10-23 that failed u-bogdan's
+  # workspace, whose 100 agents want pods 200, cpu 800. So:
+  #   * all five --quota-* flags given (the job's A7, under a call guard that
+  #     admits no call to swarm-api): rendered as given, nothing is read;
+  #   * a Terraform tenant -- named in this environment's tfvars, eng or smoke
+  #     -- has no workspace record: render.py's defaults, nothing is read, and
+  #     the release, whose account is no swarm-api admin, applies it as before;
+  #   * any other tenant: its record is read from swarm-api with the
+  #     operator's own credentials (--workspace-id names it; else the admin
+  #     list, matched by the tenant its principal derives), and render.py's
+  #     `workspace-quota` turns its limits into the five flags with the job's
+  #     formula. No record names it: the defaults, said so. An unreadable
+  #     answer renders nothing -- falling back to the defaults is the defect.
+  # A --quota-* flag on the command line still wins over the record's: the
+  # record's flags are passed first, and render.py takes the last of a flag.
+  QUOTA_ARGS=()
+  QUOTA_SEEN=" "
+  for arg in ${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}; do
+    case "${arg%%=*}" in
+      --quota-pods|--quota-cpu|--quota-memory|--quota-jobs|--quota-ephemeral)
+        [[ "${QUOTA_SEEN}" == *" ${arg%%=*} "* ]] || QUOTA_SEEN+="${arg%%=*} " ;;
+    esac
+  done
+  read -r -a QUOTA_GIVEN <<<"${QUOTA_SEEN}"
+  TF_TENANTS=""
+  if [[ "${#QUOTA_GIVEN[@]}" -lt 5 ]]; then
+    TF_TFVARS="$(tf_var_file)"
+    TF_TENANTS="$("${PYTHON}" "${HERE}/render.py" terraform-tenants --terraform-tfvars "${TF_TFVARS}")" \
+      || die "could not read the Terraform tenants from ${TF_TFVARS} (above); nothing was rendered or applied."
+  fi
+  if [[ "${#QUOTA_GIVEN[@]}" -eq 5 ]]; then
+    info "quota  as given: all five --quota-* flags are on the command line; no workspace record is read"
+  elif [[ $'\n'"${TF_TENANTS}"$'\n' == *$'\n'"${TENANT}"$'\n'* ]]; then
+    info "quota  render.py's defaults: ${TENANT} is a Terraform tenant (${ENVIRONMENT}.tfvars), which has no workspace record"
+  else
+    QUOTA_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-quota.XXXXXX")"
+    QUOTA_PATH="/admin/workspaces${WORKSPACE_ID:+/${WORKSPACE_ID}}"
+    # To a file, in THIS shell: api_request sets API_STATUS, which a command
+    # substitution would throw away (CLAUDE.md).
+    if ! api_get "${QUOTA_PATH}" >"${QUOTA_WORK}/record.json"; then
+      rm -rf "${QUOTA_WORK}"
+      die "could not read ${TENANT}'s workspace record from swarm-api (GET ${API_PREFIX}${QUOTA_PATH}: HTTP ${API_STATUS}).
+       A workspace tenant's namespace quota is its record's; nothing was rendered or applied.
+       Read it as a swarm-api admin, or pass all five --quota-* flags (scripts/register-tenant.sh
+       ws_quota_args computes them from the record's limits)."
+    fi
+    if ! "${PYTHON}" "${HERE}/render.py" workspace-quota --tenant "${TENANT}" \
+        --record "${QUOTA_WORK}/record.json" --with-id >"${QUOTA_WORK}/args"; then
+      rm -rf "${QUOTA_WORK}"
+      die "could not turn ${TENANT}'s workspace record into its quota (above); nothing was rendered or applied."
+    fi
+    QUOTA_ID=""
+    while IFS= read -r line; do
+      [[ -n "${line}" ]] || continue
+      if [[ -z "${QUOTA_ID}" ]]; then QUOTA_ID="${line}"; else QUOTA_ARGS+=("${line}"); fi
+    done <"${QUOTA_WORK}/args"
+    rm -rf "${QUOTA_WORK}"
+    if [[ -z "${QUOTA_ID}" ]]; then
+      info "quota  render.py's defaults: no workspace record names ${TENANT}"
+    else
+      [[ "${QUOTA_ID}" =~ ^w-[0-9a-f]{6}$ ]] || QUOTA_ID="(an unrecognised id)"
+      [[ "${#QUOTA_ARGS[@]}" -eq 10 ]] \
+        || die "render.py workspace-quota printed ${#QUOTA_ARGS[@]} values, not five flags and their numbers"
+      info "quota  pods ${QUOTA_ARGS[1]}, cpu ${QUOTA_ARGS[3]}, memory ${QUOTA_ARGS[5]}, jobs ${QUOTA_ARGS[7]}, ephemeral ${QUOTA_ARGS[9]}  (workspace record ${QUOTA_ID}${QUOTA_GIVEN[0]+; ${QUOTA_GIVEN[*]} as given})"
+    fi
+  fi
+
   SCHEDULER_UID="$(uid_of "swarm-scheduler@${PROJECT_ID}.iam.gserviceaccount.com")"
   RECONCILER_UID="$(uid_of "swarm-reconciler@${PROJECT_ID}.iam.gserviceaccount.com")"
 
@@ -1038,6 +1110,7 @@ else
     --network-source "${CLUSTER_NETWORK_SOURCE}" \
     ${BOUND_KSA_ARGS[@]+"${BOUND_KSA_ARGS[@]}"} \
     ${WORKSPACE_ARGS[@]+"${WORKSPACE_ARGS[@]}"} \
+    ${QUOTA_ARGS[@]+"${QUOTA_ARGS[@]}"} \
     "${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}")"
   info "rendering tenant ${TENANT}${WORKSPACE_ID:+ (namespace labelled swarm.saga.xyz/workspace=${WORKSPACE_ID})}"
 fi

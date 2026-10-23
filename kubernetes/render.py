@@ -1019,6 +1019,116 @@ def terraform_namespaces(tfvars: Iterable[str]) -> str:
     return "[" + ", ".join(f'"{name}"' for name in names) + "]"
 
 
+# ---------------------------------------------------------------------------
+# A workspace tenant's quota, from its record (QUOTA-ONE, #2039).
+#
+# The workspace job's A7 renders a workspace tenant's namespace with five
+# --quota-* flags computed from the record's limits (scripts/register-tenant.sh
+# ws_quota_args), and its A9 fails the workspace when the live quota differs.
+# kubernetes/apply.sh run by hand passed none, so it rendered the flat defaults
+# below `add_tenant_arguments` -- pods 100, cpu 400 -- and on 2026-10-23 that
+# failed u-bogdan's workspace, whose 100 agents want pods 200, cpu 800. BGD's
+# decision the same day: one formula, and apply.sh renders a workspace tenant's
+# quota from its record. The constants are scripts/lib/workspace-quota.json,
+# read here and by register-tenant.sh (ws_quota_constants); the formula is the
+# shell's, line for line, and tests/unit/scripts/test_workspace_quota_one.py
+# runs both over 1, 50, 100 and 1000 agents.
+# ---------------------------------------------------------------------------
+
+WORKSPACE_QUOTA_FILE = REPO / "scripts" / "lib" / "workspace-quota.json"
+_WORKSPACE_QUOTA_KEYS = (
+    "pods_per_agent", "cpu_per_agent", "memory_gi_per_cpu", "jobs_per_pod", "ephemeral_gi_per_pod",
+    "max_active_top", "quota_pods_top", "quota_cpu_top",
+)
+
+
+def workspace_quota_constants() -> dict[str, int]:
+    """scripts/lib/workspace-quota.json's numbers, each a whole number >= 1."""
+    import json
+
+    data = json.loads(WORKSPACE_QUOTA_FILE.read_text())
+    out: dict[str, int] = {}
+    for key in _WORKSPACE_QUOTA_KEYS:
+        value = data.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise RenderError(f"render: {WORKSPACE_QUOTA_FILE} holds no whole {key} (got {value!r})")
+        out[key] = value
+    return out
+
+
+def _limit(limits: dict, key: str, default: int | None, top: int) -> int:
+    """One limit as ws_whole reads it: absent is DEFAULT, else a whole number
+    from 1 to TOP, as an integer or a string of digits."""
+    value = limits.get(key)
+    if value is None or value == "":
+        if default is None:
+            raise RenderError(f"render: the workspace record holds no limits.{key}")
+        value = default
+    if isinstance(value, str) and value.isdigit():
+        value = int(value)
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= top:
+        raise RenderError(f"render: the record's limits.{key} {value!r} is not a whole number from 1 to {top}")
+    return value
+
+
+def workspace_quota(limits: dict) -> list[str]:
+    """The five --quota-* arguments for a record's limits, as
+    register-tenant.sh's ws_resolve_limits and ws_quota_args compute them:
+    the record's quota_pods and quota_cpu when it states them, else the
+    per-agent ratio of max_active; memory from cpu, jobs and ephemeral
+    storage from pods."""
+    c = workspace_quota_constants()
+    max_active = _limit(limits, "max_active", None, c["max_active_top"])
+    pods = _limit(limits, "quota_pods", max_active * c["pods_per_agent"], c["quota_pods_top"])
+    cpu = _limit(limits, "quota_cpu", max_active * c["cpu_per_agent"], c["quota_cpu_top"])
+    return [
+        "--quota-pods", str(pods),
+        "--quota-cpu", str(cpu),
+        "--quota-memory", f"{cpu * c['memory_gi_per_cpu']}Gi",
+        "--quota-jobs", str(pods * c["jobs_per_pod"]),
+        "--quota-ephemeral", f"{pods * c['ephemeral_gi_per_pod']}Gi",
+    ]
+
+
+def _record_tenant(record: dict) -> str:
+    """The tenant a record is filed under, derived from its principal by the
+    frozen contract, as the job's A1 derives it: a group's by
+    tenant_id_for_group, a person's and a service's by tenant_id_for_user.
+    swarm-api's admin view never carries the tenant id itself."""
+    from swarm_common.identity import tenant_id_for_group, tenant_id_for_user
+
+    principal = str(record.get("principal") or "").strip().lower()
+    if not principal:
+        return ""
+    derive = tenant_id_for_group if (record.get("kind") or "personal") == "group" else tenant_id_for_user
+    try:
+        return derive(principal)
+    except ValueError:
+        return ""
+
+
+def workspace_record_for(payload: dict, tenant: str) -> dict | None:
+    """TENANT's record in swarm-api's answer: `{"workspace": ...}` from
+    `GET /v1/admin/workspaces/{id}`, which must be TENANT's, or
+    `{"workspaces": [...]}` from `GET /v1/admin/workspaces`, where none is
+    an answer (a tenant no workspace record names)."""
+    if isinstance(payload.get("workspace"), dict):
+        record = payload["workspace"]
+        derived = _record_tenant(record)
+        if derived != tenant:
+            raise RenderError(
+                f"render: workspace record {record.get('workspace_id')} is tenant "
+                f"{derived or 'unknown'}'s, not {tenant}'s; its limits are not this namespace's"
+            )
+        return record
+    if not isinstance(payload.get("workspaces"), list):
+        raise RenderError("render: the record file holds neither `workspace` nor `workspaces`")
+    found = [r for r in payload["workspaces"] if isinstance(r, dict) and _record_tenant(r) == tenant]
+    if len(found) > 1:
+        raise RenderError(f"render: {len(found)} workspace records name tenant {tenant}; there is one per tenant")
+    return found[0] if found else None
+
+
 def render_files(files: tuple[str, ...], values: dict[str, str]) -> str:
     documents = [substitute((HERE / name).read_text(), values).rstrip("\n") for name in files]
     return "\n---\n".join(documents) + "\n"
@@ -1479,6 +1589,12 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
     # kubernetes/apply.sh; an existing namespace keeps its old quota until it
     # is re-applied. --quota-jobs (count/jobs.batch) was not part of that
     # decision; it was 32 and is now 200 (see below).
+    #
+    # THESE DEFAULTS ARE A TERRAFORM TENANT'S (eng, smoke, ...), which has no
+    # workspace record. A WORKSPACE tenant's quota is its record's
+    # (`workspace_quota`, QUOTA-ONE #2039): the job's A7 passes all five
+    # flags, and kubernetes/apply.sh run by hand reads the record and passes
+    # them, so these numbers never reach a workspace namespace.
     parser.add_argument("--quota-pods", type=int, default=100)
     # owner 2026-10-07 -- 100 running pods plus an hour of finished Jobs awaiting
     # ttlSecondsAfterFinished=3600. At 32 the quota refused new Jobs while pods
@@ -1563,6 +1679,36 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="where the range came from: run/<project>/<region>/<service>/<subnetwork> from apply.sh",
     )
+
+    # A WORKSPACE TENANT'S QUOTA (QUOTA-ONE, #2039): the five --quota-* flags
+    # for TENANT's record, one per line, or nothing when no record names it.
+    # kubernetes/apply.sh reads the record from swarm-api and asks here, so
+    # the formula is this file's and the constants the one JSON file's.
+    workspace_quota_cmd = sub.add_parser(
+        "workspace-quota",
+        help="the --quota-* flags for a tenant's workspace record, one per line",
+        allow_abbrev=False,
+    )
+    workspace_quota_cmd.add_argument("--tenant", required=True)
+    workspace_quota_cmd.add_argument(
+        "--record",
+        required=True,
+        help="swarm-api's answer: GET /v1/admin/workspaces/{id} or GET /v1/admin/workspaces",
+    )
+    workspace_quota_cmd.add_argument(
+        "--with-id",
+        action="store_true",
+        help="print the record's workspace id on the first line, before the flags (apply.sh names it)",
+    )
+
+    # THE TERRAFORM TENANTS a tfvars file declares, one per line: apply.sh
+    # keeps the defaults for these and reads no workspace record.
+    terraform_tenants_cmd = sub.add_parser(
+        "terraform-tenants",
+        help="the tenants a tfvars file's `tenants` declares, one per line",
+        allow_abbrev=False,
+    )
+    terraform_tenants_cmd.add_argument("--terraform-tfvars", required=True)
 
     job = sub.add_parser("job", help="one worker Job", allow_abbrev=False)
     add_tenant_arguments(job)
@@ -1674,6 +1820,23 @@ def main(argv: list[str] | None = None) -> int:
                 flush=True,
             )
         sys.stdout.write(render_files(SWARM_SYSTEM_FILES, values))
+    elif args.command == "workspace-quota":
+        import json
+
+        try:
+            payload = json.loads(Path(args.record).read_text())
+        except (OSError, ValueError) as exc:
+            raise RenderError(f"render: could not read the workspace record {args.record}: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise RenderError("render: the record file holds neither `workspace` nor `workspaces`")
+        record = workspace_record_for(payload, args.tenant)
+        if record is not None:
+            lines = workspace_quota(dict(record.get("limits") or {}))
+            if args.with_id:
+                lines.insert(0, str(record.get("workspace_id") or "unknown"))
+            sys.stdout.write("\n".join(lines) + "\n")
+    elif args.command == "terraform-tenants":
+        sys.stdout.write("".join(f"{key}\n" for key in terraform_tenants(Path(args.terraform_tfvars))))
     elif args.command == "job":
         sys.stdout.write(render_job(args))
     return 0

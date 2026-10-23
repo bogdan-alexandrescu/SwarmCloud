@@ -1,0 +1,12 @@
+{
+  "_why": "A workspace tenant's namespace quota, per agent of its record's limits.max_active (docs/workspaces.md §6.4, §8; owner decision WD5, 2026-10-08): 2 pods and 8 vCPU of requests per agent, and the other three lines at §8's ratio to those two -- 128Gi for 64 vCPU, 64 jobs and 160Gi of ephemeral storage for 16 pods. ONE copy, read by scripts/register-tenant.sh (ws_quota_constants, the job's A7 and A9) and by kubernetes/render.py (workspace_quota, what kubernetes/apply.sh renders for a workspace tenant by hand): two copies disagreed on 2026-10-23 and failed u-bogdan's workspace (#2039, BGD's decision: one formula). The CPU LIMIT line is not here: render.py derives it as swarm_common.profiles.CPU_BURST_MAX_RATIO x requests.cpu. swarm-api's people.py states pods_per_agent and cpu_per_agent again for the record it writes (its image carries no scripts/lib); tests/unit/scripts/test_workspace_quota_one.py holds the two equal.",
+  "pods_per_agent": 2,
+  "cpu_per_agent": 8,
+  "memory_gi_per_cpu": 2,
+  "jobs_per_pod": 4,
+  "ephemeral_gi_per_pod": 10,
+  "_why_tops": "The largest each limit a record may hold, as the job has always refused beyond them: 1000 agents (swarm-api's MAX_CEILING), and the quota lines at the per-agent ratio of that.",
+  "max_active_top": 1000,
+  "quota_pods_top": 2000,
+  "quota_cpu_top": 8000
+}
