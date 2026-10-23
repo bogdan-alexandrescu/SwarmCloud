@@ -267,8 +267,9 @@ describe('jump to error: a transcript is_error and a console-side pattern', () =
     )
     render(<AgentLogs task={running()} />)
     const button = await waitFor(() => {
-      const b = within(dock()).getByRole('button', { name: /^Error/ })
-      expect(b.textContent).toContain('of 2')
+      // Before a jump it says how many (TASKPANES-FOLLOW, box 6343764730), not `Error – of 2`.
+      const b = within(dock()).getByRole('button', { name: /^2 error lines/ })
+      expect(b.textContent).toContain('2 error lines')
       return b
     })
     expect(button.getAttribute('title')).toMatch(/is_error/)

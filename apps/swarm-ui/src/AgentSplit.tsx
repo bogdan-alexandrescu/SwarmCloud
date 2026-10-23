@@ -179,7 +179,7 @@ export function AgentSplit({
     return () => clearInterval(id)
   }, [live, task === null])
   const reload = useCallback(() => setReads((n) => n + 1), [])
-  const childCount = useChildCount(task, `${reads}`)
+  const childCount = useChildCount(task, `${reads}`, pane)
   // HOW MANY TIMES IT RAN (live QA WA-3): the attempt documents, read again
   // only when the task says something about its attempts changed -- its
   // generation, its counter or its state -- not on every header poll.
