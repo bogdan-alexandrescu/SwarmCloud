@@ -163,6 +163,7 @@ from . import mcp_attach as mcp_attach_mod
 from . import secretrelease as secretrelease_mod
 from . import territory as territory_mod
 from . import typesafe_shim as typesafe_shim_mod
+from . import owner_questions as owner_questions_mod
 from . import questions as questions_mod
 from . import qa_identity as qa_identity_mod
 from . import redact as redact_mod
@@ -2417,8 +2418,44 @@ class Worker:
             return self._park_credential_missing(outcome.credential_missing)
         if outcome.ci_wait is not None:
             return self._park_ci_pending(action, outcome.ci_wait)
+        if outcome.owner_wait is not None:
+            return self._park_for_owner_questions(action, outcome)
         with self._metrics_after_the_record():
             return self._record_worker_action_end(action, outcome)
+
+    def _park_for_owner_questions(
+        self, action: WorkerAction, outcome: "post_verdict_mod.ActionOutcome"
+    ) -> Outcome:
+        """The merge's owner-question hold: PARKED(HUMAN_REQUIRED), release, exit 75 (#2070).
+
+        The hand-off's park exactly (`handoff_mod.park_human_required`, as
+        `_park_for_answers`): one fenced transaction, no lease, the attempt
+        refunded within `max_human_resumes`, and only a person's
+        `human-ready` returns it to READY -- whereupon the merge reads every
+        answer again. An answer alone does not wake it, nor does a review
+        re-running, and the scheduler's human-wait expiry applies to it (it
+        spares only `question_wait` / `release_wait` parks): see `merge`. The questions ride in the park's `blocked_by` entry
+        under `owner_questions`, NOT `question_wait`: they are not this
+        task's own, and swarm-api's answer route reads `question_wait` as
+        questions asked by the parked task. No checkpoint: a worker action
+        keeps no workspace.
+        """
+        wait = dict(outcome.owner_wait or {})
+        uploaded = self._upload_outputs().get("artifacts")
+        self.log.info("the merge waits on the owner's questions; parking for a person",
+                      action=action.value, questions=len(wait.get("questions") or []),
+                      unreadable=wait.get("unreadable"))
+        with self._metrics_after_the_record():
+            park = handoff_mod.park_human_required(
+                self.control,
+                max_resumes=self.handoff.max_resumes,
+                detail={"park_phase": "owner_questions",
+                        "owner_questions": self._scrub(wait)},
+                uploads=uploaded if isinstance(uploaded, list) else None,
+            )
+        if park.returned_by is not None:
+            return Outcome(exit_code=ExitCode.PARKED, state=TaskState.READY)
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _record_worker_action_end(
         self, action: WorkerAction, outcome: "post_verdict_mod.ActionOutcome"
@@ -3251,6 +3288,23 @@ class Worker:
         # block between nonce lines, as data. Nothing for a task that never
         # waited on one.
         questions_mod.resume_with_answers(ws.work, payload, task)
+        # A review's owner questions (#2070, option (c)): every earlier step
+        # of its workflow's validated questions, with the answers so far, in
+        # `work/owner-questions.json`, and the verdict instructions closing
+        # the prompt. `input_from` stages one file per parent, so they never
+        # reached a review before. Nothing for any other step, or a workflow
+        # that asked nothing.
+        owner_questions_mod.stage(ws.work, payload, owner_questions_mod.collect(
+            task,
+            fetch=lambda upstream: inputs_mod.fetch_upstream_task(
+                self.db,
+                upstream_task_id=upstream,
+                tenant_id=cfg.tenant_id,
+                call_options=self.control.call_options(),
+            ),
+            store=self.store,
+            tenant_id=cfg.tenant_id,
+        ))
         ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
 
         # ---- STEP 6: tenant credentials ---------------------------------
@@ -6182,7 +6236,9 @@ class Worker:
             reserved=frozenset({REPO_DIR_NAME, WORKER_STATE_DIR})
             | ws.control_file_names()
             # `issue.md`, when the task asks for an issue (#265).
-            | issue_mod.reserved_names(task.get("input"), self.cfg.profile),
+            | issue_mod.reserved_names(task.get("input"), self.cfg.profile)
+            # A review's owner questions, written after staging (#2070).
+            | {owner_questions_mod.NAME},
         )
         self._staged_inputs = staged
         self.log.info(

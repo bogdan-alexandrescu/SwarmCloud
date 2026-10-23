@@ -260,12 +260,6 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
    From 1080 the panel is sticky beside the steps (the rule below), so the
    step's copy is not drawn there. */
 .sbf-why-at { margin-top: var(--ctl-s2); }
-/* THE EMPTY REQUIRED FIELD SAYS SO AT ITSELF, AT EVERY WIDTH (visual QA
-   QA-103, run 5b). `.sb-note`'s dim ink, never the warning ink: TS-15 keeps a
-   field the reader has not reached yet unpainted, and `.sbf-miss` takes over
-   once it has been left empty. */
-.sbf-field > .sb-note.sbf-unfilled { color: var(--text-dim); }
-.sbf-unfilled code { font-size: var(--t-micro); }
 /* THE REASON START IS DISABLED, KEPT IN VIEW BELOW 1080 (visual QA
    r4:flow-submit-form-phone-390-02, run 5b). The send panel is the last block
    at 390; this line is the steps column's last child and sticks to the foot

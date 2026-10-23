@@ -12,7 +12,7 @@ import { read, route, write, type Result } from './fetch'
  *   DELETE /v1/qa-targets/{id}                   delete, with its credential (a workspace admin)
  *   POST   /v1/qa-targets/{id}:run               a member starts a run: {screens?, file, browser_tool?}
  *   POST   /v1/qa-targets/{id}:discover          a member starts its discovery (§4.1, lane QA-DISCOVER)
- *   POST   /v1/qa-targets/{id}:approve-host      a PLATFORM admin approves the host: {host, extra_origin?} (VQ-Q1, audited)
+ *   POST   /v1/qa-targets/{id}:approve-host      a PLATFORM admin approves the host: {host, extra_origin?, idp_token_path?} (VQ-Q1, audited; QA-IDP-POST)
  *   POST   /v1/qa-targets/{id}/credential-links  a one-time link to the credential form (an admin)
  *   PUT    /v1/qa-targets/{id}/credential        the form's write, with the link's token
  *   PUT    /v1/qa-targets/{id}/challenge-bypass  its challenge bypass's value (a workspace admin, §2.5)
@@ -106,6 +106,8 @@ export interface QaTarget {
   host_state: HostState | null
   approved_by: string | null
   approved_at: string | null
+  /** The one path on the extra origin the gate lets a POST through to after its sign-in (QA-IDP-POST). */
+  approved_idp_token_path: string | null
   repo_id: string | null
   /** The registration's repository URL, `https://github.com/<owner>/<repo>`. */
   repository: string | null
@@ -241,6 +243,7 @@ export function normQaTarget(raw: unknown): QaTarget | null {
     host_state: state === 'pending' || state === 'approved' || state === 'revoked' ? state : null,
     approved_by: str(t.approved_by),
     approved_at: str(t.approved_at),
+    approved_idp_token_path: str(t.approved_idp_token_path),
     repo_id: str(t.repo_id),
     repository: str(t.repository),
     sign_in: normSignIn(t.sign_in),
@@ -378,9 +381,11 @@ export async function discoverQaTarget(id: string): Promise<Result<QaRun>> {
  * login's extra origin only when the target declares one: the API approves
  * an origin only when it is named. The answer is the target as it now is.
  */
-export async function approveQaTargetHost(id: string, host: string, extraOrigin: string | null): Promise<Result<QaTarget | null>> {
-  const body: { host: string; extra_origin?: string } = { host }
+export async function approveQaTargetHost(id: string, host: string, extraOrigin: string | null, idpTokenPath: string | null = null): Promise<Result<QaTarget | null>> {
+  const body: { host: string; extra_origin?: string; idp_token_path?: string } = { host }
   if (extraOrigin !== null) body.extra_origin = extraOrigin
+  // QA-IDP-POST: only with the extra origin it is on; the API refuses it otherwise.
+  if (extraOrigin !== null && idpTokenPath !== null) body.idp_token_path = idpTokenPath
   const r = await write(route('/v1/qa-targets/{target_id}:approve-host', { target_id: id }), 'POST', body)
   if (r.status !== 'ok') return r.status === 'error' ? r : { status: 'error', error: { kind: 'server_error', httpStatus: null, code: null, message: 'The approval was not answered.' } }
   return { ...r, data: normQaTarget(rec(r.data).qa_target) }
