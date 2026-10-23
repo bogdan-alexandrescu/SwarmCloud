@@ -83,17 +83,19 @@ GitHub-hosted, the rule PR 1184 set for release.yml.
 Every other job spells `runs-on` as one guarded expression:
 
 ```
-${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
 ```
 
-* **Main's own runs go first, on GitHub-hosted runners** (owner decision
-  2026-10-20). A push to `main` or a dispatch on `main` (main's CI run, every
-  release and hotfix) resolves to `ubuntu-24.04`, so it never queues behind
-  lane pull requests on the pool. On 2026-10-20 two releases failed after
-  waiting 45 minutes for an image build whose CI run sat queued behind ~20
-  lane PRs on 8 VMs. The repository is public, so hosted minutes are free.
-  Pull requests, lane-branch pushes (`swarm/**`) and merge-queue entries stay
-  on the pool, as the 2026-10-14 decision asks.
+* **Main's own runs use the pool again** (owner decision 2026-10-23,
+  reversing 2026-10-20). From 2026-10-20 a push or dispatch on `main` went to
+  GitHub-hosted `ubuntu-24.04` so it would not queue behind lane PRs on what
+  was then an 8-VM pool. On 2026-10-23 the hosted side starved instead:
+  product-oracle's CI held most of the account's ~20 hosted job slots, main's
+  runs (~20 hosted jobs each) sat queued for hours, and three releases timed
+  out waiting 45 minutes for an image build. The pool now scales to
+  `SWARMCLOUD_CAP` = 150 VMs (dispatcher env, read 2026-10-23), so main's runs
+  go back to it with everything else. `SELF_HOSTED_CI=off` still sends every
+  guarded job, main's included, to GitHub-hosted.
 * **A fork's pull request never reaches the VMs** (owner decision 2026-10-12).
   The repository is public, and a returning contributor's fork PR runs
   without approval.
