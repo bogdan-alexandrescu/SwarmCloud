@@ -12,6 +12,7 @@ back down.
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Iterator
 
 
@@ -209,8 +210,10 @@ class FakeTransactionRunner:
         # body wrote, so a test's own concurrent change (a fence placed from
         # a hook) stands. Without it, an end that releases its lease and then
         # has its task write refused (#2064) would read as a released lease
-        # and an unwritten task, which Firestore never shows.
-        documents = {path: dict(doc) for path, doc in self._db.documents.items()}
+        # and an unwritten task, which Firestore never shows. The snapshot is
+        # deep: a body that mutated a nested value (a list or map it read)
+        # in place before it failed is undone too.
+        documents = copy.deepcopy(self._db.documents)
         written = len(self._db.writes)
         try:
             return fn(FakeTransaction(self._db))

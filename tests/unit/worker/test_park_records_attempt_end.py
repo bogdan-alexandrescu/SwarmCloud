@@ -113,6 +113,8 @@ def test_the_end_is_written_in_the_parks_own_commit_with_the_release():
 
     _one_commit_holds_the_park_the_end_and_the_release(runner)
     assert EventType.PARKED.value in db.event_types("task_1")
+
+
 def test_a_fenced_park_writes_no_attempt_end():
     """The reconciler fenced this attempt: the park raises before any write."""
     db = FakeFirestore()
@@ -154,6 +156,8 @@ def test_a_park_whose_commit_is_refused_writes_neither_its_end_nor_its_release()
     assert db.doc("leases/lease_1")["released_at"] is None
     assert db.doc("attempts/att_1")["completed_at"] is None
     assert EventType.PARKED.value not in db.event_types("task_1")
+
+
 # -- the await park (child tasks, docs/design/child-tasks.md §3.3) -----------
 #
 # `park_awaiting_children` is a park too, in its own transaction rather than
@@ -189,6 +193,8 @@ def test_an_await_park_writes_the_end_in_its_own_commit_with_the_release():
     control.park_awaiting_children(max_resumes=3)
 
     _one_commit_holds_the_park_the_end_and_the_release(runner)
+
+
 def test_a_fenced_await_park_writes_no_attempt_end():
     db = FakeFirestore()
     seed_attempt(db, state=TaskState.RUNNING, generation=1, task_generation=2)
