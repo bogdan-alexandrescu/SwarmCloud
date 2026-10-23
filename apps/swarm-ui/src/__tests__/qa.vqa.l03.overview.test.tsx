@@ -191,9 +191,12 @@ describe('V057: a full pool’s figure carries the bad tone (owner Q3)', () => {
     expect(figures.map((b) => b.classList.contains('is-full'))).toEqual([true, false, false])
     expect(figures[0]!.closest('.ov-pl')!.getAttribute('title')).toMatch(/, full$/)
     for (const env of [WIDE, PHONE]) expect(painted(figures[0]!, 'color', env)).toBe('var(--bad)')
-    // The bar stays hidden on a phone: the owner kept that rule.
+    // The bar is drawn on a phone too: BGD reversed Q3's "the bar stays
+    // hidden on a phone" on 2026-10-23 (run 6, overview-automate-011, #1680
+    // box 6343776209). The figure's tone is kept beside the bar, not instead.
+    // MUTATION: drop `.ov-pools .ov-pl > .ctl-util-track` from overview.css's 560px block.
     const track = container.querySelector('.ov-pl .ctl-util-track')
-    if (track !== null) expect(painted(track, 'display', PHONE)).toBe('none')
+    if (track !== null) expect(painted(track, 'display', PHONE)).toBe('flex')
   })
 })
 

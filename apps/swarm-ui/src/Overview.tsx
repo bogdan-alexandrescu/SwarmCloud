@@ -1195,9 +1195,10 @@ export function CheckCard({ problem: p }: { problem: Problem }) {
   // EACH WORKFLOW THE CARD NAMES IS A LINK OF ITS OWN (visual QA N11,
   // 2026-10-21). A link cannot sit inside a link, so a card that names one
   // is a box rather than an `<a>`: the ids are links, and the card's own link
-  // is `Agents · FAILED →`, whose `::after` covers the box so a click anywhere
-  // else still opens the list (`.ov-att.is-split`). A card that names none
-  // keeps the one-link markup below.
+  // was `Agents · FAILED →`, whose `::after` covered the box so a click
+  // anywhere else opened the list (`.ov-att.is-split`); the cover is the first
+  // workflow's since 2026-10-23 (below). A card that names none keeps the
+  // one-link markup below.
   //
   // THE WORKFLOW IS REACHED AS PLAINLY AS THE LIST (visual QA 5b:wg-dark-D1,
   // 2026-10-22). With only the id in the sentence linked, the card's one
@@ -1224,8 +1225,12 @@ export function CheckCard({ problem: p }: { problem: Problem }) {
           </small>
         </span>
         <span className="ov-att-acts">
-          {workflows.map((w) => (
-            <a key={w.id} className="ov-att-go ov-att-wf" href={toPath(w.href)} title={`Open workflow ${w.id}`}>
+          {/* THE CARD OPENS THE FAILED WORKFLOW (#1680 box 6343766999, BGD's
+              decision of 2026-10-23): the first workflow's link carries the
+              card's cover (`is-cover`), so a click on its empty space opens
+              that workflow; the list's link is a plain link above it. */}
+          {workflows.map((w, i) => (
+            <a key={w.id} className={i === 0 ? 'ov-att-go ov-att-wf is-cover' : 'ov-att-go ov-att-wf'} href={toPath(w.href)} title={`Open workflow ${w.id}`}>
               <span className="ov-att-wf-t">Workflow {w.id}</span> <span aria-hidden="true">&rarr;</span>
             </a>
           ))}
