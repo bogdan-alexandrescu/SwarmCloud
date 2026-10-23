@@ -1048,7 +1048,7 @@ nothing between its tool calls except through a hook, so an agent whose
 browser call simply blocked on the pause would otherwise learn of the
 hand-off only from `swarm-handoff wait` or `status`. On a live-browser
 attempt -- the one kind the lifecycle sets `SWARM_HANDOFF` for, which is how
-the runner tells a browser profile from any other claude-code task -- the
+the runner tells a browser profile from any other claude-code agent -- the
 runner's headless settings (`write_headless_settings`,
 `apps/agent-worker/agent_worker/runners/claude_code.py`) register a
 `PostToolUse` hook on every tool,
