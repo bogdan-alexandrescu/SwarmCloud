@@ -2290,7 +2290,10 @@ TOOLS: list[dict[str, Any]] = [
             "platform renders the workflow from the registration: you choose only "
             "`file` (`issues`, the default, files findings in the target's "
             "repository; `none` reports only) and optionally a subset of its "
-            "`screens` ids. A pending host is refused (`qa_target_host_pending`). "
+            "`screens` ids, and optionally `browser_tool` (`playwright` or `jev`), "
+            "the browser tool this one run's flows use. Left out, the target's own "
+            "`flows_browser_tool` decides, and that defaults to `playwright`. A "
+            "pending host is refused (`qa_target_host_pending`). "
             "Answers the `workflow_id`; follow it with swarm_workflow_status."
         ),
         "inputSchema": {
@@ -2301,6 +2304,7 @@ TOOLS: list[dict[str, Any]] = [
                 "file": {"type": "string", "enum": list(qatargets.FILES), "default": "issues"},
                 "screens": {"type": "array", "maxItems": qatargets.MAX_SCREENS,
                             "items": {"type": "string", "maxLength": 100}},
+                "browser_tool": {"type": "string", "enum": list(qatargets.BROWSER_TOOLS)},
             },
             "required": ["target"],
         },
@@ -4833,7 +4837,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
     if name == "swarm_qa_run":
         return json.dumps(
             qatargets.qa_run(client, args.get("target"), screens=args.get("screens"),
-                             file=args.get("file", "issues")),
+                             file=args.get("file", "issues"),
+                             browser_tool=args.get("browser_tool")),
             indent=2,
         )
 

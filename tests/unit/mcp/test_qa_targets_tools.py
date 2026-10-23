@@ -129,7 +129,9 @@ def test_each_qa_tool_is_advertised_with_no_field_a_credential_fits_in(name):
     properties = schema.get("properties") or {}
     # MUTATION: add a `password` (or `username`) property to any of the three schemas.
     assert [p for p in properties if _CREDENTIALISH.search(p)] == []
-    assert set(properties) <= {"target", "repository", "screens", "file"}, sorted(properties)
+    # `browser_tool` is an enum of two tool names (lane QA-RUN-TOOL): no credential fits.
+    assert set(properties) <= {"target", "repository", "screens", "file", "browser_tool"}, \
+        sorted(properties)
 
 
 def test_an_undeclared_credential_argument_is_refused_with_nothing_sent():
