@@ -51,6 +51,10 @@ CATALOGUE = [
     # §3.17, #1933: a tenant's own QA target, at most daily (visual-qa-any-app.md §6).
     # MUTATION: drop the entry, or give it a 6 h minimum, and this list differs.
     ("visual-qa", timedelta(hours=24)),
+    # #442, owner decision 2026-10-09: the weekly re-scan of the held image
+    # tools; its floor is daily, as dependency-cve-refresh's, the type it follows.
+    # MUTATION: drop the entry, or give it a 6 h minimum, and this list differs.
+    ("image-tool-rescan", timedelta(hours=24)),
 ]
 
 
