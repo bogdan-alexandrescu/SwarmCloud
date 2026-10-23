@@ -738,6 +738,14 @@ state_via_api_tenants = ["u-bogdan", "eng"]
 # by the job (rule C9). Only after a1's three u-bogdan agents and verify-remote
 # as eng were green.
 worker_firestore_off_tenants = ["u-bogdan"]
+# ISOLATION CUTOVER STEP b2 (#1457, docs/runbooks/isolation-cutover.md):
+# eng's worker loses swarmTenantWorkerFirestore by plan. eng is a Terraform
+# tenant, so a hand removal would come back as "1 to add" on the next release.
+# BGD decided on 2026-10-23 to start b2 after b1's verify-remote as eng was
+# green (PR 2040). The plan must show exactly one row, a destroy:
+# module.tenancy.google_project_iam_member.worker_firestore["eng"]. It stops at
+# dev-iam for the owner. Rollback: back to [] (one "1 to add" at dev-iam).
+worker_firestore_off_tenants_iam = ["eng"]
 # THE FORGE BROKER STAYS OFF HERE (#1041, terraform/infra/child_tasks.tf
 # `forge_broker`), although child tasks are on: workers keep reading a
 # person's git-u- slot with their own account through forge_slot_reader.
