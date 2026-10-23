@@ -176,14 +176,24 @@ const PAST_APPROVAL: ReadonlySet<IssueRunState> = new Set(['APPROVED', 'RUNNING'
  * no workflow and a Running one built from its approved plan both read
  * "required": the column could not tell a plan waiting for a person from one
  * already approved. A workflow, an approval time or a state past Planned is
- * an approval given; an automatic approval is "not required".
+ * an approval given; an automatic approval needs none, and says so in the
+ * cell's title.
+ *
+ * EVERY WORD FITS THE COLUMN ON ONE LINE (QAFIX6-WORKPAGES-2, part of #1680).
+ * The column is 86px (intake.css), 74px of content, and the row's cells are
+ * drawn at --t-meta (13px) and never wrap. 'awaiting approval' (~124px at
+ * the tests' conservative 0.56em) ran over Workflow, so it was drawn small
+ * and wrapped; the words are now ones that fit at the body size. 'not
+ * required' (~87px) and 'none needed' (~80px) do not, so an automatic
+ * approval is a dash, and 'awaiting a plan' (~109px) is 'no plan'.
+ * qafix6.workpages.test.tsx measures every word against the column.
  */
 export function planApprovalWord(run: IssueRunSummary): string {
-  if (run.plan_approval === 'auto') return 'not required'
+  if (run.plan_approval === 'auto') return '\u2014'
   if (run.state === 'REJECTED') return 'rejected'
   if (run.workflow_id !== null || run.approved_at !== null || PAST_APPROVAL.has(run.state)) return 'approved'
-  if (run.state === 'PLANNED') return 'awaiting approval'
-  if (run.state === 'PLANNING') return 'awaiting a plan'
+  if (run.state === 'PLANNED') return 'awaiting'
+  if (run.state === 'PLANNING') return 'no plan'
   return 'not given'
 }
 
