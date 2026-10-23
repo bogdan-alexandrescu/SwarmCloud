@@ -179,6 +179,10 @@ SHOWN_IN_CONTROL = (
     ("challenges.cloudflare.com", "/"),
 )
 
+#: CAPTCHA-HANDOFF (BGD, 2026-10-23; part of #2058): the most pages whose
+#: hand-off was raised are remembered, so one load raises one request.
+CHALLENGED_PAGES = 64
+
 #: A failed `MaskCdp.link` is tried again on the parent's next fresh report
 #: or the child's next navigation, at most this many tries in all, each at
 #: least the backoff after the last failure: 250 ms doubling to 2 s. Then the
@@ -448,12 +452,22 @@ class MaskState:
     """
 
     def __init__(self, *, scale: float = 1.0, clock: Callable[[], float] = time.monotonic,
-                 record: Callable[[str, Mapping[str, Any]], None] | None = None) -> None:
+                 record: Callable[[str, Mapping[str, Any]], None] | None = None,
+                 on_challenge: Callable[[str], None] | None = None) -> None:
         self._scale = _positive(scale)
         self._clock = clock
         #: The gate's event log (`Gate.record`): told of every frame shown
         #: by `SHOWN_IN_CONTROL`, by host.
         self._record = record
+        #: CAPTCHA-HANDOFF (part of #2058): told the followed page's host, once
+        #: per page load, when a frame on it is a challenge (`SHOWN_IN_CONTROL`,
+        #: the list `challenge_host` and tabs.py read). The gate decides whether
+        #: that is a hand-off (`LiveGate._on_challenge`).
+        self.on_challenge = on_challenge
+        #: The top frames (a page's is its target id) whose current load has
+        #: told `on_challenge`. Kept apart from `_frames`, which a tab switch
+        #: empties: a page followed again is the same load, not a new one.
+        self._challenged: OrderedDict[str, None] = OrderedDict()
         self._session = False
         self._frames: dict[str, _FrameState] = {}
         self._top: str | None = None
@@ -580,12 +594,17 @@ class MaskState:
         frame = self._frames.get(frame_id)
         if frame is None:
             return
+        if frame_id == self._top and frame.url is not None:
+            # A new load of the page; a frame first listed by a follow's
+            # install (its url still unknown) is not one.
+            self._challenged.pop(frame_id, None)
         frame.url = url
         if frame.doc is not None:
             frame.retired.add(frame.doc)
         frame.new_document(None)
         if frame_id == self._top:
             self._last = None
+        self._note_challenge(frame_id, url)
 
     def url_changed(self, frame_id: str, url: str) -> None:
         """A same-document navigation (history API, fragment): the content may differ."""
@@ -597,6 +616,44 @@ class MaskState:
         frame.unhold()
         if frame_id == self._top:
             self._last = None
+        self._note_challenge(frame_id, url)
+
+    def _note_challenge(self, frame_id: str, url: str) -> None:
+        """Tell `on_challenge` the page's host when `frame_id` at `url` is a challenge. Once per load.
+
+        A child frame is one by `challenge_host` (host and path); the top
+        frame by its host alone, at any path, as tabs.py reads a tab
+        (`is_challenge_host`). The page's host is what is told -- the site
+        the person is asked to act on, never a path or a query -- or the
+        challenge's own when the page has none.
+        """
+        top = self._top
+        if self.on_challenge is None or top is None or top in self._challenged:
+            return
+        if frame_id == top:
+            try:
+                host = urlsplit(url).hostname
+            except ValueError:
+                host = None
+            if not host or not is_challenge_host(host):
+                return
+        else:
+            host = challenge_host(url)
+            if host is None:
+                return
+        self._challenged[top] = None
+        while len(self._challenged) > CHALLENGED_PAGES:
+            self._challenged.popitem(last=False)
+        page = self._frames[top].url if top in self._frames else None
+        try:
+            parts = urlsplit(page or "")
+            page_host = parts.hostname if parts.scheme in ("http", "https") else None
+        except ValueError:
+            page_host = None
+        try:
+            self.on_challenge(page_host or host)
+        except Exception as exc:  # noqa: BLE001 -- the mask never fails for the hand-off
+            log.warning("live mask: the challenge hook failed (%s)", type(exc).__name__)
 
     def listed(self, frame_id: str, url: str) -> None:
         """A frame tree the gate read lists `frame_id`, already known, at `url`.
@@ -873,6 +930,22 @@ class MaskState:
         self.reason = reason
         log.debug("live mask: masking unavailable")
         return Outcome.UNAVAILABLE
+
+
+def is_challenge_host(host: str) -> bool:
+    """Whether `host` (lower case) is one of `SHOWN_IN_CONTROL`'s, at any path.
+
+    tabs.py reads a tab this way; the mask reads the agent's top frame this
+    way too (CAPTCHA-HANDOFF), so there is one list and one match.
+    """
+    for allowed, _ in SHOWN_IN_CONTROL:
+        if allowed.startswith("*."):
+            suffix = allowed[1:]
+            if host.endswith(suffix) and len(host) > len(suffix):
+                return True
+        elif host == allowed:
+            return True
+    return False
 
 
 def challenge_host(url: str | None) -> str | None:
