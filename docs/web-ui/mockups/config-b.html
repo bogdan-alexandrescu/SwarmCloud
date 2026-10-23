@@ -105,7 +105,7 @@ figcaption b{color:var(--text)}
 .envpill{margin-left:auto;font:500 12px/1 var(--mono);padding:4px 7px;border-radius:99px;border:1px solid var(--line);color:var(--info-ink);background:color-mix(in srgb,var(--info) 12%,transparent)}
 .tenant{display:flex;align-items:center;gap:9px;margin:0 10px 10px;padding:8px 10px;border:1px solid var(--line);border-radius:10px}
 .tg{width:26px;height:26px;border-radius:7px;background:color-mix(in srgb,var(--info) 16%,transparent);color:var(--info-ink);font:650 12px/26px var(--font);text-align:center;flex:none}
-.tt{display:flex;flex-direction:column;line-height:1.25;flex:1;min-width:0}.tt b{font-size:13px}.tt small{font-size:12px;color:var(--text-dim)}
+.tt{display:flex;flex-direction:column;line-height:1.25;flex:1;min-width:0}.tt b{font-size:13px}.tt small{font-size:12px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pscroll{flex:1;min-height:0}
 .pt{font-size:12px;color:var(--text-dim);padding:6px 18px 4px;font-weight:600}
 .pk{display:flex;align-items:center;gap:9px;padding:7px 9px;margin:1px 10px;border-radius:8px;color:var(--text-dim);position:relative}
@@ -166,7 +166,7 @@ figcaption b{color:var(--text)}
 .small{font-size:12px}
 
 /* status tiles: the proposal's one idea, health before lists */
-.health{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
+.health{display:grid;grid-template-columns:repeat(auto-fill,minmax(max(190px,calc((100% - 30px) / 4)),1fr));gap:10px}
 .tile{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:4px;border-top:3px solid var(--line);min-width:0}
 .tile.ok{border-top-color:var(--ok)}.tile.warn{border-top-color:var(--warn)}.tile.bad{border-top-color:var(--bad)}.tile.unk{border-top-color:var(--line)}.tile.info{border-top-color:var(--info)}
 .tile .th{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim)}
@@ -220,16 +220,20 @@ figcaption b{color:var(--text)}
 .prow.flag{background:color-mix(in srgb,var(--warn) 6%,transparent)}
 .prow.flagb{background:color-mix(in srgb,var(--bad) 6%,transparent)}
 .prow .pt1{font-weight:600;overflow-wrap:anywhere}
+.prow .pt1 .sub{display:block;font-size:12px;font-weight:400;color:var(--text-dim)}
 .kv{display:flex;gap:10px;font-size:12px;justify-content:space-between;align-items:baseline}
 .kv>span:first-child{color:var(--text-dim);flex:none}
 .kv>span:last-child{text-align:right;min-width:0;overflow-wrap:anywhere}
 .kv .chip,.kv .st{white-space:normal}
+.kv .chip{border-radius:8px;text-align:left}
 .prow .pacts{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.prow .pacts>.btn.g:first-child,.own>span>.btn.g:first-child{margin-left:-10px}
 .banner{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-radius:10px;border:1px solid var(--line);background:var(--surface);font-size:13px}
 .banner.info{border-color:color-mix(in srgb,var(--info) 45%,var(--line));background:color-mix(in srgb,var(--info) 8%,var(--surface))}
 .banner.warn{border-color:color-mix(in srgb,var(--warn) 50%,var(--line));background:color-mix(in srgb,var(--warn) 8%,var(--surface))}
 .banner.bad{border-color:color-mix(in srgb,var(--bad) 50%,var(--line));background:color-mix(in srgb,var(--bad) 7%,var(--surface))}
-.banner svg{margin-top:2px}
+.banner>svg{width:14px;height:14px;flex:none;margin-top:3px}
+.banner.info>svg{color:var(--info)}.banner.warn>svg{color:var(--warn)}.banner.bad>svg{color:var(--bad)}
 .banner b{display:block}
 .steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
 .steps li{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
@@ -267,7 +271,7 @@ figcaption b{color:var(--text)}
 .kvgrid{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;font-size:13px}
 .kvgrid>span:nth-child(odd){color:var(--text-dim)}
 .empty{display:flex;flex-direction:column;align-items:center;text-align:center;gap:8px;padding:28px 16px}
-.empty .ic{width:28px;height:28px;color:var(--text-faint)}
+.empty>.ic{width:28px;height:28px;color:var(--text-faint)}
 .empty b{font-size:15px}.empty p{color:var(--text-dim);max-width:60ch}
 .owners{display:grid;grid-template-columns:280px 1fr;gap:0;border-top:1px solid var(--line-soft)}
 .owners>div:first-child{border-right:1px solid var(--line-soft)}
@@ -368,7 +372,7 @@ figcaption b{color:var(--text)}
 <p class="kicker">SwarmCloud · Config, Secrets, Admin and QA environments · proposal B of five · 2026-10-23</p>
 <h1>Proposal B: Status cards</h1>
 <p class="lede">BGD asked on 2026-10-23 for complete, competing mock-ups of every new and changed page before anything is built (#2157). This is proposal B. Config opens on a page of status cards, and every page then shows its health before its lists. All data here is <b>example data</b>: the person is Operator, and the hosts are <code>swarm.example.com</code> and <code>app.example.com</code>.</p>
-<p class="sec-intro">The frames are drawn with the console's own tokens (<code>apps/swarm-ui/src/styles.css</code>) on the picked V2 Sky spine (<code>navigation.html</code>). Each surface is drawn at 1440 wide, which scrolls sideways inside its own frame, and at 390 wide as a phone. The toggle at the top of this page switches every frame between light and dark. The same three-way toggle is drawn in each panel's user footer, and it works there too. Rules from <code>PICKS.md</code> hold on every frame: nothing is smaller than 12px, there are no all-caps and no letter-spacing, and an unknown figure is a dash with its reason, never 0.</p>
+<p class="sec-intro">The frames are drawn with the console's own tokens (<code>apps/swarm-ui/src/styles.css</code>) on the picked V2 Sky spine (<code>navigation.html</code>). Each surface is drawn at 1440 wide, and at 390 wide as a phone. In a window narrower than a 1440 frame, the frame is scaled to fit (down to 85%); narrower still, it scrolls sideways inside its own frame. The toggle at the top of this page switches every frame between light and dark. The same three-way toggle is drawn in each panel's user footer, and it works there too. Rules from <code>PICKS.md</code> hold on every frame: nothing is smaller than 12px, there are no all-caps and no letter-spacing, and an unknown figure is a dash with its reason, never 0.</p>
 
 <div class="idea" aria-label="Proposal B: idea, pros and risks">
   <div><h3>Idea</h3><p>Every page answers "is this working?" before "what is in it?". <b>Config</b> opens on status cards: GitHub connected, N repositories reachable, secrets set or missing per scope, setup progress, MCP servers and people. Each card names its one problem, if it has one, and leads to its page. Each page then opens with a row of health tiles before its lists. Secrets is a card per scope, each with counts, and missing items are flagged on the card. Every value is set through a one-time form in a modal. Admin opens the same way, and Platform counts' Over time leads with big headline figures, then the chart, then the breakdown.</p></div>
@@ -460,10 +464,10 @@ function rail(role,on,ws=WS.eng){
   if(hasAdmin(role))items.push(['admin','Admin','admin']);
   return `<nav class="rail" aria-label="Sections"><div class="rbrand">${hive(44)}</div><a class="ri cta">${I('submit')}<small>Submit</small></a><div class="rsep"></div>${items.map(([k,l,ic])=>`<a class="ri ${k===on?'on':''}">${I(ic)}<small>${l}</small>${k==='config'&&ws===WS.eng&&role!=='mem'?'<i class="dot" title="Config needs a look"></i>':''}</a>`).join('')}<div class="rgrow"></div><a class="ri" title="Notifications">${I('bell')}</a><a class="ri">${I('help')}<small>Help</small></a><span class="av" title="Profile">OP</span></nav>`;
 }
-function panelPages(sec,page,role,ws){
+function panelPages(sec,page,role,ws,mk=null){
   if(sec==='config'){
     const pages=CONFIG_PAGES.filter(p=>p[0]!=='people'||(ws.group&&hasAdmin(role)));
-    return `<div class="pt">Config</div><a class="pk home ${page==='home'?'on':''}">${I('overview')}<span class="l">At a glance</span></a>${pages.map(([k,l,ic,m])=>`<a class="pk ${k===page?'on':''}">${I(ic)}<span class="l">${l}</span>${ws===WS.eng&&role!=='mem'?m:''}</a>`).join('')}${!ws.group?'<p class="pnote">A personal workspace has only you, so it has no People and roles.</p>':(!hasAdmin(role)?'<p class="pnote">People and roles is shown to this workspace\'s admins.</p>':'')}`;
+    return `<div class="pt">Config</div><a class="pk home ${page==='home'?'on':''}">${I('overview')}<span class="l">At a glance</span></a>${pages.map(([k,l,ic,m])=>`<a class="pk ${k===page?'on':''}">${I(ic)}<span class="l">${l}</span>${ws===WS.eng&&role!=='mem'?(mk&&k in mk?mk[k]:m):''}</a>`).join('')}${!ws.group?'<p class="pnote">A personal workspace has only you, so it has no People and roles.</p>':(!hasAdmin(role)?'<p class="pnote">People and roles is shown to this workspace\'s admins.</p>':'')}`;
   }
   if(sec==='admin'){
     const pages=ADMIN_PAGES.filter(p=>role==='pa'||p[4]==='both');
@@ -474,11 +478,11 @@ function panelPages(sec,page,role,ws){
   }
   return '';
 }
-function panel(sec,page,role,ws){
-  return `<nav class="panel" aria-label="Pages"><div class="ph"><span class="wm">Swarm<span>Cloud</span></span><span class="envpill">dev</span></div><div class="tenant"><span class="tg">${ws.tag}</span><span class="tt"><b>${ws.name}</b><small>${ws.sub}</small></span>${I('swap')}</div><div class="pscroll">${panelPages(sec,page,role,ws)}</div><div class="pfoot"><span class="pfrow"><b>Operator</b>${role==='mem'?'':`<span class="role">${ROLE[role]}</span>`}</span><span class="pfrow"><small>operator@example.com</small></span><span class="pfrow"><small>Theme</small><span class="mini-theme" role="group" aria-label="Theme"><button type="button" data-t="light" title="Light">${I('sun')}</button><button type="button" data-t="dark" title="Dark">${I('moon')}</button><button type="button" data-t="system" title="System">${I('system')}</button></span></span></div></nav>`;
+function panel(sec,page,role,ws,mk=null){
+  return `<nav class="panel" aria-label="Pages"><div class="ph"><span class="wm">Swarm<span>Cloud</span></span><span class="envpill">dev</span></div><div class="tenant"><span class="tg">${ws.tag}</span><span class="tt"><b>${ws.name}</b><small>${ws.sub}</small></span>${I('swap')}</div><div class="pscroll">${panelPages(sec,page,role,ws,mk)}</div><div class="pfoot"><span class="pfrow"><b>Operator</b>${role==='mem'?'':`<span class="role">${ROLE[role]}</span>`}</span><span class="pfrow"><small>operator@example.com</small></span><span class="pfrow"><small>Theme</small><span class="mini-theme" role="group" aria-label="Theme"><button type="button" data-t="light" title="Light">${I('sun')}</button><button type="button" data-t="dark" title="Dark">${I('moon')}</button><button type="button" data-t="system" title="System">${I('system')}</button></span></span></div></nav>`;
 }
-function desk({sec='config',page='home',role='pa',ws=WS.eng},main){
-  return `<div class="scroller"><div class="app">${rail(role,sec,ws)}${panel(sec,page,role,ws)}<main class="ct">${main}</main></div></div>`;
+function desk({sec='config',page='home',role='pa',ws=WS.eng,mk=null},main){
+  return `<div class="scroller"><div class="app">${rail(role,sec,ws)}${panel(sec,page,role,ws,mk)}<main class="ct">${main}</main></div></div>`;
 }
 function navOnly(o){return `<div class="scroller"><div class="app navonly">${rail(o.role,o.sec,o.ws)}${panel(o.sec,o.page,o.role,o.ws)}</div></div>`}
 function phone({title,ws=WS.eng,tabs=null,on=0},body){
@@ -501,7 +505,7 @@ function configHome(ph){
   <div class="scards">
   ${scard({ic:'github',title:'GitHub access',s:'ok',big:'Connected',line:'as @operator · GitHub App · renewed 3h ago',flags:[chip('installed on 2 owners'),chip('quota 4,812 of 5,000 left')],go:'GitHub access'})}
   ${scard({ic:'repo',title:'Repositories',s:'bad',big:'12 <small>reachable as you</small>',line:'8 Write · 4 Read · 9 registered for indexing',flags:[chip('1 Push check missing','bad'),chip('2 index behind','warn'),chip('Push test not run on 7')],go:'Repositories'})}
-  ${scard({ic:'key',title:'Secrets',s:'warn',big:'23 <small>set</small>',rows:`<div class="rows"><div><span>Workspace · eng</span><span>14 set · ${chip('1 missing','warn')}</span></div><div><span>Yours</span><span>5 set</span></div><div><span>Repositories</span><span>4 set · ${chip('1 missing','warn')}</span></div></div>`,flags:[chip('1 shadowed by yours','info')],go:'Secrets'})}
+  ${scard({ic:'key',title:'Secrets',s:'warn',big:'19 <small>set</small>',rows:`<div class="rows"><div><span>Workspace · eng</span><span>10 set · ${chip('1 missing','warn')}</span></div><div><span>Yours</span><span>5 set</span></div><div><span>Repositories</span><span>4 set · ${chip('1 missing','warn')}</span></div></div>`,flags:[chip('1 shadowed by yours','info')],go:'Secrets'})}
   ${scard({ic:'ws',title:'Setup progress',s:'warn',big:'7 <small>of 9 done</small>',rows:`<div class="bar" role="img" aria-label="7 of 9 steps done"><i style="width:77.8%"></i></div>`,line:'Next: Verify access, 1 check failed on example-org/example-web',go:'Workspace Settings · Workspace setup'})}
   ${scard({ic:'plug',title:'MCP servers',s:'ok',big:'3 <small>registered</small>',line:'3 enabled · kb last used 2h ago',flags:[chip('docs: last used —, not served yet')],go:'MCP servers'})}
   ${scard({ic:'people',title:'People and roles',s:'n',big:'18 <small>people</small>',line:'Default role viewer · 3 admins · 4 with their own role',go:'People and roles'})}
@@ -513,7 +517,7 @@ function configHomeMember(){
   <div class="scards">
   ${scard({ic:'github',title:'GitHub access',s:'ok',big:'Connected',line:'as @operator',go:'GitHub access'})}
   ${scard({ic:'repo',title:'Repositories',s:'ok',big:'5 <small>reachable as you</small>',go:'Repositories'})}
-  ${scard({ic:'key',title:'Secrets',s:'n',big:'2 <small>of yours set</small>',line:'Workspace: 14 names you can read, not change',go:'Secrets'})}
+  ${scard({ic:'key',title:'Secrets',s:'n',big:'2 <small>of yours set</small>',line:'Workspace: 10 names you can read, not change',go:'Secrets'})}
   ${scard({ic:'plug',title:'MCP servers',s:'n',big:'3 <small>registered</small>',go:'MCP servers'})}
   ${scard({ic:'ws',title:'Workspace Settings',s:'n',big:'eng',line:'group workspace · your role: member',go:'Workspace Settings'})}
   </div>`;
@@ -542,14 +546,14 @@ function ghConnected(ph){
 }
 function ghNot(ph){
   return `${phead('Config / <b>GitHub access</b>','GitHub access',{sub:'SwarmCloud acts on GitHub as you, through the GitHub App.'})}
+  <div class="banner info">${M('info')}<span><b>GitHub was disconnected</b>SwarmCloud revoked its authorisation at GitHub and forgot the 12 repositories you had granted. Agents you submit now wait until you connect again.</span></div>
   ${health([
    {s:'bad',label:'Connection',big:'Not connected',sub:'no GitHub account is connected'},
    {s:'unk',label:'App installed',big:'—',sub:'not known until you connect'},
    {s:'unk',label:'Repositories chosen',big:'—',sub:'not known until you connect'},
    {s:'unk',label:'GitHub quota',big:'—',sub:'read once connected'},
   ])}
-  ${card('GitHub',`<div class="empty">${I('github')}<b>Connect GitHub to start</b><p>No GitHub account is connected. Connect yours so SwarmCloud lists the orgs and repositories you reach, and clones, pushes and opens pull requests as you.</p>${btn('Connect GitHub','p','github')}<span class="hint">Then: install the App on an account or org, enable it here, and choose repositories.</span></div>`)}
-  <div class="banner info">${M('info')}<span><b>GitHub was disconnected</b>SwarmCloud revoked its authorisation at GitHub and forgot the 12 repositories you had granted. Agents you submit now wait until you connect again.</span></div>`;
+  ${card('GitHub',`<div class="empty">${I('github')}<b>Connect GitHub to start</b><p>No GitHub account is connected. Connect yours so SwarmCloud lists the orgs and repositories you reach, and clones, pushes and opens pull requests as you.</p>${btn('Connect GitHub','p','github')}<span class="hint">Then: install the App on an account or org, enable it here, and choose repositories.</span></div>`)}`;
 }
 function ghChoose(ph){
   const repos=[['example-api','can push',2],['example-web','can push',2],['swarm-docs','read only',1],['design-tokens','can push',0],['legacy-billing','push unknown',0]];
@@ -567,7 +571,7 @@ function ghChoose(ph){
 S('s2','S2','Config › GitHub access','The GitHub connection and the repository chooser, moved from Work › Access. The connection\'s health leads the page, then the account, then the rules. Choose repositories is the page\'s second view, and Repositories\' "Add new repository" lands on it.',
  [
   F('Connected','1440 · 390',{d:desk({page:'github'},ghConnected(false)),p:[phone({title:'GitHub access',tabs:CFG_TABS,on:1},ghConnected(true))],cap:'<b>Desktop and phone.</b> Four tiles first: the connection, where the App is installed, an org still waiting for its owners, and the GitHub quota. Below them are the account, Disconnect (which confirms, as today), and the three rules from Work › Access, unchanged.'}),
-  F('Not connected','1440 · 390',{d:desk({page:'github'},ghNot(false)),p:[phone({title:'GitHub access',tabs:CFG_TABS,on:1},ghNot(true))],cap:'<b>Desktop and phone.</b> Before a connection, the figures that need GitHub are dashes with their reason, never 0. The page has one action, Connect GitHub. The banner is the one drawn after a Disconnect.'}),
+  F('Not connected','1440 · 390',{d:desk({page:'github',mk:{github:'<span class="pmark bad">'+M('bad')+'not connected</span>',repos:''}},ghNot(false)),p:[phone({title:'GitHub access',tabs:CFG_TABS,on:1},ghNot(true))],cap:'<b>Desktop and phone.</b> Before a connection, the figures that need GitHub are dashes with their reason, never 0. The page has one action, Connect GitHub. The banner above the tiles is the one drawn after a Disconnect.'}),
   F('Choose repositories','1440 · 390',{d:desk({page:'github'},ghChoose(false)),p:[phone({title:'GitHub access',tabs:CFG_TABS,on:1},ghChoose(true))],cap:'<b>Desktop and phone.</b> Onboarding chooser A, as built: owners with their install state, including an org waiting for its owners (Re-check, Withdraw request). Each repository is Not chosen, Read or Write, with "you can push" shown before Write, plus the typed owner/repo row. On the phone the owners stack above the repositories.'}),
  ]);
 
@@ -602,10 +606,10 @@ function secHome(ph){
   return `${phead('Config / <b>Secrets</b>','Secrets',{sub:SEC_CAP,acts:ph?'':btn('Set a secret','p','plus'),age:ph?'':'read 6s ago'})}
   ${seg(['Overview','Workspace','Yours','Repository'],0)}
   <div class="scards">
-  ${scard({ic:'ws',title:'Workspace · eng',s:'warn',big:'14 <small>set</small>',rows:`<div class="rows"><div><span>For agents</span><span>9 set</span></div><div><span>Keys for agents and MCP</span><span>5 set · ${chip('1 missing','warn')}</span></div><div><span>GitHub token</span><span>${st('ok','active')}</span></div></div>`,flags:[chip('openai key missing: codex needs it','warn'),chip('search-api-key shadowed by yours','info')],go:'Open the workspace\'s secrets'})}
+  ${scard({ic:'ws',title:'Workspace · eng',s:'warn',big:'10 <small>set</small>',rows:`<div class="rows"><div><span>For agents</span><span>9 set</span></div><div><span>LLM provider keys</span><span>1 set · ${chip('1 missing','warn')}</span></div><div><span>GitHub token</span><span>${st('ok','active')}</span></div></div>`,flags:[chip('openai key missing: codex needs it','warn'),chip('search-api-key shadowed by yours','info')],go:'Open the workspace\'s secrets'})}
   ${scard({ic:'people',title:'Yours',s:'ok',big:'5 <small>set</small>',rows:`<div class="rows"><div><span>Personal secrets</span><span>2 · 1 used in eng</span></div><div><span>Your TypeSafe key</span><span>set · wins over eng\'s</span></div><div><span>Browser sessions</span><span>2 · 1 expires in 2d</span></div><div><span>GitHub</span><span>${st('ok','App token active')}</span></div></div>`,go:'Open yours'})}
   ${scard({ic:'repo',title:'Repositories',s:'warn',big:'4 <small>set in 2 repositories</small>',rows:`<div class="rows"><div><span>example-org/example-web</span><span>3 · ${chip('1 missing','warn')}</span></div><div><span>example-org/example-api</span><span>1</span></div><div><span>7 other repositories</span><span>none</span></div></div>`,flags:[chip('QA production sign-in not set','warn'),chip('Actions environment preview: any branch','warn')],go:'Pick a repository'})}
-  ${scard({ic:'key',title:'Keys for agents and MCP',s:'warn',big:'5 <small>of 6</small>',line:'LLM provider keys, TypeSafe, MCP server credentials',flags:[chip('openai not set','warn')],go:'Keys for agents and MCP'})}
+  ${scard({ic:'key',title:'Keys for agents and MCP',s:'warn',big:'4 <small>of 5</small>',line:'LLM provider keys, TypeSafe (yours and eng\'s), MCP server credentials',flags:[chip('openai not set','warn')],go:'Keys for agents and MCP'})}
   ${scard({ic:'github',title:'GitHub tokens',s:'ok',big:'3 <small>active</small>',line:'workspace token · your App token · 1 owner fallback',go:'GitHub token status'})}
   </div>
   <p class="hint">When one name is set in several scopes, yours wins, then the repository's, then the workspace's. Each card shows the overrides it causes.</p>`;
@@ -621,7 +625,7 @@ function secWorkspace(ph){
   ${seg(['Overview','Workspace','Yours','Repository'],1)}
   ${health([
    {s:'ok',label:'For agents',big:'9 <small>set</small>',sub:'7 granted · 2 granted to nothing yet'},
-   {s:'warn',label:'Keys for agents and MCP',big:'5 <small>of 6</small>',sub:'openai not set',go:'Keys'},
+   {s:'warn',label:'LLM provider keys',big:'1 <small>of 2</small>',sub:'openai not set',go:'Keys'},
    {s:'ok',label:'GitHub token',big:'Active',sub:'workspace token · verified 1h ago',go:'GitHub'},
    {s:'info',label:'Overridden',big:'1',sub:'search-api-key: Operator\'s own wins on their agents'},
   ])}
@@ -771,8 +775,9 @@ function cfgPeople(ph){
    {s:'n',label:'Own roles',big:'4',sub:'people with a role of their own'},
   ])}
   ${card('People with their own role',tbl(['Person','Role','Given by','When',''],[
-    ['<b>Operator</b><span class="sub">operator@example.com</span>','admin','Operator','30d ago','—'],
+    ['<b>Operator</b><span class="sub">operator@example.com</span>','admin','Operator','30d ago',dash('your own role')],
     ['<b>Rae</b><span class="sub">rae@example.com</span>','admin','Operator','12d ago',btn('Return to default','g sm')],
+    ['<b>Kai</b><span class="sub">kai@example.com</span>','admin','Operator','20d ago',btn('Return to default','g sm')],
     ['<b>Sam</b><span class="sub">sam@example.com</span>','member','Rae','3d ago',btn('Return to default','g sm')],
   ],ph),{flush:true,acts:btn('Give a person a role','sm','plus'),foot:'The body is today\'s Settings › People and roles: what each role permits, the forms and the role events.'})}`;
 }
@@ -780,13 +785,13 @@ function admPeople(ph,role){
   const pa=role==='pa';
   const rows=pa?[
     ['<b>Operator</b><span class="sub">operator@example.com</span>','eng admin · design admin · yours','platform admin','own key','now'],
-    ['<b>Rae</b><span class="sub">rae@example.com</span>','eng admin · ops member','—','lent','1h ago'],
+    ['<b>Rae</b><span class="sub">rae@example.com</span>','eng admin · ops member','platform admin','lent','1h ago'],
     {flag:'flag',cells:['<b>Kim</b><span class="sub">kim@example.com</span>',chip('workspace requested 2d ago','warn'),'—','none','2d ago']},
     ['<b>Sam</b><span class="sub">sam@example.com</span>','eng member · design viewer','—','lent','3h ago'],
   ]:[
-    ['<b>Rae</b><span class="sub">rae@example.com</span>','eng admin','—','—','1h ago'],
-    ['<b>Sam</b><span class="sub">sam@example.com</span>','eng member · design viewer','—','—','3h ago'],
-    ['<b>Lee</b><span class="sub">lee@example.com</span>','design member','—','—','5d ago'],
+    ['<b>Rae</b><span class="sub">rae@example.com</span>','eng admin','1h ago'],
+    ['<b>Sam</b><span class="sub">sam@example.com</span>','eng member · design viewer','3h ago'],
+    ['<b>Lee</b><span class="sub">lee@example.com</span>','design member','5d ago'],
   ];
   return `${phead('Admin / <b>People and roles</b>','People and roles',{sub:pa?'Every person and every workspace on the platform. Only a platform admin sees this view.':'People in the workspaces you administer: eng and design. Other workspaces are not shown.',acts:`<span class="input filled">${pa?'Every workspace':'eng and design'} ▾</span>`})}
   ${health(pa?[
@@ -799,14 +804,14 @@ function admPeople(ph,role){
    {s:'n',label:'People',big:'23',sub:'across both'},
    {s:'n',label:'Admins',big:'4',sub:'3 in eng · 1 in design'},
   ])}
-  ${card(pa?'Everyone who has signed in':'People in eng and design',tbl(['Person','Workspaces and roles','Platform role','Claude account','Last active'],rows,ph),{flush:true,foot:pa?'Manage opens the built drawer: ceiling, Claude account, admin, and roles in workspaces.':'A role is changed in its workspace\'s Config › People and roles, or here for any workspace you admin.'})}`;
+  ${card(pa?'Everyone who has signed in':'People in eng and design',tbl(pa?['Person','Workspaces and roles','Platform role','Claude account','Last active']:['Person','Workspaces and roles','Last active'],rows,ph),{flush:true,foot:pa?'38 more people are not drawn. Manage opens the built drawer: ceiling, Claude account, admin, and roles in workspaces.':'20 more people are not drawn. A role is changed in its workspace\'s Config › People and roles, or here for any workspace you admin.'})}`;
 }
 S('s5','S5','Config › MCP servers, Config › People and roles, and Admin › People and roles','MCP servers and People and roles move from Settings to Config with their bodies as built; each gains its health row. People and roles under Config is the workspace\'s own; Admin › People and roles is the cross-workspace view.',
  [
   F('Config › MCP servers','1440 · 390',{d:desk({page:'mcp'},mcp(false)),p:[phone({title:'MCP servers',tabs:CFG_TABS,on:4},mcp(true))],cap:'<b>Desktop and phone.</b> It sits under Config and keeps the built body, drawn briefly. A server never served shows a dash and its reason under Last used.'}),
   F('Config › People and roles (group workspace, admins only)','1440 · 390',{d:desk({page:'people'},cfgPeople(false)),p:[phone({title:'People and roles',tabs:CFG_TABS,on:5},cfgPeople(true))],cap:'<b>Desktop and phone.</b> eng\'s people and roles. In a personal workspace this page does not exist (S1), and members do not see it.'}),
   F('Admin › People and roles, platform admin','1440 · 390',{d:desk({sec:'admin',page:'people'},admPeople(false,'pa')),p:[phone({title:'People and roles',tabs:ADM_TABS,on:1},admPeople(true,'pa'))],cap:'<b>Desktop and phone.</b> Every person and every workspace. The workspace requests waiting for a platform admin lead the page. The workspace picker narrows the list to one workspace.'}),
-  F('Admin › People and roles, workspace admin','1440 · 390',{d:desk({sec:'admin',page:'people',role:'wa'},admPeople(false,'wa')),p:[phone({title:'People and roles',tabs:['At a glance','People and roles','Workspaces you admin'],on:1},admPeople(true,'wa'))],cap:'<b>Desktop and phone.</b> The same page, limited to the workspaces this person administers (eng and design). There is no platform role column with values, no Claude accounts, and no requests: those are a platform admin\'s.'}),
+  F('Admin › People and roles, workspace admin','1440 · 390',{d:desk({sec:'admin',page:'people',role:'wa'},admPeople(false,'wa')),p:[phone({title:'People and roles',tabs:['At a glance','People and roles','Workspaces you admin'],on:1},admPeople(true,'wa'))],cap:'<b>Desktop and phone.</b> The same page, limited to the workspaces this person administers (eng and design). There is no platform role or Claude account column, and no requests: those are a platform admin\'s.'}),
  ]);
 
 /* S6 ---------- Workspace Settings ---------- */
@@ -829,7 +834,7 @@ function wss(ph){
 function wssAdd(ph){
   return `${phead('Config / Workspace Settings / <b>Add a new workspace</b>','Workspace Settings',{})}
   ${modal('Add a new workspace',`<p class="dim">A group workspace has its own identity, storage, namespace and secrets. Nothing crosses from eng.</p>
-   <div class="field"><label>Name</label><span class="input filled">design</span><span class="hint">Lower-case letters, digits and hyphens.</span></div>
+   <div class="field"><label>Name</label><span class="input filled">research</span><span class="hint">Lower-case letters, digits and hyphens.</span></div>
    <div class="field"><label>Google group</label><span class="input">group@example.com</span><span class="hint">Google owns who is in it. Its members join with the default role.</span></div>
    <div class="field"><label>Default role</label>${seg(['viewer','member'],0)}<span class="hint">An admin is named person by person, after it is made. You are its first admin.</span></div>
    <div class="banner info">${M('info')}<span>Approved automatically, because you are a platform admin. It is ready a few minutes later; Config › Workspace Settings shows each step as it runs.</span></div>`,`${btn('Cancel')}${btn('Add workspace','p')}`)}`;
@@ -845,8 +850,8 @@ function psec(ph){
   const r=(n,set,v,age,mgr,by,flag)=>({flag:flag||'',cells:[`<code>${n}</code>`,set,v,age,mgr,by]});
   return `${phead('Admin / <b>Platform secrets</b>','Platform secrets',{sub:'Status only, platform admins only. No value, no length, no last characters, and no form: each value is written by the operator\'s script or the system that owns it.',age:ph?'':'read 20s ago'})}
   ${health([
-   {s:'ok',label:'Declared',big:'15',sub:'in Secret Manager'},
-   {s:'ok',label:'Set',big:'14',sub:'an enabled version exists'},
+   {s:'ok',label:'Declared',big:'14',sub:'in Secret Manager'},
+   {s:'ok',label:'Set',big:'14',sub:'every declared secret has an enabled version'},
    {s:'warn',label:'Not declared',big:'1',sub:'typesafe forwarder is off here'},
    {s:'info',label:'In rotation grace',big:'2',sub:'two enabled versions'},
   ])}
@@ -894,7 +899,7 @@ function counts(ph){
    ${tile({s:'warn',label:'Estimated cost (list price, not a bill)',big:'at least $'+fmt(COST),sub:`${fmt(REPORTED)} of ${fmt(TOT)} agents reported their tokens, retries included`})}
   </div>
   ${card('Agents per day',`<div class="legend"><span><i style="background:var(--c1)"></i>first attempts</span><span><i style="background:var(--c2)"></i>retries</span><span class="faint">hover a bar for its day</span></div>${chart(ph)}`,{acts:chip('by submission day')})}
-  ${card('Breakdown',`<div style="padding:12px 16px 0">${seg(['Agent type','Model','Workspace','Pool account'],0)}</div>${tbl(['Agent type','#Agents','#Retries','#Run hours','#Tokens in','#Out','#Cache read','#Cache write','#Estimated cost','#Reported, of agents and retries'],rows,ph)}`,{flush:true,foot:'Cost is at list price from Admin › Pool limits › Model prices; an agent that reported no tokens adds nothing, which is why it says "at least". The table is also this chart\'s table view.'})}`;
+  ${card('Breakdown',`<div style="padding:12px 16px 0">${ph?'<span class="input filled" style="align-self:flex-start;display:inline-flex">Break down by: Agent type ▾</span>':seg(['Agent type','Model','Workspace','Pool account'],0)}</div>${tbl(['Agent type','#Agents','#Retries','#Run hours','#Tokens in','#Out','#Cache read','#Cache write','#Estimated cost','#Reported, of agents and retries'],rows,ph)}`,{flush:true,foot:'Cost is at list price from Admin › Pool limits › Model prices; an agent that reported no tokens adds nothing, which is why it says "at least". The table is also this chart\'s table view.'})}`;
 }
 S('s8','S8','Admin › Platform counts, with Over time','Over time leads with big headline figures, then the chart, then the breakdown (BGD\'s decisions on #2149). A count runs only when its priced Run button is pressed.',
  [F('Platform counts · Over time','1440 · 390',{d:desk({sec:'admin',page:'counts'},counts(false)),p:[phone({title:'Platform counts',tabs:ADM_TABS,on:6},counts(true))],cap:'<b>Desktop and phone.</b> Agents per day, week or month by submission day, with retries in their own colour and figure. Run hours. Tokens split into in, out, cache read and cache write. Cost is "at least $X" with "k of n agents reported". The breakdown switches between agent type, model, workspace and pool account. Run names its read cost and the page never refreshes itself. "By state now" is today\'s page, unchanged.'})]);
@@ -931,7 +936,7 @@ function qaRun(ph){
     ['<code>/beta/checkout</code>','staging','production'],['<code>/settings/billing</code>','staging','production'],['<code>/legacy/export</code>','production','staging'],
   ],ph),{flush:true,foot:'Information, never a filed finding: usually a feature not shipped yet.'})}
   ${card('New since last run',tbl(['Route','Found on','',],[
-    ['<code>/beta/checkout</code>','staging',btn('Promote','sm')],['<code>/settings/billing</code>','staging',btn('Promote','sm')],['<code>/help/contact</code>','production',btn('Promote','sm')],
+    ['<code>/beta/checkout</code>','staging',btn('Promote','sm')],['<code>/settings/billing</code>','staging',btn('Promote','sm')],['<code>/settings/team</code>','staging',btn('Promote','sm')],['<code>/orders/export</code>','staging',btn('Promote','sm')],['<code>/help/contact</code>','production',btn('Promote','sm')],
   ],ph),{flush:true,foot:'Already merged into each environment\'s discovered routes, so the next run captures them. Promote (an admin\'s) adds one to the screens list.'})}
   </div>`;
 }
@@ -961,7 +966,7 @@ function admHome(ph,role){
 function admWorkspaces(ph){
   return `${phead('Admin / <b>Workspaces you admin</b>','Workspaces you admin',{sub:'Each group workspace whose stored role for you is admin. A link selects that workspace, then opens the page.'})}
   <div class="scards">
-  ${scard({ic:'ws',title:'eng',s:'warn',big:'7 <small>of 9 set up</small>',rows:`<div class="rows"><div><span>People</span><span>18 · 3 admins</span></div><div><span>Secrets</span><span>14 · ${chip('1 missing','warn')}</span></div><div><span>MCP servers</span><span>3</span></div></div>`,go:'Open eng\'s Config'})}
+  ${scard({ic:'ws',title:'eng',s:'warn',big:'7 <small>of 9 set up</small>',rows:`<div class="rows"><div><span>People</span><span>18 · 3 admins</span></div><div><span>Secrets</span><span>10 · ${chip('1 missing','warn')}</span></div><div><span>MCP servers</span><span>3</span></div></div>`,go:'Open eng\'s Config'})}
   ${scard({ic:'ws',title:'design',s:'n',big:'Ready',rows:`<div class="rows"><div><span>People</span><span>5 · 1 admin</span></div><div><span>Secrets</span><span>none yet</span></div><div><span>MCP servers</span><span>0</span></div></div>`,go:'Open design\'s Config'})}
   </div>`;
 }
@@ -977,7 +982,7 @@ function admLimits(ph){
     {flag:'flag',cells:['<code>backend:GKE_AUTOPILOT</code>','4','4','<div class="bar" style="width:120px"><i class="warn" style="width:100%"></i></div>','Operator','20d ago']},
     ['<code>global</code>','31','40','<div class="bar" style="width:120px"><i style="width:78%"></i></div>','Operator','30d ago'],
     ['<code>tenant:eng</code>','14','20','<div class="bar" style="width:120px"><i style="width:70%"></i></div>','Operator','3d ago'],
-  ],ph),{flush:true,foot:'Full pools first. Additional repositories, Model prices and the GitHub fallback token stay on this page below the ceilings, as built.'})}`;
+  ],ph),{flush:true,foot:'Full pools first; 5 more pools are not drawn. Additional repositories, Model prices and the GitHub fallback token stay on this page below the ceilings, as built.'})}`;
 }
 function admSizes(ph){
   return `${phead('Admin / <b>Runner sizes</b>','Runner sizes',{sub:'Each class\'s CPU request, CPU limit and memory. A save is a new version; a running agent keeps the size it was admitted with.'})}
@@ -988,12 +993,13 @@ function admSizes(ph){
 }
 function admTenants(ph){
   return `${phead('Admin / <b>Tenants</b>','Tenants',{sub:'Every tenant registered on the platform, what it enforces and how it is configured.'})}
-  ${health([{s:'n',label:'Tenants',big:'9',sub:'6 group · 3 personal'},{s:'info',label:'Being made',big:'1',sub:'design · namespace step'},{s:'ok',label:'QA identity',big:'2',sub:'workspaces granted'}])}
+  ${health([{s:'n',label:'Tenants',big:'9',sub:'6 group · 3 personal'},{s:'info',label:'Being made',big:'1',sub:'research · namespace step'},{s:'ok',label:'QA identity',big:'2',sub:'workspaces granted'}])}
   ${card('Tenants',tbl(['Tenant','Status','Kind','Principal','Credentials','Identity'],[
     ['<b>eng</b>',st('ok','active'),'group','eng@example.com','anthropic','own GSA'],
-    {flag:'flag',cells:['<b>design</b>',st('run','being made'),'group','design@example.com','—','namespace step']},
+    ['<b>design</b>',st('ok','active'),'group','design@example.com','anthropic','own GSA'],
+    {flag:'flag',cells:['<b>research</b>',st('run','being made'),'group','research@example.com','—','namespace step']},
     ['<b>u-operator</b>',st('ok','active'),'personal','operator@example.com','anthropic','own GSA'],
-  ],ph),{flush:true,foot:'The built columns. "Being created" and "QA identity" stay as sections under the table.'})}`;
+  ],ph),{flush:true,foot:'The built columns; 5 more tenants are not drawn. "Being created" and "QA identity" stay as sections under the table.'})}`;
 }
 function admSched(ph){
   return `${phead('Admin / <b>Schedules and approvals</b>','Schedules and approvals',{sub:'The platform\'s view of every workspace\'s schedules and what waits for approval. Each workspace\'s own schedules stay on Automate.'})}
@@ -1009,7 +1015,7 @@ function admSched(ph){
   ],ph),{flush:true})}
   ${card('Every workspace\'s schedules',tbl(['Workspace','Name · type','Next run','Last outcome','State'],[
     ['eng','nightly visual-qa · visual-qa','02:00','succeeded',st('ok','on')],['eng','weekly index · index','Mon 03:00','succeeded',st('ok','on')],['design','docs sweep · agent','—',dash('never ran'),st('n','paused')],
-  ],ph),{flush:true,foot:'The rows of Automate › Schedules › All tenants, as built; the approvals are the Approvals inbox across workspaces.'})}`;
+  ],ph),{flush:true,foot:'The rows of Automate › Schedules › All tenants, as built; 28 more schedules are not drawn. The approvals are the Approvals inbox across workspaces.'})}`;
 }
 S('s10','S10','Every Admin page, in this proposal\'s style','Admin opens on status cards like Config. A platform admin sees every page. A workspace admin sees only People and roles and Workspaces you admin, each limited to their workspaces. Members and viewers see no Admin. People and roles, Platform secrets and Platform counts are drawn in S5, S7 and S8.',
  [
@@ -1026,6 +1032,9 @@ S('s10','S10','Every Admin page, in this proposal\'s style','Admin opens on stat
 document.getElementById('toc').innerHTML=SECTIONS.map(s=>`<li><a href="#${s.id}">${s.n} · ${s.title.split(':')[0].split(',')[0]}</a></li>`).join('');
 document.getElementById('frames').innerHTML=SECTIONS.map(s=>`<section id="${s.id}"><h2><span class="n">${s.n}</span>${s.title}</h2><p class="sec-intro">${s.intro}</p>${s.figs.map(f=>`<figure class="fr"><div class="ftitle">${f.title}<small>${f.size}</small></div>${f.d}${f.p.length?`<div class="phones">${f.p.join('')}</div>`:''}<figcaption>${f.cap}</figcaption></figure>`).join('')}</section>`).join('');
 document.addEventListener('click',e=>{const b=e.target.closest('[data-t]');if(b)setTheme(b.dataset.t)});
+/* a 1440 frame in a slightly narrower window is scaled to fit, so its right edge is never hidden; below 85% it scrolls instead */
+function fitFrames(){document.querySelectorAll('.scroller>.app').forEach(a=>{a.style.zoom='';const z=a.parentElement.clientWidth/a.offsetWidth;a.style.zoom=(z<1&&z>=.85)?String(Math.floor(z*1000)/1000):''})}
+fitFrames();addEventListener('resize',fitFrames);
 setTheme(document.documentElement.dataset.theme||'system');
 </script>
 </body>
