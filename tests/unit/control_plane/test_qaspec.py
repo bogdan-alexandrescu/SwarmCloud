@@ -26,6 +26,7 @@ from typing import Any
 
 import pytest
 
+from swarm_common.profiles import RUNNER_PROFILES
 from swarm_mcp.profiles import check_spec_model_classes, spec_without_model_classes
 from swarm_mcp.workflows import read_spec
 
@@ -144,7 +145,8 @@ def test_the_steps_are_the_designs_shapes() -> None:
     assert steps["review-g1"]["depends_on"] == ["capture-g1"]
     assert steps["flow-find-docs"]["runner_profile"] == "claude-code-browser"
     assert steps["flow-find-docs"]["model_class"] == "sonnet"
-    assert steps["flow-find-docs"]["inputs"] == {"browser_tool": "jev"}
+    # MUTATION: hard-code `browser_tool="jev"` on the flow steps again and this fails.
+    assert steps["flow-find-docs"]["inputs"] == {"browser_tool": "playwright"}
     # MUTATION: stage fewer than every capture and review tar into the report.
     assert steps["report"]["input_from"] == {
         "capture-g1": "capture-g1.tar",
@@ -156,6 +158,76 @@ def test_the_steps_are_the_designs_shapes() -> None:
     assert steps["flow-report"]["input_from"] == {"flow-find-docs": "flow-find-docs.tar"}
     assert steps["file"]["input_from"] == {"report": "findings.json"}
     assert steps["file"]["model_class"] == "sonnet"
+
+
+# --------------------------------------------------------------------------
+# The flows' browser tool (lane VQ9-TOOL; BGD, 2026-10-23: Playwright by
+# default, after batch bench3-2026-10-23; a target, or one run, may choose Jev)
+# --------------------------------------------------------------------------
+
+_FLOW = {"id": "find-docs", "goal": "find the API reference", "start_path": "/"}
+
+
+def _flow_steps(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    return [s for s in spec["steps"] if s["step_id"].startswith("flow-") and s["step_id"] != "flow-report"]
+
+
+def test_a_target_without_the_field_renders_its_flows_with_playwright() -> None:
+    spec = qaspec.render(_target(flows=[_FLOW]))
+    (flow,) = _flow_steps(spec)
+    # MUTATION: default `flows_browser_tool` to "jev" and this fails.
+    assert flow["inputs"] == {"browser_tool": "playwright"}
+    # MUTATION: keep the jev sentence in the flow prompt whatever the tool and these fail.
+    assert "Playwright MCP" in flow["prompt"]
+    assert "jev" not in flow["prompt"].lower()
+    # The capture steps stay on the fixed capture tool, whatever the flows use.
+    assert _steps(spec)["capture-g1"]["inputs"] == {"browser_tool": "playwright"}
+
+
+def test_a_target_that_chooses_jev_renders_its_flows_with_jev() -> None:
+    spec = qaspec.render(_target(flows=[_FLOW], flows_browser_tool="jev"))
+    (flow,) = _flow_steps(spec)
+    # MUTATION: ignore the target's field in `render` and this is playwright.
+    assert flow["inputs"] == {"browser_tool": "jev"}
+    # MUTATION: render the Playwright sentence for a jev flow and these fail.
+    assert "Using the jev browser tools" in flow["prompt"]
+    assert "Playwright MCP" not in flow["prompt"]
+    # MUTATION: let the flows' tool reach the capture step and this is jev.
+    assert _steps(spec)["capture-g1"]["inputs"] == {"browser_tool": "playwright"}
+
+
+def test_one_runs_browser_tool_overrides_the_targets_for_that_render_only() -> None:
+    target = _target(flows=[_FLOW], flows_browser_tool="jev")
+    before = copy.deepcopy(target)
+    (flow,) = _flow_steps(qaspec.render(target, browser_tool="playwright"))
+    # MUTATION: let the target's field win over the run's override and this is jev.
+    assert flow["inputs"] == {"browser_tool": "playwright"}
+    assert "Playwright MCP" in flow["prompt"]
+    # MUTATION: write the override back onto the target and the next render is playwright.
+    assert target == before
+    (again,) = _flow_steps(qaspec.render(target))
+    assert again["inputs"] == {"browser_tool": "jev"}
+    (chosen,) = _flow_steps(qaspec.render(_target(flows=[_FLOW]), browser_tool="jev"))
+    assert chosen["inputs"] == {"browser_tool": "jev"}
+
+
+@pytest.mark.parametrize("tool", ["dev-browser", "auto", "JEV", "", 1, ["jev"]])
+def test_an_unknown_flows_browser_tool_is_refused(tool: Any) -> None:
+    # MUTATION: accept any string as `flows_browser_tool` and this renders.
+    with pytest.raises(qaspec.QaSpecError) as err:
+        qaspec.render(_target(flows=[_FLOW], flows_browser_tool=tool))
+    assert err.value.code == "qa_target_invalid"
+    assert "flows_browser_tool" in err.value.message
+    # MUTATION: skip the override's check in `render` and this renders.
+    with pytest.raises(qaspec.QaSpecError):
+        qaspec.render(_target(flows=[_FLOW]), browser_tool=tool)
+
+
+def test_the_flow_tools_are_the_profiles_choices() -> None:
+    # MUTATION: add a tool the browser profile does not offer and this fails.
+    choices = RUNNER_PROFILES["claude-code-browser"].inputs["browser_tool"].choices
+    assert set(qaspec.FLOW_BROWSER_TOOLS) <= set(choices)
+    assert qaspec.DEFAULT_FLOW_BROWSER_TOOL == "playwright"
 
 
 def test_report_only_renders_no_file_step() -> None:

@@ -517,6 +517,92 @@ def test_a_run_body_is_logged_nowhere_as_a_prompt(client, db, seeded):
 
 
 # --------------------------------------------------------------------------
+# The flows' browser tool (lane VQ9-TOOL; BGD, 2026-10-23: flows default to
+# Playwright, after batch bench3-2026-10-23; a target, or one run, may choose Jev)
+# --------------------------------------------------------------------------
+
+_FLOWS = [{"id": "find-docs", "goal": "find the API reference", "start_path": "/"}]
+
+
+def flow_tools(db: Any, workflow_id: str) -> dict[str, Any]:
+    return {d["step_id"]: d["input"].get("browser_tool") for p, d in db.docs.items()
+            if p.startswith("tasks/") and d.get("workflow_id") == workflow_id
+            and d["step_id"].startswith("flow-") and d["step_id"] != "flow-report"}
+
+
+def test_a_target_without_the_field_runs_its_flows_with_playwright(client, db, seeded):
+    target = register(client, flows=_FLOWS).json()["qa_target"]
+    approve(client, target["id"])
+    response = run(client, target["id"], file="none")
+    assert response.status_code == 201, response.text
+    workflow_id = response.json()["workflow_id"]
+    # MUTATION: keep `browser_tool="jev"` on the flow steps and this is jev.
+    assert flow_tools(db, workflow_id) == {"flow-find-docs": "playwright"}
+    run_doc = db.docs[f"qa_target_runs/{workflow_id}"]
+    # MUTATION: leave the tool off `record_run` and the run's record cannot say what it used.
+    assert run_doc["flows_browser_tool"] == "playwright"
+    assert run_doc["browser_tool"] is None
+
+
+def test_a_target_that_chooses_jev_is_stored_served_and_runs_its_flows_with_jev(client, db, seeded):
+    response = register(client, flows=_FLOWS, flows_browser_tool="jev")
+    assert response.status_code == 201, response.text
+    target = response.json()["qa_target"]
+    # MUTATION: leave `flows_browser_tool` out of SPEC_FIELDS (or TargetBody) and it is dropped.
+    assert target["flows_browser_tool"] == "jev"
+    (doc,) = target_docs(db).values()
+    assert doc["flows_browser_tool"] == "jev"
+    approve(client, target["id"])
+    answer = run(client, target["id"], file="none")
+    assert answer.status_code == 201, answer.text
+    # MUTATION: render the run without the target's field and this is playwright.
+    assert flow_tools(db, answer.json()["workflow_id"]) == {"flow-find-docs": "jev"}
+
+
+def test_a_change_of_anything_else_keeps_the_flows_browser_tool(client, db, seeded):
+    target = register(client, flows=_FLOWS, flows_browser_tool="jev").json()["qa_target"]
+    response = client.patch(f"{TARGETS}/{target['id']}", json={"name": "Shop 2"}, headers=auth_header("carol"))
+    assert response.status_code == 200, response.text
+    # MUTATION: rebuild a change from the body alone and a save drops the field.
+    assert response.json()["qa_target"]["flows_browser_tool"] == "jev"
+
+
+def test_one_runs_browser_tool_overrides_the_targets_for_that_run_only(client, db, seeded):
+    target = register(client, flows=_FLOWS, flows_browser_tool="jev").json()["qa_target"]
+    approve(client, target["id"])
+    first = run(client, target["id"], file="none", browser_tool="playwright")
+    assert first.status_code == 201, first.text
+    first_id = first.json()["workflow_id"]
+    # MUTATION: drop `browser_tool` from `render_run`'s call in `:run` and this is jev.
+    assert flow_tools(db, first_id) == {"flow-find-docs": "playwright"}
+    first_doc = db.docs[f"qa_target_runs/{first_id}"]
+    # MUTATION: record the target's tool instead of the one the run used and these fail.
+    assert first_doc["browser_tool"] == "playwright"
+    assert first_doc["flows_browser_tool"] == "playwright"
+    # MUTATION: store the override on the target and the next run is playwright.
+    assert target_docs(db)[f"qa_targets/{target['id']}"]["flows_browser_tool"] == "jev"
+    second = run(client, target["id"], file="none")
+    assert second.status_code == 201, second.text
+    assert flow_tools(db, second.json()["workflow_id"]) == {"flow-find-docs": "jev"}
+    assert db.docs[f"qa_target_runs/{second.json()['workflow_id']}"]["browser_tool"] is None
+
+
+@pytest.mark.parametrize("tool", ["dev-browser", "auto", "chromium"])
+def test_an_unknown_flows_browser_tool_is_refused_at_registration_and_at_run(client, db, seeded, tool):
+    response = register(client, flows=_FLOWS, flows_browser_tool=tool)
+    # MUTATION: skip `qaspec.flows_browser_tool` in `check_spec` and this is 201.
+    assert response.status_code == 422, response.text
+    assert "flows_browser_tool" in response.json()["message"]
+    assert not target_docs(db)
+    target = register(client, flows=_FLOWS).json()["qa_target"]
+    approve(client, target["id"])
+    refused = run(client, target["id"], file="none", browser_tool=tool)
+    # MUTATION: type `RunBody.browser_tool` as any string and this is 201.
+    assert refused.status_code == 422, refused.text
+    assert not [p for p in db.docs if p.startswith("workflows/")]
+
+
+# --------------------------------------------------------------------------
 # Start clicks at registration (§2.2; BGD, 2026-10-23)
 # --------------------------------------------------------------------------
 
