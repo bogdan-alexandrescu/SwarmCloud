@@ -303,7 +303,7 @@ export function DispatchChoice({
         spellCheck={false}
         placeholder="https://github.com/owner/repo.git"
         value={draft.repositoryUrl}
-        aria-invalid={repoRefused || undefined}
+        aria-invalid={repoRefused || Boolean(errors?.repository_url) || undefined}
         aria-describedby={repoSays.length === 0 ? undefined : repoSays.join(' ')}
         onChange={(e) => set({ repositoryUrl: e.target.value })}
       />

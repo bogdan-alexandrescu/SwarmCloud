@@ -10,7 +10,8 @@
  *
  * Every enabled, unselected ring is held to 3:1 against the card it sits on,
  * in light and dark, inside a step not yet reached as well; the chosen and the
- * disabled ring are each held apart from it. Colours are read through the
+ * disabled ring are each held apart from it (the disabled one by its line and
+ * fill, not its colour: QA-046). Colours are read through the
  * cascade (`painted`), never `getComputedStyle`, which jsdom cannot order.
  */
 import { afterEach, describe, expect, it } from 'vitest'
@@ -50,6 +51,15 @@ function ringOf(input: HTMLElement, env: CascadeEnv, theme: Theme) {
   const tokens = tokensIn(border!, theme)
   expect(tokens, `${border} names no single colour token`).toHaveLength(1)
   return tokens[0]!.rgba
+}
+
+/** The ring's border-style and the fill inside it, resolved for `theme`. */
+function lookOf(input: HTMLElement, env: CascadeEnv, theme: Theme) {
+  const border = painted(input, ['border', 'border-style'], env)
+  expect(border, 'the radio has no border of its own').not.toBeNull()
+  const style = /\b(solid|dashed|dotted|double|groove|ridge|inset|outset|none|hidden)\b/.exec(border!)?.[1] ?? 'none'
+  const fill = painted(input, ['background', 'background-color'], env)
+  return { style, fill: fill === null ? null : resolveColour(fill, theme) }
 }
 
 /** What the card under the ring is painted. */
@@ -103,9 +113,14 @@ describe('work-b-006: the chosen and the disabled ring stay distinct from the un
         // MUTATION: drop the `:disabled` rule and a refused runner's radio
         // reads exactly as a live one.
         expect(painted(off, ['border', 'border-color'], env)).not.toBe(plainBorder)
-        // MUTATION: give the disabled ring the unselected ring's token and the
-        // two are the same colour under two declarations.
-        expect(ringOf(off, env, theme)).not.toEqual(ringOf(plain, env, theme))
+        // The disabled ring shares the live ring's 3:1 `--ctl-bd` colour on
+        // purpose (QA-046: on the hairline a refused runner read as a card
+        // with no control), so what sets it apart is its line and its fill.
+        // BGD's decision of 2026-10-23 kept QA-046 and amended this assertion
+        // from "a different colour" to "a different border-style or fill".
+        // MUTATION: make the disabled ring `solid` on `--surface` and the two
+        // are the same ring under two declarations.
+        expect(lookOf(off, env, theme)).not.toEqual(lookOf(plain, env, theme))
       })
     }
   }

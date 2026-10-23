@@ -312,7 +312,7 @@ function HeldRunners({ held, heldAs }: { held: ReadonlyArray<readonly [string, R
  * it needs, then how many can start now -- or, for a disabled runner, the
  * platform's reason in that line's place.
  */
-export function RunnerPicker({ group, label, profiles, chosen, keys, onPick, onlyUsable = false, heldAs }: {
+export function RunnerPicker({ group, label, profiles, chosen, keys, onPick, onlyUsable = false, heldAs, invalid = false, describedBy }: {
   /** The radio group's name. Unique per picker on the page. */
   group: string
   /** The group's accessible name. */
@@ -326,6 +326,11 @@ export function RunnerPicker({ group, label, profiles, chosen, keys, onPick, onl
   onlyUsable?: boolean
   /** Why the held-back runners are held back, when it is not the platform's refusal. */
   heldAs?: string
+  /** A submit was attempted with no runner chosen (visual QA run 6, QA-103):
+   *  the group is the error, at itself, and not only in the send panel. */
+  invalid?: boolean
+  /** The id of the line under the group that says what is wrong. */
+  describedBy?: string | undefined
 }) {
   const split = runnerSplit(profiles, chosen, onlyUsable)
   // The runners people submit first, the platform's own after them (G4-33).
@@ -334,7 +339,8 @@ export function RunnerPicker({ group, label, profiles, chosen, keys, onPick, onl
   const held = split.held
   return (
     <>
-    <ul className="sbf-runners is-cards" role="radiogroup" aria-label={label}>
+    <ul className="sbf-runners is-cards" role="radiogroup" aria-label={label}
+      aria-invalid={invalid || undefined} aria-describedby={describedBy}>
       {shown.map(([n, p]) => {
         const off = isOff(p)
         return (
@@ -378,6 +384,9 @@ export function RunnerPicker({ group, label, profiles, chosen, keys, onPick, onl
  * The select still offers the whole catalogue with each runner's room, and a
  * disabled runner stays in it, refused and saying so; the chosen runner's
  * size, room and key are drawn under it by `StepRunnerFacts`.
+ * IN THE SANS FACE (visual QA run 5b, QA-047): "choose a runner" and each
+ * option's room are sentences, not code, and the `mono` class set them in
+ * the code face beside sans labels.
  */
 export function RunnerSelect({ id, label, profiles, chosen, onPick }: {
   id: string
@@ -387,7 +396,7 @@ export function RunnerSelect({ id, label, profiles, chosen, onPick }: {
   onPick: (name: string) => void
 }) {
   return (
-    <select id={id} className="mono sb-runner-select" aria-label={label} value={chosen}
+    <select id={id} className="sb-runner-select" aria-label={label} value={chosen}
       aria-invalid={chosen === '' || undefined} onChange={(e) => onPick(e.target.value)}>
       <option value="" disabled>choose a runner</option>
       {runnerSplit(profiles, chosen).shown.map(([n, p]) => (
