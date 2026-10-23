@@ -1056,7 +1056,7 @@ Why the choices in it:
     against the screenshots (6:flow-workflow-graph-run-01). Each flow writes
     `date +%s` into the log when it starts and reads it before writing its
     json.
-  * *Run 5b's flow boxes.* A tie in "most recent" is broken by the task's own
+  * *Run 5b's flow boxes.* A tie in "most recent" is broken by the failed agent's own
     end time and the choice is stated; both find-failure runs go through
     Agents › Recent; the workflow-graph goal includes the step's `Agent’s
     changes ›` and `Logs ›`, since its Changes page can show no change; the
