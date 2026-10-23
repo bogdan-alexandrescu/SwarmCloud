@@ -208,10 +208,10 @@ decisions, 2026-10-23 (~19:30Z), and how the route keeps them:
 
 ### The pool account comes from the agent's own events
 
-The worker records the account it leased as an event on the task
-(`account_assigned`), never as a task field. So the derive reads it the way
-`task_accounts.py` reads it for the task pages: the same collection-group
-query over `events`, one per 30 ended agents, on the existing
+The worker records the account it leased as an event on the agent
+(`account_assigned`), never as a field of the agent's document. So the
+derive reads it the way `task_accounts.py` reads it for the agent pages: the
+same collection-group query over `events`, one per 30 ended agents, on the existing
 `events-tenant-task-cause` index, with the tenant checked on every row. No
 change to the frozen contract was needed.
 
@@ -225,8 +225,8 @@ change to the frozen contract was needed.
 * **A failed events read fails the derive.** The day is then `read_failed`
   and is derived again on the next read. A list page shows such an account as
   `unread` and moves on, but a sealed day is never read again, so an account
-  it missed would be missing for good. An agent past the reader's per-task
-  cap of 64 events is "unread", never a guess.
+  it missed would be missing for good. An agent past the reader's cap of 64
+  events per agent is "unread", never a guess.
 * **A sealed day never re-reads events.** The label is stored in the tuple.
 
 ### What v9 costs to re-derive
