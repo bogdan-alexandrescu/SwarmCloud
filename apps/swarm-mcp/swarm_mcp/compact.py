@@ -460,6 +460,13 @@ def step_result(row: dict[str, Any]) -> dict[str, Any]:
 
     A task given up on (`abandoned`) answers `UNKNOWN` with its reason as
     `last_error`, so every reply that stops carries a result to return.
+
+    `last_error` is the relayed outcome's, else the one the row's own follow
+    read of the task carried (`row["last_error"]`). Measured 2026-10-20, GKE
+    admission outage: two step rows and a task row ended FAILED with an empty
+    `last_error` while the task document held `gke_create_job_forbidden` and
+    `swarm_workflow_status` served it, so the session reported a failure with
+    no reason (#1334).
     """
     found = row.get("outcome") or {}
     result: dict[str, Any] = {"state": str(found.get("state") or row.get("state") or "UNKNOWN")}
@@ -472,7 +479,10 @@ def step_result(row: dict[str, Any]) -> dict[str, Any]:
             result[figure] = value
     result["pr_url"] = _text(found.get("pr_url"))
     result["artifacts"] = [str(name) for name in found.get("artifacts") or [] if name]
-    result["last_error"] = _text(row.get("abandoned_because") if row.get("abandoned") else found.get("last_error"))
+    if row.get("abandoned"):
+        result["last_error"] = _text(row.get("abandoned_because"))
+    else:
+        result["last_error"] = _text(found.get("last_error") or row.get("last_error"))
     result["console"] = _text(found.get("console") or row.get("console"))
     # The agent's questions for the owner (2026-10-05), with "" for a text it
     # left out, so this object still holds no null. `[]` when it asked none.
@@ -674,6 +684,10 @@ def watch_progress(
             row["console"] = link
         if task["read"] == "ok" and task.get("state") == "PARKED" and task.get("park_reason"):
             row["park_reason"] = task["park_reason"]
+        if task["read"] == "ok" and task.get("last_error"):
+            # The follow read's own reason, for `step_result` when the
+            # finished task's re-read (`outcome`) comes back without one.
+            row["last_error"] = task["last_error"]
         abandoned = None
         if step_id is not None and task["read"] == "ok" and task.get("step_id") is None:
             # A single task handed to a step row (#830).
