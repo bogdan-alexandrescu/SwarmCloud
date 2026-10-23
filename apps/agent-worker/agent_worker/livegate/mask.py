@@ -163,6 +163,14 @@ REASON_UNPLACED = "a frame on the page cannot be placed"
 #: Not a viewer's reason: the gate's event log's, for a challenge frame shown
 #: unchecked while a person holds control (`SHOWN_IN_CONTROL`).
 REASON_SHOWN_IN_CONTROL = "a challenge frame is shown unchecked while a person holds control"
+#: GREY-TAIL (part of #1344): the attempt ended and the gate closed Chromium
+#: (`LiveGate.wipe`, cause `attempt_end`, through `browser_closed`); the pod
+#: stops 2-12 s later. Not a page failure, so not `REASON_NO_SESSION`, and
+#: said as one sentence with no lead (rfb.py `desktop_name`): nothing is
+#: unsafe about a browser that is gone. MEASURED 2026-10-23 (batch
+#: mask1344-2026-10-23): every run's `no_session` time was this tail, up to
+#: 12.3 s. Owner decision (BGD, 2026-10-23): "Say the agent finished."
+REASON_BROWSER_CLOSED = "The agent has finished; its browser is closed."
 
 #: The challenge frames a person must see to get past them (issue #1340):
 #: (host, path prefix). Exact hosts; "*." is any subdomain of the rest and
@@ -469,6 +477,8 @@ class MaskState:
         #: empties: a page followed again is the same load, not a new one.
         self._challenged: OrderedDict[str, None] = OrderedDict()
         self._session = False
+        #: The attempt ended and Chromium was closed (`browser_closed`).
+        self._closed = False
         self._frames: dict[str, _FrameState] = {}
         self._top: str | None = None
         self._verdicts: OrderedDict[str, bool] = OrderedDict()
@@ -494,6 +504,7 @@ class MaskState:
         each frame.
         """
         self._session = True
+        self._closed = False
         self._last = None
         for frame in self._frames.values():
             frame.report = None
@@ -503,6 +514,15 @@ class MaskState:
     def session_down(self) -> None:
         self._session = False
         self._last = None
+
+    def browser_closed(self) -> None:
+        """The attempt ended and Chromium is closed: `REASON_BROWSER_CLOSED` until a session is up.
+
+        A `session_down` after it (the page follower seeing Chromium's pipe
+        close) is the same closed browser, so it keeps this reason.
+        """
+        self.session_down()
+        self._closed = True
 
     def hold(self, reason: str) -> None:
         """The tab on screen may be about to change: no report is trusted until `release`.
@@ -723,6 +743,8 @@ class MaskState:
 
     def _apply(self, frame: Frame) -> Outcome:
         top = self._frames.get(self._top) if self._top is not None else None
+        if self._closed:
+            return self._unavailable(frame, REASON_BROWSER_CLOSED)
         if self._held is not None:
             return self._unavailable(frame, self._held)
         if not self._session:

@@ -183,6 +183,7 @@ from .inject import MAX_TYPED_CHARS, Injector
 from .mask import (
     CANNOT_SHOW,
     PARTLY_COVERED,
+    REASON_BROWSER_CLOSED,
     REASON_HIDDEN,
     REASON_NO_PAGE,
     REASON_NO_SESSION,
@@ -283,6 +284,7 @@ UNAVAILABLE_REASON_KEYS: dict[str, str] = {
     REASON_HIDDEN: "hidden",
     REASON_SWITCHING: "switching",
     REASON_TOO_WIDE: "too_wide",
+    REASON_BROWSER_CLOSED: "browser_closed",
 }
 #: The key of an unavailable frame whose reason is not in `UNAVAILABLE_REASON_KEYS`.
 UNAVAILABLE_REASON_OTHER = "other"
@@ -372,6 +374,9 @@ def desktop_name(frame: MaskedFrame) -> bytes:
     """The desktop name a viewer is sent with `frame` (module docstring, WHY THE PAGE IS NOT SHOWN)."""
     if frame.reason is None:
         return _DESKTOP_NAME
+    if frame.reason == REASON_BROWSER_CLOSED:
+        # A whole sentence: the page is not unsafe, the browser is gone (mask.py).
+        return REASON_BROWSER_CLOSED.encode("utf-8")
     lead = PARTLY_COVERED if frame.outcome is Outcome.MASKED else CANNOT_SHOW
     return f"{lead}: {frame.reason}".encode("utf-8")[:MAX_DESKTOP_NAME_BYTES]
 

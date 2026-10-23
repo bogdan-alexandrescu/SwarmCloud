@@ -2446,7 +2446,12 @@ class LiveGate:
             self.cdp_server.close()
         if self.browser is not None:
             await self.browser.stop()
-        self.mask_state.session_down()
+        # GREY-TAIL (part of #1344): at the attempt's end the viewer is told
+        # the agent finished until the pod stops, not that the gate lost the page.
+        if cause == "attempt_end":
+            self.mask_state.browser_closed()
+        else:
+            self.mask_state.session_down()
         self._origin_changed(None)
         removed = 0
         try:
