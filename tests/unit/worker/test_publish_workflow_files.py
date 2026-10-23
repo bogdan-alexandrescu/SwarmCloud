@@ -246,3 +246,132 @@ def test_a_refused_workflow_publish_never_ends_succeeded(
     # MUTATION: return the refusal with `published: True` -> `_publish_failed` answers None.
     assert why is not None
     assert "workflow-lines.patch" in why and "workflow_scope_missing" in why
+
+
+# -- the patch is in the manifest, and the reason is whole (#2023) -----------
+
+
+def _finished_attempt(worker_factory, monkeypatch, origin, broker, task_id):
+    """Clone, edit, then upload and publish the way `_finalise` does: the
+    folder upload builds the manifest first, the deferred publish runs after
+    it. Returns the worker, its config and the summary the finish writes."""
+    _with_broker(monkeypatch, broker)
+    worker, config, _ = run_attempt(worker_factory, monkeypatch, origin, task_id=task_id,
+                                    dispatch=DIRECT, edit=adds_a_workflow, publish=False)
+    summary = worker._upload_outputs(defer_publish=True)
+    worker._publish_checked(summary, None)
+    return worker, config, summary
+
+
+def _listed(summary, name):
+    return [entry for entry in summary["artifacts"] if entry["name"] == name]
+
+
+def test_a_refused_workflow_push_lists_its_patch_in_the_manifest(
+    worker_factory, monkeypatch, origin, local_urls, forge, own_pushes, store, tmp_path
+):
+    refusal = gittools.GitToolRefused(
+        "workflow_scope_missing", "the push touches .github/workflows/ci.yml")
+    broker = FakeBroker(origin, tmp_path, refuse=refusal)
+    worker, config, summary = _finished_attempt(
+        worker_factory, monkeypatch, origin, broker, "t-listed")
+    key = f"{config.artifact_prefix}/workflow-lines.patch"
+    stored = (store.root / key).read_bytes()
+    listed = _listed(summary, "workflow-lines.patch")
+    # MUTATION: drop the manifest addition in `_publish_checked` -> the patch is
+    # stored and in the error, and listed nowhere (task_58815d231b2146689808).
+    assert len(listed) == 1, [entry["name"] for entry in summary["artifacts"]]
+    # MUTATION: list the patch with the bytes of an earlier file -> its size is wrong.
+    assert listed[0]["bytes"] == len(stored) and listed[0]["uri"] == store.uri(key)
+    names = [entry["name"].split("/") for entry in summary["artifacts"]]
+    # MUTATION: append without sorting -> the manifest leaves path order.
+    assert names == sorted(names)
+    # MUTATION: leave `artifact_bytes` as the folder upload counted it -> the
+    # total disagrees with the entries it sums.
+    assert summary["artifact_bytes"] >= len(stored)
+    assert summary["git"][lifecycle.PUBLISH_FAILED_FIELD] is True
+
+
+def test_a_patch_the_agent_wrote_under_the_same_name_is_listed_once(
+    worker_factory, monkeypatch, origin, local_urls, forge, own_pushes, store, tmp_path
+):
+    refusal = gittools.GitToolRefused("workflow_scope_missing", "no workflow scope")
+    broker = FakeBroker(origin, tmp_path, refuse=refusal)
+    _with_broker(monkeypatch, broker)
+    worker, config, _ = run_attempt(worker_factory, monkeypatch, origin, task_id="t-own",
+                                    dispatch=DIRECT, edit=adds_a_workflow, publish=False)
+    (worker.ws.artifacts / "workflow-lines.patch").write_text("the agent's own text\n")
+    summary = worker._upload_outputs(defer_publish=True)
+    before = summary["artifact_bytes"]
+    worker._publish_checked(summary, None)
+    key = f"{config.artifact_prefix}/workflow-lines.patch"
+    stored = (store.root / key).read_bytes()
+    listed = _listed(summary, "workflow-lines.patch")
+    # MUTATION: add without replacing the agent's entry -> the name is listed twice.
+    assert len(listed) == 1
+    # MUTATION: keep the agent's entry -> its size is the overwritten file's.
+    assert listed[0]["bytes"] == len(stored)
+    # MUTATION: add the patch's bytes without taking the replaced entry's off.
+    assert summary["artifact_bytes"] == before - len("the agent's own text\n") + len(stored)
+
+
+def test_a_workflow_push_that_was_not_refused_writes_and_lists_no_patch(
+    worker_factory, monkeypatch, origin, local_urls, forge, own_pushes, store, tmp_path
+):
+    broker = FakeBroker(origin, tmp_path)
+    worker, config, summary = _finished_attempt(
+        worker_factory, monkeypatch, origin, broker, "t-pushed")
+    # MUTATION: write the patch on every workflow publish -> the file exists.
+    assert not (worker.ws.artifacts / "workflow-lines.patch").exists()
+    assert not (store.root / f"{config.artifact_prefix}/workflow-lines.patch").exists()
+    # MUTATION: add a manifest entry whatever the publish answered -> it is listed.
+    assert _listed(summary, "workflow-lines.patch") == []
+    assert summary["git"]["published"] is True
+
+
+def _long_refusal() -> str:
+    """About 400 characters, the last sentence the one the 300 cut broke."""
+    head = ("the push touches .github/workflows/auto-merge.yml; GitHub takes a workflow "
+            "file only from a credential with the workflow scope, and the slot holds no "
+            "version, and the registration was read at the time of the push and its "
+            "workflow_files switch is off. ")
+    tail = ("Push without those files and write them as workflow-lines.patch for the "
+            "operator to apply by hand, then ask for the switch to be turned on.")
+    text = head + tail
+    assert 380 <= len(text) <= 420, len(text)
+    return text
+
+
+def test_a_400_character_refusal_is_quoted_whole(
+    worker_factory, monkeypatch, origin, local_urls, forge, own_pushes, tmp_path
+):
+    message = _long_refusal()
+    refusal = gittools.GitToolRefused("workflow_scope_missing", message)
+    broker = FakeBroker(origin, tmp_path, refuse=refusal)
+    worker, _, out = _refused_attempt(worker_factory, monkeypatch, origin, broker, "t-whole")
+    # MUTATION: restore `[:300]` -> "write them as. Nothing was pushed".
+    assert message in out["publish_reason"]
+    why = worker._publish_failed({"git": out, "artifacts": []})
+    # MUTATION: cut the step's error shorter than the reason -> the tail is lost there.
+    assert why is not None and message in why
+    assert "write them as. Nothing" not in why
+
+
+@pytest.mark.parametrize("limit", [300, 301, 64])
+def test_a_refusal_past_the_bound_is_cut_at_a_word_with_an_ellipsis(limit):
+    message = _long_refusal()
+    cut = lifecycle._cut_at_word(message, limit)
+    # MUTATION: slice without the "…" -> a cut reads as the whole reason.
+    assert cut.endswith("…") and len(cut) <= limit
+    kept = cut[:-1]
+    # MUTATION: slice at the limit -> the last word is half a word.
+    assert message.startswith(kept) and not message[len(kept)].isalnum()
+    # MUTATION: end the cut on the sentence's own full stop -> it reads as finished.
+    assert not kept.endswith(".")
+
+
+def test_a_refusal_within_the_bound_is_left_whole():
+    message = _long_refusal()
+    # MUTATION: always append "…" -> a whole reason reads as cut.
+    assert lifecycle._cut_at_word(message, len(message)) == message
+    assert lifecycle.WORKFLOW_REFUSAL_MAX_CHARS >= len(message)

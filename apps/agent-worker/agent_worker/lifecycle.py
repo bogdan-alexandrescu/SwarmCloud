@@ -540,6 +540,17 @@ WORKFLOW_PATHS_NAMED = 20
 #: The most of `workflow-lines.patch` read from git; a longer diff is cut and
 #: says so. Workflow files are YAML, so this is far past any real one.
 WORKFLOW_PATCH_MAX_BYTES = 8 * 1024 * 1024
+#: The most of swarm-api's refusal message a refused workflow publish quotes
+#: in `publish_reason`, and so in the step's error (#2023). It was 300, cut
+#: mid-sentence: "Push without those files and write them as. Nothing was
+#: pushed" read as a different sentence. Swarm-api's refusals run to a few
+#: hundred characters, so 1,500 keeps every real one whole; it is a bound
+#: only because the message is another service's text. With up to
+#: `WORKFLOW_PATHS_NAMED` paths and the patch's URI beside it, the reason
+#: stays under the 4,000 characters `_fail_for_published_nothing` keeps of
+#: an error, so the patch's name at its end is never the part cut. A longer
+#: message is cut at a word boundary and ends with "…" (`_cut_at_word`).
+WORKFLOW_REFUSAL_MAX_CHARS = 1500
 #: The dispatch block's mark of a merge step's conflict fix round (#1321):
 #: swarm-api copies it from the `metadata.merge_conflict_round` record
 #: `mergewake._on_conflict` submits the round with, INTO the signed block,
@@ -773,6 +784,24 @@ class _CloneUnreachable(WorkerError):
         super().__init__(f"repository clone failed: {reason}")
         self.reason = reason
         self.tries = tries
+
+
+def _cut_at_word(text: str, limit: int) -> str:
+    """`text` whole when it is at most `limit` characters; otherwise cut at the
+    last whitespace within the limit and ended with "…" (#2023), so the cut
+    never ends mid-word and never reads as a sentence of its own. A text with
+    no whitespace in reach is cut at the limit, still with the "…"."""
+    text = str(text).rstrip()
+    if len(text) <= limit:
+        return text
+    room = max(limit - 1, 0)  # one character for the "…"
+    head = text[:room]
+    if not text[room].isspace():
+        # The cut falls inside a word: drop that word's start.
+        partial = re.search(r"\s\S*$", head)
+        if partial is not None and partial.start() > 0:
+            head = head[: partial.start()]
+    return head.rstrip().rstrip(".,;:") + "…"
 
 
 class Worker:
@@ -11558,6 +11587,16 @@ class Worker:
                 PUBLISH_FAILED_FIELD: True,
             }
         git.update(self._scrub(result))
+        # THE PATCH A REFUSED WORKFLOW PUBLISH STORED, IN THE MANIFEST (#2023).
+        # `_write_workflow_patch` uploads it only now, after the folder upload
+        # built `summary["artifacts"]`; added here, before the finish writes
+        # the summary, so the manifest is still written once and lists every
+        # file the attempt stored. A following step reads it from that list.
+        patch = git.get("workflow_patch")
+        artifacts = summary.get("artifacts")
+        if isinstance(patch, dict) and isinstance(artifacts, list):
+            grew = manifest_mod.add_late_entry(artifacts, patch)
+            summary["artifact_bytes"] = int(summary.get("artifact_bytes") or 0) + grew
 
     def _integration_is_pending(self) -> bool:
         """True when this step still owes a merge even having changed nothing.
@@ -12697,7 +12736,10 @@ class Worker:
         and the workflow and action lines are left as `workflow-lines.patch`
         in the attempt's artifacts -- written by the worker, from the publish
         repository, against the commit the branch starts from, and uploaded
-        here because the artifacts left before this publish ran.
+        here because the artifacts left before this publish ran. Its
+        `workflow_patch` entry is what `_publish_checked` adds to the
+        attempt's manifest (#2023). The broker's message is quoted whole up
+        to `WORKFLOW_REFUSAL_MAX_CHARS`, and cut at a word past it.
         """
         paths = ", ".join(out.get("workflow_paths") or [])
         out["published"] = False
@@ -12715,7 +12757,8 @@ class Worker:
         out["publish_reason"] = str(self._scrub(
             f"refusing to publish: the branch touches {paths}, which only swarm-api's "
             f"git_push_branch may push (agent-autonomy.md §3.3), and it answered "
-            f"{refused['code']}: {refused['message'][:300]}. Nothing was pushed; {where}"
+            f"{refused['code']}: {_cut_at_word(refused['message'], WORKFLOW_REFUSAL_MAX_CHARS)}"
+            f". Nothing was pushed; {where}"
         ))
         self.log.error("not publishing: the broker did not push the workflow change",
                        code=refused["code"])
