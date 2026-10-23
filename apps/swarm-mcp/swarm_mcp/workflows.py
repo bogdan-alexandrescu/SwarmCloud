@@ -852,6 +852,9 @@ def fetch(client: SwarmClient, workflow_id: str) -> dict[str, Any]:
         launched_in = launch_tenant(workflow_id)
         if exc.status != 404 or exc.edge or launched_in is None or launched_in == client.tenant:
             raise
+    # A SHALLOW copy on purpose: it keeps the bridge's rate gate and shared
+    # reads (`_gate`, `_shared`), so this tenant is paced as the same
+    # principal, and the read cache is keyed by tenant (BRIDGE-PACING).
     reader = copy.copy(client)
     reader.tenant = launched_in
     return _envelope(

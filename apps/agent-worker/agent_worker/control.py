@@ -75,6 +75,7 @@ import functools
 import json
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
@@ -425,15 +426,50 @@ class TransactionRunner(Protocol):
     ) -> Any: ...
 
 
+#: Runs of one transaction body when Firestore ABORTS it anywhere before its
+#: commit: a read, or the begin (#2064). `firestore.transactional` retries an
+#: ABORTED commit, up to its own five tries (`MAX_ATTEMPTS`, google-cloud-
+#: firestore 2.30.0), and never a read: on 2026-10-23 at 09:05:41Z the lease
+#: release's pool read was aborted on cross-transaction contention and the
+#: abort went straight up and crashed the worker. An abort means nothing was
+#: committed, so the whole body is run again on fresh reads. FIVE, the
+#: library's own number for the commit, so a body gets the same tries whichever
+#: of its RPCs the contention lands on; each run still has the library's five
+#: commits. Bounded as well by the call's deadline (`_aborted_deadline`).
+TRANSACTION_ABORTED_RUNS = 5
+
+#: The first wait between two aborted runs, doubled for each next one: 0.25,
+#: 0.5, 1 and 2 s, 3.75 s in all across five runs. A contended document is
+#: free again within milliseconds once the other transaction commits; the
+#: backoff is there so five runs do not land inside the same burst.
+_ABORT_BACKOFF_SECONDS = 0.25
+
+#: Module seams, so a unit test neither sleeps nor reads the wall clock.
+_abort_sleep: Callable[[float], None] = time.sleep
+_abort_clock: Callable[[], float] = time.monotonic
+
+
+def _aborted_deadline(call_options: Mapping[str, Any] | None) -> float:
+    """Seconds an aborted transaction may be run again for: the call's own deadline.
+
+    A budgeted call keeps its budget: the `retry`'s `timeout`, the deadline
+    `budget_call_options` and the startup budget set (the heartbeat's is held
+    under its lease extension, #70). A call with no budget -- the parks, the
+    finishes and the release, made once on the way out -- gets
+    `TERMINAL_CALL_SECONDS`, the bound the state routes give the same writes.
+    """
+    retry = (call_options or {}).get("retry")
+    timeout = getattr(retry, "timeout", None)
+    if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0:
+        return float(timeout)
+    return TERMINAL_CALL_SECONDS
+
+
 class FirestoreTransactionRunner:
     def __init__(self, db: Any) -> None:
         self._db = db
 
-    def run(
-        self, fn: Callable[[Any], Any], *, call_options: Mapping[str, Any] | None = None
-    ) -> Any:
-        from google.cloud import firestore  # lazy: unit tests never import grpc
-
+    def _transaction(self, call_options: Mapping[str, Any] | None) -> Any:
         from google.cloud.firestore_v1.transaction import Transaction  # lazy: grpc
 
         transaction = self._db.transaction()
@@ -445,12 +481,38 @@ class FirestoreTransactionRunner:
             # store) has no RPCs to budget and runs as it was given. Every
             # call is a mid-run one since #70, the heartbeat included.
             transaction = _with_budget(type(transaction))(self._db, budget=call_options)
+        return transaction
+
+    def run(
+        self, fn: Callable[[Any], Any], *, call_options: Mapping[str, Any] | None = None
+    ) -> Any:
+        """`fn` in one transaction, run again on an ABORTED read or begin.
+
+        See `TRANSACTION_ABORTED_RUNS`. A fresh transaction each run: the
+        library rolled the aborted one back before the abort reached here.
+        Only `Aborted` is caught. The library's own "commit aborted five
+        times" is a `ValueError` and is raised as it is; so is every other
+        error, a fence among them.
+        """
+        from google.api_core import exceptions as core_exceptions  # lazy: grpc
+        from google.cloud import firestore  # lazy: unit tests never import grpc
 
         @firestore.transactional
         def _inner(txn: Any) -> Any:
             return fn(txn)
 
-        return _inner(transaction)
+        deadline = _abort_clock() + _aborted_deadline(call_options)
+        delay = _ABORT_BACKOFF_SECONDS
+        runs = 1
+        while True:
+            try:
+                return _inner(self._transaction(call_options))
+            except core_exceptions.Aborted:
+                if runs >= TRANSACTION_ABORTED_RUNS or _abort_clock() + delay > deadline:
+                    raise
+            _abort_sleep(delay)
+            delay *= 2
+            runs += 1
 
 
 def _commit_retry(retry: Any) -> Any:
@@ -714,6 +776,12 @@ class ControlPlane:
         # make it. See `_heartbeat_deadline`.
         self._heartbeat_interval = heartbeat_interval_seconds
         self._lease_released = False
+        #: The state this attempt's OWN end committed -- a park, a terminal
+        #: state, or READY for a retry -- in the same commit as its lease
+        #: release and its attempt end (#2064). None until one has. The crash
+        #: path reads it: a fence met after it is this attempt's own write,
+        #: not a newer attempt's, and there is nothing left to release.
+        self.committed_end: TaskState | None = None
         # The task's `submitted_by`, as the last task read this attempt made
         # served it (`fetch_task`; `state/open` on the routes). Kept only so
         # the `generation_fenced` line can name a service submitter
@@ -1332,7 +1400,6 @@ class ControlPlane:
         *,
         fields: dict[str, Any] | None = None,
         events: Sequence[tuple[EventType, dict[str, Any]]] = (),
-        parked_uploads: list[Any] | None = None,
     ) -> None:
         """Move the task to `to_state`, ONLY while this attempt still owns it.
 
@@ -1348,9 +1415,10 @@ class ControlPlane:
         announcement lands even when the write it announces is refused, in a
         stream that by then belongs to a newer generation.
 
-        `parked_uploads`, from `park` only, is the parking attempt's upload
-        manifest, recorded in the same transaction for the attempt that
-        finishes the task (`_record_parked_uploads`, #166).
+        A state that gives the lease back is not written here: a park, a
+        finish and a retry each write their state, the attempt's end and the
+        release in one transaction of their own (`_end_in_transaction`,
+        #2064).
 
         Raises `FencedWriteRefused` with nothing written, events included.
         """
@@ -1365,11 +1433,8 @@ class ControlPlane:
             current = _as_state(task.get("state"))
             if current is not to_state:
                 assert_transition(current, to_state)
-            index = self._read_carry_index(txn) if parked_uploads else None
             for ref, document in announced:
                 txn.set(ref, document)
-            if parked_uploads:
-                self._record_parked_uploads(txn, index, parked_uploads, at=utcnow())
             if current is to_state:
                 if fields:
                     txn.update(self._task_ref(), {**fields, "updated_at": utcnow()})
@@ -1827,8 +1892,18 @@ class ControlPlane:
         return True
 
     # -- lease release -----------------------------------------------------
+    @property
+    def lease_released(self) -> bool:
+        """Whether this attempt has given its lease back (or found it given back)."""
+        return self._lease_released
+
     def release_lease(self, reason: str) -> bool:
-        """Return capacity. Idempotent, and never called on the fenced path."""
+        """Return capacity. Idempotent, and never called on the fenced path.
+
+        On its own, for a caller that has no state to write with it. Every end
+        this class writes -- a park, a finish, a retry -- releases inside its
+        own transaction instead (`_end_in_transaction`, #2064).
+        """
         if self._lease_released:
             return False
 
@@ -1843,6 +1918,88 @@ class ControlPlane:
             self.emit(EventType.LEASE_RELEASED, {"reason": reason})
         return released
 
+    # -- the attempt's end: one commit -----------------------------------------
+    @staticmethod
+    def _filled(
+        slot: tuple[Any, dict[str, Any]], event_type: EventType, detail: Mapping[str, Any]
+    ) -> tuple[Any, dict[str, Any]]:
+        """An event written through `slot`, an id `_event_write` minted earlier.
+
+        Minted OUTSIDE the transaction body, which a contended transaction
+        runs again, so every run writes the same event ids; filled inside it,
+        where what the event says (a refund, a retry's target) is decided.
+        """
+        ref, document = slot
+        return ref, {**document, "type": event_type.value, "detail": dict(detail)}
+
+    def _end_in_transaction(
+        self,
+        txn: Any,
+        *,
+        payload: dict[str, Any],
+        release: str,
+        exit_code: int | None,
+        error: str | None,
+        events: Sequence[tuple[Any, dict[str, Any]]],
+        released_slot: tuple[Any, dict[str, Any]],
+        now: datetime,
+    ) -> list[dict[str, Any]]:
+        """End this attempt inside `txn`: the task's new state, the lease
+        release, the attempt's end and the events, ONE commit (#2064).
+
+        THE BODY'S FENCE COMES FIRST. Call this after `_fenced_task` and every
+        other read the body makes, and before any write it makes: the release
+        reads the lease and its pools (`release_lease_in_transaction`, frozen),
+        and Firestore refuses a read after a write. Its own writes follow its
+        reads, and this method's writes follow those.
+
+        WHY ONE. A park wrote PARKED in one transaction and released the lease
+        in a second. On 2026-10-23 at 09:05:41Z Firestore aborted the second,
+        the worker crashed, and its crash path met its own park as a fence:
+        a PARKED task held its lease (invariant 1). Here the state that holds
+        no capacity and the pools coming back down commit together or not at
+        all, and an abort is run again by the runner
+        (`TRANSACTION_ABORTED_RUNS`).
+
+        The attempt's end used to be written after the transition, best
+        effort. It is in the commit now: a park or a finish that landed has
+        closed its attempt document, and one that did not has not.
+
+        Returns the event documents written, in order, for the caller to log
+        once the commit has landed. `events` are the ones that announce or
+        record the end; LEASE_RELEASED is added from `released_slot` when the
+        release decremented the pools.
+        """
+        released = release_lease_in_transaction(
+            txn, db=self._db, lease_id=self.lease_id, reason=release, now=now
+        )
+        written = list(events)
+        if released:
+            written.append(
+                self._filled(released_slot, EventType.LEASE_RELEASED, {"reason": release})
+            )
+        for ref, document in written:
+            txn.set(ref, document)
+        txn.update(self._task_ref(), payload)
+        txn.set(
+            self._attempt_ref(),
+            {
+                "completed_at": now,
+                "exit_code": exit_code,
+                "error": error,
+                "tenant_id": self.tenant_id,
+            },
+            merge=True,
+        )
+        return [document for _, document in written]
+
+    def _ended(self, state: TaskState, written: Sequence[Mapping[str, Any]]) -> None:
+        """After the end's commit: the lease is back, and the events are logged."""
+        self._lease_released = True
+        self.committed_end = state
+        for document in written:
+            self._log.info("event", event_type=document["type"], detail=document["detail"])
+
     # -- terminal outcomes -------------------------------------------------
     def park(
         self,
@@ -1854,58 +2011,76 @@ class ControlPlane:
     ) -> None:
         """Quota path: checkpointed already, now give the slot back and exit.
 
-        Order matters. The task leaves the concurrency states first, so that the
-        instant the pools are decremented there is no document claiming this
-        task is still running.
+        ONE FENCED TRANSACTION (#2064): the fence, PARKED, the lease release
+        and the pools coming back down, the attempt's end, the uploads and the
+        events. Either all of it commits or none of it does. A park that
+        rolled back leaves the task RUNNING with its lease, which the crash
+        path can still end as its own; it never leaves a PARKED task holding
+        capacity (invariant 1). An abort anywhere in it is run again by the
+        runner (`TRANSACTION_ABORTED_RUNS`).
 
-        The transition is fenced (see `transition`). A superseded attempt gets
-        `FencedWriteRefused` here, before the event and before the release, so
-        it writes nothing.
+        A superseded attempt gets `FencedWriteRefused` from the fence, the
+        transaction's first reads, before anything is written: no state, no
+        event, no release (invariant 5).
 
         `announce` is for an event that says this park is happening, such as
         QUOTA_EXHAUSTED. It is written in the park's own transaction, ahead of
-        the state change. A caller that emitted it before calling here would
-        leave it in the task's stream when the park is refused: a fence that
-        lands during the park's uploads is met here, after the announcement.
+        PARKED. A caller that emitted it before calling here would leave it in
+        the task's stream when the park is refused: a fence that lands during
+        the park's uploads is met here, after the announcement.
 
-        THE ATTEMPT'S END IS WRITTEN AFTER THE TRANSITION (#163, owner decision
-        2026-09-28): exit 75 (`ExitCode.PARKED`) and the park reason as its
-        `error`, the order `finish` uses. Without it a parked attempt's own
-        document kept `completed_at: None` and read as still running, in the
-        timeline and to the checkpoint collector. A fenced park raises in the
-        transition, so it closes no document.
+        THE EVENTS KEEP THEIR ORDER: the announcement, PARKED, LEASE_RELEASED,
+        each minted before the transaction in that order, so their `at` sorts
+        them as before, and none of them exists for a park that rolled back.
+
+        THE ATTEMPT'S END (#163): exit 75 (`ExitCode.PARKED`) and the park
+        reason as its `error`. Without it a parked attempt's own document kept
+        `completed_at: None` and read as still running, in the timeline and to
+        the checkpoint collector.
 
         THE UPLOADS ARE RECORDED IN THE SAME TRANSACTION (#166): a park that
         uploaded passes its manifest as `detail["artifacts"]`, and it is
         written where the finishing attempt reads it by id
         (`parked_uploads`). A fenced park records nothing.
         """
+        write = f"transition to {TaskState.PARKED.value}"
+        release = f"parked:{reason.value}"
         uploads = (detail or {}).get("artifacts")
-        self.transition(
-            TaskState.PARKED,
-            fields={
-                "park_reason": reason.value,
-                "next_eligible_at": next_eligible_at,
-                "current_lease_id": None,
-                "blocked_by": [{"reason": reason.value, **(detail or {})}],
-            },
-            events=announce,
-            parked_uploads=uploads if isinstance(uploads, list) else None,
-        )
-        # Best effort: the park has landed, and a failure here must not stop
-        # the event and the lease release below, which give the slot back.
-        try:
-            self.record_attempt_end(exit_code=ExitCode.PARKED, error=reason.value)
-        except Exception as exc:
-            self._log.warning(
-                "the park landed but its attempt end was not recorded",
-                error=f"{type(exc).__name__}: {str(exc)[:300]}",
-            )
-        self.emit(
+        uploads = uploads if isinstance(uploads, list) else None
+        announced = [self._event_write(kind, d) for kind, d in announce]
+        parked = self._event_write(
             EventType.PARKED,
             {"reason": reason.value, "next_eligible_at": next_eligible_at, **(detail or {})},
         )
-        self.release_lease(f"parked:{reason.value}")
+        released_slot = self._event_write(EventType.LEASE_RELEASED)
+        now = utcnow()
+
+        def _apply(txn: Any) -> list[dict[str, Any]]:
+            task = self._fenced_task(txn, write=write)
+            assert_transition(_as_state(task.get("state")), TaskState.PARKED)
+            index = self._read_carry_index(txn) if uploads else None
+            written = self._end_in_transaction(
+                txn,
+                payload={
+                    "state": TaskState.PARKED.value,
+                    "updated_at": now,
+                    "park_reason": reason.value,
+                    "next_eligible_at": next_eligible_at,
+                    "current_lease_id": None,
+                    "blocked_by": [{"reason": reason.value, **(detail or {})}],
+                },
+                release=release,
+                exit_code=ExitCode.PARKED,
+                error=reason.value,
+                events=[*announced, parked],
+                released_slot=released_slot,
+                now=now,
+            )
+            if uploads:
+                self._record_parked_uploads(txn, index, uploads, at=now)
+            return written
+
+        self._ended(TaskState.PARKED, self._run_transaction(_apply))
 
     def park_awaiting_children(
         self,
@@ -1930,12 +2105,13 @@ class ControlPlane:
 
         Returns whether the attempt was refunded.
 
-        THE ATTEMPT'S END IS WRITTEN AFTER THE TRANSACTION, as `park` writes
-        it (#163): exit 75 and CHILDREN_INCOMPLETE as its `error`. A refund
-        gives back the attempt's COUNT, not the attempt: a resume is a new
-        attempt document, so this one has ended. Without it a parent cancelled
-        while it waited read as one attempt still running. A fenced await park
-        raises in the transaction and closes no document.
+        THE ATTEMPT'S END, THE EVENT AND THE LEASE RELEASE ARE IN THE SAME
+        TRANSACTION, as in `park` (#2064): exit 75 and CHILDREN_INCOMPLETE as
+        its `error` (#163). A refund gives back the attempt's COUNT, not the
+        attempt: a resume is a new attempt document, so this one has ended.
+        Without it a parent cancelled while it waited read as one attempt
+        still running. A fenced await park raises in the transaction and
+        closes no document.
 
         `uploads`, the manifest of what this attempt uploaded before the park,
         is recorded in the same transaction, as `park` records it (#166), for
@@ -1944,8 +2120,10 @@ class ControlPlane:
         write = "await park"
         reason = ParkReason.CHILDREN_INCOMPLETE
         now = utcnow()
+        parked = self._event_write(EventType.PARKED)
+        released_slot = self._event_write(EventType.LEASE_RELEASED)
 
-        def _apply(txn: Any) -> tuple[bool, int]:
+        def _apply(txn: Any) -> tuple[bool, list[dict[str, Any]]]:
             task = self._fenced_task(txn, write=write)
             current = _as_state(task.get("state"))
             assert_transition(current, TaskState.PARKED)
@@ -1967,32 +2145,33 @@ class ControlPlane:
                 metadata[CHILD_AWAIT_RESUMES_METADATA_KEY] = used + 1
                 payload["metadata"] = metadata
                 payload["attempt_count"] = attempt_count - 1
-            txn.update(self._task_ref(), payload)
+            event = self._filled(
+                parked,
+                EventType.PARKED,
+                {
+                    "reason": reason.value,
+                    "next_eligible_at": now,
+                    "attempt_refunded": refund,
+                    CHILD_AWAIT_RESUMES_METADATA_KEY: used + (1 if refund else 0),
+                    **(detail or {}),
+                },
+            )
+            written = self._end_in_transaction(
+                txn,
+                payload=payload,
+                release=f"parked:{reason.value}",
+                exit_code=ExitCode.PARKED,
+                error=reason.value,
+                events=[event],
+                released_slot=released_slot,
+                now=now,
+            )
             if uploads:
                 self._record_parked_uploads(txn, index, uploads, at=now)
-            return refund, used + (1 if refund else 0)
+            return refund, written
 
-        refunded, resumes = self._run_transaction(_apply)
-        # Best effort, as in `park`: the park has landed, and the event and
-        # the release below are what give the slot back.
-        try:
-            self.record_attempt_end(exit_code=ExitCode.PARKED, error=reason.value)
-        except Exception as exc:
-            self._log.warning(
-                "the await park landed but its attempt end was not recorded",
-                error=f"{type(exc).__name__}: {str(exc)[:300]}",
-            )
-        self.emit(
-            EventType.PARKED,
-            {
-                "reason": reason.value,
-                "next_eligible_at": now,
-                "attempt_refunded": refunded,
-                CHILD_AWAIT_RESUMES_METADATA_KEY: resumes,
-                **(detail or {}),
-            },
-        )
-        self.release_lease(f"parked:{reason.value}")
+        refunded, written = self._run_transaction(_apply)
+        self._ended(TaskState.PARKED, written)
         return refunded
 
     def park_release_wait(
@@ -2024,13 +2203,16 @@ class ControlPlane:
         the park; only the tick ends the wait (`scheduler.loop.owner_wait`).
         `uploads` is recorded in the same transaction, as `park` records it
         (#166). Returns whether the attempt was refunded. The attempt's end,
-        the event and the release follow the transaction, as in every park.
+        the event and the release are in the same transaction, as in every
+        park (#2064).
         """
         write = "release-wait park"
         reason = ParkReason.DEPENDENCY_INCOMPLETE
         now = utcnow()
+        parked = self._event_write(EventType.PARKED)
+        released_slot = self._event_write(EventType.LEASE_RELEASED)
 
-        def _apply(txn: Any) -> tuple[bool, int]:
+        def _apply(txn: Any) -> tuple[bool, list[dict[str, Any]]]:
             task = self._fenced_task(txn, write=write)
             current = _as_state(task.get("state"))
             assert_transition(current, TaskState.PARKED)
@@ -2051,32 +2233,33 @@ class ControlPlane:
                 metadata[RELEASE_WAIT_RESUMES_METADATA_KEY] = used + 1
                 payload["metadata"] = metadata
                 payload["attempt_count"] = attempt_count - 1
-            txn.update(self._task_ref(), payload)
+            event = self._filled(
+                parked,
+                EventType.PARKED,
+                {
+                    "reason": reason.value,
+                    "next_eligible_at": now,
+                    "attempt_refunded": refund,
+                    RELEASE_WAIT_RESUMES_METADATA_KEY: used + (1 if refund else 0),
+                    **detail,
+                },
+            )
+            written = self._end_in_transaction(
+                txn,
+                payload=payload,
+                release=f"parked:{reason.value}",
+                exit_code=ExitCode.PARKED,
+                error=reason.value,
+                events=[event],
+                released_slot=released_slot,
+                now=now,
+            )
             if uploads:
                 self._record_parked_uploads(txn, index, uploads, at=now)
-            return refund, used + (1 if refund else 0)
+            return refund, written
 
-        refunded, resumes = self._run_transaction(_apply)
-        # Best effort, as in `park`: the park has landed, and the event and
-        # the release below are what give the slot back.
-        try:
-            self.record_attempt_end(exit_code=ExitCode.PARKED, error=reason.value)
-        except Exception as exc:
-            self._log.warning(
-                "the release-wait park landed but its attempt end was not recorded",
-                error=f"{type(exc).__name__}: {str(exc)[:300]}",
-            )
-        self.emit(
-            EventType.PARKED,
-            {
-                "reason": reason.value,
-                "next_eligible_at": now,
-                "attempt_refunded": refunded,
-                RELEASE_WAIT_RESUMES_METADATA_KEY: resumes,
-                **detail,
-            },
-        )
-        self.release_lease(f"parked:{reason.value}")
+        refunded, written = self._run_transaction(_apply)
+        self._ended(TaskState.PARKED, written)
         return refunded
 
     def park_ci_pending(
@@ -2133,17 +2316,19 @@ class ControlPlane:
         this record plus GitHub, which the next attempt reads again.
 
         Returns whether the attempt was refunded. The attempt's end, the event
-        and the release follow the transaction, as in every park.
+        and the release are in the same transaction, as in every park (#2064).
         """
         write = "ci park"
         reason = ParkReason.CI_PENDING
         now = utcnow()
+        parked = self._event_write(EventType.PARKED)
+        released_slot = self._event_write(EventType.LEASE_RELEASED)
         names = [str(name) for name in pending]
         recorded: dict[str, Any] = (
             {} if failed is None else {"failed": [str(name) for name in failed]}
         )
 
-        def _apply(txn: Any) -> tuple[bool, int]:
+        def _apply(txn: Any) -> tuple[bool, list[dict[str, Any]]]:
             task = self._fenced_task(txn, write=write)
             current = _as_state(task.get("state"))
             assert_transition(current, TaskState.PARKED)
@@ -2187,34 +2372,35 @@ class ControlPlane:
             }
             if refund:
                 payload["attempt_count"] = attempt_count - 1
-            txn.update(self._task_ref(), payload)
-            return refund, wakes
-
-        refunded, wakes = self._run_transaction(_apply)
-        # Best effort, as in `park`: the park has landed, and the event and
-        # the release below are what give the slot back.
-        try:
-            self.record_attempt_end(exit_code=ExitCode.PARKED, error=reason.value)
-        except Exception as exc:
-            self._log.warning(
-                "the CI park landed but its attempt end was not recorded",
-                error=f"{type(exc).__name__}: {str(exc)[:300]}",
+            event = self._filled(
+                parked,
+                EventType.PARKED,
+                {
+                    "reason": reason.value,
+                    "next_eligible_at": now + timedelta(seconds=fallback_seconds),
+                    "attempt_refunded": refund,
+                    "wakes": wakes,
+                    "code": code,
+                    "head": head,
+                    "pending": names,
+                    "pull_request": pull_request,
+                    **recorded,
+                },
             )
-        self.emit(
-            EventType.PARKED,
-            {
-                "reason": reason.value,
-                "next_eligible_at": now + timedelta(seconds=fallback_seconds),
-                "attempt_refunded": refunded,
-                "wakes": wakes,
-                "code": code,
-                "head": head,
-                "pending": names,
-                "pull_request": pull_request,
-                **recorded,
-            },
-        )
-        self.release_lease(f"parked:{reason.value}")
+            written = self._end_in_transaction(
+                txn,
+                payload=payload,
+                release=f"parked:{reason.value}",
+                exit_code=ExitCode.PARKED,
+                error=reason.value,
+                events=[event],
+                released_slot=released_slot,
+                now=now,
+            )
+            return refund, written
+
+        refunded, written = self._run_transaction(_apply)
+        self._ended(TaskState.PARKED, written)
         return refunded
 
     def finish(
@@ -2228,9 +2414,13 @@ class ControlPlane:
     ) -> None:
         """Persist a terminal state, record the attempt's end, release the lease.
 
-        The transition is fenced (see `transition`), and it comes first. A
-        superseded attempt gets `FencedWriteRefused` before anything else is
-        written: no attempt end, no event, no release.
+        ONE FENCED TRANSACTION (#2064), as every park: the terminal state, the
+        attempt's end, the event, the lease release and the pools coming back
+        down commit together or not at all. A finish that rolled back leaves
+        the task RUNNING with its lease, never terminal with its lease held.
+        A superseded attempt gets `FencedWriteRefused` from the fence, the
+        transaction's first reads, before anything is written: no attempt end,
+        no event, no release (invariant 5). The finish wake follows the commit.
 
         `end_cause` is WRITTEN ON EVERY TERMINAL STATE, None included (contract
         request 23): a success carries None, and so does an end no cause names.
@@ -2247,16 +2437,34 @@ class ControlPlane:
         }
         if result_summary is not None:
             fields["result_summary"] = self._storable_summary(result_summary)
-        self.transition(state, fields=fields)
-        self.record_attempt_end(exit_code=exit_code, error=error)
-        event = {
-            TaskState.SUCCEEDED: EventType.SUCCEEDED,
-            TaskState.FAILED: EventType.FAILED,
-            TaskState.CANCELLED: EventType.CANCELLED,
-            TaskState.DEAD_LETTERED: EventType.DEAD_LETTERED,
-        }[state]
-        self.emit(event, {"exit_code": exit_code, "error": error})
-        self.release_lease(f"terminal:{state.value}")
+        write = f"transition to {state.value}"
+        now = utcnow()
+        event = self._event_write(
+            {
+                TaskState.SUCCEEDED: EventType.SUCCEEDED,
+                TaskState.FAILED: EventType.FAILED,
+                TaskState.CANCELLED: EventType.CANCELLED,
+                TaskState.DEAD_LETTERED: EventType.DEAD_LETTERED,
+            }[state],
+            {"exit_code": exit_code, "error": error},
+        )
+        released_slot = self._event_write(EventType.LEASE_RELEASED)
+
+        def _apply(txn: Any) -> list[dict[str, Any]]:
+            task = self._fenced_task(txn, write=write)
+            assert_transition(_as_state(task.get("state")), state)
+            return self._end_in_transaction(
+                txn,
+                payload={"state": state.value, "updated_at": now, **fields},
+                release=f"terminal:{state.value}",
+                exit_code=exit_code,
+                error=error,
+                events=[event],
+                released_slot=released_slot,
+                now=now,
+            )
+
+        self._ended(state, self._run_transaction(_apply))
         self._announce_finished(state)
 
     def _storable_summary(self, summary: dict[str, Any]) -> dict[str, Any]:
@@ -2340,11 +2548,12 @@ class ControlPlane:
         is verified it comes from the verified copy
         (`pin_verified_max_attempts`, #346), never from the live field.
 
-        Then the attempt's end, one event and the lease release, in the order
-        `finish` uses. The task leaves the concurrency states before the pools
-        are decremented. The event for READY is RETRYING with `cause`, because
-        the task is not terminal and an event type that says it is would be
-        read that way (see `EventType.CANCEL_REQUESTED`).
+        The attempt's end, one event and the lease release are in the SAME
+        transaction (#2064), as in `finish`: READY, FAILED or CANCELLED and
+        the pools coming back down commit together or not at all. The event
+        for READY is RETRYING with `cause`, because the task is not terminal
+        and an event type that says it is would be read that way (see
+        `EventType.CANCEL_REQUESTED`).
 
         Raises `FencedWriteRefused` with nothing written.
         """
@@ -2352,8 +2561,10 @@ class ControlPlane:
         now = utcnow()
         # Reshaped once, outside the transaction, which may run `_apply` again.
         summary = None if result_summary is None else self._storable_summary(result_summary)
+        outcome = self._event_write(EventType.RETRYING)
+        released_slot = self._event_write(EventType.LEASE_RELEASED)
 
-        def _apply(txn: Any) -> tuple[TaskState, int, int]:
+        def _apply(txn: Any) -> tuple[TaskState, list[dict[str, Any]]]:
             task = self._fenced_task(txn, write=write)
             current = _as_state(task.get("state"))
             attempt_count = int(task.get("attempt_count", 0))
@@ -2393,32 +2604,40 @@ class ControlPlane:
                     cancel_end_cause(task) if target is TaskState.CANCELLED else end_cause
                 )
                 payload["end_cause"] = ended_as.value if ended_as is not None else None
-            txn.update(self._task_ref(), payload)
-            return target, attempt_count, max_attempts
+            event = self._filled(
+                outcome,
+                {
+                    TaskState.READY: EventType.RETRYING,
+                    TaskState.FAILED: EventType.FAILED,
+                    TaskState.CANCELLED: EventType.CANCELLED,
+                }[target],
+                {
+                    "exit_code": exit_code,
+                    "error": error,
+                    "cause": cause,
+                    **(detail or {}),
+                    "to_state": target.value,
+                    "attempt_count": attempt_count,
+                    "max_attempts": max_attempts,
+                    "retries_exhausted": target is TaskState.FAILED,
+                },
+            )
+            written = self._end_in_transaction(
+                txn,
+                payload=payload,
+                release=(
+                    f"retry:{cause}" if target is TaskState.READY else f"terminal:{target.value}"
+                ),
+                exit_code=exit_code,
+                error=error,
+                events=[event],
+                released_slot=released_slot,
+                now=now,
+            )
+            return target, written
 
-        target, attempt_count, max_attempts = self._run_transaction(_apply)
-        self.record_attempt_end(exit_code=exit_code, error=error)
-        event = {
-            TaskState.READY: EventType.RETRYING,
-            TaskState.FAILED: EventType.FAILED,
-            TaskState.CANCELLED: EventType.CANCELLED,
-        }[target]
-        self.emit(
-            event,
-            {
-                "exit_code": exit_code,
-                "error": error,
-                "cause": cause,
-                **(detail or {}),
-                "to_state": target.value,
-                "attempt_count": attempt_count,
-                "max_attempts": max_attempts,
-                "retries_exhausted": target is TaskState.FAILED,
-            },
-        )
-        self.release_lease(
-            f"retry:{cause}" if target is TaskState.READY else f"terminal:{target.value}"
-        )
+        target, written = self._run_transaction(_apply)
+        self._ended(target, written)
         if target is not TaskState.READY:
             self._announce_finished(target)
         return target
@@ -2935,7 +3154,6 @@ class RemoteControlPlane(ControlPlane):
         *,
         fields: dict[str, Any] | None = None,
         events: Sequence[tuple[EventType, dict[str, Any]]] = (),
-        parked_uploads: list[Any] | None = None,
         detail: dict[str, Any] | None = None,
     ) -> None:
         """`state/transition`: the walk LEASED -> DISPATCHED -> STARTING ->
@@ -2943,7 +3161,7 @@ class RemoteControlPlane(ControlPlane):
         state's own event in the same fenced transaction; a park, a finish
         and a retry each have their own route. `detail` rides on that event."""
         walk = (TaskState.DISPATCHED, TaskState.STARTING, TaskState.RUNNING)
-        if to_state not in walk or events or parked_uploads or set(fields or {}) - {"started_at"}:
+        if to_state not in walk or events or set(fields or {}) - {"started_at"}:
             raise ControlPlaneError(
                 f"state/transition walks only to DISPATCHED, STARTING and RUNNING; a move to "
                 f"{to_state.value} carrying fields or events is a park, a finish or a retry"
@@ -3131,6 +3349,12 @@ class RemoteControlPlane(ControlPlane):
             body["ci"] = dict(ci)
         answer = self._post("park", body, call=None)
         self._lease_released = True
+        # swarm-api's one transaction is this attempt's end (#2064): READY on
+        # a person's return, PARKED otherwise.
+        view = answer.get("task") if isinstance(answer.get("task"), Mapping) else {}
+        self.committed_end = (
+            TaskState.READY if view.get("state") == TaskState.READY.value else TaskState.PARKED
+        )
         return answer
 
     def park(
@@ -3243,6 +3467,7 @@ class RemoteControlPlane(ControlPlane):
             body["result_summary"] = self._storable_summary(result_summary)
         self._post("finish", body, call=None)
         self._lease_released = True
+        self.committed_end = state
         self._announce_finished(state)
 
     def fail_retryably(
@@ -3276,6 +3501,7 @@ class RemoteControlPlane(ControlPlane):
         self._lease_released = True
         view = answer.get("task") if isinstance(answer.get("task"), Mapping) else {}
         target = _as_state(view.get("state"))
+        self.committed_end = target
         if target is not TaskState.READY:
             self._announce_finished(target)
         return target

@@ -13,6 +13,14 @@ and answers 204 when the agent has none (the common case), else the target's
 public settings and, for an app with its own login, the test account's
 username and password read from Secret Manager at that moment.
 
+THE CHALLENGE BYPASS TRAVELS THE SAME WAY (§2.5; lane CAPTCHA-BYPASS, part
+of #2058). A target whose owner configured one is answered with
+`challenge_bypass: {kind, name, value}`, the value read from the same secret
+as the password, for a public target too. It goes to the gate in the same
+`qa_sign_in` args, is registered with the redaction like the password, and
+is dropped once the gate has answered: only the gate adds it, and only on
+the target's approved origins.
+
 THE WORKER HANDS IT TO THE GATE AND FORGETS IT. ctl.sock `qa_sign_in`
 (`livegate/qatarget.py`): the gate holds the agent, signs in on a tab of its
 own, and scrubs the password from everything bound for the agent. The worker
@@ -229,6 +237,14 @@ def handoff_args(answer: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(username, str) or not isinstance(password, str) or not password:
             raise ValueError("an own login with no credential")
         args["credential"] = {"username": username, "password": password}
+    bypass = answer.get("challenge_bypass")
+    if bypass is not None:
+        # §2.5: the gate checks its kind, name and value again; here only its shape.
+        fields = (bypass.get("kind"), bypass.get("name"), bypass.get("value")) \
+            if isinstance(bypass, Mapping) else (None, None, None)
+        if not all(isinstance(f, str) and f for f in fields):
+            raise ValueError("a challenge bypass with no value")
+        args["challenge_bypass"] = dict(zip(("kind", "name", "value"), fields))
     return args
 
 
@@ -341,11 +357,15 @@ class QaTargetSignIn:
             answer.clear()
         self.target_id = args["target_id"]
         self._own_login = "credential" in args
-        if self._own_login and self._register_secret is not None:
+        held = [args["credential"]["password"]] if self._own_login else []
+        if "challenge_bypass" in args:
+            held.append(args["challenge_bypass"]["value"])
+        for value in held if self._register_secret is not None else []:
             try:
-                self._register_secret(args["credential"]["password"])
+                self._register_secret(value)
             except Exception:  # redaction is a second guard; nothing logs the value anyway
                 pass
+        held = []
         try:
             result = gate.call(CTL_OP, args)
         except Exception as exc:
@@ -354,10 +374,11 @@ class QaTargetSignIn:
             self._fail(GATE_REFUSED if refused else GATE_UNREACHABLE)
             return
         finally:
-            # Forgotten once the gate has answered (§2.2 step 2).
-            credential = args.pop("credential", None)
-            if isinstance(credential, dict):
-                credential.clear()
+            # Forgotten once the gate has answered (§2.2 step 2), the bypass too (§2.5).
+            for key in ("credential", "challenge_bypass"):
+                held_copy = args.pop(key, None)
+                if isinstance(held_copy, dict):
+                    held_copy.clear()
             args.clear()
         if self._own_login:
             self.sign_ins += 1

@@ -203,6 +203,11 @@ qatarget.py):
   enforces §3's read-only, origin and rate rules on sessions the gate owns;
 * the agent may not continue a paused request rewritten
   (`QaTarget.agent_refusal`), which would route around the guard;
+* a challenge bypass the target's owner configured (§2.5, lane
+  CAPTCHA-BYPASS) is added by that guard alone, on the target's approved
+  origins alone: a header on the requests it continues, or a host-only
+  `HttpOnly` cookie it plants on this pipe; its value is one more scrub
+  needle on the agent's link;
 * `qa_sign_in` is THE HELD SIGN-IN: the agent is held exactly as for a
   hand-off (`pause`), the gate signs in on a tab of its own (`SignIn`), and
   the return keeps §2.2 step 4's order -- clear the gate tab's password

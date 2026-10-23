@@ -519,7 +519,7 @@ function GitHubRow({ row, ws }: { row: ProfileGitHub; ws: ProfileWorkspace | und
   if (row.method !== null) facts.push(row.method)
   if (row.access_expires_at !== null) {
     const left = new Date(row.access_expires_at).getTime() - Date.now()
-    facts.push(left > 0 ? `token expires in ${humaniseUntil(left)}` : 'token expired')
+    facts.push(left > 0 ? `token expires in ${wholeDuration(left)}` : 'token expired')
   }
   if (row.refreshed_at !== null) facts.push(`renewed ${timeAgo(row.refreshed_at)}`)
   return (
@@ -660,20 +660,40 @@ function NotificationsCard({ p, stored, disabled, save }: { p: Profile; stored: 
 
 // -- 4. Claude accounts ------------------------------------------------------------
 
-function windowWords(label: string, w: ProfileQuotaWindow | undefined): string | null {
+const HOUR_MS = 3_600_000
+
+/**
+ * A duration that never breaks inside itself (visual QA
+ * 6:overview-automate-017, #1680): at 390 '3d 22h' and '6h 00m' broke after
+ * their first figure, so each figure is joined to the next with U+00A0.
+ */
+function wholeDuration(ms: number): string {
+  return humaniseUntil(ms).replace(/ /g, '\u00a0')
+}
+
+/**
+ * One quota window in words: '5‑hour 42%, resets in 2h 30m'. The label is
+ * written with U+2011 by its caller, so '5‑' and 'hour' stay on one line.
+ *
+ * A RESET FURTHER AWAY THAN THE WINDOW IS LONG IS AN OLD READING (visual QA
+ * 6:overview-automate-016, #1680): a 5-hour window cannot reset in 19h 43m,
+ * so the reading is from an earlier window and its countdown is not drawn.
+ */
+export function windowWords(label: string, lengthMs: number, w: ProfileQuotaWindow | undefined): string | null {
   if (w === undefined || w.utilization === null) return null
   const pct = `${label} ${Math.round(w.utilization * 100)}%`
   if (w.resets_at === null) return pct
   const left = new Date(w.resets_at).getTime() - Date.now()
-  return left > 0 ? `${pct}, resets in ${humaniseUntil(left)}` : pct
+  if (left > lengthMs) return `${pct}, reading out of date`
+  return left > 0 ? `${pct}, resets in ${wholeDuration(left)}` : pct
 }
 
 function AccountRow({ a }: { a: ProfileClaudeAccount }) {
   const facts: (string | null)[] = [
     a.relation === 'own' ? 'yours' : 'lent to you',
     a.state,
-    windowWords('5-hour', a.windows.five_hour),
-    windowWords('7-day', a.windows.seven_day),
+    windowWords('5\u2011hour', 5 * HOUR_MS, a.windows.five_hour),
+    windowWords('7\u2011day', 7 * 24 * HOUR_MS, a.windows.seven_day),
     a.lent_to_count !== null && a.lent_to_count > 0 ? `you lend it to ${a.lent_to_count}` : null,
     a.stale ? 'figures may be out of date' : null,
   ]

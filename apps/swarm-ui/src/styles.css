@@ -1731,7 +1731,7 @@ body {
 .wf-zoom-seg { flex: none; }
 .wf-zoom > .wf-caveat { flex: none; }
 /* WHAT THE ZOOM IS NOT DRAWING, AS A NOTE AND NOT AS A DATA MARK (WF-14). It
-   was a `.ctl-mark.is-partial` -- amber, a one-sided dash -- which is how this
+   was a `.ctl-mark.is-partial` -- the amber mark -- which is how this
    console says a READ came back partial. A zoom is the reader's choice (or
    Auto's) about the VIEW, so it takes provenance type and nothing else: faint
    mono at the micro step, no border, no dash, no hue. Its sentence is its
@@ -4748,11 +4748,16 @@ a.ctl-metric:focus-visible .ctl-metric-label,
      .is-admin     admin only     you are not entitled to it; nothing failed
      .is-pending   reading        in flight right now
 
-   SIX MARKS, SIX SILHOUETTES, AND THE TONE IS ALWAYS THE SECOND SIGNAL.
-   The border style carries the kind — solid for a measurement, dashed for a
-   failure, hatched for an absence — so the six stay apart in greyscale and in
-   the screenshot that gets pasted into an incident channel, which is where
-   these screens are actually read.
+   THE BORDER STYLE CARRIES THE KIND, AND THE TONE IS ALWAYS THE SECOND SIGNAL.
+   Solid for a measurement, dashed for a failure, hatched for an absence,
+   dotted for a read in flight -- so a failure, an absence and a read in
+   flight stay apart from a measurement in greyscale and in the screenshot
+   that gets pasted into an incident channel, which is where these screens are
+   actually read. The three measured marks (`none`, `partial`, `admin only`)
+   share the solid pill and are told apart by their tone and their word: each
+   once carried a one-sided edge of its own, and on a mark one line tall that
+   edge read as a broken border, not as a shape (visual QA run 6, box
+   6343768697, part of #1680).
 
    WHERE THE SENTENCE WENT. The mark is the visible, focusable anchor; the
    sentence is its accessible name and its help topic. That is the difference
@@ -4775,13 +4780,17 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   color: var(--text-faint);
 }
 /* A MEASURED ZERO IS A MEASUREMENT. Solid border, the text tone rather than
-   the faint one, and the baseline tick from the track vocabulary down its left
-   edge — the same mark, meaning the same thing, in a second place: "this scale
-   starts here and the value is at the start of it". */
+   the faint one.
+   ONE EVEN EDGE, NOT THE TRACK'S AXIS TICK (visual QA run 6,
+   6:overview-automate-014, box 6343768697, part of #1680). The left side was
+   `--track-axis` (3px) inside a 6px radius, and on a mark one line tall that
+   read as a doubled left edge -- Approvals' `none` -- not as an axis. The
+   tick stays where it means something, at the origin of a track
+   (`.ctl-util-track.is-zero`). One shorthand, so no later longhand can widen
+   one side again. */
 .ctl-mark.is-zero {
   color: var(--text-dim);
-  border-left-width: var(--track-axis);
-  padding-left: 5px;
+  border: 1px solid currentColor;
 }
 /* NOTHING WAS EVER RECORDED. Hatched — this sheet's one surface for "not a
    measurement" — but THE HATCH IS A SWATCH AT THE MARK'S LEADING EDGE, AND THE
@@ -4823,16 +4832,22 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   color: var(--warn);
   border-style: dashed;
 }
-/* SOME OF IT ARRIVED. Dashed on one side only — the side the missing part
-   would have been on. A partial total is not a total, and the mark is the
-   shape of the hole. */
+/* SOME OF IT ARRIVED. Warning-toned, and SOLID: what arrived was measured,
+   which is what keeps it apart from `.is-unread`'s dashed failure in the same
+   tone.
+   A CLOSED PILL, ONE EVEN 1PX EDGE (visual QA run 6, 6:overview-automate-014,
+   6:task-004, 6:flow-find-failure-desktop-06 and -phone-06, box 6343768697,
+   part of #1680). It was dashed on its right side only, 2px wide, round: the
+   browser fits a dashed border's pattern to the side, so on a mark one line
+   tall the right edge drew as a bracket of two ticks set off from the pill --
+   'partial' read as clipped on Overview, Approvals and the Attempts summary.
+   One shorthand, so no longhand can open one side again.
+   ROUND ON EVERY SIDE HERE. The squared dashed side (QA-049) is the Accounts
+   section's alone -- `.acct-page` / `.quota-page` in styles/capacity.css --
+   by the owner's choice of 2026-10-20 (6287748161). */
 .ctl-mark.is-partial {
   color: var(--warn);
-  border-right-style: dashed;
-  border-right-width: 2px;
-  /* ROUND ON BOTH SIDES HERE. The squared dashed side (QA-049) is the
-     Accounts section's alone -- `.acct-page` / `.quota-page` in
-     styles/capacity.css -- by the owner's choice of 2026-10-20. */
+  border: 1px solid currentColor;
 }
 /* NOT ENTITLED IS NOT BROKEN. Blue, solid, no dashes: a non-admin genuinely
    cannot read /v1/admin/*, and painting that as a failure tells someone their
@@ -10961,6 +10976,18 @@ span.sk-ttile { cursor: default; }
      first, down to a short page name whole; past that the tenant chip and
      label (`min-width: 0` through their `overflow: hidden`) shrink instead. */
   .sk-pbar b { font-size: var(--t-body); flex: 1; min-width: 5.5em; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* BESIDE THE SWITCHABLE CHIP THE TITLE GIVES WAY FIRST, ALL THE WAY
+     (visual QA run 6, 6:admin-007, part of #1680). The floor above is for
+     the member's bar, whose plain label is short. A platform admin's bar
+     also carries the admin tag, and with the title holding 5.5em the chip
+     took the whole cut: `Bo…` on every admin route at 390, a workspace
+     nobody could name. The title is the page the reader just chose and the
+     drawer names it again; the workspace is named nowhere else on a phone.
+     The bar's gaps close by 2px for the same reason. `has-chip` is set by
+     Spine.tsx on the bar that holds `.sk-tchip`. The hidden `Top` slot keeps
+     its width (N1, run 4 note 6329568327). */
+  .sk-pbar.has-chip { gap: 6px; }
+  .sk-pbar.has-chip > b { min-width: 0; }
   .sk-pbar .sk-tn { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-spine-ink); }
   /* THE TENANT GIVES WAY AFTER THE TITLE, NEVER PAST THE GLASS (#139). With
      no floor and no cap, a long tenant name -- a user tenant's is its email

@@ -97,8 +97,10 @@ from __future__ import annotations
 
 import base64
 import copy
+import json
 import logging
 import math
+import random
 import re
 import tempfile
 import threading
@@ -2646,6 +2648,81 @@ def verified_namespace(tenant_id: str, stored: Any, derived: str, prefix: str) -
 GKE_EXECUTION_NAME_ENV = "SWARM_EXECUTION_NAME"
 
 
+#: A GKE create that loses the namespace's ResourceQuota update race (#2063).
+#: Quota admission charges a create by updating the ResourceQuota's `used`
+#: under optimistic concurrency, so two creates in one namespace at once can
+#: leave one answering 409 `Conflict` on `resourcequotas` ("the object has been
+#: modified"). Nothing was created, so the create is sent again.
+#:
+#: THE BOUND: 3 more tries, so 4 creates in all, and under 2 s of backoff in
+#: total. The race clears as soon as the competing create's quota write lands
+#: -- milliseconds -- so a few short jittered tries clear any realistic burst
+#: (an acceptance group starts its tasks together). Longer is wrong: this
+#: create runs INLINE in the drain, inside `max_run_seconds`, holding a lease
+#: no container occupies yet, and every other tenant's admission waits behind
+#: it. Past the bound the DispatchError hands the task to the existing path:
+#: lease released, READY after its 30 s backoff, the attempt counted against
+#: `max_attempts` -- so a quota that keeps conflicting can never re-dispatch
+#: for hours (store.py `return_to_ready_after_failed_dispatch`).
+GKE_QUOTA_CONFLICT_RETRIES = 3
+#: Each retry's backoff before jitter; the jitter multiplies by 0.5-1.5, which
+#: keeps the whole worst case at 1.5 * (0.1 + 0.3 + 0.6) = 1.5 s. Jittered so
+#: two creates that collided once do not collide again in lockstep.
+GKE_QUOTA_CONFLICT_BACKOFF_SECONDS = (0.1, 0.3, 0.6)
+
+
+def _kubernetes_status(exc: BaseException) -> dict[str, Any]:
+    """The API server's `Status` object from a `kubernetes.client.ApiException`
+    (`.body`, JSON text), or {} for anything that does not carry one: a
+    transport error, or a body that is not JSON."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, bytes):
+        body = body.decode("utf-8", "replace")
+    if not isinstance(body, str) or not body.strip():
+        return {}
+    try:
+        status = json.loads(body)
+    except ValueError:
+        return {}
+    return status if isinstance(status, dict) else {}
+
+
+def _is_409(exc: BaseException, status: Mapping[str, Any]) -> bool:
+    for value in (getattr(exc, "status", None), status.get("code")):
+        try:
+            if value is not None and int(value) == 409:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _is_quota_conflict(exc: BaseException) -> bool:
+    """A 409 `Conflict` whose subject is a `resourcequotas` object.
+
+    Read from the Status body, never from the exception's HTTP reason phrase:
+    that is "Conflict" for EVERY 409, AlreadyExists included. A 409 Conflict
+    on any other object is not this race and is not retried.
+    """
+    status = _kubernetes_status(exc)
+    if not _is_409(exc, status) or status.get("reason") != "Conflict":
+        return False
+    details = status.get("details")
+    return isinstance(details, dict) and details.get("kind") == "resourcequotas"
+
+
+def _already_exists_name(exc: BaseException) -> str | None:
+    """The Job name a 409 `AlreadyExists` names, else None."""
+    status = _kubernetes_status(exc)
+    if not _is_409(exc, status) or status.get("reason") != "AlreadyExists":
+        return None
+    details = status.get("details")
+    if not isinstance(details, dict) or details.get("kind") != "jobs":
+        return None
+    name = details.get("name")
+    return str(name) if name else None
+
+
 @dataclass(frozen=True)
 class GkeTarget:
     endpoint: str
@@ -3122,10 +3199,20 @@ class GkeJobDispatcher:
         # is created: the worker records the same string from its env.
         recorded = _manifest_execution_name(manifest)
         try:
-            self._api().create_namespaced_job(namespace=namespace, body=manifest)
+            self._create(namespace, manifest)
         except DispatchError:
             raise
         except Exception as exc:  # kubernetes.client.ApiException and transport errors
+            # THIS ATTEMPT'S OWN JOB ALREADY EXISTS: adopted, never created
+            # twice and never failed. The name carries the lease's generation
+            # (`_manifest`), so only this attempt ever creates it, and a Job of
+            # an older generation has another name and is not adopted
+            # (invariant 5). Failing here would release the lease of a Job
+            # that runs.
+            if _already_exists_name(exc) == manifest["metadata"]["name"]:
+                log.info("gke create found its own job already created namespace=%s job=%s",
+                         namespace, manifest["metadata"]["name"])
+                return recorded
             # KUBERNETES AUTHORISES BEFORE IT RESOLVES, so a 403 here does NOT
             # establish that this is a permissions problem.
             #
@@ -3179,9 +3266,17 @@ class GkeJobDispatcher:
                     f"docs/incidents/2026-09-24-gke-dispatch.md.",
                     code="gke_create_job_forbidden",
                 ) from exc
+            # A quota race that outlasted GKE_QUOTA_CONFLICT_RETRIES keeps
+            # today's code (the loop, the runbook and the UI read it) and says
+            # so in the operator's message.
+            raced = (
+                f" (lost the ResourceQuota update race on all "
+                f"{GKE_QUOTA_CONFLICT_RETRIES + 1} tries)"
+                if _is_quota_conflict(exc) else ""
+            )
             raise DispatchError(
                 f"could not create GKE job in {namespace} as "
-                f"{self.presented_identity()}: {exc}",
+                f"{self.presented_identity()}{raced}: {exc}",
                 code="gke_create_job_failed",
             ) from exc
         # The name the worker was handed, never a second derivation of it
@@ -3190,6 +3285,29 @@ class GkeJobDispatcher:
         # AFTER the create, because a dispatch that raised there would release
         # the lease of a Job that runs.
         return recorded
+
+    def _create(self, namespace: str, manifest: dict[str, Any]) -> None:
+        """`create_namespaced_job`, sent again while the namespace's
+        ResourceQuota update race refuses it (GKE_QUOTA_CONFLICT_RETRIES).
+        Anything else, and the last conflict, is raised to `dispatch`."""
+        api = self._api()
+        tries = GKE_QUOTA_CONFLICT_RETRIES + 1
+        for attempt in range(1, tries + 1):
+            try:
+                api.create_namespaced_job(namespace=namespace, body=manifest)
+                return
+            except Exception as exc:
+                if attempt == tries or not _is_quota_conflict(exc):
+                    raise
+                delay = GKE_QUOTA_CONFLICT_BACKOFF_SECONDS[attempt - 1] * random.uniform(0.5, 1.5)
+                # The namespace, the try and the reason: never the manifest or
+                # the upstream body, which carry the pod spec and identities.
+                log.warning(
+                    "gke create lost the resourcequota update race namespace=%s try=%d/%d "
+                    "reason=Conflict on resourcequotas; retrying in %.2fs",
+                    namespace, attempt, tries, delay,
+                )
+                time.sleep(delay)
 
 
 def _manifest_execution_name(manifest: dict[str, Any]) -> str:

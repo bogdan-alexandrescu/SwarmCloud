@@ -54,6 +54,7 @@ import {
   LANE_GROUPS,
   LANE_KINDS,
   LANE_SPANS,
+  MERGE_TRACK_PX,
   PILL_MIN_PX,
   attemptWord,
   axisTicks,
@@ -300,6 +301,54 @@ export const PILL_COUNT_MIN_PX = 24
 export const BAR_WORDS_MIN_PX = 36
 
 /**
+ * CROWDED ATTEMPTS AT THE COUNTED PILL'S OWN WIDTH (owner pick c00; visual QA
+ * run 6, 6:work-a-004, box 6314122402).
+ *
+ * `lanePills` merges an attempt that starts inside the pill before it at a
+ * LONE pill's floor, but a merged pill paints at `PILL_COUNT_MIN_PX`, wider:
+ * two attempts five minutes apart became a counted pill whose floor reached
+ * past a third attempt an hour later, and `laneLayout` then pushed the two
+ * pills left against each other, a pile at 'now'. Here, on the same fixed
+ * `MERGE_TRACK_PX` scale (so 1440 and 390 merge alike), an attempt pill joins
+ * the one before it when it starts inside that pill's painted floor, and,
+ * from the right, when the room left before 'now' -- `TRACK_END_PX`, and the
+ * end mark's when the lane has one -- would push it into the pill before it.
+ * A finished park wholly under a merged pill is under it, as `lanePills`
+ * draws it; the end marks `lanePills` placed stay after the last pill, whose
+ * end this never moves.
+ */
+export function crowdPills(pills: readonly Pill[], since: number, until: number, endMark: boolean): Pill[] {
+  const unit = (until - since) / MERGE_TRACK_PX
+  const isAttempt = (p: Pill) => p.segs.every((s) => s.kind === 'hold' || s.kind === 'cut')
+  const floor = (p: Pill) => (p.segs.length > 1 ? PILL_COUNT_MIN_PX : PILL_MIN_PX) * unit
+  const start = (p: Pill) => Math.max(p.from, since)
+  const reach = (p: Pill) => Math.max(p.to, start(p) + floor(p)) + MARK_GAP_PX * unit
+  const join = (a: Pill, b: Pill): Pill => ({ segs: [...a.segs, ...b.segs], from: Math.min(a.from, b.from), to: Math.max(a.to, b.to) })
+  const groups: Pill[] = []
+  for (const p of pills.filter(isAttempt)) {
+    const last = groups[groups.length - 1]
+    if (last !== undefined && start(p) < reach(last)) groups[groups.length - 1] = join(last, p)
+    else groups.push({ ...p, segs: [...p.segs] })
+  }
+  // From 'now' leftward: the room each pill has once the ones after it are placed.
+  let limit = until - (TRACK_END_PX + (endMark ? MARK_FROM_PX.end + MARK_PX : 0)) * unit
+  for (let i = groups.length - 1; i >= 0; i--) {
+    let g = groups[i]!
+    let at = Math.min(start(g), limit - floor(g))
+    while (i > 0 && reach(groups[i - 1]!) > at) {
+      g = join(groups[i - 1]!, g)
+      groups.splice(i - 1, 2, g)
+      i--
+      at = Math.min(start(g), limit - floor(g))
+    }
+    limit = at - MARK_GAP_PX * unit
+  }
+  const merged = groups.filter((g) => g.segs.length > 1)
+  const parks = pills.filter((p) => !isAttempt(p) && (p.segs[0]!.future || !merged.some((g) => p.from >= g.from && p.to <= g.to)))
+  return [...groups, ...parks].sort((a, b) => a.from - b.from)
+}
+
+/**
  * WHERE A LANE'S BARS AND MARKS ARE DRAWN, together (VQA2 V039, 2026-10-16).
  *
  * `markLefts` kept the marks inside the track and apart, but the bars were
@@ -326,8 +375,14 @@ export function laneLayout(
   marks: readonly { pct: number; end: boolean }[],
   trackPx: number | null,
 ): { bars: { left: number; width: number }[]; marks: number[] } {
+  // Unmeasured, a bar keeps its 0.4 % floor inside the track: started in the
+  // last 0.4 % before 'now', it ran past the now line until the axis measured
+  // the track (6:work-a-004), so its floor is taken leftward from the edge.
   const plain = {
-    bars: bars.map((b) => ({ left: b.from, width: Math.max(b.to - b.from, 0.4) })),
+    bars: bars.map((b) => {
+      const width = Math.max(b.to - b.from, 0.4)
+      return { left: Math.max(0, Math.min(b.from, 100 - width)), width }
+    }),
     marks: marks.map((m) => m.pct),
   }
   if (trackPx === null || !(trackPx > 0)) return plain
@@ -1211,6 +1266,7 @@ export function TimelineLanesScreen({
         // so the counts stay those of the lanes still drawn -- figures for what
         // is on screen, never zeros for a read that has not landed (QA-093).
         lanesRead={shown !== null ? 'read' : att.status === 'error' ? 'failed' : 'reading'}
+        eventsReading={allLanes.some((l) => !l.neverRan && events.get(l.taskId)?.status === 'reading')}
         view={view}
         since={win.since}
         until={win.until}
@@ -1835,7 +1891,9 @@ function LaneRow({
   // The lane's current state is not among them: it is drawn on its own rail
   // beneath the pills, to now (work-a-005), so it moves no pill.
   const written = lane.marks.filter((m) => m.at >= since && m.at <= until)
-  const { pills, marks } = lanePills(segs, written, since, until)
+  const crowd = lanePills(segs, written, since, until)
+  const marks = crowd.marks
+  const pills = crowdPills(crowd.pills, since, until, marks.some((m) => m.kind !== 'cancel_requested'))
   const layout = laneLayout(
     pills.map((p) => ({ from: pct(p.from, since, until), to: pct(p.to, since, until), min: p.segs.length > 1 ? PILL_COUNT_MIN_PX : undefined })),
     marks.map((m) => ({ pct: pct(m.at, since, until), end: m.kind !== 'cancel_requested' })),
@@ -2135,10 +2193,40 @@ export function bothRanges(strip: StripRead, since: number, until: number): stri
   return `Outcomes reads ${ledgerRange(strip.data)}${aligned === null ? '' : ` (${aligned})`}; these lanes read ${rangeWords(since, until)}`
 }
 
+/** One bucket of the ledger, the most a span's alignment moves either end of it. */
+const BUCKET_MS = { hour: 3_600_000, day: 86_400_000, week: 7 * 86_400_000, month: 31 * 86_400_000 } as const
+
+/**
+ * THE HEADLINE NAMES ITS OWN WINDOW (visual QA run 6, 6:work-a-003; box
+ * 6343760837). '91 % success, 272 of 300 decided', the largest text on the
+ * page, is the ledger's over Sep 12 – Sep 25, above lanes drawn over the last
+ * 24 hours; only the small line under it said so. When either end of the
+ * ledger's range lies more than one of its buckets from the span's (more than
+ * the alignment `alignedWords` explains), the window, in the ledger's zone:
+ * `Sep 12 – Sep 25`, or `Oct 23, 09:00–21:00` inside one day. Null when the
+ * two agree.
+ */
+export function decidedWindow(
+  d: Pick<Outcomes, 'since' | 'until' | 'tz' | 'bucket'>,
+  since: number,
+  until: number,
+): string | null {
+  const from = Date.parse(d.since)
+  const to = Date.parse(d.until)
+  const slack = BUCKET_MS[d.bucket] ?? BUCKET_MS.day
+  if (Math.abs(from - since) <= slack && Math.abs(to - until) <= slack) return null
+  const day = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: d.tz })
+  const hm = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: d.tz })
+  const a = day.format(from)
+  const b = day.format(to)
+  return a === b ? `${a}, ${hm.format(from)}–${hm.format(to)}` : `${a} – ${b}`
+}
+
 function OutcomeStrip({
   strip,
   lanes,
   lanesRead,
+  eventsReading = false,
   view,
   since,
   until,
@@ -2155,6 +2243,15 @@ function OutcomeStrip({
    * is no figure.
    */
   lanesRead: 'reading' | 'failed' | 'read'
+  /**
+   * WHETHER A LANE'S EVENTS READ IS STILL OUT (visual QA run 6, 6:work-a-001;
+   * QA-027, box 6283709068). The capture shot 'events not read on 17 lanes'
+   * while the page text, read a moment later, had the figures: nothing said
+   * the cells were still reading. The fenced and parks cells carry
+   * `aria-busy` while any read is out, which the capture waits on; a read
+   * that failed is settled, so 'events not read' then stands unflagged.
+   */
+  eventsReading?: boolean
   view: LanesView
   since: number
   until: number
@@ -2166,6 +2263,7 @@ function OutcomeStrip({
   const unread = drawn.filter((l) => !l.eventsRead).length
   const parks = drawn.reduce((n, l) => n + l.segs.filter((s) => s.kind === 'park' && !s.future).length, 0)
   const still = drawn.filter((l) => l.task?.state === 'PARKED').length
+  const busy = lanesRead === 'reading' || eventsReading ? true : undefined
   const link = (
     <a href={`/timeline/outcomes?${outcomesQueryFor(view)}`} title={bothRanges(strip, since, until) ?? undefined}>
       Outcomes for this span ›
@@ -2175,6 +2273,7 @@ function OutcomeStrip({
   // it said "Decided counts cover 20:57–20:57" over counts the route had read
   // from 22:00, so its numbers matched neither page.
   const aligned = strip.status === 'ok' ? alignedWords(strip.data) : null
+  const own = strip.status === 'ok' ? decidedWindow(strip.data, since, until) : null
   return (
     <div className="tl-strip">
       {strip.status === 'loading' ? (
@@ -2188,10 +2287,12 @@ function OutcomeStrip({
           {strip.data.totals.rate === null ? (
             <span className="tl-x">
               <b className="tl-dash">—</b> success: no agent was decided in this span
+              {own !== null && <b className="tl-win">{own}</b>}
             </span>
           ) : (
             <span className="tl-x">
               <b>{Math.round(strip.data.totals.rate.p * 100)} %</b> success, {strip.data.totals.rate.k} of {strip.data.totals.rate.n} decided
+              {own !== null && <b className="tl-win">{own}</b>}
             </span>
           )}
           {/* THE FINISHED TOTAL, SPLIT INTO PARTS THAT ADD UP TO IT (#123):
@@ -2219,29 +2320,29 @@ function OutcomeStrip({
           </span>
           {lanesRead !== 'read' ? (
             <>
-              <span className="tl-x">
+              <span className="tl-x" aria-busy={busy}>
                 fenced <b className="tl-dash">—</b> {lanesRead === 'reading' ? 'reading the lanes' : 'the lanes were not read'}
               </span>
-              <span className="tl-x">
+              <span className="tl-x" aria-busy={busy}>
                 parks <b className="tl-dash">—</b> {lanesRead === 'reading' ? 'reading the lanes' : 'the lanes were not read'}
               </span>
             </>
           ) : unread > 0 && fenced === 0 ? (
-            <span className="tl-x">
+            <span className="tl-x" aria-busy={busy}>
               fenced <b className="tl-dash">—</b> events not read on {unread} {unread === 1 ? 'lane' : 'lanes'}
             </span>
           ) : (
-            <span className="tl-x">
+            <span className="tl-x" aria-busy={busy}>
               <b>{unread > 0 ? `${fenced}+` : fenced}</b> {fenced === 1 && unread === 0 ? 'generation' : 'generations'} fenced
               {unread > 0 && `, events not read on ${unread} ${unread === 1 ? 'lane' : 'lanes'}`}
             </span>
           )}
           {lanesRead !== 'read' ? null : unread > 0 ? (
-            <span className="tl-x">
+            <span className="tl-x" aria-busy={busy}>
               parks <b className="tl-dash">—</b> events not read on {unread} {unread === 1 ? 'lane' : 'lanes'}
             </span>
           ) : (
-            <span className="tl-x">
+            <span className="tl-x" aria-busy={busy}>
               <b>{parks}</b> {parks === 1 ? 'park' : 'parks'}, {still} still parked
             </span>
           )}

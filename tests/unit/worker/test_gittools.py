@@ -487,3 +487,65 @@ def test_the_route_is_called_once_per_request_and_a_push_is_rate_limited(tmp_pat
     _commit(world.clone, "b.txt", "b\n", "two")
     assert world.spool("git_push_branch", {}, request_id="p2")["refused"]["code"] == "rate_limited"
     assert len(world.api.calls) == 1
+
+
+# --------------------------------------------------------------------------
+# The tip a push answered with, for the end-of-task publish (#1188)
+# --------------------------------------------------------------------------
+
+
+def test_the_relay_remembers_the_tip_its_own_push_answered_with(world: World):
+    head = _commit(world.clone, "a.txt", "a\n", "one")
+    # MUTATION: record fetched tips as pushed ones and this fetch of the
+    # task's own branch-to-be would already answer a tip.
+    world.spool("git_fetch", {"ref": "main"}, request_id="f1")
+    assert world.tools.pushed_tip(OWN_BRANCH) is None
+    answer = world.spool("git_push_branch", {}, request_id="p1")
+    # MUTATION: drop `self.pushed_tips[chosen] = new_sha` and this is None.
+    assert world.tools.pushed_tip(OWN_BRANCH) == answer["result"]["new_sha"] == head
+    # MUTATION: answer from `origin.tips` and `main`, which the fetch learnt,
+    # reads as a pushed tip the publish would lease on.
+    assert world.tools.pushed_tip("main") is None
+
+
+def test_a_pushed_tip_is_answered_only_for_a_branch_this_task_may_push(world: World):
+    _commit(world.clone, "a.txt", "a\n", "one")
+    world.spool("git_push_branch", {}, request_id="p1")
+    # A tip recorded under another name -- however it got there -- is never
+    # a lease the publish is handed.
+    world.tools.pushed_tips[f"swarm/{OTHER_TASK}"] = world.tools.pushed_tips[OWN_BRANCH]
+    # MUTATION: drop the `branch in self.cfg.pushable` test and this answers a sha.
+    assert world.tools.pushed_tip(f"swarm/{OTHER_TASK}") is None
+
+
+def _refusing_pr_checks(message: str):
+    """swarm-api's 422 for a forge refusal, as `ChildApi` reads it off the wire."""
+    def pr_checks(self, body: dict[str, Any]) -> dict[str, Any]:
+        raw = json.dumps({"code": "forge_refused", "message": message}).encode()
+        raise urllib.error.HTTPError("https://api.invalid", 422, "x", {}, io.BytesIO(raw))
+    return pr_checks
+
+
+def test_a_refused_tool_calls_log_line_carries_its_scrubbed_message(world: World, monkeypatch):
+    registered = "reg-" + secrets.token_hex(16)
+    shaped = "ghp_" + secrets.token_hex(18)
+    stream = io.StringIO()
+    world.tools.log = build_logger(task_id=TASK, attempt_id="att_1", tenant_id="acme",
+                                   generation=3, runner_profile="mock", stream=stream)
+    world.tools._secrets = (registered,)
+    monkeypatch.setattr(FakeApi, "pr_checks", _refusing_pr_checks(
+        "GitHub refused the tenant's forge credential for the pull request's check runs "
+        f"(HTTP 403): {registered} {shaped}"))
+
+    answer = world.spool("pr_checks", {}, request_id="c1")
+
+    assert answer["refused"]["code"] == "forge_refused"
+    lines = [json.loads(line) for line in stream.getvalue().splitlines() if line.strip()]
+    (refused,) = [line for line in lines if "git tool refused" in json.dumps(line)]
+    text = json.dumps(refused)
+    # MUTATION: log the line without `message=` (as before #1188) and the
+    # cause of the refusal is not in the worker's log at all.
+    assert "check runs (HTTP 403)" in text, refused
+    # MUTATION: log `refusal.message` unscrubbed and either value is in the log.
+    assert registered not in stream.getvalue()
+    assert shaped not in stream.getvalue()
