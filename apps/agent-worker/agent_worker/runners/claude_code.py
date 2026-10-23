@@ -302,6 +302,11 @@ _BACKGROUND_TOOLS = "Bash|Task|Agent"
 #: runs, and it is the file the tests run.
 STDIN_HOOK_NAME = "stdin_hook.py"
 STDIN_HOOK = Path(__file__).resolve().parent / STDIN_HOOK_NAME
+#: The PostToolUse hook that puts the gate's CAPTCHA hand-off into the agent's
+#: next tool result (CAPTCHA-HANDOFF-2; the why is in its docstring). Shipped
+#: and named by absolute path, as the stdin hook is.
+GATE_WAIT_HOOK_NAME = "gate_wait_hook.py"
+GATE_WAIT_HOOK = Path(__file__).resolve().parent / GATE_WAIT_HOOK_NAME
 
 #: Where agent-runtime-browser installed Chromium (its Dockerfile's ENV). Set
 #: only in that image; the lifecycle passes it to this runner by name.
@@ -677,7 +682,15 @@ def resume_summary(spool: str) -> str | None:
 
 
 def write_headless_settings(directory: Path) -> Path:
-    """Write the CLI's `--settings` file and its hook into `directory`; return the file."""
+    """Write the CLI's `--settings` file and its hook into `directory`; return the file.
+
+    On a live-browser attempt -- the one kind the lifecycle sets SWARM_HANDOFF
+    for, read here from the same environment `body` passes it on from -- the
+    file also registers `gate_wait_hook.py` after every tool, so the agent's
+    next tool result says when the gate has asked a person to solve a CAPTCHA
+    (CAPTCHA-HANDOFF-2, BGD 2026-10-23; part of #2058). Any other attempt has
+    no spool for it to read, and gets no hook.
+    """
     if directory.is_symlink():
         directory.unlink()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -731,6 +744,24 @@ def write_headless_settings(directory: Path) -> Path:
             ]
         },
     }
+    spool = os.environ.get(HANDOFF_ENV, "").strip()
+    if spool:
+        settings["hooks"]["PostToolUse"] = [
+            {
+                # Every tool: the call the pause blocks is a browser_* tool,
+                # a Bash `swarm_browser` script or anything else. Two small
+                # reads, so a short timeout; it fails open on any error.
+                "matcher": "*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f"{shlex.quote(sys.executable)} -I {shlex.quote(str(GATE_WAIT_HOOK))} "
+                                   f"{shlex.quote(spool)}",
+                        "timeout": 10,
+                    }
+                ],
+            }
+        ]
     path = directory / "settings.json"
     _write_private(path, json.dumps(settings, indent=2) + "\n")
     return path
