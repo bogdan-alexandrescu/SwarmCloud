@@ -21,6 +21,7 @@ import {
   type WorkspaceRoleOverride,
   type WorkspaceRoster,
 } from './types'
+import './styles/roles.css'
 
 /**
  * ADMIN › PEOPLE'S WORKSPACE ROLES (lanes ROLES-UI-ADMIN, ROLES-ADMIN-LIST;

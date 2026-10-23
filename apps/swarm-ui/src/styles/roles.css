@@ -1,0 +1,33 @@
+/* ADMIN › PEOPLE'S WORKSPACE ROLES (WorkspaceRolesAdmin.tsx; lane
+   QAFIX6-ROLES, part of #1680). Until this sheet the card's `wra-*` classes
+   matched no rule anywhere (visual QA run 6, 6:admin-004), so the roster drew
+   as the browser's default lists: a bullet per workspace, a hollow bullet per
+   override, and three facts as six indented lines, ~300px for what is three.
+   The layout follows the Manage drawer's (people.css `.pp-facts`,
+   `.pp-admin-list`, `.pp-grant`): the page's other cards. */
+.wra-card { min-width: 0; }
+.wra-list { list-style: none; margin: var(--ctl-s2) 0 0; padding: 0; display: grid; gap: var(--ctl-s3); }
+.wra-ws { display: grid; gap: var(--ctl-s2); min-width: 0; padding-top: var(--ctl-s3); border-top: 1px solid var(--line-soft); }
+.wra-ws:first-child { padding-top: 0; border-top: 0; }
+.wra-ws > .ur-hint { margin: 0; }
+.wra-head { min-width: 0; overflow-wrap: anywhere; }
+.wra-roster { display: grid; gap: var(--ctl-s2); min-width: 0; }
+/* THREE FACTS, THREE LINES: each label beside its value, as `.pp-facts`. */
+.wra-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--ctl-s1) var(--ctl-s3); margin: 0; }
+.wra-facts > dt { color: var(--text-dim); }
+.wra-facts > dd { margin: 0; min-width: 0; }
+.wra-admins { overflow-wrap: anywhere; }
+.wra-count { font-variant-numeric: tabular-nums; }
+/* AN OVERRIDE IS A LINE, NOT A BULLET: a nested `ul` draws a hollow one. */
+.wra-people, .wra-person { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--ctl-s1); }
+.wra-people > li, .wra-person > li { min-width: 0; overflow-wrap: anywhere; }
+/* A FIELD AND ITS BUTTON ARE ONE ROW (6:admin-004), as Admins' 'Email /
+   Grant admin': `.ur-search` is `width: 100%` everywhere else, which put
+   'Name an admin' flush under its field. The field grows from 12rem to 18rem,
+   so at 390 the field, the gap and the button still fit one ~330px card row.
+   A LABEL IS 8PX FROM ITS SELECT (6:admin-011): 'Default role in eng' touched
+   it. AND ONE HEIGHT: the field and the select are the small button's
+   (`--h-sm`), so neither stands taller than the action beside it. */
+.wra-form { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); margin: 0; min-width: 0; }
+.wra-form > .ur-search { flex: 1 1 12rem; width: auto; max-width: 18rem; min-width: 0; height: var(--h-sm); }
+.wra-form > select { height: var(--h-sm); min-height: 0; padding-top: 0; padding-bottom: 0; max-width: 100%; }
