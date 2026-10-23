@@ -1429,7 +1429,13 @@ function Form({ capacity }: { capacity: Capacity }) {
         `Not sent — ${chosen} will not start without ${missing.join(', ')}.` } })
       return
     }
-    // The button is off for both; this keeps them for Enter as well.
+    // The button is off for both; this keeps them for Enter as well, and for
+    // the press the disabled button lets through to its strip.
+    if (pushes && repo === '') {
+      setOutcome({ kind: 'refused', sent: false, unattributed: null, fields: { repository_url:
+        `Not sent — strategy ${dispatch.strategy} pushes, so it needs a repository URL.` } })
+      return
+    }
     if (badRepo) {
       setOutcome({ kind: 'refused', sent: false, unattributed: null, fields: { repository_url:
         `Not sent — the API accepts only a URL starting with ${REPOSITORY_SCHEMES.join(', ')}.` } })

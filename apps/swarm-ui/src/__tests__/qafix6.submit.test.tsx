@@ -107,6 +107,29 @@ describe('a: a submit attempt marks each missing input at its own field', () => 
     expect(painted(button, 'pointer-events', WIDE)).toBe('none')
   })
 
+  it('a push with no repository: a press on the disabled strip, or Enter, sends nothing and marks the repository', async () => {
+    const posts: string[] = []
+    const prior = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'POST') posts.push(String(input))
+      return prior(input, init)
+    }))
+    const { container, button } = await form()
+    pick(container, 'claude-code')
+    fireEvent.change(container.querySelector<HTMLElement>('.sbf-field.is-required textarea')!, { target: { value: 'fix the build' } })
+    fireEvent.click(container.querySelector<HTMLInputElement>('input[name="dispatch-strategy"][value="direct-pr"]')!)
+    const repo = container.querySelector<HTMLInputElement>('#dsp-repo')!
+    fireEvent.change(repo, { target: { value: '' } })
+    expect(button.disabled).toBe(true)
+    // MUTATION: drop the `pushes && repo === ''` refusal from `submit` -> the disabled Start POSTs /v1/tasks and the API answers 422.
+    fireEvent.click(button.parentElement!)
+    fireEvent.keyDown(repo, { key: 'Enter' })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(posts).toEqual([])
+    // MUTATION: drop `errors.repository_url` from the field's `aria-invalid` -> the refusal is not marked at its field.
+    expect(repo.getAttribute('aria-invalid')).toBe('true')
+  })
+
   it('a runner without its prompt: the prompt field is invalid after the attempt, not before', async () => {
     const { container } = await form()
     pick(container, 'claude-code')
