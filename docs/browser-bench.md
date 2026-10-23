@@ -137,10 +137,59 @@ target or one run may choose Jev
 | `cdp_method_refused` | action-log lines with `outcome: refused` (the gate records every refusal by method name, `cdpproxy.action_line`) |
 | `google_sorry` | transcript steps (`GET /v1/tasks/{id}/transcript`) naming a Google `/sorry` page, "unusual traffic" or an HTTP 429 |
 | `google_sorry_live` | Google `/sorry` navigations in the action log, by `scripts/live_report.py`'s rule |
+| `challenges` | challenge pages the run met: each `human_handoff_requested` event whose `detail.origin` is `gate` (the gate saw a challenge on the agent's page and raised the hand-off itself), plus each Google `/sorry` page among the action log's visited URLs |
+
+`challenges` is how CAPTCHA-AVOID is measured (BGD, 2026-10-23; part of
+#2058): the browser note now tells an agent to search with the WebSearch tool
+rather than a search engine's page, to prefer a site's official API to
+scraping it, and to keep to about one navigation a second on any one site.
+Fewer challenge pages per batch is what that should buy. It is read only from
+what the run recorded, **never from the agent's own claim**: the transcript is
+not read for it, so an agent that writes "I hit a CAPTCHA" counts nothing and
+one that met a challenge without saying so is still counted. A run whose
+events or action log were not read is **`unknown`**, not 0: a source not read
+found nothing, which is not the same as there being nothing. `summary.md`
+gives a total per tool, and says how many runs it was read from when that is
+not all of them. One page can count twice: a `/sorry` page the agent
+navigated to, on which the gate also raised its hand-off. The two sources do
+not share a clock precise enough to pair them, and a page that both stopped
+the agent and needed a person is not one to under-count.
+
+The task document is read in both shapes. `GET /v1/tasks/{id}` answers
+`{"task": {...}}`; the collector and `browser_bench.py` read `.task // .`, so
+a document saved bare reads the same. On 2026-10-23 the collector read `.state`
+off the wrapper, every run looked unfinished, and the saved documents had to
+be unwrapped by hand.
 
 A figure the API did not serve is **`not measured`**, never 0: an attempt
 that reported no cost did not cost nothing, and an agent with no action log had
 no gate refusals *measured*, not none.
+
+## Results 2026-10-23
+
+Batch `bench3-2026-10-23`: 10 prompts x 3 tools x 3 repeats, 90 runs, **83
+measured**. The other 7 were hand-offs that parked waiting for a person and
+are scored as failures: a hand-off nobody answered is a run that did not
+finish its prompt, whichever tool drove it.
+
+| tool | prompts passed | successes | median $/run | median turns | median duration s | gate refusals (`cdp_method_refused`) | Google 429/sorry |
+|---|---|---|---|---|---|---|---|
+| Playwright MCP | 8/10 | 18 | $0.14 | 8 | 44.5 | 42 | 21 |
+| dev-browser | 7/10 | 19 | $0.15 | 7 | 48.3 | 32 | 14 |
+| Jev | 6/10 | 16 | $0.17 | 9 | 51.3 | 50 | 14 |
+
+**Verdict: keep Playwright MCP as the default.** It is the only arm that met
+the 8/10 bar. dev-browser had one more success and one fewer median turn, but
+passed 7/10 prompts and cost more per run; Jev passed 6/10 at the highest
+cost and the most turns.
+
+This batch is the **"before"** for `challenges`. It ran before the browser
+note said to use WebSearch, an official API and a polite rate, and its Google
+429/sorry column (21, 14 and 14) is the trigger CAPTCHA-AVOID removes. Its
+`challenges` column is read by collecting the batch again with this version of
+the helper, `scripts/browser-bench.sh --collect bench3-2026-10-23`, which
+needs the operator's sign-in. The next batch, on the same egress
+([above](#egress-must-be-held-fixed-between-the-arms)), is the "after".
 
 ## How to run it
 

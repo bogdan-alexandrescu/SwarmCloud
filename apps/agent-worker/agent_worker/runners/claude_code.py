@@ -397,6 +397,16 @@ LIVE_BROWSER_NOTE = (
     "connects over CDP to $SWARM_CDP_ENDPOINT; call `playwright.stop()` when "
     "done, never `browser.close()`. Open each new page in its own tab so the "
     "person sees it. "
+    # CAPTCHA-AVOID (BGD, 2026-10-23; part of #2058): do not provoke the
+    # challenges below. The 2026-10-15 benchmark met 11 to 21 Google 429s a
+    # batch from searches typed into google.com in this browser. WebSearch is
+    # the CLI's built-in tool and this runner restricts none: SPEC passes no
+    # --allowedTools and the generated settings deny nothing, so the tool
+    # named here is one the agent has (test_captcha_avoid_note.py holds it).
+    "For a web search, use the WebSearch tool, never a search engine's page in "
+    "the browser. When a site has an official API for what is asked, prefer it "
+    "to scraping its pages. And on any one site, keep to about one navigation a "
+    "second. "
     # CAPTCHA-HANDOFF (BGD, 2026-10-23; part of #2058): the gate raises the
     # hand-off itself when it sees a challenge on the agent's page.
     "Never try to solve or get around a CAPTCHA yourself: the platform asks a "

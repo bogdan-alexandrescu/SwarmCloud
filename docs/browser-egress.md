@@ -269,6 +269,23 @@ from one template per vendor. It is never built in the pod.
 * **Two tenants never share a session id**, because the id includes
   `tenant_id`.
 
+**Stable per-tenant egress is the recommendation** (CAPTCHA-AVOID, BGD
+2026-10-23; part of #2058). Sites score challenges per source address: a
+CAPTCHA or a `/sorry` page is what an address earns from its own history, so
+an address that one tenant's agents use politely, a navigation a second on a
+site and searches through the WebSearch tool rather than a search engine's
+page, builds a reputation those agents keep. One address shared by every
+tenant, which is `swarm-nat-ip-0` today (§0), inherits the busiest tenant's
+history; an address that changes for every attempt has none, and starts each
+attempt as a stranger. So a tenant keeps one address, or one small pool of
+ISP addresses mapped as above, across its attempts, and two tenants do not
+share one. Rotating addresses to get *past* a challenge is the opposite of
+this and out of scope: #2058 rules out detection evasion, because a CAPTCHA
+is a site's owner saying no. The benchmark's `challenges` column
+([browser-bench.md](browser-bench.md#what-is-measured-and-where-it-comes-from))
+is how a change of egress shows up, provided the egress is held fixed for the
+whole batch.
+
 ### 2.5 What changes in the pod, the dispatcher and the network
 
 * **Dispatcher** (`apps/scheduler/scheduler/dispatch.py`). For a live-browser
