@@ -187,7 +187,11 @@ function keyPx(td: Element): number {
   return Number(m![1]) * parseFloat(TABLES.dark.get('--t-micro')!)
 }
 
-/** The width a key needs: DM Mono advances 0.6em, the key is `--t-micro`. */
+/**
+ * The width a key needs: DM Mono advances 0.6em, the key is `--t-micro`. The
+ * key is sans since QA-044 (BGD, 2026-10-23) and its column kept the mono
+ * measure, which is an upper bound for the same key in DM Sans.
+ */
 function keyNeeds(label: string): number {
   return label.length * 0.6 * parseFloat(TABLES.dark.get('--t-micro')!)
 }

@@ -25,7 +25,7 @@
  */
 import { useEffect, useState, type CSSProperties } from 'react'
 
-import { agentName, type AgentTab } from './agentlist'
+import { agentName, shortTaskId, type AgentTab } from './agentlist'
 import { loadTask } from './api'
 import type { Result } from './fetch'
 import { Dash } from './components/Chip'
@@ -297,7 +297,7 @@ export interface WaitGroup {
  * The reason words are `reasonCopy` and `whyAgent`, the same ones the Agents
  * list prints, so a group here and a row there say the same thing.
  */
-export function waitGroups(all: readonly Task[]): WaitGroup[] {
+export function waitGroups(all: readonly Task[], now: number = Date.now()): WaitGroup[] {
   const groups = new Map<string, WaitGroup & { eligible: string | null; workflows: Map<string, number> }>()
   for (const t of all) {
     let key: string
@@ -338,8 +338,13 @@ export function waitGroups(all: readonly Task[]): WaitGroup[] {
           : g.state === 'READY'
             ? 'Eligible now. Admitted when every pool it needs has room.'
             : 'Not yet eligible. Holds nothing.'
+      // A TIME THAT HAS PASSED IS WORDED AS PAST (visual QA run 6,
+      // overview-automate-015, 2026-10-23): 'next eligible 11:51 UTC' under a
+      // 12:00 clock read as still waiting for it. A parked task can pass its
+      // time before the scheduler picks it up, so 'since' is a live case.
+      const passed = eligible !== null && new Date(eligible).getTime() <= now
       const clauses = [
-        ...(g.state === 'PARKED' && eligible !== null ? [`next eligible ${hhmmUtc(eligible)}`] : []),
+        ...(g.state === 'PARKED' && eligible !== null ? [`${passed ? 'eligible since' : 'next eligible'} ${hhmmUtc(eligible)}`] : []),
         ...wfs,
         ...(rest > 0 && wfs.length > 0 ? [`+${rest} more`] : []),
         why,
@@ -689,6 +694,19 @@ function failureTable(
                 {why !== '' && (
                   <span className="ov-sub ov-why" title={why}>
                     {why}
+                  </span>
+                )}
+                {/* EVERY ROW CARRIES ITS TASK ID (visual QA 5b:ff-desktop-02,
+                    #1680 box 6343791868): a lone agent's name ends in its
+                    short id, `agentName`'s, but a workflow step's read
+                    'title · checkpoints' and nothing else, so it could not
+                    be matched to its row on Agents without opening it. The
+                    step's row says the same short id under its name, the id
+                    in an element of its own: drawn as an id, it is the
+                    user's data, not a code identifier (walk.copy E). */}
+                {(t.step_id ?? null) !== null && (
+                  <span className="ov-tid" title={t.id}>
+                    task <span className="mono">{shortTaskId(t.id)}</span>
                   </span>
                 )}
               </th>

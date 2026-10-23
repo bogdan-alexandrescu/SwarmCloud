@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { loadCapacity, loadModelClasses, loadStats, type ModelClassOffer } from './api'
 import {
   CeilingTag,
@@ -30,6 +30,7 @@ import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused,
 import { HelpCard } from './HelpCard'
 import { clearTaskPrefill, peekTaskPrefill } from './submitPrefill'
 import { ModelClassSelect, RoomFact, RunnerPicker, UnreadRoom, sentModelClass, useProviderKeys } from './RunnerPicker'
+import { useInView } from './useInView'
 import { AUTO, BROWSER_TOOL_KEY, BrowserToolPicker, declaredBrowserTools, jevAllowed, profileEgress, useJevJudgment, useTypesafeKey, withBrowserTool } from './BrowserToolPicker'
 import { QA_IDENTITY_KEY, QaIdentityOption, declaredQaIdentities, useGrantedQaIdentity, withQaIdentity } from './QaIdentityGrants'
 import { useRoleGate } from './Profile'
@@ -583,6 +584,15 @@ export function unsentSettings(fields: InputField[]): string[] {
   })
 }
 
+/** A row of one's own with neither a name nor a value: nothing to send. A
+ *  yes / no always has a value, so it is never empty. */
+function emptyRow(f: InputField): boolean {
+  if (f.name.trim() !== '') return false
+  if (f.kind === 'text' || f.kind === 'number') return f.text.trim() === ''
+  if (f.kind === 'list') return f.list.every((e) => e.trim() === '')
+  return false
+}
+
 /**
  * The fields a profile starts with, carrying over anything already typed.
  *
@@ -747,12 +757,15 @@ export function inputFieldId(idPrefix: string, key: number): string {
  * LEFT empty: a runner just picked is not painted red, and until then the
  * `required` tag carries it.
  */
-export function InputFields({ profile, fields, required, onChange, idPrefix }: {
+export function InputFields({ profile, fields, required, onChange, idPrefix, attempted = false }: {
   profile: string
   fields: InputField[]
   required: string[] | null
   onChange: (next: InputField[]) => void
   idPrefix: string
+  /** A submit was attempted (visual QA run 6, QA-103): every required key
+   *  still empty is an error at its field, left or not. */
+  attempted?: boolean
 }) {
   // The fields that have been left, by field key. Local on purpose: whether a
   // reader has visited a field is this editor's business, not the form's.
@@ -808,12 +821,12 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
         const id = inputFieldId(idPrefix, f.key)
         const note = noteFor(f.name.trim())
         const key = f.name.trim()
-        const gap = f.required && missing.has(key) && left.has(f.key)
-        // NOT LEFT YET, STILL SAID AT THE FIELD (visual QA QA-103): at 1440
-        // the panel was the only place that named the empty prompt, and the
-        // field carried a bare `required` tag. A quiet line in the field's own
-        // ink until the reader leaves it; then `gap`'s warning line replaces it.
-        const unfilled = f.required && missing.has(key) && !left.has(f.key)
+        // BEFORE AN ATTEMPT, ONLY THE `required` TAG (visual QA run 6,
+        // 6:flow-submit-form-desktop-02; owner pick 2026-10-23, "Show only
+        // 'required'"). QAFIX5 drew a quiet "prompt missing" line under an
+        // untouched field; it read as an error before the reader had tried
+        // anything. A field left empty, or a submit attempt, draws `gap`'s line.
+        const gap = f.required && missing.has(key) && (left.has(f.key) || attempted)
         const missId = `${id}-missing`
         return (
           <div className={f.required ? 'sbf-field is-required' : 'sbf-field has-remove'} key={f.key}>
@@ -845,7 +858,7 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
               )}
             </div>
             <ValueEditor f={f} id={id} choices={choicesFor(key)} invalid={gap}
-              describedBy={gap || unfilled ? missId : undefined} onBlur={() => leave(f.key)}
+              describedBy={gap ? missId : undefined} onBlur={() => leave(f.key)}
               onChange={(next) => set(i, next)} />
             {/* AFTER ITS FIELD, AND NAMING IT (live QA SUB-17): it came before
                 the value in Tab order, so a screen reader heard "remove" and
@@ -864,11 +877,15 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
                 {profile} will not start without <code>{key}</code>
               </p>
             )}
-            {unfilled && <p id={missId} className="sb-note sbf-unfilled"><code>{key}</code> missing</p>}
             {note && <p className="sbf-note">{note}</p>}
             {/* A ROW WITH NO NAME IS NOT SENT, AND SAYS SO (visual QA QA-102):
-                `buildInput` skips it, and it looked like any other setting. */}
-            {f.own && key === '' && <p className="sbf-note sbf-unsent">no name — not sent</p>}
+                `buildInput` skips it, and it looked like any other setting.
+                A row with nothing in it at all says that in as many words
+                (QA-102, still open after run 6): "no name" read as a name
+                still to type, not as a row the send leaves out. */}
+            {f.own && key === '' && (
+              <p className="sbf-note sbf-unsent">{emptyRow(f) ? 'this empty row will not be sent' : 'no name — not sent'}</p>
+            )}
           </div>
         )
       })}
@@ -1020,6 +1037,8 @@ export function OutcomeSlot({ at, shown, children }: { at: unknown; shown: boole
 const TASK_FIELDS = 'task'
 /** The line under the send button that says what a disabled one waits for. */
 const WHY_ID = 'task-send-why'
+/** The input types a browser never submits a form from on Enter. */
+const NO_IMPLICIT_SUBMIT = new Set(['button', 'checkbox', 'file', 'image', 'radio', 'reset', 'submit'])
 
 /**
  * `owner/repo` out of a repository URL, as the send panel names it (#115).
@@ -1067,6 +1086,11 @@ function Form({ capacity }: { capacity: Capacity }) {
     repositoryUrl: handed?.repositoryUrl ?? '',
   })
   const [outcome, setOutcome] = useState<Outcome>({ kind: 'idle' })
+  // A SUBMIT WAS ATTEMPTED (visual QA run 6, QA-103), by Enter or the button,
+  // and from then each input it was missing is an error at its own field --
+  // the runner group as well as the prompt. Before it, a field reads only
+  // `required`, unpainted (TS-15). Held until "Submit another" starts over.
+  const [attempted, setAttempted] = useState(false)
   // Whether this tenant holds each provider's key, for every row of the picker.
   const keys = useProviderKeys()
   const catalogue = useMemo(
@@ -1263,6 +1287,11 @@ function Form({ capacity }: { capacity: Capacity }) {
   const draftKey = JSON.stringify([chosen, built.ok ? built.input : null, dispatch.strategy, dispatch.carrier, repo, extraSent, classSent ?? null])
   const [sentKey, setSentKey] = useState<string | null>(null)
   const justSent = outcome.kind === 'created' && sentKey === draftKey
+  // The runner group is an error once a submit has been attempted without one.
+  const runnerMissing = attempted && chosen === ''
+  // Whether the panel's "Not ready" line is on screen, for the docked strip.
+  const [whyRef, whyInView] = useInView<HTMLParagraphElement>('0px')
+  const whyShown = typeof globalThis.IntersectionObserver === 'function' && whyInView
   // AND A 422 IS NOT "READY TO SEND" (VQA V002): the panel said so over a live
   // button after the API had refused exactly what the form still held, and the
   // same click would be refused the same way. Held until any edit.
@@ -1285,6 +1314,7 @@ function Form({ capacity }: { capacity: Capacity }) {
     setOutcome({ kind: 'idle' })
     setSentKey(null)
     setRefusedKey(null)
+    setAttempted(false)
     setRestarted((n) => n + 1)
   }
   // AND THE KEYBOARD STARTS AGAIN AT THE TOP (live QA SUB-16): the button
@@ -1348,6 +1378,26 @@ function Form({ capacity }: { capacity: Capacity }) {
     ;(control ?? document.getElementById(refusedSayId(f)))?.focus()
   }
 
+  // THE BUTTON IS DISABLED WHILE `blocked`, AND PRESSING IT IS STILL AN
+  // ATTEMPT (visual QA run 6, QA-103). A disabled button takes no click and
+  // stops Enter's implicit submission, so the empty form's Start did nothing
+  // and the missing runner was named only in the panel. It stays disabled --
+  // it looks it (`.sbf-send .c-btn.is-primary:disabled`, submit.css) and says
+  // why -- but it lets the pointer through (`.sbf-go`) to the strip that
+  // holds it, and Enter in a field of a form whose button is off is caught
+  // below; both run `submit`, which marks the fields and sends nothing.
+  const submitOff = outcome.kind === 'sending' || blocked || refusedAsIs || roleGate !== null
+  const pressOff = (e: ReactMouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget && submitOff) void submit()
+  }
+  const enterOff = (e: ReactKeyboardEvent<HTMLFormElement>) => {
+    if (e.key !== 'Enter' || !submitOff || e.nativeEvent.isComposing) return
+    const t = e.target
+    if (!(t instanceof HTMLInputElement) || NO_IMPLICIT_SUBMIT.has(t.type)) return
+    e.preventDefault()
+    void submit()
+  }
+
   async function submit(e?: FormEvent) {
     e?.preventDefault()
     // ONE POST PER CLICK, WHATEVER SUBMITS THE FORM (live QA SUB-1). After a
@@ -1357,6 +1407,7 @@ function Form({ capacity }: { capacity: Capacity }) {
     // guard is here, not on the button: a request in flight, or the one that
     // was just created and is still what the form says, is never sent twice.
     if (inFlight.current || outcome.kind === 'sending' || justSent || refusedAsIs || roleGate !== null) return
+    setAttempted(true)
     // The button is disabled with no runner; this holds the same rule for any
     // other way a form can be submitted, so nothing is posted without a name.
     if (chosen === '') {
@@ -1377,7 +1428,13 @@ function Form({ capacity }: { capacity: Capacity }) {
         `Not sent — ${chosen} will not start without ${missing.join(', ')}.` } })
       return
     }
-    // The button is off for both; this keeps them for Enter as well.
+    // The button is off for both; this keeps them for Enter as well, and for
+    // the press the disabled button lets through to its strip.
+    if (pushes && repo === '') {
+      setOutcome({ kind: 'refused', sent: false, unattributed: null, fields: { repository_url:
+        `Not sent — strategy ${dispatch.strategy} pushes, so it needs a repository URL.` } })
+      return
+    }
     if (badRepo) {
       setOutcome({ kind: 'refused', sent: false, unattributed: null, fields: { repository_url:
         `Not sent — the API accepts only a URL starting with ${REPOSITORY_SCHEMES.join(', ')}.` } })
@@ -1432,7 +1489,7 @@ function Form({ capacity }: { capacity: Capacity }) {
   }
 
   return (
-    <form ref={formRef} className="sbf" onSubmit={submit}>
+    <form ref={formRef} className="sbf" onSubmit={submit} onKeyDown={enterOff}>
       <div className="sbf-build">
         {/* THIS SCREEN'S ONE `?` (B7.4). It was seven: two of them repeated a
             sentence printed beside the glyph, one repeated `all at once` from
@@ -1448,12 +1505,17 @@ function Form({ capacity }: { capacity: Capacity }) {
               the very thing that makes that safe. `RunnerPicker` is the one
               control both Submit forms draw. */}
           <RunnerPicker group="runner-profile" label="runner" profiles={catalogue} chosen={chosen}
-            keys={keys} onPick={pick} />
+            keys={keys} onPick={pick} invalid={runnerMissing}
+            describedBy={runnerMissing && bad.runner_profile ? refusedSayId('runner_profile') : undefined} />
           {profile && (
             <ModelClassSelect id="task-model-class" label="agent model class" offer={offers?.[chosen]} value={modelClass}
               onPick={setModelClass} />
           )}
-          {bad.runner_profile && <p id={refusedSayId('runner_profile')} tabIndex={-1} className="warn-text" role="alert">{bad.runner_profile}</p>}
+          {/* "No runner chosen" is this form's own refusal, and a pick
+              answers it; the API's own refusal stays until the next send. */}
+          {bad.runner_profile && (chosen === '' || outcome.kind !== 'refused' || outcome.sent) && (
+            <p id={refusedSayId('runner_profile')} tabIndex={-1} className="warn-text" role="alert">{bad.runner_profile}</p>
+          )}
           {profile && <ProfileFacts name={chosen} profile={profile} pools={capacity.pools} />}
           {whyAt(1)}
         </Move>
@@ -1478,7 +1540,8 @@ function Form({ capacity }: { capacity: Capacity }) {
                   fields={mcpFields} filled={mcpFilled} onFilled={onMcpFilled}
                   lifetimes={mcpLifetimes} onLifetime={(name, seconds) => setMcpLifetimes((was) => ({ ...was, [name]: seconds }))} />
               )}
-              <InputFields profile={chosen} fields={fields} required={required} onChange={setFields} idPrefix={TASK_FIELDS} />
+              <InputFields profile={chosen} fields={fields} required={required} onChange={setFields} idPrefix={TASK_FIELDS}
+                attempted={attempted} />
               {takesExtra && (
                 <AdditionalRepositoriesPicker list={extraList} picks={extraPicks} onChange={setExtraPicks}
                   error={bad.additional_repositories} />
@@ -1511,7 +1574,12 @@ function Form({ capacity }: { capacity: Capacity }) {
             while the steps scroll (`.sbf-dock`, submit.css) and is not drawn
             from 1080, where the panel is sticky beside the steps. Hidden from
             the accessibility tree: the button's description is the same line. */}
-        {blocked && !justSent && <p className="sb-note sbf-dock" aria-hidden="true">Not ready: {why.join('; ')}.</p>}
+        {/* AND IT IS SAID ONCE (visual QA run 6, work-b-005): at 390 the strip
+            came to rest about 330px above the panel's own "Not ready" line,
+            both in view. It steps aside while that line is on screen. Where
+            nothing can say so (no IntersectionObserver, jsdom), the strip
+            stays: drawn twice beats the reason not drawn at all. */}
+        {blocked && !justSent && !whyShown && <p className="sb-note sbf-dock" aria-hidden="true">Not ready: {why.join('; ')}.</p>}
       </div>
 
       {/* ONE PLACE TO ACT, and it carries what the click will do. The old form
@@ -1619,12 +1687,14 @@ function Form({ capacity }: { capacity: Capacity }) {
           {justSent ? (
             <Button key="another" type="button" kind="primary" full onClick={another}>Submit another</Button>
           ) : (
-            <Button key="submit" type="submit" kind="primary" full disabled={outcome.kind === 'sending' || blocked || refusedAsIs || roleGate !== null}
-              aria-describedby={blocked && !justSent ? WHY_ID : undefined}>
-              {outcome.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Start one agent' : `Submit as ${submitAs}`}
-            </Button>
+            <div className={submitOff ? 'sbf-go is-off' : 'sbf-go'} onClick={pressOff}>
+              <Button key="submit" type="submit" kind="primary" full disabled={submitOff}
+                aria-describedby={blocked && !justSent ? WHY_ID : undefined}>
+                {outcome.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Start one agent' : `Submit as ${submitAs}`}
+              </Button>
+            </div>
           )}
-          {blocked && !justSent && <p id={WHY_ID} className="sb-note sbf-why">Not ready: {why.join('; ')}.</p>}
+          {blocked && !justSent && <p ref={whyRef} id={WHY_ID} className="sb-note sbf-why">Not ready: {why.join('; ')}.</p>}
           {roleGate !== null && (
             <p className="sb-note" data-role-gate="member">
               {roleGate}

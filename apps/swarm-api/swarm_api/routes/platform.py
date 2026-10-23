@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import os
 
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 
 from swarm_common.profiles import RUNNER_PROFILES, Backend, effective_size, resolve_backend
 
@@ -25,10 +25,18 @@ router = APIRouter(prefix="/v1", tags=["platform"])
 
 @router.get("/stats")
 def stats(
+    # The platform half (twelve count()s over every tenant) runs only when it
+    # is asked for, and only for an admin (#2149). The console shell polls
+    # this route every 30 s for its panel counts; with the platform half on
+    # every admin read, an open admin tab billed those counts twice a minute,
+    # against Platform counts' rule that the platform count is a priced button
+    # and never auto-refreshes (owner ruling 2026-10-07, #138). A non-admin
+    # who asks is served the tenant half, as before: no 403, no key.
+    scope: Literal["tenant", "platform"] = Query(default="tenant"),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    return ctx.submissions.stats(auth)
+    return ctx.submissions.stats(auth, platform=scope == "platform")
 
 
 @router.get("/version")

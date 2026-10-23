@@ -229,3 +229,21 @@ def test_deleting_a_target_with_only_a_bypass_removes_its_entry(client, db, seed
     assert client.delete(f"{TARGETS}/{target_id}", headers=auth_header("carol")).status_code == 204
     # MUTATION: remove the secret's entry only when a credential is set in `delete` and this fails.
     assert target_id not in store.values[CAROL_TENANT]
+
+
+# --------------------------------------------------------------------------
+# Out of every capture (lane BYPASS-UNCAPTURED, part of #2058)
+# --------------------------------------------------------------------------
+
+
+def test_the_bypass_route_is_never_captured():
+    """The PUT's body is the bypass value itself, so it is named beside the
+    credential's in `main.UNCAPTURED_ROUTES`: a body capture added to the app
+    later must skip it (BGD, 2026-10-23)."""
+    from swarm_api.main import UNCAPTURED_ROUTES
+    from swarm_api.routes.qatargets import BYPASS_ROUTE, CREDENTIAL_ROUTE
+
+    # MUTATION: drop qatargets.BYPASS_ROUTE from main.UNCAPTURED_ROUTES and this fails.
+    assert BYPASS_ROUTE in UNCAPTURED_ROUTES
+    # MUTATION: drop qatargets.CREDENTIAL_ROUTE from main.UNCAPTURED_ROUTES and this fails.
+    assert CREDENTIAL_ROUTE in UNCAPTURED_ROUTES
