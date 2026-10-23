@@ -64,6 +64,48 @@ describe('a: Runs says whether a plan approval is pending or given (6:work-a-010
     // MUTATION: print `{r.plan_approval}` in the cell again (both required runs read "required").
     expect(cells.map(visible)).toEqual(['awaiting approval', 'approved', 'not required'])
   })
+
+  it("the fixture build's own two runs read 'awaiting approval' and 'approved'", async () => {
+    vi.stubEnv('VITE_LIVE', '')
+    vi.resetModules()
+    const { RunsScreen } = await import('../Runs')
+    const { container } = render(<RunsScreen view={null} go={vi.fn()} />)
+    const cells = await waitFor(() => {
+      const c = [...container.querySelectorAll<HTMLElement>('.rn-row > td[data-label="Plan approval"]')]
+      expect(c).toHaveLength(2)
+      return c
+    }, WAIT)
+    // MUTATION: print `{r.plan_approval}` in the cell again (both fixture runs read "required").
+    expect(cells.map(visible)).toEqual(['awaiting approval', 'approved'])
+  })
+
+  it("a run that ended before its plan was approved reads 'not given'", async () => {
+    const { planApprovalWord } = await import('../Runs')
+    // MUTATION: return 'awaiting approval' for every unapproved run that is not Planning.
+    for (const state of ['FAILED', 'CANCELLED', 'NOT_READY']) {
+      expect(planApprovalWord(issueRun({ state, terminal: state !== 'NOT_READY' }) as never), state).toBe('not given')
+    }
+  })
+
+  it('at 1440 the word is drawn at the micro size and wraps inside its 86px column', async () => {
+    serve((m, url) => (m === 'GET' && url.startsWith('/v1/runs')
+      ? { status: 200, body: { runs: RUNS.slice(0, 1), next_page_token: null, tenant_id: 'eng' } }
+      : null))
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const { RunsScreen } = await import('../Runs')
+    const { container } = render(<RunsScreen view={null} go={vi.fn()} />)
+    const cell = await waitFor(() => {
+      const c = container.querySelector<HTMLElement>('.rn-row > td[data-label="Plan approval"]')
+      expect(c).not.toBeNull()
+      return c!
+    }, WAIT)
+    // 'awaiting approval' is about 107px at --t-meta, nowrap, in about 74px of
+    // content: it ran over the Workflow cell.
+    // MUTATION: drop `.rn-row > td[data-label='Plan approval']` from repositories.css.
+    expect(painted(cell, 'white-space', WIDE)).toBe('normal')
+    expect(painted(cell, 'font-size', WIDE)).toMatch(/--t-micro|^12px$/)
+  })
 })
 
 describe('b: the Repositories cards line up (6:work-a-009)', () => {

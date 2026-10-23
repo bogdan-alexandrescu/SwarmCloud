@@ -654,7 +654,7 @@ function RunList({ first, go, view = null }: { first: IssueRunSummaryPage; go: (
                         <span className="sb-note rn-cut rn-why" data-why={r.state} title={runWhyLine(r) ?? ''}>{runWhyLine(r)}</span>
                       )}
                     </td>
-                    <td data-label="Plan approval" title={`plan_approval: ${r.plan_approval}`}>{planApprovalWord(r)}</td>
+                    <td data-label="Plan approval" title={r.plan_approval === 'auto' ? 'This run\'s plan is approved automatically.' : 'This run\'s plan needs a person\'s approval.'}>{planApprovalWord(r)}</td>
                     {r.workflow_id === null ? (
                       <td data-label="Workflow"><i className="ctl-em">{noWorkflowWord(r)}</i></td>
                     ) : (
