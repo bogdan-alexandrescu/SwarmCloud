@@ -171,6 +171,13 @@ _GLOB = re.compile(r"/[A-Za-z0-9._~%!$&()*+,;=:@/?\[\]-]{0,255}")
 _HOST = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)+")
 _BASE_PATH = re.compile(r"(?:/[A-Za-z0-9._~%-]*)*")
 _LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._:/-]{0,49}")
+#: A label rule's route prefix: origin-relative like a finding's `path`, and
+#: with no query, so a scheme, a host (`//h/...`) or `?` never reads as a route.
+_PREFIX = re.compile(r"/(?!/)[A-Za-z0-9._~%!$&()*+,;=:@/-]{0,255}")
+#: `file.label_rules` (#2062): at most this many rules, each at most
+#: `MAX_LABELS` labels and `MAX_RULE_PATHS` prefixes, as `file.labels` is held
+#: to `MAX_LABELS`: GitHub applies what it is given, so the bound is ours.
+MAX_LABELS, MAX_LABEL_RULES, MAX_RULE_PATHS = 10, 20, 10
 _EVIDENCE = re.compile(r"(?!/)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}\.(?:png|gif|jpe?g|webp)")
 #: Free text a target supplies and a prompt quotes: one line, no backtick.
 _FORBIDDEN_TEXT = re.compile(r"[\x00-\x1f\x7f`]")
@@ -225,6 +232,14 @@ def base_url(target: Mapping[str, Any]) -> str:
         raise _invalid("base_url's port is not a port") from None
     origin = f"https://{host.lower()}" + (f":{port}" if port else "")
     return (origin + parts.path).rstrip("/")
+
+
+def screen_url(base: str, path: str) -> str:
+    """The URL a base-relative `path` opens under `base` (as `base_url`
+    returns it, with no trailing slash): `/` is the base itself, with its
+    slash, and `/settings` is `<base>/settings`. The one join of a path to the
+    base, so a sub-path base never opens `//` or its path twice (§1)."""
+    return f"{base}/{path[1:]}"
 
 
 def _origin(url: str) -> str:
@@ -328,6 +343,7 @@ def _flows(target: Mapping[str, Any]) -> list[dict[str, Any]]:
         raise _invalid(f"flows must be a list of at most {MAX_FLOWS}")
     production = _environment(target) == "production"
     excluded, _ = _exclusions(target)
+    base_path = urlsplit(base_url(target)).path if raw else ""
     flows: list[dict[str, Any]] = []
     for item in raw:
         if not isinstance(item, Mapping):
@@ -344,7 +360,10 @@ def _flows(target: Mapping[str, Any]) -> list[dict[str, Any]]:
             raise QaSpecError("qa_mutating_flow_on_production",
                               f"flow {fid} is mutating and the target's environment is production")
         start = _path(item.get("start_path", "/"), f"flow {fid}'s start_path")
-        if _excluded(start, excluded):
+        # `start_path` is relative to the base and exclusions to the origin,
+        # so both readings are checked: `/logout` under `/app` is `/app/logout`.
+        opened = screen_url(base_path, start)
+        if _excluded(start, excluded) or _excluded(opened, excluded):
             raise QaSpecError("qa_screen_excluded", f"flow {fid} starts on an excluded path")
         flows.append({"id": fid, "goal": _text(item.get("goal"), f"flow {fid}'s goal", limit=500),
                       "start_path": start, "mutating": mutating})
@@ -368,7 +387,7 @@ def flows_browser_tool(target: Mapping[str, Any], override: Any = None) -> str:
 def _file_settings(target: Mapping[str, Any]) -> dict[str, Any]:
     raw = target.get("file") or {}
     if not isinstance(raw, Mapping):
-        raise _invalid("file must be {min_severity, max_issues, labels, evidence}")
+        raise _invalid("file must be {min_severity, max_issues, labels, label_rules, evidence}")
     out = {**DEFAULT_FILE, **raw}
     if out["min_severity"] not in SEVERITIES:
         raise _invalid(f"file.min_severity must be one of {', '.join(SEVERITIES)}")
@@ -376,14 +395,56 @@ def _file_settings(target: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= MAX_ISSUES:
         raise _invalid(f"file.max_issues must be 1..{MAX_ISSUES}")
     labels = out["labels"]
-    if not isinstance(labels, (list, tuple)) or len(labels) > 10 or not all(
+    if not isinstance(labels, (list, tuple)) or len(labels) > MAX_LABELS or not all(
         isinstance(x, str) and _LABEL.fullmatch(x) for x in labels
     ):
-        raise _invalid("file.labels must be at most 10 label names")
+        raise _invalid(f"file.labels must be at most {MAX_LABELS} label names")
     if out["evidence"] not in EVIDENCE_MODES:
         raise _invalid(f"file.evidence must be one of {', '.join(EVIDENCE_MODES)}")
     out["labels"] = list(labels)
+    out["label_rules"] = _label_rules(out.get("label_rules"))
     return out
+
+
+def _label_rules(raw: Any) -> list[dict[str, list[str]]]:
+    """`file.label_rules` (#2062): `[{paths, labels}]`, each refusal naming
+    the field it is about and quoting no value."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > MAX_LABEL_RULES:
+        raise _invalid(f"file.label_rules must be a list of at most {MAX_LABEL_RULES} rules {{paths, labels}}")
+    rules: list[dict[str, list[str]]] = []
+    for index, rule in enumerate(raw):
+        what = f"file.label_rules[{index}]"
+        if not isinstance(rule, Mapping) or set(rule) != {"paths", "labels"}:
+            raise _invalid(f"{what} must be {{paths, labels}} and nothing else")
+        paths, labels = rule["paths"], rule["labels"]
+        if not isinstance(paths, list) or not 1 <= len(paths) <= MAX_RULE_PATHS or not all(
+            isinstance(p, str) and _PREFIX.fullmatch(p) for p in paths
+        ):
+            raise _invalid(f"{what}.paths must be 1..{MAX_RULE_PATHS} origin-relative route prefixes, each "
+                           f"starting with one / and with no scheme, host or query")
+        if not isinstance(labels, list) or not 1 <= len(labels) <= MAX_LABELS or not all(
+            isinstance(x, str) and _LABEL.fullmatch(x) for x in labels
+        ):
+            raise _invalid(f"{what}.labels must be 1..{MAX_LABELS} label names")
+        rules.append({"paths": list(paths), "labels": list(labels)})
+    return rules
+
+
+def finding_labels(settings: Mapping[str, Any], path: str) -> tuple[list[str], list[int]]:
+    """The labels a finding on `path` (its origin-relative route) is filed
+    with, `file.labels` first and each matching rule's after, each once, and
+    the indexes of the rules that matched. A rule matches when the route,
+    without its query, starts with one of its prefixes (#2062)."""
+    route = path.split("?", 1)[0].split("#", 1)[0]
+    labels = list(settings["labels"])
+    matched: list[int] = []
+    for index, rule in enumerate(settings.get("label_rules") or ()):
+        if any(route.startswith(prefix) for prefix in rule["paths"]):
+            matched.append(index)
+            labels.extend(x for x in rule["labels"] if x not in labels)
+    return labels, matched
 
 
 def _design_docs(target: Mapping[str, Any]) -> list[str]:
@@ -688,7 +749,7 @@ def _flow_prompt(target: Mapping[str, Any], base: str, flow: Mapping[str, Any], 
             f"flow-{fid}-{width}`, reach the goal, then `swarm-handoff record stop`"
         )
     return (
-        f"Goal-driven flow test of {target['name']}. Open {base}{flow['start_path']} in the live "
+        f"Goal-driven flow test of {target['name']}. Open {screen_url(base, flow['start_path'])} in the live "
         f"browser.{_sign_in_note(own_login, start_clicks(target))} {_FLOW_TOOL_SENTENCE[tool]}, reach this goal as a person "
         f"would, without typing addresses: {flow['goal']}. Do it once per width, recorded: "
         f"{'; '.join(runs)}. For each run write in flow-{fid}.json whether the goal was reached, the steps "
@@ -765,11 +826,32 @@ def _file_prompt(target: Mapping[str, Any], settings: Mapping[str, Any]) -> str:
         f"{{existing: N}} means it is filed already: comment on N with this run and the new evidence. Use "
         f"the repository's bug form when it has one, else `form: \"plain\"` with the sections Summary, "
         f"Where (path, width, theme), Actual, Expected, Steps to reproduce and Evidence, ending \"Found by "
-        f"SwarmCloud visual QA\". Labels: {labels} and severity:<s>; the broker applies only labels that "
-        f"exist. Before any write, remove from the text every e-mail address, phone number and anything "
+        f"SwarmCloud visual QA\". Labels: {labels} and severity:<s>{_label_rules_sentence(settings)}; the "
+        f"broker applies only labels that exist. Before any write, remove from the text every e-mail address, phone number and anything "
         f"credential-shaped the page showed: quote no more than the words that name the defect. {evidence} "
-        f"Write filed.json listing each finding id with the issue number filed or commented on. {NO_CHANGE}"
+        f"Write filed.json listing each finding id with the issue number filed or commented on"
+        f"{_label_rules_report(settings)}. {NO_CHANGE}"
     )
+
+
+def _label_rules_sentence(settings: Mapping[str, Any]) -> str:
+    rules = settings["label_rules"]
+    if not rules:
+        return ""
+    stated = "; ".join(
+        f"rule {n}: a finding whose `path` starts with {' or '.join(json.dumps(p) for p in rule['paths'])} "
+        f"also gets {json.dumps(rule['labels'])}"
+        for n, rule in enumerate(rules, 1)
+    )
+    return (f". Then the label rules, matched against the finding's `path` without its query, every rule that "
+            f"matches adding its labels and a finding no rule matches getting none of them: {stated}")
+
+
+def _label_rules_report(settings: Mapping[str, Any]) -> str:
+    if not settings["label_rules"]:
+        return ""
+    return (", and for each the `label_rules` that labelled it, by rule number (an empty list when none "
+            "did); end your answer with one line per rule naming the issues it labelled")
 
 
 # --------------------------------------------------------------------------
