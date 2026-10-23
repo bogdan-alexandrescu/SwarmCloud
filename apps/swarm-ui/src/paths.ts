@@ -72,6 +72,42 @@ export function keyLinkToken(pathname: string, search: string): string | null {
 }
 
 /**
+ * SETTINGS › WORKSPACE › SECRETS AND ITS ONE-TIME LINK (lane SEC-UI-LIST,
+ * part of #1347; docs/design/workspace-secrets.md §5). The page is a pane of
+ * Settings › Workspace. `POST /v1/workspace/secrets/links` answers
+ * `/settings/workspace/secrets?action=add|rotate[&name=<secret>]&t=<token>`
+ * (swarm_api `WorkspaceSecrets.mint_link`), and `/sc` hands that to the person
+ * so the value never passes through Claude. ITS TOKEN IS NEVER PART OF THE
+ * ADDRESS, for the key link's reason: only `action` and, on a rotate, `name`
+ * enter the route (`secretsLinkView`), in both directions, and the page reads
+ * the token off the bar once (WorkspaceSecrets.tsx).
+ */
+export const SECRETS_ADDRESS = 'settings/workspace/secrets'
+export const SECRETS_LINK_PATH = '/settings/workspace/secrets'
+
+/** The link's token, read off a location: only on SECRETS_LINK_PATH, as `keyLinkToken`. */
+export function secretsLinkToken(pathname: string, search: string): string | null {
+  if (pathname.replace(/\/+$/, '') !== SECRETS_LINK_PATH) return null
+  const t = new URLSearchParams(search).get('t')
+  return t === null || t === '' ? null : t
+}
+
+/**
+ * The part of a secrets-page query the route keeps: a known `action`, and a
+ * `name` only on a rotate (an add link names no secret). Never `t`, and
+ * nothing else: an unknown key is dropped, not carried. '' for none.
+ */
+export function secretsLinkView(query: string): string {
+  const given = new URLSearchParams(query)
+  const action = given.get('action')
+  if (action !== 'add' && action !== 'rotate') return ''
+  const kept = new URLSearchParams({ action })
+  const name = given.get('name')
+  if (action === 'rotate' && name !== null && name !== '') kept.set('name', name)
+  return kept.toString()
+}
+
+/**
  * THE QA TARGET CREDENTIAL FORM'S ONE-TIME LINK (lane VQ6-ROUTE, part of
  * #1933; docs/design/visual-qa-any-app.md §5): the plugin's
  * `swarm_qa_target_credential_link` hands a workspace admin
@@ -144,6 +180,10 @@ export const FIXED: Readonly<Record<string, string>> = {
   // (Code intelligence). Beside API keys at the panel's foot, for the same
   // reason: set once, not worked in.
   'settings/workspace': '/settings/workspace',
+  // SEC-UI-LIST: Settings › Workspace › Secrets, a pane of Workspace (the
+  // workspace secrets store, docs/design/workspace-secrets.md §5). Its
+  // one-time link's token never enters the address: SECRETS_LINK_PATH, above.
+  [SECRETS_ADDRESS]: SECRETS_LINK_PATH,
   // MCP-UI: Settings › MCP servers, the workspace's registered MCP servers
   // (docs/design/registered-mcp-servers.md §4.11). A sibling of Workspace, for
   // the same reason: registered once, then named by tasks.
@@ -370,6 +410,12 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     const scope = keyLinkScope(query)
     return scope === null ? KEY_LINK_PATH : `${KEY_LINK_PATH}?scope=${scope}`
   }
+  // The secrets page keeps its action and name and nothing else, so an
+  // address that carries a `t` by hand still writes no token into the bar.
+  if (bare === SECRETS_ADDRESS) {
+    const view = secretsLinkView(query)
+    return view === '' ? SECRETS_LINK_PATH : `${SECRETS_LINK_PATH}?${view}`
+  }
   const fixed = FIXED[bare]
   if (fixed !== undefined) return query === '' ? fixed : `${fixed}?${query}`
   return '/overview'
@@ -500,6 +546,12 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   if (path === KEY_LINK_PATH) {
     const scope = keyLinkScope(query)
     return plain(scope === null ? KEY_LINK_ADDRESS : `${KEY_LINK_ADDRESS}?scope=${scope}`)
+  }
+
+  // THE SECRETS LINK'S TOKEN (`t`) IS DROPPED HERE, for the key link's reason.
+  if (path === SECRETS_LINK_PATH) {
+    const view = secretsLinkView(query)
+    return plain(view === '' ? SECRETS_ADDRESS : `${SECRETS_ADDRESS}?${view}`)
   }
 
   // THE QA CREDENTIAL LINK'S TOKEN (`t`) AND TARGET ARE DROPPED HERE: the route
