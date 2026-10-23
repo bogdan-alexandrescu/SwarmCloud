@@ -338,15 +338,22 @@ def test_the_launch_reads_a_spec_whose_steps_name_classes(monkeypatch):
 
     seen: list[Any] = []
 
-    def for_spec(document: Any, client: Any = None) -> dict[str, Any]:
+    submitted: list[Any] = []
+
+    def for_spec(document: Any, client: Any = None, *, embedded: Any = None) -> dict[str, Any]:
         workflows.read_spec(document)  # what the real one calls first
         seen.append(document)
+        submitted.append(embedded)
         return {"steps": len(document["steps"])}
 
     monkeypatch.setattr(launch, "for_spec", for_spec)
     spec = {"steps": [{"step_id": "a", "prompt": "a", "model_class": "haiku"}]}
     server._call(RecordingApi(), "swarm_workflow_launch", {"spec": spec})
     assert seen and "model_class" not in seen[0]["steps"][0]
+    # SC-LAUNCH-SPEC: the spec the launch embeds and writes to its handle is the
+    # one submitted, so it keeps its classes.
+    # MUTATION: a launch that embeds the class-less copy fails here.
+    assert submitted[0]["steps"][0]["model_class"] == "haiku"
     assert spec["steps"][0]["model_class"] == "haiku", "the caller's spec is not edited"
     bad = {"steps": [{"step_id": "a", "prompt": "a", "runner_profile": "mock",
                       "model_class": "haiku"}]}
