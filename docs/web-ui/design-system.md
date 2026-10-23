@@ -2747,11 +2747,13 @@ rather than inventing a metric that would have moved.
    > amber band, and no over segment because the percentage is clamped. The
    > track is a fixed 40px inline beside the figure (`.acct-window >
    > .ctl-util-track`), and at 560px and below the phone block hides it as it
-   > hides every track but a pool tile's; there the figure, the `~` and the em
-   > dash carry every state. Unmeasured cells are unchanged: the em dash, `not
-   > measured`, no track. **What remains of the `cs status` parity is the
-   > figure, the `~` and the window labels.** One disagreement is left open for
-   > its own box: Overview colours the same reading warn above 75% and bad
+   > hides every track but a pool tile's and the Overview Pools list's (the
+   > latter, `.ov-pools .ov-pl > .ctl-util-track`, drawn since BGD's
+   > 2026-10-23 reversal of Q3 of 2026-10-11, PR 2137); there the figure, the
+   > `~` and the em dash carry every state. Unmeasured cells are unchanged:
+   > the em dash, `not measured`, no track. **What remains of the `cs status`
+   > parity is the figure, the `~` and the window labels.** One disagreement
+   > is left open for its own box: Overview colours the same reading warn above 75% and bad
    > above 90%, while Accounts draws bad only at 100%.
 
 3. **The metric tile lost its box on Pools too, and gained a line** (§6.2

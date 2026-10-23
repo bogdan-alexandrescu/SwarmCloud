@@ -2430,11 +2430,13 @@ class Worker:
 
         The hand-off's park exactly (`handoff_mod.park_human_required`, as
         `_park_for_answers`): one fenced transaction, no lease, the attempt
-        refunded within `max_human_resumes`, and only a person's
-        `human-ready` returns it to READY -- whereupon the merge reads every
-        answer again. An answer alone does not wake it, nor does a review
-        re-running, and the scheduler's human-wait expiry applies to it (it
-        spares only `question_wait` / `release_wait` parks): see `merge`. The questions ride in the park's `blocked_by` entry
+        refunded within `max_human_resumes`. The answer that clears every
+        question the hold names returns it to READY (swarm-api's answer
+        route, QUESTION-WAKE, PR 2151), as a person's `human-ready` does --
+        whereupon the merge reads every answer again. A review re-running
+        does not wake it, and the scheduler's human-wait expiry spares it as
+        it spares `question_wait` / `release_wait` parks: see `merge`. The
+        questions ride in the park's `blocked_by` entry
         under `owner_questions`, NOT `question_wait`: they are not this
         task's own, and swarm-api's answer route reads `question_wait` as
         questions asked by the parked task. No checkpoint: a worker action

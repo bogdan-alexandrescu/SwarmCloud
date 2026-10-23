@@ -229,15 +229,17 @@ was opened and read.
    required by anything in this section; in particular the admin `/stats` tenant-scoped
    count (`state == X AND tenant_id == Y`) is served by the `(tenant_id, state, …)` prefix
    of `tasks-tenant-state-created` (`indexes.tf:85-93`).
-8. **An admin's `GET /v1/stats` is twenty-four aggregation queries.**
+8. **An admin's `GET /v1/stats?scope=platform` is twenty-four aggregation queries.**
    `count_tasks_by_state` (`store.py:524-533`) issues one COUNT per `TaskState` — twelve
-   (`states.py:18-31`) — and `service.stats()` calls it twice when `ctx.is_admin`: once
+   (`states.py:18-31`) — and `service.stats()` calls it twice when `ctx.is_admin` and the caller asked with
+   `?scope=platform` (PR 2152; a plain read is twelve for everyone): once
    tenant-scoped (`service.py:276`) and once platform-wide (`service.py:287`). This is the
    one panel that must not poll fast.
 9. **The runbooks name an endpoint that does not exist.** `docs/troubleshooting.md:146` and
    `docs/scaling.md:151` both say `./scripts/api.sh GET /stats | jq '.resource_usage'`.
    `service.stats()` (`service.py:271-288`) returns `tenant_id`, `tasks_by_state`,
-   `dispatch_paused`, `limits`, `generated_at`, and `platform_tasks_by_state` for admins.
+   `dispatch_paused`, `limits`, `generated_at`, and `platform_tasks_by_state` for an admin's
+   `?scope=platform` read.
    There is no `resource_usage` field and never was. This is in the OOM section, which is
    where someone lands at 3am. Fix is a two-line doc correction in Track D's files —
    reported, not made.
@@ -403,7 +405,7 @@ nothing queried is the same lie in the other direction. Those chips arrive with 
 | binding constraint | computed client-side from those fields, per the three rules above |
 | oversubscribed flag | computed client-side: `active > effective_limit`, both from `pool_to_api` |
 | holding capacity | `active` of the pool named `global` |
-| agent counters | `GET /v1/stats` → `routes/platform.py:13-19` → `service.stats()` (`service.py:271-288`) → `platform_tasks_by_state` (admin) or `tasks_by_state` |
+| agent counters | `GET /v1/stats` → `routes/platform.py:13-19` → `service.stats()` (`service.py:271-288`) → `platform_tasks_by_state` (admin, `?scope=platform`) or `tasks_by_state` |
 | database name, project | `GET /readyz` (`routes/health.py:42-53`) — unauthenticated, returns `database` and `project` |
 | environment (`dev`/`prod`), region | **nowhere.** See below |
 | source strip | the `status`/`error`/`age_seconds` of each envelope (§0.2) |
@@ -443,7 +445,7 @@ And, by design rather than by gap:
 
 * `GET /v1/admin/pools`: one collection query, ~19 documents in dev. Trivial.
 * `GET /v1/admin/dispatch`: one document read.
-* `GET /v1/stats` as admin: **24 aggregation queries** (trap 8). Aggregations bill one read
+* `GET /v1/stats?scope=platform` as admin: **24 aggregation queries** (trap 8). Aggregations bill one read
   per 1000 index entries scanned, minimum one.
 * **Budget: pools and dispatch at 10s; the agent counters at 60s, on their own timer.** Do
   not put them on one poll. At 10s a single viewer would issue 8,640 admin `/stats` calls a
