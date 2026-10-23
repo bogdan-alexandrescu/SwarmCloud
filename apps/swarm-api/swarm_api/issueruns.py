@@ -194,6 +194,7 @@ from pydantic import (
     model_validator,
 )
 
+from swarm_common import specsign
 from swarm_common.admission import _snapshot
 from swarm_common.models import utcnow
 
@@ -203,6 +204,7 @@ from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_class
 
 from . import sessiontag
+from .specsigning import SpecSigningUnavailable
 from .validation import (
     INPUT_LAYOUT_BY_PARENT,
     INPUT_LAYOUT_METADATA_KEY,
@@ -2476,6 +2478,145 @@ def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
 
 
 # --------------------------------------------------------------------------
+# The owner signature (#1569, lane RUN-OWNER-SIG)
+# --------------------------------------------------------------------------
+#
+# A tenant's worker can update any Firestore document whose id it can name,
+# and a run's planner knows its run id (its task's metadata and prompt). So
+# every field of `issue_runs/<id>` that decides WHO a submission is made as,
+# WHETHER it is made without a person, or WHERE it is made is signed when the
+# run is created, with the step-spec signer -- Cloud KMS `AsymmetricSign` on a
+# key only swarm-api's account holds `signer` on; a worker holds the public
+# half (SPEC_VERIFY_KEYS) and can verify, never sign -- and verified before
+# anything is submitted for the run or any forge credential resolved for it
+# (`routes.runs.verify_run_owner`). The run id is signed, so a signature
+# copied from another run does not verify; the purpose is inside the signed
+# bytes, so no step-spec or workspace-approval signature can read as one.
+#
+# Owner decision 2026-10-23 (~17:27Z, on #1569): sign now, for every tenant,
+# before #1457's worker Firestore-access flip reaches them.
+
+#: Domain separation: inside the signed bytes, never a step spec's
+#: (`specsign.SPEC_PURPOSE`) or an approval's (`workspaces.APPROVAL_PURPOSE`).
+#: A change to the fields or their encoding is a new purpose, never an edit.
+OWNER_PURPOSE = "swarm.issue-run-owner/v1"
+#: The run document's field the signature, and the values it covers, live in.
+OWNER_SIGNATURE = "owner_signature"
+#: What the signature covers, in `owner_fields`' order:
+#:   run_id, tenant_id   -- which run, in which tenant: no copy, no move;
+#:   created_by, on_behalf_of -- who every later submission is made AS
+#:                          (`run_owner_auth`), and so whose forge slot;
+#:   plan_approval      -- whether the tick approves the plan with no person;
+#:   auto_merge, merge_approval -- whether the merge waits for a person;
+#:   fix_rounds         -- how many CI fix rounds submit as the owner;
+#:   issue              -- the repository every submission works in;
+#:   schedule_id        -- the schedule whose gate names who may approve.
+OWNER_FIELDS = ("run_id", "tenant_id", "created_by", "on_behalf_of", "plan_approval",
+                "auto_merge", "merge_approval", "fix_rounds", "issue", "schedule_id")
+
+
+def owner_fields(run: "IssueRun") -> dict[str, Any]:
+    """The values `OWNER_FIELDS` names, as `run` holds them now."""
+    return {
+        "run_id": run.id,
+        "tenant_id": run.tenant_id,
+        "created_by": run.created_by,
+        "on_behalf_of": run.on_behalf_of,
+        "plan_approval": run.plan_approval,
+        "auto_merge": run.auto_merge,
+        "merge_approval": run.merge_approval,
+        "fix_rounds": run.fix_rounds,
+        "issue": {"owner": run.issue.owner, "repo": run.issue.repo,
+                  "number": run.issue.number},
+        "schedule_id": (run.schedule or {}).get("schedule_id"),
+    }
+
+
+def canonical_owner(fields: Mapping[str, Any]) -> bytes:
+    """JCS of {"purpose": OWNER_PURPOSE, <OWNER_FIELDS>}: the bytes signed."""
+    return specsign.jcs({"purpose": OWNER_PURPOSE,
+                         **{key: fields.get(key) for key in OWNER_FIELDS}})
+
+
+def sign_owner(signer: Any, run: "IssueRun") -> dict[str, Any] | None:
+    """The run's `owner_signature`: the signed values, the key version, the signature.
+
+    None when no signer is configured, which only local development and tests
+    allow (`specsigning.signer_from_settings` refuses to start a deployed
+    swarm-api without one); there nothing is verified either
+    (`routes.runs.verify_run_owner`), exactly as step specs go unsigned
+    there. A KMS failure is `SpecSigningUnavailable` (503), raised before the
+    planner is submitted, so nothing is created."""
+    fields = owner_fields(run)
+    if signer is None:
+        log.warning("no SPEC_SIGNING_KEY_VERSION: issue run %s created with UNSIGNED owner "
+                    "fields", run.id)
+        return None
+    try:
+        signed = signer.sign(specsign.spec_digest(canonical_owner(fields)))
+    except SpecSigningUnavailable:
+        raise
+    except Exception as exc:
+        raise SpecSigningUnavailable(
+            "the issue run's owner could not be signed (Cloud KMS); nothing was created",
+        ) from exc
+    return {
+        "fields": fields,
+        "key_version": signed.key_version,
+        "signature": base64.b64encode(signed.signature).decode("ascii"),
+    }
+
+
+def _narrowed(field_name: str, signed: Any, current: Any) -> bool:
+    """`current` differs from `signed` only by being STRICTER, which only
+    swarm-api writes: Jev's duplicate hold turns an `auto` run `required`
+    (`routes.runs._from_planner`). Never the other way."""
+    return field_name == "plan_approval" and signed == "auto" and current == "required"
+
+
+def owner_refusal(run: "IssueRun", settings: Any) -> str | None:
+    """The first field of `run` that does not verify, or None when every one does.
+
+    The answer is a FIELD NAME -- `owner_signature` for a signature that is
+    missing, by an untrusted key version, or does not verify over its signed
+    values, else the first of `OWNER_FIELDS` whose value on the run is not the
+    signed one -- never a value, so the caller can log it. A missing
+    signature is refused like a forged one: a run created before this change
+    is never trusted for being old (the PR for #1569 says why: re-signing
+    what a worker may already have rewritten would launder the rewrite).
+
+    Verified over SPEC_VERIFY_KEYS, `verdictpublish`'s reading of them, as
+    `workspaces.approval_refusal` is: swarm-api holds `signer` on the key,
+    never `publicKeyViewer`. Unset or malformed keys verify nothing."""
+    from .verdictpublish import _VERSION_SUFFIX, _signature_matches, _verify_keys
+
+    stored = run.owner_signature
+    if not isinstance(stored, Mapping) or not isinstance(stored.get("fields"), Mapping):
+        return OWNER_SIGNATURE
+    signing = str(getattr(settings, "spec_signing_key_version", "") or "")
+    matched = _VERSION_SUFFIX.search(signing)
+    crypto_key = signing[:matched.start()] if matched and matched.end() == len(signing) else ""
+    keys = _verify_keys(settings)
+    version = stored.get("key_version")
+    if (not crypto_key or not isinstance(version, str) or not version.startswith(crypto_key)
+            or not _VERSION_SUFFIX.fullmatch(version[len(crypto_key):]) or version not in keys):
+        return OWNER_SIGNATURE
+    signed = stored["fields"]
+    try:
+        canonical = canonical_owner(signed)
+    except (specsign.SpecNotCanonical, UnicodeEncodeError):
+        return OWNER_SIGNATURE
+    if not _signature_matches(keys[version], stored.get("signature"),
+                              specsign.spec_digest(canonical)):
+        return OWNER_SIGNATURE
+    current = owner_fields(run)
+    for key in OWNER_FIELDS:
+        if signed.get(key) != current[key] and not _narrowed(key, signed.get(key), current[key]):
+            return key
+    return None
+
+
+# --------------------------------------------------------------------------
 # The document, and its own serialisation
 # --------------------------------------------------------------------------
 
@@ -2660,6 +2801,11 @@ class IssueRun:
     #: `sessiontag`), stored as `metadata.claude_session` beside the
     #: schedule's mark, and copied onto every task and workflow it starts.
     claude_session: str | None = None
+    #: `sign_owner`'s map, written with the document by `routes.runs.start_run`
+    #: and by nothing else: what `owner_refusal` verifies before every
+    #: submission. None on a run created before #1569 -- which is refused --
+    #: and where no signer is configured. Never served (`to_api`).
+    owner_signature: dict[str, Any] | None = None
 
     def to_firestore(self) -> dict[str, Any]:
         return {
@@ -2724,6 +2870,9 @@ class IssueRun:
             "approval_hold": dict(self.approval_hold) if self.approval_hold is not None else None,
             "merge_approval": self.merge_approval,
             "merge_approved": dict(self.merge_approved) if self.merge_approved is not None else None,
+            OWNER_SIGNATURE: (
+                dict(self.owner_signature) if self.owner_signature is not None else None
+            ),
             "metadata": {
                 **({"schedule": dict(self.schedule)} if self.schedule is not None else {}),
                 **sessiontag.tag(self.claude_session),
@@ -2819,6 +2968,10 @@ class IssueRun:
             ),
             schedule=_schedule_mark(data.get("metadata")),
             claude_session=sessiontag.of(data.get("metadata")),
+            owner_signature=(
+                dict(data[OWNER_SIGNATURE]) if isinstance(data.get(OWNER_SIGNATURE), Mapping)
+                else None
+            ),
         )
 
     def to_api(self) -> dict[str, Any]:

@@ -692,6 +692,85 @@ describe('QA targets: a platform admin approves a pending host (VQ6-APPROVE, §1
     expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ host: 'blog.example.test', extra_origin: origin })
   })
 
+  it('the IdP token path is sent with the extra origin when typed, and only then (QA-IDP-POST, #2067)', async () => {
+    const origin = 'https://login.example.test'
+    const tokenPath = '/realms/apps/protocol/openid-connect/token'
+    const calls = live('member', {
+      platformAdmin: true,
+      pending: { sign_in: { kind: 'own_login', login_path: '/login', signed_in_selector: '#me', extra_origin: origin } },
+    })
+    await mountPage()
+    await waitFor(() => expect(button(card(PENDING), 'Approve host')).not.toBeNull(), WAIT)
+    fireEvent.click(button(card(PENDING), 'Approve host')!)
+    const form = approveForm(card(PENDING))
+    // MUTATION: drop the field from ApproveHostForm and there is nothing to type it into.
+    typeInto(form, 'idp_token_path', ` ${tokenPath} `)
+    typeInto(form, 'confirm_host', 'blog.example.test')
+    typeInto(form, 'confirm_extra_origin', origin)
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST').length).toBe(1), WAIT)
+    // MUTATION: leave `idp_token_path` out of approveQaTargetHost's body and the API never stores it.
+    expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ host: 'blog.example.test', extra_origin: origin, idp_token_path: tokenPath })
+  })
+
+  it('a target with no extra origin draws no token path field', async () => {
+    live('member', { platformAdmin: true })
+    await mountPage()
+    await waitFor(() => expect(button(card(PENDING), 'Approve host')).not.toBeNull(), WAIT)
+    fireEvent.click(button(card(PENDING), 'Approve host')!)
+    // MUTATION: draw the field whatever the sign-in and an admin is offered a path the API refuses.
+    expect(approveForm(card(PENDING)).querySelector('input[name="idp_token_path"]')).toBeNull()
+  })
+
+  it('an approved target with an extra origin can be approved again, its token path filled in (QA-IDP-POST)', async () => {
+    const origin = 'https://login.example.test'
+    const tokenPath = '/realms/apps/protocol/openid-connect/token'
+    const calls = live('member', {
+      platformAdmin: true,
+      login: { kind: 'own_login', login_path: '/login', signed_in_selector: '#me', extra_origin: origin },
+    })
+    await mountPage()
+    // The approved target with no extra origin offers nothing (the case above holds it).
+    expect(button(card(APPROVED), 'Approve again')).toBeNull()
+    // MUTATION: draw the approve form for pending targets alone and an approved target's token path can never be set.
+    await waitFor(() => expect(button(card(LOGIN), 'Approve again')).not.toBeNull(), WAIT)
+    fireEvent.click(button(card(LOGIN), 'Approve again')!)
+    const form = approveForm(card(LOGIN))
+    typeInto(form, 'idp_token_path', tokenPath)
+    typeInto(form, 'confirm_host', 'portal.example.test')
+    typeInto(form, 'confirm_extra_origin', origin)
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST').length).toBe(1), WAIT)
+    const sent = calls.find((c) => c.method === 'POST')!
+    expect(sent.url).toBe(`/v1/qa-targets/${LOGIN}:approve-host`)
+    expect(sent.body).toEqual({ host: 'portal.example.test', extra_origin: origin, idp_token_path: tokenPath })
+  })
+
+  it('the stored token path is filled in, and emptying it sends none', async () => {
+    const origin = 'https://login.example.test'
+    const tokenPath = '/realms/apps/protocol/openid-connect/token'
+    const calls = live('member', {
+      platformAdmin: true,
+      pending: {
+        sign_in: { kind: 'own_login', login_path: '/login', signed_in_selector: '#me', extra_origin: origin },
+        approved_idp_token_path: tokenPath,
+      },
+    })
+    await mountPage()
+    await waitFor(() => expect(button(card(PENDING), 'Approve host')).not.toBeNull(), WAIT)
+    fireEvent.click(button(card(PENDING), 'Approve host')!)
+    const form = approveForm(card(PENDING))
+    // MUTATION: start the field empty and re-approving silently takes the token path away.
+    expect(form.querySelector<HTMLInputElement>('input[name="idp_token_path"]')!.value).toBe(tokenPath)
+    typeInto(form, 'idp_token_path', '')
+    typeInto(form, 'confirm_host', 'blog.example.test')
+    typeInto(form, 'confirm_extra_origin', origin)
+    fireEvent.submit(form)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST').length).toBe(1), WAIT)
+    // MUTATION: send `idp_token_path: ''` and the API refuses the approval.
+    expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ host: 'blog.example.test', extra_origin: origin })
+  })
+
   it.each([
     [403, 'forbidden', 'platform admin group membership is needed to approve a host'],
     [409, 'conflict', "the host named is not this QA target's host now; read it again"],

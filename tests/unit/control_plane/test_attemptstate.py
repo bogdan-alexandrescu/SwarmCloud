@@ -769,6 +769,48 @@ def test_upstream_refuses_a_task_the_gate_does_not_name(client, db):
     assert _refused(worker.get(client, "upstream", "upstream_task_id=task_other_review"))
 
 
+def _ancestor(db, task_id: str, *, depends_on: tuple[str, ...] = (), tenant: str = "eng",
+              workflow: str = WORKFLOW) -> None:
+    doc = seed_task(db, task_id=task_id, tenant_id=tenant, state="SUCCEEDED",
+                    depends_on=depends_on)
+    doc["workflow_id"] = workflow
+
+
+def test_upstream_serves_a_workflow_ancestor_along_depends_on(client, db):
+    """A re-review (or the merge) reads the implement step's questions and answers (#2070)."""
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_fix"])
+    _ancestor(db, "task_fix", depends_on=("task_review",))
+    _ancestor(db, "task_review", depends_on=("task_impl",))
+    _ancestor(db, "task_impl")
+    response = worker.get(client, "upstream", "upstream_task_id=task_impl")
+    # MUTATION: serve only the declared depends_on and this is the 403.
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["id"] == "task_impl"
+
+
+def test_upstream_does_not_follow_depends_on_out_of_this_workflow_or_tenant(client, db):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_fix"])
+    _ancestor(db, "task_fix", depends_on=("task_theirs", "task_elsewhere"))
+    _ancestor(db, "task_theirs", depends_on=("task_beyond",), tenant="research")
+    _ancestor(db, "task_elsewhere", depends_on=("task_beyond",), workflow="wf_other")
+    _ancestor(db, "task_beyond")
+    # MUTATION: walk through another tenant's or workflow's task and these are 200s.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_theirs"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_elsewhere"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_beyond"))
+
+
+def test_upstream_refuses_a_step_of_this_workflow_that_is_no_ancestor(client, db):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_fix"])
+    _ancestor(db, "task_fix")
+    _ancestor(db, "task_sibling")
+    # MUTATION: serve any step of the workflow and this is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_sibling"))
+
+
 # --------------------------------------------------------------------------
 # merge slot: a wake only for this tenant's listed waiter
 # --------------------------------------------------------------------------

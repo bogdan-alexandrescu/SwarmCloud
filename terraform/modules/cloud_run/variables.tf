@@ -96,6 +96,11 @@ variable "services" {
     # slowly but healthily, never module-wide: a broken image should still be
     # killed promptly everywhere else (#1816).
     startup_failure_threshold = optional(number, 12)
+    # Startup CPU boost: more CPU than the declared limit while an instance
+    # starts, which is bursting, so off for every service that does not set it
+    # (CONTRACT.md invariant 7). swarm-api is the one service that sets it, by
+    # BGD's decision of 2026-10-23 (#1816 option (a)); see main.tf.
+    startup_cpu_boost = optional(bool, false)
   }))
 
   validation {

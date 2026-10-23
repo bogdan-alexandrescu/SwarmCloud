@@ -258,6 +258,14 @@ class SubmissionService:
         #: the service opens no connection; a test substitutes one.
         self.mcp_credential_writer: Any = None
 
+    @property
+    def signer(self) -> SpecSigner | None:
+        """The step-spec signer, which also signs an issue run's owner fields
+        (#1569, `issueruns.sign_owner`); None exactly where step specs go
+        unsigned, which is where `routes.runs.verify_run_owner` verifies
+        nothing. Read-only: nothing outside this service swaps it."""
+        return self._signer
+
     def _sign(self, tasks: Sequence[Task]) -> None:
         """After every write to the tasks, immediately before the store call.
 

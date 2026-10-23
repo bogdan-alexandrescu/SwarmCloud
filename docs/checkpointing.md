@@ -156,6 +156,13 @@ out of the fold that makes every pushed commit the worker's. A manifest written
 before the field existed holds `null`; that attempt's work is harvested against
 the marker and is not pushed.
 
+Beside it is `start_branch`: the branch the clone left HEAD on
+(`refs/heads/<name>`, or detached), read by the worker before any agent process
+existed (#2094). A resumed attempt reads it back to tell whether HEAD left the
+step's branch before it publishes, for the reason `clone_base` is here: the
+archived tree is the agent's to write. A manifest without it skips that branch
+check, and the start sha still decides whether the work is the step's own.
+
 ### Incremental archives after the first
 
 **An attempt's first checkpoint is a full archive; each one after it holds only

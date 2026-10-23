@@ -150,6 +150,11 @@ _BASE_SHA_LINE = re.compile(r"^" + re.escape(BASE_LINE) + r"([0-9a-f]{40})$", re
 BUILDS_ON_MAX_DEPTH: int = next(
     f.default for f in dataclasses.fields(Settings) if f.name == "max_workflow_steps"
 )
+#: How many task documents `upstream` reads walking `depends_on` back through
+#: this task's workflow (#2070): every ancestor is a distinct step of it, so
+#: the same bound. The worker's walk (`owner_questions.MAX_ANCESTORS`) reads
+#: no more than this.
+WORKFLOW_ANCESTORS_MAX: int = BUILDS_ON_MAX_DEPTH
 
 #: The attempt document's usage fields a worker may write, by `kind` (§4.2):
 #: the frozen `Attempt`'s names, nothing else. `cpu_limit_source` takes the
@@ -1682,14 +1687,21 @@ class AttemptState:
             workflow, at most `BUILDS_ON_MAX_DEPTH` tasks deep;
           * the verdict gate's review task (`lifecycle._reviewed_patches`):
             the signed `dispatch.verdict_gate.task_id`, when that task is a
-            step of this task's workflow.
+            step of this task's workflow;
+          * a workflow ancestor along `depends_on` (#2070,
+            `owner_questions.workflow_ancestors` and the merge's re-read of
+            the answers to `needs_owner`): from this task's own signed
+            `depends_on`, following each ancestor's `depends_on` only through
+            this tenant's tasks of this workflow, at most
+            `WORKFLOW_ANCESTORS_MAX` documents read.
 
         The caller still refuses a task of another tenant, so a derived id
         serves only this tenant's document.
         """
         return (self._is_index_base(attempt, task, upstream_task_id)
                 or self._is_builds_on_ancestor(attempt, task, upstream_task_id)
-                or self._is_gate_review(attempt, task, upstream_task_id))
+                or self._is_gate_review(attempt, task, upstream_task_id)
+                or self._is_workflow_ancestor(attempt, task, upstream_task_id))
 
     def _is_index_base(self, attempt: AttemptTuple, task: Mapping[str, Any],
                        upstream_task_id: str) -> bool:
@@ -1722,6 +1734,29 @@ class AttemptState:
                     or doc.get("workflow_id") != workflow_id):
                 return False
             current = _builds_on(_mapping(doc.get("metadata")))
+        return False
+
+    def _is_workflow_ancestor(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                              upstream_task_id: str) -> bool:
+        workflow_id = task.get("workflow_id")
+        if not isinstance(workflow_id, str) or not workflow_id:
+            return False
+        level = {d for d in task.get("depends_on") or [] if isinstance(d, str)}
+        seen: set[str] = {attempt.task_id}
+        while level and len(seen) <= WORKFLOW_ANCESTORS_MAX:
+            following: set[str] = set()
+            for current in sorted(level - seen):
+                if len(seen) > WORKFLOW_ANCESTORS_MAX:
+                    return False
+                seen.add(current)
+                doc = self._read(self._ref(TASKS, current))
+                if (doc is None or doc.get("tenant_id") != attempt.tenant_id
+                        or doc.get("workflow_id") != workflow_id):
+                    continue
+                if current == upstream_task_id:
+                    return True
+                following |= {d for d in doc.get("depends_on") or [] if isinstance(d, str)}
+            level = following - seen
         return False
 
     def _is_gate_review(self, attempt: AttemptTuple, task: Mapping[str, Any],

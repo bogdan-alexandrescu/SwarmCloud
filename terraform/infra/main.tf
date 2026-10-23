@@ -341,6 +341,14 @@ module "cloud_run" {
       # ready the moment it binds, and min_instances stays 2. Every other
       # service keeps 12.
       startup_failure_threshold = 36
+      # STARTUP CPU BOOST ON (BGD's decision, 2026-10-23, #1816 option (a)).
+      # Most of a ~21 s start is Python startup on 1 vCPU, and starts that ran
+      # past the probe left callers with Cloud Run's 429 on 2026-10-21. The
+      # boost bursts past the 1 vCPU limit while an instance starts, so it is
+      # BGD's recorded exception to invariant 7 for this one service; about $1
+      # a month (35-80 starts a day, ~30 boosted vCPU-seconds each). Every
+      # other service keeps the module's false, and cpu_idle stays false here.
+      startup_cpu_boost = true
       # The ONLY control-plane service that calls another one. It proxies every
       # account-pool request to the quota broker, whose ingress is
       # internal-and-cloud-load-balancing; under PRIVATE_RANGES_ONLY the
