@@ -82,6 +82,7 @@ from urllib.parse import quote
 
 from .. import refusals
 from ..errors import ApiError, Conflict
+from ..forgechecks import check_run_finished
 from ..forgewrite import (
     CHECKS_READ,
     PULLS_WRITE,
@@ -289,7 +290,9 @@ def _scan_at(writer: GitHubWriter, ref: IssueRef, sha: str, token: str) -> dict[
     )
     runs = data.get("check_runs") if isinstance(data, dict) else None
     for run in runs if isinstance(runs, list) else []:
-        if (isinstance(run, dict) and run.get("name") == SCAN_CHECK and run.get("status") == "completed"
+        # Finished as every merge judge reads it: status completed, OR a
+        # conclusion with a completed_at (BGD 2026-10-23, CHECK-STUCK-2, part of #2031).
+        if (isinstance(run, dict) and run.get("name") == SCAN_CHECK and check_run_finished(run)
                 and run.get("conclusion") in ("success", "failure")):
             return run
     return None

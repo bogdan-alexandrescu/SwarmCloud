@@ -148,6 +148,11 @@ cmd_select() {
   # Green: nothing that finished failed, required or not (auto-merge.yml's gate
   # item 5), and every required name finished well. A check still running
   # that is not required does not hold it (#815).
+  # A check run is done when its status is COMPLETED, OR when it carries a
+  # conclusion together with a completedAt, whatever its status says -- as
+  # `judge` reads it (BGD 2026-10-23, CHECK-STUCK-2, part of #2031): GitHub
+  # left PR 2006's `secret scan` IN_PROGRESS with a conclusion. A commit
+  # status keeps its own reading.
   # --allow-unknown-mergeable also boards a pull request whose mergeability
   # GitHub has not recomputed yet (UNKNOWN, as every open one is for a while
   # after a train lands): only for a bisection's named half, which compose
@@ -161,7 +166,10 @@ cmd_select() {
         | if .__typename == "StatusContext"
           then {name: .context, done: ((.state // "") as $s | $s != "PENDING" and $s != "EXPECTED"),
                 result: (.state // "")}
-          else {name: .name, done: (.status == "COMPLETED"), result: (.conclusion // "")}
+          else {name: .name,
+                done: (.status == "COMPLETED"
+                       or ((.conclusion // "") != "" and (.completedAt // "") != "")),
+                result: (.conclusion // "")}
           end ];
     def green:
       checks as $c

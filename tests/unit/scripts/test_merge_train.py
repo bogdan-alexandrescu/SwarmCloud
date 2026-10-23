@@ -162,6 +162,41 @@ def test_select_can_board_a_bisection_s_pull_request_github_has_not_rechecked(tm
     assert numbers == ["101", "106", "114", "120"]
 
 
+# CHECK-STUCK-2 (BGD, 2026-10-23, task_9e9080121b104370b079 Q0; part of
+# #2031): select reads a rollup check run as done the way `judge` does --
+# status COMPLETED, OR a conclusion together with a completedAt. GitHub left
+# PR 2006's `secret scan` IN_PROGRESS after giving it both; GitHub's own
+# rollup shows it SUCCESS. A run with no conclusion stays pending.
+#: (case, conclusion, completedAt, boards)
+SELECT_STUCK = [
+    ("IN_PROGRESS, SUCCESS, completedAt", "SUCCESS", "2026-10-22T19:05:52Z", True),
+    ("IN_PROGRESS, no conclusion", None, None, False),
+]
+
+
+@pytest.mark.parametrize(("case", "conclusion", "completed_at", "boards"), SELECT_STUCK,
+                         ids=[row[0] for row in SELECT_STUCK])
+def test_select_reads_a_run_with_a_conclusion_and_completed_at_as_done(
+    tmp_path, case, conclusion, completed_at, boards
+):
+    pr = {
+        "number": 130, "title": "A check GitHub left in progress", "headRefOid": "13" + "0" * 37 + "1",
+        "headRefName": "lane/stuck", "baseRefName": "main", "isDraft": False,
+        "isCrossRepository": False, "mergeable": "MERGEABLE", "labels": [{"name": "ready"}],
+        "statusCheckRollup": [
+            {"__typename": "CheckRun", "name": "ci-gate", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "completedAt": "2026-10-22T19:01:00Z"},
+            {"__typename": "CheckRun", "name": "secret scan", "status": "IN_PROGRESS",
+             "conclusion": conclusion, "completedAt": completed_at},
+        ],
+    }
+    prs = tmp_path / "stuck.json"
+    prs.write_text(json.dumps([pr]))
+    # MUTATION: read status alone (`done: (.status == "COMPLETED")`) -> the
+    # first row never boards, PR 2006's wait in the train.
+    assert (["130"] == [r[0] for r in _select(tmp_path, prs=prs)]) is boards, case
+
+
 def test_select_with_no_open_pull_requests_prints_nothing(tmp_path):
     empty = tmp_path / "none.json"
     empty.write_text("[]")
