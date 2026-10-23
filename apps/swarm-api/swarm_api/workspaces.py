@@ -336,6 +336,17 @@ FAILURE_COPY: Mapping[str, str] = {
         "changed. An admin, or the platform owner for a service account, must deny it and "
         "approve it again as shown; a retry does not help. The reference is {request_id}."),
 }
+#: A9's failure on the `ResourceQuota` (QUOTA-ONE, #2039): the object is
+#: there, with other numbers than the record's limits -- a namespace applied
+#: by hand from the renderer's defaults, as u-bogdan's was on 2026-10-23 -- so
+#: VERIFY_FAILED's "could not find" is not true of it. The record keeps
+#: VERIFY_FAILED and the object's type (§4.2, no numbers), which is how this
+#: is told apart; an admin's retry re-applies the quota from the limits.
+QUOTA_MISMATCH_COPY = (
+    "Every step reported success, but the final check found your workspace's Kubernetes "
+    "quota set to other numbers than its limits. Nothing runs until they match. An admin "
+    "can retry it, which applies the quota from your limits again; the reference is "
+    "{request_id}.")
 #: A code the table does not know (a later lane's, or a malformed record):
 #: still a sentence, never the raw code alone.
 _UNKNOWN_FAILURE_COPY = (
@@ -459,7 +470,11 @@ def _iso(value: Any) -> Any:
 def failure_copy(failure: Mapping[str, Any] | None, request_id: str | None) -> str:
     failure = failure or {}
     step = STEP_LABELS.get(str(failure.get("step") or ""), str(failure.get("step") or "a step"))
-    template = FAILURE_COPY.get(str(failure.get("code") or ""), _UNKNOWN_FAILURE_COPY)
+    code = str(failure.get("code") or "")
+    if code == "VERIFY_FAILED" and failure.get("object") == "ResourceQuota":
+        template = QUOTA_MISMATCH_COPY
+    else:
+        template = FAILURE_COPY.get(code, _UNKNOWN_FAILURE_COPY)
     return template.format(step=step, request_id=request_id or "unknown")
 
 

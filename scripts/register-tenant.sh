@@ -229,13 +229,17 @@ esac
 #   A9 verify     re-read every object; only then `ready`
 #
 # --mode create runs A1-A9; --mode limits runs A1, A7 and A8 (a ceiling change:
-# the namespace quota and the documents, no IAM call); --mode verify runs A1
-# and A9 (the u-bogdan migration, and an admin's check from People).
+# the namespace quota and the documents, no IAM call), and A9 after them when
+# it is repairing a quota (below); --mode verify runs A1 and A9 (the u-bogdan
+# migration, and an admin's check from People).
 #
 # WHAT A1 ADMITS. create: a record in `approved`; or `failed` / `needs_owner`
 # with an admin's retry recorded AFTER the last run's claim; or `applying` whose
-# run is dead (claimed over an hour ago and never finished). limits: `ready`.
-# verify: `ready` or `failed`. Every mode needs `decision.verdict == approved`
+# run is dead (claimed over an hour ago and never finished). limits: `ready`,
+# or `failed` when the recorded failure is A9 on the ResourceQuota alone -- a
+# namespace applied with other numbers than the record's, as u-bogdan's was by
+# hand on 2026-10-23 (#2039) -- which it repairs: A7, A8, then A9, and `ready`
+# only if A9 passes. verify: `ready` or `failed`. Every mode needs `decision.verdict == approved`
 # by an email that is an admin in admin_roles/ NOW (a revoked admin's approval
 # no longer starts anything), except verify on a `migrated` record, which no
 # admin approved because it predates approval. A retry is the record's
@@ -315,12 +319,19 @@ WS_DEFAULT_MAX_ACTIVE=8
 WS_DEFAULT_CAPACITY_UNITS=8
 # The quota scales with the ceiling, 2 pods and 8 vCPU per agent (§6.4); the
 # other three quota lines keep §8's ratio to those two: 128Gi for 64 vCPU, 64
-# jobs and 160Gi of ephemeral storage for 16 pods.
-WS_PODS_PER_AGENT=2
-WS_CPU_PER_AGENT=8
-WS_MEMORY_GI_PER_CPU=2
-WS_JOBS_PER_POD=4
-WS_EPHEMERAL_GI_PER_POD=10
+# jobs and 160Gi of ephemeral storage for 16 pods. Those numbers, and the
+# largest limit a record may hold, are scripts/lib/workspace-quota.json's, read
+# by ws_quota_constants below and by kubernetes/render.py (workspace_quota),
+# never stated here: a second copy in render.py's defaults is what failed
+# u-bogdan's workspace on 2026-10-23 (QUOTA-ONE, #2039, BGD's decision).
+WS_PODS_PER_AGENT=""
+WS_CPU_PER_AGENT=""
+WS_MEMORY_GI_PER_CPU=""
+WS_JOBS_PER_POD=""
+WS_EPHEMERAL_GI_PER_POD=""
+WS_MAX_ACTIVE_TOP=""
+WS_QUOTA_PODS_TOP=""
+WS_QUOTA_CPU_TOP=""
 # A run claimed longer ago than this and never finished is dead, and its record
 # may be claimed again. Twice the job's deadline (1800 seconds, entry.py's own,
 # whatever timeout an execution was given), so no live execution is ever
@@ -361,6 +372,11 @@ WS_MAX_ACTIVE=""
 WS_CAPACITY_UNITS=""
 WS_QUOTA_PODS=""
 WS_QUOTA_CPU=""
+# The record's last failure, as A1 read it: --mode limits may repair a failed
+# workspace only when this is A9 on its ResourceQuota (ws_quota_repair).
+WS_FAIL_STEP=""
+WS_FAIL_CODE=""
+WS_FAIL_OBJECT=""
 
 # The names, from the guard's expectation once A1 has written it.
 WS_TENANT=""
@@ -460,6 +476,16 @@ ws_require_guard() {
 ws_code() { printf '%s' "$1" >"${WS_WORK}/code"; }
 ws_hold() { printf '%s' "$1" >"${WS_WORK}/hold"; err "stopping for the platform owner: $2"; }
 ws_object() { printf '%s' "$1" >"${WS_WORK}/object"; err "verify: a ${1} is missing or not as specified"; }
+# A ResourceQuota that IS there with other numbers is not a missing object
+# (#2039): the log names both sets of numbers, the quota's and the record's;
+# the record keeps the type alone (§4.2), and `--mode limits` repairs it.
+ws_quota_off() {
+  local have
+  have="$(jq -r '.spec.hard // {} | "pods \(.pods // "none"), cpu \(.["requests.cpu"] // "none") (limit \(.["limits.cpu"] // "none"))"' \
+    "$1" 2>/dev/null | tr -cd '[:alnum:] .,()')" || have=""
+  printf '%s' "ResourceQuota" >"${WS_WORK}/object"
+  err "verify: the namespace quota is ${have:-unreadable}; the record wants pods ${WS_QUOTA_PODS}, cpu ${WS_QUOTA_CPU} (limit ${2})"
+}
 
 ws_show_err() {
   [[ -s "${WS_WORK}/call.err" ]] || return 0
@@ -550,6 +576,9 @@ ws_load_record() {
   WS_CAPACITY_UNITS="$(ws_field "${file}" '.limits.capacity_units')"
   WS_QUOTA_PODS="$(ws_field "${file}" '.limits.quota_pods')"
   WS_QUOTA_CPU="$(ws_field "${file}" '.limits.quota_cpu')"
+  WS_FAIL_STEP="$(ws_field "${file}" '.failure.step')"
+  WS_FAIL_CODE="$(ws_field "${file}" '.failure.code')"
+  WS_FAIL_OBJECT="$(ws_field "${file}" '.failure.object')"
 }
 
 # Seconds since an RFC 3339 timestamp, or nothing when it does not parse.
@@ -576,6 +605,19 @@ ws_run_live() {
   [[ "${age}" -lt "${WS_LIVE_RUN_SECONDS}" ]]
 }
 
+# True when this run is --mode limits repairing a workspace that A9 failed on
+# its ResourceQuota and nothing else (QUOTA-ONE, #2039): its namespace was
+# applied with other numbers than the record's -- by hand, from render.py's
+# defaults, on 2026-10-23 -- and re-applying the quota is this mode's own work.
+# Such a run also runs A9 again, and only A9's pass makes the workspace ready.
+# Any other failure, at any other step or of any other object, is a retry's.
+# Read from the record as A1 read it, so the claim clearing `failure` does not
+# change the answer mid-run.
+ws_quota_repair() {
+  [[ "${WORKSPACE_MODE}" == "limits" && "${WS_STATE}" == "failed" && "${WS_FAIL_STEP}" == "A9" \
+     && "${WS_FAIL_CODE}" == "VERIFY_FAILED" && "${WS_FAIL_OBJECT}" == "ResourceQuota" ]]
+}
+
 # Prints "" when this mode may claim the record as read, else "CODE why".
 ws_admit() {
   if ws_run_live; then
@@ -595,8 +637,11 @@ ws_admit() {
         *) printf 'WORKSPACE_NOT_APPROVED the record is %s, not approved' "${WS_STATE:-without a state}"; return 0 ;;
       esac ;;
     limits)
-      [[ "${WS_STATE}" == "ready" ]] \
-        || { printf 'NOT_READY a ceiling change needs a ready workspace; this one is %s' "${WS_STATE:-without a state}"; return 0; } ;;
+      # A failed workspace whose recorded failure is A9 on its ResourceQuota
+      # alone is the one exception (ws_quota_repair): re-applying the quota is
+      # exactly what this mode does, so the job repairs it itself (#2039).
+      [[ "${WS_STATE}" == "ready" ]] || ws_quota_repair \
+        || { printf 'NOT_READY a ceiling change needs a ready workspace, or one whose final check failed on its quota alone; this one is %s' "${WS_STATE:-without a state}"; return 0; } ;;
     verify)
       case "${WS_STATE}" in
         ready|failed) ;;
@@ -695,16 +740,33 @@ ws_whole() {
   printf '%s' "${value}"
 }
 
+# The quota's constants from scripts/lib/workspace-quota.json, once: the one
+# copy kubernetes/render.py's workspace_quota reads too (#2039). Each must be
+# a whole number of at least 1, or nothing runs.
+ws_quota_constants() {
+  [[ -z "${WS_PODS_PER_AGENT:-}" ]] || return 0
+  local file="${REPO_ROOT}/scripts/lib/workspace-quota.json" values=""
+  values="$(jq -r '[.pods_per_agent, .cpu_per_agent, .memory_gi_per_cpu, .jobs_per_pod,
+      .ephemeral_gi_per_pod, .max_active_top, .quota_pods_top, .quota_cpu_top]
+    | if all(type == "number" and . >= 1 and . == floor) then map(tostring) | join(" ") else empty end' \
+    "${file}" 2>/dev/null)" || values=""
+  [[ -n "${values}" ]] \
+    || die "${file} does not hold the workspace quota's eight whole numbers. Nothing was changed."
+  read -r WS_PODS_PER_AGENT WS_CPU_PER_AGENT WS_MEMORY_GI_PER_CPU WS_JOBS_PER_POD \
+    WS_EPHEMERAL_GI_PER_POD WS_MAX_ACTIVE_TOP WS_QUOTA_PODS_TOP WS_QUOTA_CPU_TOP <<<"${values}"
+}
+
 ws_resolve_limits() {
   local max units pods cpu
-  max="$(ws_whole "${WS_MAX_ACTIVE}" "${WS_DEFAULT_MAX_ACTIVE}" 1000)" \
-    || die "the record's limits.max_active '${WS_MAX_ACTIVE}' is not a whole number from 1 to 1000. Nothing was changed."
+  ws_quota_constants
+  max="$(ws_whole "${WS_MAX_ACTIVE}" "${WS_DEFAULT_MAX_ACTIVE}" "${WS_MAX_ACTIVE_TOP}")" \
+    || die "the record's limits.max_active '${WS_MAX_ACTIVE}' is not a whole number from 1 to ${WS_MAX_ACTIVE_TOP}. Nothing was changed."
   units="$(ws_whole "${WS_CAPACITY_UNITS}" "${WS_DEFAULT_CAPACITY_UNITS}" 4000)" \
     || die "the record's limits.capacity_units '${WS_CAPACITY_UNITS}' is not a whole number from 1 to 4000. Nothing was changed."
-  pods="$(ws_whole "${WS_QUOTA_PODS}" "$((max * WS_PODS_PER_AGENT))" 2000)" \
-    || die "the record's limits.quota_pods '${WS_QUOTA_PODS}' is not a whole number from 1 to 2000. Nothing was changed."
-  cpu="$(ws_whole "${WS_QUOTA_CPU}" "$((max * WS_CPU_PER_AGENT))" 8000)" \
-    || die "the record's limits.quota_cpu '${WS_QUOTA_CPU}' is not a whole number from 1 to 8000. Nothing was changed."
+  pods="$(ws_whole "${WS_QUOTA_PODS}" "$((max * WS_PODS_PER_AGENT))" "${WS_QUOTA_PODS_TOP}")" \
+    || die "the record's limits.quota_pods '${WS_QUOTA_PODS}' is not a whole number from 1 to ${WS_QUOTA_PODS_TOP}. Nothing was changed."
+  cpu="$(ws_whole "${WS_QUOTA_CPU}" "$((max * WS_CPU_PER_AGENT))" "${WS_QUOTA_CPU_TOP}")" \
+    || die "the record's limits.quota_cpu '${WS_QUOTA_CPU}' is not a whole number from 1 to ${WS_QUOTA_CPU_TOP}. Nothing was changed."
   WS_MAX_ACTIVE="${max}"
   WS_CAPACITY_UNITS="${units}"
   WS_QUOTA_PODS="${pods}"
@@ -911,7 +973,12 @@ ws_step_ids() {
       else
         printf '%s\n' A1 A2 A3 A4 A5 A6 A7 A8 A9
       fi ;;
-    limits) printf '%s\n' A1 A7 A8 ;;
+    limits)
+      if ws_quota_repair; then
+        printf '%s\n' A1 A7 A8 A9
+      else
+        printf '%s\n' A1 A7 A8
+      fi ;;
     verify) printf '%s\n' A1 A9 ;;
   esac
 }
@@ -1732,7 +1799,7 @@ ws_s2() {
 # A9: every object read back, as specified. A failure names the object's type,
 # never its name (§4.2), on the record as failure.object.
 ws_a9() {
-  local n=0 role member kind name word
+  local n=0 role member kind name word limit
   # The account and its own policy.
   ws_probe "${WS_WORK}/a9.out" gcloud iam service-accounts describe "${WS_WORKER_EMAIL}" \
     --project "${PROJECT_ID}" --format='value(email)' || { ws_object "service account"; return 1; }
@@ -1847,11 +1914,11 @@ ws_a9() {
         # limits.cpu too: a namespace applied before CPU burst holds it equal
         # to requests.cpu and fits half its pods, and `--mode limits` is what
         # re-applies it.
-        jq -e --arg p "${WS_QUOTA_PODS}" --arg c "${WS_QUOTA_CPU}" \
-          --arg l "$(ws_quota_cpu_limit "${WS_QUOTA_CPU}")" \
+        limit="$(ws_quota_cpu_limit "${WS_QUOTA_CPU}")"
+        jq -e --arg p "${WS_QUOTA_PODS}" --arg c "${WS_QUOTA_CPU}" --arg l "${limit}" \
           '(.spec.hard.pods // "") == $p and (.spec.hard["requests.cpu"] // "") == $c
            and (.spec.hard["limits.cpu"] // "") == $l' \
-          "${WS_WORK}/object.json" >/dev/null 2>&1 || { ws_object "ResourceQuota"; return 1; }
+          "${WS_WORK}/object.json" >/dev/null 2>&1 || { ws_quota_off "${WS_WORK}/object.json" "${limit}"; return 1; }
       fi
     fi
     n=$((n + 1))
@@ -1927,11 +1994,12 @@ ws_a9_service() {
     || { ws_object "front door member"; return 1; }
 }
 
-# `ready` only after A9 (create, verify); a ceiling change only closes its run.
+# `ready` only after A9 (create, verify, and a limits run repairing a quota,
+# ws_quota_repair); a ceiling change only closes its run.
 ws_finish() {
   local at fields mask
   at="$(iso_now)"
-  if [[ "${WORKSPACE_MODE}" == "limits" ]]; then
+  if [[ "${WORKSPACE_MODE}" == "limits" ]] && ! ws_quota_repair; then
     fields="$(jq -nc --arg at "${at}" '{run: {mapValue: {fields: {finished_at: {timestampValue: $at}}}}}')"
     mask="run.finished_at,failure"
   else
@@ -1941,7 +2009,7 @@ ws_finish() {
   fi
   fs_patch "${WS_DOC}" "${mask}" "${fields}" \
     || die "every step is done, but the record could not be closed (above); an admin's retry finds everything present"
-  if [[ "${WORKSPACE_MODE}" == "limits" ]]; then
+  if [[ "${WORKSPACE_MODE}" == "limits" ]] && ! ws_quota_repair; then
     ok "${WORKSPACE_ID}: limits applied"
   else
     ok "${WORKSPACE_ID}: ready"
@@ -1989,7 +2057,11 @@ workspace_main() {
       ws_run_step A9 ws_a9 ;;
     limits)
       ws_run_step A7 ws_a7
-      ws_run_step A8 ws_a8 ;;
+      ws_run_step A8 ws_a8
+      # A repair (ws_quota_repair) is ready on A9's word, never on A7's.
+      if ws_quota_repair; then
+        ws_run_step A9 ws_a9
+      fi ;;
     verify)
       ws_run_step A9 ws_a9 ;;
   esac
