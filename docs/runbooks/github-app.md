@@ -175,17 +175,18 @@ No access):
 * Issues: Read and write -- the issue-run comments (#454)
 * Checks: Read-only -- the merge step's CI wait
 * Metadata: Read-only -- mandatory, GitHub sets it
-* Workflows: Read and write, requested 2026-10-22 per BGD (#2029); each
-  installation's owner accepts it; a repository uses it only when its
+* Actions: Read and write -- the merge step re-runs a failed CI job at the
+  same commit (`mergewake.py`, `GitHubWriter.rerun_job`,
+  `forgewrite.ACTIONS_WRITE`); held since before 2026-10-23
+* Workflows: Read and write -- added to the App on 2026-10-23 (#2029); each
+  installation's owner accepts it. A repository uses it only when its
   `workflow_files` switch is on. A push that changes `.github/workflows/` or
   `.github/actions/` needs it: swarm-api mints a token for that ONE
   repository with `contents: write` and `workflows: write`, per push, never
   stored. An installation that has not accepted it reads as "Workflows: not
   granted" on a switched-on repository, and its pushes fall back to
   `workflow-lines.patch`. Why off by default: a workflow on a pushed branch
-  runs with that repository's secrets before any merge hold. (Until then the
-  App was registered with Workflows: No access, per D8, which made it a
-  separate request when a tenant asked for it; this is that request.)
+  runs with that repository's secrets before any merge hold.
 
 **Organization permissions** and **Account permissions**: none. **Subscribe
 to events**: none at registration; Step 9 subscribes `push` and nothing else.

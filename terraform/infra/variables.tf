@@ -352,6 +352,16 @@ variable "tenants" {
     error_message = "a tenant may not register git-merge or git-review: the #295 App keys are retired, and nothing but the tenant's worker would read one."
   }
 
+  # THE REMOVED -git-wf SLOT (#2029, WF-APP-TOKEN; agent-autonomy.md §3.3).
+  # git_wf_tenant carried this refusal and went with the slot. Listed here,
+  # git-wf would get a secret whose reader is the tenant's worker account --
+  # a workflow-scoped token any agent of the tenant could push with -- so it
+  # is refused at plan, in every environment.
+  validation {
+    condition     = alltrue([for t, v in var.tenants : !contains(v.providers, "git-wf")])
+    error_message = "a tenant may not list git-wf as a provider: the -git-wf slot no longer exists, and a workflow-file push uses the token the SwarmCloud GitHub App mints for one repository whose registration has workflow_files on."
+  }
+
   # The same expression as swarm_common.identity.SERVICE_ACCOUNT_EMAIL, held
   # equal by scripts/lib/check-contract-parity.sh (section 14), plus the pin to
   # THIS project that the frozen module has no project id to apply.
