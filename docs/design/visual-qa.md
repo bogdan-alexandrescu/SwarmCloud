@@ -720,6 +720,65 @@ tool. What `swarm_qa.py` does now:
   cannot be scrolled clear of it: no segment can show them, and the review
   should know that the last ~45 px of a phone agent pane sit under the bar.
 
+#### 4.2.3 Amendment, 2026-10-23: what run 6 missed (QAFIX6-CAPTURE, epic #1680)
+
+Visual QA run 6 again found rows in no image, and one capture that called
+itself complete over two identical shots. QAFIX6-CAPTURE (PR 2073) changed
+`swarm_qa.py` in five ways:
+
+* **`reached` is where the scroller actually stopped.** A scroller clamps
+  an offset past its end, and the capture recorded the offset it had asked
+  for: 6:capacity-005 said "reached 4527 of 4527" beside two identical
+  shots. `SCROLL_JS` now answers, after every scroll, with the scroller's
+  own `scrollTop` and `scrollHeight` as they are two frames later, and the
+  next segment, the next step and the entry's `reached` and `total` are
+  computed from that read-back, never from the offset asked for. A
+  measurement of where the page went is what the review is told; an
+  intention is not a measurement.
+* **A scroller that did not move on is a `duplicate`, not another
+  segment.** When the read-back position is not past the last segment's,
+  the next shot would be the same frame again. The capture stops there,
+  writes `duplicate: {"segment", "at"}` (the segment that would have
+  repeated and the px the scroller sat at), and when that left it short of
+  the end the route is listed in `failed` with "the scroller stopped at N px
+  after K segments: reached R of T px (the rest is in no image)", the same
+  form as a capture cut at its budget. Every entry carries the key,
+  `duplicate: null` when the scroller kept moving. Two identical images
+  recorded as two segments are a page reviewed once and counted twice.
+* **Each segment says what was measured around it, in `geometry`.** One
+  object per segment: `segment`, `at` (the scroller's read-back position),
+  `view` (what the screen showed of it), `scroller` and `dock` (the
+  scroller's box and `.ctl-dock`'s, the console's Reads bar, as `[top,
+  bottom]`, `dock` null where there is none) and `inner` (`innerHeight`).
+  Run 6's misses could only be explained by re-deriving those boxes from the
+  images; a review that has them in the manifest can tell a row hidden by
+  the bar from a row the page never drew, and the next tool fault is
+  diagnosed from the run that found it.
+* **The foot is taken at the window's edge.** `STUCK_JS` took the
+  scroller's foot as `top + clientHeight`. At 390 that edge was below the
+  window, so the Reads bar, fixed at the window's foot, spanned no edge the
+  capture looked at, and the rows under it were in no image (6:capacity-001
+  to -004, 6:admin-005). The foot is now `min(top + clientHeight,
+  innerHeight)`, and a segment's `view` is what the screen shows of the
+  scroller between its top and that foot, measured again after every scroll
+  (the phone bar compacts from 44 to 36 px once scrolled). Two narrower
+  covers came with it: a `sticky` element resting on the scroller's foot by
+  its `bottom` inset covers the foot too (/submit's "Not ready" strip,
+  6:work-b-001), and a top cover counts only when it is at least half the
+  scroller's width (the 1440 Submit forms' 300 px sticky side panel was
+  counted as a 371 px cover, 6:work-b-002).
+* **An off-size shot gets a device reset before it is kept.** A shot whose
+  size is not the page's layout viewport (`VIEWPORT_JS`) was taken again up
+  to `SHOT_RETRIES` (2) times and then kept under a `captured` status: in
+  run 5b every admin-persona phone-390 segment came back 394x852 against a
+  layout viewport of 394x853 or 398x862 (box 6343795935), and the retries
+  alone never brought it back. `_shot` now takes it once more after
+  `swarm-handoff device <preset>` puts the gate's device back, recording
+  `device_reset` in that `reshot` record; a shot still off after the reset is
+  kept, its line goes in the entry's `off_viewport` and in `failed`, and the
+  route's status is `unsettled`. The reset is the one thing left to try, and
+  a shot of the wrong size is no capture of the route as it stands.
+
 These reach a capture only once the `agent-runtime-browser` image is rebuilt
 and released.
 
