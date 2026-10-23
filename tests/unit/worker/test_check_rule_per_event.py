@@ -21,12 +21,14 @@ catches.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 import pytest
 
+from agent_worker import control as control_mod
 from agent_worker import merge
-from swarm_common.models import EndCause
+from swarm_common.models import EndCause, utcnow
 from swarm_common.states import TaskState
 
 from merge_world import ACTIONS_APP, API, CHECK, PINNED, TASK, MergeWorld
@@ -282,4 +284,150 @@ def test_no_required_check_still_waits_on_an_events_latest_run_in_progress(tmp_p
     assert outcome.summary["wait"]["code"] == "checks_pending", outcome.summary
     # MUTATION: label each run, not the deciding run per event -> fails.
     assert outcome.ci_wait["pending"] == [f"{OTHER} (push: in_progress)"], outcome.ci_wait
+    assert world.merge_calls() == []
+
+
+# ---------------------------------------------------------------------------
+# A run GitHub concluded but left `in_progress` (CHECK-STUCK, part of #2031)
+# ---------------------------------------------------------------------------
+#
+# BGD, 2026-10-23: a check run that carries a conclusion AND a completed_at
+# is judged by its conclusion, whatever `status` says. PR 2006's merge step
+# parked CI_PENDING 23 times and failed `checks_timeout` on `secret scan`,
+# which read `status: in_progress`, `conclusion: success`, `completed_at:
+# 2026-10-22T19:05:52Z`; its workflow run was completed/success. A run with
+# no conclusion stays pending; `completed` with no conclusion is not green
+# (failed, as the step already read it).
+
+STUCK_AT = "2026-10-22T19:05:52Z"
+
+
+@pytest.mark.parametrize(("status", "conclusion", "completed_at", "finished"), [
+    ("completed", "success", STUCK_AT, True),
+    ("completed", None, None, True),
+    ("in_progress", "success", STUCK_AT, True),
+    ("in_progress", "failure", STUCK_AT, True),
+    ("in_progress", None, None, False),
+    ("in_progress", "success", None, False),
+    ("in_progress", None, STUCK_AT, False),
+    ("queued", "", "", False),
+])
+def test_a_run_is_finished_when_completed_or_concluded_with_a_completed_at(
+        status, conclusion, completed_at, finished):
+    run = {"status": status, "conclusion": conclusion, "completed_at": completed_at}
+    # MUTATION: read status alone -> the in_progress rows with both a
+    # conclusion and a completed_at read unfinished. MUTATION: accept either
+    # field alone -> the rows with one of the two read finished.
+    assert merge.check_run_finished(run) is finished, run
+
+
+#: (case, status, conclusion, completed_at, required_check_state)
+STUCK = [
+    ("in_progress, success, completed_at", "in_progress", "success", STUCK_AT, "green"),
+    ("in_progress, failure, completed_at", "in_progress", "failure", STUCK_AT, "failed"),
+    ("in_progress, no conclusion", "in_progress", None, None, "pending"),
+    ("completed, no conclusion", "completed", None, None, "failed"),
+]
+
+
+@pytest.mark.parametrize(("case", "status", "conclusion", "completed_at", "state"), STUCK,
+                         ids=[row[0] for row in STUCK])
+def test_a_stuck_run_is_judged_by_its_conclusion_in_every_worker_rule(
+        case, status, conclusion, completed_at, state):
+    facts = merge.CheckFacts(name=CHECK, status=status, conclusion=conclusion, run_id=1,
+                             completed_at=completed_at)
+    # MUTATION: read status alone in `_judge_latest` -> the first two rows
+    # read "pending".
+    assert merge.required_check_state([facts.as_run()]) == state, case
+    # MUTATION: read status alone in `other_check_blocks` -> the first row
+    # blocks.
+    assert merge.other_check_blocks(facts.as_run()) is (state != "green"), case
+    pending, failed = merge.judge_other_checks([facts])
+    # MUTATION: bucket by `status == "completed"` in `judge_other_checks` ->
+    # the second row is listed pending, not failed.
+    assert (bool(pending), bool(failed)) == (state == "pending", state == "failed"), (pending, failed)
+    # MUTATION: read status alone in `latest_reading` -> the record names a
+    # concluded check pending, which the "Why it's waiting" panel shows.
+    recorded = merge.latest_reading({CHECK: [facts]}, merge.REQUIRED_GREEN)
+    assert recorded == ([CHECK] if state == "pending" else [],
+                        [CHECK] if state == "failed" else []), recorded
+
+
+def _stuck(conclusion: str = "success", completed_at: str | None = STUCK_AT) -> dict[str, Any]:
+    """The check run as GitHub served PR 2006's `secret scan`."""
+    return {"id": 120028057811, "name": CHECK, "status": "in_progress", "conclusion": conclusion,
+            "completed_at": completed_at, "app": {"id": ACTIONS_APP}, "check_suite": {"id": PUSH_SUITE}}
+
+
+def _waited_since(world: MergeWorld, seconds: float) -> None:
+    world.docs[TASK]["metadata"] = {control_mod.MERGE_WAIT_METADATA_KEY: {
+        "first_parked_at": utcnow() - timedelta(seconds=seconds), "wakes": 23, "updates": 0}}
+
+
+@pytest.mark.parametrize("waited", [None, merge.MERGE_CI_MAX_SECONDS + 600],
+                         ids=["first-reading", "past-6h"])
+def test_the_merge_step_merges_on_a_run_concluded_success_but_left_in_progress(tmp_path, waited):
+    """PR 2006's head: the step neither parks nor times out."""
+    world = MergeWorld(tmp_path)
+    world.runs = [_stuck()]
+    if waited is not None:
+        _waited_since(world, waited)
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: read status alone (`checks_at` drops `completed_at`, or the
+    # rule ignores it) -> parks CI_PENDING, or past 6 h fails checks_timeout.
+    assert outcome.state is TaskState.SUCCEEDED, (outcome.message, outcome.summary)
+    assert outcome.ci_wait is None
+    assert "wait" not in outcome.summary and "refusal" not in outcome.summary, outcome.summary
+    assert len(world.merge_calls()) == 1
+
+
+def test_the_merge_step_refuses_a_run_concluded_failure_but_left_in_progress(tmp_path):
+    world = MergeWorld(tmp_path)
+    world.runs = [_stuck("failure")]
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: read status alone -> parks CI_PENDING on a run that failed,
+    # and past 6 h ends `checks_timeout` instead of naming the failure.
+    assert outcome.end_cause is EndCause.MERGE_REFUSED, outcome.message
+    assert outcome.ci_wait is None
+    assert outcome.summary["refusal"]["code"] == "checks_failed"
+    assert f"{CHECK} (check suite {PUSH_SUITE}: failure)" in outcome.summary["refusal"]["message"]
+    assert world.merge_calls() == []
+
+
+def test_the_merge_step_still_waits_on_a_run_with_a_conclusion_but_no_completed_at(tmp_path):
+    """The control: a conclusion alone does not finish a run."""
+    world = MergeWorld(tmp_path)
+    world.runs = [_stuck(completed_at=None)]
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: judge by the conclusion alone -> merged.
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.ci_wait["code"] == "checks_pending", outcome.ci_wait
+    assert world.merge_calls() == []
+
+
+def test_no_required_check_a_run_concluded_success_but_left_in_progress_merges(tmp_path):
+    world = MergeWorld(tmp_path)
+    _unprotected(world, [{**_other_run(1, PUSH_SUITE, status="in_progress"), "completed_at": STUCK_AT}])
+    outcome = merge.run_merge(world.context())
+    # MUTATION: read status alone in `other_check_blocks` -> checks_pending.
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert len(world.merge_calls()) == 1
+
+
+def test_no_required_check_a_run_concluded_failure_but_left_in_progress_refuses(tmp_path):
+    world = MergeWorld(tmp_path)
+    _unprotected(world, [{**_other_run(1, PUSH_SUITE, conclusion="failure", status="in_progress"),
+                          "completed_at": STUCK_AT}])
+    outcome = merge.run_merge(world.context())
+    # MUTATION: bucket by `status == "completed"` in `judge_other_checks` ->
+    # checks_pending, a 6 h wait on a run that failed.
+    assert outcome.end_cause is EndCause.MERGE_REFUSED, outcome.message
+    assert outcome.summary["refusal"]["code"] == "checks_failed"
+    assert f"{OTHER} (check suite {PUSH_SUITE}: failure)" in outcome.summary["refusal"]["message"]
     assert world.merge_calls() == []

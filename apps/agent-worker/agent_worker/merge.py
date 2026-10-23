@@ -375,11 +375,32 @@ def title_is_placeholder(title: str) -> bool:
     )
 
 
+def check_run_finished(run: Mapping[str, Any]) -> bool:
+    """Whether a check run has finished: `status` is `completed`, OR it
+    carries a conclusion together with a `completed_at`.
+
+    BGD's decision of 2026-10-23 (CHECK-STUCK, part of #2031): a run that
+    carries a conclusion and a completed_at is judged by its conclusion,
+    whatever `status` says. GitHub left PR 2006's `secret scan` at
+    `in_progress` with `conclusion: success` and a `completed_at`, its
+    workflow run completed/success, and this step waited out its 6 h on it.
+    A run with no conclusion stays pending; one `completed` with no
+    conclusion is finished and, having no green conclusion, not green.
+    swarm-api's `forgechecks.check_run_finished`, `merge-train.sh judge` and
+    auto-merge.yml's gates 5-6 state the same rule, held equal by
+    tests/unit/scripts/test_auto_merge_workflow.py.
+    """
+    if run.get("status") == "completed":
+        return True
+    return bool(run.get("conclusion")) and bool(run.get("completed_at"))
+
+
 def other_check_blocks(run: Mapping[str, Any]) -> bool:
-    """A check at the head that holds the merge: not completed, or completed
-    with a conclusion other than success, skipped or neutral. STRICTER than
-    gate 5, which holds only on four conclusions (§8)."""
-    if run.get("status") != "completed":
+    """A check at the head that holds the merge: not finished
+    (`check_run_finished`), or finished with a conclusion other than
+    success, skipped or neutral. STRICTER than gate 5, which holds only on
+    four conclusions (§8)."""
+    if not check_run_finished(run):
         return True
     return (run.get("conclusion") or "") not in OTHER_TOLERATED
 
@@ -417,7 +438,7 @@ def _judge_latest(runs: list[Mapping[str, Any]], green: frozenset[str] | set[str
     latest = [run for _event, run in latest_per_event(runs)]
     if not latest:
         return "pending"
-    if any(run.get("status") != "completed" for run in latest):
+    if not all(check_run_finished(run) for run in latest):
         return "pending"
     if all((run.get("conclusion") or "") in green for run in latest):
         return "green"
@@ -429,7 +450,7 @@ def required_check_state(runs: list[Mapping[str, Any]]) -> str:
 
     Decided by the LATEST run of EACH event that ran it (BGD, 2026-10-22):
     green only when every event's latest run is green, pending when any is
-    not completed (or there is none), failed otherwise. A red push run is
+    not finished (`check_run_finished`; or there is none), failed otherwise. A red push run is
     never outvoted by a green pull_request run (CI-EARLY, #1694); a flake
     re-run green no longer holds the check (#1999, #1778). swarm-api's
     `forgechecks.required_check_state` is the same rule, held equal by
@@ -473,7 +494,7 @@ def judge_other_checks(checks: list[CheckFacts]) -> tuple[list[str], list[str]]:
         if not blocking:
             continue
         label = f"{name} ({required_check_label(runs)})"
-        if any(run.get("status") == "completed" for run in blocking):
+        if any(check_run_finished(run) for run in blocking):
             failed.append(label)
         else:
             pending.append(label)
@@ -489,7 +510,7 @@ def latest_reading(runs_by_check: Mapping[str, list[CheckFacts]],
     A check's runs are ordered by GitHub's run id, which a re-run increases,
     so a run cancelled and then superseded by a success of the same event is
     green here. No run is pending; so is any event's latest run not
-    completed. Otherwise a check with any event's latest run's conclusion
+    finished (`check_run_finished`). Otherwise a check with any event's latest run's conclusion
     not in `green` is failed.
 
     A RECORD, NOT THE DECISION: the merge decides on `required_check_state`
@@ -554,10 +575,14 @@ class CheckFacts:
     event: str | None = None
     #: GitHub's id for the run's check suite: the group when no event is known.
     check_suite_id: int | None = None
+    #: When GitHub says the run finished: with a conclusion, it finishes a
+    #: run whatever `status` says (`check_run_finished`, CHECK-STUCK). None
+    #: for a commit status, whose state alone says whether it finished.
+    completed_at: str | None = None
 
     def as_run(self) -> dict[str, Any]:
         return {"name": self.name, "status": self.status, "conclusion": self.conclusion,
-                "run_id": self.run_id, "event": self.event,
+                "completed_at": self.completed_at, "run_id": self.run_id, "event": self.event,
                 "check_suite_id": self.check_suite_id}
 
 
@@ -837,6 +862,7 @@ class GitHubMerger:
                 name=name,
                 status=str(run.get("status") or ""),
                 conclusion=_str(run.get("conclusion")),
+                completed_at=_str(run.get("completed_at")),
                 app_id=_int(_mapping(run.get("app")).get("id")),
                 run_id=_int(run.get("id")),
                 check_suite_id=_int(_mapping(run.get("check_suite")).get("id")),

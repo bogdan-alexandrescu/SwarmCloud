@@ -77,8 +77,8 @@ GREEN, PENDING, RED, NONE = "green", "pending", "red", "none"
 PASSED, FAILED, SKIPPED = "passed", "failed", "skipped"
 COUNT_BUCKETS = (PASSED, FAILED, PENDING, SKIPPED)
 #: Which GitHub check-run conclusions land in which bucket. A run not yet
-#: `completed` (queued, in_progress, waiting, requested) is pending, whatever
-#: its conclusion. `success` is passed; `neutral`, `skipped` and `cancelled`
+#: finished (`check_run_finished`: queued, in_progress, waiting, requested,
+#: with no conclusion and completed_at) is pending. `success` is passed; `neutral`, `skipped` and `cancelled`
 #: are skipped; every other conclusion -- `failure`, `timed_out`,
 #: `action_required`, `startup_failure`, `stale`, or none at all -- is failed.
 PASSED_CONCLUSIONS = frozenset({"success"})
@@ -142,13 +142,29 @@ def latest_per_event(runs: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any
     return [run for _rank, run in sorted(latest.values(), key=lambda item: item[0])]
 
 
+def check_run_finished(run: Mapping[str, Any]) -> bool:
+    """Whether a check run has finished: `status` is `completed`, OR it
+    carries a conclusion together with a `completed_at`.
+
+    BGD, 2026-10-23 (CHECK-STUCK, part of #2031): a run that carries a
+    conclusion and a completed_at is judged by its conclusion, whatever
+    `status` says -- GitHub left PR 2006's `secret scan` at `in_progress`
+    with `conclusion: success` and a `completed_at`. A run with no
+    conclusion stays pending. The worker's `merge.check_run_finished` is the
+    same rule, held equal by tests/unit/scripts/test_auto_merge_workflow.py.
+    """
+    if run.get("status") == "completed":
+        return True
+    return bool(run.get("conclusion")) and bool(run.get("completed_at"))
+
+
 def required_check_state(runs: Sequence[Mapping[str, Any]]) -> str:
     """The runs of ONE required check by its pinned App: green, pending or red,
     decided by the latest run of each event (`latest_per_event`)."""
     latest = latest_per_event(runs)
     if not latest:
         return PENDING
-    if any(run.get("status") != "completed" for run in latest):
+    if not all(check_run_finished(run) for run in latest):
         return PENDING
     if all((run.get("conclusion") or "") in REQUIRED_GREEN for run in latest):
         return GREEN
@@ -156,8 +172,8 @@ def required_check_state(runs: Sequence[Mapping[str, Any]]) -> str:
 
 
 def other_check_state(run: Mapping[str, Any]) -> str:
-    """A check run nothing requires: pending until completed, then tolerated or red."""
-    if run.get("status") != "completed":
+    """A check run nothing requires: pending until finished, then tolerated or red."""
+    if not check_run_finished(run):
         return PENDING
     return GREEN if (run.get("conclusion") or "") in OTHER_TOLERATED else RED
 
@@ -173,7 +189,7 @@ def status_state(status: Mapping[str, Any]) -> str:
 
 def run_bucket(run: Mapping[str, Any]) -> str:
     """The display bucket of one check run (see `PASSED_CONCLUSIONS`)."""
-    if run.get("status") != "completed":
+    if not check_run_finished(run):
         return PENDING
     conclusion = run.get("conclusion") or ""
     if conclusion in PASSED_CONCLUSIONS:
@@ -270,7 +286,7 @@ def evaluate(
                 if state == RED:
                     reading.failing_runs += [
                         run for run in deciding
-                        if run.get("status") == "completed"
+                        if check_run_finished(run)
                         and (run.get("conclusion") or "") not in REQUIRED_GREEN
                     ]
                 elif state == PENDING:

@@ -595,6 +595,12 @@ jobs:
           #    suite, read from the Actions runs at the head only when some
           #    check has more than one run; a suite with no known event is
           #    its own group, so one suite never outvotes another.
+          #    A run has finished when its status is completed, OR when it
+          #    carries a conclusion together with a completed_at, whatever
+          #    its status says (BGD 2026-10-23, CHECK-STUCK, part of #2031):
+          #    GitHub left PR 2006's `secret scan` at in_progress with
+          #    conclusion success and a completed_at. The worker's
+          #    `check_run_finished` and `merge-train.sh judge` say the same.
           runs="$(mktemp)"
           gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" >"${runs}"
           wf_runs="$(mktemp)"
@@ -617,8 +623,10 @@ jobs:
               | group_by([.name, .group])
               | map(max_by(.id))' "${runs}" >"${latest}"
           failing="$(jq -r '
+              def finished: .status == "completed"
+                            or ((.conclusion // "") != "" and (.completed_at // "") != "");
               [ .[]
-                | select(.status == "completed")
+                | select(finished)
                 | select((.conclusion // "") as $c |
                          $c == "failure" or $c == "timed_out" or
                          $c == "action_required" or $c == "cancelled")
@@ -670,11 +678,16 @@ jobs:
           #    latest run of each event, gate 5's deciding runs (BGD
           #    2026-10-22, "one rule for every check", CHECK-RULE-2, part of
           #    #1999): a run still in progress that a later run of its own
-          #    event replaced does not hold the merge.
+          #    event replaced does not hold the merge. A run is still
+          #    running until it has finished as gate 5 reads it (CHECK-STUCK,
+          #    part of #2031) AND carries a conclusion: one `completed` with
+          #    none is not green, so it waits too.
           required_json="$(jq -Rs 'split("\n") | map(select(length > 0)) | unique' "${required_names}")"
           unfinished="$(jq -r --argjson required "${required_json}" '
+              def finished: .status == "completed"
+                            or ((.conclusion // "") != "" and (.completed_at // "") != "");
               [ .[]
-                | select(.status != "completed")
+                | select((finished | not) or (.conclusion // "") == "")
                 | .name
                 | select(. as $name | $required | index($name))
               ] | unique | join(", ")' "${latest}")"

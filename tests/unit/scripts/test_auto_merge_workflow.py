@@ -1447,6 +1447,92 @@ def test_every_implementation_judges_every_check_by_the_latest_run_of_each_event
     assert (verdict != "green") is holds, (case, verdict)
 
 
+#: CHECK-STUCK (BGD, 2026-10-23, part of #2031): a check run that carries a
+#: conclusion AND a completed_at is judged by its conclusion, whatever
+#: `status` says. GitHub left PR 2006's `secret scan` at `in_progress` with
+#: `conclusion: success` and a `completed_at`, and the worker's merge step
+#: waited out its 6 h on it. A run with no conclusion stays pending; a run
+#: `completed` with no conclusion is not green -- pending in the gate (gate 6
+#: waits on a required check with no conclusion) and in the train's judge,
+#: failed in the worker and red in swarm-api, as each already read it.
+#:
+#: Each judge's own answer, one row each. The gate is read from the tree's
+#: auto-merge.yml: the rows its old rule answers differently are red until
+#: the operator applies this lane's workflow-lines.patch.
+#: (case, required, status, conclusion, completed_at,
+#:  gate, worker, swarm-api, train)
+STUCK_AT = "2026-10-22T19:05:52Z"
+STUCK_PARITY = [
+    ("required, in_progress, success, completed_at", True, "in_progress", "success", STUCK_AT,
+     "merge", "green", "green", "green"),
+    ("required, in_progress, failure, completed_at", True, "in_progress", "failure", STUCK_AT,
+     "refuse", "failed", "red", "red"),
+    ("required, in_progress, no conclusion", True, "in_progress", None, None,
+     "wait", "pending", "pending", "pending"),
+    ("required, in_progress, success, no completed_at", True, "in_progress", "success", None,
+     "wait", "pending", "pending", "pending"),
+    ("required, completed, no conclusion", True, "completed", None, STUCK_AT,
+     "wait", "failed", "red", "pending"),
+    ("not required, in_progress, success, completed_at", False, "in_progress", "success", STUCK_AT,
+     "merge", "green", "green", "green"),
+    ("not required, in_progress, failure, completed_at", False, "in_progress", "failure", STUCK_AT,
+     "refuse", "failed", "red", "red"),
+]
+
+
+@pytest.mark.parametrize(("case", "required", "status", "conclusion", "completed_at",
+                          "gate", "worker", "api", "train"),
+                         STUCK_PARITY, ids=[c[0] for c in STUCK_PARITY])
+def test_every_judge_reads_a_run_with_a_conclusion_and_completed_at_as_finished(
+    run_gate, tmp_path, case, required, status, conclusion, completed_at, gate, worker, api, train
+):
+    name = "ci-gate" if required else "terraform"
+    run = {"id": 1, "name": name, "status": status, "conclusion": conclusion,
+           "completed_at": completed_at, "app": {"id": 15368}, "check_suite": {"id": 101},
+           "html_url": "https://github.com/o/r/actions/runs/1"}
+
+    # Gate 5 and gate 6, the gate step's shell.
+    rules, branch = (RULESET_RULES, RULESET_ONLY_BRANCH) if required else (None, PROTECTED)
+    proc, _calls, comments = run_gate("A fact-style headline", branch, rules=rules, check_runs=[run])
+    decision = "refuse" if proc.returncode != 0 else _outputs(tmp_path / "output.txt").get("decision")
+    # MUTATION (auto-merge.yml gate 5): read status alone -> the failure row
+    # merges. MUTATION (gate 6): read status alone -> the success row waits,
+    # PR 2006's wait; wait on `status` without the no-conclusion rule -> the
+    # "completed, no conclusion" row merges.
+    assert decision == gate, (case, decision, proc.stderr, comments)
+
+    # The worker's merge step.
+    facts = worker_merge.CheckFacts(name=name, status=status, conclusion=conclusion, app_id=15368,
+                                    run_id=1, check_suite_id=101, completed_at=completed_at)
+    if required:
+        got = worker_merge.required_check_state([facts.as_run()])
+    else:
+        pending, failed = worker_merge.judge_other_checks([facts])
+        got = "failed" if failed else "pending" if pending else "green"
+    # MUTATION (merge.py): read status alone -> the success rows read
+    # "pending" and the failure rows "pending".
+    assert got == worker, (case, got)
+
+    # swarm-api's reading.
+    reading = api_forgechecks.evaluate([api_forgechecks.RequiredCheck(name, None)] if required else [],
+                                       [run], [])
+    # MUTATION (forgechecks.py): read status alone -> the same rows pending.
+    assert reading.state == api, (case, reading)
+
+    # The merge train's judge, beside one green required check when the row
+    # is a check nothing requires.
+    judged = [run] if required else [run, {"id": 50, "name": "ci-gate", "status": "completed",
+                                           "conclusion": "success", "check_suite": {"id": 150}}]
+    verdict = _train_judge(tmp_path, judged, [], ["ci-gate"])
+    # MUTATION (merge-train.sh `cmd_judge`): read status alone -> the
+    # success rows read "pending" and the failure rows not "red".
+    assert verdict == train, (case, verdict)
+
+    # §8: the merge may be stricter than the gate, never looser.
+    if gate != "merge":
+        assert worker != "green", case
+
+
 @pytest.mark.parametrize(
     ("rules", "branch", "gate_refuses"),
     [([], UNPROTECTED, True), (RULESET_RULES, RULESET_ONLY_BRANCH, False)],

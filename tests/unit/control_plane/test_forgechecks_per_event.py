@@ -237,3 +237,79 @@ def test_no_required_checks_of_two_apps_with_one_name_are_judged_apart():
     reading = forgechecks.evaluate([], [red, green], [])
     # MUTATION: group by name alone -> "green".
     assert reading.state == forgechecks.RED, reading
+
+
+# ---------------------------------------------------------------------------
+# A run GitHub concluded but left `in_progress` (CHECK-STUCK, part of #2031)
+# ---------------------------------------------------------------------------
+#
+# BGD, 2026-10-23: a check run that carries a conclusion AND a completed_at
+# is judged by its conclusion, whatever `status` says. PR 2006's `secret
+# scan` read `in_progress` with `conclusion: success` and a `completed_at`
+# while its workflow run was completed/success, and the merge step waited
+# 6 h on it. A run with no conclusion stays pending; `completed` with no
+# conclusion is not green -- red here, as before (`failed` in the worker).
+
+STUCK_AT = "2026-10-22T19:05:52Z"
+
+#: (case, status, conclusion, completed_at, required state, other state, bucket)
+STUCK = [
+    ("in_progress, success, completed_at", "in_progress", "success", STUCK_AT,
+     forgechecks.GREEN, forgechecks.GREEN, forgechecks.PASSED),
+    ("in_progress, failure, completed_at", "in_progress", "failure", STUCK_AT,
+     forgechecks.RED, forgechecks.RED, forgechecks.FAILED),
+    ("in_progress, no conclusion", "in_progress", None, None,
+     forgechecks.PENDING, forgechecks.PENDING, forgechecks.PENDING),
+    ("in_progress, success, no completed_at", "in_progress", "success", None,
+     forgechecks.PENDING, forgechecks.PENDING, forgechecks.PENDING),
+    ("completed, no conclusion", "completed", None, STUCK_AT,
+     forgechecks.RED, forgechecks.RED, forgechecks.FAILED),
+]
+
+
+@pytest.mark.parametrize(("case", "status", "conclusion", "completed_at", "required", "other", "bucket"),
+                         STUCK, ids=[row[0] for row in STUCK])
+def test_a_run_with_a_conclusion_and_completed_at_is_judged_by_its_conclusion(
+    case, status, conclusion, completed_at, required, other, bucket
+):
+    run = {**_github_run(1, status, conclusion, None), "completed_at": completed_at}
+    # MUTATION: read status alone in `required_check_state` -> the first two
+    # rows read "pending" (PR 2006's 6 h wait).
+    assert forgechecks.required_check_state([run]) == required, case
+    # MUTATION: read status alone in `other_check_state` -> the same rows
+    # read "pending" for a check nothing requires.
+    assert forgechecks.other_check_state(run) == other, case
+    # MUTATION: read status alone in `run_bucket` -> the run page counts a
+    # concluded run as pending.
+    assert forgechecks.run_bucket(run) == bucket, case
+    # MUTATION: accept a conclusion without a completed_at -> the fourth row
+    # reads green.
+    # The worker decides the same row alike (red spelt failed).
+    facts = worker_merge.CheckFacts(name=NAME, status=status, conclusion=conclusion, app_id=1,
+                                    run_id=1, completed_at=completed_at).as_run()
+    worker = worker_merge.required_check_state([facts])
+    # MUTATION (merge.py): change one side only -> the two disagree here.
+    assert {"failed": "red"}.get(worker, worker) == required, (case, worker)
+
+
+@pytest.mark.parametrize("required", [True, False], ids=["required", "nothing-required"])
+def test_the_reading_fails_and_excerpts_a_stuck_failure(required):
+    """What `issueci` builds the excerpt from: a run concluded `failure` but
+    left `in_progress` is a failing run, not a pending one."""
+    run = {**_github_run(1, "in_progress", "failure", None), "completed_at": STUCK_AT}
+    reading = forgechecks.evaluate([forgechecks.RequiredCheck(NAME, 1)] if required else [], [run], [])
+    # MUTATION: read status alone in `evaluate`'s failing-run filter -> the
+    # state is red with no failing run to excerpt.
+    assert reading.state == forgechecks.RED, reading
+    assert reading.failing_runs == [run], reading
+    assert reading.pending == []
+
+
+@pytest.mark.parametrize("required", [True, False], ids=["required", "nothing-required"])
+def test_the_reading_is_green_on_a_stuck_success(required):
+    """PR 2006's `secret scan`, as swarm-api reads it."""
+    run = {**_github_run(1, "in_progress", "success", None), "completed_at": STUCK_AT}
+    reading = forgechecks.evaluate([forgechecks.RequiredCheck(NAME, 1)] if required else [], [run], [])
+    # MUTATION: read status alone -> "pending", naming ci-gate.
+    assert reading.state == forgechecks.GREEN, reading
+    assert reading.counts[forgechecks.PASSED] == 1, reading.counts

@@ -219,11 +219,19 @@ cmd_judge() {
   # the one that made the run's check suite, from --workflow-runs (GET
   # actions/runs?head_sha=, optional); a suite no Actions run names is its own
   # group, so without the file each check suite is judged on its own.
+  # A run has finished when its status is completed, OR when it carries a
+  # conclusion together with a completed_at, whatever its status says (BGD
+  # 2026-10-23, CHECK-STUCK, part of #2031): GitHub left PR 2006's `secret
+  # scan` at in_progress with conclusion success and a completed_at. A run
+  # with no conclusion stays pending; the worker's `check_run_finished` and
+  # auto-merge.yml's gates 5-6 state the same rule.
   jq -rn --slurpfile cr "${check_runs}" --slurpfile st "${statuses}" \
     --slurpfile wf "${workflow_runs:-/dev/null}" --argjson required "${req}" '
     def good: . as $c | ["success", "skipped", "neutral"] | index($c) != null;
     def bad: . as $c | ["failure", "timed_out", "cancelled", "action_required",
                         "startup_failure", "stale", "error"] | index($c) != null;
+    def finished: .status == "completed"
+                  or ((.conclusion // "") != "" and (.completed_at // "") != "");
     ( [ ($wf[0].workflow_runs // [])[]
         | select(.check_suite_id != null and (.event // "") != "")
         | {key: (.check_suite_id | tostring), value: .event} ]
@@ -236,7 +244,7 @@ cmd_judge() {
         | map(max_by([(.id // 0), .position]))
         | sort_by(.position) ) as $latest
     | ( [ $latest[]
-        | {name, done: (.status == "completed"), result: (.conclusion // ""),
+        | {name, done: finished, result: (.conclusion // ""),
            url: (.html_url // .details_url // "")} ]
     + [ ($st[0].statuses // [])[]
         | {name: .context, done: (.state != "pending"), result: (.state // ""),

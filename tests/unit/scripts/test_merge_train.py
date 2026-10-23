@@ -305,6 +305,49 @@ def test_judge_a_check_nothing_requires_by_the_latest_run_of_each_event(tmp_path
     assert got == verdict, case
 
 
+# CHECK-STUCK (BGD, 2026-10-23, part of #2031): a check run that carries a
+# conclusion AND a completed_at is judged by its conclusion, whatever
+# `status` says. GitHub left PR 2006's `secret scan` at `in_progress` with
+# `conclusion: success` and a `completed_at`; its workflow run was completed.
+# A run with no conclusion stays pending; `completed` with no conclusion is
+# not green (the judge reads it pending: done, but neither good nor bad).
+STUCK_AT = "2026-10-22T19:05:52Z"
+
+
+#: (case, status, conclusion, completed_at, verdict)
+STUCK = [
+    ("in_progress, success, completed_at", "in_progress", "success", STUCK_AT, "green"),
+    ("in_progress, failure, completed_at", "in_progress", "failure", STUCK_AT, "red"),
+    ("in_progress, no conclusion", "in_progress", None, None, "pending"),
+    ("in_progress, success, no completed_at", "in_progress", "success", None, "pending"),
+    ("completed, no conclusion", "completed", None, STUCK_AT, "pending"),
+]
+
+
+@pytest.mark.parametrize(("case", "status", "conclusion", "completed_at", "verdict"), STUCK,
+                         ids=[row[0] for row in STUCK])
+def test_judge_a_run_with_a_conclusion_and_completed_at_is_finished(
+    tmp_path, case, status, conclusion, completed_at, verdict
+):
+    stuck = {**_cr("secret scan", status=status, conclusion=conclusion), "completed_at": completed_at}
+    got, failed = _judge(tmp_path, [_cr("ci-gate"), stuck])
+    # MUTATION: read status alone (`done: (.status == "completed")`) -> the
+    # first row is "pending" (PR 2006's 6 h wait) and the second not "red".
+    # MUTATION: accept a conclusion without a completed_at -> the fourth row
+    # reads "green".
+    assert got == verdict, (case, got, failed)
+    # MUTATION: read status alone -> a run GitHub concluded `failure` is not
+    # named among the failed.
+    assert ([name for name, _url in failed] == ["secret scan"]) is (verdict == "red"), failed
+
+
+def test_judge_a_stuck_failure_that_nothing_requires_is_red(tmp_path):
+    stuck = {**_cr("Trivy", status="in_progress", conclusion="failure"), "completed_at": STUCK_AT}
+    # MUTATION: read status alone -> a check nothing requires, still "in
+    # progress", holds nothing and the head reads "green".
+    assert _judge(tmp_path, [_cr("ci-gate"), _cr("secret scan"), stuck])[0] == "red"
+
+
 def test_the_tick_passes_the_actions_runs_when_a_check_ran_twice():
     """MUTATION: keep calling the judge with --check-runs alone -> a train's
     head is judged each check suite on its own, and a push re-run green in a
