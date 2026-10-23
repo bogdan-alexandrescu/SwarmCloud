@@ -1897,7 +1897,12 @@ function LiveScreen({
           it, sizes it to its stage instead. */}
       <div ref={stage} className="live-stage" style={floor === null ? undefined : { minHeight: `${floor}px` }}>
         <div
-          className={`live-frame is-${kind}`}
+          // ITS OWN BOX IN EVERY STATE (visual QA run 6, task-006): a
+          // desktop frame drew no edge of its own, only the screen's hairline
+          // inside it, so wherever the screen is not drawn whole -- borrowed
+          // by the theater, or not yet connected -- the frame lost its box.
+          // `is-bordered` draws it on the frame (styles/live.css).
+          className={`live-frame is-${kind} is-bordered`}
           data-device={kind}
           style={fit === null ? undefined : { width: `${fit.width + 2 * HAIRLINE}px`, height: `${fit.height + 2 * HAIRLINE}px` }}
         >
