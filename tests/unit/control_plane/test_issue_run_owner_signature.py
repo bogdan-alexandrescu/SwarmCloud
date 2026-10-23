@@ -44,7 +44,7 @@ from swarm_api.service import SubmissionService
 from swarm_api.waker import NullWaker
 
 from . import forge_fakes
-from .conftest import api_settings, auth_header
+from .conftest import api_settings
 from .spec_signer import KEY_VERSION, LocalSpecSigner
 from .test_issue_runs import PLAN, _approve, _create, _docs, _finish_planner, _run
 
