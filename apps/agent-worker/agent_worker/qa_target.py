@@ -26,6 +26,13 @@ origin is answered with it, and it goes to the gate in the same args
 (QA-IDP-POST, part of #2067): the gate lets exactly that POST through once
 its own sign-in has completed.
 
+AN ATTEMPT IS ONE LEG OF ITS TARGET (docs/design/qa-environments.md §1.5;
+QAENV-GATE, part of #2136). An answer for a target with `environments[]`
+names its entry in `environment_name`, and it goes to the gate unchanged: the
+gate refuses a later hand-off for another leg as `target_changed`, so
+`swarm-handoff sign-in` can never bring a second leg's credential or origins
+into the attempt. An old mark's answer has no name, and none is invented.
+
 THE WORKER HANDS IT TO THE GATE AND FORGETS IT. ctl.sock `qa_sign_in`
 (`livegate/qatarget.py`): the gate holds the agent, signs in on a tab of its
 own, and scrubs the password from everything bound for the agent. The worker
@@ -119,6 +126,8 @@ _TARGET_CAUSES = frozenset({"qa_target_host_pending", "qa_credential_unavailable
 _CAUSE = re.compile(r"[a-z0-9_]{1,64}")
 _REQUEST_ID = re.compile(r"[a-z0-9-]{1,64}")
 _TARGET_ID = re.compile(r"qat_[0-9a-f]{16}")
+#: An `environments[]` entry's `name` (docs/design/qa-environments.md §1.1).
+_ENVIRONMENT_NAME = re.compile(r"[a-z0-9-]{1,20}")
 #: The gate's `sentence`, said in place of `_WHY`'s reason only when it is one
 #: plain line: it quotes a start click's text, which a workspace admin typed.
 _SENTENCE = re.compile(r"[^\x00-\x1f\x7f`]{1,400}")
@@ -237,6 +246,14 @@ def handoff_args(answer: Mapping[str, Any]) -> dict[str, Any]:
         # swarm-api serves no per-step flag yet: every step is read-only (§3).
         "mutating": answer.get("mutating") is True,
     }
+    if "environment_name" in answer:
+        # The leg (qa-environments.md §1.5): the gate refuses a later hand-off
+        # naming another leg of the target. An old mark's answer has none, and
+        # none is sent: a default here would read it as a named leg.
+        name = answer["environment_name"]
+        if not isinstance(name, str) or not _ENVIRONMENT_NAME.fullmatch(name):
+            raise ValueError("a malformed environment name")
+        args["environment_name"] = name
     if served.get("kind") == "own_login":
         username, password = sign_in.get("username"), sign_in.get("password")
         if not isinstance(username, str) or not isinstance(password, str) or not password:
@@ -291,6 +308,8 @@ class QaTargetSignIn:
         self.wanted = getattr(cfg, "runner_profile", None) == PROFILE
         self.has_target: bool | None = None
         self.target_id: str | None = None
+        #: The leg's `environments[]` name, None for an old mark. Public, as the id is.
+        self.environment_name: str | None = None
         #: The gate's state for the target (`ready`, `signing_in`, `signed_in`,
         #: `challenge`, `failed`), or None while nothing was handed over.
         self.state: str | None = None
@@ -364,6 +383,7 @@ class QaTargetSignIn:
         finally:
             answer.clear()
         self.target_id = args["target_id"]
+        self.environment_name = args.get("environment_name")
         self._own_login = "credential" in args
         held = [args["credential"]["password"]] if self._own_login else []
         if "challenge_bypass" in args:
@@ -391,7 +411,8 @@ class QaTargetSignIn:
         if self._own_login:
             self.sign_ins += 1
         self._apply(result)
-        self.log.info("qa target handed to the gate", target_id=self.target_id, state=self.state,
+        self.log.info("qa target handed to the gate", target_id=self.target_id,
+                      environment_name=self.environment_name, state=self.state,
                       sign_ins=self.sign_ins)
 
     def _await_first(self, gate: Any) -> None:

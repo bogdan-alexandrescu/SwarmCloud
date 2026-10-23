@@ -1647,6 +1647,15 @@ def site(world, qa, monkeypatch):
         return world.robots
 
     monkeypatch.setattr(qa, "_fetch_robots", fetch)
+    # The walk spaces its navigations (QAENV-CRAWL, qa-environments.md §4):
+    # on a clock of its own here, so these tests never sleep.
+    clock = [0.0]
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr(qa, "_now", lambda: clock[0], raising=False)
+    monkeypatch.setattr(qa, "_sleep", sleep, raising=False)
     return world
 
 

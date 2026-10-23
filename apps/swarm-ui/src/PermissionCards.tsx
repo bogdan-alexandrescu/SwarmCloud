@@ -122,9 +122,9 @@ export function useForgePermissions(): ForgePermsRead {
   const fresh = useRef(false)
   const armed = useRef(false)
   const [checking, setChecking] = useState(false)
-  // A read that settles after the page is gone sets no state: the test that
-  // renders <App /> on /repositories tore jsdom down first, and React's update
-  // then reached for a `window` that was no longer there (run 40002946294).
+  // A read can settle after the surface is gone (a route change, a test's
+  // teardown): setting state then schedules an update against a torn-down
+  // window, which vitest reports as an unhandled rejection.
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true

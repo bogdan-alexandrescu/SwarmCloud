@@ -130,6 +130,17 @@ OUTCOMES_LIVE_REWRITE_S = 60
 OUTCOMES_DERIVE_READ_BUDGET = 5_000
 OUTCOMES_DERIVE_SECONDS = 20.0
 
+#: How many ended UTC days, yesterday and back, `Outcomes.seal_recent` looks at
+#: on each call of the workflow-rollup job (COUNTS-SEAL, #2149). Yesterday is
+#: the day each night makes sealable; the two before it are there so that a
+#: night the job missed (a failed tick, a paused job, an outage) is sealed by
+#: the next one rather than left to a reader's derive budget. A day already
+#: sealed costs its one stored-doc read and nothing more, so the job's
+#: fifteen-minute ticks cost 3 reads per tenant each once a night is sealed.
+#: Inside the backfill's 31-day cap by construction; older days are the admin
+#: backfill's (`POST /v1/admin/outcomes/rollup`).
+OUTCOMES_SEAL_LOOKBACK_DAYS = 3
+
 #: A fold (every section of one query) is served from memory for this long. The cache key carries the
 #: minute, so an entry never outlives the minute it was built in.
 OUTCOMES_CACHE_S = 60
@@ -3659,6 +3670,82 @@ class Outcomes:
         return _previous(params, entry.tenants, got, previous_days)
 
     # -- POST /v1/admin/outcomes/rollup ----------------------------------------
+
+    def seal_recent(
+        self, *, tenant_id: str, lookback_days: int = OUTCOMES_SEAL_LOOKBACK_DAYS
+    ) -> dict[str, Any]:
+        """SEAL one tenant's ended UTC days, yesterday and back (COUNTS-SEAL, #2149).
+
+        The workflow-rollup job calls this for each registered tenant, so a
+        12-month view of Admin › Platform counts reads sealed days instead of
+        spending a reader's derive budget on them.
+
+        * Never today: the live day is not in the window, so it is neither
+          written nor rewritten. A day still inside its 15-minute grace is
+          `not_yet` and left as it is.
+        * Idempotent: a day already sealed at this module's versions is
+          `already_sealed` and costs no derive and no write. A missing day, a
+          live one past its grace, or one on another derive or classifier
+          version is sealed by a FULL derive, exactly what the next read
+          would do.
+        * Bounded: at most `lookback_days` days (<= 31, the backfill's cap),
+          newest first, and no derive starts once this call has spent the
+          derive read budget or seconds. What it did not reach is `deferred`
+          and is sealed by the next call; it is never written as a zero.
+        * Unlike `maintain`, a sealed day is not re-derived: the drift check
+          stays the admin route's, so a tick does not re-read history.
+        """
+        if not 1 <= lookback_days <= 31:
+            raise _refuse("lookback_days", "between 1 and 31 days", value=lookback_days, max=31)
+        now = self._utcnow()
+        days = [now.date() - timedelta(days=i) for i in range(1, lookback_days + 1)]
+        meter = _Meter()
+        stored = self._read_stored([(tenant_id, day) for day in days], meter)
+        report = {
+            "examined": 0, "sealed": 0, "already_sealed": 0, "not_yet": 0,
+            "deferred": 0, "unknown": 0, "reads": 0,
+        }
+        derive_reads = 0
+        started = self._clock()
+        for day in days:
+            report["examined"] += 1
+            entry = stored[(tenant_id, day)]
+            if entry.failed:
+                report["unknown"] += 1
+                continue
+            if now < _seal_at(day):
+                report["not_yet"] += 1
+                continue
+            if entry.doc is not None and entry.doc.sealed:
+                report["already_sealed"] += 1
+                continue
+            if derive_reads >= self._budget or (self._clock() - started) >= self._derive_seconds:
+                report["deferred"] += 1
+                continue
+            before = meter.reads
+            try:
+                data = self.derive_day(tenant_id, day, meter)
+                self._write(tenant_id, day, data, sealed=True, now=now, prior_shards=entry.shards)
+                report["sealed"] += 1
+            except _TooLarge:
+                log.warning("outcome day %s %s is too large to store", tenant_id, day)
+                report["unknown"] += 1
+            except Exception:
+                log.warning("outcome day %s %s could not be sealed", tenant_id, day, exc_info=True)
+                report["unknown"] += 1
+            derive_reads += meter.reads - before
+        report["reads"] = meter.reads
+        log.info(
+            "outcome seal tenant=%s sealed=%d already_sealed=%d not_yet=%d deferred=%d unknown=%d reads=%d",
+            tenant_id, report["sealed"], report["already_sealed"], report["not_yet"],
+            report["deferred"], report["unknown"], report["reads"],
+        )
+        return {
+            "tenant_id": tenant_id,
+            "since": days[-1].isoformat(),
+            "until": now.date().isoformat(),
+            "report": report,
+        }
 
     def maintain(
         self,
