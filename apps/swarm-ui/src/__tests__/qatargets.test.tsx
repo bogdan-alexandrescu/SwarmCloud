@@ -482,7 +482,8 @@ describe('QA targets: the flow browser (VQ9-TOOL; BGD, 2026-10-23)', () => {
     const tool = form.querySelector<HTMLSelectElement>('select[name="flows_browser_tool"]')
     // MUTATION: draw no Flow browser select and this is null.
     expect(tool).not.toBeNull()
-    expect(visible(tool!.closest('label')!)).toContain('Flow browser')
+    // The label that names the select (its own `ur-fl` cell since QA-TARGETS-FORM, no longer a wrapper).
+    expect(visible(tool!.labels![0]!)).toContain('Flow browser')
     // MUTATION: default the select to Jev and this fails.
     expect(tool!.value).toBe('playwright')
     expect(Array.from(tool!.options).map((o) => o.value)).toEqual(['playwright', 'jev'])
