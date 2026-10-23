@@ -91,9 +91,9 @@ re-reads each one's task -- a step of THIS workflow, through the same
 tenant-gated upstream read -- and counts it answered when that task's
 `metadata.owner_answers` holds its index, so a question answered after the
 review counts as answered. While any is still open, or an entry cannot be
-read, it parks HUMAN_REQUIRED (`owner_wait`) naming each question's step and
-index: no lease, nothing counted, the attempt refunded within the hand-off's
-bound. A person's `human-ready` (or the review re-running) brings it back,
+read, it parks for a person (`owner_wait`, `handoff.park_human_required`),
+naming each question's step and index: no lease, nothing counted, the
+attempt refunded within the hand-off's bound. A person's `human-ready` (or the review re-running) brings it back,
 and it reads every answer again. The review's `open_questions`, the ones it
 judged need not hold, never stop the merge; those still unanswered are
 listed in the comment that records the merge, so nothing asked is
@@ -1234,7 +1234,7 @@ class _Run:
         return refusal(self.summary, EndCause.MERGE_REFUSED, code, message)
 
     def wait_for_owner(self, held: list[dict[str, Any]], *, unreadable: int) -> ActionOutcome:
-        """The owner's questions are a hold no tick can clear: park HUMAN_REQUIRED.
+        """The owner's questions are a hold no tick can clear: park for a person.
 
         `held` is each still-unanswered `needs_owner` question, `unreadable`
         how many entries could not be read. The lifecycle writes the park in
