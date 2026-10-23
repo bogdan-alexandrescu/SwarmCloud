@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.config
 import secrets
 import time
 from dataclasses import asdict
@@ -521,8 +522,8 @@ def test_another_members_submission_is_not_released_a_personal_secret(client, db
     assert names(release(client, attempt)) == []
 
 
-def test_a_lapsed_membership_releases_nothing_and_says_why_by_name(
-        db, worker_tokens, group_map, objects, sm, caplog):  # noqa: F811
+def _a_lapsed_membership_releases_nothing_and_says_why(
+        db, worker_tokens, group_map, objects, sm, caplog) -> None:  # noqa: F811
     seed_tenant(db, "eng")
     _personal(db, "u-alice", ALICE)
     value = _personal_secret(db, sm)
@@ -536,6 +537,45 @@ def test_a_lapsed_membership_releases_nothing_and_says_why_by_name(
     assert sm.reads == []
     assert any("no longer a member" in r.getMessage() for r in caplog.records)
     assert all(value not in r.getMessage() for r in caplog.records)
+
+
+def test_a_lapsed_membership_releases_nothing_and_says_why_by_name(
+        db, worker_tokens, group_map, objects, sm, caplog):  # noqa: F811
+    _a_lapsed_membership_releases_nothing_and_says_why(db, worker_tokens, group_map, objects, sm, caplog)
+
+
+@pytest.fixture
+def logging_reconfigured_by_an_earlier_test():
+    """What another test on the same xdist worker can leave behind (red on run
+    39578760162, shard 5/8): `dictConfig` disabling every existing logger, the
+    root's handlers replaced (as `configure_logging` does) and propagation off
+    above the route's logger. Every logger's state is put back afterwards, so
+    this test poisons nothing that runs after it."""
+    manager = logging.root.manager
+    loggers = [logging.root, *(lg for lg in manager.loggerDict.values() if isinstance(lg, logging.Logger))]
+    saved = [(lg, lg.disabled, lg.propagate, lg.level, list(lg.handlers)) for lg in loggers]
+    logging.getLogger(release_mod.__name__)  # exists before dictConfig, as it does once imported
+    logging.config.dictConfig({"version": 1, "disable_existing_loggers": True})
+    logging.root.handlers = [logging.NullHandler()]
+    logging.root.setLevel(logging.CRITICAL)
+    logging.getLogger("swarm_api").propagate = False
+    logging.getLogger("swarm_api.routes").propagate = False
+    try:
+        yield
+    finally:
+        for lg, disabled, propagate, level, handlers in saved:
+            lg.disabled, lg.propagate, lg.level, lg.handlers = disabled, propagate, level, handlers
+        for name, lg in list(manager.loggerDict.items()):
+            if isinstance(lg, logging.Logger) and all(lg is not s[0] for s in saved):
+                lg.disabled = False
+
+
+def test_the_lapsed_membership_warning_is_seen_whatever_reconfigured_logging_first(
+        logging_reconfigured_by_an_earlier_test, db, worker_tokens, group_map, objects, sm,
+        caplog):  # noqa: F811
+    # MUTATION: assert on caplog.records again -- the root's handler is gone and
+    # propagation stops at swarm_api, so the warning is never seen and this fails.
+    _a_lapsed_membership_releases_nothing_and_says_why(db, worker_tokens, group_map, objects, sm, caplog)
 
 
 def test_a_rewritten_submitter_fails_the_signature(client, db, sm):
