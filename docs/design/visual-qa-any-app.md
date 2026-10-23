@@ -521,7 +521,7 @@ target may set `jev`, and one run may choose either with `:run`'s
 target. Choosing Jev keeps Jev's requirements: where the workspace's
 judgment backend is TypeSafe, a flow step is refused at submission
 (`browser_tool_unavailable`, reason `no_key`) unless the submitter or the
-tenant has a TypeSafe key, exactly as any `browser_tool: jev` task is. The
+tenant has a TypeSafe key, exactly as any agent submitted with `browser_tool: jev` is. The
 capture and discovery steps are not affected: they run the fixed capture
 tool (`swarm_qa capture` and `discover` on Playwright) whatever the flows use.
 
