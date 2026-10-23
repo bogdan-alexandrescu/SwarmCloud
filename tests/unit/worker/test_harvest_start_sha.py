@@ -450,3 +450,35 @@ def test_a_carrier_checkpoint_push_from_a_new_local_branch_still_pushes(
 
 def _tree(bare: Path, ref: str) -> set[str]:
     return set(_git(bare, "ls-tree", "--name-only", ref).split())
+
+
+@pytest.mark.parametrize("packed", [False, True])
+def test_origin_tracking_refs_are_read_as_data_loose_or_packed(origin, tmp_path, packed):
+    """The two readers `_head_moved` asks, against a clone whose tracking refs
+    are loose files or lines of `packed-refs` (what `git gc` leaves)."""
+    from agent_worker import gitops
+
+    reviewed_tip = _reviewed_branch(origin, tmp_path)
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "--quiet", str(origin), str(clone)],
+                   check=True, capture_output=True)
+    _git(clone, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    main_tip = _git(clone, "rev-parse", "refs/remotes/origin/main")
+    loose = clone / ".git" / "refs" / "remotes" / "origin"
+    if packed:
+        _git(clone, "pack-refs", "--all", "--prune")
+        assert not (loose / "main").exists() and not (loose / REVIEWED).exists()
+    else:
+        # A clone packs what it fetched; a later fetch writes loose files.
+        (clone / ".git" / "packed-refs").unlink()
+        _git(clone, "update-ref", "refs/remotes/origin/main", main_tip)
+        _git(clone, "update-ref", f"refs/remotes/origin/{REVIEWED}", reviewed_tip)
+        assert (loose / "main").is_file() and (loose / REVIEWED).is_file()
+
+    # MUTATION: read only loose files (or only packed-refs) and one of the two
+    # parametrized cases answers None, and a fetched branch reads as the agent's own.
+    assert gitops.read_origin_ref_as_data(clone, f"refs/heads/{REVIEWED}") == reviewed_tip
+    assert gitops.read_origin_ref_as_data(clone, "refs/heads/feature") is None
+    # MUTATION: follow the symbolic `origin/HEAD` or drop a packed line and
+    # this set changes.
+    assert gitops.origin_tips_as_data(clone) == {reviewed_tip, main_tip}

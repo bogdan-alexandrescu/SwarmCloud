@@ -509,6 +509,13 @@ class CheckpointRecord:
     #: and an agent that could move it could keep its own commits out of the
     #: fold. The manifest is written by the worker, outside the archived tree.
     clone_base: str | None = None
+    #: The branch the attempt's clone left HEAD on (`refs/heads/<name>`, or
+    #: `gitops.DETACHED_HEAD`), read by the worker before any agent process
+    #: existed; None when there was no clone, or the manifest predates this
+    #: field (#2094). Beside `clone_base` for the same reason: the publish
+    #: asks whether HEAD left this branch, and a resumed attempt must not
+    #: take the answer from a tree the agent wrote.
+    start_branch: str | None = None
     #: The checkpoint this one's archive holds the changes since, and that
     #: archive's digest; None for a full archive (#637). For the reader only:
     #: a restore takes the base from the archive's own header (`PAX_BASE`),
@@ -956,6 +963,8 @@ class CheckpointManager:
         #: once the clone has landed, or once it has been read back from the
         #: checkpoint a resumed attempt restored, so it carries forward.
         self.clone_base: str | None = None
+        #: Written beside `clone_base`, set and carried forward the same way.
+        self.start_branch: str | None = None
         #: Directories of `work/`, by exact relative path, left out of every
         #: checkpoint this manager writes from now on, through the build
         #: directory filter (`_BuildDirFilter`). Empty unless the lifecycle
@@ -1203,6 +1212,7 @@ class CheckpointManager:
                 file_count=file_count,
                 uri=self._store.uri(f"{prefix}/"),
                 clone_base=self.clone_base,
+                start_branch=self.start_branch,
                 base_checkpoint_id=base[0] if base is not None else None,
                 base_archive_sha256=base[1] if base is not None else None,
             )
@@ -1943,6 +1953,7 @@ class CheckpointManager:
             file_count=file_count,
             uri=self._store.uri(f"{prefix}/"),
             clone_base=restored.clone_base,
+            start_branch=restored.start_branch,
             base_checkpoint_id=base[0] if base is not None else None,
             base_archive_sha256=base[1] if base is not None else None,
         )

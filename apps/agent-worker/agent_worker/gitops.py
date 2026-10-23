@@ -3286,6 +3286,11 @@ def _branch_ref_name_ok(name: str) -> bool:
     return True
 
 
+def is_branch_ref_name(name: object) -> bool:
+    """True for a `refs/heads/...` name the worker would read (`_branch_ref_name_ok`)."""
+    return isinstance(name, str) and _branch_ref_name_ok(name)
+
+
 def read_head_as_data(clone: Path) -> str | None:
     """The object id the clone's HEAD names, read from its FILES, never by git.
 
@@ -3385,6 +3390,115 @@ def read_head_branch_as_data(clone: Path) -> str:
     return name
 
 
+#: Where the clone's `origin` tracking refs live. The worker's clone tracks
+#: every branch (`TRACK_EVERY_BRANCH`), so an agent that fetched a branch by
+#: name has its tip here; a branch the agent created locally has none.
+ORIGIN_REFS_PREFIX = "refs/remotes/origin/"
+#: How many loose refs under `ORIGIN_REFS_PREFIX`, and how deep, the worker
+#: will walk before it stops trusting the answer. A clone holds one per
+#: fetched branch; past these the agent made them, and the caller is told
+#: it cannot be read rather than handed a partial set.
+_ORIGIN_REFS_MAX_ENTRIES = 10_000
+_ORIGIN_REFS_MAX_DEPTH = 32
+
+
+def read_origin_ref_as_data(clone: Path, branch: str) -> str | None:
+    """The object id `refs/remotes/origin/<name>` holds for `branch`
+    (`refs/heads/<name>`), or None when the clone has no such ref (#2094).
+
+    Read as `read_head_as_data` reads a branch -- the loose file opened
+    component by component with O_NOFOLLOW, else its line in `packed-refs`
+    -- never by git, so no config or hook of the agent's runs. A ref that
+    exists but cannot be read as an object id raises `GitError`.
+    """
+    if not _branch_ref_name_ok(branch):
+        raise GitError("not a branch name the worker reads")
+    name = ORIGIN_REFS_PREFIX + branch[len("refs/heads/"):]
+    fd = _open_ref_file(clone, *name.split("/"), what="the branch's origin tracking ref")
+    if fd is not None:
+        try:
+            loose = _read_capped_fd(fd, _REF_FILE_MAX_BYTES)
+        finally:
+            os.close(fd)
+        value = (loose or b"").decode("ascii", "replace").strip()
+        if _OBJECT_ID.match(value):
+            return value
+        raise GitError("the branch's origin tracking ref is not an object id")
+    fd = _open_ref_file(clone, "packed-refs", what="the clone's packed-refs")
+    if fd is None:
+        return None
+    try:
+        return _packed_ref(fd, name.encode("utf-8", "surrogateescape"))
+    finally:
+        os.close(fd)
+
+
+def origin_tips_as_data(clone: Path) -> set[str]:
+    """Every object id a `refs/remotes/origin/*` ref of the clone holds, loose
+    or packed, read as data and never by git (#2094).
+
+    The loose refs are walked with O_NOFOLLOW at every level; a link, a FIFO
+    or anything but a folder or a regular file is skipped, and a symbolic ref
+    (`origin/HEAD`) names no tip of its own. More than
+    `_ORIGIN_REFS_MAX_ENTRIES` entries, or a tree deeper than
+    `_ORIGIN_REFS_MAX_DEPTH`, raises `GitError`: a partial set would read as
+    "no origin tip" exactly where the agent made it partial.
+    """
+    tips: set[str] = set()
+    seen = 0
+
+    def walk(fd: int, depth: int) -> None:
+        nonlocal seen
+        if depth > _ORIGIN_REFS_MAX_DEPTH:
+            raise GitError("the clone's origin tracking refs are nested too deep to read")
+        for entry in os.listdir(fd):
+            seen += 1
+            if seen > _ORIGIN_REFS_MAX_ENTRIES:
+                raise GitError("the clone holds too many origin tracking refs to read")
+            mode = os.stat(entry, dir_fd=fd, follow_symlinks=False).st_mode
+            if stat.S_ISDIR(mode):
+                sub = os.open(entry, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=fd)
+                try:
+                    walk(sub, depth + 1)
+                finally:
+                    os.close(sub)
+            elif stat.S_ISREG(mode):
+                ref = os.open(entry, os.O_RDONLY | _NOFOLLOW | _NONBLOCK, dir_fd=fd)
+                try:
+                    raw = _read_capped_fd(ref, _REF_FILE_MAX_BYTES)
+                finally:
+                    os.close(ref)
+                value = (raw or b"").decode("ascii", "replace").strip()
+                if _OBJECT_ID.match(value):
+                    tips.add(value)
+
+    fds: list[int] = []
+    try:
+        try:
+            fds.append(os.open(clone / ".git", os.O_RDONLY | _DIRECTORY | _NOFOLLOW))
+            for folder in ORIGIN_REFS_PREFIX.rstrip("/").split("/"):
+                fds.append(os.open(folder, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=fds[-1]))
+        except FileNotFoundError:
+            pass
+        else:
+            walk(fds[-1], 0)
+    except OSError as exc:
+        raise GitError(
+            "the clone's origin tracking refs could not be read "
+            f"({errno.errorcode.get(exc.errno or 0, 'error')})"
+        ) from None
+    finally:
+        for opened in reversed(fds):
+            os.close(opened)
+    fd = _open_ref_file(clone, "packed-refs", what="the clone's packed-refs")
+    if fd is not None:
+        try:
+            tips |= _packed_refs_under(fd, ORIGIN_REFS_PREFIX.encode())
+        finally:
+            os.close(fd)
+    return tips
+
+
 def _open_ref_file(clone: Path, *names: str, what: str) -> int | None:
     """`<clone>/.git/<names...>` open for reading, None when it does not exist.
 
@@ -3453,6 +3567,40 @@ def _packed_ref(fd: int, name: bytes) -> str | None:
     if not skipping and total <= _PACKED_REFS_MAX_BYTES:
         return _packed_line_oid(pending, name)
     return None
+
+
+def _packed_refs_under(fd: int, prefix: bytes) -> set[str]:
+    """The object ids of every `packed-refs` line, open as `fd`, whose name
+    starts with `prefix`, streamed as `_packed_ref` streams. A file past
+    `_PACKED_REFS_MAX_BYTES` raises `GitError` rather than answer in part."""
+    found: set[str] = set()
+    total = 0
+    pending = b""
+    while True:
+        chunk = os.read(fd, 64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _PACKED_REFS_MAX_BYTES:
+            raise GitError("the clone's packed-refs is too large to read")
+        lines = (pending + chunk).split(b"\n")
+        pending = lines.pop()
+        for line in lines:
+            _packed_line_under(line, prefix, found)
+    _packed_line_under(pending, prefix, found)
+    return found
+
+
+def _packed_line_under(line: bytes, prefix: bytes, found: set[str]) -> None:
+    line = line.rstrip(b"\r")
+    if not line or line[:1] in (b"#", b"^"):
+        return
+    oid, _, ref = line.partition(b" ")
+    if not ref.strip().startswith(prefix):
+        return
+    text = oid.decode("ascii", "replace")
+    if _OBJECT_ID.match(text):
+        found.add(text)
 
 
 def _packed_line_oid(line: bytes, name: bytes) -> str | None:

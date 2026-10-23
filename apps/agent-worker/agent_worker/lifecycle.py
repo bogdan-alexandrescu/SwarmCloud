@@ -244,13 +244,17 @@ from .gitops import (
     fetch_branch_tip,
     fold_agent_commits,
     hide_from_git,
+    is_branch_ref_name,
     merge_branches,
     mirror_worktree,
+    origin_tips_as_data,
     own_branch_tip,
     prepare_publish_repo,
     push_branch,
     read_agent_excludes,
+    read_head_as_data,
     read_head_branch_as_data,
+    read_origin_ref_as_data,
     retry_clone,
     shallow_clone,
     summarize_work,
@@ -934,8 +938,9 @@ class Worker:
         # The branch this attempt's clone left HEAD on (`refs/heads/<name>`, or
         # `DETACHED_HEAD` for a clone at a commit), read by the worker before
         # any agent process existed: the branch the step was given (#2094).
-        # None when it is not known in this process -- a resume from a
-        # checkpoint, whose manifest does not record it -- and then only the
+        # A resumed attempt reads it back from the checkpoint manifest the
+        # worker wrote (`CheckpointRecord.start_branch`). None when it is not
+        # known -- a manifest from before it was recorded -- and then only the
         # start sha decides whether HEAD moved (`_head_moved`).
         self._start_branch: str | None = None
         # The base BRANCH the runner rebases the lane onto before it publishes
@@ -5278,6 +5283,13 @@ class Worker:
             self._clone_commit = (
                 recorded if isinstance(recorded, str) and _FULL_SHA_RE.fullmatch(recorded) else None
             )
+            # The branch the first attempt's clone landed on, from the same
+            # manifest (#2094). An older manifest records none: the branch
+            # check is then skipped, and the start sha still decides.
+            self._start_branch = _recorded_start_branch(
+                self._restored_from.start_branch if self._restored_from else None
+            )
+            self.checkpoints.start_branch = self._start_branch
             return {
                 "path": REPO_DIR_NAME,
                 "from_checkpoint": True,
@@ -5526,6 +5538,8 @@ class Worker:
         except GitError as exc:
             # Unknown, not refused: the start sha still decides (`_head_moved`).
             self.log.warning("could not read the branch the clone landed on", error=str(exc))
+        # Into every manifest from here on, so a resumed attempt knows it too.
+        self.checkpoints.start_branch = self._start_branch
         self._prepublish_rebase = self._prepublish_rebase_ref(
             ref=ref,
             checkout=Path(destination),
@@ -5655,22 +5669,46 @@ class Worker:
         and published them. HEAD has moved when, at the end:
 
         * it is on another branch than the one the clone left it on
-          (`_start_branch`, read before any agent process existed; detached
-          counts as a branch of its own) -- the branch's name is returned, or
-          the head's short sha for a detached one; or
+          (`_start_branch`, read before any agent process existed, or read
+          back from the checkpoint manifest on a resume; detached counts as a
+          branch of its own) AND that branch is one the agent FETCHED rather
+          than made (`_fetched_line`) -- the branch's name is returned, or the
+          head's short sha for a detached one; or
         * it does not descend from `floor`, the commit the step started on
           (the start sha, or where the runner's pre-publish rebase landed,
           `_adopt_rebase_base`), nor from the tip this attempt's own
           `git_push_branch` left on the task's branch (`_adopt_tool_pushed_tip`,
-          #1188) -- the head's short sha is returned.
+          #1188) -- the branch's name is returned when HEAD changed branch,
+          the head's short sha otherwise.
 
-        The end branch is read from the clone's `.git/HEAD` as data
-        (`read_head_branch_as_data`); the ancestry is asked in the worker's
-        own `publish_repo`, never in the clone. An empty repository's clone
-        has no start sha, and a resumed attempt does not know its start
-        branch: each check runs only where its fact is known. Raises
-        `GitError` when the ancestry cannot be read, and the harvest then
-        publishes nothing.
+        RELAXED FOR A NEW LOCAL BRANCH (BGD, 2026-10-23 16:47Z, recorded on
+        task_306e3aa8dee141a5a390 q0). All five implement agents sampled that
+        day ran `git checkout -b <name>` from their start and committed there,
+        and PR 2107's rule -- any other branch is a move -- refused them all. A
+        branch change is therefore NOT a move when the end branch has no
+        `refs/remotes/origin/<name>` in the clone (the clone tracks every
+        branch, `gitops.TRACK_EVERY_BRANCH`, so a branch fetched by name has
+        one) and HEAD descends from the start, the second rule above. A
+        detached HEAD reached from a branch is not a move when it descends
+        from the start and equals no `refs/remotes/origin/*` tip.
+
+        THE KNOWN LIMIT BGD ACCEPTED. A line fetched without a tracking ref
+        reads as the agent's own: a reviewed pull request fetched BY SHA (or
+        into FETCH_HEAD) and checked out onto a fresh local branch, a branch
+        made with `checkout -b mine origin/<reviewed>`, a detached HEAD with a
+        commit on top of a fetched tip, or a tracking ref the agent deleted.
+        Each descends from the start sha, so each publishes the reviewed
+        commits as this step's. Nothing in the clone tells those apart from an
+        agent's own work, and the clone is the agent's to write.
+
+        Every fact about the clone is read from its files as data
+        (`read_head_branch_as_data`, `read_origin_ref_as_data`,
+        `origin_tips_as_data`): no git runs there, so none of the agent's
+        config or hooks does. The ancestry is asked in the worker's own
+        `publish_repo`. An empty repository's clone has no start sha, and a
+        resume from a manifest without `start_branch` knows no start branch:
+        each check runs only where its fact is known. Raises `GitError` when
+        a fact cannot be read, and the harvest then publishes nothing.
         """
         ws = self.ws
         assert ws is not None
@@ -5686,14 +5724,18 @@ class Worker:
             code, head = git(["rev-parse", "--verify", "--quiet", "HEAD"], "harvest-moved-head")
             return head.strip()[:12] if code == 0 and head.strip() else "an unborn HEAD"
 
+        def where() -> str:
+            return short_head() if end == DETACHED_HEAD else end.removeprefix("refs/heads/")
+
         end = read_head_branch_as_data(repo)
         start = self._start_branch
-        if start is not None and end != start:
+        left_branch = start is not None and end != start
+        if left_branch and self._fetched_line(repo, end):
             self.log.warning(
-                "HEAD left the branch this step was given; nothing of it is harvested",
-                start=start, end=end,
+                "HEAD left the branch this step was given for one it fetched; nothing "
+                "of it is harvested", start=start, end=end,
             )
-            return short_head() if end == DETACHED_HEAD else end.removeprefix("refs/heads/")
+            return where()
         if not floor or not _FULL_SHA_RE.fullmatch(floor):
             return None
         code, _ = git(["merge-base", "--is-ancestor", floor, "HEAD"], "harvest-moved-start")
@@ -5708,12 +5750,38 @@ class Worker:
             code, _ = git(["merge-base", "--is-ancestor", tip, "HEAD"], "harvest-moved-tip")
             if code == 0:
                 return None
-        moved = short_head()
+        moved = where() if left_branch else short_head()
         self.log.warning(
             "HEAD does not descend from the commit this step started on; nothing of "
             "it is harvested", start=floor, head=moved,
         )
         return moved
+
+    def _fetched_line(self, repo: Path, end: str) -> bool:
+        """True when the branch HEAD ended on is one the agent fetched, not one
+        it made (#2094): a branch with a `refs/remotes/origin/<name>` in the
+        clone, or a detached HEAD standing exactly on a `refs/remotes/origin/*`
+        tip. Read from the clone's files as data (`gitops`), never by git.
+
+        The branch this step itself publishes (`_publish_branch_name`) is never
+        a fetched line: a `git_fetch` of it writes its tracking ref, and its
+        commits are this task's own, which the descent check (from the start
+        or from this attempt's tool-pushed tip) still bounds."""
+        own = self._publish_branch_name()
+        if own and end == f"refs/heads/{own}":
+            return False
+        if end == DETACHED_HEAD:
+            head = read_head_as_data(repo)
+            return head is not None and head in origin_tips_as_data(repo)
+        return read_origin_ref_as_data(repo, end) is not None
+
+    @staticmethod
+    def _moved_reason(moved: str) -> str:
+        """What a step whose HEAD moved is told, by the harvest and the carrier alike."""
+        return (
+            f"HEAD moved off this task's branch (to {moved}); "
+            "nothing of this task's was published"
+        )
 
     def _moved_head_result(self, out: dict[str, Any], moved: str) -> dict[str, Any]:
         """The harvest's record of a HEAD that left this step's work (#2094).
@@ -5736,10 +5804,7 @@ class Worker:
                 "dirty": [],
                 "dirty_count": 0,
                 "published": False,
-                "publish_reason": (
-                    f"HEAD moved off this task's branch (to {moved}); "
-                    "nothing of this task's was published"
-                ),
+                "publish_reason": self._moved_reason(moved),
             }
         )
         return out
@@ -10633,10 +10698,23 @@ class Worker:
         protected: tuple[str, ...],
         message: str,
     ) -> None:
-        """Scan, commit onto the tip, check authorship, push. Raises GitError."""
+        """Scan, commit onto the tip, check authorship, push. Raises GitError.
+
+        A HEAD that moved off this step's work (`_head_moved`, #2094) is not
+        carried: the fold would put the tree of a branch the agent fetched on
+        `swarm/<task>` as this step's checkpoint, exactly what the harvest
+        refuses to publish. That push is skipped with the harvest's reason.
+        """
         ws = self.ws
         assert ws is not None
         cfg = self.cfg
+        moved = self._head_moved(ws.work / REPO_DIR_NAME, publish_repo, self._publish_base)
+        if moved is not None:
+            self.log.info(
+                "carrier: the step's branch was not pushed",
+                reason=self._moved_reason(str(self._scrub(moved))),
+            )
+            return
         leak = final_tree_leak(
             repo=publish_repo,
             base=self._publish_base,
@@ -16504,6 +16582,15 @@ def _reason_path(path: str) -> str:
     if len(shown) > REASON_PATH_MAX_CHARS:
         shown = "..." + shown[-(REASON_PATH_MAX_CHARS - 3) :]
     return shown
+
+
+def _recorded_start_branch(value: Any) -> str | None:
+    """A checkpoint manifest's `start_branch` when it is one the worker could
+    have written there -- `DETACHED_HEAD` or a `refs/heads/` name -- else None,
+    which skips the branch check exactly as a manifest without it does (#2094)."""
+    if value == DETACHED_HEAD or is_branch_ref_name(value):
+        return str(value)
+    return None
 
 
 def replay_agent_commits(
