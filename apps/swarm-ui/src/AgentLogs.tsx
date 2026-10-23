@@ -30,7 +30,7 @@ import { GapNotice, LogMarksContext, type LogMarks } from './logMarks'
 import { attemptLine, useRead } from './RunFiles'
 import { TERMINAL_STATES, clockTime, type AttemptRow, type LogStream, type Task } from './types'
 import { useNow } from './useNow'
-import { Button, Segmented } from './components'
+import { Button, Segmented, ToneMark } from './components'
 
 /**
  * THE LOGS TAB (owner decision 2026-10-04; replaces viewers.html pick A's
@@ -584,14 +584,19 @@ export function AgentLogs({ task }: { task: Task }) {
   // never pushes Error under More at the 380px split (qa.u11a.logs).
   // `Log done`, NOT `Complete` (visual QA run 5b, r4 D6 still seen): alone on
   // the narrow bar `Complete` did not say what was complete. It is the log.
+  // A STATUS, NOT A BUTTON'S SHAPE (visual QA run 6, flow-find-failure-desktop-04):
+  // the bordered pill sat in a row of buttons and read as one more. It is
+  // drawn as the console's status mark -- the ended glyph and its words, no
+  // outline (`is-mark`, styles/live.css) -- and its words stay the bar's
+  // direct grandchildren, so the narrow bar still swaps them.
   const followControl = finished ? (
     <span
-      className="ag-logs-final"
+      className="ag-logs-final is-mark"
       role="note"
       aria-label="Agent ended: this is its complete log, so there is nothing to follow"
       title="This agent has finished: its log is the final record, and nothing more will arrive to follow."
     >
-      <LogWords long="Ended · complete log" short="Log done" />
+      <ToneMark tone="ended" /> <LogWords long="Ended · complete log" short="Log done" />
     </span>
   ) : (
     <Button size="sm" aria-pressed={follow} aria-keyshortcuts="F" onClick={toggleFollow}>
