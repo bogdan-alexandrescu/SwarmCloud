@@ -153,6 +153,46 @@ describe('a: a submit attempt marks each missing input at its own field', () => 
 })
 
 // ---------------------------------------------------------------------------
+// a2. before an attempt, the empty prompt says only `required`
+// ---------------------------------------------------------------------------
+
+describe('a2 (6:flow-submit-form-desktop-02): before an attempt the empty prompt shows only its required tag', () => {
+  for (const [label, env] of [['1440', WIDE], ['390', PHONE]] as const) {
+    it(`at ${label}: no "prompt missing" before an attempt; after one, the prompt is invalid with its error line`, async () => {
+      vi.stubGlobal('innerWidth', env.width)
+      const { container } = await form()
+      pick(container, 'claude-code')
+      const field = container.querySelector<HTMLElement>('.sbf-field.is-required')!
+      const editor = field.querySelector('textarea')!
+      // MUTATION: restore the `unfilled` line in InputFields -> the untouched prompt reads "prompt missing", as run 6 saw it.
+      expect(visible(field)).not.toContain('prompt missing')
+      // MUTATION: restore the `.sbf-unfilled` line -> a pre-attempt note is drawn under the field.
+      expect(field.querySelector('.sbf-unfilled')).toBeNull()
+      // MUTATION: keep the describedby on an untouched field -> it points at a line that is no longer there.
+      expect(editor.getAttribute('aria-describedby')).toBeNull()
+      const tag = field.querySelector<HTMLElement>('.sbf-req')
+      // MUTATION: drop the `required` tag -> nothing at the field says the prompt must be filled.
+      expect(tag, 'the prompt has no required tag').not.toBeNull()
+      expect(visible(tag)).toBe('required')
+      // MUTATION: hide `.sbf-req` at this width -> the tag is in the DOM and not on the screen.
+      expect(painted(tag!, 'display', env) ?? 'inline').not.toBe('none')
+      // MUTATION: mark the prompt invalid before any attempt -> an untouched form opens red.
+      expect(editor.getAttribute('aria-invalid')).toBeNull()
+
+      fireEvent.submit(container.querySelector('form')!)
+      // MUTATION: drop `attempted` from `gap` -> the attempt leaves the prompt unmarked.
+      expect(editor.getAttribute('aria-invalid')).toBe('true')
+      const miss = field.querySelectorAll<HTMLElement>('.sbf-miss')
+      // MUTATION: drop the `.sbf-miss` line -> the attempt marks the field and never says why.
+      expect(miss).toHaveLength(1)
+      expect(visible(miss[0])).toBe('claude-code will not start without prompt')
+      // MUTATION: describe the editor by nothing -> a screen reader on the field never hears the error.
+      expect(editor.getAttribute('aria-describedby')).toBe(miss[0].id)
+    })
+  }
+})
+
+// ---------------------------------------------------------------------------
 // b. custom setting rows
 // ---------------------------------------------------------------------------
 
