@@ -67,3 +67,16 @@ def test_the_file_prompt_never_files_a_finding_whose_evidence_is_a_gate_refusal(
     assert "gate_refused" in filed
     tail = filed.split("gate_refused", 1)[1]
     assert "never file" in (filed.split("gate_refused", 1)[0][-200:] + tail[:200]).lower()
+
+
+def test_the_report_names_the_idp_token_refreshes_the_gate_let_through_separately():
+    """QA-IDP-POST (part of #2067): a target's IdP token path is let through
+    after the gate's sign-in, and the manifest lists those requests as
+    `gate_refusals.allowed`. The report names them on their own line."""
+    report = _prompts()["report"]
+    # MUTATION: drop the allowed sentence from _gate_report_line and a run never shows what the gate let through.
+    assert "allowed: IdP token refresh" in report
+    assert "gate_refusals.allowed" in report
+    tail = report.split("allowed: IdP token refresh", 1)[1]
+    # They are not refusals, and never count toward N.
+    assert "not" in tail[:300] and "refus" in tail[:300]

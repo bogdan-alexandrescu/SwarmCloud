@@ -24,6 +24,20 @@ platform admin, audited"), naming the host they approve, so an approval can
 never land on a host that changed under the approver. Changing the host or
 the login's `extra_origin` sets it back to `pending`.
 
+THE IdP TOKEN PATH (QA-IDP-POST; BGD decided 2026-10-23, part of #2067:
+"allow the token path only"). The live gate refuses every write to the
+login's other origin, so an app that refreshes its SSO token after sign-in
+renders signed out. The platform admin who approves the extra origin may
+name, IN THE SAME APPROVAL, one exact path on it (`idp_token_path`: `/...`,
+no query, no fragment, no `%`, no glob, no empty, `.` or `..` segment;
+`_IDP_TOKEN_PATH`), stored as `approved_idp_token_path`. The gate then lets
+exactly `POST <extra_origin><path>` through once its own sign-in has
+completed (livegate/qatarget.py). It is refused without the extra origin
+named. It is NOT a registration field: a workspace admin's change cannot set
+it, a change of host or extra origin clears it with the approval, and an
+approval that does not name it clears it, so the admin takes it back by
+approving again. The audit row names it.
+
 THE CREDENTIAL (§2.1, VQ-Q2). One Secret Manager secret per tenant,
 `swarm-tenant-<tenant>-qa`, declared empty by Terraform (lane VQ-3) and its
 value a JSON map keyed by target id. swarm-api adds a version (IAM V-1) and
@@ -247,6 +261,14 @@ _SIGN_IN_KEYS = frozenset({"kind", "login_path", "signed_in_selector", "extra_or
                            *_SELECTOR_KEYS})
 _FORBIDDEN_TEXT = re.compile(r"[\x00-\x1f\x7f`]")
 _PATH = re.compile(r"/(?!/)[A-Za-z0-9._~%!$&()*+,;=:@/-]{0,511}")
+#: QA-IDP-POST: one plain path, compared by the gate as the whole URL. Segments
+#: of unreserved and sub-delim characters less the glob ones, no `%` (so no
+#: encoded variant to compare), no empty segment (no `//`, no trailing slash);
+#: `.` and `..` segments are refused apart. livegate/qatarget.py restates it.
+_IDP_TOKEN_PATH = re.compile(r"(?:/[A-Za-z0-9._~!$&'()+,;=:@-]+)+")
+IDP_TOKEN_PATH_MAX = 512
+#: Where the approval stores it: beside `approved_origins`, never in the spec.
+IDP_TOKEN_FIELD = "approved_idp_token_path"
 _TARGET_ID = re.compile(r"^qat_[0-9a-f]{16}$")
 
 
@@ -446,6 +468,14 @@ def _sign_in(raw: Any, resolve: Resolver, *, exclusions: Any = None) -> dict[str
         except qaspec.QaSpecError as exc:
             raise _invalid(exc.message, field="sign_in") from None
     return out
+
+
+def _idp_token_path(raw: Any) -> str:
+    if (not isinstance(raw, str) or len(raw) > IDP_TOKEN_PATH_MAX or not _IDP_TOKEN_PATH.fullmatch(raw)
+            or any(segment in (".", "..") for segment in raw.split("/"))):
+        raise _invalid("idp_token_path must be one exact path on the extra origin: /..., with no query, "
+                       "fragment, %-encoding, glob, empty segment, '.' or '..'", field="idp_token_path")
+    return raw
 
 
 def _rate(raw: Any) -> dict[str, int] | None:
@@ -656,6 +686,7 @@ def to_api(doc: Mapping[str, Any]) -> dict[str, Any]:
         "approved_by": doc.get("approved_by"),
         "approved_at": _iso(doc.get("approved_at")),
         "approved_origins": list(doc.get("approved_origins") or []),
+        IDP_TOKEN_FIELD: doc.get(IDP_TOKEN_FIELD),
         "repo_id": doc.get("repo_id"),
         "credential": credential_status(doc),
         BYPASS_FIELD: bypass_status(doc),
@@ -820,6 +851,7 @@ class QaTargets:
             "approved_by": None,
             "approved_at": None,
             "approved_origins": [],
+            IDP_TOKEN_FIELD: None,
             "credential": dict(_UNSET),
             BYPASS_FIELD: dict(_UNSET),
             "authorized_by": authorized_by,
@@ -887,7 +919,7 @@ class QaTargets:
             changed.append("authorized_by")
         if host_reset:
             new.update(host_state=HOST_PENDING, approved_by=None, approved_at=None,
-                       approved_origins=[])
+                       approved_origins=[], **{IDP_TOKEN_FIELD: None})
         bypass_cleared = bypass_status(current)["set"] and (host_reset or doc.get("challenge_bypass") is None)
         if bypass_cleared:
             self._forget_bypass(tenant_id, target_id, credentials)
@@ -942,10 +974,17 @@ class QaTargets:
     # -- the host approval (§1.2, VQ-Q1) -----------------------------------------
 
     def approve_host(self, target_id: str, *, host: Any, extra_origin: Any,
-                     by: str) -> dict[str, Any]:
+                     by: str, idp_token_path: Any = None) -> dict[str, Any]:
         """A platform admin's approval of the host they NAME, which must be the
         target's host now. The declared `extra_origin` is covered only when it
-        is named too (§1.2)."""
+        is named too (§1.2), and its `idp_token_path` only when that is named
+        with it (QA-IDP-POST): an approval that does not name it clears it."""
+        token_path = None
+        if idp_token_path is not None:
+            token_path = _idp_token_path(idp_token_path)
+            if extra_origin is None:
+                raise _invalid("idp_token_path is approved only with the extra origin it is on: name "
+                               "extra_origin too", field="idp_token_path")
         current = self.any_tenant(target_id)
         if not isinstance(host, str) or host.strip().lower().rstrip(".") != current.get("host"):
             raise Conflict("the host named is not this QA target's host now; read it again")
@@ -959,7 +998,7 @@ class QaTargets:
         now = self._now()
         tenant_id = str(current.get("tenant_id") or "")
         new = {**current, "host_state": HOST_APPROVED, "approved_by": by, "approved_at": now,
-               "approved_origins": approved}
+               "approved_origins": approved, IDP_TOKEN_FIELD: token_path}
         ref = self._ref(target_id)
         transaction = self._db.transaction()
 
@@ -972,6 +1011,7 @@ class QaTargets:
             _audit(txn, self._db, action=AUDIT_HOST_APPROVED, tenant_id=tenant_id,
                    target_id=target_id, by=by, now=now,
                    detail={"host": current.get("host"), "origins": approved,
+                           "idp_token_path": token_path,
                            "registrant": current.get("created_by")})
 
         _apply(transaction)
@@ -1581,6 +1621,11 @@ class QaTargetIssuer:
         if isinstance(bypass, Mapping) and bypass_status(target)["set"]:
             # §2.5: the gate adds it on `origins` alone. Its value is added by `issue`.
             served["challenge_bypass"] = {"kind": bypass.get("kind"), "name": bypass.get("name")}
+        approved_origins = list(target.get("approved_origins") or [origin])
+        token_path = target.get(IDP_TOKEN_FIELD)
+        if isinstance(token_path, str) and len(approved_origins) == 2:
+            # QA-IDP-POST: only with the extra origin it was approved on.
+            served["idp_token_path"] = token_path
         return {
             **served,
             "target_id": target.get("id"),
@@ -1588,7 +1633,7 @@ class QaTargetIssuer:
             "base_url": target.get("base_url"),
             # Only what a platform admin approved: the base origin, and the
             # login's other origin when it was named in the approval.
-            "origins": list(target.get("approved_origins") or [origin]),
+            "origins": approved_origins,
             "environment": target.get("environment") or "production",
             "rate": dict(target.get("rate") or DEFAULT_RATE),
             "read_posts": list(target.get("read_posts") or []),

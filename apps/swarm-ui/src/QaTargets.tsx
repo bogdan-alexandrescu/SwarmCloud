@@ -352,7 +352,8 @@ function TargetCard({
   const [failed, setFailed] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [approving, setApproving] = useState(false)
-  const canApprove = platformAdmin && t.host !== null && t.host_state !== 'approved'
+  // An approved target with a login's extra origin can be approved again, to set or clear its IdP token path (QA-IDP-POST).
+  const canApprove = platformAdmin && t.host !== null && (t.host_state !== 'approved' || t.sign_in.extra_origin !== null)
   const cannotBrowse = cannotBrowseBecause(t)
   const [discoveryBusy, setDiscoveryBusy] = useState(false)
 
@@ -478,7 +479,7 @@ function TargetCard({
         )}
         {canApprove && !approving && (
           <Button size="sm" onClick={() => setApproving(true)}>
-            Approve host
+            {t.host_state === 'approved' ? 'Approve again' : 'Approve host'}
           </Button>
         )}
       </div>
@@ -567,12 +568,17 @@ function typedHost(text: string): string {
  * A platform admin's confirmation of the host, and of the login's extra
  * origin when one is declared (§1.2). Nothing is sent until what is typed is
  * the target's own; the API checks the same again and says its refusal.
+ * With an extra origin, the admin may name its IdP token path: the one path
+ * there the gate lets a POST through to after its sign-in (QA-IDP-POST, BGD
+ * 2026-10-23, #2067). It starts as the approved one, and an approval sent
+ * without it clears it.
  */
 function ApproveHostForm({ t, onClose, onApproved }: { t: QaTarget; onClose: () => void; onApproved: (doc: QaTarget) => void }) {
   const host = t.host ?? ''
   const origin = t.sign_in.extra_origin
   const [typed, setTyped] = useState('')
   const [typedOrigin, setTypedOrigin] = useState('')
+  const [tokenPath, setTokenPath] = useState(t.approved_idp_token_path ?? '')
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
   const fid = useId()
@@ -583,7 +589,8 @@ function ApproveHostForm({ t, onClose, onApproved }: { t: QaTarget; onClose: () 
     if (!matches || busy) return
     setBusy(true)
     setFailed(null)
-    const r = await approveQaTargetHost(t.id, host, origin)
+    const path = tokenPath.trim()
+    const r = await approveQaTargetHost(t.id, host, origin, path === '' ? null : path)
     setBusy(false)
     if (r.status === 'error') {
       setFailed(writeFailure(r.error))
@@ -627,6 +634,22 @@ function ApproveHostForm({ t, onClose, onApproved }: { t: QaTarget; onClose: () 
                 placeholder={origin}
                 spellCheck={false}
               />
+            </div>
+            <label className="ur-fl" htmlFor={`${fid}-token`}>
+              IdP token path (optional)
+            </label>
+            <div>
+              <input
+                id={`${fid}-token`}
+                name="idp_token_path"
+                value={tokenPath}
+                onChange={(e) => setTokenPath(e.target.value)}
+                placeholder="/realms/<realm>/protocol/openid-connect/token"
+                spellCheck={false}
+              />
+              <p className="ur-small">
+                {`The gate lets exactly a POST to ${origin} at this path through, after its own sign-in, so the app can refresh its token. Every other write there stays refused.`}
+              </p>
             </div>
           </>
         )}

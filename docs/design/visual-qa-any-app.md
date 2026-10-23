@@ -120,6 +120,18 @@ is the allowlist, made where it can be enforced:
   on Repositories › QA targets (`apps/swarm-ui/src/QaTargets.tsx`), drawn to
   a platform admin only, which sends the route above once the admin has
   typed the host, and the login's `extra_origin` when one is declared.
+* **The IdP token path is approved in the same place, and nowhere else**
+  (QA-IDP-POST, BGD decided 2026-10-23, #2067). With the `extra_origin`, the
+  platform admin may name one exact path on it, `idp_token_path` (`/...`; no
+  query, fragment, `%`-encoding, glob, empty, `.` or `..` segment), stored as
+  `approved_idp_token_path` and audited in the approval's row. It is refused
+  without the `extra_origin` named, it is not a registration field (a
+  workspace admin's change cannot set it), and a change of host or
+  `extra_origin`, or an approval that does not name it, clears it. The
+  console's approve form carries it as an optional field, filled with the
+  approved one, and draws **Approve again** on an approved target that
+  declares an `extra_origin`, so an admin can set or clear it later. §3 says
+  what the gate does with it.
 * **The live gate enforces it** (§3): the attempt's top frame never commits a
   document outside the approved origins, and nothing but a `GET` leaves for
   any other origin.
@@ -404,6 +416,34 @@ prompt says the same so the agent does not fight its own gate.
     own sign-in submission and the paths in `read_posts`;
   * **any** request but `GET` and `HEAD` to every other origin, so a
     third-party payment, mail or analytics frame cannot be made to send.
+  **One exception: the IdP token refresh** (QA-IDP-POST; BGD decided
+  2026-10-23, "allow the token path only", #2067). On 2026-10-23 AI Studio's
+  run signed in, and then the app's own Keycloak token exchange (a browser
+  `POST` from `studio.saga.xyz` to its `extra_origin`'s
+  `/protocol/openid-connect/token`) was answered by the gate's 403 with no
+  CORS header: every screen stayed on "Checking your session…" and the run
+  filed the gate's refusal as the app's CORS blocker. So a target whose
+  platform admin approved an `idp_token_path` (§1.2) has exactly
+  `POST <extra_origin><idp_token_path>` continued, and nothing else:
+  * the gate compares the **whole URL** as a string, so a query (even an
+    empty `?`), a fragment, a trailing slash, a double slash, another port
+    (or the default one spelled out), userinfo, upper case or a
+    percent-encoded variant is another URL and refused;
+  * only `POST`: a `PUT`, `PATCH` or `DELETE` to the same path is refused;
+  * only once **the gate's own sign-in has completed** (`signed_in`) and
+    holds: never before it, never after a sign-in that failed or met a
+    challenge (a later failed sign-in takes it back), never after the wipe,
+    and never on a target that does not sign in. During the sign-in the
+    gate's own submission rule already applies;
+  * a top frame posted there is still a navigation off the target and gets
+    the left page; a redirect of the `POST` is a pause of its own, judged by
+    its own URL;
+  * every other write to the `extra_origin`, and every non-`GET` to any other
+    origin, is refused exactly as before.
+  The gate records each request it let through apart from its refusals
+  (`allowed`, code `idp_token_refresh`, "allowed: IdP token refresh"); the
+  capture's manifest names them as `gate_refusals.allowed` and the report
+  names them on a line of their own, never counted as refused.
   A declared flow with `mutating: true`, on a target whose `environment` is
   `non_production`, lifts the first rule for that flow's step only. Nothing
   lifts the second. swarm-api's attempt route decides it: its answer carries
