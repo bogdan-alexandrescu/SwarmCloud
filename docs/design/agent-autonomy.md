@@ -322,13 +322,15 @@ documented refusal, until the owner decides the redesign (#1933).
 A sink filter takes the full query language where a view filter cannot, so
 the selecting moved to a sink. `terraform/infra/log_bucket.tf` creates the log
 bucket `swarm-worker-logs` in the project's region with 30-day retention and a
-project sink, `swarm-worker-logs`, with its own writer identity, that routes
+project sink, `swarm-worker-logs`, that routes
 into it only SwarmCloud's workers: `k8s_container` in the swarm cluster in
 namespaces `swarm-tenant-*`, and `cloud_run_job` named `swarm-job-*`. It never
-names the other team's cluster, not even to exclude it. The sink's writer
-identity holds `roles/logging.bucketWriter` on that bucket alone (a project
-binding whose condition is the bucket's name), the one IAM row this adds
-beside L-1. The view keeps its id, `swarm-workers`, now on that bucket, with
+names the other team's cluster, not even to exclude it. The sink gets no IAM
+grant, so L-1 is the only IAM row: BGD decided on 2026-10-22 (#1960) to drop
+the writer's `roles/logging.bucketWriter`, because Google authorizes a sink
+that writes a log bucket in its own project ("Route logs to supported
+destinations", Set destination permissions), as bootstrap's `workspace_apply`
+sink already relies on. The view keeps its id, `swarm-workers`, now on that bucket, with
 the simplest filter a view takes (`SOURCE("projects/<project>")`); L-1 is
 unchanged. Two consequences. Worker logs are stored twice: `_Default` keeps
 its copy, and the new bucket holds a second for 30 days. And the platform's

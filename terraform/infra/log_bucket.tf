@@ -42,19 +42,9 @@
 # WHAT IS NOT VERIFIED. Nothing here has been applied.
 # ---------------------------------------------------------------------------
 #
-# THE WRITER'S GRANT. Google's routing guide says a sink writing to a log
-# bucket in its own project needs no grant (terraform/bootstrap/
-# workspace_deployer.tf's sink relies on that). The grant below is made
-# anyway, at BGD's instruction, so the sink's identity is named and bounded
-# rather than implicit. If Cloud Logging returns no writer identity for a
-# same-project bucket, the grant's apply fails at dev-iam with an empty
-# member; the sink and bucket still exist and still fill.
-#
-# THE CONDITION. `resource.name` for a log bucket is written with the project
-# ID, as verify_logs.tf and workspace_deployer.tf write their view
-# conditions. If IAM evaluates it with the project number instead, the grant
-# never matches; with no grant needed for a same-project bucket, the sink
-# still writes.
+# THAT THE SINK WRITES WITH NO GRANT. Google says it does (below); the first
+# entries in the bucket after the apply show it, and a refused write shows in
+# `gcloud logging sinks describe swarm-worker-logs`.
 #
 # THE FILTER. `=~` (RE2) and OR between parenthesised branches are the
 # documented sink query language. The first entries in the bucket after the
@@ -102,6 +92,27 @@ resource "google_logging_project_bucket_config" "swarm_worker_logs" {
   depends_on = [module.project_services]
 }
 
+# NO GRANT TO THE SINK'S WRITER (BGD's decision, 2026-10-22, #1960). The
+# destination is a log bucket in the sink's own project, and Google authorizes
+# such a sink itself. "Route logs to supported destinations", section "Set
+# destination permissions"
+# (https://cloud.google.com/logging/docs/export/configure_export_v2): "When the
+# destination is a log bucket in the same project as the sink, the sink is
+# automatically authorized", and "All sinks have a writer identity except for
+# sinks that write to a log bucket in the same Google Cloud project in which
+# the log entries originate". So there is no writer identity to grant to.
+# terraform/bootstrap/workspace_deployer.tf's `workspace_apply` sink already
+# writes to a same-project bucket with no grant anywhere.
+#
+# unique_writer_identity is left at the provider's default. It only chooses
+# which identity a sink that HAS one writes as; neither Google nor the
+# provider (it requires true only across projects or with bigquery_options)
+# needs it for this destination, and there is no grant left for it to bound.
+#
+# log_view.tftest.hcl holds that nothing under terraform/infra or
+# terraform/modules grants roles/logging.bucketWriter, so the release adds no
+# IAM row for this path beyond L-1 (swarm-api's viewAccessor on the view).
+#
 # No labels: google_logging_project_sink has none
 # (scripts/lib/unlabelable-types.json).
 resource "google_logging_project_sink" "swarm_worker_logs" {
@@ -113,28 +124,5 @@ resource "google_logging_project_sink" "swarm_worker_logs" {
   filter      = join(" OR ", [for b in local.swarm_workers_log_branches : "(${b})"])
   description = "managed-by=swarm-terraform; SwarmCloud's worker logs only, to the swarm-worker-logs bucket (terraform/infra/log_bucket.tf)."
 
-  # Its own identity, never the project's shared logging account, so the
-  # grant below names this sink and nothing else.
-  unique_writer_identity = true
-
   depends_on = [google_logging_project_bucket_config.swarm_worker_logs]
-}
-
-# The sink's writer identity: roles/logging.bucketWriter on THIS bucket only.
-# A log bucket has no IAM policy of its own, so the binding is on the project
-# with the bucket's exact name as its condition. It is a google_project_iam_
-# member, so scripts/lib/iam-plan.jq classifies it as an IAM change and a dev
-# release holds it at `dev-iam` for BGD.
-resource "google_project_iam_member" "swarm_worker_logs_writer" {
-  count = local.swarm_worker_logs_on
-
-  project = var.project_id
-  role    = "roles/logging.bucketWriter"
-  member  = google_logging_project_sink.swarm_worker_logs[0].writer_identity
-
-  condition {
-    title       = "swarm-worker-logs bucket only"
-    description = "managed-by=swarm-terraform; the swarm-worker-logs sink writes this bucket and no other (terraform/infra/log_bucket.tf)."
-    expression  = "resource.name == \"${local.swarm_worker_logs_bucket}\""
-  }
 }

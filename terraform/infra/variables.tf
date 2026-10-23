@@ -1261,11 +1261,13 @@ variable "settings_mac_key_previous_version" {
 }
 
 variable "swarm_workers_log_view_enabled" {
-  description = "Whether to create SwarmCloud's worker-log path: the swarm-worker-logs bucket, the sink that fills it, the sink writer's bucketWriter grant, the swarm-workers view on that bucket and swarm-api's viewAccessor binding on it (log_bucket.tf, log_view.tf, agent-autonomy.md §3.5, row L-1)."
+  description = "Whether to create SwarmCloud's worker-log path: the swarm-worker-logs bucket, the sink that fills it (no grant: a sink writing a bucket in its own project needs none), the swarm-workers view on that bucket and swarm-api's viewAccessor binding on it (log_bucket.tf, log_view.tf, agent-autonomy.md §3.5, row L-1)."
   type        = bool
-  # Off by default: it adds two IAM rows the owner applies at dev-iam, and a
-  # second, 30-day copy of every worker log (ingestion and storage cost), so an
-  # environment takes it on by its own tfvars line. On in dev (BGD, 2026-10-22,
+  # Off by default: it adds an IAM row (L-1) the owner applies at dev-iam, and
+  # a second, 30-day copy of every worker log (ingestion and storage cost), so
+  # an environment takes it on by its own tfvars line. The sink's writer gets
+  # no grant: BGD decided on 2026-10-22 (#1960) to drop it, since Google
+  # authorizes a sink writing a log bucket in its own project. On in dev (BGD, 2026-10-22,
   # #1960); prod stays off until BGD turns it on there. The earlier design, a
   # view on _Default, failed (release run 39742374084: "Filter exceeds the view
   # filter nesting depth limit of 1"); this switch now builds the bucket-and-
