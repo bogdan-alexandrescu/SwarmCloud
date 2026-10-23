@@ -196,14 +196,17 @@ describe('the grant matrix', () => {
   })
 
   it('an untick sends {enabled: false}', async () => {
-    const { calls } = api({
+    const off = record('typesafe-key', { grants: [grant('tool:jev-browser', false, 'typesafe')] })
+    const { calls, setList } = api({
       write: (m, url) => (m === 'PUT' && url.endsWith('/grants/tool:jev-browser')
-        ? { status: 200, body: { secret: record('typesafe-key', { grants: [grant('tool:jev-browser', false, 'typesafe')] }), takes_effect: 'at the next attempt' } }
+        ? { status: 200, body: { secret: off, takes_effect: 'at the next attempt' } }
         : null),
     })
     const { WorkspaceSecretsScreen } = await load()
     render(<WorkspaceSecretsScreen link={null} />)
     const m = await matrix()
+    // What the API serves once the write has landed.
+    setList(listBody({ secrets: [off] }))
     await act(async () => {
       fireEvent.click(box(m, 'typesafe-key', 'tool:jev-browser'))
     })
@@ -313,6 +316,37 @@ describe('Rotate', () => {
     expect(visible(alert)).toMatch(/8 bytes to 8 KiB/)
     // MUTATION: clear the field only on success -> fails.
     expect(leaks(value)).toEqual([])
+  })
+})
+
+describe('the one-time rotate link: ?action=rotate&name=..&t=..', () => {
+  it('opens Rotate for the name it names, and sends its token once, with that rotate only', async () => {
+    const token = ['lnk', 'rot'].join('') + 'Wq4'.repeat(10)
+    const { calls } = api({
+      write: (m, url) => (m === 'PUT' && url.endsWith('/value')
+        ? { status: 200, body: { secret: record('typesafe-key', { current_version: '3' }), via_link: true, note: 'n' } }
+        : null),
+    })
+    const { WorkspaceSecretsScreen } = await load()
+    render(<WorkspaceSecretsScreen link={{ action: 'rotate', name: 'typesafe-key', token }} />)
+    await matrix()
+    // MUTATION: ignore the link's name (open no form) -> getByRole throws.
+    const form = screen.getByRole('form', { name: /rotate typesafe-key/i })
+    // MUTATION: render the token anywhere -> fails.
+    expect(leaks(token)).toEqual([])
+    for (let i = 0; i < 2; i++) {
+      const f = i === 0 ? form : (fireEvent.click(screen.getByRole('button', { name: /rotate typesafe-key/i })), screen.getByRole('form', { name: /rotate typesafe-key/i }))
+      fireEvent.change(within(f).getByLabelText(/new value/i), { target: { value: fakeValue() } })
+      await act(async () => {
+        fireEvent.click(within(f).getByRole('button', { name: /^rotate$/i }))
+      })
+      await waitFor(() => expect(writes(calls)).toHaveLength(i + 1))
+    }
+    const puts = writes(calls)
+    // MUTATION: never send the rotate link's token -> fails.
+    expect((puts[0]!.body as Json).link_token).toBe(token)
+    // MUTATION: keep the token after it is sent -> the second rotate carries it and this fails.
+    expect('link_token' in (puts[1]!.body as Json)).toBe(false)
   })
 })
 

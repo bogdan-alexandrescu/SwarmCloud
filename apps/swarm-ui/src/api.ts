@@ -7397,10 +7397,31 @@ export interface WorkspaceSecretList {
   secrets: WorkspaceSecret[]
 }
 
-/** `GET /v1/workspace/secrets/consumers`: what the add form offers. */
+/** One slot a consumer reads (§2.4): the kinds it takes. */
+export interface WorkspaceSecretSlot {
+  slot: string
+  kinds: string[]
+}
+
+/**
+ * One consumer of the catalogue (§2.3), as `Consumer.to_api` serves it.
+ * `grantable` false with a slot is a LOCKED consumer (`component:git`,
+ * §6.2); false with none is one that would be delivered nothing.
+ */
+export interface WorkspaceSecretConsumer {
+  consumer: string
+  kind: string
+  name: string
+  slots: WorkspaceSecretSlot[]
+  grantable: boolean
+  note: string
+}
+
+/** `GET /v1/workspace/secrets/consumers`: what the add form offers, and the grant matrix's columns. */
 export interface WorkspaceSecretCatalogue {
   kinds: string[]
   providers: string[]
+  consumers: WorkspaceSecretConsumer[]
 }
 
 /** What a create sends: `value` for a one-line kind, `fields` for a structured one. */
@@ -7454,7 +7475,25 @@ function normWorkspaceSecretList(raw: unknown): WorkspaceSecretList {
 
 function normWorkspaceSecretCatalogue(raw: unknown): WorkspaceSecretCatalogue {
   const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
-  return { kinds: wsStrings(r.kinds), providers: wsStrings(r.providers) }
+  return { kinds: wsStrings(r.kinds), providers: wsStrings(r.providers), consumers: normWorkspaceSecretConsumers(r.consumers) }
+}
+
+/** The catalogue's consumers, copied from an allow-list; one without a name is dropped. */
+function normWorkspaceSecretConsumers(raw: unknown): WorkspaceSecretConsumer[] {
+  return (Array.isArray(raw) ? raw : []).flatMap((c): WorkspaceSecretConsumer[] => {
+    if (typeof c !== 'object' || c === null) return []
+    const r = c as Record<string, unknown>
+    const consumer = wsText(r.consumer)
+    const kind = wsText(r.kind)
+    const name = wsText(r.name)
+    if (consumer === null || kind === null || name === null) return []
+    const slots = (Array.isArray(r.slots) ? r.slots : []).flatMap((s): WorkspaceSecretSlot[] => {
+      if (typeof s !== 'object' || s === null) return []
+      const slot = wsText((s as Record<string, unknown>).slot)
+      return slot === null ? [] : [{ slot, kinds: wsStrings((s as Record<string, unknown>).kinds) }]
+    })
+    return [{ consumer, kind, name, slots, grantable: r.grantable === true, note: wsText(r.note) ?? '' }]
+  })
 }
 
 /**
@@ -7503,7 +7542,24 @@ export async function loadWorkspaceSecrets(): Promise<Result<WorkspaceSecretList
   return r
 }
 
-/** `GET /v1/workspace/secrets/consumers`: the kinds and providers a secret may be stored as. */
+const FIXTURE_SECRET_KINDS = ['api_key', 'bearer_token', 'basic_auth', 'oauth_client', 'opaque']
+const FIXTURE_NO_SLOT = 'declares no secret slot yet; a grant would deliver nothing'
+
+/** The fixture build's catalogue: some of `_catalogue()`'s profiles, and its tools and components, with the slots §2.4 gives them. */
+const FIXTURE_SECRET_CONSUMERS = [
+  ...['browser', 'claude-code', 'claude-code-browser', 'codex'].map((name) => ({
+    consumer: `profile:${name}`, kind: 'profile', name, slots: [{ slot: 'files', kinds: FIXTURE_SECRET_KINDS }], grantable: true, note: '',
+  })),
+  { consumer: 'tool:jev-browser', kind: 'tool', name: 'jev-browser', slots: [{ slot: 'typesafe', kinds: ['api_key'] }], grantable: true, note: '' },
+  { consumer: 'tool:dev-browser', kind: 'tool', name: 'dev-browser', slots: [], grantable: false, note: FIXTURE_NO_SLOT },
+  { consumer: 'tool:playwright', kind: 'tool', name: 'playwright', slots: [], grantable: false, note: FIXTURE_NO_SLOT },
+  { consumer: 'component:judge', kind: 'component', name: 'judge', slots: [{ slot: 'typesafe', kinds: ['api_key'] }], grantable: true, note: '' },
+  { consumer: 'component:merge', kind: 'component', name: 'merge', slots: [], grantable: false, note: FIXTURE_NO_SLOT },
+  { consumer: 'component:indexer', kind: 'component', name: 'indexer', slots: [], grantable: false, note: FIXTURE_NO_SLOT },
+  { consumer: 'component:git', kind: 'component', name: 'git', slots: [{ slot: 'forge', kinds: ['forge_token'] }], grantable: false, note: 'forge tokens only, never granted from this page (design §6.2)' },
+]
+
+/** `GET /v1/workspace/secrets/consumers`: the kinds and providers a secret may be stored as, and the consumers it may be granted to. */
 export async function loadWorkspaceSecretCatalogue(): Promise<Result<WorkspaceSecretCatalogue>> {
   const target = route('/v1/workspace/secrets/consumers')
   if (USE_FIXTURES) {
@@ -7511,7 +7567,7 @@ export async function loadWorkspaceSecretCatalogue(): Promise<Result<WorkspaceSe
     return {
       status: 'ok',
       fetchedAt: Date.now(),
-      data: { kinds: ['api_key', 'bearer_token', 'basic_auth', 'oauth_client', 'opaque'], providers: ['anthropic', 'brave', 'openai', 'typesafe', 'other'] },
+      data: normWorkspaceSecretCatalogue({ kinds: FIXTURE_SECRET_KINDS, providers: ['anthropic', 'brave', 'openai', 'typesafe', 'other'], consumers: FIXTURE_SECRET_CONSUMERS }),
     }
   }
   const r = await read<unknown>(target, () => false)
@@ -7530,6 +7586,44 @@ export async function createWorkspaceSecret(body: WorkspaceSecretCreate, linkTok
   if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
   const r = await write(target, 'POST', linkToken === null ? body : { ...body, link_token: linkToken })
   return r.status === 'error' ? r : { status: 'ok', fetchedAt: Date.now(), data: null }
+}
+
+/** A secrets write's `secret`, from the allow-list; null when the answer carried none. */
+function servedSecret(r: Result<unknown>): WorkspaceSecret | null {
+  const data = r.status === 'ok' || r.status === 'stale' ? r.data : null
+  return typeof data === 'object' && data !== null ? normWorkspaceSecret((data as Record<string, unknown>).secret) : null
+}
+
+/** What a rotate sends: `value` for a one-line kind, `fields` for a structured one. */
+export type WorkspaceSecretRotate = { value: string } | { fields: Record<string, string> }
+
+/**
+ * `PUT /v1/workspace/secrets/{name}/value`: a new version, its value once.
+ * `linkToken` is the `t` of a one-time rotate link for this name, sent back
+ * so the API can consume it. The answer is the record from the allow-list
+ * (never a value), or null when it carried none.
+ */
+export async function rotateWorkspaceSecret(name: string, body: WorkspaceSecretRotate, linkToken: string | null): Promise<Result<WorkspaceSecret | null>> {
+  const target = route('/v1/workspace/secrets/{name}/value', { name })
+  if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
+  const r = await write(target, 'PUT', linkToken === null ? body : { ...body, link_token: linkToken })
+  if (r.status === 'error') return r
+  return { status: 'ok', fetchedAt: Date.now(), data: servedSecret(r) }
+}
+
+/**
+ * `PUT /v1/workspace/secrets/{name}/grants/{consumer}`: ONE cell of the
+ * matrix, `{enabled}` and nothing else. No slot: every consumer in the
+ * catalogue reads one, and the API defaults to it (§2.2); `slot` is sent
+ * only for a consumer that declares several. The answer is the record's
+ * grants after the write, or null when it carried none.
+ */
+export async function setWorkspaceSecretGrant(name: string, consumer: string, enabled: boolean, slot: string | null = null): Promise<Result<WorkspaceSecret | null>> {
+  const target = route('/v1/workspace/secrets/{name}/grants/{consumer}', { name, consumer })
+  if (USE_FIXTURES) return fixtureSecretsNotServed(target) as Result<null>
+  const r = await write(target, 'PUT', slot === null ? { enabled } : { enabled, slot })
+  if (r.status === 'error') return r
+  return { status: 'ok', fetchedAt: Date.now(), data: servedSecret(r) }
 }
 
 /** `DELETE /v1/workspace/secrets/{name}`: destroy every version and disable every grant; the body repeats the name. */
