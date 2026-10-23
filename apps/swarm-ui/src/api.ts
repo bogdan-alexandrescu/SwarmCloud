@@ -6568,8 +6568,10 @@ export async function loadRunnerProfiles(): Promise<Result<string[]>> {
 // nothing else: `FIXTURE_READS` answers the registered repositories, the
 // Settings pages' reads, the people list and the runner sizes, each as the
 // raw body the route serves, so the SAME normaliser a live answer meets runs
-// over it. Every other `readAs` route -- git tokens, the graph, the access
-// routes -- is still answered as not served, exactly as an API without it.
+// over it. Since QAFIX6-FIXTURE d it answers the onboarding, GitHub
+// permissions, access and access-owner reads too. Every other `readAs` route
+// -- git tokens, the graph, an owner's repository page, the members list -- is
+// still answered as not served, exactly as an API without it.
 // ---------------------------------------------------------------------------
 
 function repoNotServed<T>(target: ApiRoute): Result<T> {
@@ -6641,6 +6643,155 @@ function fixtureRepoIndex(repoId: string): unknown {
   if (r === undefined) return undefined
   const modules = Array.from({ length: r.modules }, (_v, i) => ({ path: `src/module_${i + 1}`, files: 4 + i, lines: 300 + 40 * i, language: 'typescript' }))
   return { index: { commit_sha: fixtureSha(r.sha), truncated: [] }, document: { modules, truncated: [] } }
+}
+
+// ---------------------------------------------------------------------------
+// SETUP AND ACCESS IN THE FIXTURE BUILD (QAFIX6-FIXTURE d, visual QA run 6
+// work-b-006, part of #1680). These reads were answered as not served, so no
+// run had ever drawn /setup's checklist, its GitHub card or /access's table.
+// Each is the raw body its route serves (swarm_api/onboarding.py `derive`,
+// forgeperms.py, access.py), for alice@example.com connected through the App
+// as `alice-example`, over the three registered repositories under
+// `example-org`. Their states are mixed on purpose, and they agree with each
+// other: `example-labs` asks for SAML SSO, so orgs_enabled failed with the
+// server's own §2.3 copy; example-web's verify has not run, so access_verified
+// is in progress; the org's installation has not accepted `actions: read`, so
+// every repository reports `actions` blocked. A checklist that read all done
+// would hide the screens' failure paths, which are what they are for.
+// ---------------------------------------------------------------------------
+
+/** The App connection every Setup and Access read names. Names only: no value of any credential. */
+function fixtureGitHubConnection(): Record<string, unknown> {
+  return {
+    connection_id: 'conn_alice_example', forge: 'github', method: 'app_user', forge_login: 'alice-example',
+    forge_user_id: 4_210_771, token_id: 'gt_alice_example_app', secret_name: `swarm-tenant-${FIXTURE_TENANT}-github-alice-example`,
+    state: 'active', failure: null,
+    access_expires_at: new Date(FIXTURE_NOW + 6 * FIXTURE_HOUR).toISOString(),
+    refresh_expires_at: new Date(FIXTURE_NOW + 180 * 24 * FIXTURE_HOUR).toISOString(),
+    refreshed_at: fixtureAgo(2 * FIXTURE_HOUR), refreshing: false,
+    created_at: fixtureAgo(9 * 24 * FIXTURE_HOUR), connected_at: fixtureAgo(9 * 24 * FIXTURE_HOUR), revoked_at: null,
+  }
+}
+
+/** Each registered repository's grant and its last verify: example-web's has not run yet. */
+function fixtureAccessGrants(): Record<string, unknown>[] {
+  return FIXTURE_REPOS.map((r, i) => {
+    const verified = r.repo !== 'example-web'
+    const check = (state: string) => ({ state, code: null, checked_at: verified ? fixtureAgo((3 + i) * FIXTURE_HOUR) : null })
+    return {
+      repo_id: r.repo_id, repository: `example-org/${r.repo}`, owner: 'example-org',
+      mode: i === 2 ? 'read' : 'write', can_push: true, archived: false,
+      granted_at: fixtureAgo((8 - i) * 24 * FIXTURE_HOUR), granted_by: 'alice@example.com',
+      checks: verified
+        ? { clone: check('ok'), push: check(i === 2 ? 'not_required' : 'ok'), pull_request: check(i === 2 ? 'not_required' : 'ok') }
+        : {},
+      verified_at: verified ? fixtureAgo((3 + i) * FIXTURE_HOUR) : null,
+    }
+  })
+}
+
+/** `GET /v1/onboarding`: seven steps as `derive` serves them with the workspace gate off, in mixed states. */
+function fixtureOnboarding(): unknown {
+  const checked = fixtureAgo(4 * 60_000)
+  const step = (name: string, state: string, evidence: Record<string, unknown>, issues: unknown[] = []) => ({
+    step: name, state, code: null, copy: null, checked_at: state === 'todo' ? null : checked, evidence, issues,
+  })
+  const ssoUrl = 'https://github.com/orgs/example-labs/sso'
+  const steps = [
+    step('signed_in', 'done', { email: 'alice@example.com', tenant_id: FIXTURE_TENANT }),
+    step('github_connected', 'done', { via: 'user', kind: 'app_user', forge_login: 'alice-example', token_state: 'active' }),
+    step('app_installed', 'done', { needed: true, read: true, source: 'github', login: 'alice-example', installed: ['example-org'], not_installed: ['example-labs'], install_url: null, app_name: null }),
+    {
+      ...step('orgs_enabled', 'failed', {
+        owners: [
+          { owner: 'alice-example', owner_type: 'User', source: 'account', reach: 'reachable', registered: 0 },
+          { owner: 'example-org', owner_type: 'Organization', source: 'orgs', reach: 'reachable', registered: FIXTURE_REPOS.length },
+          { owner: 'example-labs', owner_type: 'Organization', source: 'refusal', reach: 'sso_required', registered: 0 },
+        ],
+        orgs_read: true, orgs_capped: false, sso_hidden_orgs: 0, read_at: checked,
+      }, [{
+        code: 'SSO_NOT_AUTHORISED', owner: 'example-labs', url: ssoUrl,
+        copy: "example-labs uses SAML single sign-on and GitHub has not linked your session to it yet. Open https://github.com/orgs/example-labs/sso, sign in with example-labs's identity provider, then press Re-check. Nothing in SwarmCloud has to change.",
+      }]),
+      code: 'SSO_NOT_AUTHORISED',
+    },
+    step('repos_chosen', 'done', { repositories: fixtureAccessGrants().map((g) => ({ repository: g.repository, mode: g.mode })) }),
+    step('access_verified', 'in_progress', {
+      repositories: fixtureAccessGrants().map((g) => ({ repository: g.repository, result: g.verified_at === null ? 'pending' : 'passed' })),
+    }),
+    step('ready', 'todo', { waiting_for: 'orgs_enabled' }),
+  ]
+  return {
+    tenant_id: FIXTURE_TENANT, user: 'alice@example.com', user_hash: '5a1ce0e8a3b7c912', derived_at: new Date(FIXTURE_NOW).toISOString(),
+    steps, next_step: 'orgs_enabled', complete: false, dismissed: false, dismissed_at: null, source: 'derived on this read',
+  }
+}
+
+/** `GET /v1/forge/permissions`: forgeperms.py's REQUIRED, the App, the one installation, and each registered repository. */
+function fixtureForgePermissions(): unknown {
+  const req = (permission: string, access: string, needed_for: string, capabilities: string[]) => ({ permission, access, needed_for, capabilities })
+  const required = [
+    req('contents', 'write', "runs can't push their branch, and merges can't land", ['push', 'merge']),
+    req('pull_requests', 'write', "runs can't open or update pull requests, or merge them", ['pull_request', 'merge']),
+    req('statuses', 'read', "merges can't see CI, so they fail", ['merge', 'ci']),
+    req('checks', 'read', "merges and CI fixes can't see check runs", ['merge', 'ci']),
+    req('issues', 'write', "issue runs and the observer can't read or comment on issues", ['issues']),
+    req('actions', 'read', "ci-flake-hunter and release-health can't read workflow runs", ['actions']),
+  ]
+  const app = { contents: 'write', pull_requests: 'write', statuses: 'read', checks: 'read', issues: 'write', actions: 'read', metadata: 'read' }
+  const { actions: _notAccepted, ...installed } = app
+  const actionsGap = { ...required[5], granted: null }
+  return {
+    checked_at: fixtureAgo(4 * 60_000),
+    required,
+    workflow_files_required: req('workflows', 'write', 'workflow-file pushes fall back to workflow-lines.patch (Workflows: not granted)', ['workflow_files']),
+    app: { configured: true, slug: 'swarmcloud', granted: app, missing: [], settings_url: null, error: null },
+    orgs: [{
+      org: 'example-org', account_type: 'Organization', installation_id: 51_877_204,
+      granted: installed, missing: [actionsGap], pending: [{ permission: 'actions', requested: 'read', granted: null }],
+      review_url: 'https://github.com/organizations/example-org/settings/installations/51877204', error: null,
+    }],
+    repositories: FIXTURE_REPOS.map((r) => ({
+      repo_id: r.repo_id, repo: `example-org/${r.repo}`, credential: 'app', installation_id: 51_877_204,
+      capabilities: { push: true, pull_request: true, merge: true, ci: true, issues: true, actions: false },
+      blocked_by: [actionsGap], error: null,
+    })),
+    cached: false,
+  }
+}
+
+/** `GET /v1/access`: the connection, the enabled owner and the three grants. */
+function fixtureAccess(): unknown {
+  return {
+    connection: fixtureGitHubConnection(),
+    orgs: [{
+      owner: 'example-org', method: 'app', owner_type: 'Organization', installation_id: 51_877_204, repository_selection: 'selected',
+      install_state: 'installed', sso: 'ok', enabled: true, enabled_at: fixtureAgo(9 * 24 * FIXTURE_HOUR), checked_at: fixtureAgo(4 * 60_000),
+    }],
+    requested: [],
+    grants: fixtureAccessGrants(),
+    tenant_id: FIXTURE_TENANT,
+  }
+}
+
+/** `GET /v1/access/orgs`: the person's account, the installed org, and the org that asks for SSO. */
+function fixtureAccessOwners(): unknown {
+  const owner = (name: string, type: string, state: string, sso: string, enabled: boolean, installationId: number | null) => ({
+    owner: name, owner_type: type, installation_id: installationId, repository_selection: installationId === null ? null : 'selected',
+    install_state: state, sso, enabled,
+    install_url: state === 'installed' ? null : 'https://github.com/apps/swarmcloud/installations/new',
+  })
+  return {
+    owners: [
+      owner('alice-example', 'User', 'not_installed', 'ok', false, null),
+      owner('example-org', 'Organization', 'installed', 'ok', true, 51_877_204),
+      owner('example-labs', 'Organization', 'not_installed', 'required', false, null),
+    ],
+    orgs_listed: true,
+    install_url: 'https://github.com/apps/swarmcloud/installations/new',
+    app_name: null,
+    tenant_id: FIXTURE_TENANT,
+  }
 }
 
 /** The person both personas are: the shell's alice@example.com, platform role per persona. */
@@ -6888,6 +7039,11 @@ const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | unde
   '/v1/admin/workspaces': () => (fixtureIsAdmin ? { body: { workspaces: [] } } : 'admin'),
   '/v1/admin/runner-sizes': () => (fixtureIsAdmin ? { body: fixtureRunnerSizes() } : 'admin'),
   '/v1/admin/runner-sizes/versions': () => (fixtureIsAdmin ? { body: fixtureRunnerSizeVersions() } : 'admin'),
+  // Setup and Access (QAFIX6-FIXTURE d): the checklist, the GitHub card and the grants table.
+  '/v1/onboarding': () => ({ body: fixtureOnboarding() }),
+  '/v1/forge/permissions': () => ({ body: fixtureForgePermissions() }),
+  '/v1/access': () => ({ body: fixtureAccess() }),
+  '/v1/access/orgs': () => ({ body: fixtureAccessOwners() }),
 }
 
 /** A read whose body is normalised before any screen sees it. */
@@ -7616,8 +7772,9 @@ export async function patchRepositoryWorkflowFiles(repoId: string, value: boolea
 //
 // The routes are swarm_api/routes/forgeapp.py and routes/onboarding.py. NONE
 // ANSWERS A VALUE -- no token, no code, no state after `authorize` minted it
-// -- and nothing here logs or keeps what it posts. The fixture build answers
-// each as not served, like the git-token routes above.
+// -- and nothing here logs or keeps what it posts. The fixture build serves
+// the onboarding read (QAFIX6-FIXTURE d, `fixtureOnboarding`) and answers each
+// write as not served, like the git-token routes above.
 // ---------------------------------------------------------------------------
 
 /** `GET /v1/onboarding`: the caller's six steps, derived on this read. */
@@ -8317,7 +8474,8 @@ function roleBody(fields: Record<string, string>, reason: string): Record<string
 //
 // The routes are swarm_api/routes/access.py. Each acts as the caller with
 // THEIR OWN GitHub connection, inside the caller's tenant (`tenant_scope`);
-// none answers a value. The fixture build answers each as not served.
+// none answers a value. The fixture build serves `/v1/access` and
+// `/v1/access/orgs` (QAFIX6-FIXTURE d) and answers the rest as not served.
 // ---------------------------------------------------------------------------
 
 /** `GET /v1/access`: the caller's connection, enabled owners and grants (no GitHub read). */

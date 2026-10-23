@@ -113,25 +113,19 @@ describe('the checklist with one step left to do', () => {
   })
 
   for (const theme of THEMES) {
-    // HELD RED BY A FILE OUTSIDE THIS LANE, so `it.fails`: it passes while the
-    // finding stands and fails the day it is gone, which is when it must be
-    // turned into `it`. jsdom resolves the cascade by source order alone (no
-    // specificity, no `!important`), and every section sheet loads BEFORE
-    // styles.css, so `:where(.app button) { border: 1px solid var(--ctl-bd) }`
-    // out-ranks `.c-btn.is-ghost { border-color: transparent }` here, though
-    // no browser draws that border. No rule in styles/onboarding.css can win
-    // that tie. The fix is a restatement in styles.css after the `:where`
-    // floor, as styles.css already does for capacity.css's borderless buttons
-    // ("BORDERLESS BUTTONS IN A SECTION SHEET"); the lane asked the owner for
-    // it (questions.json, SETUP-ACCESS-STYLES).
-    it.fails(`draws no control boundary under 3:1 on the next step's ghost button (${theme})`, () => {
+    // jsdom resolves the cascade by source order alone (no specificity, no
+    // `!important`), and every section sheet loads BEFORE styles.css, so
+    // `:where(.app button) { border: 1px solid var(--ctl-bd) }` out-ranks
+    // `.c-btn.is-ghost { border-color: transparent }` here, though no browser
+    // draws that border. styles.css restates the ghost's border after the
+    // `:where` floor ("BORDERLESS BUTTONS IN A SECTION SHEET"), and this holds it.
+    it(`draws no control boundary under 3:1 on the next step's ghost button (${theme})`, () => {
       const root = renderChecklist()
       const findings = measure(root, theme).filter(
         (f) => f.kind === 'divider-under-floor' && f.where === 'button.c-btn.is-ghost.is-sm',
       )
-      // MUTATION: this reads `--ctl-bd` on `--sk-acs`, 2.89:1 dark and 2.96:1
-      // light, and fails -- which `it.fails` reports as a pass until
-      // styles.css restates the ghost's own border after `:where(.app button)`.
+      // MUTATION: delete `.ob-step.is-next .c-btn.is-ghost` from styles.css and
+      // this reads `--ctl-bd` on `--sk-acs`, 2.89:1 dark and 2.96:1 light, and fails.
       expect(said(findings)).toEqual([])
     })
   }
