@@ -12,7 +12,11 @@ THE GATE SIGNS IN, WITH THE AGENT HELD (§2.2 steps 3-4; `SignIn`, driven by
 withheld exactly as for a person's hand-off. On a tab of the gate's own, in
 the default browser context (so the session's cookies are the agent's
 browser's), on a CDP session the agent never sees, the gate opens
-`login_url`, focuses each field by its selector, types with
+`login_url`, makes the target's start clicks in order (a chooser, or a
+"Sign in" button before an identity provider: each the one visible control
+whose trimmed text equals the click's `text`, waited for up to
+`START_CLICK_SECONDS`, or the sign-in ends `qa_sign_in_start_click_missing`),
+focuses each field by its selector, types with
 `Input.insertText`, presses the submit control and waits up to
 `SIGNED_IN_SECONDS` for `signed_in_selector`. Then, in the return order:
 every password input on the gate's sessions is cleared, the gate's tab is
@@ -104,6 +108,17 @@ MAX_SIGN_INS = 3
 #: and (separately) for the login form to appear.
 SIGNED_IN_SECONDS = 30.0
 FORM_SECONDS = 30.0
+#: §2.2 step 3, a start click: how long the gate waits for the one control
+#: a start click names, and then for the page it led to to finish loading. A
+#: chooser is drawn by the page's own first load, which `FORM_SECONDS` already
+#: bounds for a login form; ten seconds past the previous step is long enough
+#: for a script-drawn button and short enough that a control that is not there
+#: does not hold the agent (held throughout) for a minute per click.
+START_CLICK_SECONDS = 10.0
+#: At most three start clicks (swarm-api's `qaspec.MAX_START_CLICKS`).
+MAX_START_CLICKS = 3
+MAX_START_CLICK_TEXT = 60
+MAX_START_CLICK_CSS = 200
 #: How often the gate's tab is read while it waits.
 PROBE_SECONDS = 0.25
 #: The rate floor (§3): never faster than one navigation a second, nor more
@@ -132,6 +147,7 @@ SIGN_IN_FAILED = "qa_sign_in_failed"
 NO_FORM = "qa_sign_in_no_form"
 BUSY = "qa_sign_in_busy"
 BROWSER_GONE = "qa_sign_in_browser_gone"
+START_CLICK_MISSING = "qa_sign_in_start_click_missing"
 #: §2.4's sentence, verbatim.
 CHALLENGE_SENTENCE = ("the target's login asks for MFA or a CAPTCHA; register a test account "
                       "without one")
@@ -266,7 +282,10 @@ class QaTarget:
         self.request_spacing = 0.1
         self.read_posts: tuple[str, ...] = ()
         self.excluded_paths: tuple[str, ...] = ()
-        self.sign_in: dict[str, str] = {}
+        self.sign_in: dict[str, Any] = {}
+        #: Why the last sign-in ended, in a sentence, when its cause alone does
+        #: not say (a start click's text). Public settings only, never a credential.
+        self.sentence: str | None = None
         self.mutating = False
         self._username: str | None = None
         self._password: str | None = None
@@ -314,6 +333,8 @@ class QaTarget:
             out["target_id"] = self.target_id
         if self.cause:
             out["cause"] = self.cause
+        if self.sentence:
+            out["sentence"] = self.sentence
         return out
 
     # --------------------------------------------------------------- ctl
@@ -352,6 +373,7 @@ class QaTarget:
         self.sign_in = parsed["sign_in"]
         self.mutating = parsed["mutating"] and self.environment == "non_production"
         self.cause = None
+        self.sentence = None
         if own_login:
             username, password = parsed["credential"]
             self._username, self._password = username, password
@@ -612,12 +634,12 @@ def _parse(args: Mapping[str, Any]) -> dict[str, Any]:
             "sign_in": sign_in, "credential": credential}
 
 
-def _parse_sign_in(raw: Any, origins: Iterable[str]) -> dict[str, str]:
+def _parse_sign_in(raw: Any, origins: Iterable[str]) -> dict[str, Any]:
     if not isinstance(raw, Mapping) or raw.get("kind") not in ("none", "own_login"):
         raise QaTargetRefused("sign_in")
     if raw["kind"] == "none":
         return {"kind": "none"}
-    out = {"kind": "own_login"}
+    out: dict[str, Any] = {"kind": "own_login"}
     login_url = raw.get("login_url")
     if not isinstance(login_url, str) or not login_url.startswith("https://") \
             or origin_of(login_url) not in set(origins):
@@ -630,6 +652,33 @@ def _parse_sign_in(raw: Any, origins: Iterable[str]) -> dict[str, str]:
         if not isinstance(value, str) or not 1 <= len(value) <= MAX_SELECTOR or "\n" in value:
             raise QaTargetRefused(key)
         out[key] = value
+    clicks = _parse_start_clicks(raw.get("start_clicks"))
+    if clicks:
+        out["start_clicks"] = clicks
+    return out
+
+
+def _parse_start_clicks(raw: Any) -> list[dict[str, str]]:
+    """swarm-api checked these at registration (`qaspec.start_clicks`); the
+    gate checks their shape again, since the hand-off crossed the worker."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_START_CLICKS:
+        raise QaTargetRefused("start_clicks")
+    out: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, Mapping) or set(item) - {"text", "css"}:
+            raise QaTargetRefused("start_clicks")
+        text, css = item.get("text"), item.get("css")
+        if (not isinstance(text, str) or text != text.strip() or not 1 <= len(text) <= MAX_START_CLICK_TEXT
+                or "\n" in text):
+            raise QaTargetRefused("start_clicks")
+        click = {"text": text}
+        if css is not None:
+            if not isinstance(css, str) or not 1 <= len(css) <= MAX_START_CLICK_CSS or "\n" in css:
+                raise QaTargetRefused("start_clicks")
+            click["css"] = css
+        out.append(click)
     return out
 
 
@@ -878,6 +927,25 @@ _CLEAR = """/*swarm-qa:clear*/((a) => {
   walk(document); return n;
 })(%s)"""
 
+#: A start click (§2.2 step 3): every visible element matching `css` (any
+#: element without one) whose trimmed text is exactly `text`, the outermost of
+#: a nested pair dropped (a button and the span inside it are one control).
+#: Clicks only when there is exactly one; returns how many there were, -1
+#: when `css` is not a selector the page's `querySelectorAll` takes.
+_START_CLICK = """/*swarm-qa:start-click*/((a) => {
+  let all;
+  try { all = [...document.querySelectorAll(a.css || '*')]; } catch (e) { return -1; }
+  const shown = (el) => { const s = getComputedStyle(el);
+    return s.visibility !== 'hidden' && s.display !== 'none' && el.getClientRects().length > 0; };
+  const label = (el) => ((el instanceof HTMLInputElement ? el.value : el.innerText) || '').trim();
+  let hits = all.filter((el) => label(el) === a.text && shown(el));
+  hits = hits.filter((el) => !hits.some((o) => o !== el && el.contains(o)));
+  if (hits.length === 1) hits[0].click();
+  return hits.length;
+})(%s)"""
+
+_SETTLED = """/*swarm-qa:settled*/((a) => document.readyState === 'complete')(%s)"""
+
 _USER_FALLBACK = 'input[autocomplete~="username"], input[type=email]'
 _PASS_FALLBACK = "input[type=password]"
 
@@ -916,6 +984,10 @@ class SignIn:
         except Exception as exc:  # noqa: BLE001 -- the browser went, or refused the tab
             log.warning("qa target: the sign-in tab did not open (%s)", type(exc).__name__)
             return STATE_FAILED, BROWSER_GONE
+        for click in settings.get("start_clicks") or ():
+            ended = await self._start_click(click)
+            if ended is not None:
+                return ended
         found = await self._wait({"form", "signed_in", "challenge"}, FORM_SECONDS)
         if found == "challenge":
             return STATE_CHALLENGE, CHALLENGE
@@ -935,6 +1007,41 @@ class SignIn:
         if found == "signed_in":
             return STATE_SIGNED_IN, None
         return STATE_FAILED, SIGN_IN_FAILED
+
+    async def _start_click(self, click: Mapping[str, str]) -> tuple[str, str | None] | None:
+        """One start click: None once it was made and the page settled, or how
+        the sign-in ends. A challenge seen first ends it as a challenge; the
+        signed-in state seen first ends it signed in (the IdP's session held).
+        Where the click leads is judged by the guard like any navigation of
+        the gate's tab: an origin the target was not approved for gets the
+        left page, and the form then never appears."""
+        argument = {"signed": self._target.sign_in.get("signed_in_selector"),
+                    "user": self._target.sign_in.get("username_selector"),
+                    "pass": self._target.sign_in.get("password_selector")}
+        deadline = self._clock() + START_CLICK_SECONDS
+        count: Any = None
+        while True:
+            state = await self._evaluate(_js(_PROBE, argument))
+            if state == "challenge":
+                return STATE_CHALLENGE, CHALLENGE
+            if state == "signed_in":
+                return STATE_SIGNED_IN, None
+            count = await self._evaluate(_js(_START_CLICK, {"text": click["text"], "css": click.get("css")}))
+            if type(count) is int and count == 1:
+                break
+            if self._clock() >= deadline:
+                found = "none" if type(count) is not int or count < 1 else str(count)
+                self._target.sentence = (
+                    f"the sign-in's start click '{click['text']}' found {found} visible control"
+                    f"{'' if found == '1' else 's'} with exactly that text in {START_CLICK_SECONDS:.0f} s, "
+                    "and the gate clicks only when there is exactly one")
+                return STATE_FAILED, START_CLICK_MISSING
+            await self._sleep(self._probe_seconds)
+        await self._sleep(self._probe_seconds)
+        settle_by = self._clock() + START_CLICK_SECONDS
+        while await self._evaluate(_js(_SETTLED, {})) is not True and self._clock() < settle_by:
+            await self._sleep(self._probe_seconds)
+        return None
 
     async def close(self) -> None:
         """Clear the tab's password inputs, then close it. Never raises."""
@@ -997,6 +1104,7 @@ async def handle_ctl(target: QaTarget, proxy: Any, args: Mapping[str, Any]) -> d
 
 __all__ = [
     "BUSY", "CHALLENGE", "CHALLENGE_FRAMES", "CHALLENGE_SENTENCE", "EXHAUSTED", "FINAL", "MAX_SIGN_INS", "OP", "PLACEHOLDER",
-    "QaTarget", "QaTargetGuard", "QaTargetRefused", "SIGN_IN_FAILED", "SignIn", "Verdict", "handle_ctl",
+    "QaTarget", "QaTargetGuard", "QaTargetRefused", "SIGN_IN_FAILED", "START_CLICK_MISSING", "SignIn", "Verdict",
+    "handle_ctl",
     "left_page", "needles", "origin_of",
 ]

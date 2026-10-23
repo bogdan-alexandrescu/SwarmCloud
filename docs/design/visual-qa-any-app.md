@@ -205,6 +205,63 @@ The QA-IDENTITY path, generalised from one header to one sign-in:
    screencast's mask already paints password fields; a field typed by the
    gate is cleared before any agent capture can exist.
 
+**Start clicks: a chooser, or a "Sign in" button before an identity
+provider** (BGD, 2026-10-23; lane VQ8-START-CLICKS). Not every login page is
+the form. AI Studio (`https://studio.saga.xyz`, targets
+`ai-studio-staging-routes` and `ai-studio-staging-crawl`) opens on a chooser
+with a Staging | Production toggle and a "Sign in" button, which redirects to
+Keycloak on its `extra_origin` (`https://sso.agents-staging.saga.xyz`), where
+the username form lives. Opening `login_url` and looking for a password input
+there finds none, so the sign-in ended `qa_sign_in_no_form` every time. An
+`own_login` target may therefore list `sign_in.start_clicks`, which the gate
+makes in step 3 between opening `login_url` and looking for the form:
+
+* **The shape.** 1 to 3 entries `{text, css?}`, in order. `text` (1-60
+  characters) is the control's exact visible text, trimmed and
+  case-sensitive. `css` (optional, at most 200 characters) narrows which
+  elements are candidates, for example `button`. Allowed only with
+  `kind: own_login` (`qaspec.start_clicks`, called by the registration's
+  `_sign_in`, so a target that is stored is one the gate can click).
+* **Plain CSS only.** Playwright's selector syntax (`:has-text()`, `:text()`,
+  `:visible`, `>>`, `text=`) is refused at registration with a sentence
+  saying why: the gate clicks over CDP, inside the page, with
+  `querySelectorAll`, not through Playwright. The control's text goes in
+  `text`, which is how a person would name it anyway.
+* **Never an exit or a write.** A click whose text contains any of the
+  target's exclusion words (the defaults, `logout`, and the target's own
+  `exclusions.controls`) is refused at registration: the gate clicks before
+  it has signed in, and nothing that names delete, pay or send is a way in.
+* **Exactly one control, or no click.** For each click the gate waits up to
+  `START_CLICK_SECONDS` (10 s: a chooser is drawn by the page's own load,
+  which the form's 30 s already bounds, and an absent control should not
+  hold the agent for a minute per click) for exactly one visible element
+  matching `css` (any element without it) whose trimmed text equals `text`;
+  of a nested pair (a button and the span inside it) only the inner one
+  counts. It clicks that one and waits for the page to settle. None, or
+  more than one, ends the sign-in with `qa_sign_in_start_click_missing` and
+  a sentence naming the text (the gate's `status().sentence`). A challenge
+  seen first is a challenge (§2.4); the signed-in state seen first is a
+  sign-in (the IdP's session already held).
+* **The origin lock holds.** Where a click leads is judged like every
+  navigation of the gate's tab (`QaTarget.judge`, §3): the target's host
+  and its approved `extra_origin` only. Anywhere else gets the left page,
+  the form never appears, and the sign-in fails without typing.
+* **Then nothing else changes.** After the last click the form steps run
+  unchanged on whichever approved origin the page reached. The agent is
+  held throughout, MFA and CAPTCHA are refused, password inputs are
+  cleared, the gate's tab is closed, and the agent never sees that tab.
+
+**The agent's own tab may land on the chooser again.** AI Studio keeps its
+access token in page memory, so the agent's tab, sent to `base_url` after the
+gate's tab signed in (step 4), shows the chooser, and one "Sign in" click
+there completes through the Keycloak session with no form. So when a target
+has start clicks, every capture, flow and discovery prompt carries one more
+sentence naming them in order (`qaspec._sign_in_note`): *"If your tab shows
+the sign-in chooser, click 'Staging' then 'Sign in'; the sign-in completes
+without a form. Never type into a login form; if one appears, run
+`swarm-handoff sign-in` once."* The agent never holds the credential, so a
+form it reaches is one it cannot fill, and the hand-off asks the gate again.
+
 ### 2.3 Keeping the session
 
 * **Cookies stay in Chromium** for the attempt. The agent cannot read them

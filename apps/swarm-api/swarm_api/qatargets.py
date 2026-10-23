@@ -183,7 +183,8 @@ SPEC_FIELDS = (
 REQUIRED_FIELDS = ("name", "base_url", "repository", "authorized_by")
 
 _SELECTOR_KEYS = ("username_selector", "password_selector", "submit_selector")
-_SIGN_IN_KEYS = frozenset({"kind", "login_path", "signed_in_selector", "extra_origin", *_SELECTOR_KEYS})
+_SIGN_IN_KEYS = frozenset({"kind", "login_path", "signed_in_selector", "extra_origin", "start_clicks",
+                           *_SELECTOR_KEYS})
 _FORBIDDEN_TEXT = re.compile(r"[\x00-\x1f\x7f`]")
 _PATH = re.compile(r"/(?!/)[A-Za-z0-9._~%!$&()*+,;=:@/-]{0,511}")
 _TARGET_ID = re.compile(r"^qat_[0-9a-f]{16}$")
@@ -335,14 +336,17 @@ def _one_line(value: Any, what: str, *, limit: int, field: str) -> str:
     return value.strip()
 
 
-def _sign_in(raw: Any, resolve: Resolver) -> dict[str, Any]:
+def _sign_in(raw: Any, resolve: Resolver, *, exclusions: Any = None) -> dict[str, Any]:
     if raw is None:
         return {"kind": "none"}
     if not isinstance(raw, Mapping) or set(raw) - _SIGN_IN_KEYS:
         raise _invalid("sign_in must be {kind: none} or {kind: own_login, login_path, "
                        "signed_in_selector, username_selector?, password_selector?, "
-                       "submit_selector?, extra_origin?}", field="sign_in")
+                       "submit_selector?, extra_origin?, start_clicks?}", field="sign_in")
     kind = raw.get("kind")
+    if kind == "none" and raw.get("start_clicks") is not None:
+        raise _invalid("sign_in.start_clicks is allowed only with kind own_login: they are clicks the "
+                       "gate makes on the login page before it signs in", field="sign_in")
     if kind == "none":
         if set(raw) != {"kind"}:
             raise _invalid("a sign_in of kind none carries nothing else", field="sign_in")
@@ -364,6 +368,12 @@ def _sign_in(raw: Any, resolve: Resolver) -> dict[str, Any]:
             out[key] = _one_line(raw[key], f"sign_in.{key}", limit=SELECTOR_MAX, field="sign_in")
     if raw.get("extra_origin") is not None:
         out["extra_origin"] = _extra_origin(raw["extra_origin"], resolve)
+    if raw.get("start_clicks") is not None:
+        # §2.2: the exclusion words are the target's too, so the check reads them.
+        try:
+            out["start_clicks"] = qaspec.start_clicks({"sign_in": raw, "exclusions": exclusions})
+        except qaspec.QaSpecError as exc:
+            raise _invalid(exc.message, field="sign_in") from None
     return out
 
 
@@ -676,7 +686,7 @@ class QaTargets:
         doc["origin"] = origin
         doc["repository"], doc["repo_id"] = _repository(self._db, tenant_id, values.get("repository"),
                                                         now=self._now)
-        doc["sign_in"] = _sign_in(values.get("sign_in"), self._resolve)
+        doc["sign_in"] = _sign_in(values.get("sign_in"), self._resolve, exclusions=values.get("exclusions"))
         rate = _rate(values.get("rate"))
         if rate is not None:
             doc["rate"] = rate
@@ -1153,6 +1163,9 @@ class QaTargetIssuer:
             for key in ("signed_in_selector", *_SELECTOR_KEYS):
                 if sign_in.get(key) is not None:
                     served_sign_in[key] = sign_in[key]
+            if sign_in.get("start_clicks"):
+                # §2.2: the gate clicks these on the login page before the form.
+                served_sign_in["start_clicks"] = [dict(c) for c in sign_in["start_clicks"]]
         paths, controls = qaspec._exclusions(target)
         return {
             "target_id": target.get("id"),

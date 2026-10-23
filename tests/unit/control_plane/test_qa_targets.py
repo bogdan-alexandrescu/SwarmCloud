@@ -514,3 +514,44 @@ def test_a_run_body_is_logged_nowhere_as_a_prompt(client, db, seeded):
     # The answer names the run, the mark and the steps: not the rendered spec.
     assert set(answer) == {"workflow_id", "qa_target", "file", "browser_steps"}
     assert "shop.example.com" not in json.dumps(answer)
+
+
+# --------------------------------------------------------------------------
+# Start clicks at registration (§2.2; BGD, 2026-10-23)
+# --------------------------------------------------------------------------
+
+_LOGIN = {"kind": "own_login", "login_path": "/", "signed_in_selector": "nav .me"}
+_CHOOSER = [{"text": "Staging", "css": "button"}, {"text": "Sign in"}]
+
+
+def test_start_clicks_are_stored_and_served_to_the_gate_in_order(client, db, seeded):
+    response = register(client, sign_in={**_LOGIN, "start_clicks": _CHOOSER})
+    assert response.status_code == 201, response.text
+    target = response.json()["qa_target"]
+    # MUTATION: leave `start_clicks` out of `_SIGN_IN_KEYS` (or `_sign_in`'s output) and this fails.
+    assert target["sign_in"]["start_clicks"] == _CHOOSER
+    (doc,) = target_docs(db).values()
+    served = qatargets.QaTargetIssuer._answer(doc)["sign_in"]
+    # MUTATION: leave `start_clicks` out of `QaTargetIssuer._answer` and the gate never clicks.
+    assert served["start_clicks"] == _CHOOSER and served["login_url"] == "https://shop.example.com/"
+
+
+@pytest.mark.parametrize("sign_in", [
+    {**_LOGIN, "start_clicks": [{"text": "Sign in", "css": "button:has-text('Sign in')"}]},
+    {**_LOGIN, "start_clicks": [{"text": t} for t in ("a", "b", "c", "d")]},
+    {**_LOGIN, "start_clicks": [{"text": "Log out"}]},
+    {"kind": "none", "start_clicks": [{"text": "Sign in"}]},
+], ids=["has-text", "four", "exclusion-word", "kind-none"])
+def test_a_start_click_the_gate_must_not_make_is_refused_at_registration(client, db, seeded, sign_in):
+    response = register(client, sign_in=sign_in)
+    # MUTATION: store `start_clicks` without `qaspec.start_clicks` in `_sign_in` and this is 201.
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["field"] == "sign_in"
+    assert not target_docs(db)
+
+
+def test_a_target_exclusion_word_refuses_a_start_click_at_registration(client, db, seeded):
+    response = register(client, sign_in={**_LOGIN, "start_clicks": [{"text": "Archive"}]},
+                        exclusions={"controls": ["archive"]})
+    # MUTATION: pass no `exclusions` to `_sign_in` from `_build` and this is 201.
+    assert response.status_code == 422, response.text

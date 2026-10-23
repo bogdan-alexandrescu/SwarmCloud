@@ -569,10 +569,17 @@ interface Draft {
   username_selector: string
   password_selector: string
   submit_selector: string
+  /** The sign-in's start clicks, a row each (§2.2); `css` empty is none. */
+  start_clicks: { text: string; css: string }[]
+  /** Not drawn here (Approve host names it), but carried so a sign-in change never drops it. */
+  extra_origin: string
   screens: string
   /** `MORE_FIELDS` as one JSON object; empty is none. */
   more: string
 }
+
+/** `qaspec.MAX_START_CLICKS`: the API refuses a fourth. */
+const MAX_START_CLICKS = 3
 
 function draftOf(t: QaTarget | null): Draft {
   return {
@@ -587,6 +594,8 @@ function draftOf(t: QaTarget | null): Draft {
     username_selector: t?.sign_in.username_selector ?? '',
     password_selector: t?.sign_in.password_selector ?? '',
     submit_selector: t?.sign_in.submit_selector ?? '',
+    start_clicks: (t?.sign_in.start_clicks ?? []).map((c) => ({ text: c.text, css: c.css ?? '' })),
+    extra_origin: t?.sign_in.extra_origin ?? '',
     screens: screensText(t?.screens ?? []),
     more: t === null || Object.keys(t.more).length === 0 ? '' : JSON.stringify(t.more, null, 2),
   }
@@ -613,13 +622,19 @@ function bodyOf(d: Draft, was: Draft | null): QaTargetSend | string {
   if (typeof screens === 'string') return screens
   const more = parseMore(d.more)
   if (typeof more === 'string') return more
-  const signIn: Record<string, string> = { kind: d.kind }
+  const signIn: Record<string, unknown> = { kind: d.kind }
   if (d.kind === 'own_login') {
     signIn.login_path = d.login_path.trim()
     signIn.signed_in_selector = d.signed_in_selector.trim()
     for (const k of ['username_selector', 'password_selector', 'submit_selector'] as const) {
       if (d[k].trim() !== '') signIn[k] = d[k].trim()
     }
+    if (d.extra_origin !== '') signIn.extra_origin = d.extra_origin
+    const clicks = d.start_clicks
+      .map((c) => ({ text: c.text.trim(), css: c.css.trim() }))
+      .filter((c) => c.text !== '' || c.css !== '')
+      .map((c) => (c.css === '' ? { text: c.text } : c))
+    if (clicks.length > 0) signIn.start_clicks = clicks
   }
   const full: QaTargetSend = {
     name: d.name.trim(),
@@ -660,6 +675,8 @@ function TargetForm({
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
   const set = (k: keyof Draft) => (e: { target: { value: string } }) => setD((was) => ({ ...was, [k]: e.target.value }))
+  const setClick = (i: number, k: 'text' | 'css') => (e: { target: { value: string } }) =>
+    setD((was) => ({ ...was, start_clicks: was.start_clicks.map((c, j) => (j === i ? { ...c, [k]: e.target.value } : c)) }))
   const slugs = repos.state.status === 'ok' || repos.state.status === 'stale' ? repos.state.data.map((r) => repoName(r)) : []
   if (d.repository !== '' && !slugs.includes(d.repository)) slugs.push(d.repository)
 
@@ -742,6 +759,32 @@ function TargetForm({
             <label>
               Submit selector <input name="submit_selector" value={d.submit_selector} onChange={set('submit_selector')} />
             </label>
+            <p className="ur-small">
+              Start clicks: what the gate clicks, in order, before the form (a chooser, or a &ldquo;Sign in&rdquo; button before the identity
+              provider). Text is the control&rsquo;s exact visible text; CSS, optional, narrows the candidates (for example button).
+            </p>
+            {d.start_clicks.map((c, i) => (
+              <span key={i} className="qa-start-click">
+                <label>
+                  Click {i + 1} text <input name={`start_click_text_${i}`} value={c.text} onChange={setClick(i, 'text')} maxLength={60} />
+                </label>
+                <label>
+                  CSS <input name={`start_click_css_${i}`} value={c.css} onChange={setClick(i, 'css')} maxLength={200} />
+                </label>
+                <Button
+                  size="sm"
+                  name="remove_start_click"
+                  onClick={() => setD((was) => ({ ...was, start_clicks: was.start_clicks.filter((_, j) => j !== i) }))}
+                >
+                  Remove
+                </Button>
+              </span>
+            ))}
+            {d.start_clicks.length < MAX_START_CLICKS && (
+              <Button size="sm" onClick={() => setD((was) => ({ ...was, start_clicks: [...was.start_clicks, { text: '', css: '' }] }))}>
+                Add start click
+              </Button>
+            )}
           </fieldset>
         )}
         <label>
