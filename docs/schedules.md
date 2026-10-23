@@ -814,7 +814,7 @@ holds for schedules exactly as for agents.
 | 14 | `model-prices-check` | API | R1 | no (issues) | auto | auto | admin, platform scope only | 24 h | 2 |
 | 15 | `failure-review` | one `claude-code` investigator, then API and issue runs | R3 with `merge: auto`, else R2 | yes (fix runs) | plan auto · **approve merge** | plan auto · merge auto, reached only through the audited switch (Q8) | **owner**, platform scope only | 6 h | 3 |
 | 16 | `visual-qa` | workflow: a QA target's `:run` | R1 | no (issues) | auto · merge off | auto · merge off | a **workspace admin** of the tenant, `all` scope | 24 h | 3 |
-| 17 | `image-tool-rescan` | task: one `claude-code` agent | R2 | yes | **approve merge** | **approve merge** | members | 24 h (created weekly) | 2 |
+| 17 | `image-tool-rescan` | `task`: one `claude-code` agent | R2 | yes | **approve merge** | **approve merge** | members | 24 h (created weekly) | 2 |
 
 The **floor** column is the lowest gate the type allows. Between the floor and
 the default, only a platform admin may set the gate (§4.2), with one
@@ -1389,14 +1389,14 @@ Built by lane IMAGE-TOOL-RESCAN (PR 2099, part of #442):
   months after a clean release ships; a waiver is how a CVE ships in the
   image every agent runs.
 * **Does.** Over the repositories in scope, in scope order, until **one**
-  task has been submitted: it reads `images/agent-runtime-base/Dockerfile`
+  agent has been submitted: it reads `images/agent-runtime-base/Dockerfile`
   on the default branch with the tenant's token, and classes each tool in
   `tools` as `on` (its hold reads 1, or the hold is gone and the install
   left), `held` or `absent`. Only `held` tools are re-scanned. Nothing held
   is `nothing_held`; a pull request this schedule opened that is still open
   (its body carries the schedule's marker) is `pr_open`; either way nothing
-  is submitted. Otherwise it submits one `claude-code` task, strategy
-  `direct-pr`, naming only the held tools. The task finds each tool's newest
+  is submitted. Otherwise it submits one `claude-code` agent, strategy
+  `direct-pr`, naming only the held tools. The agent finds each tool's newest
   release, verifies the download against the vendor's checksum file, and
   scans it with the promote gate's filter **as read from main**
   (`GATE_SOURCES`: `scripts/lib/image-scan.sh`, the release's
@@ -1417,12 +1417,12 @@ Built by lane IMAGE-TOOL-RESCAN (PR 2099, part of #442):
   `DEFAULT_CRON` `0 6 * * 1` (Mondays 06:00); the type's floor is 24 hours,
   `dependency-cve-refresh`'s, so a release day can be re-scanned by hand.
 * **Gate.** Run and plan auto, **approve merge**, and the floor is the same.
-  A single task's pull request has no `merge` step, so it waits for a person
+  A single agent's pull request has no `merge` step, so it waits for a person
   on GitHub: the release builds this image, so a person reads the scan in
   the body.
 * **Budget.** `BUDGET_CAPS` in the executor: `per_run_usd` 5, `per_day_usd`
   10, `max_concurrent` 1. Caps, not measurements, no larger than
-  `dependency-cve-refresh`'s: one task a firing, $5 a one-task `claude-code`
+  `dependency-cve-refresh`'s: one agent a firing, $5 a one-agent `claude-code`
   run, $10 a day room for one run-now beside a firing.
 * **Creates.** Members, at `repos` or `all` scope. Risk R2; it pushes.
 * **Produces.** At most one pull request per firing; each repository's
