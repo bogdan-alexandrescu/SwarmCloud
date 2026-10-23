@@ -112,13 +112,16 @@ FROM ${MIRROR_DOCKER_HUB}/${NGINX_IMAGE}
 # Releases 39158785934, 39161799433 and 39162254559 (2026-10-18) refused it over
 # libx11 1.8.13-r0 (CVE-2026-88806, HIGH, fixed in 1.8.14-r0), holding every merge
 # since 17:33Z.
+# Pull request #2155's build-check (run 40022439302, 2026-10-23) refused it over
+# brotli-libs 1.2.0-r1 (CVE-2026-111497, HIGH, fixed in 1.2.1-r0, which Alpine
+# v3.24/main carries); same reason, same fix.
 USER root
 # APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
 # main build and release), so the upgrade below is never an older build's
 # (owner decision 2026-10-14).
 ARG APT_REFRESH=unset
 RUN echo "apk layer of ${APT_REFRESH}" \
- && apk upgrade --no-cache libexpat pcre2 tiff libx11
+ && apk upgrade --no-cache libexpat pcre2 tiff libx11 brotli-libs
 USER 101
 
 COPY images/swarm-ui/nginx.conf /etc/nginx/conf.d/default.conf
