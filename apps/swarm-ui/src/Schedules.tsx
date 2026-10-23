@@ -501,9 +501,15 @@ function PhoneLine({ s, names, now }: { s: Schedule; names: ReadonlyMap<string, 
         }`
   const next = s.next_run_at === null ? `no next run (${STATE_WORD[s.state]})` : `next ${untilWords(s.next_run_at, now)}`
   const waiting = s.pending_approvals > 0 ? `${s.pending_approvals} waiting` : 'none waiting'
-  const head = [s.type, scopeWords(s, names), s.words ?? s.cron, last, next].join(' · ')
+  // THE PHONE KEEPS THE ROW'S FACTS (visual QA run 6, overview-automate-005):
+  // the risk tier the type cell carries, the zone the When cell carries, and
+  // the pause note the state cell carries all lived in cells a phone hides.
+  const type = s.tier === null ? s.type : `${s.type} · ${s.tier}`
+  const head = [type, scopeWords(s, names), `${s.words ?? s.cron}, ${s.timezone}`, last, next].join(' · ')
+  const why = stateLine(s)
   return (
     <span className="sc-line2">
+      {why !== null && <span className="sc-line2-why">{why}</span>}
       {head} · <SpendFigure usdReported={s.spend_today.reported_usd} unreported={s.spend_today.unreported_attempts} what="today's runs" /> ·{' '}
       {waiting}
     </span>
@@ -580,7 +586,7 @@ function ScheduleList({
                 <td data-label="State" className="sc-c-state">
                   <span className={`sc-state is-${s.state}`}>{STATE_WORD[s.state]}</span>
                   <DryRunChip s={s} />
-                  {line !== null && <span className="sc-sub sc-cut sc-why" title={line}>{line}</span>}
+                  {line !== null && <span className="sc-sub sc-why">{line}</span>}
                 </td>
                 <td data-label="Actions" className="sc-c-acts">
                   <ScheduleActions s={s} where="row" onDone={onDone} />
@@ -638,7 +644,7 @@ function BuiltInRows({ repos, go }: { repos: Result<RepoRecord[]>; go: (to: stri
             const cadence = indexCadence(r)
             return (
               <tr key={r.repo_id} className="sc-row" data-builtin={r.repo_id}>
-                <td data-label="Built in"><span className="sc-cut">Index · {r.owner}/{r.repo}</span></td>
+                <td data-label="Built in"><span className="sc-built">Index · {slashBreaks(`${r.owner}/${r.repo}`)}</span></td>
                 <td data-label="When">
                   {cadence === null ? <i className="ctl-em" title="The registration did not serve its index interval.">&mdash; not served</i> : cadence}
                 </td>
