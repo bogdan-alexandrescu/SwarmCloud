@@ -69,6 +69,7 @@ not one):
 | `repository` | one of the tenant's **registered** repositories | where its findings go (§5). A URL alone is refused: filing reaches a repository only through a registration whose forge slot the tenant already holds |
 | `sign_in` | `{kind: "none"}` or `{kind: "own_login", login_path, username_selector, password_selector, submit_selector, signed_in_selector, extra_origin?}` | §2. Selectors are optional where the login page has exactly one `input[type=password]` and one `autocomplete=username` or `type=email` field; `signed_in_selector` is required, because "the page changed" is not "signed in" |
 | `credential` | `{set: bool, set_at, set_by, version}`, never a value | a **reference**: the value is in Secret Manager (§2.1) |
+| `challenge_bypass` | `{kind: "header" \| "cookie", name}`, optional; its value served only as `challenge_bypass_value: {set, set_at, set_by, version}` | §2.5: the app owner's own way past their CAPTCHA, added by the gate on the approved origins only |
 | `screens` | a list `{id, path, ready?, segments?}`, or `discover: {max_pages ≤ 60, max_depth ≤ 3}` | the capture's route list; discovery is bounded and same-origin (§4.1) |
 | `flows` | `{id, goal, start_path, mutating: false}` each | goal-driven flows for jev or Playwright; `mutating: true` is refused unless `environment` is `non_production` (§3) |
 | `widths` | presets by name, default `["desktop", "phone-390"]` (1440 and 390) | the gate's presets, never a viewport override (the gate refuses one) |
@@ -301,6 +302,91 @@ page to a person to complete: a person typing their own code would leave the
 agent signed in **as that person**, the reason QA-IDENTITY refuses hand-off on
 its host. Steps that need the sign-in fail with that cause; public screens of
 the same target still run and are reported.
+
+### 2.5 A challenge on an app you own
+
+BGD, 2026-10-23 (#2058, lane CAPTCHA-BYPASS): **a QA target may carry a
+challenge bypass its owner configures, and only the gate applies it, only on
+the target's own origins.** §2.4 stands for everything else: the gate never
+solves a CAPTCHA, never calls a solver service or a model to solve one, and
+never disguises the browser (stealth fingerprints, rotating proxies). A
+CAPTCHA is a site owner saying no to automated access; on an app whose owner
+says yes, the owner already has the tools to say it, and this section only
+carries their answer to the page.
+
+**What the owner configures** (the runbook,
+[qa-challenge-bypass.md](../runbooks/qa-challenge-bypass.md)): in staging,
+the always-pass test keys reCAPTCHA, hCaptcha and Cloudflare Turnstile each
+publish; in production, a WAF or edge rule that skips the challenge for a
+request carrying a header (or cookie) only they and this platform know.
+
+**The target's spec.** `challenge_bypass: {kind: "header" | "cookie", name}`,
+a registration field (`qaspec.challenge_bypass`): `name` is an HTTP token of
+at most 64 characters; a header may never be one the app's session, the
+request's framing or the browser owns (`Authorization`, `Cookie`, `Host`,
+`Set-Cookie`, `Origin`, `Referer`, `Content-Length` and the other framing
+headers, and anything under `Proxy-` or `Sec-`: `RESERVED_BYPASS_HEADERS`); a
+target with no host to scope it to is refused. A value sent with the spec is
+refused, so none is ever stored on the document.
+
+**The value is write-only, stored where the credential is.** A workspace
+admin sets it with `PUT /v1/qa-targets/{id}/challenge-bypass` (the target
+form's write-only field in the console), 16 to 1024 characters a header and a
+cookie can both carry unquoted. It is stored in the tenant's one QA secret
+(§2.1), in the target's own entry beside the username and password (each
+write keeps the other's keys): the same secret, the same reader (swarm-api
+alone), so **no IAM changes**. The target records only
+`challenge_bypass_value: {set, set_at, set_by, version}`, audited
+`qa_target_challenge_bypass_set` with the version, kind and name. The PUT
+takes no one-time link: the admin is signed in to the console that sends it,
+and the value is a key the owner made for these runs, not a person's own
+password. Removing the bypass, or changing the host or `extra_origin` (which
+sends the host back to `pending`), removes the value from the secret first:
+a value made for one host never reaches another. Deleting the target removes
+it with the credential.
+
+**How it reaches the page.** Exactly as the password (§2.2): the worker's
+attempt route answers `challenge_bypass: {kind, name, value}` beside the
+sign-in, read from the secret at that moment, for a public target too, and
+only when the value is set; the `live_audit` row names the kind, never the
+value. The worker hands it to the gate in `qa_sign_in`'s args, registers it
+with the logger's redaction, and drops its copy once the gate answers.
+
+**The origin rule.** The gate applies it on its own CDP sessions, through
+the Request-stage `Fetch` pause its guard already makes on every page, frame
+and worker (§3), never through `Network.setExtraHTTPHeaders`, which would
+send it to every origin a page touches:
+
+* `header`: a request whose URL's origin is exactly one of the target's
+  approved origins (its base origin, and the login's `extra_origin` when the
+  platform admin approved it, §1.2; scheme, host and port all equal) is
+  continued with the header added, replacing a same-named one. Any other
+  origin, a look-alike host included, is continued untouched. An added
+  header follows no redirect (qa-identity-measurements.md M5): a redirect's
+  own request is judged by its own URL.
+* `cookie`: the gate plants it once per approved origin on Chromium's pipe
+  (`Storage.setCookies`), host-only (no `Domain`, so no subdomain is sent
+  it), `Secure`, `HttpOnly` and `SameSite=None`, so the browser sends it to
+  that host and nowhere else. Cookies are not port-scoped; a target's
+  origins are hosts in practice, and the header kind is the one to use when
+  two approved origins share a host.
+
+**Out of the agent's reach.** The value is a scrub needle like the password:
+every agent-bound CDP message has it, its URL encodings and its base64 forms
+replaced with `[qa-credential]` (a page that echoes its request headers, and
+Chromium's own `Network.requestWillBeSentExtraInfo`, which reports the headers
+sent). The agent's CDP can neither read nor write cookies (`cdppolicy.py`),
+an `HttpOnly` cookie is invisible to page script and so to the agent's
+`Runtime.evaluate`, the session carry already leaves the target's origins out
+(§2.3), and nothing the gate records names the value. That is why the value
+has a 16-character floor: a short needle would blank unrelated text. **Known
+limit, stated plainly:** a page that draws an echoed header as pixels puts it
+in a screenshot, which no text scrub reaches; the owner's skip rule matches
+the header and never echoes it, and an app that echoes request headers into
+its pages should not be given a bypass. An agent that continues one of its
+own paused requests with its own `headers` may send the placeholder in the
+header's place, which costs it the bypass on that request and reveals
+nothing.
 
 ---
 
@@ -555,7 +641,7 @@ holds unchanged:
 | kind | name | owner at dev-iam |
 |---|---|---|
 | collection | `qa_targets/{target_id}` | no |
-| routes | `POST/GET/PATCH/DELETE /v1/qa-targets`, `:approve-host` (platform admin), `:run`, `/credential-links`, `PUT /credential` | no |
+| routes | `POST/GET/PATCH/DELETE /v1/qa-targets`, `:approve-host` (platform admin), `:run`, `/credential-links`, `PUT /credential`, `PUT /challenge-bypass` (§2.5) | no |
 | worker route | `POST /v1/attempts/{attempt_id}/qa-target` | no |
 | gate | `ctl.sock` verb `qa_sign_in`; the method rule, origin lock and rate limit (`livegate/qatarget.py`); the scrub of one more value | no |
 | capture tool | `swarm_qa capture --keep-storage --settle generic`, `swarm_qa discover` | no |

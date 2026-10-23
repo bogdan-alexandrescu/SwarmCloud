@@ -230,7 +230,8 @@ def test_the_value_reaches_no_agent_bound_message_and_no_record(tmp):
         # MUTATION: leave the bypass out of QaTarget's needles and the agent reads it here.
         assert value not in text and gate_qt.PLACEHOLDER in text
         reply = next(m for m in link.sent if m.get("id") == 9)
-        assert value not in base64.b64decode(reply["result"]["body"]).decode()
+        # Bytes, not text: the scrub may have replaced a base64 run of it before decoding the body.
+        assert value.encode() not in base64.b64decode(reply["result"]["body"])
         # MUTATION: record the bypass's value in qa_target_set and this fails.
         assert value not in json.dumps(rig.records, ensure_ascii=False)
         assert value not in json.dumps(rig.target.status())
