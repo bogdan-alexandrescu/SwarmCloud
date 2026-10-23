@@ -201,3 +201,29 @@ def test_a_tip_the_head_does_not_descend_from_is_not_adopted(
     # carries a lease that replaces the tool's push with an unrelated line.
     assert [call.get("lease") for call in pushes] == [None]
     assert out["published"] is False and refs(origin)[RED] == tip
+
+
+def test_the_publish_reads_the_tip_through_child_path_pushed_tip(
+    worker_factory, monkeypatch, origin, local_urls, forge, pushes, tmp_path
+):
+    """`_adopt_tool_pushed_tip` asks ChildPath's public read, not the relay
+    behind it (GITTOOLS-FOLLOW): the relay here has no `pushed_tip` at all,
+    and the stubbed `ChildPath.pushed_tip` is the only place the tip lives."""
+    worker, _, repo, tip = _rebased_and_tool_pushed(worker_factory, monkeypatch, origin, tmp_path)
+    worker.children._git = SimpleNamespace(rebased_onto=worker.children._git.rebased_onto)
+    asked: list[str] = []
+
+    def pushed_tip(branch: str) -> str | None:
+        asked.append(branch)
+        return tip if branch == RED else None
+
+    # raising=False: before GITTOOLS-FOLLOW there was no such read, and the
+    # red run fails on the assertion below rather than on this line.
+    monkeypatch.setattr(worker.children, "pushed_tip", pushed_tip, raising=False)
+
+    # MUTATION: read `getattr(self.children, "_git", None).pushed_tip` again
+    # and this relay has none: the tip is not adopted and this reads None.
+    assert worker._adopt_tool_pushed_tip(repo, RED) == tip
+    # MUTATION: read the tip for any branch but the one being published and
+    # this list names another branch, or is empty.
+    assert asked == [RED]

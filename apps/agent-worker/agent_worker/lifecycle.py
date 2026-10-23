@@ -5645,7 +5645,7 @@ class Worker:
         the branch.
 
         The tip is the `new_sha` swarm-api answered this attempt's push with
-        (`GitTools.pushed_tip`), the tip it recorded for the task and branch:
+        (`ChildPath.pushed_tip`, from `GitTools.pushed_tip`), the tip it recorded for the task and branch:
         never a ref in the agent's clone, never a fetched tip, and only for a
         branch this task may push. HEAD must descend from it in the worker's
         own repository, so a head the agent moved off its push publishes as
@@ -5653,8 +5653,7 @@ class Worker:
         tip -- are the agent's new work, and the push is `--force-with-lease`
         to exactly the tip: a branch somebody else moved since is refused.
         """
-        relay = getattr(self.children, "_git", None)
-        read = getattr(relay, "pushed_tip", None)
+        read = getattr(self.children, "pushed_tip", None)
         tip = read(branch) if callable(read) else None
         if not isinstance(tip, str) or not _FULL_SHA_RE.fullmatch(tip):
             return None
