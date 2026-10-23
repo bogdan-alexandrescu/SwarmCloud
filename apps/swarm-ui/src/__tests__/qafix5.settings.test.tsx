@@ -24,7 +24,7 @@
 // Fixtures only; no network. Nothing here is credential-shaped.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import type { CascadeEnv } from './cssgate'
 import { THEMES, painted, resolveColour, tokensIn, type Theme } from './marks'
@@ -233,6 +233,10 @@ const profilesGroup = () => {
 describe('5b:QA-010: the register form does not say no profile takes MCP servers over a table that lists one', () => {
   it('offers the profiles the registrations name when the API serves no runner inputs', async () => {
     await mountMcp(capacity('unserved'))
+    // The registrations name claude-code before /v1/capacity answers, so the
+    // box is there (under "could not be read") while the read is in flight:
+    // wait for the capacity read's own note before reading the group.
+    await waitFor(() => expect(visible(profilesGroup())).toMatch(/does not say which profiles take MCP servers/))
     const box = await within(profilesGroup()).findByRole('checkbox', { name: 'claude-code' })
     expect((box as HTMLInputElement).checked).toBe(false)
     // MUTATION: read a contract with no `inputs` as "declares nothing" (the
