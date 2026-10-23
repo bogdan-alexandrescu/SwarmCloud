@@ -956,6 +956,41 @@ def test_the_plan_case_is_logged_once_per_repository_at_info(forge, caplog):
     assert token not in caplog.text
 
 
+def _refusal_lines(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records
+            if r.name == "swarm_api.gittools" and r.getMessage().startswith("git_tool_refused ")]
+
+
+def test_every_refusal_is_logged_once_with_its_tool_code_and_scrubbed_message(
+        client, db, origin, forge, slots, caplog):
+    """#1188: on 2026-10-23 pr_checks answered 422 forge_refused and neither
+    side logged why, so the acceptance run could not say whether GitHub
+    answered 401 or 403, or for which read."""
+    forge.rules_answer = (403, TOKEN_403)
+    attempt, _ = running_task(client, db)
+    forge.open_pull(9, "c" * 40, ref=OWN_BRANCH)
+    with caplog.at_level("WARNING", logger="swarm_api.gittools"):
+        checked = call(client, attempt, "pr_checks", {"pr": None})
+        _commit(origin["work"], "c")
+        pushed = call(client, attempt, "git_push_branch", push_fields(origin, branch="main"),
+                      request_id="req-2")
+    assert checked.json()["code"] == "forge_refused", checked.text
+    assert pushed.json()["code"] == "protected_branch", pushed.text
+    lines = _refusal_lines(caplog)
+    # MUTATION: drop the log line in `GitTools.handle` and this list is empty;
+    # log it in each `except` and in `_admit` too and a refusal is logged twice.
+    assert len(lines) == 2, lines
+    checks_line, push_line = lines
+    assert "tool=pr_checks" in checks_line and "code=forge_refused" in checks_line
+    assert "status=422" in checks_line
+    # MUTATION: log the code without the message and the cause -- which read,
+    # which HTTP status -- is not in the log.
+    assert "(HTTP 403)" in checks_line and "rules" in checks_line, checks_line
+    assert "tool=git_push_branch" in push_line and "code=protected_branch" in push_line
+    for token in slots.every_value():
+        assert token not in caplog.text
+
+
 # --------------------------------------------------------------------------
 # the token never reaches a row or an answer; the audit read
 # --------------------------------------------------------------------------

@@ -771,15 +771,19 @@ function AgentsBody({
   // but none of them holds a live agent, so Live does not offer them.
   const liveAll = shown === 'live' && liveWhole
   // The sort button's word and name (QA-111): the order the list is in, then what a press sets.
+  // THE DIRECTION IN WORDS (visual QA run 6, 6:flow-find-failure-desktop-03):
+  // `Ended ↓` left the arrow to say which way; the words the sidebar uses,
+  // `newest first`, were only in the name. The name starts with the label (QA-030).
   const ownWord = shown === 'recent' ? 'Ended' : 'Submitted'
   const ownOrder = shown === 'recent' ? 'newest end first' : 'newest submitted first'
-  const sortWord = sort.started === null ? ownWord : 'Started'
+  const sortWord =
+    sort.started === null ? `${ownWord}, newest first` : sort.started === 'desc' ? 'Started, newest first' : 'Started, oldest first'
   const sortSay =
     sort.started === null
-      ? `${ownWord}: ${ownOrder}; press to sort by start, newest first`
+      ? `${sortWord}; press to sort by start, newest first`
       : sort.started === 'desc'
-        ? 'Started: newest start first; press for oldest start first'
-        : `Started: oldest start first; press for the list’s own order, ${ownOrder}`
+        ? `${sortWord}; press for oldest start first`
+        : `${sortWord}; press for the list’s own order, ${ownOrder}`
   const liveSay = `Every agent holding a pool slot is listed: the live states are read in full, not only from the ${page.tasks.length} newest rows.`
 
   return (
@@ -976,7 +980,10 @@ function AgentsBody({
                 It now reads as a column head reads its sort: `Ended ↓` on
                 Recent (`Submitted ↓` on Live and Waiting) for the list's own
                 order, `Started ↓` and `Started ↑` sorted. Its name and title
-                start with that word and say what a press does next. */}
+                start with that word and say what a press does next. Run 6
+                (6:flow-find-failure-desktop-03) read the arrow as a glyph to
+                decode: the direction is words now, `Ended, newest first`,
+                `Started, oldest first`, and the arrow is gone. */}
             {/* SORTED BY START (#376): newest start, oldest start, then the
                 list's own order. It was the Started column's head; the compact
                 list has no columns, so it is a control of the list.
@@ -996,7 +1003,7 @@ function AgentsBody({
               title={sortSay}
               onClick={sort.onStarted}
             >
-              {sortWord} <span aria-hidden="true">{sort.started === 'asc' ? '↑' : '↓'}</span>
+              {sortWord}
             </button>
           </div>
         </div>
@@ -1971,9 +1978,21 @@ function CompactRow({
             a Live row is watched for; the profile and owner are the agent's
             constant facts, so they come after. At 390 the line now wraps
             between its facts (agents.css, run 5b QA-040), so none is cut. */}
-        {live && wordOnly && (
+        {/* A STARTING ROW SAYS SO TOO (visual QA run 6, 6:work-a-008): its
+            column ticks, so `wordOnly` is false and the line opened on the
+            try, while the leased and dispatched rows beside it, drawn with
+            the same half-filled mark, led with their word. A browser agent's
+            `starting` is the same word, marked as the browser not up yet
+            (QA12-20), so it leads once and is not repeated at the end. */}
+        {live && (wordOnly || task.state === 'STARTING') && (
           <>
-            <span className="cr-state">{el.text}</span>
+            {startingBrowser ? (
+              <span className="cr-state cr-starting" title="The browser is starting: there is nothing to watch yet">
+                <ToneMark tone="unknown">starting</ToneMark>
+              </span>
+            ) : (
+              <span className="cr-state">{wordOnly ? el.text : 'starting'}</span>
+            )}
             {' · '}
           </>
         )}
@@ -2013,14 +2032,6 @@ function CompactRow({
             {' · '}
             <span className={`cr-try${tries.over ? ' is-over' : ''}`} aria-label={tries.say}>
               {tries.text}
-            </span>
-          </>
-        )}
-        {startingBrowser && (
-          <>
-            {' · '}
-            <span className="cr-starting" title="The browser is starting: there is nothing to watch yet">
-              <ToneMark tone="unknown">starting</ToneMark>
             </span>
           </>
         )}
