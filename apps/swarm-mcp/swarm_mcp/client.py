@@ -89,6 +89,66 @@ class SwarmError(RuntimeError):
         self.retry_after: float | None = None
 
 
+#: The `code` swarm-api's own token bucket refuses with: `RateLimited.code` in
+#: `swarm_api.errors`, served by `main.api_error_handler` as
+#: `{"code": "rate_limited", "message": ..., "detail": {"retry_after_seconds": ...}}`.
+API_RATE_LIMITED_CODE = "rate_limited"
+
+#: What a 429 without that code says (ANSWERS-429, part of #1816).
+NO_INSTANCE_FREE = "SwarmCloud's API had no instance free (Cloud Run)"
+
+
+class ApiRateLimited(SwarmError):
+    """A 429 from the API's own rate limiter: this caller sent too much.
+
+    WHY TWO 429s (#1816). Cloud Run's front end answers 429 too, when the
+    service has no instance free to take the request, and before this both
+    read as "you are polling too much" -- which sends the reader looking at
+    their own polling for an outage of capacity. Told apart by the body, not
+    the status: the API's refusal is its JSON error carrying
+    `API_RATE_LIMITED_CODE`, and anything else (Cloud Run's text or page, or
+    a body with no such code) is `NoInstanceFree`. Both keep `status` 429, so
+    every retry and wait keyed on the status (BRIDGE-PACING's) is unchanged.
+    """
+
+
+class NoInstanceFree(SwarmError):
+    """A 429 the API did not send: Cloud Run's front end had no instance free.
+
+    Its message says `NO_INSTANCE_FREE` and whether the bridge retried it
+    (`SwarmClient._request_retrying`). See `ApiRateLimited`.
+    """
+
+
+def _too_many(method: str, path: str, raw: str, edge: bool, exc: Any) -> SwarmError:
+    """A 429 as the error it is: the API's own refusal, or Cloud Run's."""
+    code, detail = (None, None) if edge else _error_fields(raw)
+    if code == API_RATE_LIMITED_CODE:
+        error: SwarmError = ApiRateLimited(
+            f"{method} {path} -> 429: {_explain(429, raw)}", status=429, edge=edge, code=code, detail=detail
+        )
+    else:
+        error = NoInstanceFree(
+            f"{method} {path} -> 429: {NO_INSTANCE_FREE}; not retried", status=429, edge=edge, code=code, detail=detail
+        )
+    error.retry_after = _retry_after(exc)
+    return error
+
+
+def _give_up(error: SwarmError, tried: int) -> None:
+    """Raise Cloud Run's 429 the bridge's retry gives up on, saying it retried.
+
+    Returns for any other error, and for one never retried, which the caller
+    re-raises as it is.
+    """
+    if not isinstance(error, NoInstanceFree) or tried == 0:
+        return
+    message = str(error).replace(f"{NO_INSTANCE_FREE}; not retried", f"{NO_INSTANCE_FREE}; retried {tried} time(s)")
+    out = NoInstanceFree(message, status=error.status, edge=error.edge, code=error.code, detail=error.detail)
+    out.retry_after = error.retry_after
+    raise out from error
+
+
 def _run(argv: list[str], *, timeout: int = 60) -> str:
     try:
         done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
@@ -1611,12 +1671,14 @@ class SwarmClient:
                 return self._request_once(method, path, payload=payload, timeout=timeout)
             except SwarmError as exc:
                 if exc.status != 429 or method != "GET" or tried >= len(RETRY_429_DELAYS):
+                    _give_up(exc, tried)
                     raise
                 if exc.retry_after is not None:
                     delay = min(exc.retry_after, RETRY_AFTER_CAP_SECONDS)
                 else:
                     delay = RETRY_429_DELAYS[tried] * (1.0 + random.uniform(0.0, RETRY_JITTER))
                 if budget is not None and waited + delay > budget:
+                    _give_up(exc, tried)
                     raise
                 tried += 1
                 waited += delay
@@ -1703,12 +1765,12 @@ class SwarmClient:
                     "backend service). Ask its operator; for this repository's own "
                     "deployment the steps are docs/runbooks/iap-desktop-client.md"
                 )
+            if exc.code == 429:
+                raise _too_many(method, path, raw, edge, exc) from exc
             code, detail = (None, None) if edge else _error_fields(raw)
             error = SwarmError(
                 message, status=exc.code, edge=edge, code=code, detail=detail
             )
-            if exc.code == 429:
-                error.retry_after = _retry_after(exc)
             raise error from exc
         except urllib.error.URLError as exc:
             raise SwarmError(f"could not reach {self.base_url}: {exc.reason}") from exc
