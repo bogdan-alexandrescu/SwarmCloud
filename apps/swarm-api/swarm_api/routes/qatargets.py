@@ -6,11 +6,14 @@ lane VQ-2 TARGETS, part of #1933).
     GET    /v1/qa-targets/{id}                     one (any role)
     PATCH  /v1/qa-targets/{id}                     change (a workspace admin); a new host is pending
     DELETE /v1/qa-targets/{id}                     delete, with its credential (a workspace admin)
-    POST   /v1/qa-targets/{id}:approve-host        a PLATFORM admin approves the host (VQ-Q1),
+    POST   /v1/qa-targets:migrate                  a PLATFORM admin migrates every target stored
+                                                   with one origin into environments[]
+    POST   /v1/qa-targets/{id}:approve-host        a PLATFORM admin approves an entry's host (VQ-Q1),
                                                    its extra origin and IdP token path
-    POST   /v1/qa-targets/{id}:run                 a member starts a run: {screens?, file?}
-    POST   /v1/qa-targets/{id}:discover            a member starts its discovery (§4.1)
-    POST   /v1/qa-targets/{id}/credential-links    a one-time link to the console's form (an admin)
+    POST   /v1/qa-targets/{id}:run                 a member starts a run: {screens?, file?, environment?}
+    POST   /v1/qa-targets/{id}:discover            a member starts its discovery (§4.1): {environment?}
+    POST   /v1/qa-targets/{id}/credential-links    a one-time link to the console's form (an admin),
+                                                   bound to one entry: {environment?}
     PUT    /v1/qa-targets/{id}/credential          the form's write, with the link's token
     PUT    /v1/qa-targets/{id}/challenge-bypass    its challenge bypass's value (a workspace admin, §2.5)
     POST   /v1/attempts/{attempt_id}/qa-target     WORKER ONLY: its attempt's target
@@ -79,6 +82,12 @@ from .tasks import require_member
 
 router = APIRouter(prefix="/v1", tags=["qa-targets"])
 
+#: An entry's name in a body (docs/design/qa-environments.md §1.1): every
+#: route that acts on one leg takes it, required when the target has several
+#: entries and optional on a target of one, which answers as it always did.
+#: `swarm_api.qatargets` checks it against `qaspec.ENVIRONMENT_NAME`.
+EnvironmentName = Field(default=None, max_length=20)
+
 #: The routes `main.UNCAPTURED_ROUTES` names: the one that takes the
 #: credential, and the one that serves it to the worker.
 CREDENTIAL_ROUTE = "/v1/qa-targets/{target_id}/credential"
@@ -111,6 +120,10 @@ class TargetBody(StrictModel):
     challenge_bypass: Any = None
     #: The tool its flows run with, `playwright` (unset) or `jev` (lane VQ9-TOOL).
     flows_browser_tool: Any = None
+    #: The app's legs (qa-environments.md §1.1): `[{name, base_url,
+    #: environment?, sign_in?, read_posts?, rate?, challenge_bypass?}]`, in
+    #: place of those fields beside the app's.
+    environments: Any = None
     #: The registrant's statement of who said this application may be tested.
     authorized_by: Any = None
 
@@ -123,6 +136,8 @@ class ApproveBody(StrictModel):
     #: QA-IDP-POST: one exact path on `extra_origin` the gate lets a POST
     #: through to after its sign-in; checked by `QaTargets.approve_host`.
     idp_token_path: str | None = Field(default=None, max_length=600)
+    #: The entry whose host this is (§1.3), required on a target of several.
+    environment: str | None = EnvironmentName
 
 
 class RunBody(StrictModel):
@@ -132,6 +147,13 @@ class RunBody(StrictModel):
     #: `flows_browser_tool` (lane VQ9-TOOL; `qaspec.FLOW_BROWSER_TOOLS`).
     #: Recorded on the run's record; never stored on the target.
     browser_tool: Literal["playwright", "jev"] | None = None
+    #: The leg to run, by name; required on a target of several entries.
+    environment: str | None = EnvironmentName
+
+
+class LegBody(StrictModel):
+    #: The leg a discovery or a credential link is for, by name.
+    environment: str | None = EnvironmentName
 
 
 class CredentialWrite(BaseModel):
@@ -142,6 +164,9 @@ class CredentialWrite(BaseModel):
     password: str = Field(min_length=1, max_length=PASSWORD_MAX)
     #: The `t` of the one-time link (`POST .../credential-links`): required.
     link_token: str = Field(min_length=1, max_length=256)
+    #: The entry the link was minted for (§1.4): a link for one entry never
+    #: sets another's.
+    environment: str | None = EnvironmentName
 
 
 class BypassWrite(BaseModel):
@@ -150,6 +175,7 @@ class BypassWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     value: str = Field(min_length=1, max_length=BYPASS_VALUE_MAX)
+    environment: str | None = EnvironmentName
 
 
 def _resolver(request: Request) -> Any:
@@ -196,7 +222,9 @@ def create_target(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     by = require_workspace_admin(ctx, auth, tenant_id)
-    doc = _targets(request, ctx).create(tenant_id, body.model_dump(), by=by)
+    # The store, for a target of several entries: the map's room (§1.4).
+    doc = _targets(request, ctx).create(tenant_id, body.model_dump(), by=by,
+                                        credentials=_credentials(request, ctx))
     return {"qa_target": to_api(doc)}
 
 
@@ -254,6 +282,18 @@ def delete_target(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.post("/qa-targets:migrate")
+def migrate_targets(
+    request: Request,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """A platform admin rewrites every target stored with one origin into
+    `environments[]` (qa-environments.md §1.2): one transaction per document,
+    each audited `qa_target_migrated`. Safe to call again."""
+    return _targets(request, ctx).migrate_all(by=_email(auth))
+
+
 @router.post("/qa-targets/{target_id}:approve-host")
 def approve_host(
     target_id: str,
@@ -265,7 +305,8 @@ def approve_host(
     """A platform admin approves the host they name (VQ-Q1, audited)."""
     doc = _targets(request, ctx).approve_host(target_id, host=body.host,
                                               extra_origin=body.extra_origin, by=_email(auth),
-                                              idp_token_path=body.idp_token_path)
+                                              idp_token_path=body.idp_token_path,
+                                              environment=body.environment)
     return {"qa_target": to_api(doc)}
 
 
@@ -282,7 +323,7 @@ def run_target(
     Every refusal comes before anything is admitted (§5)."""
     require_member(ctx, auth)
     targets = _targets(request, ctx)
-    target = targets.runnable(tenant_id, target_id, file=body.file)
+    target = targets.runnable(tenant_id, target_id, file=body.file, environment=body.environment)
     workflow, mark, browser = render_run(target, screens=body.screens, file=body.file,
                                          browser_tool=body.browser_tool)
     # The mark is reserved (`validation.QA_TARGET_METADATA_KEY`): only this
@@ -301,6 +342,7 @@ def run_target(
 def discover_target(
     target_id: str,
     request: Request,
+    body: LegBody | None = None,
     auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
@@ -311,7 +353,8 @@ def discover_target(
     on the target when the step ends (`QaTargets.settle_discovery`)."""
     require_member(ctx, auth)
     targets = _targets(request, ctx)
-    target = targets.discoverable(tenant_id, target_id, inspection=ctx.inspection)
+    target = targets.discoverable(tenant_id, target_id, inspection=ctx.inspection,
+                                  environment=body.environment if body is not None else None)
     workflow, mark, browser = render_discovery_run(target)
     by = _email(auth)
     claim = targets.claim_discovery(tenant_id, target, by=by)
@@ -333,6 +376,7 @@ def discover_target(
 def mint_credential_link(
     target_id: str,
     request: Request,
+    body: LegBody | None = None,
     auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
@@ -342,7 +386,8 @@ def mint_credential_link(
     expiry, as `keys.key_set_link` does (§2.1)."""
     by = require_workspace_admin(ctx, auth, tenant_id)
     return _targets(request, ctx).mint_link(tenant_id, target_id, email=by,
-                                            console=ctx.settings.console_url)
+                                            console=ctx.settings.console_url,
+                                            environment=body.environment if body is not None else None)
 
 
 @router.put("/qa-targets/{target_id}/credential")
@@ -357,7 +402,8 @@ def put_credential(
     by = require_workspace_admin(ctx, auth, tenant_id)
     status_ = _targets(request, ctx).set_credential(
         tenant_id, target_id, username=body.username, password=body.password,
-        link_token=body.link_token, by=by, credentials=_credentials(request, ctx))
+        link_token=body.link_token, by=by, credentials=_credentials(request, ctx),
+        environment=body.environment)
     return {"credential": status_}
 
 
@@ -372,7 +418,8 @@ def put_challenge_bypass(
 ) -> dict:
     by = require_workspace_admin(ctx, auth, tenant_id)
     status_ = _targets(request, ctx).set_challenge_bypass(
-        tenant_id, target_id, value=body.value, by=by, credentials=_credentials(request, ctx))
+        tenant_id, target_id, value=body.value, by=by, credentials=_credentials(request, ctx),
+        environment=body.environment)
     return {"challenge_bypass_value": status_}
 
 

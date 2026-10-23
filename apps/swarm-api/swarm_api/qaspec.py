@@ -35,6 +35,16 @@ plain https origin. No value from the target's `sign_in` or `credential` is
 ever rendered but its start clicks' visible text, public by nature (§2.2):
 the sign-in is the gate's, and the agent is told only what to click on the
 chooser and what to run when it sees the login form again.
+
+ONE LEG AT A TIME (docs/design/qa-environments.md §1.1, §1.5, §6; lane
+QAENV-MODEL). A target may list its legs in `environments[]`. Every function
+here reads ONE leg's view, `leg(target, name)`: the app's fields and that
+entry's fields where a one-origin target keeps them, so each rule above
+holds per leg unchanged, and a prompt names that leg's base URL and start
+clicks only. A target with no `environments` is its own one leg and renders
+byte for byte as before. Of a target with several, a `production` leg, and a
+`non_production` leg sharing an origin with a `production` one, render no
+mutating flow: a production leg reads only.
 """
 
 from __future__ import annotations
@@ -335,6 +345,123 @@ def _environment(target: Mapping[str, Any]) -> str:
     if env not in ENVIRONMENTS:
         raise _invalid("environment must be production or non_production")
     return env
+
+
+# --------------------------------------------------------------------------
+# One leg of a target (docs/design/qa-environments.md §1.1, §1.5, §6;
+# lane QAENV-MODEL, BGD's Q1 (a), 2026-10-23)
+# --------------------------------------------------------------------------
+
+#: An entry's name: a short label, unique in its target (§1.1).
+ENVIRONMENT_NAME = re.compile(r"[a-z0-9-]{1,20}")
+#: More legs than any app serves (dev, staging, production, a preview or
+#: two), and a third of the ~25 maximal legs one tenant's QA map holds
+#: (§1.4), so one target cannot fill the workspace's secret.
+MAX_ENVIRONMENTS = 8
+#: What a leg holds, and so what moves into an entry of `environments[]`:
+#: WHERE the app is served and every rule that must never cross from one leg
+#: to another. The routes, flows, exclusions and filing rules describe the
+#: app and stay on the target once, because two copies drift (§1.1).
+LEG_FIELDS = (
+    "base_url", "host", "origin", "environment", "sign_in", "credential", "challenge_bypass",
+    "challenge_bypass_value", "host_state", "approved_origins", "approved_by", "approved_at",
+    "approved_idp_token_path", "read_posts", "rate", "discovered", "discovered_at", "discovered_by",
+    "discovered_workflow", "discovery_error", "discovering", "legacy_map_key",
+)
+#: The leg's name in a view `leg` makes; never stored.
+LEG_NAME = "environment_name"
+#: Set (True) in a view of, and a read of, a target stored with
+#: `environments`; never stored. The mark names its leg only then, so a
+#: one-entry target stored before this lane is marked, rendered and answered
+#: byte for byte as before.
+MIGRATED = "environments_migrated"
+
+
+def legacy_environment_name(target: Mapping[str, Any]) -> str:
+    """The name §1.2's migration gives a target's one leg: `production` when
+    its old mark was (absent is production, `_environment`'s reading), and
+    `staging` otherwise."""
+    return "production" if (target.get("environment") or "production") == "production" else "staging"
+
+
+def is_migrated(target: Mapping[str, Any]) -> bool:
+    flag = target.get(MIGRATED)
+    return flag if isinstance(flag, bool) else isinstance(target.get("environments"), list)
+
+
+def environments(target: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The target's entries. A target stored before this lane is presented
+    as a one-entry list (§1.2), its legacy name, its map key the bare target
+    id (`legacy_map_key`, §1.4)."""
+    raw = target.get("environments")
+    if isinstance(raw, list):
+        return [dict(e) for e in raw if isinstance(e, Mapping)]
+    entry = {k: target[k] for k in LEG_FIELDS if k in target}
+    entry["name"] = legacy_environment_name(target)
+    entry["legacy_map_key"] = True
+    return [entry]
+
+
+def entry_named(target: Mapping[str, Any], name: str | None) -> dict[str, Any]:
+    """The entry `name`, or the target's only one when `name` is None.
+    Raises `QaSpecError`: a target of several entries needs a name, and the
+    name must be one of them. Nothing ever falls back to another entry."""
+    entries = environments(target)
+    if name is None:
+        if len(entries) != 1:
+            raise QaSpecError("qa_target_environment_required",
+                              "this QA target has several environments; name the one to use")
+        return entries[0]
+    for entry in entries:
+        if entry.get("name") == name:
+            return entry
+    raise QaSpecError("qa_target_environment_unknown", "this QA target has no environment of that name")
+
+
+def _leg_origins(entry: Mapping[str, Any]) -> set[str]:
+    """Every origin a leg may reach: what was approved, and what is declared,
+    so a pending approval never narrows the comparison below. An explicit
+    `:443` is https's own port, so `https://h:443` and `https://h` are one
+    origin here: read as two, they would let a write permission through."""
+    origins: set[str] = set()
+    for raw in (*(entry.get("approved_origins") or []), entry.get("origin"), entry.get("base_url"),
+                (entry.get("sign_in") or {}).get("extra_origin")):
+        if isinstance(raw, str) and raw.lower().startswith("https://"):
+            origin = _origin(raw).lower()
+            origins.add(origin[:-len(":443")] if origin.endswith(":443") else origin)
+    return origins
+
+
+def shares_production_origin(target: Mapping[str, Any], name: str) -> bool:
+    """True when the entry `name` shares any origin with ANOTHER entry whose
+    mark is `production` (§1.5). Such a leg is held as production for every
+    write: the page, not the origin, chooses which backend a write reaches."""
+    mine = _leg_origins(entry_named(target, name))
+    return any(e.get("name") != name and (e.get("environment") or "production") == "production"
+               and mine & _leg_origins(e) for e in environments(target))
+
+
+def leg(target: Mapping[str, Any], name: str | None = None) -> dict[str, Any]:
+    """The target as its leg `name` sees it: the app's fields, and that
+    entry's per-leg fields where a target of one origin keeps them, so every
+    rule here applies to a leg unchanged. Nothing of another entry is in it.
+
+    A target with no `environments` is its own one leg: the view is the
+    target itself, with `LEG_NAME`. Of a target with several entries, a leg
+    that is `production`, or shares an origin with a `production` entry, is
+    rendered with no mutating flow (§1.5, §6: a production leg reads only)."""
+    entry = entry_named(target, name)
+    migrated = is_migrated(target)
+    view = {k: v for k, v in target.items() if k not in LEG_FIELDS and k not in ("environments", MIGRATED)}
+    view.update({k: v for k, v in entry.items() if k in LEG_FIELDS and k != "legacy_map_key"})
+    view[LEG_NAME] = entry["name"]
+    if migrated:
+        view[MIGRATED] = True
+    if len(environments(target)) > 1 and isinstance(view.get("flows"), list) and (
+            (entry.get("environment") or "production") == "production"
+            or shares_production_origin(target, entry["name"])):
+        view["flows"] = [f for f in view["flows"] if not (isinstance(f, Mapping) and f.get("mutating") is True)]
+    return view
 
 
 def _flows(target: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -1036,11 +1163,19 @@ def _target_id(target: Mapping[str, Any]) -> str:
 def qa_target_metadata(target: Mapping[str, Any]) -> dict[str, Any]:
     """`metadata.qa_target` for each agent of `browser_steps` (§1.1): written by
     swarm-api at submission, never accepted from a caller, and what the
-    worker's attempt route resolves the target from."""
+    worker's attempt route resolves the target from. A leg of a target stored
+    with `environments` adds its name (§1.5), so the route serves that entry
+    and no other; an unmigrated target's mark is `{id, revision}` as before."""
     revision = target.get("revision")
     if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
         raise _invalid("the target has no revision")
-    return {"id": _target_id(target), "revision": revision}
+    mark: dict[str, Any] = {"id": _target_id(target), "revision": revision}
+    if target.get(MIGRATED) is True:
+        name = target.get(LEG_NAME)
+        if not isinstance(name, str) or not ENVIRONMENT_NAME.fullmatch(name):
+            raise _invalid("the target's environment has no name")
+        mark["environment"] = name
+    return mark
 
 
 def browser_steps(spec: Mapping[str, Any]) -> list[str]:
