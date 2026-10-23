@@ -18,11 +18,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   FIXTURE_CLOCK,
+  loadAccess,
+  loadAccessOwners,
   loadAccountsBoard,
   loadAdminQuota,
   loadAttempts,
   loadAttemptsPage,
   loadCapacity,
+  loadForgePermissions,
+  loadOnboarding,
   loadOutcomes,
   loadTasks,
   loadWorkflowBoard,
@@ -108,6 +112,21 @@ describe('c (box 6343775508; 6:task-007): the global and tenant pools count the 
       // MUTATION: type pool('global', 20, 5) again -> fails: 5 against the list's 7.
       expect(pools.get(name)?.active, `${name} counts other leases than the list holds`).toBe(holding)
     }
+  }, LONG)
+})
+
+describe('d (6:work-b-006): Setup and Access are served', () => {
+  it('answers the onboarding, GitHub-permissions and access reads ok, with steps in mixed states', async () => {
+    const [onboarding, perms, access, owners] = await Promise.all([loadOnboarding(), loadForgePermissions(), loadAccess(), loadAccessOwners()])
+    // MUTATION: drop '/v1/onboarding' from FIXTURE_READS -> fails: not served.
+    const doc = ok(onboarding, 'GET /v1/onboarding')
+    expect(new Set(doc.steps.map((s) => s.state)).size, 'every onboarding step reads alike').toBeGreaterThanOrEqual(3)
+    expect(doc.next_step, 'next_step is not the first unfinished step').toBe(doc.steps.find((s) => s.state !== 'done')?.step ?? null)
+    // MUTATION: drop '/v1/forge/permissions' from FIXTURE_READS -> fails: not served.
+    expect(ok(perms, 'GET /v1/forge/permissions').repositories.length).toBeGreaterThan(0)
+    // MUTATION: drop '/v1/access' from FIXTURE_READS -> fails: not served.
+    expect(ok(access, 'GET /v1/access').grants.length, 'Access has no rows').toBeGreaterThan(0)
+    expect(ok(owners, 'GET /v1/access/orgs').owners.length).toBeGreaterThan(0)
   }, LONG)
 })
 
