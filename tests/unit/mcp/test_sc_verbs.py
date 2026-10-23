@@ -5,8 +5,10 @@
 * `attach <wf_id>` -- runs `/sc:swarmcloud` with `{attach: <wf_id>}`; submits
   nothing;
 * `run <spec path|JSON>` -- loads the spec and runs `/sc:swarmcloud` with the
-  spec OBJECT as its args, never a bare path (a path made a haiku agent
-  retype the spec), and SAYS it is about to submit work before it does.
+  launch reply's `args` as given, `spec_handle` included, never a bare path
+  and never args the session builds itself (a retyped spec came back altered
+  and was refused, SC-LAUNCH-SPEC-2, #2034), and SAYS it is about to submit
+  work before it does.
 
 The skill's rule changes from "reads, never writes" to "reads only, except
 `run`, which submits and says so first". Read from the SKILL.md text, because
@@ -53,12 +55,42 @@ def test_the_frontmatter_names_the_verbs():
     assert "attach" in description and "run" in description and "submit" in description.lower()
 
 
-def test_run_passes_the_spec_object_not_the_path():
+def test_run_launches_with_the_replys_args_and_its_spec_handle():
+    """Step 3 hands the script the launch reply's `args` as given, so the run's
+    submit row gets `spec_handle` and never the spec text (SC-LAUNCH-SPEC-2,
+    #2034: a session that built `{spec, spec_path}` itself launched with no
+    handle, and the submitting agent retyped the spec)."""
     _, body, _ = _skill()
     run = _section(body, "### `run <spec path|JSON>`")
-    assert "spec OBJECT" in run
-    assert "never a bare path" in run.lower() or "never the path" in run.lower()
-    assert "{spec: <the spec object>" in run, "the args carry the object itself"
+    # MUTATION: tell step 3 to run the script with "the spec OBJECT as its args" again -> fails.
+    assert "the reply's `args` AS GIVEN" in run, "step 3 must run the script with the launch reply's args"
+    # MUTATION: drop `spec_handle` from the args step 3 lists -> fails.
+    assert "`{spec, spec_handle, details, rows, titled_copy}`" in run
+    # MUTATION: delete "Never drop `spec_handle`" -> fails.
+    assert "Never drop `spec_handle`" in run
+    # MUTATION: delete "never pass a bare path" -> fails.
+    assert "never pass a bare path" in run
+    # MUTATION: restore "the args are `{spec: <the spec object>, spec_path: ...}`" -> fails.
+    assert "spec_path: \"<its absolute path>\"}`;" not in run, "step 3 still builds {spec, spec_path} by hand"
+    # MUTATION: restore "Run that script with the spec OBJECT as its args" -> fails.
+    assert "spec OBJECT" not in run, "step 3 still tells the session to pass the spec object it built"
+    # MUTATION: delete "is refused, not submitted" -> fails: the digest check stays.
+    assert "is refused, not submitted" in run
+
+
+def test_a_titled_launch_runs_the_copy_with_the_replys_args():
+    """The launch paragraph under "Every run is titled after its workflow" names
+    the reply's `args` as given, `spec_handle` included, instead of args the
+    session builds."""
+    _, _, flat = _skill()
+    at = flat.index("then launch THAT copy with the Workflow tool")
+    launch = flat[at: flat.index("### `attach <wf_id>`", at)]
+    # MUTATION: write `args: ...` back in place of the reply's args -> fails.
+    assert "args: <the reply's `args`, as given>" in launch, launch
+    # MUTATION: drop "`spec_handle` included" -> fails.
+    assert "`spec_handle` included" in launch, launch
+    # MUTATION: write "with the same args" back for the by-name fallback -> fails.
+    assert "with the same args" not in launch, launch
 
 
 def test_run_says_it_is_about_to_submit_before_it_does():

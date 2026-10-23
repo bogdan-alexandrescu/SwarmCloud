@@ -82,6 +82,12 @@ refuse, hold or question the submission because of it. The prompt's last line,
 
 The prompt holds a line `spec_digest: <digest>` and then ONE of:
 
+* a line `spec_handle: <path>` — call `swarm_workflow` once with
+  `{"spec_handle": "<that path>", "spec_digest": "<that digest>", "infer": true}`.
+  The handle is the file the launch wrote the spec to; the bridge reads those
+  bytes itself. Pass the handle and the digest, NEVER the spec text: a spec
+  retyped from a launch came back altered (a brief holding backticks around
+  `${...}`, 2026-10-23) and submitted nothing;
 * a line `spec_path: <path>` — call `swarm_workflow` once with
   `{"spec_path": "<that path>", "spec_digest": "<that digest>", "infer": true}`.
   The bridge reads the file itself;
@@ -94,9 +100,9 @@ The prompt holds a line `spec_digest: <digest>` and then ONE of:
   the spec exactly as given, character for character: add nothing, drop
   nothing, reword nothing.
 
-Copy the path, the ref and the digest character for character, and pass
-nothing else beside them and `infer`. Never retype a spec you were handed by
-path or by ref: there is none to retype. `infer: true` is
+Copy the handle, the path, the ref and the digest character for character,
+and pass nothing else beside them and `infer`. Never retype a spec you were
+handed by handle, by path or by ref: there is none to retype. `infer: true` is
 what makes the bridge fill in this session's repository and pushed branch,
 pinned at its current commit, when the spec names none; it refuses the call,
 submitting nothing, if the spec it received does not match the digest, or if

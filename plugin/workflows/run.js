@@ -1,7 +1,7 @@
 export const meta = {
   name: 'swarmcloud',
   description: 'SwarmCloud: run a SwarmCloud workflow spec with every step executing in SwarmCloud and shown here as one [SwarmCloud] row per step, by the console\'s stage, plus at most two setup rows',
-  whenToUse: 'You have a SwarmCloud workflow spec, the JSON that swarm workflow reads, and want each step visible in /workflows while it runs remotely: pass the spec object, the spec object with its file as {spec, spec_path}, its JSON text, or the path of the spec file as args. Or a workflow already running in SwarmCloud lost its rows when this session restarted: pass {attach: "<workflow_id>"} to submit nothing, report its finished steps once and start a row for every unfinished one. Or list every workflow of your tenant still running in SwarmCloud: pass {attach: "all"} for the {attach: "<workflow_id>"} call that attaches each, one run per workflow. Or show SwarmCloud SINGLE tasks -- dispatched with swarm_dispatch, in no workflow -- as live rows: pass {attach_tasks: [{task_id, title, console}]} for one [SwarmCloud] row per task, titled from its label. The sc plugin launches each run from a copy of this script titled after its workflow or its tasks (swarm_workflow_launch, swarm_dispatch\'s rows). When the result carries owner_questions -- the questions a step\'s or task\'s agent asked the owner, still unanswered -- put EACH one to the person in that turn, before any other report, with AskUserQuestion: the question, its options as given, the recommended one marked; then record each pick with swarm_task_answer {task_id, question_index: its index, choice}. Never pick an answer yourself, and never leave them only in the result or a log line.',
+  whenToUse: 'You have a SwarmCloud workflow spec, the JSON that swarm workflow reads, and want each step visible in /workflows while it runs remotely: pass the args swarm_workflow_launch returned ({spec, spec_handle}: the spec and the file it was written to, which is what is submitted), the spec object, the spec object with its file as {spec, spec_path}, its JSON text, or the path of the spec file as args. Or a workflow already running in SwarmCloud lost its rows when this session restarted: pass {attach: "<workflow_id>"} to submit nothing, report its finished steps once and start a row for every unfinished one. Or list every workflow of your tenant still running in SwarmCloud: pass {attach: "all"} for the {attach: "<workflow_id>"} call that attaches each, one run per workflow. Or show SwarmCloud SINGLE tasks -- dispatched with swarm_dispatch, in no workflow -- as live rows: pass {attach_tasks: [{task_id, title, console}]} for one [SwarmCloud] row per task, titled from its label. The sc plugin launches each run from a copy of this script titled after its workflow or its tasks (swarm_workflow_launch, swarm_dispatch\'s rows). When the result carries owner_questions -- the questions a step\'s or task\'s agent asked the owner, still unanswered -- put EACH one to the person in that turn, before any other report, with AskUserQuestion: the question, its options as given, the recommended one marked; then record each pick with swarm_task_answer {task_id, question_index: its index, choice}. Never pick an answer yourself, and never leave them only in the result or a log line.',
   phases: [
     { title: 'Submit', detail: 'given a path, one sc:workflow agent reads the file with swarm_workflow_spec; one sc:workflow agent submits the spec with swarm_workflow by reference when it can, checked against the digest, and probes the follow every row makes' },
     { title: 'Attach', detail: 'given {attach: workflow_id}, one sc:workflow agent reads the workflow with swarm_workflow_status and probes the follow every row makes; given {attach: "all"}, one sc:workflow agent lists the running workflows and your running single tasks with swarm_workflows and the run returns the attach call for each workflow and one for the tasks; nothing is submitted' },
@@ -138,8 +138,12 @@ export const meta = {
 // of 11-44 KB came back altered from the relay and were refused three times in
 // one evening). A script cannot call a tool, so whatever reaches
 // swarm_workflow goes through an agent. Given the spec with its file
-// ({spec, spec_path}, which is what /sc run passes), the agent is handed the
-// PATH and swarm_workflow reads the bytes itself; given a path alone, the
+// ({spec, spec_path}), the agent is handed the PATH and swarm_workflow reads
+// the bytes itself; given the spec with the handle swarm_workflow_launch wrote
+// ({spec, spec_handle: {path, digest}}, which every launch's args carry,
+// SC-LAUNCH-SPEC #2034: a 23 KB brief holding template-literal text came back
+// altered from the relay on 2026-10-23), the agent is handed the handle and
+// swarm_workflow reads the bytes the launch embedded; given a path alone, the
 // bridge reads the file (swarm_workflow_spec) and hands back a `spec_ref` it
 // holds, which the submit row passes on. Only a spec given as an object or
 // JSON text with no file behind it is still carried inline.
@@ -693,6 +697,12 @@ function readSpec(given) {
       rows: readRows(value.rows), share: readShare(value.row_share),
     }
   }
+  // {spec, spec_handle: {path, digest}}: swarm_workflow_launch's args. The
+  // handle is the file the bridge wrote the embedded spec to; the submit row
+  // passes it, never the spec (SC-LAUNCH-SPEC, #2034).
+  if (isObject && Object.prototype.hasOwnProperty.call(value, 'spec_handle')) {
+    return { spec: checkSpec(value.spec), handle: readHandle(value.spec_handle), details: readDetails(value.details), rows: readRows(value.rows) }
+  }
   if (isObject && typeof value.spec_path === 'string' && value.spec_path.trim()) {
     return { spec: checkSpec(value.spec), specPath: value.spec_path.trim(), details: readDetails(value.details), rows: readRows(value.rows) }
   }
@@ -703,6 +713,20 @@ function readSpec(given) {
     return { spec: checkSpec(value.spec), details: readDetails(value.details), rows: readRows(value.rows) }
   }
   return { spec: checkSpec(value), details: {} }
+}
+
+// A spec handle as swarm_workflow_launch wrote it: a non-empty path and an
+// 'fnv1a32:' digest of eight lower-case hex digits. Anything else is refused
+// before a row starts: a handle that cannot be checked is no handle.
+function readHandle(given) {
+  const path = given && typeof given === 'object' && typeof given.path === 'string' ? given.path.trim() : ''
+  const digest = given && typeof given === 'object' && typeof given.digest === 'string' ? given.digest.trim() : ''
+  const hex = digest.slice('fnv1a32:'.length)
+  const isDigest = digest.indexOf('fnv1a32:') === 0 && hex.length === 8 && hex.split('').every((c) => '0123456789abcdef'.indexOf(c) >= 0)
+  if (!path || !isDigest) {
+    throw new Error('/sc:swarmcloud {spec, spec_handle} needs the handle swarm_workflow_launch returned, {path, digest}, exactly as given; it was given ' + JSON.stringify(given === undefined ? null : given) + '. Nothing was submitted.')
+  }
+  return { path: path, digest: digest }
 }
 
 // The row mode the bridge chose (the sc plugin's `rows` setting): 'summary'
@@ -1337,6 +1361,7 @@ const SUBMIT_REQUEST = 'request: this spec is the whole request -- submit it. Wh
 
 function submitPrompt(digest, source) {
   const head = ['SUBMIT', 'spec_digest: ' + digest]
+  if (source.specHandle) return head.concat(['spec_handle: ' + source.specHandle, SUBMIT_REQUEST]).join('\n')
   if (source.specPath) return head.concat(['spec_path: ' + source.specPath, SUBMIT_REQUEST]).join('\n')
   if (source.specRef) return head.concat(['spec_ref: ' + source.specRef, SUBMIT_REQUEST]).join('\n')
   return head.concat(['BEGIN SPEC', JSON.stringify(source.spec, null, 2), 'END SPEC', SUBMIT_REQUEST]).join('\n')
@@ -2289,7 +2314,18 @@ phase('Submit')
 
 let spec = given.spec
 let digest = null
-const source = { spec: given.spec, specPath: given.specPath || null, specRef: null }
+const source = { spec: given.spec, specPath: given.specPath || null, specRef: null, specHandle: null }
+if (given.handle) {
+  // The launch's handle: the bridge submits the bytes it wrote, checked
+  // against the digest it wrote them with. The embedded object only shapes
+  // the rows here, so a copy of it the session altered on the way in changes
+  // no byte that is submitted -- this line says so when it was.
+  source.specHandle = given.handle.path
+  digest = given.handle.digest
+  if (specDigest(given.spec) !== digest) {
+    log('the spec in this run\'s args has digest ' + specDigest(given.spec) + ', the launch wrote ' + digest + ': submitting the launch\'s bytes from ' + given.handle.path)
+  }
+}
 if (given.path) {
   // The bridge reads the file and holds it; the row relays its ref, digest and
   // outline -- never the spec -- and nothing is submitted without all three.
