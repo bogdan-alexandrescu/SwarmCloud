@@ -176,15 +176,30 @@ describe('N11: the failed-agents card links each workflow it names', () => {
     // MUTATION: move the card's accessible name off its main link.
     // Its destination first (5b:wg-dark-D1), then the card's words.
     expect(main[0]!.getAttribute('aria-label')).toBe(`Agents · FAILED: ${p.headline}. ${p.detail}`)
-    // The rest of the card still opens the list: the main link covers it.
-    // MUTATION: drop the stretched cover from the main link.
-    expect(painted(main[0]!, 'position', WIDE)).not.toBe('relative')
-    expect(painted(main[0]!, 'content', WIDE, 'after')).not.toBeNull()
-    expect(painted(main[0]!, 'position', WIDE, 'after')).toBe('absolute')
-    // MUTATION: drop `position: relative` from the workflow links, so the cover swallows their clicks.
-    const wfLink = container.querySelector(`a[href="/workflows/${WF_A}"]`)!
-    expect(painted(wfLink, 'position', WIDE)).toBe('relative')
-    expect(painted(wfLink, 'z-index', WIDE)).toBe('1')
+    // The rest of the card opens the FIRST WORKFLOW, not the list (BGD's
+    // decision of 2026-10-23, #1680 box 6343766999): the first named
+    // workflow's link carries the stretched cover, and the list's link is a
+    // plain link drawn above it.
+    const [cover, second] = [...container.querySelectorAll('.ov-att-acts a.ov-att-wf')]
+    expect(cover!.getAttribute('href')).toBe(`/workflows/${WF_A}`)
+    // MUTATION: leave the stretched cover on the list's link.
+    expect(painted(main[0]!, 'content', WIDE, 'after') ?? 'none').toBe('none')
+    // MUTATION: drop `position: relative; z-index: 1` from the list link, so the cover swallows its clicks.
+    expect(painted(main[0]!, 'position', WIDE)).toBe('relative')
+    expect(painted(main[0]!, 'z-index', WIDE)).toBe('1')
+    // MUTATION: drop the stretched cover from the first workflow's link, or keep it `position: relative`.
+    expect(painted(cover!, 'position', WIDE)).not.toBe('relative')
+    expect(painted(cover!, 'content', WIDE, 'after')).not.toBeNull()
+    expect(painted(cover!, 'position', WIDE, 'after')).toBe('absolute')
+    // MUTATION: give the second workflow the cover too, or drop its `position: relative`.
+    expect(painted(second!, 'content', WIDE, 'after') ?? 'none').toBe('none')
+    expect(painted(second!, 'position', WIDE)).toBe('relative')
+    expect(painted(second!, 'z-index', WIDE)).toBe('1')
+    // The ids line's links stay above the cover.
+    // MUTATION: drop `position: relative` from the ids line's links.
+    const idLink = container.querySelector(`.ov-att-ids a[href="/workflows/${WF_B}"]`)!
+    expect(painted(idLink, 'position', WIDE)).toBe('relative')
+    expect(painted(idLink, 'z-index', WIDE)).toBe('1')
   })
 
   it('keeps a card that names no workflow as one link', () => {

@@ -144,7 +144,7 @@ describe('5b:wg-dark-D1: the failed-agents card reaches the failed workflow as p
     ])
   })
 
-  it('paints the workflow link as the list’s link is painted, above the card’s cover', () => {
+  it('paints the workflow link as the list’s link is painted, and lets it cover the card', () => {
     const { container } = render(<CheckCard problem={failuresProblem(ONE)} />)
     const wf = container.querySelector(`.ov-att-acts a[href="/workflows/${WF_A}"]`)!
     const list = container.querySelector(`.ov-att-acts a[href="${FAILED_LIST}"]`)!
@@ -154,15 +154,20 @@ describe('5b:wg-dark-D1: the failed-agents card reaches the failed workflow as p
     // MUTATION: draw the workflow link with a class of its own only, in the sentence's dim ink.
     expect(wf.classList.contains('ov-att-go')).toBe(true)
     expect(painted(wf, 'white-space', WIDE)).toBe(painted(list, 'white-space', WIDE))
-    // It does not carry the cover: only the list's link covers the card.
-    // MUTATION: let the cover rule reach the workflow link too, so a click on the card opens the workflow.
-    expect(painted(wf, 'content', WIDE, 'after')).toBe('none')
-    // MUTATION: drop `position: relative; z-index: 1`, so the list link's cover swallows its clicks.
-    expect(painted(wf, 'position', WIDE)).toBe('relative')
-    expect(painted(wf, 'z-index', WIDE)).toBe('1')
-    // The list link still covers the rest of the card.
-    // MUTATION: scope the cover to a direct child of the card, which the list link no longer is.
-    expect(painted(list, 'position', WIDE, 'after')).toBe('absolute')
+    // THE WORKFLOW'S LINK COVERS THE CARD (BGD's decision of 2026-10-23,
+    // #1680 box 6343766999): a click on the card's empty space opens the
+    // failed workflow. It reversed "only the list's link covers the card".
+    // MUTATION: leave the cover on the list's link, so a click on the card opens the list.
+    expect(painted(wf, 'content', WIDE, 'after')).not.toBeNull()
+    expect(painted(wf, 'position', WIDE, 'after')).toBe('absolute')
+    // MUTATION: keep `position: relative` on the cover's link, so its cover covers only itself.
+    expect(painted(wf, 'position', WIDE)).not.toBe('relative')
+    // The list's link is a plain link above the cover.
+    // MUTATION: let the cover rule reach the list's link too.
+    expect(painted(list, 'content', WIDE, 'after') ?? 'none').toBe('none')
+    // MUTATION: drop `position: relative; z-index: 1` from it, so the workflow's cover swallows its clicks.
+    expect(painted(list, 'position', WIDE)).toBe('relative')
+    expect(painted(list, 'z-index', WIDE)).toBe('1')
     // MUTATION: let the column shrink, so the links wrap under each other's words.
     expect(painted(acts(container), 'flex-shrink', WIDE)).toBe('0')
     // On a phone the links take their own row, side by side, right-aligned.
