@@ -576,19 +576,18 @@ change to both, and `swarm_api.typesafe_ticket` is the reference.
   swarm-system. `scripts/roll-typesafe-fwd.sh`, in the shape of
   `scripts/roll-graph.sh`, applies through it, waits for the rollout and
   proves the pods run the rendered digest. While the output is null (until
-  `typesafe_forwarder.serve` is set, which no environment sets today) it
-  prints one notice and exits 0. `swarm-typesafe-fwd` is in `security.yml`'s
-  scheduled image scan. The step that runs the roll script in `release.yml`
-  and `hotfix.yml` is PR 1417, a workflow change the owner pushes (lanes
-  cannot push workflow files). It was not on main when this was written
-  (2026-10-16: neither workflow names `roll-typesafe-fwd.sh`). Until it lands,
-  the forwarder is built and promoted, and nothing but an operator running
-  the roll script by hand applies it.
+  `typesafe_forwarder.serve` is set) it prints one notice and exits 0.
+  `swarm-typesafe-fwd` is in `security.yml`'s scheduled image scan. The step
+  that runs the roll script in `release.yml` and `hotfix.yml` came with PR
+  1417, a workflow change the owner pushed (lanes cannot push workflow
+  files); both workflows name `roll-typesafe-fwd.sh` on main (read
+  2026-10-23).
 * **SEC-MIGRATE-TYPESAFE, what is built:** both halves, behind
-  `SWARM_TYPESAFE_INJECT`, which is **off**. The pod side (TS-MIGRATE-POD, PR
-  1409): the dispatcher labels a TypeSafe-backed pod `swarm-typesafe: inject`
-  and sets the variable on the same pods, so the label and the variable always
-  arrive together. The tenant-side egress policy
+  `SWARM_TYPESAFE_INJECT`, which is **off**. The pod side: the dispatcher
+  labels a TypeSafe-backed pod `swarm-typesafe: inject` (TS-MIGRATE-POD, PR
+  1409) and sets the variable on the same pods (TS-INJECT, PR 1456; until it
+  merged, a labelled pod's worker never saw the switch), so the label and the
+  variable always arrive together. The tenant-side egress policy
   (`network-policies/allow-typesafe-fwd.yaml`, built like
   `allow-judge-egress.yaml`) is in `render.py`'s `TENANT_FILES` and in the
   workspace deployer's scope policy
@@ -601,21 +600,24 @@ change to both, and `swarm_api.typesafe_ticket` is the reference.
   the shim's URL and a local token the shim checks and replaces, so no
   TypeSafe key is in its process. The switch is honoured only on GKE; a Cloud
   Run worker with it set keeps today's key file. Switched off, the key file,
-  the judge's key and `JEV_API_URL` are exactly what they were.
+  the judge's key and `JEV_API_URL` are exactly what they were. The jev
+  wrapper (`images/agent-runtime-browser/jev-browser/bin/jev-browser-mcp`)
+  passes the shim's loopback URL through for the TypeSafe backend since PR
+  1418 (merged 2026-10-16 18:24Z) and carries `SHIM_PASSTHROUGH_MARKER`;
+  `runners/jev_launch.py` still refuses to start jev against a wrapper
+  without the marker, so an image built before PR 1418 gets no TypeSafe
+  judgment with the switch on rather than a keyless call to api.typesafe.ai.
 
   **What is left**, none of it optional:
-  * The jev wrapper's passthrough, PR 1418. The image's wrapper still drops
-    `JEV_API_URL` for the TypeSafe backend; `runners/jev_launch.py` refuses to
-    start jev against a wrapper that does not carry `SHIM_PASSTHROUGH_MARKER`,
-    rather than let it send to api.typesafe.ai with no key. So until the new
-    wrapper ships, a pod with the switch on gets no TypeSafe judgment at all.
   * The owner re-applies `kubernetes/apply.sh --policies` before the release
     that renders `allow-typesafe-fwd.yaml`, or the deployer is refused the
     new policy.
-  * The owner sets `typesafe_forwarder.serve`, once `swarm-typesafe-fwd-key`
-    has a version and the image a digest (it renders the forwarder's manifest
-    and puts `SWARM_TYPESAFE_FWD_KEY` on swarm-api), then adds the tenant to
-    `typesafe_forwarder.tenants` and sets `enabled`. Before that nothing is
+  * The owner adds the tenant to `typesafe_forwarder.tenants` and sets
+    `enabled`. `typesafe_forwarder.serve` (which renders the forwarder's
+    manifest and puts `SWARM_TYPESAFE_FWD_KEY` on swarm-api) is already set
+    in dev, after `swarm-typesafe-fwd-key` got its first version on
+    2026-10-16 (`terraform/environments/dev/dev.tfvars`, read 2026-10-23);
+    `enabled` is false there and no tenant is listed. Before that nothing is
     forwarded and no pod is labelled: the dispatcher reads the same `enabled`
     and `tenants`, rendered "false" unless the forwarder is served.
   * The forwarder is reachable only from GKE pods, so a judge running on
