@@ -18,7 +18,7 @@ body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 var(--f)}
 a{color:var(--info)}
 button{font:inherit;color:inherit}
 :focus-visible{outline:2px solid var(--info);outline-offset:2px}
-code{font-family:var(--mono);font-size:.88em;background:var(--surface-2);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+code{font-family:var(--mono);font-size:max(12px,.88em);background:var(--surface-2);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
 
 /* ---------- the document around the frames ---------- */
 .top{position:sticky;top:0;z-index:20;background:var(--surface);border-bottom:1px solid var(--line)}
@@ -43,6 +43,8 @@ figure{margin:0;min-width:0}
 figcaption{font-size:13px;color:var(--text-dim);margin-top:8px;max-width:100ch}
 figcaption b{color:var(--text)}
 .scroller{overflow-x:auto;border-radius:var(--r-card);border:1px solid var(--line);max-width:100%}
+/* a desktop frame is 1440 wide: it bleeds over the page's side padding so a 1440 screen shows all of it, side sheets included */
+.frames .scroller{margin-inline:-16px;max-width:none;border-inline:0;border-radius:0}
 .tw{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r-card);background:var(--surface);margin-top:14px}
 table.doc{border-collapse:collapse;width:100%;font-size:14px;min-width:640px}
 table.doc th,table.doc td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line-soft);vertical-align:top}
@@ -127,7 +129,7 @@ noscript p{background:var(--surface);border:1px solid var(--line);padding:12px;b
 .chip.ov{background:transparent;border-style:dashed;color:var(--text-dim);white-space:normal}
 .tn{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-size:12.5px}
 .tn .ic{width:13px;height:13px}
-.tn.ok{color:var(--ok-ink)}.tn.warn{color:var(--warn-ink)}.tn.bad{color:var(--bad-ink)}.tn.neu{color:var(--text-dim)}
+.tn.ok{color:var(--ok-ink)}.tn.warn{color:var(--warn-ink)}.tn.bad{color:var(--bad-ink)}.tn.neu{color:var(--text-dim)}.tn.run{color:var(--info-ink)}
 .dash{color:var(--text-dim);font-size:12.5px}.dash i{font-style:normal;color:var(--text);margin-right:5px}
 .mono{font-family:var(--mono);font-size:12px}
 .note{font-size:12.5px;color:var(--text-dim);margin:8px 0 0;max-width:76ch}
@@ -190,6 +192,10 @@ table.t td.act .b+.b{margin-left:4px}
 table.t td small{display:block;font-size:12px;color:var(--text-dim)}
 table.t td .chip{margin-top:3px}
 table.t tr.tot td{font-weight:600;background:var(--surface-2)}
+/* fixed columns, so the three Platform secrets tables line up under each other */
+table.t.fx{table-layout:fixed}
+table.t.fx th:nth-child(1){width:31%}table.t.fx th:nth-child(2){width:17%}table.t.fx th:nth-child(3){width:16%}table.t.fx th:nth-child(4){width:11%}table.t.fx th:nth-child(5){width:25%}
+table.t.fx .tn{white-space:normal}
 
 /* side sheet (the one-time form, a new workspace) */
 .scrim{position:absolute;inset:0;background:var(--scrim);z-index:4}
@@ -240,6 +246,7 @@ table.t tr.tot td{font-weight:600;background:var(--surface-2)}
   table.t:not(.m) tr:last-child{border-bottom:0}
   table.t:not(.m) td{border:0;padding:2px 0;display:flex;justify-content:space-between;gap:12px;text-align:right}
   table.t:not(.m) td::before{content:attr(data-l);color:var(--text-dim);text-align:left;flex:none;max-width:45%}
+  table.t:not(.m) td>.v{flex:1 1 auto;min-width:0;text-align:right}
   table.t:not(.m) td.lead{display:block;text-align:left;padding-bottom:4px}
   table.t:not(.m) td.lead::before{content:none}
   table.t:not(.m) td.act{justify-content:flex-start;padding-top:6px;flex-wrap:wrap;gap:4px}
@@ -296,7 +303,7 @@ table.t tr.tot td{font-weight:600;background:var(--surface-2)}
 <div class="top"><div class="top-in"><b>Config · proposal A, Settings app</b><span class="sp"></span><span style="font-size:13px;color:var(--text-dim)">Theme</span><span class="theme" data-theme-toggle></span></div></div>
 
 <div class="wrap">
-<p class="kicker">SwarmCloud · Config, Secrets, Admin counts and QA environments · proposal A · 2026-10-23</p>
+<p class="kicker">SwarmCloud · Config, Secrets, Admin counts and QA environments · proposal A · <span style="white-space:nowrap">2026-10-23</span></p>
 <h1>Proposal A: Config as a calm settings app</h1>
 <p class="lede">One of five competing proposals for #2157 (CONFIG-MOCKUPS-A to E). BGD picks one; nothing here is built. Every surface the brief names is drawn once, at desktop width (1440) and at phone width (390). The theme toggle above, and the same toggle in each frame's panel foot, switches every frame between light, dark and system. All data is <b>example data</b>: the user is Operator, hosts are <code>swarm.example.com</code> and <code>app.example.com</code>, and no value on this page is a credential.</p>
 <noscript><p>The frames on this page are drawn by its inline script. Turn JavaScript on to see them; the captions and the visibility table read without it.</p></noscript>
@@ -352,7 +359,7 @@ table.t tr.tot td{font-weight:600;background:var(--surface-2)}
 <figure><div class="scroller"><div data-f="s4-empty"></div></div><figcaption><b>S4 · empty state, desktop.</b> acme/docs has no secrets of its own, no QA targets and no repository token. Each group says what an agent gets instead, and offers the one action that fills it.</figcaption></figure>
 </div>
 <div class="phones">
-<figure><div data-f="s4-ws-ph"></div><figcaption><b>S4 · Workspace scope, phone.</b> Tables become label and value pairs, one block per row. The grant matrix keeps its grid inside its own box, sized to fit.</figcaption></figure>
+<figure><div data-f="s4-ws-ph"></div><figcaption><b>S4 · Workspace scope, phone.</b> Tables become label and value pairs, one block per row. The grant matrix becomes one block per secret, with each runner profile or MCP server and whether it receives that secret.</figcaption></figure>
 <figure><div data-f="s4-yours-ph"></div><figcaption><b>S4 · Yours, phone.</b></figcaption></figure>
 <figure><div data-f="s4-repo-ph"></div><figcaption><b>S4 · Repository, Agents, phone.</b></figcaption></figure>
 <figure><div data-f="s4-actions-ph"></div><figcaption><b>S4 · Repository, GitHub Actions, phone.</b></figcaption></figure>
@@ -426,7 +433,7 @@ table.t tr.tot td{font-weight:600;background:var(--surface-2)}
 <div class="frames">
 <figure><div class="scroller"><div data-f="s10-limits"></div></div><figcaption><b>S10 · Admin › Pool limits, desktop.</b> Ceilings by family, with Edit opening today's side editor (the L2 pick: impact, history, typed confirm for 0 or a cut of half or more). The GitHub fallback token is a status row whose Set opens the one-time form. Then Additional repositories, and Model prices: the list prices Platform counts' estimate uses.</figcaption></figure>
 <figure><div class="scroller"><div data-f="s10-sizes"></div></div><figcaption><b>S10 · Admin › Runner sizes, desktop.</b> Each class's CPU request, CPU limit and memory, versioned, with its history.</figcaption></figure>
-<figure><div class="scroller"><div data-f="s10-tenants"></div></div><figcaption><b>S10 · Admin › Tenants, desktop.</b> Every workspace with its kind, members, state and job, and New workspace. QA identity grants stay on this page.</figcaption></figure>
+<figure><div class="scroller"><div data-f="s10-tenants"></div></div><figcaption><b>S10 · Admin › Tenants, desktop.</b> Every workspace with its kind, members, state and job, and Add a new workspace, which opens the same sheet as S6. QA identity grants stay on this page.</figcaption></figure>
 <figure><div class="scroller"><div data-f="s10-yours"></div></div><figcaption><b>S10 · Admin › Workspaces you admin, desktop, as a workspace admin.</b> Each workspace links to its Config pages, switching workspace on the way. This and People and roles are all a workspace admin's Admin holds.</figcaption></figure>
 <figure><div class="scroller"><div data-f="s10-sched"></div></div><figcaption><b>S10 · schedules across workspaces, desktop.</b> Drawn in this style but left where the owner put it: the "All workspaces" side of Automate › Schedules, for an admin. It has a workspace column and Pause, Disable or Re-enable per row, and "Pause all of one workspace" asks for the workspace's id typed. It never edits another workspace's parameters.</figcaption></figure>
 </div>
@@ -438,7 +445,7 @@ table.t tr.tot td{font-weight:600;background:var(--surface-2)}
 <figure><div data-f="s10-sched-ph"></div><figcaption><b>S10 · schedules across workspaces, phone.</b></figcaption></figure>
 </div>
 
-<h2 class="s" id="notes"><span class="n">·</span>What this proposal does not decide</h2>
+<h2 class="s" id="notes">What this proposal does not decide</h2>
 <ul>
 <li>Old addresses (<code>/access</code>, <code>/setup</code>, <code>/settings/workspace</code>, <code>/settings/workspace/secrets</code>, <code>/settings/mcp-servers</code>, <code>/settings/keys</code>, <code>/admin/people</code>) redirect to their Config or Admin page. That is CONFIG-NAV's work and the same in every proposal.</li>
 <li>Settings › API keys is folded into Secrets (Keys for agents and MCP, in the Workspace and Yours scopes), following secrets-scopes.md §4. Settings keeps Profile.</li>
@@ -474,8 +481,10 @@ function grp(title,desc,body,act){return '<section class="grp"><div class="grp-h
 function list(rows){return '<div class="list">'+rows.join('')+'</div>'}
 function row(main,sub,meta,act){return '<div class="row"><div class="r-main"><b>'+main+'</b>'+(sub?'<small>'+sub+'</small>':'')+'</div>'+(meta?'<div class="r-meta">'+meta+'</div>':'')+(act?'<div class="r-act">'+act+'</div>':'')+'</div>'}
 /* a table whose cells carry their column name, so a phone can draw each row as label and value pairs */
-function tbl(heads,rows,o){o=o||{};var h='<div class="tblw"'+(o.style?' style="'+o.style+'"':'')+'><table class="t"><thead><tr>'+heads.map(function(x,i){return '<th'+(o.num&&o.num.indexOf(i)>=0?' class="n"':'')+'>'+x+'</th>'}).join('')+'</tr></thead><tbody>';
-  rows.forEach(function(r){var cls=r.cls||'';var cells=r.c||r;h+='<tr'+(cls?' class="'+cls+'"':'')+'>'+cells.map(function(c,i){var k=[];if(i===0)k.push('lead');if(o.num&&o.num.indexOf(i)>=0)k.push('n');if(heads[i]===''&&i===cells.length-1)k.push('act');return '<td data-l="'+heads[i]+'"'+(k.length?' class="'+k.join(' ')+'"':'')+'>'+c+'</td>'}).join('')+'</tr>'});
+function tbl(heads,rows,o){o=o||{};var h='<div class="tblw"'+(o.style?' style="'+o.style+'"':'')+'><table class="t'+(o.cls?' '+o.cls:'')+'"><thead><tr>'+heads.map(function(x,i){return '<th'+(o.num&&o.num.indexOf(i)>=0?' class="n"':'')+'>'+x+'</th>'}).join('')+'</tr></thead><tbody>';
+  rows.forEach(function(r){var cls=r.cls||'';var cells=r.c||r;h+='<tr'+(cls?' class="'+cls+'"':'')+'>'+cells.map(function(c,i){var k=[];if(i===0)k.push('lead');if(o.num&&o.num.indexOf(i)>=0)k.push('n');if(heads[i]===''&&i===cells.length-1)k.push('act');/* a value cell is one span, so a phone keeps its parts (a state and its date, a figure and its note) together at the right */
+    var wrapV=i>0&&k.indexOf('act')<0&&c!=='';
+    return '<td data-l="'+heads[i]+'"'+(k.length?' class="'+k.join(' ')+'"':'')+'>'+(wrapV?'<span class="v">'+c+'</span>':c)+'</td>'}).join('')+'</tr>'});
   return h+'</tbody></table></div>'}
 function tabs(items,on){return '<div class="tabs">'+items.map(function(t,i){return '<span class="'+(i===on?'on':'')+'">'+t+'</span>'}).join('')+'</div>'}
 function seg(items,on){return '<span class="seg">'+items.map(function(t,i){return '<span class="'+(i===on?'on':'')+'">'+t+'</span>'}).join('')+'</span>'}
@@ -491,7 +500,7 @@ var ROLE={
   wsadmin:{line:'Workspace admin · eng, qa-lab',admin:true},
   member:{line:'Member of eng',admin:false}
 };
-var WS={group:{tile:'E',name:'eng',sub:'Group workspace · 1 of 3'},personal:{tile:'O',name:'Operator',sub:'Personal workspace · 3 of 3'}};
+var WS={group:{tile:'E',name:'eng',sub:'Group workspace · 1 of 3'},personal:{tile:'O',name:'Operator',sub:'Personal · 3 of 3'}};
 
 function rail(c){var r=ROLE[c.role];
   var items=[['overview','Overview'],['work','Work'],['automate','Automate'],['capacity','Capacity'],['config','Config']];
@@ -585,7 +594,7 @@ P.repos=function(){return head(CR+'Repositories','Repositories','What agents in 
    row('acme/web-app','Nightly and on change · 1,284 tests mapped',tn('ok','matches the head')+'<span>indexed 2 h ago</span>',b('Index now')+b('Open '+ic('chev'),'ghost')),
    row('acme/api','Nightly · 412 tests mapped',tn('warn','2 commits behind the head')+'<span>indexed yesterday</span>',b('Index now')+b('Open '+ic('chev'),'ghost')),
    row('acme/docs','On change only',tn('neu','not indexed yet'),b('Index now')+b('Open '+ic('chev'),'ghost'))]))+
- grp('QA targets','Apps SwarmCloud captures and reviews.',list([row('AI Studio','acme/web-app · staging and production · 42 screens','<span>last run 23 Oct</span>',b('Open '+ic('chev'),'ghost'))]))};
+ grp('QA targets','Apps SwarmCloud captures and reviews.',list([row('AI Studio','acme/web-app · staging, production and preview · 42 screens','<span>last run 23 Oct</span>',b('Open '+ic('chev'),'ghost'))]))};
 
 /* Secrets */
 var SCOPES=['Workspace <small>eng</small>','Yours','Repository'];
@@ -593,8 +602,9 @@ function secHead(){return head(CR+'Secrets','Secrets','Every value is set throug
 var ORDER='When one name is set in several scopes, the person\'s value wins on their own agents, then the repository\'s, then the workspace\'s.';
 function setBtns(del){return b('Set new value')+(del===false?'':b('Delete','ghost dng'))}
 P.secWs=function(){
- var matrix='<div class="tblw" style="overflow-x:auto"><table class="t m" style="min-width:480px"><thead><tr><th>Secret</th><th>claude-code</th><th>codex</th><th>visual-qa</th><th>mcp: linear</th></tr></thead><tbody>'+
-  [['SENTRY_DSN',1,1,0,0],['NPM_READ',1,1,1,0],['LINEAR_MCP',0,0,0,1]].map(function(r){return '<tr><td><span class="mono">'+r[0]+'</span></td>'+r.slice(1).map(function(v){return '<td>'+(v?tn('ok','yes'):'<span class="dash">no</span>')+'</td>'}).join('')+'</tr>'}).join('')+'</tbody></table></div>';
+ /* a grid on a desktop; on a phone each secret is a block of label and value pairs, so no column is cut off */
+ var matrix=tbl(['Secret','claude-code','codex','visual-qa','mcp: linear'],
+  [['SENTRY_DSN',1,1,0,0],['NPM_READ',1,1,1,0],['LINEAR_MCP',0,0,0,1]].map(function(r){return ['<span class="mono">'+r[0]+'</span>'].concat(r.slice(1).map(function(v){return v?tn('ok','yes'):'<span class="dash">no</span>'}))}));
  return secHead()+tabs(SCOPES,0)+'<p class="note">'+ORDER+'</p>'+
  grp('For agents','Released to an attempt only through a grant below.',tbl(['Name','Updated','Last released',''],[
    ['<span class="mono">SENTRY_DSN</span>'+chip(ic('info')+'Operator\'s own value wins on Operator\'s agents','ov')+' '+chip('acme/web-app has its own','ov'),'3 days ago · Rin Okafor',dash('the API does not say yet'),setBtns()],
@@ -667,7 +677,7 @@ P.people=function(){return head(CR+'People and roles','People and roles','eng\'s
  grp('Role events','',list([row('Operator made Jo Lindqvist a Viewer','2 Oct, 14:20'),row('Rin Okafor changed the default role to Member','28 Sep, 09:02')]))};
 P.adminPeoplePlatform=function(){return head('Admin › People and roles','People and roles','Every person and every workspace on this platform.')+
  '<div class="bar-row"><span class="inp">'+ic('search')+'Search people</span>'+sel('All workspaces')+'</div>'+
- grp('Waiting for you','Workspace requests.',list([row('Kai Moreau asks for a group workspace, ml-research','kai@example.com · asked 3 h ago','',b('Approve','pri')+b('Deny','ghost dng'))]))+
+ grp('Waiting for you','Workspace requests.',list([row('Kai Moreau asks for a group workspace, data-lab','kai@example.com · asked 3 h ago','',b('Approve','pri')+b('Deny','ghost dng'))]))+
  grp('People','5 people across 4 workspaces.',tbl(['Person','Workspaces and roles','Ceiling','Claude account',''],[
    ['Operator <small>platform admin</small>','eng admin · qa-lab admin · Operator (personal)','8','2 accounts',b('Change ceiling')],
    ['Rin Okafor <small>platform admin</small>','eng admin · design member','8','1 account',b('Change ceiling')],
@@ -678,18 +688,19 @@ P.adminPeoplePlatform=function(){return head('Admin › People and roles','Peopl
  grp('Recent admin actions','',list([row('Operator raised Sam Patel\'s ceiling from 2 to 4','yesterday, 16:40'),row('Rin Okafor approved the workspace design','20 Oct, 11:15')]))};
 P.adminPeopleWs=function(){return head('Admin › People and roles','People and roles','People in the workspaces you admin: eng and qa-lab.')+
  '<div class="bar-row"><span class="inp">'+ic('search')+'Search people</span>'+seg(['Both','eng','qa-lab'],0)+'</div>'+
- grp('People','4 people.',tbl(['Person','Role in eng','Role in qa-lab',''],[
+ grp('People','5 people.',tbl(['Person','Role in eng','Role in qa-lab',''],[
    ['Operator <small>you</small>','Admin','Admin',''],
    ['Rin Okafor','Admin','<span class="dash">not a member</span>',b('Change role')],
    ['Sam Patel','Member','<span class="dash">not a member</span>',b('Change role')+b('Remove','ghost dng')],
-   ['Ade Mensah','<span class="dash">not a member</span>','Member',b('Change role')+b('Remove','ghost dng')]]))+
+   ['Ade Mensah','<span class="dash">not a member</span>','Member',b('Change role')+b('Remove','ghost dng')],
+   ['Jo Lindqvist','Viewer','<span class="dash">not a member</span>',b('Change role')+b('Remove','ghost dng')]]))+
  '<p class="note">Ceilings, Claude accounts, platform admins and workspace requests are a platform admin\'s, so they are not on this page.</p>'};
 
 /* S6 */
 P.ws=function(){var st=function(t,ok,extra,act){return row(t,extra||'',ok===true?tn('ok','done'):ok==='warn'?tn('warn','needs a look'):tn('neu','not started'),act||'')};
  return head(CR+'Workspace Settings','Workspace Settings','eng · group workspace')+
  grp('Settings','',list([row('Name','eng','',b('Rename')),row('Workspace id','<span class="mono">eng</span>','',b('Copy','ghost')),row('Kind','Group workspace'),row('Your role','Admin')]))+
- grp('Code intelligence','Off by default. When on, the repository index is used to choose context and tests; nothing leaves the platform until you turn it on.',list([row('Code intelligence','Off',tn('neu','off'),b('Turn on'))]))+
+ grp('Code intelligence','Off by default. When on, the repository index is used to choose context and tests; nothing leaves the platform until you turn it on.',list([row('Code intelligence','',tn('neu','off'),b('Turn on'))]))+
  grp('Workspace setup','The checklist Overview shows until every step is done. 6 of 7 done.',list([
    st('Request your workspace',true),st('Add a Claude account',true),st('Connect GitHub',true,'@operator-gh'),st('Install the App',true,'on acme and operator-gh'),st('Enable orgs',true),st('Choose repositories',true,'3 chosen'),
    st('Verify access','warn','operator-gh/notes has not been checked yet.',b('Verify','pri'))]),'<span class="dash">Hidden from Overview</span>'+b('Show on Overview'))+
@@ -698,7 +709,7 @@ var NEW_BODY='<div class="lbl">Kind</div>'+seg(['Personal','Group','Service'],1)
  callout('A group gets its own namespace, service account, secrets prefix and default limits. As an admin you file it approved; a Service waits for the platform owner.')+
  '<p class="note">Limits are the platform\'s default for the kind. Nothing here names an image, a command or a resource size.</p>';
 var NEW_STEPS='<div class="lbl">ml-research · being built</div><ol class="steps">'+
- [['Approved','ok'],['Checking the name is free','ok'],['Identity','ok'],['Access','run'],['Namespace',''],['Limits',''],['Final check','']].map(function(s){return '<li>'+(s[1]==='ok'?tn('ok',''):s[1]==='run'?tn('warn',''):tn('neu',''))+'<span>'+s[0]+'</span>'+(s[1]==='run'?'<span class="dash">running, read 5 s ago</span>':'')+'</li>'}).join('')+'</ol>';
+ [['Approved','ok'],['Checking the name is free','ok'],['Identity','ok'],['Access','run'],['Namespace',''],['Limits',''],['Final check','']].map(function(s){return '<li>'+(s[1]==='ok'?tn('ok',''):s[1]==='run'?'<span class="tn run">'+ic('dot')+'</span>':tn('neu',''))+'<span>'+s[0]+'</span>'+(s[1]==='run'?'<span class="dash">running, read 5 s ago</span>':'')+'</li>'}).join('')+'</ol>';
 P.wsSheet=function(){return sheet('Add a new workspace','Files the request; the workspace job builds it.',NEW_BODY,b('Cancel','ghost')+b('Add workspace','pri'))};
 P.wsSheetDone=function(){return sheet('Add a new workspace','Filed. The workspace job is building it.',NEW_STEPS,b('Close','ghost'))};
 
@@ -706,9 +717,9 @@ P.wsSheetDone=function(){return sheet('Add a new workspace','Filed. The workspac
 P.psecrets=function(){var H=['Secret','State','Versions','Age','Managed by · value written by'];
  var r=function(name,state,v,age,mgr){return ['<span class="mono">'+name+'</span>',state,v,age,mgr]};
  return head('Admin › Platform secrets','Platform secrets','Status only: set or not, versions, age and what manages each. No value, no length, no last characters, and no form on this page.','<span class="dash">read 2 min ago</span>'+b('Read again'))+
- grp('GitHub App','',tbl(H,[r('swarm-github-app-private-key',tn('ok','set'),'1','41 days','Terraform declares · create-secrets.sh --github-app'),r('swarm-github-app-client-secret',tn('ok','set'),'1','41 days','Terraform declares · create-secrets.sh --github-app'),r('swarm-github-app-webhook-secret',tn('ok','set'),'1','41 days','Terraform declares · create-secrets.sh --github-app-webhook-secret')],{num:[2]}))+
- grp('Keys the platform signs with','',tbl(H,[r('swarm-live-key',tn('ok','set'),'2 <small>rotation in its grace</small>','3 days','Terraform declares · create-secrets.sh --live-key'),r('swarm-child-key',tn('ok','set'),'1','58 days','Terraform declares · create-secrets.sh --child-key'),r('swarm-settings-key',tn('ok','set'),'1','58 days','Terraform declares · create-secrets.sh --settings-mac-key'),r('swarm-workspace-grant-key',tn('ok','set'),'1','12 days','Terraform declares · create-secrets.sh --workspace-grant-key')],{num:[2]}))+
- grp('Network, search and forwarding','',tbl(H,[r('swarm-search-api-key',tn('ok','set'),'1','30 days','Terraform declares · create-secrets.sh --search-api-key'),r('swarm-egress-credential',tn('bad','declared, no enabled version'),'0',dash('no version'),'Terraform declares · create-secrets.sh --egress-credential'),r('swarm-tailscale-oauth',tn('neu','not declared'),'—',dash('this deployment does not declare it'),'Terraform declares · create-secrets.sh --tailscale-oauth')],{num:[2]}))+
+ grp('GitHub App','',tbl(H,[r('swarm-github-app-private-key',tn('ok','set'),'1','41 days','Terraform declares · create-secrets.sh --github-app'),r('swarm-github-app-client-secret',tn('ok','set'),'1','41 days','Terraform declares · create-secrets.sh --github-app'),r('swarm-github-app-webhook-secret',tn('ok','set'),'1','41 days','Terraform declares · create-secrets.sh --github-app-webhook-secret')],{num:[2],cls:'fx'}))+
+ grp('Keys the platform signs with','',tbl(H,[r('swarm-live-key',tn('ok','set'),'2 <small>rotation in its grace</small>','3 days','Terraform declares · create-secrets.sh --live-key'),r('swarm-child-key',tn('ok','set'),'1','58 days','Terraform declares · create-secrets.sh --child-key'),r('swarm-settings-key',tn('ok','set'),'1','58 days','Terraform declares · create-secrets.sh --settings-mac-key'),r('swarm-workspace-grant-key',tn('ok','set'),'1','12 days','Terraform declares · create-secrets.sh --workspace-grant-key')],{num:[2],cls:'fx'}))+
+ grp('Network, search and forwarding','',tbl(H,[r('swarm-search-api-key',tn('ok','set'),'1','30 days','Terraform declares · create-secrets.sh --search-api-key'),r('swarm-egress-credential',tn('bad','declared, no enabled version'),'0',dash('no version'),'Terraform declares · create-secrets.sh --egress-credential'),r('swarm-tailscale-oauth',tn('neu','not declared'),'—',dash('none'),'Terraform declares · create-secrets.sh --tailscale-oauth')],{num:[2],cls:'fx'}))+
  grp('Subscription accounts','',list([row('swarm-account-… (one per account)','14 accounts, written and refreshed by the quota broker','',b('Capacity › Accounts '+ic('chev'),'ghost'))]))};
 
 /* S8 */
@@ -720,9 +731,9 @@ function chartSvg(ph){var W=ph?290:780,H=150,pl=30,pb=22,max=140,bw=(W-pl)/14;va
  return '<svg viewBox="0 0 '+W+' '+H+'" width="'+W+'" height="'+H+'" style="width:'+W+'px" role="img" aria-label="Agents per day by submission day, first attempts and retries">'+g+'</svg>'}
 P.counts=function(ph){var tot={a:0,r:0,h:0,rep:0};DAYS.forEach(function(d){tot.a+=d.first+d.retry;tot.r+=d.retry;tot.h+=d.hours;tot.rep+=d.reported});
  var cost=function(d){return Math.round(d.reported*2.38)};var rows=DAYS.slice().reverse().map(function(d){var all=d.first+d.retry,c=cost(d);
-  return [d.wd+' '+d.d,n(all),n(d.retry),n(d.hours),(all*1.41).toFixed(1)+' M',(all*0.22).toFixed(1)+' M',(all*9.8).toFixed(0)+' M',(all*0.9).toFixed(1)+' M',(d.reported<all?'at least ':'')+'$'+n(c)+(d.reported<all?'<small>'+d.reported+' of '+all+' reported</small>':'')]});
+  return [d.wd+' '+d.d,n(all),n(d.retry),n(d.hours),(all*1.41).toFixed(1)+' M',(all*0.22).toFixed(1)+' M',n(Math.round(all*9.8))+' M',(all*0.9).toFixed(1)+' M',(d.reported<all?'at least ':'')+'$'+n(c)+(d.reported<all?'<small>'+d.reported+' of '+all+' reported</small>':'')]});
  var TOTC=0;DAYS.forEach(function(d){TOTC+=cost(d)});
- rows.push({cls:'tot',c:['14 days',n(tot.a),n(tot.r),n(tot.h),(tot.a*1.41/1000).toFixed(2)+' B',(tot.a*0.22).toFixed(0)+' M',(tot.a*9.8/1000).toFixed(1)+' B',(tot.a*0.9).toFixed(0)+' M','at least $'+n(TOTC)+'<small>'+n(tot.rep)+' of '+n(tot.a)+' reported</small>']});
+ rows.push({cls:'tot',c:['14 days',n(tot.a),n(tot.r),n(tot.h),(tot.a*1.41/1000).toFixed(2)+' B',(tot.a*0.22).toFixed(0)+' M',(tot.a*9.8/1000).toFixed(1)+' B',(tot.a*0.9/1000).toFixed(2)+' B','at least $'+n(TOTC)+'<small>'+n(tot.rep)+' of '+n(tot.a)+' reported</small>']});
  var types=[['claude-code',0.58],['codex',0.21],['visual-qa',0.13],['review',0.08]];
  return head('Admin › Platform counts','Platform counts','Counted when you press Run, never on a timer.')+
  grp('Agents by state now','Counted 4 min ago by Operator.',tbl(['State','This workspace (eng)','Every workspace'],[['Running','12','31'],['Waiting (queued, parked, ready)','37','88'],['Succeeded today','64','201'],['Failed today','3','11']],{num:[1,2]}),b('Run it again · 24 reads'))+
@@ -734,7 +745,7 @@ P.counts=function(ph){var tot={a:0,r:0,h:0,rep:0};DAYS.forEach(function(d){tot.a
   '<div class="grp-h" style="margin-top:16px"><div class="t"><h4>By agent type, these 14 days</h4></div></div>'+
   tbl(['Agent type','Agents','Retries','Run hours','Estimated cost'],types.map(function(t){return [t[0],n(Math.round(tot.a*t[1])),n(Math.round(tot.r*t[1])),n(Math.round(tot.h*t[1])),'at least $'+n(Math.round(TOTC*t[1]))]}),{num:[1,2,3,4]}),
   b('Run · about 140 reads','pri'))+
- grp('Platform ticks','',list([row('Quota tick','Recomputes provider quota state and adaptive pool targets.',tn('ok','ran 1 min ago')),row('Issue-run advance','Advances each tenant\'s issue runs nobody is reading.',tn('ok','ran 4 min ago')),row('GitHub token refresh','Refreshes GitHub user access tokens before they expire.',tn('warn','last ran 26 min ago, due every 15'))]))};
+ grp('Platform ticks','',list([row('Quota tick','Recomputes provider quota state and adaptive pool targets.',tn('ok','ran 1 min ago')),row('Issue-run advance','Advances each tenant\'s issue runs nobody is reading.',tn('ok','ran 4 min ago')),row('GitHub token refresh','Refreshes GitHub user access tokens before they expire.',tn('warn','last ran 26 min ago, due every 15 min'))]))};
 
 /* S9 */
 P.qaTarget=function(){var env=function(on,dis,name,host,prod,state,why,act){return '<div class="row"><div class="r-main"><b style="display:flex;align-items:center;gap:8px">'+cb(on,dis)+name+'</b><small style="padding-left:24px"><span class="mono">'+host+'</span> · '+prod+'</small>'+(why?'<small class="tn bad" style="padding-left:24px;white-space:normal">'+ic('x')+'Cannot run: '+why+'</small>':'')+'</div><div class="r-meta">'+state+'</div>'+(act?'<div class="r-act">'+act+'</div>':'')+'</div>'};
@@ -748,13 +759,13 @@ P.qaTarget=function(){var env=function(on,dis,name,host,prod,state,why,act){retu
    row('/settings/billing','staging and production',chip('both'),b('Promote')),
    row('/labs/agents-v2','staging only',chip('staging'),b('Promote')),
    row('/help/shortcuts','production only',chip('production'),b('Promote'))]))};
-P.qaRun=function(){var col=function(env,host,state,kv){return '<div class="colc"><div class="ch"><b>'+env+'</b>'+state+'<span class="mono" style="flex-basis:100%;color:var(--text-dim)">'+host+'</span></div>'+kv.map(function(k){return '<div class="kv"><span>'+k[0]+'</span><b>'+k[1]+'</b></div>'}).join('')+'<div class="kv">'+b('Open workflow '+ic('chev'),'ghost')+'</div></div>'};
+P.qaRun=function(){var col=function(env,host,state,kv,note){return '<div class="colc"><div class="ch"><b>'+env+'</b>'+state+'<span style="flex-basis:100%;color:var(--text-dim);font-size:12px"><span class="mono">'+host+'</span>'+(note?' · '+note:'')+'</span></div>'+kv.map(function(k){return '<div class="kv"><span>'+k[0]+'</span><b>'+k[1]+'</b></div>'}).join('')+'<div class="kv">'+b('Open workflow '+ic('chev'),'ghost')+'</div></div>'};
  return head(CR+'Repositories › QA targets › AI Studio','AI Studio · run of 23 Oct, 18:02','Started by Operator · staging and production · report and file issues.')+
  grp('Seen on one environment only','Information about what has shipped where, never a filed finding.',list([row('/labs/agents-v2','on staging, not on production',chip('staging')),row('/help/shortcuts','on production, not on staging',chip('production'))]))+
- grp('New since the last run','',list([row('/settings/billing','found on both',chip('both'),b('Promote')),row('/labs/agents-v2','found on staging',chip('staging'),b('Promote'))]))+
+ grp('New since the last run','',list([row('/settings/billing','found on both',chip('both'),b('Promote')),row('/labs/agents-v2','found on staging',chip('staging'),b('Promote')),row('/help/shortcuts','found on production',chip('production'),b('Promote'))]))+
  '<div class="grp"><div class="grp-h"><div class="t"><h4>By environment</h4></div></div><div class="cols">'+
  col('staging','staging.app.example.com',tn('ok','succeeded'),[['Steps','8 of 8'],['Screens captured','42 stored · 5 new'],['Coverage','42 of 42 stored · 5 new · 2 over the cap · 0 not reached'],['Crawl stopped by','done'],['Findings','0 critical · 3 major · 7 minor'],['Issues filed','10, titled [staging]'],['Gate refusals','0']])+
- col('production','app.example.com · reads only',tn('warn','succeeded, crawl cut short'),[['Steps','8 of 8'],['Screens captured','40 stored · 2 new'],['Coverage','40 of 42 stored · 2 new · 0 over the cap · 1 not reached'],['Crawl stopped by','time: a missing route is not evidence it is gone'],['Findings','0 critical · 1 major · 4 minor'],['Issues filed','5, titled [production]'],['Gate refusals','4 writes refused (reads only)']])+
+ col('production','app.example.com',tn('warn','succeeded, crawl cut short'),[['Steps','8 of 8'],['Screens captured','40 stored · 2 new'],['Coverage','40 of 42 stored · 2 new · 0 over the cap · 1 not reached'],['Crawl stopped by','time: a missing route is not evidence it is gone'],['Findings','0 critical · 1 major · 4 minor'],['Issues filed','5, titled [production]'],['Gate refusals','4 writes refused (reads only)']],'reads only')+
  '</div></div>'};
 
 /* S10 */
@@ -766,8 +777,8 @@ P.limits=function(){return head('Admin › Pool limits','Pool limits','The ceili
 P.sizes=function(){return head('Admin › Runner sizes','Runner sizes','Each class\'s CPU request, CPU limit and memory. Versioned; a change says what the pools admit after it.')+
  grp('Classes','',tbl(['Class','CPU request','CPU limit','Memory','Version',''],[['small','1','2','4 GiB','v3',b('Edit')],['standard','2','4','8 GiB','v5',b('Edit')],['large','4','8','16 GiB','v2',b('Edit')]],{num:[1,2,3]}))+
  grp('History','',list([row('standard memory 6 → 8 GiB','Rin Okafor · 18 Oct · v5'),row('small CPU limit 1.5 → 2','Operator · 2 Oct · v3')]))};
-P.tenants=function(){return head('Admin › Tenants','Tenants','Every workspace on the platform and its build state.',b('New workspace','pri'))+
- grp('Workspaces','',tbl(['Workspace','Kind','Members','State',''],[['eng','Group','4',tn('ok','ready'),b('Open')],['qa-lab','Group','2',tn('ok','ready'),b('Open')],['design','Group','3',tn('ok','ready'),b('Open')],['ml-research','Group','1',tn('warn','building · Access'),b('Open')],['Operator','Personal','1',tn('ok','ready'),b('Open')]],{num:[2]}))+
+P.tenants=function(){return head('Admin › Tenants','Tenants','Every workspace on the platform and its build state.',b(ic('submit')+'Add a new workspace','pri'))+
+ grp('Workspaces','',tbl(['Workspace','Kind','Members','State',''],[['eng','Group','4',tn('ok','ready'),b('Open')],['qa-lab','Group','2',tn('ok','ready'),b('Open')],['design','Group','2',tn('ok','ready'),b('Open')],['ml-research','Group',dash('added once it is built'),tn('warn','building · Access'),b('Open')],['Operator','Personal','1',tn('ok','ready'),b('Open')]],{num:[2]}))+
  grp('QA identity grants','Which workspaces may sign in to a QA host as a platform QA identity.',list([row('qa-lab','may use the QA identity on staging.app.example.com','',b('Revoke','ghost dng'))]),b('Grant'))};
 P.yours=function(){var w=function(name,people){return row(name,'Group · '+people,'',b('People and roles')+b('Secrets')+b('MCP servers')+b('Workspace Settings'))};
  return head('Admin › Workspaces you admin','Workspaces you admin','Each opens its Config pages, switching workspace on the way.')+
@@ -793,14 +804,14 @@ both('s4-ws',C('secrets'),P.secWs,'Secrets');
 both('s4-yours',C('secrets'),P.secYours,'Secrets');
 both('s4-repo',C('secrets'),P.secRepo,'Secrets');
 both('s4-actions',C('secrets'),P.secActions,'Secrets');
-both('s4-sheet',C('secrets'),function(){return placeholder(CR+'Secrets','Secrets')},'Set a secret',{sheet:P.secSheet,phSheet:P.secSheet});
+both('s4-sheet',C('secrets'),function(){return placeholder(CR+'Secrets','Secrets')},'Secrets',{sheet:P.secSheet,phSheet:P.secSheet});
 both('s4-empty',C('secrets'),P.secEmpty,'Secrets');
 both('s5-mcp',C('mcp'),P.mcp,'MCP servers');
 both('s5-people',C('people'),P.people,'People and roles');
 both('s5-admin-platform',C('apeople',{sec:'admin'}),P.adminPeoplePlatform,'People and roles');
 both('s5-admin-ws',C('apeople',{sec:'admin',role:'wsadmin'}),P.adminPeopleWs,'People and roles');
 both('s6',C('ws'),P.ws,'Workspace Settings');
-both('s6-new',C('ws'),function(){return placeholder(CR+'Workspace Settings','Workspace Settings')},'Add a new workspace',{sheet:P.wsSheet,phSheet:P.wsSheetDone});
+both('s6-new',C('ws'),function(){return placeholder(CR+'Workspace Settings','Workspace Settings')},'Workspace Settings',{sheet:P.wsSheet,phSheet:P.wsSheetDone});
 both('s7',C('psecrets',{sec:'admin'}),P.psecrets,'Platform secrets');
 both('s8',C('counts',{sec:'admin'}),P.counts,'Platform counts');
 both('s9-target',C('repos',{kid:0}),P.qaTarget,'QA targets');
