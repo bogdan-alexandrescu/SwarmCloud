@@ -858,6 +858,14 @@ MAX_NOT_READY_NEEDS = 20
 #: full text the marker points to.
 MAX_NOT_READY_REASON_CHARS = 2_000
 NOT_READY_REASON_TRUNCATED = "… [truncated: the full reason is in the planner task's plan.json]"
+#: Each NOT_READY need is bounded by TRUNCATION too, never refused: a need
+#: over 500 characters made the verdict InvalidPlan and ended the run FAILED,
+#: losing a correct owner_decision answer (#2026, as #977 was for the reason).
+#: The plan.json artifact keeps the full text. 500 matches
+#: `issuecomments.MAX_LINE_CHARS`, which cuts each need again when it is
+#: rendered on the issue: a need kept at <= 500 keeps its marker there.
+MAX_NOT_READY_NEED_CHARS = 500
+NOT_READY_NEED_TRUNCATED = "… [truncated: the full need is in the planner task's plan.json]"
 
 
 class NotReadyVerdict(_PlanModel):
@@ -869,7 +877,8 @@ class NotReadyVerdict(_PlanModel):
     `needs` lists what would make it ready ("owner decision: ...", "depends
     on #N"), one per entry, and may be empty only when `reason` says it all.
     A long `reason` is accepted and truncated by `parse_planner_output` to
-    MAX_NOT_READY_REASON_CHARS with a marker, not refused (#977).
+    MAX_NOT_READY_REASON_CHARS with a marker, not refused (#977); so is a
+    long need, to MAX_NOT_READY_NEED_CHARS (#2026). An empty need is refused.
 
     `lane` names the work this issue collides with, as the IN FLIGHT section
     lists it. Kind `duplicate` must carry one: a duplicate nobody can find is
@@ -879,7 +888,8 @@ class NotReadyVerdict(_PlanModel):
     ready: Literal[False]
     kind: Literal[NOT_READY_KINDS] | None = None  # type: ignore[valid-type]
     reason: str = Field(min_length=1)
-    needs: list[_Line] = Field(default_factory=list, max_length=MAX_NOT_READY_NEEDS)
+    needs: list[Annotated[str, Field(min_length=1)]] = Field(
+        default_factory=list, max_length=MAX_NOT_READY_NEEDS)
     lane: str | None = Field(default=None, min_length=1, max_length=MAX_NOT_READY_LANE_CHARS)
 
     @model_validator(mode="after")
@@ -926,7 +936,8 @@ def parse_planner_output(value: Any) -> tuple[str, dict[str, Any]]:
             # Agent text, shown in the console and quoted on the issue:
             # masked here, once, as a run's error is (`failure_text`).
             "reason": _not_ready_reason(verdict.reason),
-            "needs": [redact_detail(need, limit=500) for need in verdict.needs],
+            "needs": [_bounded(need, MAX_NOT_READY_NEED_CHARS, NOT_READY_NEED_TRUNCATED)
+                      for need in verdict.needs],
         }
         if verdict.lane is not None:
             # Kept only when given, so every other verdict stores as before.
@@ -941,16 +952,20 @@ def parse_planner_output(value: Any) -> tuple[str, dict[str, Any]]:
 
 
 def _not_ready_reason(reason: str) -> str:
-    """The reason as a run stores it: masked whole, then cut to the limit with a marker.
+    """The reason as a run stores it: masked whole, then cut to the limit with a marker."""
+    return _bounded(reason, MAX_NOT_READY_REASON_CHARS, NOT_READY_REASON_TRUNCATED)
+
+
+def _bounded(text: str, limit: int, marker: str) -> str:
+    """Verdict text as a run stores it: masked whole, then cut to `limit` with `marker`.
 
     Masking comes first so a credential straddling the cut is replaced by its
     stand-in, never kept as a prefix too short for the scan to recognise.
     """
-    masked = redact_detail(reason, limit=MAX_PLAN_BYTES)
-    if len(masked) <= MAX_NOT_READY_REASON_CHARS:
+    masked = redact_detail(text, limit=MAX_PLAN_BYTES)
+    if len(masked) <= limit:
         return masked
-    keep = MAX_NOT_READY_REASON_CHARS - len(NOT_READY_REASON_TRUNCATED)
-    return masked[:keep].rstrip() + NOT_READY_REASON_TRUNCATED
+    return masked[:limit - len(marker)].rstrip() + marker
 
 
 def plan_files(plan: Mapping[str, Any] | None) -> set[str]:
@@ -1638,7 +1653,8 @@ _READINESS = (
     '  {"ready": false, "kind": "already_done" | "owner_decision" | "blocked" | '
     '"too_vague" | "security_deferred" | "epic" | "other",\n'
     '   "reason": "<why, with the evidence>",\n'
-    '   "needs": ["<what would make it ready, one per entry, e.g. owner decision: '
+    '   "needs": ["<what would make it ready, one short entry each (over '
+    f'{MAX_NOT_READY_NEED_CHARS} characters is cut), e.g. owner decision: '
     '<the question>, or depends on #N>"]}\n'
     "and nothing else. SwarmCloud posts the reason and the needs on the issue and plans "
     "it again only after the issue is edited or commented on. If it is ready, write "
