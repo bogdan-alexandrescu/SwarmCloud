@@ -472,12 +472,14 @@ def test_a_quoted_credential_assigned_in_an_intermediate_commit_folds_the_histor
     assert literal.encode() not in _all_object_bytes(origin), "the key reached a pushed object"
 
 
-def test_a_history_that_does_not_descend_from_the_base_is_folded_as_before(
+def test_a_history_that_does_not_descend_from_the_base_publishes_nothing(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):
     """An agent that moved its branch off the clone base (here: onto an orphan
-    line) has no first-parent line from the base to keep. The fold still
-    applies: one worker commit on the base with everything the agent left."""
+    line) has no line from the base the worker can call its own. It used to be
+    folded into one worker commit on the base and pushed; since #2094 a HEAD
+    that left the task's branch, or no longer descends from where the step
+    started, publishes nothing and says so (test_harvest_start_sha.py)."""
     def edit(repo: Path) -> None:
         subprocess.run(["git", "checkout", "-q", "--orphan", "fresh"], cwd=str(repo), check=True)
         (repo / "fresh.txt").write_text("a new start\n")
@@ -486,11 +488,15 @@ def test_a_history_that_does_not_descend_from_the_base_is_folded_as_before(
     _, config, out = _attempt(worker_factory, monkeypatch, origin, task_id="t-orphan", edit=edit)
 
     branch = f"{config.git_branch_prefix}{config.task_id}"
-    assert out["published"] is True, out.get("publish_reason")
-    commits = pushed_commits(origin, branch)
-    assert len(commits) == 1, commits
-    assert_only_the_worker_wrote(commits, config)
-    assert out.get("agent_commits_folded") == 1, out
+    # MUTATION: fold a moved HEAD as before and this branch is pushed with the
+    # orphan line's tree on it.
+    assert out["published"] is False, out
+    assert out["head_moved"] == "fresh", out
+    assert "agent_commits_folded" not in out, out
+    assert branch not in subprocess.run(
+        ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+        cwd=str(origin), check=True, capture_output=True, text=True,
+    ).stdout.split()
 
 
 # -- a graft cannot make the replay skip a commit (#259 re-review) --

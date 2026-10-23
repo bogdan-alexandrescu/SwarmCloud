@@ -17,7 +17,6 @@ on its assertions.
 from __future__ import annotations
 
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -65,8 +64,10 @@ def _leave_uncommitted(repo: Path) -> None:
     (repo / "notes.txt").write_text("left uncommitted\n")
 
 
-def _move_off_the_base(repo: Path) -> None:
-    subprocess.run(["git", "checkout", "-q", "--orphan", "fresh"], cwd=str(repo), check=True)
+def _commit_past_the_keep_limit(repo: Path) -> None:
+    """One commit on the base, with `MAX_KEPT_COMMITS` set to 0 by the test:
+    a history the replay cannot keep, so it is folded. (It used to be an
+    orphan line, which since #2094 publishes nothing at all.)"""
     (repo / "fresh.txt").write_text("a new start\n")
     _commit(repo, "Start over")
 
@@ -118,9 +119,10 @@ def test_a_refused_title_is_not_the_commit_subject(
 def test_a_fold_commit_takes_the_agents_title_and_names_no_task_in_its_subject(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):
+    monkeypatch.setattr(lifecycle, "MAX_KEPT_COMMITS", 0)
     commits, out = _attempt(
         worker_factory, monkeypatch, origin,
-        task_id="t-fold", edit=_move_off_the_base, title=TITLE,
+        task_id="t-fold", edit=_commit_past_the_keep_limit, title=TITLE,
     )
     assert out.get("agent_commits_folded") == 1, out
     assert len(commits) == 1, commits
@@ -132,8 +134,10 @@ def test_a_fold_commit_takes_the_agents_title_and_names_no_task_in_its_subject(
 def test_an_untitled_fold_commit_names_no_task_in_its_subject(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):
+    monkeypatch.setattr(lifecycle, "MAX_KEPT_COMMITS", 0)
     commits, _ = _attempt(
-        worker_factory, monkeypatch, origin, task_id="t-fold-plain", edit=_move_off_the_base,
+        worker_factory, monkeypatch, origin, task_id="t-fold-plain",
+        edit=_commit_past_the_keep_limit,
     )
     subject, body = _subject_and_body(commits[0])
     assert subject == lifecycle.FOLDED_COMMIT_SUBJECT, subject
