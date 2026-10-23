@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 
-import { offersChildren } from '../AgentChildren'
+import { childrenServed, offersChildren } from '../AgentChildren'
 import type { TaskPane } from '../App'
 import { checkpointsSay, type CheckpointCount } from '../CheckpointsPane'
 import { questionCount } from '../QuestionsCard'
@@ -95,8 +95,16 @@ export function paneTabs({
           {
             id: 'children' as const,
             label: PANE_LABELS.children,
-            count: childCount,
-            say: childCount === null ? 'The children read has not answered, so their count is not known.' : null,
+            // A CHILD HAS NONE (visual QA run 6, task-002): `/children` on a
+            // child agent drew the tab (c04) with the split's count, which is
+            // never read for an agent that does not offer children, so `—`
+            // sat over the pane's `none`. Children are one level deep, so a
+            // child's count is 0 without a read.
+            count: childCount ?? (isChild(task) ? 0 : null),
+            say:
+              childCount === null && !isChild(task)
+                ? 'The children read has not answered, so their count is not known.'
+                : null,
             to: `${base}/children`,
           },
         ]
@@ -201,10 +209,16 @@ function byRank(keys: readonly string[]): number[] {
  * name for the tab ran them together -- `Changes not counted` read as a
  * sentence, or as a tab that is switched off. The name puts a comma between
  * them, `Changes, not counted`; a tab with no count is its label alone.
+ *
+ * A COUNT NOT KNOWN IS NOT NAMED IN WORDS THE TAB DOES NOT SHOW (visual QA
+ * run 6, box 6343755826): the badge draws `—` and the name said `Attempts,
+ * count not known`, a name that is not the tab's text (axe
+ * label-content-name-mismatch). The name is the label, as the text is once
+ * the dash is read as the symbol it is; the reason stays the badge's title.
  */
 export function tabName(t: TabDef): string {
-  if (t.count === undefined) return t.label
-  return `${t.label}, ${t.count === null ? 'count not known' : t.count}`
+  if (t.count === undefined || t.count === null) return t.label
+  return `${t.label}, ${t.count}`
 }
 
 /**
@@ -467,6 +481,11 @@ function MoreTabs({ tabs, onSelect }: { tabs: readonly TabDef[]; onSelect: (key:
 export function unknownCount(task: Task | null): string {
   if (task === null) return 'not read'
   return TERMINAL_STATES.has(task.state) ? 'not counted' : 'not yet'
+}
+
+/** The agent is itself a child, on an API that serves the child fields: it has no children (depth 1). */
+function isChild(task: Task | null): boolean {
+  return task !== null && childrenServed(task) && (task.parent_task_id ?? null) !== null
 }
 
 /** The Artifacts tab's count: the manifest's files once a summary is written, else unknown. */

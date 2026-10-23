@@ -303,9 +303,13 @@ export function StartupProgress({
       // a centring flex ROW, the two sentences sat side by side on mismatched
       // baselines and read `The agent’s browser is starting.Reading its
       // start-up.` The card is a column: a title, then its line.
+      // AND A SPACE BETWEEN THEM (QA-086, still open in run 6): the page's text
+      // -- what a copy, a find or a reader that flattens blocks gets -- still
+      // ran `starting.Reading`. The space is a text node of its own; in the
+      // card's flex column it draws nothing.
       <div className={`startup${overlay ? ' is-overlay' : ''}`} data-testid="startup-progress">
         <div className="startup-card">
-          <p className="startup-title">The agent’s browser is starting.</p>
+          <p className="startup-title">The agent’s browser is starting.</p>{' '}
           <p className="startup-say">Reading its start-up.</p>
         </div>
       </div>

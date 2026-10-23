@@ -84,10 +84,58 @@
 .jb-option > input[type='checkbox']:disabled:checked { opacity: 0.55; }
 .jb-option > input[type='radio']:focus-visible,
 .jb-option > input[type='checkbox']:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* A GROUP OF OPTIONS IS NOT A BOXED FORM (visual QA 6:overview-automate-003,
+   #1680). MCP servers' 'Credential' and 'Profiles that may use it' and
+   Profile's 'What reaches your bell' are fieldsets, and the browser drew each
+   in a 1px near-white rectangle under a body-size legend. API keys' Jev card
+   draws the same rows with no frame, so these lose the frame too, and the
+   legend is the size and tone of `.pk-form label`, the form's other names. */
+fieldset.jb-options { margin: 0; padding: 0; border: 0; }
+fieldset.jb-options > legend { padding: 0; margin-bottom: var(--ctl-s1); font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .jb-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .jb-name { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
 .jb-default { font-weight: 400; color: var(--text-dim); }
 .jb-note { font-size: var(--t-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+
+/* THE REGISTERED MCP SERVERS TABLE AT DESKTOP WIDTH (visual QA
+   6:overview-automate-001, #1680). Only the phone block below styled it, so
+   at 1440 the cells were centred, unpadded and touching: 'disabled' ran into
+   'never', and the URL into the credential. The header row is Schedules'
+   (schedules.css `.sc-table th`): small, dim, left-aligned over a hairline;
+   each server is a row with a divider. 'Last used' and its value ('never',
+   '3h ago') are one line each. The phone block overrides all of this. */
+.mcp-servers { width: 100%; border-collapse: collapse; }
+.mcp-servers > thead > tr > th {
+  text-align: left; padding: 6px 8px; vertical-align: bottom;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim);
+}
+.mcp-servers > tbody > tr > th, .mcp-servers > tbody > tr > td {
+  text-align: left; padding: 8px; vertical-align: top;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 400; overflow-wrap: anywhere;
+}
+.mcp-servers > thead > tr > th[data-col='last'], .mcp-servers > tbody > tr > td[data-label='Last used'] { white-space: nowrap; }
+.mcp-servers > tbody > tr > th > .jb-note { margin-top: 2px; }
+
+/* SETTINGS › PROFILE (Profile.tsx; visual QA 6:overview-automate-002, -004,
+   #1680). None of `pf-page`, `pf-facts` or `pf-list` had a rule: the cards
+   stacked 2px apart, the facts were the browser's indented definition list
+   and the lists carried bullets and a 40px indent. Profile now reads like
+   API keys: the page's gap is `.pk-page`'s, a fact is a label and its value
+   on one row ('Your key  Set 5d ago by …'), and a list is plain rows at the
+   13px meta size. */
+.pf-page { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
+.pf-page h3 { margin: var(--ctl-s3) 0 var(--ctl-s1); font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.pf-facts { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: var(--ctl-s1) var(--ctl-s3); margin: 0 0 var(--ctl-s3); font-size: var(--t-meta); line-height: var(--lh-meta); min-width: 0; }
+.pf-facts > dt { font-weight: 600; overflow-wrap: anywhere; }
+.pf-facts > dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+.pf-list { list-style: none; margin: 0 0 var(--ctl-s2); padding: 0; display: flex; flex-direction: column; gap: var(--ctl-s1); font-size: var(--t-meta); line-height: var(--lh-meta); min-width: 0; }
+.pf-list > li { overflow-wrap: anywhere; }
+/* A workspace's role, after its name: a step under the name's weight. */
+.pf-role { font-weight: 500; }
+/* A notification topic's words, at the size of the rows around them. */
+.pf-topic > .jb-text { font-size: var(--t-meta); line-height: var(--lh-meta); }
 
 @media (max-width: 719px) {
   .pk-input { flex-basis: 100%; max-width: none; }
@@ -95,6 +143,9 @@
   .pk-ask { max-width: none; }
   .jb-options { max-width: none; }
   .jb-option { padding: var(--ctl-s2); }
+  /* A phone stacks a fact's value under its label. */
+  .pf-facts { grid-template-columns: minmax(0, 1fr); row-gap: 0; }
+  .pf-facts > dd + dt { margin-top: var(--ctl-s1); }
 
   /* THE REGISTERED MCP SERVERS TABLE STACKS (visual QA 5b:QA-009, #1680).
      Eight columns and an unbroken URL made it wider than a 390px phone: the
@@ -108,7 +159,7 @@
   .mcp-servers { width: 100%; }
   .mcp-servers > thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .mcp-servers > tbody > tr { padding: var(--ctl-s2) 0; border-top: 1px solid var(--line); }
-  .mcp-servers > tbody > tr > th, .mcp-servers > tbody > tr > td { padding: 2px 0; text-align: left; overflow-wrap: anywhere; }
+  .mcp-servers > tbody > tr > th, .mcp-servers > tbody > tr > td { padding: 2px 0; text-align: left; overflow-wrap: anywhere; border-bottom: 0; }
   .mcp-servers > tbody > tr > th[data-label]::before,
   .mcp-servers > tbody > tr > td[data-label]::before {
     content: attr(data-label);

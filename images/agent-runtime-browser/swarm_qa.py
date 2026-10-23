@@ -74,22 +74,29 @@ What `capture` does, and why each:
    still run) so "3 minutes ago" reads the same every run. Viewport-sized
    SEGMENTS, scrolling the page's own scroller (MEASURE_JS: the nearest one
    holding the route's ready element, the document, or the largest on the
-   page; its name is the entry's `scroller`) one of its heights at a time, less
-   what is stuck over its top once scrolled and what is fixed over its foot
-   (STUCK_JS: rows under a sticky header or the Reads bar are otherwise in no
-   image; each step's overlap is in the entry's `overlaps`, split in
-   `covers`), until the scroller's end or the budget: MAX_SEGMENTS at
+   page; its name is the entry's `scroller`) by what the screen shows of it
+   at a time, less what is stuck over its top once scrolled and what covers
+   its foot (STUCK_JS: rows under a sticky header, the Reads bar or a strip
+   stuck to the foot are otherwise in no image; each step's overlap is in the
+   entry's `overlaps`, split in `covers`; what was measured at each segment,
+   the scroller's box, `innerHeight` and the Reads bar's box, in `geometry`),
+   until the scroller's end or the budget: MAX_SEGMENTS at
    phone-390 (TO_THE_END_PRESETS, owner decision c49), the route's `segments`
-   (default DEFAULT_SEGMENTS) at the desktop. A capture cut at its budget
-   before the end says so (`truncated`, `reached`, `total`) and is listed in
-   `failed`. Segments, because a model is handed a tall
+   (default DEFAULT_SEGMENTS) at the desktop. Where the scroller is and how
+   tall it is are read back after every scroll (SCROLL_JS), never assumed
+   from the offset asked for: one that did not move on is not shot again and
+   its stop is the entry's `duplicate`. A capture that ends short of the end,
+   at its budget or at such a stop, says so (`truncated`, `reached`, `total`)
+   and is listed in `failed`. Segments, because a model is handed a tall
    image downscaled until its text is unreadable, and whether a full-page
    capture through the gate needs a metrics override is unverified.
    `animations="disabled"`, `caret="hide"`. A shot whose size is not the
    page's layout viewport (innerWidth and innerHeight over the visual
    viewport's scale, VIEWPORT_JS, read after it) is taken again, up to
-   SHOT_RETRIES times, each in the entry's `reshot`; one still off is kept and
-   listed in `failed` (`_shot` says what was measured at phone-390, #1981).
+   SHOT_RETRIES times, then once more after `swarm-handoff device <preset>`,
+   each in the entry's `reshot`; one still off is kept, listed in `failed`
+   and leaves the route `unsettled` (`_shot` says what was measured at
+   phone-390, #1981, and in run 5b).
 6. Records what the page said, beside the PNGs: console and page errors,
    failed requests, and the subresources that answered 4xx or 5xx with
    their status (`bad_responses`: an HTTP error is no failed request, so a
@@ -407,15 +414,32 @@ TEXT_JS = """() => {
 #: AND WHAT COVERS THE SCROLLER'S FOOT: a `fixed` element with a box that
 #: spans the scroller's bottom edge (the Reads bar at 390 covered the
 #: drawer's bottom ~45 px), under half its height, measured the same way.
-#: Returns `[top, bottom]`, whole px.
+#: THE FOOT IS WHERE THE SCREEN STOPS SHOWING THE SCROLLER (QAFIX6-CAPTURE,
+#: run 6's 6:capacity-001 to -004 and 6:admin-005): `top + clientHeight`, or
+#: the window's `innerHeight` when the scroller runs past it. At 390 the
+#: scroller's edge was below the window, the Reads bar fixed at the window's
+#: foot spanned no edge this looked at, and the rows under it were in no
+#: image. So the third number is what the screen shows of the scroller,
+#: `view`, re-measured with every scroll (the phone bar compacts from 44 to
+#: 36 px once scrolled). A `sticky` element with a `bottom` inset resting on
+#: the scroller's own foot covers it too (/submit's 'Not ready' strip, run
+#: 6's 6:work-b-001), counted where the screen still shows it.
+#: A TOP COVER SPANS THE SCROLLER (6:work-b-002): at 1440 the Submit forms'
+#: 300 px sticky side panel was counted as a 371 px cover, over a scroller
+#: 1100 px wide. Only a box at least half the scroller's width covers its
+#: rows; the 390 tab bar spans all of it.
+#: Returns `[top, bottom, view]`, whole px.
 STUCK_JS = """() => {
   const doc = document.scrollingElement || document.documentElement;
   const el = window.__swarmQaScroller || doc;
   const top = el === doc ? 0 : el.getBoundingClientRect().top;
-  const view = el === doc ? innerHeight : el.clientHeight;
-  const foot = top + view;
+  const edge = top + (el === doc ? innerHeight : el.clientHeight);
+  const foot = Math.min(edge, innerHeight);
+  const view = foot - top;
+  const wide = el.clientWidth;
   const own = el === doc ? null : getComputedStyle(el);
   const pad = own ? (parseFloat(own.borderTopWidth) || 0) + (parseFloat(own.paddingTop) || 0) : 0;
+  const padFoot = own ? (parseFloat(own.borderBottomWidth) || 0) + (parseFloat(own.paddingBottom) || 0) : 0;
   const sticksHere = (n) => {
     for (let up = n.parentElement; up; up = up.parentElement) {
       if (up === el) return true;
@@ -431,25 +455,49 @@ STUCK_JS = """() => {
     if (style.position !== 'sticky' && style.position !== 'fixed') continue;
     if (n.getClientRects().length === 0 || style.visibility === 'hidden') continue;
     const r = n.getBoundingClientRect();
-    if (r.height <= 0 || r.height >= view / 2 || r.bottom <= top) continue;
+    if (r.height <= 0 || r.height >= view / 2 || r.bottom <= top || r.top >= foot) continue;
     if (style.position === 'fixed' && r.top > top + 1) {
-      if (r.top < foot && r.bottom >= foot - 1) under = Math.max(under, foot - r.top);
+      if (r.bottom >= foot - 1) under = Math.max(under, foot - r.top);
       continue;
     }
     if (style.position === 'sticky') {
       const inset = parseFloat(style.top);
-      if (Number.isNaN(inset) || Math.abs(r.top - (top + pad + inset)) > 1 || !sticksHere(n)) continue;
+      if (Number.isNaN(inset) || Math.abs(r.top - (top + pad + inset)) > 1) {
+        const low = parseFloat(style.bottom);
+        if (!Number.isNaN(low) && Math.abs(r.bottom - (edge - padFoot - low)) <= 1 && sticksHere(n)) {
+          under = Math.max(under, foot - r.top);
+        }
+        continue;
+      }
+      if (!sticksHere(n)) continue;
     }
+    if (r.width < wide / 2) continue;
     cover = Math.max(cover, r.bottom - top);
   }
-  return [Math.round(cover), Math.round(under)];
+  return [Math.round(cover), Math.round(under), Math.round(view)];
 }"""
 #: Scrolls the scroller MEASURE_JS chose to `y` and, two frames later,
-#: answers with STUCK_JS: what is stuck over its top and fixed over its foot there.
+#: answers with STUCK_JS's `[top, bottom, view]` there, then WHERE THE
+#: SCROLLER WENT and how tall it is now (QAFIX6-CAPTURE, run 6's
+#: 6:capacity-005: a scroller clamps below an offset past its end, and the
+#: capture recorded the offset it asked for, 'reached 4527 of 4527' beside
+#: two identical shots), then what was measured around it for the entry's
+#: `geometry`: the scroller's box and `.ctl-dock`'s (the console's Reads
+#: bar; null when there is none) as `[top, bottom]`, and `innerHeight`.
+#: `[top, bottom, view, scrollTop, scrollHeight, {scroller, dock, inner}]`.
 SCROLL_JS = """(y) => {
-  const el = window.__swarmQaScroller || document.scrollingElement || document.documentElement;
+  const doc = document.scrollingElement || document.documentElement;
+  const el = window.__swarmQaScroller || doc;
   el.scrollTop = y;
-  return new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done((%s)()))));
+  const box = (n) => {
+    if (!n || n.getClientRects().length === 0) return null;
+    const r = n.getBoundingClientRect();
+    return [Math.round(r.top), Math.round(r.bottom)];
+  };
+  return new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done([
+    ...(%s)(), Math.round(el.scrollTop), el.scrollHeight,
+    {scroller: el === doc ? [0, innerHeight] : box(el), dock: box(document.querySelector('.ctl-dock')), inner: innerHeight},
+  ]))));
 }""" % STUCK_JS
 #: QA-TOOLS-FIX (QA-077). The capture's tab is in the live browser's one
 #: profile, so what a route left in storage drew the next route: the sidebar's
@@ -741,6 +789,28 @@ def _stuck(answer: Any, view: int) -> tuple[int, int]:
     return (_px(answer, view), 0)
 
 
+def _whole(value: Any, default: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    return int(value)
+
+
+def _scrolled(answer: Any, asked: int, view: int, total: int) -> tuple[int, int, int, int, int, dict]:
+    """SCROLL_JS's answer as `(at, top, bottom, view, total, geometry)`:
+    where the scroller is (read back; `asked` when the answer does not
+    say), what is stuck over its top and fixed over its foot (`_stuck`),
+    what the screen shows of it, its scrollHeight now, and what was
+    measured around it. `view` and `total` stand when it does not say."""
+    parts = list(answer) if isinstance(answer, (list, tuple)) else [answer]
+    if len(parts) > 2:
+        view = max(1, _whole(parts[2], view))
+    top, bottom = _stuck(parts[:2] if len(parts) > 1 else parts[0], view)
+    at = _whole(parts[3], asked) if len(parts) > 3 else asked
+    total = _whole(parts[4], total) if len(parts) > 4 else total
+    geometry = parts[5] if len(parts) > 5 and isinstance(parts[5], dict) else {}
+    return at, top, bottom, view, total, geometry
+
+
 def segment_budget(route: dict, preset: str) -> int:
     """How many segments a route may take at `preset`: MAX_SEGMENTS at a
     preset captured to the scroller's end (TO_THE_END_PRESETS, owner
@@ -821,11 +891,19 @@ def _faithful(size: tuple[int, int], sizes: list[tuple[float, float]]) -> bool:
     return any(abs(size[0] - w) < 1 and abs(size[1] - h) < 1 for w, h in sizes)
 
 
-def _shot(page, segment: int) -> tuple[bytes, list[dict], str | None]:
+def _shot(page, segment: int, preset: str | None = None) -> tuple[bytes, list[dict], str | None]:
     """One screenshot of the viewport, taken again (up to SHOT_RETRIES times)
     while its size disagrees with the page's layout viewport read just after
-    it. Returns the PNG, a record of each shot taken again, and a line for
-    `failed` when the last one is still off.
+    it, then, given the `preset`, once more after putting the device back
+    (`swarm-handoff device <preset>`). Returns the PNG, a record of each shot
+    taken again, and a line for `failed` when the last one is still off.
+
+    MEASURED (box 6343795935, run 5b's 5b:QA-001, after PR 1998 had the gate
+    put the device back after a clipped capture): every admin-persona
+    phone-390 segment came back 394x852 against a layout viewport of 394x853
+    or 398x862 and was kept, under a `captured` status. The retries alone did
+    not bring it back; the reset is the one thing left to try, and a shot
+    still off after it leaves the route unsettled (`_capture_route`).
 
     MEASURED (#1981, task_aa240c7a75894ff9852b): at phone-390 the first
     screenshot after every full document load came out 980x2121 with the
@@ -841,6 +919,7 @@ def _shot(page, segment: int) -> tuple[bytes, list[dict], str | None]:
     nominal size or innerWidth alone, and one that disagrees is taken again."""
     reshot: list[dict] = []
     attempt = 0
+    reset = False
     while True:
         png = page.screenshot(type="png", animations="disabled", caret="hide", timeout=SHOT_TIMEOUT_MS)
         size = png_size(png)
@@ -848,10 +927,16 @@ def _shot(page, segment: int) -> tuple[bytes, list[dict], str | None]:
         if size is None or not sizes or _faithful(size, sizes):
             return png, reshot, None
         view = (round(sizes[0][0]), round(sizes[0][1]))
-        if attempt >= SHOT_RETRIES:
+        if attempt >= SHOT_RETRIES and (preset is None or reset):
+            after = f"{attempt + 1} shots" + (f" and a reset of the device to {preset}" if reset else "")
             return png, reshot, (f"segment {segment} was {size[0]}x{size[1]}, not the page's layout viewport "
-                                 f"{view[0]}x{view[1]}, after {attempt + 1} shots (kept as it came)")
-        reshot.append({"segment": segment, "size": list(size), "viewport": list(view)})
+                                 f"{view[0]}x{view[1]}, after {after} (kept as it came)")
+        record = {"segment": segment, "size": list(size), "viewport": list(view)}
+        if attempt >= SHOT_RETRIES:
+            reset = True
+            why = _handoff("device", preset)
+            record["device_reset"] = why or "applied"
+        reshot.append(record)
         attempt += 1
         page.wait_for_timeout(SETTLE_POLL_MS)
 
@@ -901,35 +986,46 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
         measured = page.evaluate(MEASURE_JS, ready)
         total, view = measured[0], max(1, measured[1])
         budget = segment_budget(route, preset)
-        images, overlaps, covers, reshot, off_size = [], [], [], [], []
+        images, overlaps, covers, reshot, off_size, geometry = [], [], [], [], [], []
+        duplicate = None
         step = "segment 1"
-        _top, under = _stuck(page.evaluate(SCROLL_JS, 0), view)
-        y = 0
+        y, _top, under, view, total, around = _scrolled(page.evaluate(SCROLL_JS, 0), 0, view, total)
         for segment in range(1, budget + 1):
             step = f"segment {segment}"
-            png, again, off = _shot(page, segment)
+            png, again, off = _shot(page, segment, preset)
             reshot.extend(again)
             if off is not None:
                 off_size.append(off)
             name = image_name(group, rid, preset, theme, segment)
             _write(out / name, png)
             images.append(name)
+            geometry.append({"segment": segment, "at": y, "view": view, **around})
             if segment == budget or y + view >= total:
                 break
-            # One scroller-height on, less what is fixed over its foot here
-            # (the Reads bar) and what is stuck over its top there (a sticky
-            # header, a drawer's tab strip), both from STUCK_JS, so the rows
-            # under either are in this segment or the next.
+            # What the screen showed of the scroller, less what is fixed over
+            # its foot here (the Reads bar) and what is stuck over its top
+            # there (a sticky header, a drawer's tab strip), all from
+            # STUCK_JS, so the rows under either are in this segment or the
+            # next.
             nxt = y + view - under
-            stuck, under_next = _stuck(page.evaluate(SCROLL_JS, nxt), view)
+            at, stuck, under_next, view_next, total_next, around = _scrolled(
+                page.evaluate(SCROLL_JS, nxt), nxt, view, total)
             if stuck:
                 nxt -= stuck
-                _, under_next = _stuck(page.evaluate(SCROLL_JS, nxt), view)
+                at, _, under_next, view_next, total_next, around = _scrolled(
+                    page.evaluate(SCROLL_JS, nxt), nxt, view, total)
+            # Where the scroller went, not where it was asked to go: one that
+            # did not move on would be shot as the same frame again, and its
+            # end recorded as reached (6:capacity-005).
+            if at <= y:
+                duplicate = {"segment": segment + 1, "at": at}
+                break
             overlaps.append(stuck + under)
             covers.append({"top": stuck, "bottom": under})
-            y, under = nxt, under_next
-        # Cut before the end: at its budget, the route's at the desktop or
-        # MAX_SEGMENTS at a phone. Never recorded as complete (c49).
+            y, under, view, total = at, under_next, view_next, total_next
+        # Short of the end: cut at its budget, the route's at the desktop or
+        # MAX_SEGMENTS at a phone, or a scroller that stopped moving. Never
+        # recorded as complete (c49).
         reached = min(y + view, total)
         truncated = reached < total
         step = "text"
@@ -939,12 +1035,14 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
         _write(out / f"{stem}.a11y.json", json.dumps({"format": "aria-snapshot", "snapshot": snapshot}, indent=1))
         entry = {
             "id": rid, "preset": preset, "theme": theme, "persona": persona,
-            "status": "unsettled" if pending else "captured",
+            # A segment still off the viewport's size after the device reset
+            # (`_shot`) is no capture of the route as it stands.
+            "status": "unsettled" if pending or off_size else "captured",
             "path": route["path"], "images": images, "network_idle": idle,
             "settled": not pending, "pending": pending, "scroller": measured[2] if len(measured) > 2 else None,
             "overlaps": overlaps, "covers": covers,
-            "truncated": truncated, "reached": reached, "total": total,
-            "reshot": reshot, "off_viewport": off_size,
+            "truncated": truncated, "reached": reached, "total": total, "duplicate": duplicate,
+            "geometry": geometry, "reshot": reshot, "off_viewport": off_size,
             "text": f"{stem}.txt", "a11y": f"{stem}.a11y.json", "errors": f"{stem}.errors.json",
         }
         if axe_source is not None:
@@ -1050,7 +1148,11 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                                        + "; ".join(entry["pending"]) + " (shot as it stood)")
                         if entry["off_viewport"]:
                             why.extend(entry["off_viewport"])
-                        if entry["truncated"]:
+                        if entry["truncated"] and entry["duplicate"]:
+                            why.append(f"the scroller stopped at {entry['duplicate']['at']} px after "
+                                       f"{len(entry['images'])} segments: reached {entry['reached']} "
+                                       f"of {entry['total']} px (the rest is in no image)")
+                        elif entry["truncated"]:
                             why.append(f"cut at {len(entry['images'])} segments: reached {entry['reached']} "
                                        f"of {entry['total']} px (the rest is in no image)")
                         if why:

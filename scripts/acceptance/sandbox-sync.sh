@@ -159,14 +159,24 @@ planted="${FIXTURES}/git-tools/planted.txt"
 git -C "${clone}" fetch --quiet --unshallow origin "${ACC_REF}" 2>/dev/null \
   || git -C "${clone}" fetch --quiet origin "${ACC_REF}" 2>"${WORK}/git.err" \
   || die "could not read ${ACC_GITHUB_REPO}@${ACC_REF}'s history: $(redact <"${WORK}/git.err" | head -n 3 | tr '\n' ' ')"
-added="$(git -C "${clone}" log --format=%H --diff-filter=A -n 1 HEAD -- "${planted}")"
+# Every git call below goes through `|| die`, with git's own last stderr line
+# through `redact`. Accept run 39682791678 (2026-10-21) ended at exit 128 with
+# no message: this `log` ran bare inside $(...) and the `ls-remote` sent its
+# stderr to /dev/null into a pipe, so under set -e and pipefail the run could
+# not say which call failed or why (#1822).
+added="$(git -C "${clone}" log --format=%H --diff-filter=A -n 1 HEAD -- "${planted}" 2>"${WORK}/git.err")" \
+  || die "could not find the commit that added ${planted} on ${ACC_GITHUB_REPO}@${ACC_REF} (git log): $(redact <"${WORK}/git.err" | tail -n 1)"
 [[ -n "${added}" ]] || die "${planted} is not on ${ACC_GITHUB_REPO}@${ACC_REF} after the sync: the git-tools fixture is missing from this checkout"
 base="$(git -C "${clone}" rev-parse -q --verify "${added}^" 2>/dev/null || true)"
 if [[ -z "${base}" ]]; then
   warn "${planted} arrived in ${ACC_GITHUB_REPO}'s first commit: no commit lacks it for ${GIT_TOOLS_BASE}, so the git-tools rebase check will FAIL"
   exit 0
 fi
-current="$(git -C "${clone}" ls-remote origin "refs/heads/${GIT_TOOLS_BASE}" 2>/dev/null | awk '{print $1}')"
+# To a file, not a pipe: under pipefail a failed ls-remote piped into awk ends
+# the script with git's status and no message.
+git -C "${clone}" ls-remote origin "refs/heads/${GIT_TOOLS_BASE}" >"${WORK}/ls-remote.out" 2>"${WORK}/git.err" \
+  || die "could not read ${GIT_TOOLS_BASE} on ${ACC_GITHUB_REPO} (git ls-remote): $(redact <"${WORK}/git.err" | tail -n 1)"
+current="$(awk '{print $1}' "${WORK}/ls-remote.out")"
 if [[ "${current}" == "${base}" ]]; then
   ok "${GIT_TOOLS_BASE} on ${ACC_GITHUB_REPO} is ${base:0:12}, the commit before ${planted} was added"
   exit 0

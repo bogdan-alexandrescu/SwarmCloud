@@ -107,7 +107,10 @@ def _white(_x, _y):
 #: attributes, its own text, whether it has no box (`hidden`), its parent,
 #: its CSS `position` and `top` (`pos`, `top` in px) and where its box is on
 #: the screen (`rt` its top, `rh` its height; `ch` when not given), its
-#: top padding (`pt`, px) and its CSS `bottom` inset (`bottom`, px).
+#: top padding (`pt`, px) and its CSS `bottom` inset (`bottom`, px); its
+#: box's width is `rw` (`cw` when not given). `scrollTop` clamps as a
+#: browser's does, to scrollHeight less clientHeight, and a script that
+#: answers with a promise is awaited (SCROLL_JS waits two frames).
 #: `innerText` is the drawn text of the element and everything under it.
 #: Selectors are the shapes the scripts and the route list use: `tag`,
 #: `.class`, `[attr="v"]`, `[attr*="v"]`, `*`, descendant and comma.
@@ -121,7 +124,15 @@ const els = spec.nodes.map((n) => ({
   _top: n.top === undefined ? 'auto' : n.top + 'px', _rt: n.rt || 0, _rh: n.rh === undefined ? (n.ch || 0) : n.rh,
   _pt: (n.pt || 0) + 'px', _bottom: n.bottom === undefined ? 'auto' : n.bottom + 'px',
 }));
-spec.nodes.forEach((n, i) => { els[i].parentElement = n.parent === undefined ? null : els[n.parent]; });
+spec.nodes.forEach((n, i) => {
+  els[i].parentElement = n.parent === undefined ? null : els[n.parent];
+  els[i]._rw = n.rw === undefined ? (n.cw || 0) : n.rw;
+  let at = 0;
+  Object.defineProperty(els[i], 'scrollTop', {
+    get: () => at,
+    set: (v) => { at = Math.max(0, Math.min(v, els[i].scrollHeight - els[i].clientHeight)); },
+  });
+});
 const simple = (el, s) => {
   const m = s.match(/^([a-z0-9*]*)((?:\.[\w-]+)*)(?:\[([\w-]+)(\*?)="([^"]*)"\])?$/);
   if (!m) throw new SyntaxError('unsupported selector ' + s);
@@ -144,12 +155,14 @@ els.forEach((el) => {
   el.matches = (s) => all(s).includes(el);
   el.contains = (o) => { for (let x = o; x; x = x.parentElement) if (x === el) return true; return false; };
   el.getClientRects = () => (el._hidden ? [] : [{}]);
-  el.getBoundingClientRect = () => ({ top: el._rt, bottom: el._rt + el._rh, height: el._rh });
+  el.getBoundingClientRect = () => ({ top: el._rt, bottom: el._rt + el._rh, height: el._rh,
+    left: 0, right: el._rw, width: el._rw });
   Object.defineProperty(el, 'innerText', { get: () => els.filter((o) => !o._hidden && el.contains(o) && o._text)
     .map((o) => o._text).join('\n') });
 });
 globalThis.window = globalThis;
 globalThis.innerHeight = spec.inner_height;
+globalThis.requestAnimationFrame = (f) => setTimeout(f, 0);
 if (spec.visual_scale) globalThis.visualViewport = { scale: spec.visual_scale };
 globalThis.document = {
   documentElement: els[0], scrollingElement: els[0], body: els[1],
@@ -164,7 +177,7 @@ document.createTreeWalker = (root) => {
   return { nextNode: () => texts[i++] || null };
 };
 const fn = (0, eval)('(' + process.argv[2] + ')');
-process.stdout.write(JSON.stringify(fn(JSON.parse(process.argv[3]))));
+Promise.resolve(fn(JSON.parse(process.argv[3]))).then((v) => process.stdout.write(JSON.stringify(v)));
 """
 
 
@@ -249,6 +262,17 @@ class FakePage:
         # bottom `bottom` px of what it shows are under it, at every offset.
         self.bottom = 0
         self.at = 0
+        # The scroller stops here whatever it is asked (a page whose
+        # scrollHeight runs past what it lets scroll: run 6's 6:capacity-005);
+        # None scrolls to scroll_height less viewport_height, as a browser.
+        self.max_top = None
+        # The scroller's scrollHeight once it has scrolled (content read in
+        # as it scrolls); None keeps scroll_height.
+        self.grow_to = None
+        # How much of the scroller the screen shows once it has scrolled
+        # (STUCK_JS's third number: a scroller taller than innerHeight shows
+        # less than its clientHeight); None is viewport_height.
+        self.visible = None
         self.slow = set(slow)
         self.scroll_height = scroll_height
         self.viewport_height = viewport_height
@@ -300,6 +324,9 @@ class FakePage:
         # for a page whose every shot is the viewport's size, 3x2.
         self.first_shot = None
         self.fresh = False
+        # (width, height) of every screenshot (run 5b's admin phone shots,
+        # 394x852 against the reading); None is first_shot's rule.
+        self.every_shot = None
 
     def set_viewport_size(self, *_a, **_kw):
         raise AssertionError("swarm_qa resized the page; the gate owns the size")
@@ -384,11 +411,16 @@ class FakePage:
             return [24, "0000ffff", None]
         if expression == self.qa.SCROLL_JS:
             self.log.append(("scroll", arg))
-            self.at = max(0, min(arg, self.scroll_height - self.viewport_height))
+            if arg > 0 and self.grow_to is not None:
+                self.scroll_height = self.grow_to
+            room = self.scroll_height - self.viewport_height
+            self.at = max(0, min(arg, room if self.max_top is None else min(room, self.max_top)))
             top = self.sticky if self.at > 0 else 0
-            # STUCK_JS answers `[top, bottom]`; a bare number (what it
-            # answered before the bottom cover) is still read as the top.
-            return [top, self.bottom] if self.bottom else top
+            visible = self.visible if self.visible is not None and self.at > 0 else self.viewport_height
+            # STUCK_JS's `[top, bottom, view]`, then where the scroller is,
+            # its scrollHeight and what was measured around it.
+            return [top, self.bottom, visible, self.at, self.scroll_height,
+                    {"scroller": [0, visible], "inner": visible, "dock": None}]
         if expression == self.qa.AXE_RUN_JS:
             return {"violations": []}
         self.log.append(("evaluate", expression[:40]))
@@ -402,6 +434,8 @@ class FakePage:
         assert "path" not in kw, "swarm_qa names its files itself"
         assert not kw.get("full_page"), "a full-page capture is a downscaled image to the model"
         self.log.append(("shot", self.url, (self.media or {}).get("color_scheme"), dict(kw), self.elapsed, self.at))
+        if self.every_shot is not None:
+            return _png(*self.every_shot, _white)
         if self.fresh and self.first_shot is not None:
             self.fresh = False
             return _png(*self.first_shot, _white)
@@ -710,6 +744,7 @@ def test_a_page_whose_content_scrolls_inside_a_nested_div_is_captured_in_segment
     routes["groups"]["work-a"] = [{"id": "runs", "address": "work/runs", "path": "/runs", "ready": ready}]
     world.routes.write_text(json.dumps(routes), encoding="utf-8")
     world.page.dom = _console_dom(ready_inside=ready_inside)
+    world.page.scroll_height, world.page.viewport_height = 3000, 840
     code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
     assert code == 0
     (entry,) = _manifest(bundle)["routes"]
@@ -783,7 +818,7 @@ def test_what_is_stuck_over_the_scroller_is_measured_on_the_page(qa):
     box cover no row of the page."""
     # Node 5 is `main` inside `div.ctl-scroll` (node 4); the table, when
     # given, is first, node 7, so its head's parent is 7.
-    tabs = {"tag": "div", "cls": "ag-list-tabs", "parent": 5, "pos": "sticky", "top": 0, "rt": 60, "rh": 55}
+    tabs = {"tag": "div", "cls": "ag-list-tabs", "parent": 5, "pos": "sticky", "top": 0, "rt": 60, "rh": 55, "rw": 390}
     table = {"tag": "div", "cls": "c-tbl", "parent": 5, "oy": "auto", "sh": 900, "ch": 300, "rt": 60, "rh": 300}
     thead = {"tag": "thead", "parent": 7, "pos": "sticky", "top": 0, "rt": 60, "rh": 32}
     rail = {"tag": "aside", "cls": "rn-side", "parent": 5, "pos": "sticky", "top": 0, "rt": 60, "rh": 700}
@@ -791,15 +826,15 @@ def test_what_is_stuck_over_the_scroller_is_measured_on_the_page(qa):
     probe = "(ready) => { (" + qa.MEASURE_JS + ")(ready); return (" + qa.STUCK_JS + ")(); }"
     # MUTATION: return 0 from STUCK_JS and this fails: the tab bar is 55 px.
     # It answers `[top, bottom]` (QAFIX4-QATOOL): nothing covers the bottom here.
-    assert _run_js(probe, _sticky_dom(table, thead, tabs, rail, gone), "main h1") == [55, 0]
+    assert _run_js(probe, _sticky_dom(table, thead, tabs, rail, gone), "main h1") == [55, 0, 784]
     # A sticky element with a negative inset (`.ag-tabs-edge`, top: -18px)
     # covers what shows of it.
     edge = dict(tabs, cls="ag-tabs-edge", top=-18, rt=42, rh=73)
-    assert _run_js(probe, _sticky_dom(edge), "main h1") == [55, 0]
+    assert _run_js(probe, _sticky_dom(edge), "main h1") == [55, 0, 784]
     # MUTATION: count a sticky element that is not at its inset (not stuck,
     # further down the page) and this fails.
-    assert _run_js(probe, _sticky_dom(dict(tabs, rt=400)), "main h1") == [0, 0]
-    assert _run_js(probe, _sticky_dom(table, thead, rail, gone), "main h1") == [0, 0]
+    assert _run_js(probe, _sticky_dom(dict(tabs, rt=400)), "main h1") == [0, 0, 784]
+    assert _run_js(probe, _sticky_dom(table, thead, rail, gone), "main h1") == [0, 0, 784]
     # MUTATION: let SCROLL_JS resolve to null again and the capture never
     # learns the header's height.
     assert qa.STUCK_JS in qa.SCROLL_JS
@@ -1041,7 +1076,7 @@ def _drawer_dom(*extra) -> dict:
         {"tag": "body", "parent": 0, "sh": 844, "ch": 844, "cw": 390},
         {"tag": "div", "cls": "drawer ctl-drawer ag-split", "parent": 1, "oy": "auto", "pos": "fixed",
          "sh": 3000, "ch": 772, "cw": 390, "rt": 44, "pt": 18},
-        {"tag": "div", "cls": "ag-tabs-edge", "parent": 2, "pos": "sticky", "top": -18, "rt": 44, "rh": 45},
+        {"tag": "div", "cls": "ag-tabs-edge", "parent": 2, "pos": "sticky", "top": -18, "rt": 44, "rh": 45, "cw": 390},
         {"tag": "div", "cls": "ag-split-pane", "parent": 2, "sh": 2900, "ch": 2900, "rt": 89},
         {"tag": "main", "parent": 4, "sh": 2900, "ch": 2900, "rt": 89},
         {"tag": "h1", "parent": 5, "sh": 40, "ch": 40, "rt": 89},
@@ -1064,10 +1099,10 @@ def test_a_strip_stuck_inside_a_drawer_and_a_fixed_bar_over_its_foot_are_measure
     # A fixed box clear of the bottom edge (the toast mid-screen) covers none of it.
     # MUTATION: count every fixed box below the top edge as a bottom cover and
     # the second number is 516.
-    assert _run_js(probe, _drawer_dom(toast), "main h1") == [45, 45]
+    assert _run_js(probe, _drawer_dom(toast), "main h1") == [45, 45, 772]
     no_bar = _drawer_dom()
     no_bar["nodes"] = [n for n in no_bar["nodes"] if n.get("cls") != "ctl-reads"]
-    assert _run_js(probe, no_bar, "main h1") == [45, 0]
+    assert _run_js(probe, no_bar, "main h1") == [45, 0, 772]
 
 
 def test_a_bar_fixed_over_the_scrollers_foot_shortens_each_step(qa, world):
@@ -1089,6 +1124,162 @@ def test_a_bar_fixed_over_the_scrollers_foot_shortens_each_step(qa, world):
         assert start <= end, f"rows {end}..{start} are in no segment: {shown}"
     assert entry["overlaps"] == [90] * (len(at) - 1), entry
     assert entry["covers"] == [{"top": 45, "bottom": 45}] * (len(at) - 1), entry
+
+
+# --------------------------------------------------------------------------
+# QAFIX6-CAPTURE (part of #1680): visual QA run 6, wf_31aca00c977e4d37a935
+# --------------------------------------------------------------------------
+
+
+def test_a_scroller_that_stops_short_is_reported_truncated_with_no_second_image_of_its_frame(qa, world):
+    """6:capacity-005 (and 6:admin-001, -002, -003, box 6343796637): Holders'
+    dark phone capture ended at the 'mock' row while the manifest said
+    reached 4527 of 4527, truncated false, beside byte-identical shots.
+    `reached` was the offset the capture asked for; it is now the one the
+    scroller took, read back after each scroll."""
+    _one_route(world)
+    page = world.page
+    page.scroll_height, page.viewport_height = 9 * 844, 844
+    page.max_top = 2 * 844 + 100
+    code, _out, bundle = _capture(qa, world, presets="phone-390", themes="light")
+    assert code == 0
+    manifest = _manifest(bundle)
+    (entry,) = manifest["routes"]
+    at = [e[5] for e in page.log if e[0] == "shot"]
+    # MUTATION: set `y` from the requested offset again (`y = nxt`) and this
+    # fails: nine shots, the last six of the same clamped frame.
+    assert len(at) == len(set(at)) == len(entry["images"]) == 4, at
+    # MUTATION: compute `reached` from the requested offset and it reads
+    # 7596 of 7596, truncated false.
+    assert entry["truncated"] is True and entry["reached"] == page.max_top + 844, entry
+    assert entry["duplicate"] == {"segment": 5, "at": page.max_top}, entry
+    (failed,) = manifest["failed"]
+    assert "stopped" in failed["error"] and f"{page.max_top + 844} of {9 * 844} px" in failed["error"], failed
+
+
+def test_a_scroller_that_grows_while_it_is_captured_is_followed_to_its_new_end(qa, world):
+    """The scroller's height is read back with every scroll, so content read
+    in as the page scrolls is not left out under a 'reached N of N'."""
+    _one_route(world)
+    page = world.page
+    page.scroll_height, page.viewport_height = 2 * 844, 844
+    page.grow_to = 4 * 844
+    code, _out, bundle = _capture(qa, world, presets="phone-390", themes="light")
+    assert code == 0
+    (entry,) = _manifest(bundle)["routes"]
+    # MUTATION: keep MEASURE_JS's total for the whole capture and this
+    # fails: two images, reached 1688 of 1688.
+    assert entry["total"] == entry["reached"] == 4 * 844 and entry["truncated"] is False, entry
+    assert len(entry["images"]) == 4, entry
+
+
+def test_the_scroll_answers_with_where_the_scroller_went(qa):
+    """SCROLL_JS, under node: a scroller asked past its end answers with the
+    offset it clamped to, its scrollHeight, and what the screen shows."""
+    probe = "(y) => { (" + qa.MEASURE_JS + ")('main h1'); return (" + qa.SCROLL_JS + ")(y); }"
+    answer = _run_js(probe, _console_dom(), 5000)
+    # MUTATION: answer only STUCK_JS's numbers and the capture cannot tell a
+    # clamped scroll from one that moved.
+    assert answer[3] == 3000 - 840 and answer[4] == 3000, answer
+    assert answer[5]["inner"] == 900 and answer[5]["dock"] is None, answer
+
+
+def _tall_dom(*extra) -> dict:
+    """At 390 the scroller `div.ctl-scroll` starts under the 44 px header and
+    is 900 px tall, past the window's 844 px foot; the Reads bar is fixed
+    over the window's last 73 px."""
+    return {"inner_height": 844, "nodes": [
+        {"tag": "html", "sh": 844, "ch": 844, "cw": 390},
+        {"tag": "body", "parent": 0, "sh": 844, "ch": 844, "cw": 390},
+        {"tag": "div", "cls": "ctl-scroll", "parent": 1, "oy": "auto", "sh": 3000, "ch": 900, "cw": 390, "rt": 44},
+        {"tag": "main", "parent": 2, "sh": 3000, "ch": 3000, "rt": 44},
+        {"tag": "h1", "parent": 3, "sh": 40, "ch": 40, "rt": 44},
+        *extra,
+    ]}
+
+
+def test_a_bar_over_the_windows_foot_counts_when_the_scroller_runs_past_it(qa):
+    """6:capacity-001 to -004, 6:admin-005 (box 6283704756, QA-003): the
+    Reads bar is fixed at the window's foot, but the scroller's own foot is
+    below the window, so the bar spanned no edge STUCK_JS looked at and the
+    rows under it, and those below the window, were in no image."""
+    probe = "(ready) => { (" + qa.MEASURE_JS + ")(ready); return (" + qa.STUCK_JS + ")(); }"
+    bar = {"tag": "div", "cls": "ctl-dock", "parent": 1, "pos": "fixed", "bottom": 0, "rt": 771, "rh": 73}
+    # MUTATION: take the foot as `top + clientHeight` again and this reads
+    # [0, 0, 900]: no cover, and 56 px below the window counted as shown.
+    assert _run_js(probe, _tall_dom(bar), "main h1") == [0, 73, 800]
+
+
+def test_a_strip_stuck_to_the_scrollers_foot_counts_as_a_foot_cover(qa):
+    """6:work-b-001 (boxes 6343797451, 6314118924): /submit's 'Not ready'
+    strip is `position: sticky; bottom: 0` and rests on the scroller's foot;
+    the bands under it were skipped while covers read 0."""
+    probe = "(ready) => { (" + qa.MEASURE_JS + ")(ready); return (" + qa.STUCK_JS + ")(); }"
+    dom = _sticky_dom({"tag": "div", "cls": "sf-strip", "parent": 5, "pos": "sticky", "bottom": 0,
+                       "rt": 844 - 52, "rh": 52, "rw": 390})
+    # MUTATION: count only `fixed` boxes over the foot and this reads 0.
+    assert _run_js(probe, dom, "main h1") == [0, 52, 784]
+    # Further up the page, not resting on the foot, it covers nothing.
+    dom["nodes"][-1]["rt"] = 400
+    assert _run_js(probe, dom, "main h1") == [0, 0, 784]
+
+
+def test_each_step_shortens_by_what_the_screen_does_not_show(qa, world):
+    """A scroller that shows less than its clientHeight once scrolled (the
+    phone bar compacting, a scroller past the window's foot): each step is
+    what the screen showed clear, re-measured after every scroll."""
+    _one_route(world)
+    page = world.page
+    page.scroll_height, page.viewport_height, page.sticky, page.bottom = 4000, 900, 45, 73
+    page.visible = 800
+    code, _out, bundle = _capture(qa, world, presets="phone-390", themes="light")
+    assert code == 0
+    at = [e[5] for e in page.log if e[0] == "shot"]
+    shown = [(y + (page.sticky if y > 0 else 0), y + (page.visible if y > 0 else 900) - page.bottom) for y in at]
+    # MUTATION: keep MEASURE_JS's view for every step and each later step
+    # runs 100 px past what the screen showed.
+    for (_, end), (start, _) in zip(shown, shown[1:]):
+        assert start <= end, f"rows {end}..{start} are in no segment: {shown}"
+
+
+def test_a_side_column_stuck_at_the_top_covers_no_row(qa):
+    """6:work-b-002: the Submit forms' 300 px sticky side panel at 1440 was
+    counted as a cover over the scroller's top (overlaps of 371 and 335 px).
+    Only what spans at least half the scroller's width covers its rows."""
+    probe = "(ready) => { (" + qa.MEASURE_JS + ")(ready); return (" + qa.STUCK_JS + ")(); }"
+    dom = _console_dom()
+    for node in dom["nodes"]:
+        if node.get("cls") == "ctl-scroll":
+            node.update({"cw": 1100, "rt": 60})
+    aside = {"tag": "aside", "cls": "sf-side", "parent": 5, "pos": "sticky", "top": 0, "rt": 60, "rh": 371, "rw": 300}
+    dom["nodes"].append(aside)
+    # MUTATION: drop the width check and this reads 371.
+    assert _run_js(probe, dom, "main h1")[0] == 0
+    # A bar across the scroller still counts (run 3's task-021 tab bar).
+    dom["nodes"][-1].update({"rh": 55, "rw": 1100})
+    assert _run_js(probe, dom, "main h1")[0] == 55
+
+
+def test_a_shot_still_off_size_after_a_device_reset_leaves_the_route_unsettled(qa, world):
+    """Box 6343795935 (run 5b's 5b:QA-001): every admin phone-390 segment
+    came back 394x852 against its reading and was kept as it came, under a
+    `captured` status. PR 1998 has the gate put the device back after a
+    clipped capture, and the shots were still off; so after its retries a
+    shot is taken once more after `swarm-handoff device <preset>`, and one
+    still off leaves the route unsettled."""
+    _one_route(world)
+    world.page.every_shot = (394, 852)
+    code, _out, bundle = _capture(qa, world, presets="phone-390", themes="light")
+    assert code == 0
+    manifest = _manifest(bundle)
+    (entry,) = manifest["routes"]
+    # MUTATION: keep the status `captured` beside an off-size segment and
+    # the report counts the route as clean.
+    assert entry["off_viewport"] and entry["status"] != "captured", entry
+    # MUTATION: never reset the device and only the preset's own handoff runs.
+    assert world.handoff_calls().count("device phone-390") == 1 + len(entry["images"]), world.handoff_calls()
+    (failed,) = manifest["failed"]
+    assert "394x852" in failed["error"], failed
 
 
 # --------------------------------------------------------------------------
@@ -1787,7 +1978,8 @@ def test_a_shot_that_stays_off_the_viewports_size_is_kept_and_listed_failed(qa, 
     # MUTATION: retake forever, or drop the finding, and this differs.
     assert len(failed) == 1 and "9x21" in failed[0]["error"] and "3x2" in failed[0]["error"], failed
     shots = [e for e in world.page.log if e[0] == "shot"]
-    assert len(shots) <= 3 * (1 + qa.SHOT_RETRIES)
+    # Each segment: the shot, SHOT_RETRIES more, and one after the device reset.
+    assert len(shots) <= 3 * (2 + qa.SHOT_RETRIES)
 
 
 def test_the_viewport_probe_runs_in_a_page(qa):
