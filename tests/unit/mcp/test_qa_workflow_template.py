@@ -543,3 +543,18 @@ def test_run_5b_flow_boxes_are_answered_in_the_briefs():
                 "scroll it and take one screenshot per segment instead") in prompt, step_id
         # MUTATION (box 6343805389, run-sf-5): drop "per run" and this fails.
         assert "File every finding under the run (preset or theme) it was seen in" in prompt, step_id
+
+
+def test_claude_md_states_invariant_7_as_contract_md_amended_it():
+    """Visual QA run 6's eviction box (review-task, GKE node memory pressure):
+    CLAUDE.md's checklist still said "7. `requests == limits`. No bursting.",
+    which CONTRACT.md's invariant 7 stopped saying on 2026-10-20 (contract
+    request 108, #1689): CPU may burst on GKE, and the pod is Burstable."""
+    contract = (REPO / "CONTRACT.md").read_text(encoding="utf-8")
+    assert "The pod's QoS class is\n   Burstable" in contract, "CONTRACT.md's invariant 7 moved: follow it here"
+    claude = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
+    # MUTATION: put "7. `requests == limits`. No bursting." back and this fails.
+    assert "No bursting" not in claude
+    line = next(raw for raw in claude.splitlines() if raw.startswith("7. "))
+    for part in ("Memory and ephemeral storage", "`CPU_BURST_MAX_RATIO`", "GKE", "Burstable"):
+        assert part in line, f"CLAUDE.md's invariant 7 does not say {part!r}: {line!r}"
