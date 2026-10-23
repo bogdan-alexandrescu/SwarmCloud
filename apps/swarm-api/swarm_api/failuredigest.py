@@ -42,7 +42,10 @@ under its name in `skipped`. No rule exists that the agent can add:
                          concurrency tests fence on purpose
   person_cancel          a person's cancel, its cascade, and a workflow or run
                          that failed only because of one
-  question_unanswered    dead-lettered because its owner question went unanswered
+  question_unanswered    dead-lettered because its owner question went unanswered, or
+                         an await-input step that expired unanswered; and the
+                         steps a fail_workflow sweep or cancelled_parent cascade
+                         ended because of one, and a workflow failed only by them
   fix_round_live         a running fix round already covers it
 
 WHAT AN ENTRY CARRIES (§3). For every tenant, only what the platform wrote:
@@ -81,6 +84,7 @@ from swarm_common.profiles import RESOURCE_CLASSES
 from swarm_common.states import EventType, ParkReason, TaskState
 
 from .attemptreads import CloudLogsReader, agent_row, attempt_row, log_rows
+from .awaitinput import AWAIT_INPUT_EXPIRED_ERROR, is_await_profile
 from .codec import attempt_from_dict, task_from_dict
 from .redaction import redact
 from .task_input import masking_for
@@ -157,6 +161,10 @@ VERIFY_SUBMITTERS = frozenset({"swarm-verify"})
 #: agent-autonomy.md §3.9: the `last_error` of an agent whose owner question
 #: went unanswered. A person's silence, not a defect.
 QUESTION_UNANSWERED_ERROR = "owner question unanswered"
+# An await-input step nobody answered in time is the same silence, and so is
+# what it cancelled: its `fail_workflow` sweep and its `cancelled_parent`
+# cascade (`_question_unanswered`). A REFUSED declaration
+# (`awaitinput.AWAIT_INPUT_SPEC_REFUSED_ERROR`) is a defect, and reviewed.
 
 #: The events whose `detail.requested_by` names who cancelled.
 CANCEL_EVENTS = frozenset({EventType.CANCELLED.value, EventType.CANCEL_REQUESTED.value})
@@ -555,6 +563,62 @@ def person_cancelled(task: Mapping[str, Any], docs: Documents, depth: int = 0) -
     return False
 
 
+def _sweep_causes(task: Mapping[str, Any], docs: Documents) -> list[Mapping[str, Any]]:
+    """The failed steps a `fail_workflow` sweep cancelled `task` for.
+
+    `detail.failed_steps` of the sweep's CANCELLED event
+    (`scheduler.loop._sweep_failed_workflow`); without that event in the read,
+    the workflow's FAILED and DEAD_LETTERED steps, which are what the sweep reads.
+    """
+    named: list[str] = []
+    for event in docs.events.get(str(task.get("id")), []):
+        detail = _mapping(event.get("detail"))
+        if event.get("type") == EventType.CANCELLED.value and isinstance(detail.get("failed_steps"), list):
+            named += [str(s.get("task_id")) for s in detail["failed_steps"]
+                      if isinstance(s, Mapping) and s.get("task_id")]
+    if named:
+        return [docs.tasks[n] for n in dict.fromkeys(named) if n in docs.tasks]
+    workflow_id = task.get("workflow_id")
+    return [other for other in docs.tasks.values()
+            if workflow_id and other.get("workflow_id") == workflow_id
+            and other.get("tenant_id") == task.get("tenant_id")
+            and other.get("state") in FAILED_STATES]
+
+
+def _question_unanswered(task: Mapping[str, Any], docs: Documents, depth: int = 0) -> bool:
+    """Ended because a person did not answer: directly, or by a cancel that silence caused.
+
+    * `last_error` begins with agent_questions' QUESTION_UNANSWERED_ERROR;
+    * an await-input step DEAD_LETTERED by the expiry sweep
+      (`awaitinput.AWAIT_INPUT_EXPIRED_ERROR`);
+    * a step the `fail_workflow` sweep cancelled (`WORKFLOW_SWEEP`) when every
+      failed step that caused it was such a silence;
+    * a step cancelled after an upstream step (`CANCELLED_PARENT`) when every
+      upstream step that ended without succeeding was.
+
+    A sweep a FAILED agent caused, even beside a silence, is reviewed.
+    """
+    if depth > MAX_CHAIN:
+        return False
+    last_error = str(task.get("last_error") or "")
+    if last_error.startswith(QUESTION_UNANSWERED_ERROR):
+        return True
+    state = task.get("state")
+    if state == TaskState.DEAD_LETTERED.value:
+        return is_await_profile(task.get("runner_profile")) and last_error.startswith(
+            AWAIT_INPUT_EXPIRED_ERROR)
+    if state != TaskState.CANCELLED.value:
+        return False
+    if task.get("end_cause") == EndCause.WORKFLOW_SWEEP.value:
+        causes = [c for c in _sweep_causes(task, docs) if c.get("id") != task.get("id")]
+    elif task.get("end_cause") == EndCause.CANCELLED_PARENT.value:
+        causes = [docs.tasks[p] for p in task.get("depends_on") or []
+                  if p in docs.tasks and docs.tasks[p].get("state") in REVIEWED_TASK_STATES]
+    else:
+        return False
+    return bool(causes) and all(_question_unanswered(c, docs, depth + 1) for c in causes)
+
+
 def _run_of(task: Mapping[str, Any], docs: Documents) -> Mapping[str, Any] | None:
     run_id = _metadata(task).get(ISSUE_RUN_METADATA_KEY)
     if isinstance(run_id, str) and run_id in docs.runs:
@@ -606,7 +670,7 @@ def skip_rule(task: Mapping[str, Any], docs: Documents) -> str | None:
         return VERIFY_FENCE
     if person_cancelled(task, docs):
         return PERSON_CANCEL
-    if str(task.get("last_error") or "").startswith(QUESTION_UNANSWERED_ERROR):
+    if _question_unanswered(task, docs):
         return QUESTION_UNANSWERED
     if _fix_round_live(task, docs):
         return FIX_ROUND_LIVE

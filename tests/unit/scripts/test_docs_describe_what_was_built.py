@@ -541,7 +541,11 @@ def test_await_input_section_names_the_forms_and_their_artifacts():
                    "answer_busy", "store_unavailable"):
         assert f"`{reason}`" in body, reason
         assert f'"{reason}"' in source, reason
-    assert "await_input_expired" in body and '"await_input_expired: ' in source
+    # The expiry's marker is one constant (failure-review reads it too), and the
+    # sweep's text is built from it.
+    assert "await_input_expired" in body
+    assert awaitinput.AWAIT_INPUT_EXPIRED_ERROR == "await_input_expired:"
+    assert '{AWAIT_INPUT_EXPIRED_ERROR} nobody answered within' in source
     # The worker stages the files beside the artifact.
     assert "`review.files/`" in body
     assert "`apps/agent-worker/agent_worker/inputs.py::attachments_dir`" in body
