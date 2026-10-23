@@ -754,6 +754,11 @@ itself complete over two identical shots. QAFIX6-CAPTURE (PR 2073) changed
   images; a review that has them in the manifest can tell a row hidden by
   the bar from a row the page never drew, and the next tool fault is
   diagnosed from the run that found it.
+  Since QA-SHOT-MASK (PR 2114) each object also carries `masked`: how many
+  places the credential mask covered in that segment's image, "a count,
+  never the value or its length" (`swarm_qa.py`, module docstring), and the
+  entry's own `masked` sums them. A review reading a nonzero `masked` knows
+  the black box in that image is the mask, not a defect of the page.
 * **The foot is taken at the window's edge.** `STUCK_JS` took the
   scroller's foot as `top + clientHeight`. At 390 that edge was below the
   window, so the Reads bar, fixed at the window's foot, spanned no edge the
@@ -778,6 +783,22 @@ itself complete over two identical shots. QAFIX6-CAPTURE (PR 2073) changed
   kept, its line goes in the entry's `off_viewport` and in `failed`, and the
   route's status is `unsettled`. The reset is the one thing left to try, and
   a shot of the wrong size is no capture of the route as it stands.
+
+**A shot whose mask could not be drawn is not stored** (QA-SHOT-MASK, PR
+2114). Finding #2055: on 2026-10-23 a login demo printed its own password on
+its home page, and while the capture's text and accessibility files carried
+the gate's redaction marker in its place, every stored screenshot showed it
+readable, because "a screenshot is pixels, which no scrub can match"
+(`swarm_qa.py`, module docstring). So before every shot, each retake
+included, the capture finds where the page draws that marker and covers it
+with an opaque box, and it "FAILS CLOSED: a sweep, a draw or a take-down
+that throws or answers malformed, or a mask the page removed or changed
+before the take-down, drops that shot unread, and the route fails at that
+segment saying why" (`_masked_screenshot`). The route has no manifest entry
+and is listed in `failed` with "segment N: _MaskFailed: …". A shot kept
+without its mask would put the credential back in the run's stored images,
+the defect the mask exists to remove; a route missing from the review is a
+finding someone sees, and a password in an artifact is not.
 
 These reach a capture only once the `agent-runtime-browser` image is rebuilt
 and released.
